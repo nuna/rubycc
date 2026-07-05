@@ -12,7 +12,7 @@ module Rubycc
       KEYWORDS = %w[int void return].freeze
 
       # Single-character punctuators used by this slice.
-      PUNCTUATORS = %w[+ - * / % ( ) { } ;].freeze
+      PUNCTUATORS = %w[+ - * / % ( ) { } ; = ,].freeze
 
       def initialize(source, filename:)
         @src = source

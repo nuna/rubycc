@@ -6,24 +6,31 @@ require_relative "../compile_error"
 module Rubycc
   module Front
     # Recursive-descent parser for the C subset. Nonterminals follow the
-    # grammar productions of ISO C (6.5.x / 6.8.x):
+    # grammar productions of ISO C (6.5.x / 6.7 / 6.8.x):
     #
     #   translation-unit          = function-definition*
     #   function-definition       = "int" identifier "(" "void"? ")" compound-statement
-    #   compound-statement        = "{" statement* "}"
-    #   statement                 = "return" expression ";"
-    #   expression                = additive-expression
+    #   compound-statement        = "{" block-item* "}"
+    #   block-item                = declaration | statement
+    #   declaration               = "int" init-declarator ("," init-declarator)* ";"
+    #   init-declarator           = identifier ("=" assignment-expression)?
+    #   statement                 = return-statement | expression-statement
+    #   return-statement          = "return" expression ";"
+    #   expression-statement      = expression? ";"
+    #   expression                = assignment-expression
+    #   assignment-expression     = additive-expression ("=" assignment-expression)?
     #   additive-expression       = multiplicative-expression
     #                               (("+" | "-") multiplicative-expression)*
     #   multiplicative-expression = unary-expression
     #                               (("*" | "/" | "%") unary-expression)*
     #   unary-expression          = ("+" | "-")* primary-expression
-    #   primary-expression        = integer-constant | "(" expression ")"
+    #   primary-expression        = integer-constant | identifier | "(" expression ")"
     #
     # Binary precedence levels are parsed by a single table-driven
     # left-associative loop (see #parse_left_associative) rather than one
     # hand-written loop per level, so adding an operator or a precedence
-    # tier only requires a new table entry.
+    # tier only requires a new table entry. assignment-expression is
+    # right-associative and is handled separately (see #parse_assignment_expression).
     class Parser
       # Punctuator → AST operator tables, one per precedence tier
       # (weakest binding first).
@@ -63,17 +70,48 @@ module Rubycc
         expect_punct("{")
 
         body = []
-        body << parse_statement until peek.punct?("}")
+        body.concat(parse_block_item) until peek.punct?("}")
         expect_punct("}")
 
         AST::FunctionDef.new(name_tok.value, body, int_tok)
+      end
+
+      # Returns an array of nodes: a declaration expands to one VariableDecl
+      # per init-declarator, while a statement always yields exactly one node.
+      def parse_block_item
+        if peek.keyword?("int")
+          parse_declaration
+        else
+          [parse_statement]
+        end
+      end
+
+      def parse_declaration
+        expect_keyword("int")
+        decls = [parse_init_declarator]
+        while peek.punct?(",")
+          advance
+          decls << parse_init_declarator
+        end
+        expect_punct(";")
+        decls
+      end
+
+      def parse_init_declarator
+        name_tok = expect_ident
+        initializer = nil
+        if peek.punct?("=")
+          advance
+          initializer = parse_assignment_expression
+        end
+        AST::VariableDecl.new(name_tok.value, initializer, name_tok)
       end
 
       def parse_statement
         if peek.keyword?("return")
           parse_return
         else
-          error_at(peek, "expected statement")
+          parse_expression_statement
         end
       end
 
@@ -84,8 +122,31 @@ module Rubycc
         AST::Return.new(expr, ret_tok)
       end
 
+      def parse_expression_statement
+        tok = peek
+        if tok.punct?(";")
+          advance
+          AST::EmptyStmt.new(tok)
+        else
+          expr = parse_expression
+          expect_punct(";")
+          AST::ExpressionStmt.new(expr, tok)
+        end
+      end
+
       def parse_expression
-        parse_additive_expression
+        parse_assignment_expression
+      end
+
+      # Right-associative: "a = b = c" parses as "a = (b = c)".
+      def parse_assignment_expression
+        node = parse_additive_expression
+        return node unless peek.punct?("=")
+
+        eq_tok = advance
+        error_at(eq_tok, "expression is not assignable") unless node.is_a?(AST::VariableRef)
+        value = parse_assignment_expression
+        AST::Assignment.new(node, value, eq_tok)
       end
 
       def parse_additive_expression
@@ -128,6 +189,9 @@ module Rubycc
         if tok.type == :num
           advance
           AST::IntLit.new(tok.value, tok)
+        elsif tok.type == :ident
+          advance
+          AST::VariableRef.new(tok.value, tok)
         elsif tok.punct?("(")
           advance
           node = parse_expression

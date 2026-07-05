@@ -17,6 +17,23 @@ module Rubycc
       # `return <expr>;`
       Return = Data.define(:expr, :token)
 
+      # A local variable declaration. `initializer` is an expression node or
+      # nil when the declarator has no "= <expr>" part.
+      VariableDecl = Data.define(:name, :initializer, :token)
+
+      # A reference to a local variable by name.
+      VariableRef = Data.define(:name, :token)
+
+      # Simple assignment `target = value`. `target` is always a
+      # VariableRef (checked by the parser).
+      Assignment = Data.define(:target, :value, :token)
+
+      # An expression evaluated for its side effects; the value is discarded.
+      ExpressionStmt = Data.define(:expr, :token)
+
+      # The empty statement ";".
+      EmptyStmt = Data.define(:token)
+
       # A function definition. `body` is an array of statement nodes.
       FunctionDef = Data.define(:name, :body, :token)
 

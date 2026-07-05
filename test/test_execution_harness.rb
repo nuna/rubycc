@@ -55,6 +55,38 @@ class TestExecutionHarness < Minitest::Test
     assert_c_exit_status(0, "int main(void) { }", compiler: :rubycc)
   end
 
+  def test_variable_declaration_with_initializer
+    assert_c_exit_status(42, "int main(void) { int x = 6; return x * 7; }", compiler: :rubycc)
+  end
+
+  def test_assignment_to_declared_variable
+    assert_c_exit_status(42, "int main(void) { int x; x = 40; x = x + 2; return x; }", compiler: :rubycc)
+  end
+
+  def test_comma_separated_declarations
+    assert_c_exit_status(42, "int main(void) { int a = 5, b = 7; return a * b + a + 2; }", compiler: :rubycc)
+  end
+
+  def test_assignment_expression_has_a_value
+    assert_c_exit_status(42, "int main(void) { int x; return x = 42; }", compiler: :rubycc)
+  end
+
+  def test_chained_assignment_is_right_associative
+    assert_c_exit_status(42, "int main(void) { int a; int b; a = b = 21; return a + b; }", compiler: :rubycc)
+  end
+
+  def test_mixed_declarations_and_statements
+    assert_c_exit_status(42, "int main(void) { int x = 1; x = x + 1; int y = 40; return x + y; }", compiler: :rubycc)
+  end
+
+  def test_empty_statements
+    assert_c_exit_status(42, "int main(void) { ; ; return 42; }", compiler: :rubycc)
+  end
+
+  def test_unused_variable
+    assert_c_exit_status(42, "int main(void) { int unused = 99; return 42; }", compiler: :rubycc)
+  end
+
   # N7: differential test against gcc. Compile the same source with both
   # compilers and assert the process exit codes agree.
   DIFFERENTIAL_SOURCES = [
@@ -67,7 +99,15 @@ class TestExecutionHarness < Minitest::Test
     "int main(void) { return 17 % 5; }",
     "int main(void) { return -(-42); }",
     "int main(void) { return 10 - 20 + 52; }",
-    "int main(void) { }"
+    "int main(void) { }",
+    "int main(void) { int x = 6; return x * 7; }",
+    "int main(void) { int x; x = 40; x = x + 2; return x; }",
+    "int main(void) { int a = 5, b = 7; return a * b + a + 2; }",
+    "int main(void) { int x; return x = 42; }",
+    "int main(void) { int a; int b; a = b = 21; return a + b; }",
+    "int main(void) { int x = 1; x = x + 1; int y = 40; return x + y; }",
+    "int main(void) { ; ; return 42; }",
+    "int main(void) { int unused = 99; return 42; }"
   ].freeze
 
   def test_matches_gcc_exit_codes

@@ -102,10 +102,100 @@ class TestParser < Minitest::Test
     assert_match(/expected expression/, error.description)
   end
 
+  def test_bare_expression_is_a_valid_statement
+    # "42;" is now a valid expression-statement (its value is discarded).
+    program = parse("int main(void) { 42; }")
+    stmt = program.functions.first.body.first
+
+    assert_kind_of AST::ExpressionStmt, stmt
+    assert_kind_of AST::IntLit, stmt.expr
+  end
+
   def test_unexpected_token_where_statement_expected
     error = assert_raises(Rubycc::CompileError) do
-      parse("int main(void) { 42; }")
+      parse("int main(void) { ) ; }")
     end
-    assert_match(/expected statement/, error.description)
+    assert_match(/expected expression/, error.description)
+  end
+
+  def test_parses_variable_declaration_without_initializer
+    program = parse("int main(void) { int x; return 0; }")
+    decl = program.functions.first.body.first
+
+    assert_kind_of AST::VariableDecl, decl
+    assert_equal "x", decl.name
+    assert_nil decl.initializer
+  end
+
+  def test_parses_variable_declaration_with_initializer
+    program = parse("int main(void) { int x = 6; return x; }")
+    decl = program.functions.first.body.first
+
+    assert_kind_of AST::VariableDecl, decl
+    assert_equal "x", decl.name
+    assert_kind_of AST::IntLit, decl.initializer
+    assert_equal 6, decl.initializer.value
+  end
+
+  def test_parses_comma_separated_declarators_as_separate_decls
+    program = parse("int main(void) { int a = 1, b; return 0; }")
+    body = program.functions.first.body
+
+    assert_kind_of AST::VariableDecl, body[0]
+    assert_equal "a", body[0].name
+    assert_equal 1, body[0].initializer.value
+
+    assert_kind_of AST::VariableDecl, body[1]
+    assert_equal "b", body[1].name
+    assert_nil body[1].initializer
+  end
+
+  def test_parses_variable_reference
+    expr = parse_expr("x")
+    assert_kind_of AST::VariableRef, expr
+    assert_equal "x", expr.name
+  end
+
+  def test_parses_assignment_expression
+    expr = parse_expr("x = 42")
+    assert_kind_of AST::Assignment, expr
+    assert_kind_of AST::VariableRef, expr.target
+    assert_equal "x", expr.target.name
+    assert_kind_of AST::IntLit, expr.value
+    assert_equal 42, expr.value.value
+  end
+
+  def test_chained_assignment_is_right_associative
+    # a = b = c  =>  (assign a (assign b c))
+    expr = parse_expr("a = b = c")
+
+    assert_kind_of AST::Assignment, expr
+    assert_equal "a", expr.target.name
+    assert_kind_of AST::Assignment, expr.value
+    assert_equal "b", expr.value.target.name
+    assert_kind_of AST::VariableRef, expr.value.value
+    assert_equal "c", expr.value.value.name
+  end
+
+  def test_parses_expression_statement
+    program = parse("int main(void) { x; return 0; }")
+    stmt = program.functions.first.body.first
+
+    assert_kind_of AST::ExpressionStmt, stmt
+    assert_kind_of AST::VariableRef, stmt.expr
+  end
+
+  def test_parses_empty_statement
+    program = parse("int main(void) { ; return 0; }")
+    stmt = program.functions.first.body.first
+
+    assert_kind_of AST::EmptyStmt, stmt
+  end
+
+  def test_assignment_to_non_lvalue_reports_compile_error
+    error = assert_raises(Rubycc::CompileError) do
+      parse("int main(void) { 1 = 2; return 0; }")
+    end
+    assert_match(/expression is not assignable/, error.description)
   end
 end

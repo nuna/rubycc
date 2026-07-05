@@ -5,6 +5,7 @@ module Rubycc
     # A single three-address instruction over virtual registers.
     #
     #   :const  dst <- a            (a is an immediate Integer)
+    #   :copy   dst <- a
     #   :add/:sub/:mul/:div/:mod    dst <- a op b
     #   :neg    dst <- -a
     #   :ret    return a

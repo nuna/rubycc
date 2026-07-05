@@ -35,4 +35,24 @@ class TestDiagnostics < Minitest::Test
     caret_line = error.message.split("\n").last
     assert_match(/\A *\^\z/, caret_line)
   end
+
+  def test_undeclared_variable_message_has_full_diagnostic
+    source = "int main(void) { return x; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal "foo.c", error.filename
+    assert_equal 1, error.line
+    assert_match(/undeclared variable 'x'/, error.description)
+    assert_match(/foo\.c:1:\d+: error: undeclared variable 'x'/, error.message)
+  end
+
+  def test_redeclaration_message_has_full_diagnostic
+    source = "int main(void) { int x; int x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal "foo.c", error.filename
+    assert_equal 1, error.line
+    assert_match(/redeclaration of 'x'/, error.description)
+    assert_match(/foo\.c:1:\d+: error: redeclaration of 'x'/, error.message)
+  end
 end

@@ -2,6 +2,7 @@
 
 require_relative "ir"
 require_relative "../front/ast"
+require_relative "../compile_error"
 
 module Rubycc
   module IR
@@ -18,6 +19,9 @@ module Rubycc
       def gen_function(func)
         @insts = []
         @vreg_count = 0
+        # Function-local symbol table: variable name -> vreg number. This
+        # slice has a single flat scope per function (no nested blocks).
+        @vars = {}
 
         func.body.each { |stmt| gen_statement(stmt) }
 
@@ -37,8 +41,27 @@ module Rubycc
         when Front::AST::Return
           value = gen_expr(stmt.expr)
           emit(:ret, a: value)
+        when Front::AST::VariableDecl
+          gen_variable_decl(stmt)
+        when Front::AST::ExpressionStmt
+          gen_expr(stmt.expr)
+        when Front::AST::EmptyStmt
+          # no-op
         else
           raise "unsupported statement: #{stmt.class}"
+        end
+      end
+
+      def gen_variable_decl(decl)
+        if @vars.key?(decl.name)
+          error_at(decl.token, "redeclaration of '#{decl.name}'")
+        end
+
+        vreg = new_vreg
+        @vars[decl.name] = vreg
+        if decl.initializer
+          value = gen_expr(decl.initializer)
+          emit(:copy, dst: vreg, a: value)
         end
       end
 
@@ -59,9 +82,20 @@ module Rubycc
           dst = new_vreg
           emit(node.op, dst: dst, a: lhs, b: rhs)
           dst
+        when Front::AST::VariableRef
+          lookup_vreg(node.name, node.token)
+        when Front::AST::Assignment
+          value = gen_expr(node.value)
+          target_vreg = lookup_vreg(node.target.name, node.target.token)
+          emit(:copy, dst: target_vreg, a: value)
+          target_vreg
         else
           raise "unsupported expression: #{node.class}"
         end
+      end
+
+      def lookup_vreg(name, token)
+        @vars[name] || error_at(token, "undeclared variable '#{name}'")
       end
 
       def new_vreg
@@ -72,6 +106,16 @@ module Rubycc
 
       def emit(op, dst: nil, a: nil, b: nil)
         @insts << Instruction.new(op, dst: dst, a: a, b: b)
+      end
+
+      def error_at(token, description)
+        raise CompileError.new(
+          description,
+          filename: token.filename,
+          line: token.line,
+          column: token.column,
+          source_line: token.source_line
+        )
       end
     end
   end

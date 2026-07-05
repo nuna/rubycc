@@ -47,6 +47,9 @@ module Rubycc
         case inst.op
         when :const
           emit_const(inst.dst, inst.a)
+        when :copy
+          load_reg(EAX, inst.a)
+          store_reg(EAX, inst.dst)
         when :add
           emit_binary(inst.dst, inst.a, inst.b, [0x01, 0xC8]) # add eax, ecx
         when :sub
