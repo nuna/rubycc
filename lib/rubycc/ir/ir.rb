@@ -13,6 +13,8 @@ module Rubycc
     #   :label        a = label id (a jump target; emits no code itself)
     #   :jump         a = label id (unconditional branch)
     #   :jump_if_zero a = condition vreg, b = label id (branch when a == 0)
+    #   :call   dst <- f(args)  a = callee name (String),
+    #                           b = array of argument vregs (left to right)
     #
     # `dst`, `a`, `b` are virtual register numbers (Integers) unless noted;
     # unused fields are nil.
@@ -33,13 +35,17 @@ module Rubycc
 
     # A function in IR form: a name, a flat list of instructions and the number
     # of virtual registers used (so the backend can size its stack frame).
+    # `param_count` is the number of parameters; by convention they occupy the
+    # first `param_count` virtual registers (0..param_count-1), so the backend
+    # can spill the incoming argument registers into their slots.
     class Function
-      attr_reader :name, :insts, :vreg_count
+      attr_reader :name, :insts, :vreg_count, :param_count
 
-      def initialize(name, insts, vreg_count)
+      def initialize(name, insts, vreg_count, param_count)
         @name = name
         @insts = insts
         @vreg_count = vreg_count
+        @param_count = param_count
       end
     end
   end

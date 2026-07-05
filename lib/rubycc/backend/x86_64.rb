@@ -14,13 +14,26 @@ module Rubycc
     class X86_64
       # Result of compiling one function: `bytes` is the machine code (an
       # ASCII-8BIT String), `symbols` is an array of
-      # { name:, offset:, size: } describing the emitted function symbols.
-      Result = Data.define(:bytes, :symbols)
+      # { name:, offset:, size: } describing the emitted function symbols, and
+      # `relocations` is an array of { offset:, symbol: } marking each `call`
+      # site whose rel32 field the linker must resolve (offset is relative to
+      # the start of this function's code).
+      Result = Data.define(:bytes, :symbols, :relocations)
 
-      # Register numbers (low 3 bits of the ModR/M reg field).
+      # Register numbers. For eax/ecx/edx these are the low 3 bits of the
+      # ModR/M reg field; edi/esi likewise (6, 7); r8d/r9d are 8/9 and need a
+      # REX.R prefix with the low 3 bits going into the reg field.
       EAX = 0
       ECX = 1
       EDX = 2
+      ESI = 6
+      EDI = 7
+      R8D = 8
+      R9D = 9
+
+      # System V AMD64 integer argument registers, in order. A call with N
+      # arguments (N <= 6) uses the first N entries.
+      ARG_REGISTERS = [EDI, ESI, EDX, ECX, R8D, R9D].freeze
 
       # IR comparison op -> setcc opcode (second byte of the 0F 9x encoding).
       # The result is materialized into eax as an int 0/1 by movzx.
@@ -40,24 +53,32 @@ module Rubycc
         # rel32 field is overwritten once every label offset is known.
         @labels = {}
         @fixups = []
-        emit_prologue(ir_func.vreg_count)
+        # Each `call` records a { offset:, symbol: } here so the object writer
+        # can emit a .rela.text entry once this function's base in .text is
+        # known.
+        @relocations = []
+        emit_prologue(ir_func.vreg_count, ir_func.param_count)
         ir_func.insts.each { |inst| emit_instruction(inst) }
         resolve_fixups
 
         Result.new(
           bytes: @code,
-          symbols: [{ name: ir_func.name, offset: 0, size: @code.bytesize }]
+          symbols: [{ name: ir_func.name, offset: 0, size: @code.bytesize }],
+          relocations: @relocations
         )
       end
 
       private
 
-      def emit_prologue(vreg_count)
+      def emit_prologue(vreg_count, param_count)
         frame_size = align16(vreg_count * 8)
         emit(0x55)                          # push rbp
         emit(0x48, 0x89, 0xE5)              # mov rbp, rsp
         emit(0x48, 0x81, 0xEC)              # sub rsp, imm32
         emit_bytes([frame_size].pack("L<"))
+        # Spill the incoming argument registers into the parameter slots (the
+        # first `param_count` vregs) so they read back like any other vreg.
+        param_count.times { |i| store_reg(ARG_REGISTERS[i], i) }
       end
 
       def emit_instruction(inst)
@@ -89,6 +110,8 @@ module Rubycc
           emit_jump(inst.a)
         when :jump_if_zero
           emit_jump_if_zero(inst.a, inst.b)
+        when :call
+          emit_call(inst.dst, inst.a, inst.b)
         when :ret
           load_reg(EAX, inst.a)
           emit(0xC9)                                          # leave
@@ -96,6 +119,21 @@ module Rubycc
         else
           raise "unsupported IR op: #{inst.op}"
         end
+      end
+
+      # Emits a call: load each argument from its slot into the matching
+      # System V argument register, then "call rel32" with a zero displacement
+      # placeholder recorded as a relocation, then spill eax to the result
+      # slot. All arguments already live in slots, so loading them in order
+      # cannot clobber a not-yet-loaded argument. The prologue keeps rsp
+      # 16-aligned (push rbp plus a 16-aligned sub), so at the call the stack
+      # meets the System V alignment requirement without extra adjustment.
+      def emit_call(dst, name, arg_vregs)
+        arg_vregs.each_with_index { |vreg, i| load_reg(ARG_REGISTERS[i], vreg) }
+        emit(0xE8)                          # call rel32
+        @relocations << { offset: @code.bytesize, symbol: name }
+        emit_bytes([0].pack("l<"))          # linker patches this via R_X86_64_PLT32
+        store_reg(EAX, dst)
       end
 
       def emit_comparison(dst, a, b, setcc_opcode)
@@ -161,16 +199,19 @@ module Rubycc
         store_reg(result_reg, dst)
       end
 
-      # mov <reg>, [rbp + disp]
+      # mov <reg>, [rbp + disp]. Registers r8d/r9d (>= 8) need a REX.R prefix,
+      # with the low 3 bits of the register going into the ModR/M reg field.
       def load_reg(reg, vreg)
+        emit(0x44) if reg >= 8              # REX.R
         emit(0x8B)
-        emit_bytes(modrm_rbp_disp(reg, slot_disp(vreg)))
+        emit_bytes(modrm_rbp_disp(reg & 7, slot_disp(vreg)))
       end
 
-      # mov [rbp + disp], <reg>
+      # mov [rbp + disp], <reg>. See load_reg for the REX.R handling.
       def store_reg(reg, vreg)
+        emit(0x44) if reg >= 8              # REX.R
         emit(0x89)
-        emit_bytes(modrm_rbp_disp(reg, slot_disp(vreg)))
+        emit_bytes(modrm_rbp_disp(reg & 7, slot_disp(vreg)))
       end
 
       def slot_disp(vreg)

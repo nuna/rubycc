@@ -62,10 +62,24 @@ module Rubycc
       # `continue;` — targets the innermost enclosing iteration-statement.
       Continue = Data.define(:token)
 
-      # A function definition. `body` is an array of statement nodes.
-      FunctionDef = Data.define(:name, :body, :token)
+      # A call to a named function. `args` is an array of expression nodes
+      # (the argument-expression-list), evaluated left to right.
+      Call = Data.define(:name, :args, :token)
 
-      # Whole translation unit. `functions` is an array of FunctionDef.
+      # A single function parameter. `name` is the identifier String, or nil
+      # for an unnamed parameter in a prototype (e.g. "int f(int, int);").
+      Parameter = Data.define(:name, :token)
+
+      # A function prototype (a bare declaration with no body), e.g.
+      # "int f(int a, int b);". `params` is an array of Parameter.
+      FunctionDecl = Data.define(:name, :params, :token)
+
+      # A function definition. `params` is an array of Parameter (each with a
+      # non-nil name) and `body` is an array of statement nodes.
+      FunctionDef = Data.define(:name, :params, :body, :token)
+
+      # Whole translation unit. `functions` is an array of FunctionDef and
+      # FunctionDecl (prototype) nodes in source order.
       Program = Data.define(:functions)
     end
   end

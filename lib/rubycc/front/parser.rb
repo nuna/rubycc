@@ -8,8 +8,13 @@ module Rubycc
     # Recursive-descent parser for the C subset. Nonterminals follow the
     # grammar productions of ISO C (6.5.x / 6.7 / 6.8.x):
     #
-    #   translation-unit          = function-definition*
-    #   function-definition       = "int" identifier "(" "void"? ")" compound-statement
+    #   translation-unit          = external-declaration*
+    #   external-declaration      = "int" identifier "(" parameter-type-list? ")"
+    #                               (";" | compound-statement)
+    #   parameter-type-list       = "void"
+    #                             | parameter-declaration
+    #                               ("," parameter-declaration)*
+    #   parameter-declaration     = "int" identifier?
     #   compound-statement        = "{" block-item* "}"
     #   block-item                = declaration | statement
     #   declaration               = "int" init-declarator ("," init-declarator)* ";"
@@ -37,7 +42,11 @@ module Rubycc
     #                               (("+" | "-") multiplicative-expression)*
     #   multiplicative-expression = unary-expression
     #                               (("*" | "/" | "%") unary-expression)*
-    #   unary-expression          = ("+" | "-" | "!")* primary-expression
+    #   unary-expression          = ("+" | "-" | "!")* postfix-expression
+    #   postfix-expression        = primary-expression
+    #                             | identifier "(" argument-expression-list? ")"
+    #   argument-expression-list  = assignment-expression
+    #                               ("," assignment-expression)*
     #   primary-expression        = integer-constant | identifier | "(" expression ")"
     #
     # Binary precedence levels are parsed by a single table-driven
@@ -52,6 +61,11 @@ module Rubycc
       RELATIONAL_OPERATORS = { "<" => :lt, ">" => :gt, "<=" => :le, ">=" => :ge }.freeze
       ADDITIVE_OPERATORS = { "+" => :add, "-" => :sub }.freeze
       MULTIPLICATIVE_OPERATORS = { "*" => :mul, "/" => :div, "%" => :mod }.freeze
+
+      # System V AMD64 passes the first six integer arguments in registers;
+      # this subset rejects any function with more parameters (or arguments).
+      MAX_PARAMS = 6
+
       def initialize(tokens)
         @tokens = tokens
         @pos = 0
@@ -60,7 +74,7 @@ module Rubycc
       # Parses the whole translation unit into an AST::Program.
       def parse
         functions = []
-        functions << parse_function until peek.eof?
+        functions << parse_external_declaration until peek.eof?
         AST::Program.new(functions)
       end
 
@@ -70,26 +84,79 @@ module Rubycc
         @tokens[@pos]
       end
 
+      # Looks ahead `offset` tokens without consuming; used to disambiguate a
+      # function-call "identifier (" from a bare identifier reference.
+      def peek_ahead(offset)
+        @tokens[@pos + offset]
+      end
+
       def advance
         tok = @tokens[@pos]
         @pos += 1 unless tok.eof?
         tok
       end
 
-      def parse_function
+      # An external declaration is a prototype (ends in ";") or a definition
+      # (ends in a compound-statement); the two share the same
+      # "int" identifier "(" parameter-type-list? ")" prefix.
+      def parse_external_declaration
         int_tok = expect_keyword("int")
         name_tok = expect_ident
         expect_punct("(")
-        # Accept both "(void)" and "()".
-        consume_keyword("void")
+        params = parse_parameter_type_list
         expect_punct(")")
-        expect_punct("{")
 
+        if peek.punct?(";")
+          advance
+          AST::FunctionDecl.new(name_tok.value, params, int_tok)
+        else
+          parse_function_definition(name_tok.value, params, int_tok)
+        end
+      end
+
+      def parse_function_definition(name, params, int_tok)
+        # A definition, unlike a prototype, must name each parameter so its
+        # value can be bound in the body.
+        params.each do |param|
+          error_at(param.token, "parameter name omitted") if param.name.nil?
+        end
+        expect_punct("{")
         body = []
         body.concat(parse_block_item) until peek.punct?("}")
         expect_punct("}")
+        AST::FunctionDef.new(name, params, body, int_tok)
+      end
 
-        AST::FunctionDef.new(name_tok.value, body, int_tok)
+      # Returns an array of AST::Parameter; empty for "()" or "(void)".
+      def parse_parameter_type_list
+        return [] if peek.punct?(")")
+        if peek.keyword?("void")
+          advance
+          return []
+        end
+
+        params = [parse_parameter_declaration]
+        while peek.punct?(",")
+          advance
+          params << parse_parameter_declaration
+        end
+        if params.size > MAX_PARAMS
+          error_at(params[MAX_PARAMS].token, "too many parameters (rubycc supports up to 6)")
+        end
+        params
+      end
+
+      # parameter-declaration = "int" identifier?. The name is optional (nil)
+      # so prototypes may omit it; an unnamed parameter is located by its
+      # "int" keyword for diagnostics.
+      def parse_parameter_declaration
+        int_tok = expect_keyword("int")
+        if peek.type == :ident
+          name_tok = advance
+          AST::Parameter.new(name_tok.value, name_tok)
+        else
+          AST::Parameter.new(nil, int_tok)
+        end
       end
 
       # Returns an array of nodes: a declaration expands to one VariableDecl
@@ -305,8 +372,39 @@ module Rubycc
           op_tok = advance
           AST::Unary.new(:not, parse_unary_expression, op_tok)
         else
+          parse_postfix_expression
+        end
+      end
+
+      # An identifier immediately followed by "(" is a function call; anything
+      # else falls through to a primary-expression.
+      def parse_postfix_expression
+        tok = peek
+        if tok.type == :ident && peek_ahead(1)&.punct?("(")
+          parse_call
+        else
           parse_primary_expression
         end
+      end
+
+      def parse_call
+        name_tok = advance # identifier
+        expect_punct("(")
+        args = parse_argument_expression_list
+        expect_punct(")")
+        AST::Call.new(name_tok.value, args, name_tok)
+      end
+
+      # Returns an array of expression nodes; empty for an argument-less "()".
+      def parse_argument_expression_list
+        return [] if peek.punct?(")")
+
+        args = [parse_assignment_expression]
+        while peek.punct?(",")
+          advance
+          args << parse_assignment_expression
+        end
+        args
       end
 
       def parse_primary_expression
@@ -333,10 +431,6 @@ module Rubycc
         tok = peek
         error_at(tok, "expected '#{str}'") unless tok.keyword?(str)
         advance
-      end
-
-      def consume_keyword(str)
-        advance if peek.keyword?(str)
       end
 
       def expect_ident

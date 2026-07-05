@@ -9,12 +9,43 @@ module Rubycc
     # Lowers the AST into IR. A straightforward post-order walk that allocates a
     # fresh virtual register for every computed value. No optimization.
     class Generator
-      # Returns an array of IR::Function, one per AST::FunctionDef.
+      # Returns an array of IR::Function, one per AST::FunctionDef. Prototypes
+      # (AST::FunctionDecl) contribute only a signature-table entry and emit no
+      # code. The table is filled in source order so a definition can reference
+      # itself (recursion) or an earlier prototype (mutual recursion), while a
+      # call to a still-unknown name is diagnosed as an implicit declaration.
       def generate(program)
-        program.functions.map { |func| gen_function(func) }
+        # name -> { arity:, defined: }. `defined` distinguishes a prototype
+        # from a completed definition so redefinitions can be rejected.
+        @signatures = {}
+        ir_functions = []
+        program.functions.each do |decl|
+          case decl
+          when Front::AST::FunctionDecl
+            declare_function(decl.name, decl.params.size, defined: false, token: decl.token)
+          when Front::AST::FunctionDef
+            declare_function(decl.name, decl.params.size, defined: true, token: decl.token)
+            ir_functions << gen_function(decl)
+          end
+        end
+        ir_functions
       end
 
       private
+
+      # Records or updates a function's signature, enforcing that repeated
+      # declarations agree on arity and that a body is defined at most once.
+      def declare_function(name, arity, defined:, token:)
+        existing = @signatures[name]
+        if existing
+          if existing[:arity] != arity
+            error_at(token, "conflicting types for '#{name}'")
+          elsif defined && existing[:defined]
+            error_at(token, "redefinition of '#{name}'")
+          end
+        end
+        @signatures[name] = { arity: arity, defined: defined || existing&.fetch(:defined) || false }
+      end
 
       def gen_function(func)
         @insts = []
@@ -28,6 +59,10 @@ module Rubycc
         # to the right labels without threading them through every call.
         @loop_stack = []
 
+        # Parameters take the first vregs (0..n-1) in the outermost scope; the
+        # backend spills the incoming argument registers into these slots.
+        func.params.each { |param| @scopes.last[param.name] = new_vreg }
+
         func.body.each { |stmt| gen_statement(stmt) }
 
         # C99: falling off the end of main returns 0. Emit an explicit return
@@ -38,7 +73,7 @@ module Rubycc
           emit(:ret, a: zero)
         end
 
-        Function.new(func.name, @insts, @vreg_count)
+        Function.new(func.name, @insts, @vreg_count, func.params.size)
       end
 
       def gen_statement(stmt)
@@ -211,9 +246,30 @@ module Rubycc
           target_vreg = lookup_vreg(node.target.name, node.target.token)
           emit(:copy, dst: target_vreg, a: value)
           target_vreg
+        when Front::AST::Call
+          gen_call(node)
         else
           raise "unsupported expression: #{node.class}"
         end
+      end
+
+      # Lowers a call: the callee must have a known signature and a matching
+      # argument count. Arguments are evaluated left to right, each landing in
+      # its own vreg, and the whole call yields a fresh vreg for the result.
+      def gen_call(node)
+        sig = @signatures[node.name]
+        error_at(node.token, "implicit declaration of function '#{node.name}'") unless sig
+
+        if node.args.size < sig[:arity]
+          error_at(node.token, "too few arguments to function '#{node.name}'")
+        elsif node.args.size > sig[:arity]
+          error_at(node.token, "too many arguments to function '#{node.name}'")
+        end
+
+        arg_vregs = node.args.map { |arg| gen_expr(arg) }
+        dst = new_vreg
+        emit(:call, dst: dst, a: node.name, b: arg_vregs)
+        dst
       end
 
       # Logical negation "!x" is lowered to the comparison "x == 0", reusing

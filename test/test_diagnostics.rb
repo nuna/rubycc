@@ -100,4 +100,51 @@ class TestDiagnostics < Minitest::Test
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/break statement not within a loop/, error.description)
   end
+
+  def test_implicit_declaration_of_function
+    source = "int main(void) { return f(1); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal "foo.c", error.filename
+    assert_equal 1, error.line
+    assert_match(/implicit declaration of function 'f'/, error.description)
+    assert_match(/foo\.c:1:\d+: error: implicit declaration of function 'f'/, error.message)
+  end
+
+  def test_too_few_arguments_to_function
+    source = "int f(int a, int b) { return a + b; } int main(void) { return f(1); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/too few arguments to function 'f'/, error.description)
+  end
+
+  def test_too_many_arguments_to_function
+    source = "int f(int a) { return a; } int main(void) { return f(1, 2); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/too many arguments to function 'f'/, error.description)
+  end
+
+  def test_redefinition_of_function
+    source = "int f(void) { return 1; } int f(void) { return 2; } int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/redefinition of 'f'/, error.description)
+  end
+
+  def test_conflicting_types_between_prototype_and_definition
+    source = "int f(int a); int f(int a, int b) { return a + b; } int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/conflicting types for 'f'/, error.description)
+  end
+
+  def test_too_many_parameters
+    source = "int f(int a, int b, int c, int d, int e, int g, int h) { return a; } " \
+             "int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/too many parameters \(rubycc supports up to 6\)/, error.description)
+  end
+
+  def test_parameter_name_omitted_in_definition
+    source = "int f(int a, int) { return a; } int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/parameter name omitted/, error.description)
+  end
 end

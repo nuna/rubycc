@@ -50,6 +50,16 @@ module ExecutionHelper
     run_status.exitstatus
   end
 
+  # Links `object_path` into an executable and returns the linker's combined
+  # stderr, so tests can assert it is warning-free (e.g. no missing
+  # .note.GNU-stack executable-stack warning).
+  def link_stderr(object_path)
+    dir = File.dirname(object_path)
+    exe_path = File.join(dir, "#{File.basename(object_path, ".*")}.out")
+    _stdout, stderr, _status = Open3.capture3("gcc", "-o", exe_path, object_path)
+    stderr
+  end
+
   def assert_c_exit_status(expected, c_source, compiler: :rubycc)
     in_tmpdir do |dir|
       object_path = File.join(dir, "test.o")

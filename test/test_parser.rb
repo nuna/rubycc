@@ -354,4 +354,78 @@ class TestParser < Minitest::Test
 
     assert_kind_of AST::Continue, stmt
   end
+
+  def test_parses_function_definition_with_parameters
+    program = parse("int add(int a, int b) { return a + b; }")
+    func = program.functions.first
+
+    assert_kind_of AST::FunctionDef, func
+    assert_equal "add", func.name
+    assert_equal 2, func.params.size
+    assert_kind_of AST::Parameter, func.params[0]
+    assert_equal "a", func.params[0].name
+    assert_equal "b", func.params[1].name
+  end
+
+  def test_parses_multiple_top_level_functions
+    program = parse("int f(void) { return 1; } int main(void) { return 0; }")
+
+    assert_equal 2, program.functions.size
+    assert_equal "f", program.functions[0].name
+    assert_equal "main", program.functions[1].name
+  end
+
+  def test_parses_function_prototype
+    program = parse("int f(int a, int b); int main(void) { return 0; }")
+    proto = program.functions.first
+
+    assert_kind_of AST::FunctionDecl, proto
+    assert_equal "f", proto.name
+    assert_equal 2, proto.params.size
+    assert_equal "a", proto.params[0].name
+  end
+
+  def test_prototype_may_omit_parameter_names
+    program = parse("int f(int, int); int main(void) { return 0; }")
+    proto = program.functions.first
+
+    assert_kind_of AST::FunctionDecl, proto
+    assert_equal 2, proto.params.size
+    assert_nil proto.params[0].name
+    assert_nil proto.params[1].name
+  end
+
+  def test_prototype_with_void_has_no_parameters
+    program = parse("int f(void); int main(void) { return 0; }")
+    proto = program.functions.first
+
+    assert_kind_of AST::FunctionDecl, proto
+    assert_empty proto.params
+  end
+
+  def test_parses_function_call_with_arguments
+    expr = parse_expr("add(1, 2)")
+
+    assert_kind_of AST::Call, expr
+    assert_equal "add", expr.name
+    assert_equal 2, expr.args.size
+    assert_equal 1, expr.args[0].value
+    assert_equal 2, expr.args[1].value
+  end
+
+  def test_parses_call_with_no_arguments
+    expr = parse_expr("f()")
+
+    assert_kind_of AST::Call, expr
+    assert_equal "f", expr.name
+    assert_empty expr.args
+  end
+
+  def test_parses_nested_call_arguments
+    expr = parse_expr("f(g(1))")
+
+    assert_kind_of AST::Call, expr
+    assert_kind_of AST::Call, expr.args.first
+    assert_equal "g", expr.args.first.name
+  end
 end

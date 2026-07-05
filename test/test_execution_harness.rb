@@ -256,6 +256,87 @@ class TestExecutionHarness < Minitest::Test
     )
   end
 
+  def test_calls_another_function
+    assert_c_exit_status(
+      42,
+      "int add(int a, int b) { return a + b; } int main(void) { return add(40, 2); }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_argument_order_is_preserved
+    assert_c_exit_status(
+      42,
+      "int f(int a, int b) { return a - b; } int main(void) { return f(50, 8); }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_six_arguments
+    assert_c_exit_status(
+      67,
+      "int f(int a, int b, int c, int d, int e, int g) " \
+      "{ return a + b * 2 + c * 3 + d * 4 + e * 5 + g * 6; } " \
+      "int main(void) { return f(1, 2, 3, 4, 5, 2); }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_recursion
+    assert_c_exit_status(
+      55,
+      "int fib(int n) { if (n < 2) return n; return fib(n - 1) + fib(n - 2); } " \
+      "int main(void) { return fib(10); }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_mutual_recursion_via_prototype
+    assert_c_exit_status(
+      42,
+      "int is_odd(int n); " \
+      "int is_even(int n) { if (n == 0) return 1; return is_odd(n - 1); } " \
+      "int is_odd(int n) { if (n == 0) return 0; return is_even(n - 1); } " \
+      "int main(void) { return is_even(10) * 42; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_nested_calls
+    assert_c_exit_status(
+      42,
+      "int twice(int x) { return x * 2; } int main(void) { return twice(twice(10)) + 2; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_external_libc_function
+    assert_c_exit_status(
+      42,
+      "int abs(int); int main(void) { return abs(0 - 42); }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_call_inside_loop
+    assert_c_exit_status(
+      30,
+      "int sq(int x) { return x * x; } " \
+      "int main(void) { int s = 0; for (int i = 1; i <= 4; i = i + 1) s = s + sq(i); return s; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_linking_emits_no_executable_stack_warning
+    # The .note.GNU-stack section marks the stack non-executable, so gcc's
+    # linker driver should not print any warning when producing the executable.
+    in_tmpdir do |dir|
+      object_path = File.join(dir, "test.o")
+      compile_with_rubycc("int f(int x) { return x; } int main(void) { return f(42); }", object_path)
+      assert_empty link_stderr(object_path)
+    end
+  end
+
   # N7: differential test against gcc. Compile the same source with both
   # compilers and assert the process exit codes agree.
   DIFFERENTIAL_SOURCES = [
@@ -311,7 +392,22 @@ class TestExecutionHarness < Minitest::Test
     "{ i = i + 1; if (i > 100) break; if (i % 10 != 0) continue; n = n + 1; } return n; }",
     "int main(void) { int total = 0; for (int i = 0; i < 5; i = i + 1) " \
     "{ for (int j = 0; j < 5; j = j + 1) { if (j > i) break; total = total + 1; } } return total; }",
-    "int main(void) { int i = 100; for (int i = 0; i < 5; i = i + 1) { ; } return i; }"
+    "int main(void) { int i = 100; for (int i = 0; i < 5; i = i + 1) { ; } return i; }",
+    "int add(int a, int b) { return a + b; } int main(void) { return add(40, 2); }",
+    "int f(int a, int b) { return a - b; } int main(void) { return f(50, 8); }",
+    "int f(int a, int b, int c, int d, int e, int g) " \
+    "{ return a + b * 2 + c * 3 + d * 4 + e * 5 + g * 6; } " \
+    "int main(void) { return f(1, 2, 3, 4, 5, 2); }",
+    "int fib(int n) { if (n < 2) return n; return fib(n - 1) + fib(n - 2); } " \
+    "int main(void) { return fib(10); }",
+    "int is_odd(int n); " \
+    "int is_even(int n) { if (n == 0) return 1; return is_odd(n - 1); } " \
+    "int is_odd(int n) { if (n == 0) return 0; return is_even(n - 1); } " \
+    "int main(void) { return is_even(10) * 42; }",
+    "int twice(int x) { return x * 2; } int main(void) { return twice(twice(10)) + 2; }",
+    "int abs(int); int main(void) { return abs(0 - 42); }",
+    "int sq(int x) { return x * x; } " \
+    "int main(void) { int s = 0; for (int i = 1; i <= 4; i = i + 1) s = s + sq(i); return s; }"
   ].freeze
 
   def test_matches_gcc_exit_codes

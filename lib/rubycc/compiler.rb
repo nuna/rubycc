@@ -23,17 +23,45 @@ module Rubycc
       writer.add_file_symbol(File.basename(filename))
 
       text = +"".b
+      defined_names = []
+      relocations = []
       ir_functions.each do |ir_func|
         result = backend.compile(ir_func)
+        # Align each function to 16 bytes with NOP (0x90) padding, keeping the
+        # output deterministic and every entry point aligned.
+        pad_to_alignment(text, 16)
         base = text.bytesize
         text << result.bytes
         result.symbols.each do |sym|
           writer.add_global_func(sym[:name], base + sym[:offset], sym[:size])
+          defined_names << sym[:name]
+        end
+        result.relocations.each do |reloc|
+          relocations << { offset: base + reloc[:offset], symbol: reloc[:symbol] }
         end
       end
+
+      # A call whose target is not defined in this translation unit becomes an
+      # undefined symbol for the linker to resolve (e.g. libc's abs).
+      relocations.each do |reloc|
+        writer.add_undefined_symbol(reloc[:symbol]) unless defined_names.include?(reloc[:symbol])
+        writer.add_text_relocation(offset: reloc[:offset], symbol: reloc[:symbol])
+      end
+
       writer.add_text_section(text)
       writer.to_binary
     end
+
+    private
+
+    # Pads `buffer` with NOP (0x90) bytes until its length is a multiple of
+    # `alignment`.
+    def pad_to_alignment(buffer, alignment)
+      remainder = buffer.bytesize % alignment
+      buffer << ("\x90".b * (alignment - remainder)) if remainder.positive?
+    end
+
+    public
 
     # Convenience: read `input_path`, compile it and write the object to
     # `output_path`.
