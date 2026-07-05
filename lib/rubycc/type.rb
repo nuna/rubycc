@@ -1,10 +1,12 @@
 # frozen_string_literal: true
 
 module Rubycc
-  # The minimal type system for this C subset. Only two kinds of type exist:
-  # the scalar `int` and pointers to another type. Types compare by value, so
-  # any two `int *` are equal, and each renders itself the way a C declarator
-  # would ("int", "int *", "int **") for use in diagnostics.
+  # The type system for this C subset: the scalar `int`, pointers to another
+  # type, and one-dimensional arrays of another type. Types compare by value,
+  # so any two `int *` are equal, and each renders itself the way a C
+  # declarator would ("int", "int *", "int [10]") for use in diagnostics. Every
+  # type reports its storage width in bytes via #size (int 4, any pointer 8, an
+  # array its element width times its length).
   module Type
     # The scalar integer type. A single shared instance (Type::Int) stands in
     # for every `int`, so identity comparison doubles as value comparison.
@@ -15,6 +17,15 @@ module Rubycc
 
       def int?
         true
+      end
+
+      def array?
+        false
+      end
+
+      # An `int` occupies 4 bytes.
+      def size
+        4
       end
 
       def to_s
@@ -36,11 +47,48 @@ module Rubycc
         false
       end
 
+      def array?
+        false
+      end
+
+      # Every pointer is a 64-bit address, so 8 bytes wide.
+      def size
+        8
+      end
+
       # Renders as a C declarator: a space separates the base type from its
       # first "*", and deeper levels stack their stars with no gap in between
       # ("int *", "int **").
       def to_s
         target.pointer? ? "#{target}*" : "#{target} *"
+      end
+    end
+
+    # A one-dimensional array of `length` elements, each of type `element`
+    # (itself a Type: an int or a pointer in this subset). Two arrays are equal
+    # when both their element type and length match.
+    Array = Data.define(:element, :length) do
+      def pointer?
+        false
+      end
+
+      def int?
+        false
+      end
+
+      def array?
+        true
+      end
+
+      # The whole array's byte size: the element width times the count.
+      def size
+        element.size * length
+      end
+
+      # Renders like a C array declarator: the element type, a space, then the
+      # bracketed length ("int [10]", "int * [4]").
+      def to_s
+        "#{element} [#{length}]"
       end
     end
   end

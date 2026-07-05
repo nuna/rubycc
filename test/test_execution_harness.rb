@@ -385,6 +385,92 @@ class TestExecutionHarness < Minitest::Test
     )
   end
 
+  def test_array_write_and_read_in_a_loop
+    assert_c_exit_status(
+      42,
+      "int main(void) { int a[5]; for (int i = 0; i < 5; i = i + 1) a[i] = i * 10; return a[4] + 2; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_array_sum
+    assert_c_exit_status(
+      42,
+      "int main(void) { int a[3]; a[0] = 1; a[1] = 2; a[2] = 3; int s = 0; " \
+      "for (int i = 0; i < 3; i = i + 1) s = s + a[i]; return s * 7; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_pointer_to_array_and_pointer_arithmetic_store
+    assert_c_exit_status(
+      42,
+      "int main(void) { int a[4]; int *p = a; *(p + 2) = 42; return a[2]; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_address_of_element_and_subscript_through_pointer
+    assert_c_exit_status(
+      42,
+      "int main(void) { int a[4]; a[3] = 42; int *p = &a[3]; return p[0]; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_negative_subscript_through_pointer
+    assert_c_exit_status(
+      42,
+      "int main(void) { int a[8]; a[2] = 42; int *p = &a[5]; return p[-3]; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_pointer_difference
+    assert_c_exit_status(
+      42,
+      "int main(void) { int a[10]; int *p = &a[1]; int *q = &a[8]; return (q - p) * 6; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_pointer_comparison_in_loop
+    assert_c_exit_status(
+      42,
+      "int main(void) { int a[4]; int *p = &a[0]; int *q = &a[3]; int n = 0; " \
+      "while (p < q) { p = p + 1; n = n + 1; } return n * 14; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_passing_an_array_decays_to_a_pointer
+    assert_c_exit_status(
+      42,
+      "int sum(int *v, int n) { int s = 0; for (int i = 0; i < n; i = i + 1) s = s + v[i]; return s; } " \
+      "int main(void) { int a[4]; a[0] = 10; a[1] = 11; a[2] = 10; a[3] = 11; return sum(a, 4); }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_sizeof_of_arrays_pointers_and_types
+    # sizeof(a) - sizeof(int) * 8 + sizeof(p) - sizeof(int *) + sizeof 1 - 2
+    #   = 40 - 32 + 8 - 8 + 4 - 2 = 10 (matching gcc).
+    assert_c_exit_status(
+      10,
+      "int main(void) { int a[10]; int *p; " \
+      "return sizeof(a) - sizeof(int) * 8 + sizeof(p) - sizeof(int *) + sizeof 1 - 2; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_multiple_objects_and_scalars_interleaved
+    assert_c_exit_status(
+      42,
+      "int main(void) { int x = 1; int a[3]; int y = 2; a[1] = 39; return x + a[1] + y; }",
+      compiler: :rubycc
+    )
+  end
+
   def test_linking_emits_no_executable_stack_warning
     # The .note.GNU-stack section marks the stack non-executable, so gcc's
     # linker driver should not print any warning when producing the executable.
@@ -474,7 +560,21 @@ class TestExecutionHarness < Minitest::Test
     "int set(int *dst, int v) { *dst = v; return 0; } " \
     "int main(void) { int x = 0; set(&x, 42); return x; }",
     "int swap(int *a, int *b) { int t = *a; *a = *b; *b = t; return 0; } " \
-    "int main(void) { int x = 2; int y = 40; swap(&x, &y); return x - y + 80; }"
+    "int main(void) { int x = 2; int y = 40; swap(&x, &y); return x - y + 80; }",
+    "int main(void) { int a[5]; for (int i = 0; i < 5; i = i + 1) a[i] = i * 10; return a[4] + 2; }",
+    "int main(void) { int a[3]; a[0] = 1; a[1] = 2; a[2] = 3; int s = 0; " \
+    "for (int i = 0; i < 3; i = i + 1) s = s + a[i]; return s * 7; }",
+    "int main(void) { int a[4]; int *p = a; *(p + 2) = 42; return a[2]; }",
+    "int main(void) { int a[4]; a[3] = 42; int *p = &a[3]; return p[0]; }",
+    "int main(void) { int a[8]; a[2] = 42; int *p = &a[5]; return p[-3]; }",
+    "int main(void) { int a[10]; int *p = &a[1]; int *q = &a[8]; return (q - p) * 6; }",
+    "int main(void) { int a[4]; int *p = &a[0]; int *q = &a[3]; int n = 0; " \
+    "while (p < q) { p = p + 1; n = n + 1; } return n * 14; }",
+    "int sum(int *v, int n) { int s = 0; for (int i = 0; i < n; i = i + 1) s = s + v[i]; return s; } " \
+    "int main(void) { int a[4]; a[0] = 10; a[1] = 11; a[2] = 10; a[3] = 11; return sum(a, 4); }",
+    "int main(void) { int a[10]; int *p; " \
+    "return sizeof(a) - sizeof(int) * 8 + sizeof(p) - sizeof(int *) + sizeof 1 - 2; }",
+    "int main(void) { int x = 1; int a[3]; int y = 2; a[1] = 39; return x + a[1] + y; }"
   ].freeze
 
   def test_matches_gcc_exit_codes

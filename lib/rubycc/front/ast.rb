@@ -27,6 +27,20 @@ module Rubycc
       # A reference to a local variable by name.
       VariableRef = Data.define(:name, :token)
 
+      # A subscript `target[index]` (postfix "[" expression "]"). Both `target`
+      # and `index` are expression nodes; the generator lowers it as
+      # "*(target + index)" and type-checks that `target` is an array/pointer.
+      Subscript = Data.define(:target, :index, :token)
+
+      # `sizeof operand`: the byte size of a unary-expression's result type.
+      # `operand` is an expression node; the array-to-pointer decay does not
+      # apply to it, so `sizeof a` measures the whole array.
+      SizeofExpr = Data.define(:operand, :token)
+
+      # `sizeof ( type-name )`: the byte size of a written type ("int",
+      # "int *", ...). `type` is the resolved Rubycc::Type.
+      SizeofType = Data.define(:type, :token)
+
       # Simple assignment `target = value`. `target` is a VariableRef or a
       # dereference (Unary with op :deref); the parser rejects any other,
       # non-assignable target.

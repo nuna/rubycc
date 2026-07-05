@@ -9,15 +9,16 @@ module Rubycc
     # and keeps each source line around so tokens (and errors) can be reported
     # with source excerpts. Handles // and /* */ comments and whitespace.
     class Lexer
-      KEYWORDS = %w[int void return if else while do for break continue].freeze
+      KEYWORDS = %w[int void return if else while do for break continue sizeof].freeze
 
       # Two-character punctuators, matched before the single-character list so
       # the lexer always prefers the longest punctuator ("==" over two "=").
       PUNCTUATORS_2 = %w[== != <= >=].freeze
 
       # Single-character punctuators used by this slice. "&" is the address-of
-      # operator and "*" doubles as dereference and pointer-declarator marker.
-      PUNCTUATORS_1 = %w[+ - * / % ( ) { } ; = , < > ! &].freeze
+      # operator, "*" doubles as dereference and pointer-declarator marker, and
+      # "[" "]" bracket array declarators and subscripts.
+      PUNCTUATORS_1 = %w[+ - * / % ( ) { } ; = , < > ! & [ ]].freeze
 
       def initialize(source, filename:)
         @src = source

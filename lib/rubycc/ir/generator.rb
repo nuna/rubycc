@@ -12,9 +12,10 @@ module Rubycc
     # expression's static type so pointer operations can be type-checked and
     # lowered. No optimization.
     class Generator
-      # A declared variable's binding: the stack slot (vreg) that holds its
-      # value and its declared Rubycc::Type.
-      Local = Data.define(:vreg, :type)
+      # A declared variable's binding and its declared Rubycc::Type. `storage`
+      # is a virtual-register number for a scalar (int or pointer) and a stack
+      # object id for an array; which one it is follows from `type.array?`.
+      Local = Data.define(:type, :storage)
       # Returns an array of IR::Function, one per AST::FunctionDef. Prototypes
       # (AST::FunctionDecl) contribute only a signature-table entry and emit no
       # code. The table is filled in source order so a definition can reference
@@ -63,6 +64,10 @@ module Rubycc
         @insts = []
         @vreg_count = 0
         @label_count = 0
+        # Aggregate stack objects (arrays), indexed by object id; each entry is
+        # the object's byte size. The backend lays them out below the vreg
+        # slots and resolves :object_addr against this table.
+        @stack_objects = []
         # Symbol tables form a scope stack (innermost last). Each entry maps a
         # variable name to its vreg number. The function body owns the
         # outermost scope; every compound-statement pushes a fresh one.
@@ -73,7 +78,9 @@ module Rubycc
 
         # Parameters take the first vregs (0..n-1) in the outermost scope; the
         # backend spills the incoming argument registers into these slots.
-        func.params.each { |param| @scopes.last[param.name] = Local.new(new_vreg, param.type) }
+        func.params.each do |param|
+          @scopes.last[param.name] = Local.new(type: param.type, storage: new_vreg)
+        end
 
         func.body.each { |stmt| gen_statement(stmt) }
 
@@ -85,7 +92,7 @@ module Rubycc
           emit(:ret, a: zero)
         end
 
-        Function.new(func.name, @insts, @vreg_count, func.params.size)
+        Function.new(func.name, @insts, @vreg_count, func.params.size, @stack_objects)
       end
 
       def gen_statement(stmt)
@@ -229,14 +236,21 @@ module Rubycc
           error_at(decl.token, "redeclaration of '#{decl.name}'")
         end
 
-        vreg = new_vreg
-        scope[decl.name] = Local.new(vreg, decl.type)
-        if decl.initializer
-          value, value_type = gen_expr(decl.initializer)
-          unless compatible_types?(decl.type, value_type)
-            error_at(decl.token, "incompatible types in assignment")
+        # An array reserves a stack object sized to hold all its elements; the
+        # parser has already rejected any initializer for it. A scalar takes a
+        # vreg slot and may be initialized in place.
+        if decl.type.array?
+          scope[decl.name] = Local.new(type: decl.type, storage: new_object(decl.type.size))
+        else
+          vreg = new_vreg
+          scope[decl.name] = Local.new(type: decl.type, storage: vreg)
+          if decl.initializer
+            value, value_type = gen_expr(decl.initializer)
+            unless compatible_types?(decl.type, value_type)
+              error_at(decl.token, "incompatible types in assignment")
+            end
+            emit(:copy, dst: vreg, a: value)
           end
-          emit(:copy, dst: vreg, a: value)
         end
       end
 
@@ -254,8 +268,13 @@ module Rubycc
         when Front::AST::Binary
           gen_binary(node)
         when Front::AST::VariableRef
-          local = lookup_local(node.name, node.token)
-          [local.vreg, local.type]
+          gen_variable_ref(node)
+        when Front::AST::Subscript
+          gen_subscript(node)
+        when Front::AST::SizeofExpr
+          gen_sizeof(sizeof_operand_type(node.operand))
+        when Front::AST::SizeofType
+          gen_sizeof(node.type)
         when Front::AST::Assignment
           gen_assignment(node)
         when Front::AST::Call
@@ -265,18 +284,122 @@ module Rubycc
         end
       end
 
-      # Arithmetic and comparison operators are int-only in this subset. A
-      # pointer operand has no defined lowering yet (pointer arithmetic and
-      # comparison arrive with arrays), so it is rejected here.
+      # A variable reference. A scalar yields its slot directly; an array
+      # "decays" to a pointer to its first element (its base address), which is
+      # the value every expression context except sizeof and unary "&" sees.
+      def gen_variable_ref(node)
+        local = lookup_local(node.name, node.token)
+        if local.type.array?
+          dst = new_vreg
+          emit(:object_addr, dst: dst, a: local.storage)
+          [dst, Type::Pointer.new(local.type.element)]
+        else
+          [local.storage, local.type]
+        end
+      end
+
+      # "e[i]" read: compute the element address (see #gen_element_address) and
+      # load through it, the width following the element type.
+      def gen_subscript(node)
+        addr, element_type = gen_element_address(node)
+        dst = new_vreg
+        emit(:load, dst: dst, a: addr, size: element_type.size)
+        [dst, element_type]
+      end
+
+      # sizeof folds to a compile-time int constant: the resolved type's byte
+      # size. The operand (for the expression form) is never evaluated, so no
+      # code other than the constant is emitted.
+      def gen_sizeof(type)
+        dst = new_vreg
+        emit(:const, dst: dst, a: type.size)
+        [dst, Type::Int]
+      end
+
+      # A binary operation. Its result type (and the legality of its operands)
+      # is settled by #binary_result_type; the lowering then branches on the
+      # operand kinds:
+      #   * comparisons stay a single compare, widened to 64 bits when the
+      #     operands are pointers;
+      #   * pointer +/- int scales the int by the element size (64-bit);
+      #   * pointer - pointer subtracts, then divides by the element size to
+      #     yield an int element count;
+      #   * everything else is ordinary 32-bit int arithmetic.
       def gen_binary(node)
         lhs, lhs_type = gen_expr(node.lhs)
         rhs, rhs_type = gen_expr(node.rhs)
-        if lhs_type.pointer? || rhs_type.pointer?
-          error_at(node.token, "invalid operands to binary expression")
+        result_type = binary_result_type(node.op, lhs_type, rhs_type, node.token)
+
+        if comparison_op?(node.op)
+          dst = new_vreg
+          emit(node.op, dst: dst, a: lhs, b: rhs, size: (8 if lhs_type.pointer?))
+          [dst, result_type]
+        elsif lhs_type.pointer? && rhs_type.pointer?
+          gen_pointer_difference(lhs, rhs, lhs_type)
+        elsif lhs_type.pointer?
+          gen_pointer_int_arith(node.op, lhs, rhs, lhs_type)
+        elsif rhs_type.pointer?
+          # int + pointer (subtraction in this order was already rejected).
+          gen_pointer_int_arith(node.op, rhs, lhs, rhs_type)
+        else
+          dst = new_vreg
+          emit(node.op, dst: dst, a: lhs, b: rhs)
+          [dst, Type::Int]
         end
+      end
+
+      # pointer +/- int: scale the int index by the element size (as a 64-bit
+      # byte offset) and add or subtract it from the pointer. The result has the
+      # pointer's type.
+      def gen_pointer_int_arith(op, ptr_vreg, int_vreg, ptr_type)
+        offset = scale_index(int_vreg, ptr_type.target.size)
         dst = new_vreg
-        emit(node.op, dst: dst, a: lhs, b: rhs)
+        emit(op, dst: dst, a: ptr_vreg, b: offset, size: 8)
+        [dst, ptr_type]
+      end
+
+      # pointer - pointer (same type): the byte distance divided by the element
+      # size, giving the number of elements between them as an int.
+      def gen_pointer_difference(lhs_vreg, rhs_vreg, ptr_type)
+        diff = new_vreg
+        emit(:sub, dst: diff, a: lhs_vreg, b: rhs_vreg, size: 8)
+        size_reg = new_vreg
+        emit(:const, dst: size_reg, a: ptr_type.target.size)
+        dst = new_vreg
+        emit(:div, dst: dst, a: diff, b: size_reg, size: 8)
         [dst, Type::Int]
+      end
+
+      # Sign-extends a 32-bit index to 64 bits and multiplies it by the element
+      # size, yielding the byte offset used to index a pointer or array. Shared
+      # by pointer arithmetic and subscripting; the sign extension makes
+      # negative indices (p[-1]) address the element below the pointer.
+      def scale_index(index_vreg, element_size)
+        wide = new_vreg
+        emit(:sext, dst: wide, a: index_vreg)
+        size_reg = new_vreg
+        emit(:const, dst: size_reg, a: element_size)
+        scaled = new_vreg
+        emit(:mul, dst: scaled, a: wide, b: size_reg, size: 8)
+        scaled
+      end
+
+      # Computes the address of "e[i]" — the lvalue shared by subscript reads
+      # and writes and by "&e[i]". The target decays to a pointer (an array
+      # becomes a pointer to its first element); the int index is scaled by the
+      # element size and added, exactly like "*(e + i)". Returns
+      # [address_vreg, element_type].
+      def gen_element_address(node)
+        base, base_type = gen_expr(node.target)
+        element_type = subscript_element_type(base_type, node.token)
+        index, index_type = gen_expr(node.index)
+        unless index_type.int?
+          error_at(node.token, "array subscript is not an integer")
+        end
+        offset = scale_index(index, element_type.size)
+        addr = new_vreg
+        emit(:add, dst: addr, a: base, b: offset, size: 8)
+        [addr, element_type]
       end
 
       def gen_unary(node)
@@ -306,16 +429,24 @@ module Rubycc
         [dst, Type::Int]
       end
 
-      # "&x" yields the address of an lvalue. Only a variable reference or a
-      # dereference "*p" is an lvalue here; "&x" is a pointer to x's type, and
-      # "&*p" collapses to p itself (its already-computed address).
+      # "&x" yields the address of an lvalue. A variable reference, a subscript
+      # "e[i]" or a dereference "*p" is an lvalue here: "&x" is a pointer to x's
+      # type, "&e[i]" is a pointer to the element (its already-computed
+      # address) and "&*p" collapses to p itself. Taking the address of a whole
+      # array is not modelled (use "&a[0]").
       def gen_address_of(node)
         operand = node.operand
         if operand.is_a?(Front::AST::VariableRef)
           local = lookup_local(operand.name, operand.token)
+          if local.type.array?
+            error_at(node.token, "address of array is not supported yet")
+          end
           dst = new_vreg
-          emit(:addr_of, dst: dst, a: local.vreg)
+          emit(:addr_of, dst: dst, a: local.storage)
           [dst, Type::Pointer.new(local.type)]
+        elsif operand.is_a?(Front::AST::Subscript)
+          addr, element_type = gen_element_address(operand)
+          [addr, Type::Pointer.new(element_type)]
         elsif operand.is_a?(Front::AST::Unary) && operand.op == :deref
           addr, ptr_type = gen_expr(operand.operand)
           require_pointer(ptr_type, operand.token)
@@ -333,7 +464,7 @@ module Rubycc
         require_pointer(ptr_type, node.token)
         result_type = ptr_type.target
         dst = new_vreg
-        emit(:load, dst: dst, a: addr, size: type_size(result_type))
+        emit(:load, dst: dst, a: addr, size: result_type.size)
         [dst, result_type]
       end
 
@@ -344,6 +475,8 @@ module Rubycc
         target = node.target
         if target.is_a?(Front::AST::Unary) && target.op == :deref
           gen_store_through_pointer(node, target)
+        elsif target.is_a?(Front::AST::Subscript)
+          gen_store_through_subscript(node, target)
         else
           gen_variable_assignment(node, target)
         end
@@ -351,12 +484,28 @@ module Rubycc
 
       def gen_variable_assignment(node, target)
         local = lookup_local(target.name, target.token)
+        if local.type.array?
+          error_at(node.token, "array type is not assignable")
+        end
         value, value_type = gen_expr(node.value)
         unless compatible_types?(local.type, value_type)
           error_at(node.token, "incompatible types in assignment")
         end
-        emit(:copy, dst: local.vreg, a: value)
-        [local.vreg, local.type]
+        emit(:copy, dst: local.storage, a: value)
+        [local.storage, local.type]
+      end
+
+      # "e[i] = v": compute the element address (see #gen_element_address) and
+      # write v through it, the store width following the element type. The
+      # expression's value is v.
+      def gen_store_through_subscript(node, target)
+        addr, element_type = gen_element_address(target)
+        value, value_type = gen_expr(node.value)
+        unless compatible_types?(element_type, value_type)
+          error_at(node.token, "incompatible types in assignment")
+        end
+        emit(:store, a: addr, b: value, size: element_type.size)
+        [value, element_type]
       end
 
       # "*p = v": evaluate p (an address) and v, then write v through the
@@ -370,7 +519,7 @@ module Rubycc
         unless compatible_types?(target_type, value_type)
           error_at(node.token, "incompatible types in assignment")
         end
-        emit(:store, a: addr, b: value, size: type_size(target_type))
+        emit(:store, a: addr, b: value, size: target_type.size)
         [value, target_type]
       end
 
@@ -412,10 +561,117 @@ module Rubycc
         error_at(token, "invalid type argument of unary '*'") unless type.pointer?
       end
 
-      # Storage width in bytes driving load/store access sizes: pointers are 8,
-      # int is 4.
-      def type_size(type)
-        type.pointer? ? 8 : 4
+      COMPARISON_OPS = %i[eq ne lt le gt ge].freeze
+
+      def comparison_op?(op)
+        COMPARISON_OPS.include?(op)
+      end
+
+      # Settles a binary operation's result type and rejects any illegal
+      # operand combination with "invalid operands to binary expression".
+      # Shared by the lowering path (#gen_binary) and the code-free type
+      # inference used by sizeof (#static_type):
+      #   * comparisons: int/int or same-type pointer/pointer -> int;
+      #   * "+": int/int -> int, and pointer/int or int/pointer -> that pointer;
+      #   * "-": int/int -> int, pointer/int -> that pointer, and same-type
+      #     pointer/pointer -> int;
+      #   * "*" "/" "%": int/int -> int only.
+      def binary_result_type(op, lhs_type, rhs_type, token)
+        result =
+          if comparison_op?(op)
+            Type::Int if lhs_type == rhs_type && (lhs_type.int? || lhs_type.pointer?)
+          else
+            case op
+            when :add
+              if lhs_type.int? && rhs_type.int? then Type::Int
+              elsif lhs_type.pointer? && rhs_type.int? then lhs_type
+              elsif lhs_type.int? && rhs_type.pointer? then rhs_type
+              end
+            when :sub
+              if lhs_type.int? && rhs_type.int? then Type::Int
+              elsif lhs_type.pointer? && rhs_type.int? then lhs_type
+              elsif lhs_type.pointer? && rhs_type.pointer? && lhs_type == rhs_type then Type::Int
+              end
+            else # :mul, :div, :mod
+              Type::Int if lhs_type.int? && rhs_type.int?
+            end
+          end
+        result || error_at(token, "invalid operands to binary expression")
+      end
+
+      # A subscripted value must be a pointer (an array has already decayed to
+      # one); the result is the pointed-to element type.
+      def subscript_element_type(base_type, token)
+        unless base_type.pointer?
+          error_at(token, "subscripted value is neither array nor pointer")
+        end
+        base_type.target
+      end
+
+      # sizeof measures the operand's type without evaluating it. A bare array
+      # variable keeps its array type (no decay), so "sizeof a" is the whole
+      # array; every other operand takes its ordinary (decayed) expression type.
+      def sizeof_operand_type(node)
+        if node.is_a?(Front::AST::VariableRef)
+          lookup_local(node.name, node.token).type
+        else
+          static_type(node)
+        end
+      end
+
+      # Infers an expression's rvalue type without emitting any code, applying
+      # the same rules (and array-to-pointer decay) as #gen_expr. Used only to
+      # resolve a sizeof operand's type.
+      def static_type(node)
+        case node
+        when Front::AST::IntLit, Front::AST::Call,
+             Front::AST::SizeofExpr, Front::AST::SizeofType
+          Type::Int
+        when Front::AST::VariableRef
+          type = lookup_local(node.name, node.token).type
+          type.array? ? Type::Pointer.new(type.element) : type
+        when Front::AST::Subscript
+          subscript_element_type(static_type(node.target), node.token)
+        when Front::AST::Binary
+          binary_result_type(node.op, static_type(node.lhs), static_type(node.rhs), node.token)
+        when Front::AST::Unary
+          static_unary_type(node)
+        when Front::AST::Assignment
+          static_type(node.target)
+        else
+          raise "unsupported expression: #{node.class}"
+        end
+      end
+
+      def static_unary_type(node)
+        case node.op
+        when :neg, :not
+          Type::Int
+        when :deref
+          type = static_type(node.operand)
+          require_pointer(type, node.token)
+          type.target
+        when :addr
+          static_address_of_type(node)
+        end
+      end
+
+      # The type of "&operand" without emitting code, mirroring #gen_address_of.
+      def static_address_of_type(node)
+        operand = node.operand
+        if operand.is_a?(Front::AST::VariableRef)
+          local = lookup_local(operand.name, operand.token)
+          error_at(node.token, "address of array is not supported yet") if local.type.array?
+          Type::Pointer.new(local.type)
+        elsif operand.is_a?(Front::AST::Subscript)
+          Type::Pointer.new(subscript_element_type(static_type(operand.target), operand.token))
+        elsif operand.is_a?(Front::AST::Unary) && operand.op == :deref
+          type = static_type(operand.operand)
+          require_pointer(type, operand.token)
+          type
+        else
+          error_at(node.token, "lvalue required as unary '&' operand")
+        end
       end
 
       # Resolves a variable by walking scopes from innermost to outermost, so
@@ -432,6 +688,14 @@ module Rubycc
         vreg = @vreg_count
         @vreg_count += 1
         vreg
+      end
+
+      # Reserves a stack object of `byte_size` bytes, returning its id (an index
+      # into @stack_objects the backend lays out below the vreg slots).
+      def new_object(byte_size)
+        id = @stack_objects.size
+        @stack_objects << byte_size
+        id
       end
 
       def new_label

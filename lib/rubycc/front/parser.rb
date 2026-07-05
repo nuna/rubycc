@@ -16,7 +16,8 @@ module Rubycc
     #                             | parameter-declaration
     #                               ("," parameter-declaration)*
     #   parameter-declaration     = "int" declarator?
-    #   declarator                = "*"* identifier
+    #   declarator                = "*"* direct-declarator
+    #   direct-declarator         = identifier ("[" integer-constant "]")?
     #   compound-statement        = "{" block-item* "}"
     #   block-item                = declaration | statement
     #   declaration               = "int" init-declarator ("," init-declarator)* ";"
@@ -45,8 +46,12 @@ module Rubycc
     #   multiplicative-expression = unary-expression
     #                               (("*" | "/" | "%") unary-expression)*
     #   unary-expression          = ("+" | "-" | "!" | "&" | "*")* postfix-expression
-    #   postfix-expression        = primary-expression
-    #                             | identifier "(" argument-expression-list? ")"
+    #                             | "sizeof" unary-expression
+    #                             | "sizeof" "(" type-name ")"
+    #   type-name                 = "int" "*"*
+    #   postfix-expression        = (primary-expression
+    #                               | identifier "(" argument-expression-list? ")")
+    #                               ("[" expression "]")*
     #   argument-expression-list  = assignment-expression
     #                               ("," assignment-expression)*
     #   primary-expression        = integer-constant | identifier | "(" expression ")"
@@ -187,12 +192,39 @@ module Rubycc
       def parse_init_declarator
         type = parse_pointer_declarator(Type::Int)
         name_tok = expect_ident
+        type = parse_array_declarator(type)
         initializer = nil
         if peek.punct?("=")
-          advance
+          eq_tok = advance
+          if type.array?
+            error_at(eq_tok, "array initializers are not supported yet")
+          end
           initializer = parse_assignment_expression
         end
         AST::VariableDecl.new(name_tok.value, type, initializer, name_tok)
+      end
+
+      # direct-declarator's optional array suffix. A bracketed length turns the
+      # declared object into an array of `element_type`; the length must be a
+      # positive integer-constant literal. A second "[" would begin a
+      # multidimensional array, which this subset does not model.
+      def parse_array_declarator(element_type)
+        return element_type unless peek.punct?("[")
+
+        advance # "["
+        length_tok = peek
+        unless length_tok.type == :num
+          error_at(length_tok, "array size must be an integer constant")
+        end
+        advance
+        unless length_tok.value.positive?
+          error_at(length_tok, "array size must be positive")
+        end
+        expect_punct("]")
+        if peek.punct?("[")
+          error_at(peek, "multidimensional arrays are not supported yet")
+        end
+        Type::Array.new(element_type, length_tok.value)
       end
 
       # Consumes the "*" run of a declarator, wrapping `base` in one pointer
@@ -348,11 +380,13 @@ module Rubycc
         AST::Assignment.new(node, value, eq_tok)
       end
 
-      # Syntactically, only a variable reference or a dereference "*expr" can
-      # appear on the left of "=". Whether the dereferenced operand is actually
-      # a pointer is checked later by the generator.
+      # Syntactically, only a variable reference, a subscript "e[i]" or a
+      # dereference "*expr" can appear on the left of "=". Whether the target's
+      # type is actually assignable (e.g. not an array) is checked later by the
+      # generator.
       def assignable?(node)
         node.is_a?(AST::VariableRef) ||
+          node.is_a?(AST::Subscript) ||
           (node.is_a?(AST::Unary) && node.op == :deref)
       end
 
@@ -388,7 +422,9 @@ module Rubycc
       end
 
       def parse_unary_expression
-        if peek.punct?("+")
+        if peek.keyword?("sizeof")
+          parse_sizeof
+        elsif peek.punct?("+")
           advance # unary + is a no-op; fold it away
           parse_unary_expression
         elsif peek.punct?("-")
@@ -408,15 +444,41 @@ module Rubycc
         end
       end
 
+      # "sizeof" measures either a parenthesized type-name ("sizeof(int *)") or
+      # the result type of a unary-expression ("sizeof x", "sizeof(a)"). A "("
+      # right after the keyword is only a type-name when "int" follows;
+      # otherwise it is an ordinary parenthesized operand, so it is left for
+      # unary-expression to consume.
+      def parse_sizeof
+        sizeof_tok = advance # "sizeof"
+        if peek.punct?("(") && peek_ahead(1)&.keyword?("int")
+          advance # "("
+          expect_keyword("int")
+          type = parse_pointer_declarator(Type::Int)
+          expect_punct(")")
+          AST::SizeofType.new(type, sizeof_tok)
+        else
+          AST::SizeofExpr.new(parse_unary_expression, sizeof_tok)
+        end
+      end
+
       # An identifier immediately followed by "(" is a function call; anything
-      # else falls through to a primary-expression.
+      # else falls through to a primary-expression. Either may then be followed
+      # by a chain of "[" expression "]" subscripts (a[i], a[i][j], p[k]).
       def parse_postfix_expression
         tok = peek
-        if tok.type == :ident && peek_ahead(1)&.punct?("(")
-          parse_call
-        else
-          parse_primary_expression
+        node = if tok.type == :ident && peek_ahead(1)&.punct?("(")
+                 parse_call
+               else
+                 parse_primary_expression
+               end
+        while peek.punct?("[")
+          bracket_tok = advance # "["
+          index = parse_expression
+          expect_punct("]")
+          node = AST::Subscript.new(node, index, bracket_tok)
         end
+        node
       end
 
       def parse_call

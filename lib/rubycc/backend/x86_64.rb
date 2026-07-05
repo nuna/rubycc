@@ -59,7 +59,7 @@ module Rubycc
         # can emit a .rela.text entry once this function's base in .text is
         # known.
         @relocations = []
-        emit_prologue(ir_func.vreg_count, ir_func.param_count)
+        emit_prologue(ir_func.vreg_count, ir_func.param_count, ir_func.stack_objects)
         ir_func.insts.each { |inst| emit_instruction(inst) }
         resolve_fixups
 
@@ -72,8 +72,20 @@ module Rubycc
 
       private
 
-      def emit_prologue(vreg_count, param_count)
-        frame_size = align16(vreg_count * 8)
+      # Frame layout, from rbp downward: first the virtual-register slots
+      # (8 bytes each, rounded up to a 16-byte region), then the stack objects.
+      # Each object is placed at a 16-byte-aligned size below the previous one,
+      # and @object_offsets[id] records the rbp-relative displacement of the
+      # object's base (its lowest address, i.e. element 0).
+      def emit_prologue(vreg_count, param_count, stack_objects)
+        vreg_region = align16(vreg_count * 8)
+        @object_offsets = []
+        running = vreg_region
+        stack_objects.each do |object_size|
+          running += align16(object_size)
+          @object_offsets << -running
+        end
+        frame_size = align16(running)
         emit(0x55)                          # push rbp
         emit(0x48, 0x89, 0xE5)              # mov rbp, rsp
         emit(0x48, 0x81, 0xEC)              # sub rsp, imm32
@@ -91,21 +103,23 @@ module Rubycc
           load_reg(EAX, inst.a)
           store_reg(EAX, inst.dst)
         when :add
-          emit_binary(inst.dst, inst.a, inst.b, [0x01, 0xC8]) # add eax, ecx
+          emit_binary(inst.dst, inst.a, inst.b, [0x01, 0xC8], inst.size) # add eax, ecx
         when :sub
-          emit_binary(inst.dst, inst.a, inst.b, [0x29, 0xC8]) # sub eax, ecx
+          emit_binary(inst.dst, inst.a, inst.b, [0x29, 0xC8], inst.size) # sub eax, ecx
         when :mul
-          emit_binary(inst.dst, inst.a, inst.b, [0x0F, 0xAF, 0xC1]) # imul eax, ecx
+          emit_binary(inst.dst, inst.a, inst.b, [0x0F, 0xAF, 0xC1], inst.size) # imul eax, ecx
         when :div
-          emit_divmod(inst.dst, inst.a, inst.b, EAX)          # quotient in eax
+          emit_divmod(inst.dst, inst.a, inst.b, EAX, inst.size) # quotient in eax
         when :mod
-          emit_divmod(inst.dst, inst.a, inst.b, EDX)          # remainder in edx
+          emit_divmod(inst.dst, inst.a, inst.b, EDX, inst.size) # remainder in edx
         when :eq, :ne, :lt, :le, :gt, :ge
-          emit_comparison(inst.dst, inst.a, inst.b, SETCC_OPCODES.fetch(inst.op))
+          emit_comparison(inst.dst, inst.a, inst.b, SETCC_OPCODES.fetch(inst.op), inst.size)
         when :neg
           load_reg(EAX, inst.a)
           emit(0xF7, 0xD8)                                    # neg eax
           store_reg(EAX, inst.dst)
+        when :sext
+          emit_sext(inst.dst, inst.a)
         when :label
           @labels[inst.a] = @code.bytesize
         when :jump
@@ -116,6 +130,8 @@ module Rubycc
           emit_call(inst.dst, inst.a, inst.b)
         when :addr_of
           emit_addr_of(inst.dst, inst.a)
+        when :object_addr
+          emit_object_addr(inst.dst, inst.a)
         when :load
           emit_load(inst.dst, inst.a, inst.size)
         when :store
@@ -152,6 +168,24 @@ module Rubycc
         store_reg(EAX, dst)
       end
 
+      # :object_addr — lea rax, [rbp+disp] loads a stack object's base address
+      # (an array's first element) into rax, then a 64-bit store parks it in the
+      # destination slot, giving the decayed pointer value.
+      def emit_object_addr(dst, object_id)
+        emit(0x48, 0x8D)                # REX.W lea rax, [rbp+disp]
+        emit_bytes(modrm_rbp_disp(EAX, @object_offsets[object_id]))
+        store_reg(EAX, dst)
+      end
+
+      # :sext — movsxd rax, dword [rbp+disp] sign-extends the 32-bit value in
+      # a's slot to 64 bits in rax; the 64-bit store then writes the widened
+      # value so pointer-offset scaling sees a correct (possibly negative) index.
+      def emit_sext(dst, src_vreg)
+        emit(0x48, 0x63)                # REX.W movsxd rax, r/m32
+        emit_bytes(modrm_rbp_disp(EAX, slot_disp(src_vreg)))
+        store_reg(EAX, dst)
+      end
+
       # "*p" read: load the pointer from its slot into rax, then read through
       # it. An 8-byte load moves a full pointer (mov rax, [rax]); a 4-byte load
       # reads an int (mov eax, [rax]), whose upper bits the store then zeroes.
@@ -178,10 +212,15 @@ module Rubycc
         end
       end
 
-      def emit_comparison(dst, a, b, setcc_opcode)
+      # A size of 8 compares full 64-bit pointer values (REX.W cmp rax, rcx);
+      # otherwise the 32-bit int compare is used. The signed setcc still suits
+      # pointer ordering here, since stack addresses stay within the positive
+      # half of the 64-bit range.
+      def emit_comparison(dst, a, b, setcc_opcode, size = nil)
         load_reg(EAX, a)
         load_reg(ECX, b)
-        emit(0x39, 0xC8)                # cmp eax, ecx
+        emit(0x48) if size == 8         # REX.W widens the following cmp
+        emit(0x39, 0xC8)                # cmp eax, ecx  (rax, rcx when REX.W)
         emit(0x0F, setcc_opcode, 0xC0)  # setcc al
         emit(0x0F, 0xB6, 0xC0)          # movzx eax, al
         store_reg(EAX, dst)
@@ -226,18 +265,29 @@ module Rubycc
         store_reg(EAX, dst)
       end
 
-      def emit_binary(dst, a, b, opcode_bytes)
+      # A size of 8 prefixes REX.W so the operation runs on the full 64-bit
+      # rax/rcx (pointer arithmetic and index scaling); otherwise it stays a
+      # 32-bit int operation. The opcode bytes are identical either way.
+      def emit_binary(dst, a, b, opcode_bytes, size = nil)
         load_reg(EAX, a)
         load_reg(ECX, b)
+        emit(0x48) if size == 8
         emit(*opcode_bytes)
         store_reg(EAX, dst)
       end
 
-      def emit_divmod(dst, a, b, result_reg)
+      # A size of 8 does a 64-bit signed division (REX.W cqo + REX.W idiv rcx),
+      # used for pointer differences; otherwise the 32-bit int division.
+      def emit_divmod(dst, a, b, result_reg, size = nil)
         load_reg(EAX, a)
         load_reg(ECX, b)
-        emit(0x99)          # cdq: sign-extend eax into edx:eax
-        emit(0xF7, 0xF9)    # idiv ecx
+        if size == 8
+          emit(0x48, 0x99)          # cqo: sign-extend rax into rdx:rax
+          emit(0x48, 0xF7, 0xF9)    # idiv rcx
+        else
+          emit(0x99)                # cdq: sign-extend eax into edx:eax
+          emit(0xF7, 0xF9)          # idiv ecx
+        end
         store_reg(result_reg, dst)
       end
 

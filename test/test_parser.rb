@@ -517,4 +517,113 @@ class TestParser < Minitest::Test
     assert_kind_of AST::Call, expr.args.first
     assert_equal "g", expr.args.first.name
   end
+
+  def test_parses_array_declaration_type
+    program = parse("int main(void) { int a[10]; return 0; }")
+    decl = program.functions.first.body.first
+
+    assert_kind_of AST::VariableDecl, decl
+    assert_equal "a", decl.name
+    assert_equal Type::Array.new(Type::Int, 10), decl.type
+    assert_nil decl.initializer
+  end
+
+  def test_parses_pointer_array_declaration_type
+    program = parse("int main(void) { int *ps[4]; return 0; }")
+    decl = program.functions.first.body.first
+
+    assert_equal "ps", decl.name
+    assert_equal Type::Array.new(Type::Pointer.new(Type::Int), 4), decl.type
+  end
+
+  def test_array_size_must_be_a_positive_constant
+    error = assert_raises(Rubycc::CompileError) do
+      parse("int main(void) { int a[0]; return 0; }")
+    end
+    assert_match(/array size must be positive/, error.description)
+  end
+
+  def test_array_size_must_be_an_integer_constant
+    error = assert_raises(Rubycc::CompileError) do
+      parse("int main(void) { int n; int a[n]; return 0; }")
+    end
+    assert_match(/array size must be an integer constant/, error.description)
+  end
+
+  def test_multidimensional_array_is_rejected
+    error = assert_raises(Rubycc::CompileError) do
+      parse("int main(void) { int a[3][4]; return 0; }")
+    end
+    assert_match(/multidimensional arrays are not supported yet/, error.description)
+  end
+
+  def test_array_initializer_is_rejected
+    error = assert_raises(Rubycc::CompileError) do
+      parse("int main(void) { int a[3] = 0; return 0; }")
+    end
+    assert_match(/array initializers are not supported yet/, error.description)
+  end
+
+  def test_parses_subscript
+    # a[i]  =>  (subscript a i)
+    expr = parse_expr("a[i]")
+    assert_kind_of AST::Subscript, expr
+    assert_kind_of AST::VariableRef, expr.target
+    assert_equal "a", expr.target.name
+    assert_kind_of AST::VariableRef, expr.index
+    assert_equal "i", expr.index.name
+  end
+
+  def test_parses_subscript_chain
+    # a[i][j]  =>  (subscript (subscript a i) j)
+    expr = parse_expr("a[i][j]")
+    assert_kind_of AST::Subscript, expr
+    assert_equal "j", expr.index.name
+    inner = expr.target
+    assert_kind_of AST::Subscript, inner
+    assert_equal "a", inner.target.name
+    assert_equal "i", inner.index.name
+  end
+
+  def test_subscript_target_is_assignable
+    # a[i] = 42  =>  (assign (subscript a i) 42)
+    expr = parse_expr("a[i] = 42")
+    assert_kind_of AST::Assignment, expr
+    assert_kind_of AST::Subscript, expr.target
+    assert_equal 42, expr.value.value
+  end
+
+  def test_parses_sizeof_unary_expression
+    # sizeof 1  =>  (sizeof-expr 1)
+    expr = parse_expr("sizeof 1")
+    assert_kind_of AST::SizeofExpr, expr
+    assert_kind_of AST::IntLit, expr.operand
+    assert_equal 1, expr.operand.value
+  end
+
+  def test_parses_sizeof_parenthesized_variable_as_expression
+    # sizeof(a): the "(" is not a type-name, so it is a parenthesized operand.
+    expr = parse_expr("sizeof(a)")
+    assert_kind_of AST::SizeofExpr, expr
+    assert_kind_of AST::VariableRef, expr.operand
+    assert_equal "a", expr.operand.name
+  end
+
+  def test_parses_sizeof_type_name
+    expr = parse_expr("sizeof(int)")
+    assert_kind_of AST::SizeofType, expr
+    assert_equal Type::Int, expr.type
+  end
+
+  def test_parses_sizeof_pointer_type_name
+    expr = parse_expr("sizeof(int *)")
+    assert_kind_of AST::SizeofType, expr
+    assert_equal Type::Pointer.new(Type::Int), expr.type
+  end
+
+  def test_parses_sizeof_pointer_to_pointer_type_name
+    expr = parse_expr("sizeof(int **)")
+    assert_kind_of AST::SizeofType, expr
+    assert_equal Type::Pointer.new(Type::Pointer.new(Type::Int)), expr.type
+  end
 end

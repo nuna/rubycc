@@ -198,9 +198,62 @@ class TestDiagnostics < Minitest::Test
     assert_match(/incompatible type for argument 2 of 'f'/, error.description)
   end
 
-  def test_pointer_arithmetic_is_rejected_for_now
-    source = "int main(void) { int x; int *p; p = &x; return p + 1; }"
+  def test_assigning_to_an_array_is_rejected
+    source = "int main(void) { int a[3]; int *p; a = p; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal 1, error.line
+    assert_match(/array type is not assignable/, error.description)
+    assert_match(/foo\.c:1:\d+: error: array type is not assignable/, error.message)
+  end
+
+  def test_address_of_whole_array_is_rejected
+    source = "int main(void) { int a[3]; return &a == 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal 1, error.line
+    assert_match(/address of array is not supported yet/, error.description)
+  end
+
+  def test_subscripting_an_int_is_rejected
+    source = "int main(void) { int x; return x[0]; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/subscripted value is neither array nor pointer/, error.description)
+  end
+
+  def test_adding_two_pointers_is_rejected
+    source = "int main(void) { int a[4]; int *p; int *q; p = a; q = a; return p + q; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_arithmetic_on_mismatched_pointer_types_is_rejected
+    source = "int main(void) { int *p; int **q; return q - p; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_comparing_mismatched_pointer_types_is_rejected
+    source = "int main(void) { int *p; int **q; return p < q; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_comparing_pointer_with_int_is_rejected
+    source = "int main(void) { int *p; return p < 1; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_multidimensional_array_is_rejected
+    source = "int main(void) { int a[3][4]; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/multidimensional arrays are not supported yet/, error.description)
+  end
+
+  def test_array_initializer_is_rejected
+    source = "int main(void) { int a[3] = 0; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/array initializers are not supported yet/, error.description)
   end
 end
