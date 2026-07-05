@@ -24,6 +24,9 @@ module Rubycc
         # variable name to its vreg number. The function body owns the
         # outermost scope; every compound-statement pushes a fresh one.
         @scopes = [{}]
+        # Innermost-last stack of enclosing loops, so break/continue can jump
+        # to the right labels without threading them through every call.
+        @loop_stack = []
 
         func.body.each { |stmt| gen_statement(stmt) }
 
@@ -53,6 +56,16 @@ module Rubycc
           gen_if(stmt)
         when Front::AST::Block
           gen_block(stmt)
+        when Front::AST::While
+          gen_while(stmt)
+        when Front::AST::DoWhile
+          gen_do_while(stmt)
+        when Front::AST::For
+          gen_for(stmt)
+        when Front::AST::Break
+          gen_break(stmt)
+        when Front::AST::Continue
+          gen_continue(stmt)
         else
           raise "unsupported statement: #{stmt.class}"
         end
@@ -81,6 +94,86 @@ module Rubycc
           gen_statement(node.then_stmt)
           emit(:label, a: end_label)
         end
+      end
+
+      def gen_while(node)
+        cond_label = new_label
+        end_label = new_label
+        emit(:label, a: cond_label)
+        cond = gen_expr(node.condition)
+        emit(:jump_if_zero, a: cond, b: end_label)
+        gen_loop_body(node.body, continue_label: cond_label, break_label: end_label)
+        emit(:jump, a: cond_label)
+        emit(:label, a: end_label)
+      end
+
+      def gen_do_while(node)
+        body_label = new_label
+        cond_label = new_label
+        end_label = new_label
+        emit(:label, a: body_label)
+        gen_loop_body(node.body, continue_label: cond_label, break_label: end_label)
+        emit(:label, a: cond_label)
+        cond = gen_expr(node.condition)
+        emit(:jump_if_zero, a: cond, b: end_label)
+        emit(:jump, a: body_label)
+        emit(:label, a: end_label)
+      end
+
+      # C99: the for-loop's own parentheses introduce a scope, so a
+      # declaration in clause-1 is only visible to the condition, step and
+      # body (not to code after the loop).
+      def gen_for(node)
+        @scopes.push({})
+        gen_for_init(node.init)
+
+        cond_label = new_label
+        step_label = new_label
+        end_label = new_label
+
+        emit(:label, a: cond_label)
+        if node.condition
+          cond = gen_expr(node.condition)
+          emit(:jump_if_zero, a: cond, b: end_label)
+        end
+        gen_loop_body(node.body, continue_label: step_label, break_label: end_label)
+        emit(:label, a: step_label)
+        gen_expr(node.step) if node.step
+        emit(:jump, a: cond_label)
+        emit(:label, a: end_label)
+
+        @scopes.pop
+      end
+
+      def gen_for_init(init)
+        case init
+        when Array
+          init.each { |decl| gen_variable_decl(decl) }
+        when nil
+          # no-op: clause-1 was omitted
+        else
+          gen_expr(init)
+        end
+      end
+
+      # Runs a loop's body with break/continue targets visible to any nested
+      # Break/Continue node, restoring the enclosing loop's targets (if any)
+      # once the body has been generated.
+      def gen_loop_body(body, continue_label:, break_label:)
+        @loop_stack.push(continue_label: continue_label, break_label: break_label)
+        gen_statement(body)
+      ensure
+        @loop_stack.pop
+      end
+
+      def gen_break(node)
+        error_at(node.token, "break statement not within a loop") if @loop_stack.empty?
+        emit(:jump, a: @loop_stack.last[:break_label])
+      end
+
+      def gen_continue(node)
+        error_at(node.token, "continue statement not within a loop") if @loop_stack.empty?
+        emit(:jump, a: @loop_stack.last[:continue_label])
       end
 
       def gen_variable_decl(decl)

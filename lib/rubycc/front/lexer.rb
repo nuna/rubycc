@@ -9,7 +9,7 @@ module Rubycc
     # and keeps each source line around so tokens (and errors) can be reported
     # with source excerpts. Handles // and /* */ comments and whitespace.
     class Lexer
-      KEYWORDS = %w[int void return if else].freeze
+      KEYWORDS = %w[int void return if else while do for break continue].freeze
 
       # Two-character punctuators, matched before the single-character list so
       # the lexer always prefers the longest punctuator ("==" over two "=").

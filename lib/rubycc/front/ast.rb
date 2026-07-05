@@ -44,6 +44,24 @@ module Rubycc
       # `items` is a flat array of declaration/statement nodes.
       Block = Data.define(:items, :token)
 
+      # `while (condition) body`
+      While = Data.define(:condition, :body, :token)
+
+      # `do body while (condition);`
+      DoWhile = Data.define(:body, :condition, :token)
+
+      # `for (init; condition; step) body`. `init` is an array of
+      # VariableDecl (from a declaration clause), an expression node (from an
+      # expression clause) or nil (clause omitted). `condition` and `step`
+      # are expression nodes or nil when omitted.
+      For = Data.define(:init, :condition, :step, :body, :token)
+
+      # `break;` — targets the innermost enclosing iteration-statement.
+      Break = Data.define(:token)
+
+      # `continue;` — targets the innermost enclosing iteration-statement.
+      Continue = Data.define(:token)
+
       # A function definition. `body` is an array of statement nodes.
       FunctionDef = Data.define(:name, :body, :token)
 

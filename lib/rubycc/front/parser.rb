@@ -15,11 +15,18 @@ module Rubycc
     #   declaration               = "int" init-declarator ("," init-declarator)* ";"
     #   init-declarator           = identifier ("=" assignment-expression)?
     #   statement                 = return-statement | expression-statement
-    #                             | selection-statement | compound-statement
+    #                             | selection-statement | iteration-statement
+    #                             | jump-statement | compound-statement
     #   return-statement          = "return" expression ";"
     #   expression-statement      = expression? ";"
     #   selection-statement       = "if" "(" expression ")" statement
     #                               ("else" statement)?
+    #   iteration-statement       = "while" "(" expression ")" statement
+    #                             | "do" statement "while" "(" expression ")" ";"
+    #                             | "for" "(" for-init expression? ";"
+    #                               expression? ")" statement
+    #   for-init                  = declaration | expression? ";"
+    #   jump-statement            = "break" ";" | "continue" ";"
     #   expression                = assignment-expression
     #   assignment-expression     = equality-expression ("=" assignment-expression)?
     #   equality-expression       = relational-expression
@@ -121,6 +128,16 @@ module Rubycc
           parse_return
         elsif peek.keyword?("if")
           parse_selection_statement
+        elsif peek.keyword?("while")
+          parse_while_statement
+        elsif peek.keyword?("do")
+          parse_do_while_statement
+        elsif peek.keyword?("for")
+          parse_for_statement
+        elsif peek.keyword?("break")
+          parse_break_statement
+        elsif peek.keyword?("continue")
+          parse_continue_statement
         elsif peek.punct?("{")
           parse_compound_statement
         else
@@ -150,6 +167,65 @@ module Rubycc
           else_stmt = parse_statement
         end
         AST::If.new(condition, then_stmt, else_stmt, if_tok)
+      end
+
+      def parse_while_statement
+        while_tok = advance # "while"
+        expect_punct("(")
+        condition = parse_expression
+        expect_punct(")")
+        body = parse_statement
+        AST::While.new(condition, body, while_tok)
+      end
+
+      def parse_do_while_statement
+        do_tok = advance # "do"
+        body = parse_statement
+        expect_keyword("while")
+        expect_punct("(")
+        condition = parse_expression
+        expect_punct(")")
+        expect_punct(";")
+        AST::DoWhile.new(body, condition, do_tok)
+      end
+
+      def parse_for_statement
+        for_tok = advance # "for"
+        expect_punct("(")
+        init = parse_for_init
+        condition = peek.punct?(";") ? nil : parse_expression
+        expect_punct(";")
+        step = peek.punct?(")") ? nil : parse_expression
+        expect_punct(")")
+        body = parse_statement
+        AST::For.new(init, condition, step, body, for_tok)
+      end
+
+      # Parses the for-loop's first clause, consuming its trailing ";" (a
+      # declaration already does so; the other two branches do it explicitly).
+      def parse_for_init
+        if peek.keyword?("int")
+          parse_declaration
+        elsif peek.punct?(";")
+          advance
+          nil
+        else
+          expr = parse_expression
+          expect_punct(";")
+          expr
+        end
+      end
+
+      def parse_break_statement
+        break_tok = advance # "break"
+        expect_punct(";")
+        AST::Break.new(break_tok)
+      end
+
+      def parse_continue_statement
+        continue_tok = advance # "continue"
+        expect_punct(";")
+        AST::Continue.new(continue_tok)
       end
 
       def parse_compound_statement

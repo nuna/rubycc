@@ -179,6 +179,83 @@ class TestExecutionHarness < Minitest::Test
     )
   end
 
+  def test_while_loop_sums_up_to_n
+    assert_c_exit_status(
+      45,
+      "int main(void) { int i = 0; int sum = 0; while (i < 10) { sum = sum + i; i = i + 1; } return sum; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_while_false_never_executes_body
+    assert_c_exit_status(42, "int main(void) { while (0) return 7; return 42; }", compiler: :rubycc)
+  end
+
+  def test_do_while_executes_body_at_least_once
+    assert_c_exit_status(42, "int main(void) { int x = 0; do { x = 42; } while (0); return x; }", compiler: :rubycc)
+  end
+
+  def test_do_while_loops_until_condition_false
+    assert_c_exit_status(42, "int main(void) { int i = 0; do { i = i + 1; } while (i < 42); return i; }", compiler: :rubycc)
+  end
+
+  def test_for_loop_sums_a_range
+    assert_c_exit_status(
+      45,
+      "int main(void) { int sum = 0; for (int i = 1; i <= 9; i = i + 1) { sum = sum + i; } return sum; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_for_loop_with_expression_init
+    assert_c_exit_status(
+      42,
+      "int main(void) { int i; int sum = 0; for (i = 0; i < 7; i = i + 1) sum = sum + 6; return sum; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_for_loop_with_all_clauses_omitted_relies_on_break
+    assert_c_exit_status(
+      42,
+      "int main(void) { int i = 0; for (;;) { i = i + 1; if (i == 42) break; } return i; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_continue_skips_to_the_step_clause
+    assert_c_exit_status(
+      25,
+      "int main(void) { int sum = 0; for (int i = 0; i < 10; i = i + 1) { if (i % 2 == 0) continue; sum = sum + i; } return sum; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_while_with_break_and_continue
+    assert_c_exit_status(
+      10,
+      "int main(void) { int i = 0; int n = 0; while (1) { i = i + 1; if (i > 100) break; if (i % 10 != 0) continue; n = n + 1; } return n; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_nested_for_loops_with_break_in_inner_loop
+    assert_c_exit_status(
+      15,
+      "int main(void) { int total = 0; for (int i = 0; i < 5; i = i + 1) " \
+      "{ for (int j = 0; j < 5; j = j + 1) { if (j > i) break; total = total + 1; } } return total; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_for_loop_init_declaration_scopes_to_the_loop
+    assert_c_exit_status(
+      100,
+      "int main(void) { int i = 100; for (int i = 0; i < 5; i = i + 1) { ; } return i; }",
+      compiler: :rubycc
+    )
+  end
+
   # N7: differential test against gcc. Compile the same source with both
   # compilers and assert the process exit codes agree.
   DIFFERENTIAL_SOURCES = [
@@ -220,7 +297,21 @@ class TestExecutionHarness < Minitest::Test
     "int main(void) { if (1) if (0) return 7; else return 42; return 9; }",
     "int main(void) { if (1) { int x = 40; return x + 2; } return 7; }",
     "int main(void) { int x = 1; { int x = 100; x = 41; } return x + 41; }",
-    "int main(void) { int a = 1; int b = 2; if (a == 1) { if (b == 2) { return 42; } } return 7; }"
+    "int main(void) { int a = 1; int b = 2; if (a == 1) { if (b == 2) { return 42; } } return 7; }",
+    "int main(void) { int i = 0; int sum = 0; while (i < 10) { sum = sum + i; i = i + 1; } return sum; }",
+    "int main(void) { while (0) return 7; return 42; }",
+    "int main(void) { int x = 0; do { x = 42; } while (0); return x; }",
+    "int main(void) { int i = 0; do { i = i + 1; } while (i < 42); return i; }",
+    "int main(void) { int sum = 0; for (int i = 1; i <= 9; i = i + 1) { sum = sum + i; } return sum; }",
+    "int main(void) { int i; int sum = 0; for (i = 0; i < 7; i = i + 1) sum = sum + 6; return sum; }",
+    "int main(void) { int i = 0; for (;;) { i = i + 1; if (i == 42) break; } return i; }",
+    "int main(void) { int sum = 0; for (int i = 0; i < 10; i = i + 1) " \
+    "{ if (i % 2 == 0) continue; sum = sum + i; } return sum; }",
+    "int main(void) { int i = 0; int n = 0; while (1) " \
+    "{ i = i + 1; if (i > 100) break; if (i % 10 != 0) continue; n = n + 1; } return n; }",
+    "int main(void) { int total = 0; for (int i = 0; i < 5; i = i + 1) " \
+    "{ for (int j = 0; j < 5; j = j + 1) { if (j > i) break; total = total + 1; } } return total; }",
+    "int main(void) { int i = 100; for (int i = 0; i < 5; i = i + 1) { ; } return i; }"
   ].freeze
 
   def test_matches_gcc_exit_codes

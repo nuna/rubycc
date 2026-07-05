@@ -74,4 +74,30 @@ class TestDiagnostics < Minitest::Test
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/undeclared variable 'x'/, error.description)
   end
+
+  def test_break_outside_loop_message_has_full_diagnostic
+    source = "int main(void) { break; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal "foo.c", error.filename
+    assert_equal 1, error.line
+    assert_match(/break statement not within a loop/, error.description)
+    assert_match(/foo\.c:1:\d+: error: break statement not within a loop/, error.message)
+  end
+
+  def test_continue_outside_loop_message_has_full_diagnostic
+    source = "int main(void) { continue; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal "foo.c", error.filename
+    assert_equal 1, error.line
+    assert_match(/continue statement not within a loop/, error.description)
+    assert_match(/foo\.c:1:\d+: error: continue statement not within a loop/, error.message)
+  end
+
+  def test_break_inside_if_but_outside_loop_is_still_an_error
+    source = "int main(void) { if (1) break; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/break statement not within a loop/, error.description)
+  end
 end

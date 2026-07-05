@@ -287,4 +287,71 @@ class TestParser < Minitest::Test
     assert_kind_of AST::VariableDecl, block.items[0]
     assert_kind_of AST::ExpressionStmt, block.items[1]
   end
+
+  def test_parses_while_statement
+    program = parse("int main(void) { while (1) return 2; }")
+    stmt = program.functions.first.body.first
+
+    assert_kind_of AST::While, stmt
+    assert_kind_of AST::IntLit, stmt.condition
+    assert_equal 1, stmt.condition.value
+    assert_kind_of AST::Return, stmt.body
+  end
+
+  def test_parses_do_while_statement
+    program = parse("int main(void) { do return 2; while (1); }")
+    stmt = program.functions.first.body.first
+
+    assert_kind_of AST::DoWhile, stmt
+    assert_kind_of AST::Return, stmt.body
+    assert_kind_of AST::IntLit, stmt.condition
+    assert_equal 1, stmt.condition.value
+  end
+
+  def test_parses_for_statement_with_declaration_init
+    program = parse("int main(void) { for (int i = 0; i < 10; i = i + 1) return i; }")
+    stmt = program.functions.first.body.first
+
+    assert_kind_of AST::For, stmt
+    assert_kind_of Array, stmt.init
+    assert_kind_of AST::VariableDecl, stmt.init.first
+    assert_equal "i", stmt.init.first.name
+    assert_kind_of AST::Binary, stmt.condition
+    assert_equal :lt, stmt.condition.op
+    assert_kind_of AST::Assignment, stmt.step
+    assert_kind_of AST::Return, stmt.body
+  end
+
+  def test_parses_for_statement_with_expression_init
+    program = parse("int main(void) { int i; for (i = 0; i < 10; i = i + 1) return i; }")
+    stmt = program.functions.first.body.last
+
+    assert_kind_of AST::For, stmt
+    assert_kind_of AST::Assignment, stmt.init
+  end
+
+  def test_parses_for_statement_with_all_clauses_omitted
+    program = parse("int main(void) { for (;;) break; }")
+    stmt = program.functions.first.body.first
+
+    assert_kind_of AST::For, stmt
+    assert_nil stmt.init
+    assert_nil stmt.condition
+    assert_nil stmt.step
+    assert_kind_of AST::Break, stmt.body
+  end
+
+  def test_parses_break_statement
+    program = parse("int main(void) { while (1) break; }")
+    stmt = program.functions.first.body.first.body
+
+    assert_kind_of AST::Break, stmt
+  end
+
+  def test_parses_continue_statement
+    program = parse("int main(void) { while (1) continue; }")
+    stmt = program.functions.first.body.first.body
+
+    assert_kind_of AST::Continue, stmt
+  end
 end
