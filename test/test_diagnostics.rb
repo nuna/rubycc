@@ -147,4 +147,60 @@ class TestDiagnostics < Minitest::Test
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/parameter name omitted/, error.description)
   end
+
+  def test_dereference_of_non_pointer_is_rejected
+    source = "int main(void) { int x; return *x; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal "foo.c", error.filename
+    assert_equal 1, error.line
+    assert_match(/invalid type argument of unary '\*'/, error.description)
+    assert_match(%r{foo\.c:1:\d+: error: invalid type argument of unary '\*'}, error.message)
+  end
+
+  def test_address_of_non_lvalue_is_rejected
+    source = "int main(void) { return &1; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal 1, error.line
+    assert_match(/lvalue required as unary '&' operand/, error.description)
+    assert_match(/foo\.c:1:\d+: error: lvalue required as unary '&' operand/, error.message)
+  end
+
+  def test_assigning_pointer_to_int_is_a_type_error
+    source = "int main(void) { int x; int *p; x = p; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal 1, error.line
+    assert_match(/incompatible types in assignment/, error.description)
+    assert_match(/foo\.c:1:\d+: error: incompatible types in assignment/, error.message)
+  end
+
+  def test_assigning_int_to_pointer_is_a_type_error
+    source = "int main(void) { int *p; int x; p = x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/incompatible types in assignment/, error.description)
+  end
+
+  def test_pointer_argument_type_mismatch_is_rejected
+    source = "int f(int *p) { return 0; } int main(void) { int x; return f(x); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal 1, error.line
+    assert_match(/incompatible type for argument 1 of 'f'/, error.description)
+    assert_match(/foo\.c:1:\d+: error: incompatible type for argument 1 of 'f'/, error.message)
+  end
+
+  def test_int_argument_to_pointer_parameter_is_rejected
+    source = "int f(int a, int *p) { return a; } " \
+             "int main(void) { int x; return f(1, 2); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/incompatible type for argument 2 of 'f'/, error.description)
+  end
+
+  def test_pointer_arithmetic_is_rejected_for_now
+    source = "int main(void) { int x; int *p; p = &x; return p + 1; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
 end

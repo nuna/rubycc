@@ -9,7 +9,7 @@ module Rubycc
       IntLit = Data.define(:value, :token)
 
       # Unary operation. `op` is :neg or :not (unary + is folded away by the
-      # parser).
+      # parser), :addr (the address-of "&") or :deref (the dereference "*").
       Unary = Data.define(:op, :operand, :token)
 
       # Binary operation. `op` is one of :add, :sub, :mul, :div, :mod (arithmetic)
@@ -19,15 +19,17 @@ module Rubycc
       # `return <expr>;`
       Return = Data.define(:expr, :token)
 
-      # A local variable declaration. `initializer` is an expression node or
-      # nil when the declarator has no "= <expr>" part.
-      VariableDecl = Data.define(:name, :initializer, :token)
+      # A local variable declaration. `type` is the declared Rubycc::Type
+      # (int or a pointer). `initializer` is an expression node or nil when the
+      # declarator has no "= <expr>" part.
+      VariableDecl = Data.define(:name, :type, :initializer, :token)
 
       # A reference to a local variable by name.
       VariableRef = Data.define(:name, :token)
 
-      # Simple assignment `target = value`. `target` is always a
-      # VariableRef (checked by the parser).
+      # Simple assignment `target = value`. `target` is a VariableRef or a
+      # dereference (Unary with op :deref); the parser rejects any other,
+      # non-assignable target.
       Assignment = Data.define(:target, :value, :token)
 
       # An expression evaluated for its side effects; the value is discarded.
@@ -68,7 +70,8 @@ module Rubycc
 
       # A single function parameter. `name` is the identifier String, or nil
       # for an unnamed parameter in a prototype (e.g. "int f(int, int);").
-      Parameter = Data.define(:name, :token)
+      # `type` is the parameter's Rubycc::Type (int or a pointer).
+      Parameter = Data.define(:name, :type, :token)
 
       # A function prototype (a bare declaration with no body), e.g.
       # "int f(int a, int b);". `params` is an array of Parameter.

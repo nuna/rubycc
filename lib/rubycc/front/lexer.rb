@@ -15,8 +15,9 @@ module Rubycc
       # the lexer always prefers the longest punctuator ("==" over two "=").
       PUNCTUATORS_2 = %w[== != <= >=].freeze
 
-      # Single-character punctuators used by this slice.
-      PUNCTUATORS_1 = %w[+ - * / % ( ) { } ; = , < > !].freeze
+      # Single-character punctuators used by this slice. "&" is the address-of
+      # operator and "*" doubles as dereference and pointer-declarator marker.
+      PUNCTUATORS_1 = %w[+ - * / % ( ) { } ; = , < > ! &].freeze
 
       def initialize(source, filename:)
         @src = source

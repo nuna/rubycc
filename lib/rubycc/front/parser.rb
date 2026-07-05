@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "ast"
+require_relative "../type"
 require_relative "../compile_error"
 
 module Rubycc
@@ -14,11 +15,12 @@ module Rubycc
     #   parameter-type-list       = "void"
     #                             | parameter-declaration
     #                               ("," parameter-declaration)*
-    #   parameter-declaration     = "int" identifier?
+    #   parameter-declaration     = "int" declarator?
+    #   declarator                = "*"* identifier
     #   compound-statement        = "{" block-item* "}"
     #   block-item                = declaration | statement
     #   declaration               = "int" init-declarator ("," init-declarator)* ";"
-    #   init-declarator           = identifier ("=" assignment-expression)?
+    #   init-declarator           = declarator ("=" assignment-expression)?
     #   statement                 = return-statement | expression-statement
     #                             | selection-statement | iteration-statement
     #                             | jump-statement | compound-statement
@@ -42,7 +44,7 @@ module Rubycc
     #                               (("+" | "-") multiplicative-expression)*
     #   multiplicative-expression = unary-expression
     #                               (("*" | "/" | "%") unary-expression)*
-    #   unary-expression          = ("+" | "-" | "!")* postfix-expression
+    #   unary-expression          = ("+" | "-" | "!" | "&" | "*")* postfix-expression
     #   postfix-expression        = primary-expression
     #                             | identifier "(" argument-expression-list? ")"
     #   argument-expression-list  = assignment-expression
@@ -146,16 +148,18 @@ module Rubycc
         params
       end
 
-      # parameter-declaration = "int" identifier?. The name is optional (nil)
-      # so prototypes may omit it; an unnamed parameter is located by its
-      # "int" keyword for diagnostics.
+      # parameter-declaration = "int" declarator?. The declarator's name is
+      # optional (nil) so prototypes may omit it, but any leading "*" run still
+      # contributes to the parameter's pointer type; an unnamed parameter is
+      # located by its "int" keyword for diagnostics.
       def parse_parameter_declaration
         int_tok = expect_keyword("int")
+        type = parse_pointer_declarator(Type::Int)
         if peek.type == :ident
           name_tok = advance
-          AST::Parameter.new(name_tok.value, name_tok)
+          AST::Parameter.new(name_tok.value, type, name_tok)
         else
-          AST::Parameter.new(nil, int_tok)
+          AST::Parameter.new(nil, type, int_tok)
         end
       end
 
@@ -181,13 +185,27 @@ module Rubycc
       end
 
       def parse_init_declarator
+        type = parse_pointer_declarator(Type::Int)
         name_tok = expect_ident
         initializer = nil
         if peek.punct?("=")
           advance
           initializer = parse_assignment_expression
         end
-        AST::VariableDecl.new(name_tok.value, initializer, name_tok)
+        AST::VariableDecl.new(name_tok.value, type, initializer, name_tok)
+      end
+
+      # Consumes the "*" run of a declarator, wrapping `base` in one pointer
+      # level per star (so "int **" becomes a pointer to a pointer to int). The
+      # parser only builds the type here; whether operations on it type-check is
+      # the generator's job.
+      def parse_pointer_declarator(base)
+        type = base
+        while peek.punct?("*")
+          advance
+          type = Type::Pointer.new(type)
+        end
+        type
       end
 
       def parse_statement
@@ -325,9 +343,17 @@ module Rubycc
         return node unless peek.punct?("=")
 
         eq_tok = advance
-        error_at(eq_tok, "expression is not assignable") unless node.is_a?(AST::VariableRef)
+        error_at(eq_tok, "expression is not assignable") unless assignable?(node)
         value = parse_assignment_expression
         AST::Assignment.new(node, value, eq_tok)
+      end
+
+      # Syntactically, only a variable reference or a dereference "*expr" can
+      # appear on the left of "=". Whether the dereferenced operand is actually
+      # a pointer is checked later by the generator.
+      def assignable?(node)
+        node.is_a?(AST::VariableRef) ||
+          (node.is_a?(AST::Unary) && node.op == :deref)
       end
 
       def parse_equality_expression
@@ -371,6 +397,12 @@ module Rubycc
         elsif peek.punct?("!")
           op_tok = advance
           AST::Unary.new(:not, parse_unary_expression, op_tok)
+        elsif peek.punct?("&")
+          op_tok = advance
+          AST::Unary.new(:addr, parse_unary_expression, op_tok)
+        elsif peek.punct?("*")
+          op_tok = advance
+          AST::Unary.new(:deref, parse_unary_expression, op_tok)
         else
           parse_postfix_expression
         end

@@ -15,21 +15,26 @@ module Rubycc
     #   :jump_if_zero a = condition vreg, b = label id (branch when a == 0)
     #   :call   dst <- f(args)  a = callee name (String),
     #                           b = array of argument vregs (left to right)
+    #   :addr_of dst <- &slot(a)    dst gets the address of a's stack slot
+    #   :load   dst <- *a           dst gets `size` bytes read through pointer a
+    #   :store  *a <- b             `size` bytes of b are written through ptr a
     #
     # `dst`, `a`, `b` are virtual register numbers (Integers) unless noted;
-    # unused fields are nil.
+    # unused fields are nil. `size` is the memory access width in bytes (4 for
+    # an int, 8 for a pointer) and is set only on :load / :store.
     class Instruction
-      attr_reader :op, :dst, :a, :b
+      attr_reader :op, :dst, :a, :b, :size
 
-      def initialize(op, dst: nil, a: nil, b: nil)
+      def initialize(op, dst: nil, a: nil, b: nil, size: nil)
         @op = op
         @dst = dst
         @a = a
         @b = b
+        @size = size
       end
 
       def inspect
-        "#<IR #{op} dst=#{dst.inspect} a=#{a.inspect} b=#{b.inspect}>"
+        "#<IR #{op} dst=#{dst.inspect} a=#{a.inspect} b=#{b.inspect} size=#{size.inspect}>"
       end
     end
 

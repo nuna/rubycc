@@ -327,6 +327,64 @@ class TestExecutionHarness < Minitest::Test
     )
   end
 
+  def test_reads_through_a_pointer
+    assert_c_exit_status(
+      42,
+      "int main(void) { int x = 10; int *p = &x; return *p * 4 + 2; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_writes_through_a_pointer
+    assert_c_exit_status(
+      42,
+      "int main(void) { int x = 1; int *p = &x; *p = 42; return x; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_writes_through_a_pointer_to_a_pointer
+    assert_c_exit_status(
+      42,
+      "int main(void) { int x = 5; int *p = &x; int **pp = &p; **pp = 42; return x; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_reassigning_a_pointer
+    assert_c_exit_status(
+      42,
+      "int main(void) { int x = 5; int y = 42; int *p = &x; p = &y; return *p; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_read_write_mix_through_a_pointer
+    assert_c_exit_status(
+      42,
+      "int main(void) { int x = 40; int *p = &x; *p = *p + 2; return x; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_function_writes_through_pointer_argument
+    assert_c_exit_status(
+      42,
+      "int set(int *dst, int v) { *dst = v; return 0; } " \
+      "int main(void) { int x = 0; set(&x, 42); return x; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_swap_through_pointer_arguments
+    assert_c_exit_status(
+      118,
+      "int swap(int *a, int *b) { int t = *a; *a = *b; *b = t; return 0; } " \
+      "int main(void) { int x = 2; int y = 40; swap(&x, &y); return x - y + 80; }",
+      compiler: :rubycc
+    )
+  end
+
   def test_linking_emits_no_executable_stack_warning
     # The .note.GNU-stack section marks the stack non-executable, so gcc's
     # linker driver should not print any warning when producing the executable.
@@ -407,7 +465,16 @@ class TestExecutionHarness < Minitest::Test
     "int twice(int x) { return x * 2; } int main(void) { return twice(twice(10)) + 2; }",
     "int abs(int); int main(void) { return abs(0 - 42); }",
     "int sq(int x) { return x * x; } " \
-    "int main(void) { int s = 0; for (int i = 1; i <= 4; i = i + 1) s = s + sq(i); return s; }"
+    "int main(void) { int s = 0; for (int i = 1; i <= 4; i = i + 1) s = s + sq(i); return s; }",
+    "int main(void) { int x = 10; int *p = &x; return *p * 4 + 2; }",
+    "int main(void) { int x = 1; int *p = &x; *p = 42; return x; }",
+    "int main(void) { int x = 5; int *p = &x; int **pp = &p; **pp = 42; return x; }",
+    "int main(void) { int x = 5; int y = 42; int *p = &x; p = &y; return *p; }",
+    "int main(void) { int x = 40; int *p = &x; *p = *p + 2; return x; }",
+    "int set(int *dst, int v) { *dst = v; return 0; } " \
+    "int main(void) { int x = 0; set(&x, 42); return x; }",
+    "int swap(int *a, int *b) { int t = *a; *a = *b; *b = t; return 0; } " \
+    "int main(void) { int x = 2; int y = 40; swap(&x, &y); return x - y + 80; }"
   ].freeze
 
   def test_matches_gcc_exit_codes

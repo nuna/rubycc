@@ -5,10 +5,12 @@ require_relative "../ir/ir"
 module Rubycc
   module Backend
     # x86_64 code generator using a spill-everything strategy: every virtual
-    # register lives in its own stack slot at [rbp - 8*(n+1)], and each IR
-    # instruction loads its operands into eax/ecx, computes, and stores the
-    # result back. All arithmetic is 32-bit, which reproduces C `int`
-    # wrap-around semantics for free.
+    # register lives in its own 8-byte stack slot at [rbp - 8*(n+1)], and each
+    # IR instruction loads its operands into eax/ecx, computes, and stores the
+    # result back. Integer arithmetic stays 32-bit (using eax/ecx), which
+    # reproduces C `int` wrap-around semantics for free; slots themselves are
+    # read and written 64 bits at a time so a pointer value survives intact
+    # (see #load_reg / #store_reg).
     #
     # System V AMD64: the integer return value is passed in eax.
     class X86_64
@@ -112,6 +114,12 @@ module Rubycc
           emit_jump_if_zero(inst.a, inst.b)
         when :call
           emit_call(inst.dst, inst.a, inst.b)
+        when :addr_of
+          emit_addr_of(inst.dst, inst.a)
+        when :load
+          emit_load(inst.dst, inst.a, inst.size)
+        when :store
+          emit_store(inst.a, inst.b, inst.size)
         when :ret
           load_reg(EAX, inst.a)
           emit(0xC9)                                          # leave
@@ -134,6 +142,40 @@ module Rubycc
         @relocations << { offset: @code.bytesize, symbol: name }
         emit_bytes([0].pack("l<"))          # linker patches this via R_X86_64_PLT32
         store_reg(EAX, dst)
+      end
+
+      # "&x": lea rax, [rbp+disp] computes the absolute address of the operand's
+      # slot, which a 64-bit store then parks in the destination slot.
+      def emit_addr_of(dst, slot_vreg)
+        emit(0x48, 0x8D)                # REX.W lea rax, [rbp+disp]
+        emit_bytes(modrm_rbp_disp(EAX, slot_disp(slot_vreg)))
+        store_reg(EAX, dst)
+      end
+
+      # "*p" read: load the pointer from its slot into rax, then read through
+      # it. An 8-byte load moves a full pointer (mov rax, [rax]); a 4-byte load
+      # reads an int (mov eax, [rax]), whose upper bits the store then zeroes.
+      def emit_load(dst, ptr_vreg, size)
+        load_reg(EAX, ptr_vreg)         # rax = pointer value
+        if size == 8
+          emit(0x48, 0x8B, 0x00)        # mov rax, [rax]
+        else
+          emit(0x8B, 0x00)              # mov eax, [rax]
+        end
+        store_reg(EAX, dst)
+      end
+
+      # "*p = v": rax holds the destination address, rcx the value, then rcx is
+      # written through the address. An 8-byte store writes a full pointer
+      # (mov [rax], rcx); a 4-byte store writes an int (mov [rax], ecx).
+      def emit_store(ptr_vreg, value_vreg, size)
+        load_reg(EAX, ptr_vreg)         # rax = destination address
+        load_reg(ECX, value_vreg)       # rcx = value
+        if size == 8
+          emit(0x48, 0x89, 0x08)        # mov [rax], rcx
+        else
+          emit(0x89, 0x08)              # mov [rax], ecx
+        end
       end
 
       def emit_comparison(dst, a, b, setcc_opcode)
@@ -199,17 +241,21 @@ module Rubycc
         store_reg(result_reg, dst)
       end
 
-      # mov <reg>, [rbp + disp]. Registers r8d/r9d (>= 8) need a REX.R prefix,
-      # with the low 3 bits of the register going into the ModR/M reg field.
+      # mov r64, [rbp + disp]: slots are always moved 64 bits at a time so a
+      # pointer value is not truncated to 32 bits. This is safe for ints too:
+      # every int is produced by a 32-bit write to eax, which x86-64 defines to
+      # zero the upper 32 bits of rax, so the slot's high half is already zero.
+      # The REX prefix carries W (64-bit operand) plus R for r8/r9 (>= 8), whose
+      # low 3 bits go into the ModR/M reg field.
       def load_reg(reg, vreg)
-        emit(0x44) if reg >= 8              # REX.R
+        emit(0x48 | (reg >= 8 ? 0x04 : 0)) # REX.W (+ REX.R for r8/r9)
         emit(0x8B)
         emit_bytes(modrm_rbp_disp(reg & 7, slot_disp(vreg)))
       end
 
-      # mov [rbp + disp], <reg>. See load_reg for the REX.R handling.
+      # mov [rbp + disp], r64. See load_reg for the 64-bit and REX rationale.
       def store_reg(reg, vreg)
-        emit(0x44) if reg >= 8              # REX.R
+        emit(0x48 | (reg >= 8 ? 0x04 : 0)) # REX.W (+ REX.R for r8/r9)
         emit(0x89)
         emit_bytes(modrm_rbp_disp(reg & 7, slot_disp(vreg)))
       end

@@ -7,6 +7,7 @@ module Rubycc
 end
 
 require_relative "rubycc/compile_error"
+require_relative "rubycc/type"
 require_relative "rubycc/front/token"
 require_relative "rubycc/front/lexer"
 require_relative "rubycc/front/ast"

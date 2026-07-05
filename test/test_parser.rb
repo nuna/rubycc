@@ -4,6 +4,7 @@ require_relative "test_helper"
 
 class TestParser < Minitest::Test
   AST = Rubycc::Front::AST
+  Type = Rubycc::Type
 
   def parse(source, filename: "test.c")
     tokens = Rubycc::Front::Lexer.new(source, filename: filename).tokenize
@@ -148,6 +149,94 @@ class TestParser < Minitest::Test
     assert_kind_of AST::VariableDecl, body[1]
     assert_equal "b", body[1].name
     assert_nil body[1].initializer
+  end
+
+  def test_variable_declaration_has_int_type
+    program = parse("int main(void) { int x; return 0; }")
+    decl = program.functions.first.body.first
+
+    assert_kind_of AST::VariableDecl, decl
+    assert_equal Type::Int, decl.type
+  end
+
+  def test_parses_pointer_declaration_type
+    program = parse("int main(void) { int *p; return 0; }")
+    decl = program.functions.first.body.first
+
+    assert_kind_of AST::VariableDecl, decl
+    assert_equal "p", decl.name
+    assert_equal Type::Pointer.new(Type::Int), decl.type
+  end
+
+  def test_parses_pointer_to_pointer_declaration_type
+    program = parse("int main(void) { int **pp; return 0; }")
+    decl = program.functions.first.body.first
+
+    assert_equal "pp", decl.name
+    assert_equal Type::Pointer.new(Type::Pointer.new(Type::Int)), decl.type
+  end
+
+  def test_pointer_declarator_binds_per_declarator
+    # In "int *p, q", the "*" applies only to p; q stays a plain int.
+    program = parse("int main(void) { int *p, q; return 0; }")
+    body = program.functions.first.body
+
+    assert_equal Type::Pointer.new(Type::Int), body[0].type
+    assert_equal Type::Int, body[1].type
+  end
+
+  def test_parses_pointer_parameter_type
+    program = parse("int f(int *p) { return 0; } int main(void) { return 0; }")
+    param = program.functions.first.params.first
+
+    assert_kind_of AST::Parameter, param
+    assert_equal "p", param.name
+    assert_equal Type::Pointer.new(Type::Int), param.type
+  end
+
+  def test_parses_address_of_as_unary_addr
+    expr = parse_expr("&x")
+    assert_kind_of AST::Unary, expr
+    assert_equal :addr, expr.op
+    assert_kind_of AST::VariableRef, expr.operand
+    assert_equal "x", expr.operand.name
+  end
+
+  def test_parses_dereference_as_unary_deref
+    expr = parse_expr("*p")
+    assert_kind_of AST::Unary, expr
+    assert_equal :deref, expr.op
+    assert_kind_of AST::VariableRef, expr.operand
+    assert_equal "p", expr.operand.name
+  end
+
+  def test_parses_nested_dereference
+    # **pp  =>  (deref (deref pp))
+    expr = parse_expr("**pp")
+    assert_kind_of AST::Unary, expr
+    assert_equal :deref, expr.op
+    assert_kind_of AST::Unary, expr.operand
+    assert_equal :deref, expr.operand.op
+    assert_equal "pp", expr.operand.operand.name
+  end
+
+  def test_dereference_binds_tighter_than_multiplication
+    # *p * 4  =>  (mul (deref p) 4)
+    expr = parse_expr("*p * 4")
+    assert_kind_of AST::Binary, expr
+    assert_equal :mul, expr.op
+    assert_kind_of AST::Unary, expr.lhs
+    assert_equal :deref, expr.lhs.op
+    assert_equal 4, expr.rhs.value
+  end
+
+  def test_parses_store_through_pointer
+    # *p = v  =>  (assign (deref p) v), a valid assignable target.
+    expr = parse_expr("*p = 42")
+    assert_kind_of AST::Assignment, expr
+    assert_kind_of AST::Unary, expr.target
+    assert_equal :deref, expr.target.op
+    assert_equal 42, expr.value.value
   end
 
   def test_parses_variable_reference
