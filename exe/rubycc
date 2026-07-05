@@ -8,5 +8,55 @@ if ARGV.include?("--version") || ARGV.include?("-v")
   exit 0
 end
 
-warn "rubycc: C compilation is not yet implemented"
-exit 1
+input = nil
+output = nil
+args = ARGV.dup
+i = 0
+while i < args.length
+  arg = args[i]
+  case arg
+  when "-c"
+    # Compile-to-object mode. This is the only mode this slice supports, so the
+    # flag is accepted but implied.
+  when "-o"
+    i += 1
+    output = args[i]
+    if output.nil?
+      warn "rubycc: error: missing filename after '-o'"
+      exit 1
+    end
+  else
+    if arg.start_with?("-")
+      warn "rubycc: error: unrecognized option '#{arg}'"
+      exit 1
+    elsif input.nil?
+      input = arg
+    else
+      warn "rubycc: error: multiple input files are not supported"
+      exit 1
+    end
+  end
+  i += 1
+end
+
+if input.nil?
+  warn "rubycc: error: no input file"
+  exit 1
+end
+
+if output.nil?
+  ext = File.extname(input)
+  output = ext.empty? ? "#{input}.o" : "#{input[0...-ext.length]}.o"
+end
+
+begin
+  Rubycc::Compiler.compile_file(input, output)
+rescue Rubycc::CompileError => e
+  warn e.message
+  exit 1
+rescue Errno::ENOENT => e
+  warn "rubycc: error: #{e.message}"
+  exit 1
+end
+
+exit 0

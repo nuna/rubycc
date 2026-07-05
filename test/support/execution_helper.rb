@@ -8,9 +8,8 @@ require "open3"
 # executable, run it, and assert on its exit status.
 #
 # `compiler: :gcc` exercises a reference path (using the system gcc) that
-# exists purely to validate the harness itself. `compiler: :rubycc` is the
-# path that will exercise the Pure Ruby toolchain once it is implemented;
-# today it raises NotImplementedError.
+# exists purely to validate the harness itself. `compiler: :rubycc` drives the
+# Pure Ruby toolchain (Rubycc::Compiler).
 module ExecutionHelper
   def in_tmpdir
     Dir.mktmpdir("rubycc-test") do |dir|
@@ -18,8 +17,11 @@ module ExecutionHelper
     end
   end
 
-  def compile_with_rubycc(_c_source, _output_path)
-    raise NotImplementedError, "rubycc compiler is not implemented yet"
+  def compile_with_rubycc(c_source, output_path)
+    filename = "#{File.basename(output_path, ".*")}.c"
+    binary = Rubycc::Compiler.new.compile(c_source, filename: filename)
+    File.binwrite(output_path, binary)
+    output_path
   end
 
   def compile_with_gcc(c_source, output_path)
