@@ -15,15 +15,22 @@ module Rubycc
     #   declaration               = "int" init-declarator ("," init-declarator)* ";"
     #   init-declarator           = identifier ("=" assignment-expression)?
     #   statement                 = return-statement | expression-statement
+    #                             | selection-statement | compound-statement
     #   return-statement          = "return" expression ";"
     #   expression-statement      = expression? ";"
+    #   selection-statement       = "if" "(" expression ")" statement
+    #                               ("else" statement)?
     #   expression                = assignment-expression
-    #   assignment-expression     = additive-expression ("=" assignment-expression)?
+    #   assignment-expression     = equality-expression ("=" assignment-expression)?
+    #   equality-expression       = relational-expression
+    #                               (("==" | "!=") relational-expression)*
+    #   relational-expression     = additive-expression
+    #                               (("<" | ">" | "<=" | ">=") additive-expression)*
     #   additive-expression       = multiplicative-expression
     #                               (("+" | "-") multiplicative-expression)*
     #   multiplicative-expression = unary-expression
     #                               (("*" | "/" | "%") unary-expression)*
-    #   unary-expression          = ("+" | "-")* primary-expression
+    #   unary-expression          = ("+" | "-" | "!")* primary-expression
     #   primary-expression        = integer-constant | identifier | "(" expression ")"
     #
     # Binary precedence levels are parsed by a single table-driven
@@ -34,6 +41,8 @@ module Rubycc
     class Parser
       # Punctuator → AST operator tables, one per precedence tier
       # (weakest binding first).
+      EQUALITY_OPERATORS = { "==" => :eq, "!=" => :ne }.freeze
+      RELATIONAL_OPERATORS = { "<" => :lt, ">" => :gt, "<=" => :le, ">=" => :ge }.freeze
       ADDITIVE_OPERATORS = { "+" => :add, "-" => :sub }.freeze
       MULTIPLICATIVE_OPERATORS = { "*" => :mul, "/" => :div, "%" => :mod }.freeze
       def initialize(tokens)
@@ -110,6 +119,10 @@ module Rubycc
       def parse_statement
         if peek.keyword?("return")
           parse_return
+        elsif peek.keyword?("if")
+          parse_selection_statement
+        elsif peek.punct?("{")
+          parse_compound_statement
         else
           parse_expression_statement
         end
@@ -120,6 +133,31 @@ module Rubycc
         expr = parse_expression
         expect_punct(";")
         AST::Return.new(expr, ret_tok)
+      end
+
+      # "else" binds to the nearest preceding "if": since the else clause is
+      # consumed eagerly by the innermost recursive call, dangling-else
+      # resolves the standard C way without extra bookkeeping.
+      def parse_selection_statement
+        if_tok = advance # "if"
+        expect_punct("(")
+        condition = parse_expression
+        expect_punct(")")
+        then_stmt = parse_statement
+        else_stmt = nil
+        if peek.keyword?("else")
+          advance
+          else_stmt = parse_statement
+        end
+        AST::If.new(condition, then_stmt, else_stmt, if_tok)
+      end
+
+      def parse_compound_statement
+        brace_tok = expect_punct("{")
+        items = []
+        items.concat(parse_block_item) until peek.punct?("}")
+        expect_punct("}")
+        AST::Block.new(items, brace_tok)
       end
 
       def parse_expression_statement
@@ -140,13 +178,21 @@ module Rubycc
 
       # Right-associative: "a = b = c" parses as "a = (b = c)".
       def parse_assignment_expression
-        node = parse_additive_expression
+        node = parse_equality_expression
         return node unless peek.punct?("=")
 
         eq_tok = advance
         error_at(eq_tok, "expression is not assignable") unless node.is_a?(AST::VariableRef)
         value = parse_assignment_expression
         AST::Assignment.new(node, value, eq_tok)
+      end
+
+      def parse_equality_expression
+        parse_left_associative(EQUALITY_OPERATORS) { parse_relational_expression }
+      end
+
+      def parse_relational_expression
+        parse_left_associative(RELATIONAL_OPERATORS) { parse_additive_expression }
       end
 
       def parse_additive_expression
@@ -179,6 +225,9 @@ module Rubycc
         elsif peek.punct?("-")
           op_tok = advance
           AST::Unary.new(:neg, parse_unary_expression, op_tok)
+        elsif peek.punct?("!")
+          op_tok = advance
+          AST::Unary.new(:not, parse_unary_expression, op_tok)
         else
           parse_primary_expression
         end

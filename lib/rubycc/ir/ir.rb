@@ -7,8 +7,12 @@ module Rubycc
     #   :const  dst <- a            (a is an immediate Integer)
     #   :copy   dst <- a
     #   :add/:sub/:mul/:div/:mod    dst <- a op b
+    #   :eq/:ne/:lt/:le/:gt/:ge     dst <- (a op b) ? 1 : 0
     #   :neg    dst <- -a
     #   :ret    return a
+    #   :label        a = label id (a jump target; emits no code itself)
+    #   :jump         a = label id (unconditional branch)
+    #   :jump_if_zero a = condition vreg, b = label id (branch when a == 0)
     #
     # `dst`, `a`, `b` are virtual register numbers (Integers) unless noted;
     # unused fields are nil.

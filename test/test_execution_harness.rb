@@ -87,6 +87,98 @@ class TestExecutionHarness < Minitest::Test
     assert_c_exit_status(42, "int main(void) { int unused = 99; return 42; }", compiler: :rubycc)
   end
 
+  def test_relational_less_than_true
+    assert_c_exit_status(1, "int main(void) { return 1 < 2; }", compiler: :rubycc)
+  end
+
+  def test_relational_less_than_false
+    assert_c_exit_status(0, "int main(void) { return 2 < 1; }", compiler: :rubycc)
+  end
+
+  def test_relational_less_or_equal
+    assert_c_exit_status(1, "int main(void) { return 2 <= 2; }", compiler: :rubycc)
+  end
+
+  def test_relational_greater_than
+    assert_c_exit_status(1, "int main(void) { return 3 > 2; }", compiler: :rubycc)
+  end
+
+  def test_relational_greater_or_equal_false
+    assert_c_exit_status(0, "int main(void) { return 2 >= 3; }", compiler: :rubycc)
+  end
+
+  def test_equality_true
+    assert_c_exit_status(1, "int main(void) { return 42 == 42; }", compiler: :rubycc)
+  end
+
+  def test_equality_false
+    assert_c_exit_status(0, "int main(void) { return 42 != 42; }", compiler: :rubycc)
+  end
+
+  def test_additive_binds_tighter_than_equality
+    assert_c_exit_status(1, "int main(void) { return 1 + 1 == 2; }", compiler: :rubycc)
+  end
+
+  def test_relational_binds_tighter_than_equality
+    assert_c_exit_status(1, "int main(void) { return 0 < 1 == 1; }", compiler: :rubycc)
+  end
+
+  def test_logical_not_of_zero
+    assert_c_exit_status(1, "int main(void) { return !0; }", compiler: :rubycc)
+  end
+
+  def test_logical_not_of_nonzero
+    assert_c_exit_status(0, "int main(void) { return !5; }", compiler: :rubycc)
+  end
+
+  def test_double_logical_not
+    assert_c_exit_status(1, "int main(void) { return !!42; }", compiler: :rubycc)
+  end
+
+  def test_comparison_result_is_an_int_value
+    assert_c_exit_status(42, "int main(void) { int x = 1 < 2; return x * 42; }", compiler: :rubycc)
+  end
+
+  def test_if_taken_branch_returns
+    assert_c_exit_status(42, "int main(void) { if (1) return 42; return 7; }", compiler: :rubycc)
+  end
+
+  def test_if_not_taken_falls_through
+    assert_c_exit_status(42, "int main(void) { if (0) return 7; return 42; }", compiler: :rubycc)
+  end
+
+  def test_if_else_takes_else_branch
+    assert_c_exit_status(42, "int main(void) { if (0) return 7; else return 42; }", compiler: :rubycc)
+  end
+
+  def test_else_if_chain
+    assert_c_exit_status(
+      42,
+      "int main(void) { int x = 2; if (x == 1) return 1; else if (x == 2) return 42; else return 3; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_dangling_else_binds_to_nearest_if
+    assert_c_exit_status(42, "int main(void) { if (1) if (0) return 7; else return 42; return 9; }", compiler: :rubycc)
+  end
+
+  def test_block_statement_introduces_scope
+    assert_c_exit_status(42, "int main(void) { if (1) { int x = 40; return x + 2; } return 7; }", compiler: :rubycc)
+  end
+
+  def test_inner_declaration_shadows_outer
+    assert_c_exit_status(42, "int main(void) { int x = 1; { int x = 100; x = 41; } return x + 41; }", compiler: :rubycc)
+  end
+
+  def test_nested_if_inside_blocks
+    assert_c_exit_status(
+      42,
+      "int main(void) { int a = 1; int b = 2; if (a == 1) { if (b == 2) { return 42; } } return 7; }",
+      compiler: :rubycc
+    )
+  end
+
   # N7: differential test against gcc. Compile the same source with both
   # compilers and assert the process exit codes agree.
   DIFFERENTIAL_SOURCES = [
@@ -107,7 +199,28 @@ class TestExecutionHarness < Minitest::Test
     "int main(void) { int a; int b; a = b = 21; return a + b; }",
     "int main(void) { int x = 1; x = x + 1; int y = 40; return x + y; }",
     "int main(void) { ; ; return 42; }",
-    "int main(void) { int unused = 99; return 42; }"
+    "int main(void) { int unused = 99; return 42; }",
+    "int main(void) { return 1 < 2; }",
+    "int main(void) { return 2 < 1; }",
+    "int main(void) { return 2 <= 2; }",
+    "int main(void) { return 3 > 2; }",
+    "int main(void) { return 2 >= 3; }",
+    "int main(void) { return 42 == 42; }",
+    "int main(void) { return 42 != 42; }",
+    "int main(void) { return 1 + 1 == 2; }",
+    "int main(void) { return 0 < 1 == 1; }",
+    "int main(void) { return !0; }",
+    "int main(void) { return !5; }",
+    "int main(void) { return !!42; }",
+    "int main(void) { int x = 1 < 2; return x * 42; }",
+    "int main(void) { if (1) return 42; return 7; }",
+    "int main(void) { if (0) return 7; return 42; }",
+    "int main(void) { if (0) return 7; else return 42; }",
+    "int main(void) { int x = 2; if (x == 1) return 1; else if (x == 2) return 42; else return 3; }",
+    "int main(void) { if (1) if (0) return 7; else return 42; return 9; }",
+    "int main(void) { if (1) { int x = 40; return x + 2; } return 7; }",
+    "int main(void) { int x = 1; { int x = 100; x = 41; } return x + 41; }",
+    "int main(void) { int a = 1; int b = 2; if (a == 1) { if (b == 2) { return 42; } } return 7; }"
   ].freeze
 
   def test_matches_gcc_exit_codes

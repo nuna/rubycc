@@ -9,10 +9,14 @@ module Rubycc
     # and keeps each source line around so tokens (and errors) can be reported
     # with source excerpts. Handles // and /* */ comments and whitespace.
     class Lexer
-      KEYWORDS = %w[int void return].freeze
+      KEYWORDS = %w[int void return if else].freeze
+
+      # Two-character punctuators, matched before the single-character list so
+      # the lexer always prefers the longest punctuator ("==" over two "=").
+      PUNCTUATORS_2 = %w[== != <= >=].freeze
 
       # Single-character punctuators used by this slice.
-      PUNCTUATORS = %w[+ - * / % ( ) { } ; = ,].freeze
+      PUNCTUATORS_1 = %w[+ - * / % ( ) { } ; = , < > !].freeze
 
       def initialize(source, filename:)
         @src = source
@@ -107,11 +111,24 @@ module Rubycc
           lex_number(line, column)
         elsif ch =~ /[A-Za-z_]/
           lex_identifier(line, column)
-        elsif PUNCTUATORS.include?(ch)
+        else
+          lex_punctuator(line, column)
+        end
+      end
+
+      # Longest-match punctuator scan: try the two-character punctuators first,
+      # then fall back to the single-character ones.
+      def lex_punctuator(line, column)
+        two = "#{current_char}#{peek(1)}"
+        if PUNCTUATORS_2.include?(two)
           advance
+          advance
+          make_token(:punct, two, line, column)
+        elsif PUNCTUATORS_1.include?(current_char)
+          ch = advance
           make_token(:punct, ch, line, column)
         else
-          raise_error("unexpected character #{ch.inspect}", line, column)
+          raise_error("unexpected character #{current_char.inspect}", line, column)
         end
       end
 

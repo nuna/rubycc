@@ -8,10 +8,12 @@ module Rubycc
       # Integer literal. `value` is a Ruby Integer.
       IntLit = Data.define(:value, :token)
 
-      # Unary operation. `op` is :neg (unary + is folded away by the parser).
+      # Unary operation. `op` is :neg or :not (unary + is folded away by the
+      # parser).
       Unary = Data.define(:op, :operand, :token)
 
-      # Binary operation. `op` is one of :add, :sub, :mul, :div, :mod.
+      # Binary operation. `op` is one of :add, :sub, :mul, :div, :mod (arithmetic)
+      # or :eq, :ne, :lt, :le, :gt, :ge (comparisons yielding int 0/1).
       Binary = Data.define(:op, :lhs, :rhs, :token)
 
       # `return <expr>;`
@@ -33,6 +35,14 @@ module Rubycc
 
       # The empty statement ";".
       EmptyStmt = Data.define(:token)
+
+      # `if (condition) then_stmt` with an optional `else else_stmt`.
+      # `else_stmt` is nil when there is no else clause.
+      If = Data.define(:condition, :then_stmt, :else_stmt, :token)
+
+      # A compound-statement "{ block-item* }" introducing a new scope.
+      # `items` is a flat array of declaration/statement nodes.
+      Block = Data.define(:items, :token)
 
       # A function definition. `body` is an array of statement nodes.
       FunctionDef = Data.define(:name, :body, :token)

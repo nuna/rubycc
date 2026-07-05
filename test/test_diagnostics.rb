@@ -55,4 +55,23 @@ class TestDiagnostics < Minitest::Test
     assert_match(/redeclaration of 'x'/, error.description)
     assert_match(/foo\.c:1:\d+: error: redeclaration of 'x'/, error.message)
   end
+
+  def test_same_scope_redeclaration_is_still_an_error
+    source = "int main(void) { int x; int x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/redeclaration of 'x'/, error.description)
+  end
+
+  def test_inner_scope_shadowing_is_not_an_error
+    # Re-declaring 'x' in a nested block shadows the outer 'x' rather than
+    # colliding with it, so compilation must succeed.
+    source = "int main(void) { int x = 1; { int x = 2; return x; } }"
+    assert_kind_of String, compile(source)
+  end
+
+  def test_variable_declared_in_block_is_not_visible_outside
+    source = "int main(void) { { int x = 1; } return x; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/undeclared variable 'x'/, error.description)
+  end
 end

@@ -198,4 +198,93 @@ class TestParser < Minitest::Test
     end
     assert_match(/expression is not assignable/, error.description)
   end
+
+  def test_equality_operator_produces_eq_node
+    # 1 == 2  =>  (eq 1 2)
+    expr = parse_expr("1 == 2")
+    assert_kind_of AST::Binary, expr
+    assert_equal :eq, expr.op
+    assert_equal 1, expr.lhs.value
+    assert_equal 2, expr.rhs.value
+  end
+
+  def test_relational_operators_map_to_ops
+    { "<" => :lt, ">" => :gt, "<=" => :le, ">=" => :ge }.each do |punct, op|
+      expr = parse_expr("1 #{punct} 2")
+      assert_equal op, expr.op
+    end
+  end
+
+  def test_additive_binds_tighter_than_equality
+    # 1 + 1 == 2  =>  (eq (add 1 1) 2)
+    expr = parse_expr("1 + 1 == 2")
+
+    assert_equal :eq, expr.op
+    assert_kind_of AST::Binary, expr.lhs
+    assert_equal :add, expr.lhs.op
+    assert_equal 1, expr.lhs.lhs.value
+    assert_equal 1, expr.lhs.rhs.value
+    assert_equal 2, expr.rhs.value
+  end
+
+  def test_relational_binds_tighter_than_equality
+    # 0 < 1 == 1  =>  (eq (lt 0 1) 1)
+    expr = parse_expr("0 < 1 == 1")
+
+    assert_equal :eq, expr.op
+    assert_kind_of AST::Binary, expr.lhs
+    assert_equal :lt, expr.lhs.op
+    assert_equal 1, expr.rhs.value
+  end
+
+  def test_logical_not_produces_not_node
+    expr = parse_expr("!0")
+    assert_kind_of AST::Unary, expr
+    assert_equal :not, expr.op
+    assert_equal 0, expr.operand.value
+  end
+
+  def test_parses_if_without_else
+    program = parse("int main(void) { if (1) return 2; }")
+    stmt = program.functions.first.body.first
+
+    assert_kind_of AST::If, stmt
+    assert_kind_of AST::IntLit, stmt.condition
+    assert_kind_of AST::Return, stmt.then_stmt
+    assert_nil stmt.else_stmt
+  end
+
+  def test_parses_if_with_else
+    program = parse("int main(void) { if (1) return 2; else return 3; }")
+    stmt = program.functions.first.body.first
+
+    assert_kind_of AST::If, stmt
+    assert_kind_of AST::Return, stmt.then_stmt
+    assert_kind_of AST::Return, stmt.else_stmt
+  end
+
+  def test_dangling_else_binds_to_nearest_if
+    # if (1) if (0) return 7; else return 42;
+    # The else must attach to the inner if, not the outer one.
+    program = parse("int main(void) { if (1) if (0) return 7; else return 42; }")
+    outer = program.functions.first.body.first
+
+    assert_kind_of AST::If, outer
+    assert_nil outer.else_stmt
+
+    inner = outer.then_stmt
+    assert_kind_of AST::If, inner
+    assert_kind_of AST::Return, inner.then_stmt
+    assert_kind_of AST::Return, inner.else_stmt
+  end
+
+  def test_parses_compound_statement_as_block
+    program = parse("int main(void) { { int x = 1; x; } return 0; }")
+    block = program.functions.first.body.first
+
+    assert_kind_of AST::Block, block
+    assert_equal 2, block.items.size
+    assert_kind_of AST::VariableDecl, block.items[0]
+    assert_kind_of AST::ExpressionStmt, block.items[1]
+  end
 end

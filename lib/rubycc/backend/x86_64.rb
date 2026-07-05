@@ -22,10 +22,27 @@ module Rubycc
       ECX = 1
       EDX = 2
 
+      # IR comparison op -> setcc opcode (second byte of the 0F 9x encoding).
+      # The result is materialized into eax as an int 0/1 by movzx.
+      SETCC_OPCODES = {
+        eq: 0x94, # sete
+        ne: 0x95, # setne
+        lt: 0x9C, # setl
+        le: 0x9E, # setle
+        gt: 0x9F, # setg
+        ge: 0x9D  # setge
+      }.freeze
+
       def compile(ir_func)
         @code = +"".b
+        # Control-flow bookkeeping: `@labels` maps a label id to its resolved
+        # code offset; `@fixups` collects [patch_offset, label_id] pairs whose
+        # rel32 field is overwritten once every label offset is known.
+        @labels = {}
+        @fixups = []
         emit_prologue(ir_func.vreg_count)
         ir_func.insts.each { |inst| emit_instruction(inst) }
+        resolve_fixups
 
         Result.new(
           bytes: @code,
@@ -60,16 +77,66 @@ module Rubycc
           emit_divmod(inst.dst, inst.a, inst.b, EAX)          # quotient in eax
         when :mod
           emit_divmod(inst.dst, inst.a, inst.b, EDX)          # remainder in edx
+        when :eq, :ne, :lt, :le, :gt, :ge
+          emit_comparison(inst.dst, inst.a, inst.b, SETCC_OPCODES.fetch(inst.op))
         when :neg
           load_reg(EAX, inst.a)
           emit(0xF7, 0xD8)                                    # neg eax
           store_reg(EAX, inst.dst)
+        when :label
+          @labels[inst.a] = @code.bytesize
+        when :jump
+          emit_jump(inst.a)
+        when :jump_if_zero
+          emit_jump_if_zero(inst.a, inst.b)
         when :ret
           load_reg(EAX, inst.a)
           emit(0xC9)                                          # leave
           emit(0xC3)                                          # ret
         else
           raise "unsupported IR op: #{inst.op}"
+        end
+      end
+
+      def emit_comparison(dst, a, b, setcc_opcode)
+        load_reg(EAX, a)
+        load_reg(ECX, b)
+        emit(0x39, 0xC8)                # cmp eax, ecx
+        emit(0x0F, setcc_opcode, 0xC0)  # setcc al
+        emit(0x0F, 0xB6, 0xC0)          # movzx eax, al
+        store_reg(EAX, dst)
+      end
+
+      # Emits "jmp rel32" with a zero placeholder and records a fixup so the
+      # displacement can be patched once the target label offset is known.
+      def emit_jump(label_id)
+        emit(0xE9)                      # jmp rel32
+        record_fixup(label_id)
+      end
+
+      def emit_jump_if_zero(cond, label_id)
+        load_reg(EAX, cond)
+        emit(0x85, 0xC0)                # test eax, eax
+        emit(0x0F, 0x84)                # je rel32
+        record_fixup(label_id)
+      end
+
+      # Remembers the current offset as a rel32 patch site and reserves four
+      # bytes for the displacement.
+      def record_fixup(label_id)
+        @fixups << [@code.bytesize, label_id]
+        emit_bytes([0].pack("l<"))
+      end
+
+      # Overwrites each reserved rel32 with the signed distance from the end of
+      # the branch instruction to its target label.
+      def resolve_fixups
+        @fixups.each do |patch_offset, label_id|
+          target = @labels[label_id]
+          raise "unresolved label #{label_id}" unless target
+
+          rel = target - (patch_offset + 4)
+          @code[patch_offset, 4] = [rel].pack("l<")
         end
       end
 

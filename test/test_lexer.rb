@@ -78,4 +78,40 @@ class TestLexer < Minitest::Test
   def test_unterminated_block_comment_raises
     assert_raises(Rubycc::CompileError) { lex("return /* oops") }
   end
+
+  def test_two_character_punctuators_are_single_tokens
+    %w[== != <= >=].each do |op|
+      tokens = lex("x #{op} y").reject(&:eof?)
+      assert_equal [:ident, :punct, :ident], tokens.map(&:type)
+      assert_equal op, tokens[1].value
+    end
+  end
+
+  def test_spaced_equals_lexes_as_two_tokens
+    tokens = lex("x = = y").reject(&:eof?)
+    assert_equal %i[ident punct punct ident], tokens.map(&:type)
+    assert_equal ["x", "=", "=", "y"], tokens.map(&:value)
+  end
+
+  def test_less_or_equal_versus_less_then_equals
+    combined = lex("x <= y").reject(&:eof?)
+    assert_equal %i[ident punct ident], combined.map(&:type)
+    assert_equal "<=", combined[1].value
+
+    split = lex("x < = y").reject(&:eof?)
+    assert_equal %i[ident punct punct ident], split.map(&:type)
+    assert_equal ["x", "<", "=", "y"], split.map(&:value)
+  end
+
+  def test_bang_is_a_single_character_punctuator
+    tokens = lex("!x").reject(&:eof?)
+    assert_equal %i[punct ident], tokens.map(&:type)
+    assert_equal "!", tokens[0].value
+  end
+
+  def test_if_and_else_are_keywords
+    tokens = lex("if else").reject(&:eof?)
+    assert_equal %i[keyword keyword], tokens.map(&:type)
+    assert_equal %w[if else], tokens.map(&:value)
+  end
 end

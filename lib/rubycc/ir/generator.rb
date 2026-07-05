@@ -19,9 +19,11 @@ module Rubycc
       def gen_function(func)
         @insts = []
         @vreg_count = 0
-        # Function-local symbol table: variable name -> vreg number. This
-        # slice has a single flat scope per function (no nested blocks).
-        @vars = {}
+        @label_count = 0
+        # Symbol tables form a scope stack (innermost last). Each entry maps a
+        # variable name to its vreg number. The function body owns the
+        # outermost scope; every compound-statement pushes a fresh one.
+        @scopes = [{}]
 
         func.body.each { |stmt| gen_statement(stmt) }
 
@@ -47,18 +49,48 @@ module Rubycc
           gen_expr(stmt.expr)
         when Front::AST::EmptyStmt
           # no-op
+        when Front::AST::If
+          gen_if(stmt)
+        when Front::AST::Block
+          gen_block(stmt)
         else
           raise "unsupported statement: #{stmt.class}"
         end
       end
 
+      def gen_block(block)
+        @scopes.push({})
+        block.items.each { |item| gen_statement(item) }
+        @scopes.pop
+      end
+
+      def gen_if(node)
+        cond = gen_expr(node.condition)
+        if node.else_stmt
+          else_label = new_label
+          end_label = new_label
+          emit(:jump_if_zero, a: cond, b: else_label)
+          gen_statement(node.then_stmt)
+          emit(:jump, a: end_label)
+          emit(:label, a: else_label)
+          gen_statement(node.else_stmt)
+          emit(:label, a: end_label)
+        else
+          end_label = new_label
+          emit(:jump_if_zero, a: cond, b: end_label)
+          gen_statement(node.then_stmt)
+          emit(:label, a: end_label)
+        end
+      end
+
       def gen_variable_decl(decl)
-        if @vars.key?(decl.name)
+        scope = @scopes.last
+        if scope.key?(decl.name)
           error_at(decl.token, "redeclaration of '#{decl.name}'")
         end
 
         vreg = new_vreg
-        @vars[decl.name] = vreg
+        scope[decl.name] = vreg
         if decl.initializer
           value = gen_expr(decl.initializer)
           emit(:copy, dst: vreg, a: value)
@@ -72,10 +104,7 @@ module Rubycc
           emit(:const, dst: dst, a: node.value)
           dst
         when Front::AST::Unary
-          operand = gen_expr(node.operand)
-          dst = new_vreg
-          emit(node.op, dst: dst, a: operand)
-          dst
+          gen_unary(node)
         when Front::AST::Binary
           lhs = gen_expr(node.lhs)
           rhs = gen_expr(node.rhs)
@@ -94,14 +123,44 @@ module Rubycc
         end
       end
 
+      # Logical negation "!x" is lowered to the comparison "x == 0", reusing
+      # the :eq path rather than introducing a dedicated IR opcode.
+      def gen_unary(node)
+        if node.op == :not
+          operand = gen_expr(node.operand)
+          zero = new_vreg
+          emit(:const, dst: zero, a: 0)
+          dst = new_vreg
+          emit(:eq, dst: dst, a: operand, b: zero)
+          dst
+        else
+          operand = gen_expr(node.operand)
+          dst = new_vreg
+          emit(node.op, dst: dst, a: operand)
+          dst
+        end
+      end
+
+      # Resolves a variable by walking scopes from innermost to outermost, so
+      # an inner declaration shadows an outer one with the same name.
       def lookup_vreg(name, token)
-        @vars[name] || error_at(token, "undeclared variable '#{name}'")
+        @scopes.reverse_each do |scope|
+          vreg = scope[name]
+          return vreg if vreg
+        end
+        error_at(token, "undeclared variable '#{name}'")
       end
 
       def new_vreg
         vreg = @vreg_count
         @vreg_count += 1
         vreg
+      end
+
+      def new_label
+        label = @label_count
+        @label_count += 1
+        label
       end
 
       def emit(op, dst: nil, a: nil, b: nil)
