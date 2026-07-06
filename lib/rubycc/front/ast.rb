@@ -16,6 +16,29 @@ module Rubycc
       # or :eq, :ne, :lt, :le, :gt, :ge (comparisons yielding int 0/1).
       Binary = Data.define(:op, :lhs, :rhs, :token)
 
+      # Short-circuit "&&" and "||". Kept apart from Binary because both
+      # operands must be int-typed and only one side may end up evaluated at
+      # run time, unlike every other Binary operator.
+      LogicalAnd = Data.define(:lhs, :rhs, :token)
+      LogicalOr = Data.define(:lhs, :rhs, :token)
+
+      # The conditional operator "condition ? then_expr : else_expr".
+      # `condition` must be int-typed; `then_expr` and `else_expr` must share
+      # the same type (int/int or same-type pointer/pointer).
+      Conditional = Data.define(:condition, :then_expr, :else_expr, :token)
+
+      # Compound assignment "target op= value". `op` is one of :add, :sub,
+      # :mul, :div, :mod (the operator without its trailing "="). `target` is
+      # a VariableRef, a Subscript or a dereference (Unary with op :deref); the
+      # parser rejects any other, non-assignable target.
+      CompoundAssignment = Data.define(:op, :target, :value, :token)
+
+      # Prefix or postfix "++"/"--". `op` is :add for "++" and :sub for "--".
+      # `prefix` is true for "++x"/"--x" and false for "x++"/"x--". `target`
+      # is a VariableRef, a Subscript or a dereference, exactly like
+      # CompoundAssignment.
+      IncDec = Data.define(:op, :target, :prefix, :token)
+
       # `return <expr>;`
       Return = Data.define(:expr, :token)
 

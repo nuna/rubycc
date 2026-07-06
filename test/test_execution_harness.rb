@@ -471,6 +471,112 @@ class TestExecutionHarness < Minitest::Test
     )
   end
 
+  def test_logical_and_or_arithmetic
+    assert_c_exit_status(
+      41,
+      "int main(void) { return (1 && 2) * 21 + (0 && 1) + (1 || 0) * 20 + (0 || 0); }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_short_circuit_and_or_skip_their_side_effecting_operand
+    assert_c_exit_status(
+      42,
+      "int f(int *p) { *p = 99; return 1; } " \
+      "int main(void) { int x = 0; 0 && f(&x); 1 || f(&x); return x + 42; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_short_circuit_and_or_run_their_evaluated_operand
+    assert_c_exit_status(
+      42,
+      "int bump(int *p) { *p += 1; return 1; } " \
+      "int main(void) { int c = 0; 1 && bump(&c); 0 || bump(&c); return c * 21; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_conditional_operator
+    assert_c_exit_status(42, "int main(void) { int x = 1; return x == 1 ? 42 : 7; }", compiler: :rubycc)
+  end
+
+  def test_conditional_operator_is_right_associative
+    assert_c_exit_status(
+      42,
+      "int main(void) { int n = 2; return n == 1 ? 10 : n == 2 ? 42 : 30; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_compound_assignment_add
+    assert_c_exit_status(42, "int main(void) { int x = 40; x += 2; return x; }", compiler: :rubycc)
+  end
+
+  def test_compound_assignment_div
+    assert_c_exit_status(42, "int main(void) { int x = 84; x /= 2; return x; }", compiler: :rubycc)
+  end
+
+  def test_compound_assignment_mod
+    assert_c_exit_status(42, "int main(void) { int x = 100; x %= 58; return x; }", compiler: :rubycc)
+  end
+
+  def test_compound_assignment_mul
+    assert_c_exit_status(42, "int main(void) { int x = 7; x *= 6; return x; }", compiler: :rubycc)
+  end
+
+  def test_compound_assignment_sub
+    assert_c_exit_status(42, "int main(void) { int x = 44; x -= 2; return x; }", compiler: :rubycc)
+  end
+
+  def test_pointer_compound_assignment_scales_by_element_size
+    assert_c_exit_status(
+      42,
+      "int main(void) { int a[8]; a[5] = 42; int *p = a; p += 5; return *p; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_prefix_increment
+    assert_c_exit_status(42, "int main(void) { int i = 41; return ++i; }", compiler: :rubycc)
+  end
+
+  def test_postfix_increment
+    assert_c_exit_status(42, "int main(void) { int i = 42; return i++; }", compiler: :rubycc)
+  end
+
+  def test_prefix_decrement
+    assert_c_exit_status(42, "int main(void) { int i = 43; return --i; }", compiler: :rubycc)
+  end
+
+  def test_postfix_increment_in_array_subscript
+    assert_c_exit_status(
+      42,
+      "int main(void) { int i = 0; int a[3]; a[i++] = 40; a[i] = 2; return a[0] + a[1]; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_pointer_postfix_increment_scales_by_element_size
+    assert_c_exit_status(
+      42,
+      "int main(void) { int a[4]; a[0] = 40; a[1] = 2; int *p = a; int s = *p++; s += *p; return s; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_subscript_compound_assignment
+    assert_c_exit_status(42, "int main(void) { int a[2]; a[1] = 40; a[1] += 2; return a[1]; }", compiler: :rubycc)
+  end
+
+  def test_loop_using_compound_assignment_and_prefix_increment
+    assert_c_exit_status(
+      42,
+      "int main(void) { int s = 0; for (int i = 1; i <= 9; ++i) s += i; return s - 3; }",
+      compiler: :rubycc
+    )
+  end
+
   def test_linking_emits_no_executable_stack_warning
     # The .note.GNU-stack section marks the stack non-executable, so gcc's
     # linker driver should not print any warning when producing the executable.
@@ -574,7 +680,27 @@ class TestExecutionHarness < Minitest::Test
     "int main(void) { int a[4]; a[0] = 10; a[1] = 11; a[2] = 10; a[3] = 11; return sum(a, 4); }",
     "int main(void) { int a[10]; int *p; " \
     "return sizeof(a) - sizeof(int) * 8 + sizeof(p) - sizeof(int *) + sizeof 1 - 2; }",
-    "int main(void) { int x = 1; int a[3]; int y = 2; a[1] = 39; return x + a[1] + y; }"
+    "int main(void) { int x = 1; int a[3]; int y = 2; a[1] = 39; return x + a[1] + y; }",
+    "int main(void) { return (1 && 2) * 21 + (0 && 1) + (1 || 0) * 20 + (0 || 0); }",
+    "int f(int *p) { *p = 99; return 1; } " \
+    "int main(void) { int x = 0; 0 && f(&x); 1 || f(&x); return x + 42; }",
+    "int bump(int *p) { *p += 1; return 1; } " \
+    "int main(void) { int c = 0; 1 && bump(&c); 0 || bump(&c); return c * 21; }",
+    "int main(void) { int x = 1; return x == 1 ? 42 : 7; }",
+    "int main(void) { int n = 2; return n == 1 ? 10 : n == 2 ? 42 : 30; }",
+    "int main(void) { int x = 40; x += 2; return x; }",
+    "int main(void) { int x = 84; x /= 2; return x; }",
+    "int main(void) { int x = 100; x %= 58; return x; }",
+    "int main(void) { int x = 7; x *= 6; return x; }",
+    "int main(void) { int x = 44; x -= 2; return x; }",
+    "int main(void) { int a[8]; a[5] = 42; int *p = a; p += 5; return *p; }",
+    "int main(void) { int i = 41; return ++i; }",
+    "int main(void) { int i = 42; return i++; }",
+    "int main(void) { int i = 43; return --i; }",
+    "int main(void) { int i = 0; int a[3]; a[i++] = 40; a[i] = 2; return a[0] + a[1]; }",
+    "int main(void) { int a[4]; a[0] = 40; a[1] = 2; int *p = a; int s = *p++; s += *p; return s; }",
+    "int main(void) { int a[2]; a[1] = 40; a[1] += 2; return a[1]; }",
+    "int main(void) { int s = 0; for (int i = 1; i <= 9; ++i) s += i; return s - 3; }"
   ].freeze
 
   def test_matches_gcc_exit_codes

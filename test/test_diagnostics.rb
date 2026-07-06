@@ -256,4 +256,65 @@ class TestDiagnostics < Minitest::Test
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/array initializers are not supported yet/, error.description)
   end
+
+  def test_pointer_used_as_if_condition_is_rejected
+    source = "int main(void) { int *p; if (p) return 1; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal "foo.c", error.filename
+    assert_equal 1, error.line
+    assert_match(/used pointer where scalar int is required/, error.description)
+    assert_match(/foo\.c:1:\d+: error: used pointer where scalar int is required/, error.message)
+  end
+
+  def test_pointer_used_as_while_condition_is_rejected
+    source = "int main(void) { int *p; while (p) p = p; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/used pointer where scalar int is required/, error.description)
+  end
+
+  def test_pointer_used_as_logical_and_operand_is_rejected
+    source = "int main(void) { int *p; return p && 1; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/used pointer where scalar int is required/, error.description)
+  end
+
+  def test_pointer_used_as_logical_or_operand_is_rejected
+    source = "int main(void) { int *p; return 1 || p; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/used pointer where scalar int is required/, error.description)
+  end
+
+  def test_pointer_used_as_logical_not_operand_is_rejected
+    source = "int main(void) { int *p; return !p; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/used pointer where scalar int is required/, error.description)
+  end
+
+  def test_pointer_used_as_conditional_operator_condition_is_rejected
+    source = "int main(void) { int *p; int x; return p ? x : x; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/used pointer where scalar int is required/, error.description)
+  end
+
+  def test_conditional_operator_type_mismatch_is_rejected
+    source = "int main(void) { int *p; int x; return 1 ? x : p; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal 1, error.line
+    assert_match(/type mismatch in conditional expression/, error.description)
+    assert_match(/foo\.c:1:\d+: error: type mismatch in conditional expression/, error.message)
+  end
+
+  def test_increment_of_non_lvalue_is_rejected
+    source = "int main(void) { return ++1; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/expression is not assignable/, error.description)
+  end
+
+  def test_compound_assignment_multiply_with_pointer_target_is_rejected
+    source = "int main(void) { int *p; int x; p *= x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
 end

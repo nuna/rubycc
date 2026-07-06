@@ -36,7 +36,15 @@ module Rubycc
     #   for-init                  = declaration | expression? ";"
     #   jump-statement            = "break" ";" | "continue" ";"
     #   expression                = assignment-expression
-    #   assignment-expression     = equality-expression ("=" assignment-expression)?
+    #   assignment-expression     = conditional-expression
+    #                               (("=" | "+=" | "-=" | "*=" | "/=" | "%=")
+    #                                assignment-expression)?
+    #   conditional-expression    = logical-OR-expression
+    #                               ("?" expression ":" conditional-expression)?
+    #   logical-OR-expression     = logical-AND-expression
+    #                               ("||" logical-AND-expression)*
+    #   logical-AND-expression    = equality-expression
+    #                               ("&&" equality-expression)*
     #   equality-expression       = relational-expression
     #                               (("==" | "!=") relational-expression)*
     #   relational-expression     = additive-expression
@@ -46,12 +54,13 @@ module Rubycc
     #   multiplicative-expression = unary-expression
     #                               (("*" | "/" | "%") unary-expression)*
     #   unary-expression          = ("+" | "-" | "!" | "&" | "*")* postfix-expression
+    #                             | ("++" | "--") unary-expression
     #                             | "sizeof" unary-expression
     #                             | "sizeof" "(" type-name ")"
     #   type-name                 = "int" "*"*
     #   postfix-expression        = (primary-expression
     #                               | identifier "(" argument-expression-list? ")")
-    #                               ("[" expression "]")*
+    #                               ("[" expression "]" | "++" | "--")*
     #   argument-expression-list  = assignment-expression
     #                               ("," assignment-expression)*
     #   primary-expression        = integer-constant | identifier | "(" expression ")"
@@ -60,10 +69,15 @@ module Rubycc
     # left-associative loop (see #parse_left_associative) rather than one
     # hand-written loop per level, so adding an operator or a precedence
     # tier only requires a new table entry. assignment-expression is
-    # right-associative and is handled separately (see #parse_assignment_expression).
+    # right-associative and is handled separately (see #parse_assignment_expression),
+    # as is conditional-expression (see #parse_conditional_expression), whose
+    # third operand recurses back into itself rather than into the tier above.
     class Parser
       # Punctuator → AST operator tables, one per precedence tier
       # (weakest binding first).
+      COMPOUND_ASSIGNMENT_OPERATORS = {
+        "+=" => :add, "-=" => :sub, "*=" => :mul, "/=" => :div, "%=" => :mod
+      }.freeze
       EQUALITY_OPERATORS = { "==" => :eq, "!=" => :ne }.freeze
       RELATIONAL_OPERATORS = { "<" => :lt, ">" => :gt, "<=" => :le, ">=" => :ge }.freeze
       ADDITIVE_OPERATORS = { "+" => :add, "-" => :sub }.freeze
@@ -369,25 +383,66 @@ module Rubycc
         parse_assignment_expression
       end
 
-      # Right-associative: "a = b = c" parses as "a = (b = c)".
+      # Right-associative: "a = b = c" parses as "a = (b = c)"; likewise for
+      # the compound-assignment operators.
       def parse_assignment_expression
-        node = parse_equality_expression
-        return node unless peek.punct?("=")
+        node = parse_conditional_expression
+        tok = peek
+        if tok.punct?("=")
+          advance
+          error_at(tok, "expression is not assignable") unless assignable?(node)
+          return AST::Assignment.new(node, parse_assignment_expression, tok)
+        end
 
-        eq_tok = advance
-        error_at(eq_tok, "expression is not assignable") unless assignable?(node)
-        value = parse_assignment_expression
-        AST::Assignment.new(node, value, eq_tok)
+        op = tok.type == :punct ? COMPOUND_ASSIGNMENT_OPERATORS[tok.value] : nil
+        return node unless op
+
+        advance
+        error_at(tok, "expression is not assignable") unless assignable?(node)
+        AST::CompoundAssignment.new(op, node, parse_assignment_expression, tok)
       end
 
       # Syntactically, only a variable reference, a subscript "e[i]" or a
-      # dereference "*expr" can appear on the left of "=". Whether the target's
-      # type is actually assignable (e.g. not an array) is checked later by the
-      # generator.
+      # dereference "*expr" can appear on the left of "=" (or "++"/"--", or a
+      # compound-assignment operator). Whether the target's type is actually
+      # assignable (e.g. not an array) is checked later by the generator.
       def assignable?(node)
         node.is_a?(AST::VariableRef) ||
           node.is_a?(AST::Subscript) ||
           (node.is_a?(AST::Unary) && node.op == :deref)
+      end
+
+      # "?:" is right-associative: "a ? b : c ? d : e" parses as
+      # "a ? b : (c ? d : e)". The middle operand is a full expression (not a
+      # conditional-expression), per ISO C, so a bare assignment may appear
+      # there without parentheses.
+      def parse_conditional_expression
+        node = parse_logical_or_expression
+        return node unless peek.punct?("?")
+
+        question_tok = advance
+        then_expr = parse_expression
+        expect_punct(":")
+        else_expr = parse_conditional_expression
+        AST::Conditional.new(node, then_expr, else_expr, question_tok)
+      end
+
+      def parse_logical_or_expression
+        node = parse_logical_and_expression
+        while peek.punct?("||")
+          tok = advance
+          node = AST::LogicalOr.new(node, parse_logical_and_expression, tok)
+        end
+        node
+      end
+
+      def parse_logical_and_expression
+        node = parse_equality_expression
+        while peek.punct?("&&")
+          tok = advance
+          node = AST::LogicalAnd.new(node, parse_equality_expression, tok)
+        end
+        node
       end
 
       def parse_equality_expression
@@ -439,9 +494,19 @@ module Rubycc
         elsif peek.punct?("*")
           op_tok = advance
           AST::Unary.new(:deref, parse_unary_expression, op_tok)
+        elsif peek.punct?("++") || peek.punct?("--")
+          parse_prefix_inc_dec
         else
           parse_postfix_expression
         end
+      end
+
+      def parse_prefix_inc_dec
+        op_tok = advance
+        op = op_tok.value == "++" ? :add : :sub
+        operand = parse_unary_expression
+        error_at(op_tok, "expression is not assignable") unless assignable?(operand)
+        AST::IncDec.new(op, operand, true, op_tok)
       end
 
       # "sizeof" measures either a parenthesized type-name ("sizeof(int *)") or
@@ -464,7 +529,8 @@ module Rubycc
 
       # An identifier immediately followed by "(" is a function call; anything
       # else falls through to a primary-expression. Either may then be followed
-      # by a chain of "[" expression "]" subscripts (a[i], a[i][j], p[k]).
+      # by a chain of "[" expression "]" subscripts (a[i], a[i][j], p[k]) and
+      # postfix "++"/"--" (a[i]++), in any order.
       def parse_postfix_expression
         tok = peek
         node = if tok.type == :ident && peek_ahead(1)&.punct?("(")
@@ -472,13 +538,21 @@ module Rubycc
                else
                  parse_primary_expression
                end
-        while peek.punct?("[")
-          bracket_tok = advance # "["
-          index = parse_expression
-          expect_punct("]")
-          node = AST::Subscript.new(node, index, bracket_tok)
+        loop do
+          if peek.punct?("[")
+            bracket_tok = advance # "["
+            index = parse_expression
+            expect_punct("]")
+            node = AST::Subscript.new(node, index, bracket_tok)
+          elsif peek.punct?("++") || peek.punct?("--")
+            op_tok = advance
+            op = op_tok.value == "++" ? :add : :sub
+            error_at(op_tok, "expression is not assignable") unless assignable?(node)
+            node = AST::IncDec.new(op, node, false, op_tok)
+          else
+            return node
+          end
         end
-        node
       end
 
       def parse_call

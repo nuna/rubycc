@@ -626,4 +626,127 @@ class TestParser < Minitest::Test
     assert_kind_of AST::SizeofType, expr
     assert_equal Type::Pointer.new(Type::Pointer.new(Type::Int)), expr.type
   end
+
+  def test_logical_and_produces_logical_and_node
+    expr = parse_expr("1 && 2")
+    assert_kind_of AST::LogicalAnd, expr
+    assert_equal 1, expr.lhs.value
+    assert_equal 2, expr.rhs.value
+  end
+
+  def test_logical_or_produces_logical_or_node
+    expr = parse_expr("1 || 2")
+    assert_kind_of AST::LogicalOr, expr
+    assert_equal 1, expr.lhs.value
+    assert_equal 2, expr.rhs.value
+  end
+
+  def test_logical_and_binds_tighter_than_logical_or
+    # 1 || 0 && 0  =>  (or 1 (and 0 0))
+    expr = parse_expr("1 || 0 && 0")
+    assert_kind_of AST::LogicalOr, expr
+    assert_equal 1, expr.lhs.value
+    assert_kind_of AST::LogicalAnd, expr.rhs
+    assert_equal 0, expr.rhs.lhs.value
+    assert_equal 0, expr.rhs.rhs.value
+  end
+
+  def test_conditional_operator_produces_conditional_node
+    expr = parse_expr("1 ? 2 : 3")
+    assert_kind_of AST::Conditional, expr
+    assert_equal 1, expr.condition.value
+    assert_equal 2, expr.then_expr.value
+    assert_equal 3, expr.else_expr.value
+  end
+
+  def test_conditional_operator_is_right_associative
+    # a ? b : c ? d : e  =>  (cond a b (cond c d e))
+    expr = parse_expr("1 ? 2 : 3 ? 4 : 5")
+    assert_kind_of AST::Conditional, expr
+    assert_equal 1, expr.condition.value
+    assert_equal 2, expr.then_expr.value
+    assert_kind_of AST::Conditional, expr.else_expr
+    assert_equal 3, expr.else_expr.condition.value
+    assert_equal 4, expr.else_expr.then_expr.value
+    assert_equal 5, expr.else_expr.else_expr.value
+  end
+
+  def test_assignment_binds_looser_than_conditional
+    # a = b ? c : d  =>  (assign a (cond b c d))
+    expr = parse_expr("a = b ? c : d")
+    assert_kind_of AST::Assignment, expr
+    assert_equal "a", expr.target.name
+    assert_kind_of AST::Conditional, expr.value
+  end
+
+  def test_parses_compound_assignment_operators
+    { "+=" => :add, "-=" => :sub, "*=" => :mul, "/=" => :div, "%=" => :mod }.each do |punct, op|
+      expr = parse_expr("x #{punct} 1")
+      assert_kind_of AST::CompoundAssignment, expr
+      assert_equal op, expr.op
+      assert_kind_of AST::VariableRef, expr.target
+      assert_equal "x", expr.target.name
+      assert_equal 1, expr.value.value
+    end
+  end
+
+  def test_compound_assignment_to_non_lvalue_reports_compile_error
+    error = assert_raises(Rubycc::CompileError) do
+      parse("int main(void) { 1 += 2; return 0; }")
+    end
+    assert_match(/expression is not assignable/, error.description)
+  end
+
+  def test_parses_prefix_increment
+    expr = parse_expr("++i")
+    assert_kind_of AST::IncDec, expr
+    assert_equal :add, expr.op
+    assert_equal true, expr.prefix
+    assert_kind_of AST::VariableRef, expr.target
+    assert_equal "i", expr.target.name
+  end
+
+  def test_parses_prefix_decrement
+    expr = parse_expr("--i")
+    assert_kind_of AST::IncDec, expr
+    assert_equal :sub, expr.op
+    assert_equal true, expr.prefix
+  end
+
+  def test_parses_postfix_increment
+    expr = parse_expr("i++")
+    assert_kind_of AST::IncDec, expr
+    assert_equal :add, expr.op
+    assert_equal false, expr.prefix
+    assert_kind_of AST::VariableRef, expr.target
+    assert_equal "i", expr.target.name
+  end
+
+  def test_parses_postfix_decrement
+    expr = parse_expr("i--")
+    assert_kind_of AST::IncDec, expr
+    assert_equal :sub, expr.op
+    assert_equal false, expr.prefix
+  end
+
+  def test_postfix_increment_on_subscript
+    expr = parse_expr("a[i]++")
+    assert_kind_of AST::IncDec, expr
+    assert_equal false, expr.prefix
+    assert_kind_of AST::Subscript, expr.target
+  end
+
+  def test_prefix_increment_of_non_lvalue_reports_compile_error
+    error = assert_raises(Rubycc::CompileError) do
+      parse("int main(void) { ++1; return 0; }")
+    end
+    assert_match(/expression is not assignable/, error.description)
+  end
+
+  def test_postfix_increment_of_non_lvalue_reports_compile_error
+    error = assert_raises(Rubycc::CompileError) do
+      parse("int main(void) { 1++; return 0; }")
+    end
+    assert_match(/expression is not assignable/, error.description)
+  end
 end

@@ -132,7 +132,8 @@ module Rubycc
       end
 
       def gen_if(node)
-        cond, = gen_expr(node.condition)
+        cond, cond_type = gen_expr(node.condition)
+        require_int_condition(cond_type, node.condition.token)
         if node.else_stmt
           else_label = new_label
           end_label = new_label
@@ -154,7 +155,8 @@ module Rubycc
         cond_label = new_label
         end_label = new_label
         emit(:label, a: cond_label)
-        cond, = gen_expr(node.condition)
+        cond, cond_type = gen_expr(node.condition)
+        require_int_condition(cond_type, node.condition.token)
         emit(:jump_if_zero, a: cond, b: end_label)
         gen_loop_body(node.body, continue_label: cond_label, break_label: end_label)
         emit(:jump, a: cond_label)
@@ -168,7 +170,8 @@ module Rubycc
         emit(:label, a: body_label)
         gen_loop_body(node.body, continue_label: cond_label, break_label: end_label)
         emit(:label, a: cond_label)
-        cond, = gen_expr(node.condition)
+        cond, cond_type = gen_expr(node.condition)
+        require_int_condition(cond_type, node.condition.token)
         emit(:jump_if_zero, a: cond, b: end_label)
         emit(:jump, a: body_label)
         emit(:label, a: end_label)
@@ -187,7 +190,8 @@ module Rubycc
 
         emit(:label, a: cond_label)
         if node.condition
-          cond, = gen_expr(node.condition)
+          cond, cond_type = gen_expr(node.condition)
+          require_int_condition(cond_type, node.condition.token)
           emit(:jump_if_zero, a: cond, b: end_label)
         end
         gen_loop_body(node.body, continue_label: step_label, break_label: end_label)
@@ -279,6 +283,16 @@ module Rubycc
           gen_assignment(node)
         when Front::AST::Call
           gen_call(node)
+        when Front::AST::LogicalAnd
+          gen_logical_and(node)
+        when Front::AST::LogicalOr
+          gen_logical_or(node)
+        when Front::AST::Conditional
+          gen_conditional(node)
+        when Front::AST::CompoundAssignment
+          gen_compound_assignment(node)
+        when Front::AST::IncDec
+          gen_inc_dec(node)
         else
           raise "unsupported expression: #{node.class}"
         end
@@ -328,22 +342,30 @@ module Rubycc
       def gen_binary(node)
         lhs, lhs_type = gen_expr(node.lhs)
         rhs, rhs_type = gen_expr(node.rhs)
-        result_type = binary_result_type(node.op, lhs_type, rhs_type, node.token)
+        gen_binary_op(node.op, lhs, lhs_type, rhs, rhs_type, node.token)
+      end
 
-        if comparison_op?(node.op)
+      # The value-level core of #gen_binary, factored out so compound
+      # assignment and "++"/"--" (see #gen_compound_assignment, #gen_inc_dec)
+      # can reuse the exact same lowering and type rules on operands they have
+      # already evaluated into vregs, without re-walking an AST::Binary node.
+      def gen_binary_op(op, lhs, lhs_type, rhs, rhs_type, token)
+        result_type = binary_result_type(op, lhs_type, rhs_type, token)
+
+        if comparison_op?(op)
           dst = new_vreg
-          emit(node.op, dst: dst, a: lhs, b: rhs, size: (8 if lhs_type.pointer?))
+          emit(op, dst: dst, a: lhs, b: rhs, size: (8 if lhs_type.pointer?))
           [dst, result_type]
         elsif lhs_type.pointer? && rhs_type.pointer?
           gen_pointer_difference(lhs, rhs, lhs_type)
         elsif lhs_type.pointer?
-          gen_pointer_int_arith(node.op, lhs, rhs, lhs_type)
+          gen_pointer_int_arith(op, lhs, rhs, lhs_type)
         elsif rhs_type.pointer?
           # int + pointer (subtraction in this order was already rejected).
-          gen_pointer_int_arith(node.op, rhs, lhs, rhs_type)
+          gen_pointer_int_arith(op, rhs, lhs, rhs_type)
         else
           dst = new_vreg
-          emit(node.op, dst: dst, a: lhs, b: rhs)
+          emit(op, dst: dst, a: lhs, b: rhs)
           [dst, Type::Int]
         end
       end
@@ -419,9 +441,11 @@ module Rubycc
       end
 
       # Logical negation "!x" is lowered to the comparison "x == 0", reusing
-      # the :eq path rather than introducing a dedicated IR opcode.
+      # the :eq path rather than introducing a dedicated IR opcode. Its operand
+      # is a condition, so it must be int-typed.
       def gen_logical_not(node)
-        operand, = gen_expr(node.operand)
+        operand, operand_type = gen_expr(node.operand)
+        require_int_condition(operand_type, node.operand.token)
         zero = new_vreg
         emit(:const, dst: zero, a: 0)
         dst = new_vreg
@@ -550,6 +574,229 @@ module Rubycc
         [dst, Type::Int]
       end
 
+      # "lhs && rhs": short-circuit, so rhs is only evaluated when lhs is
+      # non-zero. Both operands are conditions (int required). Lowered with a
+      # single result vreg written from one of two "const 1"/"const 0" arms,
+      # since the IR has no boolean value beyond an int 0/1:
+      #   lhs -> jump_if_zero(false) -> rhs -> jump_if_zero(false)
+      #     -> result = 1 -> jump(end)
+      #   false: result = 0
+      #   end:
+      def gen_logical_and(node)
+        lhs, lhs_type = gen_expr(node.lhs)
+        require_int_condition(lhs_type, node.lhs.token)
+        false_label = new_label
+        end_label = new_label
+        result = new_vreg
+        emit(:jump_if_zero, a: lhs, b: false_label)
+
+        rhs, rhs_type = gen_expr(node.rhs)
+        require_int_condition(rhs_type, node.rhs.token)
+        emit(:jump_if_zero, a: rhs, b: false_label)
+        emit_const_copy(result, 1)
+        emit(:jump, a: end_label)
+
+        emit(:label, a: false_label)
+        emit_const_copy(result, 0)
+        emit(:label, a: end_label)
+        [result, Type::Int]
+      end
+
+      # "lhs || rhs": short-circuit, so rhs is only evaluated when lhs is
+      # zero. Symmetric to #gen_logical_and: a false (zero) lhs falls through
+      # to evaluate rhs, while a true lhs settles the result at 1 immediately.
+      #   lhs -> jump_if_zero(rhs) -> result = 1 -> jump(end)
+      #   rhs: rhs -> jump_if_zero(false) -> result = 1 -> jump(end)
+      #   false: result = 0
+      #   end:
+      def gen_logical_or(node)
+        lhs, lhs_type = gen_expr(node.lhs)
+        require_int_condition(lhs_type, node.lhs.token)
+        rhs_label = new_label
+        false_label = new_label
+        end_label = new_label
+        result = new_vreg
+        emit(:jump_if_zero, a: lhs, b: rhs_label)
+
+        emit_const_copy(result, 1)
+        emit(:jump, a: end_label)
+
+        emit(:label, a: rhs_label)
+        rhs, rhs_type = gen_expr(node.rhs)
+        require_int_condition(rhs_type, node.rhs.token)
+        emit(:jump_if_zero, a: rhs, b: false_label)
+        emit_const_copy(result, 1)
+        emit(:jump, a: end_label)
+
+        emit(:label, a: false_label)
+        emit_const_copy(result, 0)
+        emit(:label, a: end_label)
+        [result, Type::Int]
+      end
+
+      # "condition ? then_expr : else_expr": the condition must be int-typed;
+      # only one of the two arms is evaluated, and both must settle on the
+      # same result type (which becomes the expression's type).
+      def gen_conditional(node)
+        cond, cond_type = gen_expr(node.condition)
+        require_int_condition(cond_type, node.condition.token)
+        else_label = new_label
+        end_label = new_label
+        result = new_vreg
+        emit(:jump_if_zero, a: cond, b: else_label)
+
+        then_value, then_type = gen_expr(node.then_expr)
+        emit(:copy, dst: result, a: then_value)
+        emit(:jump, a: end_label)
+
+        emit(:label, a: else_label)
+        else_value, else_type = gen_expr(node.else_expr)
+        emit(:copy, dst: result, a: else_value)
+        emit(:label, a: end_label)
+
+        unless then_type == else_type
+          error_at(node.token, "type mismatch in conditional expression")
+        end
+        [result, then_type]
+      end
+
+      # A compound assignment "target op= value" reads through the target's
+      # address (or its vreg, for a plain variable) exactly once, combines it
+      # with value via the same operator/type rules as "target = target op
+      # value" (#gen_binary_op), and writes the result back. The expression's
+      # value is the result.
+      def gen_compound_assignment(node)
+        target = node.target
+        if target.is_a?(Front::AST::Unary) && target.op == :deref
+          gen_compound_assignment_through_pointer(node, target)
+        elsif target.is_a?(Front::AST::Subscript)
+          gen_compound_assignment_through_subscript(node, target)
+        else
+          gen_compound_assignment_to_variable(node, target)
+        end
+      end
+
+      def gen_compound_assignment_to_variable(node, target)
+        local = lookup_local(target.name, target.token)
+        error_at(node.token, "array type is not assignable") if local.type.array?
+
+        value, value_type = gen_expr(node.value)
+        result, result_type = gen_binary_op(node.op, local.storage, local.type, value, value_type, node.token)
+        unless compatible_types?(local.type, result_type)
+          error_at(node.token, "incompatible types in assignment")
+        end
+        emit(:copy, dst: local.storage, a: result)
+        [local.storage, local.type]
+      end
+
+      def gen_compound_assignment_through_subscript(node, target)
+        addr, element_type = gen_element_address(target)
+        current = new_vreg
+        emit(:load, dst: current, a: addr, size: element_type.size)
+
+        value, value_type = gen_expr(node.value)
+        result, result_type = gen_binary_op(node.op, current, element_type, value, value_type, node.token)
+        unless compatible_types?(element_type, result_type)
+          error_at(node.token, "incompatible types in assignment")
+        end
+        emit(:store, a: addr, b: result, size: element_type.size)
+        [result, element_type]
+      end
+
+      def gen_compound_assignment_through_pointer(node, target)
+        addr, ptr_type = gen_expr(target.operand)
+        require_pointer(ptr_type, target.token)
+        target_type = ptr_type.target
+        current = new_vreg
+        emit(:load, dst: current, a: addr, size: target_type.size)
+
+        value, value_type = gen_expr(node.value)
+        result, result_type = gen_binary_op(node.op, current, target_type, value, value_type, node.token)
+        unless compatible_types?(target_type, result_type)
+          error_at(node.token, "incompatible types in assignment")
+        end
+        emit(:store, a: addr, b: result, size: target_type.size)
+        [result, target_type]
+      end
+
+      # Prefix/postfix "++"/"--" is a compound assignment by the constant 1,
+      # sharing #gen_binary_op's type rules (an int step scaled for a pointer
+      # target, same as "p += 1"). Only the reported value differs: a prefix
+      # form yields the updated value, a postfix form yields the value read
+      # before the update.
+      def gen_inc_dec(node)
+        target = node.target
+        if target.is_a?(Front::AST::Unary) && target.op == :deref
+          gen_inc_dec_through_pointer(node, target)
+        elsif target.is_a?(Front::AST::Subscript)
+          gen_inc_dec_through_subscript(node, target)
+        else
+          gen_inc_dec_variable(node, target)
+        end
+      end
+
+      def gen_inc_dec_variable(node, target)
+        local = lookup_local(target.name, target.token)
+        error_at(node.token, "array type is not assignable") if local.type.array?
+
+        old_value = nil
+        unless node.prefix
+          old_value = new_vreg
+          emit(:copy, dst: old_value, a: local.storage)
+        end
+
+        one = new_vreg
+        emit(:const, dst: one, a: 1)
+        result, result_type = gen_binary_op(node.op, local.storage, local.type, one, Type::Int, node.token)
+        unless compatible_types?(local.type, result_type)
+          error_at(node.token, "incompatible types in assignment")
+        end
+        emit(:copy, dst: local.storage, a: result)
+        node.prefix ? [local.storage, local.type] : [old_value, local.type]
+      end
+
+      def gen_inc_dec_through_subscript(node, target)
+        addr, element_type = gen_element_address(target)
+        current = new_vreg
+        emit(:load, dst: current, a: addr, size: element_type.size)
+
+        one = new_vreg
+        emit(:const, dst: one, a: 1)
+        result, result_type = gen_binary_op(node.op, current, element_type, one, Type::Int, node.token)
+        unless compatible_types?(element_type, result_type)
+          error_at(node.token, "incompatible types in assignment")
+        end
+        emit(:store, a: addr, b: result, size: element_type.size)
+        node.prefix ? [result, element_type] : [current, element_type]
+      end
+
+      def gen_inc_dec_through_pointer(node, target)
+        addr, ptr_type = gen_expr(target.operand)
+        require_pointer(ptr_type, target.token)
+        target_type = ptr_type.target
+        current = new_vreg
+        emit(:load, dst: current, a: addr, size: target_type.size)
+
+        one = new_vreg
+        emit(:const, dst: one, a: 1)
+        result, result_type = gen_binary_op(node.op, current, target_type, one, Type::Int, node.token)
+        unless compatible_types?(target_type, result_type)
+          error_at(node.token, "incompatible types in assignment")
+        end
+        emit(:store, a: addr, b: result, size: target_type.size)
+        node.prefix ? [result, target_type] : [current, target_type]
+      end
+
+      # Materializes an immediate into `dst` via a fresh const vreg; shared by
+      # the short-circuit lowerings (#gen_logical_and, #gen_logical_or) which
+      # need to write a fixed 0/1 into the same result vreg from more than one
+      # control-flow arm.
+      def emit_const_copy(dst, value)
+        src = new_vreg
+        emit(:const, dst: src, a: value)
+        emit(:copy, dst: dst, a: src)
+      end
+
       # Assignment/initialization/argument compatibility: types must match
       # exactly. Mixing int and pointer (either direction) is rejected.
       def compatible_types?(expected, actual)
@@ -559,6 +806,14 @@ module Rubycc
       # Guards a unary "*": its operand must be a pointer.
       def require_pointer(type, token)
         error_at(token, "invalid type argument of unary '*'") unless type.pointer?
+      end
+
+      # Guards every condition position (if/while/do-while/for, "&&"/"||"
+      # operands, "!" operand, "?:" condition): a pointer is not a scalar
+      # int and this subset has no other truthiness rule, so it is rejected
+      # rather than silently treated as non-zero.
+      def require_int_condition(type, token)
+        error_at(token, "used pointer where scalar int is required") unless type.int?
       end
 
       COMPARISON_OPS = %i[eq ne lt le gt ge].freeze
@@ -636,11 +891,27 @@ module Rubycc
           binary_result_type(node.op, static_type(node.lhs), static_type(node.rhs), node.token)
         when Front::AST::Unary
           static_unary_type(node)
-        when Front::AST::Assignment
+        when Front::AST::Assignment, Front::AST::CompoundAssignment, Front::AST::IncDec
           static_type(node.target)
+        when Front::AST::LogicalAnd, Front::AST::LogicalOr
+          Type::Int
+        when Front::AST::Conditional
+          static_conditional_type(node)
         else
           raise "unsupported expression: #{node.class}"
         end
+      end
+
+      # The type of "condition ? then_expr : else_expr" without emitting code,
+      # mirroring #gen_conditional: both arms must agree, and that shared type
+      # is the result.
+      def static_conditional_type(node)
+        then_type = static_type(node.then_expr)
+        else_type = static_type(node.else_expr)
+        unless then_type == else_type
+          error_at(node.token, "type mismatch in conditional expression")
+        end
+        then_type
       end
 
       def static_unary_type(node)

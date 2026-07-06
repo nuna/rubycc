@@ -114,4 +114,54 @@ class TestLexer < Minitest::Test
     assert_equal %i[keyword keyword], tokens.map(&:type)
     assert_equal %w[if else], tokens.map(&:value)
   end
+
+  def test_logical_and_versus_bitwise_and
+    combined = lex("x && y").reject(&:eof?)
+    assert_equal %i[ident punct ident], combined.map(&:type)
+    assert_equal "&&", combined[1].value
+
+    split = lex("x & y").reject(&:eof?)
+    assert_equal %i[ident punct ident], split.map(&:type)
+    assert_equal "&", split[1].value
+  end
+
+  def test_logical_or_is_a_single_token
+    tokens = lex("x || y").reject(&:eof?)
+    assert_equal %i[ident punct ident], tokens.map(&:type)
+    assert_equal "||", tokens[1].value
+  end
+
+  def test_increment_versus_compound_add_versus_plain_plus
+    increment = lex("x ++ y").reject(&:eof?)
+    assert_equal "++", increment[1].value
+
+    compound_add = lex("x += y").reject(&:eof?)
+    assert_equal "+=", compound_add[1].value
+
+    plain_plus = lex("x + y").reject(&:eof?)
+    assert_equal "+", plain_plus[1].value
+
+    no_space = lex("x+++y").reject(&:eof?)
+    assert_equal ["x", "++", "+", "y"], no_space.map(&:value)
+  end
+
+  def test_decrement_versus_compound_sub_versus_plain_minus
+    assert_equal "--", lex("x -- y").reject(&:eof?)[1].value
+    assert_equal "-=", lex("x -= y").reject(&:eof?)[1].value
+    assert_equal "-", lex("x - y").reject(&:eof?)[1].value
+  end
+
+  def test_compound_assignment_operators_are_single_tokens
+    %w[+= -= *= /= %=].each do |op|
+      tokens = lex("x #{op} y").reject(&:eof?)
+      assert_equal [:ident, :punct, :ident], tokens.map(&:type)
+      assert_equal op, tokens[1].value
+    end
+  end
+
+  def test_conditional_operator_punctuators_are_single_character_tokens
+    tokens = lex("a ? b : c").reject(&:eof?)
+    assert_equal %i[ident punct ident punct ident], tokens.map(&:type)
+    assert_equal ["a", "?", "b", ":", "c"], tokens.map(&:value)
+  end
 end

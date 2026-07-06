@@ -12,13 +12,15 @@ module Rubycc
       KEYWORDS = %w[int void return if else while do for break continue sizeof].freeze
 
       # Two-character punctuators, matched before the single-character list so
-      # the lexer always prefers the longest punctuator ("==" over two "=").
-      PUNCTUATORS_2 = %w[== != <= >=].freeze
+      # the lexer always prefers the longest punctuator ("==" over two "=",
+      # "&&" over two "&", "++" or "+=" over a lone "+").
+      PUNCTUATORS_2 = %w[== != <= >= && || += -= *= /= %= ++ --].freeze
 
       # Single-character punctuators used by this slice. "&" is the address-of
-      # operator, "*" doubles as dereference and pointer-declarator marker, and
-      # "[" "]" bracket array declarators and subscripts.
-      PUNCTUATORS_1 = %w[+ - * / % ( ) { } ; = , < > ! & [ ]].freeze
+      # operator, "*" doubles as dereference and pointer-declarator marker,
+      # "[" "]" bracket array declarators and subscripts, and "?" ":" form the
+      # conditional operator.
+      PUNCTUATORS_1 = %w[+ - * / % ( ) { } ; = , < > ! & [ ] ? :].freeze
 
       def initialize(source, filename:)
         @src = source
