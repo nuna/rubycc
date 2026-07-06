@@ -654,6 +654,102 @@ class TestExecutionHarness < Minitest::Test
     )
   end
 
+  # --- file-scope (global) variables --------------------------------------
+
+  def test_global_int_in_bss_is_shared_across_functions
+    assert_c_exit_status(
+      42,
+      "int counter; int bump(void) { counter += 7; return 0; } " \
+      "int main(void) { bump(); bump(); bump(); return counter * 2; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_global_int_with_initializer_lives_in_data
+    assert_c_exit_status(42, "int base = 40; int main(void) { return base + 2; }", compiler: :rubycc)
+  end
+
+  def test_global_char_initializer
+    assert_c_exit_status(42, "char tag = 'Z'; int main(void) { return tag - 48; }", compiler: :rubycc)
+  end
+
+  def test_global_negative_initializer
+    assert_c_exit_status(42, "int negative = -8; int main(void) { return negative + 50; }", compiler: :rubycc)
+  end
+
+  def test_global_array_in_bss
+    assert_c_exit_status(
+      42,
+      "int table[8]; int main(void) { for (int i = 0; i < 8; i++) table[i] = i; return table[6] * 7; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_local_shadows_global
+    assert_c_exit_status(42, "int g = 5; int main(void) { int g = 40; return g + 2; }", compiler: :rubycc)
+  end
+
+  def test_global_shared_across_calls
+    assert_c_exit_status(
+      42,
+      "int shared = 30; int add(int n) { shared += n; return shared; } " \
+      "int main(void) { add(5); return add(7); }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_global_address_and_pointer_write
+    assert_c_exit_status(42, "int v = 21; int main(void) { int *p = &v; *p *= 2; return v; }", compiler: :rubycc)
+  end
+
+  def test_local_char_alias_write_is_visible_on_reread
+    # A store through "char *p = &c" rewrites only the slot's low byte; the
+    # subsequent read of c must re-extract that byte rather than trust the
+    # slot's stale upper bytes.
+    assert_c_exit_status(
+      42,
+      "int main(void) { char c = -1; char *p = &c; *p = 'x'; return c == 'x' ? 42 : 7; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_global_char_written_through_pointer_parameter
+    assert_c_exit_status(
+      42,
+      "char gc = -1; int set(char *p) { *p = 'A'; return 0; } " \
+      "int main(void) { set(&gc); return gc - 23; }",
+      compiler: :rubycc
+    )
+  end
+
+  # These file-scope cases must agree with gcc bit-for-bit on exit code,
+  # covering .bss/.data placement, char and negative initializers, arrays,
+  # shadowing and the local-char aliasing fix.
+  GLOBAL_DIFFERENTIAL_SOURCES = [
+    "int counter; int bump(void) { counter += 7; return 0; } " \
+    "int main(void) { bump(); bump(); bump(); return counter * 2; }",
+    "int base = 40; int main(void) { return base + 2; }",
+    "char tag = 'Z'; int main(void) { return tag - 48; }",
+    "int negative = -8; int main(void) { return negative + 50; }",
+    "int table[8]; int main(void) { for (int i = 0; i < 8; i++) table[i] = i; return table[6] * 7; }",
+    "int g = 5; int main(void) { int g = 40; return g + 2; }",
+    "int shared = 30; int add(int n) { shared += n; return shared; } " \
+    "int main(void) { add(5); return add(7); }",
+    "int v = 21; int main(void) { int *p = &v; *p *= 2; return v; }",
+    "int main(void) { char c = -1; char *p = &c; *p = 'x'; return c == 'x' ? 42 : 7; }",
+    "char gc = -1; int set(char *p) { *p = 'A'; return 0; } " \
+    "int main(void) { set(&gc); return gc - 23; }"
+  ].freeze
+
+  def test_globals_match_gcc_exit_codes
+    GLOBAL_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
   PUTS_PROGRAM = "int puts(char *s); int main(void) { puts(\"hello, rubycc\"); return 0; }"
 
   def test_puts_writes_to_stdout

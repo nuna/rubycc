@@ -347,4 +347,53 @@ class TestDiagnostics < Minitest::Test
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/char return type is not supported yet/, error.description)
   end
+
+  def test_global_redefinition_is_rejected
+    source = "int g; int g = 1; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal "foo.c", error.filename
+    assert_equal 1, error.line
+    assert_match(/redefinition of 'g'/, error.description)
+    assert_match(/foo\.c:1:\d+: error: redefinition of 'g'/, error.message)
+  end
+
+  def test_global_conflicting_with_function_is_rejected
+    source = "int f; int f(void) { return 0; } int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/redefinition of 'f'/, error.description)
+  end
+
+  def test_non_constant_global_initializer_is_rejected
+    source = "int a = 1; int b = a; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal 1, error.line
+    assert_match(/unsupported initializer for global variable/, error.description)
+    assert_match(%r{foo\.c:1:\d+: error: unsupported initializer for global variable}, error.message)
+  end
+
+  def test_global_expression_initializer_is_rejected
+    source = "int g = 1 + 2; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/unsupported initializer for global variable/, error.description)
+  end
+
+  def test_global_array_initializer_is_rejected
+    source = "int a[3] = 0; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/unsupported initializer for global variable/, error.description)
+  end
+
+  def test_global_string_initializer_is_rejected
+    source = "char *s = \"hi\"; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/unsupported initializer for global variable/, error.description)
+  end
+
+  def test_undeclared_global_uses_the_undeclared_variable_error
+    source = "int main(void) { return missing; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/undeclared variable 'missing'/, error.description)
+  end
 end

@@ -55,6 +55,132 @@ class TestElfWriter < Minitest::Test
     writer.to_binary
   end
 
+  # An initialized global "base" (int 40) laid out at .data offset 0.
+  DATA_BYTES = [40, 0, 0, 0].pack("C*")
+
+  # Builds an object with a .data section holding one initialized int global
+  # and its STT_OBJECT symbol.
+  def build_object_with_data
+    writer = Rubycc::ObjFile::ELFWriter.new
+    writer.add_file_symbol("foo.c")
+    writer.add_text_section(MAIN_CODE)
+    writer.add_global_func("main", 0, MAIN_CODE.bytesize)
+    writer.set_data(DATA_BYTES, align: 4)
+    writer.add_global_object("base", :data, 0, 4)
+    writer.to_binary
+  end
+
+  # Builds an object with a .bss section reserving one uninitialized int global
+  # and its STT_OBJECT symbol.
+  def build_object_with_bss
+    writer = Rubycc::ObjFile::ELFWriter.new
+    writer.add_file_symbol("foo.c")
+    writer.add_text_section(MAIN_CODE)
+    writer.add_global_func("main", 0, MAIN_CODE.bytesize)
+    writer.set_bss(4, align: 4)
+    writer.add_global_object("counter", :bss, 0, 4)
+    writer.to_binary
+  end
+
+  # Builds an object whose code addresses a global "g" via a "lea rip" site,
+  # producing one PC32 relocation against g's own object symbol.
+  def build_object_with_global_relocation
+    writer = Rubycc::ObjFile::ELFWriter.new
+    writer.add_file_symbol("foo.c")
+    writer.add_text_section(LEA_CODE)
+    writer.add_global_func("main", 0, LEA_CODE.bytesize)
+    writer.set_bss(4, align: 4)
+    writer.add_global_object("g", :bss, 0, 4)
+    writer.add_global_relocation(offset: LEA_REL32_OFFSET, symbol: "g")
+    writer.to_binary
+  end
+
+  def test_data_section_holds_the_initializer_bytes_little_endian
+    bin = build_object_with_data
+    data = find_section(bin, ".data")
+
+    refute_nil data, ".data section should be emitted"
+    assert_equal 1, data[:type]              # SHT_PROGBITS
+    assert_equal 0x2, data[:flags] & 0x2     # SHF_ALLOC
+    assert_equal 0x1, data[:flags] & 0x1     # SHF_WRITE
+    assert_equal DATA_BYTES, bin[data[:offset], data[:size]]
+  end
+
+  def test_object_without_globals_has_no_data_or_bss
+    assert_nil find_section(build_object, ".data")
+    assert_nil find_section(build_object, ".bss")
+  end
+
+  def test_bss_section_is_nobits_with_a_size_but_no_file_bytes
+    bin = build_object_with_bss
+    bss = find_section(bin, ".bss")
+
+    refute_nil bss, ".bss section should be emitted"
+    assert_equal 8, bss[:type]               # SHT_NOBITS
+    assert_equal 0x2, bss[:flags] & 0x2      # SHF_ALLOC
+    assert_equal 0x1, bss[:flags] & 0x1      # SHF_WRITE
+    assert_equal 4, bss[:size]               # reserves 4 bytes in memory
+  end
+
+  def test_global_object_symbol_is_a_defined_stt_object
+    bin = build_object_with_bss
+    symtab = find_section(bin, ".symtab")
+    strtab = find_section(bin, ".strtab")
+    count = symtab[:size] / 24
+
+    index = (0...count).find do |i|
+      sym = bin[symtab[:offset] + i * 24, 24]
+      read_c_string(bin, strtab[:offset] + sym[0, 4].unpack1("L<")) == "counter"
+    end
+    refute_nil index, "counter object symbol should be present"
+
+    sym = bin[symtab[:offset] + index * 24, 24]
+    st_info = sym[4].unpack1("C")
+    st_shndx = sym[6, 2].unpack1("S<")
+    st_size = sym[16, 8].unpack1("Q<")
+
+    assert_equal 1, st_info >> 4             # STB_GLOBAL
+    assert_equal 1, st_info & 0xF            # STT_OBJECT
+    assert_equal section_index(bin, ".bss"), st_shndx
+    assert_equal 4, st_size
+  end
+
+  def test_global_relocation_is_pc32_against_the_object_symbol
+    bin = build_object_with_global_relocation
+    rela = find_section(bin, ".rela.text")
+    refute_nil rela, ".rela.text section should be emitted"
+    assert_equal 1, rela[:size] / 24
+
+    r_offset = bin[rela[:offset], 8].unpack1("Q<")
+    r_info = bin[rela[:offset] + 8, 8].unpack1("Q<")
+    r_addend = bin[rela[:offset] + 16, 8].unpack1("q<")
+
+    assert_equal LEA_REL32_OFFSET, r_offset
+    assert_equal 2, r_info & 0xFFFFFFFF      # R_X86_64_PC32
+    assert_equal(-4, r_addend)
+    assert_equal "g", symbol_name(bin, r_info >> 32)
+  end
+
+  def test_readelf_reports_the_bss_object_symbol
+    with_object_file(build_object_with_bss) do |path|
+      stdout, status = Open3.capture2("readelf", "-s", path)
+      assert status.success?, "readelf failed to read symbols"
+      assert_match(/OBJECT\s+GLOBAL\s+\S+\s+\S*\s*counter/, stdout)
+    end
+  end
+
+  def test_readelf_reports_the_bss_and_data_sections
+    with_object_file(build_object_with_data) do |path|
+      stdout, status = Open3.capture2("readelf", "-S", path)
+      assert status.success?, "readelf failed to read sections"
+      assert_match(/\.data\s+PROGBITS/, stdout)
+    end
+    with_object_file(build_object_with_bss) do |path|
+      stdout, _status = Open3.capture2("readelf", "-S", path)
+      assert_match(/\.bss\s+NOBITS/, stdout)
+    end
+  end
+
   def test_rodata_section_holds_the_concatenated_nul_terminated_strings
     bin = build_object_with_rodata
     rodata = find_section(bin, ".rodata")

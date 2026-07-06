@@ -12,10 +12,13 @@ module Rubycc
     # expression's static type so pointer operations can be type-checked and
     # lowered. No optimization.
     class Generator
-      # A declared variable's binding and its declared Rubycc::Type. `storage`
-      # is a virtual-register number for a scalar (int or pointer) and a stack
-      # object id for an array; which one it is follows from `type.array?`.
-      Local = Data.define(:type, :storage)
+      # A declared variable's binding and its declared Rubycc::Type. When
+      # `global` is false it is a local: `storage` is a virtual-register number
+      # for a scalar (int or pointer) and a stack object id for an array, which
+      # one following from `type.array?`. When `global` is true it is a
+      # file-scope variable and `storage` is its symbol name (a String), whose
+      # address :global_addr materializes.
+      Local = Data.define(:type, :storage, :global)
       # Returns an IR::Program: an IR::Function per AST::FunctionDef plus the
       # translation unit's read-only string pool. Prototypes
       # (AST::FunctionDecl) contribute only a signature-table entry and emit no
@@ -33,9 +36,21 @@ module Rubycc
         # identical literals collapse to one entry (and one .rodata address).
         @strings = []
         @string_ids = {}
+        # File-scope variables: `@global_bindings` maps each name to its Local
+        # binding (the outermost scope every function shares), while `@globals`
+        # holds the IR::Global descriptors in source order for the compiler to
+        # lay out into .data/.bss.
+        @global_bindings = {}
+        @globals = []
         ir_functions = []
+        # Declarations are processed in source order, so a function may only
+        # reference a global or callee already declared above it (C's
+        # declaration-before-use rule), and a name reused across the global and
+        # function namespaces is rejected as a redefinition.
         program.functions.each do |decl|
           case decl
+          when Front::AST::GlobalDecl
+            declare_global(decl)
           when Front::AST::FunctionDecl
             declare_function(decl.name, decl.params.map(&:type), defined: false, token: decl.token)
           when Front::AST::FunctionDef
@@ -43,10 +58,23 @@ module Rubycc
             ir_functions << gen_function(decl)
           end
         end
-        Program.new(ir_functions, @strings)
+        Program.new(ir_functions, @strings, @globals)
       end
 
       private
+
+      # Records a file-scope variable: its binding (visible to every function
+      # as the outermost scope) and its IR::Global layout descriptor. A name
+      # already taken by another global or by a function is a redefinition.
+      def declare_global(decl)
+        if @global_bindings.key?(decl.name) || @signatures.key?(decl.name)
+          error_at(decl.token, "redefinition of '#{decl.name}'")
+        end
+        @global_bindings[decl.name] = Local.new(type: decl.type, storage: decl.name, global: true)
+        align = decl.type.array? ? decl.type.element.size : decl.type.size
+        @globals << Global.new(name: decl.name, size: decl.type.size, align: align,
+                               init: decl.initializer_value)
+      end
 
       # Interns `bytes` (an ASCII-8BIT String) into the string pool, returning
       # its id. Identical contents share one id, deduplicating string literals
@@ -64,6 +92,7 @@ module Rubycc
       # declarations agree on their parameter types (which also covers arity)
       # and that a body is defined at most once.
       def declare_function(name, param_types, defined:, token:)
+        error_at(token, "redefinition of '#{name}'") if @global_bindings.key?(name)
         existing = @signatures[name]
         if existing
           if existing[:param_types] != param_types
@@ -86,10 +115,12 @@ module Rubycc
         # the object's byte size. The backend lays them out below the vreg
         # slots and resolves :object_addr against this table.
         @stack_objects = []
-        # Symbol tables form a scope stack (innermost last). Each entry maps a
-        # variable name to its vreg number. The function body owns the
-        # outermost scope; every compound-statement pushes a fresh one.
-        @scopes = [{}]
+        # Symbol tables form a scope stack (innermost last), each mapping a
+        # variable name to its Local binding. The shared file-scope globals sit
+        # at the bottom so a local of the same name shadows a global; the
+        # function body owns the next scope, and every compound-statement pushes
+        # a fresh one on top.
+        @scopes = [@global_bindings, {}]
         # Innermost-last stack of enclosing loops, so break/continue can jump
         # to the right labels without threading them through every call.
         @loop_stack = []
@@ -97,7 +128,7 @@ module Rubycc
         # Parameters take the first vregs (0..n-1) in the outermost scope; the
         # backend spills the incoming argument registers into these slots.
         func.params.each do |param|
-          @scopes.last[param.name] = Local.new(type: param.type, storage: new_vreg)
+          @scopes.last[param.name] = Local.new(type: param.type, storage: new_vreg, global: false)
         end
 
         # A char parameter arrives as a full int in its register; narrow it to
@@ -272,10 +303,10 @@ module Rubycc
         # parser has already rejected any initializer for it. A scalar takes a
         # vreg slot and may be initialized in place.
         if decl.type.array?
-          scope[decl.name] = Local.new(type: decl.type, storage: new_object(decl.type.size))
+          scope[decl.name] = Local.new(type: decl.type, storage: new_object(decl.type.size), global: false)
         else
           vreg = new_vreg
-          scope[decl.name] = Local.new(type: decl.type, storage: vreg)
+          scope[decl.name] = Local.new(type: decl.type, storage: vreg, global: false)
           if decl.initializer
             value, value_type = gen_expr(decl.initializer)
             unless compatible_types?(decl.type, value_type)
@@ -328,17 +359,46 @@ module Rubycc
         end
       end
 
-      # A variable reference. A scalar yields its slot directly; an array
+      # A variable reference. A local scalar yields its slot directly; an array
       # "decays" to a pointer to its first element (its base address), which is
-      # the value every expression context except sizeof and unary "&" sees.
+      # the value every expression context except sizeof and unary "&" sees. A
+      # global is read through its address (see #gen_global_ref).
       def gen_variable_ref(node)
         local = lookup_local(node.name, node.token)
+        return gen_global_ref(local) if local.global
+
         if local.type.array?
           dst = new_vreg
           emit(:object_addr, dst: dst, a: local.storage)
           [dst, Type::Pointer.new(local.type.element)]
+        elsif local.type.char?
+          # A char local lives in its 8-byte slot as a sign-extended int, but a
+          # store through a pointer to it ("char *p = &c; *p = v;") rewrites
+          # only the slot's low byte, leaving the upper bytes stale. Re-extract
+          # the char value from that low byte with :sext8 so a plain read of the
+          # variable never depends on the (possibly aliased) upper bytes.
+          dst = new_vreg
+          emit(:sext8, dst: dst, a: local.storage)
+          [dst, local.type]
         else
           [local.storage, local.type]
+        end
+      end
+
+      # A file-scope variable reference. Its address is materialized with
+      # :global_addr; an array decays to that base address (a pointer to its
+      # first element), while a scalar is loaded through it, the width following
+      # its type (a size-1 char load already re-extends the byte, so no aliasing
+      # fix like a local's is needed).
+      def gen_global_ref(local)
+        addr = new_vreg
+        emit(:global_addr, dst: addr, a: local.storage)
+        if local.type.array?
+          [addr, Type::Pointer.new(local.type.element)]
+        else
+          dst = new_vreg
+          emit(:load, dst: dst, a: addr, size: local.type.size)
+          [dst, local.type]
         end
       end
 
@@ -505,8 +565,10 @@ module Rubycc
           if local.type.array?
             error_at(node.token, "address of array is not supported yet")
           end
+          # A global's address is its symbol (:global_addr); a local's is the
+          # absolute address of its stack slot (:addr_of).
           dst = new_vreg
-          emit(:addr_of, dst: dst, a: local.storage)
+          emit(local.global ? :global_addr : :addr_of, dst: dst, a: local.storage)
           [dst, Type::Pointer.new(local.type)]
         elsif operand.is_a?(Front::AST::Subscript)
           addr, element_type = gen_element_address(operand)
@@ -555,8 +617,37 @@ module Rubycc
         unless compatible_types?(local.type, value_type)
           error_at(node.token, "incompatible types in assignment")
         end
-        emit(:copy, dst: local.storage, a: narrow_to_type(value, local.type))
-        [local.storage, local.type]
+        stored = store_scalar_variable(local, value)
+        [stored, local.type]
+      end
+
+      # Reads a scalar variable's current value into a usable vreg. A local
+      # scalar already lives in its slot vreg; a global is loaded through its
+      # address (:global_addr then :load, the width following its type).
+      def load_scalar_variable(local)
+        return local.storage unless local.global
+
+        addr = new_vreg
+        emit(:global_addr, dst: addr, a: local.storage)
+        dst = new_vreg
+        emit(:load, dst: dst, a: addr, size: local.type.size)
+        dst
+      end
+
+      # Writes `value_vreg` into a scalar variable, narrowing it to the
+      # variable's type first (int -> char). A local is a plain :copy into its
+      # slot; a global is a :store through its address. Returns the vreg holding
+      # the stored (narrowed) value, which is the assignment expression's value.
+      def store_scalar_variable(local, value_vreg)
+        narrowed = narrow_to_type(value_vreg, local.type)
+        if local.global
+          addr = new_vreg
+          emit(:global_addr, dst: addr, a: local.storage)
+          emit(:store, a: addr, b: narrowed, size: local.type.size)
+        else
+          emit(:copy, dst: local.storage, a: narrowed)
+        end
+        narrowed
       end
 
       # "e[i] = v": compute the element address (see #gen_element_address) and
@@ -728,12 +819,13 @@ module Rubycc
         error_at(node.token, "array type is not assignable") if local.type.array?
 
         value, value_type = gen_expr(node.value)
-        result, result_type = gen_binary_op(node.op, local.storage, local.type, value, value_type, node.token)
+        current = load_scalar_variable(local)
+        result, result_type = gen_binary_op(node.op, current, local.type, value, value_type, node.token)
         unless compatible_types?(local.type, result_type)
           error_at(node.token, "incompatible types in assignment")
         end
-        emit(:copy, dst: local.storage, a: narrow_to_type(result, local.type))
-        [local.storage, local.type]
+        stored = store_scalar_variable(local, result)
+        [stored, local.type]
       end
 
       def gen_compound_assignment_through_subscript(node, target)
@@ -786,20 +878,21 @@ module Rubycc
         local = lookup_local(target.name, target.token)
         error_at(node.token, "array type is not assignable") if local.type.array?
 
+        current = load_scalar_variable(local)
         old_value = nil
         unless node.prefix
           old_value = new_vreg
-          emit(:copy, dst: old_value, a: local.storage)
+          emit(:copy, dst: old_value, a: current)
         end
 
         one = new_vreg
         emit(:const, dst: one, a: 1)
-        result, result_type = gen_binary_op(node.op, local.storage, local.type, one, Type::Int, node.token)
+        result, result_type = gen_binary_op(node.op, current, local.type, one, Type::Int, node.token)
         unless compatible_types?(local.type, result_type)
           error_at(node.token, "incompatible types in assignment")
         end
-        emit(:copy, dst: local.storage, a: narrow_to_type(result, local.type))
-        node.prefix ? [local.storage, local.type] : [old_value, local.type]
+        stored = store_scalar_variable(local, result)
+        node.prefix ? [stored, local.type] : [old_value, local.type]
       end
 
       def gen_inc_dec_through_subscript(node, target)

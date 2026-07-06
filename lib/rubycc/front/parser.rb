@@ -10,8 +10,15 @@ module Rubycc
     # grammar productions of ISO C (6.5.x / 6.7 / 6.8.x):
     #
     #   translation-unit          = external-declaration*
-    #   external-declaration      = "int" identifier "(" parameter-type-list? ")"
-    #                               (";" | compound-statement)
+    #   external-declaration      = type-specifier declarator
+    #                               ( "(" parameter-type-list? ")"
+    #                                 (";" | compound-statement)   -- function
+    #                               | global-declarator-suffix
+    #                                 ("," declarator global-declarator-suffix)*
+    #                                 ";" )                         -- variables
+    #   global-declarator-suffix  = ("[" integer-constant "]")?
+    #                               ("=" constant-initializer)?
+    #   constant-initializer      = ("+" | "-")* integer-constant
     #   type-specifier            = "int" | "char"
     #   parameter-type-list       = "void"
     #                             | parameter-declaration
@@ -98,11 +105,17 @@ module Rubycc
         @pos = 0
       end
 
-      # Parses the whole translation unit into an AST::Program.
+      # Parses the whole translation unit into an AST::Program. An external
+      # declaration yields a single node (a function) or, for a comma-separated
+      # run of global variables, an array of GlobalDecl; both are flattened into
+      # one source-ordered list.
       def parse
-        functions = []
-        functions << parse_external_declaration until peek.eof?
-        AST::Program.new(functions)
+        declarations = []
+        until peek.eof?
+          node = parse_external_declaration
+          node.is_a?(Array) ? declarations.concat(node) : declarations << node
+        end
+        AST::Program.new(declarations)
       end
 
       private
@@ -123,18 +136,31 @@ module Rubycc
         tok
       end
 
-      # An external declaration is a prototype (ends in ";") or a definition
-      # (ends in a compound-statement); the two share the same
-      # type-specifier identifier "(" parameter-type-list? ")" prefix. Only an
-      # int return type is modelled; a char return type is rejected rather than
-      # silently narrowed.
+      # An external declaration is either a function (a prototype ending in ";"
+      # or a definition ending in a compound-statement) or a file-scope variable
+      # declaration. Both begin with a type-specifier, its "*" run and a name; a
+      # following "(" marks the function form, anything else the variable form.
       def parse_external_declaration
-        return_tok = peek
-        return_type = parse_type_specifier
-        if return_type.char?
-          error_at(return_tok, "char return type is not supported yet")
-        end
+        type_tok = peek
+        base_type = parse_type_specifier
+        type = parse_pointer_declarator(base_type)
         name_tok = expect_ident
+
+        if peek.punct?("(")
+          parse_function(type, name_tok, type_tok)
+        else
+          parse_global_declaration(base_type, type, name_tok)
+        end
+      end
+
+      # The function form of an external declaration, its name and return type
+      # already read. Only an int return type is modelled; a char or pointer
+      # return type is rejected rather than silently narrowed.
+      def parse_function(return_type, name_tok, return_tok)
+        unless return_type.int?
+          message = return_type.char? ? "char return type is not supported yet" : "pointer return type is not supported yet"
+          error_at(return_tok, message)
+        end
         expect_punct("(")
         params = parse_parameter_type_list
         expect_punct(")")
@@ -145,6 +171,65 @@ module Rubycc
         else
           parse_function_definition(name_tok.value, params, return_tok)
         end
+      end
+
+      # The file-scope variable form of an external declaration: a
+      # comma-separated run of declarators sharing `base_type`, the first of
+      # which (`first_type`/`first_name_tok`) has already been read. Each
+      # declarator yields one GlobalDecl; the run ends at ";".
+      def parse_global_declaration(base_type, first_type, first_name_tok)
+        decls = [parse_global_declarator(first_type, first_name_tok)]
+        while peek.punct?(",")
+          advance
+          type = parse_pointer_declarator(base_type)
+          name_tok = expect_ident
+          decls << parse_global_declarator(type, name_tok)
+        end
+        expect_punct(";")
+        decls
+      end
+
+      # One global declarator: the array suffix and an optional "= constant"
+      # initializer. A global may only be initialized by an integer/character
+      # constant (with an optional sign); an array, a non-constant expression, a
+      # string literal or an initializer list is rejected uniformly with
+      # "unsupported initializer for global variable".
+      def parse_global_declarator(type, name_tok)
+        type = parse_array_declarator(type)
+        initializer_value = nil
+        if peek.punct?("=")
+          eq_tok = advance
+          error_at(eq_tok, "unsupported initializer for global variable") if type.array?
+          initializer_value = parse_constant_initializer(eq_tok)
+        end
+        AST::GlobalDecl.new(name_tok.value, type, initializer_value, name_tok)
+      end
+
+      # Folds a global's initializer to a Ruby Integer at parse time. Only an
+      # integer or character constant, optionally preceded by unary "+"/"-"
+      # signs, is a valid constant initializer; the folded value must be
+      # immediately followed by "," or ";", so a non-constant expression like
+      # "1 + 2" (or an identifier, a string or an initializer list) is rejected
+      # with "unsupported initializer for global variable" located at "=".
+      def parse_constant_initializer(eq_tok)
+        negate = false
+        loop do
+          if peek.punct?("-")
+            advance
+            negate = !negate
+          elsif peek.punct?("+")
+            advance
+          else
+            break
+          end
+        end
+        tok = peek
+        follower = peek_ahead(1)
+        unless tok.type == :num && follower && (follower.punct?(";") || follower.punct?(","))
+          error_at(eq_tok, "unsupported initializer for global variable")
+        end
+        advance
+        negate ? -tok.value : tok.value
       end
 
       # type-specifier = "int" | "char": consumes the keyword and returns the

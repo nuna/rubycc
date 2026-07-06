@@ -53,6 +53,14 @@ module Rubycc
       # declarator has no "= <expr>" part.
       VariableDecl = Data.define(:name, :type, :initializer, :token)
 
+      # A file-scope (global) variable declaration. `type` is the declared
+      # Rubycc::Type (int, char, a pointer or a one-dimensional array).
+      # `initializer_value` is the initializer folded to a Ruby Integer (an
+      # integer/character constant, optionally negated) or nil when the
+      # declarator has no "= <constant>" part, since a global may only be
+      # initialized by a constant expression the parser evaluates on the spot.
+      GlobalDecl = Data.define(:name, :type, :initializer_value, :token)
+
       # A reference to a local variable by name.
       VariableRef = Data.define(:name, :token)
 
@@ -124,8 +132,9 @@ module Rubycc
       # non-nil name) and `body` is an array of statement nodes.
       FunctionDef = Data.define(:name, :params, :body, :token)
 
-      # Whole translation unit. `functions` is an array of FunctionDef and
-      # FunctionDecl (prototype) nodes in source order.
+      # Whole translation unit. `functions` is an array of FunctionDef,
+      # FunctionDecl (prototype) and GlobalDecl (file-scope variable) nodes in
+      # source order.
       Program = Data.define(:functions)
     end
   end

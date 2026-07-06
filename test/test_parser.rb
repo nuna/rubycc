@@ -749,4 +749,70 @@ class TestParser < Minitest::Test
     end
     assert_match(/expression is not assignable/, error.description)
   end
+
+  # --- file-scope (global) variable declarations --------------------------
+
+  def test_parses_uninitialized_global_declaration
+    program = parse("int g; int main(void) { return 0; }")
+    decl = program.functions.first
+
+    assert_kind_of AST::GlobalDecl, decl
+    assert_equal "g", decl.name
+    assert_equal Type::Int, decl.type
+    assert_nil decl.initializer_value
+  end
+
+  def test_parses_initialized_global_declaration
+    program = parse("int g = 42; int main(void) { return 0; }")
+    decl = program.functions.first
+
+    assert_kind_of AST::GlobalDecl, decl
+    assert_equal "g", decl.name
+    assert_equal 42, decl.initializer_value
+  end
+
+  def test_parses_negative_global_initializer
+    decl = parse("int g = -8; int main(void) { return 0; }").functions.first
+
+    assert_equal(-8, decl.initializer_value)
+  end
+
+  def test_parses_char_global_initializer
+    decl = parse("char c = 'x'; int main(void) { return 0; }").functions.first
+
+    assert_kind_of AST::GlobalDecl, decl
+    assert_equal Type::Char, decl.type
+    assert_equal 120, decl.initializer_value # 'x'
+  end
+
+  def test_parses_global_array_declaration
+    decl = parse("int table[8]; int main(void) { return 0; }").functions.first
+
+    assert_kind_of AST::GlobalDecl, decl
+    assert_equal Type::Array.new(Type::Int, 8), decl.type
+    assert_nil decl.initializer_value
+  end
+
+  def test_parses_global_pointer_declaration
+    decl = parse("int *p; int main(void) { return 0; }").functions.first
+
+    assert_kind_of AST::GlobalDecl, decl
+    assert_equal Type::Pointer.new(Type::Int), decl.type
+  end
+
+  def test_parses_comma_separated_globals
+    program = parse("int a, b = 3, c; int main(void) { return 0; }")
+    globals = program.functions.first(3)
+
+    assert_equal %w[a b c], globals.map(&:name)
+    assert_equal [nil, 3, nil], globals.map(&:initializer_value)
+    assert(globals.all? { |g| g.is_a?(AST::GlobalDecl) })
+  end
+
+  def test_distinguishes_global_from_function
+    program = parse("int g = 1; int main(void) { return 0; }")
+
+    assert_kind_of AST::GlobalDecl, program.functions[0]
+    assert_kind_of AST::FunctionDef, program.functions[1]
+  end
 end

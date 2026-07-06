@@ -32,6 +32,32 @@ module Rubycc
         rodata << bytes << "\0".b
       end
 
+      # Lay out the file-scope variables: initialized ones into .data (their
+      # values packed little-endian at the declared width) and zero-initialized
+      # ones into .bss (space reserved only). Each is placed at its type's
+      # alignment and registered as a global STT_OBJECT symbol; the section
+      # alignment is the widest member's.
+      data = +"".b
+      data_align = 1
+      bss_size = 0
+      bss_align = 1
+      ir_program.globals.each do |global|
+        if global.init.nil?
+          bss_align = [bss_align, global.align].max
+          bss_size = align_up(bss_size, global.align)
+          writer.add_global_object(global.name, :bss, bss_size, global.size)
+          bss_size += global.size
+        else
+          data_align = [data_align, global.align].max
+          offset = align_up(data.bytesize, global.align)
+          data << ("\0".b * (offset - data.bytesize))
+          writer.add_global_object(global.name, :data, offset, global.size)
+          data << pack_global_init(global.init, global.size)
+        end
+      end
+      writer.set_data(data, align: data_align) unless data.empty?
+      writer.set_bss(bss_size, align: bss_align) if bss_size.positive?
+
       text = +"".b
       defined_names = []
       relocations = []
@@ -64,6 +90,11 @@ module Rubycc
           # accounts for the rel32 field sitting 4 bytes before its own end.
           addend = string_offsets[reloc[:string_id]] - 4
           writer.add_rodata_relocation(offset: reloc[:offset], addend: addend)
+        when :global
+          # A "lea rip" displacement addressing a file-scope variable: a
+          # PC-relative reference to that variable's own (defined) object
+          # symbol.
+          writer.add_global_relocation(offset: reloc[:offset], symbol: reloc[:symbol])
         end
       end
 
@@ -79,6 +110,22 @@ module Rubycc
     def pad_to_alignment(buffer, alignment)
       remainder = buffer.bytesize % alignment
       buffer << ("\x90".b * (alignment - remainder)) if remainder.positive?
+    end
+
+    # Rounds `value` up to the next multiple of `alignment`.
+    def align_up(value, alignment)
+      (value + alignment - 1) / alignment * alignment
+    end
+
+    # Packs a global's integer initializer into its storage width as a
+    # little-endian, two's-complement byte string (1 byte for a char, 4 for an
+    # int, 8 for a pointer).
+    def pack_global_init(value, size)
+      case size
+      when 1 then [value].pack("c")
+      when 8 then [value].pack("q<")
+      else [value].pack("l<")
+      end
     end
 
     public

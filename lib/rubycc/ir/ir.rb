@@ -26,6 +26,10 @@ module Rubycc
     #   :string_addr dst <- &string(a)  dst gets the address of read-only string
     #                                   a (an id into the translation unit's
     #                                   string pool), i.e. a decayed char *
+    #   :global_addr dst <- &global(a)  dst gets the address of the file-scope
+    #                                   variable named a (a String symbol name),
+    #                                   the lvalue every global read/write and
+    #                                   "&g"/array decay is lowered through
     #
     # `dst`, `a`, `b` are virtual register numbers (Integers) unless noted;
     # unused fields are nil. `size` is an operand width in bytes. On :load /
@@ -71,12 +75,21 @@ module Rubycc
       end
     end
 
+    # A file-scope variable as laid out by the compiler. `name` is its symbol
+    # name, `size` its storage width in bytes and `align` its required
+    # alignment (its type size for a scalar/pointer, its element size for an
+    # array). `init` is the initializer folded to a Ruby Integer, written as a
+    # `size`-byte little-endian value in .data, or nil for a zero-initialized
+    # global that lives in .bss.
+    Global = Data.define(:name, :size, :align, :init)
+
     # A whole translation unit lowered to IR: its `functions` (an array of
-    # Function) and the shared read-only string pool `strings` (an array of
+    # Function), the shared read-only string pool `strings` (an array of
     # ASCII-8BIT byte strings, without their NUL terminators, indexed by the id
-    # a :string_addr instruction carries). Identical string contents are pooled
-    # once, so the compiler can lay them out in .rodata in this order and
-    # resolve each :string_addr to an offset.
-    Program = Data.define(:functions, :strings)
+    # a :string_addr instruction carries) and its `globals` (an array of Global
+    # in source order). Identical string contents are pooled once, so the
+    # compiler can lay them out in .rodata in this order and resolve each
+    # :string_addr to an offset.
+    Program = Data.define(:functions, :strings, :globals)
   end
 end

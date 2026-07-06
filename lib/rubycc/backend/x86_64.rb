@@ -31,7 +31,10 @@ module Rubycc
       #     against the named symbol (R_X86_64_PLT32);
       #   * { kind: :string, offset:, string_id: } — a "lea rip" displacement
       #     addressing read-only string `string_id` (R_X86_64_PC32 against the
-      #     .rodata section).
+      #     .rodata section);
+      #   * { kind: :global, offset:, symbol: } — a "lea rip" displacement
+      #     addressing the named file-scope variable `symbol` (R_X86_64_PC32
+      #     against that symbol).
       Result = Data.define(:bytes, :symbols, :relocations)
 
       # Register numbers. For eax/ecx/edx these are the low 3 bits of the
@@ -136,6 +139,8 @@ module Rubycc
           emit_sext8(inst.dst, inst.a)
         when :string_addr
           emit_string_addr(inst.dst, inst.a)
+        when :global_addr
+          emit_global_addr(inst.dst, inst.a)
         when :label
           @labels[inst.a] = @code.bytesize
         when :jump
@@ -184,6 +189,18 @@ module Rubycc
       def emit_string_addr(dst, string_id)
         emit(0x48, 0x8D, 0x05)              # REX.W lea rax, [rip + disp32]
         @relocations << { kind: :string, offset: @code.bytesize, string_id: string_id }
+        emit_bytes([0].pack("l<"))
+        store_reg(EAX, dst)
+      end
+
+      # :global_addr — lea rax, [rip + disp32] materializes the address of the
+      # named file-scope variable `symbol`. Like :string_addr, the disp32 is a
+      # zero placeholder recorded as a relocation ({ kind: :global }); the linker
+      # patches it PC-relatively (R_X86_64_PC32) against that symbol, and a
+      # 64-bit store parks the resulting address in the destination slot.
+      def emit_global_addr(dst, symbol)
+        emit(0x48, 0x8D, 0x05)              # REX.W lea rax, [rip + disp32]
+        @relocations << { kind: :global, offset: @code.bytesize, symbol: symbol }
         emit_bytes([0].pack("l<"))
         store_reg(EAX, dst)
       end

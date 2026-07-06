@@ -4,20 +4,27 @@ module Rubycc
   module ObjFile
     # Writes a minimal ELF64 relocatable object (ET_REL) for Linux x86_64.
     #
-    # Section layout (in this order): NULL, .text, .rodata (only when there are
-    # string literals), .rela.text (only when there are relocations),
+    # Section layout (in this order): NULL, .text, .rodata (only with string
+    # literals), .data (only with initialized globals), .bss (only with
+    # zero-initialized globals), .rela.text (only when there are relocations),
     # .note.GNU-stack, .symtab, .strtab, .shstrtab. Section indices are not
     # hard-coded: the ordered name list is assembled in #to_binary and a
     # name -> index lookup resolves the cross-references (symtab's sh_link,
     # rela's sh_link/sh_info, and each symbol's st_shndx). Symbol table order is
     # NULL, STT_FILE, the .text section symbol, the .rodata section symbol (when
-    # present), then the global symbols (defined functions followed by undefined
-    # externals); r_info in .rela.text indexes into that final order.
+    # present), then the global symbols (defined functions, then defined
+    # file-scope objects, then undefined externals); r_info in .rela.text indexes
+    # into that final order.
     #
-    # .rela.text carries two relocation kinds: each `call` site as an
-    # R_X86_64_PLT32 against its (defined or undefined) symbol, and each string
+    # .rela.text carries three relocation kinds: each `call` site as an
+    # R_X86_64_PLT32 against its (defined or undefined) symbol, each string
     # reference as an R_X86_64_PC32 against the .rodata section symbol with the
-    # string's byte offset (minus 4) as its addend.
+    # string's byte offset (minus 4) as its addend, and each global reference as
+    # an R_X86_64_PC32 against that global's own object symbol (addend -4).
+    #
+    # .data holds the initialized globals' little-endian bytes; .bss is a NOBITS
+    # section that reserves space for the zero-initialized ones without occupying
+    # any file bytes. Both are writable (SHF_WRITE | SHF_ALLOC).
     #
     # The empty .note.GNU-stack marks the stack as non-executable so the linker
     # does not warn about a missing GNU_STACK note. Output is fully
@@ -39,8 +46,10 @@ module Rubycc
       SHT_SYMTAB   = 2
       SHT_STRTAB   = 3
       SHT_RELA     = 4
+      SHT_NOBITS   = 8
 
       # Section header flags
+      SHF_WRITE     = 0x1
       SHF_ALLOC     = 0x2
       SHF_EXECINSTR = 0x4
       SHF_INFO_LINK = 0x40
@@ -49,6 +58,7 @@ module Rubycc
       STB_LOCAL  = 0
       STB_GLOBAL = 1
       STT_NOTYPE  = 0
+      STT_OBJECT  = 1
       STT_FUNC    = 2
       STT_SECTION = 3
       STT_FILE    = 4
@@ -67,8 +77,13 @@ module Rubycc
       def initialize
         @text_bytes = "".b
         @rodata_bytes = nil
+        @data_bytes = nil
+        @data_align = 1
+        @bss_size = 0
+        @bss_align = 1
         @file_symbol = nil
         @func_symbols = []
+        @object_symbols = []
         @undefined_symbols = []
         @relocations = []
       end
@@ -86,8 +101,34 @@ module Rubycc
         self
       end
 
+      # Sets the .data payload (the initialized file-scope variables laid out
+      # in order) and the section's alignment. The section, a writable
+      # PROGBITS, is emitted only when this is set to a non-empty value.
+      def set_data(bytes, align: 1)
+        @data_bytes = bytes.b
+        @data_align = align
+        self
+      end
+
+      # Sets the .bss size in bytes (the zero-initialized file-scope variables)
+      # and the section's alignment. The section, a writable NOBITS occupying
+      # no file space, is emitted only when the size is positive.
+      def set_bss(size, align: 1)
+        @bss_size = size
+        @bss_align = align
+        self
+      end
+
       def add_global_func(name, offset, size)
         @func_symbols << { name: name, offset: offset, size: size }
+        self
+      end
+
+      # Registers a defined file-scope variable as a global STT_OBJECT symbol.
+      # `section` is :data or :bss, `offset` its byte offset within that section
+      # (st_value) and `size` its storage width (st_size).
+      def add_global_object(name, section, offset, size)
+        @object_symbols << { name: name, section: section, offset: offset, size: size }
         self
       end
 
@@ -109,6 +150,14 @@ module Rubycc
       # R_X86_64_PC32.
       def add_rodata_relocation(offset:, addend:)
         @relocations << { kind: :string, offset: offset, addend: addend }
+        self
+      end
+
+      # Records a PC-relative reference from .text to the named file-scope
+      # variable `symbol` (a "lea rip" displacement addressing a global).
+      # Resolved against that symbol as R_X86_64_PC32 with an addend of -4.
+      def add_global_relocation(offset:, symbol:)
+        @relocations << { kind: :global, offset: offset, symbol: symbol }
         self
       end
 
@@ -142,12 +191,22 @@ module Rubycc
         !@rodata_bytes.nil? && !@rodata_bytes.empty?
       end
 
+      def data?
+        !@data_bytes.nil? && !@data_bytes.empty?
+      end
+
+      def bss?
+        @bss_size.positive?
+      end
+
       # The ordered list of section names (nil for the anonymous NULL section);
-      # .rodata appears only with string data, and .rela.text only when there
-      # is something to relocate.
+      # .rodata/.data appear only with their data, .bss only with a positive
+      # size, and .rela.text only when there is something to relocate.
       def build_section_names
         names = [nil, ".text"]
         names << ".rodata" if rodata?
+        names << ".data" if data?
+        names << ".bss" if bss?
         names << ".rela.text" if relocations?
         names.concat([".note.GNU-stack", ".symtab", ".strtab", ".shstrtab"])
       end
@@ -179,6 +238,10 @@ module Rubycc
           syms << { name: sym[:name], bind: STB_GLOBAL, type: STT_FUNC,
                     shndx: :text, value: sym[:offset], size: sym[:size] }
         end
+        @object_symbols.each do |obj|
+          syms << { name: obj[:name], bind: STB_GLOBAL, type: STT_OBJECT,
+                    shndx: obj[:section], value: obj[:offset], size: obj[:size] }
+        end
         @undefined_symbols.each do |name|
           syms << { name: name, bind: STB_GLOBAL, type: STT_NOTYPE,
                     shndx: SHN_UNDEF, value: 0, size: 0 }
@@ -207,6 +270,7 @@ module Rubycc
         names = []
         names << @file_symbol if @file_symbol
         @func_symbols.each { |sym| names << sym[:name] }
+        @object_symbols.each { |obj| names << obj[:name] }
         names.concat(@undefined_symbols)
         names.uniq.each do |name|
           offsets[name] = buf.bytesize
@@ -243,6 +307,8 @@ module Rubycc
             append_rela(buf, reloc[:offset], symbol_indices.fetch(reloc[:symbol]), R_X86_64_PLT32, -4)
           when :string
             append_rela(buf, reloc[:offset], rodata_sym_index, R_X86_64_PC32, reloc[:addend])
+          when :global
+            append_rela(buf, reloc[:offset], symbol_indices.fetch(reloc[:symbol]), R_X86_64_PC32, -4)
           end
         end
         buf
@@ -270,6 +336,15 @@ module Rubycc
           sections[".rodata"] = { type: SHT_PROGBITS, flags: SHF_ALLOC, data: @rodata_bytes,
                                   link: 0, info: 0, addralign: 8, entsize: 0 }
         end
+        if data?
+          sections[".data"] = { type: SHT_PROGBITS, flags: SHF_ALLOC | SHF_WRITE, data: @data_bytes,
+                                link: 0, info: 0, addralign: @data_align, entsize: 0 }
+        end
+        if bss?
+          sections[".bss"] = { type: SHT_NOBITS, flags: SHF_ALLOC | SHF_WRITE, data: nil,
+                               nobits_size: @bss_size, link: 0, info: 0,
+                               addralign: @bss_align, entsize: 0 }
+        end
         if rela
           sections[".rela.text"] = { type: SHT_RELA, flags: SHF_INFO_LINK,
                                      data: rela, link: :symtab, info: :text,
@@ -295,6 +370,14 @@ module Rubycc
 
         offset = EHDR_SIZE
         sections.each do |sec|
+          # A NOBITS section (.bss) occupies no file space: it still gets an
+          # aligned sh_offset for tooling, but the running offset does not
+          # advance past it.
+          if sec[:type] == SHT_NOBITS
+            offset = align(offset, [sec[:addralign], 1].max)
+            sec[:offset] = offset
+            next
+          end
           next if sec[:data].nil?
 
           offset = align(offset, [sec[:addralign], 1].max)
@@ -364,12 +447,21 @@ module Rubycc
           flags: section[:flags],
           addr: 0,
           offset: section[:offset] || 0,
-          size: section[:data] ? section[:data].bytesize : 0,
+          size: section_size(section),
           link: resolve_ref(section[:link]),
           info: resolve_ref(section[:info]),
           addralign: section[:addralign],
           entsize: section[:entsize]
         )
+      end
+
+      # A section's sh_size: a NOBITS section (.bss) reports its in-memory size
+      # although it stores no file bytes; every other section reports the byte
+      # length of its payload.
+      def section_size(section)
+        return section[:nobits_size] || 0 if section[:type] == SHT_NOBITS
+
+        section[:data] ? section[:data].bytesize : 0
       end
 
       # A section's sh_link/sh_info is either a literal integer or a symbolic
