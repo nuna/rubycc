@@ -2,14 +2,17 @@
 
 module Rubycc
   # The type system for this C subset: the scalar arithmetic types `int` and
-  # `char`, pointers to another type, and one-dimensional arrays of another
-  # type. Types compare by value, so any two `int *` are equal, and each
-  # renders itself the way a C declarator would ("int", "char *", "int [10]")
-  # for use in diagnostics. Every type reports its storage width in bytes via
-  # #size (int 4, char 1, any pointer 8, an array its element width times its
-  # length). #arithmetic? groups the scalar arithmetic types (int and char)
-  # that mix freely in expressions and convert to one another implicitly, while
-  # #char? and #int? name each one individually.
+  # `char`, the incomplete `void` type, pointers to another type, and
+  # one-dimensional arrays of another type. Types compare by value, so any two
+  # `int *` are equal, and each renders itself the way a C declarator would
+  # ("int", "char *", "int [10]") for use in diagnostics. Every type but `void`
+  # reports its storage width in bytes via #size (int 4, char 1, any pointer 8,
+  # an array its element width times its length); `void` has no size (see
+  # Type::VoidType#size) since it is only ever valid as a function's return
+  # type or as the target of a pointer. #arithmetic? groups the scalar
+  # arithmetic types (int and char) that mix freely in expressions and convert
+  # to one another implicitly, while #char? and #int? name each one
+  # individually, and #void? names `void` itself.
   module Type
     # The scalar integer type. A single shared instance (Type::Int) stands in
     # for every `int`, so identity comparison doubles as value comparison.
@@ -23,6 +26,10 @@ module Rubycc
       end
 
       def char?
+        false
+      end
+
+      def void?
         false
       end
 
@@ -62,6 +69,10 @@ module Rubycc
         true
       end
 
+      def void?
+        false
+      end
+
       def arithmetic?
         true
       end
@@ -80,11 +91,58 @@ module Rubycc
       end
     end
 
+    # The incomplete `void` type. A single shared instance (Type::Void) stands
+    # in for every `void`. It is valid only as a function's return type or as
+    # the target of a pointer (`void *`); every other use (a variable, an
+    # array element, a non-pointer parameter, `sizeof(void)`, dereferencing a
+    # `void *`) is rejected by the parser or the generator rather than modelled
+    # here. It has no storage width: #size raises, since a well-formed program
+    # never asks a bare `void` for one.
+    class VoidType
+      def pointer?
+        false
+      end
+
+      def int?
+        false
+      end
+
+      def char?
+        false
+      end
+
+      def void?
+        true
+      end
+
+      def arithmetic?
+        false
+      end
+
+      def array?
+        false
+      end
+
+      # `void` is incomplete and has no storage width; every call site that
+      # might reach a bare `void` here (sizeof, a global's layout, ...) rejects
+      # it first with a proper CompileError, so reaching this is a bug.
+      def size
+        raise "void has no size"
+      end
+
+      def to_s
+        "void"
+      end
+    end
+
     # The lone `int`. Referred to everywhere as Type::Int.
     Int = Scalar.new
 
     # The lone `char`. Referred to everywhere as Type::Char.
     Char = CharType.new
+
+    # The lone `void`. Referred to everywhere as Type::Void.
+    Void = VoidType.new
 
     # A pointer to `target` (itself a Type). Being a Data, two pointers are
     # equal exactly when their targets are, giving "int *" == "int *".
@@ -98,6 +156,10 @@ module Rubycc
       end
 
       def char?
+        false
+      end
+
+      def void?
         false
       end
 
@@ -135,6 +197,10 @@ module Rubycc
       end
 
       def char?
+        false
+      end
+
+      def void?
         false
       end
 

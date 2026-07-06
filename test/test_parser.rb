@@ -98,9 +98,17 @@ class TestParser < Minitest::Test
 
   def test_missing_expression_reports_compile_error
     error = assert_raises(Rubycc::CompileError) do
-      parse("int main(void) { return ; }")
+      parse("int main(void) { return 1 + ; }")
     end
     assert_match(/expected expression/, error.description)
+  end
+
+  def test_return_without_expression_parses_as_valueless_return
+    program = parse("void f(void) { return; }")
+    stmt = program.functions.first.body.first
+
+    assert_kind_of AST::Return, stmt
+    assert_nil stmt.expr
   end
 
   def test_bare_expression_is_a_valid_statement
@@ -450,10 +458,39 @@ class TestParser < Minitest::Test
 
     assert_kind_of AST::FunctionDef, func
     assert_equal "add", func.name
+    assert_equal Type::Int, func.return_type
     assert_equal 2, func.params.size
     assert_kind_of AST::Parameter, func.params[0]
     assert_equal "a", func.params[0].name
     assert_equal "b", func.params[1].name
+  end
+
+  def test_parses_pointer_return_type
+    program = parse("int *f(void) { return 0; }")
+    func = program.functions.first
+
+    assert_equal Type::Pointer.new(Type::Int), func.return_type
+  end
+
+  def test_parses_char_return_type
+    program = parse("char f(void) { return 0; }")
+    func = program.functions.first
+
+    assert_equal Type::Char, func.return_type
+  end
+
+  def test_parses_void_return_type
+    program = parse("void f(void) { return; }")
+    func = program.functions.first
+
+    assert_equal Type::Void, func.return_type
+  end
+
+  def test_parses_void_pointer_return_type
+    program = parse("void *f(void) { return 0; }")
+    func = program.functions.first
+
+    assert_equal Type::Pointer.new(Type::Void), func.return_type
   end
 
   def test_parses_multiple_top_level_functions
@@ -470,8 +507,25 @@ class TestParser < Minitest::Test
 
     assert_kind_of AST::FunctionDecl, proto
     assert_equal "f", proto.name
+    assert_equal Type::Int, proto.return_type
     assert_equal 2, proto.params.size
     assert_equal "a", proto.params[0].name
+  end
+
+  def test_parses_void_pointer_prototype
+    program = parse("void *malloc(int n); int main(void) { return 0; }")
+    proto = program.functions.first
+
+    assert_kind_of AST::FunctionDecl, proto
+    assert_equal Type::Pointer.new(Type::Void), proto.return_type
+    assert_equal Type::Int, proto.params[0].type
+  end
+
+  def test_parses_void_pointer_parameter
+    program = parse("void free(void *p) { return; } int main(void) { return 0; }")
+    param = program.functions.first.params.first
+
+    assert_equal Type::Pointer.new(Type::Void), param.type
   end
 
   def test_prototype_may_omit_parameter_names

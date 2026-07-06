@@ -12,7 +12,9 @@ module Rubycc
     #   :sext   dst <- a            (a's 32-bit value sign-extended to 64 bits)
     #   :sext8  dst <- a            (a's low 8 bits sign-extended to 32 bits;
     #                               an int -> char narrowing, sign preserved)
-    #   :ret    return a
+    #   :ret    return a           (a is nil for a void function's "return;"
+    #                              or its implicit fall-off-the-end return,
+    #                              which emits no value-loading code at all)
     #   :label        a = label id (a jump target; emits no code itself)
     #   :jump         a = label id (unconditional branch)
     #   :jump_if_zero a = condition vreg, b = label id (branch when a == 0)

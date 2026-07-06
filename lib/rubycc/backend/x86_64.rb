@@ -19,7 +19,8 @@ module Rubycc
     # (movsx), a size-1 :store writes just the low byte (cl), and the :sext8 op
     # narrows an int down to a char value in a register.
     #
-    # System V AMD64: the integer return value is passed in eax.
+    # System V AMD64: the return value is passed in eax/rax; a void function's
+    # ":ret" (a nil operand) leaves eax/rax unset since there is no value.
     class X86_64
       # Result of compiling one function: `bytes` is the machine code (an
       # ASCII-8BIT String), `symbols` is an array of
@@ -158,7 +159,7 @@ module Rubycc
         when :store
           emit_store(inst.a, inst.b, inst.size)
         when :ret
-          load_reg(EAX, inst.a)
+          load_reg(EAX, inst.a) unless inst.a.nil?
           emit(0xC9)                                          # leave
           emit(0xC3)                                          # ret
         else

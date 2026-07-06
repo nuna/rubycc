@@ -116,4 +116,40 @@ class TestType < Minitest::Test
   def test_arrays_differing_in_length_are_not_equal
     refute_equal Type::Array.new(Type::Int, 3), Type::Array.new(Type::Int, 4)
   end
+
+  def test_void_predicates
+    assert_predicate Type::Void, :void?
+    refute_predicate Type::Void, :int?
+    refute_predicate Type::Void, :char?
+    refute_predicate Type::Void, :pointer?
+    refute_predicate Type::Void, :array?
+    refute_predicate Type::Void, :arithmetic?
+  end
+
+  def test_other_types_are_not_void
+    refute_predicate Type::Int, :void?
+    refute_predicate Type::Char, :void?
+    refute_predicate Type::Pointer.new(Type::Int), :void?
+    refute_predicate Type::Array.new(Type::Int, 3), :void?
+  end
+
+  def test_void_renders_as_void
+    assert_equal "void", Type::Void.to_s
+  end
+
+  def test_void_equals_itself
+    assert_equal Type::Void, Type::Void
+  end
+
+  def test_pointer_to_void_renders_with_single_star
+    assert_equal "void *", Type::Pointer.new(Type::Void).to_s
+  end
+
+  def test_pointer_to_pointer_to_void_renders_with_stacked_stars
+    assert_equal "void **", Type::Pointer.new(Type::Pointer.new(Type::Void)).to_s
+  end
+
+  def test_pointer_to_void_size_is_eight
+    assert_equal 8, Type::Pointer.new(Type::Void).size
+  end
 end

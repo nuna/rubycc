@@ -19,7 +19,7 @@ module Rubycc
     #   global-declarator-suffix  = ("[" integer-constant "]")?
     #                               ("=" constant-initializer)?
     #   constant-initializer      = ("+" | "-")* integer-constant
-    #   type-specifier            = "int" | "char"
+    #   type-specifier            = "int" | "char" | "void"
     #   parameter-type-list       = "void"
     #                             | parameter-declaration
     #                               ("," parameter-declaration)*
@@ -34,7 +34,7 @@ module Rubycc
     #   statement                 = return-statement | expression-statement
     #                             | selection-statement | iteration-statement
     #                             | jump-statement | compound-statement
-    #   return-statement          = "return" expression ";"
+    #   return-statement          = "return" expression? ";"
     #   expression-statement      = expression? ";"
     #   selection-statement       = "if" "(" expression ")" statement
     #                               ("else" statement)?
@@ -94,7 +94,9 @@ module Rubycc
       MULTIPLICATIVE_OPERATORS = { "*" => :mul, "/" => :div, "%" => :mod }.freeze
 
       # The keywords that open a declaration, each naming a base Rubycc::Type.
-      TYPE_SPECIFIERS = { "int" => Type::Int, "char" => Type::Char }.freeze
+      # "void" is only ever valid as a function's return type or as the target
+      # of a pointer; every other use is rejected by #reject_void_type.
+      TYPE_SPECIFIERS = { "int" => Type::Int, "char" => Type::Char, "void" => Type::Void }.freeze
 
       # System V AMD64 passes the first six integer arguments in registers;
       # this subset rejects any function with more parameters (or arguments).
@@ -154,22 +156,18 @@ module Rubycc
       end
 
       # The function form of an external declaration, its name and return type
-      # already read. Only an int return type is modelled; a char or pointer
-      # return type is rejected rather than silently narrowed.
+      # already read: int, char, void or a pointer to any of those (including
+      # void, "void *") are all valid return types.
       def parse_function(return_type, name_tok, return_tok)
-        unless return_type.int?
-          message = return_type.char? ? "char return type is not supported yet" : "pointer return type is not supported yet"
-          error_at(return_tok, message)
-        end
         expect_punct("(")
         params = parse_parameter_type_list
         expect_punct(")")
 
         if peek.punct?(";")
           advance
-          AST::FunctionDecl.new(name_tok.value, params, return_tok)
+          AST::FunctionDecl.new(name_tok.value, return_type, params, return_tok)
         else
-          parse_function_definition(name_tok.value, params, return_tok)
+          parse_function_definition(name_tok.value, return_type, params, return_tok)
         end
       end
 
@@ -196,6 +194,7 @@ module Rubycc
       # "unsupported initializer for global variable".
       def parse_global_declarator(type, name_tok)
         type = parse_array_declarator(type)
+        reject_void_type(type, name_tok)
         initializer_value = nil
         if peek.punct?("=")
           eq_tok = advance
@@ -232,8 +231,9 @@ module Rubycc
         negate ? -tok.value : tok.value
       end
 
-      # type-specifier = "int" | "char": consumes the keyword and returns the
-      # base Rubycc::Type any leading "*" run then builds a pointer from.
+      # type-specifier = "int" | "char" | "void": consumes the keyword and
+      # returns the base Rubycc::Type any leading "*" run then builds a
+      # pointer from.
       def parse_type_specifier
         tok = peek
         base = type_specifier?(tok) && TYPE_SPECIFIERS[tok.value]
@@ -243,13 +243,24 @@ module Rubycc
         base
       end
 
-      # Whether `token` opens a declaration (an "int" or "char" keyword),
-      # letting block-item and for-init tell a declaration from a statement.
+      # Whether `token` opens a declaration (an "int", "char" or "void"
+      # keyword), letting block-item and for-init tell a declaration from a
+      # statement.
       def type_specifier?(token)
         token.type == :keyword && TYPE_SPECIFIERS.key?(token.value)
       end
 
-      def parse_function_definition(name, params, return_tok)
+      # Rejects `type` when it denotes a bare void or an array of void: this
+      # subset only allows "void" as a function's return type or as the target
+      # of a pointer ("void *", "void **", ...), so a void variable, global,
+      # array element or (non-pointer) parameter is an error.
+      def reject_void_type(type, token)
+        return unless type.void? || (type.array? && type.element.void?)
+
+        error_at(token, "variable or field declared void")
+      end
+
+      def parse_function_definition(name, return_type, params, return_tok)
         # A definition, unlike a prototype, must name each parameter so its
         # value can be bound in the body.
         params.each do |param|
@@ -259,13 +270,16 @@ module Rubycc
         body = []
         body.concat(parse_block_item) until peek.punct?("}")
         expect_punct("}")
-        AST::FunctionDef.new(name, params, body, return_tok)
+        AST::FunctionDef.new(name, return_type, params, body, return_tok)
       end
 
-      # Returns an array of AST::Parameter; empty for "()" or "(void)".
+      # Returns an array of AST::Parameter; empty for "()" or "(void)". A bare
+      # "void" only means "no parameters" when it is the entire list (followed
+      # immediately by ")"); "void *" or a later "void" parameter falls through
+      # to parse_parameter_declaration, which rejects a non-pointer void.
       def parse_parameter_type_list
         return [] if peek.punct?(")")
-        if peek.keyword?("void")
+        if peek.keyword?("void") && peek_ahead(1)&.punct?(")")
           advance
           return []
         end
@@ -288,6 +302,7 @@ module Rubycc
       def parse_parameter_declaration
         type_tok = peek
         type = parse_pointer_declarator(parse_type_specifier)
+        reject_void_type(type, type_tok)
         if peek.type == :ident
           name_tok = advance
           AST::Parameter.new(name_tok.value, type, name_tok)
@@ -321,6 +336,7 @@ module Rubycc
         type = parse_pointer_declarator(base_type)
         name_tok = expect_ident
         type = parse_array_declarator(type)
+        reject_void_type(type, name_tok)
         initializer = nil
         if peek.punct?("=")
           eq_tok = advance
@@ -390,9 +406,12 @@ module Rubycc
         end
       end
 
+      # "return;" (a void return, `expr` nil) or "return expression;"; whether
+      # a void function may omit the value (and a non-void one may not) is the
+      # generator's job.
       def parse_return
         ret_tok = advance # "return"
-        expr = parse_expression
+        expr = peek.punct?(";") ? nil : parse_expression
         expect_punct(";")
         AST::Return.new(expr, ret_tok)
       end

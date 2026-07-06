@@ -26,10 +26,11 @@ module Rubycc
       # itself (recursion) or an earlier prototype (mutual recursion), while a
       # call to a still-unknown name is diagnosed as an implicit declaration.
       def generate(program)
-        # name -> { param_types:, defined: }. `param_types` is the array of
-        # parameter Rubycc::Types (its length being the arity); `defined`
-        # distinguishes a prototype from a completed definition so redefinitions
-        # can be rejected.
+        # name -> { param_types:, return_type:, defined: }. `param_types` is
+        # the array of parameter Rubycc::Types (its length being the arity);
+        # `return_type` is the declared Rubycc::Type of a call to this
+        # function; `defined` distinguishes a prototype from a completed
+        # definition so redefinitions can be rejected.
         @signatures = {}
         # The translation-unit-wide string pool: `@strings` holds each interned
         # byte string in id order, `@string_ids` maps content back to its id so
@@ -52,9 +53,9 @@ module Rubycc
           when Front::AST::GlobalDecl
             declare_global(decl)
           when Front::AST::FunctionDecl
-            declare_function(decl.name, decl.params.map(&:type), defined: false, token: decl.token)
+            declare_function(decl.name, decl.return_type, decl.params.map(&:type), defined: false, token: decl.token)
           when Front::AST::FunctionDef
-            declare_function(decl.name, decl.params.map(&:type), defined: true, token: decl.token)
+            declare_function(decl.name, decl.return_type, decl.params.map(&:type), defined: true, token: decl.token)
             ir_functions << gen_function(decl)
           end
         end
@@ -89,13 +90,13 @@ module Rubycc
       end
 
       # Records or updates a function's signature, enforcing that repeated
-      # declarations agree on their parameter types (which also covers arity)
-      # and that a body is defined at most once.
-      def declare_function(name, param_types, defined:, token:)
+      # declarations agree on their return type and parameter types (which
+      # also covers arity) and that a body is defined at most once.
+      def declare_function(name, return_type, param_types, defined:, token:)
         error_at(token, "redefinition of '#{name}'") if @global_bindings.key?(name)
         existing = @signatures[name]
         if existing
-          if existing[:param_types] != param_types
+          if existing[:param_types] != param_types || existing[:return_type] != return_type
             error_at(token, "conflicting types for '#{name}'")
           elsif defined && existing[:defined]
             error_at(token, "redefinition of '#{name}'")
@@ -103,6 +104,7 @@ module Rubycc
         end
         @signatures[name] = {
           param_types: param_types,
+          return_type: return_type,
           defined: defined || existing&.fetch(:defined) || false
         }
       end
@@ -111,6 +113,10 @@ module Rubycc
         @insts = []
         @vreg_count = 0
         @label_count = 0
+        # The enclosing function's declared return type, consulted by
+        # #gen_return to type-check "return ...;" and by the implicit-return
+        # fallback below.
+        @current_return_type = func.return_type
         # Aggregate stack objects (arrays), indexed by object id; each entry is
         # the object's byte size. The backend lays them out below the vreg
         # slots and resolves :object_addr against this table.
@@ -143,12 +149,20 @@ module Rubycc
 
         func.body.each { |stmt| gen_statement(stmt) }
 
-        # C99: falling off the end of main returns 0. Emit an explicit return
-        # unless the body already ended with one.
+        # Falling off the end of the body needs an explicit return, unless one
+        # was already emitted. A void function returns no value; every other
+        # return type (including char and pointer, where falling off the end
+        # is technically undefined behavior, just like a non-void, non-main
+        # function in C99) returns 0, matching main's C99 fallback and keeping
+        # this single case simple.
         unless @insts.last&.op == :ret
-          zero = new_vreg
-          emit(:const, dst: zero, a: 0)
-          emit(:ret, a: zero)
+          if @current_return_type.void?
+            emit(:ret, a: nil)
+          else
+            zero = new_vreg
+            emit(:const, dst: zero, a: 0)
+            emit(:ret, a: zero)
+          end
         end
 
         Function.new(func.name, @insts, @vreg_count, func.params.size, @stack_objects)
@@ -157,8 +171,7 @@ module Rubycc
       def gen_statement(stmt)
         case stmt
         when Front::AST::Return
-          value, = gen_expr(stmt.expr)
-          emit(:ret, a: value)
+          gen_return(stmt)
         when Front::AST::VariableDecl
           gen_variable_decl(stmt)
         when Front::AST::ExpressionStmt
@@ -191,7 +204,7 @@ module Rubycc
       end
 
       def gen_if(node)
-        cond, cond_type = gen_expr(node.condition)
+        cond, cond_type = gen_value(node.condition)
         require_scalar_condition(cond_type, node.condition.token)
         if node.else_stmt
           else_label = new_label
@@ -214,7 +227,7 @@ module Rubycc
         cond_label = new_label
         end_label = new_label
         emit(:label, a: cond_label)
-        cond, cond_type = gen_expr(node.condition)
+        cond, cond_type = gen_value(node.condition)
         require_scalar_condition(cond_type, node.condition.token)
         emit(:jump_if_zero, a: cond, b: end_label)
         gen_loop_body(node.body, continue_label: cond_label, break_label: end_label)
@@ -229,7 +242,7 @@ module Rubycc
         emit(:label, a: body_label)
         gen_loop_body(node.body, continue_label: cond_label, break_label: end_label)
         emit(:label, a: cond_label)
-        cond, cond_type = gen_expr(node.condition)
+        cond, cond_type = gen_value(node.condition)
         require_scalar_condition(cond_type, node.condition.token)
         emit(:jump_if_zero, a: cond, b: end_label)
         emit(:jump, a: body_label)
@@ -249,7 +262,7 @@ module Rubycc
 
         emit(:label, a: cond_label)
         if node.condition
-          cond, cond_type = gen_expr(node.condition)
+          cond, cond_type = gen_value(node.condition)
           require_scalar_condition(cond_type, node.condition.token)
           emit(:jump_if_zero, a: cond, b: end_label)
         end
@@ -293,6 +306,29 @@ module Rubycc
         emit(:jump, a: @loop_stack.last[:continue_label])
       end
 
+      # "return;" or "return expr;", checked against the enclosing function's
+      # declared return type (@current_return_type): a void function accepts
+      # only the valueless form ("return with a value in void function"
+      # otherwise), every other return type requires a value ("return without
+      # a value" otherwise) that is return-type-compatible (#compatible_types?,
+      # the same rule assignment and arguments use) and is narrowed to that
+      # type exactly like a variable's initializer.
+      def gen_return(node)
+        if @current_return_type.void?
+          error_at(node.token, "return with a value in void function") if node.expr
+          emit(:ret, a: nil)
+          return
+        end
+
+        error_at(node.token, "return without a value") unless node.expr
+
+        value, value_type = gen_value(node.expr)
+        unless compatible_types?(@current_return_type, value_type)
+          error_at(node.token, "incompatible return type")
+        end
+        emit(:ret, a: narrow_to_type(value, @current_return_type))
+      end
+
       def gen_variable_decl(decl)
         scope = @scopes.last
         if scope.key?(decl.name)
@@ -308,7 +344,7 @@ module Rubycc
           vreg = new_vreg
           scope[decl.name] = Local.new(type: decl.type, storage: vreg, global: false)
           if decl.initializer
-            value, value_type = gen_expr(decl.initializer)
+            value, value_type = gen_value(decl.initializer)
             unless compatible_types?(decl.type, value_type)
               error_at(decl.token, "incompatible types in assignment")
             end
@@ -337,9 +373,9 @@ module Rubycc
         when Front::AST::Subscript
           gen_subscript(node)
         when Front::AST::SizeofExpr
-          gen_sizeof(sizeof_operand_type(node.operand))
+          gen_sizeof(sizeof_operand_type(node.operand), node.token)
         when Front::AST::SizeofType
-          gen_sizeof(node.type)
+          gen_sizeof(node.type, node.token)
         when Front::AST::Assignment
           gen_assignment(node)
         when Front::AST::Call
@@ -357,6 +393,18 @@ module Rubycc
         else
           raise "unsupported expression: #{node.class}"
         end
+      end
+
+      # Lowers `node` for its value like #gen_expr, but rejects a void result:
+      # the only expression a void type can have is a call to a void function,
+      # and C only allows that call's (non-)value to be discarded as a whole
+      # expression-statement, never consumed as an operand. Every context that
+      # actually uses the value it gets back (an operand, an argument, an
+      # initializer, a condition, ...) goes through this instead of #gen_expr.
+      def gen_value(node)
+        value, type = gen_expr(node)
+        error_at(node.token, "void value not ignored as it ought to be") if type.void?
+        [value, type]
       end
 
       # A variable reference. A local scalar yields its slot directly; an array
@@ -423,8 +471,12 @@ module Rubycc
 
       # sizeof folds to a compile-time int constant: the resolved type's byte
       # size. The operand (for the expression form) is never evaluated, so no
-      # code other than the constant is emitted.
-      def gen_sizeof(type)
+      # code other than the constant is emitted. void (an incomplete type with
+      # no size) is rejected, whether written directly ("sizeof(void)") or
+      # reached through a void-returning call's result type ("sizeof f()").
+      def gen_sizeof(type, token)
+        error_at(token, "invalid application of 'sizeof' to void type") if type.void?
+
         dst = new_vreg
         emit(:const, dst: dst, a: type.size)
         [dst, Type::Int]
@@ -440,8 +492,8 @@ module Rubycc
       #     yield an int element count;
       #   * everything else is ordinary 32-bit int arithmetic.
       def gen_binary(node)
-        lhs, lhs_type = gen_expr(node.lhs)
-        rhs, rhs_type = gen_expr(node.rhs)
+        lhs, lhs_type = gen_value(node.lhs)
+        rhs, rhs_type = gen_value(node.rhs)
         gen_binary_op(node.op, lhs, lhs_type, rhs, rhs_type, node.token)
       end
 
@@ -509,12 +561,14 @@ module Rubycc
       # Computes the address of "e[i]" — the lvalue shared by subscript reads
       # and writes and by "&e[i]". The target decays to a pointer (an array
       # becomes a pointer to its first element); the int index is scaled by the
-      # element size and added, exactly like "*(e + i)". Returns
+      # element size and added, exactly like "*(e + i)" (rejected up front when
+      # the element type is void, since there is no size to scale by). Returns
       # [address_vreg, element_type].
       def gen_element_address(node)
-        base, base_type = gen_expr(node.target)
+        base, base_type = gen_value(node.target)
         element_type = subscript_element_type(base_type, node.token)
-        index, index_type = gen_expr(node.index)
+        error_at(node.token, "invalid use of void pointer") if element_type.void?
+        index, index_type = gen_value(node.index)
         unless index_type.int?
           error_at(node.token, "array subscript is not an integer")
         end
@@ -529,7 +583,7 @@ module Rubycc
         when :not
           gen_logical_not(node)
         when :neg
-          operand, = gen_expr(node.operand)
+          operand, = gen_value(node.operand)
           dst = new_vreg
           emit(:neg, dst: dst, a: operand)
           [dst, Type::Int]
@@ -544,7 +598,7 @@ module Rubycc
       # the :eq path rather than introducing a dedicated IR opcode. Its operand
       # is a condition, so it must be int-typed.
       def gen_logical_not(node)
-        operand, operand_type = gen_expr(node.operand)
+        operand, operand_type = gen_value(node.operand)
         require_scalar_condition(operand_type, node.operand.token)
         zero = new_vreg
         emit(:const, dst: zero, a: 0)
@@ -586,8 +640,8 @@ module Rubycc
       # type is p's pointed-to type, which also fixes the load width (a pointer
       # target is 8 bytes wide, an int 4).
       def gen_deref(node)
-        addr, ptr_type = gen_expr(node.operand)
-        require_pointer(ptr_type, node.token)
+        addr, ptr_type = gen_value(node.operand)
+        require_dereferenceable_pointer(ptr_type, node.token)
         result_type = ptr_type.target
         dst = new_vreg
         emit(:load, dst: dst, a: addr, size: result_type.size)
@@ -613,7 +667,7 @@ module Rubycc
         if local.type.array?
           error_at(node.token, "array type is not assignable")
         end
-        value, value_type = gen_expr(node.value)
+        value, value_type = gen_value(node.value)
         unless compatible_types?(local.type, value_type)
           error_at(node.token, "incompatible types in assignment")
         end
@@ -655,7 +709,7 @@ module Rubycc
       # expression's value is v.
       def gen_store_through_subscript(node, target)
         addr, element_type = gen_element_address(target)
-        value, value_type = gen_expr(node.value)
+        value, value_type = gen_value(node.value)
         unless compatible_types?(element_type, value_type)
           error_at(node.token, "incompatible types in assignment")
         end
@@ -667,10 +721,10 @@ module Rubycc
       # address. The store width follows p's target type. The expression's
       # value is v.
       def gen_store_through_pointer(node, target)
-        addr, ptr_type = gen_expr(target.operand)
-        require_pointer(ptr_type, target.token)
+        addr, ptr_type = gen_value(target.operand)
+        require_dereferenceable_pointer(ptr_type, target.token)
         target_type = ptr_type.target
-        value, value_type = gen_expr(node.value)
+        value, value_type = gen_value(node.value)
         unless compatible_types?(target_type, value_type)
           error_at(node.token, "incompatible types in assignment")
         end
@@ -681,7 +735,9 @@ module Rubycc
       # Lowers a call: the callee must have a known signature and a matching
       # argument count, and each argument's type must match the corresponding
       # parameter. Arguments are evaluated left to right, each landing in its
-      # own vreg; the result is always int (the only return type in this subset).
+      # own vreg; the result's type is the callee's declared return type (a
+      # void one is only valid when the whole call is used as an
+      # expression-statement, enforced by #gen_value at every other site).
       def gen_call(node)
         sig = @signatures[node.name]
         error_at(node.token, "implicit declaration of function '#{node.name}'") unless sig
@@ -694,7 +750,7 @@ module Rubycc
         end
 
         arg_vregs = node.args.each_with_index.map do |arg, i|
-          vreg, arg_type = gen_expr(arg)
+          vreg, arg_type = gen_value(arg)
           unless compatible_types?(param_types[i], arg_type)
             error_at(node.token, "incompatible type for argument #{i + 1} of '#{node.name}'")
           end
@@ -702,7 +758,7 @@ module Rubycc
         end
         dst = new_vreg
         emit(:call, dst: dst, a: node.name, b: arg_vregs)
-        [dst, Type::Int]
+        [dst, sig[:return_type]]
       end
 
       # "lhs && rhs": short-circuit, so rhs is only evaluated when lhs is
@@ -714,14 +770,14 @@ module Rubycc
       #   false: result = 0
       #   end:
       def gen_logical_and(node)
-        lhs, lhs_type = gen_expr(node.lhs)
+        lhs, lhs_type = gen_value(node.lhs)
         require_scalar_condition(lhs_type, node.lhs.token)
         false_label = new_label
         end_label = new_label
         result = new_vreg
         emit(:jump_if_zero, a: lhs, b: false_label)
 
-        rhs, rhs_type = gen_expr(node.rhs)
+        rhs, rhs_type = gen_value(node.rhs)
         require_scalar_condition(rhs_type, node.rhs.token)
         emit(:jump_if_zero, a: rhs, b: false_label)
         emit_const_copy(result, 1)
@@ -741,7 +797,7 @@ module Rubycc
       #   false: result = 0
       #   end:
       def gen_logical_or(node)
-        lhs, lhs_type = gen_expr(node.lhs)
+        lhs, lhs_type = gen_value(node.lhs)
         require_scalar_condition(lhs_type, node.lhs.token)
         rhs_label = new_label
         false_label = new_label
@@ -753,7 +809,7 @@ module Rubycc
         emit(:jump, a: end_label)
 
         emit(:label, a: rhs_label)
-        rhs, rhs_type = gen_expr(node.rhs)
+        rhs, rhs_type = gen_value(node.rhs)
         require_scalar_condition(rhs_type, node.rhs.token)
         emit(:jump_if_zero, a: rhs, b: false_label)
         emit_const_copy(result, 1)
@@ -769,19 +825,19 @@ module Rubycc
       # only one of the two arms is evaluated, and both must settle on the
       # same result type (which becomes the expression's type).
       def gen_conditional(node)
-        cond, cond_type = gen_expr(node.condition)
+        cond, cond_type = gen_value(node.condition)
         require_scalar_condition(cond_type, node.condition.token)
         else_label = new_label
         end_label = new_label
         result = new_vreg
         emit(:jump_if_zero, a: cond, b: else_label)
 
-        then_value, then_type = gen_expr(node.then_expr)
+        then_value, then_type = gen_value(node.then_expr)
         emit(:copy, dst: result, a: then_value)
         emit(:jump, a: end_label)
 
         emit(:label, a: else_label)
-        else_value, else_type = gen_expr(node.else_expr)
+        else_value, else_type = gen_value(node.else_expr)
         emit(:copy, dst: result, a: else_value)
         emit(:label, a: end_label)
 
@@ -818,7 +874,7 @@ module Rubycc
         local = lookup_local(target.name, target.token)
         error_at(node.token, "array type is not assignable") if local.type.array?
 
-        value, value_type = gen_expr(node.value)
+        value, value_type = gen_value(node.value)
         current = load_scalar_variable(local)
         result, result_type = gen_binary_op(node.op, current, local.type, value, value_type, node.token)
         unless compatible_types?(local.type, result_type)
@@ -833,7 +889,7 @@ module Rubycc
         current = new_vreg
         emit(:load, dst: current, a: addr, size: element_type.size)
 
-        value, value_type = gen_expr(node.value)
+        value, value_type = gen_value(node.value)
         result, result_type = gen_binary_op(node.op, current, element_type, value, value_type, node.token)
         unless compatible_types?(element_type, result_type)
           error_at(node.token, "incompatible types in assignment")
@@ -843,13 +899,13 @@ module Rubycc
       end
 
       def gen_compound_assignment_through_pointer(node, target)
-        addr, ptr_type = gen_expr(target.operand)
-        require_pointer(ptr_type, target.token)
+        addr, ptr_type = gen_value(target.operand)
+        require_dereferenceable_pointer(ptr_type, target.token)
         target_type = ptr_type.target
         current = new_vreg
         emit(:load, dst: current, a: addr, size: target_type.size)
 
-        value, value_type = gen_expr(node.value)
+        value, value_type = gen_value(node.value)
         result, result_type = gen_binary_op(node.op, current, target_type, value, value_type, node.token)
         unless compatible_types?(target_type, result_type)
           error_at(node.token, "incompatible types in assignment")
@@ -911,8 +967,8 @@ module Rubycc
       end
 
       def gen_inc_dec_through_pointer(node, target)
-        addr, ptr_type = gen_expr(target.operand)
-        require_pointer(ptr_type, target.token)
+        addr, ptr_type = gen_value(target.operand)
+        require_dereferenceable_pointer(ptr_type, target.token)
         target_type = ptr_type.target
         current = new_vreg
         emit(:load, dst: current, a: addr, size: target_type.size)
@@ -937,13 +993,17 @@ module Rubycc
         emit(:copy, dst: dst, a: src)
       end
 
-      # Assignment/initialization/argument compatibility. The arithmetic types
-      # int and char convert to one another implicitly (int -> char narrows;
-      # char -> int promotes), so any arithmetic pair is compatible. Pointers
-      # must match exactly, and mixing an arithmetic type with a pointer
-      # (either direction) is rejected.
+      # Assignment/initialization/argument/return compatibility. The arithmetic
+      # types int and char convert to one another implicitly (int -> char
+      # narrows; char -> int promotes), so any arithmetic pair is compatible.
+      # Two pointers are compatible when they share the same target type or
+      # either side is void * (void * converts to and from any pointer type,
+      # both directions); mixing an arithmetic type with a pointer (either
+      # direction) is rejected.
       def compatible_types?(expected, actual)
         return true if expected.arithmetic? && actual.arithmetic?
+        return true if expected.pointer? && actual.pointer? &&
+                        (expected == actual || expected.target.void? || actual.target.void?)
 
         expected == actual
       end
@@ -965,6 +1025,16 @@ module Rubycc
         error_at(token, "invalid type argument of unary '*'") unless type.pointer?
       end
 
+      # Guards an actual load/store through a pointer ("*p", "*p = v",
+      # "p += 1", "e[i]", ...): beyond #require_pointer's plain pointer check,
+      # a void pointer is rejected too, since its pointed-to type has no size
+      # to load, store or scale by ("&*p", which never touches memory, is the
+      # one place a void pointer's target may go unexamined).
+      def require_dereferenceable_pointer(type, token)
+        require_pointer(type, token)
+        error_at(token, "invalid use of void pointer") if type.target.void?
+      end
+
       # Guards every condition position (if/while/do-while/for, "&&"/"||"
       # operands, "!" operand, "?:" condition): an arithmetic value (int or a
       # char, which promotes to int) is a valid scalar condition, but a pointer
@@ -980,36 +1050,60 @@ module Rubycc
         COMPARISON_OPS.include?(op)
       end
 
+      # "==" and "!=" alone let a void * mix with any other pointer type (as
+      # in an assignment); every other pointer comparison ("<", "<=", ">",
+      # ">=") requires the exact same pointer type on both sides, void *
+      # included.
+      EQUALITY_OPS = %i[eq ne].freeze
+
+      def pointer_comparable?(op, lhs_type, rhs_type)
+        return lhs_type == rhs_type || lhs_type.target.void? || rhs_type.target.void? if EQUALITY_OPS.include?(op)
+
+        lhs_type == rhs_type
+      end
+
+      # Pointer arithmetic (p + n, p - n, p - q) scales by the pointed-to
+      # type's size, which void has none of; rejected up front with "invalid
+      # use of void pointer" rather than let #size raise deep in the lowering.
+      # Returns `type` so it can sit directly in #binary_result_type's
+      # if/elsif chain.
+      def require_non_void_pointer(type, token)
+        error_at(token, "invalid use of void pointer") if type.target.void?
+        type
+      end
+
       # Settles a binary operation's result type and rejects any illegal
       # operand combination with "invalid operands to binary expression".
       # Arithmetic operands (int and char) mix freely and promote to int, so
       # the rules below read "arithmetic" wherever int would once have stood.
       # Shared by the lowering path (#gen_binary) and the code-free type
       # inference used by sizeof (#static_type):
-      #   * comparisons: arithmetic/arithmetic or same-type pointer/pointer
-      #     -> int;
+      #   * comparisons: arithmetic/arithmetic, or pointer/pointer per
+      #     #pointer_comparable? -> int;
       #   * "+": arithmetic/arithmetic -> int, and pointer/arithmetic or
-      #     arithmetic/pointer -> that pointer;
+      #     arithmetic/pointer -> that (non-void) pointer;
       #   * "-": arithmetic/arithmetic -> int, pointer/arithmetic -> that
-      #     pointer, and same-type pointer/pointer -> int;
+      #     (non-void) pointer, and same-type (non-void) pointer/pointer -> int;
       #   * "*" "/" "%": arithmetic/arithmetic -> int only.
       def binary_result_type(op, lhs_type, rhs_type, token)
         result =
           if comparison_op?(op)
             if lhs_type.arithmetic? && rhs_type.arithmetic? then Type::Int
-            elsif lhs_type.pointer? && rhs_type.pointer? && lhs_type == rhs_type then Type::Int
+            elsif lhs_type.pointer? && rhs_type.pointer? && pointer_comparable?(op, lhs_type, rhs_type) then Type::Int
             end
           else
             case op
             when :add
               if lhs_type.arithmetic? && rhs_type.arithmetic? then Type::Int
-              elsif lhs_type.pointer? && rhs_type.arithmetic? then lhs_type
-              elsif lhs_type.arithmetic? && rhs_type.pointer? then rhs_type
+              elsif lhs_type.pointer? && rhs_type.arithmetic? then require_non_void_pointer(lhs_type, token)
+              elsif lhs_type.arithmetic? && rhs_type.pointer? then require_non_void_pointer(rhs_type, token)
               end
             when :sub
               if lhs_type.arithmetic? && rhs_type.arithmetic? then Type::Int
-              elsif lhs_type.pointer? && rhs_type.arithmetic? then lhs_type
-              elsif lhs_type.pointer? && rhs_type.pointer? && lhs_type == rhs_type then Type::Int
+              elsif lhs_type.pointer? && rhs_type.arithmetic? then require_non_void_pointer(lhs_type, token)
+              elsif lhs_type.pointer? && rhs_type.pointer? && lhs_type == rhs_type
+                require_non_void_pointer(lhs_type, token)
+                Type::Int
               end
             else # :mul, :div, :mod
               Type::Int if lhs_type.arithmetic? && rhs_type.arithmetic?
@@ -1047,9 +1141,10 @@ module Rubycc
       # resolve a sizeof operand's type.
       def static_type(node)
         case node
-        when Front::AST::IntLit, Front::AST::Call,
-             Front::AST::SizeofExpr, Front::AST::SizeofType
+        when Front::AST::IntLit, Front::AST::SizeofExpr, Front::AST::SizeofType
           Type::Int
+        when Front::AST::Call
+          call_return_type(node)
         when Front::AST::StringLit
           Type::Pointer.new(Type::Char)
         when Front::AST::VariableRef
@@ -1070,6 +1165,15 @@ module Rubycc
         else
           raise "unsupported expression: #{node.class}"
         end
+      end
+
+      # A call's rvalue type without emitting code: the callee's declared
+      # return type, looked up the same way #gen_call does.
+      def call_return_type(node)
+        sig = @signatures[node.name]
+        error_at(node.token, "implicit declaration of function '#{node.name}'") unless sig
+
+        sig[:return_type]
       end
 
       # The type of "condition ? then_expr : else_expr" without emitting code,

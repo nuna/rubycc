@@ -45,7 +45,7 @@ module Rubycc
       # CompoundAssignment.
       IncDec = Data.define(:op, :target, :prefix, :token)
 
-      # `return <expr>;`
+      # `return <expr>;`, or `return;` with `expr` nil (a void return).
       Return = Data.define(:expr, :token)
 
       # A local variable declaration. `type` is the declared Rubycc::Type
@@ -121,16 +121,19 @@ module Rubycc
 
       # A single function parameter. `name` is the identifier String, or nil
       # for an unnamed parameter in a prototype (e.g. "int f(int, int);").
-      # `type` is the parameter's Rubycc::Type (int or a pointer).
+      # `type` is the parameter's Rubycc::Type (int, char or a pointer; never
+      # void, except as a pointer's target).
       Parameter = Data.define(:name, :type, :token)
 
       # A function prototype (a bare declaration with no body), e.g.
-      # "int f(int a, int b);". `params` is an array of Parameter.
-      FunctionDecl = Data.define(:name, :params, :token)
+      # "int f(int a, int b);". `return_type` is the declared Rubycc::Type
+      # (int, char, void or a pointer). `params` is an array of Parameter.
+      FunctionDecl = Data.define(:name, :return_type, :params, :token)
 
-      # A function definition. `params` is an array of Parameter (each with a
-      # non-nil name) and `body` is an array of statement nodes.
-      FunctionDef = Data.define(:name, :params, :body, :token)
+      # A function definition. `return_type` is the declared Rubycc::Type
+      # (int, char, void or a pointer). `params` is an array of Parameter
+      # (each with a non-nil name) and `body` is an array of statement nodes.
+      FunctionDef = Data.define(:name, :return_type, :params, :body, :token)
 
       # Whole translation unit. `functions` is an array of FunctionDef,
       # FunctionDecl (prototype) and GlobalDecl (file-scope variable) nodes in

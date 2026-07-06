@@ -342,10 +342,66 @@ class TestDiagnostics < Minitest::Test
     assert_match(/invalid operands to binary expression/, error.description)
   end
 
-  def test_char_return_type_is_rejected
-    source = "char f(void) { return 0; } int main(void) { return 0; }"
+  def test_void_variable_declaration_is_rejected
+    source = "int main(void) { void x; return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/char return type is not supported yet/, error.description)
+
+    assert_equal 1, error.line
+    assert_match(/variable or field declared void/, error.description)
+    assert_match(/foo\.c:1:\d+: error: variable or field declared void/, error.message)
+  end
+
+  def test_sizeof_void_is_rejected
+    source = "int main(void) { return sizeof(void); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid application of 'sizeof' to void type/, error.description)
+  end
+
+  def test_void_function_result_used_as_a_value_is_rejected
+    source = "void f(void) { return; } int main(void) { return f() + 1; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/void value not ignored as it ought to be/, error.description)
+  end
+
+  def test_return_without_a_value_in_non_void_function_is_rejected
+    source = "int main(void) { return; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/return without a value/, error.description)
+  end
+
+  def test_return_with_a_value_in_void_function_is_rejected
+    source = "void f(void) { return 1; } int main(void) { f(); return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/return with a value in void function/, error.description)
+  end
+
+  def test_return_type_mismatch_is_rejected
+    source = "int *f(void) { return 1; } int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/incompatible return type/, error.description)
+  end
+
+  def test_void_return_is_still_valid_in_void_function
+    source = "void f(void) { return; } int main(void) { f(); return 42; }"
+    assert_kind_of String, compile(source)
+  end
+
+  def test_pointer_arithmetic_on_void_pointer_is_rejected
+    source = "int main(void) { void *p; p = p + 1; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid use of void pointer/, error.description)
+  end
+
+  def test_dereferencing_void_pointer_is_rejected
+    source = "int main(void) { void *p; return *p; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid use of void pointer/, error.description)
+  end
+
+  def test_conflicting_return_types_between_prototype_and_definition
+    source = "int f(void); char f(void) { return 0; } int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/conflicting types for 'f'/, error.description)
   end
 
   def test_global_redefinition_is_rejected

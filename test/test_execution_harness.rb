@@ -654,6 +654,81 @@ class TestExecutionHarness < Minitest::Test
     )
   end
 
+  # --- pointer, char and void return types --------------------------------
+
+  def test_pointer_return_type
+    assert_c_exit_status(
+      42,
+      "int *pick(int *a, int i) { return &a[i]; } " \
+      "int main(void) { int v[3]; v[2] = 42; return *pick(v, 2); }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_char_return_type
+    assert_c_exit_status(
+      42,
+      "char first(char *s) { return s[0]; } " \
+      "int main(void) { return first(\"*hello\") == 42 ? 42 : 7; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_void_function_returns_no_value
+    assert_c_exit_status(
+      42,
+      "void fill(int *p, int v) { *p = v; return; } " \
+      "int main(void) { int x; fill(&x, 42); return x; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_void_function_falls_off_the_end
+    assert_c_exit_status(
+      42,
+      "void nop(void) { } int main(void) { nop(); return 42; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_malloc_and_free_through_void_pointer_prototypes
+    assert_c_exit_status(
+      42,
+      "void *malloc(int n); void free(void *p); " \
+      "int main(void) { int *a = malloc(sizeof(int) * 10); " \
+      "for (int i = 0; i < 10; i++) a[i] = i; " \
+      "int s = a[9] * 4 + a[6]; free(a); return s; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_pointer_returning_string_search
+    assert_c_exit_status(
+      42,
+      "char *find(char *s, char c) { while (*s && *s != c) s++; return s; } " \
+      "int main(void) { char *p = find(\"abcdef\", 'd'); return *p - 58; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_void_pointer_passed_through_and_back
+    assert_c_exit_status(
+      42,
+      "void *pass(void *p) { return p; } " \
+      "int main(void) { int x = 42; int *q = pass(&x); return *q; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_recursive_void_function
+    assert_c_exit_status(
+      42,
+      "void countdown(int *n) { if (*n > 0) { *n -= 1; countdown(n); } } " \
+      "int main(void) { int n = 58; countdown(&n); return 42 - n; }",
+      compiler: :rubycc
+    )
+  end
+
   # --- file-scope (global) variables --------------------------------------
 
   def test_global_int_in_bss_is_shared_across_functions
