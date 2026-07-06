@@ -12,14 +12,26 @@ module Rubycc
     # read and written 64 bits at a time so a pointer value survives intact
     # (see #load_reg / #store_reg).
     #
+    # Value representation: a scalar value in a slot is always held already
+    # sign-extended to at least 32 bits. A char is no exception — it lives in
+    # its slot as a full sign-extended int, and the narrowing to 8 bits happens
+    # only at the memory boundary: a size-1 :load sign-extends the byte it reads
+    # (movsx), a size-1 :store writes just the low byte (cl), and the :sext8 op
+    # narrows an int down to a char value in a register.
+    #
     # System V AMD64: the integer return value is passed in eax.
     class X86_64
       # Result of compiling one function: `bytes` is the machine code (an
       # ASCII-8BIT String), `symbols` is an array of
       # { name:, offset:, size: } describing the emitted function symbols, and
-      # `relocations` is an array of { offset:, symbol: } marking each `call`
-      # site whose rel32 field the linker must resolve (offset is relative to
-      # the start of this function's code).
+      # `relocations` is an array of relocation records the linker must resolve
+      # (each `offset` is relative to the start of this function's code). Every
+      # record carries a `kind`:
+      #   * { kind: :call, offset:, symbol: } — a "call rel32" site, resolved
+      #     against the named symbol (R_X86_64_PLT32);
+      #   * { kind: :string, offset:, string_id: } — a "lea rip" displacement
+      #     addressing read-only string `string_id` (R_X86_64_PC32 against the
+      #     .rodata section).
       Result = Data.define(:bytes, :symbols, :relocations)
 
       # Register numbers. For eax/ecx/edx these are the low 3 bits of the
@@ -55,9 +67,9 @@ module Rubycc
         # rel32 field is overwritten once every label offset is known.
         @labels = {}
         @fixups = []
-        # Each `call` records a { offset:, symbol: } here so the object writer
-        # can emit a .rela.text entry once this function's base in .text is
-        # known.
+        # Each `call` and each string-literal reference records a kind-tagged
+        # relocation here (see Result) so the object writer can emit a
+        # .rela.text entry once this function's base in .text is known.
         @relocations = []
         emit_prologue(ir_func.vreg_count, ir_func.param_count, ir_func.stack_objects)
         ir_func.insts.each { |inst| emit_instruction(inst) }
@@ -120,6 +132,10 @@ module Rubycc
           store_reg(EAX, inst.dst)
         when :sext
           emit_sext(inst.dst, inst.a)
+        when :sext8
+          emit_sext8(inst.dst, inst.a)
+        when :string_addr
+          emit_string_addr(inst.dst, inst.a)
         when :label
           @labels[inst.a] = @code.bytesize
         when :jump
@@ -155,8 +171,20 @@ module Rubycc
       def emit_call(dst, name, arg_vregs)
         arg_vregs.each_with_index { |vreg, i| load_reg(ARG_REGISTERS[i], vreg) }
         emit(0xE8)                          # call rel32
-        @relocations << { offset: @code.bytesize, symbol: name }
+        @relocations << { kind: :call, offset: @code.bytesize, symbol: name }
         emit_bytes([0].pack("l<"))          # linker patches this via R_X86_64_PLT32
+        store_reg(EAX, dst)
+      end
+
+      # :string_addr — lea rax, [rip + disp32] materializes the address of
+      # read-only string `string_id`. The disp32 is a zero placeholder recorded
+      # as a { kind: :string } relocation; the linker patches it PC-relatively
+      # (R_X86_64_PC32) against the .rodata section. A 64-bit store then parks
+      # the resulting char * in the destination slot.
+      def emit_string_addr(dst, string_id)
+        emit(0x48, 0x8D, 0x05)              # REX.W lea rax, [rip + disp32]
+        @relocations << { kind: :string, offset: @code.bytesize, string_id: string_id }
+        emit_bytes([0].pack("l<"))
         store_reg(EAX, dst)
       end
 
@@ -186,13 +214,28 @@ module Rubycc
         store_reg(EAX, dst)
       end
 
+      # :sext8 — load a's slot, then movsx eax, al sign-extends its low byte to
+      # 32 bits (the 32-bit write also zeroing the upper half of rax); the
+      # store writes it back. This is the int -> char narrowing: only the low
+      # byte survives, re-widened with its sign.
+      def emit_sext8(dst, src_vreg)
+        load_reg(EAX, src_vreg)         # rax = value
+        emit(0x0F, 0xBE, 0xC0)          # movsx eax, al
+        store_reg(EAX, dst)
+      end
+
       # "*p" read: load the pointer from its slot into rax, then read through
       # it. An 8-byte load moves a full pointer (mov rax, [rax]); a 4-byte load
-      # reads an int (mov eax, [rax]), whose upper bits the store then zeroes.
+      # reads an int (mov eax, [rax]), whose upper bits the store then zeroes;
+      # a 1-byte load reads a char and sign-extends it to 32 bits
+      # (movsx eax, byte [rax]) so the slot holds a promoted int value.
       def emit_load(dst, ptr_vreg, size)
         load_reg(EAX, ptr_vreg)         # rax = pointer value
-        if size == 8
+        case size
+        when 8
           emit(0x48, 0x8B, 0x00)        # mov rax, [rax]
+        when 1
+          emit(0x0F, 0xBE, 0x00)        # movsx eax, byte [rax]
         else
           emit(0x8B, 0x00)              # mov eax, [rax]
         end
@@ -201,12 +244,17 @@ module Rubycc
 
       # "*p = v": rax holds the destination address, rcx the value, then rcx is
       # written through the address. An 8-byte store writes a full pointer
-      # (mov [rax], rcx); a 4-byte store writes an int (mov [rax], ecx).
+      # (mov [rax], rcx); a 4-byte store writes an int (mov [rax], ecx); a
+      # 1-byte store writes just the low byte (mov [rax], cl), which is exactly
+      # the int -> char truncation a char lvalue needs.
       def emit_store(ptr_vreg, value_vreg, size)
         load_reg(EAX, ptr_vreg)         # rax = destination address
         load_reg(ECX, value_vreg)       # rcx = value
-        if size == 8
+        case size
+        when 8
           emit(0x48, 0x89, 0x08)        # mov [rax], rcx
+        when 1
+          emit(0x88, 0x08)              # mov [rax], cl
         else
           emit(0x89, 0x08)              # mov [rax], ecx
         end

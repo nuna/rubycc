@@ -37,6 +37,8 @@ module ExecutionHelper
     output_path
   end
 
+  # Links `object_path` into an executable, runs it, and returns
+  # [exit_status, stdout] so callers can assert on either.
   def link_and_run(object_path)
     dir = File.dirname(object_path)
     exe_path = File.join(dir, "#{File.basename(object_path, ".*")}.out")
@@ -46,8 +48,8 @@ module ExecutionHelper
       raise "gcc failed to link object file (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
     end
 
-    _, run_status = Open3.capture2e(exe_path)
-    run_status.exitstatus
+    stdout, run_status = Open3.capture2(exe_path)
+    [run_status.exitstatus, stdout]
   end
 
   # Links `object_path` into an executable and returns the linker's combined
@@ -60,21 +62,39 @@ module ExecutionHelper
     stderr
   end
 
+  # Compiles `c_source` to `object_path` with the requested compiler.
+  def compile_source(c_source, object_path, compiler)
+    case compiler
+    when :rubycc
+      compile_with_rubycc(c_source, object_path)
+    when :gcc
+      compile_with_gcc(c_source, object_path)
+    else
+      raise ArgumentError, "unknown compiler: #{compiler.inspect}"
+    end
+  end
+
   def assert_c_exit_status(expected, c_source, compiler: :rubycc)
     in_tmpdir do |dir|
       object_path = File.join(dir, "test.o")
+      compile_source(c_source, object_path, compiler)
 
-      case compiler
-      when :rubycc
-        compile_with_rubycc(c_source, object_path)
-      when :gcc
-        compile_with_gcc(c_source, object_path)
-      else
-        raise ArgumentError, "unknown compiler: #{compiler.inspect}"
-      end
-
-      actual = link_and_run(object_path)
+      actual, = link_and_run(object_path)
       assert_equal expected, actual, "expected C program to exit with #{expected}, got #{actual}"
+    end
+  end
+
+  # Compiles, links and runs `c_source`, asserting on the exit status and,
+  # when `stdout` is given, on the program's standard output too.
+  def assert_c_program(c_source, exit_status:, stdout: nil, compiler: :rubycc)
+    in_tmpdir do |dir|
+      object_path = File.join(dir, "test.o")
+      compile_source(c_source, object_path, compiler)
+
+      actual_status, actual_stdout = link_and_run(object_path)
+      assert_equal exit_status, actual_status,
+                   "expected C program to exit with #{exit_status}, got #{actual_status}"
+      assert_equal stdout, actual_stdout, "stdout mismatch" unless stdout.nil?
     end
   end
 end

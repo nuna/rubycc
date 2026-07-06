@@ -8,6 +8,12 @@ module Rubycc
       # Integer literal. `value` is a Ruby Integer.
       IntLit = Data.define(:value, :token)
 
+      # String literal. `value` is the escape-resolved bytes as an ASCII-8BIT
+      # String, without the NUL terminator. Its type is char[N+1] (N being the
+      # byte count); in every expression context except sizeof it decays to a
+      # char * pointing at the string's first byte in .rodata.
+      StringLit = Data.define(:value, :token)
+
       # Unary operation. `op` is :neg or :not (unary + is folded away by the
       # parser), :addr (the address-of "&") or :deref (the dereference "*").
       Unary = Data.define(:op, :operand, :token)

@@ -1,12 +1,15 @@
 # frozen_string_literal: true
 
 module Rubycc
-  # The type system for this C subset: the scalar `int`, pointers to another
-  # type, and one-dimensional arrays of another type. Types compare by value,
-  # so any two `int *` are equal, and each renders itself the way a C
-  # declarator would ("int", "int *", "int [10]") for use in diagnostics. Every
-  # type reports its storage width in bytes via #size (int 4, any pointer 8, an
-  # array its element width times its length).
+  # The type system for this C subset: the scalar arithmetic types `int` and
+  # `char`, pointers to another type, and one-dimensional arrays of another
+  # type. Types compare by value, so any two `int *` are equal, and each
+  # renders itself the way a C declarator would ("int", "char *", "int [10]")
+  # for use in diagnostics. Every type reports its storage width in bytes via
+  # #size (int 4, char 1, any pointer 8, an array its element width times its
+  # length). #arithmetic? groups the scalar arithmetic types (int and char)
+  # that mix freely in expressions and convert to one another implicitly, while
+  # #char? and #int? name each one individually.
   module Type
     # The scalar integer type. A single shared instance (Type::Int) stands in
     # for every `int`, so identity comparison doubles as value comparison.
@@ -16,6 +19,14 @@ module Rubycc
       end
 
       def int?
+        true
+      end
+
+      def char?
+        false
+      end
+
+      def arithmetic?
         true
       end
 
@@ -33,8 +44,47 @@ module Rubycc
       end
     end
 
+    # The signed 1-byte character type. Like Type::Int it is a single shared
+    # instance (Type::Char), so identity comparison doubles as value
+    # comparison. In expressions a char promotes to int; the 8-bit narrowing
+    # happens only at the memory boundary (a size-1 load/store) and at an
+    # explicit int->char conversion.
+    class CharType
+      def pointer?
+        false
+      end
+
+      def int?
+        false
+      end
+
+      def char?
+        true
+      end
+
+      def arithmetic?
+        true
+      end
+
+      def array?
+        false
+      end
+
+      # A `char` occupies 1 byte.
+      def size
+        1
+      end
+
+      def to_s
+        "char"
+      end
+    end
+
     # The lone `int`. Referred to everywhere as Type::Int.
     Int = Scalar.new
+
+    # The lone `char`. Referred to everywhere as Type::Char.
+    Char = CharType.new
 
     # A pointer to `target` (itself a Type). Being a Data, two pointers are
     # equal exactly when their targets are, giving "int *" == "int *".
@@ -44,6 +94,14 @@ module Rubycc
       end
 
       def int?
+        false
+      end
+
+      def char?
+        false
+      end
+
+      def arithmetic?
         false
       end
 
@@ -73,6 +131,14 @@ module Rubycc
       end
 
       def int?
+        false
+      end
+
+      def char?
+        false
+      end
+
+      def arithmetic?
         false
       end
 

@@ -164,4 +164,74 @@ class TestLexer < Minitest::Test
     assert_equal %i[ident punct ident punct ident], tokens.map(&:type)
     assert_equal ["a", "?", "b", ":", "c"], tokens.map(&:value)
   end
+
+  def test_char_is_a_keyword
+    tokens = lex("char c").reject(&:eof?)
+    assert_equal %i[keyword ident], tokens.map(&:type)
+    assert_equal %w[char c], tokens.map(&:value)
+  end
+
+  def test_character_constant_is_a_num_token
+    tokens = lex("'A'").reject(&:eof?)
+    assert_equal [:num], tokens.map(&:type)
+    assert_equal 65, tokens[0].value
+    assert_kind_of Integer, tokens[0].value
+  end
+
+  def test_character_constant_escape_sequences
+    { "'\\n'" => 10, "'\\t'" => 9, "'\\r'" => 13, "'\\0'" => 0,
+      "'\\\\'" => 92, "'\\''" => 39, "'\\\"'" => 34, "'\\a'" => 7,
+      "'\\b'" => 8, "'\\f'" => 12, "'\\v'" => 11 }.each do |source, value|
+      tokens = lex(source).reject(&:eof?)
+      assert_equal :num, tokens[0].type, "#{source} should lex as a :num token"
+      assert_equal value, tokens[0].value, "#{source} should have value #{value}"
+    end
+  end
+
+  def test_string_literal_is_a_string_token
+    tokens = lex('"hello"').reject(&:eof?)
+    assert_equal [:string], tokens.map(&:type)
+    assert_equal "hello".b, tokens[0].value
+    assert_equal Encoding::ASCII_8BIT, tokens[0].value.encoding
+  end
+
+  def test_string_literal_resolves_escapes
+    tokens = lex('"a\\tb\\n"').reject(&:eof?)
+    assert_equal "a\tb\n".b, tokens[0].value
+  end
+
+  def test_string_literal_has_no_trailing_nul
+    tokens = lex('"hi"').reject(&:eof?)
+    assert_equal 2, tokens[0].value.bytesize
+  end
+
+  def test_empty_character_constant_raises
+    error = assert_raises(Rubycc::CompileError) { lex("''") }
+    assert_match(/empty character constant/, error.description)
+  end
+
+  def test_multi_character_constant_raises
+    error = assert_raises(Rubycc::CompileError) { lex("'ab'") }
+    assert_match(/multi-character character constant/, error.description)
+  end
+
+  def test_unterminated_character_constant_raises
+    error = assert_raises(Rubycc::CompileError) { lex("'a") }
+    assert_match(/unterminated character constant/, error.description)
+  end
+
+  def test_unknown_escape_in_character_constant_raises
+    error = assert_raises(Rubycc::CompileError) { lex("'\\q'") }
+    assert_match(/unknown escape sequence in character constant/, error.description)
+  end
+
+  def test_unterminated_string_literal_raises
+    error = assert_raises(Rubycc::CompileError) { lex('"oops') }
+    assert_match(/unterminated string literal/, error.description)
+  end
+
+  def test_unknown_escape_in_string_literal_raises
+    error = assert_raises(Rubycc::CompileError) { lex('"a\\qb"') }
+    assert_match(/unknown escape sequence in string literal/, error.description)
+  end
 end

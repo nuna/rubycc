@@ -10,6 +10,8 @@ module Rubycc
     #   :eq/:ne/:lt/:le/:gt/:ge     dst <- (a op b) ? 1 : 0
     #   :neg    dst <- -a
     #   :sext   dst <- a            (a's 32-bit value sign-extended to 64 bits)
+    #   :sext8  dst <- a            (a's low 8 bits sign-extended to 32 bits;
+    #                               an int -> char narrowing, sign preserved)
     #   :ret    return a
     #   :label        a = label id (a jump target; emits no code itself)
     #   :jump         a = label id (unconditional branch)
@@ -21,10 +23,14 @@ module Rubycc
     #                                   object a (an array's first element)
     #   :load   dst <- *a           dst gets `size` bytes read through pointer a
     #   :store  *a <- b             `size` bytes of b are written through ptr a
+    #   :string_addr dst <- &string(a)  dst gets the address of read-only string
+    #                                   a (an id into the translation unit's
+    #                                   string pool), i.e. a decayed char *
     #
     # `dst`, `a`, `b` are virtual register numbers (Integers) unless noted;
     # unused fields are nil. `size` is an operand width in bytes. On :load /
-    # :store it is the memory access width (4 for an int, 8 for a pointer). On a
+    # :store it is the memory access width (1 for a char, 4 for an int, 8 for a
+    # pointer). On a
     # binary op (:add/:sub/:mul/:div and the comparisons) size == 8 selects
     # 64-bit arithmetic for pointer values and pointer-offset scaling; a nil (or
     # 4) size means the default 32-bit `int` arithmetic.
@@ -64,5 +70,13 @@ module Rubycc
         @stack_objects = stack_objects
       end
     end
+
+    # A whole translation unit lowered to IR: its `functions` (an array of
+    # Function) and the shared read-only string pool `strings` (an array of
+    # ASCII-8BIT byte strings, without their NUL terminators, indexed by the id
+    # a :string_addr instruction carries). Identical string contents are pooled
+    # once, so the compiler can lay them out in .rodata in this order and
+    # resolve each :string_addr to an offset.
+    Program = Data.define(:functions, :strings)
   end
 end

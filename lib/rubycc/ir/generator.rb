@@ -16,7 +16,8 @@ module Rubycc
       # is a virtual-register number for a scalar (int or pointer) and a stack
       # object id for an array; which one it is follows from `type.array?`.
       Local = Data.define(:type, :storage)
-      # Returns an array of IR::Function, one per AST::FunctionDef. Prototypes
+      # Returns an IR::Program: an IR::Function per AST::FunctionDef plus the
+      # translation unit's read-only string pool. Prototypes
       # (AST::FunctionDecl) contribute only a signature-table entry and emit no
       # code. The table is filled in source order so a definition can reference
       # itself (recursion) or an earlier prototype (mutual recursion), while a
@@ -27,6 +28,11 @@ module Rubycc
         # distinguishes a prototype from a completed definition so redefinitions
         # can be rejected.
         @signatures = {}
+        # The translation-unit-wide string pool: `@strings` holds each interned
+        # byte string in id order, `@string_ids` maps content back to its id so
+        # identical literals collapse to one entry (and one .rodata address).
+        @strings = []
+        @string_ids = {}
         ir_functions = []
         program.functions.each do |decl|
           case decl
@@ -37,10 +43,22 @@ module Rubycc
             ir_functions << gen_function(decl)
           end
         end
-        ir_functions
+        Program.new(ir_functions, @strings)
       end
 
       private
+
+      # Interns `bytes` (an ASCII-8BIT String) into the string pool, returning
+      # its id. Identical contents share one id, deduplicating string literals
+      # across the whole translation unit.
+      def intern_string(bytes)
+        @string_ids.fetch(bytes) do
+          id = @strings.size
+          @strings << bytes
+          @string_ids[bytes] = id
+          id
+        end
+      end
 
       # Records or updates a function's signature, enforcing that repeated
       # declarations agree on their parameter types (which also covers arity)
@@ -80,6 +98,16 @@ module Rubycc
         # backend spills the incoming argument registers into these slots.
         func.params.each do |param|
           @scopes.last[param.name] = Local.new(type: param.type, storage: new_vreg)
+        end
+
+        # A char parameter arrives as a full int in its register; narrow it to
+        # 8 bits in place so its slot holds the truncated char value like any
+        # other char lvalue.
+        func.params.each do |param|
+          next unless param.type.char?
+
+          slot = @scopes.last[param.name].storage
+          emit(:sext8, dst: slot, a: slot)
         end
 
         func.body.each { |stmt| gen_statement(stmt) }
@@ -133,7 +161,7 @@ module Rubycc
 
       def gen_if(node)
         cond, cond_type = gen_expr(node.condition)
-        require_int_condition(cond_type, node.condition.token)
+        require_scalar_condition(cond_type, node.condition.token)
         if node.else_stmt
           else_label = new_label
           end_label = new_label
@@ -156,7 +184,7 @@ module Rubycc
         end_label = new_label
         emit(:label, a: cond_label)
         cond, cond_type = gen_expr(node.condition)
-        require_int_condition(cond_type, node.condition.token)
+        require_scalar_condition(cond_type, node.condition.token)
         emit(:jump_if_zero, a: cond, b: end_label)
         gen_loop_body(node.body, continue_label: cond_label, break_label: end_label)
         emit(:jump, a: cond_label)
@@ -171,7 +199,7 @@ module Rubycc
         gen_loop_body(node.body, continue_label: cond_label, break_label: end_label)
         emit(:label, a: cond_label)
         cond, cond_type = gen_expr(node.condition)
-        require_int_condition(cond_type, node.condition.token)
+        require_scalar_condition(cond_type, node.condition.token)
         emit(:jump_if_zero, a: cond, b: end_label)
         emit(:jump, a: body_label)
         emit(:label, a: end_label)
@@ -191,7 +219,7 @@ module Rubycc
         emit(:label, a: cond_label)
         if node.condition
           cond, cond_type = gen_expr(node.condition)
-          require_int_condition(cond_type, node.condition.token)
+          require_scalar_condition(cond_type, node.condition.token)
           emit(:jump_if_zero, a: cond, b: end_label)
         end
         gen_loop_body(node.body, continue_label: step_label, break_label: end_label)
@@ -253,7 +281,7 @@ module Rubycc
             unless compatible_types?(decl.type, value_type)
               error_at(decl.token, "incompatible types in assignment")
             end
-            emit(:copy, dst: vreg, a: value)
+            emit(:copy, dst: vreg, a: narrow_to_type(value, decl.type))
           end
         end
       end
@@ -267,6 +295,8 @@ module Rubycc
           dst = new_vreg
           emit(:const, dst: dst, a: node.value)
           [dst, Type::Int]
+        when Front::AST::StringLit
+          gen_string_literal(node)
         when Front::AST::Unary
           gen_unary(node)
         when Front::AST::Binary
@@ -310,6 +340,16 @@ module Rubycc
         else
           [local.storage, local.type]
         end
+      end
+
+      # A string literal decays, in every expression context, to a char *
+      # pointing at its bytes in the read-only pool. The bytes are interned
+      # (deduplicated) and :string_addr loads the resulting address.
+      def gen_string_literal(node)
+        id = intern_string(node.value)
+        dst = new_vreg
+        emit(:string_addr, dst: dst, a: id)
+        [dst, Type::Pointer.new(Type::Char)]
       end
 
       # "e[i]" read: compute the element address (see #gen_element_address) and
@@ -445,7 +485,7 @@ module Rubycc
       # is a condition, so it must be int-typed.
       def gen_logical_not(node)
         operand, operand_type = gen_expr(node.operand)
-        require_int_condition(operand_type, node.operand.token)
+        require_scalar_condition(operand_type, node.operand.token)
         zero = new_vreg
         emit(:const, dst: zero, a: 0)
         dst = new_vreg
@@ -515,7 +555,7 @@ module Rubycc
         unless compatible_types?(local.type, value_type)
           error_at(node.token, "incompatible types in assignment")
         end
-        emit(:copy, dst: local.storage, a: value)
+        emit(:copy, dst: local.storage, a: narrow_to_type(value, local.type))
         [local.storage, local.type]
       end
 
@@ -584,14 +624,14 @@ module Rubycc
       #   end:
       def gen_logical_and(node)
         lhs, lhs_type = gen_expr(node.lhs)
-        require_int_condition(lhs_type, node.lhs.token)
+        require_scalar_condition(lhs_type, node.lhs.token)
         false_label = new_label
         end_label = new_label
         result = new_vreg
         emit(:jump_if_zero, a: lhs, b: false_label)
 
         rhs, rhs_type = gen_expr(node.rhs)
-        require_int_condition(rhs_type, node.rhs.token)
+        require_scalar_condition(rhs_type, node.rhs.token)
         emit(:jump_if_zero, a: rhs, b: false_label)
         emit_const_copy(result, 1)
         emit(:jump, a: end_label)
@@ -611,7 +651,7 @@ module Rubycc
       #   end:
       def gen_logical_or(node)
         lhs, lhs_type = gen_expr(node.lhs)
-        require_int_condition(lhs_type, node.lhs.token)
+        require_scalar_condition(lhs_type, node.lhs.token)
         rhs_label = new_label
         false_label = new_label
         end_label = new_label
@@ -623,7 +663,7 @@ module Rubycc
 
         emit(:label, a: rhs_label)
         rhs, rhs_type = gen_expr(node.rhs)
-        require_int_condition(rhs_type, node.rhs.token)
+        require_scalar_condition(rhs_type, node.rhs.token)
         emit(:jump_if_zero, a: rhs, b: false_label)
         emit_const_copy(result, 1)
         emit(:jump, a: end_label)
@@ -639,7 +679,7 @@ module Rubycc
       # same result type (which becomes the expression's type).
       def gen_conditional(node)
         cond, cond_type = gen_expr(node.condition)
-        require_int_condition(cond_type, node.condition.token)
+        require_scalar_condition(cond_type, node.condition.token)
         else_label = new_label
         end_label = new_label
         result = new_vreg
@@ -654,10 +694,17 @@ module Rubycc
         emit(:copy, dst: result, a: else_value)
         emit(:label, a: end_label)
 
-        unless then_type == else_type
-          error_at(node.token, "type mismatch in conditional expression")
+        [result, conditional_result_type(then_type, else_type, node.token)]
+      end
+
+      # The type of "condition ? then : else": identical types are kept as is,
+      # a mixed arithmetic pair (int/char) promotes to int, and anything else
+      # (e.g. pointer vs int, or two different pointer types) is rejected.
+      def conditional_result_type(then_type, else_type, token)
+        if then_type == else_type then then_type
+        elsif then_type.arithmetic? && else_type.arithmetic? then Type::Int
+        else error_at(token, "type mismatch in conditional expression")
         end
-        [result, then_type]
       end
 
       # A compound assignment "target op= value" reads through the target's
@@ -685,7 +732,7 @@ module Rubycc
         unless compatible_types?(local.type, result_type)
           error_at(node.token, "incompatible types in assignment")
         end
-        emit(:copy, dst: local.storage, a: result)
+        emit(:copy, dst: local.storage, a: narrow_to_type(result, local.type))
         [local.storage, local.type]
       end
 
@@ -751,7 +798,7 @@ module Rubycc
         unless compatible_types?(local.type, result_type)
           error_at(node.token, "incompatible types in assignment")
         end
-        emit(:copy, dst: local.storage, a: result)
+        emit(:copy, dst: local.storage, a: narrow_to_type(result, local.type))
         node.prefix ? [local.storage, local.type] : [old_value, local.type]
       end
 
@@ -797,10 +844,27 @@ module Rubycc
         emit(:copy, dst: dst, a: src)
       end
 
-      # Assignment/initialization/argument compatibility: types must match
-      # exactly. Mixing int and pointer (either direction) is rejected.
+      # Assignment/initialization/argument compatibility. The arithmetic types
+      # int and char convert to one another implicitly (int -> char narrows;
+      # char -> int promotes), so any arithmetic pair is compatible. Pointers
+      # must match exactly, and mixing an arithmetic type with a pointer
+      # (either direction) is rejected.
       def compatible_types?(expected, actual)
+        return true if expected.arithmetic? && actual.arithmetic?
+
         expected == actual
+      end
+
+      # Narrows a value to its destination scalar type just before it is copied
+      # into that lvalue's slot. A char destination keeps only the low 8 bits
+      # (sign-extended back to the slot width), giving int -> char truncation;
+      # every other destination type takes the value unchanged.
+      def narrow_to_type(value_vreg, type)
+        return value_vreg unless type.char?
+
+        dst = new_vreg
+        emit(:sext8, dst: dst, a: value_vreg)
+        dst
       end
 
       # Guards a unary "*": its operand must be a pointer.
@@ -809,11 +873,12 @@ module Rubycc
       end
 
       # Guards every condition position (if/while/do-while/for, "&&"/"||"
-      # operands, "!" operand, "?:" condition): a pointer is not a scalar
-      # int and this subset has no other truthiness rule, so it is rejected
-      # rather than silently treated as non-zero.
-      def require_int_condition(type, token)
-        error_at(token, "used pointer where scalar int is required") unless type.int?
+      # operands, "!" operand, "?:" condition): an arithmetic value (int or a
+      # char, which promotes to int) is a valid scalar condition, but a pointer
+      # is not and this subset has no other truthiness rule, so a pointer is
+      # rejected rather than silently treated as non-zero.
+      def require_scalar_condition(type, token)
+        error_at(token, "used pointer where scalar int is required") unless type.arithmetic?
       end
 
       COMPARISON_OPS = %i[eq ne lt le gt ge].freeze
@@ -824,31 +889,37 @@ module Rubycc
 
       # Settles a binary operation's result type and rejects any illegal
       # operand combination with "invalid operands to binary expression".
+      # Arithmetic operands (int and char) mix freely and promote to int, so
+      # the rules below read "arithmetic" wherever int would once have stood.
       # Shared by the lowering path (#gen_binary) and the code-free type
       # inference used by sizeof (#static_type):
-      #   * comparisons: int/int or same-type pointer/pointer -> int;
-      #   * "+": int/int -> int, and pointer/int or int/pointer -> that pointer;
-      #   * "-": int/int -> int, pointer/int -> that pointer, and same-type
-      #     pointer/pointer -> int;
-      #   * "*" "/" "%": int/int -> int only.
+      #   * comparisons: arithmetic/arithmetic or same-type pointer/pointer
+      #     -> int;
+      #   * "+": arithmetic/arithmetic -> int, and pointer/arithmetic or
+      #     arithmetic/pointer -> that pointer;
+      #   * "-": arithmetic/arithmetic -> int, pointer/arithmetic -> that
+      #     pointer, and same-type pointer/pointer -> int;
+      #   * "*" "/" "%": arithmetic/arithmetic -> int only.
       def binary_result_type(op, lhs_type, rhs_type, token)
         result =
           if comparison_op?(op)
-            Type::Int if lhs_type == rhs_type && (lhs_type.int? || lhs_type.pointer?)
+            if lhs_type.arithmetic? && rhs_type.arithmetic? then Type::Int
+            elsif lhs_type.pointer? && rhs_type.pointer? && lhs_type == rhs_type then Type::Int
+            end
           else
             case op
             when :add
-              if lhs_type.int? && rhs_type.int? then Type::Int
-              elsif lhs_type.pointer? && rhs_type.int? then lhs_type
-              elsif lhs_type.int? && rhs_type.pointer? then rhs_type
+              if lhs_type.arithmetic? && rhs_type.arithmetic? then Type::Int
+              elsif lhs_type.pointer? && rhs_type.arithmetic? then lhs_type
+              elsif lhs_type.arithmetic? && rhs_type.pointer? then rhs_type
               end
             when :sub
-              if lhs_type.int? && rhs_type.int? then Type::Int
-              elsif lhs_type.pointer? && rhs_type.int? then lhs_type
+              if lhs_type.arithmetic? && rhs_type.arithmetic? then Type::Int
+              elsif lhs_type.pointer? && rhs_type.arithmetic? then lhs_type
               elsif lhs_type.pointer? && rhs_type.pointer? && lhs_type == rhs_type then Type::Int
               end
             else # :mul, :div, :mod
-              Type::Int if lhs_type.int? && rhs_type.int?
+              Type::Int if lhs_type.arithmetic? && rhs_type.arithmetic?
             end
           end
         result || error_at(token, "invalid operands to binary expression")
@@ -865,10 +936,14 @@ module Rubycc
 
       # sizeof measures the operand's type without evaluating it. A bare array
       # variable keeps its array type (no decay), so "sizeof a" is the whole
-      # array; every other operand takes its ordinary (decayed) expression type.
+      # array; a string literal is likewise measured as its char[N+1] array
+      # (NUL included) rather than the char * it would decay to; every other
+      # operand takes its ordinary (decayed) expression type.
       def sizeof_operand_type(node)
         if node.is_a?(Front::AST::VariableRef)
           lookup_local(node.name, node.token).type
+        elsif node.is_a?(Front::AST::StringLit)
+          Type::Array.new(Type::Char, node.value.bytesize + 1)
         else
           static_type(node)
         end
@@ -882,6 +957,8 @@ module Rubycc
         when Front::AST::IntLit, Front::AST::Call,
              Front::AST::SizeofExpr, Front::AST::SizeofType
           Type::Int
+        when Front::AST::StringLit
+          Type::Pointer.new(Type::Char)
         when Front::AST::VariableRef
           type = lookup_local(node.name, node.token).type
           type.array? ? Type::Pointer.new(type.element) : type
@@ -906,12 +983,7 @@ module Rubycc
       # mirroring #gen_conditional: both arms must agree, and that shared type
       # is the result.
       def static_conditional_type(node)
-        then_type = static_type(node.then_expr)
-        else_type = static_type(node.else_expr)
-        unless then_type == else_type
-          error_at(node.token, "type mismatch in conditional expression")
-        end
-        then_type
+        conditional_result_type(static_type(node.then_expr), static_type(node.else_expr), node.token)
       end
 
       def static_unary_type(node)

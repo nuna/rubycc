@@ -3,10 +3,12 @@
 module Rubycc
   module Front
     # A single lexical token. `type` is one of :num, :ident, :keyword, :punct,
-    # :eof. `value` is an Integer for :num and a String otherwise (nil for
-    # :eof). The remaining fields locate the token in the source for diagnostics.
+    # :string, :eof. `value` is an Integer for :num, an ASCII-8BIT String of the
+    # escape-resolved bytes for :string, a String for :ident/:keyword/:punct,
+    # and nil for :eof. The remaining fields locate the token in the source for
+    # diagnostics.
     class Token
-      TYPES = %i[num ident keyword punct eof].freeze
+      TYPES = %i[num ident keyword punct string eof].freeze
 
       attr_reader :type, :value, :filename, :line, :column, :source_line
 

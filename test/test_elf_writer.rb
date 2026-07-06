@@ -13,6 +13,16 @@ class TestElfWriter < Minitest::Test
   CALL_CODE = [0xE8, 0x00, 0x00, 0x00, 0x00, 0xC3].pack("C*")
   CALL_REL32_OFFSET = 1
 
+  # A body "lea rax, [rip + 0]" (48 8D 05 + zero placeholder) followed by ret;
+  # the rel32 displacement sits at offset 3 and is what a .rodata PC32
+  # relocation targets.
+  LEA_CODE = [0x48, 0x8D, 0x05, 0x00, 0x00, 0x00, 0x00, 0xC3].pack("C*")
+  LEA_REL32_OFFSET = 3
+
+  # Two NUL-terminated strings, "hi" at offset 0 and "world" at offset 3.
+  RODATA = "hi\0world\0".b
+  WORLD_OFFSET = 3
+
   def build_object
     writer = Rubycc::ObjFile::ELFWriter.new
     writer.add_file_symbol("foo.c")
@@ -31,6 +41,78 @@ class TestElfWriter < Minitest::Test
     writer.add_undefined_symbol("abs")
     writer.add_text_relocation(offset: CALL_REL32_OFFSET, symbol: "abs")
     writer.to_binary
+  end
+
+  # Builds an object with a .rodata string pool and one PC32 relocation from a
+  # "lea rip" site into it (addressing "world", at .rodata offset 3).
+  def build_object_with_rodata
+    writer = Rubycc::ObjFile::ELFWriter.new
+    writer.add_file_symbol("foo.c")
+    writer.add_text_section(LEA_CODE)
+    writer.add_global_func("main", 0, LEA_CODE.bytesize)
+    writer.set_rodata(RODATA)
+    writer.add_rodata_relocation(offset: LEA_REL32_OFFSET, addend: WORLD_OFFSET - 4)
+    writer.to_binary
+  end
+
+  def test_rodata_section_holds_the_concatenated_nul_terminated_strings
+    bin = build_object_with_rodata
+    rodata = find_section(bin, ".rodata")
+
+    refute_nil rodata, ".rodata section should be emitted"
+    assert_equal 1, rodata[:type]              # SHT_PROGBITS
+    assert_equal 0x2, rodata[:flags] & 0x2     # SHF_ALLOC
+    assert_equal RODATA, bin[rodata[:offset], rodata[:size]]
+  end
+
+  def test_object_without_strings_has_no_rodata
+    assert_nil find_section(build_object, ".rodata")
+  end
+
+  def test_rodata_section_symbol_is_local_and_points_at_rodata
+    bin = build_object_with_rodata
+    symtab = find_section(bin, ".symtab")
+    rodata_index = section_index(bin, ".rodata")
+    count = symtab[:size] / 24
+
+    section_syms = (0...count).select do |i|
+      sym = bin[symtab[:offset] + i * 24, 24]
+      st_info = sym[4].unpack1("C")
+      (st_info & 0xF) == 3 && sym[6, 2].unpack1("S<") == rodata_index # STT_SECTION into .rodata
+    end
+    assert_equal 1, section_syms.size, "exactly one .rodata section symbol"
+
+    sym = bin[symtab[:offset] + section_syms.first * 24, 24]
+    assert_equal 0, sym[4].unpack1("C") >> 4   # STB_LOCAL
+  end
+
+  def test_rodata_relocation_is_pc32_against_the_rodata_section
+    bin = build_object_with_rodata
+    rela = find_section(bin, ".rela.text")
+    refute_nil rela, ".rela.text section should be emitted"
+    assert_equal 1, rela[:size] / 24           # the single PC32 entry
+
+    r_offset = bin[rela[:offset], 8].unpack1("Q<")
+    r_info = bin[rela[:offset] + 8, 8].unpack1("Q<")
+    r_addend = bin[rela[:offset] + 16, 8].unpack1("q<")
+
+    assert_equal LEA_REL32_OFFSET, r_offset
+    assert_equal 2, r_info & 0xFFFFFFFF        # R_X86_64_PC32
+    assert_equal WORLD_OFFSET - 4, r_addend    # string offset biased by -4
+
+    sym_index = r_info >> 32
+    sym = bin[find_section(bin, ".symtab")[:offset] + sym_index * 24, 24]
+    assert_equal 3, sym[4].unpack1("C") & 0xF  # the target is a STT_SECTION symbol
+    assert_equal section_index(bin, ".rodata"), sym[6, 2].unpack1("S<")
+  end
+
+  def test_readelf_reports_the_rodata_relocation
+    with_object_file(build_object_with_rodata) do |path|
+      stdout, status = Open3.capture2("readelf", "-r", path)
+      assert status.success?, "readelf failed to read relocations"
+      assert_match(/R_X86_64_PC32/, stdout)
+      assert_match(/\.rodata/, stdout)
+    end
   end
 
   def test_elf_magic_and_identification

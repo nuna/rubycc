@@ -317,4 +317,34 @@ class TestDiagnostics < Minitest::Test
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/invalid operands to binary expression/, error.description)
   end
+
+  def test_assigning_char_pointer_to_int_pointer_is_rejected
+    source = "int main(void) { char *c; int *p; p = c; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/incompatible types in assignment/, error.description)
+  end
+
+  def test_char_pointer_argument_to_int_pointer_parameter_is_rejected
+    source = "int f(int *p) { return 0; } int main(void) { char *c; return f(c); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/incompatible type for argument 1 of 'f'/, error.description)
+  end
+
+  def test_comparing_char_pointer_with_int_pointer_is_rejected
+    source = "int main(void) { char *c; int *p; return c < p; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_subtracting_mismatched_char_and_int_pointers_is_rejected
+    source = "int main(void) { char *c; int *p; return p - c; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_char_return_type_is_rejected
+    source = "char f(void) { return 0; } int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/char return type is not supported yet/, error.description)
+  end
 end

@@ -16,16 +16,26 @@ module Rubycc
     def compile(source, filename:)
       tokens = Front::Lexer.new(source, filename: filename).tokenize
       program = Front::Parser.new(tokens).parse
-      ir_functions = IR::Generator.new.generate(program)
+      ir_program = IR::Generator.new.generate(program)
 
       backend = Backend::X86_64.new
       writer = ObjFile::ELFWriter.new
       writer.add_file_symbol(File.basename(filename))
 
+      # Lay out the translation unit's string pool as .rodata: each interned
+      # string in id order, NUL-terminated. `string_offsets[id]` is the byte
+      # offset of string `id` within the section.
+      rodata = +"".b
+      string_offsets = []
+      ir_program.strings.each do |bytes|
+        string_offsets << rodata.bytesize
+        rodata << bytes << "\0".b
+      end
+
       text = +"".b
       defined_names = []
       relocations = []
-      ir_functions.each do |ir_func|
+      ir_program.functions.each do |ir_func|
         result = backend.compile(ir_func)
         # Align each function to 16 bytes with NOP (0x90) padding, keeping the
         # output deterministic and every entry point aligned.
@@ -37,17 +47,27 @@ module Rubycc
           defined_names << sym[:name]
         end
         result.relocations.each do |reloc|
-          relocations << { offset: base + reloc[:offset], symbol: reloc[:symbol] }
+          relocations << reloc.merge(offset: base + reloc[:offset])
         end
       end
 
-      # A call whose target is not defined in this translation unit becomes an
-      # undefined symbol for the linker to resolve (e.g. libc's abs).
       relocations.each do |reloc|
-        writer.add_undefined_symbol(reloc[:symbol]) unless defined_names.include?(reloc[:symbol])
-        writer.add_text_relocation(offset: reloc[:offset], symbol: reloc[:symbol])
+        case reloc[:kind]
+        when :call
+          # A call whose target is not defined in this translation unit becomes
+          # an undefined symbol for the linker to resolve (e.g. libc's abs).
+          writer.add_undefined_symbol(reloc[:symbol]) unless defined_names.include?(reloc[:symbol])
+          writer.add_text_relocation(offset: reloc[:offset], symbol: reloc[:symbol])
+        when :string
+          # A "lea rip" displacement into .rodata: a PC-relative reference to
+          # the .rodata section symbol biased by the string's offset. The -4
+          # accounts for the rel32 field sitting 4 bytes before its own end.
+          addend = string_offsets[reloc[:string_id]] - 4
+          writer.add_rodata_relocation(offset: reloc[:offset], addend: addend)
+        end
       end
 
+      writer.set_rodata(rodata) unless rodata.empty?
       writer.add_text_section(text)
       writer.to_binary
     end

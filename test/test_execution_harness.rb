@@ -577,6 +577,95 @@ class TestExecutionHarness < Minitest::Test
     )
   end
 
+  def test_char_arithmetic_promotes_to_int
+    assert_c_exit_status(42, "int main(void) { char c = 65; return c - 23; }", compiler: :rubycc)
+  end
+
+  def test_char_assignment_truncates_to_one_byte
+    assert_c_exit_status(44, "int main(void) { char c = 300; return c; }", compiler: :rubycc)
+  end
+
+  def test_character_constant
+    assert_c_exit_status(42, "int main(void) { char c = 'A'; return c == 65 ? 42 : 0; }", compiler: :rubycc)
+  end
+
+  def test_character_constant_escape
+    assert_c_exit_status(42, "int main(void) { return '\\n' == 10 ? 42 : 7; }", compiler: :rubycc)
+  end
+
+  def test_string_subscript
+    assert_c_exit_status(101, "int main(void) { char *s = \"hello\"; return s[1]; }", compiler: :rubycc)
+  end
+
+  def test_string_length_with_own_strlen
+    assert_c_exit_status(
+      42,
+      "int length(char *s) { int n = 0; while (s[n]) n++; return n; } " \
+      "int main(void) { return length(\"forty-two!\") * 4 + 2; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_char_array_store_and_load
+    assert_c_exit_status(
+      120,
+      "int main(void) { char buf[4]; buf[0] = 'x'; buf[1] = 0; return buf[0]; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_char_pointer_arithmetic_scales_by_one
+    assert_c_exit_status(99, "int main(void) { char *s = \"abc\"; s += 2; return *s; }", compiler: :rubycc)
+  end
+
+  def test_string_escape_is_resolved
+    assert_c_exit_status(42, "int main(void) { char *s = \"a\\tb\"; return s[1] == 9 ? 42 : 0; }", compiler: :rubycc)
+  end
+
+  def test_sizeof_of_char_string_and_char_pointer
+    assert_c_exit_status(
+      42,
+      "int main(void) { return sizeof(\"hi\") * 10 + sizeof(char) * 8 + sizeof(char *) / 2; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_char_promotes_when_added_to_int
+    assert_c_exit_status(42, "int main(void) { char a = 40; int b = 2; return a + b; }", compiler: :rubycc)
+  end
+
+  def test_identical_string_literals_are_deduplicated
+    # rubycc pools identical literals, so both pointers hold the same .rodata
+    # address. (Excluded from the gcc differential: identical string identity
+    # is unspecified in C.)
+    assert_c_exit_status(
+      42,
+      "int main(void) { char *a = \"same\"; char *b = \"same\"; return a == b ? 42 : 7; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_while_dereference_loop_counts_characters
+    assert_c_exit_status(
+      42,
+      "int count(char *s, char t) { int n = 0; while (*s) { if (*s == t) n++; s++; } return n; } " \
+      "int main(void) { return count(\"mississippi\", 's') * 10 + 2; }",
+      compiler: :rubycc
+    )
+  end
+
+  PUTS_PROGRAM = "int puts(char *s); int main(void) { puts(\"hello, rubycc\"); return 0; }"
+
+  def test_puts_writes_to_stdout
+    assert_c_program(PUTS_PROGRAM, exit_status: 0, stdout: "hello, rubycc\n", compiler: :rubycc)
+  end
+
+  def test_puts_matches_gcc_stdout_and_exit
+    rubycc = program_output(PUTS_PROGRAM, compiler: :rubycc)
+    gcc = program_output(PUTS_PROGRAM, compiler: :gcc)
+    assert_equal gcc, rubycc, "rubycc and gcc disagree on [exit, stdout] for puts"
+  end
+
   def test_linking_emits_no_executable_stack_warning
     # The .note.GNU-stack section marks the stack non-executable, so gcc's
     # linker driver should not print any warning when producing the executable.
@@ -700,7 +789,21 @@ class TestExecutionHarness < Minitest::Test
     "int main(void) { int i = 0; int a[3]; a[i++] = 40; a[i] = 2; return a[0] + a[1]; }",
     "int main(void) { int a[4]; a[0] = 40; a[1] = 2; int *p = a; int s = *p++; s += *p; return s; }",
     "int main(void) { int a[2]; a[1] = 40; a[1] += 2; return a[1]; }",
-    "int main(void) { int s = 0; for (int i = 1; i <= 9; ++i) s += i; return s - 3; }"
+    "int main(void) { int s = 0; for (int i = 1; i <= 9; ++i) s += i; return s - 3; }",
+    "int main(void) { char c = 65; return c - 23; }",
+    "int main(void) { char c = 300; return c; }",
+    "int main(void) { char c = 'A'; return c == 65 ? 42 : 0; }",
+    "int main(void) { return '\\n' == 10 ? 42 : 7; }",
+    "int main(void) { char *s = \"hello\"; return s[1]; }",
+    "int length(char *s) { int n = 0; while (s[n]) n++; return n; } " \
+    "int main(void) { return length(\"forty-two!\") * 4 + 2; }",
+    "int main(void) { char buf[4]; buf[0] = 'x'; buf[1] = 0; return buf[0]; }",
+    "int main(void) { char *s = \"abc\"; s += 2; return *s; }",
+    "int main(void) { char *s = \"a\\tb\"; return s[1] == 9 ? 42 : 0; }",
+    "int main(void) { return sizeof(\"hi\") * 10 + sizeof(char) * 8 + sizeof(char *) / 2; }",
+    "int main(void) { char a = 40; int b = 2; return a + b; }",
+    "int count(char *s, char t) { int n = 0; while (*s) { if (*s == t) n++; s++; } return n; } " \
+    "int main(void) { return count(\"mississippi\", 's') * 10 + 2; }"
   ].freeze
 
   def test_matches_gcc_exit_codes
@@ -717,10 +820,17 @@ class TestExecutionHarness < Minitest::Test
   def run_source(source, compiler:)
     in_tmpdir do |dir|
       object_path = File.join(dir, "test.o")
-      case compiler
-      when :rubycc then compile_with_rubycc(source, object_path)
-      when :gcc then compile_with_gcc(source, object_path)
-      end
+      compile_source(source, object_path, compiler)
+      exit_status, = link_and_run(object_path)
+      exit_status
+    end
+  end
+
+  # Compiles and runs `source`, returning [exit_status, stdout] for comparison.
+  def program_output(source, compiler:)
+    in_tmpdir do |dir|
+      object_path = File.join(dir, "test.o")
+      compile_source(source, object_path, compiler)
       link_and_run(object_path)
     end
   end

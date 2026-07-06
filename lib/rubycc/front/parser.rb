@@ -12,15 +12,17 @@ module Rubycc
     #   translation-unit          = external-declaration*
     #   external-declaration      = "int" identifier "(" parameter-type-list? ")"
     #                               (";" | compound-statement)
+    #   type-specifier            = "int" | "char"
     #   parameter-type-list       = "void"
     #                             | parameter-declaration
     #                               ("," parameter-declaration)*
-    #   parameter-declaration     = "int" declarator?
+    #   parameter-declaration     = type-specifier declarator?
     #   declarator                = "*"* direct-declarator
     #   direct-declarator         = identifier ("[" integer-constant "]")?
     #   compound-statement        = "{" block-item* "}"
     #   block-item                = declaration | statement
-    #   declaration               = "int" init-declarator ("," init-declarator)* ";"
+    #   declaration               = type-specifier init-declarator
+    #                               ("," init-declarator)* ";"
     #   init-declarator           = declarator ("=" assignment-expression)?
     #   statement                 = return-statement | expression-statement
     #                             | selection-statement | iteration-statement
@@ -57,13 +59,14 @@ module Rubycc
     #                             | ("++" | "--") unary-expression
     #                             | "sizeof" unary-expression
     #                             | "sizeof" "(" type-name ")"
-    #   type-name                 = "int" "*"*
+    #   type-name                 = type-specifier "*"*
     #   postfix-expression        = (primary-expression
     #                               | identifier "(" argument-expression-list? ")")
     #                               ("[" expression "]" | "++" | "--")*
     #   argument-expression-list  = assignment-expression
     #                               ("," assignment-expression)*
-    #   primary-expression        = integer-constant | identifier | "(" expression ")"
+    #   primary-expression        = integer-constant | string-literal
+    #                             | identifier | "(" expression ")"
     #
     # Binary precedence levels are parsed by a single table-driven
     # left-associative loop (see #parse_left_associative) rather than one
@@ -82,6 +85,9 @@ module Rubycc
       RELATIONAL_OPERATORS = { "<" => :lt, ">" => :gt, "<=" => :le, ">=" => :ge }.freeze
       ADDITIVE_OPERATORS = { "+" => :add, "-" => :sub }.freeze
       MULTIPLICATIVE_OPERATORS = { "*" => :mul, "/" => :div, "%" => :mod }.freeze
+
+      # The keywords that open a declaration, each naming a base Rubycc::Type.
+      TYPE_SPECIFIERS = { "int" => Type::Int, "char" => Type::Char }.freeze
 
       # System V AMD64 passes the first six integer arguments in registers;
       # this subset rejects any function with more parameters (or arguments).
@@ -119,9 +125,15 @@ module Rubycc
 
       # An external declaration is a prototype (ends in ";") or a definition
       # (ends in a compound-statement); the two share the same
-      # "int" identifier "(" parameter-type-list? ")" prefix.
+      # type-specifier identifier "(" parameter-type-list? ")" prefix. Only an
+      # int return type is modelled; a char return type is rejected rather than
+      # silently narrowed.
       def parse_external_declaration
-        int_tok = expect_keyword("int")
+        return_tok = peek
+        return_type = parse_type_specifier
+        if return_type.char?
+          error_at(return_tok, "char return type is not supported yet")
+        end
         name_tok = expect_ident
         expect_punct("(")
         params = parse_parameter_type_list
@@ -129,13 +141,30 @@ module Rubycc
 
         if peek.punct?(";")
           advance
-          AST::FunctionDecl.new(name_tok.value, params, int_tok)
+          AST::FunctionDecl.new(name_tok.value, params, return_tok)
         else
-          parse_function_definition(name_tok.value, params, int_tok)
+          parse_function_definition(name_tok.value, params, return_tok)
         end
       end
 
-      def parse_function_definition(name, params, int_tok)
+      # type-specifier = "int" | "char": consumes the keyword and returns the
+      # base Rubycc::Type any leading "*" run then builds a pointer from.
+      def parse_type_specifier
+        tok = peek
+        base = type_specifier?(tok) && TYPE_SPECIFIERS[tok.value]
+        error_at(tok, "expected type specifier") unless base
+
+        advance
+        base
+      end
+
+      # Whether `token` opens a declaration (an "int" or "char" keyword),
+      # letting block-item and for-init tell a declaration from a statement.
+      def type_specifier?(token)
+        token.type == :keyword && TYPE_SPECIFIERS.key?(token.value)
+      end
+
+      def parse_function_definition(name, params, return_tok)
         # A definition, unlike a prototype, must name each parameter so its
         # value can be bound in the body.
         params.each do |param|
@@ -145,7 +174,7 @@ module Rubycc
         body = []
         body.concat(parse_block_item) until peek.punct?("}")
         expect_punct("}")
-        AST::FunctionDef.new(name, params, body, int_tok)
+        AST::FunctionDef.new(name, params, body, return_tok)
       end
 
       # Returns an array of AST::Parameter; empty for "()" or "(void)".
@@ -167,25 +196,25 @@ module Rubycc
         params
       end
 
-      # parameter-declaration = "int" declarator?. The declarator's name is
-      # optional (nil) so prototypes may omit it, but any leading "*" run still
-      # contributes to the parameter's pointer type; an unnamed parameter is
-      # located by its "int" keyword for diagnostics.
+      # parameter-declaration = type-specifier declarator?. The declarator's
+      # name is optional (nil) so prototypes may omit it, but any leading "*"
+      # run still contributes to the parameter's pointer type; an unnamed
+      # parameter is located by its type-specifier keyword for diagnostics.
       def parse_parameter_declaration
-        int_tok = expect_keyword("int")
-        type = parse_pointer_declarator(Type::Int)
+        type_tok = peek
+        type = parse_pointer_declarator(parse_type_specifier)
         if peek.type == :ident
           name_tok = advance
           AST::Parameter.new(name_tok.value, type, name_tok)
         else
-          AST::Parameter.new(nil, type, int_tok)
+          AST::Parameter.new(nil, type, type_tok)
         end
       end
 
       # Returns an array of nodes: a declaration expands to one VariableDecl
       # per init-declarator, while a statement always yields exactly one node.
       def parse_block_item
-        if peek.keyword?("int")
+        if type_specifier?(peek)
           parse_declaration
         else
           [parse_statement]
@@ -193,18 +222,18 @@ module Rubycc
       end
 
       def parse_declaration
-        expect_keyword("int")
-        decls = [parse_init_declarator]
+        base_type = parse_type_specifier
+        decls = [parse_init_declarator(base_type)]
         while peek.punct?(",")
           advance
-          decls << parse_init_declarator
+          decls << parse_init_declarator(base_type)
         end
         expect_punct(";")
         decls
       end
 
-      def parse_init_declarator
-        type = parse_pointer_declarator(Type::Int)
+      def parse_init_declarator(base_type)
+        type = parse_pointer_declarator(base_type)
         name_tok = expect_ident
         type = parse_array_declarator(type)
         initializer = nil
@@ -335,7 +364,7 @@ module Rubycc
       # Parses the for-loop's first clause, consuming its trailing ";" (a
       # declaration already does so; the other two branches do it explicitly).
       def parse_for_init
-        if peek.keyword?("int")
+        if type_specifier?(peek)
           parse_declaration
         elsif peek.punct?(";")
           advance
@@ -509,17 +538,16 @@ module Rubycc
         AST::IncDec.new(op, operand, true, op_tok)
       end
 
-      # "sizeof" measures either a parenthesized type-name ("sizeof(int *)") or
-      # the result type of a unary-expression ("sizeof x", "sizeof(a)"). A "("
-      # right after the keyword is only a type-name when "int" follows;
-      # otherwise it is an ordinary parenthesized operand, so it is left for
-      # unary-expression to consume.
+      # "sizeof" measures either a parenthesized type-name ("sizeof(char *)")
+      # or the result type of a unary-expression ("sizeof x", "sizeof(a)"). A
+      # "(" right after the keyword is only a type-name when a type-specifier
+      # ("int" or "char") follows; otherwise it is an ordinary parenthesized
+      # operand, so it is left for unary-expression to consume.
       def parse_sizeof
         sizeof_tok = advance # "sizeof"
-        if peek.punct?("(") && peek_ahead(1)&.keyword?("int")
+        if peek.punct?("(") && peek_ahead(1) && type_specifier?(peek_ahead(1))
           advance # "("
-          expect_keyword("int")
-          type = parse_pointer_declarator(Type::Int)
+          type = parse_pointer_declarator(parse_type_specifier)
           expect_punct(")")
           AST::SizeofType.new(type, sizeof_tok)
         else
@@ -580,6 +608,9 @@ module Rubycc
         if tok.type == :num
           advance
           AST::IntLit.new(tok.value, tok)
+        elsif tok.type == :string
+          advance
+          AST::StringLit.new(tok.value, tok)
         elsif tok.type == :ident
           advance
           AST::VariableRef.new(tok.value, tok)

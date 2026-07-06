@@ -16,6 +16,40 @@ class TestType < Minitest::Test
     refute_predicate ptr, :int?
   end
 
+  def test_char_predicates
+    assert_predicate Type::Char, :char?
+    assert_predicate Type::Char, :arithmetic?
+    refute_predicate Type::Char, :int?
+    refute_predicate Type::Char, :pointer?
+    refute_predicate Type::Char, :array?
+  end
+
+  def test_int_is_arithmetic_but_not_char
+    assert_predicate Type::Int, :arithmetic?
+    refute_predicate Type::Int, :char?
+  end
+
+  def test_pointer_and_array_are_not_arithmetic
+    refute_predicate Type::Pointer.new(Type::Char), :arithmetic?
+    refute_predicate Type::Array.new(Type::Char, 3), :arithmetic?
+  end
+
+  def test_char_size_and_rendering
+    assert_equal 1, Type::Char.size
+    assert_equal "char", Type::Char.to_s
+    assert_equal "char *", Type::Pointer.new(Type::Char).to_s
+  end
+
+  def test_char_and_int_are_not_equal
+    refute_equal Type::Char, Type::Int
+    refute_equal Type::Pointer.new(Type::Char), Type::Pointer.new(Type::Int)
+  end
+
+  def test_char_equals_itself
+    assert_equal Type::Char, Type::Char
+    assert_equal Type::Pointer.new(Type::Char), Type::Pointer.new(Type::Char)
+  end
+
   def test_int_renders_as_int
     assert_equal "int", Type::Int.to_s
   end
