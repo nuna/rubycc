@@ -71,9 +71,11 @@ module Rubycc
         if @global_bindings.key?(decl.name) || @signatures.key?(decl.name)
           error_at(decl.token, "redefinition of '#{decl.name}'")
         end
+        # A global needs a known storage width and boundary, so an incomplete
+        # struct (a tag never defined) cannot be laid out in .bss/.data.
+        require_complete(decl.type, decl.token)
         @global_bindings[decl.name] = Local.new(type: decl.type, storage: decl.name, global: true)
-        align = decl.type.array? ? decl.type.element.size : decl.type.size
-        @globals << Global.new(name: decl.name, size: decl.type.size, align: align,
+        @globals << Global.new(name: decl.name, size: decl.type.size, align: decl.type.alignment,
                                init: decl.initializer_value)
       end
 
@@ -94,6 +96,16 @@ module Rubycc
       # also covers arity) and that a body is defined at most once.
       def declare_function(name, return_type, param_types, defined:, token:)
         error_at(token, "redefinition of '#{name}'") if @global_bindings.key?(name)
+        # Passing or returning a struct by value is out of scope for this step
+        # (a struct pointer is the way to hand a struct across a call), so a
+        # struct-typed parameter or return type is rejected up front, before any
+        # call site can rely on it.
+        if return_type.struct?
+          error_at(token, "struct return values are not supported yet")
+        end
+        if param_types.any?(&:struct?)
+          error_at(token, "struct parameters are not supported yet")
+        end
         existing = @signatures[name]
         if existing
           if existing[:param_types] != param_types || existing[:return_type] != return_type
@@ -335,10 +347,12 @@ module Rubycc
           error_at(decl.token, "redeclaration of '#{decl.name}'")
         end
 
-        # An array reserves a stack object sized to hold all its elements; the
-        # parser has already rejected any initializer for it. A scalar takes a
-        # vreg slot and may be initialized in place.
-        if decl.type.array?
+        # An array or a struct is an aggregate: it reserves a stack object
+        # sized to hold it (a struct must be complete first, so its width is
+        # known), and the parser has already rejected any initializer for one.
+        # A scalar takes a vreg slot and may be initialized in place.
+        if decl.type.array? || decl.type.struct?
+          require_complete(decl.type, decl.token)
           scope[decl.name] = Local.new(type: decl.type, storage: new_object(decl.type.size), global: false)
         else
           vreg = new_vreg
@@ -372,6 +386,8 @@ module Rubycc
           gen_variable_ref(node)
         when Front::AST::Subscript
           gen_subscript(node)
+        when Front::AST::MemberAccess
+          gen_member_access(node)
         when Front::AST::SizeofExpr
           gen_sizeof(sizeof_operand_type(node.operand), node.token)
         when Front::AST::SizeofType
@@ -419,6 +435,14 @@ module Rubycc
           dst = new_vreg
           emit(:object_addr, dst: dst, a: local.storage)
           [dst, Type::Pointer.new(local.type.element)]
+        elsif local.type.struct?
+          # A struct does not decay: unlike an array it keeps its struct type,
+          # but its "value" is likewise its object's base address, which member
+          # access, "&s" and struct assignment all build on. Nothing is loaded
+          # here; a whole struct never lives in a single vreg.
+          dst = new_vreg
+          emit(:object_addr, dst: dst, a: local.storage)
+          [dst, local.type]
         elsif local.type.char?
           # A char local lives in its 8-byte slot as a sign-extended int, but a
           # store through a pointer to it ("char *p = &c; *p = v;") rewrites
@@ -443,6 +467,10 @@ module Rubycc
         emit(:global_addr, dst: addr, a: local.storage)
         if local.type.array?
           [addr, Type::Pointer.new(local.type.element)]
+        elsif local.type.struct?
+          # Like a local struct (and unlike a scalar global), a global struct's
+          # value is its base address, not a load: it keeps its struct type.
+          [addr, local.type]
         else
           dst = new_vreg
           emit(:load, dst: dst, a: addr, size: local.type.size)
@@ -460,13 +488,85 @@ module Rubycc
         [dst, Type::Pointer.new(Type::Char)]
       end
 
-      # "e[i]" read: compute the element address (see #gen_element_address) and
-      # load through it, the width following the element type.
+      # "e[i]" read: compute the element address (see #gen_element_address) and,
+      # for a scalar element, load through it. A struct element does not load —
+      # like a struct variable its value is its (element) address — so indexing
+      # an array of structs yields the addressed struct.
       def gen_subscript(node)
         addr, element_type = gen_element_address(node)
+        return [addr, element_type] if element_type.struct?
+
         dst = new_vreg
         emit(:load, dst: dst, a: addr, size: element_type.size)
         [dst, element_type]
+      end
+
+      # "s.m" / "p->m" read: compute the member's address (see
+      # #gen_member_address) and, for a scalar member, load through it. A struct
+      # member yields its own address (a nested struct lvalue) and an array
+      # member decays to a pointer to its first element, matching how a struct
+      # variable and an array variable each behave.
+      def gen_member_access(node)
+        addr, member_type = gen_member_address(node)
+        if member_type.struct?
+          [addr, member_type]
+        elsif member_type.array?
+          [addr, Type::Pointer.new(member_type.element)]
+        else
+          dst = new_vreg
+          emit(:load, dst: dst, a: addr, size: member_type.size)
+          [dst, member_type]
+        end
+      end
+
+      # The address of a struct member — the lvalue shared by member reads and
+      # writes and by "&s.m". It is the base struct's address (see
+      # #gen_struct_base) plus the member's constant byte offset; a zero offset
+      # (the first member) needs no arithmetic. Returns [address_vreg,
+      # member_type].
+      def gen_member_address(node)
+        base_addr, struct_type = gen_struct_base(node)
+        member = struct_type.member(node.member)
+        unless member
+          error_at(node.token, "no member named '#{node.member}' in '#{struct_type}'")
+        end
+        return [base_addr, member.type] if member.offset.zero?
+
+        offset = new_vreg
+        emit(:const, dst: offset, a: member.offset)
+        addr = new_vreg
+        emit(:add, dst: addr, a: base_addr, b: offset, size: 8)
+        [addr, member.type]
+      end
+
+      # Evaluates the object a "." or "->" selects from, returning
+      # [struct_address_vreg, complete_struct_type]. For "->" the base is a
+      # pointer to a struct (its value is the address directly); for "." the
+      # base is a struct lvalue (its value is already an address). Either way an
+      # incomplete struct is rejected, since its members are unknown.
+      def gen_struct_base(node)
+        base, base_type = gen_value(node.base)
+        if node.arrow
+          require_pointer_to_struct(base_type, node)
+          struct_type = base_type.target
+        else
+          unless base_type.struct?
+            error_at(node.token, "request for member '#{node.member}' in something not a structure")
+          end
+          struct_type = base_type
+        end
+        require_complete(struct_type, node.token)
+        [base, struct_type]
+      end
+
+      # Guards the "->" form: its base must be a pointer, and that pointer's
+      # target must be a struct. A non-pointer base (e.g. "s->m" on a struct
+      # value, where "s.m" was meant) and a pointer to a non-struct are both
+      # rejected with the same "not a structure" wording "." uses.
+      def require_pointer_to_struct(base_type, node)
+        unless base_type.pointer? && base_type.target.struct?
+          error_at(node.token, "request for member '#{node.member}' in something not a structure")
+        end
       end
 
       # sizeof folds to a compile-time int constant: the resolved type's byte
@@ -476,6 +576,10 @@ module Rubycc
       # reached through a void-returning call's result type ("sizeof f()").
       def gen_sizeof(type, token)
         error_at(token, "invalid application of 'sizeof' to void type") if type.void?
+        # An incomplete struct has no known size to fold, whether written
+        # directly ("sizeof(struct node)" before it is defined) or reached
+        # through an operand of that type.
+        require_complete(type, token)
 
         dst = new_vreg
         emit(:const, dst: dst, a: type.size)
@@ -568,6 +672,9 @@ module Rubycc
         base, base_type = gen_value(node.target)
         element_type = subscript_element_type(base_type, node.token)
         error_at(node.token, "invalid use of void pointer") if element_type.void?
+        # The element's size scales the index, so an incomplete struct element
+        # (its width unknown) is rejected before it reaches #scale_index.
+        require_complete(element_type, node.token)
         index, index_type = gen_value(node.index)
         unless index_type.int?
           error_at(node.token, "array subscript is not an integer")
@@ -619,14 +726,26 @@ module Rubycc
           if local.type.array?
             error_at(node.token, "address of array is not supported yet")
           end
-          # A global's address is its symbol (:global_addr); a local's is the
-          # absolute address of its stack slot (:addr_of).
+          # A struct variable already evaluates to its object's base address
+          # (a stack object or a global symbol), so "&s" reuses that and just
+          # retags it as a pointer. A scalar's address is its symbol
+          # (:global_addr) or the absolute address of its stack slot (:addr_of).
+          if local.type.struct?
+            addr, = gen_variable_ref(operand)
+            return [addr, Type::Pointer.new(local.type)]
+          end
           dst = new_vreg
           emit(local.global ? :global_addr : :addr_of, dst: dst, a: local.storage)
           [dst, Type::Pointer.new(local.type)]
         elsif operand.is_a?(Front::AST::Subscript)
           addr, element_type = gen_element_address(operand)
           [addr, Type::Pointer.new(element_type)]
+        elsif operand.is_a?(Front::AST::MemberAccess)
+          addr, member_type = gen_member_address(operand)
+          if member_type.array?
+            error_at(node.token, "address of array is not supported yet")
+          end
+          [addr, Type::Pointer.new(member_type)]
         elsif operand.is_a?(Front::AST::Unary) && operand.op == :deref
           addr, ptr_type = gen_expr(operand.operand)
           require_pointer(ptr_type, operand.token)
@@ -643,6 +762,11 @@ module Rubycc
         addr, ptr_type = gen_value(node.operand)
         require_dereferenceable_pointer(ptr_type, node.token)
         result_type = ptr_type.target
+        # "*p" of a struct pointer is a struct lvalue: its value is the pointer
+        # itself (the struct's address), so nothing is loaded, just as a struct
+        # variable yields its address.
+        return [addr, result_type] if result_type.struct?
+
         dst = new_vreg
         emit(:load, dst: dst, a: addr, size: result_type.size)
         [dst, result_type]
@@ -657,9 +781,22 @@ module Rubycc
           gen_store_through_pointer(node, target)
         elsif target.is_a?(Front::AST::Subscript)
           gen_store_through_subscript(node, target)
+        elsif target.is_a?(Front::AST::MemberAccess)
+          gen_store_through_member(node, target)
         else
           gen_variable_assignment(node, target)
         end
+      end
+
+      # A whole-struct assignment "dst = src" (same struct type), lowered to a
+      # :memcpy of the struct's byte width from the source object's address to
+      # the destination's. Both sides evaluate to addresses (that is a struct
+      # value here), so this works uniformly for a variable, a member, an
+      # array element or a "*p" on either side. Returns [dest_addr, struct_type]
+      # so a chained "a = b = c" copies into each in turn.
+      def gen_struct_copy(dest_addr, src_addr, struct_type)
+        emit(:memcpy, a: dest_addr, b: src_addr, size: struct_type.size)
+        [dest_addr, struct_type]
       end
 
       def gen_variable_assignment(node, target)
@@ -670,6 +807,12 @@ module Rubycc
         value, value_type = gen_value(node.value)
         unless compatible_types?(local.type, value_type)
           error_at(node.token, "incompatible types in assignment")
+        end
+        # A struct variable is copied whole (both sides are addresses); a scalar
+        # is narrowed and written into its slot or global.
+        if local.type.struct?
+          dest, = gen_variable_ref(target)
+          return gen_struct_copy(dest, value, local.type)
         end
         stored = store_scalar_variable(local, value)
         [stored, local.type]
@@ -713,8 +856,29 @@ module Rubycc
         unless compatible_types?(element_type, value_type)
           error_at(node.token, "incompatible types in assignment")
         end
+        return gen_struct_copy(addr, value, element_type) if element_type.struct?
+
         emit(:store, a: addr, b: value, size: element_type.size)
         [value, element_type]
+      end
+
+      # "s.m = v" / "p->m = v": compute the member's address (see
+      # #gen_member_address) and write v through it. A struct member is copied
+      # whole; an array member is not assignable, like an array variable; every
+      # other member is a scalar store the member's width wide.
+      def gen_store_through_member(node, target)
+        addr, member_type = gen_member_address(target)
+        if member_type.array?
+          error_at(node.token, "array type is not assignable")
+        end
+        value, value_type = gen_value(node.value)
+        unless compatible_types?(member_type, value_type)
+          error_at(node.token, "incompatible types in assignment")
+        end
+        return gen_struct_copy(addr, value, member_type) if member_type.struct?
+
+        emit(:store, a: addr, b: value, size: member_type.size)
+        [value, member_type]
       end
 
       # "*p = v": evaluate p (an address) and v, then write v through the
@@ -728,6 +892,8 @@ module Rubycc
         unless compatible_types?(target_type, value_type)
           error_at(node.token, "incompatible types in assignment")
         end
+        return gen_struct_copy(addr, value, target_type) if target_type.struct?
+
         emit(:store, a: addr, b: value, size: target_type.size)
         [value, target_type]
       end
@@ -865,14 +1031,35 @@ module Rubycc
           gen_compound_assignment_through_pointer(node, target)
         elsif target.is_a?(Front::AST::Subscript)
           gen_compound_assignment_through_subscript(node, target)
+        elsif target.is_a?(Front::AST::MemberAccess)
+          gen_compound_assignment_through_member(node, target)
         else
           gen_compound_assignment_to_variable(node, target)
         end
       end
 
+      # "s.m op= v": read the member once through its address, combine it with v
+      # under #gen_binary_op's rules, and write it back. An aggregate member (a
+      # struct or an array) has no arithmetic, so it is rejected before the read.
+      def gen_compound_assignment_through_member(node, target)
+        addr, member_type = gen_member_address(target)
+        require_scalar_target(member_type, node.token)
+        current = new_vreg
+        emit(:load, dst: current, a: addr, size: member_type.size)
+
+        value, value_type = gen_value(node.value)
+        result, result_type = gen_binary_op(node.op, current, member_type, value, value_type, node.token)
+        unless compatible_types?(member_type, result_type)
+          error_at(node.token, "incompatible types in assignment")
+        end
+        emit(:store, a: addr, b: result, size: member_type.size)
+        [result, member_type]
+      end
+
       def gen_compound_assignment_to_variable(node, target)
         local = lookup_local(target.name, target.token)
         error_at(node.token, "array type is not assignable") if local.type.array?
+        error_at(node.token, "invalid operands to binary expression") if local.type.struct?
 
         value, value_type = gen_value(node.value)
         current = load_scalar_variable(local)
@@ -886,6 +1073,7 @@ module Rubycc
 
       def gen_compound_assignment_through_subscript(node, target)
         addr, element_type = gen_element_address(target)
+        require_scalar_target(element_type, node.token)
         current = new_vreg
         emit(:load, dst: current, a: addr, size: element_type.size)
 
@@ -902,6 +1090,7 @@ module Rubycc
         addr, ptr_type = gen_value(target.operand)
         require_dereferenceable_pointer(ptr_type, target.token)
         target_type = ptr_type.target
+        require_scalar_target(target_type, node.token)
         current = new_vreg
         emit(:load, dst: current, a: addr, size: target_type.size)
 
@@ -925,14 +1114,37 @@ module Rubycc
           gen_inc_dec_through_pointer(node, target)
         elsif target.is_a?(Front::AST::Subscript)
           gen_inc_dec_through_subscript(node, target)
+        elsif target.is_a?(Front::AST::MemberAccess)
+          gen_inc_dec_through_member(node, target)
         else
           gen_inc_dec_variable(node, target)
         end
       end
 
+      # "s.m++"/"++s.m": the member is read once through its address, stepped by
+      # one, and written back; an aggregate member (a struct or array) has no
+      # arithmetic and is rejected first. Prefix yields the new value, postfix
+      # the value read before the step.
+      def gen_inc_dec_through_member(node, target)
+        addr, member_type = gen_member_address(target)
+        require_scalar_target(member_type, node.token)
+        current = new_vreg
+        emit(:load, dst: current, a: addr, size: member_type.size)
+
+        one = new_vreg
+        emit(:const, dst: one, a: 1)
+        result, result_type = gen_binary_op(node.op, current, member_type, one, Type::Int, node.token)
+        unless compatible_types?(member_type, result_type)
+          error_at(node.token, "incompatible types in assignment")
+        end
+        emit(:store, a: addr, b: result, size: member_type.size)
+        node.prefix ? [result, member_type] : [current, member_type]
+      end
+
       def gen_inc_dec_variable(node, target)
         local = lookup_local(target.name, target.token)
         error_at(node.token, "array type is not assignable") if local.type.array?
+        error_at(node.token, "invalid operands to binary expression") if local.type.struct?
 
         current = load_scalar_variable(local)
         old_value = nil
@@ -953,6 +1165,7 @@ module Rubycc
 
       def gen_inc_dec_through_subscript(node, target)
         addr, element_type = gen_element_address(target)
+        require_scalar_target(element_type, node.token)
         current = new_vreg
         emit(:load, dst: current, a: addr, size: element_type.size)
 
@@ -970,6 +1183,7 @@ module Rubycc
         addr, ptr_type = gen_value(target.operand)
         require_dereferenceable_pointer(ptr_type, target.token)
         target_type = ptr_type.target
+        require_scalar_target(target_type, node.token)
         current = new_vreg
         emit(:load, dst: current, a: addr, size: target_type.size)
 
@@ -1029,10 +1243,33 @@ module Rubycc
       # "p += 1", "e[i]", ...): beyond #require_pointer's plain pointer check,
       # a void pointer is rejected too, since its pointed-to type has no size
       # to load, store or scale by ("&*p", which never touches memory, is the
-      # one place a void pointer's target may go unexamined).
+      # one place a void pointer's target may go unexamined). A pointer to an
+      # incomplete struct is rejected for the same reason: its target has no
+      # known size (member access checks completeness separately).
       def require_dereferenceable_pointer(type, token)
         require_pointer(type, token)
         error_at(token, "invalid use of void pointer") if type.target.void?
+        require_complete(type.target, token)
+      end
+
+      # Rejects an incomplete struct (a tag never defined) wherever a complete
+      # object type is required — a variable or global, a sizeof, a member's
+      # base struct, an array/pointer element being sized. Only a struct can be
+      # incomplete here; every other type is already complete.
+      def require_complete(type, token)
+        return unless type.struct? && !type.complete?
+
+        error_at(token, "invalid use of incomplete type '#{type}'")
+      end
+
+      # Guards a compound-assignment or "++"/"--" target that must be a scalar
+      # the arithmetic can read and write: an aggregate (a struct or an array
+      # member) has no arithmetic, so it is rejected with the same wording a
+      # bad binary operand gets.
+      def require_scalar_target(type, token)
+        return unless type.struct? || type.array?
+
+        error_at(token, "invalid operands to binary expression")
       end
 
       # Guards every condition position (if/while/do-while/for, "&&"/"||"
@@ -1069,6 +1306,9 @@ module Rubycc
       # if/elsif chain.
       def require_non_void_pointer(type, token)
         error_at(token, "invalid use of void pointer") if type.target.void?
+        # Pointer arithmetic scales by the target's size, which an incomplete
+        # struct target has none of, so it is rejected here alongside void.
+        require_complete(type.target, token)
         type
       end
 
@@ -1131,6 +1371,11 @@ module Rubycc
           lookup_local(node.name, node.token).type
         elsif node.is_a?(Front::AST::StringLit)
           Type::Array.new(Type::Char, node.value.bytesize + 1)
+        elsif node.is_a?(Front::AST::MemberAccess)
+          # A member keeps its declared type here (no array-to-pointer decay),
+          # so "sizeof s.arr" measures the whole member array, like "sizeof a"
+          # for a bare array variable.
+          static_member(node).type
         else
           static_type(node)
         end
@@ -1152,6 +1397,9 @@ module Rubycc
           type.array? ? Type::Pointer.new(type.element) : type
         when Front::AST::Subscript
           subscript_element_type(static_type(node.target), node.token)
+        when Front::AST::MemberAccess
+          member = static_member(node)
+          decay(member.type)
         when Front::AST::Binary
           binary_result_type(node.op, static_type(node.lhs), static_type(node.rhs), node.token)
         when Front::AST::Unary
@@ -1165,6 +1413,37 @@ module Rubycc
         else
           raise "unsupported expression: #{node.class}"
         end
+      end
+
+      # The array-to-pointer decay applied to an rvalue type: an array becomes a
+      # pointer to its element, everything else (a struct included, since it
+      # does not decay) is left as is. Used by the code-free type inference.
+      def decay(type)
+        type.array? ? Type::Pointer.new(type.element) : type
+      end
+
+      # Resolves the member a "." / "->" selects, using only static types (no
+      # code emitted), for sizeof and address-of. It mirrors #gen_struct_base +
+      # #gen_member_address: the base's struct type is inferred, an incomplete
+      # struct or a base that is not a structure is rejected, and a missing
+      # member is diagnosed. Returns the Type::Member.
+      def static_member(node)
+        base_type = static_type(node.base)
+        struct_type =
+          if node.arrow
+            unless base_type.pointer? && base_type.target.struct?
+              error_at(node.token, "request for member '#{node.member}' in something not a structure")
+            end
+            base_type.target
+          else
+            unless base_type.struct?
+              error_at(node.token, "request for member '#{node.member}' in something not a structure")
+            end
+            base_type
+          end
+        require_complete(struct_type, node.token)
+        struct_type.member(node.member) ||
+          error_at(node.token, "no member named '#{node.member}' in '#{struct_type}'")
       end
 
       # A call's rvalue type without emitting code: the callee's declared
@@ -1205,6 +1484,10 @@ module Rubycc
           Type::Pointer.new(local.type)
         elsif operand.is_a?(Front::AST::Subscript)
           Type::Pointer.new(subscript_element_type(static_type(operand.target), operand.token))
+        elsif operand.is_a?(Front::AST::MemberAccess)
+          member = static_member(operand)
+          error_at(node.token, "address of array is not supported yet") if member.type.array?
+          Type::Pointer.new(member.type)
         elsif operand.is_a?(Front::AST::Unary) && operand.op == :deref
           type = static_type(operand.operand)
           require_pointer(type, operand.token)

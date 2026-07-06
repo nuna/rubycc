@@ -25,6 +25,10 @@ module Rubycc
     #                                   object a (an array's first element)
     #   :load   dst <- *a           dst gets `size` bytes read through pointer a
     #   :store  *a <- b             `size` bytes of b are written through ptr a
+    #   :memcpy *a <- *b (size)     `size` bytes are copied from the address in
+    #                               b to the address in a (a whole-struct
+    #                               assignment "s = t"); both are pointer vregs,
+    #                               `size` the struct's byte width
     #   :string_addr dst <- &string(a)  dst gets the address of read-only string
     #                                   a (an id into the translation unit's
     #                                   string pool), i.e. a decayed char *

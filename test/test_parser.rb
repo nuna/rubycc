@@ -869,4 +869,134 @@ class TestParser < Minitest::Test
     assert_kind_of AST::GlobalDecl, program.functions[0]
     assert_kind_of AST::FunctionDef, program.functions[1]
   end
+
+  # --- structs ------------------------------------------------------------
+
+  def test_struct_definition_alone_yields_no_object
+    # "struct point { ... };" declares only the tag, so the program holds just
+    # the function that follows it.
+    program = parse("struct point { int x; int y; }; int main(void) { return 0; }")
+
+    assert_equal 1, program.functions.size
+    assert_kind_of AST::FunctionDef, program.functions.first
+  end
+
+  def test_parses_struct_variable_declaration_type
+    program = parse("struct point { int x; int y; }; " \
+                    "int main(void) { struct point p; return 0; }")
+    decl = program.functions.first.body.first
+
+    assert_kind_of AST::VariableDecl, decl
+    assert_equal "p", decl.name
+    assert_predicate decl.type, :struct?
+    assert_equal "point", decl.type.tag
+    assert_equal 8, decl.type.size
+  end
+
+  def test_same_tag_resolves_to_one_struct_type
+    # Two "struct point" declarators name the very same (identity-equal) type.
+    program = parse("struct point { int x; }; " \
+                    "int main(void) { struct point a; struct point b; return 0; }")
+    body = program.functions.first.body
+
+    assert_same body[0].type, body[1].type
+  end
+
+  def test_parses_pointer_to_struct_type
+    program = parse("struct node { int v; }; " \
+                    "int main(void) { struct node *p; return 0; }")
+    decl = program.functions.first.body.first
+
+    assert_predicate decl.type, :pointer?
+    assert_predicate decl.type.target, :struct?
+    assert_equal "node", decl.type.target.tag
+  end
+
+  def test_self_referential_struct_pointer_member
+    program = parse("struct node { int v; struct node *next; }; " \
+                    "int main(void) { struct node n; return 0; }")
+    type = program.functions.first.body.first.type
+
+    assert_same type, type.member("next").type.target
+  end
+
+  def test_forward_declared_struct_is_incomplete
+    program = parse("struct node; int main(void) { struct node *p; return 0; }")
+    decl = program.functions.first.body.first
+
+    assert_predicate decl.type, :pointer?
+    refute_predicate decl.type.target, :complete?
+  end
+
+  def test_parses_anonymous_struct_variable
+    program = parse("int main(void) { struct { int x; } v; return 0; }")
+    decl = program.functions.first.body.first
+
+    assert_predicate decl.type, :struct?
+    assert_nil decl.type.tag
+  end
+
+  def test_parses_dot_member_access
+    # s.x  =>  (member s "x" arrow=false)
+    expr = parse_expr("s.x")
+    assert_kind_of AST::MemberAccess, expr
+    assert_kind_of AST::VariableRef, expr.base
+    assert_equal "s", expr.base.name
+    assert_equal "x", expr.member
+    refute expr.arrow
+  end
+
+  def test_parses_arrow_member_access
+    # p->x  =>  (member p "x" arrow=true)
+    expr = parse_expr("p->x")
+    assert_kind_of AST::MemberAccess, expr
+    assert_equal "p", expr.base.name
+    assert_equal "x", expr.member
+    assert expr.arrow
+  end
+
+  def test_parses_nested_member_access
+    # a.b.c  =>  (member (member a "b") "c")
+    expr = parse_expr("a.b.c")
+    assert_kind_of AST::MemberAccess, expr
+    assert_equal "c", expr.member
+    inner = expr.base
+    assert_kind_of AST::MemberAccess, inner
+    assert_equal "b", inner.member
+    assert_equal "a", inner.base.name
+  end
+
+  def test_parses_arrow_chain
+    # p->q->r  =>  (member (member p "q" arrow) "r" arrow)
+    expr = parse_expr("p->q->r")
+    assert_kind_of AST::MemberAccess, expr
+    assert expr.arrow
+    assert_equal "r", expr.member
+    assert_kind_of AST::MemberAccess, expr.base
+    assert_equal "q", expr.base.member
+  end
+
+  def test_member_access_of_subscript
+    # a[i].x  =>  (member (subscript a i) "x")
+    expr = parse_expr("a[i].x")
+    assert_kind_of AST::MemberAccess, expr
+    assert_equal "x", expr.member
+    assert_kind_of AST::Subscript, expr.base
+  end
+
+  def test_subscript_of_member_access
+    # s.a[i]  =>  (subscript (member s "a") i)
+    expr = parse_expr("s.a[i]")
+    assert_kind_of AST::Subscript, expr
+    assert_kind_of AST::MemberAccess, expr.target
+    assert_equal "a", expr.target.member
+  end
+
+  def test_member_access_is_assignable
+    # s.x = 42  =>  (assign (member s "x") 42)
+    expr = parse_expr("s.x = 42")
+    assert_kind_of AST::Assignment, expr
+    assert_kind_of AST::MemberAccess, expr.target
+    assert_equal 42, expr.value.value
+  end
 end

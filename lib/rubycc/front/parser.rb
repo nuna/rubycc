@@ -10,7 +10,8 @@ module Rubycc
     # grammar productions of ISO C (6.5.x / 6.7 / 6.8.x):
     #
     #   translation-unit          = external-declaration*
-    #   external-declaration      = type-specifier declarator
+    #   external-declaration      = type-specifier ";"             -- tag only
+    #                             | type-specifier declarator
     #                               ( "(" parameter-type-list? ")"
     #                                 (";" | compound-statement)   -- function
     #                               | global-declarator-suffix
@@ -20,6 +21,11 @@ module Rubycc
     #                               ("=" constant-initializer)?
     #   constant-initializer      = ("+" | "-")* integer-constant
     #   type-specifier            = "int" | "char" | "void"
+    #                             | struct-or-union-specifier
+    #   struct-or-union-specifier = "struct" identifier? "{" struct-declaration+ "}"
+    #                             | "struct" identifier
+    #   struct-declaration        = type-specifier declarator
+    #                               ("," declarator)* ";"
     #   parameter-type-list       = "void"
     #                             | parameter-declaration
     #                               ("," parameter-declaration)*
@@ -28,7 +34,8 @@ module Rubycc
     #   direct-declarator         = identifier ("[" integer-constant "]")?
     #   compound-statement        = "{" block-item* "}"
     #   block-item                = declaration | statement
-    #   declaration               = type-specifier init-declarator
+    #   declaration               = type-specifier ";"
+    #                             | type-specifier init-declarator
     #                               ("," init-declarator)* ";"
     #   init-declarator           = declarator ("=" assignment-expression)?
     #   statement                 = return-statement | expression-statement
@@ -69,7 +76,8 @@ module Rubycc
     #   type-name                 = type-specifier "*"*
     #   postfix-expression        = (primary-expression
     #                               | identifier "(" argument-expression-list? ")")
-    #                               ("[" expression "]" | "++" | "--")*
+    #                               ("[" expression "]" | "." identifier
+    #                                | "->" identifier | "++" | "--")*
     #   argument-expression-list  = assignment-expression
     #                               ("," assignment-expression)*
     #   primary-expression        = integer-constant | string-literal
@@ -105,6 +113,16 @@ module Rubycc
       def initialize(tokens)
         @tokens = tokens
         @pos = 0
+        # Struct tags live in their own namespace, separate from variables and
+        # functions, and follow the same block scoping. @tag_scopes is a stack
+        # of "tag name -> Type::StructType" maps, innermost last, with the
+        # file scope at the bottom; a compound-statement (and a for-loop's own
+        # parentheses, and a function body) pushes a fresh map so a struct
+        # defined inside a block shadows an outer one and vanishes at the block's
+        # end. Tag resolution happens here, at parse time, because every other
+        # type is built here too — the generator only ever consumes finished
+        # Type objects.
+        @tag_scopes = [{}]
       end
 
       # Parses the whole translation unit into an AST::Program. An external
@@ -145,6 +163,16 @@ module Rubycc
       def parse_external_declaration
         type_tok = peek
         base_type = parse_type_specifier
+
+        # "struct point { ... };" (or "struct node;") with no declarator only
+        # declares or defines the tag, which parse_type_specifier already
+        # registered; it contributes no object and no code, so it flattens away
+        # to an empty run of declarations.
+        if peek.punct?(";")
+          advance
+          return []
+        end
+
         type = parse_pointer_declarator(base_type)
         name_tok = expect_ident
 
@@ -198,7 +226,9 @@ module Rubycc
         initializer_value = nil
         if peek.punct?("=")
           eq_tok = advance
-          error_at(eq_tok, "unsupported initializer for global variable") if type.array?
+          if type.array? || type.struct?
+            error_at(eq_tok, "unsupported initializer for global variable")
+          end
           initializer_value = parse_constant_initializer(eq_tok)
         end
         AST::GlobalDecl.new(name_tok.value, type, initializer_value, name_tok)
@@ -231,11 +261,14 @@ module Rubycc
         negate ? -tok.value : tok.value
       end
 
-      # type-specifier = "int" | "char" | "void": consumes the keyword and
-      # returns the base Rubycc::Type any leading "*" run then builds a
-      # pointer from.
+      # type-specifier = "int" | "char" | "void" | struct-or-union-specifier:
+      # consumes the specifier and returns the base Rubycc::Type any leading
+      # "*" run then builds a pointer from. A "struct" hands off to
+      # #parse_struct_specifier, which resolves or defines the tag.
       def parse_type_specifier
         tok = peek
+        return parse_struct_specifier if tok.keyword?("struct")
+
         base = type_specifier?(tok) && TYPE_SPECIFIERS[tok.value]
         error_at(tok, "expected type specifier") unless base
 
@@ -243,11 +276,113 @@ module Rubycc
         base
       end
 
-      # Whether `token` opens a declaration (an "int", "char" or "void"
-      # keyword), letting block-item and for-init tell a declaration from a
-      # statement.
+      # struct-or-union-specifier: a "struct" keyword, an optional tag, and an
+      # optional "{ ... }" body. Three shapes result:
+      #   * "struct tag { ... }" / "struct { ... }" — a definition; the tagged
+      #     one is registered (or completed) in the current tag scope, an
+      #     anonymous one is a fresh unnamed type. #parse_struct_body lays it out.
+      #   * "struct tag" — a reference; resolved through the tag scopes, or, when
+      #     the tag is unknown, forward-declared as an incomplete struct in the
+      #     current scope (so "struct node;" and a pointer to a not-yet-defined
+      #     tag both work).
+      def parse_struct_specifier
+        struct_tok = advance # "struct"
+        tag_tok = peek.type == :ident ? advance : nil
+        tag = tag_tok&.value
+
+        if peek.punct?("{")
+          struct_type = tag ? define_struct_tag(tag, struct_tok) : Type::StructType.new(nil)
+          parse_struct_body(struct_type)
+          struct_type
+        elsif tag
+          reference_struct_tag(tag)
+        else
+          error_at(struct_tok, "expected identifier or '{' after 'struct'")
+        end
+      end
+
+      # Resolves the tag being *defined* to the StructType #parse_struct_body
+      # will lay out. A tag already declared in the *current* scope is reused
+      # (completing an earlier "struct tag;" forward declaration or the
+      # in-progress self-reference), unless it is already complete, which makes
+      # the second body a redefinition. An unknown tag is created incomplete and
+      # registered up front — before its body is parsed — so a member that
+      # points back at the same tag ("struct node *next;") resolves to this very
+      # object.
+      def define_struct_tag(tag, token)
+        existing = @tag_scopes.last[tag]
+        if existing
+          error_at(token, "redefinition of 'struct #{tag}'") if existing.complete?
+          return existing
+        end
+        struct_type = Type::StructType.new(tag)
+        @tag_scopes.last[tag] = struct_type
+        struct_type
+      end
+
+      # Resolves a bare "struct tag" reference. An in-scope tag (searched
+      # innermost outward) is returned as is — complete or not. An unknown tag
+      # is forward-declared: a fresh incomplete struct is registered in the
+      # current scope, so "struct node;" introduces the tag and "struct node *p;"
+      # names a pointer to an as-yet-undefined struct.
+      def reference_struct_tag(tag)
+        @tag_scopes.reverse_each do |scope|
+          found = scope[tag]
+          return found if found
+        end
+        struct_type = Type::StructType.new(tag)
+        @tag_scopes.last[tag] = struct_type
+        struct_type
+      end
+
+      # Parses a struct's "{ struct-declaration+ }" body and lays `struct_type`
+      # out. Each struct-declaration is a type-specifier followed by one or more
+      # comma-separated declarators (each contributing a "*" run and an optional
+      # array suffix), just like a local declaration but with no initializer. A
+      # member may not be void, an incomplete struct by value, or a duplicate
+      # name; a pointer to an incomplete struct (the self-referential case) is
+      # fine, since a pointer is always complete.
+      def parse_struct_body(struct_type)
+        expect_punct("{")
+        raw_members = []
+        names = {}
+        until peek.punct?("}")
+          member_base = parse_type_specifier
+          loop do
+            type = parse_pointer_declarator(member_base)
+            name_tok = expect_ident
+            type = parse_array_declarator(type)
+            reject_void_type(type, name_tok)
+            reject_incomplete_member(type, name_tok)
+            error_at(name_tok, "duplicate member '#{name_tok.value}'") if names.key?(name_tok.value)
+            names[name_tok.value] = true
+            raw_members << [name_tok.value, type]
+            break unless peek.punct?(",")
+
+            advance
+          end
+          expect_punct(";")
+        end
+        expect_punct("}")
+        struct_type.define(raw_members)
+      end
+
+      # Rejects a struct member declared with an incomplete struct type by
+      # value (a whole "struct node" inside "struct node", or before the tag is
+      # defined): its size is unknown, so the layout could not place the fields
+      # after it. An array of such a type is rejected for the same reason; a
+      # pointer to it is allowed.
+      def reject_incomplete_member(type, token)
+        incomplete = (type.struct? && !type.complete?) ||
+                     (type.array? && type.element.struct? && !type.element.complete?)
+        error_at(token, "field '#{token.value}' has incomplete type") if incomplete
+      end
+
+      # Whether `token` opens a declaration (an "int", "char", "void" or
+      # "struct" keyword), letting block-item and for-init tell a declaration
+      # from a statement.
       def type_specifier?(token)
-        token.type == :keyword && TYPE_SPECIFIERS.key?(token.value)
+        token.type == :keyword && (TYPE_SPECIFIERS.key?(token.value) || token.value == "struct")
       end
 
       # Rejects `type` when it denotes a bare void or an array of void: this
@@ -267,8 +402,12 @@ module Rubycc
           error_at(param.token, "parameter name omitted") if param.name.nil?
         end
         expect_punct("{")
+        # The body is a block, so it owns a tag scope: a struct defined in one
+        # function's body is invisible to the next.
+        @tag_scopes.push({})
         body = []
         body.concat(parse_block_item) until peek.punct?("}")
+        @tag_scopes.pop
         expect_punct("}")
         AST::FunctionDef.new(name, return_type, params, body, return_tok)
       end
@@ -323,6 +462,14 @@ module Rubycc
 
       def parse_declaration
         base_type = parse_type_specifier
+
+        # A bare "struct point { ... };" (or "struct node;") inside a block just
+        # declares or defines the tag, adding no local; it yields no items.
+        if peek.punct?(";")
+          advance
+          return []
+        end
+
         decls = [parse_init_declarator(base_type)]
         while peek.punct?(",")
           advance
@@ -456,12 +603,16 @@ module Rubycc
       def parse_for_statement
         for_tok = advance # "for"
         expect_punct("(")
+        # C99 gives the for-loop's own parentheses a scope, so a struct tag (or
+        # a variable) declared in clause-1 is visible only through the loop.
+        @tag_scopes.push({})
         init = parse_for_init
         condition = peek.punct?(";") ? nil : parse_expression
         expect_punct(";")
         step = peek.punct?(")") ? nil : parse_expression
         expect_punct(")")
         body = parse_statement
+        @tag_scopes.pop
         AST::For.new(init, condition, step, body, for_tok)
       end
 
@@ -494,8 +645,12 @@ module Rubycc
 
       def parse_compound_statement
         brace_tok = expect_punct("{")
+        # A nested block introduces its own tag scope, mirroring its variable
+        # scope: a struct defined here shadows an outer tag and is gone at "}".
+        @tag_scopes.push({})
         items = []
         items.concat(parse_block_item) until peek.punct?("}")
+        @tag_scopes.pop
         expect_punct("}")
         AST::Block.new(items, brace_tok)
       end
@@ -535,13 +690,15 @@ module Rubycc
         AST::CompoundAssignment.new(op, node, parse_assignment_expression, tok)
       end
 
-      # Syntactically, only a variable reference, a subscript "e[i]" or a
-      # dereference "*expr" can appear on the left of "=" (or "++"/"--", or a
-      # compound-assignment operator). Whether the target's type is actually
-      # assignable (e.g. not an array) is checked later by the generator.
+      # Syntactically, only a variable reference, a subscript "e[i]", a struct
+      # member access "e.m"/"e->m" or a dereference "*expr" can appear on the
+      # left of "=" (or "++"/"--", or a compound-assignment operator). Whether
+      # the target's type is actually assignable (e.g. not an array) is checked
+      # later by the generator.
       def assignable?(node)
         node.is_a?(AST::VariableRef) ||
           node.is_a?(AST::Subscript) ||
+          node.is_a?(AST::MemberAccess) ||
           (node.is_a?(AST::Unary) && node.op == :deref)
       end
 
@@ -676,6 +833,10 @@ module Rubycc
             index = parse_expression
             expect_punct("]")
             node = AST::Subscript.new(node, index, bracket_tok)
+          elsif peek.punct?(".") || peek.punct?("->")
+            op_tok = advance
+            member_tok = expect_ident
+            node = AST::MemberAccess.new(node, member_tok.value, op_tok.value == "->", op_tok)
           elsif peek.punct?("++") || peek.punct?("--")
             op_tok = advance
             op = op_tok.value == "++" ? :add : :sub

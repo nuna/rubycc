@@ -9,7 +9,7 @@ module Rubycc
     # and keeps each source line around so tokens (and errors) can be reported
     # with source excerpts. Handles // and /* */ comments and whitespace.
     class Lexer
-      KEYWORDS = %w[int char void return if else while do for break continue sizeof].freeze
+      KEYWORDS = %w[int char void struct return if else while do for break continue sizeof].freeze
 
       # Escape sequences shared by character constants and string literals,
       # mapping the letter after the backslash to the byte value it denotes.
@@ -20,14 +20,14 @@ module Rubycc
 
       # Two-character punctuators, matched before the single-character list so
       # the lexer always prefers the longest punctuator ("==" over two "=",
-      # "&&" over two "&", "++" or "+=" over a lone "+").
-      PUNCTUATORS_2 = %w[== != <= >= && || += -= *= /= %= ++ --].freeze
+      # "&&" over two "&", "++" or "+=" over a lone "+", "->" over a lone "-").
+      PUNCTUATORS_2 = %w[== != <= >= && || += -= *= /= %= ++ -- ->].freeze
 
       # Single-character punctuators used by this slice. "&" is the address-of
       # operator, "*" doubles as dereference and pointer-declarator marker,
-      # "[" "]" bracket array declarators and subscripts, and "?" ":" form the
-      # conditional operator.
-      PUNCTUATORS_1 = %w[+ - * / % ( ) { } ; = , < > ! & [ ] ? :].freeze
+      # "[" "]" bracket array declarators and subscripts, "?" ":" form the
+      # conditional operator, and "." selects a struct member.
+      PUNCTUATORS_1 = %w[+ - * / % ( ) { } ; = , < > ! & [ ] ? : .].freeze
 
       def initialize(source, filename:)
         @src = source

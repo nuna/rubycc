@@ -158,6 +158,8 @@ module Rubycc
           emit_load(inst.dst, inst.a, inst.size)
         when :store
           emit_store(inst.a, inst.b, inst.size)
+        when :memcpy
+          emit_memcpy(inst.a, inst.b, inst.size)
         when :ret
           load_reg(EAX, inst.a) unless inst.a.nil?
           emit(0xC9)                                          # leave
@@ -276,6 +278,22 @@ module Rubycc
         else
           emit(0x89, 0x08)              # mov [rax], ecx
         end
+      end
+
+      # :memcpy — a whole-struct copy "s = t". Load the destination address
+      # into rdi and the source into rsi, the byte count into ecx (a struct's
+      # size fits well within 32 bits), then "rep movsb" copies count bytes
+      # forward. cld clears the direction flag first so the copy runs upward;
+      # the System V ABI already guarantees DF is clear on entry, but clearing
+      # it costs one byte and keeps this instruction self-contained. rdi/rsi/rcx
+      # are all caller-saved scratch here, so nothing needs preserving.
+      def emit_memcpy(dest_vreg, src_vreg, byte_count)
+        load_reg(EDI, dest_vreg)            # rdi = destination address
+        load_reg(ESI, src_vreg)             # rsi = source address
+        emit(0xB9)                          # mov ecx, imm32
+        emit_bytes([byte_count].pack("L<"))
+        emit(0xFC)                          # cld
+        emit(0xF3, 0xA4)                    # rep movsb
       end
 
       # A size of 8 compares full 64-bit pointer values (REX.W cmp rax, rcx);

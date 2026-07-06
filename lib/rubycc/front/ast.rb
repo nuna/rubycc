@@ -69,6 +69,14 @@ module Rubycc
       # "*(target + index)" and type-checks that `target` is an array/pointer.
       Subscript = Data.define(:target, :index, :token)
 
+      # A struct member access. `base` is the postfix-expression on the left,
+      # `member` the identifier String on the right and `arrow` false for the
+      # "." form (base is the struct itself) or true for the "->" form (base is
+      # a pointer to the struct, so "p->m" means "(*p).m"). Both forms are
+      # lvalues: the generator lowers either to the base struct's address plus
+      # the member's constant offset, then reads or writes through it.
+      MemberAccess = Data.define(:base, :member, :arrow, :token)
+
       # `sizeof operand`: the byte size of a unary-expression's result type.
       # `operand` is an expression node; the array-to-pointer decay does not
       # apply to it, so `sizeof a` measures the whole array.

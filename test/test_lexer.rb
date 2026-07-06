@@ -171,6 +171,34 @@ class TestLexer < Minitest::Test
     assert_equal %w[char c], tokens.map(&:value)
   end
 
+  def test_struct_is_a_keyword
+    tokens = lex("struct point").reject(&:eof?)
+    assert_equal %i[keyword ident], tokens.map(&:type)
+    assert_equal %w[struct point], tokens.map(&:value)
+  end
+
+  def test_arrow_is_a_single_token
+    tokens = lex("p->x").reject(&:eof?)
+    assert_equal %i[ident punct ident], tokens.map(&:type)
+    assert_equal ["p", "->", "x"], tokens.map(&:value)
+  end
+
+  def test_arrow_versus_minus_then_greater
+    combined = lex("p -> x").reject(&:eof?)
+    assert_equal "->", combined[1].value
+
+    # A lone "-" followed by ">" (with a space) stays two tokens.
+    split = lex("p - > x").reject(&:eof?)
+    assert_equal %i[ident punct punct ident], split.map(&:type)
+    assert_equal ["p", "-", ">", "x"], split.map(&:value)
+  end
+
+  def test_dot_is_a_single_character_punctuator
+    tokens = lex("s.x").reject(&:eof?)
+    assert_equal %i[ident punct ident], tokens.map(&:type)
+    assert_equal ["s", ".", "x"], tokens.map(&:value)
+  end
+
   def test_character_constant_is_a_num_token
     tokens = lex("'A'").reject(&:eof?)
     assert_equal [:num], tokens.map(&:type)

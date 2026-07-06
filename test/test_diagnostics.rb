@@ -452,4 +452,119 @@ class TestDiagnostics < Minitest::Test
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/undeclared variable 'missing'/, error.description)
   end
+
+  # --- structs ------------------------------------------------------------
+
+  def test_variable_of_undefined_struct_tag_is_rejected
+    source = "int main(void) { struct undefined x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal "foo.c", error.filename
+    assert_equal 1, error.line
+    assert_match(/invalid use of incomplete type 'struct undefined'/, error.description)
+    assert_match(%r{foo\.c:1:\d+: error: invalid use of incomplete type 'struct undefined'}, error.message)
+  end
+
+  def test_variable_of_forward_declared_struct_is_rejected
+    source = "struct node; int main(void) { struct node n; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid use of incomplete type 'struct node'/, error.description)
+  end
+
+  def test_global_of_incomplete_struct_is_rejected
+    source = "struct node; struct node g; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid use of incomplete type 'struct node'/, error.description)
+  end
+
+  def test_sizeof_incomplete_struct_type_is_rejected
+    source = "struct node; int main(void) { return sizeof(struct node); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid use of incomplete type 'struct node'/, error.description)
+  end
+
+  def test_member_that_does_not_exist_is_rejected
+    source = "struct s { int x; }; int main(void) { struct s v; return v.y; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal 1, error.line
+    assert_match(/no member named 'y' in 'struct s'/, error.description)
+    assert_match(%r{foo\.c:1:\d+: error: no member named 'y' in 'struct s'}, error.message)
+  end
+
+  def test_dot_on_non_struct_is_rejected
+    source = "int main(void) { int x; return x.a; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/request for member 'a' in something not a structure/, error.description)
+  end
+
+  def test_arrow_on_non_pointer_is_rejected
+    source = "struct s { int x; }; int main(void) { struct s v; return v->x; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/request for member 'x' in something not a structure/, error.description)
+  end
+
+  def test_arrow_on_pointer_to_non_struct_is_rejected
+    source = "int main(void) { int *p; return p->x; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/request for member 'x' in something not a structure/, error.description)
+  end
+
+  def test_struct_parameter_is_rejected
+    source = "struct s { int x; }; int f(struct s v) { return v.x; } " \
+             "int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/struct parameters are not supported yet/, error.description)
+  end
+
+  def test_struct_return_value_is_rejected
+    source = "struct s { int x; }; struct s f(void) { struct s v; return v; } " \
+             "int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/struct return values are not supported yet/, error.description)
+  end
+
+  def test_arithmetic_on_struct_is_rejected
+    source = "struct s { int x; }; " \
+             "int main(void) { struct s a; struct s b; return a + b; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_struct_by_value_member_is_rejected
+    source = "struct s { struct s inner; }; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/field 'inner' has incomplete type/, error.description)
+  end
+
+  def test_void_struct_member_is_rejected
+    source = "struct s { void v; }; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/variable or field declared void/, error.description)
+  end
+
+  def test_struct_redefinition_is_rejected
+    source = "struct s { int x; }; struct s { int y; }; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/redefinition of 'struct s'/, error.description)
+  end
+
+  def test_duplicate_struct_member_is_rejected
+    source = "struct s { int x; int x; }; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/duplicate member 'x'/, error.description)
+  end
+
+  def test_assigning_between_different_struct_types_is_rejected
+    source = "struct a { int x; }; struct b { int x; }; " \
+             "int main(void) { struct a p; struct b q; p = q; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/incompatible types in assignment/, error.description)
+  end
+
+  def test_global_struct_initializer_is_rejected
+    source = "struct s { int x; }; struct s g = 0; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/unsupported initializer for global variable/, error.description)
+  end
 end

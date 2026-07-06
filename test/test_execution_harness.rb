@@ -986,6 +986,224 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
+  # --- structs ------------------------------------------------------------
+
+  def test_struct_member_read_and_write
+    assert_c_exit_status(
+      42,
+      "struct point { int x; int y; }; " \
+      "int main(void) { struct point p; p.x = 40; p.y = 2; return p.x + p.y; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_struct_member_write_through_arrow
+    assert_c_exit_status(
+      42,
+      "struct point { int x; int y; }; " \
+      "int main(void) { struct point p; struct point *q = &p; " \
+      "q->x = 40; q->y = 2; return p.x + p.y; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_struct_assignment_copies_all_members
+    assert_c_exit_status(
+      42,
+      "struct point { int x; int y; }; " \
+      "int main(void) { struct point a; a.x = 40; a.y = 2; " \
+      "struct point b; b = a; return b.x + b.y; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_nested_struct_member_access
+    assert_c_exit_status(
+      42,
+      "struct inner { int v; }; struct outer { struct inner in; int w; }; " \
+      "int main(void) { struct outer o; o.in.v = 40; o.w = 2; return o.in.v + o.w; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_array_of_structs
+    assert_c_exit_status(
+      42,
+      "struct point { int x; int y; }; " \
+      "int main(void) { struct point ps[3]; " \
+      "for (int i = 0; i < 3; i++) { ps[i].x = i; ps[i].y = i * 10; } " \
+      "return ps[2].x * 16 + ps[1].y; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_sizeof_struct_type
+    assert_c_exit_status(
+      42,
+      "struct point { int x; int y; }; int main(void) { return sizeof(struct point) + 34; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_sizeof_struct_expression
+    assert_c_exit_status(
+      42,
+      "struct s { int a; int b; int c; }; " \
+      "int main(void) { struct s v; return sizeof v + 30; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_struct_with_char_and_int_members_roundtrips_through_padding
+    assert_c_exit_status(
+      42,
+      "struct s { char c; int i; }; " \
+      "int main(void) { struct s v; v.c = 7; v.i = 35; return v.c + v.i; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_char_members_survive_struct_copy
+    # A whole-struct copy is a byte-for-byte memcpy, so each single-byte char
+    # member lands intact in the destination.
+    assert_c_exit_status(
+      42,
+      "struct s { char a; char b; char c; }; " \
+      "int main(void) { struct s x; x.a = 10; x.b = 14; x.c = 18; " \
+      "struct s y; y = x; return y.a + y.b + y.c; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_global_struct
+    assert_c_exit_status(
+      42,
+      "struct point { int x; int y; }; struct point g; " \
+      "int main(void) { g.x = 40; g.y = 2; return g.x + g.y; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_struct_with_array_member
+    assert_c_exit_status(
+      42,
+      "struct s { int a[4]; int n; }; " \
+      "int main(void) { struct s v; v.n = 2; for (int i = 0; i < 4; i++) v.a[i] = i * 10; " \
+      "return v.a[3] + v.a[1] - v.n + 4; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_address_of_struct_member
+    assert_c_exit_status(
+      42,
+      "struct p { int x; int y; }; " \
+      "int main(void) { struct p a; a.y = 42; int *pp = &a.y; return *pp; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_struct_pointer_parameter_mutates_caller_struct
+    assert_c_exit_status(
+      42,
+      "struct p { int x; int y; }; " \
+      "int setx(struct p *q, int v) { q->x = v; return 0; } " \
+      "int main(void) { struct p a; a.x = 0; a.y = 2; setx(&a, 40); return a.x + a.y; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_pointer_arithmetic_over_struct_array
+    assert_c_exit_status(
+      42,
+      "struct p { int x; int y; }; " \
+      "int main(void) { struct p ps[3]; " \
+      "for (int i = 0; i < 3; i++) { ps[i].x = i; ps[i].y = i * 10; } " \
+      "struct p *q = ps; return (q + 2)->y + (q + 2)->x * 11; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_linked_list_built_and_traversed_with_arrow
+    # Build a three-node list on the stack, chaining with "&", then walk it
+    # through "->". The last node points at itself so traversal has a stable
+    # terminator without a null pointer constant (which this subset lacks).
+    assert_c_exit_status(
+      42,
+      "struct node { int v; struct node *next; }; " \
+      "int main(void) { struct node a; struct node b; struct node c; " \
+      "a.v = 10; a.next = &b; b.v = 14; b.next = &c; c.v = 18; c.next = &c; " \
+      "struct node *p = &a; int sum = 0; " \
+      "for (int i = 0; i < 3; i++) { sum += p->v; p = p->next; } return sum; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_anonymous_struct_variable
+    assert_c_exit_status(
+      42,
+      "int main(void) { struct { int x; int y; } v; v.x = 40; v.y = 2; return v.x + v.y; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_forward_declared_struct_completed_later
+    assert_c_exit_status(
+      42,
+      "struct node; struct wrap { struct node *p; }; struct node { int v; }; " \
+      "int main(void) { struct node n; n.v = 42; struct wrap w; w.p = &n; return w.p->v; }",
+      compiler: :rubycc
+    )
+  end
+
+  # These struct cases must agree with gcc bit-for-bit on exit code, covering
+  # member access via "." and "->", whole-struct copy, nesting, struct arrays,
+  # struct globals, pointer arithmetic over structs, sizeof and a "->"-traversed
+  # linked list.
+  STRUCT_DIFFERENTIAL_SOURCES = [
+    "struct point { int x; int y; }; int main(void) { struct point p; p.x = 40; p.y = 2; return p.x + p.y; }",
+    "struct point { int x; int y; }; int main(void) { struct point p; struct point *q = &p; " \
+    "q->x = 40; q->y = 2; return p.x + p.y; }",
+    "struct point { int x; int y; }; int main(void) { struct point a; a.x = 40; a.y = 2; " \
+    "struct point b; b = a; return b.x + b.y; }",
+    "struct inner { int v; }; struct outer { struct inner in; int w; }; " \
+    "int main(void) { struct outer o; o.in.v = 40; o.w = 2; return o.in.v + o.w; }",
+    "struct point { int x; int y; }; int main(void) { struct point ps[3]; " \
+    "for (int i = 0; i < 3; i++) { ps[i].x = i; ps[i].y = i * 10; } return ps[2].x * 16 + ps[1].y; }",
+    "struct point { int x; int y; }; int main(void) { return sizeof(struct point) + 34; }",
+    "struct s { char c; int i; }; int main(void) { struct s v; v.c = 7; v.i = 35; return v.c + v.i; }",
+    "struct point { int x; int y; }; struct point g; int main(void) { g.x = 40; g.y = 2; return g.x + g.y; }",
+    "struct p { int x; int y; }; struct p g[3]; int main(void) { " \
+    "for (int i = 0; i < 3; i++) { g[i].x = i; g[i].y = i; } return g[2].x * 20 + g[1].y * 2; }",
+    "struct node { int v; struct node *next; }; int main(void) { " \
+    "struct node a; struct node b; struct node c; " \
+    "a.v = 10; a.next = &b; b.v = 14; b.next = &c; c.v = 18; c.next = &c; " \
+    "struct node *p = &a; int sum = 0; for (int i = 0; i < 3; i++) { sum += p->v; p = p->next; } return sum; }",
+    "struct p { int x; int y; }; int main(void) { struct p ps[3]; " \
+    "for (int i = 0; i < 3; i++) { ps[i].x = i; ps[i].y = i * 10; } " \
+    "struct p *q = ps; return (q + 2)->y + (q + 2)->x * 11; }",
+    "struct s { int a[4]; int n; }; int main(void) { struct s v; v.n = 2; " \
+    "for (int i = 0; i < 4; i++) v.a[i] = i * 10; return v.a[3] + v.a[1] - v.n + 4; }",
+    "struct p { int x; int y; }; int main(void) { struct p a; a.y = 42; int *pp = &a.y; return *pp; }",
+    "struct p { int x; int y; }; int setx(struct p *q, int v) { q->x = v; return 0; } " \
+    "int main(void) { struct p a; a.x = 0; a.y = 2; setx(&a, 40); return a.x + a.y; }",
+    "struct s { char a; char b; char c; }; int main(void) { struct s x; x.a = 10; x.b = 14; x.c = 18; " \
+    "struct s y; y = x; return y.a + y.b + y.c; }",
+    "int main(void) { struct { int x; int y; } v; v.x = 40; v.y = 2; return v.x + v.y; }",
+    "struct node; struct wrap { struct node *p; }; struct node { int v; }; " \
+    "int main(void) { struct node n; n.v = 42; struct wrap w; w.p = &n; return w.p->v; }",
+    "struct s { int a; int b; int c; }; int main(void) { struct s v; return sizeof v + 30; }"
+  ].freeze
+
+  def test_structs_match_gcc_exit_codes
+    STRUCT_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
   private
 
   def run_source(source, compiler:)
