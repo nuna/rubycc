@@ -214,28 +214,124 @@ struct 系の応用(union/enum/typedef)より先に固める、(3) ruby.h が要
 
 ## 5. M2 — リンカと ar(json/msgpack を手動ビルド)
 
-コンパイラと独立したコンポーネント。M1 終盤(Step 26 以降)と並行着手可。
+コンパイラと独立したコンポーネント群。M1 終盤(Step 26 のプリプロセッサ以降)と並行着手可。
+以下の L1〜L8 は計画上のラベルで、**コミットの "(Step N)" は M1 と通しで完了順に採番する**
+(並行開発で計画順と完了順がずれても混乱しないように)。
 
-- **L1: ELF リーダと ar**: 自前 .o の読み戻し(ラウンドトリップテスト)、外部 .so の
-  ELF ヘッダ/.dynsym/DT_SONAME 読み取り、ar アーカイブ(`!<arch>`)の読み書き。
-- **L2: 静的リンクコア**: 複数 .o のセクション統合・シンボル解決(強弱・COMDAT は当面
-  非対応)・再配置適用(PC32/PLT32/64/32S)。
-- **L3: 共有ライブラリ出力(.so)**: PT_DYNAMIC、.dynsym/.dynstr、**.gnu.hash と .hash の
-  両方**(glibc/musl 両対応。DESIGN 5.3)、RELA(GLOB_DAT/JUMP_SLOT/RELATIVE)、PLT/GOT、
-  DT_NEEDED(-l は対象 .so の .dynsym を読んで解決。開発ヘッダ不要: DESIGN 4.2)。
-  - **PIC の設計判断**: Ruby 拡張は「Init_xxx をエクスポートし rb_* を未解決で残す」形なので、
-    自 DSO 内のデータ参照は既存の PC32 直参照のままでよいか、GOT 経由が要るかを
-    ここで確定する(コピー再配置は実行ファイルを作らない限り発生しない。
-    テキスト再配置(DT_TEXTREL)だけは絶対に避けること)。外部シンボル参照は PLT/GOT 必須。
-- **L4: 実行ファイルと crt**: conftest 用。PT_INTERP + 動的リンク実行ファイル、
-  最小 _start(argc/argv → main → exit。Ruby 内で機械語合成: DESIGN 5.3 crt/)。
-- **L5: 受け入れ**: json と msgpack を「extconf.rb が生成した Makefile のコマンドを
-  手動で rubycc に置き換えて」ビルドし、gem のテストスイートに合格。
-  ここで初めて ruby.h の全機能(varargs・関数ポインタ・GNU 拡張)が実戦検証される。
-- **リスク**: 動的リンクの细部(ハッシュテーブル・シンボルバージョニングの受け側)は
-  glibc/musl の挙動差が出やすい。両 libc の Docker イメージで dlopen できることを
-  CI 化してから先に進む。シンボルバージョン(GLIBC_2.x)は「参照側としては無視できる」
-  はずだが、L3 の設計時に必ず実物の libc.so で確認する。
+順序の方針: (1) 読み取り(ELF リーダ・ar)を先に作り、以降の全ステップのテストを
+「自分で書いたものを自分で読み戻す + 実物(gcc/binutils の出力・システムの .so)を読む」
+の両輪にする、(2) 静的リンクコアを `ld -r` 相当の再配置可能出力として先に単体検証し、
+動的リンク(.so)の複雑さと分離する、(3) コンパイラ側の PIC 対応(L4)を .so ライタ(L5)の
+前提として明示する。受け入れ基準は共通で「ユニットテスト + 実物との相互運用テスト +
+既存テスト全 green」。
+
+### L1 — ELF リーダ(.o の読み戻しと .so の動的シンボル読み取り)
+- 自前 .o のフルパース(セクション・シンボルテーブル・RELA)。elf_writer との
+  **ラウンドトリップ golden テスト**(書いたものを読んで同じ構造に戻ること)で
+  ライタ・リーダ双方を相互検証する(N7)。gcc が出した .o も読めること。
+- 外部 .so の読み取り: ELF ヘッダ、.dynsym / .dynstr、DT_SONAME。列挙は
+  **セクションヘッダ経由(sh_size / sh_entsize)を第一経路**とする。alloc セクション
+  (.dynsym 等)は strip では消えないため実運用で欠けることはほぼ無い。セクションヘッダの
+  無い .so に当たったら PT_DYNAMIC(DT_SYMTAB + DT_HASH/DT_GNU_HASH からの個数導出)へ
+  フォールバックを追加する(最初からは作らない: YAGNI)。
+- 検証: readelf の出力(-s / -d)と突き合わせるテスト。システムの libc.so.6 実物を
+  読んで printf 等のエクスポートが見えること。
+
+### L2 — ar アーカイバ(rubycc-ar)
+- GNU ar 形式: `!<arch>\n` マジック、60 バイトヘッダ、偶数境界パディング、
+  長いファイル名の `//` 拡張名テーブル、シンボルインデックス `/`(ranlib 相当を
+  書き込み時に常時生成)。BSD 形式は対象外。
+- exe/rubycc-ar CLI は mkmf が叩く `$(AR) rcs` を最優先で(r/c/s/t/x を実装)。
+- 用途は vendored ライブラリの静的リンク(R5)。リンカ(L3)からはライブラリとして
+  読み、**未解決シンボル駆動の遅延取り込み**(ELF リンカの伝統的セマンティクス:
+  コマンドライン順、必要になったメンバだけ引き込む)で使う。
+- 検証: system ar との相互運用(rubycc-ar が作ったものを ar t/x で読める、逆も)。
+
+### L3 — 静的リンクコア(セクション統合・シンボル解決・再配置適用)
+- 入力: 複数 .o + アーカイブ。同名セクションの結合(アラインメント維持・オフセット
+  再計算)、シンボル解決(重複定義はエラー。weak は当面「定義が無ければ 0 でなく
+  エラー、strong と衝突したら strong 勝ち」の最小実装とし、コーパスで必要になったら
+  拡充)、再配置適用(R_X86_64_PC32 / PLT32 / 64 / 32 / 32S)。
+- **中間マイルストーンとして `ld -r` 相当(複数 ET_REL → 単一 ET_REL)を実装する**。
+  これにより動的リンクを作る前に「rubycc がマージした .o を gcc でリンクして実行テスト全件
+  green」という強い検証ができる。
+- 設計方針: リンカ独自の中間表現は最初は作らず、リーダが返す ELF 構造の上で直接
+  統合する。入力が増えて破綻したら IR 導入を検討(R11 上も、binutils/lld/mold の
+  内部構成を参照しない。仕様(ELF gABI・psABI)だけを一次資料にする)。
+- 検証: 既存の実行テスト群を「rubycc .o を rubycc で ld -r 併合 → gcc でリンク」経路でも
+  全件実行。
+
+### L4 — PIC データアクセス(コンパイラ側の前提対応)
+- 現状の :global_addr は PC32 直参照で、**同一 DSO 内で解決されるシンボルにしか安全でない**。
+  .so が外部データシンボル(libruby の rb_eArgError 等の VALUE 変数)を参照するには
+  GOT 経由が必須(コピー再配置は実行ファイル専用。テキスト再配置(DT_TEXTREL)は禁止)。
+- 設計: -fPIC 時(mkmf は常に付ける)、**その TU に定義が無いグローバルのアドレス取得を
+  `mov rax, [rip+disp]` + R_X86_64_REX_GOTPCRELX に変える**。TU 内で定義された
+  グローバル・static・文字列リテラルは既存の PC32 lea のまま(同一 DSO 内で必ず解決される。
+  「他 DSO からの interpose」は C 拡張の実態では起きないので、既定で -Bsymbolic 相当と
+  割り切ることを明文化)。関数呼び出しは既存の PLT32 のままでよい(PLT 生成はリンカの仕事)。
+- **トレードオフ**: 「外部かどうか」を TU 内の定義有無で決めるため、同一 .so 内の別 TU の
+  グローバルも GOT 経由になり 1 命令分遅い。正しさ優先で許容(N2)。リンカ側で
+  GOTPCRELX → lea への緩和(relaxation)は M6 以降の最適化。
+- 検証: gcc -fPIC の再配置種別と突き合わせ。**rubycc の .o を gcc/ld で .so にリンクして
+  TEXTREL が出ない**こと(readelf -d で確認)を CI に追加。
+
+### L5 — 共有ライブラリライタ(.so)
+- レイアウト: ELF ヘッダ / プログラムヘッダ(PT_LOAD(r-x / r-- / rw-)、PT_DYNAMIC、
+  PT_GNU_STACK)/ .dynsym .dynstr **.gnu.hash と .hash の両方**(glibc は gnu.hash 優先、
+  musl 対応も含め安全側: DESIGN 5.3)/ .rela.dyn(GLOB_DAT / RELATIVE / 64)/
+  .rela.plt(JUMP_SLOT)/ .plt / .got / .got.plt / .text .rodata .data .bss / .dynamic。
+- エクスポート方針: 定義済みグローバルを全て動的シンボルに出す(gcc 既定と同じ。
+  mkmf は Init_xxx が見えることを要求する)。未解決の rb_* は UND のまま残す
+  (共有ライブラリでは合法。dlopen 時に解決: DESIGN 4.2)。
+- .gnu.hash(ブルームフィルタ・バケット)は公式仕様が薄いので、binutils の出力を
+  readelf で**観察して外形を合わせる**(実装コードは見ない: R11)。
+- 決定的出力(N4): ハッシュのバケット数等もサイズから決定的に導出する。
+- 検証: readelf / eu-elflint での構造検査に加え、**Ruby の Fiddle で dlopen して
+  エクスポート関数を実際に呼ぶ**実地テストを glibc・musl 両コンテナで CI 化。
+  ここが「動的リンクの細部は libc 差が出やすい」リスク(DESIGN 7 章)の関所。
+  シンボルバージョン(GLIBC_2.x)は参照側としては無版本参照で解決される想定だが、
+  実物の libc.so で必ず確認する。
+
+### L6 — ライブラリ解決(-l / -L / DT_NEEDED)
+- -L 探索順 → `libfoo.so` 優先・`libfoo.a` フォールバック。静的ライブラリは L2/L3 の
+  遅延取り込みで、共有ライブラリは「.dynsym を読んで解決記録 + DT_NEEDED」で扱う
+  (.so の中身はリンクしない)。
+- **glibc の `libc.so` はテキストのリンカスクリプト**(`GROUP ( libc.so.6 ... )`)である
+  現実に対応する: GROUP / INPUT / OUTPUT_FORMAT / AS_NEEDED だけ認識する最小パーサを
+  用意する(本物のリンカスクリプト言語は実装しない)。
+- DT_NEEDED は「実際にシンボルを解決した .so」だけに張る(--as-needed 相当を既定)。
+  soname は DT_SONAME、無ければ指定ファイル名。依存の推移閉包(.so が必要とする .so)は
+  辿らない — それは実行時の動的リンカの仕事で、リンク時の未解決検査は .so では行わない。
+- 検証: システム実物の libz 等に対して -lz でリンクし、Fiddle 実行まで通すテスト。
+
+### L7 — 実行ファイルと crt(conftest 用)
+- 目的は mkmf の conftest(try_link / try_run)のみ。一般の実行ファイル生成品質は狙わない。
+- 形式: **非 PIE の ET_EXEC + PT_INTERP** を選ぶ(PIE より再配置が単純。ASLR 適合性は
+  conftest には不要)。インタプリタパスは実在確認で選択
+  (glibc: /lib64/ld-linux-x86-64.so.2、musl: /lib/ld-musl-x86_64.so.1)。
+- crt: _start は **__libc_start_main 呼び出し方式**(glibc / musl 両方が提供し、libc 初期化・
+  atexit・環境変数を正しく通す)。「main 直呼び + exit syscall」の自前方式は printf 等の
+  libc 初期化前提が崩れるので採らない。glibc 2.34+ で __libc_start_main がバージョン付き
+  シンボルになっている点は、無版本参照での解決可否を実物で確認してから確定する。
+  機械語は Ruby 内で合成(DESIGN 5.3 crt/)。
+- 検証: mkmf が生成する典型 conftest ソース(have_func / have_header / try_run の実物)を
+  ビルド・実行して終了コードを確認。glibc / musl 両方。
+
+### L8 — ドライバ統合と M2 受け入れ
+- exe/rubycc を gcc 互換ドライバに拡張(R6): 複数入力(.c / .o 混在)、-c 無しの
+  コンパイル+リンク一気通貫、-shared、-l / -L / -Wl,、-fPIC、-O(受理して無視)、
+  未知の GCC 固有フラグは警告のみで無視。
+- **M2 受け入れ**: json と msgpack を「extconf.rb が生成した Makefile のコマンドを
+  手動で rubycc に置き換えて」ビルドし、**gem 自身のテストスイートに合格**。
+  glibc / musl 両コンテナで確認。
+- 検証環境の前提: この時点では同梱 libc ヘッダ(R8)が無いので、
+  「Ruby ヘッダ + libc 開発ヘッダが存在する通常のビルドコンテナ」で検証してよい
+  (プリプロセッサの既定インクルードパスに /usr/include を許す)。ヘッダレス環境
+  (distroless)対応は M5 の同梱ヘッダで達成する。
+- ここで初めて ruby.h の全機能(varargs・関数ポインタ・GNU 拡張・ビットフィールド)が
+  実物で検証される。露見した M1 の残穴は棚卸しして「M1 追補ステップ」として
+  通し番号で処理する。
 
 ## 6. M3 — ビルド統合(rmake / rubygems_plugin / pkg-config / conftest)
 
@@ -247,7 +343,7 @@ struct 系の応用(union/enum/typedef)より先に固める、(3) ruby.h が要
   ENV["MAKE"] / ENV["PKG_CONFIG"] の注入(DESIGN 5.4)。
 - **pkg-config シム**: 純 Ruby .pc パーサ(Requires 再帰、--cflags/--libs/--exists)。
 - **conftest 対応**: mkmf の have_header/have_func/try_link/try_run が全部通ること。
-  try_run は L4 の実行ファイルが動くことが前提。
+  try_run は L7 の実行ファイルが動くことが前提。
 - **受け入れ**: distroless 相当のイメージ(cc/make/sh なし)で
   `gem install json msgpack sqlite3 pg`(sqlite3/pg はシステムライブラリあり構成)が成功。
 - **リスク**: extconf.rb が xsystem で任意の sh 構文を使うケース(DESIGN 7 章)。
