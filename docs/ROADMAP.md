@@ -335,46 +335,229 @@ struct 系の応用(union/enum/typedef)より先に固める、(3) ruby.h が要
 
 ## 6. M3 — ビルド統合(rmake / rubygems_plugin / pkg-config / conftest)
 
-- **rmake**: mkmf が生成する Makefile のサブセット(変数展開・代入 4 種・ルール・
-  自動変数 $@ $< $^・VPATH は不要)。レシピは /bin/sh を使わず内蔵実行器で
-  「単純コマンド・&&・; ・リダイレクト・cd」を解釈(DESIGN R5)。$(CC) 等は
-  in-process で rubycc 呼び出しに置換(プロセス起動レス: DESIGN 5.4)。-j は Process.fork。
-- **rubygems_plugin**: `RUBYCC=1` 強制 / cc・make 不在時の自動有効化 / `RUBYCC=0` 無効化。
-  ENV["MAKE"] / ENV["PKG_CONFIG"] の注入(DESIGN 5.4)。
-- **pkg-config シム**: 純 Ruby .pc パーサ(Requires 再帰、--cflags/--libs/--exists)。
-- **conftest 対応**: mkmf の have_header/have_func/try_link/try_run が全部通ること。
-  try_run は L7 の実行ファイルが動くことが前提。
-- **受け入れ**: distroless 相当のイメージ(cc/make/sh なし)で
-  `gem install json msgpack sqlite3 pg`(sqlite3/pg はシステムライブラリあり構成)が成功。
-- **リスク**: extconf.rb が xsystem で任意の sh 構文を使うケース(DESIGN 7 章)。
-  内蔵実行器でカバーできない gem はスコープ外として README に列挙する。
+M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画上の識別子で、
+コミットの "(Step N)" は完了順の通し採番(M2 と同じ規則)。
+
+順序の方針: (1) 一次資料は「実物の mkmf が生成した Makefile と conftest」。着手前に
+代表 gem(json / msgpack / sqlite3 / pg / racc / redcarpet)の extconf.rb を実行して
+生成物(Makefile・mkmf.log・conftest ソース)を採取し、**test/fixtures にコーパス化**
+してから逆算で機能セットを決める。仕様書(POSIX make)から演繹しない — mkmf が
+生成しないものは作らない。(2) rmake 単体 → 実行器 → in-process 統合 → mkmf 対話、
+の順に外側から内側へ進める。
+
+### B1 — rmake コア(Makefile パーサと依存グラフ実行)
+- mkmf 生成 Makefile のサブセット: 変数代入(= := ?= +=)、変数展開(`$(VAR)`/`${VAR}`、
+  ネスト、mkmf が実際に使う関数のみ)、明示ルール、**旧式サフィックスルール
+  (`.c.o:` 形式。mkmf は `.c.$(OBJEXT)` を生成する)**、.PHONY、VPATH
+  (mkmf は `VPATH = $(srcdir)...` を出すので必要)、行継続、コメント。
+  条件分岐(ifeq 等)は mkmf が出さない限り実装しない。
+- タイムスタンプ比較による再ビルド判定と依存グラフのトポロジカル実行。
+- **検証**: 採取した実物 Makefile 群を「パース → 実行計画(どのコマンドをどの順で
+  走らせるか)のダンプ」にして golden テスト化。GNU make の -n 出力との突き合わせ。
+
+### B2 — 内蔵コマンド実行器(シェルレス)
+- ミニマム環境に /bin/sh が無い前提(R5)で、レシピを自前解釈する:
+  単純コマンド、`&&`、`;`、リダイレクト(> 2> >>)、`cd`、`VAR=x cmd` 前置、`@`(非表示)、
+  `-`(エラー無視)。パイプ・サブシェル・ワイルドカード展開は mkmf レシピに出ない限り
+  非対応(出たらここに追記して拡張)。
+- 頻出ユーティリティの内蔵実装(FileUtils ベース): rm -f / mkdir -p / cp / install /
+  echo / true(`$(NULLCMD)`)。PATH に実物があればそれを使う選択肢もあるが、
+  **無い前提の内蔵実装を正**とし、外部コマンドは最後の手段にする。
+- **リスク**(DESIGN 7 章): extconf.rb が xsystem で任意の sh 構文を使う gem は
+  カバーしきれない。実行器が解釈できない構文は「gem 名 + レシピ」を記録して明確に
+  失敗させ、README のスコープ外リストへ反映する運用にする。
+- **検証**: 採取レシピの再生テスト(ファイルシステム効果の突き合わせ)。
+
+### B3 — in-process ツール呼び出しと並列ビルド
+- レシピ中の `$(CC)` / `$(LD)` / `$(AR)` を認識して rubycc / rubycc-ar の**内部 API 呼び出し**
+  に置換(プロセス起動レス: DESIGN 5.4)。コンパイラ側に「argv を受けて例外で失敗を返す」
+  再入可能なエントリポイントを整備する(グローバル状態を持たないこと — fork 並列と
+  in-process 実行の両立条件)。
+- -j 並列: 依存グラフの独立ノードを Process.fork で並列コンパイル(Linux 前提: DESIGN 6 章)。
+  ジョブサーバは実装しない(単一 Makefile 内の並列で十分)。
+- **トレードオフ**: in-process 化はコンパイラのバグが rmake ごと落とすリスクと引き換え。
+  fork 子プロセス内で実行すれば隔離と並列を同時に満たせるので、既定は
+  「fork + in-process」のハイブリッドとする。
+- **検証**: json 実物の Makefile を rmake で -j 込み実行し、gcc + make の成果物と
+  同等の .so ができること。
+
+### B4 — pkg-config シム(rubycc-pkgconf)
+- 純 Ruby の .pc パーサ: 変数定義と展開、Name/Version/Cflags/Libs/Requires(.private)、
+  Requires の再帰解決。CLI は mkmf の pkg_config() が呼ぶ形
+  (--exists / --modversion / --cflags / --libs、複数モジュール)を一次資料にする。
+- 検索パス: PKG_CONFIG_PATH → libdir 既定(/usr/lib/pkgconfig, /usr/lib/x86_64-linux-gnu/pkgconfig,
+  /usr/share/pkgconfig 等をターゲット別に)。
+- **検証**: システム実物の .pc(zlib, libffi 等)で pkg-config 本家と出力一致テスト。
+
+### B5 — conftest 完全対応
+- mkmf の have_header / have_func / have_library / have_macro / try_compile / try_link /
+  try_run / check_sizeof / convertible_int が全部通ること。try_run は M2 L7 の
+  実行ファイルが前提。
+- mkmf は結果を conftest の**終了コードと mkmf.log** で判断する。ログに書かれる
+  コマンド行の体裁も実物に寄せ、失敗時に人間が mkmf.log から原因を追える状態を守る(N3)。
+- have_func のリンク検査は「未解決シンボルが残ると実行ファイルリンクが失敗する」性質に
+  依存するため、L7 リンカの未解決検査の厳密さがここで効く(緩すぎると誤検出で
+  機能が「ある」ことになり、gem が壊れる)。
+- **検証**: 代表 gem の extconf.rb を RUBYCC 経由で走らせ、生成される Makefile /
+  extconf.h が gcc 環境と同内容になること。
+
+### B6 — rubygems_plugin 統合(ヘッダあり環境での gem install)
+- rubygems_plugin.rb: `RUBYCC=1` 強制有効 / `RUBYCC=0` 無効 / 既定は「cc と make が
+  PATH に無ければ自動有効」。有効時に ENV["MAKE"]=rmake、ENV["PKG_CONFIG"]=シムを注入
+  (DESIGN 5.4)。プラグインは gem インストール時に必ず読まれるので、
+  **無効時のオーバーヘッドと副作用をゼロに保つ**(判定だけして何もしない)。
+- **受け入れ(第一段)**: libc 開発ヘッダのある通常コンテナ(ruby:slim + libc6-dev 相当)で
+  `gem install json msgpack sqlite3 pg`(sqlite3/pg はシステムライブラリ利用構成)が
+  素の `gem install` コマンドだけで成功し、各 gem の要求どおり動くこと。
+
+### B7 — 同梱ヘッダ先行版と distroless 受け入れ
+- **DESIGN の M3 受け入れ(distroless 相当で成功)には libc ヘッダが必要だが、
+  R8 の同梱ヘッダ網羅は M5 スコープ**という計画上のギャップをここで埋める:
+  M3 では「上記 4 gem(と ruby.h)が #include する範囲だけ」の同梱ヘッダ先行版を作る。
+  ヘッダ設計方針(musl 派生かクリーンルームか、ディレクトリ構成、型幅の切替機構)は
+  **M5 H1 の設計をこの時点で確定させて従う**(先行版が使い捨てにならないように)。
+- **受け入れ(最終)**: cc / make / sh / libc ヘッダの無い distroless 相当イメージ +
+  システム .so(libz, libsqlite3, libpq)ありの構成で `gem install json msgpack sqlite3 pg`
+  が成功 = **M3 完了**。glibc / musl 両方。
 
 ## 7. M4 — aarch64 バックエンド
 
-- 前提リファクタ: Backend を「IR → Result(bytes/symbols/relocations)」のインターフェイスで
-  抽象化(現状ほぼ成立している)。ELF ライタの機種依存(e_machine・リロケーション型)を
-  パラメタ化。
-- AAPCS64: 引数 x0-x7 / v0-v7、戻り値 x0/v0、スタック 16 バイト整列、可変長引数は
-  SysV と別方式(スタック上の名前なし領域)なので va_* を backend 別に実装。
-- リロケーション: CALL26、ADRP + ADD_ABS_LO12_NC(グローバル・文字列参照)、
-  リンカ側の対応も同時に。
-- spill-everything の構造はそのまま移植できる(AArch64 は ldr/str のオフセット制約にだけ注意)。
-- 受け入れ: 既存の実行テスト全件を aarch64(Docker/QEMU)で green に。ABI ファジングも両対応。
+ラベル A1〜A5 は計画上の識別子(コミット採番規則は M2 と同じ)。M1〜M3 の x86_64 実装が
+安定していることが前提で、**「x86_64 で規約化したもの(値表現・IR・テスト)を第二の
+バックエンドが検証する」**マイルストーンでもある — IR やテストハーネスに x86_64 の
+暗黙の仮定が漏れていればここで露見する。
+
+### A1 — バックエンド抽象化リファクタ(x86_64 のみで完結)
+- Backend の契約「IR::Function → Result(bytes / symbols / relocations)」を明文化し、
+  リロケーション kind(:call / :string / :global / :got)を**機種非依存の語彙**として
+  固定する。ELF ライタは kind → 機種別リロケーション型(R_X86_64_* / R_AARCH64_*)の
+  マッピングテーブルを持ち、e_machine をパラメタ化。
+- ドライバにターゲット選択を追加(既定はホスト検出: RbConfig::CONFIG["host_cpu"])。
+- **このステップは挙動変更ゼロ**: x86_64 の全テストが green のまま、という受け入れ基準が
+  リファクタの正しさの定義。aarch64 のコードは一行も書かない。
+
+### A2 — aarch64 コーデジェン・コア
+- 固定長 32bit 命令のエンコーダ(即値の合成は MOVZ/MOVK、比較結果は CSET)。
+- spill-everything の移植。**フレームレイアウトは x86_64 と違い「sp からの正オフセット」で
+  スロットを参照する**設計にする: AArch64 の ldr/str 即値は「スケール済み非負 12bit」が
+  基本で、fp(x29)からの負オフセット参照は 9bit 非スケール(-256〜255)しか使えず
+  すぐ溢れるため。溢れる大フレームは加算でアドレスを合成する経路を最初から用意する。
+- 32bit 演算は w レジスタで行い C int のラップアラウンドを再現(x86 の eax と同じ理屈)。
+  値表現規約(スロット 8 バイト・拡張済み)はそのまま適用。
+- AAPCS64 の整数引数 x0-x7(SysV の 6 個より多い)、戻り値 x0、スタック 16 バイト整列。
+- 分岐: B(±128MB)/ B.cond(±1MB)。関数内ジャンプは rel 幅が十分なので
+  x86 と同じバックパッチ方式でよい。
+- **受け入れ**: 制御フロー・算術・関数呼び出しまでの既存実行テストのサブセットが
+  aarch64 で green(グローバル・文字列は A3 まで除外)。
+
+### A3 — メモリアクセスとリロケーション
+- 幅つき load/store(ldrsb / ldrh / ldrsw / str の各幅。符号拡張ロードの規約は
+  値表現規約と対応させる)。
+- グローバル・文字列参照: ADRP + ADD(R_AARCH64_ADR_PREL_PG_HI21 +
+  R_AARCH64_ADD_ABS_LO12_NC のペア)。GOT 経由(L4 相当): ADRP + LDR
+  (R_AARCH64_ADR_GOT_PAGE + R_AARCH64_LD64_GOT_LO12_NC)。
+  呼び出し: BL + R_AARCH64_CALL26。**1 参照が 2 命令 2 リロケーションになる**点が
+  x86(1 命令 1 リロケーション)と違うので、backend の relocation 記録と ELF ライタの
+  対応付けをペア前提に拡張する。
+- **受け入れ**: 既存実行テスト全件(gcc 差分込み)が aarch64 で green。
+  .o を aarch64 の gcc/ld にリンクさせる相互運用も確認。
+
+### A4 — ABI 完全化(struct 値渡し・varargs・浮動小数)
+- 浮動小数: 引数/戻り値 v0-v7、SSE と対になる FP 命令(fadd/fcmp/scvtf 等)。
+- struct 値渡し・値返し: AAPCS64 の分類(2 レジスタまでの合成、HFA(同一浮動小数型
+  4 個まで)は vレジスタ、超過はメモリ / x8 間接返し)。**SysV と規則が全く違う**ので、
+  Step 25 で作った ABI ファジングハーネスを機種パラメタ化して回すことが受け入れ条件。
+- varargs: AAPCS64 の va_list は 5 フィールドの構造体(__stack / __gr_top / __vr_top /
+  __gr_offs / __vr_offs)で SysV と別物。__builtin_va_* の実装を backend 別に分ける
+  (同梱ヘッダの va_list 定義もターゲットで切替)。
+- **受け入れ**: ABI ファジング(構造体レイアウト・varargs 網羅)が aarch64 で green。
+
+### A5 — リンカ対応と M4 受け入れ
+- リンカの再配置適用・PLT/GOT 生成を aarch64 に対応(PLT エントリの命令列、
+  ページ境界計算)。crt(_start)の aarch64 版。
+- **CI 環境のトレードオフ**: QEMU(binfmt_misc)はどこでも動くが遅く、まれに実機と
+  挙動が違う。既定は QEMU の Docker マトリクスとし、リリース前検証だけ実機
+  (Apple Silicon 上の Linux か ARM ランナー)で流す二段構えにする。
+- **受け入れ = M4 完了**: 全テストスイート + ABI ファジング + json/msgpack の
+  gem install が aarch64(glibc/musl)で成功。
 
 ## 8. M5 — 互換ヘッダ・コーパス 90%・v1.0
 
-- **互換ヘッダ**(DESIGN R8): musl(MIT)から派生させる案を第一候補とし、ライセンス表記を
-  NOTICE に明記。glibc ターゲットでは「型幅・構造体レイアウトを glibc ABI に一致させた
-  自前ヘッダ」を書く(glibc ヘッダ実物は同梱できない)。off_t/time_t 等の型幅は
-  ターゲット別に切り替え。`#include_next` で実ヘッダ併用も可能にする(DESIGN 7 章)。
-- **コーパス CI**: rubygems.org 上位の対象 gem(DESIGN R10 の選定基準)を実際に
-  `gem install` → gem 自身のテストスイート実行、の Docker マトリクス
-  (glibc/musl × x86_64/aarch64)。不足ヘッダ・未実装拡張はここで検出して漸進対応。
-- **性能**(N1): YJIT 前提で 20,000 行/秒。プロファイルして字句解析の strscan 化、
-  文字列連結の削減、TU 単位 fork 並列(rmake -j)を適用。
-  sqlite3 amalgamation(25 万行)は「動くが遅い」を許容。
-- **受け入れ = v1.0**: コーパス 90% 合格(R10)、N1〜N7 の非機能要件をチェックリスト化して
-  全項目確認。
+ラベル H1〜H6 は計画上の識別子(コミット採番規則は M2 と同じ)。M5 は前半(H1〜H3)が
+通常のステップ、後半(H4)が**コーパス駆動の反復フェーズ**(1 コミット 1 ステップの
+リズムではなく、失敗 gem を潰す小さなコミットの束)になる点が他のマイルストーンと違う。
+
+### H1 — 互換ヘッダ基盤(設計確定。M3 B7 の前に確定させる)
+- **由来の方針決定**(DESIGN R8): 第一候補は musl(MIT)からの派生 + NOTICE への
+  ライセンス表記。派生の定義を決めておく — 宣言・型定義・マクロ値は musl を出発点に、
+  glibc ターゲットでは**型幅・構造体レイアウト・マクロ値を glibc ABI に一致させる改変**を
+  加える(glibc ヘッダ実物は LGPL かつ複雑で同梱できない)。判断に迷う箇所は
+  クリーンルームで書き直す方が安全、という優先順位も明記。
+- ディレクトリ構成: `headers/freestanding/`(stddef/stdarg/stdbool/stdint/limits 等。
+  コンパイラと密結合な va_list・size_t はここ)+ `headers/libc/`(共通宣言)+
+  `headers/libc/{glibc,musl}/{x86_64,aarch64}/`(型幅・レイアウトの切替層)。
+  freestanding 層は libc に依存しないので**必ず自前で書く**(musl 由来にしない)。
+- コンパイラの既定インクルードパス組み込み(-nostdinc / -I の優先順位、
+  `#include_next` の実装 — 実ヘッダ併用逃げ道: DESIGN 7 章)。
+- **ABI 一致の検証機構をヘッダより先に作る**: 同じ検査ソース(sizeof / offsetof /
+  _Alignof / マクロ値を印字)を「gcc + 実ヘッダ」と「rubycc + 同梱ヘッダ」で
+  コンパイル・実行して突き合わせる自動ハーネス。以降のヘッダ追加はすべて
+  このハーネスのケース追加とセットで行う(ヘッダの正しさを目視に頼らない)。
+
+### H2 — libc ヘッダ第一陣
+- 対象範囲: ruby.h 一式と主要 gem(json / msgpack / bigdecimal / date / racc /
+  redcarpet / puma)が #include する範囲(stdio / stdlib / string / errno / ctype /
+  math / time / signal / sys/types / sys/stat / fcntl / unistd あたりが実測での中心)。
+  範囲は推測でなく、**コーパスの #include を集計して決める**。
+- off_t / time_t 等の型幅、errno の実体(glibc: __errno_location、musl: 同名関数)、
+  FILE の不透明扱い(構造体の中身は見せない — レイアウト互換の負担を避ける)など、
+  **「ABI に効く最小限だけ正確に、それ以外は不透明に」**を設計原則にする。
+- **受け入れ**: H1 の ABI 一致ハーネスが対象ヘッダ全域で green(glibc/musl × 2 arch)。
+  B7 の先行版ヘッダをこの体系に統合し、M3 の受け入れが維持されること。
+
+### H3 — コーパス CI 基盤
+- 対象 gem の選定を自動化: rubygems.org ダウンロード上位から R10 基準
+  (C++ 不使用・実体 asm 不使用・configure 非依存)を機械判定(拡張子・extconf.rb の
+  mini_portile / configure 呼び出し検出)でフィルタし、**選定リスト自体をリポジトリに
+  コミット**する(再現性のため。手動除外には理由を併記)。
+- マトリクス実行: glibc/musl × x86_64/aarch64 の Docker で各 gem を
+  `gem install` → gem 自身のテストスイート実行。結果を機械可読(JSON)で集計し、
+  **失敗を 4 分類**(ヘッダ不足 / 言語機能不足 / ABI バグ / rmake・conftest 非互換)する
+  レポートを出す — H4 の反復はこの分類が駆動する。
+- **受け入れ**: コーパス全 gem の初回実測レポートが出ること(この時点の合格率は
+  問わない。ベースラインの確定が目的)。
+
+### H4 — コーパス駆動の穴埋め反復(合格率 90% まで)
+- H3 の分類レポートに従って修正を反復する運用フェーズ:
+  - ヘッダ不足 → H2 の体系に追加(ABI ハーネスのケースとセット)
+  - 言語機能不足 → M1 と同じ流儀の追補ステップ(通し番号でコミット)
+  - ABI バグ → 最優先で修正し、ABI ファジングに再発防止ケースを追加(DESIGN 7 章:
+    ABI 不一致は SEGV に直結する最重要リスク)
+  - rmake / conftest 非互換 → B1〜B5 の該当箇所に追記して拡張
+- **`__GNUC__` 非定義方針(R7)の影響をここで実測**する: fallback パスが無くて落ちる
+  gem が合格率を有意に下げるなら、「GCC 擬態モード」(M6 予定)の前倒しを判断する。
+  判断材料(落ちた gem と原因マクロ)をレポートに残すこと。
+- **受け入れ**: コーパス 90% が「install 成功 + gem テスト合格」(R10)。
+
+### H5 — 性能(N1: 20,000 行/秒)
+- まず**測定を整備**: 実 gem ソース(前処理後行数ベース)のベンチを rake タスク化し、
+  YJIT 有無・主要 gem 別の数値を継続記録する。sqlite3 amalgamation(25 万行)は
+  参考値として実測を記録(「動くが遅い」を許容: N1)。
+- 定石の最適化を計測駆動で適用: 字句解析の strscan 化、プリプロセッサのトークン列
+  キャッシュ(同一ヘッダの再 #include)、文字列連結・中間配列の削減、rmake -j の既定化。
+  **推測で最適化しない — プロファイル(stackprof 等は開発時依存として可)が先**。
+- **受け入れ**: YJIT 有効で 20,000 行/秒以上(代表 gem の中央値)。未達なら
+  ボトルネックの分析と「v1.0 で許容するか」の判断を文書化。
+
+### H6 — v1.0 リリース準備
+- N1〜N7 の非機能要件をチェックリスト化して全項目確認(N4 決定的ビルドは
+  「同一入力 2 回ビルドのバイナリ一致」を CI 化)。
+- ドキュメント: README(対応範囲、既知の制限、R4 の「修正とみなすもの/みなさないもの」、
+  distro Ruby での dev パッケージ要件: DESIGN 4.2)、LICENSE / NOTICE
+  (musl 派生ヘッダの表記: R8)。
+- rubygems.org へ公開、以降のバージョニング方針(セマンティックバージョニング、
+  コーパス合格率の回帰を破壊的変更として扱う)を決めて記録。
+- **受け入れ = v1.0 リリース = M5 完了**。
 
 ## 9. マイルストーン横断のリスク(DESIGN 7 章の運用)
 
