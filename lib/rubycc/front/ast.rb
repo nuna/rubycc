@@ -86,6 +86,27 @@ module Rubycc
       # "int *", ...). `type` is the resolved Rubycc::Type.
       SizeofType = Data.define(:type, :token)
 
+      # A cast "( type-name ) operand" (ISO C 6.5.4). `type` is the resolved
+      # Rubycc::Type the operand is converted to and `operand` is the
+      # cast-expression to its right. The generator settles which conversions
+      # are legal (arithmetic reinterpretation, a pointer retag, discarding a
+      # value with "(void)", a null-pointer-constant cast) and emits any code a
+      # narrowing needs; the parser only builds the node.
+      Cast = Data.define(:type, :operand, :token)
+
+      # A null pointer constant, as this subset defines it: an integer literal
+      # whose value is 0, which also covers a character constant like '\0'
+      # (the lexer already lowers it to an integer 0). ISO C additionally admits
+      # any integer constant expression evaluating to 0, and such an expression
+      # cast to void *, but general constant-expression evaluation arrives in a
+      # later step, so matching the literal form is enough here. A null pointer
+      # constant converts implicitly to any pointer type in an assignment, an
+      # initializer, an argument, a return, an "=="/"!=" comparison and the arms
+      # of "?:".
+      def self.null_pointer_constant?(node)
+        node.is_a?(IntLit) && node.value.zero?
+      end
+
       # Simple assignment `target = value`. `target` is a VariableRef or a
       # dereference (Unary with op :deref); the parser rejects any other,
       # non-assignable target.

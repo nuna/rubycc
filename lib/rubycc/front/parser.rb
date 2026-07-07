@@ -67,9 +67,11 @@ module Rubycc
     #                               (("<" | ">" | "<=" | ">=") additive-expression)*
     #   additive-expression       = multiplicative-expression
     #                               (("+" | "-") multiplicative-expression)*
-    #   multiplicative-expression = unary-expression
-    #                               (("*" | "/" | "%") unary-expression)*
-    #   unary-expression          = ("+" | "-" | "!" | "&" | "*")* postfix-expression
+    #   multiplicative-expression = cast-expression
+    #                               (("*" | "/" | "%") cast-expression)*
+    #   cast-expression           = "(" type-name ")" cast-expression
+    #                             | unary-expression
+    #   unary-expression          = ("+" | "-" | "!" | "&" | "*")* cast-expression
     #                             | ("++" | "--") unary-expression
     #                             | "sizeof" unary-expression
     #                             | "sizeof" "(" type-name ")"
@@ -748,7 +750,26 @@ module Rubycc
       end
 
       def parse_multiplicative_expression
-        parse_left_associative(MULTIPLICATIVE_OPERATORS) { parse_unary_expression }
+        parse_left_associative(MULTIPLICATIVE_OPERATORS) { parse_cast_expression }
+      end
+
+      # cast-expression = "(" type-name ")" cast-expression | unary-expression.
+      # A "(" begins a cast only when a type-specifier follows it; otherwise it
+      # is an ordinary parenthesized expression, left for unary-expression (and
+      # finally primary-expression) to consume. With no typedef names yet, the
+      # keyword after "(" settles the choice with a single token of lookahead,
+      # so "(int)x" is a cast while "(x)(y)" — x not being a type — is a call.
+      # (When typedef arrives, this test must also consult the typedef-name
+      # namespace, since a "(" followed by a typedef name would open a cast.)
+      def parse_cast_expression
+        if peek.punct?("(") && peek_ahead(1) && type_specifier?(peek_ahead(1))
+          paren_tok = advance # "("
+          type = parse_type_name
+          expect_punct(")")
+          AST::Cast.new(type, parse_cast_expression, paren_tok)
+        else
+          parse_unary_expression
+        end
       end
 
       # Generic left-associative binary parser: the block parses one operand
@@ -771,19 +792,19 @@ module Rubycc
           parse_sizeof
         elsif peek.punct?("+")
           advance # unary + is a no-op; fold it away
-          parse_unary_expression
+          parse_cast_expression
         elsif peek.punct?("-")
           op_tok = advance
-          AST::Unary.new(:neg, parse_unary_expression, op_tok)
+          AST::Unary.new(:neg, parse_cast_expression, op_tok)
         elsif peek.punct?("!")
           op_tok = advance
-          AST::Unary.new(:not, parse_unary_expression, op_tok)
+          AST::Unary.new(:not, parse_cast_expression, op_tok)
         elsif peek.punct?("&")
           op_tok = advance
-          AST::Unary.new(:addr, parse_unary_expression, op_tok)
+          AST::Unary.new(:addr, parse_cast_expression, op_tok)
         elsif peek.punct?("*")
           op_tok = advance
-          AST::Unary.new(:deref, parse_unary_expression, op_tok)
+          AST::Unary.new(:deref, parse_cast_expression, op_tok)
         elsif peek.punct?("++") || peek.punct?("--")
           parse_prefix_inc_dec
         else
@@ -808,12 +829,20 @@ module Rubycc
         sizeof_tok = advance # "sizeof"
         if peek.punct?("(") && peek_ahead(1) && type_specifier?(peek_ahead(1))
           advance # "("
-          type = parse_pointer_declarator(parse_type_specifier)
+          type = parse_type_name
           expect_punct(")")
           AST::SizeofType.new(type, sizeof_tok)
         else
           AST::SizeofExpr.new(parse_unary_expression, sizeof_tok)
         end
+      end
+
+      # type-name = type-specifier "*"*: a base type-specifier and its pointer
+      # "*" run, with no declarator name. Shared by "sizeof ( type-name )" and
+      # the cast "( type-name )"; abstract array and function declarators are
+      # not modelled in this subset.
+      def parse_type_name
+        parse_pointer_declarator(parse_type_specifier)
       end
 
       # An identifier immediately followed by "(" is a function call; anything

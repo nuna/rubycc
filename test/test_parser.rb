@@ -681,6 +681,75 @@ class TestParser < Minitest::Test
     assert_equal Type::Pointer.new(Type::Pointer.new(Type::Int)), expr.type
   end
 
+  def test_parses_cast_to_scalar_type
+    # (int)x  =>  (cast int x)
+    expr = parse_expr("(int)x")
+    assert_kind_of AST::Cast, expr
+    assert_equal Type::Int, expr.type
+    assert_kind_of AST::VariableRef, expr.operand
+    assert_equal "x", expr.operand.name
+  end
+
+  def test_parses_cast_to_pointer_type
+    expr = parse_expr("(char *)p")
+    assert_kind_of AST::Cast, expr
+    assert_equal Type::Pointer.new(Type::Char), expr.type
+    assert_kind_of AST::VariableRef, expr.operand
+    assert_equal "p", expr.operand.name
+  end
+
+  def test_parses_nested_casts_right_to_left
+    # (int)(char)x  =>  (cast int (cast char x))
+    expr = parse_expr("(int)(char)x")
+    assert_kind_of AST::Cast, expr
+    assert_equal Type::Int, expr.type
+    inner = expr.operand
+    assert_kind_of AST::Cast, inner
+    assert_equal Type::Char, inner.type
+    assert_kind_of AST::VariableRef, inner.operand
+  end
+
+  def test_parses_cast_to_void_of_call
+    # (void)f()  =>  (cast void (call f))
+    expr = parse_expr("(void)f()")
+    assert_kind_of AST::Cast, expr
+    assert_equal Type::Void, expr.type
+    assert_kind_of AST::Call, expr.operand
+    assert_equal "f", expr.operand.name
+  end
+
+  def test_parenthesized_non_type_is_an_operand_not_a_cast
+    # "(x) + 1": x is not a type-specifier, so "(x)" is a parenthesized operand
+    # (the left side of "+"), never a cast of "+ 1" to type x.
+    expr = parse_expr("(x) + 1")
+    assert_kind_of AST::Binary, expr
+    assert_equal :add, expr.op
+    assert_kind_of AST::VariableRef, expr.lhs
+    assert_equal "x", expr.lhs.name
+    assert_equal 1, expr.rhs.value
+  end
+
+  def test_parenthesized_non_type_before_parentheses_is_not_a_cast
+    # "(x)(y)": x is not a type-specifier, so "(x)" is a parenthesized operand,
+    # not a cast — it is treated as a (would-be) call target. This subset only
+    # calls a bare identifier, so the trailing "(y)" is left unconsumed and the
+    # parser stops expecting ";", proving "(x)" was taken as a value, not a
+    # cast of "(y)" to type x (which would fail asking for a type specifier).
+    error = assert_raises(Rubycc::CompileError) do
+      parse("int main(void) { return (x)(y); }")
+    end
+    assert_match(/expected ';'/, error.description)
+  end
+
+  def test_unary_minus_applies_to_cast
+    # -(int)x  =>  (neg (cast int x)): a unary operator's operand is a
+    # cast-expression, so the cast binds inside the negation.
+    expr = parse_expr("-(int)x")
+    assert_kind_of AST::Unary, expr
+    assert_equal :neg, expr.op
+    assert_kind_of AST::Cast, expr.operand
+  end
+
   def test_logical_and_produces_logical_and_node
     expr = parse_expr("1 && 2")
     assert_kind_of AST::LogicalAnd, expr

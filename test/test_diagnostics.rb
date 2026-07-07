@@ -257,44 +257,49 @@ class TestDiagnostics < Minitest::Test
     assert_match(/array initializers are not supported yet/, error.description)
   end
 
-  def test_pointer_used_as_if_condition_is_rejected
+  # Step 14 resolves Step 9's intentional deviation: a pointer is a valid
+  # scalar condition (its truth is "is not null"), so these once-rejected
+  # forms now compile. Their run-time behavior is covered in the execution
+  # harness; here we assert only that they no longer raise a diagnostic.
+  def test_pointer_used_as_if_condition_is_accepted
     source = "int main(void) { int *p; if (p) return 1; return 0; }"
+    assert_kind_of String, compile(source)
+  end
+
+  def test_pointer_used_as_while_condition_is_accepted
+    source = "int main(void) { int *p; while (p) p = p; return 0; }"
+    assert_kind_of String, compile(source)
+  end
+
+  def test_pointer_used_as_logical_and_operand_is_accepted
+    source = "int main(void) { int *p; return p && 1; }"
+    assert_kind_of String, compile(source)
+  end
+
+  def test_pointer_used_as_logical_or_operand_is_accepted
+    source = "int main(void) { int *p; return 1 || p; }"
+    assert_kind_of String, compile(source)
+  end
+
+  def test_pointer_used_as_logical_not_operand_is_accepted
+    source = "int main(void) { int *p; return !p; }"
+    assert_kind_of String, compile(source)
+  end
+
+  def test_pointer_used_as_conditional_operator_condition_is_accepted
+    source = "int main(void) { int *p; int x; return p ? x : x; }"
+    assert_kind_of String, compile(source)
+  end
+
+  # A struct still has no truth value, so it remains an illegal condition.
+  def test_struct_used_as_if_condition_is_rejected
+    source = "struct s { int x; }; int main(void) { struct s v; if (v) return 1; return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
 
     assert_equal "foo.c", error.filename
     assert_equal 1, error.line
-    assert_match(/used pointer where scalar int is required/, error.description)
-    assert_match(/foo\.c:1:\d+: error: used pointer where scalar int is required/, error.message)
-  end
-
-  def test_pointer_used_as_while_condition_is_rejected
-    source = "int main(void) { int *p; while (p) p = p; return 0; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/used pointer where scalar int is required/, error.description)
-  end
-
-  def test_pointer_used_as_logical_and_operand_is_rejected
-    source = "int main(void) { int *p; return p && 1; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/used pointer where scalar int is required/, error.description)
-  end
-
-  def test_pointer_used_as_logical_or_operand_is_rejected
-    source = "int main(void) { int *p; return 1 || p; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/used pointer where scalar int is required/, error.description)
-  end
-
-  def test_pointer_used_as_logical_not_operand_is_rejected
-    source = "int main(void) { int *p; return !p; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/used pointer where scalar int is required/, error.description)
-  end
-
-  def test_pointer_used_as_conditional_operator_condition_is_rejected
-    source = "int main(void) { int *p; int x; return p ? x : x; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/used pointer where scalar int is required/, error.description)
+    assert_match(/used struct type value where scalar is required/, error.description)
+    assert_match(/foo\.c:1:\d+: error: used struct type value where scalar is required/, error.message)
   end
 
   def test_conditional_operator_type_mismatch_is_rejected
@@ -566,5 +571,65 @@ class TestDiagnostics < Minitest::Test
     source = "struct s { int x; }; struct s g = 0; int main(void) { return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/unsupported initializer for global variable/, error.description)
+  end
+
+  # --- casts and null pointer constants (Step 14) -------------------------
+
+  def test_cast_from_pointer_to_integer_is_rejected
+    source = "int main(void) { int *p; return (int)p; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_equal 1, error.line
+    assert_match(/cast between pointer and integer is not supported yet/, error.description)
+    assert_match(%r{foo\.c:1:\d+: error: cast between pointer and integer}, error.message)
+  end
+
+  def test_cast_from_nonzero_integer_to_pointer_is_rejected
+    # Only a null pointer constant (a literal 0) crosses the pointer/integer
+    # boundary; any other integer needs a pointer-width integer type that does
+    # not exist yet.
+    source = "int main(void) { int *p; p = (int *)5; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/cast between pointer and integer is not supported yet/, error.description)
+  end
+
+  def test_cast_to_struct_type_is_rejected
+    source = "struct s { int x; }; int main(void) { struct s v; return (struct s)v; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/conversion to non-scalar type requested/, error.description)
+  end
+
+  def test_cast_to_incomplete_struct_type_is_rejected
+    source = "struct node; int main(void) { int *p; return (struct node)p; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/conversion to non-scalar type requested/, error.description)
+  end
+
+  def test_cast_from_struct_to_pointer_is_rejected
+    source = "struct s { int x; }; int main(void) { struct s v; return (int *)v == 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/cannot cast 'struct s' to 'int \*'/, error.description)
+  end
+
+  def test_comparing_pointer_with_nonzero_integer_is_rejected
+    # A null pointer constant is the literal 0 only; "p == 1" stays a type
+    # error, since 1 is not a null pointer constant.
+    source = "int main(void) { int *p; return p == 1; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_relational_comparison_of_pointer_with_zero_is_rejected
+    # Only "==" / "!=" admit a null pointer constant; "<" against 0 is still a
+    # type error (its result would be undefined in C anyway).
+    source = "int main(void) { int *p; return p < 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_void_cast_result_used_as_a_value_is_rejected
+    source = "int main(void) { int x; return (void)x; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/void value not ignored as it ought to be/, error.description)
   end
 end

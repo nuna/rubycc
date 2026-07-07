@@ -111,6 +111,18 @@ class TestElfWriter < Minitest::Test
     assert_nil find_section(build_object, ".bss")
   end
 
+  # A global null pointer "int *p = 0;" carries an explicit (folded) initializer
+  # of 0, so, like any other explicitly initialized global, it lands in .data —
+  # here as eight zero bytes (a 64-bit null address) — rather than .bss.
+  def test_global_null_pointer_lands_in_data_as_eight_zero_bytes
+    bin = Rubycc::Compiler.new.compile("int *p = 0; int main(void) { return 0; }", filename: "foo.c")
+    data = find_section(bin, ".data")
+
+    refute_nil data, ".data section should be emitted"
+    assert_equal 8, data[:size]
+    assert_equal ("\0".b * 8), bin[data[:offset], data[:size]]
+  end
+
   def test_bss_section_is_nobits_with_a_size_but_no_file_bytes
     bin = build_object_with_bss
     bss = find_section(bin, ".bss")

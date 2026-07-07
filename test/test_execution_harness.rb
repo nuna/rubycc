@@ -1204,6 +1204,153 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
+  # --- casts, null pointer constants and pointer conditions (Step 14) ------
+
+  def test_cast_truncates_int_to_char
+    # 298 & 0xFF == 42, so the narrowing cast keeps only the low byte.
+    assert_c_exit_status(42, "int main(void) { int x = 298; return (char)x; }", compiler: :rubycc)
+  end
+
+  def test_cast_char_to_int_widens
+    assert_c_exit_status(65, "int main(void) { char c = 'A'; return (int)c; }", compiler: :rubycc)
+  end
+
+  def test_pointer_cast_reinterprets_low_byte
+    # Read an int's first byte through a char *: on little-endian x86-64 that
+    # is the low byte (298 & 0xFF == 42), proving the cast only retags.
+    assert_c_exit_status(
+      42, "int main(void) { int x = 298; char *p = (char *)&x; return *p; }", compiler: :rubycc
+    )
+  end
+
+  def test_void_cast_discards_value
+    assert_c_exit_status(42, "int main(void) { int x = 42; (void)x; return x; }", compiler: :rubycc)
+  end
+
+  def test_void_cast_of_void_call
+    assert_c_program(
+      "int puts(char *s); void f(void) { puts(\"cast\"); } " \
+      "int main(void) { (void)f(); return 0; }",
+      exit_status: 0, stdout: "cast\n", compiler: :rubycc
+    )
+  end
+
+  def test_null_pointer_constant_assignment_and_comparison
+    assert_c_exit_status(
+      42, "int main(void) { int *p; p = 0; return p == 0 ? 42 : 7; }", compiler: :rubycc
+    )
+  end
+
+  def test_null_pointer_constant_comparison_both_orders
+    assert_c_exit_status(
+      42, "int main(void) { int *p = 0; return (0 == p) == (p != 0 ? 0 : 1) ? 42 : 7; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_null_pointer_constant_as_argument
+    assert_c_exit_status(
+      42, "int f(int *p) { return p == 0; } int main(void) { return f(0) ? 42 : 7; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_null_pointer_constant_as_return_value
+    assert_c_exit_status(
+      42, "int *g(void) { return 0; } int main(void) { return g() == 0 ? 42 : 7; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_null_pointer_constant_in_conditional_arms
+    assert_c_exit_status(
+      42, "int main(void) { int x = 5; int *p = x ? 0 : &x; return p == 0 ? 42 : 7; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_char_null_terminator_is_a_null_pointer_constant
+    # '\0' is a character constant of value 0, so it is a null pointer constant.
+    assert_c_exit_status(
+      42, "int main(void) { char *p = '\\0'; return p == 0 ? 42 : 7; }", compiler: :rubycc
+    )
+  end
+
+  def test_pointer_used_directly_as_while_condition
+    assert_c_exit_status(
+      42, "int main(void) { int a[3]; int *p = a; int n = 0; " \
+          "p = 0; while (p) { n++; p = 0; } return n == 0 ? 42 : 7; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_not_of_null_pointer_is_true
+    assert_c_exit_status(
+      42, "int main(void) { int *p = 0; if (!p) return 42; return 7; }", compiler: :rubycc
+    )
+  end
+
+  def test_global_null_pointer_is_zero_initialized
+    assert_c_exit_status(
+      42, "int *gp = 0; int main(void) { return gp == 0 ? 42 : 7; }", compiler: :rubycc
+    )
+  end
+
+  def test_null_terminated_linked_list_built_and_traversed
+    # Step 13's linked-list test used a self-loop on the last node as a
+    # sentinel because the subset then lacked a null pointer constant. With
+    # NPC and pointer conditions (Step 14), the list terminates on a real null
+    # and "while (p)" walks it to the end.
+    assert_c_exit_status(
+      42,
+      "struct node { int v; struct node *next; }; " \
+      "int main(void) { struct node a; struct node b; struct node c; " \
+      "a.v = 10; a.next = &b; b.v = 14; b.next = &c; c.v = 18; c.next = 0; " \
+      "struct node *p = &a; int sum = 0; " \
+      "while (p) { sum += p->v; p = p->next; } return sum; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_sizeof_null_pointer_cast
+    # sizeof measures the cast's type (char *, 8 bytes) without evaluating it,
+    # exercising the static-type path for a cast.
+    assert_c_exit_status(
+      42, "int main(void) { return sizeof((char *)0) * 5 + 2; }", compiler: :rubycc
+    )
+  end
+
+  # These cast/NPC/pointer-condition cases must agree with gcc bit-for-bit on
+  # the exit code.
+  CAST_AND_NULL_DIFFERENTIAL_SOURCES = [
+    "int main(void) { int x = 298; return (char)x; }",
+    "int main(void) { return (char)(-1) == -1 ? 42 : 7; }",
+    "int main(void) { char c = 'A'; return (int)c; }",
+    "int main(void) { int x = 298; char *p = (char *)&x; return *p; }",
+    "int main(void) { int x = 42; (void)x; return x; }",
+    "int main(void) { int *p; p = 0; return p == 0 ? 42 : 7; }",
+    "int f(int *p) { return p == 0; } int main(void) { return f(0) ? 42 : 7; }",
+    "int *g(void) { return 0; } int main(void) { return g() == 0 ? 42 : 7; }",
+    "int main(void) { int x = 5; int *p = x ? 0 : &x; return p == 0 ? 42 : 7; }",
+    "int main(void) { int *p = 0; if (!p) return 42; return 7; }",
+    "int *gp = 0; int main(void) { return gp == 0 ? 42 : 7; }",
+    "struct node { int v; struct node *next; }; " \
+    "int main(void) { struct node a; struct node b; struct node c; " \
+    "a.v = 10; a.next = &b; b.v = 14; b.next = &c; c.v = 18; c.next = 0; " \
+    "struct node *p = &a; int sum = 0; while (p) { sum += p->v; p = p->next; } return sum; }",
+    "int main(void) { char buf[4]; char *p = buf; p[0] = 42; return *(char *)buf; }",
+    "int main(void) { int a[3]; int *p = a; if (p) return 42; return 7; }"
+  ].freeze
+
+  def test_casts_and_nulls_match_gcc_exit_codes
+    CAST_AND_NULL_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
   private
 
   def run_source(source, compiler:)

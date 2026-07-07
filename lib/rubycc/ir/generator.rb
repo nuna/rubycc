@@ -216,8 +216,7 @@ module Rubycc
       end
 
       def gen_if(node)
-        cond, cond_type = gen_value(node.condition)
-        require_scalar_condition(cond_type, node.condition.token)
+        cond = gen_condition(node.condition)
         if node.else_stmt
           else_label = new_label
           end_label = new_label
@@ -239,8 +238,7 @@ module Rubycc
         cond_label = new_label
         end_label = new_label
         emit(:label, a: cond_label)
-        cond, cond_type = gen_value(node.condition)
-        require_scalar_condition(cond_type, node.condition.token)
+        cond = gen_condition(node.condition)
         emit(:jump_if_zero, a: cond, b: end_label)
         gen_loop_body(node.body, continue_label: cond_label, break_label: end_label)
         emit(:jump, a: cond_label)
@@ -254,8 +252,7 @@ module Rubycc
         emit(:label, a: body_label)
         gen_loop_body(node.body, continue_label: cond_label, break_label: end_label)
         emit(:label, a: cond_label)
-        cond, cond_type = gen_value(node.condition)
-        require_scalar_condition(cond_type, node.condition.token)
+        cond = gen_condition(node.condition)
         emit(:jump_if_zero, a: cond, b: end_label)
         emit(:jump, a: body_label)
         emit(:label, a: end_label)
@@ -274,8 +271,7 @@ module Rubycc
 
         emit(:label, a: cond_label)
         if node.condition
-          cond, cond_type = gen_value(node.condition)
-          require_scalar_condition(cond_type, node.condition.token)
+          cond = gen_condition(node.condition)
           emit(:jump_if_zero, a: cond, b: end_label)
         end
         gen_loop_body(node.body, continue_label: step_label, break_label: end_label)
@@ -322,9 +318,10 @@ module Rubycc
       # declared return type (@current_return_type): a void function accepts
       # only the valueless form ("return with a value in void function"
       # otherwise), every other return type requires a value ("return without
-      # a value" otherwise) that is return-type-compatible (#compatible_types?,
-      # the same rule assignment and arguments use) and is narrowed to that
-      # type exactly like a variable's initializer.
+      # a value" otherwise) that is return-type-compatible (#compatible_assignment?,
+      # the same rule assignment and arguments use, so "return 0;" from a pointer
+      # function is a null pointer) and is narrowed to that type exactly like a
+      # variable's initializer.
       def gen_return(node)
         if @current_return_type.void?
           error_at(node.token, "return with a value in void function") if node.expr
@@ -335,7 +332,7 @@ module Rubycc
         error_at(node.token, "return without a value") unless node.expr
 
         value, value_type = gen_value(node.expr)
-        unless compatible_types?(@current_return_type, value_type)
+        unless compatible_assignment?(@current_return_type, node.expr, value_type)
           error_at(node.token, "incompatible return type")
         end
         emit(:ret, a: narrow_to_type(value, @current_return_type))
@@ -359,7 +356,7 @@ module Rubycc
           scope[decl.name] = Local.new(type: decl.type, storage: vreg, global: false)
           if decl.initializer
             value, value_type = gen_value(decl.initializer)
-            unless compatible_types?(decl.type, value_type)
+            unless compatible_assignment?(decl.type, decl.initializer, value_type)
               error_at(decl.token, "incompatible types in assignment")
             end
             emit(:copy, dst: vreg, a: narrow_to_type(value, decl.type))
@@ -392,6 +389,8 @@ module Rubycc
           gen_sizeof(sizeof_operand_type(node.operand), node.token)
         when Front::AST::SizeofType
           gen_sizeof(node.type, node.token)
+        when Front::AST::Cast
+          gen_cast(node)
         when Front::AST::Assignment
           gen_assignment(node)
         when Front::AST::Call
@@ -586,6 +585,72 @@ module Rubycc
         [dst, Type::Int]
       end
 
+      # A cast "( type-name ) operand". The destination type steers the whole
+      # conversion, since the type-name grammar only ever yields int, char,
+      # void, a pointer or a bare struct:
+      #   * "(void)e" evaluates e for its side effects and discards the value;
+      #   * a pointer destination retags a pointer source (no code), turns a
+      #     null pointer constant into a null pointer, and rejects any other
+      #     integer (no same-width integer type exists yet) or a struct;
+      #   * an arithmetic destination reinterprets an arithmetic source, with
+      #     the int -> char narrowing #narrow_to_type already provides, and
+      #     rejects a pointer or struct source;
+      #   * a struct destination is never a valid cast target here.
+      def gen_cast(node)
+        target = node.type
+        return gen_cast_to_void(node) if target.void?
+        if target.struct?
+          error_at(node.token, "conversion to non-scalar type requested")
+        end
+
+        value, value_type = gen_value(node.operand)
+        if target.pointer?
+          gen_cast_to_pointer(node, target, value, value_type)
+        else
+          gen_cast_to_arithmetic(node, target, value, value_type)
+        end
+      end
+
+      # "(void)e": e is evaluated (with #gen_expr, not #gen_value, so a void
+      # operand such as a call to a void function is allowed) and its value is
+      # thrown away. The result is a void value, which nothing may consume —
+      # #gen_value rejects it everywhere a value is actually needed, leaving
+      # "(void)f();" as an expression-statement the one legal use.
+      def gen_cast_to_void(node)
+        value, = gen_expr(node.operand)
+        [value, Type::Void]
+      end
+
+      # A cast to a pointer type. A pointer source is reinterpreted in place
+      # (the value is the same 64-bit address, only its static type changes), a
+      # null pointer constant becomes a 64-bit null pointer (its literal 0
+      # already occupies the whole slot), any other integer is rejected until a
+      # pointer-width integer type exists, and a struct source has no pointer
+      # value to take.
+      def gen_cast_to_pointer(node, target, value, value_type)
+        return [value, target] if value_type.pointer?
+        return [value, target] if Front::AST.null_pointer_constant?(node.operand)
+        if value_type.arithmetic?
+          error_at(node.token, "cast between pointer and integer is not supported yet")
+        end
+        error_at(node.token, "cannot cast '#{value_type}' to '#{target}'")
+      end
+
+      # A cast to an arithmetic type (int or char). An arithmetic source is
+      # reinterpreted, narrowing to char via :sext8 when needed (a widening or
+      # same-width conversion needs no code, since the slot already holds a
+      # sign-extended value); a pointer source is rejected for want of a
+      # pointer-width integer type, and a struct source has no arithmetic value.
+      def gen_cast_to_arithmetic(node, target, value, value_type)
+        if value_type.pointer?
+          error_at(node.token, "cast between pointer and integer is not supported yet")
+        end
+        unless value_type.arithmetic?
+          error_at(node.token, "cannot cast '#{value_type}' to '#{target}'")
+        end
+        [narrow_to_type(value, target), target]
+      end
+
       # A binary operation. Its result type (and the legality of its operands)
       # is settled by #binary_result_type; the lowering then branches on the
       # operand kinds:
@@ -598,7 +663,28 @@ module Rubycc
       def gen_binary(node)
         lhs, lhs_type = gen_value(node.lhs)
         rhs, rhs_type = gen_value(node.rhs)
+        # "p == 0" / "0 != p": a null pointer constant compares equal or unequal
+        # against any pointer. The bare operand types (pointer vs int) would
+        # otherwise look mismatched, so recognize it here and compare at 64 bits
+        # so the whole address participates. Only "==" and "!=" admit it; the
+        # relational operators keep rejecting a pointer against 0.
+        if EQUALITY_OPS.include?(node.op)
+          if lhs_type.pointer? && Front::AST.null_pointer_constant?(node.rhs)
+            return gen_pointer_null_comparison(node.op, lhs, rhs)
+          elsif rhs_type.pointer? && Front::AST.null_pointer_constant?(node.lhs)
+            return gen_pointer_null_comparison(node.op, lhs, rhs)
+          end
+        end
         gen_binary_op(node.op, lhs, lhs_type, rhs, rhs_type, node.token)
+      end
+
+      # "==" / "!=" between a pointer and a null pointer constant, compared at
+      # 64 bits (the null constant's slot already holds a full-width 0). The
+      # result is an int 0/1 like any other comparison.
+      def gen_pointer_null_comparison(op, lhs, rhs)
+        dst = new_vreg
+        emit(op, dst: dst, a: lhs, b: rhs, size: 8)
+        [dst, Type::Int]
       end
 
       # The value-level core of #gen_binary, factored out so compound
@@ -703,14 +789,15 @@ module Rubycc
 
       # Logical negation "!x" is lowered to the comparison "x == 0", reusing
       # the :eq path rather than introducing a dedicated IR opcode. Its operand
-      # is a condition, so it must be int-typed.
+      # is a truth value, so a pointer is allowed too ("!p" is "p is null"),
+      # compared at 64 bits so the whole address decides the result.
       def gen_logical_not(node)
         operand, operand_type = gen_value(node.operand)
-        require_scalar_condition(operand_type, node.operand.token)
+        require_scalar_for_truth(operand_type, node.operand.token)
         zero = new_vreg
         emit(:const, dst: zero, a: 0)
         dst = new_vreg
-        emit(:eq, dst: dst, a: operand, b: zero)
+        emit(:eq, dst: dst, a: operand, b: zero, size: (8 if operand_type.pointer?))
         [dst, Type::Int]
       end
 
@@ -805,7 +892,7 @@ module Rubycc
           error_at(node.token, "array type is not assignable")
         end
         value, value_type = gen_value(node.value)
-        unless compatible_types?(local.type, value_type)
+        unless compatible_assignment?(local.type, node.value, value_type)
           error_at(node.token, "incompatible types in assignment")
         end
         # A struct variable is copied whole (both sides are addresses); a scalar
@@ -853,7 +940,7 @@ module Rubycc
       def gen_store_through_subscript(node, target)
         addr, element_type = gen_element_address(target)
         value, value_type = gen_value(node.value)
-        unless compatible_types?(element_type, value_type)
+        unless compatible_assignment?(element_type, node.value, value_type)
           error_at(node.token, "incompatible types in assignment")
         end
         return gen_struct_copy(addr, value, element_type) if element_type.struct?
@@ -872,7 +959,7 @@ module Rubycc
           error_at(node.token, "array type is not assignable")
         end
         value, value_type = gen_value(node.value)
-        unless compatible_types?(member_type, value_type)
+        unless compatible_assignment?(member_type, node.value, value_type)
           error_at(node.token, "incompatible types in assignment")
         end
         return gen_struct_copy(addr, value, member_type) if member_type.struct?
@@ -889,7 +976,7 @@ module Rubycc
         require_dereferenceable_pointer(ptr_type, target.token)
         target_type = ptr_type.target
         value, value_type = gen_value(node.value)
-        unless compatible_types?(target_type, value_type)
+        unless compatible_assignment?(target_type, node.value, value_type)
           error_at(node.token, "incompatible types in assignment")
         end
         return gen_struct_copy(addr, value, target_type) if target_type.struct?
@@ -917,7 +1004,7 @@ module Rubycc
 
         arg_vregs = node.args.each_with_index.map do |arg, i|
           vreg, arg_type = gen_value(arg)
-          unless compatible_types?(param_types[i], arg_type)
+          unless compatible_assignment?(param_types[i], arg, arg_type)
             error_at(node.token, "incompatible type for argument #{i + 1} of '#{node.name}'")
           end
           vreg
@@ -936,15 +1023,13 @@ module Rubycc
       #   false: result = 0
       #   end:
       def gen_logical_and(node)
-        lhs, lhs_type = gen_value(node.lhs)
-        require_scalar_condition(lhs_type, node.lhs.token)
+        lhs = gen_condition(node.lhs)
         false_label = new_label
         end_label = new_label
         result = new_vreg
         emit(:jump_if_zero, a: lhs, b: false_label)
 
-        rhs, rhs_type = gen_value(node.rhs)
-        require_scalar_condition(rhs_type, node.rhs.token)
+        rhs = gen_condition(node.rhs)
         emit(:jump_if_zero, a: rhs, b: false_label)
         emit_const_copy(result, 1)
         emit(:jump, a: end_label)
@@ -963,8 +1048,7 @@ module Rubycc
       #   false: result = 0
       #   end:
       def gen_logical_or(node)
-        lhs, lhs_type = gen_value(node.lhs)
-        require_scalar_condition(lhs_type, node.lhs.token)
+        lhs = gen_condition(node.lhs)
         rhs_label = new_label
         false_label = new_label
         end_label = new_label
@@ -975,8 +1059,7 @@ module Rubycc
         emit(:jump, a: end_label)
 
         emit(:label, a: rhs_label)
-        rhs, rhs_type = gen_value(node.rhs)
-        require_scalar_condition(rhs_type, node.rhs.token)
+        rhs = gen_condition(node.rhs)
         emit(:jump_if_zero, a: rhs, b: false_label)
         emit_const_copy(result, 1)
         emit(:jump, a: end_label)
@@ -991,8 +1074,7 @@ module Rubycc
       # only one of the two arms is evaluated, and both must settle on the
       # same result type (which becomes the expression's type).
       def gen_conditional(node)
-        cond, cond_type = gen_value(node.condition)
-        require_scalar_condition(cond_type, node.condition.token)
+        cond = gen_condition(node.condition)
         else_label = new_label
         end_label = new_label
         result = new_vreg
@@ -1007,16 +1089,28 @@ module Rubycc
         emit(:copy, dst: result, a: else_value)
         emit(:label, a: end_label)
 
-        [result, conditional_result_type(then_type, else_type, node.token)]
+        result_type = conditional_result_type(node.then_expr, then_type,
+                                              node.else_expr, else_type, node.token)
+        [result, result_type]
       end
 
       # The type of "condition ? then : else": identical types are kept as is,
-      # a mixed arithmetic pair (int/char) promotes to int, and anything else
-      # (e.g. pointer vs int, or two different pointer types) is rejected.
-      def conditional_result_type(then_type, else_type, token)
-        if then_type == else_type then then_type
-        elsif then_type.arithmetic? && else_type.arithmetic? then Type::Int
-        else error_at(token, "type mismatch in conditional expression")
+      # a mixed arithmetic pair (int/char) promotes to int, and a pointer arm
+      # paired with a null pointer constant (in either position) takes the
+      # pointer type, so "cond ? p : 0" is a pointer. Anything else (a pointer
+      # vs a non-null int, or two different pointer types) is rejected. Both
+      # arms are passed as AST nodes so the null-pointer-constant check can look
+      # at the literal, not just its int type.
+      def conditional_result_type(then_node, then_type, else_node, else_type, token)
+        return then_type if then_type == else_type
+        if then_type.pointer? && Front::AST.null_pointer_constant?(else_node)
+          then_type
+        elsif else_type.pointer? && Front::AST.null_pointer_constant?(then_node)
+          else_type
+        elsif then_type.arithmetic? && else_type.arithmetic?
+          Type::Int
+        else
+          error_at(token, "type mismatch in conditional expression")
         end
       end
 
@@ -1222,6 +1316,20 @@ module Rubycc
         expected == actual
       end
 
+      # Whether `value_node` (whose rvalue type is `actual`) may initialize, be
+      # assigned to, be passed as, or be returned as `expected`. It is
+      # #compatible_types? extended with the null-pointer-constant rule: a
+      # literal 0 (an integer or a '\0') converts to any pointer type, so
+      # "int *p = 0;", "p = 0;", "f(0)" against a pointer parameter and
+      # "return 0;" from a pointer function are all well-typed. The node is
+      # needed (not just the type) so the check sees the literal 0 rather than
+      # merely its int type.
+      def compatible_assignment?(expected, value_node, actual)
+        return true if expected.pointer? && Front::AST.null_pointer_constant?(value_node)
+
+        compatible_types?(expected, actual)
+      end
+
       # Narrows a value to its destination scalar type just before it is copied
       # into that lvalue's slot. A char destination keeps only the low 8 bits
       # (sign-extended back to the slot width), giving int -> char truncation;
@@ -1272,13 +1380,35 @@ module Rubycc
         error_at(token, "invalid operands to binary expression")
       end
 
-      # Guards every condition position (if/while/do-while/for, "&&"/"||"
-      # operands, "!" operand, "?:" condition): an arithmetic value (int or a
-      # char, which promotes to int) is a valid scalar condition, but a pointer
-      # is not and this subset has no other truthiness rule, so a pointer is
-      # rejected rather than silently treated as non-zero.
-      def require_scalar_condition(type, token)
-        error_at(token, "used pointer where scalar int is required") unless type.arithmetic?
+      # Evaluates an expression used as a truth value (an if/while/do-while/for
+      # condition, a "&&"/"||" operand, a "?:" condition) and returns the vreg
+      # the branch instructions test against zero. An arithmetic value is used
+      # directly. A pointer is a valid scalar condition too — its truth is "is
+      # not null" — so it is desugared to a 64-bit "pointer != 0", yielding an
+      # int 0/1 the 32-bit :jump_if_zero test then reads without ever truncating
+      # the address (the concern that made Step 9 reject pointer conditions
+      # outright). A struct has no truth value and is rejected; a void one is
+      # already caught by #gen_value.
+      def gen_condition(node)
+        value, type = gen_value(node)
+        require_scalar_for_truth(type, node.token)
+        return value if type.arithmetic?
+
+        zero = new_vreg
+        emit(:const, dst: zero, a: 0)
+        dst = new_vreg
+        emit(:ne, dst: dst, a: value, b: zero, size: 8)
+        dst
+      end
+
+      # Guards a value used for its truth (a condition or a "!" operand): an
+      # arithmetic value or a pointer is a scalar with a well-defined truth
+      # value, but a struct is not (void is already rejected by #gen_value
+      # before it reaches here).
+      def require_scalar_for_truth(type, token)
+        return if type.arithmetic? || type.pointer?
+
+        error_at(token, "used struct type value where scalar is required")
       end
 
       COMPARISON_OPS = %i[eq ne lt le gt ge].freeze
@@ -1401,7 +1531,12 @@ module Rubycc
           member = static_member(node)
           decay(member.type)
         when Front::AST::Binary
-          binary_result_type(node.op, static_type(node.lhs), static_type(node.rhs), node.token)
+          static_binary_type(node)
+        when Front::AST::Cast
+          # A cast's rvalue type is simply the type named, mirroring #gen_cast.
+          # sizeof rejects a "(void)e" operand through gen_sizeof's void guard,
+          # just as it would a bare void.
+          node.type
         when Front::AST::Unary
           static_unary_type(node)
         when Front::AST::Assignment, Front::AST::CompoundAssignment, Front::AST::IncDec
@@ -1459,7 +1594,23 @@ module Rubycc
       # mirroring #gen_conditional: both arms must agree, and that shared type
       # is the result.
       def static_conditional_type(node)
-        conditional_result_type(static_type(node.then_expr), static_type(node.else_expr), node.token)
+        conditional_result_type(node.then_expr, static_type(node.then_expr),
+                                node.else_expr, static_type(node.else_expr), node.token)
+      end
+
+      # A binary operation's rvalue type without emitting code, mirroring
+      # #gen_binary: an "=="/"!=" between a pointer and a null pointer constant
+      # is an int comparison (the bare operand types would look mismatched),
+      # everything else defers to #binary_result_type.
+      def static_binary_type(node)
+        lhs_type = static_type(node.lhs)
+        rhs_type = static_type(node.rhs)
+        if EQUALITY_OPS.include?(node.op) &&
+           ((lhs_type.pointer? && Front::AST.null_pointer_constant?(node.rhs)) ||
+            (rhs_type.pointer? && Front::AST.null_pointer_constant?(node.lhs)))
+          return Type::Int
+        end
+        binary_result_type(node.op, lhs_type, rhs_type, node.token)
       end
 
       def static_unary_type(node)
