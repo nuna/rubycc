@@ -198,9 +198,52 @@ struct のローカル/グローバル/配列/ポインタ、タグの名前空�
 **トレードオフ**: `struct S;` を「外側スコープの S が見えていても内側で新タグを宣言する」
 C の細則(6.7.2.3p7)には従っていない(外側を参照する)。実用上の影響が出た時点で対応。
 
+## Step 14 — キャスト式・ヌルポインタ定数・スカラ条件(1416b4a)
+
+**内容**: cast-expression(`(型名)式`)、ヌルポインタ定数(NPC)の暗黙変換、
+条件位置でのポインタ許可(Step 9 の意図的逸脱の解消)、`(void)式`。
+
+**設計判断**:
+- **cast-expression の挿入位置**は ISO C どおり multiplicative と unary の間。
+  `(` の次が型指定子なら型キャスト、さもなくば括弧式(1 トークン先読み)。
+  **typedef 導入時(Step 18)はこの判定に typedef 名の名前空間参照が必要**になる旨を
+  パーサにコメントで残した。型名パースは parse_type_name として抽出し sizeof(型名) と共有。
+- **キャスト生成は目的型で分岐**(type-name 文法は int/char/void/ポインタ/struct しか
+  生まないため場合分けが閉じる)。算術↔算術は narrow_to_type 再利用(int→char のみ
+  :sext8、拡幅はスロットが拡張済みなのでコード無し)、ポインタ↔ポインタ・NPC→ポインタは
+  **リタグのみでコード無し**。`(void)` は gen_expr で評価して値を捨てる(gen_value でなく
+  gen_expr なのは void 関数呼び出しを被演算子に許すため)。
+- **ポインタ⇔整数(0 以外)のキャストは診断エラー**
+  「cast between pointer and integer is not supported yet」。ポインタ幅の整数型
+  (long / intptr_t 級)が無い現状では往復できないため(Step 17 で解消見込み)。
+- **NPC 判定はノード単位**(`AST.null_pointer_constant?` = IntLit かつ値 0。'\0' は
+  字句解析器が整数 0 に落とすので自動的に含まれる)。型(int)だけではリテラル 0 を
+  識別できないため、型でなくノードを見る。一般の整数定数式(`1-1` 等)は Step 20 の
+  定数式評価導入時に拡張する前提をコメントに明記。
+- **NPC の暗黙変換は compatible_assignment?(expected, value_node, actual) に集約**し、
+  代入(単純代入・添字・メンバ・参照外し)・初期化・引数・return の全経路に適用。
+  複合代入・++/-- は NPC 非該当なので compatible_types? のまま。==/!= は gen_binary で
+  NPC×ポインタを検出して **size=8 比較**、?: は conditional_result_type にノードを渡して
+  NPC 側の腕にポインタ型を与える。`p < 0` は従来どおり invalid operands。
+- **条件の脱糖は gen_condition に集約**: ポインタ条件は「0 との :ne(**size=8**)」に
+  脱糖して int 0/1 を返し、既存の :jump_if_zero(32bit テスト)に渡す。Step 9 で
+  拒否した理由だった「アドレス上位 32bit の切り捨て」を 64bit 比較で解消。`!p` は
+  gen_logical_not 内で :eq size=8。**struct 条件は診断エラーのまま**
+  (require_scalar_condition を require_scalar_for_truth に置換し、算術+ポインタを許可)。
+- **static_type の同期**: Cast(型名をそのまま返す)と static_binary_type
+  (NPC の ==/!= を int にする)を追加。sizeof((char *)0) == 8 を実行テストで確認。
+- **グローバル `int *p = 0;`** は既存経路がそのまま通り、init 非 nil の既存規約どおり
+  **.data に 8 バイトのゼロ**として配置(null ポインタとして意味的に正しい)。
+- **IR 命令の追加なし**(すべて既存 :const/:eq/:ne/:sext8 への脱糖)。
+
+**トレードオフ**: `(x)(y)`(x が非型)はキャストではなく括弧式+呼び出しと解釈されるが、
+現状は呼び出し対象が裸の識別子に限られるため「expected ';'」で止まる(関数ポインタの
+Step 21 で意味を持つ)。Step 13 で NULL の代わりに自己ループ番兵を使っていた連結リストの
+テストは、本ステップで実 NULL 終端の走査テストに置き換えた。
+
 ---
 
 ## 現在のテスト規模
 
-Step 13 完了時点: **456 runs / 1,355 assertions / 0 failures**(`rake test`)。
+Step 14 完了時点: **490 runs / 1,435 assertions / 0 failures**(`rake test`)。
 内訳: 字句・パーサ・型・ELF・診断・CLI のユニットテスト + 実行テスト(gcc 差分比較込み)。
