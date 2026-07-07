@@ -152,11 +152,37 @@ class TestLexer < Minitest::Test
   end
 
   def test_compound_assignment_operators_are_single_tokens
-    %w[+= -= *= /= %=].each do |op|
+    %w[+= -= *= /= %= &= |= ^= <<= >>=].each do |op|
       tokens = lex("x #{op} y").reject(&:eof?)
       assert_equal [:ident, :punct, :ident], tokens.map(&:type)
       assert_equal op, tokens[1].value
     end
+  end
+
+  def test_bitwise_operators_are_single_character_tokens
+    %w[& | ^ ~].each do |op|
+      tokens = lex("x #{op} y").reject(&:eof?)
+      assert_equal op, tokens[1].value
+    end
+  end
+
+  def test_shift_operators_are_two_character_tokens
+    %w[<< >>].each do |op|
+      tokens = lex("x #{op} y").reject(&:eof?)
+      assert_equal %i[ident punct ident], tokens.map(&:type)
+      assert_equal op, tokens[1].value
+    end
+  end
+
+  def test_shift_assignment_prefers_longest_punctuator
+    # "<<=" must win over "<<", "<=" and "<"; likewise ">>=".
+    assert_equal "<<=", lex("x <<= y").reject(&:eof?)[1].value
+    assert_equal ">>=", lex("x >>= y").reject(&:eof?)[1].value
+
+    # Without the trailing "=", the shift is two "<" characters, not "<" then
+    # something else, and a following "=" splits off as its own token.
+    assert_equal ["x", "<<", "y"], lex("x << y").reject(&:eof?).map(&:value)
+    assert_equal ["x", "<<", "=", "y"], lex("x <<= y".sub("<<=", "<< =")).reject(&:eof?).map(&:value)
   end
 
   def test_conditional_operator_punctuators_are_single_character_tokens

@@ -128,6 +128,22 @@ module Rubycc
           emit_divmod(inst.dst, inst.a, inst.b, EAX, inst.size) # quotient in eax
         when :mod
           emit_divmod(inst.dst, inst.a, inst.b, EDX, inst.size) # remainder in edx
+        when :and
+          emit_binary(inst.dst, inst.a, inst.b, [0x21, 0xC8], inst.size) # and eax, ecx
+        when :or
+          emit_binary(inst.dst, inst.a, inst.b, [0x09, 0xC8], inst.size)  # or eax, ecx
+        when :xor
+          emit_binary(inst.dst, inst.a, inst.b, [0x31, 0xC8], inst.size)  # xor eax, ecx
+        when :shl
+          # shl eax, cl (D3 /4): the count comes from cl, which #emit_binary
+          # loads into ecx alongside the value in eax. The x86 shift already
+          # masks the count to 5 bits for a 32-bit operand.
+          emit_binary(inst.dst, inst.a, inst.b, [0xD3, 0xE0])
+        when :sar
+          # sar eax, cl (D3 /7): the arithmetic (sign-preserving) right shift,
+          # so a negative int shifts in copies of its sign bit, matching C's
+          # implementation-defined ">>" on a signed value.
+          emit_binary(inst.dst, inst.a, inst.b, [0xD3, 0xF8])
         when :eq, :ne, :lt, :le, :gt, :ge
           emit_comparison(inst.dst, inst.a, inst.b, SETCC_OPCODES.fetch(inst.op), inst.size)
         when :neg

@@ -52,26 +52,34 @@ module Rubycc
     #   for-init                  = declaration | expression? ";"
     #   jump-statement            = "break" ";" | "continue" ";"
     #   expression                = assignment-expression
+    #                               ("," assignment-expression)*
     #   assignment-expression     = conditional-expression
-    #                               (("=" | "+=" | "-=" | "*=" | "/=" | "%=")
+    #                               (("=" | "+=" | "-=" | "*=" | "/=" | "%="
+    #                                | "&=" | "|=" | "^=" | "<<=" | ">>=")
     #                                assignment-expression)?
     #   conditional-expression    = logical-OR-expression
     #                               ("?" expression ":" conditional-expression)?
     #   logical-OR-expression     = logical-AND-expression
     #                               ("||" logical-AND-expression)*
-    #   logical-AND-expression    = equality-expression
-    #                               ("&&" equality-expression)*
+    #   logical-AND-expression    = inclusive-OR-expression
+    #                               ("&&" inclusive-OR-expression)*
+    #   inclusive-OR-expression   = exclusive-OR-expression
+    #                               ("|" exclusive-OR-expression)*
+    #   exclusive-OR-expression   = AND-expression ("^" AND-expression)*
+    #   AND-expression            = equality-expression ("&" equality-expression)*
     #   equality-expression       = relational-expression
     #                               (("==" | "!=") relational-expression)*
-    #   relational-expression     = additive-expression
-    #                               (("<" | ">" | "<=" | ">=") additive-expression)*
+    #   relational-expression     = shift-expression
+    #                               (("<" | ">" | "<=" | ">=") shift-expression)*
+    #   shift-expression          = additive-expression
+    #                               (("<<" | ">>") additive-expression)*
     #   additive-expression       = multiplicative-expression
     #                               (("+" | "-") multiplicative-expression)*
     #   multiplicative-expression = cast-expression
     #                               (("*" | "/" | "%") cast-expression)*
     #   cast-expression           = "(" type-name ")" cast-expression
     #                             | unary-expression
-    #   unary-expression          = ("+" | "-" | "!" | "&" | "*")* cast-expression
+    #   unary-expression          = ("+" | "-" | "!" | "~" | "&" | "*")* cast-expression
     #                             | ("++" | "--") unary-expression
     #                             | "sizeof" unary-expression
     #                             | "sizeof" "(" type-name ")"
@@ -96,10 +104,18 @@ module Rubycc
       # Punctuator → AST operator tables, one per precedence tier
       # (weakest binding first).
       COMPOUND_ASSIGNMENT_OPERATORS = {
-        "+=" => :add, "-=" => :sub, "*=" => :mul, "/=" => :div, "%=" => :mod
+        "+=" => :add, "-=" => :sub, "*=" => :mul, "/=" => :div, "%=" => :mod,
+        "&=" => :and, "|=" => :or, "^=" => :xor, "<<=" => :shl, ">>=" => :shr
       }.freeze
+      INCLUSIVE_OR_OPERATORS = { "|" => :or }.freeze
+      EXCLUSIVE_OR_OPERATORS = { "^" => :xor }.freeze
+      AND_OPERATORS = { "&" => :and }.freeze
       EQUALITY_OPERATORS = { "==" => :eq, "!=" => :ne }.freeze
       RELATIONAL_OPERATORS = { "<" => :lt, ">" => :gt, "<=" => :le, ">=" => :ge }.freeze
+      # ">>" desugars to an arithmetic shift (:shr here names the source
+      # operator, which the generator lowers to a signed :sar); a future
+      # unsigned type will lower the same :shr to a logical shift instead.
+      SHIFT_OPERATORS = { "<<" => :shl, ">>" => :shr }.freeze
       ADDITIVE_OPERATORS = { "+" => :add, "-" => :sub }.freeze
       MULTIPLICATIVE_OPERATORS = { "*" => :mul, "/" => :div, "%" => :mod }.freeze
 
@@ -669,8 +685,23 @@ module Rubycc
         end
       end
 
+      # expression = assignment-expression ("," assignment-expression)*: the
+      # comma operator, left-associative. Each left operand is evaluated for its
+      # side effects and discarded; the last operand's value and type are the
+      # whole expression's. Every context where a comma is a *separator* rather
+      # than the operator (a call's arguments, a run of declarators, a global
+      # initializer) bypasses this and calls #parse_assignment_expression
+      # directly, so those commas keep their meaning; only the contexts that
+      # take a full expression (a parenthesized expression, a subscript, an
+      # expression-statement, the for-clauses, a control condition, a return,
+      # the middle of "?:") reach the comma operator here.
       def parse_expression
-        parse_assignment_expression
+        node = parse_assignment_expression
+        while peek.punct?(",")
+          tok = advance
+          node = AST::Comma.new(node, parse_assignment_expression, tok)
+        end
+        node
       end
 
       # Right-associative: "a = b = c" parses as "a = (b = c)"; likewise for
@@ -729,12 +760,29 @@ module Rubycc
       end
 
       def parse_logical_and_expression
-        node = parse_equality_expression
+        node = parse_inclusive_or_expression
         while peek.punct?("&&")
           tok = advance
-          node = AST::LogicalAnd.new(node, parse_equality_expression, tok)
+          node = AST::LogicalAnd.new(node, parse_inclusive_or_expression, tok)
         end
         node
+      end
+
+      # The three bitwise tiers sit between logical-AND and equality, in ISO C
+      # order (inclusive-OR loosest, then exclusive-OR, then AND). The binary
+      # "&" is recognized only here, between two operands; a "&" that opens a
+      # unary-expression is the address-of operator, parsed far deeper, so the
+      # two never collide (and the lexer has already split off "&&" and "&=").
+      def parse_inclusive_or_expression
+        parse_left_associative(INCLUSIVE_OR_OPERATORS) { parse_exclusive_or_expression }
+      end
+
+      def parse_exclusive_or_expression
+        parse_left_associative(EXCLUSIVE_OR_OPERATORS) { parse_and_expression }
+      end
+
+      def parse_and_expression
+        parse_left_associative(AND_OPERATORS) { parse_equality_expression }
       end
 
       def parse_equality_expression
@@ -742,7 +790,14 @@ module Rubycc
       end
 
       def parse_relational_expression
-        parse_left_associative(RELATIONAL_OPERATORS) { parse_additive_expression }
+        parse_left_associative(RELATIONAL_OPERATORS) { parse_shift_expression }
+      end
+
+      # shift-expression sits between relational and additive, so "1 << 2 + 3"
+      # shifts by 5 (additive binds tighter) while "1 + 2 << 3" adds first
+      # (shift is looser than additive but tighter than relational).
+      def parse_shift_expression
+        parse_left_associative(SHIFT_OPERATORS) { parse_additive_expression }
       end
 
       def parse_additive_expression
@@ -799,6 +854,8 @@ module Rubycc
         elsif peek.punct?("!")
           op_tok = advance
           AST::Unary.new(:not, parse_cast_expression, op_tok)
+        elsif peek.punct?("~")
+          parse_bitwise_not
         elsif peek.punct?("&")
           op_tok = advance
           AST::Unary.new(:addr, parse_cast_expression, op_tok)
@@ -810,6 +867,19 @@ module Rubycc
         else
           parse_postfix_expression
         end
+      end
+
+      # "~x" is the one's-complement of an arithmetic operand. Rather than carry
+      # a dedicated bitwise-not through the IR, it is desugared here to the
+      # exclusive-or "x ^ -1": flipping every bit is an xor with all-ones, and
+      # -1 is all-ones in every integer width. The generator then type-checks
+      # and lowers it as an ordinary ":xor", so a pointer or struct operand is
+      # rejected as an invalid binary operand exactly like "x ^ 1" would be. The
+      # "~" token locates both the literal and the node for diagnostics.
+      def parse_bitwise_not
+        op_tok = advance # "~"
+        operand = parse_cast_expression
+        AST::Binary.new(:xor, operand, AST::IntLit.new(-1, op_tok), op_tok)
       end
 
       def parse_prefix_inc_dec

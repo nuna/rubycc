@@ -405,9 +405,21 @@ module Rubycc
           gen_compound_assignment(node)
         when Front::AST::IncDec
           gen_inc_dec(node)
+        when Front::AST::Comma
+          gen_comma(node)
         else
           raise "unsupported expression: #{node.class}"
         end
+      end
+
+      # "left, right": evaluate `left` for its side effects and throw its value
+      # away, then evaluate `right`, whose value and type are the comma
+      # expression's. `left` is lowered with #gen_expr rather than #gen_value so
+      # a void-typed left operand (a call to a void function) is allowed in the
+      # discarded position, matching an expression-statement.
+      def gen_comma(node)
+        gen_expr(node.left)
+        gen_expr(node.right)
       end
 
       # Lowers `node` for its value like #gen_expr, but rejects a void result:
@@ -698,6 +710,16 @@ module Rubycc
           dst = new_vreg
           emit(op, dst: dst, a: lhs, b: rhs, size: (8 if lhs_type.pointer?))
           [dst, result_type]
+        elsif SHIFT_OPS.include?(op)
+          # A shift is 32-bit int arithmetic (a char operand is already promoted
+          # in its slot); #binary_result_type has rejected any pointer operand.
+          # The result is always int. "<<" is the logical :shl; ">>" on a signed
+          # int is the arithmetic :sar (an unsigned left operand will select the
+          # logical :shr once unsigned types exist). The shift count rides in the
+          # b operand, whose low byte the backend reads from cl.
+          dst = new_vreg
+          emit(op == :shl ? :shl : :sar, dst: dst, a: lhs, b: rhs)
+          [dst, Type::Int]
         elsif lhs_type.pointer? && rhs_type.pointer?
           gen_pointer_difference(lhs, rhs, lhs_type)
         elsif lhs_type.pointer?
@@ -1417,6 +1439,12 @@ module Rubycc
         COMPARISON_OPS.include?(op)
       end
 
+      # The two shift operators, whose operand order matters (the count is the
+      # right operand, never commuted) and whose lowering is special (the count
+      # rides in cl), so #gen_binary_op handles them apart from the commutative
+      # 32-bit ops that share the plain :add lowering.
+      SHIFT_OPS = %i[shl shr].freeze
+
       # "==" and "!=" alone let a void * mix with any other pointer type (as
       # in an assignment); every other pointer comparison ("<", "<=", ">",
       # ">=") requires the exact same pointer type on both sides, void *
@@ -1454,7 +1482,9 @@ module Rubycc
       #     arithmetic/pointer -> that (non-void) pointer;
       #   * "-": arithmetic/arithmetic -> int, pointer/arithmetic -> that
       #     (non-void) pointer, and same-type (non-void) pointer/pointer -> int;
-      #   * "*" "/" "%": arithmetic/arithmetic -> int only.
+      #   * "*" "/" "%", the bitwise "&" "|" "^" and the shifts "<<" ">>":
+      #     arithmetic/arithmetic -> int only (any pointer operand is invalid),
+      #     which is exactly the fall-through "else" case below.
       def binary_result_type(op, lhs_type, rhs_type, token)
         result =
           if comparison_op?(op)
@@ -1475,7 +1505,7 @@ module Rubycc
                 require_non_void_pointer(lhs_type, token)
                 Type::Int
               end
-            else # :mul, :div, :mod
+            else # :mul, :div, :mod, :and, :or, :xor, :shl, :shr
               Type::Int if lhs_type.arithmetic? && rhs_type.arithmetic?
             end
           end
@@ -1541,6 +1571,11 @@ module Rubycc
           static_unary_type(node)
         when Front::AST::Assignment, Front::AST::CompoundAssignment, Front::AST::IncDec
           static_type(node.target)
+        when Front::AST::Comma
+          # The comma operator's type is its right operand's, mirroring #gen_comma
+          # (the left operand is evaluated only for effect), so "sizeof(a, b)"
+          # measures b's type.
+          static_type(node.right)
         when Front::AST::LogicalAnd, Front::AST::LogicalOr
           Type::Int
         when Front::AST::Conditional

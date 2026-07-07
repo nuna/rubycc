@@ -803,7 +803,10 @@ class TestParser < Minitest::Test
   end
 
   def test_parses_compound_assignment_operators
-    { "+=" => :add, "-=" => :sub, "*=" => :mul, "/=" => :div, "%=" => :mod }.each do |punct, op|
+    {
+      "+=" => :add, "-=" => :sub, "*=" => :mul, "/=" => :div, "%=" => :mod,
+      "&=" => :and, "|=" => :or, "^=" => :xor, "<<=" => :shl, ">>=" => :shr
+    }.each do |punct, op|
       expr = parse_expr("x #{punct} 1")
       assert_kind_of AST::CompoundAssignment, expr
       assert_equal op, expr.op
@@ -811,6 +814,119 @@ class TestParser < Minitest::Test
       assert_equal "x", expr.target.name
       assert_equal 1, expr.value.value
     end
+  end
+
+  # --- Step 15: bitwise, shift and comma operators ---------------------
+
+  def test_bitwise_operators_produce_binary_nodes
+    { "&" => :and, "|" => :or, "^" => :xor, "<<" => :shl, ">>" => :shr }.each do |punct, op|
+      expr = parse_expr("a #{punct} b")
+      assert_kind_of AST::Binary, expr
+      assert_equal op, expr.op
+      assert_equal "a", expr.lhs.name
+      assert_equal "b", expr.rhs.name
+    end
+  end
+
+  def test_bitwise_precedence_inclusive_or_loosest_then_xor_then_and
+    # a | b ^ c & d  =>  (or a (xor b (and c d))): inclusive-OR is loosest,
+    # exclusive-OR next, bitwise AND tightest of the three.
+    expr = parse_expr("a | b ^ c & d")
+    assert_kind_of AST::Binary, expr
+    assert_equal :or, expr.op
+    assert_equal "a", expr.lhs.name
+    xor = expr.rhs
+    assert_equal :xor, xor.op
+    assert_equal "b", xor.lhs.name
+    bit_and = xor.rhs
+    assert_equal :and, bit_and.op
+    assert_equal "c", bit_and.lhs.name
+    assert_equal "d", bit_and.rhs.name
+  end
+
+  def test_bitwise_and_is_looser_than_equality
+    # a & b == c  =>  (and a (eq b c)): equality binds tighter than bitwise AND.
+    expr = parse_expr("a & b == c")
+    assert_equal :and, expr.op
+    assert_equal "a", expr.lhs.name
+    assert_kind_of AST::Binary, expr.rhs
+    assert_equal :eq, expr.rhs.op
+  end
+
+  def test_shift_is_between_relational_and_additive
+    # a < b << c + d  =>  (lt a (shl b (add c d))): shift is tighter than
+    # relational and looser than additive.
+    expr = parse_expr("a < b << c + d")
+    assert_equal :lt, expr.op
+    assert_equal "a", expr.lhs.name
+    shift = expr.rhs
+    assert_equal :shl, shift.op
+    assert_equal "b", shift.lhs.name
+    add = shift.rhs
+    assert_equal :add, add.op
+    assert_equal "c", add.lhs.name
+    assert_equal "d", add.rhs.name
+  end
+
+  def test_binary_and_distinguished_from_address_of
+    # "a & b" is a bitwise AND of two operands...
+    expr = parse_expr("a & b")
+    assert_kind_of AST::Binary, expr
+    assert_equal :and, expr.op
+
+    # ...while "&a" (a "&" opening a unary-expression) is address-of.
+    unary = parse_expr("&a")
+    assert_kind_of AST::Unary, unary
+    assert_equal :addr, unary.op
+    assert_equal "a", unary.operand.name
+  end
+
+  def test_bitwise_not_desugars_to_xor_with_minus_one
+    # ~a is lowered at parse time to the exclusive-or "a ^ -1".
+    expr = parse_expr("~a")
+    assert_kind_of AST::Binary, expr
+    assert_equal :xor, expr.op
+    assert_equal "a", expr.lhs.name
+    assert_kind_of AST::IntLit, expr.rhs
+    assert_equal(-1, expr.rhs.value)
+  end
+
+  def test_comma_operator_is_left_associative
+    # a, b, c  =>  (comma (comma a b) c)
+    expr = parse_expr("a, b, c")
+    assert_kind_of AST::Comma, expr
+    assert_kind_of AST::Comma, expr.left
+    assert_equal "a", expr.left.left.name
+    assert_equal "b", expr.left.right.name
+    assert_equal "c", expr.right.name
+  end
+
+  def test_comma_is_looser_than_assignment
+    # a = 1, b = 2  =>  (comma (assign a 1) (assign b 2))
+    expr = parse_expr("a = 1, b = 2")
+    assert_kind_of AST::Comma, expr
+    assert_kind_of AST::Assignment, expr.left
+    assert_kind_of AST::Assignment, expr.right
+  end
+
+  def test_comma_as_separator_is_not_a_comma_operator
+    # A comma between call arguments stays a separator: "f(a, b)" has two
+    # arguments, not one comma-expression argument.
+    program = parse("int f(int a, int b); int main(void) { return f(1, 2); }")
+    call = program.functions.last.body.first.expr
+    assert_kind_of AST::Call, call
+    assert_equal 2, call.args.size
+    assert_equal 1, call.args[0].value
+    assert_equal 2, call.args[1].value
+  end
+
+  def test_comma_operator_inside_parentheses_as_call_argument
+    # Parentheses turn a comma back into the operator: "f((a, b))" is one
+    # argument whose value is the comma-expression.
+    program = parse("int f(int a); int main(void) { return f((1, 2)); }")
+    call = program.functions.last.body.first.expr
+    assert_equal 1, call.args.size
+    assert_kind_of AST::Comma, call.args[0]
   end
 
   def test_compound_assignment_to_non_lvalue_reports_compile_error

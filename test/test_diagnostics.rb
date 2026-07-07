@@ -323,6 +323,45 @@ class TestDiagnostics < Minitest::Test
     assert_match(/invalid operands to binary expression/, error.description)
   end
 
+  # Step 15: the bitwise and shift operators take arithmetic operands only, so
+  # a pointer or struct operand is rejected as an invalid binary operand.
+  def test_bitwise_and_of_pointer_is_rejected
+    source = "int main(void) { int *p; return p & 1; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_left_shift_of_pointer_is_rejected
+    source = "int main(void) { int *p; return p << 1; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_bitwise_not_of_pointer_is_rejected
+    # "~p" desugars to "p ^ -1", so an xor of a pointer is the invalid operand.
+    source = "int main(void) { int *p; return ~p; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_bitwise_or_of_struct_is_rejected
+    source = "struct s { int x; }; int main(void) { struct s v; return v | 1; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_bitwise_compound_assignment_with_pointer_target_is_rejected
+    source = "int main(void) { int *p; p &= 1; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_shift_compound_assignment_with_pointer_target_is_rejected
+    source = "int main(void) { int *p; p <<= 1; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
   def test_assigning_char_pointer_to_int_pointer_is_rejected
     source = "int main(void) { char *c; int *p; p = c; return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }

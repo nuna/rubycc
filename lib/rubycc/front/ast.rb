@@ -18,9 +18,21 @@ module Rubycc
       # parser), :addr (the address-of "&") or :deref (the dereference "*").
       Unary = Data.define(:op, :operand, :token)
 
-      # Binary operation. `op` is one of :add, :sub, :mul, :div, :mod (arithmetic)
-      # or :eq, :ne, :lt, :le, :gt, :ge (comparisons yielding int 0/1).
+      # Binary operation. `op` is one of :add, :sub, :mul, :div, :mod
+      # (arithmetic), :and, :or, :xor (bitwise), :shl, :shr (shifts) or
+      # :eq, :ne, :lt, :le, :gt, :ge (comparisons yielding int 0/1). The unary
+      # bitwise-not "~x" has no op of its own: the parser desugars it to the
+      # Binary "x ^ -1", so it reaches the generator as an ordinary :xor.
       Binary = Data.define(:op, :lhs, :rhs, :token)
+
+      # The comma operator "left, right" (ISO C 6.5.17): `left` is evaluated
+      # for its side effects and its value discarded, then `right` is evaluated
+      # and its value and type become the whole expression's. Only a context
+      # that admits a full expression (a parenthesized expression, a subscript,
+      # an expression-statement, the three for-clauses, a control condition, a
+      # return, the middle of "?:") ever builds one; a comma that merely
+      # separates items (call arguments, declarators) is not this node.
+      Comma = Data.define(:left, :right, :token)
 
       # Short-circuit "&&" and "||". Kept apart from Binary because both
       # operands must be int-typed and only one side may end up evaluated at

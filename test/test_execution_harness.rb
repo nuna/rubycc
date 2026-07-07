@@ -1320,6 +1320,155 @@ class TestExecutionHarness < Minitest::Test
     )
   end
 
+  # --- Step 15: bitwise, shift and comma operators ---------------------
+
+  def test_bitwise_and
+    assert_c_exit_status(2, "int main(void) { return 6 & 3; }", compiler: :rubycc)
+  end
+
+  def test_bitwise_or
+    assert_c_exit_status(7, "int main(void) { return 6 | 1; }", compiler: :rubycc)
+  end
+
+  def test_bitwise_xor
+    assert_c_exit_status(5, "int main(void) { return 6 ^ 3; }", compiler: :rubycc)
+  end
+
+  def test_bitwise_not_is_desugared_to_xor_minus_one
+    # ~5 == -6; taken mod 256 as an exit code that is 250.
+    assert_c_exit_status(250, "int main(void) { return ~5; }", compiler: :rubycc)
+  end
+
+  def test_left_shift
+    assert_c_exit_status(40, "int main(void) { return 5 << 3; }", compiler: :rubycc)
+  end
+
+  def test_right_shift_of_positive
+    assert_c_exit_status(5, "int main(void) { return 40 >> 3; }", compiler: :rubycc)
+  end
+
+  def test_right_shift_of_negative_is_arithmetic
+    # -8 >> 1 is -4 with an arithmetic (sign-preserving) shift; -4 mod 256 is 252.
+    assert_c_exit_status(252, "int main(void) { int x = -8; return x >> 1; }", compiler: :rubycc)
+  end
+
+  def test_bitwise_precedence_and_tighter_than_xor_tighter_than_or
+    # 2 | 4 ^ 4 & 5  ==  2 | (4 ^ (4 & 5))  ==  2 | (4 ^ 4)  ==  2 | 0  ==  2.
+    assert_c_exit_status(2, "int main(void) { return 2 | 4 ^ 4 & 5; }", compiler: :rubycc)
+  end
+
+  def test_shift_is_left_associative
+    # 1 << 3 >> 1  ==  (1 << 3) >> 1  ==  8 >> 1  ==  4.
+    assert_c_exit_status(4, "int main(void) { return 1 << 3 >> 1; }", compiler: :rubycc)
+  end
+
+  def test_additive_binds_tighter_than_shift
+    # 1 + 2 << 3  ==  (1 + 2) << 3  ==  24.
+    assert_c_exit_status(24, "int main(void) { return 1 + 2 << 3; }", compiler: :rubycc)
+  end
+
+  def test_bitwise_and_compound_assignment
+    assert_c_exit_status(8, "int main(void) { int x = 12; x &= 10; return x; }", compiler: :rubycc)
+  end
+
+  def test_bitwise_or_compound_assignment
+    assert_c_exit_status(13, "int main(void) { int x = 12; x |= 1; return x; }", compiler: :rubycc)
+  end
+
+  def test_bitwise_xor_compound_assignment
+    assert_c_exit_status(10, "int main(void) { int x = 12; x ^= 6; return x; }", compiler: :rubycc)
+  end
+
+  def test_left_shift_compound_assignment
+    assert_c_exit_status(16, "int main(void) { int x = 1; x <<= 4; return x; }", compiler: :rubycc)
+  end
+
+  def test_right_shift_compound_assignment
+    assert_c_exit_status(16, "int main(void) { int x = 64; x >>= 2; return x; }", compiler: :rubycc)
+  end
+
+  def test_compound_bitwise_narrows_to_char
+    # 300 & 15 == 12, still a char after "&="; the store keeps only the low byte.
+    assert_c_exit_status(12, "int main(void) { char c = 300; c &= 15; return c; }", compiler: :rubycc)
+  end
+
+  def test_comma_operator_yields_right_operand
+    assert_c_exit_status(42, "int main(void) { return (1, 2, 42); }", compiler: :rubycc)
+  end
+
+  def test_sizeof_of_shift_expression_is_int_via_static_type
+    # sizeof(1 << 2) folds through the code-free static-type path: a shift is an
+    # int, so its size is 4. (4 * 10 + 2 == 42.)
+    assert_c_exit_status(42, "int main(void) { return sizeof(1 << 2) * 10 + 2; }", compiler: :rubycc)
+  end
+
+  def test_sizeof_of_comma_expression_measures_right_operand
+    # The comma's type (and size) is its right operand's: a char is 1 byte.
+    assert_c_exit_status(
+      42, "int main(void) { char c; return sizeof(1, c) == 1 ? 42 : 7; }", compiler: :rubycc
+    )
+  end
+
+  def test_comma_operator_evaluates_left_for_side_effects
+    # The left operand's assignment happens, then the right operand is the value.
+    assert_c_exit_status(7, "int main(void) { int x = 1; int y = (x = 5, x + 2); return y; }", compiler: :rubycc)
+  end
+
+  def test_comma_in_for_step_clause
+    # "i++, j++" runs both updates each iteration; j starts at 10 and steps 3 times.
+    assert_c_exit_status(
+      13, "int main(void) { int i = 0; int j = 10; for (i = 0; i < 3; i++, j++); return j; }",
+      compiler: :rubycc
+    )
+  end
+
+  def test_compound_assignment_through_subscript_evaluates_lvalue_once
+    # a[i++] += 5 must evaluate the index (with its side effect) exactly once,
+    # so i advances by one and only a[0] is touched.
+    assert_c_exit_status(
+      245, "int main(void) { int a[3]; a[0] = 0; a[1] = 0; a[2] = 0; int i = 0; " \
+           "a[i++] += 5; return a[0] * 100 + i; }",
+      compiler: :rubycc
+    )
+  end
+
+  # These bitwise/shift/comma cases must agree with gcc bit-for-bit on the exit
+  # code (including operator precedence, arithmetic right shift and comma
+  # sequencing).
+  BITWISE_SHIFT_COMMA_DIFFERENTIAL_SOURCES = [
+    "int main(void) { return 6 & 3; }",
+    "int main(void) { return 6 | 1; }",
+    "int main(void) { return 6 ^ 3; }",
+    "int main(void) { return ~0 == -1 ? 42 : 7; }",
+    "int main(void) { char c = 5; return ~c; }",
+    "int main(void) { return 5 << 3; }",
+    "int main(void) { return 40 >> 3; }",
+    "int main(void) { int x = -8; return x >> 1; }",
+    "int main(void) { return -8 >> 2; }",
+    "int main(void) { return 2 | 4 ^ 4 & 5; }",
+    "int main(void) { return 1 << 3 >> 1; }",
+    "int main(void) { return 1 + 2 << 3; }",
+    "int main(void) { return 1 << 2 + 3; }",
+    "int main(void) { return 5 & 3 | 8; }",
+    "int main(void) { int x = 12; x &= 10; x |= 1; x ^= 6; return x; }",
+    "int main(void) { int x = 1; x <<= 4; x >>= 2; return x; }",
+    "int main(void) { char c = 300; c &= 15; return c; }",
+    "int main(void) { return (1, 2, 42); }",
+    "int main(void) { int x = 1; int y = (x = 5, x + 2); return y; }",
+    "int main(void) { int i = 0; int j = 10; for (i = 0; i < 3; i++, j++); return j; }",
+    "int main(void) { int a[3]; a[0] = 0; a[1] = 0; a[2] = 0; int i = 0; a[i++] += 5; return a[0] * 100 + i; }",
+    "int main(void) { int a[3]; a[0] = 4; a[1] = 0; a[2] = 0; int i = 0; a[i++] <<= 3; return a[0] + i; }"
+  ].freeze
+
+  def test_bitwise_shift_comma_match_gcc_exit_codes
+    BITWISE_SHIFT_COMMA_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
   # These cast/NPC/pointer-condition cases must agree with gcc bit-for-bit on
   # the exit code.
   CAST_AND_NULL_DIFFERENTIAL_SOURCES = [

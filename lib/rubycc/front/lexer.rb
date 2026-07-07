@@ -18,16 +18,24 @@ module Rubycc
         "'" => 39, "\"" => 34, "a" => 7, "b" => 8, "f" => 12, "v" => 11
       }.freeze
 
+      # Three-character punctuators, matched before the shorter lists so the
+      # longest one always wins: "<<=" must beat "<<" (and "<="/"<"), and
+      # ">>=" must beat ">>" (and ">="/">"). These are the two compound shift
+      # assignments; no other punctuator in this subset is three characters.
+      PUNCTUATORS_3 = %w[<<= >>=].freeze
+
       # Two-character punctuators, matched before the single-character list so
       # the lexer always prefers the longest punctuator ("==" over two "=",
-      # "&&" over two "&", "++" or "+=" over a lone "+", "->" over a lone "-").
-      PUNCTUATORS_2 = %w[== != <= >= && || += -= *= /= %= ++ -- ->].freeze
+      # "&&" over two "&", "++" or "+=" over a lone "+", "->" over a lone "-",
+      # "<<" over two "<", "&=" over "&"/"&&").
+      PUNCTUATORS_2 = %w[== != <= >= && || += -= *= /= %= ++ -- -> << >> &= |= ^=].freeze
 
-      # Single-character punctuators used by this slice. "&" is the address-of
-      # operator, "*" doubles as dereference and pointer-declarator marker,
-      # "[" "]" bracket array declarators and subscripts, "?" ":" form the
-      # conditional operator, and "." selects a struct member.
-      PUNCTUATORS_1 = %w[+ - * / % ( ) { } ; = , < > ! & [ ] ? : .].freeze
+      # Single-character punctuators used by this slice. "&" is both the
+      # address-of operator and the bitwise-and operator, "*" doubles as
+      # dereference and pointer-declarator marker, "|" "^" "~" are the remaining
+      # bitwise operators, "[" "]" bracket array declarators and subscripts,
+      # "?" ":" form the conditional operator, and "." selects a struct member.
+      PUNCTUATORS_1 = %w[+ - * / % ( ) { } ; = , < > ! & | ^ ~ [ ] ? : .].freeze
 
       def initialize(source, filename:)
         @src = source
@@ -196,11 +204,20 @@ module Rubycc
         end
       end
 
-      # Longest-match punctuator scan: try the two-character punctuators first,
-      # then fall back to the single-character ones.
+      # Longest-match punctuator scan: try the three-character punctuators
+      # first, then the two-character ones, then fall back to the
+      # single-character ones. peek(1)/peek(2) yield nil past the end, which
+      # interpolate to "", so the assembled candidates simply fail to match near
+      # EOF and the scan falls through to a shorter length.
       def lex_punctuator(line, column)
+        three = "#{current_char}#{peek(1)}#{peek(2)}"
         two = "#{current_char}#{peek(1)}"
-        if PUNCTUATORS_2.include?(two)
+        if PUNCTUATORS_3.include?(three)
+          advance
+          advance
+          advance
+          make_token(:punct, three, line, column)
+        elsif PUNCTUATORS_2.include?(two)
           advance
           advance
           make_token(:punct, two, line, column)

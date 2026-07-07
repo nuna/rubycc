@@ -7,6 +7,14 @@ module Rubycc
     #   :const  dst <- a            (a is an immediate Integer)
     #   :copy   dst <- a
     #   :add/:sub/:mul/:div/:mod    dst <- a op b
+    #   :and/:or/:xor               dst <- a op b   (32-bit bitwise)
+    #   :shl    dst <- a << b       (logical left shift; b's low byte is the
+    #                               shift count, taken from cl by the backend)
+    #   :sar    dst <- a >> b       (arithmetic right shift; b's low byte is the
+    #                               shift count. int is signed, so the source
+    #                               ">>" lowers to :sar; a logical-shift opcode
+    #                               (:shr) is added when unsigned types arrive
+    #                               and an unsigned left operand needs it)
     #   :eq/:ne/:lt/:le/:gt/:ge     dst <- (a op b) ? 1 : 0
     #   :neg    dst <- -a
     #   :sext   dst <- a            (a's 32-bit value sign-extended to 64 bits)
