@@ -17,6 +17,13 @@ class TestParser < Minitest::Test
     program.functions.first.body.first.expr
   end
 
+  # Parses "int main(void) { <decl_source> return 0; }" and returns the first
+  # declaration statement.
+  def parse_decl(decl_source)
+    program = parse("int main(void) { #{decl_source} return 0; }")
+    program.functions.first.body.first
+  end
+
   def test_parses_program_structure
     program = parse("int main(void) { return 42; }")
 
@@ -1267,5 +1274,77 @@ class TestParser < Minitest::Test
     assert_kind_of AST::Assignment, expr
     assert_kind_of AST::MemberAccess, expr.target
     assert_equal 42, expr.value.value
+  end
+
+  # --- integer type extension (Step 17) -----------------------------------
+
+  def test_declaration_specifiers_normalize_regardless_of_order
+    { "unsigned long x;" => Type::ULong, "long unsigned x;" => Type::ULong,
+      "long unsigned int x;" => Type::ULong, "unsigned long int x;" => Type::ULong,
+      "int long unsigned x;" => Type::ULong, "long long x;" => Type::Long,
+      "long long int x;" => Type::Long, "int long x;" => Type::Long,
+      "signed long x;" => Type::Long, "unsigned x;" => Type::UInt,
+      "unsigned int x;" => Type::UInt, "signed x;" => Type::Int,
+      "signed int x;" => Type::Int, "short x;" => Type::Short,
+      "short int x;" => Type::Short, "unsigned short x;" => Type::UShort,
+      "short unsigned int x;" => Type::UShort, "signed char x;" => Type::Char,
+      "char x;" => Type::Char, "unsigned char x;" => Type::UChar,
+      "_Bool x;" => Type::Bool }.each do |source, expected|
+      assert_equal expected, parse_decl(source).type, "#{source.inspect} should normalize to #{expected}"
+    end
+  end
+
+  def test_sizeof_unsigned_long_type_name
+    expr = parse_expr("sizeof(unsigned long)")
+    assert_kind_of AST::SizeofType, expr
+    assert_equal Type::ULong, expr.type
+  end
+
+  def test_sizeof_short_and_unsigned_char_type_names
+    assert_equal Type::Short, parse_expr("sizeof(short)").type
+    assert_equal Type::UChar, parse_expr("sizeof(unsigned char)").type
+    assert_equal Type::Bool, parse_expr("sizeof(_Bool)").type
+  end
+
+  def test_hexadecimal_and_octal_integer_literal_values
+    assert_equal 31, parse_expr("0x1F").value
+    assert_equal 8, parse_expr("010").value
+    assert_equal 0, parse_expr("0").value
+  end
+
+  def test_decimal_literal_type_by_size
+    assert_equal Type::Int, parse_expr("42").type
+    assert_equal Type::Long, parse_expr("2147483648").type # past INT_MAX
+    assert_equal Type::Long, parse_expr("4294967296").type # past UINT_MAX
+  end
+
+  def test_hexadecimal_literal_may_become_unsigned
+    # A decimal constant never falls to an unsigned type without a suffix, but
+    # a hex constant may (6.4.4.1): 0x80000000 does not fit a signed int, so it
+    # takes the next candidate, unsigned int, rather than widening to long.
+    assert_equal Type::UInt, parse_expr("0x80000000").type
+    assert_equal Type::Int, parse_expr("0x7FFFFFFF").type
+  end
+
+  def test_unsigned_suffix_literal_type
+    assert_equal Type::UInt, parse_expr("10u").type
+    assert_equal Type::UInt, parse_expr("10U").type
+  end
+
+  def test_long_suffix_literal_type
+    assert_equal Type::Long, parse_expr("10l").type
+    assert_equal Type::Long, parse_expr("10L").type
+    assert_equal Type::Long, parse_expr("10ll").type
+  end
+
+  def test_unsigned_long_suffix_literal_type_regardless_of_order
+    assert_equal Type::ULong, parse_expr("10ul").type
+    assert_equal Type::ULong, parse_expr("10lu").type
+    assert_equal Type::ULong, parse_expr("10ull").type
+    assert_equal Type::ULong, parse_expr("10llu").type
+  end
+
+  def test_character_constant_is_always_plain_int
+    assert_equal Type::Int, parse_expr("'A'").type
   end
 end

@@ -165,14 +165,18 @@ module Rubycc
           @scopes.last[param.name] = Local.new(type: param.type, storage: new_vreg, global: false)
         end
 
-        # A char parameter arrives as a full int in its register; narrow it to
-        # 8 bits in place so its slot holds the truncated char value like any
-        # other char lvalue.
+        # A narrow integer parameter (char/short and their unsigned forms,
+        # _Bool) arrives in a register with an unspecified high half; re-derive
+        # its value from the low bytes in place, by the type's signedness, so
+        # its slot holds the properly extended value like any other narrow
+        # lvalue. Wider parameters (int/long and their unsigned forms, pointers)
+        # already arrive in the right representation.
         func.params.each do |param|
-          next unless param.type.char?
+          type = param.type
+          next unless type.integer? && (type.size == 1 || type.size == 2)
 
           slot = @scopes.last[param.name].storage
-          emit(:sext8, dst: slot, a: slot)
+          emit(type.signed? ? :sext : :zext, dst: slot, a: slot, size: type.size)
         end
 
         func.body.each { |stmt| gen_statement(stmt) }
@@ -369,12 +373,15 @@ module Rubycc
       # without a break) just runs into the next label's code.
       def gen_switch(node)
         control, control_type = gen_value(node.control)
-        # The controlling expression must be an integer type (char promotes to
-        # int); a pointer, struct or other non-integer has no case constants to
-        # match against.
-        unless control_type.arithmetic?
+        # The controlling expression must be an integer type; a pointer, struct
+        # or other non-integer has no case constants to match against. It
+        # undergoes integer promotion (6.8.4.2), and the case constants are
+        # compared against it in that promoted type.
+        unless control_type.integer?
           error_at(node.token, "switch quantity is not an integer")
         end
+        promoted_type = integer_promote(control_type)
+        control = convert(control, from: control_type, to: promoted_type)
 
         # Collect every case/default that belongs to this switch — those not
         # sealed off inside a nested switch — assigning each a label and checking
@@ -384,7 +391,7 @@ module Rubycc
         labels, default_node = resolve_switch_labels(collected)
 
         end_label = new_label
-        emit_switch_dispatch(control, collected, labels, default_node, end_label)
+        emit_switch_dispatch(control, promoted_type, collected, labels, default_node, end_label)
 
         # Generate the body with the labels in scope so each Case/Default marks
         # its position, and with break routed to the switch's end.
@@ -397,14 +404,18 @@ module Rubycc
       # unconditional jump to default (or the switch's end when there is none).
       # ">> jump when equal" is spelled with the existing :ne + :jump_if_zero
       # because the IR has no jump-if-nonzero.
-      def emit_switch_dispatch(control, collected, labels, default_node, end_label)
+      def emit_switch_dispatch(control, control_type, collected, labels, default_node, end_label)
+        # A size-8 controlling type compares (and loads its case constants) at
+        # 64 bits, so a long case value and the high half of the control both
+        # participate.
+        size = control_type.size == 8 ? 8 : nil
         collected.each do |node|
           next if node.is_a?(Front::AST::Default)
 
           value_reg = new_vreg
-          emit(:const, dst: value_reg, a: node.value)
+          emit(:const, dst: value_reg, a: node.value, size: size)
           cmp = new_vreg
-          emit(:ne, dst: cmp, a: control, b: value_reg)
+          emit(:ne, dst: cmp, a: control, b: value_reg, size: size)
           emit(:jump_if_zero, a: cmp, b: labels[node])
         end
         emit(:jump, a: default_node ? labels[default_node] : end_label)
@@ -544,7 +555,7 @@ module Rubycc
         unless compatible_assignment?(@current_return_type, node.expr, value_type)
           error_at(node.token, "incompatible return type")
         end
-        emit(:ret, a: narrow_to_type(value, @current_return_type))
+        emit(:ret, a: convert_for_assignment(value, value_type, @current_return_type))
       end
 
       def gen_variable_decl(decl)
@@ -568,7 +579,7 @@ module Rubycc
             unless compatible_assignment?(decl.type, decl.initializer, value_type)
               error_at(decl.token, "incompatible types in assignment")
             end
-            emit(:copy, dst: vreg, a: narrow_to_type(value, decl.type))
+            emit(:copy, dst: vreg, a: convert_for_assignment(value, value_type, decl.type))
           end
         end
       end
@@ -580,8 +591,11 @@ module Rubycc
         case node
         when Front::AST::IntLit
           dst = new_vreg
-          emit(:const, dst: dst, a: node.value)
-          [dst, Type::Int]
+          # The literal's type is fixed by the parser (6.4.4.1); a long/unsigned
+          # long constant loads a full 64-bit immediate so its high half is
+          # valid, a narrower one a 32-bit immediate.
+          emit(:const, dst: dst, a: node.value, size: (8 if node.type.size == 8))
+          [dst, node.type]
         when Front::AST::StringLit
           gen_string_literal(node)
         when Front::AST::Unary
@@ -663,17 +677,8 @@ module Rubycc
           dst = new_vreg
           emit(:object_addr, dst: dst, a: local.storage)
           [dst, local.type]
-        elsif local.type.char?
-          # A char local lives in its 8-byte slot as a sign-extended int, but a
-          # store through a pointer to it ("char *p = &c; *p = v;") rewrites
-          # only the slot's low byte, leaving the upper bytes stale. Re-extract
-          # the char value from that low byte with :sext8 so a plain read of the
-          # variable never depends on the (possibly aliased) upper bytes.
-          dst = new_vreg
-          emit(:sext8, dst: dst, a: local.storage)
-          [dst, local.type]
         else
-          [local.storage, local.type]
+          [read_local_scalar(local), local.type]
         end
       end
 
@@ -693,7 +698,7 @@ module Rubycc
           [addr, local.type]
         else
           dst = new_vreg
-          emit(:load, dst: dst, a: addr, size: local.type.size)
+          emit_scalar_load(dst, addr, local.type)
           [dst, local.type]
         end
       end
@@ -717,7 +722,7 @@ module Rubycc
         return [addr, element_type] if element_type.struct?
 
         dst = new_vreg
-        emit(:load, dst: dst, a: addr, size: element_type.size)
+        emit_scalar_load(dst, addr, element_type)
         [dst, element_type]
       end
 
@@ -734,7 +739,7 @@ module Rubycc
           [addr, Type::Pointer.new(member_type.element)]
         else
           dst = new_vreg
-          emit(:load, dst: dst, a: addr, size: member_type.size)
+          emit_scalar_load(dst, addr, member_type)
           [dst, member_type]
         end
       end
@@ -789,11 +794,12 @@ module Rubycc
         end
       end
 
-      # sizeof folds to a compile-time int constant: the resolved type's byte
-      # size. The operand (for the expression form) is never evaluated, so no
-      # code other than the constant is emitted. void (an incomplete type with
-      # no size) is rejected, whether written directly ("sizeof(void)") or
-      # reached through a void-returning call's result type ("sizeof f()").
+      # sizeof folds to a compile-time constant of type size_t (unsigned long
+      # here): the resolved type's byte size. The operand (for the expression
+      # form) is never evaluated, so no code other than the constant is emitted.
+      # void (an incomplete type with no size) is rejected, whether written
+      # directly ("sizeof(void)") or reached through a void-returning call's
+      # result type ("sizeof f()").
       def gen_sizeof(type, token)
         error_at(token, "invalid application of 'sizeof' to void type") if type.void?
         # An incomplete struct has no known size to fold, whether written
@@ -802,20 +808,21 @@ module Rubycc
         require_complete(type, token)
 
         dst = new_vreg
+        # The size is small and non-negative, so a 32-bit mov (which zeroes the
+        # upper half of rax) already leaves a valid 8-byte unsigned long value.
         emit(:const, dst: dst, a: type.size)
-        [dst, Type::Int]
+        [dst, Type::ULong]
       end
 
       # A cast "( type-name ) operand". The destination type steers the whole
-      # conversion, since the type-name grammar only ever yields int, char,
-      # void, a pointer or a bare struct:
+      # conversion, since the type-name grammar only ever yields an integer
+      # type, void, a pointer or a bare struct:
       #   * "(void)e" evaluates e for its side effects and discards the value;
       #   * a pointer destination retags a pointer source (no code), turns a
-      #     null pointer constant into a null pointer, and rejects any other
-      #     integer (no same-width integer type exists yet) or a struct;
-      #   * an arithmetic destination reinterprets an arithmetic source, with
-      #     the int -> char narrowing #narrow_to_type already provides, and
-      #     rejects a pointer or struct source;
+      #     null pointer constant into a null pointer, and widens any other
+      #     integer to a 64-bit address value, but rejects a struct;
+      #   * an arithmetic destination converts an integer or pointer source to
+      #     the destination type (#convert), and rejects a struct source;
       #   * a struct destination is never a valid cast target here.
       def gen_cast(node)
         target = node.type
@@ -845,31 +852,33 @@ module Rubycc
       # A cast to a pointer type. A pointer source is reinterpreted in place
       # (the value is the same 64-bit address, only its static type changes), a
       # null pointer constant becomes a 64-bit null pointer (its literal 0
-      # already occupies the whole slot), any other integer is rejected until a
-      # pointer-width integer type exists, and a struct source has no pointer
-      # value to take.
+      # already occupies the whole slot), and any other integer is widened to a
+      # 64-bit address value by its own signedness (a signed int extends its
+      # sign, an unsigned one zero-fills). A struct source has no pointer value
+      # to take.
       def gen_cast_to_pointer(node, target, value, value_type)
         return [value, target] if value_type.pointer?
         return [value, target] if Front::AST.null_pointer_constant?(node.operand)
-        if value_type.arithmetic?
-          error_at(node.token, "cast between pointer and integer is not supported yet")
+        if value_type.integer?
+          # Widen to the pointer's 8-byte width. convert(to: Long) triggers the
+          # size-8 path, extending by the source signedness; a source that is
+          # already 8 bytes passes through.
+          return [convert(value, from: value_type, to: Type::Long), target]
         end
         error_at(node.token, "cannot cast '#{value_type}' to '#{target}'")
       end
 
-      # A cast to an arithmetic type (int or char). An arithmetic source is
-      # reinterpreted, narrowing to char via :sext8 when needed (a widening or
-      # same-width conversion needs no code, since the slot already holds a
-      # sign-extended value); a pointer source is rejected for want of a
-      # pointer-width integer type, and a struct source has no arithmetic value.
+      # A cast to an arithmetic type. An integer source is converted to the
+      # destination type (narrowing, widening or a sign change, per #convert); a
+      # pointer source is reinterpreted as an unsigned 64-bit value and then
+      # converted to the destination width. A struct source has no arithmetic
+      # value.
       def gen_cast_to_arithmetic(node, target, value, value_type)
-        if value_type.pointer?
-          error_at(node.token, "cast between pointer and integer is not supported yet")
-        end
-        unless value_type.arithmetic?
+        source_type = value_type.pointer? ? Type::ULong : value_type
+        unless source_type.integer?
           error_at(node.token, "cannot cast '#{value_type}' to '#{target}'")
         end
-        [narrow_to_type(value, target), target]
+        [convert(value, from: source_type, to: target), target]
       end
 
       # A binary operation. Its result type (and the legality of its operands)
@@ -916,38 +925,85 @@ module Rubycc
         result_type = binary_result_type(op, lhs_type, rhs_type, token)
 
         if comparison_op?(op)
-          dst = new_vreg
-          emit(op, dst: dst, a: lhs, b: rhs, size: (8 if lhs_type.pointer?))
-          [dst, result_type]
+          gen_comparison(op, lhs, lhs_type, rhs, rhs_type)
         elsif SHIFT_OPS.include?(op)
-          # A shift is 32-bit int arithmetic (a char operand is already promoted
-          # in its slot); #binary_result_type has rejected any pointer operand.
-          # The result is always int. "<<" is the logical :shl; ">>" on a signed
-          # int is the arithmetic :sar (an unsigned left operand will select the
-          # logical :shr once unsigned types exist). The shift count rides in the
-          # b operand, whose low byte the backend reads from cl.
-          dst = new_vreg
-          emit(op == :shl ? :shl : :sar, dst: dst, a: lhs, b: rhs)
-          [dst, Type::Int]
+          gen_shift(op, lhs, lhs_type, rhs, result_type)
         elsif lhs_type.pointer? && rhs_type.pointer?
           gen_pointer_difference(lhs, rhs, lhs_type)
         elsif lhs_type.pointer?
-          gen_pointer_int_arith(op, lhs, rhs, lhs_type)
+          gen_pointer_int_arith(op, lhs, rhs, rhs_type, lhs_type)
         elsif rhs_type.pointer?
           # int + pointer (subtraction in this order was already rejected).
-          gen_pointer_int_arith(op, rhs, lhs, rhs_type)
+          gen_pointer_int_arith(op, rhs, lhs, lhs_type, rhs_type)
         else
-          dst = new_vreg
-          emit(op, dst: dst, a: lhs, b: rhs)
-          [dst, Type::Int]
+          gen_integer_arithmetic(op, lhs, lhs_type, rhs, rhs_type, result_type)
         end
+      end
+
+      # A comparison, yielding int 0/1. Two pointers compare as full 64-bit
+      # values: equality with the sign-independent :eq/:ne, ordering with the
+      # unsigned :ult family, since an address is unsigned. Two integers are
+      # first brought to their common type (6.3.1.8), then compared with the
+      # signed or unsigned setcc that the common type's signedness selects; the
+      # comparison is 64-bit only when the common type is 8 bytes.
+      def gen_comparison(op, lhs, lhs_type, rhs, rhs_type)
+        dst = new_vreg
+        if lhs_type.pointer? && rhs_type.pointer?
+          cmp = EQUALITY_OPS.include?(op) ? op : UNSIGNED_COMPARISONS.fetch(op)
+          emit(cmp, dst: dst, a: lhs, b: rhs, size: 8)
+        else
+          common = common_arithmetic_type(lhs_type, rhs_type)
+          l = convert(lhs, from: lhs_type, to: common)
+          r = convert(rhs, from: rhs_type, to: common)
+          cmp = op
+          cmp = UNSIGNED_COMPARISONS.fetch(op) if common.unsigned? && !EQUALITY_OPS.include?(op)
+          emit(cmp, dst: dst, a: l, b: r, size: (8 if common.size == 8))
+        end
+        [dst, Type::Int]
+      end
+
+      # A shift promotes each operand on its own — never the usual arithmetic
+      # conversion — and takes the promoted left operand's type as its result
+      # (6.5.7), which #binary_result_type has already computed. "<<" is the
+      # logical :shl; ">>" is the arithmetic :sar for a signed left operand and
+      # the logical :shr for an unsigned one. The count rides in b (its low byte,
+      # read from cl by the backend); a size-8 left operand shifts 64-bit.
+      def gen_shift(op, lhs, lhs_type, rhs, result_type)
+        value = convert(lhs, from: lhs_type, to: result_type)
+        opcode = if op == :shl
+                   :shl
+                 else
+                   result_type.unsigned? ? :shr : :sar
+                 end
+        dst = new_vreg
+        emit(opcode, dst: dst, a: value, b: rhs, size: (8 if result_type.size == 8))
+        [dst, result_type]
+      end
+
+      # Ordinary integer arithmetic (+ - * / % and the bitwise & | ^). Both
+      # operands are converted to their common type (which is the result type),
+      # then combined; the additive, multiplicative and bitwise opcodes are
+      # shared across signedness (their bit patterns coincide, wrap-around
+      # included), while division and remainder pick the signed or unsigned
+      # opcode. A common type of 8 bytes runs the operation 64-bit.
+      def gen_integer_arithmetic(op, lhs, lhs_type, rhs, rhs_type, result_type)
+        l = convert(lhs, from: lhs_type, to: result_type)
+        r = convert(rhs, from: rhs_type, to: result_type)
+        opcode = case op
+                 when :div then result_type.unsigned? ? :udiv : :div
+                 when :mod then result_type.unsigned? ? :umod : :mod
+                 else op
+                 end
+        dst = new_vreg
+        emit(opcode, dst: dst, a: l, b: r, size: (8 if result_type.size == 8))
+        [dst, result_type]
       end
 
       # pointer +/- int: scale the int index by the element size (as a 64-bit
       # byte offset) and add or subtract it from the pointer. The result has the
       # pointer's type.
-      def gen_pointer_int_arith(op, ptr_vreg, int_vreg, ptr_type)
-        offset = scale_index(int_vreg, ptr_type.target.size)
+      def gen_pointer_int_arith(op, ptr_vreg, int_vreg, int_type, ptr_type)
+        offset = scale_index(int_vreg, int_type, ptr_type.target.size)
         dst = new_vreg
         emit(op, dst: dst, a: ptr_vreg, b: offset, size: 8)
         [dst, ptr_type]
@@ -965,13 +1021,13 @@ module Rubycc
         [dst, Type::Int]
       end
 
-      # Sign-extends a 32-bit index to 64 bits and multiplies it by the element
-      # size, yielding the byte offset used to index a pointer or array. Shared
-      # by pointer arithmetic and subscripting; the sign extension makes
-      # negative indices (p[-1]) address the element below the pointer.
-      def scale_index(index_vreg, element_size)
-        wide = new_vreg
-        emit(:sext, dst: wide, a: index_vreg)
+      # Widens an index to a 64-bit byte offset and multiplies it by the element
+      # size, yielding the offset used to index a pointer or array. The widening
+      # follows the index's own signedness (a signed index sign-extends, so
+      # p[-1] addresses the element below the pointer; an unsigned one
+      # zero-extends), and an already-64-bit index passes through.
+      def scale_index(index_vreg, index_type, element_size)
+        wide = convert(index_vreg, from: index_type, to: Type::Long)
         size_reg = new_vreg
         emit(:const, dst: size_reg, a: element_size)
         scaled = new_vreg
@@ -993,10 +1049,10 @@ module Rubycc
         # (its width unknown) is rejected before it reaches #scale_index.
         require_complete(element_type, node.token)
         index, index_type = gen_value(node.index)
-        unless index_type.int?
+        unless index_type.integer?
           error_at(node.token, "array subscript is not an integer")
         end
-        offset = scale_index(index, element_type.size)
+        offset = scale_index(index, index_type, element_type.size)
         addr = new_vreg
         emit(:add, dst: addr, a: base, b: offset, size: 8)
         [addr, element_type]
@@ -1007,10 +1063,17 @@ module Rubycc
         when :not
           gen_logical_not(node)
         when :neg
-          operand, = gen_value(node.operand)
+          operand, operand_type = gen_value(node.operand)
+          unless operand_type.integer?
+            error_at(node.token, "wrong type argument to unary minus")
+          end
+          # Unary minus promotes its operand and negates in the promoted type,
+          # so "-x" of a long is long (negated 64-bit) and of a char is int.
+          result_type = integer_promote(operand_type)
+          value = convert(operand, from: operand_type, to: result_type)
           dst = new_vreg
-          emit(:neg, dst: dst, a: operand)
-          [dst, Type::Int]
+          emit(:neg, dst: dst, a: value, size: (8 if result_type.size == 8))
+          [dst, result_type]
         when :addr
           gen_address_of(node)
         when :deref
@@ -1028,7 +1091,7 @@ module Rubycc
         zero = new_vreg
         emit(:const, dst: zero, a: 0)
         dst = new_vreg
-        emit(:eq, dst: dst, a: operand, b: zero, size: (8 if operand_type.pointer?))
+        emit(:eq, dst: dst, a: operand, b: zero, size: (8 if wide_scalar?(operand_type)))
         [dst, Type::Int]
       end
 
@@ -1086,7 +1149,7 @@ module Rubycc
         return [addr, result_type] if result_type.struct?
 
         dst = new_vreg
-        emit(:load, dst: dst, a: addr, size: result_type.size)
+        emit_scalar_load(dst, addr, result_type)
         [dst, result_type]
       end
 
@@ -1132,37 +1195,40 @@ module Rubycc
           dest, = gen_variable_ref(target)
           return gen_struct_copy(dest, value, local.type)
         end
-        stored = store_scalar_variable(local, value)
+        stored = store_scalar_variable(local, value, value_type)
         [stored, local.type]
       end
 
       # Reads a scalar variable's current value into a usable vreg. A local
-      # scalar already lives in its slot vreg; a global is loaded through its
-      # address (:global_addr then :load, the width following its type).
+      # scalar comes from its slot (re-derived from the low bytes for a narrow
+      # type, see #read_local_scalar); a global is loaded through its address
+      # (:global_addr then a width- and sign-appropriate load).
       def load_scalar_variable(local)
-        return local.storage unless local.global
+        return read_local_scalar(local) unless local.global
 
         addr = new_vreg
         emit(:global_addr, dst: addr, a: local.storage)
         dst = new_vreg
-        emit(:load, dst: dst, a: addr, size: local.type.size)
+        emit_scalar_load(dst, addr, local.type)
         dst
       end
 
-      # Writes `value_vreg` into a scalar variable, narrowing it to the
-      # variable's type first (int -> char). A local is a plain :copy into its
-      # slot; a global is a :store through its address. Returns the vreg holding
-      # the stored (narrowed) value, which is the assignment expression's value.
-      def store_scalar_variable(local, value_vreg)
-        narrowed = narrow_to_type(value_vreg, local.type)
+      # Writes `value_vreg` (of type `value_type`) into a scalar variable,
+      # converting it to the variable's type first (the usual assignment
+      # conversion — a narrowing, widening or sign change). A local is a plain
+      # :copy into its slot; a global is a :store through its address, the store
+      # width following its type. Returns the vreg holding the stored (converted)
+      # value, which is the assignment expression's value.
+      def store_scalar_variable(local, value_vreg, value_type)
+        converted = convert_for_assignment(value_vreg, value_type, local.type)
         if local.global
           addr = new_vreg
           emit(:global_addr, dst: addr, a: local.storage)
-          emit(:store, a: addr, b: narrowed, size: local.type.size)
+          emit(:store, a: addr, b: converted, size: local.type.size)
         else
-          emit(:copy, dst: local.storage, a: narrowed)
+          emit(:copy, dst: local.storage, a: converted)
         end
-        narrowed
+        converted
       end
 
       # "e[i] = v": compute the element address (see #gen_element_address) and
@@ -1238,7 +1304,10 @@ module Rubycc
           unless compatible_assignment?(param_types[i], arg, arg_type)
             error_at(node.token, "incompatible type for argument #{i + 1} of '#{node.name}'")
           end
-          vreg
+          # An arithmetic argument is converted to the parameter's type, like an
+          # assignment (a widening/narrowing/sign change); a pointer or null
+          # pointer constant passes through.
+          convert_for_assignment(vreg, arg_type, param_types[i])
         end
         dst = new_vreg
         emit(:call, dst: dst, a: node.name, b: arg_vregs)
@@ -1305,6 +1374,12 @@ module Rubycc
       # only one of the two arms is evaluated, and both must settle on the
       # same result type (which becomes the expression's type).
       def gen_conditional(node)
+        # The result type is settled up front from the arms' static types (the
+        # same code-free inference sizeof uses), so each arm's value can be
+        # converted to it inside its own branch before the shared result slot is
+        # written — needed when the arms differ (e.g. int and long).
+        result_type = conditional_result_type(node.then_expr, static_type(node.then_expr),
+                                               node.else_expr, static_type(node.else_expr), node.token)
         cond = gen_condition(node.condition)
         else_label = new_label
         end_label = new_label
@@ -1312,16 +1387,14 @@ module Rubycc
         emit(:jump_if_zero, a: cond, b: else_label)
 
         then_value, then_type = gen_value(node.then_expr)
-        emit(:copy, dst: result, a: then_value)
+        emit(:copy, dst: result, a: convert_for_assignment(then_value, then_type, result_type))
         emit(:jump, a: end_label)
 
         emit(:label, a: else_label)
         else_value, else_type = gen_value(node.else_expr)
-        emit(:copy, dst: result, a: else_value)
+        emit(:copy, dst: result, a: convert_for_assignment(else_value, else_type, result_type))
         emit(:label, a: end_label)
 
-        result_type = conditional_result_type(node.then_expr, then_type,
-                                              node.else_expr, else_type, node.token)
         [result, result_type]
       end
 
@@ -1338,8 +1411,8 @@ module Rubycc
           then_type
         elsif else_type.pointer? && Front::AST.null_pointer_constant?(then_node)
           else_type
-        elsif then_type.arithmetic? && else_type.arithmetic?
-          Type::Int
+        elsif then_type.integer? && else_type.integer?
+          common_arithmetic_type(then_type, else_type)
         else
           error_at(token, "type mismatch in conditional expression")
         end
@@ -1370,7 +1443,7 @@ module Rubycc
         addr, member_type = gen_member_address(target)
         require_scalar_target(member_type, node.token)
         current = new_vreg
-        emit(:load, dst: current, a: addr, size: member_type.size)
+        emit_scalar_load(current, addr, member_type)
 
         value, value_type = gen_value(node.value)
         result, result_type = gen_binary_op(node.op, current, member_type, value, value_type, node.token)
@@ -1392,7 +1465,7 @@ module Rubycc
         unless compatible_types?(local.type, result_type)
           error_at(node.token, "incompatible types in assignment")
         end
-        stored = store_scalar_variable(local, result)
+        stored = store_scalar_variable(local, result, result_type)
         [stored, local.type]
       end
 
@@ -1400,7 +1473,7 @@ module Rubycc
         addr, element_type = gen_element_address(target)
         require_scalar_target(element_type, node.token)
         current = new_vreg
-        emit(:load, dst: current, a: addr, size: element_type.size)
+        emit_scalar_load(current, addr, element_type)
 
         value, value_type = gen_value(node.value)
         result, result_type = gen_binary_op(node.op, current, element_type, value, value_type, node.token)
@@ -1417,7 +1490,7 @@ module Rubycc
         target_type = ptr_type.target
         require_scalar_target(target_type, node.token)
         current = new_vreg
-        emit(:load, dst: current, a: addr, size: target_type.size)
+        emit_scalar_load(current, addr, target_type)
 
         value, value_type = gen_value(node.value)
         result, result_type = gen_binary_op(node.op, current, target_type, value, value_type, node.token)
@@ -1454,7 +1527,7 @@ module Rubycc
         addr, member_type = gen_member_address(target)
         require_scalar_target(member_type, node.token)
         current = new_vreg
-        emit(:load, dst: current, a: addr, size: member_type.size)
+        emit_scalar_load(current, addr, member_type)
 
         one = new_vreg
         emit(:const, dst: one, a: 1)
@@ -1484,7 +1557,7 @@ module Rubycc
         unless compatible_types?(local.type, result_type)
           error_at(node.token, "incompatible types in assignment")
         end
-        stored = store_scalar_variable(local, result)
+        stored = store_scalar_variable(local, result, result_type)
         node.prefix ? [stored, local.type] : [old_value, local.type]
       end
 
@@ -1492,7 +1565,7 @@ module Rubycc
         addr, element_type = gen_element_address(target)
         require_scalar_target(element_type, node.token)
         current = new_vreg
-        emit(:load, dst: current, a: addr, size: element_type.size)
+        emit_scalar_load(current, addr, element_type)
 
         one = new_vreg
         emit(:const, dst: one, a: 1)
@@ -1510,7 +1583,7 @@ module Rubycc
         target_type = ptr_type.target
         require_scalar_target(target_type, node.token)
         current = new_vreg
-        emit(:load, dst: current, a: addr, size: target_type.size)
+        emit_scalar_load(current, addr, target_type)
 
         one = new_vreg
         emit(:const, dst: one, a: 1)
@@ -1540,7 +1613,9 @@ module Rubycc
       # both directions); mixing an arithmetic type with a pointer (either
       # direction) is rejected.
       def compatible_types?(expected, actual)
-        return true if expected.arithmetic? && actual.arithmetic?
+        return true if expected.integer? && actual.integer?
+        # Any scalar converts to _Bool (the "!= 0" rule), pointers included.
+        return true if expected.bool? && actual.pointer?
         return true if expected.pointer? && actual.pointer? &&
                         (expected == actual || expected.target.void? || actual.target.void?)
 
@@ -1561,16 +1636,115 @@ module Rubycc
         compatible_types?(expected, actual)
       end
 
-      # Narrows a value to its destination scalar type just before it is copied
-      # into that lvalue's slot. A char destination keeps only the low 8 bits
-      # (sign-extended back to the slot width), giving int -> char truncation;
-      # every other destination type takes the value unchanged.
-      def narrow_to_type(value_vreg, type)
-        return value_vreg unless type.char?
+      # Integer promotion (6.3.1.1): a type whose rank is below int (char, short
+      # and their unsigned forms, and _Bool) promotes to int, which holds every
+      # one of their values; int, unsigned int, long and unsigned long are
+      # unchanged. Only an integer type is promoted; anything else passes
+      # through.
+      def integer_promote(type)
+        return type unless type.integer?
+
+        type.size < 4 ? Type::Int : type
+      end
+
+      # The common type of two arithmetic operands (6.3.1.8), after each has
+      # been integer-promoted. Same signedness picks the wider rank; mixed
+      # signedness gives the unsigned type when its rank is at least the signed
+      # type's, otherwise the signed type — which under LP64 always represents
+      # every value of a strictly narrower unsigned type (e.g. long covers
+      # unsigned int, so "long + unsigned int" is long).
+      def common_arithmetic_type(lhs_type, rhs_type)
+        a = integer_promote(lhs_type)
+        b = integer_promote(rhs_type)
+        return a if a == b
+        return (a.size >= b.size ? a : b) if a.signed? == b.signed?
+
+        unsigned, signed = a.unsigned? ? [a, b] : [b, a]
+        unsigned.size >= signed.size ? unsigned : signed
+      end
+
+      # Converts `vreg` (a value of integer type `from`) to integer type `to`,
+      # emitting the width/sign change the value representation calls for and
+      # returning the vreg holding the result. A conversion to _Bool is the
+      # truth test "value != 0". Widening to 8 bytes extends by the *source*
+      # signedness (preserving the numeric value); a 1/2-byte destination
+      # re-derives its low bytes by the *destination* signedness; a 4-byte
+      # destination, and same-bit-pattern reinterpretations (int <-> unsigned
+      # int, long <-> unsigned long), need no code at all.
+      def convert(vreg, from:, to:)
+        return vreg if from == to
+        return to_bool(vreg, from) if to.bool?
+
+        if to.size == 8
+          return vreg if from.size == 8 # long <-> unsigned long: same 64 bits
+
+          dst = new_vreg
+          emit(from.signed? ? :sext : :zext, dst: dst, a: vreg, size: 4)
+          dst
+        elsif to.size == 4
+          vreg # the low 32 bits already hold the converted value
+        else # to.size 1 or 2
+          dst = new_vreg
+          emit(to.signed? ? :sext : :zext, dst: dst, a: vreg, size: to.size)
+          dst
+        end
+      end
+
+      # The implicit conversion an assignment context (=, initialization, an
+      # argument, a return, a "?:" arm) applies to a value of type `from_type`
+      # bound to a `to_type` target. An arithmetic-to-arithmetic conversion goes
+      # through #convert; a conversion of any scalar to _Bool is "value != 0";
+      # a pointer (or null pointer constant, already full-width) otherwise
+      # passes through unchanged.
+      def convert_for_assignment(value_vreg, from_type, to_type)
+        if to_type.bool? && (from_type.integer? || from_type.pointer?)
+          return to_bool(value_vreg, from_type)
+        end
+        return value_vreg unless to_type.integer? && from_type.integer?
+
+        convert(value_vreg, from: from_type, to: to_type)
+      end
+
+      # "value != 0", the conversion of a scalar to _Bool: a nonzero source
+      # becomes 1, zero becomes 0. A pointer or 8-byte integer source compares
+      # at 64 bits so its whole value decides. The int 0/1 result is already a
+      # valid _Bool representation.
+      def to_bool(value_vreg, from_type)
+        zero = new_vreg
+        emit(:const, dst: zero, a: 0)
+        dst = new_vreg
+        emit(:ne, dst: dst, a: value_vreg, b: zero, size: (8 if wide_scalar?(from_type)))
+        dst
+      end
+
+      # Whether a scalar's truth/zero test must run 64-bit: a pointer or an
+      # 8-byte integer, whose high half would otherwise be ignored by a 32-bit
+      # test.
+      def wide_scalar?(type)
+        type.pointer? || (type.integer? && type.size == 8)
+      end
+
+      # Reads a non-global scalar local's value into a usable vreg. A 1/2-byte
+      # integer is re-derived from the slot's low bytes by its signedness
+      # (:sext / :zext), guarding against a stale upper half after an aliased
+      # pointer write through "&x" (the trap first seen for char in Step 11,
+      # now general to every narrow type); a wider local's slot already holds a
+      # usable value, so its slot vreg is returned directly.
+      def read_local_scalar(local)
+        type = local.type
+        return local.storage unless type.integer? && (type.size == 1 || type.size == 2)
 
         dst = new_vreg
-        emit(:sext8, dst: dst, a: value_vreg)
+        emit(type.signed? ? :sext : :zext, dst: dst, a: local.storage, size: type.size)
         dst
+      end
+
+      # Emits a scalar load through `addr`, choosing the zero-extending :uload
+      # for an unsigned narrow type (and _Bool) and the sign-extending :load
+      # otherwise; the two coincide at width 4 and 8.
+      def emit_scalar_load(dst, addr, type)
+        op = type.integer? && type.unsigned? ? :uload : :load
+        emit(op, dst: dst, a: addr, size: type.size)
       end
 
       # Guards a unary "*": its operand must be a pointer.
@@ -1623,7 +1797,11 @@ module Rubycc
       def gen_condition(node)
         value, type = gen_value(node)
         require_scalar_for_truth(type, node.token)
-        return value if type.arithmetic?
+        # A 4-byte-or-narrower integer's low 32 bits already hold its value, so
+        # the 32-bit :jump_if_zero test reads it directly. A pointer or an
+        # 8-byte integer must be tested at 64 bits so its whole value decides,
+        # so it is desugared to "value != 0" (an int 0/1) up front.
+        return value if type.integer? && type.size <= 4
 
         zero = new_vreg
         emit(:const, dst: zero, a: 0)
@@ -1650,9 +1828,14 @@ module Rubycc
 
       # The two shift operators, whose operand order matters (the count is the
       # right operand, never commuted) and whose lowering is special (the count
-      # rides in cl), so #gen_binary_op handles them apart from the commutative
-      # 32-bit ops that share the plain :add lowering.
+      # rides in cl and each operand promotes on its own), so #gen_binary_op
+      # handles them apart from the ordinary arithmetic ops.
       SHIFT_OPS = %i[shl shr].freeze
+
+      # The relational operators' unsigned counterparts, chosen when the common
+      # operand type is unsigned (and always for pointer ordering). Equality
+      # (:eq/:ne) is sign-independent and so absent here.
+      UNSIGNED_COMPARISONS = { lt: :ult, le: :ule, gt: :ugt, ge: :uge }.freeze
 
       # "==" and "!=" alone let a void * mix with any other pointer type (as
       # in an assignment); every other pointer comparison ("<", "<=", ">",
@@ -1681,41 +1864,45 @@ module Rubycc
 
       # Settles a binary operation's result type and rejects any illegal
       # operand combination with "invalid operands to binary expression".
-      # Arithmetic operands (int and char) mix freely and promote to int, so
-      # the rules below read "arithmetic" wherever int would once have stood.
-      # Shared by the lowering path (#gen_binary) and the code-free type
-      # inference used by sizeof (#static_type):
-      #   * comparisons: arithmetic/arithmetic, or pointer/pointer per
+      # Integer operands mix per the usual arithmetic conversions
+      # (#common_arithmetic_type), except a shift, whose result is its promoted
+      # left operand's type alone (6.5.7). Shared by the lowering path
+      # (#gen_binary) and the code-free type inference used by sizeof
+      # (#static_type):
+      #   * comparisons: integer/integer, or pointer/pointer per
       #     #pointer_comparable? -> int;
-      #   * "+": arithmetic/arithmetic -> int, and pointer/arithmetic or
-      #     arithmetic/pointer -> that (non-void) pointer;
-      #   * "-": arithmetic/arithmetic -> int, pointer/arithmetic -> that
+      #   * shifts "<<" ">>": integer/integer -> the promoted left type;
+      #   * "+": integer/integer -> their common type, and pointer/integer or
+      #     integer/pointer -> that (non-void) pointer;
+      #   * "-": integer/integer -> their common type, pointer/integer -> that
       #     (non-void) pointer, and same-type (non-void) pointer/pointer -> int;
-      #   * "*" "/" "%", the bitwise "&" "|" "^" and the shifts "<<" ">>":
-      #     arithmetic/arithmetic -> int only (any pointer operand is invalid),
-      #     which is exactly the fall-through "else" case below.
+      #   * "*" "/" "%", the bitwise "&" "|" "^": integer/integer -> their
+      #     common type only (any pointer operand is invalid), which is the
+      #     fall-through "else" case below.
       def binary_result_type(op, lhs_type, rhs_type, token)
         result =
           if comparison_op?(op)
-            if lhs_type.arithmetic? && rhs_type.arithmetic? then Type::Int
+            if lhs_type.integer? && rhs_type.integer? then Type::Int
             elsif lhs_type.pointer? && rhs_type.pointer? && pointer_comparable?(op, lhs_type, rhs_type) then Type::Int
             end
+          elsif SHIFT_OPS.include?(op)
+            integer_promote(lhs_type) if lhs_type.integer? && rhs_type.integer?
           else
             case op
             when :add
-              if lhs_type.arithmetic? && rhs_type.arithmetic? then Type::Int
-              elsif lhs_type.pointer? && rhs_type.arithmetic? then require_non_void_pointer(lhs_type, token)
-              elsif lhs_type.arithmetic? && rhs_type.pointer? then require_non_void_pointer(rhs_type, token)
+              if lhs_type.integer? && rhs_type.integer? then common_arithmetic_type(lhs_type, rhs_type)
+              elsif lhs_type.pointer? && rhs_type.integer? then require_non_void_pointer(lhs_type, token)
+              elsif lhs_type.integer? && rhs_type.pointer? then require_non_void_pointer(rhs_type, token)
               end
             when :sub
-              if lhs_type.arithmetic? && rhs_type.arithmetic? then Type::Int
-              elsif lhs_type.pointer? && rhs_type.arithmetic? then require_non_void_pointer(lhs_type, token)
+              if lhs_type.integer? && rhs_type.integer? then common_arithmetic_type(lhs_type, rhs_type)
+              elsif lhs_type.pointer? && rhs_type.integer? then require_non_void_pointer(lhs_type, token)
               elsif lhs_type.pointer? && rhs_type.pointer? && lhs_type == rhs_type
                 require_non_void_pointer(lhs_type, token)
                 Type::Int
               end
-            else # :mul, :div, :mod, :and, :or, :xor, :shl, :shr
-              Type::Int if lhs_type.arithmetic? && rhs_type.arithmetic?
+            else # :mul, :div, :mod, :and, :or, :xor
+              common_arithmetic_type(lhs_type, rhs_type) if lhs_type.integer? && rhs_type.integer?
             end
           end
         result || error_at(token, "invalid operands to binary expression")
@@ -1755,8 +1942,10 @@ module Rubycc
       # resolve a sizeof operand's type.
       def static_type(node)
         case node
-        when Front::AST::IntLit, Front::AST::SizeofExpr, Front::AST::SizeofType
-          Type::Int
+        when Front::AST::IntLit
+          node.type
+        when Front::AST::SizeofExpr, Front::AST::SizeofType
+          Type::ULong
         when Front::AST::Call
           call_return_type(node)
         when Front::AST::StringLit
@@ -1859,8 +2048,10 @@ module Rubycc
 
       def static_unary_type(node)
         case node.op
-        when :neg, :not
+        when :not
           Type::Int
+        when :neg
+          integer_promote(static_type(node.operand))
         when :deref
           type = static_type(node.operand)
           require_pointer(type, node.token)

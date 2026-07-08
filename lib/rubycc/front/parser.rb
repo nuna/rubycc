@@ -20,7 +20,9 @@ module Rubycc
     #   global-declarator-suffix  = ("[" integer-constant "]")?
     #                               ("=" constant-initializer)?
     #   constant-initializer      = ("+" | "-")* integer-constant
-    #   type-specifier            = "int" | "char" | "void"
+    #   declaration-specifiers    = type-specifier+
+    #   type-specifier            = "void" | "char" | "short" | "int" | "long"
+    #                             | "signed" | "unsigned" | "_Bool"
     #                             | struct-or-union-specifier
     #   struct-or-union-specifier = "struct" identifier? "{" struct-declaration+ "}"
     #                             | "struct" identifier
@@ -125,10 +127,13 @@ module Rubycc
       ADDITIVE_OPERATORS = { "+" => :add, "-" => :sub }.freeze
       MULTIPLICATIVE_OPERATORS = { "*" => :mul, "/" => :div, "%" => :mod }.freeze
 
-      # The keywords that open a declaration, each naming a base Rubycc::Type.
-      # "void" is only ever valid as a function's return type or as the target
-      # of a pointer; every other use is rejected by #reject_void_type.
-      TYPE_SPECIFIERS = { "int" => Type::Int, "char" => Type::Char, "void" => Type::Void }.freeze
+      # The keywords that make up an integer/void type-specifier list (a "struct"
+      # specifier is handled on its own). A declaration begins with one or more
+      # of these; #normalize_type_specifiers collapses the collected multiset
+      # into a single Rubycc::Type. "void" is only ever valid as a function's
+      # return type or as the target of a pointer; every other use is rejected
+      # by #reject_void_type.
+      DECL_SPECIFIER_KEYWORDS = %w[void char short int long signed unsigned _Bool].freeze
 
       # System V AMD64 passes the first six integer arguments in registers;
       # this subset rejects any function with more parameters (or arguments).
@@ -285,19 +290,74 @@ module Rubycc
         negate ? -tok.value : tok.value
       end
 
-      # type-specifier = "int" | "char" | "void" | struct-or-union-specifier:
-      # consumes the specifier and returns the base Rubycc::Type any leading
-      # "*" run then builds a pointer from. A "struct" hands off to
-      # #parse_struct_specifier, which resolves or defines the tag.
+      # declaration-specifiers = type-specifier+: consumes a run of integer/void
+      # type-specifier keywords (in any order) and returns the base
+      # Rubycc::Type any leading "*" run then builds a pointer from. A "struct"
+      # is a specifier on its own and hands off to #parse_struct_specifier,
+      # which resolves or defines the tag; the integer keywords are collected
+      # and normalized by #normalize_type_specifiers.
       def parse_type_specifier
-        tok = peek
-        return parse_struct_specifier if tok.keyword?("struct")
+        first_tok = peek
+        return parse_struct_specifier if first_tok.keyword?("struct")
 
-        base = type_specifier?(tok) && TYPE_SPECIFIERS[tok.value]
-        error_at(tok, "expected type specifier") unless base
+        specs = []
+        while (tok = peek).type == :keyword && DECL_SPECIFIER_KEYWORDS.include?(tok.value)
+          specs << advance.value
+        end
+        error_at(first_tok, "expected type specifier") if specs.empty?
 
-        advance
-        base
+        normalize_type_specifiers(specs, first_tok)
+      end
+
+      # Collapses a multiset of integer type-specifier keywords (in any order:
+      # "unsigned long", "long unsigned int", "long long int", ...) into a
+      # single Rubycc::Type per 6.7.2. `void` and `_Bool` stand alone;
+      # signed/unsigned choose the signedness; short/long (up to two longs, LP64
+      # folding "long long" onto "long") and int/char choose the width, with a
+      # bare "signed"/"unsigned" meaning int. Every ill-formed combination
+      # ("short char", "long short", "signed unsigned", ...) is a diagnostic.
+      def normalize_type_specifiers(specs, tok)
+        counts = Hash.new(0)
+        specs.each { |s| counts[s] += 1 }
+
+        return normalize_standalone(Type::Void, "void", specs, tok) if counts["void"].positive?
+        return normalize_standalone(Type::Bool, "_Bool", specs, tok) if counts["_Bool"].positive?
+
+        signed = counts["signed"].positive?
+        unsigned = counts["unsigned"].positive?
+        short = counts["short"].positive?
+        long = counts["long"]
+        %w[signed unsigned short int char].each do |kw|
+          error_at(tok, "duplicate '#{kw}'") if counts[kw] > 1
+        end
+        error_at(tok, "both 'signed' and 'unsigned' in declaration specifiers") if signed && unsigned
+        error_at(tok, "more than two 'long's in declaration specifiers") if long > 2
+
+        if counts["char"].positive?
+          if short || long.positive? || counts["int"].positive?
+            error_at(tok, "both 'char' and a size specifier in declaration specifiers")
+          end
+          return unsigned ? Type::UChar : Type::Char
+        end
+
+        error_at(tok, "both 'short' and 'long' in declaration specifiers") if short && long.positive?
+
+        if short
+          unsigned ? Type::UShort : Type::Short
+        elsif long.positive?
+          unsigned ? Type::ULong : Type::Long
+        else
+          unsigned ? Type::UInt : Type::Int
+        end
+      end
+
+      # `void` and `_Bool` cannot combine with any other type-specifier keyword;
+      # each must be the whole list.
+      def normalize_standalone(type, keyword, specs, tok)
+        unless specs == [keyword]
+          error_at(tok, "cannot combine '#{keyword}' with other type specifiers")
+        end
+        type
       end
 
       # struct-or-union-specifier: a "struct" keyword, an optional tag, and an
@@ -402,11 +462,12 @@ module Rubycc
         error_at(token, "field '#{token.value}' has incomplete type") if incomplete
       end
 
-      # Whether `token` opens a declaration (an "int", "char", "void" or
-      # "struct" keyword), letting block-item and for-init tell a declaration
-      # from a statement.
+      # Whether `token` opens a declaration (any integer/void type-specifier
+      # keyword or "struct"), letting block-item and for-init tell a declaration
+      # from a statement, and the cast/sizeof parsers tell a type-name from a
+      # parenthesized expression.
       def type_specifier?(token)
-        token.type == :keyword && (TYPE_SPECIFIERS.key?(token.value) || token.value == "struct")
+        token.type == :keyword && (DECL_SPECIFIER_KEYWORDS.include?(token.value) || token.value == "struct")
       end
 
       # Rejects `type` when it denotes a bare void or an array of void: this
@@ -981,7 +1042,7 @@ module Rubycc
       def parse_bitwise_not
         op_tok = advance # "~"
         operand = parse_cast_expression
-        AST::Binary.new(:xor, operand, AST::IntLit.new(-1, op_tok), op_tok)
+        AST::Binary.new(:xor, operand, AST::IntLit.new(-1, op_tok, Type::Int), op_tok)
       end
 
       def parse_prefix_inc_dec
@@ -1073,7 +1134,7 @@ module Rubycc
         tok = peek
         if tok.type == :num
           advance
-          AST::IntLit.new(tok.value, tok)
+          AST::IntLit.new(tok.value, tok, integer_literal_type(tok.value, tok.base, tok.suffix, tok))
         elsif tok.type == :string
           advance
           AST::StringLit.new(tok.value, tok)
@@ -1088,6 +1149,36 @@ module Rubycc
         else
           error_at(tok, "expected expression")
         end
+      end
+
+      # The type of an integer constant (6.4.4.1): the first type in a
+      # base/suffix-specific candidate list whose range holds the value. A `u`
+      # suffix admits the unsigned types; a decimal constant is never unsigned
+      # without one, while hex and octal constants may fall through to an
+      # unsigned type. `l`/`ll` (folded to one "long" width under LP64) demote
+      # the int candidates. A value beyond even unsigned long is rejected.
+      def integer_literal_type(value, base, suffix, tok)
+        has_u = suffix.include?("u")
+        has_l = suffix.include?("l")
+        decimal = base == 10
+        candidates =
+          if has_u && has_l then [Type::ULong]
+          elsif has_u then [Type::UInt, Type::ULong]
+          elsif has_l then decimal ? [Type::Long] : [Type::Long, Type::ULong]
+          elsif decimal then [Type::Int, Type::Long]
+          else [Type::Int, Type::UInt, Type::Long, Type::ULong]
+          end
+
+        candidates.find { |type| integer_fits?(value, type) } ||
+          # gcc widens an out-of-range constant to unsigned long rather than
+          # reject it outright; only a value past unsigned long is an error.
+          (integer_fits?(value, Type::ULong) ? Type::ULong : error_at(tok, "integer constant is too large"))
+      end
+
+      # Whether the non-negative `value` fits in integer type `type`.
+      def integer_fits?(value, type)
+        limit = type.signed? ? (1 << (type.size * 8 - 1)) - 1 : (1 << (type.size * 8)) - 1
+        value <= limit
       end
 
       # --- token consumption helpers -------------------------------------

@@ -7,17 +7,23 @@ module Rubycc
     # x86_64 code generator using a spill-everything strategy: every virtual
     # register lives in its own 8-byte stack slot at [rbp - 8*(n+1)], and each
     # IR instruction loads its operands into eax/ecx, computes, and stores the
-    # result back. Integer arithmetic stays 32-bit (using eax/ecx), which
-    # reproduces C `int` wrap-around semantics for free; slots themselves are
-    # read and written 64 bits at a time so a pointer value survives intact
-    # (see #load_reg / #store_reg).
+    # result back. Arithmetic on a 4-byte-or-narrower type stays 32-bit (using
+    # eax/ecx), whose natural wrap-around reproduces C's semantics for free;
+    # `long`/`unsigned long`/pointer arithmetic is 64-bit (a REX.W prefix,
+    # selected by an IR op's size == 8). Slots are always read and written 64
+    # bits at a time so a pointer value survives intact (see #load_reg /
+    # #store_reg).
     #
-    # Value representation: a scalar value in a slot is always held already
-    # sign-extended to at least 32 bits. A char is no exception — it lives in
-    # its slot as a full sign-extended int, and the narrowing to 8 bits happens
-    # only at the memory boundary: a size-1 :load sign-extends the byte it reads
-    # (movsx), a size-1 :store writes just the low byte (cl), and the :sext8 op
-    # narrows an int down to a char value in a register.
+    # Value representation: an integer value narrower than 8 bytes is held in
+    # its slot's low 32 bits, extended to 32 bits following its type's
+    # signedness (sign-extended when signed, zero-extended when unsigned); the
+    # slot's bits 32..63 are indeterminate for such a value. An 8-byte value
+    # (long/unsigned long/pointer) uses the whole 64-bit slot. Every change of
+    # width happens only at two boundaries: a memory access (:load sign-extends,
+    # :uload zero-extends, :store truncates to `size` bytes) and an explicit
+    # widening/narrowing op (:sext / :zext, whose `size` is the source width).
+    # Same-width, sign-only reinterpretations (int <-> unsigned int) need no
+    # code, since the two share a bit pattern.
     #
     # System V AMD64: the return value is passed in eax/rax; a void function's
     # ":ret" (a nil operand) leaves eax/rax unset since there is no value.
@@ -54,14 +60,21 @@ module Rubycc
       ARG_REGISTERS = [EDI, ESI, EDX, ECX, R8D, R9D].freeze
 
       # IR comparison op -> setcc opcode (second byte of the 0F 9x encoding).
-      # The result is materialized into eax as an int 0/1 by movzx.
+      # The result is materialized into eax as an int 0/1 by movzx. The signed
+      # forms (setl/setle/setg/setge) test the sign/overflow flags; the unsigned
+      # forms (setb/setbe/seta/setae) test the carry flag, which is what an
+      # unsigned or pointer comparison needs.
       SETCC_OPCODES = {
-        eq: 0x94, # sete
-        ne: 0x95, # setne
-        lt: 0x9C, # setl
-        le: 0x9E, # setle
-        gt: 0x9F, # setg
-        ge: 0x9D  # setge
+        eq: 0x94,  # sete
+        ne: 0x95,  # setne
+        lt: 0x9C,  # setl
+        le: 0x9E,  # setle
+        gt: 0x9F,  # setg
+        ge: 0x9D,  # setge
+        ult: 0x92, # setb   (below, unsigned <)
+        ule: 0x96, # setbe  (below or equal, unsigned <=)
+        ugt: 0x97, # seta   (above, unsigned >)
+        uge: 0x93  # setae  (above or equal, unsigned >=)
       }.freeze
 
       def compile(ir_func)
@@ -114,7 +127,7 @@ module Rubycc
       def emit_instruction(inst)
         case inst.op
         when :const
-          emit_const(inst.dst, inst.a)
+          emit_const(inst.dst, inst.a, inst.size)
         when :copy
           load_reg(EAX, inst.a)
           store_reg(EAX, inst.dst)
@@ -128,6 +141,10 @@ module Rubycc
           emit_divmod(inst.dst, inst.a, inst.b, EAX, inst.size) # quotient in eax
         when :mod
           emit_divmod(inst.dst, inst.a, inst.b, EDX, inst.size) # remainder in edx
+        when :udiv
+          emit_udivmod(inst.dst, inst.a, inst.b, EAX, inst.size) # quotient in eax
+        when :umod
+          emit_udivmod(inst.dst, inst.a, inst.b, EDX, inst.size) # remainder in edx
         when :and
           emit_binary(inst.dst, inst.a, inst.b, [0x21, 0xC8], inst.size) # and eax, ecx
         when :or
@@ -136,24 +153,30 @@ module Rubycc
           emit_binary(inst.dst, inst.a, inst.b, [0x31, 0xC8], inst.size)  # xor eax, ecx
         when :shl
           # shl eax, cl (D3 /4): the count comes from cl, which #emit_binary
-          # loads into ecx alongside the value in eax. The x86 shift already
-          # masks the count to 5 bits for a 32-bit operand.
-          emit_binary(inst.dst, inst.a, inst.b, [0xD3, 0xE0])
+          # loads into ecx alongside the value in eax. A size-8 operand takes a
+          # REX.W prefix (shl rax, cl). The x86 shift masks the count to 5 bits
+          # for a 32-bit operand, 6 for a 64-bit one.
+          emit_binary(inst.dst, inst.a, inst.b, [0xD3, 0xE0], inst.size)
         when :sar
           # sar eax, cl (D3 /7): the arithmetic (sign-preserving) right shift,
-          # so a negative int shifts in copies of its sign bit, matching C's
+          # so a negative value shifts in copies of its sign bit, matching C's
           # implementation-defined ">>" on a signed value.
-          emit_binary(inst.dst, inst.a, inst.b, [0xD3, 0xF8])
-        when :eq, :ne, :lt, :le, :gt, :ge
+          emit_binary(inst.dst, inst.a, inst.b, [0xD3, 0xF8], inst.size)
+        when :shr
+          # shr eax, cl (D3 /5): the logical (zero-filling) right shift, the
+          # unsigned counterpart of :sar.
+          emit_binary(inst.dst, inst.a, inst.b, [0xD3, 0xE8], inst.size)
+        when :eq, :ne, :lt, :le, :gt, :ge, :ult, :ule, :ugt, :uge
           emit_comparison(inst.dst, inst.a, inst.b, SETCC_OPCODES.fetch(inst.op), inst.size)
         when :neg
           load_reg(EAX, inst.a)
-          emit(0xF7, 0xD8)                                    # neg eax
+          emit(0x48) if inst.size == 8                        # REX.W for neg rax
+          emit(0xF7, 0xD8)                                    # neg eax/rax
           store_reg(EAX, inst.dst)
         when :sext
-          emit_sext(inst.dst, inst.a)
-        when :sext8
-          emit_sext8(inst.dst, inst.a)
+          emit_sext(inst.dst, inst.a, inst.size)
+        when :zext
+          emit_zext(inst.dst, inst.a, inst.size)
         when :string_addr
           emit_string_addr(inst.dst, inst.a)
         when :global_addr
@@ -172,6 +195,8 @@ module Rubycc
           emit_object_addr(inst.dst, inst.a)
         when :load
           emit_load(inst.dst, inst.a, inst.size)
+        when :uload
+          emit_uload(inst.dst, inst.a, inst.size)
         when :store
           emit_store(inst.a, inst.b, inst.size)
         when :memcpy
@@ -241,57 +266,98 @@ module Rubycc
         store_reg(EAX, dst)
       end
 
-      # :sext — movsxd rax, dword [rbp+disp] sign-extends the 32-bit value in
-      # a's slot to 64 bits in rax; the 64-bit store then writes the widened
-      # value so pointer-offset scaling sees a correct (possibly negative) index.
-      def emit_sext(dst, src_vreg)
-        emit(0x48, 0x63)                # REX.W movsxd rax, r/m32
-        emit_bytes(modrm_rbp_disp(EAX, slot_disp(src_vreg)))
-        store_reg(EAX, dst)
-      end
-
-      # :sext8 — load a's slot, then movsx eax, al sign-extends its low byte to
-      # 32 bits (the 32-bit write also zeroing the upper half of rax); the
-      # store writes it back. This is the int -> char narrowing: only the low
-      # byte survives, re-widened with its sign.
-      def emit_sext8(dst, src_vreg)
+      # :sext — sign-extend a's low `size` bytes to the full 64-bit register.
+      # size 4 is a movsxd rax, eax (the classic int -> long widening, so
+      # pointer-offset scaling sees a correct, possibly negative index); size 2
+      # a movsx rax, ax and size 1 a movsx rax, al, which re-derive a signed
+      # short/char value from just its stored low bytes. The 64-bit store writes
+      # the widened value back.
+      def emit_sext(dst, src_vreg, size)
         load_reg(EAX, src_vreg)         # rax = value
-        emit(0x0F, 0xBE, 0xC0)          # movsx eax, al
+        case size
+        when 1
+          emit(0x48, 0x0F, 0xBE, 0xC0)  # REX.W movsx rax, al
+        when 2
+          emit(0x48, 0x0F, 0xBF, 0xC0)  # REX.W movsx rax, ax
+        else # 4
+          emit(0x48, 0x63, 0xC0)        # REX.W movsxd rax, eax
+        end
         store_reg(EAX, dst)
       end
 
-      # "*p" read: load the pointer from its slot into rax, then read through
-      # it. An 8-byte load moves a full pointer (mov rax, [rax]); a 4-byte load
-      # reads an int (mov eax, [rax]), whose upper bits the store then zeroes;
-      # a 1-byte load reads a char and sign-extends it to 32 bits
-      # (movsx eax, byte [rax]) so the slot holds a promoted int value.
+      # :zext — zero-extend a's low `size` bytes to the full 64-bit register.
+      # size 1/2 are a movzx eax, al / movzx eax, ax; size 4 a plain mov eax,
+      # eax. Each writes eax, which x86-64 defines to clear the upper 32 bits of
+      # rax, so all three leave a clean 64-bit zero-extended value.
+      def emit_zext(dst, src_vreg, size)
+        load_reg(EAX, src_vreg)         # rax = value
+        case size
+        when 1
+          emit(0x0F, 0xB6, 0xC0)        # movzx eax, al
+        when 2
+          emit(0x0F, 0xB7, 0xC0)        # movzx eax, ax
+        else # 4
+          emit(0x89, 0xC0)              # mov eax, eax
+        end
+        store_reg(EAX, dst)
+      end
+
+      # "*p" read, sign-extending: load the pointer from its slot into rax, then
+      # read through it. An 8-byte load moves a full pointer/long (mov rax,
+      # [rax]); a 4-byte load reads an int (mov eax, [rax]), whose upper bits the
+      # write to eax zeroes; a 2/1-byte load reads a short/char and sign-extends
+      # it to the register (movsx), so the slot holds a promoted signed value.
       def emit_load(dst, ptr_vreg, size)
         load_reg(EAX, ptr_vreg)         # rax = pointer value
         case size
         when 8
           emit(0x48, 0x8B, 0x00)        # mov rax, [rax]
+        when 2
+          emit(0x0F, 0xBF, 0x00)        # movsx eax, word [rax]
         when 1
           emit(0x0F, 0xBE, 0x00)        # movsx eax, byte [rax]
-        else
+        else # 4
+          emit(0x8B, 0x00)              # mov eax, [rax]
+        end
+        store_reg(EAX, dst)
+      end
+
+      # "*p" read, zero-extending: the unsigned counterpart of #emit_load for an
+      # unsigned char/short (and _Bool). The 2/1-byte forms use movzx; the 4/8
+      # forms are identical to a signed load (a plain mov already zero-extends a
+      # 32-bit read, and an 8-byte value has no spare bits).
+      def emit_uload(dst, ptr_vreg, size)
+        load_reg(EAX, ptr_vreg)         # rax = pointer value
+        case size
+        when 8
+          emit(0x48, 0x8B, 0x00)        # mov rax, [rax]
+        when 2
+          emit(0x0F, 0xB7, 0x00)        # movzx eax, word [rax]
+        when 1
+          emit(0x0F, 0xB6, 0x00)        # movzx eax, byte [rax]
+        else # 4
           emit(0x8B, 0x00)              # mov eax, [rax]
         end
         store_reg(EAX, dst)
       end
 
       # "*p = v": rax holds the destination address, rcx the value, then rcx is
-      # written through the address. An 8-byte store writes a full pointer
+      # written through the address. An 8-byte store writes a full pointer/long
       # (mov [rax], rcx); a 4-byte store writes an int (mov [rax], ecx); a
-      # 1-byte store writes just the low byte (mov [rax], cl), which is exactly
-      # the int -> char truncation a char lvalue needs.
+      # 2-byte store writes a word (a 66 operand-size prefix + mov [rax], cx);
+      # a 1-byte store writes just the low byte (mov [rax], cl). The narrower
+      # writes are exactly the truncation a narrow lvalue needs.
       def emit_store(ptr_vreg, value_vreg, size)
         load_reg(EAX, ptr_vreg)         # rax = destination address
         load_reg(ECX, value_vreg)       # rcx = value
         case size
         when 8
           emit(0x48, 0x89, 0x08)        # mov [rax], rcx
+        when 2
+          emit(0x66, 0x89, 0x08)        # mov [rax], cx
         when 1
           emit(0x88, 0x08)              # mov [rax], cl
-        else
+        else # 4
           emit(0x89, 0x08)              # mov [rax], ecx
         end
       end
@@ -359,9 +425,19 @@ module Rubycc
         end
       end
 
-      def emit_const(dst, value)
-        emit(0xB8)                                            # mov eax, imm32
-        emit_bytes([value & 0xFFFFFFFF].pack("L<"))
+      # A size of 8 materializes a full 64-bit immediate (movabs rax, imm64),
+      # needed for a `long`/`unsigned long` constant that does not fit — or
+      # would not sign-extend correctly — in 32 bits. Otherwise a 32-bit
+      # "mov eax, imm32" suffices: it fills the low 32 bits (the whole value of
+      # a 4-byte-or-narrower type) and zeroes the upper half of rax.
+      def emit_const(dst, value, size = nil)
+        if size == 8
+          emit(0x48, 0xB8)                                    # movabs rax, imm64
+          emit_bytes([value & 0xFFFFFFFFFFFFFFFF].pack("Q<"))
+        else
+          emit(0xB8)                                          # mov eax, imm32
+          emit_bytes([value & 0xFFFFFFFF].pack("L<"))
+        end
         store_reg(EAX, dst)
       end
 
@@ -387,6 +463,23 @@ module Rubycc
         else
           emit(0x99)                # cdq: sign-extend eax into edx:eax
           emit(0xF7, 0xF9)          # idiv ecx
+        end
+        store_reg(result_reg, dst)
+      end
+
+      # Unsigned division/remainder. Unlike the signed form, the high half of
+      # the dividend is zeroed (xor edx, edx, which also clears the upper 32
+      # bits of rdx for the 64-bit case) rather than sign-extended, and the
+      # unsigned `div` opcode is used. size 8 divides the full 64-bit rax by
+      # rcx; otherwise the 32-bit division. Quotient in eax, remainder in edx.
+      def emit_udivmod(dst, a, b, result_reg, size = nil)
+        load_reg(EAX, a)
+        load_reg(ECX, b)
+        emit(0x31, 0xD2)            # xor edx, edx
+        if size == 8
+          emit(0x48, 0xF7, 0xF1)    # div rcx
+        else
+          emit(0xF7, 0xF1)          # div ecx
         end
         store_reg(result_reg, dst)
       end

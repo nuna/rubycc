@@ -4,22 +4,37 @@ module Rubycc
   module IR
     # A single three-address instruction over virtual registers.
     #
-    #   :const  dst <- a            (a is an immediate Integer)
+    #   :const  dst <- a            (a is an immediate Integer; size == 8 loads a
+    #                               full 64-bit immediate for a long/pointer
+    #                               constant, otherwise a 32-bit one)
     #   :copy   dst <- a
-    #   :add/:sub/:mul/:div/:mod    dst <- a op b
-    #   :and/:or/:xor               dst <- a op b   (32-bit bitwise)
+    #   :add/:sub/:mul             dst <- a op b
+    #   :div/:mod                  dst <- a op b   (signed division/remainder)
+    #   :udiv/:umod                dst <- a op b   (unsigned division/remainder;
+    #                               the backend zeroes edx and uses `div`)
+    #   :and/:or/:xor              dst <- a op b   (bitwise)
     #   :shl    dst <- a << b       (logical left shift; b's low byte is the
     #                               shift count, taken from cl by the backend)
     #   :sar    dst <- a >> b       (arithmetic right shift; b's low byte is the
-    #                               shift count. int is signed, so the source
-    #                               ">>" lowers to :sar; a logical-shift opcode
-    #                               (:shr) is added when unsigned types arrive
-    #                               and an unsigned left operand needs it)
-    #   :eq/:ne/:lt/:le/:gt/:ge     dst <- (a op b) ? 1 : 0
+    #                               count. A signed left operand's ">>" lowers to
+    #                               :sar so the sign bit is replicated)
+    #   :shr    dst <- a >> b       (logical right shift; the unsigned counterpart
+    #                               of :sar, chosen when the left operand is an
+    #                               unsigned type — the split mirrors :div/:udiv,
+    #                               since the machine opcodes differ by sign)
+    #   :eq/:ne                    dst <- (a op b) ? 1 : 0   (sign-independent)
+    #   :lt/:le/:gt/:ge            dst <- (a op b) ? 1 : 0   (signed compare)
+    #   :ult/:ule/:ugt/:uge        dst <- (a op b) ? 1 : 0   (unsigned compare,
+    #                               setb/setbe/seta/setae; also used for pointer
+    #                               ordering, addresses being unsigned)
     #   :neg    dst <- -a
-    #   :sext   dst <- a            (a's 32-bit value sign-extended to 64 bits)
-    #   :sext8  dst <- a            (a's low 8 bits sign-extended to 32 bits;
-    #                               an int -> char narrowing, sign preserved)
+    #   :sext   dst <- a  (size: 1/2/4)  a's low `size` bytes sign-extended to
+    #                               the register's full width. size 4 is a
+    #                               movsxd; size 1/2 a movsx of the low byte/word
+    #   :zext   dst <- a  (size: 1/2/4)  a's low `size` bytes zero-extended to
+    #                               the register's full width. size 4 is a plain
+    #                               32-bit mov (which zeroes the upper half);
+    #                               size 1/2 a movzx
     #   :ret    return a           (a is nil for a void function's "return;"
     #                              or its implicit fall-off-the-end return,
     #                              which emits no value-loading code at all)
@@ -31,7 +46,12 @@ module Rubycc
     #   :addr_of dst <- &slot(a)    dst gets the address of a's stack slot
     #   :object_addr dst <- &object(a)  dst gets the base address of stack
     #                                   object a (an array's first element)
-    #   :load   dst <- *a           dst gets `size` bytes read through pointer a
+    #   :load   dst <- *a           dst gets `size` bytes read through pointer a,
+    #                               sign-extended (a signed char/short read is a
+    #                               movsx; size 4/8 a plain mov)
+    #   :uload  dst <- *a           like :load but zero-extended (an unsigned
+    #                               char/short read is a movzx), for unsigned
+    #                               narrow types and _Bool
     #   :store  *a <- b             `size` bytes of b are written through ptr a
     #   :memcpy *a <- *b (size)     `size` bytes are copied from the address in
     #                               b to the address in a (a whole-struct
@@ -47,11 +67,12 @@ module Rubycc
     #
     # `dst`, `a`, `b` are virtual register numbers (Integers) unless noted;
     # unused fields are nil. `size` is an operand width in bytes. On :load /
-    # :store it is the memory access width (1 for a char, 4 for an int, 8 for a
-    # pointer). On a
-    # binary op (:add/:sub/:mul/:div and the comparisons) size == 8 selects
-    # 64-bit arithmetic for pointer values and pointer-offset scaling; a nil (or
-    # 4) size means the default 32-bit `int` arithmetic.
+    # :uload / :store it is the memory access width (1 char, 2 short, 4 int,
+    # 8 pointer/long). On a binary op (the arithmetic, shift and comparison ops)
+    # size == 8 selects 64-bit arithmetic for `long`/`unsigned long`/pointer
+    # values and pointer-offset scaling; a nil (or 4) size means the default
+    # 32-bit arithmetic, whose natural wrap-around matches a 4-byte C type. On
+    # :sext / :zext, `size` is instead the *source* width being extended from.
     class Instruction
       attr_reader :op, :dst, :a, :b, :size
 

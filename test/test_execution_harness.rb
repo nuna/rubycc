@@ -1555,6 +1555,79 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
+  # The extended integer types (Step 17): unsigned wrap-around, signed vs.
+  # unsigned division/remainder/shift/comparison, a wide long computation that
+  # overflows 32 bits, hexadecimal/octal literals and suffixed literals,
+  # narrow-type storage (sign- vs. zero-extension on reload), _Bool's
+  # normalization to 0/1 from every source, a pointer round trip through a
+  # long, sizeof on every width, integer promotion, and a long switch control
+  # expression. Every case masks or sizes its result to stay a 0..255 exit
+  # code.
+  INTEGER_TYPES_DIFFERENTIAL_SOURCES = [
+    # Unsigned wrap-around on overflow and underflow.
+    "int main(void) { unsigned int x = 4294967295u; x = x + 1; return x; }",
+    "int main(void) { unsigned int x = 0; x = x - 1; return x & 255; }",
+    # Signed vs. unsigned division and remainder differ on a negative operand.
+    "int main(void) { int a = -7; int b = 2; return a / b; }",
+    "int main(void) { unsigned int a = 0xFFFFFFF9; unsigned int b = 2; return a / b; }",
+    "int main(void) { int a = -7; int b = 2; return (a % b) & 255; }",
+    "int main(void) { unsigned int a = 0xFFFFFFF9; unsigned int b = 2; return a % b; }",
+    # Arithmetic (signed) vs. logical (unsigned) right shift.
+    "int main(void) { int a = -8; return a >> 1; }",
+    "int main(void) { unsigned int a = 0xFFFFFFF8; return a >> 1; }",
+    # Unsigned comparison: a large unsigned value outranks a small signed one
+    # cast alongside it, and a negative int reads as huge once compared
+    # unsigned.
+    "int main(void) { unsigned int a = 4000000000u; int b = 100; return a > (unsigned int)b ? 1 : 0; }",
+    "int main(void) { int a = -1; unsigned int b = 1; return a > b ? 1 : 0; }",
+    # A 64-bit long computation that overflows 32 bits, and extracting its
+    # upper half.
+    "int main(void) { long x = 4294967296L; x = x + 1; return (int)(x & 255); }",
+    "int main(void) { long x = 4294967296L; return (int)(x >> 32); }",
+    # Hexadecimal and octal literals.
+    "int main(void) { return 0x2A; }",
+    "int main(void) { return 052; }",
+    # Suffixed literals (u/U, l/L, ul/lu, ll) still add like plain integers.
+    "int main(void) { return 10u + 5; }",
+    "int main(void) { return 10ul + 5; }",
+    "int main(void) { return 10ll + 5; }",
+    # short truncates on store, and unsigned char/short wrap instead of
+    # sign-extending on overflow.
+    "int main(void) { short s = 40000; return s & 255; }",
+    "int main(void) { unsigned char c = 200; c = c + 100; return c; }",
+    "int main(void) { unsigned char c = 255; c++; return c; }",
+    "int main(void) { unsigned short s = 65535; s++; return s; }",
+    # A negative short reinterpreted as unsigned short zero-extends instead of
+    # sign-extending on reload.
+    "int main(void) { short s = -1; unsigned short us = (unsigned short)s; return us & 255; }",
+    # _Bool normalizes any nonzero source (an int, a negative int, a nonzero
+    # pointer) to 1 and any zero source to 0, including through a parameter.
+    "int main(void) { _Bool b = 0; return b; }",
+    "int main(void) { _Bool b = 5; return b; }",
+    "int main(void) { _Bool b = -1; return b; }",
+    "int main(void) { int *p = 0; _Bool b = (_Bool)p; return b; }",
+    "int f(_Bool b) { return b; } int main(void) { return f(42); }",
+    # A pointer survives a round trip through a long.
+    "int main(void) { int x = 7; long addr = (long)&x; int *p = (int *)addr; return *p; }",
+    # sizeof on every extended width.
+    "int main(void) { return sizeof(char) + sizeof(short) * 10 + sizeof(int) * 100 + sizeof(long); }",
+    "int main(void) { return sizeof(unsigned long); }",
+    # Integer promotion: a char operand promotes to int before "+", so the sum
+    # compares past what a char alone could hold.
+    "int main(void) { char c = 100; int x = 100; return (c + x) > 199 ? 1 : 0; }",
+    # A long switch control expression.
+    "int main(void) { long x = 10; switch (x) { case 10: return 42; default: return 0; } }"
+  ].freeze
+
+  def test_integer_types_match_gcc_exit_codes
+    INTEGER_TYPES_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
   private
 
   def run_source(source, compiler:)

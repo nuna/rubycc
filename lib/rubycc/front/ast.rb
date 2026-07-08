@@ -5,8 +5,11 @@ module Rubycc
     # Abstract syntax tree nodes for the C subset. Each node carries a
     # representative token (`token`) for source-location diagnostics.
     module AST
-      # Integer literal. `value` is a Ruby Integer.
-      IntLit = Data.define(:value, :token)
+      # Integer literal. `value` is a Ruby Integer and `type` its Rubycc::Type,
+      # fixed by the parser from the constant's base, suffix and magnitude
+      # (6.4.4.1) — int/long or their unsigned forms; a character constant is
+      # int.
+      IntLit = Data.define(:value, :token, :type)
 
       # String literal. `value` is the escape-resolved bytes as an ASCII-8BIT
       # String, without the NUL terminator. Its type is char[N+1] (N being the

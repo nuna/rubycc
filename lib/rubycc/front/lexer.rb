@@ -9,7 +9,8 @@ module Rubycc
     # and keeps each source line around so tokens (and errors) can be reported
     # with source excerpts. Handles // and /* */ comments and whitespace.
     class Lexer
-      KEYWORDS = %w[int char void struct return if else while do for break continue
+      KEYWORDS = %w[int char void short long signed unsigned _Bool struct
+                    return if else while do for break continue
                     switch case default goto sizeof].freeze
 
       # Escape sequences shared by character constants and string literals,
@@ -159,7 +160,9 @@ module Rubycc
           raise_error("multi-character character constant", line, column)
         end
         advance # closing quote
-        make_token(:num, value, line, column)
+        # A character constant has type int (6.4.4.4), so it presents as a plain
+        # decimal, suffix-free integer constant to the parser.
+        make_num_token(value, 10, "", line, column)
       end
 
       # A string literal "abc": lexed as a :string token whose value is the
@@ -230,15 +233,58 @@ module Rubycc
         end
       end
 
+      # An integer constant in one of three bases — hexadecimal (0x/0X), octal
+      # (a leading 0) or decimal — with an optional u/U and l/L/ll/LL suffix
+      # run. The token carries the folded value together with its base and
+      # normalized suffix, from which the parser fixes the constant's type
+      # (6.4.4.1). A trailing identifier character (e.g. 12abc, once the real
+      # suffix letters are consumed) is rejected.
       def lex_number(line, column)
-        digits = +""
-        digits << advance while !at_end? && current_char =~ /[0-9]/
-        # A digit immediately followed by an identifier char is not a valid
-        # integer token in this subset (e.g. 12abc).
-        if !at_end? && current_char =~ /[A-Za-z_]/
-          raise_error("invalid digit in number", @line, @column)
+        if current_char == "0" && (peek(1) == "x" || peek(1) == "X")
+          advance # 0
+          advance # x
+          digits = +""
+          digits << advance while !at_end? && current_char =~ /[0-9A-Fa-f]/
+          raise_error("invalid hexadecimal constant", line, column) if digits.empty?
+          base = 16
+        elsif current_char == "0" && peek(1) =~ /[0-9]/
+          advance # leading 0
+          digits = +"0"
+          while !at_end? && current_char =~ /[0-9]/
+            unless current_char =~ /[0-7]/
+              raise_error("invalid digit in octal constant", @line, @column)
+            end
+            digits << advance
+          end
+          base = 8
+        else
+          digits = +""
+          digits << advance while !at_end? && current_char =~ /[0-9]/
+          base = 10
         end
-        make_token(:num, digits.to_i, line, column)
+
+        suffix = lex_integer_suffix(line, column)
+        if !at_end? && current_char =~ /[A-Za-z0-9_]/
+          raise_error("invalid suffix on integer constant", @line, @column)
+        end
+        make_num_token(digits.to_i(base), base, suffix, line, column)
+      end
+
+      # Consumes an integer constant's u/U and l/L suffix run and returns it in
+      # a normalized (lower-case) form ("", "u", "l", "ul", "ll", "ull", ...).
+      # A valid suffix is at most one "u" together with at most one l-part
+      # ("l"/"L" or "ll"/"LL", never mixed case), in either order; anything else
+      # is rejected.
+      def lex_integer_suffix(line, column)
+        raw = +""
+        raw << advance while !at_end? && current_char =~ /[uUlL]/
+        return "" if raw.empty?
+
+        valid = raw.match?(/\A(?:[uU])?(?:ll|LL|[lL])?\z/) ||
+                raw.match?(/\A(?:ll|LL|[lL])?(?:[uU])?\z/)
+        raise_error("invalid suffix #{raw.inspect} on integer constant", line, column) unless valid
+
+        raw.downcase
       end
 
       def lex_identifier(line, column)
@@ -256,6 +302,21 @@ module Rubycc
           line: line,
           column: column,
           source_line: source_line_for(line)
+        )
+      end
+
+      # A :num token carrying the extra base/suffix an integer constant needs
+      # for the parser to fix its type.
+      def make_num_token(value, base, suffix, line, column)
+        Token.new(
+          type: :num,
+          value: value,
+          filename: @filename,
+          line: line,
+          column: column,
+          source_line: source_line_for(line),
+          base: base,
+          suffix: suffix
         )
       end
 

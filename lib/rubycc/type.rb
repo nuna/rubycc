@@ -1,50 +1,97 @@
 # frozen_string_literal: true
 
 module Rubycc
-  # The type system for this C subset: the scalar arithmetic types `int` and
-  # `char`, the incomplete `void` type, pointers to another type,
-  # one-dimensional arrays of another type, and structures (Type::StructType).
-  # The scalar, pointer and array types compare by value, so any two `int *`
-  # are equal, and each renders itself the way a C declarator would ("int",
-  # "char *", "int [10]") for use in diagnostics. Structures instead compare by
-  # identity (see Type::StructType): a struct type is the same type only when it
-  # is the very same tag definition, which is what lets a self-referential
-  # struct ("struct node { struct node *next; }") describe itself without a
+  # The type system for this C subset: the standard integer types (char and its
+  # signed/unsigned variants, short, int, long and _Bool), the incomplete
+  # `void` type, pointers to another type, one-dimensional arrays of another
+  # type, and structures (Type::StructType). The integer, pointer and array
+  # types compare by value, so any two `int *` are equal, and each renders
+  # itself the way a C declarator would ("int", "unsigned long", "char *",
+  # "int [10]") for use in diagnostics. Structures instead compare by identity
+  # (see Type::StructType): a struct type is the same type only when it is the
+  # very same tag definition, which is what lets a self-referential struct
+  # ("struct node { struct node *next; }") describe itself without a
   # value-equality walk looping forever.
   #
   # Every type but `void` and an incomplete struct reports its storage width in
-  # bytes via #size (int 4, char 1, any pointer 8, an array its element width
-  # times its length, a struct its laid-out size) and its required boundary via
-  # #alignment (int 4, char 1, any pointer 8, an array its element's alignment,
-  # a struct its widest member's). `void` has no size or alignment (see
-  # Type::VoidType) since it is only ever valid as a function's return type or
-  # as the target of a pointer; an incomplete struct likewise has neither until
-  # it is completed. #arithmetic? groups the scalar arithmetic types (int and
-  # char) that mix freely in expressions and convert to one another implicitly,
-  # while #char? and #int? name each one individually, #void? names `void`
-  # itself, and #struct? names a structure.
+  # bytes via #size (char/_Bool 1, short 2, int 4, long 8, any pointer 8, an
+  # array its element width times its length, a struct its laid-out size) and
+  # its required boundary via #alignment (an integer type is aligned to its own
+  # width, any pointer 8, an array its element's alignment, a struct its widest
+  # member's). `void` has no size or alignment (see Type::VoidType) since it is
+  # only ever valid as a function's return type or as the target of a pointer;
+  # an incomplete struct likewise has neither until it is completed.
+  #
+  # #integer? groups the standard integer types that mix freely in expressions
+  # and convert to one another implicitly (#arithmetic? is its synonym, kept for
+  # the day a floating type widens the notion of "arithmetic"). #signed? /
+  # #unsigned? report an integer type's signedness — the axis that decides
+  # signed vs unsigned division, right shift and comparison — and #bool? names
+  # `_Bool` specifically (whose only values are 0 and 1). #int? and #char? still
+  # name those two specific types (never their unsigned cousins), #void? names
+  # `void` and #struct? names a structure.
   module Type
-    # The scalar integer type. A single shared instance (Type::Int) stands in
-    # for every `int`, so identity comparison doubles as value comparison.
-    class Scalar
+    # A standard integer type, identified by its C spelling (`name`), its width
+    # in bytes (`size`, one of 1/2/4/8) and its signedness (`signed`). A single
+    # shared instance stands in for each type (Type::Int, Type::ULong, ...), so
+    # identity comparison doubles as value comparison; two variables both `int`
+    # name the very same object. `bool` singles out `_Bool`, whose values are
+    # constrained to 0 and 1.
+    #
+    # Value representation (see Backend::X86_64): an integer value narrower than
+    # 8 bytes lives in its virtual-register slot extended to (at least) 32 bits
+    # following this type's signedness — sign-extended when #signed?,
+    # zero-extended when #unsigned? — with the slot's bits 32..63 left
+    # indeterminate. An 8-byte value (long/unsigned long) uses the whole slot.
+    class IntegerType
+      attr_reader :name
+
+      def initialize(name, size, signed, bool: false)
+        @name = name
+        @size = size
+        @signed = signed
+        @bool = bool
+      end
+
       def pointer?
         false
       end
 
+      # #int? and #char? name the plain `int` and `char` types alone, so an
+      # `unsigned int` is not #int? and an `unsigned char` is not #char?; code
+      # that means "any integer" asks #integer? instead.
       def int?
-        true
+        @name == "int"
       end
 
       def char?
-        false
+        @name == "char"
       end
 
       def void?
         false
       end
 
+      def integer?
+        true
+      end
+
+      # Synonym for #integer?: every integer type is an arithmetic type. The two
+      # names diverge only once a floating type exists, which this subset lacks.
       def arithmetic?
         true
+      end
+
+      def signed?
+        @signed
+      end
+
+      def unsigned?
+        !@signed
+      end
+
+      def bool?
+        @bool
       end
 
       def array?
@@ -55,67 +102,18 @@ module Rubycc
         false
       end
 
-      # An `int` occupies 4 bytes.
       def size
-        4
+        @size
       end
 
-      # An `int` is 4-byte aligned.
+      # An integer type is aligned to its own width: char/_Bool 1, short 2,
+      # int 4, long 8.
       def alignment
-        4
+        @size
       end
 
       def to_s
-        "int"
-      end
-    end
-
-    # The signed 1-byte character type. Like Type::Int it is a single shared
-    # instance (Type::Char), so identity comparison doubles as value
-    # comparison. In expressions a char promotes to int; the 8-bit narrowing
-    # happens only at the memory boundary (a size-1 load/store) and at an
-    # explicit int->char conversion.
-    class CharType
-      def pointer?
-        false
-      end
-
-      def int?
-        false
-      end
-
-      def char?
-        true
-      end
-
-      def void?
-        false
-      end
-
-      def arithmetic?
-        true
-      end
-
-      def array?
-        false
-      end
-
-      def struct?
-        false
-      end
-
-      # A `char` occupies 1 byte.
-      def size
-        1
-      end
-
-      # A `char` is 1-byte aligned (no alignment constraint).
-      def alignment
-        1
-      end
-
-      def to_s
-        "char"
+        @name
       end
     end
 
@@ -143,7 +141,15 @@ module Rubycc
         true
       end
 
+      def integer?
+        false
+      end
+
       def arithmetic?
+        false
+      end
+
+      def bool?
         false
       end
 
@@ -173,11 +179,22 @@ module Rubycc
       end
     end
 
-    # The lone `int`. Referred to everywhere as Type::Int.
-    Int = Scalar.new
-
-    # The lone `char`. Referred to everywhere as Type::Char.
-    Char = CharType.new
+    # The shared integer-type instances, one per distinct C type. LP64 governs
+    # the widths: int is 4 bytes, long and any pointer 8. `char` is signed (this
+    # subset's implementation-defined choice), and `signed char` normalizes to
+    # it. `long long` normalizes to `long` (same width under LP64) at the point
+    # it is parsed, so no separate instance is needed here.
+    Char = IntegerType.new("char", 1, true)
+    UChar = IntegerType.new("unsigned char", 1, false)
+    Short = IntegerType.new("short", 2, true)
+    UShort = IntegerType.new("unsigned short", 2, false)
+    Int = IntegerType.new("int", 4, true)
+    UInt = IntegerType.new("unsigned int", 4, false)
+    Long = IntegerType.new("long", 8, true)
+    ULong = IntegerType.new("unsigned long", 8, false)
+    # `_Bool` is treated as an unsigned 1-byte type whose stored value is only
+    # ever 0 or 1; a conversion to it lowers to "value != 0" (see the generator).
+    Bool = IntegerType.new("_Bool", 1, false, bool: true)
 
     # The lone `void`. Referred to everywhere as Type::Void.
     Void = VoidType.new
@@ -201,7 +218,15 @@ module Rubycc
         false
       end
 
+      def integer?
+        false
+      end
+
       def arithmetic?
+        false
+      end
+
+      def bool?
         false
       end
 
@@ -253,7 +278,15 @@ module Rubycc
         false
       end
 
+      def integer?
+        false
+      end
+
       def arithmetic?
+        false
+      end
+
+      def bool?
         false
       end
 
@@ -332,7 +365,15 @@ module Rubycc
         false
       end
 
+      def integer?
+        false
+      end
+
       def arithmetic?
+        false
+      end
+
+      def bool?
         false
       end
 

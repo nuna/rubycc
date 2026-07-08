@@ -294,4 +294,83 @@ class TestLexer < Minitest::Test
     error = assert_raises(Rubycc::CompileError) { lex('"a\\qb"') }
     assert_match(/unknown escape sequence in string literal/, error.description)
   end
+
+  # --- integer type extension (Step 17): base and suffix ------------------
+
+  def test_short_long_signed_unsigned_bool_are_keywords
+    tokens = lex("short long signed unsigned _Bool").reject(&:eof?)
+    assert_equal %i[keyword keyword keyword keyword keyword], tokens.map(&:type)
+    assert_equal %w[short long signed unsigned _Bool], tokens.map(&:value)
+  end
+
+  def test_hexadecimal_constant_value_and_base
+    tokens = lex("0x1F").reject(&:eof?)
+    num = tokens.first
+    assert_equal 31, num.value
+    assert_equal 16, num.base
+    assert_equal "", num.suffix
+  end
+
+  def test_uppercase_hexadecimal_prefix_and_digits
+    tokens = lex("0X2a").reject(&:eof?)
+    num = tokens.first
+    assert_equal 42, num.value
+    assert_equal 16, num.base
+  end
+
+  def test_octal_constant_value_and_base
+    tokens = lex("010").reject(&:eof?)
+    num = tokens.first
+    assert_equal 8, num.value
+    assert_equal 8, num.base
+  end
+
+  def test_lone_zero_is_decimal_not_octal
+    tokens = lex("0").reject(&:eof?)
+    num = tokens.first
+    assert_equal 0, num.value
+    assert_equal 10, num.base
+  end
+
+  def test_decimal_constant_has_base_ten
+    tokens = lex("123").reject(&:eof?)
+    num = tokens.first
+    assert_equal 123, num.value
+    assert_equal 10, num.base
+    assert_equal "", num.suffix
+  end
+
+  def test_integer_suffix_is_normalized_to_lower_case
+    { "123u" => "u", "123U" => "u", "123l" => "l", "123L" => "l",
+      "123ul" => "ul", "123LU" => "lu", "123ll" => "ll", "123LL" => "ll",
+      "123ull" => "ull", "123llu" => "llu" }.each do |source, suffix|
+      tokens = lex(source).reject(&:eof?)
+      assert_equal suffix, tokens.first.suffix, "#{source} should normalize to suffix #{suffix.inspect}"
+    end
+  end
+
+  def test_suffix_free_constant_has_empty_suffix
+    tokens = lex("42").reject(&:eof?)
+    assert_equal "", tokens.first.suffix
+  end
+
+  def test_invalid_hexadecimal_constant_raises
+    error = assert_raises(Rubycc::CompileError) { lex("0x;") }
+    assert_match(/invalid hexadecimal constant/, error.description)
+  end
+
+  def test_invalid_digit_in_octal_constant_raises
+    error = assert_raises(Rubycc::CompileError) { lex("08;") }
+    assert_match(/invalid digit in octal constant/, error.description)
+  end
+
+  def test_invalid_integer_suffix_raises
+    error = assert_raises(Rubycc::CompileError) { lex("1uu;") }
+    assert_match(/invalid suffix "uu" on integer constant/, error.description)
+  end
+
+  def test_unknown_trailing_letter_on_integer_constant_raises
+    error = assert_raises(Rubycc::CompileError) { lex("1z;") }
+    assert_match(/invalid suffix on integer constant/, error.description)
+  end
 end

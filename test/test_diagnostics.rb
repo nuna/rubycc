@@ -676,24 +676,6 @@ class TestDiagnostics < Minitest::Test
 
   # --- casts and null pointer constants (Step 14) -------------------------
 
-  def test_cast_from_pointer_to_integer_is_rejected
-    source = "int main(void) { int *p; return (int)p; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-
-    assert_equal 1, error.line
-    assert_match(/cast between pointer and integer is not supported yet/, error.description)
-    assert_match(%r{foo\.c:1:\d+: error: cast between pointer and integer}, error.message)
-  end
-
-  def test_cast_from_nonzero_integer_to_pointer_is_rejected
-    # Only a null pointer constant (a literal 0) crosses the pointer/integer
-    # boundary; any other integer needs a pointer-width integer type that does
-    # not exist yet.
-    source = "int main(void) { int *p; p = (int *)5; return 0; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/cast between pointer and integer is not supported yet/, error.description)
-  end
-
   def test_cast_to_struct_type_is_rejected
     source = "struct s { int x; }; int main(void) { struct s v; return (struct s)v; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
@@ -732,5 +714,79 @@ class TestDiagnostics < Minitest::Test
     source = "int main(void) { int x; return (void)x; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/void value not ignored as it ought to be/, error.description)
+  end
+
+  # --- integer type extension (Step 17) -----------------------------------
+
+  def test_signed_and_unsigned_together_is_rejected
+    source = "int main(void) { signed unsigned x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/both 'signed' and 'unsigned' in declaration specifiers/, error.description)
+  end
+
+  def test_short_and_long_together_is_rejected
+    source = "int main(void) { short long x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/both 'short' and 'long' in declaration specifiers/, error.description)
+  end
+
+  def test_duplicate_int_specifier_is_rejected
+    source = "int main(void) { int int x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/duplicate 'int'/, error.description)
+  end
+
+  def test_more_than_two_longs_is_rejected
+    source = "int main(void) { long long long x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/more than two 'long's in declaration specifiers/, error.description)
+  end
+
+  def test_void_combined_with_other_specifier_is_rejected
+    source = "int main(void) { int void x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/cannot combine 'void' with other type specifiers/, error.description)
+  end
+
+  def test_bool_combined_with_other_specifier_is_rejected
+    source = "int main(void) { _Bool int x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/cannot combine '_Bool' with other type specifiers/, error.description)
+  end
+
+  def test_char_with_size_specifier_is_rejected
+    source = "int main(void) { char short x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/both 'char' and a size specifier in declaration specifiers/, error.description)
+  end
+
+  def test_integer_constant_too_large_is_rejected
+    source = "int main(void) { unsigned long x = 99999999999999999999999999; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/integer constant is too large/, error.description)
+  end
+
+  def test_invalid_hexadecimal_constant_is_rejected
+    source = "int main(void) { int x = 0x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid hexadecimal constant/, error.description)
+  end
+
+  def test_invalid_digit_in_octal_constant_is_rejected
+    source = "int main(void) { int x = 08; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid digit in octal constant/, error.description)
+  end
+
+  def test_invalid_integer_suffix_is_rejected
+    source = "int main(void) { int x = 1uu; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid suffix "uu" on integer constant/, error.description)
+  end
+
+  def test_unknown_letter_after_integer_constant_is_rejected
+    source = "int main(void) { int x = 1z; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid suffix on integer constant/, error.description)
   end
 end

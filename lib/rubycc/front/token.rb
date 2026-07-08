@@ -5,20 +5,25 @@ module Rubycc
     # A single lexical token. `type` is one of :num, :ident, :keyword, :punct,
     # :string, :eof. `value` is an Integer for :num, an ASCII-8BIT String of the
     # escape-resolved bytes for :string, a String for :ident/:keyword/:punct,
-    # and nil for :eof. The remaining fields locate the token in the source for
-    # diagnostics.
+    # and nil for :eof. `base` (10/8/16) and `suffix` (a normalized string of
+    # the u/l letters, e.g. "", "u", "ul") accompany an integer :num token so
+    # the parser can fix its type per 6.4.4.1; both are nil on every other
+    # token (a character constant is a :num with base 10 and no suffix). The
+    # remaining fields locate the token in the source for diagnostics.
     class Token
       TYPES = %i[num ident keyword punct string eof].freeze
 
-      attr_reader :type, :value, :filename, :line, :column, :source_line
+      attr_reader :type, :value, :filename, :line, :column, :source_line, :base, :suffix
 
-      def initialize(type:, value:, filename:, line:, column:, source_line:)
+      def initialize(type:, value:, filename:, line:, column:, source_line:, base: nil, suffix: nil)
         @type = type
         @value = value
         @filename = filename
         @line = line
         @column = column
         @source_line = source_line
+        @base = base
+        @suffix = suffix
       end
 
       def punct?(str)
