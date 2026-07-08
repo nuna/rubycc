@@ -280,7 +280,51 @@ Step 21 で意味を持つ)。Step 13 で NULL の代わりに自己ループ番
 
 ---
 
+## Step 16 — switch・goto・ラベル文(408be5e)
+
+**内容**: switch / case / default(6.8.4.2, 6.8.1)、goto / ラベル文(6.8.6.1, 6.8.1)。
+新規 IR 命令ゼロ。backend・ir.rb 無変更。
+
+**設計判断**:
+- **switch は比較チェーンへ脱糖**(ジャンプテーブルは最適化であり M6 以降)。
+  制御式を一度だけ評価し、各 case 定数と `:ne` で比較して `:jump_if_zero`
+  (= 等しければジャンプ)で該当ラベルへ。jump-if-nonzero 命令を IR に足さず、
+  既存 2 命令の組み合わせで表現(「IR 命令は最後の手段」)。全 case 不一致は
+  default ラベル(なければ switch 終端)への無条件ジャンプ。
+- **case/default の収集は AST の再帰走査**(collect_switch_labels):ブロック・
+  if の両腕・ループ本体・ラベル文・case/default 自身の本体を降下し、ネストした
+  switch では停止(内側の case は内側の所有)。これにより「ブロック内に埋まった
+  case」(Duff's device 型)も正しく外側 switch に帰属する。
+- **ノード→ラベル id の対応は `{}.compare_by_identity`**。AST ノードは
+  Data.define(値等価)のため、`case 1: ...` が二重に見える同値ノードを
+  区別するには恒等キーが必要。dispatch 生成時に採番した id を、本体生成中の
+  gen_case/gen_default が @case_label_stack(switch のネストに対応)経由で引く。
+- **@loop_stack を @control_stack に一般化**。フレームは
+  `{break_label:, continue_label:}` で、ループは両方自前、switch フレームは
+  break_label のみ差し替えて continue_label を外側から継承。これで switch 内の
+  break は switch を抜け、continue はループまで素通しになる(継承値が nil =
+  ループ外 switch 内の continue は診断)。
+- **goto は関数スコープの @goto_labels(name → {id:, defined:, token:})で
+  バックパッチ不要**。初出時(前方 goto でも定義でも)に id を採番するので、
+  goto は即 `:jump` を発行でき、後から来る定義が同じ id に `:label` を置くだけ。
+  ROADMAP 当初案の「前方参照はバックパッチ」より単純になった。重複定義は
+  定義時に、未定義ラベルへの goto は関数末尾で(保存したトークン位置で)診断。
+- **case 定数はパーサで畳み込み**(整数・文字定数 + 単項 `+`/`-` の連なり)。
+  グローバル初期化子の既存畳み込みと同じ範囲に揃え、一般の定数式評価
+  (`case 1 + 2:`)は Step 20 の定数評価器(6.6)導入時に拡張する。
+- **ラベル文の判別は 2 トークン先読み**(識別子 + `:`)。式文との曖昧さは
+  この位置でのみ生じ、`x ? a : b;` は 2 個目が `?` なので誤爆しない。
+
+**診断**: 重複 case 値・複数 default・switch 外の case/default・非整数の制御式
+(ポインタ/struct)・重複ラベル定義・未定義ラベルへの goto・ループ外 switch 内の
+continue(break は合法)。
+
+**トレードオフ**: goto がスコープ途中へ飛ぶと宣言の初期化式はスキップされる
+(C 準拠の挙動。vreg スロットはコンパイル時割り付けなので実行は安全)。
+
+---
+
 ## 現在のテスト規模
 
-Step 15 完了時点: **532 runs / 1,607 assertions / 0 failures**(`rake test`)。
+Step 16 完了時点: **553 runs / 1,680 assertions / 0 failures**(`rake test`)。
 内訳: 字句・パーサ・型・ELF・診断・CLI のユニットテスト + 実行テスト(gcc 差分比較込み)。
