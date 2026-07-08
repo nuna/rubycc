@@ -694,6 +694,56 @@ class TestDiagnostics < Minitest::Test
     assert_match(/cannot cast 'struct s' to 'int \*'/, error.description)
   end
 
+  # --- unions and anonymous members --------------------------------------
+
+  def test_struct_tag_redeclared_as_union_is_rejected
+    source = "struct S { int x; }; int main(void) { union S u; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/'S' defined as wrong kind of tag/, error.description)
+  end
+
+  def test_union_tag_redeclared_as_struct_is_rejected
+    source = "union S { int x; }; struct S { int y; }; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/'S' defined as wrong kind of tag/, error.description)
+  end
+
+  def test_union_tag_reused_as_enum_is_rejected
+    source = "union S { int x; }; int main(void) { return sizeof(enum S); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/'S' defined as wrong kind of tag/, error.description)
+  end
+
+  def test_variable_of_incomplete_union_is_rejected
+    source = "union u; int main(void) { union u v; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid use of incomplete type 'union u'/, error.description)
+  end
+
+  def test_union_redefinition_is_rejected
+    source = "union u { int x; }; union u { int y; }; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/redefinition of 'union u'/, error.description)
+  end
+
+  def test_member_name_clashing_through_anonymous_member_is_rejected
+    source = "struct s { union { int a; int b; }; int a; }; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/duplicate member 'a'/, error.description)
+  end
+
+  def test_tagged_member_without_declarator_declares_nothing
+    source = "struct s { struct inner { int y; }; int x; }; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/declaration does not declare anything/, error.description)
+  end
+
+  def test_forward_declared_tag_without_declarator_declares_nothing
+    source = "struct s { struct inner; int x; }; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/declaration does not declare anything/, error.description)
+  end
+
   def test_comparing_pointer_with_nonzero_integer_is_rejected
     # A null pointer constant is the literal 0 only; "p == 1" stays a type
     # error, since 1 is not a null pointer constant.

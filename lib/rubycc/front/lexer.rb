@@ -9,7 +9,7 @@ module Rubycc
     # and keeps each source line around so tokens (and errors) can be reported
     # with source excerpts. Handles // and /* */ comments and whitespace.
     class Lexer
-      KEYWORDS = %w[int char void short long signed unsigned _Bool struct
+      KEYWORDS = %w[int char void short long signed unsigned _Bool struct union
                     enum typedef
                     return if else while do for break continue
                     switch case default goto sizeof].freeze

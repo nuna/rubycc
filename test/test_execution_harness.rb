@@ -1680,6 +1680,48 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
+  # --- unions and anonymous struct/union members (Step 19) -----------------
+  #
+  # Every source stays within a 0..255 exit code. The type-punning cases assume
+  # x86-64's little-endian layout, which both compilers target, so reading a
+  # union through a narrower member sees the low bytes of the wider one.
+  UNION_DIFFERENTIAL_SOURCES = [
+    # Write the int member, read back its low byte through the char member.
+    "union u { int i; char c; }; int main(void) { union u v; v.i = 0x11223344; return v.c; }",
+    # sizeof a union is its widest member's, rounded to the widest alignment.
+    "union u { char c; int i; long l; }; int main(void) { return sizeof(union u) + 34; }",
+    # An anonymous union inside a struct (an RBasic-style common header plus a
+    # variant): the variant's members are reached straight off the struct.
+    "struct obj { int flags; union { int num; char ch; }; }; " \
+    "int main(void) { struct obj o; o.flags = 3; o.num = 39; return o.flags + o.num; }",
+    # A deep, transparent path: an anonymous union inside an anonymous struct
+    # inside the outer struct, all reached in one flat access.
+    "struct outer { int a; struct { int b; union { int c; char d; }; }; }; " \
+    "int main(void) { struct outer o; o.a = 1; o.b = 2; o.c = 39; return o.a + o.b + o.c; }",
+    # A union pointer's "->" writes one member and reads a narrower one back.
+    "union u { int i; char c; }; int main(void) { union u v; union u *p = &v; " \
+    "p->i = 0x2A; return p->c; }",
+    # Whole-union assignment copies the object, not a single member.
+    "union u { int i; char c; }; int main(void) { union u a; a.i = 42; union u b; b = a; return b.i; }",
+    # A struct nested inside a union, overlaid with a short: two chars overlay
+    # the short's two bytes.
+    "union u { struct { char a; char b; } pair; short both; }; " \
+    "int main(void) { union u v; v.both = 0; v.pair.a = 20; v.pair.b = 22; return v.pair.a + v.pair.b; }",
+    # A typedef'd anonymous union with an array member, fully initialized before
+    # readback so no byte is indeterminate.
+    "typedef union { int i; char bytes[4]; } Word; " \
+    "int main(void) { Word w; w.i = 0; w.bytes[0] = 21; return w.i + 21; }"
+  ].freeze
+
+  def test_unions_and_anonymous_members_match_gcc_exit_codes
+    UNION_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
   private
 
   def run_source(source, compiler:)

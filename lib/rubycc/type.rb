@@ -29,7 +29,8 @@ module Rubycc
   # signed vs unsigned division, right shift and comparison — and #bool? names
   # `_Bool` specifically (whose only values are 0 and 1). #int? and #char? still
   # name those two specific types (never their unsigned cousins), #void? names
-  # `void` and #struct? names a structure.
+  # `void` and #struct? names a structure or a union (both are aggregates that
+  # share the same lvalue/copy machinery; #union? tells the two apart).
   module Type
     # A standard integer type, identified by its C spelling (`name`), its width
     # in bytes (`size`, one of 1/2/4/8) and its signedness (`signed`). A single
@@ -320,29 +321,33 @@ module Rubycc
     # byte `offset` of its first byte from the start of the enclosing struct.
     Member = Data.define(:name, :type, :offset)
 
-    # A structure type. Unlike every other type here, a struct compares by
-    # identity, not by value: two struct types are the same type exactly when
-    # they are the same object, which is the object a single tag definition
-    # produces. That is what C means by struct type identity (a redeclared
-    # "struct point" refers to the one definition, never a structurally equal
-    # copy) and it is also what keeps equality and #to_s from looping on a
-    # self-referential struct, whose members point back at itself.
+    # A structure or a union type. Both are aggregates (6.7.2.1) that share this
+    # one class, told apart by `kind` (:struct or :union); a union differs only
+    # in its layout (every member at offset 0, sized to hold the widest one).
+    # Unlike every other type here, one compares by identity, not by value: two
+    # such types are the same type exactly when they are the same object, which
+    # is the object a single tag definition produces. That is what C means by
+    # struct/union type identity (a redeclared "struct point" refers to the one
+    # definition, never a structurally equal copy) and it is also what keeps
+    # equality and #to_s from looping on a self-referential struct, whose
+    # members point back at itself.
     #
-    # A StructType is born incomplete: `tag` (the name after "struct", or nil
-    # for an anonymous struct) is fixed, but its members are unknown until
-    # #define lays them out. This mutability is deliberate — a forward
-    # declaration ("struct node;") and, above all, a self-referential pointer
-    # ("struct node *next;" inside "struct node"'s own body) both take a
+    # A StructType is born incomplete: `tag` (the name after "struct"/"union",
+    # or nil for an anonymous one) and `kind` are fixed, but its members are
+    # unknown until #define lays them out. This mutability is deliberate — a
+    # forward declaration ("struct node;") and, above all, a self-referential
+    # pointer ("struct node *next;" inside "struct node"'s own body) both take a
     # reference to the still-incomplete object, and #define later fills in the
     # very same object, so those earlier references observe the completed
     # layout. Until then #size and #alignment raise and #complete? is false, so
     # the generator can reject an incomplete type (a variable, a sizeof, a
     # by-value member) with a proper diagnostic rather than lay out nonsense.
     class StructType
-      attr_reader :tag, :members
+      attr_reader :tag, :kind, :members
 
-      def initialize(tag)
+      def initialize(tag, kind: :struct)
         @tag = tag
+        @kind = kind
         @members = nil
         @size = nil
         @alignment = nil
@@ -381,8 +386,20 @@ module Rubycc
         false
       end
 
+      # True for a union as well as a struct: both are aggregates that reuse the
+      # same lvalue, member-access and whole-object-copy paths, so every
+      # generator site that means "an aggregate" (member address, :memcpy copy,
+      # by-value rejection) asks #struct? and needs no union-specific branch.
+      # #union? draws the distinction where the layout or a diagnostic depends
+      # on it.
       def struct?
         true
+      end
+
+      # Distinguishes a union from a struct; the two share this class and differ
+      # only in layout and in the wording of tag-kind diagnostics.
+      def union?
+        @kind == :union
       end
 
       # Whether the tag's body has been laid out yet. A struct only used
@@ -393,31 +410,42 @@ module Rubycc
       end
 
       # The member named `name`, or nil when there is none — the generator uses
-      # the nil to diagnose "no member named ...".
+      # the nil to diagnose "no member named ...". A named member wins directly;
+      # failing that, an anonymous struct/union member (name nil, an aggregate
+      # per C11 6.7.2.1p13) is searched transparently, and a hit there is
+      # returned as a synthesized Member whose offset folds the anonymous
+      # member's own offset into the inner one. The search recurses, so an
+      # anonymous member nested inside another resolves in the same single step;
+      # because the returned Member carries a ready-made offset and type, the
+      # generator's "." and "->" lowering reaches a nested field with no
+      # awareness that it came through an anonymous member.
       def member(name)
-        @members&.find { |m| m.name == name }
+        return nil unless @members
+
+        direct = @members.find { |m| m.name == name }
+        return direct if direct
+
+        @members.each do |m|
+          next unless m.name.nil? && m.type.struct?
+
+          inner = m.type.member(name)
+          return Member.new(inner.name, inner.type, m.offset + inner.offset) if inner
+        end
+        nil
       end
 
-      # Lays out the struct from `raw_members` (an array of [name, Type] pairs
-      # in declaration order) following the System V AMD64 rules: each member
-      # starts at the next offset that satisfies its own alignment (inserting
-      # padding as needed), the struct's alignment is its widest member's, and
-      # the total size is rounded up to that alignment so arrays of the struct
-      # keep every element aligned. Completing the struct in place means any
-      # reference taken while it was incomplete now sees the finished layout.
+      # Lays out the aggregate from `raw_members` (an array of [name, Type]
+      # pairs in declaration order; an anonymous struct/union member has a nil
+      # name). A struct follows the System V AMD64 rules: each member starts at
+      # the next offset that satisfies its own alignment (inserting padding as
+      # needed), the alignment is the widest member's, and the size is rounded
+      # up to that alignment so arrays keep every element aligned. A union
+      # overlays every member at offset 0, so its alignment is still the widest
+      # member's but its size is the largest member's rounded up to that
+      # alignment. Completing the type in place means any reference taken while
+      # it was incomplete now sees the finished layout.
       def define(raw_members)
-        offset = 0
-        max_alignment = 1
-        @members = raw_members.map do |name, type|
-          member_alignment = type.alignment
-          offset = align_up(offset, member_alignment)
-          member = Member.new(name, type, offset)
-          offset += type.size
-          max_alignment = member_alignment if member_alignment > max_alignment
-          member
-        end
-        @alignment = max_alignment
-        @size = align_up(offset, max_alignment)
+        @members, @size, @alignment = union? ? layout_union(raw_members) : layout_struct(raw_members)
         @complete = true
       end
 
@@ -450,10 +478,38 @@ module Rubycc
       # self-referential struct renders in one step; an anonymous struct has no
       # tag to name.
       def to_s
-        tag ? "struct #{tag}" : "struct <anonymous>"
+        keyword = union? ? "union" : "struct"
+        tag ? "#{keyword} #{tag}" : "#{keyword} <anonymous>"
       end
 
       private
+
+      # The struct layout: members packed in order at their own alignment, the
+      # whole rounded up to the widest member's alignment. Returns
+      # [members, size, alignment].
+      def layout_struct(raw_members)
+        offset = 0
+        max_alignment = 1
+        members = raw_members.map do |name, type|
+          member_alignment = type.alignment
+          offset = align_up(offset, member_alignment)
+          member = Member.new(name, type, offset)
+          offset += type.size
+          max_alignment = member_alignment if member_alignment > max_alignment
+          member
+        end
+        [members, align_up(offset, max_alignment), max_alignment]
+      end
+
+      # The union layout: every member overlaid at offset 0, the size the widest
+      # member's rounded up to the widest alignment. Returns
+      # [members, size, alignment].
+      def layout_union(raw_members)
+        members = raw_members.map { |name, type| Member.new(name, type, 0) }
+        max_alignment = members.map { |m| m.type.alignment }.max || 1
+        max_size = members.map { |m| m.type.size }.max || 0
+        [members, align_up(max_size, max_alignment), max_alignment]
+      end
 
       def align_up(value, alignment)
         (value + alignment - 1) / alignment * alignment

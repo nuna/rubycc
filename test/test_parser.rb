@@ -1212,6 +1212,92 @@ class TestParser < Minitest::Test
     assert_nil decl.type.tag
   end
 
+  # --- unions and anonymous members --------------------------------------
+
+  def test_parses_union_variable_declaration_type
+    program = parse("union u { int i; char c; }; " \
+                    "int main(void) { union u v; return 0; }")
+    decl = program.functions.first.body.first
+
+    assert_kind_of AST::VariableDecl, decl
+    assert_predicate decl.type, :struct? # an aggregate, like a struct
+    assert_predicate decl.type, :union?
+    assert_equal "u", decl.type.tag
+  end
+
+  def test_union_overlays_members_at_offset_zero
+    # Every member starts at 0; the size holds the widest member (int, 4),
+    # rounded to the widest alignment (int, 4).
+    program = parse("union u { int i; char c; short s; }; " \
+                    "int main(void) { union u v; return 0; }")
+    type = program.functions.first.body.first.type
+
+    assert_equal 0, type.member("i").offset
+    assert_equal 0, type.member("c").offset
+    assert_equal 0, type.member("s").offset
+    assert_equal 4, type.size
+    assert_equal 4, type.alignment
+  end
+
+  def test_union_size_rounds_widest_member_to_alignment
+    # The widest member is char[5] (size 5, alignment 1), but the int member
+    # forces alignment 4, so the size rounds 5 up to 8.
+    program = parse("union u { int i; char buf[5]; }; " \
+                    "int main(void) { union u v; return 0; }")
+    type = program.functions.first.body.first.type
+
+    assert_equal 8, type.size
+    assert_equal 4, type.alignment
+  end
+
+  def test_anonymous_member_resolves_transparently_with_composed_offset
+    # "n" and "p" live inside the anonymous struct, which itself sits after the
+    # int "tag" (offset 4 under 4-byte alignment). Accessing them through the
+    # outer struct folds the anonymous member's offset into the inner one.
+    program = parse("struct obj { int tag; struct { int n; int p; }; }; " \
+                    "int main(void) { struct obj o; return 0; }")
+    type = program.functions.first.body.first.type
+
+    assert_equal 0, type.member("tag").offset
+    assert_equal 4, type.member("n").offset
+    assert_equal 8, type.member("p").offset
+  end
+
+  def test_anonymous_union_member_shares_offset_with_sibling
+    # The anonymous union overlays both variants at the struct's second slot.
+    program = parse("struct box { int kind; union { int n; char *s; }; }; " \
+                    "int main(void) { struct box b; return 0; }")
+    type = program.functions.first.body.first.type
+
+    assert_equal 8, type.member("n").offset # 8-byte pointer forces alignment 8
+    assert_equal 8, type.member("s").offset
+  end
+
+  def test_nested_anonymous_members_resolve_recursively
+    # An anonymous union inside an anonymous struct: the deep field is reached
+    # through two transparent layers in one lookup.
+    program = parse("struct outer { int a; struct { int b; union { int c; char d; }; }; }; " \
+                    "int main(void) { struct outer o; return 0; }")
+    type = program.functions.first.body.first.type
+
+    assert_equal 4, type.member("b").offset
+    assert_equal 8, type.member("c").offset
+    assert_equal 8, type.member("d").offset
+  end
+
+  def test_typedef_of_tagged_union
+    decl = parse_body_item("union pair { int a; int b; }; typedef union pair Pair;",
+                           "Pair p; return 0;")
+    assert_predicate decl.type, :union?
+    assert_equal "pair", decl.type.tag
+  end
+
+  def test_typedef_of_anonymous_union
+    decl = parse_body_item("typedef union { int i; char c; } U;", "U u; return 0;")
+    assert_predicate decl.type, :union?
+    assert_nil decl.type.tag
+  end
+
   def test_parses_dot_member_access
     # s.x  =>  (member s "x" arrow=false)
     expr = parse_expr("s.x")

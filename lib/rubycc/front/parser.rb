@@ -27,14 +27,17 @@ module Rubycc
     #                             | struct-or-union-specifier | enum-specifier
     #                             | typedef-name
     #   typedef-name              = identifier
-    #   struct-or-union-specifier = "struct" identifier? "{" struct-declaration+ "}"
-    #                             | "struct" identifier
+    #   struct-or-union-specifier = struct-or-union identifier?
+    #                                 "{" struct-declaration+ "}"
+    #                             | struct-or-union identifier
+    #   struct-or-union           = "struct" | "union"
     #   enum-specifier            = "enum" identifier? "{" enumerator-list ","? "}"
     #                             | "enum" identifier
     #   enumerator-list           = enumerator ("," enumerator)*
     #   enumerator                = identifier ("=" constant-expression)?
     #   struct-declaration        = type-specifier declarator
     #                               ("," declarator)* ";"
+    #                             | struct-or-union-specifier ";"  -- anonymous
     #   parameter-type-list       = "void"
     #                             | parameter-declaration
     #                               ("," parameter-declaration)*
@@ -370,9 +373,9 @@ module Rubycc
           elsif tok.type == :keyword && DECL_SPECIFIER_KEYWORDS.include?(tok.value)
             error_at(tok, "two or more data types in declaration specifiers") if composite
             specs << advance.value
-          elsif tok.keyword?("struct")
+          elsif tok.keyword?("struct") || tok.keyword?("union")
             error_at(tok, "two or more data types in declaration specifiers") if composite || !specs.empty?
-            composite = parse_struct_specifier
+            composite = parse_struct_or_union_specifier
           elsif tok.keyword?("enum")
             error_at(tok, "two or more data types in declaration specifiers") if composite || !specs.empty?
             composite = parse_enum_specifier
@@ -443,28 +446,30 @@ module Rubycc
         type
       end
 
-      # struct-or-union-specifier: a "struct" keyword, an optional tag, and an
-      # optional "{ ... }" body. Three shapes result:
+      # struct-or-union-specifier: a "struct" or "union" keyword (the two differ
+      # only in the aggregate's `kind` and thus its layout), an optional tag,
+      # and an optional "{ ... }" body. Three shapes result:
       #   * "struct tag { ... }" / "struct { ... }" — a definition; the tagged
       #     one is registered (or completed) in the current tag scope, an
       #     anonymous one is a fresh unnamed type. #parse_struct_body lays it out.
       #   * "struct tag" — a reference; resolved through the tag scopes, or, when
-      #     the tag is unknown, forward-declared as an incomplete struct in the
-      #     current scope (so "struct node;" and a pointer to a not-yet-defined
-      #     tag both work).
-      def parse_struct_specifier
-        struct_tok = advance # "struct"
+      #     the tag is unknown, forward-declared as an incomplete aggregate in
+      #     the current scope (so "struct node;" and a pointer to a
+      #     not-yet-defined tag both work — the union spellings behave alike).
+      def parse_struct_or_union_specifier
+        keyword_tok = advance # "struct" or "union"
+        kind = keyword_tok.value == "union" ? :union : :struct
         tag_tok = peek.type == :ident ? advance : nil
         tag = tag_tok&.value
 
         if peek.punct?("{")
-          struct_type = tag ? define_struct_tag(tag, struct_tok) : Type::StructType.new(nil)
+          struct_type = tag ? define_struct_tag(tag, kind, keyword_tok) : Type::StructType.new(nil, kind: kind)
           parse_struct_body(struct_type)
           struct_type
         elsif tag
-          reference_struct_tag(tag, tag_tok)
+          reference_struct_tag(tag, kind, tag_tok)
         else
-          error_at(struct_tok, "expected identifier or '{' after 'struct'")
+          error_at(keyword_tok, "expected identifier or '{' after '#{keyword_tok.value}'")
         end
       end
 
@@ -603,70 +608,137 @@ module Rubycc
       # will lay out. A tag already declared in the *current* scope is reused
       # (completing an earlier "struct tag;" forward declaration or the
       # in-progress self-reference), unless it is already complete, which makes
-      # the second body a redefinition. An unknown tag is created incomplete and
-      # registered up front — before its body is parsed — so a member that
-      # points back at the same tag ("struct node *next;") resolves to this very
-      # object.
-      def define_struct_tag(tag, token)
+      # the second body a redefinition. A tag already taken by a differing kind
+      # (an enum, or the other of struct/union) is the wrong kind of tag. An
+      # unknown tag is created incomplete and registered up front — before its
+      # body is parsed — so a member that points back at the same tag ("struct
+      # node *next;") resolves to this very object.
+      def define_struct_tag(tag, kind, token)
         existing = @tag_scopes.last[tag]
         if existing
-          error_at(token, "'#{tag}' defined as wrong kind of tag") if existing.is_a?(EnumTag)
-          error_at(token, "redefinition of 'struct #{tag}'") if existing.complete?
+          reject_wrong_tag_kind(existing, kind, tag, token)
+          error_at(token, "redefinition of '#{tag_keyword(kind)} #{tag}'") if existing.complete?
           return existing
         end
-        struct_type = Type::StructType.new(tag)
+        struct_type = Type::StructType.new(tag, kind: kind)
         @tag_scopes.last[tag] = struct_type
         struct_type
       end
 
       # Resolves a bare "struct tag" reference. An in-scope tag (searched
-      # innermost outward) is returned as is — complete or not. An unknown tag
-      # is forward-declared: a fresh incomplete struct is registered in the
-      # current scope, so "struct node;" introduces the tag and "struct node *p;"
-      # names a pointer to an as-yet-undefined struct.
-      def reference_struct_tag(tag, token)
+      # innermost outward) is returned as is — complete or not — provided it is
+      # the same kind of aggregate; a tag bound to an enum or the other of
+      # struct/union is the wrong kind of tag. An unknown tag is forward-declared:
+      # a fresh incomplete aggregate of this kind is registered in the current
+      # scope, so "struct node;" introduces the tag and "struct node *p;" names a
+      # pointer to an as-yet-undefined struct.
+      def reference_struct_tag(tag, kind, token)
         @tag_scopes.reverse_each do |scope|
           found = scope[tag]
           next unless found
 
-          error_at(token, "'#{tag}' defined as wrong kind of tag") if found.is_a?(EnumTag)
+          reject_wrong_tag_kind(found, kind, tag, token)
           return found
         end
-        struct_type = Type::StructType.new(tag)
+        struct_type = Type::StructType.new(tag, kind: kind)
         @tag_scopes.last[tag] = struct_type
         struct_type
       end
 
-      # Parses a struct's "{ struct-declaration+ }" body and lays `struct_type`
-      # out. Each struct-declaration is a type-specifier followed by one or more
-      # comma-separated declarators (each contributing a "*" run and an optional
-      # array suffix), just like a local declaration but with no initializer. A
-      # member may not be void, an incomplete struct by value, or a duplicate
-      # name; a pointer to an incomplete struct (the self-referential case) is
-      # fine, since a pointer is always complete.
+      # Rejects a tag whose existing binding disagrees with the kind now written
+      # for it: struct, union and enum share one namespace (6.7.2.3), so "union
+      # S" against a "struct S", or either against an "enum S", is the wrong kind
+      # of tag. An enum binding is an EnumTag; a struct/union binding is a
+      # StructType told apart by #union?.
+      def reject_wrong_tag_kind(existing, kind, tag, token)
+        wrong = existing.is_a?(EnumTag) || existing.union? != (kind == :union)
+        error_at(token, "'#{tag}' defined as wrong kind of tag") if wrong
+      end
+
+      # The keyword spelling for an aggregate kind, for diagnostics.
+      def tag_keyword(kind)
+        kind == :union ? "union" : "struct"
+      end
+
+      # Parses a struct/union's "{ struct-declaration+ }" body and lays
+      # `struct_type` out. A struct-declaration is either a type-specifier
+      # followed by one or more comma-separated declarators (each contributing a
+      # "*" run and an optional array suffix), just like a local declaration but
+      # with no initializer, or — for an anonymous member (C11 6.7.2.1p13) — a
+      # tagless struct/union specifier with no declarator at all. A named member
+      # may not be void, an incomplete aggregate by value, or a duplicate name;
+      # a pointer to an incomplete struct (the self-referential case) is fine,
+      # since a pointer is always complete. `seen` tracks every member name
+      # visible from this body, folding in the names an anonymous member exposes
+      # transparently, so a collision through one is diagnosed like any other.
       def parse_struct_body(struct_type)
         expect_punct("{")
         raw_members = []
-        names = {}
+        seen = {}
         until peek.punct?("}")
+          spec_tok = peek
           member_base = parse_type_specifier
-          loop do
-            type = parse_pointer_declarator(member_base)
-            name_tok = expect_ident
-            type = parse_array_declarator(type)
-            reject_void_type(type, name_tok)
-            reject_incomplete_member(type, name_tok)
-            error_at(name_tok, "duplicate member '#{name_tok.value}'") if names.key?(name_tok.value)
-            names[name_tok.value] = true
-            raw_members << [name_tok.value, type]
-            break unless peek.punct?(",")
-
-            advance
+          if peek.punct?(";")
+            parse_anonymous_member(member_base, spec_tok, raw_members, seen)
+          else
+            parse_member_declarators(member_base, raw_members, seen)
           end
           expect_punct(";")
         end
         expect_punct("}")
         struct_type.define(raw_members)
+      end
+
+      # A struct-declaration with no declarator. It is well-formed only as an
+      # anonymous member — a tagless struct/union specifier (its type is an
+      # aggregate with no tag); a tagged specifier standing alone ("struct Inner
+      # {...};" or "struct Inner;" inside a body) or any other bare type
+      # declares nothing and is rejected. The member is recorded with a nil name
+      # and its inner type; every name it exposes transparently is added to
+      # `seen` so a later member cannot shadow one of them.
+      def parse_anonymous_member(member_base, spec_tok, raw_members, seen)
+        unless member_base.struct? && member_base.tag.nil?
+          error_at(spec_tok, "declaration does not declare anything")
+        end
+        transparent_member_names(member_base).each do |name|
+          error_at(spec_tok, "duplicate member '#{name}'") if seen.key?(name)
+          seen[name] = true
+        end
+        raw_members << [nil, member_base]
+      end
+
+      # The comma-separated declarators sharing `member_base`, each a named
+      # member with its own "*" run and array suffix. Each name is checked for a
+      # duplicate against `seen` (which already holds any transparently exposed
+      # names) and then added to it.
+      def parse_member_declarators(member_base, raw_members, seen)
+        loop do
+          type = parse_pointer_declarator(member_base)
+          name_tok = expect_ident
+          type = parse_array_declarator(type)
+          reject_void_type(type, name_tok)
+          reject_incomplete_member(type, name_tok)
+          error_at(name_tok, "duplicate member '#{name_tok.value}'") if seen.key?(name_tok.value)
+          seen[name_tok.value] = true
+          raw_members << [name_tok.value, type]
+          break unless peek.punct?(",")
+
+          advance
+        end
+      end
+
+      # Every member name an anonymous member exposes to its enclosing
+      # aggregate: its own named members, plus (recursively) the names its own
+      # anonymous members expose. `struct_type` is already laid out here, so its
+      # members are known.
+      def transparent_member_names(struct_type)
+        struct_type.members.flat_map do |m|
+          if m.name.nil? && m.type.struct?
+            transparent_member_names(m.type)
+          else
+            [m.name]
+          end
+        end
       end
 
       # Rejects a struct member declared with an incomplete struct type by
@@ -689,7 +761,8 @@ module Rubycc
       def type_specifier?(token)
         if token.type == :keyword
           return DECL_SPECIFIER_KEYWORDS.include?(token.value) ||
-                 token.value == "struct" || token.value == "enum" || token.value == "typedef"
+                 token.value == "struct" || token.value == "union" ||
+                 token.value == "enum" || token.value == "typedef"
         end
         token.type == :ident && typedef_name?(token.value)
       end
