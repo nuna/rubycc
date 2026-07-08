@@ -74,35 +74,19 @@
 
 | 項目 | 内容 | 解消予定 |
 |---|---|---|
-| ポインタ⇔整数キャスト | 0 以外は "cast between pointer and integer is not supported yet"。ポインタ幅の整数型が無いため | Step 17(long 導入時) |
-| 16 進・8 進リテラル | 整数リテラルは 10 進のみ(Step 15 のビット演算テストで表面化)。ヘッダ・実コードでは 0x が頻出 | Step 17(整数型拡張・リテラル接尾辞と同時) |
 | `&配列` 未対応 | "address of array is not supported yet" | Step 21(関数ポインタと同時期に配列ポインタ型ごと) |
 | 引数 7 個以上 | スタック渡し未実装で診断エラー | Step 21 |
 | struct 値渡し・値返し | 診断エラーにして先送り | Step 25 |
 | 内側スコープの `struct S;` 再宣言 | C 6.7.2.3p7 に従わず外側タグを参照 | 実害が出た時点 |
 | 初期化子の制限 | 配列・struct の初期化子リスト未対応。グローバルは整数定数のみ | Step 20 |
 
-## 4. M1 残りの実行計画(Step 17〜)
+## 4. M1 残りの実行計画(Step 18〜)
 
 順序の方針: (1) C 適合性の逸脱を早く解消する、(2) 型システムの土台(整数型)を
 struct 系の応用(union/enum/typedef)より先に固める、(3) ruby.h が要求する機能
 (関数ポインタ・varargs・プリプロセッサ・GNU 拡張最小セット)を M1 後半に集める。
 各ステップの受け入れ基準は共通で「新機能の実行テスト(gcc 差分込み)+ 診断テスト +
 既存テスト全 green」。
-
-### Step 17 — 整数型の拡張(long / short / unsigned / _Bool)
-**M1 で最も影響範囲が広いステップ。単独で着手し、他と混ぜない。**
-- 型: signed/unsigned × char/short/int/long(long long は LP64 では long と同幅なので
-  エイリアスで受理)、_Bool。宣言指定子の組み合わせ(`unsigned long`、`long int` 等)を
-  正規化するロジックをパーサに追加。
-- 整数リテラル接尾辞(U/L/UL)と、値がはみ出す場合の型繰り上げ(6.4.4.1 の表)。
-- 整数昇格・通常算術変換(6.3.1.8)をジェネレータの二項演算に実装。
-- 値表現規約の拡張: スロット内は「64bit へ拡張済み(符号付きは符号拡張、無符号はゼロ拡張)」
-  へ規約を持ち上げるのが一貫性が高い。32bit 演算の上位ゼロ化との整合を再点検すること。
-- backend: 2 バイトの load/store(movsx/movzx word)、8 バイト演算の一般化(size=8 は既存)、
-  無符号の div/mod(div)・右シフト(shr)・比較(setb/setbe/seta/setae)。
-- **トレードオフ**: VALUE(unsigned long)を扱うために unsigned long は必須。_Bool は
-  ruby.h の stdbool 利用に備えて小さく入れる(比較結果 0/1 の既存表現で足りる)。
 
 ### Step 18 — enum・typedef
 - enum(定数はスコープ内の int 定数として登録、型は int 扱いで十分)。
