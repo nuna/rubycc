@@ -139,9 +139,25 @@ module Rubycc
         # function body owns the next scope, and every compound-statement pushes
         # a fresh one on top.
         @scopes = [@global_bindings, {}]
-        # Innermost-last stack of enclosing loops, so break/continue can jump
-        # to the right labels without threading them through every call.
-        @loop_stack = []
+        # Innermost-last stack of enclosing loops and switches, each frame a
+        # { break_label:, continue_label: }. `break` jumps to the top frame's
+        # break_label (a loop's end or a switch's end); `continue` jumps to the
+        # top frame's continue_label. A switch frame carries the enclosing
+        # loop's continue_label unchanged, so `continue` inside a switch passes
+        # through to the loop, and a nil continue_label (a switch with no
+        # enclosing loop) makes `continue` a diagnostic.
+        @control_stack = []
+        # Function-scoped goto label table: name -> { id:, defined:, token: }.
+        # A label id is allocated the first time a name is seen (by a goto or by
+        # its definition), so a forward goto needs no backpatching — it emits a
+        # jump to the id the label will later mark. `defined` catches a duplicate
+        # definition and, at the function's end, a goto to a never-defined label.
+        @goto_labels = {}
+        # Innermost-last stack of the current switches' case/default label maps
+        # (each a node -> label id, keyed by object identity), so a Case/Default
+        # statement encountered while walking a switch body can find the label
+        # the comparison chain already assigned to it.
+        @case_label_stack = []
 
         # Parameters take the first vregs (0..n-1) in the outermost scope; the
         # backend spills the incoming argument registers into these slots.
@@ -160,6 +176,16 @@ module Rubycc
         end
 
         func.body.each { |stmt| gen_statement(stmt) }
+
+        # Every label a goto referenced must have been defined somewhere in the
+        # function; a goto to a label that never appears is diagnosed here, once
+        # the whole body has been seen (so a forward reference is not mistaken
+        # for an undefined one). The stored token locates the offending goto.
+        @goto_labels.each do |name, entry|
+          next if entry[:defined]
+
+          error_at(entry[:token], "label '#{name}' used but not defined")
+        end
 
         # Falling off the end of the body needs an explicit return, unless one
         # was already emitted. A void function returns no value; every other
@@ -204,6 +230,16 @@ module Rubycc
           gen_break(stmt)
         when Front::AST::Continue
           gen_continue(stmt)
+        when Front::AST::Switch
+          gen_switch(stmt)
+        when Front::AST::Case
+          gen_case(stmt)
+        when Front::AST::Default
+          gen_default(stmt)
+        when Front::AST::Goto
+          gen_goto(stmt)
+        when Front::AST::Label
+          gen_label(stmt)
         else
           raise "unsupported statement: #{stmt.class}"
         end
@@ -296,22 +332,195 @@ module Rubycc
 
       # Runs a loop's body with break/continue targets visible to any nested
       # Break/Continue node, restoring the enclosing loop's targets (if any)
-      # once the body has been generated.
+      # once the body has been generated. Both targets are the loop's own, so
+      # break leaves the loop and continue restarts it.
       def gen_loop_body(body, continue_label:, break_label:)
-        @loop_stack.push(continue_label: continue_label, break_label: break_label)
+        @control_stack.push(break_label: break_label, continue_label: continue_label)
         gen_statement(body)
       ensure
-        @loop_stack.pop
+        @control_stack.pop
       end
 
+      # break jumps to the innermost enclosing loop's or switch's end. It is a
+      # diagnostic only when no such construct is open at all.
       def gen_break(node)
-        error_at(node.token, "break statement not within a loop") if @loop_stack.empty?
-        emit(:jump, a: @loop_stack.last[:break_label])
+        if @control_stack.empty?
+          error_at(node.token, "break statement not within a loop or switch")
+        end
+        emit(:jump, a: @control_stack.last[:break_label])
       end
 
+      # continue jumps to the innermost enclosing loop's continue target. A
+      # switch frame carries the loop's target through unchanged, so a continue
+      # inside a switch reaches the loop; a nil target (no enclosing loop at all,
+      # even if a switch is open) is the diagnostic case.
       def gen_continue(node)
-        error_at(node.token, "continue statement not within a loop") if @loop_stack.empty?
-        emit(:jump, a: @loop_stack.last[:continue_label])
+        target = @control_stack.last && @control_stack.last[:continue_label]
+        error_at(node.token, "continue statement not within a loop") unless target
+        emit(:jump, a: target)
+      end
+
+      # A switch is desugared to a comparison chain (no jump table — that is a
+      # later optimization): the controlling expression is evaluated once, then
+      # each case constant is compared against it and, on a match, control jumps
+      # to that case's label; failing every case it jumps to default (or, absent
+      # one, past the switch). The case/default labels themselves are placed
+      # while the body is generated, so fall-through between cases (a case
+      # without a break) just runs into the next label's code.
+      def gen_switch(node)
+        control, control_type = gen_value(node.control)
+        # The controlling expression must be an integer type (char promotes to
+        # int); a pointer, struct or other non-integer has no case constants to
+        # match against.
+        unless control_type.arithmetic?
+          error_at(node.token, "switch quantity is not an integer")
+        end
+
+        # Collect every case/default that belongs to this switch — those not
+        # sealed off inside a nested switch — assigning each a label and checking
+        # for duplicate values and a second default.
+        collected = []
+        collect_switch_labels(node.body, collected)
+        labels, default_node = resolve_switch_labels(collected)
+
+        end_label = new_label
+        emit_switch_dispatch(control, collected, labels, default_node, end_label)
+
+        # Generate the body with the labels in scope so each Case/Default marks
+        # its position, and with break routed to the switch's end.
+        gen_switch_body(node.body, labels, end_label)
+        emit(:label, a: end_label)
+      end
+
+      # Emits the comparison chain: for each case, "control != value" and a
+      # jump-if-zero (i.e. jump when equal) to the case's label; then an
+      # unconditional jump to default (or the switch's end when there is none).
+      # ">> jump when equal" is spelled with the existing :ne + :jump_if_zero
+      # because the IR has no jump-if-nonzero.
+      def emit_switch_dispatch(control, collected, labels, default_node, end_label)
+        collected.each do |node|
+          next if node.is_a?(Front::AST::Default)
+
+          value_reg = new_vreg
+          emit(:const, dst: value_reg, a: node.value)
+          cmp = new_vreg
+          emit(:ne, dst: cmp, a: control, b: value_reg)
+          emit(:jump_if_zero, a: cmp, b: labels[node])
+        end
+        emit(:jump, a: default_node ? labels[default_node] : end_label)
+      end
+
+      # Assigns a fresh label to each collected case/default and diagnoses a
+      # duplicate case value or a second default. Returns [labels, default_node]
+      # where `labels` maps each node (by identity) to its label id.
+      def resolve_switch_labels(collected)
+        labels = {}.compare_by_identity
+        seen_values = {}
+        default_node = nil
+        collected.each do |node|
+          if node.is_a?(Front::AST::Default)
+            error_at(node.token, "multiple default labels in one switch") if default_node
+            default_node = node
+          elsif seen_values.key?(node.value)
+            error_at(node.token, "duplicate case value '#{node.value}'")
+          else
+            seen_values[node.value] = true
+          end
+          labels[node] = new_label
+        end
+        [labels, default_node]
+      end
+
+      # Recursively gathers the Case/Default nodes that belong to one switch,
+      # appending them to `collected` in source order. It descends through every
+      # statement that can textually enclose a label (blocks, if arms, loops,
+      # labeled statements and the case/default bodies themselves) but stops at a
+      # nested switch, whose own cases belong to it, not this one.
+      def collect_switch_labels(stmt, collected)
+        case stmt
+        when Front::AST::Case, Front::AST::Default
+          collected << stmt
+          collect_switch_labels(stmt.body, collected)
+        when Front::AST::Label
+          collect_switch_labels(stmt.body, collected)
+        when Front::AST::Block
+          stmt.items.each { |item| collect_switch_labels(item, collected) }
+        when Front::AST::If
+          collect_switch_labels(stmt.then_stmt, collected)
+          collect_switch_labels(stmt.else_stmt, collected) if stmt.else_stmt
+        when Front::AST::While, Front::AST::DoWhile, Front::AST::For
+          collect_switch_labels(stmt.body, collected)
+        end
+        # Every other statement (a return, an expression, a declaration, a break,
+        # a goto, or a nested switch) either holds no statement or, in the
+        # switch's case, seals off its own labels, so recursion stops here.
+      end
+
+      # Generates a switch body with its case labels in scope (so Case/Default
+      # nodes resolve to the labels the dispatch chain assigned) and break routed
+      # to the switch's end. The continue target is inherited from the enclosing
+      # loop unchanged, so a continue inside the switch still restarts that loop.
+      def gen_switch_body(body, labels, break_label)
+        inherited_continue = @control_stack.last && @control_stack.last[:continue_label]
+        @case_label_stack.push(labels)
+        @control_stack.push(break_label: break_label, continue_label: inherited_continue)
+        gen_statement(body)
+      ensure
+        @control_stack.pop
+        @case_label_stack.pop
+      end
+
+      # A case label: place the label the dispatch chain assigned, then generate
+      # the labeled statement so control flows into it on a match (or falls
+      # through from the case above). A Case reached with no switch open, or one
+      # that belongs to an outer switch, has no label and is diagnosed.
+      def gen_case(node)
+        label = current_case_label(node)
+        error_at(node.token, "case label not within a switch statement") unless label
+        emit(:label, a: label)
+        gen_statement(node.body)
+      end
+
+      # A default label, lowered exactly like a case: mark its position and
+      # generate the labeled statement. Diagnosed when reached outside a switch.
+      def gen_default(node)
+        label = current_case_label(node)
+        error_at(node.token, "'default' label not within a switch statement") unless label
+        emit(:label, a: label)
+        gen_statement(node.body)
+      end
+
+      # Looks up the label the innermost switch's dispatch assigned to this
+      # Case/Default node. The node is matched by identity, so a label is found
+      # only while generating the very switch body that collected it.
+      def current_case_label(node)
+        map = @case_label_stack.last
+        map && map[node]
+      end
+
+      # goto: an unconditional jump to the named label. The label id is allocated
+      # on first sight (here for a forward jump, or at the definition for a
+      # backward one), so the jump can be emitted immediately with no
+      # backpatching; the token is kept to locate the goto if the label turns out
+      # to be undefined at the function's end.
+      def gen_goto(node)
+        entry = @goto_labels[node.label] ||= { id: new_label, defined: false, token: node.token }
+        emit(:jump, a: entry[:id])
+      end
+
+      # A labeled statement "name: stmt": define the label (allocating its id if
+      # a forward goto has not already) and place it, then generate the prefixed
+      # statement. A name defined twice in one function is a diagnostic.
+      def gen_label(node)
+        entry = @goto_labels[node.name]
+        if entry
+          error_at(node.token, "duplicate label '#{node.name}'") if entry[:defined]
+          entry[:defined] = true
+        else
+          entry = @goto_labels[node.name] = { id: new_label, defined: true, token: node.token }
+        end
+        emit(:label, a: entry[:id])
+        gen_statement(node.body)
       end
 
       # "return;" or "return expr;", checked against the enclosing function's

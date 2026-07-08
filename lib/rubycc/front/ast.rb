@@ -150,11 +150,46 @@ module Rubycc
       # are expression nodes or nil when omitted.
       For = Data.define(:init, :condition, :step, :body, :token)
 
-      # `break;` — targets the innermost enclosing iteration-statement.
+      # `break;` — targets the innermost enclosing iteration-statement or,
+      # once switch exists, the innermost enclosing switch.
       Break = Data.define(:token)
 
-      # `continue;` — targets the innermost enclosing iteration-statement.
+      # `continue;` — targets the innermost enclosing iteration-statement,
+      # passing straight through any switch that sits between it and the loop.
       Continue = Data.define(:token)
+
+      # `switch (control) body` (ISO C 6.8.4.2). `control` is the controlling
+      # expression (an integer type). `body` is a single statement — usually a
+      # compound-statement — inside which `case`/`default` labels mark the entry
+      # points the generator lowers to a comparison chain. A case label may sit
+      # at any depth of a nested statement in `body`; the ones that belong to
+      # this switch are exactly those not enclosed by a nested switch.
+      Switch = Data.define(:control, :body, :token)
+
+      # A `case <constant>: statement` label (6.8.1). `value` is the case
+      # constant folded to a Ruby Integer at parse time (an integer or character
+      # constant, optionally signed — general constant-expression evaluation
+      # arrives in a later step). `body` is the labeled statement. A Case only
+      # has meaning inside a switch; the generator diagnoses one that is not.
+      Case = Data.define(:value, :body, :token)
+
+      # A `default: statement` label (6.8.1). `body` is the labeled statement.
+      # Like Case it is only meaningful inside a switch, and at most one may
+      # appear per switch.
+      Default = Data.define(:body, :token)
+
+      # A `goto identifier;` jump (6.8.6.1). `label` is the target label's name.
+      # The target may be defined anywhere in the same function, before or after
+      # the goto; the generator resolves the name against a function-scoped label
+      # table and diagnoses a jump to an undefined label at the function's end.
+      Goto = Data.define(:label, :token)
+
+      # A labeled statement `identifier: statement` (6.8.1), the target of a
+      # goto. `name` is the label's name and `body` the statement it prefixes
+      # (often the empty statement, as in "end: ;"). Distinguished from an
+      # ordinary expression-statement by two tokens of lookahead — an identifier
+      # immediately followed by ":".
+      Label = Data.define(:name, :body, :token)
 
       # A call to a named function. `args` is an array of expression nodes
       # (the argument-expression-list), evaluated left to right.

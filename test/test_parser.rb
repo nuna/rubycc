@@ -452,6 +452,90 @@ class TestParser < Minitest::Test
     assert_kind_of AST::Continue, stmt
   end
 
+  def test_parses_switch_statement
+    program = parse("int main(void) { switch (x) { case 1: return 1; } }")
+    stmt = program.functions.first.body.first
+
+    assert_kind_of AST::Switch, stmt
+    assert_kind_of AST::VariableRef, stmt.control
+    assert_equal "x", stmt.control.name
+    assert_kind_of AST::Block, stmt.body
+  end
+
+  def test_parses_case_label_with_folded_constant
+    program = parse("int main(void) { switch (x) { case 42: return 1; } }")
+    switch = program.functions.first.body.first
+    case_stmt = switch.body.items.first
+
+    assert_kind_of AST::Case, case_stmt
+    assert_equal 42, case_stmt.value
+    assert_kind_of AST::Return, case_stmt.body
+  end
+
+  def test_parses_case_label_with_negative_constant
+    # "case -1:" folds the unary minus into the constant at parse time.
+    program = parse("int main(void) { switch (x) { case -1: return 1; } }")
+    case_stmt = program.functions.first.body.first.body.items.first
+
+    assert_kind_of AST::Case, case_stmt
+    assert_equal(-1, case_stmt.value)
+  end
+
+  def test_parses_case_label_with_character_constant
+    program = parse("int main(void) { switch (x) { case 'A': return 1; } }")
+    case_stmt = program.functions.first.body.first.body.items.first
+
+    assert_kind_of AST::Case, case_stmt
+    assert_equal 65, case_stmt.value
+  end
+
+  def test_parses_default_label
+    program = parse("int main(void) { switch (x) { default: return 1; } }")
+    default_stmt = program.functions.first.body.first.body.items.first
+
+    assert_kind_of AST::Default, default_stmt
+    assert_kind_of AST::Return, default_stmt.body
+  end
+
+  def test_parses_goto_statement
+    program = parse("int main(void) { goto done; }")
+    stmt = program.functions.first.body.first
+
+    assert_kind_of AST::Goto, stmt
+    assert_equal "done", stmt.label
+  end
+
+  def test_parses_labeled_statement
+    # "done: return 0;" is a labeled statement, distinguished from an
+    # expression-statement by the identifier immediately followed by ":".
+    program = parse("int main(void) { done: return 0; }")
+    stmt = program.functions.first.body.first
+
+    assert_kind_of AST::Label, stmt
+    assert_equal "done", stmt.name
+    assert_kind_of AST::Return, stmt.body
+  end
+
+  def test_parses_labeled_empty_statement
+    program = parse("int main(void) { end: ; }")
+    stmt = program.functions.first.body.first
+
+    assert_kind_of AST::Label, stmt
+    assert_equal "end", stmt.name
+    assert_kind_of AST::EmptyStmt, stmt.body
+  end
+
+  def test_identifier_expression_statement_is_not_a_label
+    # A bare identifier not followed by ":" stays an expression-statement, so
+    # the two-token lookahead does not mistake "x;" for a label.
+    program = parse("int main(void) { int x; x; }")
+    stmt = program.functions.first.body.last
+
+    assert_kind_of AST::ExpressionStmt, stmt
+    assert_kind_of AST::VariableRef, stmt.expr
+    assert_equal "x", stmt.expr.name
+  end
+
   def test_parses_function_definition_with_parameters
     program = parse("int add(int a, int b) { return a + b; }")
     func = program.functions.first

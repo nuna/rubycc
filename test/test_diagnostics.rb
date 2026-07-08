@@ -101,6 +101,68 @@ class TestDiagnostics < Minitest::Test
     assert_match(/break statement not within a loop/, error.description)
   end
 
+  def test_duplicate_case_value_is_an_error
+    source = "int main(void) { int x = 0; switch (x) { case 1: return 1; case 1: return 2; } return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/duplicate case value '1'/, error.description)
+  end
+
+  def test_duplicate_default_label_is_an_error
+    source = "int main(void) { int x = 0; switch (x) { default: return 1; default: return 2; } return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/multiple default labels in one switch/, error.description)
+  end
+
+  def test_case_outside_switch_is_an_error
+    source = "int main(void) { case 1: return 1; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/case label not within a switch statement/, error.description)
+  end
+
+  def test_default_outside_switch_is_an_error
+    source = "int main(void) { default: return 1; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/'default' label not within a switch statement/, error.description)
+  end
+
+  def test_non_constant_case_expression_is_an_error
+    source = "int main(void) { int y = 1; int x = 0; switch (x) { case y: return 1; } return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/case label does not reduce to an integer constant/, error.description)
+  end
+
+  def test_pointer_switch_control_is_an_error
+    source = "int main(void) { int a; int *p = &a; switch (p) { case 1: return 1; } return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/switch quantity is not an integer/, error.description)
+  end
+
+  def test_struct_switch_control_is_an_error
+    source = "struct S { int a; }; int main(void) { struct S s; switch (s) { case 1: return 1; } return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/switch quantity is not an integer/, error.description)
+  end
+
+  def test_duplicate_label_is_an_error
+    source = "int main(void) { a: ; a: ; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/duplicate label 'a'/, error.description)
+  end
+
+  def test_goto_to_undefined_label_is_an_error
+    source = "int main(void) { goto missing; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/label 'missing' used but not defined/, error.description)
+  end
+
+  def test_continue_in_switch_outside_loop_is_an_error
+    # A continue inside a switch but with no enclosing loop has no loop target,
+    # so it is diagnosed even though a break there would be legal.
+    source = "int main(void) { int x = 0; switch (x) { case 0: continue; } return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/continue statement not within a loop/, error.description)
+  end
+
   def test_implicit_declaration_of_function
     source = "int main(void) { return f(1); }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }

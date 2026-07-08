@@ -115,6 +115,12 @@ class TestLexer < Minitest::Test
     assert_equal %w[if else], tokens.map(&:value)
   end
 
+  def test_switch_case_default_goto_are_keywords
+    tokens = lex("switch case default goto").reject(&:eof?)
+    assert_equal %i[keyword keyword keyword keyword], tokens.map(&:type)
+    assert_equal %w[switch case default goto], tokens.map(&:value)
+  end
+
   def test_logical_and_versus_bitwise_and
     combined = lex("x && y").reject(&:eof?)
     assert_equal %i[ident punct ident], combined.map(&:type)

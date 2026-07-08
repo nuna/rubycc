@@ -38,19 +38,25 @@ module Rubycc
     #                             | type-specifier init-declarator
     #                               ("," init-declarator)* ";"
     #   init-declarator           = declarator ("=" assignment-expression)?
-    #   statement                 = return-statement | expression-statement
-    #                             | selection-statement | iteration-statement
-    #                             | jump-statement | compound-statement
+    #   statement                 = labeled-statement | return-statement
+    #                             | expression-statement | selection-statement
+    #                             | iteration-statement | jump-statement
+    #                             | compound-statement
+    #   labeled-statement         = identifier ":" statement
+    #                             | "case" constant-expression ":" statement
+    #                             | "default" ":" statement
     #   return-statement          = "return" expression? ";"
     #   expression-statement      = expression? ";"
     #   selection-statement       = "if" "(" expression ")" statement
     #                               ("else" statement)?
+    #                             | "switch" "(" expression ")" statement
     #   iteration-statement       = "while" "(" expression ")" statement
     #                             | "do" statement "while" "(" expression ")" ";"
     #                             | "for" "(" for-init expression? ";"
     #                               expression? ")" statement
     #   for-init                  = declaration | expression? ";"
     #   jump-statement            = "break" ";" | "continue" ";"
+    #                             | "goto" identifier ";"
     #   expression                = assignment-expression
     #                               ("," assignment-expression)*
     #   assignment-expression     = conditional-expression
@@ -554,6 +560,12 @@ module Rubycc
           parse_return
         elsif peek.keyword?("if")
           parse_selection_statement
+        elsif peek.keyword?("switch")
+          parse_switch_statement
+        elsif peek.keyword?("case")
+          parse_case_statement
+        elsif peek.keyword?("default")
+          parse_default_statement
         elsif peek.keyword?("while")
           parse_while_statement
         elsif peek.keyword?("do")
@@ -564,8 +576,15 @@ module Rubycc
           parse_break_statement
         elsif peek.keyword?("continue")
           parse_continue_statement
+        elsif peek.keyword?("goto")
+          parse_goto_statement
         elsif peek.punct?("{")
           parse_compound_statement
+        # A bare identifier immediately followed by ":" opens a labeled
+        # statement (a goto target); this two-token lookahead is what tells it
+        # apart from an expression-statement that merely begins with a name.
+        elsif peek.type == :ident && peek_ahead(1)&.punct?(":")
+          parse_labeled_statement
         else
           parse_expression_statement
         end
@@ -659,6 +678,89 @@ module Rubycc
         continue_tok = advance # "continue"
         expect_punct(";")
         AST::Continue.new(continue_tok)
+      end
+
+      # "goto identifier;": an unconditional jump to a label defined elsewhere
+      # in the same function. Only the target's name is captured here; whether
+      # it names a defined label is the generator's check, since the label may
+      # appear textually after the goto (a forward jump).
+      def parse_goto_statement
+        goto_tok = advance # "goto"
+        name_tok = expect_ident
+        expect_punct(";")
+        AST::Goto.new(name_tok.value, goto_tok)
+      end
+
+      # "switch (expression) statement": the controlling expression and the body
+      # in which case/default labels sit. The body is one statement (typically a
+      # compound-statement); the parser does not check that any case is present
+      # or well-placed — the generator collects the labels and diagnoses misuse.
+      def parse_switch_statement
+        switch_tok = advance # "switch"
+        expect_punct("(")
+        control = parse_expression
+        expect_punct(")")
+        body = parse_statement
+        AST::Switch.new(control, body, switch_tok)
+      end
+
+      # "case constant-expression : statement". The case constant is folded to a
+      # Ruby Integer on the spot (see #parse_case_constant); the labeled
+      # statement follows the colon. Whether this case sits inside a switch, and
+      # whether its value is unique, is left to the generator.
+      def parse_case_statement
+        case_tok = advance # "case"
+        value = parse_case_constant(case_tok)
+        expect_punct(":")
+        body = parse_statement
+        AST::Case.new(value, body, case_tok)
+      end
+
+      # "default : statement": the fall-through label of a switch, carrying no
+      # constant. At most one may appear per switch, which the generator checks.
+      def parse_default_statement
+        default_tok = advance # "default"
+        expect_punct(":")
+        body = parse_statement
+        AST::Default.new(body, default_tok)
+      end
+
+      # Folds a case label's constant to a Ruby Integer at parse time, mirroring
+      # a global initializer's constant (see #parse_constant_initializer): an
+      # integer or character constant, optionally preceded by unary "+"/"-"
+      # signs. General constant-expression evaluation (e.g. "case 1 + 2:")
+      # arrives with the constant evaluator in a later step, so the folded value
+      # must be immediately followed by the label's ":"; anything else is
+      # rejected as a non-constant case expression.
+      def parse_case_constant(case_tok)
+        negate = false
+        loop do
+          if peek.punct?("-")
+            advance
+            negate = !negate
+          elsif peek.punct?("+")
+            advance
+          else
+            break
+          end
+        end
+        tok = peek
+        follower = peek_ahead(1)
+        unless tok.type == :num && follower&.punct?(":")
+          error_at(case_tok, "case label does not reduce to an integer constant")
+        end
+        advance
+        negate ? -tok.value : tok.value
+      end
+
+      # "identifier : statement": a labeled statement, the target of a goto. The
+      # identifier and its ":" have already been confirmed by the two-token
+      # lookahead in #parse_statement; the prefixed statement follows.
+      def parse_labeled_statement
+        name_tok = advance # identifier
+        advance # ":"
+        body = parse_statement
+        AST::Label.new(name_tok.value, body, name_tok)
       end
 
       def parse_compound_statement

@@ -1500,6 +1500,61 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
+  # switch/case/default and goto/labels, each checked bit-for-bit against gcc's
+  # exit code: matching cases, default, no-match fall-out, fall-through between
+  # cases, a nested switch (whose cases stay its own), the break/continue split
+  # inside a loop (break leaves the switch, continue reaches the loop), case
+  # labels buried in nested statements, and goto's forward, backward and
+  # multi-loop-escape jumps.
+  SWITCH_GOTO_DIFFERENTIAL_SOURCES = [
+    # Basic dispatch: a matching case, the default, and no match with no default.
+    "int main(void) { int x = 2; switch (x) { case 1: return 10; case 2: return 20; case 3: return 30; } return 0; }",
+    "int main(void) { int x = 9; switch (x) { case 1: return 10; default: return 42; } return 0; }",
+    "int main(void) { int x = 9; switch (x) { case 1: return 10; } return 7; }",
+    # default need not be last; it is only reached when no case matches.
+    "int main(void) { int x = 5; switch (x) { default: return 99; case 5: return 42; } return 0; }",
+    # Fall-through: without a break, control runs into the next case's code.
+    "int main(void) { int x = 1; int s = 0; switch (x) { case 1: s += 1; case 2: s += 2; case 3: s += 4; } return s; }",
+    "int main(void) { int x = 2; int s = 0; switch (x) { case 1: s += 1; case 2: s += 2; case 3: s += 4; } return s; }",
+    # break leaves the switch immediately.
+    "int main(void) { int x = 1; int s = 0; switch (x) { case 1: s += 1; break; case 2: s += 2; } return s; }",
+    # A char control (promoted to int) matched against integer case constants.
+    "int main(void) { char c = 'B'; switch (c) { case 65: return 1; case 66: return 2; } return 0; }",
+    # A signed case constant.
+    "int main(void) { int x = -1; switch (x) { case -1: return 33; default: return 0; } }",
+    # A nested switch: the inner case belongs to the inner switch, and the outer
+    # case 2 is only reachable by falling through the inner switch's end.
+    "int main(void) { int a = 1; int b = 2; switch (a) { case 1: switch (b) { case 2: return 55; } " \
+    "case 2: return 3; } return 0; }",
+    # Case labels sitting inside nested statements (a block here) still belong to
+    # the enclosing switch and are jumped to across the block boundary.
+    "int main(void) { int x = 3; int s = 0; switch (x) { case 1: { s += 1; case 3: s += 10; } case 4: s += 100; } return s; }",
+    # A loop wrapping a switch: continue passes through the switch to the loop's
+    # step, while break only leaves the switch.
+    "int main(void) { int s = 0; for (int i = 0; i < 5; i++) { switch (i) { case 2: continue; case 4: break; } " \
+    "s += i; } return s; }",
+    # continue from within a switch restarts the while loop (never falls out).
+    "int main(void) { int i = 0; int n = 0; while (i < 6) { i++; switch (i) { case 3: continue; } n++; } return n; }",
+    # goto: a forward jump skipping code.
+    "int main(void) { int x = 0; goto skip; x = 99; skip: return x; }",
+    # goto: a backward jump forming a loop.
+    "int main(void) { int i = 0; int s = 0; loop: if (i < 5) { s += i; i++; goto loop; } return s; }",
+    # goto: escaping two nested loops at once.
+    "int main(void) { int i; int j; for (i = 0; i < 10; i++) { for (j = 0; j < 10; j++) " \
+    "{ if (i * j > 6) goto done; } } done: return i * 10 + j; }",
+    # A labeled empty statement as a goto target.
+    "int main(void) { int x = 5; goto end; x = 0; end: ; return x; }"
+  ].freeze
+
+  def test_switch_and_goto_match_gcc_exit_codes
+    SWITCH_GOTO_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
   private
 
   def run_source(source, compiler:)
