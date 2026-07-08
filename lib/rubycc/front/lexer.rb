@@ -10,6 +10,7 @@ module Rubycc
     # with source excerpts. Handles // and /* */ comments and whitespace.
     class Lexer
       KEYWORDS = %w[int char void short long signed unsigned _Bool struct
+                    enum typedef
                     return if else while do for break continue
                     switch case default goto sizeof].freeze
 

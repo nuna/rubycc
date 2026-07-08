@@ -20,12 +20,19 @@ module Rubycc
     #   global-declarator-suffix  = ("[" integer-constant "]")?
     #                               ("=" constant-initializer)?
     #   constant-initializer      = ("+" | "-")* integer-constant
-    #   declaration-specifiers    = type-specifier+
+    #   declaration-specifiers    = (storage-class-specifier | type-specifier)+
+    #   storage-class-specifier   = "typedef"
     #   type-specifier            = "void" | "char" | "short" | "int" | "long"
     #                             | "signed" | "unsigned" | "_Bool"
-    #                             | struct-or-union-specifier
+    #                             | struct-or-union-specifier | enum-specifier
+    #                             | typedef-name
+    #   typedef-name              = identifier
     #   struct-or-union-specifier = "struct" identifier? "{" struct-declaration+ "}"
     #                             | "struct" identifier
+    #   enum-specifier            = "enum" identifier? "{" enumerator-list ","? "}"
+    #                             | "enum" identifier
+    #   enumerator-list           = enumerator ("," enumerator)*
+    #   enumerator                = identifier ("=" constant-expression)?
     #   struct-declaration        = type-specifier declarator
     #                               ("," declarator)* ";"
     #   parameter-type-list       = "void"
@@ -139,19 +146,44 @@ module Rubycc
       # this subset rejects any function with more parameters (or arguments).
       MAX_PARAMS = 6
 
+      # A tag scope entry for an enum tag. C keeps struct, union and enum tags in
+      # one shared namespace, so enum tags live in @tag_scopes alongside the
+      # StructType objects that stand for struct tags. An enum contributes no
+      # distinct type — an enum object is just an int (6.7.2.2) — so this marker
+      # only records that the tag names an enum, which lets a later "struct X"
+      # (or "enum X" against a struct tag) be diagnosed as the wrong kind of tag.
+      EnumTag = Data.define(:tag)
+
+      # An entry in the ordinary-identifier scope (see @ordinary_scopes). `kind`
+      # is :typedef for a typedef name (`value` its resolved Rubycc::Type), :enum
+      # for an enumeration constant (`value` its Integer value), or :ordinary for
+      # a variable, parameter or function name (`value` nil). The ordinary
+      # entries carry no payload; they exist only so a declarator can shadow a
+      # typedef name or an enum constant of the same name from an outer scope,
+      # keeping "typedef int T; { int T; ... }" from misreading the inner T as a
+      # type.
+      OrdinaryName = Data.define(:kind, :value)
+
       def initialize(tokens)
         @tokens = tokens
         @pos = 0
-        # Struct tags live in their own namespace, separate from variables and
-        # functions, and follow the same block scoping. @tag_scopes is a stack
-        # of "tag name -> Type::StructType" maps, innermost last, with the
-        # file scope at the bottom; a compound-statement (and a for-loop's own
-        # parentheses, and a function body) pushes a fresh map so a struct
-        # defined inside a block shadows an outer one and vanishes at the block's
-        # end. Tag resolution happens here, at parse time, because every other
-        # type is built here too — the generator only ever consumes finished
-        # Type objects.
+        # Struct and enum tags live in their own namespace, separate from
+        # variables and functions, and follow the same block scoping.
+        # @tag_scopes is a stack of "tag name -> Type::StructType | EnumTag"
+        # maps, innermost last, with the file scope at the bottom; a
+        # compound-statement (and a for-loop's own parentheses, and a function
+        # body) pushes a fresh map so a tag defined inside a block shadows an
+        # outer one and vanishes at the block's end. Tag resolution happens here,
+        # at parse time, because every other type is built here too — the
+        # generator only ever consumes finished Type objects.
         @tag_scopes = [{}]
+        # The ordinary-identifier namespace, scoped in lockstep with @tag_scopes:
+        # a stack of "name -> OrdinaryName" maps. It records typedef names
+        # (resolved to a Type), enum constants (resolved to an Integer) and the
+        # plain declarator names that shadow them, so a name is looked up here to
+        # decide whether an identifier opens a declaration (a typedef name), folds
+        # to a constant (an enumerator) or is an ordinary reference.
+        @ordinary_scopes = [{}]
       end
 
       # Parses the whole translation unit into an AST::Program. An external
@@ -191,16 +223,21 @@ module Rubycc
       # following "(" marks the function form, anything else the variable form.
       def parse_external_declaration
         type_tok = peek
-        base_type = parse_type_specifier
+        base_type, is_typedef = parse_declaration_specifiers(allow_storage_class: true)
 
-        # "struct point { ... };" (or "struct node;") with no declarator only
-        # declares or defines the tag, which parse_type_specifier already
-        # registered; it contributes no object and no code, so it flattens away
-        # to an empty run of declarations.
+        # "struct point { ... };" (or "struct node;", or a tag-only "enum E { ...
+        # };") with no declarator only declares or defines the tag, which the
+        # specifier parse already registered; it contributes no object and no
+        # code, so it flattens away to an empty run of declarations. A stray
+        # "typedef int;" with no declarator flattens away the same way.
         if peek.punct?(";")
           advance
           return []
         end
+
+        # A typedef declaration binds each declarator's name as a type; it
+        # yields no object and no code (see #parse_typedef_declaration).
+        return parse_typedef_declaration(base_type) if is_typedef
 
         type = parse_pointer_declarator(base_type)
         name_tok = expect_ident
@@ -219,6 +256,9 @@ module Rubycc
         expect_punct("(")
         params = parse_parameter_type_list
         expect_punct(")")
+        # A function name is an ordinary identifier at file scope, recorded so an
+        # inner block declaring the same name shadows it against a typedef check.
+        declare_ordinary_name(name_tok.value)
 
         if peek.punct?(";")
           advance
@@ -260,6 +300,7 @@ module Rubycc
           end
           initializer_value = parse_constant_initializer(eq_tok)
         end
+        declare_ordinary_name(name_tok.value)
         AST::GlobalDecl.new(name_tok.value, type, initializer_value, name_tok)
       end
 
@@ -290,23 +331,65 @@ module Rubycc
         negate ? -tok.value : tok.value
       end
 
-      # declaration-specifiers = type-specifier+: consumes a run of integer/void
-      # type-specifier keywords (in any order) and returns the base
-      # Rubycc::Type any leading "*" run then builds a pointer from. A "struct"
-      # is a specifier on its own and hands off to #parse_struct_specifier,
-      # which resolves or defines the tag; the integer keywords are collected
-      # and normalized by #normalize_type_specifiers.
+      # A bare type-specifier list with no storage class, used everywhere a type
+      # is written without a "typedef" in front of it: a struct member, a
+      # parameter, and a type-name in a cast or sizeof. It resolves to a single
+      # Rubycc::Type, discarding the (always-false) typedef flag.
       def parse_type_specifier
-        first_tok = peek
-        return parse_struct_specifier if first_tok.keyword?("struct")
+        type, = parse_declaration_specifiers(allow_storage_class: false)
+        type
+      end
 
-        specs = []
-        while (tok = peek).type == :keyword && DECL_SPECIFIER_KEYWORDS.include?(tok.value)
-          specs << advance.value
+      # declaration-specifiers = (storage-class-specifier | type-specifier)+.
+      # Consumes the whole specifier run — an optional "typedef" storage class
+      # (6.7.1), which may sit anywhere among the type-specifiers, together with
+      # the type itself — and returns [base_type, is_typedef]. The base type any
+      # leading "*" run then builds a pointer from is one of: a run of
+      # integer/void keywords collected and normalized by
+      # #normalize_type_specifiers; a "struct"/"enum" specifier, which resolves
+      # or defines its tag; or a single typedef name, an identifier bound to a
+      # type in the ordinary namespace. A typedef name is recognized only as the
+      # first (and only) type-specifier — once any type keyword has been seen, a
+      # following identifier is the declarator, so "int T" declares a variable T
+      # even where T names a type (the standard rule that keeps typedef names
+      # shadowable). Mixing categories ("unsigned struct", "enum T", ...) is a
+      # diagnostic; `allow_storage_class` is false in the contexts a "typedef"
+      # cannot appear (a member, a parameter, a type-name).
+      def parse_declaration_specifiers(allow_storage_class:)
+        start_tok = peek
+        specs = []       # collected integer/void keyword strings
+        composite = nil  # a struct/enum/typedef-name Type (excludes `specs`)
+        is_typedef = false
+        loop do
+          tok = peek
+          if tok.keyword?("typedef")
+            error_at(tok, "'typedef' is not allowed here") unless allow_storage_class
+            error_at(tok, "duplicate 'typedef'") if is_typedef
+            is_typedef = true
+            advance
+          elsif tok.type == :keyword && DECL_SPECIFIER_KEYWORDS.include?(tok.value)
+            error_at(tok, "two or more data types in declaration specifiers") if composite
+            specs << advance.value
+          elsif tok.keyword?("struct")
+            error_at(tok, "two or more data types in declaration specifiers") if composite || !specs.empty?
+            composite = parse_struct_specifier
+          elsif tok.keyword?("enum")
+            error_at(tok, "two or more data types in declaration specifiers") if composite || !specs.empty?
+            composite = parse_enum_specifier
+          elsif composite.nil? && specs.empty? && tok.type == :ident && typedef_name?(tok.value)
+            composite = lookup_ordinary(tok.value).value
+            advance
+          else
+            break
+          end
         end
-        error_at(first_tok, "expected type specifier") if specs.empty?
 
-        normalize_type_specifiers(specs, first_tok)
+        if composite
+          [composite, is_typedef]
+        else
+          error_at(start_tok, "expected type specifier") if specs.empty?
+          [normalize_type_specifiers(specs, start_tok), is_typedef]
+        end
       end
 
       # Collapses a multiset of integer type-specifier keywords (in any order:
@@ -379,10 +462,141 @@ module Rubycc
           parse_struct_body(struct_type)
           struct_type
         elsif tag
-          reference_struct_tag(tag)
+          reference_struct_tag(tag, tag_tok)
         else
           error_at(struct_tok, "expected identifier or '{' after 'struct'")
         end
+      end
+
+      # enum-specifier (6.7.2.2): "enum identifier? { enumerator-list ,? }"
+      # defines the enumeration (registering the tag, if named, and every
+      # enumerator as an int constant in the current ordinary scope), while
+      # "enum identifier" references a previously defined enum tag. Either way an
+      # enum object is an int, so the specifier resolves to Type::Int and no
+      # dedicated enum type exists. Unlike a struct, an enum has no incomplete
+      # form: a reference to a tag with no visible definition is an error on the
+      # spot, since an int-sized object cannot be laid out from an unknown set of
+      # constants.
+      def parse_enum_specifier
+        enum_tok = advance # "enum"
+        tag_tok = peek.type == :ident ? advance : nil
+        tag = tag_tok&.value
+
+        if peek.punct?("{")
+          register_enum_tag(tag, tag_tok) if tag
+          parse_enum_body
+          Type::Int
+        elsif tag
+          resolve_enum_tag(tag, tag_tok)
+        else
+          error_at(enum_tok, "expected identifier or '{' after 'enum'")
+        end
+      end
+
+      # Registers an enum tag being defined in the current scope. A name already
+      # taken there by another enum is a redefinition; one taken by a struct tag
+      # is the wrong kind of tag (struct, union and enum share one namespace).
+      def register_enum_tag(tag, token)
+        existing = @tag_scopes.last[tag]
+        if existing
+          if existing.is_a?(EnumTag)
+            error_at(token, "redefinition of 'enum #{tag}'")
+          else
+            error_at(token, "'#{tag}' defined as wrong kind of tag")
+          end
+        end
+        @tag_scopes.last[tag] = EnumTag.new(tag)
+      end
+
+      # Resolves a bare "enum tag" reference (innermost scope outward) to
+      # Type::Int. A tag bound to a struct is the wrong kind of tag; a tag with
+      # no visible binding at all is undefined — an enum type cannot be used
+      # incomplete, so this is an error rather than a forward declaration.
+      def resolve_enum_tag(tag, token)
+        @tag_scopes.reverse_each do |scope|
+          found = scope[tag]
+          next unless found
+
+          error_at(token, "'#{tag}' defined as wrong kind of tag") unless found.is_a?(EnumTag)
+          return Type::Int
+        end
+        error_at(token, "use of undefined enum '#{tag}'")
+      end
+
+      # Parses "{ enumerator-list ,? }" (the enumerator-list must be non-empty).
+      # Each enumerator takes the previous value plus one, the first being 0,
+      # unless it names an explicit "= constant"; the folded value is bound as an
+      # int enum constant in the current ordinary scope. A trailing comma before
+      # "}" is allowed (C99).
+      def parse_enum_body
+        expect_punct("{")
+        next_value = 0
+        loop do
+          name_tok = expect_ident
+          value = next_value
+          if peek.punct?("=")
+            eq_tok = advance
+            value = parse_enum_constant(eq_tok)
+          end
+          declare_enum_constant(name_tok, value)
+          next_value = value + 1
+          break unless peek.punct?(",")
+
+          advance # ","
+          break if peek.punct?("}") # trailing comma ends the list
+        end
+        expect_punct("}")
+      end
+
+      # Folds an enumerator's "= constant" to a Ruby Integer, mirroring a case
+      # label (see #parse_case_constant): an integer or character constant,
+      # optionally preceded by unary "+"/"-" signs, or another enumerator already
+      # in scope. The folded value must be immediately followed by "," or "}",
+      # so a non-constant expression is rejected — general constant-expression
+      # evaluation arrives in a later step.
+      def parse_enum_constant(eq_tok)
+        negate = false
+        loop do
+          if peek.punct?("-")
+            advance
+            negate = !negate
+          elsif peek.punct?("+")
+            advance
+          else
+            break
+          end
+        end
+        tok = peek
+        follower = peek_ahead(1)
+        unless follower && (follower.punct?(",") || follower.punct?("}"))
+          error_at(eq_tok, "enumerator value is not an integer constant")
+        end
+        value = enum_constant_operand(tok, eq_tok)
+        advance
+        negate ? -value : value
+      end
+
+      # The integer an enumerator's "= constant" reduces to: an integer/character
+      # constant literal, or an identifier that is itself an enum constant in
+      # scope. Anything else (a variable, an arbitrary expression) is rejected.
+      def enum_constant_operand(tok, eq_tok)
+        return tok.value if tok.type == :num
+
+        if tok.type == :ident
+          entry = lookup_ordinary(tok.value)
+          return entry.value if entry&.kind == :enum
+        end
+        error_at(eq_tok, "enumerator value is not an integer constant")
+      end
+
+      # Binds an enumerator's name to its value as an int constant in the current
+      # ordinary scope. A name already bound there — by another enumerator or by
+      # a variable — is a redefinition.
+      def declare_enum_constant(name_tok, value)
+        if @ordinary_scopes.last.key?(name_tok.value)
+          error_at(name_tok, "redefinition of '#{name_tok.value}'")
+        end
+        @ordinary_scopes.last[name_tok.value] = OrdinaryName.new(:enum, value)
       end
 
       # Resolves the tag being *defined* to the StructType #parse_struct_body
@@ -396,6 +610,7 @@ module Rubycc
       def define_struct_tag(tag, token)
         existing = @tag_scopes.last[tag]
         if existing
+          error_at(token, "'#{tag}' defined as wrong kind of tag") if existing.is_a?(EnumTag)
           error_at(token, "redefinition of 'struct #{tag}'") if existing.complete?
           return existing
         end
@@ -409,10 +624,13 @@ module Rubycc
       # is forward-declared: a fresh incomplete struct is registered in the
       # current scope, so "struct node;" introduces the tag and "struct node *p;"
       # names a pointer to an as-yet-undefined struct.
-      def reference_struct_tag(tag)
+      def reference_struct_tag(tag, token)
         @tag_scopes.reverse_each do |scope|
           found = scope[tag]
-          return found if found
+          next unless found
+
+          error_at(token, "'#{tag}' defined as wrong kind of tag") if found.is_a?(EnumTag)
+          return found
         end
         struct_type = Type::StructType.new(tag)
         @tag_scopes.last[tag] = struct_type
@@ -462,12 +680,18 @@ module Rubycc
         error_at(token, "field '#{token.value}' has incomplete type") if incomplete
       end
 
-      # Whether `token` opens a declaration (any integer/void type-specifier
-      # keyword or "struct"), letting block-item and for-init tell a declaration
-      # from a statement, and the cast/sizeof parsers tell a type-name from a
-      # parenthesized expression.
+      # Whether `token` opens a declaration, letting block-item and for-init tell
+      # a declaration from a statement, and the cast/sizeof parsers tell a
+      # type-name from a parenthesized expression. A declaration begins with an
+      # integer/void type-specifier keyword, "struct"/"enum", the "typedef"
+      # storage class, or a typedef name — an identifier bound to a type in the
+      # ordinary namespace whose innermost binding is not shadowed by a variable.
       def type_specifier?(token)
-        token.type == :keyword && (DECL_SPECIFIER_KEYWORDS.include?(token.value) || token.value == "struct")
+        if token.type == :keyword
+          return DECL_SPECIFIER_KEYWORDS.include?(token.value) ||
+                 token.value == "struct" || token.value == "enum" || token.value == "typedef"
+        end
+        token.type == :ident && typedef_name?(token.value)
       end
 
       # Rejects `type` when it denotes a bare void or an array of void: this
@@ -487,11 +711,16 @@ module Rubycc
           error_at(param.token, "parameter name omitted") if param.name.nil?
         end
         expect_punct("{")
-        # The body is a block, so it owns a tag scope: a struct defined in one
-        # function's body is invisible to the next.
+        # The body is a block, so it owns a tag scope and an ordinary scope: a
+        # struct or typedef defined in one function's body is invisible to the
+        # next. The parameters live in this body scope as ordinary names, so a
+        # parameter shadows an outer typedef of the same name inside the body.
         @tag_scopes.push({})
+        @ordinary_scopes.push({})
+        params.each { |param| declare_ordinary_name(param.name) }
         body = []
         body.concat(parse_block_item) until peek.punct?("}")
+        @ordinary_scopes.pop
         @tag_scopes.pop
         expect_punct("}")
         AST::FunctionDef.new(name, return_type, params, body, return_tok)
@@ -546,14 +775,19 @@ module Rubycc
       end
 
       def parse_declaration
-        base_type = parse_type_specifier
+        base_type, is_typedef = parse_declaration_specifiers(allow_storage_class: true)
 
-        # A bare "struct point { ... };" (or "struct node;") inside a block just
-        # declares or defines the tag, adding no local; it yields no items.
+        # A bare "struct point { ... };" (or "struct node;", or a tag-only "enum
+        # E { ... };") inside a block just declares or defines the tag, adding no
+        # local; it yields no items.
         if peek.punct?(";")
           advance
           return []
         end
+
+        # A local typedef binds names as types in this block's scope; like a
+        # file-scope typedef it yields no items.
+        return parse_typedef_declaration(base_type) if is_typedef
 
         decls = [parse_init_declarator(base_type)]
         while peek.punct?(",")
@@ -562,6 +796,28 @@ module Rubycc
         end
         expect_punct(";")
         decls
+      end
+
+      # A typedef declaration: a run of comma-separated declarators sharing
+      # `base_type`, each binding its name as a type (its "*" run and array
+      # suffix applied) in the current ordinary scope. A typedef declarator may
+      # not have an initializer (6.7.1); the declaration itself contributes no
+      # AST node, so this returns an empty run.
+      def parse_typedef_declaration(base_type)
+        loop do
+          type = parse_pointer_declarator(base_type)
+          name_tok = expect_ident
+          type = parse_array_declarator(type)
+          if peek.punct?("=")
+            error_at(peek, "typedef '#{name_tok.value}' must not be initialized")
+          end
+          declare_typedef_name(name_tok, type)
+          break unless peek.punct?(",")
+
+          advance # ","
+        end
+        expect_punct(";")
+        []
       end
 
       def parse_init_declarator(base_type)
@@ -577,6 +833,7 @@ module Rubycc
           end
           initializer = parse_assignment_expression
         end
+        declare_ordinary_name(name_tok.value)
         AST::VariableDecl.new(name_tok.value, type, initializer, name_tok)
       end
 
@@ -701,15 +958,17 @@ module Rubycc
       def parse_for_statement
         for_tok = advance # "for"
         expect_punct("(")
-        # C99 gives the for-loop's own parentheses a scope, so a struct tag (or
-        # a variable) declared in clause-1 is visible only through the loop.
+        # C99 gives the for-loop's own parentheses a scope, so a tag, a typedef
+        # or a variable declared in clause-1 is visible only through the loop.
         @tag_scopes.push({})
+        @ordinary_scopes.push({})
         init = parse_for_init
         condition = peek.punct?(";") ? nil : parse_expression
         expect_punct(";")
         step = peek.punct?(")") ? nil : parse_expression
         expect_punct(")")
         body = parse_statement
+        @ordinary_scopes.pop
         @tag_scopes.pop
         AST::For.new(init, condition, step, body, for_tok)
       end
@@ -807,11 +1066,25 @@ module Rubycc
         end
         tok = peek
         follower = peek_ahead(1)
-        unless tok.type == :num && follower&.punct?(":")
-          error_at(case_tok, "case label does not reduce to an integer constant")
-        end
+        error_at(case_tok, "case label does not reduce to an integer constant") unless follower&.punct?(":")
+
+        value = case_constant_operand(tok, case_tok)
         advance
-        negate ? -tok.value : tok.value
+        negate ? -value : value
+      end
+
+      # The integer a case label reduces to: an integer/character constant
+      # literal, or an identifier that is an enum constant in scope (so
+      # "case RED:" works through the same path). Anything else is not a
+      # constant case expression.
+      def case_constant_operand(tok, case_tok)
+        return tok.value if tok.type == :num
+
+        if tok.type == :ident
+          entry = lookup_ordinary(tok.value)
+          return entry.value if entry&.kind == :enum
+        end
+        error_at(case_tok, "case label does not reduce to an integer constant")
       end
 
       # "identifier : statement": a labeled statement, the target of a goto. The
@@ -826,11 +1099,14 @@ module Rubycc
 
       def parse_compound_statement
         brace_tok = expect_punct("{")
-        # A nested block introduces its own tag scope, mirroring its variable
-        # scope: a struct defined here shadows an outer tag and is gone at "}".
+        # A nested block introduces its own tag and ordinary scopes, mirroring
+        # its variable scope: a struct, an enum constant or a typedef defined
+        # here shadows an outer one and is gone at "}".
         @tag_scopes.push({})
+        @ordinary_scopes.push({})
         items = []
         items.concat(parse_block_item) until peek.punct?("}")
+        @ordinary_scopes.pop
         @tag_scopes.pop
         expect_punct("}")
         AST::Block.new(items, brace_tok)
@@ -974,11 +1250,10 @@ module Rubycc
       # cast-expression = "(" type-name ")" cast-expression | unary-expression.
       # A "(" begins a cast only when a type-specifier follows it; otherwise it
       # is an ordinary parenthesized expression, left for unary-expression (and
-      # finally primary-expression) to consume. With no typedef names yet, the
-      # keyword after "(" settles the choice with a single token of lookahead,
-      # so "(int)x" is a cast while "(x)(y)" — x not being a type — is a call.
-      # (When typedef arrives, this test must also consult the typedef-name
-      # namespace, since a "(" followed by a typedef name would open a cast.)
+      # finally primary-expression) to consume. #type_specifier? settles the
+      # choice with a single token of lookahead — a type keyword or a typedef
+      # name after "(" — so "(int)x" and "(T)x" are casts while "(x)(y)", x
+      # being neither, is a call.
       def parse_cast_expression
         if peek.punct?("(") && peek_ahead(1) && type_specifier?(peek_ahead(1))
           paren_tok = advance # "("
@@ -1140,7 +1415,15 @@ module Rubycc
           AST::StringLit.new(tok.value, tok)
         elsif tok.type == :ident
           advance
-          AST::VariableRef.new(tok.value, tok)
+          # An identifier bound to an enum constant folds to its int value on the
+          # spot, so the rest of the pipeline never sees an enumerator; one bound
+          # to (or shadowed by) an ordinary name stays a variable reference.
+          entry = lookup_ordinary(tok.value)
+          if entry&.kind == :enum
+            AST::IntLit.new(entry.value, tok, Type::Int)
+          else
+            AST::VariableRef.new(tok.value, tok)
+          end
         elsif tok.punct?("(")
           advance
           node = parse_expression
@@ -1179,6 +1462,44 @@ module Rubycc
       def integer_fits?(value, type)
         limit = type.signed? ? (1 << (type.size * 8 - 1)) - 1 : (1 << (type.size * 8)) - 1
         value <= limit
+      end
+
+      # --- ordinary-identifier namespace ---------------------------------
+
+      # Records a variable, parameter or function name in the current ordinary
+      # scope. The entry carries no payload; it exists only to shadow a typedef
+      # name or enum constant of the same name from an outer scope, so a
+      # redeclaration of an ordinary name (a genuine error the generator reports)
+      # is deliberately not diagnosed here.
+      def declare_ordinary_name(name)
+        @ordinary_scopes.last[name] = OrdinaryName.new(:ordinary, nil)
+      end
+
+      # Binds a typedef name to its resolved type in the current ordinary scope.
+      # A name already bound there — by an earlier typedef (even to the same
+      # type, which M1 rejects for simplicity), or by any other declaration — is
+      # a redefinition.
+      def declare_typedef_name(name_tok, type)
+        if @ordinary_scopes.last.key?(name_tok.value)
+          error_at(name_tok, "redefinition of typedef '#{name_tok.value}'")
+        end
+        @ordinary_scopes.last[name_tok.value] = OrdinaryName.new(:typedef, type)
+      end
+
+      # The innermost ordinary-scope entry for `name`, or nil when none binds it.
+      def lookup_ordinary(name)
+        @ordinary_scopes.reverse_each do |scope|
+          entry = scope[name]
+          return entry if entry
+        end
+        nil
+      end
+
+      # Whether `name`'s innermost ordinary binding is a typedef name — false
+      # when it is unbound or shadowed by a nearer variable or enum constant.
+      def typedef_name?(name)
+        entry = lookup_ordinary(name)
+        !entry.nil? && entry.kind == :typedef
       end
 
       # --- token consumption helpers -------------------------------------

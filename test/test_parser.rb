@@ -1347,4 +1347,149 @@ class TestParser < Minitest::Test
   def test_character_constant_is_always_plain_int
     assert_equal Type::Int, parse_expr("'A'").type
   end
+
+  # --- typedef (Step 18) --------------------------------------------------
+
+  # Parses the first body item of "<prelude> int main(void) { <body> }".
+  def parse_body_item(prelude, body)
+    program = parse("#{prelude} int main(void) { #{body} }")
+    program.functions.last.body.first
+  end
+
+  def test_typedef_name_declares_a_variable_of_the_aliased_type
+    decl = parse_body_item("typedef int MyInt;", "MyInt x; return 0;")
+    assert_kind_of AST::VariableDecl, decl
+    assert_equal "x", decl.name
+    assert_equal Type::Int, decl.type
+  end
+
+  def test_typedef_declaration_yields_no_object
+    # A typedef contributes no AST node, so the program holds only main.
+    program = parse("typedef int MyInt; int main(void) { return 0; }")
+    assert_equal 1, program.functions.size
+    assert_kind_of AST::FunctionDef, program.functions.first
+  end
+
+  def test_typedef_of_pointer_type
+    decl = parse_body_item("typedef int *IntPtr;", "IntPtr p; return 0;")
+    assert_equal Type::Pointer.new(Type::Int), decl.type
+  end
+
+  def test_typedef_of_array_type
+    decl = parse_body_item("typedef char Buf[8];", "Buf b; return 0;")
+    assert_equal Type::Array.new(Type::Char, 8), decl.type
+  end
+
+  def test_typedef_of_unsigned_long
+    decl = parse_body_item("typedef unsigned long VALUE;", "VALUE v; return 0;")
+    assert_equal Type::ULong, decl.type
+  end
+
+  def test_typedef_of_tagged_struct
+    decl = parse_body_item("struct point { int x; int y; }; typedef struct point Point;",
+                           "Point p; return 0;")
+    assert_predicate decl.type, :struct?
+    assert_equal "point", decl.type.tag
+    assert_equal 8, decl.type.size
+  end
+
+  def test_typedef_of_anonymous_struct
+    decl = parse_body_item("typedef struct { int x; } S;", "S s; return 0;")
+    assert_predicate decl.type, :struct?
+    assert_nil decl.type.tag
+  end
+
+  def test_typedef_name_is_usable_in_a_cast
+    # (T)5 parses as a cast, T resolving through the typedef namespace.
+    program = parse("typedef int T; int main(void) { return (T)5; }")
+    expr = program.functions.last.body.first.expr
+    assert_kind_of AST::Cast, expr
+    assert_equal Type::Int, expr.type
+    assert_equal 5, expr.operand.value
+  end
+
+  def test_typedef_name_is_usable_in_sizeof
+    program = parse("typedef int *P; int main(void) { return sizeof(P); }")
+    expr = program.functions.last.body.first.expr
+    assert_kind_of AST::SizeofType, expr
+    assert_equal Type::Pointer.new(Type::Int), expr.type
+  end
+
+  def test_typedef_name_is_usable_as_a_parameter_type
+    program = parse("typedef int T; int f(T a) { return a; } int main(void) { return 0; }")
+    param = program.functions.first.params.first
+    assert_equal Type::Int, param.type
+  end
+
+  def test_declarator_shadows_a_typedef_name_of_the_same_name
+    # After "int T;" in the block, T names a variable, so "T" is an ordinary
+    # reference rather than a type — the return statement reads the variable.
+    program = parse("typedef int T; int main(void) { int T = 5; return T; }")
+    body = program.functions.last.body
+    assert_kind_of AST::VariableDecl, body[0]
+    assert_equal "T", body[0].name
+    ret = body[1]
+    assert_kind_of AST::VariableRef, ret.expr
+    assert_equal "T", ret.expr.name
+  end
+
+  # --- enum (Step 18) -----------------------------------------------------
+
+  def test_enum_specifier_resolves_to_int
+    decl = parse_body_item("enum Color { RED, GREEN, BLUE };", "enum Color c; return 0;")
+    assert_kind_of AST::VariableDecl, decl
+    assert_equal Type::Int, decl.type
+  end
+
+  def test_enumerators_default_to_consecutive_values_from_zero
+    # RED=0, GREEN=1, BLUE=2, folded to int literals at their use sites.
+    program = parse("enum Color { RED, GREEN, BLUE }; " \
+                    "int main(void) { return RED + GREEN + BLUE; }")
+    expr = program.functions.last.body.first.expr
+    # (RED + GREEN) + BLUE = (0 + 1) + 2
+    assert_equal 2, expr.rhs.value
+    assert_equal 1, expr.lhs.rhs.value
+    assert_equal 0, expr.lhs.lhs.value
+  end
+
+  def test_enumerator_explicit_value_advances_the_next_default
+    # A = 10, B = 11 (10 + 1), C = 20, D = 21.
+    program = parse("enum E { A = 10, B, C = 20, D }; " \
+                    "int main(void) { return D; }")
+    expr = program.functions.last.body.first.expr
+    assert_kind_of AST::IntLit, expr
+    assert_equal 21, expr.value
+  end
+
+  def test_enumerator_folds_to_an_int_literal
+    program = parse("enum E { LO = -2, HI = 5 }; int main(void) { return HI; }")
+    expr = program.functions.last.body.first.expr
+    assert_kind_of AST::IntLit, expr
+    assert_equal 5, expr.value
+    assert_equal Type::Int, expr.type
+  end
+
+  def test_trailing_comma_in_enumerator_list_is_allowed
+    decl = parse_body_item("enum E { A, B, };", "int x = B; return x;")
+    assert_kind_of AST::VariableDecl, decl
+    assert_equal 1, decl.initializer.value
+  end
+
+  def test_enum_constant_folds_in_a_case_label
+    program = parse("enum Color { RED, GREEN }; int main(void) { int c = 1; " \
+                    "switch (c) { case RED: return 0; case GREEN: return 1; } return 9; }")
+    switch = program.functions.last.body[1]
+    labels = switch.body.items
+    assert_equal 0, labels[0].value
+    assert_equal 1, labels[1].value
+  end
+
+  def test_local_variable_shadows_an_enum_constant
+    # V is an enum constant at file scope but a variable inside main, so the
+    # reference resolves to the variable, not the folded constant.
+    program = parse("enum E { V = 7 }; int main(void) { int V = 3; return V; }")
+    ret = program.functions.last.body[1]
+    assert_kind_of AST::VariableRef, ret.expr
+    assert_equal "V", ret.expr.name
+  end
 end

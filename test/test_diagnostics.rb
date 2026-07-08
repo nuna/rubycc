@@ -789,4 +789,61 @@ class TestDiagnostics < Minitest::Test
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/invalid suffix on integer constant/, error.description)
   end
+
+  # --- typedef and enum (Step 18) -----------------------------------------
+
+  def test_typedef_with_initializer_is_rejected
+    source = "typedef int T = 1; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/typedef 'T' must not be initialized/, error.description)
+  end
+
+  def test_typedef_name_redefinition_is_rejected
+    source = "typedef int T; typedef char T; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/redefinition of typedef 'T'/, error.description)
+  end
+
+  def test_typedef_name_combined_with_type_specifier_is_rejected
+    # "unsigned T x": once "unsigned" is seen, T is the declarator, so "x" is a
+    # stray token — the same error gcc reports for this misuse.
+    source = "typedef int T; int main(void) { unsigned T x; return 0; }"
+    assert_raises(Rubycc::CompileError) { compile(source) }
+  end
+
+  def test_undefined_enum_tag_is_rejected
+    source = "int main(void) { enum Missing x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/use of undefined enum 'Missing'/, error.description)
+  end
+
+  def test_struct_tag_reused_as_enum_is_rejected
+    source = "struct S { int x; }; int main(void) { return sizeof(enum S); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/'S' defined as wrong kind of tag/, error.description)
+  end
+
+  def test_enum_tag_reused_as_struct_is_rejected
+    source = "enum E { A }; struct E { int x; }; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/'E' defined as wrong kind of tag/, error.description)
+  end
+
+  def test_duplicate_enumerator_is_rejected
+    source = "int main(void) { enum { A, A }; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/redefinition of 'A'/, error.description)
+  end
+
+  def test_enumerator_colliding_with_variable_is_rejected
+    source = "int main(void) { int v; enum { v }; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/redefinition of 'v'/, error.description)
+  end
+
+  def test_non_constant_enumerator_value_is_rejected
+    source = "int main(void) { enum { A = 1 + 2 }; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/enumerator value is not an integer constant/, error.description)
+  end
 end

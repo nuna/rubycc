@@ -1628,6 +1628,58 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
+  # enum and typedef (Step 18): default/explicit/mixed enumerator values, an
+  # enum constant used as a switch case label, an enum variable assigned and
+  # computed with, a typedef alias for unsigned long arithmetic, a struct
+  # typedef accessed by value and through a pointer, a typedef array, a block
+  # that shadows a typedef with a variable of the same name, and typedef names
+  # in a cast and a sizeof. Each case sizes its result to a 0..255 exit code.
+  ENUM_TYPEDEF_DIFFERENTIAL_SOURCES = [
+    # Enumerators default to 0, 1, 2, ...; the last one reads back its index.
+    "enum Weekday { MON, TUE, WED, THU, FRI }; int main(void) { return FRI; }",
+    # Explicit values, and a default that resumes from the previous one plus one.
+    "enum E { P = 10, Q, R = 20, S }; int main(void) { return P + Q + R + S; }",
+    # Bit-flag style constants combined by addition.
+    "enum Bits { A = 1, B = 2, C = 4, D = 8 }; int main(void) { return A + B + C + D; }",
+    # A negative explicit value participates in arithmetic.
+    "enum Range { LO = -2, HI = 2 }; int main(void) { return (HI - LO) + 40; }",
+    # A character-constant enumerator value.
+    "enum Ch { X = 'A', Y = 'B' }; int main(void) { return Y - X + 41; }",
+    # An enum constant folded into a switch case label.
+    "enum Color { RED, GREEN, BLUE }; int main(void) { int c = 2; " \
+    "switch (c) { case RED: return 1; case GREEN: return 2; case BLUE: return 42; } return 0; }",
+    # An enum variable (an int) assigned and advanced.
+    "enum Color { RED, GREEN, BLUE }; int main(void) { enum Color c = GREEN; c = c + 1; return c + 41; }",
+    # sizeof of an enum type and of an enum variable are both sizeof(int) == 4.
+    "enum Color { RED }; int main(void) { enum Color c = RED; return sizeof(enum Color) + sizeof(c) * 10 - 2; }",
+    # A typedef alias for unsigned long carries a computation past 32 bits.
+    "typedef unsigned long VALUE; int main(void) { VALUE a = 4294967296; VALUE b = a + 1; " \
+    "return (int)(b >> 32) + (int)(b & 255); }",
+    # A struct typedef accessed by value.
+    "typedef struct { int x; int y; } Point; int main(void) { Point p; p.x = 20; p.y = 22; return p.x + p.y; }",
+    # A struct typedef passed and read through a pointer parameter.
+    "typedef struct { int x; } Box; int get(Box *b) { return b->x; } " \
+    "int main(void) { Box b; b.x = 42; return get(&b); }",
+    # A typedef pointer alias written through.
+    "typedef int *IntPtr; int main(void) { int a = 30; IntPtr p = &a; *p = *p + 12; return a; }",
+    # A typedef array alias.
+    "typedef char Buf[4]; int main(void) { Buf b; b[0] = 10; b[1] = 32; return b[0] + b[1]; }",
+    # A block-local variable shadows an outer typedef name of the same spelling.
+    "typedef int T; int main(void) { T x = 5; { int T = 10; return x + T + 27; } }",
+    # A typedef name in a cast and in sizeof.
+    "typedef int Elem; int main(void) { Elem a = 100; Elem b = (Elem)200; return (a + b) & 255; }",
+    "typedef int T; int main(void) { T x = 40; return sizeof(T) + x - 2; }"
+  ].freeze
+
+  def test_enum_and_typedef_match_gcc_exit_codes
+    ENUM_TYPEDEF_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
   private
 
   def run_source(source, compiler:)

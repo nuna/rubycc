@@ -209,6 +209,12 @@ class TestLexer < Minitest::Test
     assert_equal %w[struct point], tokens.map(&:value)
   end
 
+  def test_enum_and_typedef_are_keywords
+    tokens = lex("enum typedef Color").reject(&:eof?)
+    assert_equal %i[keyword keyword ident], tokens.map(&:type)
+    assert_equal %w[enum typedef Color], tokens.map(&:value)
+  end
+
   def test_arrow_is_a_single_token
     tokens = lex("p->x").reject(&:eof?)
     assert_equal %i[ident punct ident], tokens.map(&:type)
