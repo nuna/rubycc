@@ -1,6 +1,7 @@
-/* FizzBuzz: ループ・剰余・if/else 連鎖・ローカル配列・ポインタ演算・
-   外部関数 puts の呼び出し(プロトタイプ宣言経由)を使う。
-   printf はまだ無いので、整数の 10 進化は手書きの print_int で行う。 */
+/* Step 10(char・文字/文字列リテラル)までの機能によるサンプル: FizzBuzz。
+   ループ・剰余・if/else 連鎖(Step 4-5)、関数(Step 6)、ローカル配列と
+   ポインタ演算(Step 8)、char と文字列リテラル・外部関数 puts の呼び出し
+   (Step 10)を使う。printf はまだ無いので 10 進化は手書きの print_int。 */
 
 int puts(char *s);
 
