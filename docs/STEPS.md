@@ -414,7 +414,45 @@ enum の列挙型としての区別(-Wenum-compare 相当の警告等)は持た�
 
 ---
 
+## Step 19 — union・無名 struct/union メンバ(596bf9e)
+
+**内容**: union(6.7.2.1)と無名 struct/union メンバ(C11 6.7.2.1p13)。
+ジェネレータ・IR・backend は無変更。
+
+**設計判断**:
+- **StructType に kind(:struct | :union)を追加して流用**(別クラスを作らない —
+  ROADMAP の確定判断)。`struct?` は「struct または union の集成体」の意味に広げて
+  両方 true を維持。ジェネレータの「集成体かどうか」の全分岐(メンバアドレス・
+  :memcpy 丸ごとコピー・値渡し拒否・スカラー要求診断)が読み替えなしで union に
+  効くための選択で、意味の変更は struct? のコメントに明記。区別が要るのは
+  タグ種別チェックと to_s 表示だけで、そこに `union?` を使う。
+- **レイアウトのみ kind 分岐**: layout_struct(既存の逐次配置)/ layout_union
+  (全メンバ offset 0、サイズ = 最大メンバサイズを最大アラインメントへ切り上げ)。
+  不完全→define で完成という可変性・恒等比較・前方宣言・自己参照ポインタの機構は
+  struct と完全共有。
+- **無名メンバは member(name) の透過探索で実現**: 名前付きメンバを先に探し、
+  なければ name=nil の集成体メンバの中を再帰探索して「無名メンバの offset +
+  内側の offset」を畳み込んだ合成 Member を返す。内側の再帰が返す Member には
+  既に内側の合成 offset が入っているため、外側は自分の offset を足すだけで
+  何段ネストしても 1 回のルックアップで解決する。ジェネレータの . / -> 低下は
+  member.offset / member.type しか見ないので、無名メンバの存在を一切知らない
+  まま透過アクセスが成立(無変更の根拠)。
+- **名前衝突はパーサの define 時に診断**: 無名メンバが透過的に晒す全名前を
+  再帰収集して seen 集合に畳み、直接メンバとの衝突を双方向(無名→直接、
+  直接→無名)で「duplicate member」として検出。
+- **タグ付き無宣言子は一律拒否**(`struct Inner { ... };` / `struct Inner;` が
+  struct 本体内に単独で現れる形)。C11 の無名メンバはタグなしに限るため
+  「declaration does not declare anything」で診断(gcc は警告どまりだが M1 は
+  エラーに単純化)。
+
+**トレードオフ**: struct 本体内の `enum { A };`(メンバなしの enum 定数宣言)も
+「declaration does not declare anything」で拒否される(gcc は許容)。実害が出た
+時点で緩和。型パンニングの読み出し値はリトルエンディアン前提(x86-64 のみが
+ターゲットの M1 では gcc 差分テストと整合)。
+
+---
+
 ## 現在のテスト規模
 
-Step 18 完了時点: **617 runs / 1,910 assertions / 0 failures**(`rake test`)。
+Step 19 完了時点: **635 runs / 1,968 assertions / 0 failures**(`rake test`)。
 内訳: 字句・パーサ・型・ELF・診断・CLI のユニットテスト + 実行テスト(gcc 差分比較込み)。
