@@ -377,7 +377,44 @@ NoMethodError(71 テスト失敗)→ 全型クラスに `bool?`(false)を追加�
 
 ---
 
+## Step 18 — enum・typedef(0395856)
+
+**内容**: enum-specifier(6.7.2.2)と typedef(6.7.1)。C の「識別子が型名かどうかで
+構文が変わる」曖昧性をパーサ側スコープ表で解決。ジェネレータ・IR・backend は無変更。
+
+**設計判断**:
+- **通常識別子スコープ(@ordinary_scopes)をパーサに追加**し、既存のタグスコープと
+  完全並走で push/pop(関数本体・for 括弧・compound)。エントリは typedef 名
+  (→解決済み Type)、enum 定数(→Integer 値)、通常識別子(ペイロードなし)の 3 種。
+  通常識別子は「内側スコープの変数宣言が外側の typedef 名/enum 定数をシャドウする」
+  ことだけのために記録し、再宣言診断は既存のジェネレータ側に残す(責務の重複を回避)。
+- **字句解析器は変更しない**(ROADMAP の確定判断)。typedef 名は識別子のまま
+  トークン化され、パーサが type_specifier? の照会で解決する。lexer hack ではなく
+  パーサ内スコープ表方式。
+- **typedef 名の認識は「最初で唯一の型指定子」の位置のみ**。型キーワードを 1 つでも
+  読んだ後の識別子は宣言子(`int T;` は typedef T があっても変数 T の宣言)という
+  ISO C の規則どおりで、これがシャドウ宣言を可能にする。`unsigned T x;` は
+  T が宣言子になった結果の構文エラー(gcc と同じ挙動)。
+- **enum 型は Type::Int をそのまま返す**(専用 EnumType なし — ROADMAP の確定判断)。
+  enum 定数は式中でも case ラベルでも enumerator 定数式でもパーサが
+  IntLit(Type::Int) に畳み込むため、AST 以降のパイプラインは enumerator を一切
+  見ない。ジェネレータ無変更はこの帰結。
+- **enum タグは struct タグと同一名前空間**(C 6.2.3)。StructType と区別する
+  EnumTag マーカーを @tag_scopes に置き、種別不一致を「defined as wrong kind of
+  tag」で診断。enum に不完全形は無いので未定義タグの参照は即エラー
+  (struct の前方宣言との対比)。
+- **enumerator 値の畳み込みはケース定数と同じ制限**(整数・文字定数 + 単項 +/-)に
+  「スコープ内の他 enumerator 参照」を加えた範囲。一般の定数式(`A = 1 + 2`)は
+  Step 20 の定数評価器(6.6)導入時に拡張。
+- **同一型への再 typedef も一律拒否**(M1 単純化。C11 6.7p3 は同一型なら許容)。
+  ruby.h 処理で実害が出た時点で緩和する。
+
+**トレードオフ**: typedef の再定義許容(C11 準拠)と一般定数式の enumerator は先送り。
+enum の列挙型としての区別(-Wenum-compare 相当の警告等)は持たない(int と完全同一視)。
+
+---
+
 ## 現在のテスト規模
 
-Step 17 完了時点: **588 runs / 1,827 assertions / 0 failures**(`rake test`)。
+Step 18 完了時点: **617 runs / 1,910 assertions / 0 failures**(`rake test`)。
 内訳: 字句・パーサ・型・ELF・診断・CLI のユニットテスト + 実行テスト(gcc 差分比較込み)。
