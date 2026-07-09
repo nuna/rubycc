@@ -6,7 +6,8 @@ module Rubycc
     #
     # Section layout (in this order): NULL, .text, .rodata (only with string
     # literals), .data (only with initialized globals), .bss (only with
-    # zero-initialized globals), .rela.text (only when there are relocations),
+    # zero-initialized globals), .rela.text (only when there are text
+    # relocations), .rela.data (only when a .data pointer slot needs one),
     # .note.GNU-stack, .symtab, .strtab, .shstrtab. Section indices are not
     # hard-coded: the ordered name list is assembled in #to_binary and a
     # name -> index lookup resolves the cross-references (symtab's sh_link,
@@ -21,6 +22,11 @@ module Rubycc
     # reference as an R_X86_64_PC32 against the .rodata section symbol with the
     # string's byte offset (minus 4) as its addend, and each global reference as
     # an R_X86_64_PC32 against that global's own object symbol (addend -4).
+    #
+    # .rela.data carries the absolute R_X86_64_64 relocations that patch a .data
+    # pointer slot: one against another object's symbol (addend 0) for a "&other"
+    # or a decayed global array, and one against the .rodata section symbol (the
+    # string's byte offset as its addend) for a string-literal pointer.
     #
     # .data holds the initialized globals' little-endian bytes; .bss is a NOBITS
     # section that reserves space for the zero-initialized ones without occupying
@@ -63,9 +69,11 @@ module Rubycc
       STT_SECTION = 3
       STT_FILE    = 4
 
-      # x86_64 relocation types: PC32 for a plain PC-relative reference (e.g. a
-      # "lea rip" into .rodata) and PLT32 for a near call (PC-relative,
-      # PLT-aware).
+      # x86_64 relocation types: 64 for an absolute 64-bit address (a pointer
+      # slot in .data initialized to another object's address), PC32 for a plain
+      # PC-relative reference (e.g. a "lea rip" into .rodata) and PLT32 for a near
+      # call (PC-relative, PLT-aware).
+      R_X86_64_64    = 1
       R_X86_64_PC32  = 2
       R_X86_64_PLT32 = 4
 
@@ -86,6 +94,7 @@ module Rubycc
         @object_symbols = []
         @undefined_symbols = []
         @relocations = []
+        @data_relocations = []
       end
 
       def add_text_section(bytes)
@@ -161,6 +170,24 @@ module Rubycc
         self
       end
 
+      # Records an absolute 64-bit reference inside .data to the named file-scope
+      # object `symbol` (a pointer global initialized with "&other" or a decayed
+      # global array). `offset` is the pointer slot's byte offset within .data.
+      # Resolved against that symbol as R_X86_64_64 with an addend of 0.
+      def add_data_relocation(offset:, symbol:)
+        @data_relocations << { kind: :symbol, offset: offset, symbol: symbol }
+        self
+      end
+
+      # Records an absolute 64-bit reference inside .data into .rodata (a pointer
+      # global initialized with a string literal). `offset` is the pointer slot's
+      # byte offset within .data and `addend` the string's byte offset within
+      # .rodata. Resolved against the .rodata section symbol as R_X86_64_64.
+      def add_data_rodata_relocation(offset:, addend:)
+        @data_relocations << { kind: :rodata, offset: offset, addend: addend }
+        self
+      end
+
       def add_file_symbol(filename)
         @file_symbol = filename
         self
@@ -176,8 +203,9 @@ module Rubycc
         strtab, sym_name_offsets = build_strtab
         symtab = build_symtab(@symbols, sym_name_offsets)
         rela = relocations? ? build_rela(symbol_indices, rodata_sym_index) : nil
+        rela_data = data_relocations? ? build_rela_data(symbol_indices, rodata_sym_index) : nil
 
-        sections = section_layout(symtab: symtab, strtab: strtab, rela: rela)
+        sections = section_layout(symtab: symtab, strtab: strtab, rela: rela, rela_data: rela_data)
         assemble(sections)
       end
 
@@ -185,6 +213,10 @@ module Rubycc
 
       def relocations?
         !@relocations.empty?
+      end
+
+      def data_relocations?
+        !@data_relocations.empty?
       end
 
       def rodata?
@@ -208,6 +240,7 @@ module Rubycc
         names << ".data" if data?
         names << ".bss" if bss?
         names << ".rela.text" if relocations?
+        names << ".rela.data" if data_relocations?
         names.concat([".note.GNU-stack", ".symtab", ".strtab", ".shstrtab"])
       end
 
@@ -314,6 +347,24 @@ module Rubycc
         buf
       end
 
+      # Builds the .rela.data payload, one entry per recorded data relocation,
+      # all absolute R_X86_64_64. A :symbol reloc points at another object's
+      # symbol with an addend of 0 (the pointer slot holds that object's
+      # address); a :rodata reloc points at the .rodata section symbol with the
+      # string's byte offset as its addend.
+      def build_rela_data(symbol_indices, rodata_sym_index)
+        buf = +"".b
+        @data_relocations.each do |reloc|
+          case reloc[:kind]
+          when :symbol
+            append_rela(buf, reloc[:offset], symbol_indices.fetch(reloc[:symbol]), R_X86_64_64, 0)
+          when :rodata
+            append_rela(buf, reloc[:offset], rodata_sym_index, R_X86_64_64, reloc[:addend])
+          end
+        end
+        buf
+      end
+
       # Appends a single 24-byte Elf64_Rela entry (r_offset, r_info, r_addend).
       def append_rela(buf, offset, sym_index, type, addend)
         r_info = (sym_index << 32) | type
@@ -325,7 +376,7 @@ module Rubycc
       # Ordered section descriptors, matching @section_names. sh_link/sh_info
       # are held as section references (:symtab, :strtab, :text) and resolved
       # once every section index is fixed.
-      def section_layout(symtab:, strtab:, rela:)
+      def section_layout(symtab:, strtab:, rela:, rela_data:)
         sections = {}
         sections[nil] = { type: SHT_NULL, flags: 0, data: nil,
                           link: 0, info: 0, addralign: 0, entsize: 0 }
@@ -348,6 +399,11 @@ module Rubycc
         if rela
           sections[".rela.text"] = { type: SHT_RELA, flags: SHF_INFO_LINK,
                                      data: rela, link: :symtab, info: :text,
+                                     addralign: 8, entsize: RELA_ENTSIZE }
+        end
+        if rela_data
+          sections[".rela.data"] = { type: SHT_RELA, flags: SHF_INFO_LINK,
+                                     data: rela_data, link: :symtab, info: :data,
                                      addralign: 8, entsize: RELA_ENTSIZE }
         end
         sections[".note.GNU-stack"] = { type: SHT_PROGBITS, flags: 0, data: "".b,

@@ -69,12 +69,41 @@ module Rubycc
       VariableDecl = Data.define(:name, :type, :initializer, :token)
 
       # A file-scope (global) variable declaration. `type` is the declared
-      # Rubycc::Type (int, char, a pointer or a one-dimensional array).
-      # `initializer_value` is the initializer folded to a Ruby Integer (an
-      # integer/character constant, optionally negated) or nil when the
-      # declarator has no "= <constant>" part, since a global may only be
-      # initialized by a constant expression the parser evaluates on the spot.
-      GlobalDecl = Data.define(:name, :type, :initializer_value, :token)
+      # Rubycc::Type (int, char, a pointer, a one-dimensional array or a
+      # struct/union). At most one of two initializer fields is set:
+      # `initializer_value` is a plain scalar-integer initializer folded to a
+      # Ruby Integer on the spot (the common "int g = 1 + 2;" case, kept folded
+      # so nothing downstream re-evaluates it), while `initializer_node` carries
+      # a still-unfolded initializer the generator lowers itself — a brace
+      # initializer-list (AST::InitializerList) for an aggregate or scalar, a
+      # string literal for a char array, or an address constant for a pointer
+      # (a null pointer, "&other_global", a decayed global array name or a
+      # string literal). Both are nil for an uninitialized global, which lands
+      # in .bss.
+      GlobalDecl = Data.define(:name, :type, :initializer_value, :initializer_node, :token)
+
+      # A brace-enclosed initializer "{ ... }" (ISO C 6.7.9). `items` is the
+      # ordered list of InitItem, one per comma-separated element (a trailing
+      # comma adds none). Appears as a VariableDecl/GlobalDecl initializer, or
+      # nested as an InitItem's value; the resolver walks it against the
+      # object's type to place each scalar. `token` is the opening brace.
+      InitializerList = Data.define(:items, :token)
+
+      # One element of an initializer-list. `designators` is the (possibly
+      # empty) leading designator chain — ArrayDesignator / MemberDesignator
+      # nodes, so ".a.b = x" and "[1].m = y" carry two — that redirects the
+      # current object before `value` initializes it; `value` is either an
+      # expression node or a nested InitializerList.
+      InitItem = Data.define(:designators, :value)
+
+      # An array designator "[constant-expression]" (6.7.9). `index` is the
+      # bracketed constant folded to a Ruby Integer at parse time; `token` is
+      # the "[" for diagnostics (an out-of-range index).
+      ArrayDesignator = Data.define(:index, :token)
+
+      # A member designator ".identifier" (6.7.9). `name` is the member's name;
+      # `token` is the "." for diagnostics (an unknown member).
+      MemberDesignator = Data.define(:name, :token)
 
       # A reference to a local variable by name.
       VariableRef = Data.define(:name, :token)

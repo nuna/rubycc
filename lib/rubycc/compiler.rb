@@ -52,7 +52,13 @@ module Rubycc
           offset = align_up(data.bytesize, global.align)
           data << ("\0".b * (offset - data.bytesize))
           writer.add_global_object(global.name, :data, offset, global.size)
-          data << pack_global_init(global.init, global.size)
+          data << global.init.bytes
+          # Each pointer slot in the image is patched by a .data relocation,
+          # its .text-relative offset (within the global) biased by where the
+          # global itself landed in .data.
+          global.init.relocations.each do |reloc|
+            register_data_relocation(writer, reloc, offset, string_offsets)
+          end
         end
       end
       writer.set_data(data, align: data_align) unless data.empty?
@@ -117,14 +123,17 @@ module Rubycc
       (value + alignment - 1) / alignment * alignment
     end
 
-    # Packs a global's integer initializer into its storage width as a
-    # little-endian, two's-complement byte string (1 byte for a char, 4 for an
-    # int, 8 for a pointer).
-    def pack_global_init(value, size)
-      case size
-      when 1 then [value].pack("c")
-      when 8 then [value].pack("q<")
-      else [value].pack("l<")
+    # Registers one global-image relocation with the ELF writer, translating a
+    # within-global slot offset into a .data-section offset. A :symbol reloc
+    # points at another object's symbol (an absolute 64-bit address); a :string
+    # reloc points into .rodata, its addend the interned string's byte offset.
+    def register_data_relocation(writer, reloc, global_offset, string_offsets)
+      case reloc.kind
+      when :symbol
+        writer.add_data_relocation(offset: global_offset + reloc.offset, symbol: reloc.symbol)
+      when :string
+        writer.add_data_rodata_relocation(offset: global_offset + reloc.offset,
+                                          addend: string_offsets[reloc.string_id])
       end
     end
 

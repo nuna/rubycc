@@ -113,10 +113,29 @@ module Rubycc
     # A file-scope variable as laid out by the compiler. `name` is its symbol
     # name, `size` its storage width in bytes and `align` its required
     # alignment (its type size for a scalar/pointer, its element size for an
-    # array). `init` is the initializer folded to a Ruby Integer, written as a
-    # `size`-byte little-endian value in .data, or nil for a zero-initialized
-    # global that lives in .bss.
+    # array, its widest member's for a struct). `init` is either nil — a
+    # zero-initialized global that lives in .bss — or a GlobalInit: the
+    # `size`-byte little-endian image to place in .data together with the
+    # relocations that patch pointer slots at link time.
     Global = Data.define(:name, :size, :align, :init)
+
+    # The materialized initializer of a .data global: `bytes` is its full
+    # `size`-byte image (a scalar packed little-endian, an aggregate laid out
+    # member/element by member/element, a pointer slot left as eight zeros for a
+    # relocation to fill), and `relocations` is the list of GlobalReloc that
+    # patch the pointer slots. An all-zero image with no relocations is still a
+    # GlobalInit (an explicitly zero-initialized global), distinct from a nil
+    # `init` that reserves .bss space.
+    GlobalInit = Data.define(:bytes, :relocations)
+
+    # One relocation inside a global's .data image. `offset` is the byte offset
+    # of the 8-byte pointer slot within that global. `kind` is :symbol for the
+    # address of another file-scope object — `symbol` names it, resolved as an
+    # absolute 64-bit address (a "&global" or a decayed global array) — or
+    # :string for a string literal, where `string_id` indexes the translation
+    # unit's string pool and the compiler resolves it to a .rodata offset. The
+    # unused field is nil for each kind.
+    GlobalReloc = Data.define(:offset, :kind, :symbol, :string_id)
 
     # A whole translation unit lowered to IR: its `functions` (an array of
     # Function), the shared read-only string pool `strings` (an array of

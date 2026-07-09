@@ -2,6 +2,8 @@
 
 require_relative "ir"
 require_relative "../front/ast"
+require_relative "../front/constant_evaluator"
+require_relative "../front/initializer_resolver"
 require_relative "../type"
 require_relative "../compile_error"
 
@@ -71,12 +73,133 @@ module Rubycc
         if @global_bindings.key?(decl.name) || @signatures.key?(decl.name)
           error_at(decl.token, "redefinition of '#{decl.name}'")
         end
+        # Resolve the initializer first: a "[]" array bound is only known once
+        # its initializer has been walked, so the final type (and thus the
+        # storage size) may differ from the declared one. An uninitialized global
+        # keeps its declared type and lands in .bss (a nil init).
+        type = decl.type
+        init = nil
+        if decl.initializer_node
+          type, init = build_global_init(type, decl.initializer_node, decl.token)
+        elsif !decl.initializer_value.nil?
+          init = GlobalInit.new(bytes: pack_integer(decl.initializer_value, type.size), relocations: [])
+        end
         # A global needs a known storage width and boundary, so an incomplete
         # struct (a tag never defined) cannot be laid out in .bss/.data.
-        require_complete(decl.type, decl.token)
-        @global_bindings[decl.name] = Local.new(type: decl.type, storage: decl.name, global: true)
-        @globals << Global.new(name: decl.name, size: decl.type.size, align: decl.type.alignment,
-                               init: decl.initializer_value)
+        require_complete(type, decl.token)
+        @global_bindings[decl.name] = Local.new(type: type, storage: decl.name, global: true)
+        @globals << Global.new(name: decl.name, size: type.size, align: type.alignment, init: init)
+      end
+
+      # Materializes a global's deferred initializer into [final_type,
+      # GlobalInit]. A structural initializer (a brace list, or a string for a
+      # char array) is resolved and each placement packed into the byte image; a
+      # bare pointer initializer is an address constant. The image starts all
+      # zeros, so any byte the initializer leaves unset — struct padding, an
+      # array's tail, a string's NUL — is already zero (6.7.9p10/p21).
+      def build_global_init(type, node, token)
+        if Front::InitializerResolver.structural?(type, node)
+          resolved = Front::InitializerResolver.resolve(type, node)
+          final_type = resolved.type
+          require_complete(final_type, token)
+          image = "\0".b * final_type.size
+          relocations = []
+          resolved.entries.each { |entry| pack_global_entry(entry, image, relocations) }
+          [final_type, GlobalInit.new(bytes: image, relocations: relocations)]
+        else
+          require_complete(type, token)
+          image = "\0".b * type.size
+          relocations = []
+          pack_global_scalar(0, type, node, image, relocations)
+          [type, GlobalInit.new(bytes: image, relocations: relocations)]
+        end
+      end
+
+      # Writes one resolved placement into a global's image: a scalar folded (or
+      # relocated, for a pointer) into its slot, or a string literal's bytes
+      # copied verbatim (the surrounding zeros supply its NUL and any padding).
+      def pack_global_entry(entry, image, relocations)
+        case entry
+        when Front::ScalarInit
+          pack_global_scalar(entry.offset, entry.type, entry.value, image, relocations)
+        when Front::StringInit
+          image[entry.offset, entry.bytes.bytesize] = entry.bytes.b
+        end
+      end
+
+      # Packs one scalar slot of a global. An integer/_Bool slot is folded to a
+      # constant and stored little-endian; a pointer slot is an address constant
+      # (see #pack_global_pointer). Any other slot type has no constant form.
+      def pack_global_scalar(offset, type, value, image, relocations)
+        if type.integer?
+          folded = fold_global_constant(value)
+          image[offset, type.size] = pack_integer(folded, type.size)
+        elsif type.pointer?
+          pack_global_pointer(offset, value, image, relocations)
+        else
+          error_at(value.token, "unsupported initializer for global variable")
+        end
+      end
+
+      # Packs a global pointer slot. The only address constants this subset
+      # admits are: a null pointer constant (the eight zero bytes already in
+      # place); a string literal (a .rodata relocation on the interned string); a
+      # "&global" (an absolute relocation against that object's symbol); and a
+      # decayed global array name (the same). A function name (Step 21's function
+      # pointers) or a computed address like "&arr[i]" has no such form yet.
+      def pack_global_pointer(offset, value, _image, relocations)
+        if Front::AST.null_pointer_constant?(value)
+          nil # eight zero bytes are already in the image
+        elsif value.is_a?(Front::AST::StringLit)
+          relocations << GlobalReloc.new(offset: offset, kind: :string,
+                                         symbol: nil, string_id: intern_string(value.value))
+        elsif (name = address_constant_symbol(value))
+          relocations << GlobalReloc.new(offset: offset, kind: :symbol, symbol: name, string_id: nil)
+        else
+          error_at(value.token, "unsupported initializer for global variable")
+        end
+      end
+
+      # The file-scope object symbol a pointer initializer takes the address of,
+      # or nil when `value` is not such an address constant: "&g" against a global
+      # variable, or a bare global array name that decays to a pointer to its
+      # first element.
+      def address_constant_symbol(value)
+        if value.is_a?(Front::AST::Unary) && value.op == :addr &&
+           value.operand.is_a?(Front::AST::VariableRef)
+          binding = @global_bindings[value.operand.name]
+          return binding.storage if binding
+        elsif value.is_a?(Front::AST::VariableRef)
+          binding = @global_bindings[value.name]
+          return binding.storage if binding&.type&.array?
+        end
+        nil
+      end
+
+      # Folds a global's scalar-integer initializer element to a constant, the
+      # rule (6.6) a global requires; a non-constant element (a call, a variable)
+      # or a division by zero is diagnosed at its own token.
+      def fold_global_constant(node)
+        Front::ConstantEvaluator.evaluate(node)
+      rescue Front::ConstantEvaluator::NotConstant => e
+        error_at(e.token, "initializer element is not a constant")
+      rescue Front::ConstantEvaluator::DivisionByZero => e
+        error_at(e.token, "division by zero in constant expression")
+      end
+
+      # Packs an integer into `size` little-endian two's-complement bytes. The
+      # value is masked to the slot width first — the constant evaluator works in
+      # unbounded Ruby Integers, so an expression like "1L << 100" would
+      # otherwise overflow pack's fixed-width directives with a RangeError
+      # instead of storing the low bytes the way a C store to that width does.
+      def pack_integer(value, size)
+        masked = value & ((1 << (size * 8)) - 1)
+        case size
+        when 1 then [masked].pack("C")
+        when 2 then [masked].pack("S<")
+        when 4 then [masked].pack("L<")
+        else [masked].pack("Q<")
+        end
       end
 
       # Interns `bytes` (an ASCII-8BIT String) into the string pool, returning
@@ -564,24 +687,143 @@ module Rubycc
           error_at(decl.token, "redeclaration of '#{decl.name}'")
         end
 
-        # An array or a struct is an aggregate: it reserves a stack object
-        # sized to hold it (a struct must be complete first, so its width is
-        # known), and the parser has already rejected any initializer for one.
-        # A scalar takes a vreg slot and may be initialized in place.
+        # An array or a struct is an aggregate lowered onto a stack object; a
+        # scalar (int, pointer) takes a vreg slot.
         if decl.type.array? || decl.type.struct?
-          require_complete(decl.type, decl.token)
-          scope[decl.name] = Local.new(type: decl.type, storage: new_object(decl.type.size), global: false)
+          gen_aggregate_decl(decl, scope)
         else
-          vreg = new_vreg
-          scope[decl.name] = Local.new(type: decl.type, storage: vreg, global: false)
-          if decl.initializer
-            value, value_type = gen_value(decl.initializer)
-            unless compatible_assignment?(decl.type, decl.initializer, value_type)
-              error_at(decl.token, "incompatible types in assignment")
+          gen_scalar_decl(decl, scope)
+        end
+      end
+
+      # A scalar local. A brace-wrapped initializer ("int x = {5};", 6.7.9p11) is
+      # resolved to its single scalar value first; every other initializer is a
+      # plain expression. The binding is created before the initializer runs, so
+      # a (pathological) self-reference resolves to this very variable.
+      def gen_scalar_decl(decl, scope)
+        vreg = new_vreg
+        scope[decl.name] = Local.new(type: decl.type, storage: vreg, global: false)
+        return unless decl.initializer
+
+        value_node = decl.initializer
+        if value_node.is_a?(Front::AST::InitializerList)
+          value_node = Front::InitializerResolver.resolve(decl.type, value_node).entries.first.value
+        end
+        value, value_type = gen_value(value_node)
+        unless compatible_assignment?(decl.type, value_node, value_type)
+          error_at(decl.token, "incompatible types in assignment")
+        end
+        emit(:copy, dst: vreg, a: convert_for_assignment(value, value_type, decl.type))
+      end
+
+      # An aggregate local (array or struct). A structural initializer (a brace
+      # list, or a string for a char array) is resolved — completing an inferred
+      # "[]" bound — and lowered onto the stack object; a struct may also be
+      # copy-initialized from a whole-struct expression ("struct s a = b;"). The
+      # binding is created before the initializer is lowered so a member's
+      # initializer could refer back to the object.
+      def gen_aggregate_decl(decl, scope)
+        type = decl.type
+        init = decl.initializer
+
+        if init && Front::InitializerResolver.structural?(type, init)
+          resolved = Front::InitializerResolver.resolve(type, init)
+          type = resolved.type
+          require_complete(type, decl.token)
+          base = bind_stack_object(scope, decl.name, type)
+          lower_resolved_init(base, type, resolved.entries)
+          return
+        end
+
+        require_complete(type, decl.token)
+        base = bind_stack_object(scope, decl.name, type)
+        return unless init
+
+        # The only non-structural aggregate initializer is a whole-struct copy;
+        # an array cannot be initialized from a scalar or another array here.
+        if type.struct?
+          src, src_type = gen_value(init)
+          unless src_type == type
+            error_at(decl.token, "incompatible types in initialization")
+          end
+          gen_struct_copy(base, src, type)
+        else
+          error_at(decl.token, "invalid initializer for array (expected '{' or a string)")
+        end
+      end
+
+      # Reserves a stack object for `type`, binds `name` to it, and returns a
+      # vreg holding the object's base address (the destination every placement
+      # is written through).
+      def bind_stack_object(scope, name, type)
+        object_id = new_object(type.size)
+        scope[name] = Local.new(type: type, storage: object_id, global: false)
+        base = new_vreg
+        emit(:object_addr, dst: base, a: object_id)
+        base
+      end
+
+      # Lowers a resolved aggregate initializer onto the object at `base`. The
+      # object is zeroed whole first, then each explicit placement overwrites its
+      # slot, so any unspecified byte (struct padding, an array's tail, a
+      # string's NUL) reads as 0 with no bookkeeping over which ranges stay
+      # untouched. Each scalar is converted to its slot's type like an ordinary
+      # assignment; a string is written as immediate bytes.
+      def lower_resolved_init(base, type, entries)
+        zero_fill(base, type.size)
+        entries.each do |entry|
+          case entry
+          when Front::ScalarInit
+            addr = offset_address(base, entry.offset)
+            value, value_type = gen_value(entry.value)
+            unless compatible_assignment?(entry.type, entry.value, value_type)
+              error_at(entry.value.token, "incompatible types in initialization")
             end
-            emit(:copy, dst: vreg, a: convert_for_assignment(value, value_type, decl.type))
+            converted = convert_for_assignment(value, value_type, entry.type)
+            emit(:store, a: addr, b: converted, size: entry.type.size)
+          when Front::StringInit
+            write_string_bytes(base, entry.offset, entry.bytes)
           end
         end
+      end
+
+      # Zeroes `size` bytes at `base`, using the widest store that still fits at
+      # each step (8, then 4/2/1 for the tail) so any object size is covered by a
+      # handful of stores from a single zero register.
+      def zero_fill(base, size)
+        zero = new_vreg
+        emit(:const, dst: zero, a: 0, size: 8)
+        offset = 0
+        [8, 4, 2, 1].each do |chunk|
+          while size - offset >= chunk
+            emit(:store, a: offset_address(base, offset), b: zero, size: chunk)
+            offset += chunk
+          end
+        end
+      end
+
+      # Writes a char array's string initializer as a run of 1-byte immediate
+      # stores. Immediate bytes (rather than a memcpy from an interned .rodata
+      # copy) keep a char-array initializer out of the string pool; the earlier
+      # whole-object zeroing already supplied the terminating NUL and any tail.
+      def write_string_bytes(base, offset, bytes)
+        bytes.each_byte.with_index do |byte, i|
+          value = new_vreg
+          emit(:const, dst: value, a: byte)
+          emit(:store, a: offset_address(base, offset + i), b: value, size: 1)
+        end
+      end
+
+      # A vreg holding `base + offset`, or `base` itself when the offset is zero
+      # (the object's first byte needs no arithmetic).
+      def offset_address(base, offset)
+        return base if offset.zero?
+
+        off = new_vreg
+        emit(:const, dst: off, a: offset)
+        addr = new_vreg
+        emit(:add, dst: addr, a: base, b: off, size: 8)
+        addr
       end
 
       # Lowers an expression, returning [result_vreg, Rubycc::Type]. The type

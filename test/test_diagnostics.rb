@@ -313,10 +313,12 @@ class TestDiagnostics < Minitest::Test
     assert_match(/multidimensional arrays are not supported yet/, error.description)
   end
 
-  def test_array_initializer_is_rejected
+  def test_array_initialized_from_a_scalar_is_rejected
+    # An array is initialized by a brace list (or, for a char array, a string),
+    # never by a bare scalar expression.
     source = "int main(void) { int a[3] = 0; return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/array initializers are not supported yet/, error.description)
+    assert_match(/invalid initializer for array/, error.description)
   end
 
   # Step 14 resolves Step 9's intentional deviation: a pointer is a valid
@@ -535,20 +537,16 @@ class TestDiagnostics < Minitest::Test
     assert_match(%r{foo\.c:1:\d+: error: unsupported initializer for global variable}, error.message)
   end
 
-  def test_global_expression_initializer_is_rejected
-    source = "int g = 1 + 2; int main(void) { return 0; }"
+  def test_global_function_call_initializer_is_rejected
+    # A global's initializer is a constant-expression (6.6); a function call
+    # is never one, even though "1 + 2" now folds to a plain constant.
+    source = "int f(void); int g = f(); int main(void) { return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/unsupported initializer for global variable/, error.description)
   end
 
   def test_global_array_initializer_is_rejected
     source = "int a[3] = 0; int main(void) { return 0; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/unsupported initializer for global variable/, error.description)
-  end
-
-  def test_global_string_initializer_is_rejected
-    source = "char *s = \"hi\"; int main(void) { return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/unsupported initializer for global variable/, error.description)
   end
@@ -892,8 +890,114 @@ class TestDiagnostics < Minitest::Test
   end
 
   def test_non_constant_enumerator_value_is_rejected
-    source = "int main(void) { enum { A = 1 + 2 }; return 0; }"
+    source = "int main(void) { int v = 0; enum { A = v }; return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/enumerator value is not an integer constant/, error.description)
+  end
+
+  def test_enumerator_value_containing_an_assignment_is_rejected
+    # An assignment is not itself a constant-expression, even parenthesized
+    # inside one; "1 << 4" alone (no assignment) is fine (see test_parser.rb).
+    source = "int main(void) { int v = 0; enum { A = (v = 1) }; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/enumerator value is not an integer constant/, error.description)
+  end
+
+  def test_case_label_calling_a_function_is_rejected
+    source = "int f(void); int main(void) { switch (0) { case f(): return 1; } return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/case label does not reduce to an integer constant/, error.description)
+  end
+
+  def test_array_size_containing_an_assignment_is_rejected
+    source = "int main(void) { int x = 0; int a[(x = 3)]; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/array size must be an integer constant/, error.description)
+  end
+
+  def test_negative_computed_array_size_is_rejected
+    source = "int main(void) { int a[3 - 5]; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/array size must be positive/, error.description)
+  end
+
+  def test_division_by_zero_in_constant_expression_is_rejected
+    source = "int main(void) { switch (0) { case 1 / 0: return 1; } return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/division by zero in constant expression/, error.description)
+  end
+
+  def test_modulo_by_zero_in_constant_expression_is_rejected
+    source = "int main(void) { enum { A = 1 % 0 }; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/division by zero in constant expression/, error.description)
+  end
+
+  def test_short_circuited_division_by_zero_is_not_an_error
+    # "&&"/"||" only evaluate their right operand once the left has not
+    # already settled the result, exactly like the run-time operators; the
+    # never-reached "1 / 0" must not raise.
+    source = "int main(void) { switch (0) { case 1 || 1 / 0: return 1; case 0 && 1 / 0: return 2; } return 0; }"
+    compile(source)
+  end
+
+  # --- initializers (Step 20) ---------------------------------------------
+
+  def test_excess_elements_in_array_initializer_is_rejected
+    source = "int main(void) { int a[2] = {1, 2, 3}; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/excess elements in initializer/, error.description)
+  end
+
+  def test_braced_list_for_a_scalar_is_rejected
+    source = "int main(void) { int x = {1, 2}; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/excess elements in scalar initializer/, error.description)
+  end
+
+  def test_unknown_member_designator_is_rejected
+    source = "struct p { int x; int y; }; int main(void) { struct p a = {.z = 1}; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/unknown field designator '\.z'/, error.description)
+  end
+
+  def test_out_of_range_array_designator_is_rejected
+    source = "int main(void) { int a[3] = {[5] = 1}; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/array designator index 5 exceeds array bounds/, error.description)
+  end
+
+  def test_empty_braces_initializer_is_rejected
+    source = "int main(void) { int a[3] = {}; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/empty braces are not a valid initializer/, error.description)
+  end
+
+  def test_array_without_size_or_initializer_is_rejected
+    source = "int main(void) { int a[]; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/array size missing in 'a'/, error.description)
+  end
+
+  def test_overlong_string_initializer_for_char_array_is_rejected
+    # The array must hold the terminating NUL too, so "hi" (three bytes with
+    # the NUL) does not fit a char[2].
+    source = "int main(void) { char s[2] = \"hi\"; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/initializer-string for char array is too long/, error.description)
+  end
+
+  def test_non_constant_global_aggregate_element_is_rejected
+    source = "int f(void); int a[2] = {1, f()}; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/initializer element is not a constant/, error.description)
+  end
+
+  def test_global_pointer_to_a_function_name_is_rejected
+    # A function name as an address constant needs Step 21's function pointers;
+    # until then it is an unsupported global initializer.
+    source = "int f(void); int *p = f; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/unsupported initializer for global variable/, error.description)
   end
 end

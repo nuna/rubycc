@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require_relative "ast"
+require_relative "constant_evaluator"
+require_relative "initializer_resolver"
 require_relative "../type"
 require_relative "../compile_error"
 
@@ -17,9 +19,8 @@ module Rubycc
     #                               | global-declarator-suffix
     #                                 ("," declarator global-declarator-suffix)*
     #                                 ";" )                         -- variables
-    #   global-declarator-suffix  = ("[" integer-constant "]")?
-    #                               ("=" constant-initializer)?
-    #   constant-initializer      = ("+" | "-")* integer-constant
+    #   global-declarator-suffix  = ("[" constant-expression "]" | "[" "]")?
+    #                               ("=" initializer)?
     #   declaration-specifiers    = (storage-class-specifier | type-specifier)+
     #   storage-class-specifier   = "typedef"
     #   type-specifier            = "void" | "char" | "short" | "int" | "long"
@@ -43,13 +44,20 @@ module Rubycc
     #                               ("," parameter-declaration)*
     #   parameter-declaration     = type-specifier declarator?
     #   declarator                = "*"* direct-declarator
-    #   direct-declarator         = identifier ("[" integer-constant "]")?
+    #   direct-declarator         = identifier
+    #                               ("[" constant-expression "]" | "[" "]")?
     #   compound-statement        = "{" block-item* "}"
     #   block-item                = declaration | statement
     #   declaration               = type-specifier ";"
     #                             | type-specifier init-declarator
     #                               ("," init-declarator)* ";"
-    #   init-declarator           = declarator ("=" assignment-expression)?
+    #   init-declarator           = declarator ("=" initializer)?
+    #   initializer               = assignment-expression
+    #                             | "{" initializer-list ","? "}"
+    #   initializer-list          = designation? initializer
+    #                               ("," designation? initializer)*
+    #   designation               = designator+ "="
+    #   designator                = "[" constant-expression "]" | "." identifier
     #   statement                 = labeled-statement | return-statement
     #                             | expression-statement | selection-statement
     #                             | iteration-statement | jump-statement
@@ -77,6 +85,7 @@ module Rubycc
     #                                assignment-expression)?
     #   conditional-expression    = logical-OR-expression
     #                               ("?" expression ":" conditional-expression)?
+    #   constant-expression       = conditional-expression
     #   logical-OR-expression     = logical-AND-expression
     #                               ("||" logical-AND-expression)*
     #   logical-AND-expression    = inclusive-OR-expression
@@ -287,51 +296,38 @@ module Rubycc
         decls
       end
 
-      # One global declarator: the array suffix and an optional "= constant"
-      # initializer. A global may only be initialized by an integer/character
-      # constant (with an optional sign); an array, a non-constant expression, a
-      # string literal or an initializer list is rejected uniformly with
-      # "unsupported initializer for global variable".
+      # One global declarator: the array suffix and an optional "=" initializer.
+      # A plain scalar-integer initializer is a constant-expression (6.6) folded
+      # to a Ruby Integer on the spot (initializer_value). Every other admitted
+      # form is deferred to the generator as a raw node (initializer_node): a
+      # brace initializer-list for an aggregate or scalar, a string for a char
+      # array, or an address constant for a pointer (a null pointer, a "&global",
+      # a decayed global array name, or a string literal). A structural
+      # initializer also completes an inferred "[]" bound here. A non-constant
+      # scalar-integer initializer (a call, another variable, ...) is still
+      # rejected with "unsupported initializer for global variable"; the deferred
+      # forms the generator cannot fold reach the same diagnostic there.
       def parse_global_declarator(type, name_tok)
-        type = parse_array_declarator(type)
+        type = parse_array_declarator(type, allow_incomplete: true)
         reject_void_type(type, name_tok)
         initializer_value = nil
+        initializer_node = nil
         if peek.punct?("=")
-          eq_tok = advance
-          if type.array? || type.struct?
-            error_at(eq_tok, "unsupported initializer for global variable")
+          advance # "="
+          init = parse_initializer
+          if InitializerResolver.structural?(type, init)
+            type = InitializerResolver.resolve(type, init).type
+            initializer_node = init
+          elsif type.integer?
+            initializer_value = evaluate_constant_expression(init, "unsupported initializer for global variable")
+          else
+            initializer_node = init
           end
-          initializer_value = parse_constant_initializer(eq_tok)
+        elsif type.array? && type.length.nil?
+          error_at(name_tok, "array size missing in '#{name_tok.value}'")
         end
         declare_ordinary_name(name_tok.value)
-        AST::GlobalDecl.new(name_tok.value, type, initializer_value, name_tok)
-      end
-
-      # Folds a global's initializer to a Ruby Integer at parse time. Only an
-      # integer or character constant, optionally preceded by unary "+"/"-"
-      # signs, is a valid constant initializer; the folded value must be
-      # immediately followed by "," or ";", so a non-constant expression like
-      # "1 + 2" (or an identifier, a string or an initializer list) is rejected
-      # with "unsupported initializer for global variable" located at "=".
-      def parse_constant_initializer(eq_tok)
-        negate = false
-        loop do
-          if peek.punct?("-")
-            advance
-            negate = !negate
-          elsif peek.punct?("+")
-            advance
-          else
-            break
-          end
-        end
-        tok = peek
-        follower = peek_ahead(1)
-        unless tok.type == :num && follower && (follower.punct?(";") || follower.punct?(","))
-          error_at(eq_tok, "unsupported initializer for global variable")
-        end
-        advance
-        negate ? -tok.value : tok.value
+        AST::GlobalDecl.new(name_tok.value, type, initializer_value, initializer_node, name_tok)
       end
 
       # A bare type-specifier list with no storage class, used everywhere a type
@@ -540,8 +536,9 @@ module Rubycc
           name_tok = expect_ident
           value = next_value
           if peek.punct?("=")
-            eq_tok = advance
-            value = parse_enum_constant(eq_tok)
+            advance # "="
+            expr = parse_conditional_expression
+            value = evaluate_constant_expression(expr, "enumerator value is not an integer constant")
           end
           declare_enum_constant(name_tok, value)
           next_value = value + 1
@@ -551,47 +548,6 @@ module Rubycc
           break if peek.punct?("}") # trailing comma ends the list
         end
         expect_punct("}")
-      end
-
-      # Folds an enumerator's "= constant" to a Ruby Integer, mirroring a case
-      # label (see #parse_case_constant): an integer or character constant,
-      # optionally preceded by unary "+"/"-" signs, or another enumerator already
-      # in scope. The folded value must be immediately followed by "," or "}",
-      # so a non-constant expression is rejected — general constant-expression
-      # evaluation arrives in a later step.
-      def parse_enum_constant(eq_tok)
-        negate = false
-        loop do
-          if peek.punct?("-")
-            advance
-            negate = !negate
-          elsif peek.punct?("+")
-            advance
-          else
-            break
-          end
-        end
-        tok = peek
-        follower = peek_ahead(1)
-        unless follower && (follower.punct?(",") || follower.punct?("}"))
-          error_at(eq_tok, "enumerator value is not an integer constant")
-        end
-        value = enum_constant_operand(tok, eq_tok)
-        advance
-        negate ? -value : value
-      end
-
-      # The integer an enumerator's "= constant" reduces to: an integer/character
-      # constant literal, or an identifier that is itself an enum constant in
-      # scope. Anything else (a variable, an arbitrary expression) is rejected.
-      def enum_constant_operand(tok, eq_tok)
-        return tok.value if tok.type == :num
-
-        if tok.type == :ident
-          entry = lookup_ordinary(tok.value)
-          return entry.value if entry&.kind == :enum
-        end
-        error_at(eq_tok, "enumerator value is not an integer constant")
       end
 
       # Binds an enumerator's name to its value as an int constant in the current
@@ -896,41 +852,108 @@ module Rubycc
       def parse_init_declarator(base_type)
         type = parse_pointer_declarator(base_type)
         name_tok = expect_ident
-        type = parse_array_declarator(type)
+        type = parse_array_declarator(type, allow_incomplete: true)
         reject_void_type(type, name_tok)
         initializer = nil
         if peek.punct?("=")
-          eq_tok = advance
-          if type.array?
-            error_at(eq_tok, "array initializers are not supported yet")
+          advance # "="
+          initializer = parse_initializer
+          # A structural initializer (a brace list, or a string for a char array)
+          # fixes the object's type — completing an inferred "[]" bound — and is
+          # validated for shape here, so a later stage sees a finished type.
+          if InitializerResolver.structural?(type, initializer)
+            type = InitializerResolver.resolve(type, initializer).type
           end
-          initializer = parse_assignment_expression
+        elsif type.array? && type.length.nil?
+          error_at(name_tok, "array size missing in '#{name_tok.value}'")
         end
         declare_ordinary_name(name_tok.value)
         AST::VariableDecl.new(name_tok.value, type, initializer, name_tok)
       end
 
+      # initializer = assignment-expression | "{" initializer-list ","? "}"
+      # (6.7.9). A "{" opens a brace list; anything else is a single assignment
+      # expression (a scalar's value, or a whole string literal for a char
+      # array). The resolver later matches the shape against the object's type.
+      def parse_initializer
+        return parse_initializer_list if peek.punct?("{")
+
+        parse_assignment_expression
+      end
+
+      # initializer-list = designation? initializer ("," designation? initializer)*
+      # with an optional trailing comma before "}". Each element becomes an
+      # InitItem pairing its (possibly empty) designator chain with its value,
+      # which may itself be a nested brace list.
+      def parse_initializer_list
+        brace_tok = expect_punct("{")
+        items = []
+        until peek.punct?("}")
+          designators = parse_designation
+          value = parse_initializer
+          items << AST::InitItem.new(designators, value)
+          break unless peek.punct?(",")
+
+          advance # ","
+        end
+        expect_punct("}")
+        AST::InitializerList.new(items, brace_tok)
+      end
+
+      # designation = designator+ "=", where designator is "[" constant-expression
+      # "]" or "." identifier (6.7.9). Returns the designator chain, or an empty
+      # array when the next element is positional (no leading "[" or "."). An
+      # array designator's index is folded to a Ruby Integer on the spot, like an
+      # array bound.
+      def parse_designation
+        return [] unless peek.punct?("[") || peek.punct?(".")
+
+        designators = []
+        loop do
+          if peek.punct?("[")
+            bracket_tok = advance # "["
+            expr = parse_conditional_expression
+            index = evaluate_constant_expression(expr, "array designator is not an integer constant")
+            expect_punct("]")
+            designators << AST::ArrayDesignator.new(index, bracket_tok)
+          elsif peek.punct?(".")
+            dot_tok = advance # "."
+            name_tok = expect_ident
+            designators << AST::MemberDesignator.new(name_tok.value, dot_tok)
+          else
+            break
+          end
+        end
+        expect_punct("=")
+        designators
+      end
+
       # direct-declarator's optional array suffix. A bracketed length turns the
-      # declared object into an array of `element_type`; the length must be a
-      # positive integer-constant literal. A second "[" would begin a
-      # multidimensional array, which this subset does not model.
-      def parse_array_declarator(element_type)
+      # declared object into an array of `element_type`; the length is a
+      # constant-expression (6.6) folded to a positive Ruby Integer. When
+      # `allow_incomplete` is set (a variable or global with an initializer),
+      # empty brackets "[]" are accepted too, leaving the length nil for the
+      # initializer resolver to infer (6.7.9p22); everywhere else "[]" is an
+      # error. A second "[" would begin a multidimensional array, which this
+      # subset does not model.
+      def parse_array_declarator(element_type, allow_incomplete: false)
         return element_type unless peek.punct?("[")
 
-        advance # "["
-        length_tok = peek
-        unless length_tok.type == :num
-          error_at(length_tok, "array size must be an integer constant")
+        bracket_tok = advance # "["
+        if peek.punct?("]")
+          error_at(bracket_tok, "array size must be an integer constant") unless allow_incomplete
+          advance # "]"
+          length = nil
+        else
+          expr = parse_conditional_expression
+          length = evaluate_constant_expression(expr, "array size must be an integer constant")
+          expect_punct("]")
+          error_at(expr.token, "array size must be positive") unless length.positive?
         end
-        advance
-        unless length_tok.value.positive?
-          error_at(length_tok, "array size must be positive")
-        end
-        expect_punct("]")
         if peek.punct?("[")
           error_at(peek, "multidimensional arrays are not supported yet")
         end
-        Type::Array.new(element_type, length_tok.value)
+        Type::Array.new(element_type, length)
       end
 
       # Consumes the "*" run of a declarator, wrapping `base` in one pointer
@@ -1097,13 +1120,17 @@ module Rubycc
         AST::Switch.new(control, body, switch_tok)
       end
 
-      # "case constant-expression : statement". The case constant is folded to a
-      # Ruby Integer on the spot (see #parse_case_constant); the labeled
-      # statement follows the colon. Whether this case sits inside a switch, and
+      # "case constant-expression : statement". The case constant is parsed as
+      # a conditional-expression — constant-expression's production (6.6) — and
+      # folded to a Ruby Integer on the spot; the labeled statement follows the
+      # colon. A conditional operand's own ":" (as in "case 1 ? 2 : 3:") is
+      # consumed by conditional-expression itself, leaving exactly the label's
+      # ":" for #expect_punct here. Whether this case sits inside a switch, and
       # whether its value is unique, is left to the generator.
       def parse_case_statement
         case_tok = advance # "case"
-        value = parse_case_constant(case_tok)
+        expr = parse_conditional_expression
+        value = evaluate_constant_expression(expr, "case label does not reduce to an integer constant")
         expect_punct(":")
         body = parse_statement
         AST::Case.new(value, body, case_tok)
@@ -1116,48 +1143,6 @@ module Rubycc
         expect_punct(":")
         body = parse_statement
         AST::Default.new(body, default_tok)
-      end
-
-      # Folds a case label's constant to a Ruby Integer at parse time, mirroring
-      # a global initializer's constant (see #parse_constant_initializer): an
-      # integer or character constant, optionally preceded by unary "+"/"-"
-      # signs. General constant-expression evaluation (e.g. "case 1 + 2:")
-      # arrives with the constant evaluator in a later step, so the folded value
-      # must be immediately followed by the label's ":"; anything else is
-      # rejected as a non-constant case expression.
-      def parse_case_constant(case_tok)
-        negate = false
-        loop do
-          if peek.punct?("-")
-            advance
-            negate = !negate
-          elsif peek.punct?("+")
-            advance
-          else
-            break
-          end
-        end
-        tok = peek
-        follower = peek_ahead(1)
-        error_at(case_tok, "case label does not reduce to an integer constant") unless follower&.punct?(":")
-
-        value = case_constant_operand(tok, case_tok)
-        advance
-        negate ? -value : value
-      end
-
-      # The integer a case label reduces to: an integer/character constant
-      # literal, or an identifier that is an enum constant in scope (so
-      # "case RED:" works through the same path). Anything else is not a
-      # constant case expression.
-      def case_constant_operand(tok, case_tok)
-        return tok.value if tok.type == :num
-
-        if tok.type == :ident
-          entry = lookup_ordinary(tok.value)
-          return entry.value if entry&.kind == :enum
-        end
-        error_at(case_tok, "case label does not reduce to an integer constant")
       end
 
       # "identifier : statement": a labeled statement, the target of a goto. The
@@ -1603,6 +1588,20 @@ module Rubycc
           column: token.column,
           source_line: token.source_line
         )
+      end
+
+      # Folds `node` — a conditional-expression already parsed as a
+      # constant-expression (6.6) — to a Ruby Integer via ConstantEvaluator.
+      # A sub-expression that is not itself a constant expression is reported
+      # with `message` at its own token; a division/remainder by zero that is
+      # actually reached is reported at the operator's token, independent of
+      # `message`, since it is a different failure than "not a constant".
+      def evaluate_constant_expression(node, message)
+        ConstantEvaluator.evaluate(node)
+      rescue ConstantEvaluator::NotConstant => e
+        error_at(e.token, message)
+      rescue ConstantEvaluator::DivisionByZero => e
+        error_at(e.token, "division by zero in constant expression")
       end
     end
   end

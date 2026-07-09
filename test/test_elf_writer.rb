@@ -397,6 +397,51 @@ class TestElfWriter < Minitest::Test
     end
   end
 
+  # A pointer global initialized with "&g" (Step 20) produces a .rela.data
+  # section, whose single entry is an absolute R_X86_64_64 against g's symbol.
+  def test_data_relocation_is_absolute_against_the_object_symbol
+    bin = Rubycc::Compiler.new.compile("int g = 41; int *p = &g; int main(void) { return 0; }",
+                                       filename: "foo.c")
+    rela = find_section(bin, ".rela.data")
+    refute_nil rela, ".rela.data section should be emitted"
+    assert_equal 4, rela[:type]                          # SHT_RELA
+    assert_equal section_index(bin, ".symtab"), rela[:link]
+    assert_equal section_index(bin, ".data"), rela[:info]
+    assert_equal 1, rela[:size] / 24
+
+    r_info = bin[rela[:offset] + 8, 8].unpack1("Q<")
+    r_addend = bin[rela[:offset] + 16, 8].unpack1("q<")
+    assert_equal 1, r_info & 0xFFFFFFFF                  # R_X86_64_64
+    assert_equal 0, r_addend
+    assert_equal "g", symbol_name(bin, r_info >> 32)
+  end
+
+  # A pointer global initialized with a string literal produces a .rela.data
+  # entry against the .rodata section symbol, its addend the string's offset.
+  def test_data_relocation_for_a_string_pointer_targets_rodata
+    bin = Rubycc::Compiler.new.compile("char *s = \"hi\"; int main(void) { return 0; }",
+                                       filename: "foo.c")
+    rela = find_section(bin, ".rela.data")
+    refute_nil rela, ".rela.data section should be emitted"
+    assert_equal 1, rela[:size] / 24
+
+    r_info = bin[rela[:offset] + 8, 8].unpack1("Q<")
+    r_addend = bin[rela[:offset] + 16, 8].unpack1("q<")
+    assert_equal 1, r_info & 0xFFFFFFFF                  # R_X86_64_64
+    assert_equal 0, r_addend                             # "hi" is at .rodata offset 0
+  end
+
+  def test_readelf_reports_the_data_relocation
+    bin = Rubycc::Compiler.new.compile("int g = 41; int *p = &g; int main(void) { return 0; }",
+                                       filename: "foo.c")
+    with_object_file(bin) do |path|
+      stdout, status = Open3.capture2("readelf", "-r", path)
+      assert status.success?, "readelf failed to read relocations"
+      assert_match(/\.rela\.data/, stdout)
+      assert_match(/R_X86_64_64/, stdout)
+    end
+  end
+
   private
 
   def with_object_file(bin)

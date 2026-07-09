@@ -496,6 +496,63 @@ class TestParser < Minitest::Test
     assert_equal 65, case_stmt.value
   end
 
+  def test_case_label_folds_an_additive_constant_expression
+    program = parse("int main(void) { switch (x) { case 1 + 2: return 1; } }")
+    case_stmt = program.functions.first.body.first.body.items.first
+
+    assert_kind_of AST::Case, case_stmt
+    assert_equal 3, case_stmt.value
+  end
+
+  def test_case_label_folds_a_bitwise_or_enum_constant_expression
+    program = parse("enum Color { RED = 1 }; int main(void) { switch (x) { case RED | 4: return 1; } }")
+    case_stmt = program.functions.last.body.first.body.items.first
+
+    assert_kind_of AST::Case, case_stmt
+    assert_equal 5, case_stmt.value
+  end
+
+  def test_case_label_folds_a_conditional_expression
+    # "case 1 ? 2 : 3:" parses the "?:" operand's own ":" as part of the
+    # conditional-expression, leaving the label's ":" for the labeled
+    # statement that follows.
+    program = parse("int main(void) { switch (x) { case 1 ? 2 : 3: return 1; } }")
+    case_stmt = program.functions.first.body.first.body.items.first
+
+    assert_kind_of AST::Case, case_stmt
+    assert_equal 2, case_stmt.value
+    assert_kind_of AST::Return, case_stmt.body
+  end
+
+  def test_case_label_folds_short_circuiting_logical_operators
+    program = parse("int main(void) { switch (x) { case 0 || 5: return 1; case 1 && 0: return 2; } }")
+    labels = program.functions.first.body.first.body.items
+
+    assert_equal 1, labels[0].value
+    assert_equal 0, labels[1].value
+  end
+
+  def test_case_label_folds_a_sizeof_type_comparison
+    program = parse("int main(void) { switch (x) { case sizeof(int) == 4: return 1; } }")
+    case_stmt = program.functions.first.body.first.body.items.first
+
+    assert_equal 1, case_stmt.value
+  end
+
+  def test_case_label_truncates_division_toward_zero
+    program = parse("int main(void) { switch (x) { case -7 / 2: return 1; } }")
+    case_stmt = program.functions.first.body.first.body.items.first
+
+    assert_equal(-3, case_stmt.value)
+  end
+
+  def test_case_label_folds_a_cast_that_wraps_its_value
+    program = parse("int main(void) { switch (x) { case (char)300: return 1; } }")
+    case_stmt = program.functions.first.body.first.body.items.first
+
+    assert_equal 44, case_stmt.value
+  end
+
   def test_parses_default_label
     program = parse("int main(void) { switch (x) { default: return 1; } }")
     default_stmt = program.functions.first.body.first.body.items.first
@@ -695,6 +752,20 @@ class TestParser < Minitest::Test
     assert_match(/array size must be an integer constant/, error.description)
   end
 
+  def test_array_size_folds_a_constant_expression
+    program = parse("enum { N = 5 }; int main(void) { int a[N * 2]; return 0; }")
+    decl = program.functions.last.body.first
+
+    assert_equal Type::Array.new(Type::Int, 10), decl.type
+  end
+
+  def test_array_size_folds_a_sizeof_type_expression
+    program = parse("int main(void) { char b[sizeof(int) * 4]; return 0; }")
+    decl = program.functions.first.body.first
+
+    assert_equal Type::Array.new(Type::Char, 16), decl.type
+  end
+
   def test_multidimensional_array_is_rejected
     error = assert_raises(Rubycc::CompileError) do
       parse("int main(void) { int a[3][4]; return 0; }")
@@ -702,11 +773,57 @@ class TestParser < Minitest::Test
     assert_match(/multidimensional arrays are not supported yet/, error.description)
   end
 
-  def test_array_initializer_is_rejected
-    error = assert_raises(Rubycc::CompileError) do
-      parse("int main(void) { int a[3] = 0; return 0; }")
-    end
-    assert_match(/array initializers are not supported yet/, error.description)
+  def test_parses_array_initializer_list
+    decl = parse("int main(void) { int a[3] = {1, 2, 3}; return 0; }").functions.first.body.first
+
+    assert_kind_of AST::VariableDecl, decl
+    assert_kind_of AST::InitializerList, decl.initializer
+    assert_equal 3, decl.initializer.items.size
+    assert_equal [1, 2, 3], decl.initializer.items.map { |item| item.value.value }
+    assert(decl.initializer.items.all? { |item| item.designators.empty? })
+  end
+
+  def test_array_initializer_infers_length_from_positional_elements
+    decl = parse("int main(void) { int a[] = {4, 5, 6, 7}; return 0; }").functions.first.body.first
+
+    assert_equal Type::Array.new(Type::Int, 4), decl.type
+  end
+
+  def test_array_initializer_infers_length_from_the_largest_designator
+    decl = parse("int main(void) { int a[] = {[4] = 1, 2}; return 0; }").functions.first.body.first
+
+    # [4] fixes index 4, then the following positional element lands at 5, so
+    # the inferred length is 6 (max index + 1), not the element count.
+    assert_equal Type::Array.new(Type::Int, 6), decl.type
+  end
+
+  def test_char_array_initializer_infers_length_from_the_string
+    decl = parse("int main(void) { char s[] = \"abc\"; return 0; }").functions.first.body.first
+
+    # Three characters plus the terminating NUL.
+    assert_equal Type::Array.new(Type::Char, 4), decl.type
+  end
+
+  def test_parses_designated_and_nested_initializers
+    program = parse("struct p { int x; int y; }; " \
+                    "int main(void) { struct p a[2] = { {1, 2}, [1].y = 9 }; return 0; }")
+    decl = program.functions.last.body.first
+    items = decl.initializer.items
+
+    assert_kind_of AST::InitializerList, items[0].value
+    assert_kind_of AST::ArrayDesignator, items[1].designators[0]
+    assert_equal 1, items[1].designators[0].index
+    assert_kind_of AST::MemberDesignator, items[1].designators[1]
+    assert_equal "y", items[1].designators[1].name
+  end
+
+  def test_parses_the_zero_initializer_idiom
+    decl = parse("struct p { int x; int y; }; " \
+                 "int main(void) { struct p a = {0}; return 0; }").functions.last.body.first
+
+    assert_kind_of AST::InitializerList, decl.initializer
+    assert_equal 1, decl.initializer.items.size
+    assert_equal 0, decl.initializer.items.first.value.value
   end
 
   def test_parses_subscript
@@ -1113,6 +1230,18 @@ class TestParser < Minitest::Test
     assert_kind_of AST::GlobalDecl, decl
     assert_equal Type::Char, decl.type
     assert_equal 120, decl.initializer_value # 'x'
+  end
+
+  def test_parses_global_initializer_with_a_constant_expression
+    decl = parse("int g = (1 << 4) - 1; int main(void) { return 0; }").functions.first
+
+    assert_equal 15, decl.initializer_value
+  end
+
+  def test_parses_global_initializer_with_a_sizeof_constant_expression
+    decl = parse("int g = sizeof(int) * 4; int main(void) { return 0; }").functions.first
+
+    assert_equal 16, decl.initializer_value
   end
 
   def test_parses_global_array_declaration
@@ -1553,6 +1682,15 @@ class TestParser < Minitest::Test
     assert_kind_of AST::IntLit, expr
     assert_equal 5, expr.value
     assert_equal Type::Int, expr.type
+  end
+
+  def test_enumerator_value_folds_a_constant_expression
+    # "A" is bound to (1 << 4) - 1 == 15 before "B" is parsed, so "B" can refer
+    # to it in its own constant expression, exactly like an earlier enumerator.
+    program = parse("enum E { A = (1 << 4) - 1, B = A + 1 }; int main(void) { return B; }")
+    expr = program.functions.last.body.first.expr
+    assert_kind_of AST::IntLit, expr
+    assert_equal 16, expr.value
   end
 
   def test_trailing_comma_in_enumerator_list_is_allowed

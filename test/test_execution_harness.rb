@@ -1543,7 +1543,13 @@ class TestExecutionHarness < Minitest::Test
     "int main(void) { int i; int j; for (i = 0; i < 10; i++) { for (j = 0; j < 10; j++) " \
     "{ if (i * j > 6) goto done; } } done: return i * 10 + j; }",
     # A labeled empty statement as a goto target.
-    "int main(void) { int x = 5; goto end; x = 0; end: ; return x; }"
+    "int main(void) { int x = 5; goto end; x = 0; end: ; return x; }",
+    # A case label folded from a general constant-expression (Step 20's
+    # constant evaluator), including a truncating division and a wrapping
+    # cast, rather than a bare (optionally signed) literal.
+    "int main(void) { int x = 3; switch (x) { case 1 + 2: return 42; default: return 0; } }",
+    "int main(void) { int x = -3; switch (x) { case -7 / 2: return 42; default: return 0; } }",
+    "int main(void) { int x = 44; switch (x) { case (char)300: return 42; default: return 0; } }"
   ].freeze
 
   def test_switch_and_goto_match_gcc_exit_codes
@@ -1668,7 +1674,14 @@ class TestExecutionHarness < Minitest::Test
     "typedef int T; int main(void) { T x = 5; { int T = 10; return x + T + 27; } }",
     # A typedef name in a cast and in sizeof.
     "typedef int Elem; int main(void) { Elem a = 100; Elem b = (Elem)200; return (a + b) & 255; }",
-    "typedef int T; int main(void) { T x = 40; return sizeof(T) + x - 2; }"
+    "typedef int T; int main(void) { T x = 40; return sizeof(T) + x - 2; }",
+    # An enumerator value folded from a general constant-expression (Step 20's
+    # constant evaluator), referring back to an earlier enumerator in the same
+    # list.
+    "enum E { A = (1 << 4) - 1, B = A + 1 }; int main(void) { return B; }",
+    # An array bound and a global initializer folded the same way.
+    "enum { N = 5 }; int main(void) { int a[N * 2]; a[9] = 42; return a[9]; }",
+    "int g = sizeof(int) * 4 + 26; int main(void) { return g; }"
   ].freeze
 
   def test_enum_and_typedef_match_gcc_exit_codes
@@ -1715,6 +1728,86 @@ class TestExecutionHarness < Minitest::Test
 
   def test_unions_and_anonymous_members_match_gcc_exit_codes
     UNION_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
+  # Aggregate and string initializers (Step 20): local and global arrays,
+  # structs and unions initialized with brace lists (fully, partially with a
+  # zero tail, nested, brace-elided, designated and via the "{0}" idiom), char
+  # arrays and pointers initialized from string literals, "[]" bound inference
+  # with sizeof, and pointer globals bearing address constants. Every exit code
+  # stays within 0..255.
+  INITIALIZER_DIFFERENTIAL_SOURCES = [
+    # A fully initialized local array, read back element by element.
+    "int main(void) { int a[3] = {40, 1, 1}; return a[0] + a[1] + a[2]; }",
+    # A partially initialized local array: the unlisted tail is zero.
+    "int main(void) { int a[5] = {10, 20}; return a[0] + a[1] + a[2] + a[3] + a[4]; }",
+    # The "{0}" idiom zeroes a whole aggregate.
+    "int main(void) { int a[4] = {0}; return a[0] + a[1] + a[2] + a[3] + 42; }",
+    # Brace elision: a flat list fills an array of structs.
+    "struct p { int x; int y; }; " \
+    "int main(void) { struct p a[2] = {1, 2, 3, 4}; return a[0].x + a[0].y + a[1].x + a[1].y + 32; }",
+    # Fully braced (non-elided) array of structs.
+    "struct p { int x; int y; }; " \
+    "int main(void) { struct p a[2] = { {5, 6}, {7, 8} }; return a[0].x + a[1].y - 4; }",
+    # Array designators, out of order, with a zeroed gap.
+    "int main(void) { int a[6] = {[5] = 3, [1] = 39}; return a[1] + a[5] + a[0]; }",
+    # A designator followed by positional continuation from the next index.
+    "int main(void) { int a[4] = {[1] = 10, 20}; return a[0] + a[1] + a[2] + a[3] + 12; }",
+    # A local struct initialized positionally.
+    "struct p { int a; int b; int c; }; " \
+    "int main(void) { struct p s = {12, 13, 14}; return s.a + s.b + s.c + 3; }",
+    # A local struct initialized with member designators, out of order.
+    "struct p { int a; int b; int c; }; " \
+    "int main(void) { struct p s = {.c = 30, .a = 12}; return s.a + s.b + s.c; }",
+    # A nested struct with an inner brace.
+    "struct in { int x; int y; }; struct out { struct in m; int z; }; " \
+    "int main(void) { struct out o = { {1, 2}, 39 }; return o.m.x + o.m.y + o.z; }",
+    # A chained member designator reaches a nested field.
+    "struct in { int x; int y; }; struct out { struct in m; int z; }; " \
+    "int main(void) { struct out o = {.m.y = 41, .z = 1}; return o.m.x + o.m.y + o.z; }",
+    # A union defaults to its first member.
+    "union u { int i; char c; }; int main(void) { union u v = {66}; return v.c; }",
+    # A union member picked by designator.
+    "union u { int i; char c; }; int main(void) { union u v = {.c = 67}; return v.c; }",
+    # A designator into an anonymous member, reached transparently.
+    "struct obj { int flags; union { int num; char ch; }; }; " \
+    "int main(void) { struct obj o = {.num = 39, .flags = 3}; return o.flags + o.num; }",
+    # A char array initialized by a string literal, its NUL and tail zeroed.
+    "int main(void) { char s[8] = \"AB\"; return s[0] + s[1] + s[2] + s[7]; }",
+    # A char array whose bound is inferred from the string, measured by sizeof.
+    "int main(void) { char s[] = \"hello\"; return sizeof(s) + s[0] - 60; }",
+    # A char array initialized by a braced string.
+    "int main(void) { char s[4] = { \"cd\" }; return s[0] + s[1] + s[2]; }",
+    # An int array whose bound is inferred, measured by sizeof.
+    "int main(void) { int a[] = {9, 8, 7, 6, 5}; return sizeof(a) / sizeof(int) * 8 + a[4]; }",
+    # A global array read back.
+    "int g[3] = {30, 40, 50}; int main(void) { return g[0] + g[1] + g[2] - 78; }",
+    # A partially initialized global array with a zeroed tail.
+    "int g[5] = {21, 21}; int main(void) { return g[0] + g[1] + g[2] + g[3] + g[4]; }",
+    # A global struct read back.
+    "struct p { int x; int y; }; struct p g = {19, 23}; " \
+    "int main(void) { return g.x + g.y; }",
+    # A global char pointer to a string literal.
+    "char *s = \"hi!\"; int main(void) { return s[0] + s[1] + s[2] - 100; }",
+    # A global char array initialized by a string, plus sizeof.
+    "char s[] = \"abcd\"; int main(void) { return sizeof(s) + s[0] - 60; }",
+    # A pointer global holding another global's address, dereferenced and used
+    # to write back through.
+    "int g = 41; int *p = &g; int main(void) { *p = *p + 1; return g; }",
+    # A decayed global array name stored in a pointer global.
+    "int a[3] = {7, 8, 9}; int *p = a; int main(void) { return p[0] + p[1] + p[2] + 18; }",
+    # A global struct with a string-pointer member.
+    "struct s { char *name; int v; }; struct s g = {\"Z\", 42}; " \
+    "int main(void) { return g.name[0] + g.v - 90; }"
+  ].freeze
+
+  def test_initializers_match_gcc_exit_codes
+    INITIALIZER_DIFFERENTIAL_SOURCES.each do |source|
       rubycc_exit = run_source(source, compiler: :rubycc)
       gcc_exit = run_source(source, compiler: :gcc)
       assert_equal gcc_exit, rubycc_exit,
