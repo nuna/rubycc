@@ -41,6 +41,12 @@ module Rubycc
       data_align = 1
       bss_size = 0
       bss_align = 1
+      # Symbols a .data pointer slot resolves against (a "&global", a decayed
+      # global array, or a function address in a function-pointer global). A
+      # reference to a function defined elsewhere must be registered as an
+      # undefined symbol, but only once the set of locally defined functions is
+      # known (after the text is compiled), so the names are collected here.
+      data_symbol_refs = []
       ir_program.globals.each do |global|
         if global.init.nil?
           bss_align = [bss_align, global.align].max
@@ -58,6 +64,7 @@ module Rubycc
           # global itself landed in .data.
           global.init.relocations.each do |reloc|
             register_data_relocation(writer, reloc, offset, string_offsets)
+            data_symbol_refs << reloc.symbol if reloc.kind == :symbol
           end
         end
       end
@@ -83,11 +90,21 @@ module Rubycc
         end
       end
 
+      # A function-pointer global that names a function defined elsewhere leaves
+      # an undefined symbol for the linker; one that names a local function or
+      # another global is already in the symbol table.
+      known_names = defined_names + ir_program.globals.map(&:name)
+      data_symbol_refs.each do |symbol|
+        writer.add_undefined_symbol(symbol) unless known_names.include?(symbol)
+      end
+
       relocations.each do |reloc|
         case reloc[:kind]
-        when :call
-          # A call whose target is not defined in this translation unit becomes
-          # an undefined symbol for the linker to resolve (e.g. libc's abs).
+        when :call, :func
+          # A call, or a taken function address, whose target is not defined in
+          # this translation unit becomes an undefined symbol for the linker to
+          # resolve (e.g. libc's abs). Both are PC-relative and share the same
+          # PLT32 text relocation.
           writer.add_undefined_symbol(reloc[:symbol]) unless defined_names.include?(reloc[:symbol])
           writer.add_text_relocation(offset: reloc[:offset], symbol: reloc[:symbol])
         when :string

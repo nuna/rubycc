@@ -223,9 +223,15 @@ module Rubycc
       # immediately followed by ":".
       Label = Data.define(:name, :body, :token)
 
-      # A call to a named function. `args` is an array of expression nodes
-      # (the argument-expression-list), evaluated left to right.
-      Call = Data.define(:name, :args, :token)
+      # A function call "callee ( args )" (ISO C 6.5.2.2). `callee` is the
+      # postfix-expression being called — an ordinary identifier for a direct
+      # call ("f(x)"), but equally a dereference ("(*fp)(x)"), a subscript
+      # ("table[i](x)"), a member access ("s.fp(x)") or any expression that
+      # yields a function or a function pointer. `args` is an array of
+      # expression nodes (the argument-expression-list), evaluated left to
+      # right. The generator settles whether the callee is a direct function
+      # designator (a plain :call) or a pointer value (an indirect call).
+      Call = Data.define(:callee, :args, :token)
 
       # A single function parameter. `name` is the identifier String, or nil
       # for an unnamed parameter in a prototype (e.g. "int f(int, int);").

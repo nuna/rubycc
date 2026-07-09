@@ -463,6 +463,25 @@ class TestExecutionHarness < Minitest::Test
     )
   end
 
+  def test_sizeof_of_function_pointer_types
+    # A function pointer is an ordinary 8-byte address, so sizeof of a function
+    # pointer type (written directly or through a local variable) is 8. The
+    # value semantics of function pointers arrive later; this measures the type.
+    # 8 + 8 * 4 + 2 = 42, matching gcc.
+    assert_c_exit_status(
+      42,
+      "int main(void) { int (*fp)(int); " \
+      "return sizeof(int (*)(int)) + sizeof(fp) * 4 + 2; }",
+      compiler: :gcc
+    )
+    assert_c_exit_status(
+      42,
+      "int main(void) { int (*fp)(int); " \
+      "return sizeof(int (*)(int)) + sizeof(fp) * 4 + 2; }",
+      compiler: :rubycc
+    )
+  end
+
   def test_multiple_objects_and_scalars_interleaved
     assert_c_exit_status(
       42,
@@ -1808,6 +1827,100 @@ class TestExecutionHarness < Minitest::Test
 
   def test_initializers_match_gcc_exit_codes
     INITIALIZER_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
+  # Step 21: function pointers (declaration, both address forms, direct and
+  # dereferenced calls, callbacks, returning a pointer, struct members,
+  # dispatch tables, typedefs, comparisons), stack-passed arguments beyond the
+  # sixth, and pointers to whole arrays. Every program exits in 0..255.
+  FUNCTION_POINTER_DIFFERENTIAL_SOURCES = [
+    # A function pointer declared and assigned from the plain name, then called.
+    "int add1(int x) { return x + 1; } " \
+    "int main(void) { int (*fp)(int) = add1; return fp(41); }",
+    # Assigned from "&f" instead, and called through an explicit dereference.
+    "int add1(int x) { return x + 1; } " \
+    "int main(void) { int (*fp)(int) = &add1; return (*fp)(41); }",
+    # A reassigned function pointer picks a different target at run time.
+    "int a(int x) { return x + 1; } int b(int x) { return x * 2; } " \
+    "int main(void) { int (*fp)(int) = a; fp = b; return fp(21); }",
+    # A pointer to a function pointer, called through a double dereference.
+    "int add1(int x) { return x + 1; } " \
+    "int main(void) { int (*fp)(int) = add1; int (**pp)(int) = &fp; return (**pp)(41); }",
+    # A callback: a function taking a function pointer as a parameter.
+    "int apply(int (*f)(int), int v) { return f(v); } int dbl(int x) { return x * 2; } " \
+    "int main(void) { return apply(dbl, 21); }",
+    # A callback parameter written with function syntax (adjusted to a pointer).
+    "int apply(int f(int), int v) { return f(v) + 2; } int inc(int x) { return x + 1; } " \
+    "int main(void) { return apply(inc, 39); }",
+    # A function that returns a function pointer, immediately called.
+    "int inc(int x) { return x + 1; } int (*pick(void))(int) { return inc; } " \
+    "int main(void) { return pick()(41); }",
+    # A struct member function pointer: stored, then called through the member.
+    "struct ops { int (*fp)(int); }; int t(int x) { return x + 2; } " \
+    "int main(void) { struct ops o; o.fp = t; return o.fp(40); }",
+    # An array of function pointers used as a dispatch table.
+    "int a0(int x) { return x + 10; } int a1(int x) { return x + 20; } " \
+    "int main(void) { int (*ops[2])(int) = {a0, a1}; return ops[0](11) + ops[1](1); }",
+    # A typedef'd function-pointer type.
+    "typedef int (*binop)(int, int); int sub(int a, int b) { return a - b; } " \
+    "int main(void) { binop f = sub; return f(50, 8); }",
+    # Equality and inequality of function pointers, and a null comparison.
+    "int f(int x) { return x; } int g(int x) { return x; } " \
+    "int main(void) { int (*fp)(int) = f; int (*gp)(int) = 0; " \
+    "return (fp == f) * 20 + (fp != g) * 21 + (gp == 0); }",
+    # Selecting a function pointer with "?:" and calling the result.
+    "int a(int x) { return x + 1; } int b(int x) { return x + 2; } " \
+    "int main(void) { int use_a = 1; int (*fp)(int) = use_a ? a : b; return fp(41); }",
+    # Seven arguments: one on the stack (an odd push count, so a pad is added).
+    "int s7(int a, int b, int c, int d, int e, int f, int g) { return a + b + c + d + e + f + g; } " \
+    "int main(void) { return s7(1, 2, 3, 4, 5, 6, 21); }",
+    # Eight arguments: two on the stack (an even push count, no pad).
+    "int s8(int a, int b, int c, int d, int e, int f, int g, int h) " \
+    "{ return a + b + c + d + e + f + g + h; } " \
+    "int main(void) { return s8(1, 2, 3, 4, 5, 6, 7, 14); }",
+    # Nine arguments: three on the stack (an odd push count again).
+    "int s9(int a, int b, int c, int d, int e, int f, int g, int h, int i) " \
+    "{ return a + b + c + d + e + f + g + h + i; } " \
+    "int main(void) { return s9(1, 2, 3, 4, 5, 6, 7, 8, 6); }",
+    # An indirect call passing eight arguments (register + stack split).
+    "int s8(int a, int b, int c, int d, int e, int f, int g, int h) " \
+    "{ return a + b + c + d + e + f + g + h; } " \
+    "int main(void) { int (*fp)(int, int, int, int, int, int, int, int) = s8; " \
+    "return fp(1, 2, 3, 4, 5, 6, 7, 14); }",
+    # Narrow integer types (char/short) landing in stack-passed argument slots.
+    "int f(int a, int b, int c, int d, int e, int g, char h, short i) " \
+    "{ return a + b + c + d + e + g + h + i; } " \
+    "int main(void) { return f(1, 2, 3, 4, 5, 6, (char)-1, (short)23); }",
+    # A stack argument that is itself a function-call result.
+    "int id(int x) { return x; } " \
+    "int s7(int a, int b, int c, int d, int e, int f, int g) { return a + b + c + d + e + f + g; } " \
+    "int main(void) { return s7(1, 2, 3, 4, 5, 6, id(21)); }",
+    # "&a" is a pointer to a whole array, dereferenced and subscripted.
+    "int main(void) { int a[3] = {10, 20, 12}; int (*p)[3] = &a; " \
+    "return (*p)[0] + (*p)[1] + (*p)[2]; }",
+    # "sizeof *p" measures the whole pointed-to array, not one element.
+    "int main(void) { int a[4]; int (*p)[4] = &a; return sizeof(*p) / sizeof(int) * 10 + 2; }",
+    # Adding 1 to a pointer-to-array advances by the whole array's size.
+    "int main(void) { int a[6] = {1, 2, 3, 4, 5, 6}; int (*p)[3] = (int (*)[3])a; " \
+    "int (*q)[3] = p + 1; return (*q)[0] + (*q)[1] + (*q)[2] + 27; }",
+    # A global function pointer initialized from a function name.
+    "int inc(int x) { return x + 1; } int (*gp)(int) = inc; " \
+    "int main(void) { return gp(41); }",
+    # A global function-pointer array (mixing "f" and "&f"), used to dispatch.
+    "int a0(int x) { return x + 10; } int a1(int x) { return x + 20; } " \
+    "int (*table[2])(int) = {a0, &a1}; " \
+    "int main(void) { return table[0](11) + table[1](1); }",
+    # A function pointer to an external libc function (abs), called indirectly.
+    "int abs(int); int main(void) { int (*fp)(int) = abs; return fp(0 - 42); }"
+  ].freeze
+
+  def test_function_pointers_match_gcc_exit_codes
+    FUNCTION_POINTER_DIFFERENTIAL_SOURCES.each do |source|
       rubycc_exit = run_source(source, compiler: :rubycc)
       gcc_exit = run_source(source, compiler: :gcc)
       assert_equal gcc_exit, rubycc_exit,

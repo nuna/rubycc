@@ -698,7 +698,8 @@ class TestParser < Minitest::Test
     expr = parse_expr("add(1, 2)")
 
     assert_kind_of AST::Call, expr
-    assert_equal "add", expr.name
+    assert_kind_of AST::VariableRef, expr.callee
+    assert_equal "add", expr.callee.name
     assert_equal 2, expr.args.size
     assert_equal 1, expr.args[0].value
     assert_equal 2, expr.args[1].value
@@ -708,7 +709,8 @@ class TestParser < Minitest::Test
     expr = parse_expr("f()")
 
     assert_kind_of AST::Call, expr
-    assert_equal "f", expr.name
+    assert_kind_of AST::VariableRef, expr.callee
+    assert_equal "f", expr.callee.name
     assert_empty expr.args
   end
 
@@ -717,7 +719,38 @@ class TestParser < Minitest::Test
 
     assert_kind_of AST::Call, expr
     assert_kind_of AST::Call, expr.args.first
-    assert_equal "g", expr.args.first.name
+    assert_equal "g", expr.args.first.callee.name
+  end
+
+  # A call is a postfix suffix, so its callee may itself be a postfix
+  # expression: a member access "s.fp(x)" or a subscript "table[i](x)".
+  def test_parses_call_through_member_callee
+    expr = parse_expr("s.fp(3)")
+
+    assert_kind_of AST::Call, expr
+    assert_kind_of AST::MemberAccess, expr.callee
+    assert_equal "fp", expr.callee.member
+    assert_equal 1, expr.args.size
+    assert_equal 3, expr.args[0].value
+  end
+
+  def test_parses_call_through_subscript_callee
+    expr = parse_expr("table[i](7)")
+
+    assert_kind_of AST::Call, expr
+    assert_kind_of AST::Subscript, expr.callee
+    assert_equal 7, expr.args[0].value
+  end
+
+  # "(*fp)(x)" calls through a dereferenced function pointer: the callee is the
+  # dereference expression.
+  def test_parses_call_through_dereferenced_pointer_callee
+    expr = parse_expr("(*fp)(9)")
+
+    assert_kind_of AST::Call, expr
+    assert_kind_of AST::Unary, expr.callee
+    assert_equal :deref, expr.callee.op
+    assert_equal 9, expr.args[0].value
   end
 
   def test_parses_array_declaration_type
@@ -736,6 +769,133 @@ class TestParser < Minitest::Test
 
     assert_equal "ps", decl.name
     assert_equal Type::Array.new(Type::Pointer.new(Type::Int), 4), decl.type
+  end
+
+  # A local declarator that resolves to a bare function type ("int *f(int);")
+  # is parsed here as a VariableDecl; the generator later rejects it as a
+  # block-scope function declaration. The parser's job is to build the type.
+  def test_star_before_name_binds_to_the_return_type
+    # "int *f(int)": f is a function taking int and returning "int *", so the
+    # "*" applies to the return type, not to f (the function suffix "()" binds
+    # tighter than the "*").
+    decl = parse_decl("int *f(int);")
+
+    assert_equal "f", decl.name
+    assert_equal Type::FunctionType.new(Type::Pointer.new(Type::Int), [Type::Int]), decl.type
+  end
+
+  def test_parenthesized_star_makes_a_function_pointer
+    # "int (*f)(int)": the parentheses reverse the binding, so f is a pointer
+    # to a function taking int and returning int.
+    decl = parse_decl("int (*f)(int);")
+
+    assert_equal "f", decl.name
+    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    assert_equal Type::Pointer.new(func), decl.type
+  end
+
+  def test_parenthesized_star_before_brackets_makes_an_array_pointer
+    # "int (*a)[3]": a pointer to an array of three ints.
+    decl = parse_decl("int (*a)[3];")
+
+    assert_equal "a", decl.name
+    assert_equal Type::Pointer.new(Type::Array.new(Type::Int, 3)), decl.type
+  end
+
+  def test_star_with_brackets_makes_an_array_of_pointers
+    # "int *a[3]": an array of three "int *", since "[]" binds tighter than "*".
+    decl = parse_decl("int *a[3];")
+
+    assert_equal "a", decl.name
+    assert_equal Type::Array.new(Type::Pointer.new(Type::Int), 3), decl.type
+  end
+
+  def test_array_of_function_pointers
+    # "int (*fa[2])(int)": an array of two pointers to "int (int)".
+    decl = parse_decl("int (*fa[2])(int);")
+
+    assert_equal "fa", decl.name
+    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    assert_equal Type::Array.new(Type::Pointer.new(func), 2), decl.type
+  end
+
+  def test_nested_parentheses_in_declarator
+    # "int (*(*p))(int)": redundant parentheses around the inner "*p" still
+    # yield a pointer to a pointer to a function.
+    decl = parse_decl("int (*(*p))(int);")
+
+    assert_equal "p", decl.name
+    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    assert_equal Type::Pointer.new(Type::Pointer.new(func)), decl.type
+  end
+
+  def test_function_returning_a_pointer_is_a_function_definition
+    # "int *strdup(char *s) { ... }": the outermost derivation is the function,
+    # so this is a definition returning "int *", with the "*" on the return.
+    program = parse("int *strdup(char *s) { return s; }")
+    fn = program.functions.first
+
+    assert_kind_of AST::FunctionDef, fn
+    assert_equal "strdup", fn.name
+    assert_equal Type::Pointer.new(Type::Int), fn.return_type
+    assert_equal [Type::Pointer.new(Type::Char)], fn.params.map(&:type)
+  end
+
+  def test_array_parameter_is_adjusted_to_a_pointer
+    # 6.7.6.3: "int a[10]" as a parameter is adjusted to "int *a".
+    program = parse("int f(int a[10]) { return 0; }")
+    param = program.functions.first.params.first
+
+    assert_equal "a", param.name
+    assert_equal Type::Pointer.new(Type::Int), param.type
+  end
+
+  def test_function_parameter_is_adjusted_to_a_function_pointer
+    # 6.7.6.3: "int g(int)" as a parameter is adjusted to "int (*g)(int)".
+    program = parse("int f(int g(int)) { return 0; }")
+    param = program.functions.first.params.first
+
+    assert_equal "g", param.name
+    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    assert_equal Type::Pointer.new(func), param.type
+  end
+
+  def test_typedef_of_a_function_pointer
+    # "typedef int (*cb)(int); cb handler;": the typedef name resolves to a
+    # function-pointer type, which the following declarator adopts.
+    program = parse("typedef int (*cb)(int); cb handler;")
+    decl = program.functions.first
+
+    assert_kind_of AST::GlobalDecl, decl
+    assert_equal "handler", decl.name
+    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    assert_equal Type::Pointer.new(func), decl.type
+  end
+
+  def test_struct_member_function_pointer
+    program = parse("struct s { int (*fp)(int); int x; }; struct s v;")
+    struct_type = program.functions.first.type
+    fp = struct_type.member("fp")
+
+    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    assert_equal Type::Pointer.new(func), fp.type
+  end
+
+  def test_abstract_function_pointer_type_in_sizeof
+    # The type-name in a sizeof accepts an abstract function-pointer declarator.
+    expr = parse_expr("sizeof(int (*)(int))")
+
+    assert_kind_of AST::SizeofType, expr
+    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    assert_equal Type::Pointer.new(func), expr.type
+  end
+
+  def test_abstract_function_pointer_type_in_cast
+    expr = parse_expr("(int (*)(int))p")
+
+    assert_kind_of AST::Cast, expr
+    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    assert_equal Type::Pointer.new(func), expr.type
   end
 
   def test_array_size_must_be_a_positive_constant
@@ -923,7 +1083,7 @@ class TestParser < Minitest::Test
     assert_kind_of AST::Cast, expr
     assert_equal Type::Void, expr.type
     assert_kind_of AST::Call, expr.operand
-    assert_equal "f", expr.operand.name
+    assert_equal "f", expr.operand.callee.name
   end
 
   def test_parenthesized_non_type_is_an_operand_not_a_cast
@@ -939,14 +1099,16 @@ class TestParser < Minitest::Test
 
   def test_parenthesized_non_type_before_parentheses_is_not_a_cast
     # "(x)(y)": x is not a type-specifier, so "(x)" is a parenthesized operand,
-    # not a cast — it is treated as a (would-be) call target. This subset only
-    # calls a bare identifier, so the trailing "(y)" is left unconsumed and the
-    # parser stops expecting ";", proving "(x)" was taken as a value, not a
-    # cast of "(y)" to type x (which would fail asking for a type specifier).
-    error = assert_raises(Rubycc::CompileError) do
-      parse("int main(void) { return (x)(y); }")
-    end
-    assert_match(/expected ';'/, error.description)
+    # not a cast. As a postfix call target it now yields an ordinary call whose
+    # callee is the parenthesized "x" (an indirect call through a function
+    # pointer), proving "(x)" was taken as a value, not a cast of "(y)" to type
+    # x (which would fail asking for a type specifier).
+    expr = parse_expr("(x)(y)")
+    assert_kind_of AST::Call, expr
+    assert_kind_of AST::VariableRef, expr.callee
+    assert_equal "x", expr.callee.name
+    assert_equal 1, expr.args.size
+    assert_equal "y", expr.args[0].name
   end
 
   def test_unary_minus_applies_to_cast

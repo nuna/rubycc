@@ -191,17 +191,58 @@ class TestDiagnostics < Minitest::Test
     assert_match(/redefinition of 'f'/, error.description)
   end
 
+  # Step 21: calling a non-function, non-pointer value is rejected.
+  def test_calling_a_non_function_is_rejected
+    source = "int main(void) { int x = 3; return x(1); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/called object is not a function or function pointer/, error.description)
+  end
+
+  # A function pointer may only be assigned a pointer to a function with the
+  # very same signature; a differing arity or parameter type is incompatible.
+  def test_incompatible_signature_function_pointer_assignment_is_rejected
+    source = "int f(int a); int g(int a, int b); " \
+             "int main(void) { int (*fp)(int) = f; fp = g; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/incompatible types in assignment/, error.description)
+  end
+
+  # An indirect call through a function pointer checks the argument count, just
+  # like a direct call, but names the callee generically.
+  def test_too_few_arguments_through_function_pointer_is_rejected
+    source = "int f(int a, int b); " \
+             "int main(void) { int (*fp)(int, int) = f; return fp(1); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/too few arguments to function pointer/, error.description)
+  end
+
+  def test_too_many_arguments_through_function_pointer_is_rejected
+    source = "int f(int a); " \
+             "int main(void) { int (*fp)(int) = f; return fp(1, 2); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/too many arguments to function pointer/, error.description)
+  end
+
+  # An indirect call also checks each argument's type against the pointed-to
+  # function's parameter types.
+  def test_argument_type_mismatch_through_function_pointer_is_rejected
+    source = "int f(int *p); " \
+             "int main(void) { int (*fp)(int *) = f; return fp(3); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/incompatible type for argument 1/, error.description)
+  end
+
+  # sizeof cannot be applied to a function designator (a function has no size).
+  def test_sizeof_function_designator_is_rejected
+    source = "int f(int a); int main(void) { return sizeof f; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid application of 'sizeof' to a function type/, error.description)
+  end
+
   def test_conflicting_types_between_prototype_and_definition
     source = "int f(int a); int f(int a, int b) { return a + b; } int main(void) { return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/conflicting types for 'f'/, error.description)
-  end
-
-  def test_too_many_parameters
-    source = "int f(int a, int b, int c, int d, int e, int g, int h) { return a; } " \
-             "int main(void) { return 0; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/too many parameters \(rubycc supports up to 6\)/, error.description)
   end
 
   def test_parameter_name_omitted_in_definition
@@ -267,14 +308,6 @@ class TestDiagnostics < Minitest::Test
     assert_equal 1, error.line
     assert_match(/array type is not assignable/, error.description)
     assert_match(/foo\.c:1:\d+: error: array type is not assignable/, error.message)
-  end
-
-  def test_address_of_whole_array_is_rejected
-    source = "int main(void) { int a[3]; return &a == 0; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-
-    assert_equal 1, error.line
-    assert_match(/address of array is not supported yet/, error.description)
   end
 
   def test_subscripting_an_int_is_rejected
@@ -993,11 +1026,48 @@ class TestDiagnostics < Minitest::Test
     assert_match(/initializer element is not a constant/, error.description)
   end
 
-  def test_global_pointer_to_a_function_name_is_rejected
-    # A function name as an address constant needs Step 21's function pointers;
-    # until then it is an unsupported global initializer.
+  def test_global_pointer_to_incompatibly_typed_function_is_rejected
+    # A function name is a valid address constant for a matching function
+    # pointer, but assigning it to an object pointer ("int *") mismatches the
+    # target type, which is rejected like an incompatible initializer.
     source = "int f(void); int *p = f; int main(void) { return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/unsupported initializer for global variable/, error.description)
+    assert_match(/incompatible types in initialization/, error.description)
+  end
+
+  def test_function_returning_a_function_is_rejected
+    source = "int f(void)(int); int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/function returning a function is not allowed/, error.description)
+  end
+
+  def test_function_returning_an_array_is_rejected
+    source = "int f(void)[3]; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/function returning an array is not allowed/, error.description)
+  end
+
+  def test_array_of_functions_is_rejected
+    source = "int a[3](int); int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/array of functions is not allowed/, error.description)
+  end
+
+  def test_sizeof_a_function_type_is_rejected
+    source = "int main(void) { return sizeof(int (int)); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid application of 'sizeof' to a function type/, error.description)
+  end
+
+  def test_block_scope_function_declaration_is_rejected
+    source = "int main(void) { int f(int); return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/block-scope function declarations are not supported/, error.description)
+  end
+
+  def test_struct_member_declared_as_a_function_is_rejected
+    source = "struct s { int f(int); }; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/field 'f' declared as a function/, error.description)
   end
 end

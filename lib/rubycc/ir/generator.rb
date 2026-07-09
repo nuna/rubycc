@@ -135,29 +135,55 @@ module Rubycc
           folded = fold_global_constant(value)
           image[offset, type.size] = pack_integer(folded, type.size)
         elsif type.pointer?
-          pack_global_pointer(offset, value, image, relocations)
+          pack_global_pointer(offset, type, value, image, relocations)
         else
           error_at(value.token, "unsupported initializer for global variable")
         end
       end
 
-      # Packs a global pointer slot. The only address constants this subset
-      # admits are: a null pointer constant (the eight zero bytes already in
-      # place); a string literal (a .rodata relocation on the interned string); a
-      # "&global" (an absolute relocation against that object's symbol); and a
-      # decayed global array name (the same). A function name (Step 21's function
-      # pointers) or a computed address like "&arr[i]" has no such form yet.
-      def pack_global_pointer(offset, value, _image, relocations)
+      # Packs a global pointer slot. The address constants this subset admits
+      # are: a null pointer constant (the eight zero bytes already in place); a
+      # string literal (a .rodata relocation on the interned string); a "&global"
+      # or a decayed global array name (an absolute relocation against that
+      # object's symbol); and a function name "f" or "&f" (the same, against the
+      # function's symbol, its signature checked against the pointer's target).
+      # A computed address like "&arr[i]" still has no constant form.
+      def pack_global_pointer(offset, type, value, _image, relocations)
         if Front::AST.null_pointer_constant?(value)
           nil # eight zero bytes are already in the image
         elsif value.is_a?(Front::AST::StringLit)
           relocations << GlobalReloc.new(offset: offset, kind: :string,
                                          symbol: nil, string_id: intern_string(value.value))
-        elsif (name = address_constant_symbol(value))
+        elsif (name = function_address_constant(type, value)) ||
+              (name = address_constant_symbol(value))
           relocations << GlobalReloc.new(offset: offset, kind: :symbol, symbol: name, string_id: nil)
         else
           error_at(value.token, "unsupported initializer for global variable")
         end
+      end
+
+      # The function symbol a pointer initializer takes the address of — "f" or
+      # "&f" — or nil when `value` is not a function reference. The function's
+      # signature must match the pointer's target type, exactly as a local
+      # function-pointer assignment requires. A name shadowed by a file-scope
+      # variable is left to #address_constant_symbol.
+      def function_address_constant(type, value)
+        name =
+          if value.is_a?(Front::AST::Unary) && value.op == :addr &&
+             value.operand.is_a?(Front::AST::VariableRef)
+            value.operand.name
+          elsif value.is_a?(Front::AST::VariableRef)
+            value.name
+          end
+        return nil if name.nil? || @global_bindings.key?(name)
+
+        sig = @signatures[name]
+        return nil unless sig
+
+        unless type.pointer? && type.target == function_type_of(sig)
+          error_at(value.token, "incompatible types in initialization")
+        end
+        name
       end
 
       # The file-scope object symbol a pointer initializer takes the address of,
@@ -687,6 +713,15 @@ module Rubycc
           error_at(decl.token, "redeclaration of '#{decl.name}'")
         end
 
+        # A block-scope declarator that builds a function type ("int f(int);"
+        # inside a body) declares an external function, not a local object. This
+        # subset does not model that, so it is rejected here rather than laid out
+        # as if it were a variable. A function *pointer* local (Pointer with a
+        # FunctionType target) is an ordinary 8-byte scalar and falls through.
+        if decl.type.function?
+          error_at(decl.token, "block-scope function declarations are not supported")
+        end
+
         # An array or a struct is an aggregate lowered onto a stack object; a
         # scalar (int, pointer) takes a vreg slot.
         if decl.type.array? || decl.type.struct?
@@ -902,9 +937,12 @@ module Rubycc
       # A variable reference. A local scalar yields its slot directly; an array
       # "decays" to a pointer to its first element (its base address), which is
       # the value every expression context except sizeof and unary "&" sees. A
-      # global is read through its address (see #gen_global_ref).
+      # global is read through its address (see #gen_global_ref). A name that
+      # binds no variable but names a function is a function designator, which
+      # decays to a pointer to that function (see #gen_function_designator).
       def gen_variable_ref(node)
-        local = lookup_local(node.name, node.token)
+        local = lookup_variable(node.name)
+        return gen_function_designator(node.name, node.token) unless local
         return gen_global_ref(local) if local.global
 
         if local.type.array?
@@ -943,6 +981,21 @@ module Rubycc
           emit_scalar_load(dst, addr, local.type)
           [dst, local.type]
         end
+      end
+
+      # A function designator that appears anywhere but the callee of a call
+      # (or under sizeof) decays to a pointer to the function (6.3.2.1p4), so
+      # "fp = f", "&f", passing "f" as an argument and comparing two function
+      # names all see the same Pointer(FunctionType) value. Its value is the
+      # function's own address, materialized by :func_addr; a name that is
+      # neither a visible variable nor a declared function is undeclared.
+      def gen_function_designator(name, token)
+        sig = @signatures[name]
+        error_at(token, "undeclared variable '#{name}'") unless sig
+
+        dst = new_vreg
+        emit(:func_addr, dst: dst, a: name)
+        [dst, Type::Pointer.new(function_type_of(sig))]
       end
 
       # A string literal decays, in every expression context, to a char *
@@ -1044,6 +1097,9 @@ module Rubycc
       # result type ("sizeof f()").
       def gen_sizeof(type, token)
         error_at(token, "invalid application of 'sizeof' to void type") if type.void?
+        # A function type has no size (only a pointer to it does), whether
+        # written directly ("sizeof(int (int))") or reached through an operand.
+        error_at(token, "invalid application of 'sizeof' to a function type") if type.function?
         # An incomplete struct has no known size to fold, whether written
         # directly ("sizeof(struct node)" before it is defined) or reached
         # through an operand of that type.
@@ -1339,21 +1395,24 @@ module Rubycc
 
       # "&x" yields the address of an lvalue. A variable reference, a subscript
       # "e[i]" or a dereference "*p" is an lvalue here: "&x" is a pointer to x's
-      # type, "&e[i]" is a pointer to the element (its already-computed
-      # address) and "&*p" collapses to p itself. Taking the address of a whole
-      # array is not modelled (use "&a[0]").
+      # type, "&a" a pointer to a whole array, "&e[i]" a pointer to the element
+      # (its already-computed address) and "&*p" collapses to p itself. "&f" of
+      # a function designator is a pointer to the function, the same value the
+      # bare name decays to.
       def gen_address_of(node)
         operand = node.operand
         if operand.is_a?(Front::AST::VariableRef)
-          local = lookup_local(operand.name, operand.token)
-          if local.type.array?
-            error_at(node.token, "address of array is not supported yet")
-          end
-          # A struct variable already evaluates to its object's base address
-          # (a stack object or a global symbol), so "&s" reuses that and just
-          # retags it as a pointer. A scalar's address is its symbol
-          # (:global_addr) or the absolute address of its stack slot (:addr_of).
-          if local.type.struct?
+          local = lookup_variable(operand.name)
+          # A bare function name: "&f" is a pointer to the function, identical
+          # to the decayed designator "f" (6.3.2.1p4), so reuse it.
+          return gen_function_designator(operand.name, operand.token) unless local
+
+          # A struct or array variable already evaluates to its object's base
+          # address (a stack object or a global symbol), so "&s"/"&a" reuse that
+          # and just retag it as a pointer to the whole object. A scalar's
+          # address is its symbol (:global_addr) or the absolute address of its
+          # stack slot (:addr_of).
+          if local.type.struct? || local.type.array?
             addr, = gen_variable_ref(operand)
             return [addr, Type::Pointer.new(local.type)]
           end
@@ -1364,10 +1423,9 @@ module Rubycc
           addr, element_type = gen_element_address(operand)
           [addr, Type::Pointer.new(element_type)]
         elsif operand.is_a?(Front::AST::MemberAccess)
+          # "&s.arr" of an array member is a pointer to the whole array (the
+          # member's own address); every other member address retags likewise.
           addr, member_type = gen_member_address(operand)
-          if member_type.array?
-            error_at(node.token, "address of array is not supported yet")
-          end
           [addr, Type::Pointer.new(member_type)]
         elsif operand.is_a?(Front::AST::Unary) && operand.op == :deref
           addr, ptr_type = gen_expr(operand.operand)
@@ -1389,6 +1447,15 @@ module Rubycc
         # itself (the struct's address), so nothing is loaded, just as a struct
         # variable yields its address.
         return [addr, result_type] if result_type.struct?
+        # "*fp" of a function pointer is a function designator, which decays
+        # right back to the same pointer value (its code address), so it is
+        # returned unchanged — this is what lets "(*fp)(x)" and "(**fp)(x)"
+        # reach the call as an ordinary Pointer(FunctionType).
+        return [addr, ptr_type] if result_type.function?
+        # "*p" of a pointer-to-array is an array lvalue, which decays to a
+        # pointer to its first element (the same address), so "(*p)[i]" and
+        # pointer-to-array arithmetic work; nothing is loaded.
+        return [addr, Type::Pointer.new(result_type.element)] if result_type.array?
 
         dst = new_vreg
         emit_scalar_load(dst, addr, result_type)
@@ -1524,36 +1591,83 @@ module Rubycc
         [value, target_type]
       end
 
-      # Lowers a call: the callee must have a known signature and a matching
-      # argument count, and each argument's type must match the corresponding
-      # parameter. Arguments are evaluated left to right, each landing in its
-      # own vreg; the result's type is the callee's declared return type (a
-      # void one is only valid when the whole call is used as an
-      # expression-statement, enforced by #gen_value at every other site).
+      # Lowers a call. A callee that is a bare function name not shadowed by a
+      # variable is a direct call to that symbol; any other callee (a function
+      # pointer variable, "(*fp)(x)", "s.fp(x)", "table[i](x)") is evaluated to
+      # a Pointer(FunctionType) value and called indirectly. Arguments are
+      # evaluated left to right, each landing in its own vreg; the result's type
+      # is the callee's return type (a void one is only valid when the whole
+      # call is an expression-statement, enforced by #gen_value at every other
+      # site).
       def gen_call(node)
-        sig = @signatures[node.name]
-        error_at(node.token, "implicit declaration of function '#{node.name}'") unless sig
+        callee = node.callee
+        # A bare identifier callee that binds no variable is a direct call to a
+        # function of that name; an unknown one is an implicit declaration.
+        if callee.is_a?(Front::AST::VariableRef) && lookup_variable(callee.name).nil?
+          unless @signatures.key?(callee.name)
+            error_at(node.token, "implicit declaration of function '#{callee.name}'")
+          end
+          gen_direct_call(node, callee.name)
+        else
+          gen_indirect_call(node)
+        end
+      end
 
-        param_types = sig[:param_types]
+      # A direct call to the named function, its signature already known.
+      def gen_direct_call(node, name)
+        sig = @signatures[name]
+        arg_vregs = lower_call_arguments(node, sig[:param_types], name)
+        dst = new_vreg
+        emit(:call, dst: dst, a: name, b: arg_vregs)
+        [dst, sig[:return_type]]
+      end
+
+      # An indirect call through a function-pointer value. The callee is
+      # evaluated (a function designator having already decayed to a pointer);
+      # its type must be a pointer to a function, whose signature drives the
+      # argument checks and supplies the result type. The target address rides
+      # in the a-field and the argument vregs in b, exactly like a direct call.
+      def gen_indirect_call(node)
+        target, callee_type = gen_value(node.callee)
+        func_type = called_function_type(callee_type, node.token)
+        arg_vregs = lower_call_arguments(node, func_type.param_types, nil)
+        dst = new_vreg
+        emit(:call_indirect, dst: dst, a: target, b: arg_vregs)
+        [dst, func_type.return_type]
+      end
+
+      # The FunctionType a call's callee names, or a diagnostic when the callee
+      # is neither a function nor a pointer to one. A function designator would
+      # already have decayed to Pointer(FunctionType), but a bare function type
+      # is accepted too for completeness.
+      def called_function_type(callee_type, token)
+        return callee_type.target if callee_type.pointer? && callee_type.target.function?
+        return callee_type if callee_type.function?
+
+        error_at(token, "called object is not a function or function pointer")
+      end
+
+      # Evaluates a call's arguments against `param_types`, checking the count
+      # and each type and converting each like an assignment (an arithmetic
+      # widening/narrowing/sign change; a pointer or null pointer constant
+      # passes through). `name` names the callee in the diagnostics of a direct
+      # call, or is nil for an indirect one.
+      def lower_call_arguments(node, param_types, name)
+        callee_desc = name ? "function '#{name}'" : "function pointer"
         if node.args.size < param_types.size
-          error_at(node.token, "too few arguments to function '#{node.name}'")
+          error_at(node.token, "too few arguments to #{callee_desc}")
         elsif node.args.size > param_types.size
-          error_at(node.token, "too many arguments to function '#{node.name}'")
+          error_at(node.token, "too many arguments to #{callee_desc}")
         end
 
-        arg_vregs = node.args.each_with_index.map do |arg, i|
+        node.args.each_with_index.map do |arg, i|
           vreg, arg_type = gen_value(arg)
           unless compatible_assignment?(param_types[i], arg, arg_type)
-            error_at(node.token, "incompatible type for argument #{i + 1} of '#{node.name}'")
+            suffix = name ? " of '#{name}'" : ""
+            error_at(node.token, "incompatible type for argument #{i + 1}#{suffix}")
           end
-          # An arithmetic argument is converted to the parameter's type, like an
-          # assignment (a widening/narrowing/sign change); a pointer or null
-          # pointer constant passes through.
           convert_for_assignment(vreg, arg_type, param_types[i])
         end
-        dst = new_vreg
-        emit(:call, dst: dst, a: node.name, b: arg_vregs)
-        [dst, sig[:return_type]]
       end
 
       # "lhs && rhs": short-circuit, so rhs is only evaluated when lhs is
@@ -2166,7 +2280,15 @@ module Rubycc
       # operand takes its ordinary (decayed) expression type.
       def sizeof_operand_type(node)
         if node.is_a?(Front::AST::VariableRef)
-          lookup_local(node.name, node.token).type
+          local = lookup_variable(node.name)
+          # A bare function name under sizeof keeps its function type, which
+          # gen_sizeof then rejects ("sizeof f" has no size); a variable keeps
+          # its declared type with no array-to-pointer decay.
+          return local.type if local
+
+          sig = @signatures[node.name] ||
+                error_at(node.token, "undeclared variable '#{node.name}'")
+          function_type_of(sig)
         elsif node.is_a?(Front::AST::StringLit)
           Type::Array.new(Type::Char, node.value.bytesize + 1)
         elsif node.is_a?(Front::AST::MemberAccess)
@@ -2193,8 +2315,14 @@ module Rubycc
         when Front::AST::StringLit
           Type::Pointer.new(Type::Char)
         when Front::AST::VariableRef
-          type = lookup_local(node.name, node.token).type
-          type.array? ? Type::Pointer.new(type.element) : type
+          local = lookup_variable(node.name)
+          if local
+            local.type.array? ? Type::Pointer.new(local.type.element) : local.type
+          else
+            sig = @signatures[node.name] ||
+                  error_at(node.token, "undeclared variable '#{node.name}'")
+            Type::Pointer.new(function_type_of(sig))
+          end
         when Front::AST::Subscript
           subscript_element_type(static_type(node.target), node.token)
         when Front::AST::MemberAccess
@@ -2256,13 +2384,18 @@ module Rubycc
           error_at(node.token, "no member named '#{node.member}' in '#{struct_type}'")
       end
 
-      # A call's rvalue type without emitting code: the callee's declared
-      # return type, looked up the same way #gen_call does.
+      # A call's rvalue type without emitting code: the callee's return type,
+      # resolved the same way #gen_call splits a direct call from an indirect
+      # one.
       def call_return_type(node)
-        sig = @signatures[node.name]
-        error_at(node.token, "implicit declaration of function '#{node.name}'") unless sig
-
-        sig[:return_type]
+        callee = node.callee
+        if callee.is_a?(Front::AST::VariableRef) && lookup_variable(callee.name).nil?
+          sig = @signatures[callee.name]
+          error_at(node.token, "implicit declaration of function '#{callee.name}'") unless sig
+          sig[:return_type]
+        else
+          called_function_type(static_type(callee), node.token).return_type
+        end
       end
 
       # The type of "condition ? then_expr : else_expr" without emitting code,
@@ -2307,15 +2440,16 @@ module Rubycc
       def static_address_of_type(node)
         operand = node.operand
         if operand.is_a?(Front::AST::VariableRef)
-          local = lookup_local(operand.name, operand.token)
-          error_at(node.token, "address of array is not supported yet") if local.type.array?
+          local = lookup_variable(operand.name)
+          # "&f" of a function name is a pointer to the function, like the
+          # decayed designator itself; "&a" is a pointer to the whole array.
+          return static_type(operand) unless local
+
           Type::Pointer.new(local.type)
         elsif operand.is_a?(Front::AST::Subscript)
           Type::Pointer.new(subscript_element_type(static_type(operand.target), operand.token))
         elsif operand.is_a?(Front::AST::MemberAccess)
-          member = static_member(operand)
-          error_at(node.token, "address of array is not supported yet") if member.type.array?
-          Type::Pointer.new(member.type)
+          Type::Pointer.new(static_member(operand).type)
         elsif operand.is_a?(Front::AST::Unary) && operand.op == :deref
           type = static_type(operand.operand)
           require_pointer(type, operand.token)
@@ -2326,13 +2460,30 @@ module Rubycc
       end
 
       # Resolves a variable by walking scopes from innermost to outermost, so
-      # an inner declaration shadows an outer one with the same name.
-      def lookup_local(name, token)
+      # an inner declaration shadows an outer one with the same name. Returns
+      # nil when no variable binds the name — the caller decides whether the
+      # name might instead be a function designator or is simply undeclared.
+      def lookup_variable(name)
         @scopes.reverse_each do |scope|
           local = scope[name]
           return local if local
         end
-        error_at(token, "undeclared variable '#{name}'")
+        nil
+      end
+
+      # Like #lookup_variable but for the contexts that require an object (an
+      # assignment target, a "++"/"--"): a name that binds no variable is
+      # undeclared here (a function name never reaches these, the parser having
+      # made it a call or a decayed pointer instead).
+      def lookup_local(name, token)
+        lookup_variable(name) || error_at(token, "undeclared variable '#{name}'")
+      end
+
+      # The Type::FunctionType a function's recorded signature describes, used
+      # both to build the pointer a function designator decays to and to check
+      # an indirect call or a function-pointer assignment against it.
+      def function_type_of(sig)
+        Type::FunctionType.new(sig[:return_type], sig[:param_types])
       end
 
       def new_vreg

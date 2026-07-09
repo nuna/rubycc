@@ -41,7 +41,11 @@ module Rubycc
       #     .rodata section);
       #   * { kind: :global, offset:, symbol: } — a "lea rip" displacement
       #     addressing the named file-scope variable `symbol` (R_X86_64_PC32
-      #     against that symbol).
+      #     against that symbol);
+      #   * { kind: :func, offset:, symbol: } — a "lea rip" displacement taking
+      #     the address of the function `symbol` (a function designator or
+      #     "&f"), resolved like a `call` against that (defined or undefined)
+      #     symbol.
       Result = Data.define(:bytes, :symbols, :relocations)
 
       # Register numbers. For eax/ecx/edx these are the low 3 bits of the
@@ -54,9 +58,13 @@ module Rubycc
       EDI = 7
       R8D = 8
       R9D = 9
+      # r10 is a System V caller-saved scratch register that is not an argument
+      # register, so it can hold an indirect call's target without clobbering
+      # any argument already loaded into edi..r9d.
+      R10 = 10
 
       # System V AMD64 integer argument registers, in order. A call with N
-      # arguments (N <= 6) uses the first N entries.
+      # arguments passes the first six here; any beyond that go on the stack.
       ARG_REGISTERS = [EDI, ESI, EDX, ECX, R8D, R9D].freeze
 
       # IR comparison op -> setcc opcode (second byte of the 0F 9x encoding).
@@ -119,9 +127,20 @@ module Rubycc
         emit(0x48, 0x89, 0xE5)              # mov rbp, rsp
         emit(0x48, 0x81, 0xEC)              # sub rsp, imm32
         emit_bytes([frame_size].pack("L<"))
-        # Spill the incoming argument registers into the parameter slots (the
-        # first `param_count` vregs) so they read back like any other vreg.
-        param_count.times { |i| store_reg(ARG_REGISTERS[i], i) }
+        # Bring each incoming argument into its parameter slot (the first
+        # `param_count` vregs) so it reads back like any other vreg. The first
+        # six arrive in registers and are spilled directly; a seventh and beyond
+        # were pushed by the caller and now sit above the return address at
+        # [rbp + 16 + 8*(i-6)], so they are copied down through rax.
+        param_count.times do |i|
+          if i < ARG_REGISTERS.size
+            store_reg(ARG_REGISTERS[i], i)
+          else
+            emit(0x48, 0x8B)                # mov rax, [rbp + disp]
+            emit_bytes(modrm_rbp_disp(EAX, 16 + 8 * (i - ARG_REGISTERS.size)))
+            store_reg(EAX, i)
+          end
+        end
       end
 
       def emit_instruction(inst)
@@ -189,6 +208,10 @@ module Rubycc
           emit_jump_if_zero(inst.a, inst.b)
         when :call
           emit_call(inst.dst, inst.a, inst.b)
+        when :call_indirect
+          emit_call_indirect(inst.dst, inst.a, inst.b)
+        when :func_addr
+          emit_func_addr(inst.dst, inst.a)
         when :addr_of
           emit_addr_of(inst.dst, inst.a)
         when :object_addr
@@ -210,18 +233,76 @@ module Rubycc
         end
       end
 
-      # Emits a call: load each argument from its slot into the matching
-      # System V argument register, then "call rel32" with a zero displacement
-      # placeholder recorded as a relocation, then spill eax to the result
-      # slot. All arguments already live in slots, so loading them in order
-      # cannot clobber a not-yet-loaded argument. The prologue keeps rsp
-      # 16-aligned (push rbp plus a 16-aligned sub), so at the call the stack
-      # meets the System V alignment requirement without extra adjustment.
+      # Emits a direct call: place the arguments (see #emit_call_args), then
+      # "call rel32" with a zero displacement placeholder recorded as a
+      # relocation, undo any stack-argument adjustment, and spill eax to the
+      # result slot.
       def emit_call(dst, name, arg_vregs)
-        arg_vregs.each_with_index { |vreg, i| load_reg(ARG_REGISTERS[i], vreg) }
+        reclaim = emit_call_args(arg_vregs)
         emit(0xE8)                          # call rel32
         @relocations << { kind: :call, offset: @code.bytesize, symbol: name }
         emit_bytes([0].pack("l<"))          # linker patches this via R_X86_64_PLT32
+        emit_reclaim_stack_args(reclaim)
+        store_reg(EAX, dst)
+      end
+
+      # Emits an indirect call through a function-pointer value: place the
+      # arguments, load the target address into r10 (a non-argument scratch, so
+      # it survives the argument setup), "call r10", then undo any
+      # stack-argument adjustment and spill the result.
+      def emit_call_indirect(dst, target_vreg, arg_vregs)
+        reclaim = emit_call_args(arg_vregs)
+        load_reg(R10, target_vreg)          # mov r10, [rbp + disp]
+        emit(0x41, 0xFF, 0xD2)              # call r10
+        emit_reclaim_stack_args(reclaim)
+        store_reg(EAX, dst)
+      end
+
+      # Places a call's arguments for the System V AMD64 convention and returns
+      # the number of bytes the caller must reclaim from the stack afterwards.
+      # The first six arguments go in edi..r9d; a seventh and beyond are pushed
+      # in reverse so the seventh ends up at the lowest address ([rsp] at the
+      # call). When their count is odd an extra 8-byte pad is pushed first so rsp
+      # stays 16-aligned at the call, as the ABI requires (the prologue already
+      # leaves it 16-aligned). All arguments live in rbp-relative slots, so the
+      # rsp changes never disturb a not-yet-loaded one.
+      def emit_call_args(arg_vregs)
+        register_args = arg_vregs.first(ARG_REGISTERS.size)
+        stack_args = arg_vregs.drop(ARG_REGISTERS.size)
+        pad = stack_args.size.odd? ? 8 : 0
+        emit_sub_rsp(pad) if pad.positive?
+        stack_args.reverse_each do |vreg|
+          load_reg(EAX, vreg)               # rax = argument value
+          emit(0x50)                        # push rax
+        end
+        register_args.each_with_index { |vreg, i| load_reg(ARG_REGISTERS[i], vreg) }
+        stack_args.size * 8 + pad
+      end
+
+      # Reclaims `bytes` of stack space (the pushed arguments and any alignment
+      # pad) after a call returns; a no-op when nothing was pushed.
+      def emit_reclaim_stack_args(bytes)
+        return if bytes.zero?
+
+        emit(0x48, 0x81, 0xC4)              # add rsp, imm32
+        emit_bytes([bytes].pack("L<"))
+      end
+
+      # sub rsp, imm32 — reserves `bytes` of stack space (the pre-call alignment
+      # pad for an odd number of stack arguments).
+      def emit_sub_rsp(bytes)
+        emit(0x48, 0x81, 0xEC)              # sub rsp, imm32
+        emit_bytes([bytes].pack("L<"))
+      end
+
+      # :func_addr — lea rax, [rip + disp32] takes the address of the named
+      # function, like :global_addr but recorded as a { kind: :func } relocation
+      # the compiler resolves against the function symbol (defined here or an
+      # undefined external), giving a usable function-pointer value.
+      def emit_func_addr(dst, name)
+        emit(0x48, 0x8D, 0x05)              # REX.W lea rax, [rip + disp32]
+        @relocations << { kind: :func, offset: @code.bytesize, symbol: name }
+        emit_bytes([0].pack("l<"))
         store_reg(EAX, dst)
       end
 

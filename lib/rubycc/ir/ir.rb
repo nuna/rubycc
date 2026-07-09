@@ -42,7 +42,18 @@ module Rubycc
     #   :jump         a = label id (unconditional branch)
     #   :jump_if_zero a = condition vreg, b = label id (branch when a == 0)
     #   :call   dst <- f(args)  a = callee name (String),
-    #                           b = array of argument vregs (left to right)
+    #                           b = array of argument vregs (left to right).
+    #                           Arguments past the sixth are passed on the stack
+    #                           (System V AMD64), pushed in reverse below the
+    #                           first six in registers
+    #   :call_indirect dst <- (*a)(args)  a = a vreg holding the function's
+    #                           address (a function pointer value), b = the
+    #                           argument vregs, passed exactly as for :call. The
+    #                           backend calls through a scratch register
+    #   :func_addr dst <- &func(a)  dst gets the address of the function named a
+    #                           (a String symbol), the value a function
+    #                           designator decays to (and "&f" yields); resolved
+    #                           by a PC-relative relocation like :global_addr
     #   :addr_of dst <- &slot(a)    dst gets the address of a's stack slot
     #   :object_addr dst <- &object(a)  dst gets the base address of stack
     #                                   object a (an array's first element)

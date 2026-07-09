@@ -103,6 +103,10 @@ module Rubycc
         false
       end
 
+      def function?
+        false
+      end
+
       def size
         @size
       end
@@ -159,6 +163,10 @@ module Rubycc
       end
 
       def struct?
+        false
+      end
+
+      def function?
         false
       end
 
@@ -239,6 +247,10 @@ module Rubycc
         false
       end
 
+      def function?
+        false
+      end
+
       # Every pointer is a 64-bit address, so 8 bytes wide.
       def size
         8
@@ -251,11 +263,23 @@ module Rubycc
         8
       end
 
-      # Renders as a C declarator: a space separates the base type from its
-      # first "*", and deeper levels stack their stars with no gap in between
+      # Renders as a C declarator. A pointer to a function or an array cannot be
+      # spelled by simply suffixing a "*", since the postfix "()" / "[]" would
+      # then bind tighter than the star; C parenthesizes the star instead, so a
+      # pointer to "int (int)" is written "int (*)(int)" and a pointer to
+      # "int [3]" is "int (*)[3]". Every other target uses the plain suffix form:
+      # a space before the first star, deeper levels stacking with no gap
       # ("int *", "int **").
       def to_s
-        target.pointer? ? "#{target}*" : "#{target} *"
+        if target.function?
+          "#{target.return_type} (*)(#{target.parameter_list_string})"
+        elsif target.array?
+          "#{target.element} (*)[#{target.length}]"
+        elsif target.pointer?
+          "#{target}*"
+        else
+          "#{target} *"
+        end
       end
     end
 
@@ -299,6 +323,10 @@ module Rubycc
         false
       end
 
+      def function?
+        false
+      end
+
       # The whole array's byte size: the element width times the count.
       def size
         element.size * length
@@ -314,6 +342,87 @@ module Rubycc
       # bracketed length ("int [10]", "int * [4]").
       def to_s
         "#{element} [#{length}]"
+      end
+    end
+
+    # A function type (6.7.6.3): its `return_type` and the ordered
+    # `param_types`, an array of the parameter Types after the array/function
+    # adjustments the parser applies ("(void)" and "()" both yield an empty
+    # array). Being a Data, two function types are equal exactly when their
+    # return type and parameter types all match, so "int (int)" == "int (int)".
+    #
+    # A function type is not an object type: it has no storage width, so #size
+    # and #alignment raise (a well-formed program measures a *pointer* to a
+    # function, never the function itself, and the parser rejects a bare
+    # function type wherever an object is required). It is reached in this
+    # subset only through a pointer (a function pointer, Pointer with a
+    # FunctionType target) or as the very type a function declarator builds;
+    # #function? tells it apart from every object type.
+    FunctionType = Data.define(:return_type, :param_types) do
+      def pointer?
+        false
+      end
+
+      def int?
+        false
+      end
+
+      def char?
+        false
+      end
+
+      def void?
+        false
+      end
+
+      def integer?
+        false
+      end
+
+      def arithmetic?
+        false
+      end
+
+      def bool?
+        false
+      end
+
+      def array?
+        false
+      end
+
+      def struct?
+        false
+      end
+
+      def function?
+        true
+      end
+
+      # A function type has no storage, so it cannot be laid out; every path
+      # that could reach one where a size is needed (sizeof, a member layout, a
+      # variable) rejects it first with a proper diagnostic, so a raise here is
+      # a missing guard.
+      def size
+        raise "function type has no size"
+      end
+
+      def alignment
+        raise "function type has no alignment"
+      end
+
+      # The parenthesized parameter list as it appears in a C declarator, used
+      # both by #to_s and by Pointer#to_s for a function pointer. An empty list
+      # renders "void" (a prototype taking no arguments).
+      def parameter_list_string
+        param_types.empty? ? "void" : param_types.map(&:to_s).join(", ")
+      end
+
+      # Renders like a C function declarator with the name elided: the return
+      # type, a space, then the bracketed parameter list ("int (int, char *)",
+      # "void (void)").
+      def to_s
+        "#{return_type} (#{parameter_list_string})"
       end
     end
 
@@ -394,6 +503,10 @@ module Rubycc
       # on it.
       def struct?
         true
+      end
+
+      def function?
+        false
       end
 
       # Distinguishes a union from a struct; the two share this class and differ

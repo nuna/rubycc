@@ -330,4 +330,51 @@ class TestType < Minitest::Test
   def test_pointer_to_struct_renders_with_star
     assert_equal "struct point *", Type::Pointer.new(Type::StructType.new("point")).to_s
   end
+
+  def test_function_type_predicate
+    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    assert_predicate func, :function?
+    refute_predicate func, :pointer?
+    refute_predicate func, :integer?
+    refute_predicate func, :array?
+    refute_predicate func, :struct?
+  end
+
+  def test_only_function_type_is_function
+    refute_predicate Type::Int, :function?
+    refute_predicate Type::Void, :function?
+    refute_predicate Type::Pointer.new(Type::Int), :function?
+    refute_predicate Type::Array.new(Type::Int, 3), :function?
+    refute_predicate Type::StructType.new("s"), :function?
+  end
+
+  def test_function_type_has_no_size_or_alignment
+    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    assert_raises(RuntimeError) { func.size }
+    assert_raises(RuntimeError) { func.alignment }
+  end
+
+  def test_function_type_equality_is_by_value
+    a = Type::FunctionType.new(Type::Int, [Type::Int, Type::Pointer.new(Type::Char)])
+    b = Type::FunctionType.new(Type::Int, [Type::Int, Type::Pointer.new(Type::Char)])
+    c = Type::FunctionType.new(Type::Int, [Type::Int])
+    assert_equal a, b
+    refute_equal a, c
+  end
+
+  def test_function_type_renders_like_a_c_declarator
+    assert_equal "int (int, char *)",
+                 Type::FunctionType.new(Type::Int, [Type::Int, Type::Pointer.new(Type::Char)]).to_s
+    # An empty parameter list renders "void".
+    assert_equal "void (void)", Type::FunctionType.new(Type::Void, []).to_s
+  end
+
+  def test_function_pointer_renders_with_parenthesized_star
+    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    assert_equal "int (*)(int)", Type::Pointer.new(func).to_s
+  end
+
+  def test_array_pointer_renders_with_parenthesized_star
+    assert_equal "int (*)[3]", Type::Pointer.new(Type::Array.new(Type::Int, 3)).to_s
+  end
 end

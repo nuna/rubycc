@@ -14,13 +14,13 @@ module Rubycc
     #   translation-unit          = external-declaration*
     #   external-declaration      = type-specifier ";"             -- tag only
     #                             | type-specifier declarator
-    #                               ( "(" parameter-type-list? ")"
-    #                                 (";" | compound-statement)   -- function
-    #                               | global-declarator-suffix
-    #                                 ("," declarator global-declarator-suffix)*
+    #                               ( (";" | compound-statement)   -- function
+    #                                                                 (declarator
+    #                                                                  is a
+    #                                                                  function)
+    #                               | ("=" initializer)?
+    #                                 ("," declarator ("=" initializer)?)*
     #                                 ";" )                         -- variables
-    #   global-declarator-suffix  = ("[" constant-expression "]" | "[" "]")?
-    #                               ("=" initializer)?
     #   declaration-specifiers    = (storage-class-specifier | type-specifier)+
     #   storage-class-specifier   = "typedef"
     #   type-specifier            = "void" | "char" | "short" | "int" | "long"
@@ -42,10 +42,15 @@ module Rubycc
     #   parameter-type-list       = "void"
     #                             | parameter-declaration
     #                               ("," parameter-declaration)*
-    #   parameter-declaration     = type-specifier declarator?
+    #   parameter-declaration     = type-specifier declarator
     #   declarator                = "*"* direct-declarator
-    #   direct-declarator         = identifier
-    #                               ("[" constant-expression "]" | "[" "]")?
+    #   direct-declarator         = (identifier | "(" declarator ")")
+    #                               direct-declarator-suffix*
+    #   direct-declarator-suffix  = "[" constant-expression? "]"
+    #                             | "(" parameter-type-list? ")"
+    #   abstract-declarator       = "*"* direct-abstract-declarator?
+    #   direct-abstract-declarator = ("(" abstract-declarator ")")?
+    #                               direct-declarator-suffix*
     #   compound-statement        = "{" block-item* "}"
     #   block-item                = declaration | statement
     #   declaration               = type-specifier ";"
@@ -110,11 +115,12 @@ module Rubycc
     #                             | ("++" | "--") unary-expression
     #                             | "sizeof" unary-expression
     #                             | "sizeof" "(" type-name ")"
-    #   type-name                 = type-specifier "*"*
-    #   postfix-expression        = (primary-expression
-    #                               | identifier "(" argument-expression-list? ")")
-    #                               ("[" expression "]" | "." identifier
-    #                                | "->" identifier | "++" | "--")*
+    #   type-name                 = type-specifier abstract-declarator?
+    #   postfix-expression        = primary-expression
+    #                               ("[" expression "]"
+    #                                | "(" argument-expression-list? ")"
+    #                                | "." identifier | "->" identifier
+    #                                | "++" | "--")*
     #   argument-expression-list  = assignment-expression
     #                               ("," assignment-expression)*
     #   primary-expression        = integer-constant | string-literal
@@ -153,10 +159,6 @@ module Rubycc
       # return type or as the target of a pointer; every other use is rejected
       # by #reject_void_type.
       DECL_SPECIFIER_KEYWORDS = %w[void char short int long signed unsigned _Bool].freeze
-
-      # System V AMD64 passes the first six integer arguments in registers;
-      # this subset rejects any function with more parameters (or arguments).
-      MAX_PARAMS = 6
 
       # A tag scope entry for an enum tag. C keeps struct, union and enum tags in
       # one shared namespace, so enum tags live in @tag_scopes alongside the
@@ -218,7 +220,9 @@ module Rubycc
       end
 
       # Looks ahead `offset` tokens without consuming; used to disambiguate a
-      # function-call "identifier (" from a bare identifier reference.
+      # parenthesized declarator from a parameter list, a cast/sizeof type-name
+      # from a parenthesized expression, and a labeled statement from an
+      # expression-statement.
       def peek_ahead(offset)
         @tokens[@pos + offset]
       end
@@ -231,8 +235,10 @@ module Rubycc
 
       # An external declaration is either a function (a prototype ending in ";"
       # or a definition ending in a compound-statement) or a file-scope variable
-      # declaration. Both begin with a type-specifier, its "*" run and a name; a
-      # following "(" marks the function form, anything else the variable form.
+      # declaration. Both begin with a type-specifier and a declarator; the
+      # declarator's built type settles the form — a function type is the
+      # function form (its declarator having read the "(" parameter list), any
+      # other type the variable form.
       def parse_external_declaration
         type_tok = peek
         base_type, is_typedef = parse_declaration_specifiers(allow_storage_class: true)
@@ -251,32 +257,30 @@ module Rubycc
         # yields no object and no code (see #parse_typedef_declaration).
         return parse_typedef_declaration(base_type) if is_typedef
 
-        type = parse_pointer_declarator(base_type)
-        name_tok = expect_ident
+        name_tok, type, function_params = parse_declarator(base_type, allow_incomplete_array: true)
 
-        if peek.punct?("(")
-          parse_function(type, name_tok, type_tok)
+        if type.function?
+          parse_function(name_tok, type, function_params, type_tok)
         else
-          parse_global_declaration(base_type, type, name_tok)
+          parse_global_declaration(base_type, name_tok, type)
         end
       end
 
-      # The function form of an external declaration, its name and return type
-      # already read: int, char, void or a pointer to any of those (including
-      # void, "void *") are all valid return types.
-      def parse_function(return_type, name_tok, return_tok)
-        expect_punct("(")
-        params = parse_parameter_type_list
-        expect_punct(")")
+      # The function form of an external declaration, its declarator already
+      # read into `func_type` (a Type::FunctionType) and `params` (the Parameter
+      # objects of its outermost function suffix). A ";" is a prototype, a
+      # compound-statement a definition. The return type is func_type's — int,
+      # char, void or a pointer to any of those (including "void *").
+      def parse_function(name_tok, func_type, params, return_tok)
         # A function name is an ordinary identifier at file scope, recorded so an
         # inner block declaring the same name shadows it against a typedef check.
         declare_ordinary_name(name_tok.value)
 
         if peek.punct?(";")
           advance
-          AST::FunctionDecl.new(name_tok.value, return_type, params, return_tok)
+          AST::FunctionDecl.new(name_tok.value, func_type.return_type, params, return_tok)
         else
-          parse_function_definition(name_tok.value, return_type, params, return_tok)
+          parse_function_definition(name_tok.value, func_type.return_type, params, return_tok)
         end
       end
 
@@ -284,19 +288,19 @@ module Rubycc
       # comma-separated run of declarators sharing `base_type`, the first of
       # which (`first_type`/`first_name_tok`) has already been read. Each
       # declarator yields one GlobalDecl; the run ends at ";".
-      def parse_global_declaration(base_type, first_type, first_name_tok)
+      def parse_global_declaration(base_type, first_name_tok, first_type)
         decls = [parse_global_declarator(first_type, first_name_tok)]
         while peek.punct?(",")
           advance
-          type = parse_pointer_declarator(base_type)
-          name_tok = expect_ident
+          name_tok, type = parse_declarator(base_type, allow_incomplete_array: true)
           decls << parse_global_declarator(type, name_tok)
         end
         expect_punct(";")
         decls
       end
 
-      # One global declarator: the array suffix and an optional "=" initializer.
+      # One global declarator's tail, its type (array suffix included) already
+      # built: the void/incomplete checks and an optional "=" initializer.
       # A plain scalar-integer initializer is a constant-expression (6.6) folded
       # to a Ruby Integer on the spot (initializer_value). Every other admitted
       # form is deferred to the generator as a raw node (initializer_node): a
@@ -308,7 +312,6 @@ module Rubycc
       # rejected with "unsupported initializer for global variable"; the deferred
       # forms the generator cannot fold reach the same diagnostic there.
       def parse_global_declarator(type, name_tok)
-        type = parse_array_declarator(type, allow_incomplete: true)
         reject_void_type(type, name_tok)
         initializer_value = nil
         initializer_node = nil
@@ -664,14 +667,15 @@ module Rubycc
       end
 
       # The comma-separated declarators sharing `member_base`, each a named
-      # member with its own "*" run and array suffix. Each name is checked for a
+      # member with its own declarator (a "*" run, an array suffix, or a
+      # function-pointer shape such as "int (*handler)(int)"). A member may not
+      # be a bare function; a pointer to one is fine. Each name is checked for a
       # duplicate against `seen` (which already holds any transparently exposed
       # names) and then added to it.
       def parse_member_declarators(member_base, raw_members, seen)
         loop do
-          type = parse_pointer_declarator(member_base)
-          name_tok = expect_ident
-          type = parse_array_declarator(type)
+          name_tok, type = parse_declarator(member_base)
+          error_at(name_tok, "field '#{name_tok.value}' declared as a function") if type.function?
           reject_void_type(type, name_tok)
           reject_incomplete_member(type, name_tok)
           error_at(name_tok, "duplicate member '#{name_tok.value}'") if seen.key?(name_tok.value)
@@ -771,22 +775,22 @@ module Rubycc
           advance
           params << parse_parameter_declaration
         end
-        if params.size > MAX_PARAMS
-          error_at(params[MAX_PARAMS].token, "too many parameters (rubycc supports up to 6)")
-        end
         params
       end
 
-      # parameter-declaration = type-specifier declarator?. The declarator's
-      # name is optional (nil) so prototypes may omit it, but any leading "*"
-      # run still contributes to the parameter's pointer type; an unnamed
-      # parameter is located by its type-specifier keyword for diagnostics.
+      # parameter-declaration = type-specifier declarator?, the declarator being
+      # a full (possibly abstract) one whose name is optional (:optional mode)
+      # so prototypes may omit it. The parsed type is then adjusted per 6.7.6.3
+      # (an array becomes a pointer to its element, a function a pointer to
+      # itself), so "int a[10]" is "int *a" and "int g(int)" is "int (*g)(int)".
+      # An unnamed parameter is located by its type-specifier keyword for
+      # diagnostics.
       def parse_parameter_declaration
         type_tok = peek
-        type = parse_pointer_declarator(parse_type_specifier)
-        reject_void_type(type, type_tok)
-        if peek.type == :ident
-          name_tok = advance
+        name_tok, type = parse_declarator(parse_type_specifier, name_mode: :optional)
+        type = adjust_parameter_type(type)
+        reject_void_type(type, name_tok || type_tok)
+        if name_tok
           AST::Parameter.new(name_tok.value, type, name_tok)
         else
           AST::Parameter.new(nil, type, type_tok)
@@ -834,9 +838,7 @@ module Rubycc
       # AST node, so this returns an empty run.
       def parse_typedef_declaration(base_type)
         loop do
-          type = parse_pointer_declarator(base_type)
-          name_tok = expect_ident
-          type = parse_array_declarator(type)
+          name_tok, type = parse_declarator(base_type)
           if peek.punct?("=")
             error_at(peek, "typedef '#{name_tok.value}' must not be initialized")
           end
@@ -850,9 +852,7 @@ module Rubycc
       end
 
       def parse_init_declarator(base_type)
-        type = parse_pointer_declarator(base_type)
-        name_tok = expect_ident
-        type = parse_array_declarator(type, allow_incomplete: true)
+        name_tok, type = parse_declarator(base_type, allow_incomplete_array: true)
         reject_void_type(type, name_tok)
         initializer = nil
         if peek.punct?("=")
@@ -928,17 +928,145 @@ module Rubycc
         designators
       end
 
-      # direct-declarator's optional array suffix. A bracketed length turns the
-      # declared object into an array of `element_type`; the length is a
-      # constant-expression (6.6) folded to a positive Ruby Integer. When
-      # `allow_incomplete` is set (a variable or global with an initializer),
-      # empty brackets "[]" are accepted too, leaving the length nil for the
-      # initializer resolver to infer (6.7.9p22); everywhere else "[]" is an
-      # error. A second "[" would begin a multidimensional array, which this
-      # subset does not model.
-      def parse_array_declarator(element_type, allow_incomplete: false)
-        return element_type unless peek.punct?("[")
+      # Parses a full declarator (6.7.6) and applies it to `base`, returning
+      # [name_token_or_nil, type, function_params]. The declarator is read
+      # syntactically and turned into a proc that wraps `base` inside-out (see
+      # #parse_declarator_builder); `type` is that proc applied to `base`, and
+      # `function_params` is the parameter list of the function suffix attached
+      # directly to the declared name when the result is a function type (a
+      # function definition or prototype needs those Parameter objects), nil
+      # otherwise.
+      #
+      # `name_mode` governs the identifier: :required in an ordinary declaration
+      # (a missing name is an error), :optional in a parameter (the name may be
+      # omitted), or :forbidden in a type-name (a cast or sizeof, which never
+      # names anything). `allow_incomplete_array` admits a trailing "[]" whose
+      # length an initializer will infer.
+      def parse_declarator(base, name_mode: :required, allow_incomplete_array: false)
+        name_tok, build, function_params =
+          parse_declarator_builder(name_mode: name_mode, allow_incomplete_array: allow_incomplete_array)
+        [name_tok, build.call(base), function_params]
+      end
 
+      # declarator = pointer? direct-declarator. Parses the leading "*" run and
+      # the direct-declarator, returning [name_token, build, function_params]
+      # where `build` maps a base type to the declared type. The pointer prefix
+      # is the outermost derivation textually but binds looser than the postfix
+      # "()"/"[]", so it wraps the *base* first (becoming the innermost target,
+      # e.g. the return or element type) and the direct-declarator's suffixes
+      # then wrap that — which is exactly why "int *f(int)" is a function
+      # returning "int *" while "int (*f)(int)" is a pointer to a function.
+      def parse_declarator_builder(name_mode:, allow_incomplete_array:)
+        star_count = 0
+        star_count += 1 while consume_punct("*")
+        name_tok, direct_build, function_params =
+          parse_direct_declarator(name_mode: name_mode, allow_incomplete_array: allow_incomplete_array)
+        build = lambda do |base|
+          type = base
+          star_count.times { type = Type::Pointer.new(type) }
+          direct_build.call(type)
+        end
+        [name_tok, build, function_params]
+      end
+
+      # direct-declarator = (identifier | "(" declarator ")") suffix*, where a
+      # suffix is a "[" size? "]" array or a "(" parameter-type-list? ")"
+      # function. Returns [name_token, build, function_params].
+      #
+      # The core is a parenthesized declarator when a "(" is followed by a token
+      # that opens a declarator (see #paren_starts_declarator?), an identifier
+      # when one is present and the mode admits a name, or empty (an abstract
+      # declarator's or an unnamed parameter's missing name). The suffixes bind
+      # tighter than the pointer prefix and than an enclosing paren's suffix, so
+      # `build` applies them to the base before the core — and, since a later
+      # suffix binds tighter than an earlier one ("a[2][3]"), in reverse textual
+      # order.
+      #
+      # `function_params` reports the parameter list of the function suffix
+      # attached directly to the name: it is this level's first suffix when the
+      # core is the identifier (or is absent), but the *inner* declarator's when
+      # the core is parenthesized, so a name buried inside parentheses still
+      # surfaces the suffix that makes it a function ("int (*g(int a))(int b)"
+      # reports "int a", g's own parameters, not "int b").
+      def parse_direct_declarator(name_mode:, allow_incomplete_array:)
+        name_tok, core_build, inner_params = parse_declarator_core(name_mode: name_mode)
+
+        suffixes = []
+        loop do
+          if peek.punct?("[")
+            suffixes << parse_array_suffix(allow_incomplete: allow_incomplete_array)
+          elsif peek.punct?("(")
+            suffixes << parse_function_suffix
+          else
+            break
+          end
+        end
+
+        build = lambda do |base|
+          type = base
+          suffixes.reverse_each { |suffix| type = apply_declarator_suffix(suffix, type) }
+          core_build.call(type)
+        end
+
+        # A parenthesized core forwards the buried name's own function suffix;
+        # every other core takes this level's outermost (first textual) suffix.
+        function_params =
+          if inner_params != :none
+            inner_params
+          elsif suffixes.first&.first == :function
+            suffixes.first[1]
+          end
+        [name_tok, build, function_params]
+      end
+
+      # The core of a direct-declarator, returning [name_token, build,
+      # inner_params]. `inner_params` is the parenthesized inner declarator's
+      # function_params when the core is "( declarator )", or the sentinel :none
+      # when the core is an identifier or empty (so #parse_direct_declarator
+      # knows whether to forward a buried name's suffix or read its own).
+      def parse_declarator_core(name_mode:)
+        if peek.punct?("(") && paren_starts_declarator?
+          advance # "("
+          name_tok, build, inner_params =
+            parse_declarator_builder(name_mode: name_mode, allow_incomplete_array: false)
+          expect_punct(")")
+          [name_tok, build, inner_params]
+        elsif peek.type == :ident && name_mode != :forbidden
+          name_tok = advance
+          [name_tok, ->(base) { base }, :none]
+        elsif name_mode == :required
+          error_at(peek, "expected identifier")
+        else
+          # An abstract declarator or an unnamed parameter: no core, so the type
+          # is whatever the suffixes and pointer prefix make of the base.
+          [nil, ->(base) { base }, :none]
+        end
+      end
+
+      # Whether a "(" at the core position opens a parenthesized declarator
+      # rather than a function suffix's parameter list. It does exactly when the
+      # following token begins a declarator — a "*", a "[", a nested "(", or an
+      # identifier that is not a typedef name (a declared or redundantly
+      # parenthesized name) — which is what disambiguates "int (*f)(int)" (a
+      # parenthesized "*f") from the abstract "int (int)" (a function taking an
+      # int). A type-specifier, a typedef name or a ")" after the "(" instead
+      # opens a parameter list.
+      def paren_starts_declarator?
+        nxt = peek_ahead(1)
+        return false if nxt.nil?
+        return true if nxt.punct?("*") || nxt.punct?("[") || nxt.punct?("(")
+
+        nxt.type == :ident && !typedef_name?(nxt.value)
+      end
+
+      # A direct-declarator's array suffix "[" size? "]". A bracketed length is
+      # a constant-expression (6.6) folded to a positive Ruby Integer. When
+      # `allow_incomplete` is set (a variable or global with an initializer),
+      # empty brackets "[]" leave the length nil for the initializer resolver to
+      # infer (6.7.9p22); everywhere else "[]" is an error. Returns a suffix
+      # descriptor [:array, length, bracket_token] applied later by
+      # #apply_declarator_suffix.
+      def parse_array_suffix(allow_incomplete:)
         bracket_tok = advance # "["
         if peek.punct?("]")
           error_at(bracket_tok, "array size must be an integer constant") unless allow_incomplete
@@ -950,23 +1078,63 @@ module Rubycc
           expect_punct("]")
           error_at(expr.token, "array size must be positive") unless length.positive?
         end
-        if peek.punct?("[")
-          error_at(peek, "multidimensional arrays are not supported yet")
-        end
-        Type::Array.new(element_type, length)
+        [:array, length, bracket_tok]
       end
 
-      # Consumes the "*" run of a declarator, wrapping `base` in one pointer
-      # level per star (so "int **" becomes a pointer to a pointer to int). The
-      # parser only builds the type here; whether operations on it type-check is
-      # the generator's job.
-      def parse_pointer_declarator(base)
-        type = base
-        while peek.punct?("*")
-          advance
-          type = Type::Pointer.new(type)
+      # A direct-declarator's function suffix "(" parameter-type-list? ")". The
+      # parameters are parsed (and array/function ones adjusted, see
+      # #parse_parameter_declaration) here so the suffix can both build the
+      # function type and, when it belongs to a real function, hand its
+      # Parameter objects back for the body. Returns [:function, params,
+      # paren_token].
+      def parse_function_suffix
+        paren_tok = advance # "("
+        params = parse_parameter_type_list
+        expect_punct(")")
+        [:function, params, paren_tok]
+      end
+
+      # Wraps `inner` in one declarator suffix, enforcing the constraints a
+      # function or array derivation cannot satisfy (6.7.6.3): a function's
+      # return type may be neither a function nor an array, an array's element
+      # may not be a function, and (this subset) an array's element may not be
+      # another array. The suffix's own token (the "(" or "[") locates any
+      # diagnostic.
+      def apply_declarator_suffix(suffix, inner)
+        kind, data, tok = suffix
+        if kind == :function
+          error_at(tok, "function returning a function is not allowed") if inner.function?
+          error_at(tok, "function returning an array is not allowed") if inner.array?
+          Type::FunctionType.new(inner, data.map(&:type))
+        else
+          error_at(tok, "array of functions is not allowed") if inner.function?
+          error_at(tok, "multidimensional arrays are not supported yet") if inner.array?
+          Type::Array.new(inner, data)
         end
-        type
+      end
+
+      # A parameter's declared type after the adjustments of 6.7.6.3: an array
+      # parameter is adjusted to a pointer to its element ("int a[10]" is
+      # "int *a") and a function parameter to a pointer to that function
+      # ("int g(int)" is "int (*g)(int)"), so a call passes an address in either
+      # case. Every other type is left as written.
+      def adjust_parameter_type(type)
+        if type.array?
+          Type::Pointer.new(type.element)
+        elsif type.function?
+          Type::Pointer.new(type)
+        else
+          type
+        end
+      end
+
+      # Consumes and reports a punctuator when it is next, leaving the stream
+      # untouched otherwise; lets the "*" run read one star at a time.
+      def consume_punct(str)
+        return false unless peek.punct?(str)
+
+        advance
+        true
       end
 
       def parse_statement
@@ -1403,27 +1571,31 @@ module Rubycc
         end
       end
 
-      # type-name = type-specifier "*"*: a base type-specifier and its pointer
-      # "*" run, with no declarator name. Shared by "sizeof ( type-name )" and
-      # the cast "( type-name )"; abstract array and function declarators are
-      # not modelled in this subset.
+      # type-name = type-specifier abstract-declarator?: a base type-specifier
+      # and an abstract declarator (no name). Shared by "sizeof ( type-name )"
+      # and the cast "( type-name )", so a function pointer, an array pointer or
+      # a plain pointer type can be written there ("sizeof(int (*)(int))",
+      # "(int (*)(int))p").
       def parse_type_name
-        parse_pointer_declarator(parse_type_specifier)
+        _name_tok, type = parse_declarator(parse_type_specifier, name_mode: :forbidden)
+        type
       end
 
-      # An identifier immediately followed by "(" is a function call; anything
-      # else falls through to a primary-expression. Either may then be followed
-      # by a chain of "[" expression "]" subscripts (a[i], a[i][j], p[k]) and
-      # postfix "++"/"--" (a[i]++), in any order.
+      # A postfix-expression is a primary-expression followed by any run of
+      # postfix suffixes in source order: a call "( args )", a subscript
+      # "[ i ]", a member access "." / "->" and a postfix "++"/"--". A call is
+      # just another suffix, so its callee may be any postfix-expression —
+      # "f(x)", "(*fp)(x)", "table[i](x)" and "s.fp(x)" all parse the same way,
+      # with the AST::Call carrying the callee expression it followed.
       def parse_postfix_expression
-        tok = peek
-        node = if tok.type == :ident && peek_ahead(1)&.punct?("(")
-                 parse_call
-               else
-                 parse_primary_expression
-               end
+        node = parse_primary_expression
         loop do
-          if peek.punct?("[")
+          if peek.punct?("(")
+            paren_tok = advance # "("
+            args = parse_argument_expression_list
+            expect_punct(")")
+            node = AST::Call.new(node, args, paren_tok)
+          elsif peek.punct?("[")
             bracket_tok = advance # "["
             index = parse_expression
             expect_punct("]")
@@ -1441,14 +1613,6 @@ module Rubycc
             return node
           end
         end
-      end
-
-      def parse_call
-        name_tok = advance # identifier
-        expect_punct("(")
-        args = parse_argument_expression_list
-        expect_punct(")")
-        AST::Call.new(name_tok.value, args, name_tok)
       end
 
       # Returns an array of expression nodes; empty for an argument-less "()".
