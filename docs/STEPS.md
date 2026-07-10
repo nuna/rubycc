@@ -559,7 +559,60 @@ Type::FunctionType、関数指示子の退化(6.3.2.1p4)、間接呼び出し
 
 ---
 
+## Step 22 — 記憶クラス・型修飾子・_Static_assert・_Alignof(8500270)
+
+**内容**: 宣言指定子の拡張(static/extern/register/auto・const/volatile・inline)、
+const 代入違反の診断、_Static_assert(6.7.10)、_Alignof(6.5.3.4)、static の
+内部リンケージ(ELF ローカルシンボル)、ブロックスコープ static、extern 宣言。
+実装は 2 段階に分割して移譲(第 1 段: 指定子・診断・アサーション、
+第 2 段: リンケージ・記憶域。いずれも heavy-implementer)。
+
+**設計判断**:
+- **const は型に載せず宣言のフラグで追跡**: 型システムに Qualified ラッパを導入すると
+  値等価比較(Pointer/FunctionType の Data 等価、代入互換、関数ポインタ署名)全体に
+  修飾除去が波及するため、M1 では「宣言されたオブジェクトのトップレベル修飾」だけを
+  VariableDecl/GlobalDecl/Parameter のフラグ → Local の const として伝搬し、
+  単純代入・複合代入・++/-- を "assignment of read-only variable" で診断する。
+  トップレベル判定: ポインタ派生が無ければ指定子の const、あれば最外ポインタ段の
+  修飾(`int * const p` は const、`const int *p` は非 const)。ポインタ段の修飾は
+  parse_pointer_qualifiers が「星 1 個につき const フラグ 1 個」のリストで返す。
+- **typedef const は typedef エントリに併載**: OrdinaryName(:typedef) の value を
+  [型, const] の対にし、使用側の指定子 const と OR。`typedef const int *cp;` は
+  指し先修飾なので typedef 自体は非 const(同じトップレベル規則を適用)。
+- **register/auto は 6.7.1 の重複検査にだけ参加して不記録**: DeclSpecInfo(storage,
+  const, inline_p) に残るのは typedef/static/extern のみ。指定子は型指定子と任意順で
+  混在可。allow_storage_class: false の文脈(メンバ・パラメータ・型名)でも
+  const/volatile は合法(`int f(const int x)`、`sizeof(const int)`)。
+- **_Static_assert は「何も生成しない宣言」**: typedef・タグ宣言と同じく空の宣言列を
+  返し、AST に痕跡を残さない。評価は既存の定数式経路。_Alignof は SizeofType に並ぶ
+  AlignofType として sizeof と同一の分担(パーサ→ジェネレータ畳み込み・ULong)で実装、
+  定数式評価器にも同じ拒否条件(void・関数型・不完全型)で追加し配列境界に書ける。
+- **シンボル表は bind 別 2 パスで構築**: ELF の「STB_LOCAL は最初の STB_GLOBAL より
+  前」を、シンボル登録時に bind を持たせ build 時に [LOCAL, GLOBAL] の 2 パスで
+  並べることで満たす(各パス内は従来の関数→オブジェクト順を保存、sh_info は既存の
+  first_global_index がそのまま正しくなる)。API は add_local_func/add_local_object を
+  新設(bind: 引数より呼び出し側が読みやすい)。
+- **ブロックスコープ static は一意名グローバルへの降ろし**: シンボル名
+  `<変数名>.<n>`(TU 全体の単調カウンタ、ソース順で決定的 = N4)。'.' は C 識別子に
+  現れないため実シンボルと衝突しない。束縛は Local(global: true) にして既存の
+  :global_addr 経路・グローバル初期化経路(定数畳み込み・GlobalInit・.bss)を
+  そのまま再利用 — 「1 回だけ初期化」は .data/.bss 配置で構築時に満たされ、
+  実行時初期化コードを出さない。
+- **extern は「記憶域なしの束縛登録」**: @defined_globals(記憶域を確保した名前)を
+  導入し、extern は @global_bindings への ||= 登録のみ。定義は前後どちらでも共存可、
+  型不一致は "conflicting types for"、定義 2 個目のみ "redefinition"。定義されない
+  参照は :global reloc 解決時に未定義シンボル登録(Step 21 の :call/:func と同じ流儀)。
+
+**トレードオフ**: 指し先 const(`const int *p` の `*p = x`)・const 配列要素・const
+struct メンバへの書き込みは検出しない(型レベル追跡を持たない意図的簡略化)。
+volatile は完全に無視(最適化を行わない現段階では意味差なし)。ブロックスコープ
+extern の束縛はブロックを超えて残る。宣言と定義の static/extern 不一致
+(6.2.2p7 の未定義動作)は診断しない。括弧内ポインタの const(`int (* const p)[3]`)は
+トップレベル判定に乗らず非 const 扱い(既知のギャップ)。
+
+---
+
 ## 現在のテスト規模
 
-Step 21 完了時点: **706 runs / 2,209 assertions / 0 failures**(`rake test`)。
+Step 22 完了時点: **746 runs / 2,354 assertions / 0 failures**(`rake test`)。
 内訳: 字句・パーサ・型・ELF・診断・CLI のユニットテスト + 実行テスト(gcc 差分比較込み)。
