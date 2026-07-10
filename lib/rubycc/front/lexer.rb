@@ -10,9 +10,10 @@ module Rubycc
     # with source excerpts. Handles // and /* */ comments and whitespace.
     class Lexer
       KEYWORDS = %w[int char void short long signed unsigned _Bool struct union
-                    enum typedef
+                    enum typedef static extern const volatile inline register auto
                     return if else while do for break continue
-                    switch case default goto sizeof].freeze
+                    switch case default goto sizeof
+                    _Static_assert _Alignof].freeze
 
       # Escape sequences shared by character constants and string literals,
       # mapping the letter after the backslash to the byte value it denotes.

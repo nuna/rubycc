@@ -1070,4 +1070,126 @@ class TestDiagnostics < Minitest::Test
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/field 'f' declared as a function/, error.description)
   end
+
+  # --- storage class, const, inline, _Static_assert, _Alignof (Step 22) ---
+
+  def test_assignment_to_const_variable_is_rejected
+    source = "int main(void) { const int x = 1; x = 2; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/assignment of read-only variable 'x'/, error.description)
+  end
+
+  def test_compound_assignment_to_const_variable_is_rejected
+    source = "int main(void) { const int x = 1; x += 2; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/assignment of read-only variable 'x'/, error.description)
+  end
+
+  def test_increment_of_const_variable_is_rejected
+    source = "int main(void) { const int x = 1; x++; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/assignment of read-only variable 'x'/, error.description)
+  end
+
+  def test_predecrement_of_const_variable_is_rejected
+    source = "int main(void) { const int x = 1; --x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/assignment of read-only variable 'x'/, error.description)
+  end
+
+  def test_assignment_to_const_parameter_is_rejected
+    source = "int f(const int x) { x = 3; return x; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/assignment of read-only variable 'x'/, error.description)
+  end
+
+  def test_multiple_storage_classes_is_rejected
+    source = "int main(void) { static extern int x; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/multiple storage classes in declaration specifiers/, error.description)
+  end
+
+  def test_storage_class_on_a_member_is_rejected
+    source = "struct s { static int x; }; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/'static' is not allowed here/, error.description)
+  end
+
+  def test_storage_class_on_a_parameter_is_rejected
+    source = "int f(register int x) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/'register' is not allowed here/, error.description)
+  end
+
+  def test_storage_class_in_a_type_name_is_rejected
+    source = "int main(void) { return sizeof(static int); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/'static' is not allowed here/, error.description)
+  end
+
+  def test_inline_on_a_variable_is_rejected
+    source = "int main(void) { inline int z; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/variable 'z' declared 'inline'/, error.description)
+  end
+
+  def test_static_assert_failure_reports_the_message
+    source = "int main(void) { _Static_assert(0, \"boom\"); return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/static assertion failed: "boom"/, error.description)
+  end
+
+  def test_static_assert_with_a_false_expression_fails
+    source = "_Static_assert(1 == 2, \"unequal\"); int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/static assertion failed: "unequal"/, error.description)
+  end
+
+  def test_static_assert_with_a_non_constant_expression_is_rejected
+    source = "int main(void) { int n = 1; _Static_assert(n, \"nc\"); return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/static assertion expression is not an integer constant/, error.description)
+  end
+
+  def test_alignof_of_a_function_type_is_rejected
+    source = "int main(void) { return _Alignof(int (int)); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid application of '_Alignof' to a function type/, error.description)
+  end
+
+  def test_alignof_of_an_incomplete_type_is_rejected
+    source = "struct s; int main(void) { return _Alignof(struct s); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/incomplete type/, error.description)
+  end
+
+  def test_extern_with_initializer_is_rejected
+    source = "extern int g = 5; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/'g' has both 'extern' and initializer/, error.description)
+  end
+
+  def test_block_scope_static_with_a_non_constant_initializer_is_rejected
+    source = "int f(int n) { static int c = n; return c; } int main(void) { return f(1); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/initializer element is not a constant/, error.description)
+  end
+
+  def test_extern_declaration_conflicting_with_the_definition_is_rejected
+    source = "extern int g; long g; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/conflicting types for 'g'/, error.description)
+  end
+
+  def test_definition_conflicting_with_a_later_extern_declaration_is_rejected
+    source = "int g; extern long g; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/conflicting types for 'g'/, error.description)
+  end
+
+  def test_two_definitions_of_a_global_are_still_a_redefinition
+    source = "int g; int g; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/redefinition of 'g'/, error.description)
+  end
 end

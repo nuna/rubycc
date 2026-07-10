@@ -160,6 +160,23 @@ module Rubycc
       # by #reject_void_type.
       DECL_SPECIFIER_KEYWORDS = %w[void char short int long signed unsigned _Bool].freeze
 
+      # The storage-class specifiers (6.7.1): at most one may appear in a
+      # declaration. "typedef", "static" and "extern" are recorded in
+      # DeclSpecInfo#storage and consumed downstream, while "register" and "auto"
+      # are accepted for compatibility but carry no effect in this subset, so
+      # they are consumed without being recorded; all five still participate in
+      # the "at most one storage class" duplicate check.
+      STORAGE_CLASS_KEYWORDS = %w[typedef static extern register auto].freeze
+
+      # The non-type parts of a declaration's specifier run, collected by
+      # #parse_declaration_specifiers alongside the base type. `storage` is the
+      # recorded storage class (nil, :typedef, :static or :extern); `const` is
+      # whether the declaration is const-qualified (const seen among the
+      # specifiers, or folded in from a const typedef name); `inline_p` is
+      # whether "inline" appeared (a function specifier, accepted on functions
+      # and rejected on objects). volatile and register/auto leave no trace here.
+      DeclSpecInfo = Data.define(:storage, :const, :inline_p)
+
       # A tag scope entry for an enum tag. C keeps struct, union and enum tags in
       # one shared namespace, so enum tags live in @tag_scopes alongside the
       # StructType objects that stand for struct tags. An enum contributes no
@@ -169,7 +186,9 @@ module Rubycc
       EnumTag = Data.define(:tag)
 
       # An entry in the ordinary-identifier scope (see @ordinary_scopes). `kind`
-      # is :typedef for a typedef name (`value` its resolved Rubycc::Type), :enum
+      # is :typedef for a typedef name (`value` a [resolved Rubycc::Type, const?]
+      # pair, the flag carrying a "typedef const int" so a use folds it back into
+      # the object's const-ness), :enum
       # for an enumeration constant (`value` its Integer value), or :ordinary for
       # a variable, parameter or function name (`value` nil). The ordinary
       # entries carry no payload; they exist only so a declarator can shadow a
@@ -240,8 +259,12 @@ module Rubycc
       # function form (its declarator having read the "(" parameter list), any
       # other type the variable form.
       def parse_external_declaration
+        # A file-scope "_Static_assert(expr, "msg");" is a declaration that binds
+        # nothing; it is checked and flattened away here (see #parse_static_assert).
+        return parse_static_assert if peek.keyword?("_Static_assert")
+
         type_tok = peek
-        base_type, is_typedef = parse_declaration_specifiers(allow_storage_class: true)
+        base_type, spec_info = parse_declaration_specifiers(allow_storage_class: true)
 
         # "struct point { ... };" (or "struct node;", or a tag-only "enum E { ...
         # };") with no declarator only declares or defines the tag, which the
@@ -255,14 +278,15 @@ module Rubycc
 
         # A typedef declaration binds each declarator's name as a type; it
         # yields no object and no code (see #parse_typedef_declaration).
-        return parse_typedef_declaration(base_type) if is_typedef
+        return parse_typedef_declaration(base_type, spec_info) if spec_info.storage == :typedef
 
-        name_tok, type, function_params = parse_declarator(base_type, allow_incomplete_array: true)
+        name_tok, type, function_params, pointer_quals =
+          parse_declarator(base_type, allow_incomplete_array: true)
 
         if type.function?
-          parse_function(name_tok, type, function_params, type_tok)
+          parse_function(name_tok, type, function_params, type_tok, spec_info)
         else
-          parse_global_declaration(base_type, name_tok, type)
+          parse_global_declaration(base_type, name_tok, type, pointer_quals, spec_info)
         end
       end
 
@@ -271,16 +295,20 @@ module Rubycc
       # objects of its outermost function suffix). A ";" is a prototype, a
       # compound-statement a definition. The return type is func_type's — int,
       # char, void or a pointer to any of those (including "void *").
-      def parse_function(name_tok, func_type, params, return_tok)
+      # `spec_info` carries the function's storage class (nil/:static/:extern,
+      # recorded for Phase B) and an "inline" flag that is accepted and folded
+      # away here; a function is the one place "inline" is legal, so it is simply
+      # not rejected (unlike an object declaration, see #reject_object_specifiers).
+      def parse_function(name_tok, func_type, params, return_tok, spec_info)
         # A function name is an ordinary identifier at file scope, recorded so an
         # inner block declaring the same name shadows it against a typedef check.
         declare_ordinary_name(name_tok.value)
 
         if peek.punct?(";")
           advance
-          AST::FunctionDecl.new(name_tok.value, func_type.return_type, params, return_tok)
+          AST::FunctionDecl.new(name_tok.value, func_type.return_type, params, return_tok, spec_info.storage)
         else
-          parse_function_definition(name_tok.value, func_type.return_type, params, return_tok)
+          parse_function_definition(name_tok.value, func_type.return_type, params, return_tok, spec_info.storage)
         end
       end
 
@@ -288,12 +316,12 @@ module Rubycc
       # comma-separated run of declarators sharing `base_type`, the first of
       # which (`first_type`/`first_name_tok`) has already been read. Each
       # declarator yields one GlobalDecl; the run ends at ";".
-      def parse_global_declaration(base_type, first_name_tok, first_type)
-        decls = [parse_global_declarator(first_type, first_name_tok)]
+      def parse_global_declaration(base_type, first_name_tok, first_type, first_pointer_quals, spec_info)
+        decls = [parse_global_declarator(first_type, first_name_tok, first_pointer_quals, spec_info)]
         while peek.punct?(",")
           advance
-          name_tok, type = parse_declarator(base_type, allow_incomplete_array: true)
-          decls << parse_global_declarator(type, name_tok)
+          name_tok, type, _params, pointer_quals = parse_declarator(base_type, allow_incomplete_array: true)
+          decls << parse_global_declarator(type, name_tok, pointer_quals, spec_info)
         end
         expect_punct(";")
         decls
@@ -311,11 +339,18 @@ module Rubycc
       # scalar-integer initializer (a call, another variable, ...) is still
       # rejected with "unsupported initializer for global variable"; the deferred
       # forms the generator cannot fold reach the same diagnostic there.
-      def parse_global_declarator(type, name_tok)
+      def parse_global_declarator(type, name_tok, pointer_quals, spec_info)
         reject_void_type(type, name_tok)
+        reject_object_specifiers(name_tok, spec_info)
+        const = declarator_object_const(type, spec_info.const, pointer_quals)
         initializer_value = nil
         initializer_node = nil
         if peek.punct?("=")
+          # An "extern" object with an initializer is a definition, not a mere
+          # reference; the two together are contradictory, so reject them.
+          if spec_info.storage == :extern
+            error_at(name_tok, "'#{name_tok.value}' has both 'extern' and initializer")
+          end
           advance # "="
           init = parse_initializer
           if InitializerResolver.structural?(type, init)
@@ -330,7 +365,7 @@ module Rubycc
           error_at(name_tok, "array size missing in '#{name_tok.value}'")
         end
         declare_ordinary_name(name_tok.value)
-        AST::GlobalDecl.new(name_tok.value, type, initializer_value, initializer_node, name_tok)
+        AST::GlobalDecl.new(name_tok.value, type, initializer_value, initializer_node, name_tok, const, spec_info.storage)
       end
 
       # A bare type-specifier list with no storage class, used everywhere a type
@@ -342,10 +377,10 @@ module Rubycc
         type
       end
 
-      # declaration-specifiers = (storage-class-specifier | type-specifier)+.
-      # Consumes the whole specifier run — an optional "typedef" storage class
-      # (6.7.1), which may sit anywhere among the type-specifiers, together with
-      # the type itself — and returns [base_type, is_typedef]. The base type any
+      # declaration-specifiers = (storage-class-specifier | type-qualifier |
+      # function-specifier | type-specifier)+. Consumes the whole specifier run —
+      # at most one storage class (6.7.1), any const/volatile/inline, and the
+      # type itself, all in any order. The base type any
       # leading "*" run then builds a pointer from is one of: a run of
       # integer/void keywords collected and normalized by
       # #normalize_type_specifiers; a "struct"/"enum" specifier, which resolves
@@ -355,19 +390,37 @@ module Rubycc
       # following identifier is the declarator, so "int T" declares a variable T
       # even where T names a type (the standard rule that keeps typedef names
       # shadowable). Mixing categories ("unsigned struct", "enum T", ...) is a
-      # diagnostic; `allow_storage_class` is false in the contexts a "typedef"
-      # cannot appear (a member, a parameter, a type-name).
+      # diagnostic; `allow_storage_class` is false in the contexts a storage
+      # class or "inline" cannot appear (a member, a parameter, a type-name),
+      # where const/volatile are still admitted ("int f(const int x)",
+      # "sizeof(const int)"). Returns [base_type, DeclSpecInfo].
       def parse_declaration_specifiers(allow_storage_class:)
         start_tok = peek
         specs = []       # collected integer/void keyword strings
         composite = nil  # a struct/enum/typedef-name Type (excludes `specs`)
-        is_typedef = false
+        storage = nil    # recorded storage class: :typedef / :static / :extern
+        storage_seen = false # any storage-class specifier (for the 6.7.1 check)
+        const_p = false
+        inline_p = false
+        typedef_const = false # const folded in from a const typedef name
         loop do
           tok = peek
-          if tok.keyword?("typedef")
-            error_at(tok, "'typedef' is not allowed here") unless allow_storage_class
-            error_at(tok, "duplicate 'typedef'") if is_typedef
-            is_typedef = true
+          if tok.type == :keyword && STORAGE_CLASS_KEYWORDS.include?(tok.value)
+            error_at(tok, "'#{tok.value}' is not allowed here") unless allow_storage_class
+            error_at(tok, "multiple storage classes in declaration specifiers") if storage_seen
+            storage_seen = true
+            # register/auto have no effect in this subset: they are consumed but
+            # left unrecorded, only typedef/static/extern reaching later stages.
+            storage = tok.value.to_sym if %w[typedef static extern].include?(tok.value)
+            advance
+          elsif tok.keyword?("const")
+            const_p = true
+            advance
+          elsif tok.keyword?("volatile")
+            advance # accepted and ignored: M1 carries no qualified types
+          elsif tok.keyword?("inline")
+            error_at(tok, "'inline' is not allowed here") unless allow_storage_class
+            inline_p = true
             advance
           elsif tok.type == :keyword && DECL_SPECIFIER_KEYWORDS.include?(tok.value)
             error_at(tok, "two or more data types in declaration specifiers") if composite
@@ -379,18 +432,21 @@ module Rubycc
             error_at(tok, "two or more data types in declaration specifiers") if composite || !specs.empty?
             composite = parse_enum_specifier
           elsif composite.nil? && specs.empty? && tok.type == :ident && typedef_name?(tok.value)
-            composite = lookup_ordinary(tok.value).value
+            composite, typedef_const = lookup_ordinary(tok.value).value
             advance
           else
             break
           end
         end
 
+        # A "const" typedef name ("typedef const int ci; ci x;") contributes its
+        # const to the declaration, OR-ed with any const written here directly.
+        spec_info = DeclSpecInfo.new(storage: storage, const: const_p || typedef_const, inline_p: inline_p)
         if composite
-          [composite, is_typedef]
+          [composite, spec_info]
         else
           error_at(start_tok, "expected type specifier") if specs.empty?
-          [normalize_type_specifiers(specs, start_tok), is_typedef]
+          [normalize_type_specifiers(specs, start_tok), spec_info]
         end
       end
 
@@ -715,14 +771,22 @@ module Rubycc
       # Whether `token` opens a declaration, letting block-item and for-init tell
       # a declaration from a statement, and the cast/sizeof parsers tell a
       # type-name from a parenthesized expression. A declaration begins with an
-      # integer/void type-specifier keyword, "struct"/"enum", the "typedef"
-      # storage class, or a typedef name — an identifier bound to a type in the
-      # ordinary namespace whose innermost binding is not shadowed by a variable.
+      # integer/void type-specifier keyword, "struct"/"union"/"enum", a storage
+      # class ("typedef"/"static"/"extern"/"register"/"auto"), a type qualifier
+      # ("const"/"volatile"), the "inline" function specifier, or a typedef name —
+      # an identifier bound to a type in the ordinary namespace whose innermost
+      # binding is not shadowed by a variable. The storage-class and inline
+      # keywords never open an expression, so admitting them here only ever
+      # forwards a genuine declaration (a bare "static x;" then fails in the
+      # specifier parse, where it belongs).
       def type_specifier?(token)
         if token.type == :keyword
           return DECL_SPECIFIER_KEYWORDS.include?(token.value) ||
+                 STORAGE_CLASS_KEYWORDS.include?(token.value) ||
                  token.value == "struct" || token.value == "union" ||
-                 token.value == "enum" || token.value == "typedef"
+                 token.value == "enum" ||
+                 token.value == "const" || token.value == "volatile" ||
+                 token.value == "inline"
         end
         token.type == :ident && typedef_name?(token.value)
       end
@@ -737,7 +801,7 @@ module Rubycc
         error_at(token, "variable or field declared void")
       end
 
-      def parse_function_definition(name, return_type, params, return_tok)
+      def parse_function_definition(name, return_type, params, return_tok, storage)
         # A definition, unlike a prototype, must name each parameter so its
         # value can be bound in the body.
         params.each do |param|
@@ -756,7 +820,7 @@ module Rubycc
         @ordinary_scopes.pop
         @tag_scopes.pop
         expect_punct("}")
-        AST::FunctionDef.new(name, return_type, params, body, return_tok)
+        AST::FunctionDef.new(name, return_type, params, body, return_tok, storage)
       end
 
       # Returns an array of AST::Parameter; empty for "()" or "(void)". A bare
@@ -787,19 +851,30 @@ module Rubycc
       # diagnostics.
       def parse_parameter_declaration
         type_tok = peek
-        name_tok, type = parse_declarator(parse_type_specifier, name_mode: :optional)
+        # A parameter's specifiers admit const/volatile but not a storage class
+        # or inline (allow_storage_class: false); only its const survives.
+        base_type, spec_info = parse_declaration_specifiers(allow_storage_class: false)
+        name_tok, type, _params, pointer_quals = parse_declarator(base_type, name_mode: :optional)
         type = adjust_parameter_type(type)
+        # The const-ness is settled on the adjusted type, so "const int a[10]"
+        # (a pointer to const int after adjustment) yields a non-const parameter,
+        # while "int * const a" stays a const pointer parameter.
+        const = declarator_object_const(type, spec_info.const, pointer_quals)
         reject_void_type(type, name_tok || type_tok)
         if name_tok
-          AST::Parameter.new(name_tok.value, type, name_tok)
+          AST::Parameter.new(name_tok.value, type, name_tok, const)
         else
-          AST::Parameter.new(nil, type, type_tok)
+          AST::Parameter.new(nil, type, type_tok, const)
         end
       end
 
       # Returns an array of nodes: a declaration expands to one VariableDecl
       # per init-declarator, while a statement always yields exactly one node.
       def parse_block_item
+        # A block-scope "_Static_assert(expr, "msg");" is a declaration that
+        # binds nothing; it is checked and flattened away like a bare tag decl.
+        return parse_static_assert if peek.keyword?("_Static_assert")
+
         if type_specifier?(peek)
           parse_declaration
         else
@@ -808,7 +883,7 @@ module Rubycc
       end
 
       def parse_declaration
-        base_type, is_typedef = parse_declaration_specifiers(allow_storage_class: true)
+        base_type, spec_info = parse_declaration_specifiers(allow_storage_class: true)
 
         # A bare "struct point { ... };" (or "struct node;", or a tag-only "enum
         # E { ... };") inside a block just declares or defines the tag, adding no
@@ -820,12 +895,12 @@ module Rubycc
 
         # A local typedef binds names as types in this block's scope; like a
         # file-scope typedef it yields no items.
-        return parse_typedef_declaration(base_type) if is_typedef
+        return parse_typedef_declaration(base_type, spec_info) if spec_info.storage == :typedef
 
-        decls = [parse_init_declarator(base_type)]
+        decls = [parse_init_declarator(base_type, spec_info)]
         while peek.punct?(",")
           advance
-          decls << parse_init_declarator(base_type)
+          decls << parse_init_declarator(base_type, spec_info)
         end
         expect_punct(";")
         decls
@@ -836,13 +911,18 @@ module Rubycc
       # suffix applied) in the current ordinary scope. A typedef declarator may
       # not have an initializer (6.7.1); the declaration itself contributes no
       # AST node, so this returns an empty run.
-      def parse_typedef_declaration(base_type)
+      def parse_typedef_declaration(base_type, spec_info)
         loop do
-          name_tok, type = parse_declarator(base_type)
+          name_tok, type, _params, pointer_quals = parse_declarator(base_type)
           if peek.punct?("=")
             error_at(peek, "typedef '#{name_tok.value}' must not be initialized")
           end
-          declare_typedef_name(name_tok, type)
+          # A typedef of a const-qualified object type remembers that const so a
+          # later use ("typedef const int ci; ci x;") makes x const; the same
+          # top-level rule applies, so "typedef const int *cp;" (a pointer to
+          # const) is not itself const.
+          const = declarator_object_const(type, spec_info.const, pointer_quals)
+          declare_typedef_name(name_tok, type, const)
           break unless peek.punct?(",")
 
           advance # ","
@@ -851,11 +931,16 @@ module Rubycc
         []
       end
 
-      def parse_init_declarator(base_type)
-        name_tok, type = parse_declarator(base_type, allow_incomplete_array: true)
+      def parse_init_declarator(base_type, spec_info)
+        name_tok, type, _params, pointer_quals = parse_declarator(base_type, allow_incomplete_array: true)
         reject_void_type(type, name_tok)
+        reject_object_specifiers(name_tok, spec_info)
+        const = declarator_object_const(type, spec_info.const, pointer_quals)
         initializer = nil
         if peek.punct?("=")
+          if spec_info.storage == :extern
+            error_at(name_tok, "'#{name_tok.value}' has both 'extern' and initializer")
+          end
           advance # "="
           initializer = parse_initializer
           # A structural initializer (a brace list, or a string for a char array)
@@ -868,7 +953,56 @@ module Rubycc
           error_at(name_tok, "array size missing in '#{name_tok.value}'")
         end
         declare_ordinary_name(name_tok.value)
-        AST::VariableDecl.new(name_tok.value, type, initializer, name_tok)
+        AST::VariableDecl.new(name_tok.value, type, initializer, name_tok, const, spec_info.storage)
+      end
+
+      # Rejects the declaration specifiers that may sit on a function but not on
+      # an object: "inline" on a variable or global is ill-formed ("inline" is a
+      # function specifier, 6.7.4). Storage classes are already admitted here
+      # (recorded for Phase B), so only "inline" is caught. Shared by the local
+      # and file-scope object declarators.
+      def reject_object_specifiers(name_tok, spec_info)
+        return unless spec_info.inline_p
+
+        error_at(name_tok, "variable '#{name_tok.value}' declared 'inline'")
+      end
+
+      # Whether the object a declarator declares is top-level const-qualified,
+      # the only qualification M1 tracks. With no pointer/array/function
+      # derivation the specifier's const applies directly ("const int x"); an
+      # array likewise takes the specifier const (M1 treats the whole array
+      # variable as const rather than only its elements, a deliberate
+      # simplification); a pointer is const only when its outermost level bears
+      # the qualifier ("int * const p" is const, "const int *p" is not); a
+      # function type is never a const object. `pointer_quals` is the declarator's
+      # leading "*" run, one const flag per level, so its last entry is the
+      # outermost pointer — empty (a pointer built inside parentheses) reads as
+      # not const, a tolerated M1 gap for "int (* const p)[3]".
+      def declarator_object_const(type, specifier_const, pointer_quals)
+        return pointer_quals.last || false if type.pointer?
+        return false if type.function?
+
+        specifier_const
+      end
+
+      # A file- or block-scope "_Static_assert ( constant-expression ,
+      # string-literal ) ;" (6.7.10). The expression is folded like any other
+      # constant-expression; a zero value fails the assertion, quoting the
+      # message the way gcc does. It declares nothing, so — like a bare tag
+      # declaration or a typedef — it returns an empty run of declarations.
+      def parse_static_assert
+        keyword_tok = advance # "_Static_assert"
+        expect_punct("(")
+        expr = parse_conditional_expression
+        value = evaluate_constant_expression(expr, "static assertion expression is not an integer constant")
+        expect_punct(",")
+        message_tok = peek
+        error_at(message_tok, "expected string literal in '_Static_assert'") unless message_tok.type == :string
+        advance
+        expect_punct(")")
+        expect_punct(";")
+        error_at(keyword_tok, "static assertion failed: \"#{message_tok.value}\"") if value.zero?
+        []
       end
 
       # initializer = assignment-expression | "{" initializer-list ","? "}"
@@ -942,10 +1076,15 @@ module Rubycc
       # omitted), or :forbidden in a type-name (a cast or sizeof, which never
       # names anything). `allow_incomplete_array` admits a trailing "[]" whose
       # length an initializer will infer.
+      # Returns [name_token_or_nil, type, function_params, pointer_quals], the
+      # last being the declarator's leading "*" run as a list of per-level const
+      # flags (see #parse_pointer_qualifiers) so an object declarator can settle
+      # its top-level const-ness (see #declarator_object_const). Callers that do
+      # not need the qualifiers simply ignore the trailing value.
       def parse_declarator(base, name_mode: :required, allow_incomplete_array: false)
-        name_tok, build, function_params =
+        name_tok, build, function_params, pointer_quals =
           parse_declarator_builder(name_mode: name_mode, allow_incomplete_array: allow_incomplete_array)
-        [name_tok, build.call(base), function_params]
+        [name_tok, build.call(base), function_params, pointer_quals]
       end
 
       # declarator = pointer? direct-declarator. Parses the leading "*" run and
@@ -957,16 +1096,41 @@ module Rubycc
       # then wrap that — which is exactly why "int *f(int)" is a function
       # returning "int *" while "int (*f)(int)" is a pointer to a function.
       def parse_declarator_builder(name_mode:, allow_incomplete_array:)
-        star_count = 0
-        star_count += 1 while consume_punct("*")
+        pointer_quals = parse_pointer_qualifiers
         name_tok, direct_build, function_params =
           parse_direct_declarator(name_mode: name_mode, allow_incomplete_array: allow_incomplete_array)
         build = lambda do |base|
           type = base
-          star_count.times { type = Type::Pointer.new(type) }
+          pointer_quals.each { type = Type::Pointer.new(type) }
           direct_build.call(type)
         end
-        [name_tok, build, function_params]
+        [name_tok, build, function_params, pointer_quals]
+      end
+
+      # A declarator's "*" run, each star optionally followed by a type-qualifier
+      # list ("int * const p", "char * const * volatile q"). Returns one boolean
+      # per star, true when that pointer level is const-qualified; "volatile" is
+      # accepted and ignored, since M1 carries no qualified types. The list is in
+      # textual order, so the first star wraps the base first (the innermost
+      # pointer) and the last is the outermost — the level that qualifies the
+      # declared object.
+      def parse_pointer_qualifiers
+        quals = []
+        while consume_punct("*")
+          const_here = false
+          loop do
+            if peek.keyword?("const")
+              const_here = true
+              advance
+            elsif peek.keyword?("volatile")
+              advance
+            else
+              break
+            end
+          end
+          quals << const_here
+        end
+        quals
       end
 
       # direct-declarator = (identifier | "(" declarator ")") suffix*, where a
@@ -1509,6 +1673,8 @@ module Rubycc
       def parse_unary_expression
         if peek.keyword?("sizeof")
           parse_sizeof
+        elsif peek.keyword?("_Alignof")
+          parse_alignof
         elsif peek.punct?("+")
           advance # unary + is a no-op; fold it away
           parse_cast_expression
@@ -1569,6 +1735,18 @@ module Rubycc
         else
           AST::SizeofExpr.new(parse_unary_expression, sizeof_tok)
         end
+      end
+
+      # "_Alignof ( type-name )" (6.5.3.4): the alignment of a written type. Only
+      # the parenthesized type-name form exists — there is no operand form as
+      # sizeof has — so the "(" and type-name are read unconditionally. The
+      # generator folds it to a size_t constant, like sizeof of a type.
+      def parse_alignof
+        alignof_tok = advance # "_Alignof"
+        expect_punct("(")
+        type = parse_type_name
+        expect_punct(")")
+        AST::AlignofType.new(type, alignof_tok)
       end
 
       # type-name = type-specifier abstract-declarator?: a base type-specifier
@@ -1697,15 +1875,16 @@ module Rubycc
         @ordinary_scopes.last[name] = OrdinaryName.new(:ordinary, nil)
       end
 
-      # Binds a typedef name to its resolved type in the current ordinary scope.
-      # A name already bound there — by an earlier typedef (even to the same
-      # type, which M1 rejects for simplicity), or by any other declaration — is
-      # a redefinition.
-      def declare_typedef_name(name_tok, type)
+      # Binds a typedef name to its resolved type (and whether it names a
+      # const-qualified object type) in the current ordinary scope. A name
+      # already bound there — by an earlier typedef (even to the same type, which
+      # M1 rejects for simplicity), or by any other declaration — is a
+      # redefinition.
+      def declare_typedef_name(name_tok, type, const)
         if @ordinary_scopes.last.key?(name_tok.value)
           error_at(name_tok, "redefinition of typedef '#{name_tok.value}'")
         end
-        @ordinary_scopes.last[name_tok.value] = OrdinaryName.new(:typedef, type)
+        @ordinary_scopes.last[name_tok.value] = OrdinaryName.new(:typedef, [type, const])
       end
 
       # The innermost ordinary-scope entry for `name`, or nil when none binds it.

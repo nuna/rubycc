@@ -48,16 +48,20 @@ module Rubycc
       # known (after the text is compiled), so the names are collected here.
       data_symbol_refs = []
       ir_program.globals.each do |global|
+        # A `static` global gets an internal-linkage (STB_LOCAL) object symbol,
+        # an ordinary one a global (STB_GLOBAL) symbol; both are laid out into
+        # .data/.bss identically.
+        internal = global.linkage == :internal
         if global.init.nil?
           bss_align = [bss_align, global.align].max
           bss_size = align_up(bss_size, global.align)
-          writer.add_global_object(global.name, :bss, bss_size, global.size)
+          add_object_symbol(writer, internal, global.name, :bss, bss_size, global.size)
           bss_size += global.size
         else
           data_align = [data_align, global.align].max
           offset = align_up(data.bytesize, global.align)
           data << ("\0".b * (offset - data.bytesize))
-          writer.add_global_object(global.name, :data, offset, global.size)
+          add_object_symbol(writer, internal, global.name, :data, offset, global.size)
           data << global.init.bytes
           # Each pointer slot in the image is patched by a .data relocation,
           # its .text-relative offset (within the global) biased by where the
@@ -82,7 +86,14 @@ module Rubycc
         base = text.bytesize
         text << result.bytes
         result.symbols.each do |sym|
-          writer.add_global_func(sym[:name], base + sym[:offset], sym[:size])
+          # A `static` function is a file-local (STB_LOCAL) symbol; an ordinary
+          # one is global. Either way it is a defined name a same-object
+          # reference resolves against, never an undefined external.
+          if ir_func.linkage == :internal
+            writer.add_local_func(sym[:name], base + sym[:offset], sym[:size])
+          else
+            writer.add_global_func(sym[:name], base + sym[:offset], sym[:size])
+          end
           defined_names << sym[:name]
         end
         result.relocations.each do |reloc|
@@ -115,8 +126,11 @@ module Rubycc
           writer.add_rodata_relocation(offset: reloc[:offset], addend: addend)
         when :global
           # A "lea rip" displacement addressing a file-scope variable: a
-          # PC-relative reference to that variable's own (defined) object
-          # symbol.
+          # PC-relative reference to that variable's own object symbol. A
+          # variable only declared `extern` in this unit (referenced but never
+          # defined here) has no local object symbol, so it becomes an undefined
+          # symbol for the linker, just like an undefined call target.
+          writer.add_undefined_symbol(reloc[:symbol]) unless known_names.include?(reloc[:symbol])
           writer.add_global_relocation(offset: reloc[:offset], symbol: reloc[:symbol])
         end
       end
@@ -138,6 +152,17 @@ module Rubycc
     # Rounds `value` up to the next multiple of `alignment`.
     def align_up(value, alignment)
       (value + alignment - 1) / alignment * alignment
+    end
+
+    # Registers a file-scope object's symbol, choosing the internal-linkage
+    # (STB_LOCAL) writer entry for a `static` object and the global one
+    # otherwise.
+    def add_object_symbol(writer, internal, name, section, offset, size)
+      if internal
+        writer.add_local_object(name, section, offset, size)
+      else
+        writer.add_global_object(name, section, offset, size)
+      end
     end
 
     # Registers one global-image relocation with the ELF writer, translating a

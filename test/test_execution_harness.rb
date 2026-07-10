@@ -1928,6 +1928,98 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
+  # Type qualifiers, _Alignof and _Static_assert (Step 22 Phase A): const
+  # objects and parameters that are only read, a const pointer whose pointee is
+  # still writable, a "const char *" string, a volatile loop counter, _Alignof
+  # of each admitted type, and a program guarded by a satisfied _Static_assert.
+  # Every exit code stays within 0..255. static/extern semantics are Phase B, so
+  # only their acceptance (not their runtime effect) is exercised elsewhere.
+  QUALIFIER_DIFFERENTIAL_SOURCES = [
+    # A const local, read back through its own name.
+    "int main(void) { const int x = 42; return x; }",
+    # A const parameter, read (never written) inside the callee.
+    "int f(const int n) { return n + 1; } int main(void) { return f(41); }",
+    # A const pointer ("int * const"): p itself is fixed, but "*p" is writable.
+    "int main(void) { int x = 5; int * const p = &x; *p = 40; return *p + 2; }",
+    # A "const char *" walked byte by byte ('h'=104, 'i'=105).
+    "int main(void) { const char *s = \"hi\"; return s[0] + s[1] - 167; }",
+    # A volatile loop counter and accumulator summing 0..9.
+    "int main(void) { volatile int s = 0; for (volatile int i = 0; i < 10; i++) { s += i; } return s - 3; }",
+    # _Alignof of the standard integer types, a pointer and a struct.
+    "int main(void) { return _Alignof(int) + 38; }",
+    "int main(void) { return _Alignof(long) + 34; }",
+    "int main(void) { return _Alignof(char) + 41; }",
+    "int main(void) { return _Alignof(int *) + 34; }",
+    "struct s { char c; int i; long l; }; int main(void) { return _Alignof(struct s) + 34; }",
+    # _Alignof folds as a constant, usable in a constant expression (an array
+    # bound here), and equals sizeof for a single scalar.
+    "int main(void) { int a[_Alignof(long)]; return sizeof(a) + 34; }",
+    # A program guarded by a satisfied file-scope _Static_assert.
+    "_Static_assert(sizeof(int) == 4, \"int must be 4 bytes\"); int main(void) { return 42; }",
+    # A block-scope _Static_assert that holds, plus const const-folding.
+    "int main(void) { _Static_assert(_Alignof(long) == 8, \"long aligns to 8\"); " \
+    "const int k = 40; return k + 2; }"
+  ].freeze
+
+  def test_qualifiers_alignof_and_static_assert_match_gcc_exit_codes
+    QUALIFIER_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
+  STORAGE_CLASS_DIFFERENTIAL_SOURCES = [
+    # A static file-scope function and a static global read and written.
+    "static int add(int a, int b) { return a + b; } static int total = 100; " \
+    "int main(void) { total = total + add(3, 4); return total - 100; }",
+    # A static local counter accumulating across three calls (it is initialized
+    # once, not on every entry).
+    "int tick(void) { static int n = 0; n = n + 1; return n; } " \
+    "int main(void) { tick(); tick(); return tick() + 39; }",
+    # A static local array with an initializer, summed.
+    "int main(void) { static int a[3] = {10, 20, 30}; return a[0] + a[1] + a[2] - 18; }",
+    # A static local array without an initializer lands in .bss (all zero).
+    "int main(void) { static int a[4]; int s = 0; for (int i = 0; i < 4; i++) { s += a[i]; } return s + 42; }",
+    # A static local struct with an initializer, its members read back.
+    "struct p { int x; int y; }; " \
+    "int main(void) { static struct p pt = {5, 7}; return pt.x + pt.y + 30; }",
+    # A static local struct without an initializer is zero-filled in .bss.
+    "struct p { int x; int y; }; " \
+    "int main(void) { static struct p pt; return pt.x + pt.y + 42; }",
+    # Two same-named static locals in different functions keep independent
+    # objects (the unique-name lowering), advancing separately.
+    "int f(void) { static int v = 10; return ++v; } " \
+    "int g(void) { static int v = 20; return ++v; } " \
+    "int main(void) { f(); g(); return f() + g() - 20; }",
+    # A static local shadowing an outer automatic variable of the same name.
+    "int main(void) { int x = 5; { static int x = 40; return x + 2; } }",
+    # A const static local, folded and read back.
+    "int main(void) { static const int k = 42; return k; }",
+    # A static function's address taken into a function pointer, then called.
+    "static int one(void) { return 1; } " \
+    "int main(void) { int (*fp)(void) = one; return fp() + 41; }",
+    # An extern reference resolved by a definition later in the same unit.
+    "extern int shared; int get(void) { return shared; } " \
+    "int main(void) { shared = 42; return get(); } int shared;",
+    # A block-scope extern referencing a file-scope object defined above.
+    "int counter = 0; " \
+    "int main(void) { { extern int counter; counter = 42; } return counter; }",
+    # A static const table indexed across several calls.
+    "static const int squares[4] = {0, 1, 4, 9}; int sq(int i) { return squares[i]; } " \
+    "int main(void) { return sq(3) + sq(2) + sq(1) + 28; }"
+  ].freeze
+
+  def test_storage_class_semantics_match_gcc_exit_codes
+    STORAGE_CLASS_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
   private
 
   def run_source(source, compiler:)

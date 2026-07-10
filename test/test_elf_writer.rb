@@ -134,6 +134,61 @@ class TestElfWriter < Minitest::Test
     assert_equal 4, bss[:size]               # reserves 4 bytes in memory
   end
 
+  # Builds an object mixing internal-linkage (`static`) and external symbols: a
+  # static function "helper" and object "priv" alongside a global "main" and
+  # object "pub", exercising the local-before-global symbol ordering.
+  def build_object_with_local_symbols
+    writer = Rubycc::ObjFile::ELFWriter.new
+    writer.add_file_symbol("foo.c")
+    writer.add_text_section(MAIN_CODE)
+    writer.add_local_func("helper", 0, MAIN_CODE.bytesize)
+    writer.add_global_func("main", 0, MAIN_CODE.bytesize)
+    writer.set_bss(8, align: 4)
+    writer.add_local_object("priv", :bss, 0, 4)
+    writer.add_global_object("pub", :bss, 4, 4)
+    writer.to_binary
+  end
+
+  def test_static_function_and_object_are_local_symbols
+    bin = build_object_with_local_symbols
+    assert_equal 2, symbol_info(bin, "helper") & 0xF # STT_FUNC
+    assert_equal 0, symbol_info(bin, "helper") >> 4  # STB_LOCAL
+    assert_equal 1, symbol_info(bin, "priv") & 0xF   # STT_OBJECT
+    assert_equal 0, symbol_info(bin, "priv") >> 4    # STB_LOCAL
+    assert_equal 1, symbol_info(bin, "main") >> 4    # STB_GLOBAL
+    assert_equal 1, symbol_info(bin, "pub") >> 4     # STB_GLOBAL
+  end
+
+  def test_local_symbols_precede_globals_and_set_sh_info
+    bin = build_object_with_local_symbols
+    symtab = find_section(bin, ".symtab")
+    count = symtab[:size] / 24
+    binds = (0...count).map { |i| bin[symtab[:offset] + i * 24 + 4].unpack1("C") >> 4 }
+
+    first_global = binds.index(1)
+    refute_nil first_global, "there should be a global symbol"
+    # Every symbol before the first global is local, and none after it is local.
+    assert(binds[0...first_global].all?(&:zero?), "locals must come first")
+    assert(binds[first_global..].none?(&:zero?), "no local may follow a global")
+    # sh_info is the index of that first global (the local count).
+    assert_equal first_global, symtab[:info]
+
+    # The static symbols land among the leading locals; the external ones after.
+    assert_operator symbol_index(bin, "helper"), :<, first_global
+    assert_operator symbol_index(bin, "priv"), :<, first_global
+    assert_operator symbol_index(bin, "main"), :>=, first_global
+    assert_operator symbol_index(bin, "pub"), :>=, first_global
+  end
+
+  def test_readelf_reports_the_static_function_as_local
+    with_object_file(build_object_with_local_symbols) do |path|
+      stdout, status = Open3.capture2("readelf", "-s", path)
+      assert status.success?, "readelf failed to read symbols"
+      assert_match(/FUNC\s+LOCAL\s+\S+\s+\S*\s*helper/, stdout)
+      assert_match(/OBJECT\s+LOCAL\s+\S+\s+\S*\s*priv/, stdout)
+    end
+  end
+
   def test_global_object_symbol_is_a_defined_stt_object
     bin = build_object_with_bss
     symtab = find_section(bin, ".symtab")
@@ -497,6 +552,19 @@ class TestElfWriter < Minitest::Test
     strtab = find_section(bin, ".strtab")
     sym = bin[symtab[:offset] + index * 24, 24]
     read_c_string(bin, strtab[:offset] + sym[0, 4].unpack1("L<"))
+  end
+
+  # The symbol table index of the entry named `name`.
+  def symbol_index(bin, name)
+    symtab = find_section(bin, ".symtab")
+    count = symtab[:size] / 24
+    (0...count).find { |i| symbol_name(bin, i) == name }
+  end
+
+  # The st_info byte (bind in the high nibble, type in the low) of `name`.
+  def symbol_info(bin, name)
+    symtab = find_section(bin, ".symtab")
+    bin[symtab[:offset] + symbol_index(bin, name) * 24 + 4].unpack1("C")
   end
 
   def read_c_string(bin, offset)

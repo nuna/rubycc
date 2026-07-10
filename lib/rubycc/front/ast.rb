@@ -65,8 +65,12 @@ module Rubycc
 
       # A local variable declaration. `type` is the declared Rubycc::Type
       # (int or a pointer). `initializer` is an expression node or nil when the
-      # declarator has no "= <expr>" part.
-      VariableDecl = Data.define(:name, :type, :initializer, :token)
+      # declarator has no "= <expr>" part. `const` is true when the object is
+      # top-level const-qualified (the only qualification M1 tracks), which the
+      # generator rejects writes against. `storage` records the storage-class
+      # specifier (nil, :static or :extern) for Phase B; the generator does not
+      # consume it yet.
+      VariableDecl = Data.define(:name, :type, :initializer, :token, :const, :storage)
 
       # A file-scope (global) variable declaration. `type` is the declared
       # Rubycc::Type (int, char, a pointer, a one-dimensional array or a
@@ -79,8 +83,11 @@ module Rubycc
       # string literal for a char array, or an address constant for a pointer
       # (a null pointer, "&other_global", a decayed global array name or a
       # string literal). Both are nil for an uninitialized global, which lands
-      # in .bss.
-      GlobalDecl = Data.define(:name, :type, :initializer_value, :initializer_node, :token)
+      # in .bss. `const` and `storage` carry the same top-level const flag and
+      # storage-class specifier (nil/:static/:extern) as VariableDecl; the
+      # generator diagnoses writes against a const global but does not yet act
+      # on the storage class (Phase B).
+      GlobalDecl = Data.define(:name, :type, :initializer_value, :initializer_node, :token, :const, :storage)
 
       # A brace-enclosed initializer "{ ... }" (ISO C 6.7.9). `items` is the
       # ordered list of InitItem, one per comma-separated element (a trailing
@@ -129,6 +136,13 @@ module Rubycc
       # `sizeof ( type-name )`: the byte size of a written type ("int",
       # "int *", ...). `type` is the resolved Rubycc::Type.
       SizeofType = Data.define(:type, :token)
+
+      # `_Alignof ( type-name )` (ISO C 6.5.3.4): the alignment requirement, in
+      # bytes, of a written type. `type` is the resolved Rubycc::Type. Only the
+      # parenthesized type-name form exists; unlike sizeof there is no operand
+      # form. The result folds to a size_t (unsigned long) constant, exactly
+      # like SizeofType, and is rejected for a void, function or incomplete type.
+      AlignofType = Data.define(:type, :token)
 
       # A cast "( type-name ) operand" (ISO C 6.5.4). `type` is the resolved
       # Rubycc::Type the operand is converted to and `operand` is the
@@ -236,18 +250,26 @@ module Rubycc
       # A single function parameter. `name` is the identifier String, or nil
       # for an unnamed parameter in a prototype (e.g. "int f(int, int);").
       # `type` is the parameter's Rubycc::Type (int, char or a pointer; never
-      # void, except as a pointer's target).
-      Parameter = Data.define(:name, :type, :token)
+      # void, except as a pointer's target). `const` is true when the parameter
+      # object is top-level const-qualified ("int f(const int x)"), computed
+      # after the array/function-to-pointer adjustment, so the generator can
+      # reject writes to it.
+      Parameter = Data.define(:name, :type, :token, :const)
 
       # A function prototype (a bare declaration with no body), e.g.
       # "int f(int a, int b);". `return_type` is the declared Rubycc::Type
       # (int, char, void or a pointer). `params` is an array of Parameter.
-      FunctionDecl = Data.define(:name, :return_type, :params, :token)
+      # `storage` records the storage-class specifier (nil/:static/:extern) for
+      # Phase B; `inline` is accepted and folded away by the parser and left off
+      # here since the generator has no use for it yet.
+      FunctionDecl = Data.define(:name, :return_type, :params, :token, :storage)
 
       # A function definition. `return_type` is the declared Rubycc::Type
       # (int, char, void or a pointer). `params` is an array of Parameter
       # (each with a non-nil name) and `body` is an array of statement nodes.
-      FunctionDef = Data.define(:name, :return_type, :params, :body, :token)
+      # `storage` records the storage-class specifier (nil/:static/:extern) for
+      # Phase B, the generator not yet acting on it.
+      FunctionDef = Data.define(:name, :return_type, :params, :body, :token, :storage)
 
       # Whole translation unit. `functions` is an array of FunctionDef,
       # FunctionDecl (prototype) and GlobalDecl (file-scope variable) nodes in

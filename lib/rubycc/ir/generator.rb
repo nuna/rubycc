@@ -19,8 +19,11 @@ module Rubycc
       # for a scalar (int or pointer) and a stack object id for an array, which
       # one following from `type.array?`. When `global` is true it is a
       # file-scope variable and `storage` is its symbol name (a String), whose
-      # address :global_addr materializes.
-      Local = Data.define(:type, :storage, :global)
+      # address :global_addr materializes. `const` records whether the object is
+      # top-level const-qualified, so a write to it (a plain assignment, a
+      # compound assignment or "++"/"--") is diagnosed as writing a read-only
+      # variable; reads and "&" are unaffected.
+      Local = Data.define(:type, :storage, :global, :const)
       # Returns an IR::Program: an IR::Function per AST::FunctionDef plus the
       # translation unit's read-only string pool. Prototypes
       # (AST::FunctionDecl) contribute only a signature-table entry and emit no
@@ -45,6 +48,16 @@ module Rubycc
         # lay out into .data/.bss.
         @global_bindings = {}
         @globals = []
+        # Names of file-scope variables that have a real definition here (storage
+        # reserved), as opposed to a bare `extern` reference. A second definition
+        # of a name already in this set is a redefinition, while any number of
+        # `extern` references may coexist with (at most) one definition.
+        @defined_globals = {}
+        # A monotonic counter that names each block-scope `static` uniquely as
+        # "<var>.<n>". A '.' cannot appear in a C identifier, so these names
+        # never collide with a real symbol; the counter runs over the whole
+        # translation unit in source order, keeping the output deterministic (N4).
+        @static_local_count = 0
         ir_functions = []
         # Declarations are processed in source order, so a function may only
         # reference a global or callee already declared above it (C's
@@ -55,10 +68,17 @@ module Rubycc
           when Front::AST::GlobalDecl
             declare_global(decl)
           when Front::AST::FunctionDecl
+            # A prototype's storage class (`static`/`extern`) is recorded on the
+            # AST but drives no behavior here: a declaration reserves nothing and
+            # M1 does not diagnose a static/extern mismatch against the eventual
+            # definition, so a prototype only contributes a signature.
             declare_function(decl.name, decl.return_type, decl.params.map(&:type), defined: false, token: decl.token)
           when Front::AST::FunctionDef
             declare_function(decl.name, decl.return_type, decl.params.map(&:type), defined: true, token: decl.token)
-            ir_functions << gen_function(decl)
+            # `static` gives the definition internal linkage (an STB_LOCAL text
+            # symbol); an absent or `extern` specifier leaves it external.
+            linkage = decl.storage == :static ? :internal : :external
+            ir_functions << gen_function(decl, linkage)
           end
         end
         Program.new(ir_functions, @strings, @globals)
@@ -66,11 +86,18 @@ module Rubycc
 
       private
 
-      # Records a file-scope variable: its binding (visible to every function
-      # as the outermost scope) and its IR::Global layout descriptor. A name
-      # already taken by another global or by a function is a redefinition.
+      # Records a file-scope variable. A name already taken by a function is a
+      # redefinition. The storage class then steers the outcome:
+      #   * `extern` is a reference declaration — it registers the binding (so
+      #     later code sees the name and its type) but reserves no storage, and
+      #     any number may coexist with each other and with one real definition;
+      #   * an absent or `static` specifier is a definition — it lays out an
+      #     IR::Global (external or internal linkage) and marks the name defined,
+      #     so a second definition is caught as a redefinition.
+      # Whenever a binding already exists (from an earlier reference or
+      # definition), the two must agree on type.
       def declare_global(decl)
-        if @global_bindings.key?(decl.name) || @signatures.key?(decl.name)
+        if @signatures.key?(decl.name)
           error_at(decl.token, "redefinition of '#{decl.name}'")
         end
         # Resolve the initializer first: a "[]" array bound is only known once
@@ -85,10 +112,32 @@ module Rubycc
           init = GlobalInit.new(bytes: pack_integer(decl.initializer_value, type.size), relocations: [])
         end
         # A global needs a known storage width and boundary, so an incomplete
-        # struct (a tag never defined) cannot be laid out in .bss/.data.
+        # struct (a tag never defined) cannot be laid out in .bss/.data — and an
+        # `extern` reference likewise needs a concrete type to bind here.
         require_complete(type, decl.token)
-        @global_bindings[decl.name] = Local.new(type: type, storage: decl.name, global: true)
-        @globals << Global.new(name: decl.name, size: type.size, align: type.alignment, init: init)
+
+        existing = @global_bindings[decl.name]
+        if existing && existing.type != type
+          error_at(decl.token, "conflicting types for '#{decl.name}'")
+        end
+
+        if decl.storage == :extern
+          # A reference declaration: bind the name (once) with no storage. A real
+          # definition, before or after, supplies the object; if none does, a
+          # reference to it becomes an undefined symbol for the linker.
+          @global_bindings[decl.name] ||=
+            Local.new(type: type, storage: decl.name, global: true, const: decl.const)
+          return
+        end
+
+        if @defined_globals[decl.name]
+          error_at(decl.token, "redefinition of '#{decl.name}'")
+        end
+        @defined_globals[decl.name] = true
+        linkage = decl.storage == :static ? :internal : :external
+        @global_bindings[decl.name] = Local.new(type: type, storage: decl.name, global: true, const: decl.const)
+        @globals << Global.new(name: decl.name, size: type.size, align: type.alignment,
+                               init: init, linkage: linkage)
       end
 
       # Materializes a global's deferred initializer into [final_type,
@@ -270,7 +319,7 @@ module Rubycc
         }
       end
 
-      def gen_function(func)
+      def gen_function(func, linkage)
         @insts = []
         @vreg_count = 0
         @label_count = 0
@@ -311,7 +360,7 @@ module Rubycc
         # Parameters take the first vregs (0..n-1) in the outermost scope; the
         # backend spills the incoming argument registers into these slots.
         func.params.each do |param|
-          @scopes.last[param.name] = Local.new(type: param.type, storage: new_vreg, global: false)
+          @scopes.last[param.name] = Local.new(type: param.type, storage: new_vreg, global: false, const: param.const)
         end
 
         # A narrow integer parameter (char/short and their unsigned forms,
@@ -356,7 +405,7 @@ module Rubycc
           end
         end
 
-        Function.new(func.name, @insts, @vreg_count, func.params.size, @stack_objects)
+        Function.new(func.name, @insts, @vreg_count, func.params.size, @stack_objects, linkage)
       end
 
       def gen_statement(stmt)
@@ -722,13 +771,64 @@ module Rubycc
           error_at(decl.token, "block-scope function declarations are not supported")
         end
 
+        # A block-scope storage class changes where the object lives, not its
+        # visibility beyond this block: `static` gives it a private file-scope
+        # object (see #gen_block_static_decl) and `extern` merely references a
+        # file-scope one (see #gen_block_extern_decl). Only an automatic object
+        # takes an ordinary local slot.
+        case decl.storage
+        when :static
+          gen_block_static_decl(decl, scope)
+        when :extern
+          gen_block_extern_decl(decl)
         # An array or a struct is an aggregate lowered onto a stack object; a
         # scalar (int, pointer) takes a vreg slot.
-        if decl.type.array? || decl.type.struct?
-          gen_aggregate_decl(decl, scope)
         else
-          gen_scalar_decl(decl, scope)
+          if decl.type.array? || decl.type.struct?
+            gen_aggregate_decl(decl, scope)
+          else
+            gen_scalar_decl(decl, scope)
+          end
         end
+      end
+
+      # A block-scope `static` object. It has automatic-storage *scope* (visible
+      # only in this block, named in `scope`) but static *storage*: it is lowered
+      # to a uniquely named file-scope IR::Global with internal linkage, so it
+      # persists across calls and is initialized once, at load time, with no
+      # runtime initialization code. The unique name "<var>.<n>" cannot clash
+      # with a real symbol, so two same-named block statics (in different
+      # functions or blocks) get distinct objects. The binding is a global one,
+      # so every access flows through the ordinary :global_addr path.
+      def gen_block_static_decl(decl, scope)
+        name = "#{decl.name}.#{@static_local_count}"
+        @static_local_count += 1
+        type = decl.type
+        init = nil
+        # The initializer must be a constant expression (6.7.8p4), folded through
+        # the same global-initializer path that a file-scope object uses; a
+        # non-constant element reaches "initializer element is not a constant"
+        # there. Without an initializer the object is zero-filled in .bss.
+        type, init = build_global_init(type, decl.initializer, decl.token) if decl.initializer
+        require_complete(type, decl.token)
+        scope[decl.name] = Local.new(type: type, storage: name, global: true, const: decl.const)
+        @globals << Global.new(name: name, size: type.size, align: type.alignment,
+                               init: init, linkage: :internal)
+      end
+
+      # A block-scope `extern` declaration references a file-scope object defined
+      # elsewhere (this unit or another). It reserves no storage; it registers a
+      # file-scope binding if the name is not already bound, so references resolve
+      # to that external symbol (an undefined one if nothing defines it here).
+      # M1 lets this binding outlive the block, a deliberate simplification.
+      def gen_block_extern_decl(decl)
+        require_complete(decl.type, decl.token)
+        existing = @global_bindings[decl.name]
+        if existing && existing.type != decl.type
+          error_at(decl.token, "conflicting types for '#{decl.name}'")
+        end
+        @global_bindings[decl.name] ||=
+          Local.new(type: decl.type, storage: decl.name, global: true, const: decl.const)
       end
 
       # A scalar local. A brace-wrapped initializer ("int x = {5};", 6.7.9p11) is
@@ -737,7 +837,7 @@ module Rubycc
       # a (pathological) self-reference resolves to this very variable.
       def gen_scalar_decl(decl, scope)
         vreg = new_vreg
-        scope[decl.name] = Local.new(type: decl.type, storage: vreg, global: false)
+        scope[decl.name] = Local.new(type: decl.type, storage: vreg, global: false, const: decl.const)
         return unless decl.initializer
 
         value_node = decl.initializer
@@ -765,13 +865,13 @@ module Rubycc
           resolved = Front::InitializerResolver.resolve(type, init)
           type = resolved.type
           require_complete(type, decl.token)
-          base = bind_stack_object(scope, decl.name, type)
+          base = bind_stack_object(scope, decl.name, type, decl.const)
           lower_resolved_init(base, type, resolved.entries)
           return
         end
 
         require_complete(type, decl.token)
-        base = bind_stack_object(scope, decl.name, type)
+        base = bind_stack_object(scope, decl.name, type, decl.const)
         return unless init
 
         # The only non-structural aggregate initializer is a whole-struct copy;
@@ -790,9 +890,9 @@ module Rubycc
       # Reserves a stack object for `type`, binds `name` to it, and returns a
       # vreg holding the object's base address (the destination every placement
       # is written through).
-      def bind_stack_object(scope, name, type)
+      def bind_stack_object(scope, name, type, const)
         object_id = new_object(type.size)
-        scope[name] = Local.new(type: type, storage: object_id, global: false)
+        scope[name] = Local.new(type: type, storage: object_id, global: false, const: const)
         base = new_vreg
         emit(:object_addr, dst: base, a: object_id)
         base
@@ -889,6 +989,8 @@ module Rubycc
           gen_sizeof(sizeof_operand_type(node.operand), node.token)
         when Front::AST::SizeofType
           gen_sizeof(node.type, node.token)
+        when Front::AST::AlignofType
+          gen_alignof(node.type, node.token)
         when Front::AST::Cast
           gen_cast(node)
         when Front::AST::Assignment
@@ -1109,6 +1211,21 @@ module Rubycc
         # The size is small and non-negative, so a 32-bit mov (which zeroes the
         # upper half of rax) already leaves a valid 8-byte unsigned long value.
         emit(:const, dst: dst, a: type.size)
+        [dst, Type::ULong]
+      end
+
+      # _Alignof folds to a size_t (unsigned long) constant, the resolved type's
+      # alignment, mirroring #gen_sizeof: a void, function or incomplete type has
+      # no alignment and is rejected the same way sizeof rejects a missing size.
+      def gen_alignof(type, token)
+        error_at(token, "invalid application of '_Alignof' to void type") if type.void?
+        error_at(token, "invalid application of '_Alignof' to a function type") if type.function?
+        require_complete(type, token)
+
+        dst = new_vreg
+        # An alignment is a small power of two, so a 32-bit mov already leaves a
+        # valid unsigned long value (its upper half zeroed).
+        emit(:const, dst: dst, a: type.alignment)
         [dst, Type::ULong]
       end
 
@@ -1491,6 +1608,7 @@ module Rubycc
 
       def gen_variable_assignment(node, target)
         local = lookup_local(target.name, target.token)
+        reject_readonly_write(local, target, node.token)
         if local.type.array?
           error_at(node.token, "array type is not assignable")
         end
@@ -1812,6 +1930,7 @@ module Rubycc
 
       def gen_compound_assignment_to_variable(node, target)
         local = lookup_local(target.name, target.token)
+        reject_readonly_write(local, target, node.token)
         error_at(node.token, "array type is not assignable") if local.type.array?
         error_at(node.token, "invalid operands to binary expression") if local.type.struct?
 
@@ -1897,6 +2016,7 @@ module Rubycc
 
       def gen_inc_dec_variable(node, target)
         local = lookup_local(target.name, target.token)
+        reject_readonly_write(local, target, node.token)
         error_at(node.token, "array type is not assignable") if local.type.array?
         error_at(node.token, "invalid operands to binary expression") if local.type.struct?
 
@@ -2308,7 +2428,7 @@ module Rubycc
         case node
         when Front::AST::IntLit
           node.type
-        when Front::AST::SizeofExpr, Front::AST::SizeofType
+        when Front::AST::SizeofExpr, Front::AST::SizeofType, Front::AST::AlignofType
           Type::ULong
         when Front::AST::Call
           call_return_type(node)
@@ -2477,6 +2597,16 @@ module Rubycc
       # made it a call or a decayed pointer instead).
       def lookup_local(name, token)
         lookup_variable(name) || error_at(token, "undeclared variable '#{name}'")
+      end
+
+      # Rejects a write to a top-level const-qualified variable or parameter — a
+      # plain assignment, a compound assignment or "++"/"--". Only the variable's
+      # own const-ness is tracked (M1 carries no qualified types), so a write
+      # through a pointer, a subscript or a struct member is not caught here.
+      def reject_readonly_write(local, target, token)
+        return unless local.const
+
+        error_at(token, "assignment of read-only variable '#{target.name}'")
       end
 
       # The Type::FunctionType a function's recorded signature describes, used

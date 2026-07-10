@@ -92,6 +92,8 @@ module Rubycc
           evaluate_cast(node)
         when AST::SizeofType
           evaluate_sizeof_type(node)
+        when AST::AlignofType
+          evaluate_alignof_type(node)
         else
           # Every other node — VariableRef, Call, Assignment,
           # CompoundAssignment, IncDec, MemberAccess, Subscript, StringLit,
@@ -173,6 +175,18 @@ module Rubycc
         raise NotConstant, node.token if type.void? || (type.struct? && !type.complete?)
 
         type.size
+      end
+
+      # _Alignof(type-name) folds to the type's alignment; a void, function or
+      # incomplete type has no alignment to fold, matching what the generator
+      # rejects for the same construct.
+      def evaluate_alignof_type(node)
+        type = node.type
+        if type.void? || type.function? || (type.struct? && !type.complete?)
+          raise NotConstant, node.token
+        end
+
+        type.alignment
       end
     end
   end

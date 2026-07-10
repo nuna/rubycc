@@ -1878,4 +1878,117 @@ class TestParser < Minitest::Test
     assert_kind_of AST::VariableRef, ret.expr
     assert_equal "V", ret.expr.name
   end
+
+  # --- declaration specifiers: storage class, qualifiers, inline (Step 22) ---
+
+  def test_specifiers_mix_in_any_order
+    # "static const unsigned long" and "const static int" both parse: the
+    # storage class, qualifier and type-specifier keywords may interleave.
+    a = parse_decl("static const unsigned long x = 1;")
+    assert_equal Type::ULong, a.type
+    assert_equal :static, a.storage
+    assert a.const
+
+    b = parse_decl("const static int y = 2;")
+    assert_equal Type::Int, b.type
+    assert_equal :static, b.storage
+    assert b.const
+  end
+
+  def test_extern_and_static_storage_are_recorded
+    program = parse("static int g; extern int h; int main(void) { return 0; }")
+    assert_equal :static, program.functions[0].storage
+    assert_equal :extern, program.functions[1].storage
+  end
+
+  def test_register_and_auto_are_accepted_without_effect
+    # register/auto are consumed but leave no storage recorded.
+    decl = parse_decl("register int r = 5;")
+    assert_equal Type::Int, decl.type
+    assert_nil decl.storage
+    refute decl.const
+
+    decl = parse_decl("auto int a = 6;")
+    assert_nil decl.storage
+  end
+
+  def test_multiple_storage_classes_is_a_diagnostic
+    error = assert_raises(Rubycc::CompileError) do
+      parse("int main(void) { static register int x; return 0; }")
+    end
+    assert_match(/multiple storage classes in declaration specifiers/, error.description)
+  end
+
+  def test_const_pointer_versus_pointer_to_const
+    # "int * const p" makes p itself const; "const int *p" makes only the
+    # pointee const, so p stays a mutable (non-const) object.
+    body = parse("int main(void) { int x; int * const p = &x; const int *q = &x; return 0; }")
+            .functions.first.body
+    const_ptr = body[1]
+    assert_equal "p", const_ptr.name
+    assert const_ptr.const
+
+    ptr_to_const = body[2]
+    assert_equal "q", ptr_to_const.name
+    refute ptr_to_const.const
+  end
+
+  def test_scalar_const_is_tracked
+    assert parse_decl("const int x = 1;").const
+    refute parse_decl("int y = 1;").const
+  end
+
+  def test_const_typedef_propagates_to_uses
+    # "typedef const int ci; ci a;" makes a const; a plain "typedef int ti"
+    # does not.
+    program = parse("typedef const int ci; typedef int ti; " \
+                    "int main(void) { ci a = 1; ti b = 2; return 0; }")
+    body = program.functions.last.body
+    assert body[0].const
+    refute body[1].const
+  end
+
+  def test_const_typedef_of_pointer_is_not_itself_const
+    # "typedef const int *cp; cp p;" is a pointer to const, so p is mutable.
+    program = parse("typedef const int *cp; " \
+                    "int main(void) { int x; cp p = &x; return 0; }")
+    decl = program.functions.last.body[1]
+    refute decl.const
+  end
+
+  def test_parameter_const_is_recorded
+    program = parse("int f(const int x, int y) { return 0; }")
+    params = program.functions.first.params
+    assert params[0].const
+    refute params[1].const
+  end
+
+  def test_const_array_parameter_is_not_const_after_adjustment
+    # "const int a[10]" adjusts to "const int *a", a pointer to const int, so
+    # the parameter object itself is not const.
+    program = parse("int f(const int a[10]) { return 0; }")
+    refute program.functions.first.params.first.const
+  end
+
+  def test_inline_function_is_accepted
+    program = parse("inline int f(void) { return 1; } int main(void) { return f(); }")
+    assert_kind_of AST::FunctionDef, program.functions.first
+    assert_equal "f", program.functions.first.name
+  end
+
+  def test_static_assert_that_holds_yields_no_node
+    # A satisfied _Static_assert declares nothing, so it disappears from the
+    # translation unit and from a block's items.
+    program = parse("_Static_assert(1, \"ok\"); int main(void) { _Static_assert(2 > 1, \"gt\"); return 0; }")
+    assert_equal 1, program.functions.size
+    assert_equal "main", program.functions.first.name
+    assert_equal 1, program.functions.first.body.size
+    assert_kind_of AST::Return, program.functions.first.body.first
+  end
+
+  def test_alignof_of_a_type_name
+    expr = parse_expr("_Alignof(long)")
+    assert_kind_of AST::AlignofType, expr
+    assert_equal Type::Long, expr.type
+  end
 end

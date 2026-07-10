@@ -13,9 +13,10 @@ module Rubycc
     # name -> index lookup resolves the cross-references (symtab's sh_link,
     # rela's sh_link/sh_info, and each symbol's st_shndx). Symbol table order is
     # NULL, STT_FILE, the .text section symbol, the .rodata section symbol (when
-    # present), then the global symbols (defined functions, then defined
-    # file-scope objects, then undefined externals); r_info in .rela.text indexes
-    # into that final order.
+    # present), then the file-local (`static`) functions and objects — every
+    # STB_LOCAL must precede the first STB_GLOBAL — followed by the external
+    # symbols (defined functions, then defined file-scope objects, then
+    # undefined externals); r_info in .rela.text indexes into that final order.
     #
     # .rela.text carries three relocation kinds: each `call` site as an
     # R_X86_64_PLT32 against its (defined or undefined) symbol, each string
@@ -129,7 +130,15 @@ module Rubycc
       end
 
       def add_global_func(name, offset, size)
-        @func_symbols << { name: name, offset: offset, size: size }
+        @func_symbols << { name: name, offset: offset, size: size, bind: STB_GLOBAL }
+        self
+      end
+
+      # Registers a defined `static` function as a file-local STT_FUNC symbol
+      # (STB_LOCAL): private to this object, so a same-named function elsewhere
+      # does not collide with it. Laid out in .text like any other function.
+      def add_local_func(name, offset, size)
+        @func_symbols << { name: name, offset: offset, size: size, bind: STB_LOCAL }
         self
       end
 
@@ -137,7 +146,15 @@ module Rubycc
       # `section` is :data or :bss, `offset` its byte offset within that section
       # (st_value) and `size` its storage width (st_size).
       def add_global_object(name, section, offset, size)
-        @object_symbols << { name: name, section: section, offset: offset, size: size }
+        @object_symbols << { name: name, section: section, offset: offset, size: size, bind: STB_GLOBAL }
+        self
+      end
+
+      # Registers a `static` file-scope variable (or a block-scope `static`
+      # lowered to a uniquely named one) as a file-local STT_OBJECT symbol
+      # (STB_LOCAL). Placed in .data/.bss exactly like a global object.
+      def add_local_object(name, section, offset, size)
+        @object_symbols << { name: name, section: section, offset: offset, size: size, bind: STB_LOCAL }
         self
       end
 
@@ -267,13 +284,25 @@ module Rubycc
           syms << { name: nil, bind: STB_LOCAL, type: STT_SECTION,
                     shndx: :rodata, value: 0, size: 0 }
         end
-        @func_symbols.each do |sym|
-          syms << { name: sym[:name], bind: STB_GLOBAL, type: STT_FUNC,
-                    shndx: :text, value: sym[:offset], size: sym[:size] }
-        end
-        @object_symbols.each do |obj|
-          syms << { name: obj[:name], bind: STB_GLOBAL, type: STT_OBJECT,
-                    shndx: obj[:section], value: obj[:offset], size: obj[:size] }
+        # ELF requires every STB_LOCAL symbol to precede the first STB_GLOBAL,
+        # so the defined symbols are emitted in two passes: the `static`
+        # (internal-linkage) functions and objects first, then the external
+        # ones. Within each pass functions come before objects, keeping the
+        # global-only case's original function-then-object order. sh_info
+        # (#first_global_index) then lands on the first external symbol.
+        [STB_LOCAL, STB_GLOBAL].each do |bind|
+          @func_symbols.each do |sym|
+            next unless sym[:bind] == bind
+
+            syms << { name: sym[:name], bind: bind, type: STT_FUNC,
+                      shndx: :text, value: sym[:offset], size: sym[:size] }
+          end
+          @object_symbols.each do |obj|
+            next unless obj[:bind] == bind
+
+            syms << { name: obj[:name], bind: bind, type: STT_OBJECT,
+                      shndx: obj[:section], value: obj[:offset], size: obj[:size] }
+          end
         end
         @undefined_symbols.each do |name|
           syms << { name: name, bind: STB_GLOBAL, type: STT_NOTYPE,

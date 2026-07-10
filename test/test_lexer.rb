@@ -221,6 +221,18 @@ class TestLexer < Minitest::Test
     assert_equal %w[enum typedef Color], tokens.map(&:value)
   end
 
+  def test_storage_class_and_qualifier_keywords
+    tokens = lex("static extern register auto const volatile inline x").reject(&:eof?)
+    assert_equal %i[keyword keyword keyword keyword keyword keyword keyword ident], tokens.map(&:type)
+    assert_equal %w[static extern register auto const volatile inline x], tokens.map(&:value)
+  end
+
+  def test_static_assert_and_alignof_are_keywords
+    tokens = lex("_Static_assert _Alignof").reject(&:eof?)
+    assert_equal %i[keyword keyword], tokens.map(&:type)
+    assert_equal %w[_Static_assert _Alignof], tokens.map(&:value)
+  end
+
   def test_arrow_is_a_single_token
     tokens = lex("p->x").reject(&:eof?)
     assert_equal %i[ident punct ident], tokens.map(&:type)

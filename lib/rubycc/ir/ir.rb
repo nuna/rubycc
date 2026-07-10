@@ -109,15 +109,20 @@ module Rubycc
     # byte sizes of aggregate stack objects (arrays); the backend lays these
     # out below the virtual-register slots and resolves :object_addr against
     # them.
+    # `linkage` is :external for an ordinary function (a global symbol the
+    # linker can resolve across translation units) or :internal for a `static`
+    # one (a file-local symbol, emitted STB_LOCAL so it stays private to this
+    # object and never collides with a same-named function elsewhere).
     class Function
-      attr_reader :name, :insts, :vreg_count, :param_count, :stack_objects
+      attr_reader :name, :insts, :vreg_count, :param_count, :stack_objects, :linkage
 
-      def initialize(name, insts, vreg_count, param_count, stack_objects)
+      def initialize(name, insts, vreg_count, param_count, stack_objects, linkage)
         @name = name
         @insts = insts
         @vreg_count = vreg_count
         @param_count = param_count
         @stack_objects = stack_objects
+        @linkage = linkage
       end
     end
 
@@ -127,8 +132,12 @@ module Rubycc
     # array, its widest member's for a struct). `init` is either nil — a
     # zero-initialized global that lives in .bss — or a GlobalInit: the
     # `size`-byte little-endian image to place in .data together with the
-    # relocations that patch pointer slots at link time.
-    Global = Data.define(:name, :size, :align, :init)
+    # relocations that patch pointer slots at link time. `linkage` is :external
+    # for an ordinary file-scope variable (a global symbol) or :internal for a
+    # `static` one — a file-scope `static`, or a block-scope `static` lowered to
+    # a uniquely named file-scope object — emitted STB_LOCAL so it stays private
+    # to this object.
+    Global = Data.define(:name, :size, :align, :init, :linkage)
 
     # The materialized initializer of a .data global: `bytes` is its full
     # `size`-byte image (a scalar packed little-endian, an aggregate laid out
