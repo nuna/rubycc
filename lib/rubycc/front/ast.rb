@@ -247,6 +247,27 @@ module Rubycc
       # designator (a plain :call) or a pointer value (an indirect call).
       Call = Data.define(:callee, :args, :token)
 
+      # "__builtin_va_start ( ap , last )" (the initializer of a variable
+      # argument list). `ap` is the va_list expression to initialize; `last_name`
+      # is the identifier String naming the function's last fixed parameter,
+      # which ISO C requires so the variable part can be located just past it.
+      # `token` is the builtin keyword, locating every diagnostic (a fixed-arity
+      # enclosing function, a wrong last-parameter name, a bad `ap` type). The
+      # expression's value is void — it is only ever an expression-statement.
+      VaStart = Data.define(:ap, :last_name, :token)
+
+      # "__builtin_va_arg ( ap , type-name )": fetches the next variable argument
+      # and advances `ap`. `ap` is the va_list expression and `type` is the
+      # resolved Rubycc::Type the argument is read as (an int/long/unsigned/
+      # pointer object type; a promotable or aggregate type is diagnosed). The
+      # whole expression's value and type are that argument.
+      VaArg = Data.define(:ap, :type, :token)
+
+      # "__builtin_va_end ( ap )": ends traversal of `ap`. On System V this is a
+      # no-op beyond type-checking the operand, so the node carries only the
+      # va_list expression and the keyword token; its value is void.
+      VaEnd = Data.define(:ap, :token)
+
       # A single function parameter. `name` is the identifier String, or nil
       # for an unnamed parameter in a prototype (e.g. "int f(int, int);").
       # `type` is the parameter's Rubycc::Type (int, char or a pointer; never
@@ -261,15 +282,19 @@ module Rubycc
       # (int, char, void or a pointer). `params` is an array of Parameter.
       # `storage` records the storage-class specifier (nil/:static/:extern) for
       # Phase B; `inline` is accepted and folded away by the parser and left off
-      # here since the generator has no use for it yet.
-      FunctionDecl = Data.define(:name, :return_type, :params, :token, :storage)
+      # here since the generator has no use for it yet. `variadic` is true when
+      # the prototype ends in "..." ("int printf(const char *, ...);"), in which
+      # case `params` holds only the fixed, named parameters.
+      FunctionDecl = Data.define(:name, :return_type, :params, :token, :storage, :variadic)
 
       # A function definition. `return_type` is the declared Rubycc::Type
       # (int, char, void or a pointer). `params` is an array of Parameter
       # (each with a non-nil name) and `body` is an array of statement nodes.
       # `storage` records the storage-class specifier (nil/:static/:extern) for
-      # Phase B, the generator not yet acting on it.
-      FunctionDef = Data.define(:name, :return_type, :params, :body, :token, :storage)
+      # Phase B, the generator not yet acting on it. `variadic` is true when the
+      # parameter list ends in "..." (the variable part is reachable only through
+      # va_* in Phase B; a body that ignores it compiles and runs already).
+      FunctionDef = Data.define(:name, :return_type, :params, :body, :token, :storage, :variadic)
 
       # Whole translation unit. `functions` is an array of FunctionDef,
       # FunctionDecl (prototype) and GlobalDecl (file-scope variable) nodes in

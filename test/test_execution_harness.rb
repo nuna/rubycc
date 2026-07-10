@@ -2020,6 +2020,116 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
+  # Variadic call sites (Step 23 Phase A): a prototype/pointer ending in "...",
+  # the default argument promotions on the variable part, and the al=0 the
+  # System V ABI wants at a variadic call. Every program calls a real libc
+  # variadic function (printf/snprintf) or a locally defined variadic one, so
+  # both its exit code and its stdout are matched against gcc. Each exit code
+  # stays within 0..255 (printf/snprintf return their byte counts, kept small).
+  VARIADIC_CALL_DIFFERENTIAL_SOURCES = [
+    # printf's return value (the number of bytes written) drives the exit code.
+    "int printf(const char *, ...); " \
+    "int main(void) { return printf(\"value=%d\\n\", 42); }",
+    # A char and a short argument promote to int in the variable part (%d).
+    "int printf(const char *, ...); " \
+    "int main(void) { char c = 65; short s = 1000; return printf(\"%d %d\\n\", c, s); }",
+    # A negative char promotes with its sign preserved (sign extension to int).
+    "int printf(const char *, ...); " \
+    "int main(void) { char c = (char)-5; return printf(\"%d\\n\", c) + 40; }",
+    # snprintf stringifies an integer; a hand-written loop counts its length,
+    # the size argument being an unsigned long fixed parameter.
+    "int snprintf(char *, unsigned long, const char *, ...); " \
+    "int main(void) { char buf[16]; snprintf(buf, 16, \"%d\", 12345); " \
+    "int n = 0; while (buf[n] != 0) { n = n + 1; } return n + 40; }",
+    # A variadic call through a function pointer of variadic type.
+    "int printf(const char *, ...); " \
+    "int main(void) { int (*fp)(const char *, ...) = printf; return fp(\"%d%d\\n\", 7, 8); }",
+    # Nine call arguments (one fixed, eight variable): three ride the stack.
+    "int printf(const char *, ...); " \
+    "int main(void) { return printf(\"%d %d %d %d %d %d %d %d\\n\", 1, 2, 3, 4, 5, 6, 7, 8); }",
+    # A long argument passes through the promotions unchanged (%ld).
+    "int printf(const char *, ...); " \
+    "int main(void) { long x = 100000; return printf(\"%ld\\n\", x) + 30; }",
+    # A locally defined variadic function whose body ignores the variable part
+    # (va_* is Phase B): defining and calling it must still work.
+    "int first(int a, ...) { return a; } " \
+    "int main(void) { return first(42, 1, 2, 3); }"
+  ].freeze
+
+  def test_variadic_calls_match_gcc
+    VARIADIC_CALL_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc = program_output(source, compiler: :rubycc)
+      gcc = program_output(source, compiler: :gcc)
+      assert_equal gcc, rubycc,
+                   "rubycc and gcc disagree on [exit, stdout] for: #{source}"
+    end
+  end
+
+  # Variadic function definitions (Step 23 Phase B): __builtin_va_list, the
+  # __builtin_va_start / __builtin_va_arg / __builtin_va_end trio and the
+  # register-save-area prologue. gcc understands the same builtins, so each
+  # program is compiled and run by both and its [exit, stdout] compared. Exit
+  # codes stay within 0..255.
+  VARIADIC_DEFINITION_DIFFERENTIAL_SOURCES = [
+    # sum(n, ...) reading n ints: three arguments stay in registers, ...
+    "int sum(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); " \
+    "int t = 0, i; for (i = 0; i < n; i = i + 1) t = t + __builtin_va_arg(ap, int); " \
+    "__builtin_va_end(ap); return t; } " \
+    "int main(void) { return sum(3, 10, 20, 30); }",
+    # ... and eight cross from the five register argument slots into the stack
+    # overflow area.
+    "int sum(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); " \
+    "int t = 0, i; for (i = 0; i < n; i = i + 1) t = t + __builtin_va_arg(ap, int); " \
+    "__builtin_va_end(ap); return t; } " \
+    "int main(void) { return sum(8, 1, 2, 3, 4, 5, 6, 7, 8); }",
+    # Seven named parameters fill every integer register, so the variable part
+    # begins in the stack overflow area from its first argument.
+    "int seven(int a, int b, int c, int d, int e, int f, int g, ...) { " \
+    "__builtin_va_list ap; __builtin_va_start(ap, g); " \
+    "int x = __builtin_va_arg(ap, int); int y = __builtin_va_arg(ap, int); " \
+    "__builtin_va_end(ap); return a + b + c + d + e + f + g + x + y; } " \
+    "int main(void) { return seven(1, 2, 3, 4, 5, 6, 7, 100, 200); }",
+    # va_arg(long) and va_arg(char *) mixed: the long is summed and the string's
+    # first byte drives the low bits of the exit code.
+    "int mix(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); " \
+    "long v = __builtin_va_arg(ap, long); char *s = __builtin_va_arg(ap, char *); " \
+    "__builtin_va_end(ap); return (int)v + s[0]; } " \
+    "int main(void) { return mix(2, 100L, \"A\"); }",
+    # A va_list forwarded to a helper that takes a __builtin_va_list parameter
+    # (the vsum pattern): the callee reads through the same tag object.
+    "int vsum(int n, __builtin_va_list ap) { int t = 0, i; " \
+    "for (i = 0; i < n; i = i + 1) t = t + __builtin_va_arg(ap, int); return t; } " \
+    "int forward(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); " \
+    "int r = vsum(n, ap); __builtin_va_end(ap); return r; } " \
+    "int main(void) { return forward(4, 5, 6, 7, 8); }",
+    # Two va_start/va_end passes over the same list re-read it from the start.
+    "int twice(int n, ...) { __builtin_va_list ap; int a, b; " \
+    "__builtin_va_start(ap, n); a = __builtin_va_arg(ap, int); __builtin_va_end(ap); " \
+    "__builtin_va_start(ap, n); b = __builtin_va_arg(ap, int); __builtin_va_end(ap); " \
+    "return a + b; } " \
+    "int main(void) { return twice(2, 41, 99); }",
+    # A static variadic function called through a variadic function pointer.
+    "static int ssum(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); " \
+    "int t = 0, i; for (i = 0; i < n; i = i + 1) t = t + __builtin_va_arg(ap, int); " \
+    "__builtin_va_end(ap); return t; } " \
+    "int main(void) { int (*fp)(int, ...) = ssum; return fp(4, 1, 2, 3, 4); }",
+    # A logf(fmt, ...) that va_starts and forwards to the libc vprintf, so its
+    # stdout is matched byte-for-byte against gcc.
+    "int vprintf(const char *, __builtin_va_list); " \
+    "void logline(const char *fmt, ...) { __builtin_va_list ap; " \
+    "__builtin_va_start(ap, fmt); vprintf(fmt, ap); __builtin_va_end(ap); } " \
+    "int main(void) { logline(\"n=%d s=%s\\n\", 42, \"ok\"); return 0; }"
+  ].freeze
+
+  def test_variadic_definitions_match_gcc
+    VARIADIC_DEFINITION_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc = program_output(source, compiler: :rubycc)
+      gcc = program_output(source, compiler: :gcc)
+      assert_equal gcc, rubycc,
+                   "rubycc and gcc disagree on [exit, stdout] for: #{source}"
+    end
+  end
+
   private
 
   def run_source(source, compiler:)

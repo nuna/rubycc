@@ -345,11 +345,17 @@ module Rubycc
       end
     end
 
-    # A function type (6.7.6.3): its `return_type` and the ordered
-    # `param_types`, an array of the parameter Types after the array/function
-    # adjustments the parser applies ("(void)" and "()" both yield an empty
-    # array). Being a Data, two function types are equal exactly when their
-    # return type and parameter types all match, so "int (int)" == "int (int)".
+    # A function type (6.7.6.3): its `return_type`, the ordered `param_types`
+    # (an array of the parameter Types after the array/function adjustments the
+    # parser applies — "(void)" and "()" both yield an empty array) and
+    # `variadic`, true for a prototype ending in "..." (a variable argument list
+    # after the named parameters, "int (const char *, ...)"). For a variadic
+    # type `param_types` holds only the fixed, named parameters. Being a Data,
+    # two function types are equal exactly when their return type, parameter
+    # types and variadic flag all match, so "int (int)" == "int (int)" but a
+    # variadic "int (int, ...)" differs from the fixed "int (int)"; this makes a
+    # function-pointer signature check reject a variadic/non-variadic mismatch on
+    # its own.
     #
     # A function type is not an object type: it has no storage width, so #size
     # and #alignment raise (a well-formed program measures a *pointer* to a
@@ -358,7 +364,7 @@ module Rubycc
     # subset only through a pointer (a function pointer, Pointer with a
     # FunctionType target) or as the very type a function declarator builds;
     # #function? tells it apart from every object type.
-    FunctionType = Data.define(:return_type, :param_types) do
+    FunctionType = Data.define(:return_type, :param_types, :variadic) do
       def pointer?
         false
       end
@@ -413,9 +419,15 @@ module Rubycc
 
       # The parenthesized parameter list as it appears in a C declarator, used
       # both by #to_s and by Pointer#to_s for a function pointer. An empty list
-      # renders "void" (a prototype taking no arguments).
+      # renders "void" (a prototype taking no arguments); a variadic type ends
+      # in ", ..." after its named parameters ("char *, ..."). A variadic type
+      # always has at least one named parameter (ISO C forbids a lone "..."), so
+      # the empty-list "void" spelling is never variadic.
       def parameter_list_string
-        param_types.empty? ? "void" : param_types.map(&:to_s).join(", ")
+        return "..." if param_types.empty? && variadic
+
+        base = param_types.empty? ? "void" : param_types.map(&:to_s).join(", ")
+        variadic ? "#{base}, ..." : base
       end
 
       # Renders like a C function declarator with the name elided: the return
@@ -628,5 +640,34 @@ module Rubycc
         (value + alignment - 1) / alignment * alignment
       end
     end
+
+    # The System V AMD64 psABI representation of a `va_list` element: the
+    # `__va_list_tag` structure a call's variable arguments are read through.
+    # Its layout — a 32-bit `gp_offset` (the byte offset of the next integer
+    # argument still in the register-save area), a 32-bit `fp_offset` (the same
+    # for a vector argument), an `overflow_arg_area` pointer (the next argument
+    # that spilled onto the stack) and a `reg_save_area` pointer (the base of the
+    # saved argument registers) — is fixed by the ABI, so building it here from
+    # the ordinary #define layout path (size 24, 8-byte aligned) matches what a
+    # System V compiler and its C library agree on. A single shared instance
+    # stands for the tag, and, being a StructType, it compares by identity, so
+    # the generator recognizes "pointer to __va_list_tag" by object identity when
+    # type-checking a va_start/va_arg/va_end operand.
+    VaListTag = StructType.new("__va_list_tag").tap do |tag|
+      tag.define([
+                   ["gp_offset", UInt],
+                   ["fp_offset", UInt],
+                   ["overflow_arg_area", Pointer.new(Void)],
+                   ["reg_save_area", Pointer.new(Void)]
+                 ])
+    end
+
+    # The type the built-in `__builtin_va_list` typedef names: a one-element
+    # array of __va_list_tag. The array shape is what makes a `va_list` object
+    # decay to a `__va_list_tag *` in every expression context (so passing one
+    # to a helper hands over a pointer to the same object, and va_start/va_arg
+    # write through it), while a local declaration still reserves the whole
+    # 24-byte tag as a stack object — exactly the System V convention.
+    BuiltinVaList = Array.new(VaListTag, 1)
   end
 end

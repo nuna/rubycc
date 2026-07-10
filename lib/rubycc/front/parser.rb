@@ -215,8 +215,12 @@ module Rubycc
         # (resolved to a Type), enum constants (resolved to an Integer) and the
         # plain declarator names that shadow them, so a name is looked up here to
         # decide whether an identifier opens a declaration (a typedef name), folds
-        # to a constant (an enumerator) or is an ordinary reference.
-        @ordinary_scopes = [{}]
+        # to a constant (an enumerator) or is an ordinary reference. The outermost
+        # scope is pre-seeded with `__builtin_va_list` as a typedef for the System
+        # V va_list type (a one-element __va_list_tag array), exactly as gcc
+        # predeclares it, so "__builtin_va_list ap;" is parsed as a declaration
+        # with no dedicated keyword and a program may still shadow the name.
+        @ordinary_scopes = [{ "__builtin_va_list" => OrdinaryName.new(:typedef, [Type::BuiltinVaList, false]) }]
       end
 
       # Parses the whole translation unit into an AST::Program. An external
@@ -306,9 +310,11 @@ module Rubycc
 
         if peek.punct?(";")
           advance
-          AST::FunctionDecl.new(name_tok.value, func_type.return_type, params, return_tok, spec_info.storage)
+          AST::FunctionDecl.new(name_tok.value, func_type.return_type, params, return_tok,
+                                spec_info.storage, func_type.variadic)
         else
-          parse_function_definition(name_tok.value, func_type.return_type, params, return_tok, spec_info.storage)
+          parse_function_definition(name_tok.value, func_type.return_type, params, return_tok,
+                                    spec_info.storage, func_type.variadic)
         end
       end
 
@@ -801,7 +807,7 @@ module Rubycc
         error_at(token, "variable or field declared void")
       end
 
-      def parse_function_definition(name, return_type, params, return_tok, storage)
+      def parse_function_definition(name, return_type, params, return_tok, storage, variadic)
         # A definition, unlike a prototype, must name each parameter so its
         # value can be bound in the body.
         params.each do |param|
@@ -820,26 +826,43 @@ module Rubycc
         @ordinary_scopes.pop
         @tag_scopes.pop
         expect_punct("}")
-        AST::FunctionDef.new(name, return_type, params, body, return_tok, storage)
+        AST::FunctionDef.new(name, return_type, params, body, return_tok, storage, variadic)
       end
 
-      # Returns an array of AST::Parameter; empty for "()" or "(void)". A bare
-      # "void" only means "no parameters" when it is the entire list (followed
-      # immediately by ")"); "void *" or a later "void" parameter falls through
-      # to parse_parameter_declaration, which rejects a non-pointer void.
+      # Returns [params, variadic]: an array of AST::Parameter (empty for "()" or
+      # "(void)") and whether the list ends in a "..." variable-argument marker
+      # (6.7.6.3). A bare "void" only means "no parameters" when it is the entire
+      # list (followed immediately by ")"); "void *" or a later "void" parameter
+      # falls through to parse_parameter_declaration, which rejects a non-pointer
+      # void. A "..." is admitted only after at least one named parameter and a
+      # comma ("int a, ..."): a lone "(...)" has no fixed parameter to anchor a
+      # va_start on, and nothing may follow the "...".
       def parse_parameter_type_list
-        return [] if peek.punct?(")")
+        return [[], false] if peek.punct?(")")
         if peek.keyword?("void") && peek_ahead(1)&.punct?(")")
           advance
-          return []
+          return [[], false]
+        end
+        if peek.punct?("...")
+          error_at(peek, "ISO C requires a named parameter before '...'")
         end
 
         params = [parse_parameter_declaration]
+        variadic = false
         while peek.punct?(",")
           advance
+          if peek.punct?("...")
+            advance
+            variadic = true
+            # "..." terminates the list; a parameter or stray token after it
+            # ("int a, ..., int b") is rejected here rather than left for the
+            # caller's ")" expectation to surface as a vaguer error.
+            error_at(peek, "'...' must be the last parameter") unless peek.punct?(")")
+            break
+          end
           params << parse_parameter_declaration
         end
-        params
+        [params, variadic]
       end
 
       # parameter-declaration = type-specifier declarator?, the declarator being
@@ -1250,12 +1273,13 @@ module Rubycc
       # #parse_parameter_declaration) here so the suffix can both build the
       # function type and, when it belongs to a real function, hand its
       # Parameter objects back for the body. Returns [:function, params,
-      # paren_token].
+      # paren_token, variadic], the variadic flag carrying the trailing "..."
+      # forward to #apply_declarator_suffix so it lands on the FunctionType.
       def parse_function_suffix
         paren_tok = advance # "("
-        params = parse_parameter_type_list
+        params, variadic = parse_parameter_type_list
         expect_punct(")")
-        [:function, params, paren_tok]
+        [:function, params, paren_tok, variadic]
       end
 
       # Wraps `inner` in one declarator suffix, enforcing the constraints a
@@ -1265,11 +1289,11 @@ module Rubycc
       # another array. The suffix's own token (the "(" or "[") locates any
       # diagnostic.
       def apply_declarator_suffix(suffix, inner)
-        kind, data, tok = suffix
+        kind, data, tok, variadic = suffix
         if kind == :function
           error_at(tok, "function returning a function is not allowed") if inner.function?
           error_at(tok, "function returning an array is not allowed") if inner.array?
-          Type::FunctionType.new(inner, data.map(&:type))
+          Type::FunctionType.new(inner, data.map(&:type), variadic)
         else
           error_at(tok, "array of functions is not allowed") if inner.function?
           error_at(tok, "multidimensional arrays are not supported yet") if inner.array?
@@ -1675,6 +1699,12 @@ module Rubycc
           parse_sizeof
         elsif peek.keyword?("_Alignof")
           parse_alignof
+        elsif peek.keyword?("__builtin_va_start")
+          parse_va_start
+        elsif peek.keyword?("__builtin_va_arg")
+          parse_va_arg
+        elsif peek.keyword?("__builtin_va_end")
+          parse_va_end
         elsif peek.punct?("+")
           advance # unary + is a no-op; fold it away
           parse_cast_expression
@@ -1747,6 +1777,44 @@ module Rubycc
         type = parse_type_name
         expect_punct(")")
         AST::AlignofType.new(type, alignof_tok)
+      end
+
+      # "__builtin_va_start ( assignment-expression , identifier )": the va_list
+      # to initialize and the name of the last fixed parameter (a bare
+      # identifier, not an expression, since the ABI locates the variable part
+      # relative to that parameter). The generator checks the name against the
+      # enclosing function's last named parameter.
+      def parse_va_start
+        keyword_tok = advance # "__builtin_va_start"
+        expect_punct("(")
+        ap = parse_assignment_expression
+        expect_punct(",")
+        name_tok = expect_ident
+        expect_punct(")")
+        AST::VaStart.new(ap, name_tok.value, keyword_tok)
+      end
+
+      # "__builtin_va_arg ( assignment-expression , type-name )": the va_list and
+      # the type-name the next argument is fetched as. The type-name uses the
+      # same abstract-declarator grammar as sizeof/casts.
+      def parse_va_arg
+        keyword_tok = advance # "__builtin_va_arg"
+        expect_punct("(")
+        ap = parse_assignment_expression
+        expect_punct(",")
+        type = parse_type_name
+        expect_punct(")")
+        AST::VaArg.new(ap, type, keyword_tok)
+      end
+
+      # "__builtin_va_end ( assignment-expression )": the va_list whose traversal
+      # ends. A no-op on System V beyond the operand's type check.
+      def parse_va_end
+        keyword_tok = advance # "__builtin_va_end"
+        expect_punct("(")
+        ap = parse_assignment_expression
+        expect_punct(")")
+        AST::VaEnd.new(ap, keyword_tok)
       end
 
       # type-name = type-specifier abstract-declarator?: a base type-specifier

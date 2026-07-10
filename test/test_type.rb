@@ -332,7 +332,7 @@ class TestType < Minitest::Test
   end
 
   def test_function_type_predicate
-    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    func = Type::FunctionType.new(Type::Int, [Type::Int], false)
     assert_predicate func, :function?
     refute_predicate func, :pointer?
     refute_predicate func, :integer?
@@ -349,32 +349,69 @@ class TestType < Minitest::Test
   end
 
   def test_function_type_has_no_size_or_alignment
-    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    func = Type::FunctionType.new(Type::Int, [Type::Int], false)
     assert_raises(RuntimeError) { func.size }
     assert_raises(RuntimeError) { func.alignment }
   end
 
   def test_function_type_equality_is_by_value
-    a = Type::FunctionType.new(Type::Int, [Type::Int, Type::Pointer.new(Type::Char)])
-    b = Type::FunctionType.new(Type::Int, [Type::Int, Type::Pointer.new(Type::Char)])
-    c = Type::FunctionType.new(Type::Int, [Type::Int])
+    a = Type::FunctionType.new(Type::Int, [Type::Int, Type::Pointer.new(Type::Char)], false)
+    b = Type::FunctionType.new(Type::Int, [Type::Int, Type::Pointer.new(Type::Char)], false)
+    c = Type::FunctionType.new(Type::Int, [Type::Int], false)
     assert_equal a, b
     refute_equal a, c
   end
 
   def test_function_type_renders_like_a_c_declarator
     assert_equal "int (int, char *)",
-                 Type::FunctionType.new(Type::Int, [Type::Int, Type::Pointer.new(Type::Char)]).to_s
+                 Type::FunctionType.new(Type::Int, [Type::Int, Type::Pointer.new(Type::Char)], false).to_s
     # An empty parameter list renders "void".
-    assert_equal "void (void)", Type::FunctionType.new(Type::Void, []).to_s
+    assert_equal "void (void)", Type::FunctionType.new(Type::Void, [], false).to_s
   end
 
   def test_function_pointer_renders_with_parenthesized_star
-    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    func = Type::FunctionType.new(Type::Int, [Type::Int], false)
     assert_equal "int (*)(int)", Type::Pointer.new(func).to_s
+  end
+
+  def test_variadic_function_type_renders_with_ellipsis
+    func = Type::FunctionType.new(Type::Int, [Type::Pointer.new(Type::Char)], true)
+    assert_equal "int (char *, ...)", func.to_s
+  end
+
+  def test_variadic_flag_participates_in_equality
+    fixed = Type::FunctionType.new(Type::Int, [Type::Pointer.new(Type::Char)], false)
+    variadic = Type::FunctionType.new(Type::Int, [Type::Pointer.new(Type::Char)], true)
+    same_variadic = Type::FunctionType.new(Type::Int, [Type::Pointer.new(Type::Char)], true)
+    refute_equal fixed, variadic
+    assert_equal variadic, same_variadic
   end
 
   def test_array_pointer_renders_with_parenthesized_star
     assert_equal "int (*)[3]", Type::Pointer.new(Type::Array.new(Type::Int, 3)).to_s
+  end
+
+  # Step 23 Phase B: the System V __va_list_tag has the ABI-fixed layout the C
+  # library agrees on — a 32-bit gp_offset/fp_offset then two 8-byte pointers,
+  # 24 bytes total, 8-byte aligned.
+  def test_va_list_tag_has_the_sysv_layout
+    tag = Type::VaListTag
+    assert_predicate tag, :struct?
+    assert_equal 24, tag.size
+    assert_equal 8, tag.alignment
+    assert_equal 0, tag.member("gp_offset").offset
+    assert_equal Type::UInt, tag.member("gp_offset").type
+    assert_equal 4, tag.member("fp_offset").offset
+    assert_equal 8, tag.member("overflow_arg_area").offset
+    assert_equal Type::Pointer.new(Type::Void), tag.member("overflow_arg_area").type
+    assert_equal 16, tag.member("reg_save_area").offset
+  end
+
+  # __builtin_va_list is a one-element array of that tag, so it reserves 24
+  # bytes but decays to a __va_list_tag * wherever an array does.
+  def test_builtin_va_list_is_a_one_element_tag_array
+    assert_equal Type::Array.new(Type::VaListTag, 1), Type::BuiltinVaList
+    assert_equal 24, Type::BuiltinVaList.size
+    assert_equal Type::VaListTag, Type::BuiltinVaList.element
   end
 end

@@ -31,11 +31,14 @@ module Rubycc
       # itself (recursion) or an earlier prototype (mutual recursion), while a
       # call to a still-unknown name is diagnosed as an implicit declaration.
       def generate(program)
-        # name -> { param_types:, return_type:, defined: }. `param_types` is
-        # the array of parameter Rubycc::Types (its length being the arity);
-        # `return_type` is the declared Rubycc::Type of a call to this
-        # function; `defined` distinguishes a prototype from a completed
-        # definition so redefinitions can be rejected.
+        # name -> { param_types:, return_type:, variadic:, defined: }.
+        # `param_types` is the array of parameter Rubycc::Types (its length being
+        # the fixed arity — for a variadic function, only the named parameters);
+        # `return_type` is the declared Rubycc::Type of a call to this function;
+        # `variadic` is true for a "..."-terminated prototype (its calls admit
+        # extra, promoted arguments past the fixed ones); `defined` distinguishes
+        # a prototype from a completed definition so redefinitions can be
+        # rejected.
         @signatures = {}
         # The translation-unit-wide string pool: `@strings` holds each interned
         # byte string in id order, `@string_ids` maps content back to its id so
@@ -72,9 +75,11 @@ module Rubycc
             # AST but drives no behavior here: a declaration reserves nothing and
             # M1 does not diagnose a static/extern mismatch against the eventual
             # definition, so a prototype only contributes a signature.
-            declare_function(decl.name, decl.return_type, decl.params.map(&:type), defined: false, token: decl.token)
+            declare_function(decl.name, decl.return_type, decl.params.map(&:type),
+                             variadic: decl.variadic, defined: false, token: decl.token)
           when Front::AST::FunctionDef
-            declare_function(decl.name, decl.return_type, decl.params.map(&:type), defined: true, token: decl.token)
+            declare_function(decl.name, decl.return_type, decl.params.map(&:type),
+                             variadic: decl.variadic, defined: true, token: decl.token)
             # `static` gives the definition internal linkage (an STB_LOCAL text
             # symbol); an absent or `extern` specifier leaves it external.
             linkage = decl.storage == :static ? :internal : :external
@@ -292,7 +297,7 @@ module Rubycc
       # Records or updates a function's signature, enforcing that repeated
       # declarations agree on their return type and parameter types (which
       # also covers arity) and that a body is defined at most once.
-      def declare_function(name, return_type, param_types, defined:, token:)
+      def declare_function(name, return_type, param_types, variadic:, defined:, token:)
         error_at(token, "redefinition of '#{name}'") if @global_bindings.key?(name)
         # Passing or returning a struct by value is out of scope for this step
         # (a struct pointer is the way to hand a struct across a call), so a
@@ -306,7 +311,8 @@ module Rubycc
         end
         existing = @signatures[name]
         if existing
-          if existing[:param_types] != param_types || existing[:return_type] != return_type
+          if existing[:param_types] != param_types || existing[:return_type] != return_type ||
+             existing[:variadic] != variadic
             error_at(token, "conflicting types for '#{name}'")
           elsif defined && existing[:defined]
             error_at(token, "redefinition of '#{name}'")
@@ -315,6 +321,7 @@ module Rubycc
         @signatures[name] = {
           param_types: param_types,
           return_type: return_type,
+          variadic: variadic,
           defined: defined || existing&.fetch(:defined) || false
         }
       end
@@ -327,6 +334,11 @@ module Rubycc
         # #gen_return to type-check "return ...;" and by the implicit-return
         # fallback below.
         @current_return_type = func.return_type
+        # The enclosing function's "..." flag and its ordered named parameters,
+        # consulted by #gen_va_start to reject va_start in a fixed-arity function
+        # and to check its second argument against the last named parameter.
+        @current_variadic = func.variadic
+        @current_named_params = func.params
         # Aggregate stack objects (arrays), indexed by object id; each entry is
         # the object's byte size. The backend lays them out below the vreg
         # slots and resolves :object_addr against this table.
@@ -405,7 +417,7 @@ module Rubycc
           end
         end
 
-        Function.new(func.name, @insts, @vreg_count, func.params.size, @stack_objects, linkage)
+        Function.new(func.name, @insts, @vreg_count, func.params.size, @stack_objects, linkage, func.variadic)
       end
 
       def gen_statement(stmt)
@@ -1009,6 +1021,12 @@ module Rubycc
           gen_inc_dec(node)
         when Front::AST::Comma
           gen_comma(node)
+        when Front::AST::VaStart
+          gen_va_start(node)
+        when Front::AST::VaArg
+          gen_va_arg(node)
+        when Front::AST::VaEnd
+          gen_va_end(node)
         else
           raise "unsupported expression: #{node.class}"
         end
@@ -1022,6 +1040,135 @@ module Rubycc
       def gen_comma(node)
         gen_expr(node.left)
         gen_expr(node.right)
+      end
+
+      # "__builtin_va_start(ap, last)": initializes `ap` so a following
+      # __builtin_va_arg can walk the variable arguments. It is only valid inside
+      # a variadic function (a fixed-arity one has no variable part to point at),
+      # and `last` must name that function's last fixed parameter (6.7.6.3 anchors
+      # the variable part just past it). The single :va_start op carries the
+      # va_list address and the fixed parameter count, from which the backend
+      # fills the four System V fields against its register-save area. The value
+      # is void — va_start is only ever an expression-statement.
+      def gen_va_start(node)
+        unless @current_variadic
+          error_at(node.token, "'va_start' used in function with fixed arguments")
+        end
+        ap = gen_va_list_address(node.ap, node.token, "va_start")
+        last = @current_named_params.last
+        if last.nil? || last.name != node.last_name
+          error_at(node.token, "second argument to 'va_start' is not the last named parameter")
+        end
+        emit(:va_start, a: ap, b: @current_named_params.size)
+        [ap, Type::Void]
+      end
+
+      # "__builtin_va_arg(ap, type)": fetches the next variable argument as
+      # `type` and advances `ap`, lowered entirely to existing IR (no dedicated
+      # op). Following the System V register-save-area convention it reads
+      # gp_offset: while it is below 48 the argument still sits in a saved
+      # register (reg_save_area + gp_offset, then gp_offset += 8); once it reaches
+      # 48 the argument has spilled onto the stack (overflow_arg_area, then that
+      # pointer += 8). Both arms deposit the argument's address into one slot the
+      # merge point loads through, the load width and signedness following `type`.
+      # Only an int/long/unsigned/pointer-sized object type is admissible (see
+      # #require_va_arg_type); a promotable or aggregate type is diagnosed.
+      def gen_va_arg(node)
+        ap = gen_va_list_address(node.ap, node.token, "va_arg")
+        type = node.type
+        require_va_arg_type(type, node.token)
+
+        gp_field = offset_address(ap, Type::VaListTag.member("gp_offset").offset)
+        result_addr = new_vreg
+        overflow_label = new_label
+        end_label = new_label
+
+        emit_va_arg_dispatch(ap, gp_field, result_addr, overflow_label, end_label)
+
+        dst = new_vreg
+        emit_scalar_load(dst, result_addr, type)
+        [dst, type]
+      end
+
+      # Emits the register-vs-overflow branch of a va_arg. `gp_field` addresses
+      # the va_list's gp_offset; `result_addr` is the slot both arms leave the
+      # argument's address in.
+      def emit_va_arg_dispatch(ap, gp_field, result_addr, overflow_label, end_label)
+        # gp = gp_offset; if gp >= 48 the argument is on the stack.
+        gp = new_vreg
+        emit(:uload, dst: gp, a: gp_field, size: 4)
+        limit = new_vreg
+        emit(:const, dst: limit, a: 48)
+        below = new_vreg
+        emit(:ult, dst: below, a: gp, b: limit)
+        emit(:jump_if_zero, a: below, b: overflow_label)
+
+        # Register arm: addr = reg_save_area + gp; gp_offset += 8.
+        reg_save = new_vreg
+        emit(:load, dst: reg_save, a: offset_address(ap, Type::VaListTag.member("reg_save_area").offset), size: 8)
+        gp_wide = convert(gp, from: Type::UInt, to: Type::Long)
+        reg_addr = new_vreg
+        emit(:add, dst: reg_addr, a: reg_save, b: gp_wide, size: 8)
+        emit(:copy, dst: result_addr, a: reg_addr)
+        emit(:store, a: gp_field, b: bump(gp, 8), size: 4)
+        emit(:jump, a: end_label)
+
+        # Overflow arm: addr = overflow_arg_area; overflow_arg_area += 8.
+        emit(:label, a: overflow_label)
+        overflow_field = offset_address(ap, Type::VaListTag.member("overflow_arg_area").offset)
+        overflow = new_vreg
+        emit(:load, dst: overflow, a: overflow_field, size: 8)
+        emit(:copy, dst: result_addr, a: overflow)
+        emit(:store, a: overflow_field, b: bump(overflow, 8, size: 8), size: 8)
+        emit(:label, a: end_label)
+      end
+
+      # A vreg holding `value + amount`. `size` selects 32- or 64-bit addition
+      # (8 for a pointer bump, the default 4 for the gp_offset counter).
+      def bump(value, amount, size: nil)
+        addend = new_vreg
+        emit(:const, dst: addend, a: amount)
+        dst = new_vreg
+        emit(:add, dst: dst, a: value, b: addend, size: size)
+        dst
+      end
+
+      # "__builtin_va_end(ap)": ends traversal of `ap`. System V keeps no state
+      # to tear down, so beyond type-checking the operand this emits nothing; its
+      # value is void, like va_start.
+      def gen_va_end(node)
+        ap = gen_va_list_address(node.ap, node.token, "va_end")
+        [ap, Type::Void]
+      end
+
+      # Evaluates a va_* builtin's first operand and returns the vreg holding the
+      # address of its __va_list_tag. Both a local `__builtin_va_list` (a one-tag
+      # array that decays to a __va_list_tag *) and a forwarded parameter (a
+      # __va_list_tag * after the 6.7.6.3 adjustment) yield exactly that pointer,
+      # so the one type check — a pointer to the shared VaListTag — covers both
+      # and rejects anything else (`builtin` names the site in the diagnostic).
+      def gen_va_list_address(node, token, builtin)
+        ap, ap_type = gen_value(node)
+        unless ap_type.pointer? && ap_type.target == Type::VaListTag
+          error_at(token, "first argument to '#{builtin}' is not of type '__builtin_va_list'")
+        end
+        ap
+      end
+
+      # Rejects a va_arg type-name that cannot be fetched. A char/short/_Bool (or
+      # their unsigned forms) is of promotable type: it was widened to int by the
+      # default argument promotions at the call, so va_arg(char) would read the
+      # wrong width — the caller must use the promoted type. A struct/union, void,
+      # function or array has no scalar argument slot to read here at all. Only an
+      # int/unsigned/long/unsigned long (enum being int already) or a pointer is
+      # admissible.
+      def require_va_arg_type(type, token)
+        if type.integer? && type.size < 4
+          error_at(token, "second argument to 'va_arg' is of promotable type '#{type}'")
+        end
+        return if (type.integer? && type.size >= 4) || type.pointer?
+
+        error_at(token, "second argument to 'va_arg' has type '#{type}', which va_arg cannot yield")
       end
 
       # Lowers `node` for its value like #gen_expr, but rejects a void result:
@@ -1734,9 +1881,12 @@ module Rubycc
       # A direct call to the named function, its signature already known.
       def gen_direct_call(node, name)
         sig = @signatures[name]
-        arg_vregs = lower_call_arguments(node, sig[:param_types], name)
+        arg_vregs = lower_call_arguments(node, sig[:param_types], sig[:variadic], name)
         dst = new_vreg
-        emit(:call, dst: dst, a: name, b: arg_vregs)
+        # A variadic callee carries its fixed parameter count in `size` (non-nil
+        # marks the call variadic), which the backend turns into the al=0 the
+        # System V ABI wants (no xmm arguments in this subset).
+        emit(:call, dst: dst, a: name, b: arg_vregs, size: (sig[:param_types].size if sig[:variadic]))
         [dst, sig[:return_type]]
       end
 
@@ -1748,9 +1898,12 @@ module Rubycc
       def gen_indirect_call(node)
         target, callee_type = gen_value(node.callee)
         func_type = called_function_type(callee_type, node.token)
-        arg_vregs = lower_call_arguments(node, func_type.param_types, nil)
+        arg_vregs = lower_call_arguments(node, func_type.param_types, func_type.variadic, nil)
         dst = new_vreg
-        emit(:call_indirect, dst: dst, a: target, b: arg_vregs)
+        # `size` marks a variadic callee for the backend's al=0, exactly as in a
+        # direct call; the function pointer's own type supplies the flag.
+        emit(:call_indirect, dst: dst, a: target, b: arg_vregs,
+                             size: (func_type.param_types.size if func_type.variadic))
         [dst, func_type.return_type]
       end
 
@@ -1765,27 +1918,53 @@ module Rubycc
         error_at(token, "called object is not a function or function pointer")
       end
 
-      # Evaluates a call's arguments against `param_types`, checking the count
-      # and each type and converting each like an assignment (an arithmetic
-      # widening/narrowing/sign change; a pointer or null pointer constant
-      # passes through). `name` names the callee in the diagnostics of a direct
-      # call, or is nil for an indirect one.
-      def lower_call_arguments(node, param_types, name)
+      # Evaluates a call's arguments against `param_types` (the fixed, named
+      # parameters), checking the count and converting each. A fixed argument
+      # (index below the parameter count) is checked against its parameter type
+      # and converted like an assignment (an arithmetic widening/narrowing/sign
+      # change; a pointer or null pointer constant passes through). When
+      # `variadic` is set, any extra arguments past the fixed ones are allowed
+      # (only a shortfall below the fixed count is an error, never a surplus) and
+      # each takes the default argument promotions (see #promote_variadic_argument)
+      # instead of an assignment conversion. `name` names the callee in the
+      # diagnostics of a direct call, or is nil for an indirect one.
+      def lower_call_arguments(node, param_types, variadic, name)
         callee_desc = name ? "function '#{name}'" : "function pointer"
-        if node.args.size < param_types.size
+        fixed = param_types.size
+        if node.args.size < fixed
           error_at(node.token, "too few arguments to #{callee_desc}")
-        elsif node.args.size > param_types.size
+        elsif !variadic && node.args.size > fixed
           error_at(node.token, "too many arguments to #{callee_desc}")
         end
 
         node.args.each_with_index.map do |arg, i|
           vreg, arg_type = gen_value(arg)
-          unless compatible_assignment?(param_types[i], arg, arg_type)
-            suffix = name ? " of '#{name}'" : ""
-            error_at(node.token, "incompatible type for argument #{i + 1}#{suffix}")
+          if i < fixed
+            unless compatible_assignment?(param_types[i], arg, arg_type)
+              suffix = name ? " of '#{name}'" : ""
+              error_at(node.token, "incompatible type for argument #{i + 1}#{suffix}")
+            end
+            convert_for_assignment(vreg, arg_type, param_types[i])
+          else
+            promote_variadic_argument(vreg, arg_type, node.token)
           end
-          convert_for_assignment(vreg, arg_type, param_types[i])
         end
+      end
+
+      # The default argument promotions applied to an argument in a variadic
+      # call's variable part (6.5.2.2p6): an integer narrower than int (char,
+      # short and their unsigned forms, and _Bool) widens to int, while int,
+      # long, their unsigned forms and any pointer pass through unchanged.
+      # (A floating type would promote double, but this subset has none.) A
+      # struct has no promoted form the callee could recover through va_arg in a
+      # register/stack layout this step models, so passing one is rejected.
+      def promote_variadic_argument(vreg, arg_type, token)
+        if arg_type.struct?
+          error_at(token, "passing a struct to a variadic function is not supported yet")
+        end
+        return vreg unless arg_type.integer?
+
+        convert(vreg, from: arg_type, to: integer_promote(arg_type))
       end
 
       # "lhs && rhs": short-circuit, so rhs is only evaluated when lhs is
@@ -2613,7 +2792,7 @@ module Rubycc
       # both to build the pointer a function designator decays to and to check
       # an indirect call or a function-pointer assignment against it.
       def function_type_of(sig)
-        Type::FunctionType.new(sig[:return_type], sig[:param_types])
+        Type::FunctionType.new(sig[:return_type], sig[:param_types], sig[:variadic])
       end
 
       def new_vreg

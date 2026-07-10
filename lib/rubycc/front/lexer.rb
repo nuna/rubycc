@@ -13,7 +13,8 @@ module Rubycc
                     enum typedef static extern const volatile inline register auto
                     return if else while do for break continue
                     switch case default goto sizeof
-                    _Static_assert _Alignof].freeze
+                    _Static_assert _Alignof
+                    __builtin_va_start __builtin_va_arg __builtin_va_end].freeze
 
       # Escape sequences shared by character constants and string literals,
       # mapping the letter after the backslash to the byte value it denotes.
@@ -23,10 +24,11 @@ module Rubycc
       }.freeze
 
       # Three-character punctuators, matched before the shorter lists so the
-      # longest one always wins: "<<=" must beat "<<" (and "<="/"<"), and
-      # ">>=" must beat ">>" (and ">="/">"). These are the two compound shift
-      # assignments; no other punctuator in this subset is three characters.
-      PUNCTUATORS_3 = %w[<<= >>=].freeze
+      # longest one always wins: "<<=" must beat "<<" (and "<="/"<"), ">>=" must
+      # beat ">>" (and ">="/">"), and "..." (the variadic-parameter ellipsis)
+      # must beat a lone "." (which is not a two-character punctuator, so ".."
+      # never forms; three consecutive dots are the only way "..." arises).
+      PUNCTUATORS_3 = %w[<<= >>= ...].freeze
 
       # Two-character punctuators, matched before the single-character list so
       # the lexer always prefers the longest punctuator ("==" over two "=",

@@ -24,6 +24,14 @@ class TestParser < Minitest::Test
     program.functions.first.body.first
   end
 
+  # Parses a whole function definition and returns the expression of its last
+  # body item (an ExpressionStmt), for a builtin whose surrounding statements
+  # (a va_list declaration) must precede it.
+  def parse_expr_stmt(function_source)
+    program = parse(function_source)
+    program.functions.first.body.last.expr
+  end
+
   def test_parses_program_structure
     program = parse("int main(void) { return 42; }")
 
@@ -781,7 +789,7 @@ class TestParser < Minitest::Test
     decl = parse_decl("int *f(int);")
 
     assert_equal "f", decl.name
-    assert_equal Type::FunctionType.new(Type::Pointer.new(Type::Int), [Type::Int]), decl.type
+    assert_equal Type::FunctionType.new(Type::Pointer.new(Type::Int), [Type::Int], false), decl.type
   end
 
   def test_parenthesized_star_makes_a_function_pointer
@@ -790,7 +798,7 @@ class TestParser < Minitest::Test
     decl = parse_decl("int (*f)(int);")
 
     assert_equal "f", decl.name
-    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    func = Type::FunctionType.new(Type::Int, [Type::Int], false)
     assert_equal Type::Pointer.new(func), decl.type
   end
 
@@ -815,7 +823,7 @@ class TestParser < Minitest::Test
     decl = parse_decl("int (*fa[2])(int);")
 
     assert_equal "fa", decl.name
-    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    func = Type::FunctionType.new(Type::Int, [Type::Int], false)
     assert_equal Type::Array.new(Type::Pointer.new(func), 2), decl.type
   end
 
@@ -825,7 +833,7 @@ class TestParser < Minitest::Test
     decl = parse_decl("int (*(*p))(int);")
 
     assert_equal "p", decl.name
-    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    func = Type::FunctionType.new(Type::Int, [Type::Int], false)
     assert_equal Type::Pointer.new(Type::Pointer.new(func)), decl.type
   end
 
@@ -856,7 +864,7 @@ class TestParser < Minitest::Test
     param = program.functions.first.params.first
 
     assert_equal "g", param.name
-    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    func = Type::FunctionType.new(Type::Int, [Type::Int], false)
     assert_equal Type::Pointer.new(func), param.type
   end
 
@@ -868,7 +876,7 @@ class TestParser < Minitest::Test
 
     assert_kind_of AST::GlobalDecl, decl
     assert_equal "handler", decl.name
-    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    func = Type::FunctionType.new(Type::Int, [Type::Int], false)
     assert_equal Type::Pointer.new(func), decl.type
   end
 
@@ -877,8 +885,90 @@ class TestParser < Minitest::Test
     struct_type = program.functions.first.type
     fp = struct_type.member("fp")
 
-    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    func = Type::FunctionType.new(Type::Int, [Type::Int], false)
     assert_equal Type::Pointer.new(func), fp.type
+  end
+
+  def test_variadic_prototype_records_ellipsis
+    # "int printf(const char *fmt, ...);": a variadic prototype keeps only its
+    # fixed parameter and flags the variable part.
+    program = parse("int printf(const char *fmt, ...);")
+    decl = program.functions.first
+
+    assert_kind_of AST::FunctionDecl, decl
+    assert decl.variadic
+    assert_equal ["fmt"], decl.params.map(&:name)
+    assert_equal [Type::Pointer.new(Type::Char)], decl.params.map(&:type)
+  end
+
+  def test_variadic_function_pointer_declarator
+    # "int (*fp)(const char *, ...)": a pointer to a variadic function type,
+    # the ellipsis carried onto the pointed-to FunctionType.
+    decl = parse_decl("int (*fp)(const char *, ...);")
+
+    assert_equal "fp", decl.name
+    func = Type::FunctionType.new(Type::Int, [Type::Pointer.new(Type::Char)], true)
+    assert_equal Type::Pointer.new(func), decl.type
+  end
+
+  def test_lone_ellipsis_parameter_is_rejected
+    # "(...)" with no named parameter has nothing for va_start to anchor on.
+    error = assert_raises(Rubycc::CompileError) { parse("int f(...);") }
+    assert_match(/named parameter before '\.\.\.'/, error.description)
+  end
+
+  def test_parameter_after_ellipsis_is_rejected
+    # Nothing may follow the "..." in a parameter list.
+    error = assert_raises(Rubycc::CompileError) { parse("int f(int a, ..., int b);") }
+    assert_match(/'\.\.\.' must be the last parameter/, error.description)
+  end
+
+  def test_builtin_va_list_names_a_one_element_tag_array
+    # "__builtin_va_list ap;" is a declaration with no dedicated keyword: the
+    # predeclared typedef names a one-element __va_list_tag array (24 bytes).
+    decl = parse_decl("__builtin_va_list ap;")
+
+    assert_kind_of AST::VariableDecl, decl
+    assert_equal "ap", decl.name
+    assert_equal Type::BuiltinVaList, decl.type
+    assert_predicate decl.type, :array?
+    assert_equal 1, decl.type.length
+    assert_equal 24, decl.type.size
+  end
+
+  def test_builtin_va_list_parameter_decays_to_tag_pointer
+    # As a parameter the array type is adjusted (6.7.6.3) to a pointer to its
+    # element, so a forwarded va_list arrives as a __va_list_tag *.
+    program = parse("int vsum(int n, __builtin_va_list ap) { return n; }")
+    param = program.functions.first.params[1]
+
+    assert_equal "ap", param.name
+    assert_equal Type::Pointer.new(Type::VaListTag), param.type
+  end
+
+  def test_builtin_va_start_ast_shape
+    expr = parse_expr_stmt("int f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); }")
+
+    assert_kind_of AST::VaStart, expr
+    assert_kind_of AST::VariableRef, expr.ap
+    assert_equal "ap", expr.ap.name
+    assert_equal "a", expr.last_name
+  end
+
+  def test_builtin_va_arg_ast_shape
+    expr = parse_expr("__builtin_va_arg(ap, long *)")
+
+    assert_kind_of AST::VaArg, expr
+    assert_kind_of AST::VariableRef, expr.ap
+    assert_equal Type::Pointer.new(Type::Long), expr.type
+  end
+
+  def test_builtin_va_end_ast_shape
+    expr = parse_expr("__builtin_va_end(ap)")
+
+    assert_kind_of AST::VaEnd, expr
+    assert_kind_of AST::VariableRef, expr.ap
+    assert_equal "ap", expr.ap.name
   end
 
   def test_abstract_function_pointer_type_in_sizeof
@@ -886,7 +976,7 @@ class TestParser < Minitest::Test
     expr = parse_expr("sizeof(int (*)(int))")
 
     assert_kind_of AST::SizeofType, expr
-    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    func = Type::FunctionType.new(Type::Int, [Type::Int], false)
     assert_equal Type::Pointer.new(func), expr.type
   end
 
@@ -894,7 +984,7 @@ class TestParser < Minitest::Test
     expr = parse_expr("(int (*)(int))p")
 
     assert_kind_of AST::Cast, expr
-    func = Type::FunctionType.new(Type::Int, [Type::Int])
+    func = Type::FunctionType.new(Type::Int, [Type::Int], false)
     assert_equal Type::Pointer.new(func), expr.type
   end
 

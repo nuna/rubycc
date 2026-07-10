@@ -191,6 +191,78 @@ class TestDiagnostics < Minitest::Test
     assert_match(/redefinition of 'f'/, error.description)
   end
 
+  # Step 23 Phase A: a variadic call still requires every fixed parameter.
+  def test_too_few_arguments_to_variadic_function
+    source = "int f(int a, int b, ...) { return a + b; } int main(void) { return f(1); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/too few arguments to function 'f'/, error.description)
+  end
+
+  # A fixed parameter of a variadic function is still type-checked (only the
+  # variable part escapes the assignment-compatibility check).
+  def test_fixed_argument_type_mismatch_to_variadic_function
+    source = "int f(int *p, ...) { return 0; } int main(void) { return f(3); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/incompatible type for argument 1 of 'f'/, error.description)
+  end
+
+  # A struct has no promoted form the variable part can carry here.
+  def test_struct_passed_to_variadic_function_is_rejected
+    source = "struct p { int x; }; int f(int a, ...) { return a; } " \
+             "int main(void) { struct p s; return f(1, s); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/passing a struct to a variadic function is not supported yet/, error.description)
+  end
+
+  # A variadic/non-variadic mismatch makes the function-pointer signatures
+  # differ, so assigning a variadic function to a non-variadic pointer fails.
+  def test_variadic_mismatch_function_pointer_assignment_is_rejected
+    source = "int f(const char *fmt, ...); int g(const char *fmt); " \
+             "int main(void) { int (*fp)(const char *) = g; fp = f; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/incompatible types in assignment/, error.description)
+  end
+
+  # Step 23 Phase B: va_start needs a variable part to anchor on, so it is
+  # rejected in a function with a fixed parameter list.
+  def test_va_start_in_fixed_arity_function_is_rejected
+    source = "int f(int a) { __builtin_va_list ap; __builtin_va_start(ap, a); return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/'va_start' used in function with fixed arguments/, error.description)
+  end
+
+  # The second argument to va_start must name the last fixed parameter.
+  def test_va_start_wrong_last_parameter_is_rejected
+    source = "int f(int a, int b, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/second argument to 'va_start' is not the last named parameter/, error.description)
+  end
+
+  # va_arg of a promotable type (char/short/_Bool) would read the wrong width,
+  # since the argument was promoted to int at the call.
+  def test_va_arg_of_promotable_type_is_rejected
+    source = "int f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); " \
+             "return __builtin_va_arg(ap, char); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/second argument to 'va_arg' is of promotable type 'char'/, error.description)
+  end
+
+  # va_arg of a struct has no scalar argument slot to read here.
+  def test_va_arg_of_struct_type_is_rejected
+    source = "struct p { int x; }; int f(int a, ...) { __builtin_va_list ap; " \
+             "__builtin_va_start(ap, a); struct p s = __builtin_va_arg(ap, struct p); return s.x; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/second argument to 'va_arg' has type 'struct p', which va_arg cannot yield/, error.description)
+  end
+
+  # A va_* builtin's first argument must be a va_list (a __va_list_tag pointer),
+  # not an arbitrary scalar.
+  def test_va_start_first_argument_wrong_type_is_rejected
+    source = "int f(int a, ...) { int ap; __builtin_va_start(ap, a); return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/first argument to 'va_start' is not of type '__builtin_va_list'/, error.description)
+  end
+
   # Step 21: calling a non-function, non-pointer value is rejected.
   def test_calling_a_non_function_is_rejected
     source = "int main(void) { int x = 3; return x(1); }"

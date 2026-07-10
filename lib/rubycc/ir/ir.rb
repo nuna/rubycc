@@ -45,10 +45,15 @@ module Rubycc
     #                           b = array of argument vregs (left to right).
     #                           Arguments past the sixth are passed on the stack
     #                           (System V AMD64), pushed in reverse below the
-    #                           first six in registers
+    #                           first six in registers. `size` non-nil marks a
+    #                           variadic callee (its value is the fixed parameter
+    #                           count); the backend then zeroes al before the call
+    #                           (the System V count of vector registers used, 0
+    #                           here since this subset passes nothing in xmm)
     #   :call_indirect dst <- (*a)(args)  a = a vreg holding the function's
     #                           address (a function pointer value), b = the
-    #                           argument vregs, passed exactly as for :call. The
+    #                           argument vregs, passed exactly as for :call; `size`
+    #                           marks a variadic callee just as for :call. The
     #                           backend calls through a scratch register
     #   :func_addr dst <- &func(a)  dst gets the address of the function named a
     #                           (a String symbol), the value a function
@@ -75,6 +80,17 @@ module Rubycc
     #                                   variable named a (a String symbol name),
     #                                   the lvalue every global read/write and
     #                                   "&g"/array decay is lowered through
+    #   :va_start                   a = a vreg holding the address of a
+    #                               __va_list_tag, b = the enclosing function's
+    #                               fixed (named) parameter count. Initializes the
+    #                               four System V va_list fields (gp_offset,
+    #                               fp_offset, overflow_arg_area, reg_save_area)
+    #                               so a later __builtin_va_arg reads the variable
+    #                               arguments; the backend fills them from the
+    #                               register-save area its variadic prologue set
+    #                               up. va_arg/va_end need no IR op of their own —
+    #                               the generator lowers them to ordinary
+    #                               load/store/branch instructions
     #
     # `dst`, `a`, `b` are virtual register numbers (Integers) unless noted;
     # unused fields are nil. `size` is an operand width in bytes. On :load /
@@ -113,16 +129,20 @@ module Rubycc
     # linker can resolve across translation units) or :internal for a `static`
     # one (a file-local symbol, emitted STB_LOCAL so it stays private to this
     # object and never collides with a same-named function elsewhere).
+    # `variadic` is true for a "..."-terminated definition, which makes the
+    # backend emit a register-save-area prologue so :va_start / __builtin_va_arg
+    # can reach the variable arguments; a fixed-arity function leaves it false.
     class Function
-      attr_reader :name, :insts, :vreg_count, :param_count, :stack_objects, :linkage
+      attr_reader :name, :insts, :vreg_count, :param_count, :stack_objects, :linkage, :variadic
 
-      def initialize(name, insts, vreg_count, param_count, stack_objects, linkage)
+      def initialize(name, insts, vreg_count, param_count, stack_objects, linkage, variadic)
         @name = name
         @insts = insts
         @vreg_count = vreg_count
         @param_count = param_count
         @stack_objects = stack_objects
         @linkage = linkage
+        @variadic = variadic
       end
     end
 

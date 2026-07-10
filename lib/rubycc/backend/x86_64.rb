@@ -96,7 +96,7 @@ module Rubycc
         # relocation here (see Result) so the object writer can emit a
         # .rela.text entry once this function's base in .text is known.
         @relocations = []
-        emit_prologue(ir_func.vreg_count, ir_func.param_count, ir_func.stack_objects)
+        emit_prologue(ir_func.vreg_count, ir_func.param_count, ir_func.stack_objects, ir_func.variadic)
         ir_func.insts.each { |inst| emit_instruction(inst) }
         resolve_fixups
 
@@ -110,17 +110,29 @@ module Rubycc
       private
 
       # Frame layout, from rbp downward: first the virtual-register slots
-      # (8 bytes each, rounded up to a 16-byte region), then the stack objects.
-      # Each object is placed at a 16-byte-aligned size below the previous one,
-      # and @object_offsets[id] records the rbp-relative displacement of the
-      # object's base (its lowest address, i.e. element 0).
-      def emit_prologue(vreg_count, param_count, stack_objects)
+      # (8 bytes each, rounded up to a 16-byte region), then the stack objects,
+      # and last — for a variadic function — a 48-byte register-save area below
+      # everything else. Each object is placed at a 16-byte-aligned size below
+      # the previous one, and @object_offsets[id] records the rbp-relative
+      # displacement of the object's base (its lowest address, i.e. element 0).
+      def emit_prologue(vreg_count, param_count, stack_objects, variadic)
         vreg_region = align16(vreg_count * 8)
         @object_offsets = []
         running = vreg_region
         stack_objects.each do |object_size|
           running += align16(object_size)
           @object_offsets << -running
+        end
+        # A variadic function reserves a 48-byte GP register-save area at the
+        # very bottom of the frame; :va_start points reg_save_area here and the
+        # prologue spills the six integer argument registers into it. 48 is a
+        # multiple of 16, so the frame stays 16-aligned. (No xmm save area: this
+        # subset passes nothing in a vector register, so va_arg's fp_offset,
+        # fixed at 48, never selects one.)
+        @reg_save_area_offset = nil
+        if variadic
+          running += 48
+          @reg_save_area_offset = -running
         end
         frame_size = align16(running)
         emit(0x55)                          # push rbp
@@ -140,6 +152,21 @@ module Rubycc
             emit_bytes(modrm_rbp_disp(EAX, 16 + 8 * (i - ARG_REGISTERS.size)))
             store_reg(EAX, i)
           end
+        end
+        emit_save_gp_registers if variadic
+      end
+
+      # Spills all six System V integer argument registers into the variadic
+      # register-save area, in ABI order from its base, so :va_start's
+      # reg_save_area pointer plus a gp_offset reaches each one. The spill reads
+      # the argument registers (unmodified by the parameter spilling above, which
+      # only writes their values out to slots), so every register still holds its
+      # incoming argument here.
+      def emit_save_gp_registers
+        ARG_REGISTERS.each_with_index do |reg, i|
+          emit(0x48 | (reg >= 8 ? 0x04 : 0)) # REX.W (+ REX.R for r8/r9)
+          emit(0x89)                          # mov [rbp + disp], r64
+          emit_bytes(modrm_rbp_disp(reg & 7, @reg_save_area_offset + 8 * i))
         end
       end
 
@@ -207,9 +234,9 @@ module Rubycc
         when :jump_if_zero
           emit_jump_if_zero(inst.a, inst.b)
         when :call
-          emit_call(inst.dst, inst.a, inst.b)
+          emit_call(inst.dst, inst.a, inst.b, inst.size)
         when :call_indirect
-          emit_call_indirect(inst.dst, inst.a, inst.b)
+          emit_call_indirect(inst.dst, inst.a, inst.b, inst.size)
         when :func_addr
           emit_func_addr(inst.dst, inst.a)
         when :addr_of
@@ -224,6 +251,8 @@ module Rubycc
           emit_store(inst.a, inst.b, inst.size)
         when :memcpy
           emit_memcpy(inst.a, inst.b, inst.size)
+        when :va_start
+          emit_va_start(inst.a, inst.b)
         when :ret
           load_reg(EAX, inst.a) unless inst.a.nil?
           emit(0xC9)                                          # leave
@@ -233,12 +262,13 @@ module Rubycc
         end
       end
 
-      # Emits a direct call: place the arguments (see #emit_call_args), then
-      # "call rel32" with a zero displacement placeholder recorded as a
-      # relocation, undo any stack-argument adjustment, and spill eax to the
-      # result slot.
-      def emit_call(dst, name, arg_vregs)
+      # Emits a direct call: place the arguments (see #emit_call_args), zero al
+      # for a variadic callee (see #emit_variadic_al), then "call rel32" with a
+      # zero displacement placeholder recorded as a relocation, undo any
+      # stack-argument adjustment, and spill eax to the result slot.
+      def emit_call(dst, name, arg_vregs, variadic)
         reclaim = emit_call_args(arg_vregs)
+        emit_variadic_al(variadic)
         emit(0xE8)                          # call rel32
         @relocations << { kind: :call, offset: @code.bytesize, symbol: name }
         emit_bytes([0].pack("l<"))          # linker patches this via R_X86_64_PLT32
@@ -248,14 +278,32 @@ module Rubycc
 
       # Emits an indirect call through a function-pointer value: place the
       # arguments, load the target address into r10 (a non-argument scratch, so
-      # it survives the argument setup), "call r10", then undo any
-      # stack-argument adjustment and spill the result.
-      def emit_call_indirect(dst, target_vreg, arg_vregs)
+      # it survives the argument setup), zero al for a variadic callee, "call
+      # r10", then undo any stack-argument adjustment and spill the result. The
+      # al=0 comes after the r10 load so it lands right before the call, and r10
+      # (a distinct register) is not disturbed by it.
+      def emit_call_indirect(dst, target_vreg, arg_vregs, variadic)
         reclaim = emit_call_args(arg_vregs)
         load_reg(R10, target_vreg)          # mov r10, [rbp + disp]
+        emit_variadic_al(variadic)
         emit(0x41, 0xFF, 0xD2)              # call r10
         emit_reclaim_stack_args(reclaim)
         store_reg(EAX, dst)
+      end
+
+      # Zeroes al before a variadic call, as the System V AMD64 ABI requires: al
+      # holds the number of vector (xmm) registers used to pass arguments, which
+      # is always zero here since this subset passes nothing in an xmm register.
+      # `variadic` is nil for a non-variadic callee (nothing emitted) and the
+      # fixed parameter count otherwise (its value unused — al is 0 regardless).
+      # "xor eax, eax" clears the whole of eax; that is safe because eax was only
+      # a scratch relay for the stack arguments in #emit_call_args and holds
+      # nothing the call depends on, while the six argument registers (edi..r9d)
+      # are already loaded.
+      def emit_variadic_al(variadic)
+        return if variadic.nil?
+
+        emit(0x31, 0xC0)                    # xor eax, eax
       end
 
       # Places a call's arguments for the System V AMD64 convention and returns
@@ -457,6 +505,33 @@ module Rubycc
         emit_bytes([byte_count].pack("L<"))
         emit(0xFC)                          # cld
         emit(0xF3, 0xA4)                    # rep movsb
+      end
+
+      # :va_start — initializes the four System V va_list fields at the address
+      # in `ap_vreg`, for an enclosing function with `named` fixed parameters.
+      # rax holds the __va_list_tag address and r10 is a second scratch for the
+      # two pointer fields:
+      #   [rax+0]  gp_offset = 8 * min(named, 6)   (GP registers the named
+      #                                            parameters already consumed)
+      #   [rax+4]  fp_offset = 48                  (no vector args in this subset,
+      #                                            so va_arg never reads fp side)
+      #   [rax+8]  overflow_arg_area = rbp + 16 + 8*max(named-6, 0)  (the first
+      #                                            stacked variable argument)
+      #   [rax+16] reg_save_area = rbp + @reg_save_area_offset
+      def emit_va_start(ap_vreg, named)
+        load_reg(EAX, ap_vreg)              # rax = &__va_list_tag
+        emit(0xC7, 0x40, 0x00)              # mov dword [rax+0], imm32
+        emit_bytes([8 * [named, 6].min].pack("l<"))
+        emit(0xC7, 0x40, 0x04)              # mov dword [rax+4], imm32
+        emit_bytes([48].pack("l<"))
+        # overflow_arg_area
+        emit(0x4C, 0x8D)                    # REX.WR lea r10, [rbp + disp]
+        emit_bytes(modrm_rbp_disp(R10 & 7, 16 + 8 * [named - ARG_REGISTERS.size, 0].max))
+        emit(0x4C, 0x89, 0x50, 0x08)        # mov [rax+8], r10
+        # reg_save_area
+        emit(0x4C, 0x8D)                    # REX.WR lea r10, [rbp + disp]
+        emit_bytes(modrm_rbp_disp(R10 & 7, @reg_save_area_offset))
+        emit(0x4C, 0x89, 0x50, 0x10)        # mov [rax+16], r10
       end
 
       # A size of 8 compares full 64-bit pointer values (REX.W cmp rax, rcx);
