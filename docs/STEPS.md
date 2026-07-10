@@ -612,7 +612,55 @@ extern の束縛はブロックを超えて残る。宣言と定義の static/ex
 
 ---
 
+## Step 23 — 可変長引数(整数のみ)(ae4bf95)
+
+**内容**: プロトタイプ・宣言子の `...`、可変部のデフォルト実引数昇格、可変長
+呼び出しの al=0、__builtin_va_list / __builtin_va_start / __builtin_va_arg /
+__builtin_va_end(SysV reg_save_area 方式、整数・ポインタのみ)。
+実装は 2 段階に分割して移譲(第 1 段: 呼び出し側、第 2 段: 定義側。
+いずれも heavy-implementer)。
+
+**設計判断**:
+- **variadic は FunctionType の値等価に参加**: Data.define(:return_type,
+  :param_types, :variadic) にしたことで、関数ポインタ代入・グローバル初期化子の
+  署名検査が専用分岐なしで自動的に厳密化される。`...` は宣言子接尾辞タプルの
+  末尾に追加し、既存の function_params 抽出(suffix[1])を変更せずに通した。
+- **al=0 は :call/:call_indirect の size フィールドで伝達**: call 系で size は
+  未使用だったため「非 nil = 可変長 callee(値は固定パラメータ数)」と定義。
+  backend は引数配置(間接なら r10 ロードも)後・call 直前に xor eax, eax を発行
+  (EAX はスタック引数中継後で死んでいる)。
+- **__builtin_va_list はヘッダでなく定義済み typedef**: プリプロセッサが無い
+  段階(#include は Step 26)なので、パーサの最外 ordinary スコープに
+  `__builtin_va_list` を登録する方式にした(ROADMAP の「同梱ヘッダで提供」からの
+  意図的変更。stdarg.h は Step 26 で `typedef __builtin_va_list va_list;` として
+  提供予定)。gcc も同名ビルトインを解するため、定義側の差分テストが同一ソースで
+  成立する。型は SysV psABI の __va_list_tag struct(gp_offset/fp_offset u32、
+  overflow_arg_area/reg_save_area void*、24 バイト)の要素数 1 配列 —
+  psABI 由来のレイアウト・タグ名なので R11 に抵触しない。配列にしたことで、
+  ローカルは減衰・パラメータは 6.7.6.3 調整でどちらも `__va_list_tag *` になり、
+  va_list の関数間転送(vprintf 転送)が単一の型検査(タグ singleton への
+  ポインタ、identity 比較)で成立する。
+- **レジスタ退避領域はフレーム最下部の 48 バイト**: vreg 領域・stack object の
+  下に置く(48 は 16 の倍数なので整列ロジック追加なし)。xmm は退避しない
+  (浮動小数型が無い M1 では fp_offset=48 固定で xmm 側を読む経路が生じない。
+  Step 24 で完成させる二段構え)。named パラメータの通常 spill はレジスタを
+  読むだけなので、6 本全部の退避と順序依存がない。
+- **新 backend 命令は :va_start のみ、va_arg は既存 IR に降ろす**: :va_start は
+  reg_save_area のフレーム内位置(backend しか知らない)を要するため backend
+  命令にし、4 フィールドを rax + r10 で店舗。va_arg は gp_offset の
+  :uload → :ult 48 → 分岐 → 両腕が同じ結果スロット vreg に :copy して合流
+  (vreg は SSA でないスロットなので合流が自然に書ける)という既存命令だけの
+  展開。昇格対象型(char/short/_Bool)の va_arg は診断(C では UB)。
+- **overflow_arg_area = rbp + 16 + 8×max(named−6, 0)**: named 7 個以上でも
+  可変部の開始が正しくずれる(差分テストで named=1/7/8 を検証)。
+
+**トレードオフ**: 浮動小数の可変長(al>0、xmm 退避、fp_offset)は Step 24。
+struct の可変部渡し・va_arg(struct) は診断(Step 25 の SysV 分類と同時期に検討)。
+va_copy は未提供(必要時に追加。M1 の rb_funcall/rb_raise 経路では不要)。
+
+---
+
 ## 現在のテスト規模
 
-Step 22 完了時点: **746 runs / 2,354 assertions / 0 failures**(`rake test`)。
+Step 23 完了時点: **770 runs / 2,443 assertions / 0 failures**(`rake test`)。
 内訳: 字句・パーサ・型・ELF・診断・CLI のユニットテスト + 実行テスト(gcc 差分比較込み)。
