@@ -660,7 +660,63 @@ va_copy は未提供(必要時に追加。M1 の rb_funcall/rb_raise 経路で�
 
 ---
 
+## Step 24 — float / double と SysV xmm 呼び出し規約 (04452c9)
+
+**内容**: 浮動小数点定数(小数・指数・f/l 接尾辞・先頭/末尾ドット)、float/double
+型、四則・全 6 比較・整数⇔浮動小数・float⇔double 変換、単項マイナス、浮動小数点の
+条件式。ABI: xmm0-7 引数・xmm0 戻り値・可変長呼び出しの al = 使用 xmm 数・
+176 バイトレジスタ退避領域・va_arg(ap, double)・float/double グローバル初期化子。
+実装は 2 フェーズに分割して移譲(Phase A: 関数内演算、Phase B: 呼び出し境界。
+いずれも heavy-implementer)。
+
+**設計判断**:
+- **浮動小数点値もスロット規約に乗せる**: float はスロット下位 4 バイトに IEEE754
+  単精度(上位 32 bit は狭い整数と同様に不定)、double は 8 バイト全体。定数は
+  :const が整数即値としてビットパターン(`[v].pack("E"/"e").unpack1(...)`)を
+  実体化し、浮動小数点命令は xmm0/xmm1 スクラッチで movss/movsd によりスロットを
+  直接読み書きする。フレーム構造・:copy・:store は変更ゼロで浮動小数型が入った。
+- **単項マイナスは符号ビット :xor へ脱糖**: 専用命令を置かず、float 0x80000000 /
+  double 0x8000000000000000 との整数 :xor(size 8)。-0.0 と NaN の符号反転も
+  IEEE754 どおりになる。
+- **NaN 対応比較は「above 系に寄せる」**: ucomis は NaN で CF=ZF=PF=1 になるため、
+  :fgt/:fge は ucomis(a,b)+seta/setae、:flt/:fle はオペランドを反転した
+  ucomis(b,a)+seta/setae で、大小 4 種すべてが NaN→0 に揃う。:feq は
+  sete AND setnp(NaN で 0)、:fne は setne OR setp(NaN で 1)。
+- **:call の b は [vreg, kind] ペア、size は [fixed, ret] ディスクリプタ**:
+  引数のレジスタクラス(:gp/:sse4/:sse8)は型を知るジェネレータが分類し、
+  backend は左→右ウォークで edi..r9d / xmm0..7 の「次の空き」に割り当てるだけ
+  (あふれた引数はクラス問わず 8 バイトスロット内容のまま逆順 push)。
+  Step 23 の「size 非 nil = 可変長」を [固定パラメータ数, 戻り値クラス] ペアに
+  拡張し、al = 使用 xmm 数(mov al, imm8)と xmm0 戻り値回収を同じフィールドで
+  伝達する。
+- **Function.param_kinds でプロローグと :va_start を駆動**: パラメータの着信位置
+  (GP/xmm/スタック)の導出と、可変長関数の gp_offset(8×min(GP,6))・
+  fp_offset(48+16×min(SSE,8))・overflow 開始(スタック渡し named 数)の導出を
+  すべて param_kinds から行う。:va_start の b(固定パラメータ数)は残るが未使用。
+- **xmm 退避は al ガードなしの常時 8 本**: al で退避を分岐する定石に対し、
+  発行コードが実引数個数に依存しない方が決定的(N4)で分岐 1 つ分単純。
+  各 16 バイト psABI スロットの下位 8 バイトのみ movsd で保存
+  (va_arg(double) が読み戻すのはその 8 バイトだけ)。
+- **可変長部の float は :ftof で double へ昇格**(6.5.2.2p6)し :sse8 で渡す。
+  va_arg(ap, float) は promotable-type 診断(char/short と同じ扱い)。
+  va_arg(double) は fp_offset の :uload → :ult 176 → 分岐(レジスタ側 +=16 /
+  あふれ側 +=8)という Step 23 の GP 側と同型の展開。
+- **グローバル初期化子は Ruby Float の pack で畳み込み**: FloatLit・単項マイナス・
+  整数定数を IEEE754 像へ(double は pack("E")、float は pack("e") が単精度への
+  正しい丸めを行う)。浮動定数→整数グローバルは to_i(ゼロ方向切り捨て、6.3.1.4)。
+- **チェックポイント運用**: Phase A 完了時に [WIP] コミットを作り、Phase B 完了後に
+  `git reset --soft` で 1 コミットへ統合した。移譲エージェントがセッション上限で
+  中断される事故(本ステップで実際に発生)から確定済み作業を守るため。
+  「1 ステップ 1 コミット」の最終形は維持。
+
+**トレードオフ**: unsigned long ⇔ float/double 変換は未対応(64 bit 符号無しの
+往復に追加コードが要るため診断で拒否。既知の負債として ROADMAP に記載)。
+long double は double 扱い(DESIGN 3.3)、x87 は一切使わない。float のスタック渡しは
+「スロット下位 4 バイトが有効」の規約で 8 バイト push に統一。
+
+---
+
 ## 現在のテスト規模
 
-Step 23 完了時点: **770 runs / 2,443 assertions / 0 failures**(`rake test`)。
+Step 24 完了時点: **803 runs / 2,585 assertions / 0 failures**(`rake test`)。
 内訳: 字句・パーサ・型・ELF・診断・CLI のユニットテスト + 実行テスト(gcc 差分比較込み)。

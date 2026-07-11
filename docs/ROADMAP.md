@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M1 の途中、Step 23(可変長引数)まで完了**。
+現在地: **M1 の途中、Step 24(float / double と SysV xmm 呼び出し規約)まで完了**。
 
 ---
 
@@ -80,24 +80,15 @@
 | ブロックスコープの関数宣言 | 外部リンケージ未モデルで診断エラー | 実害が出た時点 |
 | `&arr[i]` 等の計算アドレス定数 | グローバル初期化子で診断エラー | 実害が出た時点 |
 | 指し先 const の書き込み検出 | `const int *p` の `*p = x` を診断しない(型に修飾を載せない簡略化) | 実害が出た時点 |
+| unsigned long ⇔ float/double 変換 | 64 bit 符号無しの往復に追加コードが要るため診断エラー | 実害が出た時点 |
 
-## 4. M1 残りの実行計画(Step 24〜)
+## 4. M1 残りの実行計画(Step 25〜)
 
 順序の方針: (1) C 適合性の逸脱を早く解消する、(2) 型システムの土台(整数型)を
 struct 系の応用(union/enum/typedef)より先に固める、(3) ruby.h が要求する機能
 (関数ポインタ・varargs・プリプロセッサ・GNU 拡張最小セット)を M1 後半に集める。
 各ステップの受け入れ基準は共通で「新機能の実行テスト(gcc 差分込み)+ 診断テスト +
 既存テスト全 green」。
-
-### Step 24 — float / double(SSE)
-- 型・リテラル・変換(整数⇔浮動小数、float⇔double)、算術・比較。
-- ABI: 引数 xmm0-7、戻り値 xmm0、varargs の al レジスタと reg_save_area の xmm 保存を完成。
-- backend: SSE2 命令(movss/movsd/addsd/ucomisd/cvtsi2sd 等)のエンコード。
-  スロット表現は「xmm から 8 バイトで store」に統一すれば既存フレームのまま。
-- float の丸め再現は Ruby 側の定数畳み込みでのみ必要(`[x].pack('f').unpack1('f')`、
-  DESIGN 6 章)。
-- **トレードオフ**: bigdecimal / json 等は double を使うので M1 に含めるが、
-  x87 80bit(long double)は double 扱いで確定(DESIGN 3.3)。
 
 ### Step 25 — struct の値渡し・値返し(R9 の中核)
 - System V AMD64 の分類アルゴリズム(MEMORY / INTEGER / SSE、8 バイト単位の分類、
