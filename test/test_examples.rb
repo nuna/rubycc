@@ -17,21 +17,34 @@ class TestExamples < Minitest::Test
 
   def test_examples_match_gcc_exit_status_and_stdout
     EXAMPLE_SOURCES.each do |path|
-      source = File.read(path)
-      assert_equal build_and_run(source, :gcc), build_and_run(source, :rubycc),
+      assert_equal build_and_run(path, :gcc), build_and_run(path, :rubycc),
                    "rubycc and gcc disagree on [exit status, stdout] for #{File.basename(path)}"
     end
   end
 
   private
 
-  # Compiles `source` with the requested compiler, links and runs it, and
-  # returns [exit_status, stdout] for a bit-for-bit comparison.
-  def build_and_run(source, compiler)
+  # Compiles the sample at `path` with the requested compiler, links and runs
+  # it, and returns [exit_status, stdout] for a bit-for-bit comparison. The
+  # sample is compiled from its own location (not a copy in a temp dir) so a
+  # quote #include resolves against examples/m1, the same base gcc uses.
+  def build_and_run(path, compiler)
     in_tmpdir do |dir|
       object_path = File.join(dir, "example.o")
-      compile_source(source, object_path, compiler)
+      compile_example(path, object_path, compiler)
       link_and_run(object_path)
+    end
+  end
+
+  def compile_example(path, object_path, compiler)
+    case compiler
+    when :rubycc
+      Rubycc::Compiler.compile_file(path, object_path)
+    when :gcc
+      stdout_and_stderr, status = Open3.capture2e("gcc", "-c", "-o", object_path, path)
+      unless status.success?
+        raise "gcc failed to compile #{path} (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
+      end
     end
   end
 end

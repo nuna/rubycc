@@ -10,6 +10,7 @@ end
 
 input = nil
 output = nil
+include_paths = []
 args = ARGV.dup
 i = 0
 while i < args.length
@@ -25,6 +26,19 @@ while i < args.length
       warn "rubycc: error: missing filename after '-o'"
       exit 1
     end
+  when "-I"
+    # A header search directory, in either the separated ("-I dir") form here
+    # or the joined ("-Idir") form below. Order is preserved so an earlier -I
+    # shadows a later one, as gcc does.
+    i += 1
+    dir = args[i]
+    if dir.nil?
+      warn "rubycc: error: missing directory after '-I'"
+      exit 1
+    end
+    include_paths << dir
+  when /\A-I./
+    include_paths << arg[2..]
   else
     if arg.start_with?("-")
       warn "rubycc: error: unrecognized option '#{arg}'"
@@ -50,7 +64,7 @@ if output.nil?
 end
 
 begin
-  Rubycc::Compiler.compile_file(input, output)
+  Rubycc::Compiler.compile_file(input, output, include_paths: include_paths)
 rescue Rubycc::CompileError => e
   warn e.message
   exit 1

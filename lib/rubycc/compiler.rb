@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "compile_error"
-require_relative "front/lexer"
+require_relative "preprocess/preprocessor"
 require_relative "front/parser"
 require_relative "ir/generator"
 require_relative "backend/x86_64"
@@ -13,8 +13,8 @@ module Rubycc
   class Compiler
     # Compiles C source into an ELF64 relocatable object, returned as an
     # ASCII-8BIT String. Raises Rubycc::CompileError on user errors.
-    def compile(source, filename:)
-      tokens = Front::Lexer.new(source, filename: filename).tokenize
+    def compile(source, filename:, include_paths: [])
+      tokens = Preprocess::Preprocessor.new.run(source, filename: filename, include_paths: include_paths)
       program = Front::Parser.new(tokens).parse
       ir_program = IR::Generator.new.generate(program)
 
@@ -183,9 +183,9 @@ module Rubycc
 
     # Convenience: read `input_path`, compile it and write the object to
     # `output_path`.
-    def self.compile_file(input_path, output_path)
+    def self.compile_file(input_path, output_path, include_paths: [])
       source = File.read(input_path)
-      binary = new.compile(source, filename: input_path)
+      binary = new.compile(source, filename: input_path, include_paths: include_paths)
       File.binwrite(output_path, binary)
       output_path
     end

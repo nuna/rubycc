@@ -37,6 +37,21 @@ module ExecutionHelper
     output_path
   end
 
+  # Preprocesses `c_source` with the system gcc ("-E -P": run the preprocessor
+  # only, and suppress the #line markers so the output is bare token text) and
+  # returns its standard output. This is the reference oracle the preprocessor's
+  # differential tests lex and compare against rubycc's own token stream.
+  def preprocess_with_gcc(c_source)
+    in_tmpdir do |dir|
+      source_path = File.join(dir, "input.c")
+      File.write(source_path, c_source)
+      stdout, stderr, status = Open3.capture3("gcc", "-E", "-P", source_path)
+      raise "gcc failed to preprocess source (exit #{status.exitstatus}):\n#{stderr}" unless status.success?
+
+      stdout
+    end
+  end
+
   # Links `object_path` into an executable, runs it, and returns
   # [exit_status, stdout] so callers can assert on either.
   def link_and_run(object_path)

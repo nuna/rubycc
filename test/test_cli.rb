@@ -83,4 +83,40 @@ class TestCli < Minitest::Test
     assert_equal 1, status.exitstatus
     assert_match(/unrecognized option/, stderr)
   end
+
+  def test_include_path_option_resolves_a_header
+    Dir.mktmpdir("rubycc-cli") do |dir|
+      headers = File.join(dir, "include")
+      Dir.mkdir(headers)
+      File.write(File.join(headers, "answer.h"), "#define ANSWER 42\n")
+      File.write(File.join(dir, "foo.c"), "#include <answer.h>\nint main(void) { return ANSWER; }\n")
+
+      # The joined "-Idir" form; the header only resolves along the search path.
+      _stdout, stderr, status = Open3.capture3(
+        "ruby", "-I#{lib_dir}", EXE_PATH, "-c", "foo.c", "-o", "foo.o", "-I#{headers}",
+        chdir: dir
+      )
+
+      assert_equal 0, status.exitstatus, "stderr: #{stderr}"
+      assert File.exist?(File.join(dir, "foo.o")), "expected foo.o to be created"
+    end
+  end
+
+  def test_missing_include_path_fails_without_the_option
+    Dir.mktmpdir("rubycc-cli") do |dir|
+      headers = File.join(dir, "include")
+      Dir.mkdir(headers)
+      File.write(File.join(headers, "answer.h"), "#define ANSWER 42\n")
+      File.write(File.join(dir, "foo.c"), "#include <answer.h>\nint main(void) { return ANSWER; }\n")
+
+      # Without -I the angled header is unreachable, so compilation fails.
+      _stdout, stderr, status = Open3.capture3(
+        "ruby", "-I#{lib_dir}", EXE_PATH, "-c", "foo.c", "-o", "foo.o",
+        chdir: dir
+      )
+
+      assert_equal 1, status.exitstatus
+      assert_match(%r{answer\.h: No such file or directory}, stderr)
+    end
+  end
 end

@@ -2453,6 +2453,67 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
+  # A backslash-newline in the middle of an expression is spliced away before
+  # tokenizing, so rubycc must agree with gcc that the operands rejoin. The "+"
+  # and its operand land on separate physical lines.
+  def test_line_continuation_within_expression_matches_gcc
+    source = "int main(void) {\n  int total = 40 +\\\n2;\n  return total;\n}\n"
+    assert_equal run_source(source, compiler: :gcc),
+                 run_source(source, compiler: :rubycc)
+  end
+
+  # A backslash-newline splitting an identifier fuses it back into one name, so
+  # the split declaration and its later use still resolve to the same variable.
+  def test_line_continuation_within_identifier_matches_gcc
+    source = "int main(void) {\n  int resu\\\nlt = 6 * 7;\n  return result;\n}\n"
+    assert_equal run_source(source, compiler: :gcc),
+                 run_source(source, compiler: :rubycc)
+  end
+
+  # Object-like macros are pure text substitution, so gcc is the oracle: each
+  # program folds its macro use into an exit code and both compilers must agree.
+  MACRO_DIFFERENTIAL_SOURCES = [
+    # A plain object macro standing in for a return value.
+    "#define ANSWER 42\nint main(void) { return ANSWER; }\n",
+    # A parenthesized expression macro, kept intact by the surrounding parens.
+    "#define TWICE (2 * 3)\nint main(void) { return TWICE * 7; }\n",
+    # A macro defined in terms of other macros, expanded by rescanning.
+    "#define A 6\n#define B 7\n#define PRODUCT (A * B)\nint main(void) { return PRODUCT; }\n"
+  ].freeze
+
+  def test_object_macros_match_gcc_exit_codes
+    MACRO_DIFFERENTIAL_SOURCES.each do |source|
+      assert_equal run_source(source, compiler: :gcc),
+                   run_source(source, compiler: :rubycc),
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
+  # Conditional inclusion is again pure text selection, so gcc is the oracle:
+  # each program compiles to whichever return value its #if chain selects, and
+  # both compilers must agree.
+  CONDITIONAL_DIFFERENTIAL_SOURCES = [
+    # A defined macro drives an #if/#else that picks the return value.
+    "#define WIDE 1\n" \
+    "#if WIDE\nint main(void) { return 42; }\n#else\nint main(void) { return 7; }\n#endif\n",
+    # An #elif chain with a computed condition and a #undef in between.
+    "#define LEVEL 2\n#undef LEVEL\n#define LEVEL 3\n" \
+    "int main(void) {\n" \
+    "#if LEVEL == 1\n  return 1;\n#elif LEVEL == 3\n  return 42;\n#else\n  return 9;\n#endif\n}\n",
+    # #ifndef guarding a fallback default, plus defined() in the expression.
+    "#define BASE 40\n" \
+    "int main(void) {\n#ifndef BASE\n  return 0;\n#endif\n" \
+    "#if defined(BASE) && BASE + 2 == 42\n  return 42;\n#else\n  return 1;\n#endif\n}\n"
+  ].freeze
+
+  def test_conditional_compilation_matches_gcc_exit_codes
+    CONDITIONAL_DIFFERENTIAL_SOURCES.each do |source|
+      assert_equal run_source(source, compiler: :gcc),
+                   run_source(source, compiler: :rubycc),
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
   private
 
   def run_source(source, compiler:)
