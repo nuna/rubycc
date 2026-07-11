@@ -716,7 +716,75 @@ long double は double 扱い(DESIGN 3.3)、x87 は一切使わない。float �
 
 ---
 
+## Step 25 — struct の値渡し・値返し(SysV eightbyte 分類)(54389f9)
+
+**内容**: struct/union を関数の引数・戻り値として値で渡す。System V AMD64 psABI
+3.2.3 の eightbyte 分類(INTEGER/SSE/MEMORY)、引数の all-or-nothing 配置、
+16 バイト超の MEMORY 戻り値の隠れ結果ポインタ、レジスタ戻り(rax/rdx・xmm0/xmm1)。
+実装は 3 フェーズに分割(Phase A: ジェネレータ側配置決定(:mem kind)への契約移行、
+Phase B: struct 本体(heavy-implementer)、Phase C: gcc ↔ rubycc クロスリンク
+ABI ハーネス(implementer))。
+
+**設計判断**:
+- **バックエンドは struct を知らないまま**: 全機構を eightbyte 粒度の既存命令
+  (:memcpy・size 8 の :load/:store・:object_addr)への降ろしで実現。struct 引数は
+  スクラッチ stack object へ :memcpy してから 8 バイトずつ :load(stack object は
+  16 バイト整列・切り上げ確保なので、サイズが 8 の倍数でない struct でも末尾
+  eightbyte の 8 バイト読みが領域内に収まる — 端数サイズ対策を構造的に解決)。
+- **配置決定をジェネレータへ移動(:mem kind の導入、Phase A)**: psABI の
+  all-or-nothing 規則は「引数全体の eightbyte 列が両クラスのレジスタ残数に収まるか」
+  を要し、それを知るのは型を持つジェネレータだけ。place_argument_kinds が呼び出しと
+  パラメータの両方で同じ配置シミュレーションを走らせ、バックエンドは指定された
+  kind(:gp/:sse4/:sse8/:mem)に従うだけ(超過は契約違反 raise)。
+- **分類は psABI 仕様から直接実装**: classify_eightbytes が member offset で再帰
+  (ネスト struct/union、配列は要素ごと)し、eightbyte ごとに INTEGER 優先 /
+  NO_CLASS→SSE でマージ。SSE eightbyte は常に :sse8(movsd 1 本で packed float
+  2 個も運べる)。本サブセットは自然整列のみなのでスカラが eightbyte 境界を
+  跨ぐことはない。
+- **MEMORY 戻りは「隠れポインタ = 先頭の :gp 引数」**: caller はスクラッチバッファの
+  アドレスを [addr, :gp] ペアとして引数列の先頭に挿入(配置シミュレーションが
+  rdi を消費)し、callee は psABI どおりそのポインタを rax で返すので、dst の
+  回収は通常のスカラ呼び出しと同一 — バックエンド変更ゼロ。callee 側は隠れ
+  ポインタを合成第 0 パラメータとして受け、`return expr;` は隠れポインタへの
+  :memcpy + そのポインタの size nil :ret。
+- **レジスタ戻りは :call の ret = [buffer_vreg, classes] / :ret の size = クラス配列**:
+  callee はスクラッチへ :memcpy 後、バックエンドが [rcx+8i] から INTEGER =
+  rax→rdx / SSE = xmm0→xmm1 の順に収集して leave/ret。caller 側は call 後に同じ
+  ウォークで戻りレジスタをバッファへ散布。バッファアドレスは rcx 経由
+  (戻りレジスタと重ならない)。dst = nil で、式の値はバッファアドレス。
+- **param_count/param_kinds を「ABI スロット列」に一般化**: スカラ 1 スロット、
+  struct は分類された eightbyte 数(MEMORY は ceil(size/8) 個の :mem)、MEMORY 戻り
+  関数は隠れポインタが先頭スロット。スロットが vreg 0..param_count-1 を占め、
+  struct パラメータの再組み立て(スロット → stack object への :store)は
+  ジェネレータがプロローグ IR で行う。:va_start の gp_offset/fp_offset/overflow は
+  param_kinds の count(:gp)/count(:sse*)/count(:mem) から導出。
+- **クロスリンク差分ハーネス(Phase C、R9 / DESIGN 6 章テスト 3 の先行版)**:
+  固定シードの乱数で 40 個の struct レイアウト(メンバ 1〜4、char〜double・
+  小配列・ネスト struct、先行 int 0〜5 個)を生成し、caller と callee を
+  別コンパイラでビルドして 1 実行ファイルにリンク。gcc×gcc をオラクルに、
+  gcc caller × rubycc callee / rubycc caller × gcc callee の stdout(全メンバの
+  printf)+ 終了コードを突き合わせる。自己無撞着なだけの ABI 実装
+  (caller/callee とも rubycc なら整合して見える)を排除する。
+- **ハーネスが既存バグを即座に発見**: アドレス経由の代入 6 経路(添字・メンバ・
+  ポインタの単純/複合代入)が convert_for_assignment を通さず store していた
+  (int→long の符号拡張欠落、int→float/double の itof 欠落、複合代入の
+  double→float 縮小欠落)。変数代入経路と同じ変換を入れて修正し、回帰テスト
+  STORE_CONVERSION_DIFFERENTIAL_SOURCES を追加。ランダムレイアウト×クロスリンクの
+  網羅性が、手書きテストの「型が揃った代入ばかり書く」バイアスを突破した実例。
+- **チェックポイント運用の継続**: Phase A/B をそれぞれ [WIP] コミットにし、
+  Phase C 完了後に `git reset --soft` で 1 コミットへ統合(Step 24 で確立した運用。
+  本ステップでも移譲エージェントのセッション上限中断が 2 回発生し、有効だった)。
+
+**トレードオフ**: 不完全型 struct の param/return は宣言時点で診断エラー
+(C は未呼び出しのプロトタイプなら許すが、分類にレイアウトが要るため簡略化)。
+可変長部への struct 渡しと va_arg(struct) は未対応のまま(既知の負債)。
+末尾到達 UB の struct 戻りはクラッシュ防止形(MEMORY = 隠れポインタを返す /
+レジスタ = rax に 0)で処理。
+
+---
+
 ## 現在のテスト規模
 
-Step 24 完了時点: **803 runs / 2,585 assertions / 0 failures**(`rake test`)。
-内訳: 字句・パーサ・型・ELF・診断・CLI のユニットテスト + 実行テスト(gcc 差分比較込み)。
+Step 25 完了時点: **807 runs / 2,619 assertions / 0 failures**(`rake test`)。
+内訳: 字句・パーサ・型・ELF・診断・CLI のユニットテスト + 実行テスト(gcc 差分比較・
+クロスリンク ABI 差分込み)。
