@@ -93,6 +93,13 @@ module Rubycc
       # arguments passes the first six here; any beyond that go on the stack.
       ARG_REGISTERS = [EDI, ESI, EDX, ECX, R8D, R9D].freeze
 
+      # The registers an aggregate result comes back in, in eightbyte order: an
+      # INTEGER eightbyte fills rax then rdx, an SSE eightbyte fills xmm0 then
+      # xmm1 (psABI 3.2.3). A mixed struct uses one from each list in the order
+      # its eightbytes are classified.
+      GP_RETURN_REGISTERS = [EAX, EDX].freeze
+      SSE_RETURN_REGISTERS = [XMM0, XMM1].freeze
+
       # IR comparison op -> setcc opcode (second byte of the 0F 9x encoding).
       # The result is materialized into eax as an int 0/1 by movzx. The signed
       # forms (setl/setle/setg/setge) test the sign/overflow flags; the unsigned
@@ -178,28 +185,36 @@ module Rubycc
 
       # Brings each incoming argument into its parameter slot (the first
       # `param_count` vregs, one per param_kinds entry) so it reads back like any
-      # other vreg. An integer/pointer (:gp) arrives in the next integer argument
-      # register (spilled directly) and a float/double (:sse4/:sse8) in the next
-      # xmm (spilled with movss/movsd); whatever class overflows its registers was
-      # pushed by the caller and now sits above the return address at
-      # [rbp + 16 + 8*k] (k the stack-passed running index), copied down through
-      # rax as a whole eightbyte — the low bits carry either class.
+      # other vreg. The generator has already fixed where each parameter arrives:
+      # a :gp in the next integer argument register (spilled directly), an
+      # :sse4/:sse8 in the next xmm (spilled with movss/movsd), and a :mem on the
+      # stack — pushed by the caller and now sitting above the return address at
+      # [rbp + 16 + 8*k] (k the :mem running index), copied down through rax as a
+      # whole eightbyte. A kind that would overrun its register file is a
+      # generator contract violation and raises.
       def spill_parameters(param_kinds)
         next_gp = 0
         next_sse = 0
         next_stack = 0
         param_kinds.each_with_index do |kind, i|
-          if kind == :gp && next_gp < ARG_REGISTERS.size
+          case kind
+          when :gp
+            raise "parameter :gp overruns the integer registers" if next_gp >= ARG_REGISTERS.size
+
             store_reg(ARG_REGISTERS[next_gp], i)
             next_gp += 1
-          elsif kind != :gp && next_sse < 8
+          when :sse4, :sse8
+            raise "parameter #{kind} overruns the xmm registers" if next_sse >= 8
+
             store_xmm(next_sse, i, kind == :sse8 ? 8 : 4)
             next_sse += 1
-          else
+          when :mem
             emit(0x48, 0x8B)                # mov rax, [rbp + disp]
             emit_bytes(modrm_rbp_disp(EAX, 16 + 8 * next_stack))
             store_reg(EAX, i)
             next_stack += 1
+          else
+            raise "unknown parameter kind #{kind.inspect}"
           end
         end
       end
@@ -371,13 +386,57 @@ module Rubycc
         store_call_result(dst, ret)
       end
 
-      # Reads a call's result into its destination slot: a float/double comes back
-      # in xmm0 (movss/movsd, `ret` being :sse4/:sse8), every other value in rax.
+      # Reads a call's result into its destination. An in-register struct result
+      # (`ret` a [buffer_vreg, classes] array) is scattered into the caller's
+      # scratch buffer (dst is unused, the value being that buffer's address); a
+      # float/double comes back in xmm0 (movss/movsd, `ret` being :sse4/:sse8);
+      # every other value — including a MEMORY struct's hidden pointer — in rax.
       def store_call_result(dst, ret)
-        if ret
+        if ret.is_a?(Array)
+          store_struct_call_result(ret)
+        elsif ret
           store_xmm(XMM0, dst, ret == :sse8 ? 8 : 4)
         else
           store_reg(EAX, dst)
+        end
+      end
+
+      # Scatters an in-register struct result into the caller's scratch buffer.
+      # `ret` is [buffer_vreg, classes]; buffer_vreg's slot (kept live across the
+      # call) holds the buffer address, loaded into rcx — a register the return
+      # values (rax/rdx, xmm0/xmm1) never occupy, so loading it clobbers none of
+      # them. Each eightbyte is stored at buffer + 8*i from its return register:
+      # INTEGER eightbytes from rax then rdx, SSE eightbytes from xmm0 then xmm1,
+      # taken in eightbyte order.
+      def store_struct_call_result(ret)
+        buffer_vreg, classes = ret
+        load_reg(ECX, buffer_vreg)          # rcx = buffer address
+        each_return_eightbyte(classes) do |i, reg, sse|
+          if sse
+            emit(0xF2, 0x0F, 0x11)          # movsd [rcx + disp8], xmm
+            emit(0x40 | (reg << 3) | 0x01, 8 * i)
+          else
+            emit(0x48, 0x89)                # mov [rcx + disp8], r64
+            emit(0x40 | (reg << 3) | 0x01, 8 * i)
+          end
+        end
+      end
+
+      # Yields each result eightbyte's [index, register, sse?], handing out the
+      # INTEGER (rax, rdx) and SSE (xmm0, xmm1) return registers in classification
+      # order. Shared by the caller-side scatter (#store_struct_call_result) and
+      # the callee-side gather (#emit_struct_ret).
+      def each_return_eightbyte(classes)
+        next_gp = 0
+        next_sse = 0
+        classes.each_with_index do |cls, i|
+          if cls == :gp
+            yield i, GP_RETURN_REGISTERS[next_gp], false
+            next_gp += 1
+          else
+            yield i, SSE_RETURN_REGISTERS[next_sse], true
+            next_sse += 1
+          end
         end
       end
 
@@ -395,15 +454,15 @@ module Rubycc
         emit(0xB0, sse_count)               # mov al, imm8
       end
 
-      # Places a call's arguments (each a [vreg, kind] pair) for the System V
-      # AMD64 convention and returns [reclaim_bytes, sse_count]: the bytes the
-      # caller must drop from the stack afterwards, and the number of xmm
-      # registers used (for a variadic al). Walking left to right, a :gp argument
-      # takes the next of edi..r9d and a float/double the next of xmm0..7; once a
-      # class's registers are exhausted its further arguments spill to the stack.
-      # The stacked arguments are pushed in reverse so the first ends up at the
-      # lowest address ([rsp] at the call), each a whole eightbyte (the slot's low
-      # bits carry either class). When their count is odd an extra 8-byte pad is
+      # Places a call's arguments (each a [vreg, kind] pair the generator has
+      # already assigned a class) for the System V AMD64 convention and returns
+      # [reclaim_bytes, sse_count]: the bytes the caller must drop from the stack
+      # afterwards, and the number of xmm registers used (for a variadic al). A
+      # :gp argument goes to its integer register, an :sse4/:sse8 to its xmm and a
+      # :mem to the stack (see #classify_call_args). The :mem arguments are pushed
+      # in reverse so the first ends up at the lowest address ([rsp] at the call),
+      # each a whole eightbyte (the slot's low bits carry its value). When their
+      # count is odd an extra 8-byte pad is
       # pushed first so rsp stays 16-aligned at the call, as the ABI requires (the
       # prologue already leaves it 16-aligned). All arguments live in rbp-relative
       # slots, so the rsp changes never disturb a not-yet-loaded one.
@@ -420,11 +479,15 @@ module Rubycc
         [stack_args.size * 8 + pad, sse_args.size]
       end
 
-      # Routes each [vreg, kind] argument to a register class, returning
+      # Routes each [vreg, kind] argument to its register class, returning
       # [gp_args, sse_args, stack_args]: gp_args are [reg, vreg] pairs bound to
       # edi..r9d, sse_args are [xmm, vreg, width] triples bound to xmm0..7, and
-      # stack_args are the vregs (in left-to-right order) that overflowed either
-      # class onto the stack.
+      # stack_args are the vregs (in left-to-right order) passed on the stack. The
+      # generator has already fixed the placement: a :gp takes the next integer
+      # register, an :sse4/:sse8 the next xmm and a :mem the next stack eightbyte,
+      # each class handed out strictly in order. A kind that would overrun its
+      # register file (say a seventh :gp) is a generator contract violation, not a
+      # user error, so it raises rather than silently spilling.
       def classify_call_args(args)
         next_gp = 0
         next_sse = 0
@@ -432,14 +495,21 @@ module Rubycc
         sse_args = []
         stack_args = []
         args.each do |vreg, kind|
-          if kind == :gp && next_gp < ARG_REGISTERS.size
+          case kind
+          when :gp
+            raise "call argument :gp overruns the integer registers" if next_gp >= ARG_REGISTERS.size
+
             gp_args << [ARG_REGISTERS[next_gp], vreg]
             next_gp += 1
-          elsif kind != :gp && next_sse < 8
+          when :sse4, :sse8
+            raise "call argument #{kind} overruns the xmm registers" if next_sse >= 8
+
             sse_args << [next_sse, vreg, kind == :sse8 ? 8 : 4]
             next_sse += 1
-          else
+          when :mem
             stack_args << vreg
+          else
+            raise "unknown call argument kind #{kind.inspect}"
           end
         end
         [gp_args, sse_args, stack_args]
@@ -461,13 +531,17 @@ module Rubycc
         emit_bytes([bytes].pack("L<"))
       end
 
-      # :ret — loads the return value into its ABI register, then "leave; ret".
-      # `size` is nil for an integer/pointer return (rax, via load_reg) or 4/8 for
-      # a floating one, which movss/movsd loads from the slot into xmm0. A void
-      # return (a nil operand) loads nothing.
+      # :ret — loads the return value into its ABI register(s), then "leave; ret".
+      # `size` is nil for an integer/pointer return (rax, via load_reg), 4/8 for a
+      # floating one (movss/movsd into xmm0), or a class array for an in-register
+      # struct return, whose eightbytes are gathered from the buffer `value_vreg`
+      # points at into the return registers. A void return (a nil operand) loads
+      # nothing.
       def emit_ret(value_vreg, size)
         if value_vreg.nil?
           nil
+        elsif size.is_a?(Array)
+          emit_struct_ret(value_vreg, size)
         elsif size
           load_xmm(XMM0, value_vreg, size)
         else
@@ -475,6 +549,24 @@ module Rubycc
         end
         emit(0xC9)                          # leave
         emit(0xC3)                          # ret
+      end
+
+      # Gathers an in-register struct return into its result registers. `buffer_vreg`
+      # holds the address of the value (a stack object the generator filled), loaded
+      # into rcx; each eightbyte at buffer + 8*i is loaded into its return register —
+      # INTEGER eightbytes into rax then rdx, SSE into xmm0 then xmm1 — leaving them
+      # set for "leave; ret". rcx is loaded first and never itself a return register.
+      def emit_struct_ret(buffer_vreg, classes)
+        load_reg(ECX, buffer_vreg)          # rcx = buffer address
+        each_return_eightbyte(classes) do |i, reg, sse|
+          if sse
+            emit(0xF2, 0x0F, 0x10)          # movsd xmm, [rcx + disp8]
+            emit(0x40 | (reg << 3) | 0x01, 8 * i)
+          else
+            emit(0x48, 0x8B)                # mov r64, [rcx + disp8]
+            emit(0x40 | (reg << 3) | 0x01, 8 * i)
+          end
+        end
       end
 
       # :func_addr — lea rax, [rip + disp32] takes the address of the named
@@ -642,29 +734,31 @@ module Rubycc
       end
 
       # :va_start — initializes the four System V va_list fields at the address
-      # in `ap_vreg`. The named parameters' register classes (from @param_kinds)
-      # decide how far the GP and SSE registers were already consumed: `gp_named`
-      # of the six integer registers and `sse_named` of the eight xmm ones, with
-      # any beyond those having spilled to the stack. rax holds the __va_list_tag
-      # address and r10 is a second scratch for the two pointer fields:
-      #   [rax+0]  gp_offset = 8 * min(gp_named, 6)      (GP registers consumed)
-      #   [rax+4]  fp_offset = 48 + 16 * min(sse_named, 8) (past the saved GP
-      #                                            block, then the xmm registers
-      #                                            the named parameters consumed)
+      # in `ap_vreg`. The named parameters' fixed classes (from @param_kinds, the
+      # generator having already resolved register-vs-stack placement) count how
+      # far the GP and SSE registers were consumed: `gp_named` of the six integer
+      # registers arrived as :gp and `sse_named` of the eight xmm ones as
+      # :sse4/:sse8, while `stack_named` (the :mem parameters) spilled to the
+      # stack. rax holds the __va_list_tag address and r10 is a second scratch for
+      # the two pointer fields:
+      #   [rax+0]  gp_offset = 8 * gp_named             (GP registers consumed)
+      #   [rax+4]  fp_offset = 48 + 16 * sse_named      (past the saved GP block,
+      #                                            then the xmm registers the named
+      #                                            parameters consumed)
       #   [rax+8]  overflow_arg_area = rbp + 16 + 8*stack_named (the first stacked
       #                                            variable argument, past any
       #                                            named parameter that spilled)
       #   [rax+16] reg_save_area = rbp + @reg_save_area_offset
       def emit_va_start(ap_vreg, _named)
         gp_named = @param_kinds.count(:gp)
-        sse_named = @param_kinds.size - gp_named
-        stack_named = [gp_named - ARG_REGISTERS.size, 0].max + [sse_named - 8, 0].max
+        sse_named = @param_kinds.count(:sse4) + @param_kinds.count(:sse8)
+        stack_named = @param_kinds.count(:mem)
 
         load_reg(EAX, ap_vreg)              # rax = &__va_list_tag
         emit(0xC7, 0x40, 0x00)              # mov dword [rax+0], imm32
-        emit_bytes([8 * [gp_named, 6].min].pack("l<"))
+        emit_bytes([8 * gp_named].pack("l<"))
         emit(0xC7, 0x40, 0x04)              # mov dword [rax+4], imm32
-        emit_bytes([48 + 16 * [sse_named, 8].min].pack("l<"))
+        emit_bytes([48 + 16 * sse_named].pack("l<"))
         # overflow_arg_area
         emit(0x4C, 0x8D)                    # REX.WR lea r10, [rbp + disp]
         emit_bytes(modrm_rbp_disp(R10 & 7, 16 + 8 * stack_named))

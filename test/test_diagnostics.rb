@@ -719,18 +719,20 @@ class TestDiagnostics < Minitest::Test
     assert_match(/request for member 'x' in something not a structure/, error.description)
   end
 
-  def test_struct_parameter_is_rejected
-    source = "struct s { int x; }; int f(struct s v) { return v.x; } " \
+  def test_incomplete_struct_parameter_is_rejected
+    # A struct passed by value needs a known layout for its eightbyte
+    # classification; an incomplete (never-defined) tag is rejected up front.
+    source = "struct s; int f(struct s v); " \
              "int main(void) { return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/struct parameters are not supported yet/, error.description)
+    assert_match(/parameter has incomplete type/, error.description)
   end
 
-  def test_struct_return_value_is_rejected
-    source = "struct s { int x; }; struct s f(void) { struct s v; return v; } " \
+  def test_incomplete_struct_return_type_is_rejected
+    source = "struct s; struct s f(void); " \
              "int main(void) { return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/struct return values are not supported yet/, error.description)
+    assert_match(/return type is an incomplete type/, error.description)
   end
 
   def test_arithmetic_on_struct_is_rejected

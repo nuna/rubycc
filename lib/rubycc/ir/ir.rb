@@ -70,33 +70,61 @@ module Rubycc
     #                              (the value goes in rax/eax) or 4/8 for a
     #                              floating one, which the backend loads from a's
     #                              slot into xmm0 with movss/movsd, the System V
-    #                              register a float/double result is returned in
+    #                              register a float/double result is returned in.
+    #                              For an in-register struct return `size` is
+    #                              instead an eightbyte-class array (:gp/:sse8 per
+    #                              eightbyte): a is the address of the struct's
+    #                              buffer, and the backend gathers each eightbyte
+    #                              into its return register (INTEGER eightbytes
+    #                              into rax then rdx, SSE into xmm0 then xmm1). A
+    #                              MEMORY-classified struct is not returned this
+    #                              way — its callee copies the result through the
+    #                              hidden pointer parameter and returns that
+    #                              pointer in rax (a plain size-nil :ret)
     #   :label        a = label id (a jump target; emits no code itself)
     #   :jump         a = label id (unconditional branch)
     #   :jump_if_zero a = condition vreg, b = label id (branch when a == 0)
     #   :call   dst <- f(args)  a = callee name (String),
     #                           b = array of [arg_vreg, kind] pairs (left to
-    #                           right). `kind` classifies each argument for the
-    #                           System V AMD64 convention: :gp (integer/pointer)
-    #                           takes the next free integer register
-    #                           (edi,esi,edx,ecx,r8d,r9d), :sse4 (float) / :sse8
-    #                           (double) the next free xmm (xmm0..7), loaded from
-    #                           the slot with movss/movsd; whatever class overflows
-    #                           its registers spills to the stack (pushed in
-    #                           reverse, an eightbyte each, the slot's low bits
-    #                           carrying either class). `size` is nil, or a
+    #                           right). `kind` gives each argument's System V
+    #                           AMD64 placement, which the generator has already
+    #                           fixed over the whole argument list (so a Phase B
+    #                           struct can apply the all-or-nothing overflow rule
+    #                           where every argument's type is known): :gp takes
+    #                           the next integer register (edi,esi,edx,ecx,r8d,r9d),
+    #                           :sse4 (float) / :sse8 (double) the next xmm
+    #                           (xmm0..7, loaded from the slot with movss/movsd),
+    #                           and :mem a stack eightbyte. The backend follows the
+    #                           kind verbatim — it assigns registers in order and
+    #                           pushes the :mem arguments in reverse so the first
+    #                           lands at the lowest address (an eightbyte each, the
+    #                           slot's low bits carrying its value). A by-value
+    #                           struct argument fans out into one [vreg, kind] pair
+    #                           per eightbyte (its System V class :gp/:sse8, or :mem
+    #                           for every eightbyte of a MEMORY-classified struct),
+    #                           all placed together so the whole argument stays in
+    #                           registers or spills as a unit; a MEMORY-returning
+    #                           call also prepends a hidden [vreg, :gp] result
+    #                           pointer as the first argument. `size` is nil, or a
     #                           [fixed, ret] pair when either half is non-nil:
     #                           `fixed` is the callee's fixed parameter count for a
     #                           variadic call (else nil), which makes the backend
     #                           set al to the count of xmm registers it used before
     #                           the call, as the ABI requires; `ret` is :sse4/:sse8
     #                           when the result is a float/double (loaded from xmm0
-    #                           with movss/movsd into dst's slot), else nil (the
-    #                           result comes back in rax as usual)
+    #                           with movss/movsd into dst's slot), a
+    #                           [buffer_vreg, classes] pair when the result is a
+    #                           struct returned in registers (dst is nil and the
+    #                           backend scatters each eightbyte from its return
+    #                           register — rax/rdx for INTEGER, xmm0/xmm1 for SSE —
+    #                           into the buffer buffer_vreg points at), else nil
+    #                           (the result comes back in rax as usual, which for a
+    #                           MEMORY struct is the returned hidden pointer)
     #   :call_indirect dst <- (*a)(args)  a = a vreg holding the function's
     #                           address (a function pointer value), b = the
-    #                           [arg_vreg, kind] pairs, passed exactly as for
-    #                           :call; `size` carries the same [fixed, ret] pair.
+    #                           [arg_vreg, kind] pairs (the same generator-fixed
+    #                           :gp/:sse4/:sse8/:mem placement as :call); `size`
+    #                           carries the same [fixed, ret] pair.
     #                           The backend calls through a scratch register
     #   :func_addr dst <- &func(a)  dst gets the address of the function named a
     #                           (a String symbol), the value a function
@@ -168,15 +196,21 @@ module Rubycc
 
     # A function in IR form: a name, a flat list of instructions and the number
     # of virtual registers used (so the backend can size its stack frame).
-    # `param_count` is the number of parameters; by convention they occupy the
-    # first `param_count` virtual registers (0..param_count-1), so the backend
-    # can spill the incoming argument registers into their slots.
-    # `param_kinds` is an array of length `param_count` classifying each
-    # parameter for the System V AMD64 convention (:gp integer/pointer, :sse4
-    # float, :sse8 double), in declaration order, so the prologue knows whether
-    # each parameter arrives in an integer register, an xmm register, or the
-    # stack overflow area; a variadic function also derives its gp_offset /
-    # fp_offset / overflow start for :va_start from these counts.
+    # `param_count` is the number of System V AMD64 argument slots (eightbytes),
+    # not the number of C parameters: a scalar parameter is one slot, a by-value
+    # struct parameter its one-or-more eightbyte slots, and a MEMORY-returning
+    # function's hidden result pointer an extra leading slot. Those slots occupy
+    # the first `param_count` virtual registers (0..param_count-1) in that order,
+    # so the backend can spill the incoming argument registers into them; the
+    # generator then reassembles a struct parameter's slots into a stack object.
+    # `param_kinds` is an array of length `param_count` giving each slot's System V
+    # AMD64 arrival, in that flattened order, which the generator has fixed by the
+    # same placement simulation a call's arguments use: :gp (integer register),
+    # :sse4 (float xmm), :sse8 (double xmm — also each eightbyte of a struct
+    # arriving in a vector register) or :mem (the stack overflow area). The
+    # prologue spills each slot straight from that location, and a variadic
+    # function derives its gp_offset / fp_offset / overflow start for :va_start
+    # from the counts of each kind.
     # `stack_objects` is an array indexed by object id whose entries are the
     # byte sizes of aggregate stack objects (arrays); the backend lays these
     # out below the virtual-register slots and resolves :object_addr against

@@ -1223,6 +1223,108 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
+  # Struct arguments and results passed by value under the System V AMD64
+  # classification (Step 25 Phase B). Each source hands a whole struct across a
+  # call — in registers when it fits its one or two eightbytes, or through a
+  # hidden pointer when it is MEMORY-classified — and folds the result into an
+  # exit code, so gcc's own eightbyte classification is the oracle bit-for-bit.
+  STRUCT_ABI_DIFFERENTIAL_SOURCES = [
+    # Two ints share one INTEGER eightbyte: a single-register argument and return.
+    "struct P { int x; int y; }; struct P mk(int a, int b) { struct P p; p.x = a; p.y = b; return p; } " \
+    "int main(void) { struct P p = mk(40, 2); return p.x + p.y; }",
+    # Four ints are 16 bytes, two INTEGER eightbytes ([:gp, :gp]).
+    "struct Q { int a; int b; int c; int d; }; struct Q id(struct Q q) { return q; } " \
+    "int main(void) { struct Q q; q.a = 1; q.b = 2; q.c = 3; q.d = 4; struct Q r = id(q); " \
+    "return r.a + r.b + r.c + r.d + 32; }",
+    # Two doubles are two SSE eightbytes ([:sse8, :sse8]).
+    "struct D { double a; double b; }; struct D id(struct D d) { return d; } " \
+    "int main(void) { struct D d; d.a = 1.5; d.b = 2.5; struct D r = id(d); return (int)(r.a + r.b) + 38; }",
+    # Two floats pack into one SSE eightbyte ([:sse8]): a single movsd carries both.
+    "struct F { float a; float b; }; struct F id(struct F f) { return f; } " \
+    "int main(void) { struct F f; f.a = 1.5f; f.b = 2.5f; struct F r = id(f); return (int)(r.a + r.b) + 38; }",
+    # Four floats are 16 bytes, two packed SSE eightbytes ([:sse8, :sse8]).
+    "struct F4 { float a; float b; float c; float d; }; struct F4 id(struct F4 f) { return f; } " \
+    "int main(void) { struct F4 f; f.a = 1.0f; f.b = 2.0f; f.c = 3.0f; f.d = 4.0f; struct F4 r = id(f); " \
+    "return (int)(r.a + r.b + r.c + r.d) + 32; }",
+    # A mixed { int; double; }: the int and the double fall in separate eightbytes
+    # ([:gp, :sse8]), so the result rides one integer register and one xmm.
+    "struct M { int i; double d; }; struct M id(struct M m) { return m; } " \
+    "int main(void) { struct M m; m.i = 10; m.d = 2.5; struct M r = id(m); return r.i + (int)r.d + 30; }",
+    # A mixed { double; long; } is the opposite order ([:sse8, :gp]).
+    "struct N { double d; long l; }; struct N id(struct N n) { return n; } " \
+    "int main(void) { struct N n; n.d = 2.5; n.l = 7; struct N r = id(n); return (int)r.d + (int)r.l + 33; }",
+    # 24 bytes exceeds two eightbytes: a MEMORY argument and MEMORY return, both
+    # through a hidden result pointer.
+    "struct B { long a; long b; long c; }; struct B add(struct B u, struct B v) { struct B r; " \
+    "r.a = u.a + v.a; r.b = u.b + v.b; r.c = u.c + v.c; return r; } " \
+    "int main(void) { struct B u; u.a = 1; u.b = 2; u.c = 3; struct B v; v.a = 10; v.b = 20; v.c = 30; " \
+    "struct B w = add(u, v); return (int)(w.a + w.b + w.c); }",
+    # Odd-sized char structs (1/2/3/4 bytes): a fraction of an eightbyte, copied
+    # through a scratch buffer so the 8-byte eightbyte load never reads past them.
+    "struct C1 { char a; }; struct C1 id(struct C1 c) { return c; } " \
+    "int main(void) { struct C1 c; c.a = 42; struct C1 r = id(c); return r.a; }",
+    "struct C2 { char a; char b; }; struct C2 id(struct C2 c) { return c; } " \
+    "int main(void) { struct C2 c; c.a = 40; c.b = 2; struct C2 r = id(c); return r.a + r.b; }",
+    "struct C3 { char a; char b; char c; }; struct C3 id(struct C3 c) { return c; } " \
+    "int main(void) { struct C3 c; c.a = 10; c.b = 14; c.c = 18; struct C3 r = id(c); return r.a + r.b + r.c; }",
+    "struct C4 { char a; char b; char c; char d; }; struct C4 id(struct C4 c) { return c; } " \
+    "int main(void) { struct C4 c; c.a = 10; c.b = 14; c.c = 8; c.d = 10; struct C4 r = id(c); " \
+    "return r.a + r.b + r.c + r.d; }",
+    # All-or-nothing: five GP arguments leave only one integer register, so a
+    # two-INTEGER-eightbyte struct cannot fit and spills wholly to the stack.
+    "struct T { int a; int b; int c; int d; }; " \
+    "int f(int p1, int p2, int p3, int p4, int p5, struct T t) { return p1 + p2 + p3 + p4 + p5 + t.a + t.b + t.c + t.d; } " \
+    "int main(void) { struct T t; t.a = 1; t.b = 2; t.c = 3; t.d = 4; return f(1, 2, 3, 4, 5, t) + 27; }",
+    # All-or-nothing on the SSE side: seven xmm arguments leave one xmm register,
+    # so a two-SSE-eightbyte struct spills wholly to the stack.
+    "struct D2 { double a; double b; }; " \
+    "int f(double a1, double a2, double a3, double a4, double a5, double a6, double a7, struct D2 d) { " \
+    "return (int)(a1 + a2 + a3 + a4 + a5 + a6 + a7 + d.a + d.b); } " \
+    "int main(void) { struct D2 d; d.a = 1.5; d.b = 2.5; return f(1, 2, 3, 4, 5, 6, 7, d) + 8; }",
+    # A nested struct, a union member and an array member all fold into the
+    # eightbyte classification: { struct { int; int; }; float[2]; } is [:gp, :sse8].
+    "struct In { int a; int b; }; struct S { struct In inner; float f[2]; }; struct S id(struct S s) { return s; } " \
+    "int main(void) { struct S s; s.inner.a = 1; s.inner.b = 2; s.f[0] = 1.5f; s.f[1] = 2.5f; struct S r = id(s); " \
+    "return r.inner.a + r.inner.b + (int)(r.f[0] + r.f[1]) + 35; }",
+    "union U { int i; float f; }; struct SU { union U u; int tag; }; struct SU id(struct SU s) { return s; } " \
+    "int main(void) { struct SU s; s.u.i = 40; s.tag = 2; struct SU r = id(s); return r.u.i + r.tag; }",
+    # A struct in the fixed part of a variadic function: va_start must advance
+    # gp_offset past the struct's eightbytes before reading the variable ints.
+    "struct P { int x; int y; }; " \
+    "int sum(struct P p, ...) { __builtin_va_list ap; __builtin_va_start(ap, p); int t = p.x + p.y; " \
+    "t += __builtin_va_arg(ap, int); t += __builtin_va_arg(ap, int); __builtin_va_end(ap); return t; } " \
+    "int main(void) { struct P p; p.x = 10; p.y = 20; return sum(p, 5, 7); }",
+    # Accessing a member of a struct returned by value (f(s).x).
+    "struct P { int x; int y; }; struct P mk(int a, int b) { struct P p; p.x = a; p.y = b; return p; } " \
+    "int main(void) { return mk(40, 2).x + mk(0, 2).y; }",
+    # A struct-returning call feeding another (g(f(s))).
+    "struct P { int x; int y; }; struct P inc(struct P p) { p.x += 1; p.y += 1; return p; } " \
+    "int main(void) { struct P a; a.x = 40; a.y = 0; struct P r = inc(inc(a)); return r.x + r.y; }",
+    # return *p reads a whole struct through a pointer.
+    "struct P { int x; int y; }; struct P deref(struct P *p) { return *p; } " \
+    "int main(void) { struct P a; a.x = 40; a.y = 2; struct P r = deref(&a); return r.x + r.y; }",
+    # A struct object initialized from a by-value struct return.
+    "struct P { int x; int y; }; struct P mk(int a, int b) { struct P p; p.x = a; p.y = b; return p; } " \
+    "int main(void) { struct P t = mk(40, 2); return t.x + t.y; }",
+    # Through a function pointer, a register-returned struct.
+    "struct P { int x; int y; }; struct P mk(struct P p) { p.x += 1; p.y += 1; return p; } " \
+    "int main(void) { struct P (*fp)(struct P) = mk; struct P a; a.x = 40; a.y = 0; struct P r = fp(a); " \
+    "return r.x + r.y + 1; }",
+    # Through a function pointer, a MEMORY-returned struct (hidden pointer).
+    "struct B { long a; long b; long c; }; struct B mk(struct B b) { b.a += 1; return b; } " \
+    "int main(void) { struct B (*fp)(struct B) = mk; struct B x; x.a = 40; x.b = 1; x.c = 0; struct B r = fp(x); " \
+    "return (int)(r.a + r.b + r.c); }"
+  ].freeze
+
+  def test_struct_abi_matches_gcc_exit_codes
+    STRUCT_ABI_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
   # --- casts, null pointer constants and pointer conditions (Step 14) ------
 
   def test_cast_truncates_int_to_char
@@ -2312,6 +2414,42 @@ class TestExecutionHarness < Minitest::Test
       gcc = program_output(source, compiler: :gcc)
       assert_equal gcc, rubycc,
                    "rubycc and gcc disagree on [exit, stdout] for: #{source}"
+    end
+  end
+
+  # Assignment through an address (a subscript, a member or a dereferenced
+  # pointer) must convert the right-hand side to the target's type before
+  # storing, exactly like a plain variable assignment. Each case folds an
+  # otherwise-invisible conversion bug (a missing sign-extend or int<->float
+  # conversion) into the exit code so gcc's own conversion is the oracle.
+  STORE_CONVERSION_DIFFERENTIAL_SOURCES = [
+    # A negative int stored into a long struct member must sign-extend.
+    "struct s { long m; }; int main(void) { struct s v; v.m = -16; return (v.m == -16) ? 42 : 1; }",
+    # A negative int stored into a long array element must sign-extend.
+    "int main(void) { long a[2]; a[0] = -16; return (a[0] == -16) ? 42 : 1; }",
+    # A negative int stored through a "long *" must sign-extend.
+    "int main(void) { long v; long *p = &v; *p = -16; return (*p == -16) ? 42 : 1; }",
+    # An int stored into a float struct member must convert int -> float.
+    "struct s { float f; }; int main(void) { struct s v; v.f = 3; return (v.f == 3.0f) ? 42 : 1; }",
+    # An int stored into a double array element must convert int -> double.
+    "int main(void) { double a[2]; a[0] = 3; return (a[0] == 3.0) ? 42 : 1; }",
+    # "+=" on a float member computes the usual arithmetic conversion in
+    # double, which must narrow back to float before the store.
+    "struct s { float f; }; int main(void) { struct s v; v.f = 1.0f; v.f += 2.0; " \
+    "return (v.f == 3.0f) ? 42 : 1; }",
+    # "+=" with a negative int right-hand side on a long member.
+    "struct s { long m; }; int main(void) { struct s v; v.m = 0; v.m += -20; return (v.m == -20) ? 42 : 1; }",
+    # The assignment expression's own value is the converted value, not the
+    # unconverted one, so it must chain correctly into a further comparison.
+    "struct s { long m; }; int main(void) { struct s v; return ((v.m = -16) == -16) ? 42 : 1; }"
+  ].freeze
+
+  def test_store_conversions_match_gcc_exit_codes
+    STORE_CONVERSION_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
     end
   end
 

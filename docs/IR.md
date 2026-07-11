@@ -9,7 +9,7 @@
 値表現規約。本書はそれらを 1 か所にまとめた読み物であり、命令の追加・変更時は
 `ir.rb` のコメントと本書の両方を更新すること(ROADMAP §2)。
 
-対応コミット時点: Step 24(浮動小数点と SysV xmm 呼び出し規約)完了。
+対応コミット時点: Step 25(struct の値渡し・値返し)完了。
 
 ---
 
@@ -50,8 +50,8 @@ IR::Program
 | `name` | シンボル名(String) |
 | `insts` | 命令のフラットな配列 |
 | `vreg_count` | 使用 vreg 数(バックエンドのフレームサイズ計算用) |
-| `param_count` | パラメータ数。**パラメータは vreg 0..param_count-1 を占める**規約で、バックエンドが着信引数レジスタ(およびレジスタからあふれたスタック引数)をこのスロットへ写す |
-| `param_kinds` | 長さ param_count の配列。各パラメータの SysV レジスタクラス(`:gp` 整数/ポインタ、`:sse4` float、`:sse8` double)を宣言順に持つ。プロローグはこれから各パラメータの着信位置(整数レジスタ / xmm / スタック)を導出し、可変長関数は :va_start の gp_offset / fp_offset / overflow 開始位置もここから導く |
+| `param_count` | **ABI スロット数**(パラメータ数ではない)。スカラパラメータは 1 スロット、struct パラメータは分類された eightbyte 数(MEMORY struct は ceil(size/8))、MEMORY 戻りの関数は隠れ結果ポインタが先頭に 1 スロット加わる。**スロットは vreg 0..param_count-1 を占める**規約で、バックエンドが着信引数レジスタ / スタック引数をこのスロットへ写す。struct パラメータのスロットからの再組み立て(stack object への :store)はジェネレータがプロローグ IR で行う |
+| `param_kinds` | 長さ param_count の配列。各 ABI スロットの**着信位置**(`:gp` 整数レジスタ、`:sse4`/`:sse8` xmm、`:mem` スタック)を宣言順に持つ。配置はジェネレータが呼び出し側と同じシミュレーションで確定済みで、バックエンドはこの指定に従うだけ(超過時は契約違反として raise)。可変長関数は :va_start の gp_offset / fp_offset / overflow 開始位置もここから導く |
 | `stack_objects` | オブジェクト id で索引する配列。各要素は集約オブジェクト(配列・struct)のバイトサイズ。バックエンドは vreg スロットの下に配置し :object_addr を解決する |
 | `linkage` | `:external`(通常)/ `:internal`(`static`。STB_LOCAL で発行) |
 | `variadic` | `...` 付き定義なら true。バックエンドがレジスタ退避領域つきプロローグを出す |
@@ -115,8 +115,8 @@ Instruction(op, dst:, a:, b:, size:)
 | :const | 8 = 64 bit 即値ロード(long/ポインタ定数)。それ以外は 32 bit 即値 |
 | 浮動小数点演算(:fadd 系・:f 比較) | 浮動小数点オペランド幅(4 = float / 8 = double) |
 | :itof / :ftoi / :ftof | :itof は変換**先**の浮動小数点幅、:ftoi / :ftof は変換**元**の幅(§5) |
-| :call / :call_indirect | nil、または **[fixed, ret] ペア**(どちらかが非 nil のとき)。fixed = 可変長 callee の固定パラメータ数(非可変長は nil)で、バックエンドは call 直前に al = 使用 xmm 数を出す。ret = 戻り値が float/double なら :sse4/:sse8(xmm0 から回収)、それ以外は nil(rax) |
-| :ret | nil = 整数/ポインタ戻り値(rax)。4/8 = 浮動小数点戻り値(スロットから movss/movsd で xmm0 へ) |
+| :call / :call_indirect | nil、または **[fixed, ret] ペア**(どちらかが非 nil のとき)。fixed = 可変長 callee の固定パラメータ数(非可変長は nil)で、バックエンドは call 直前に al = 使用 xmm 数を出す。ret = 戻り値が float/double なら :sse4/:sse8(xmm0 から回収)、レジスタ返しの struct なら **[buffer_vreg, classes]**(classes は :gp/:sse8 の eightbyte クラス配列。バックエンドが戻りレジスタ rax→rdx / xmm0→xmm1 の内容を buffer_vreg の指すスクラッチバッファへ 8×i で散布)、それ以外は nil(rax。MEMORY struct の隠れポインタ戻りもここ) |
+| :ret | nil = 整数/ポインタ戻り値(rax)。4/8 = 浮動小数点戻り値(スロットから movss/movsd で xmm0 へ)。**クラス配列** = レジスタ返しの struct(a の指すバッファから各 eightbyte を戻りレジスタへ収集) |
 | :memcpy | コピーするバイト数(struct 全体代入) |
 
 ## 5. 命令一覧
@@ -187,13 +187,13 @@ Instruction(op, dst:, a:, b:, size:)
 | :label | a = ラベル id | ジャンプ先。それ自体はコードを出さない |
 | :jump | a = ラベル id | 無条件分岐 |
 | :jump_if_zero | a = 条件 vreg、b = ラベル id | a == 0 のとき分岐 |
-| :ret | a = 値 vreg または nil | 関数から戻る。nil は void の `return;` / 末尾到達(値ロードなし)。`size` nil = rax 戻り、4/8 = 浮動小数点戻り(スロットから movss/movsd で xmm0 へ) |
+| :ret | a = 値 vreg または nil | 関数から戻る。nil は void の `return;` / 末尾到達(値ロードなし)。`size` nil = rax 戻り、4/8 = 浮動小数点戻り(スロットから movss/movsd で xmm0 へ)、クラス配列 = レジスタ返しの struct — a はジェネレータが memcpy 済みのスクラッチバッファのアドレス vreg で、バックエンドはそれを rcx にロードし [rcx + 8i] から各 eightbyte を INTEGER = rax→rdx / SSE = xmm0→xmm1 の順に収集する。MEMORY struct の `return` は隠れ結果ポインタへの :memcpy の後、そのポインタを size nil で返す(rax = 結果アドレス、psABI どおり) |
 
 ### 呼び出し
 
 | 命令 | 形 | 意味 |
 |---|---|---|
-| :call | dst ← f(args)。a = callee 名(String)、b = **[vreg, kind] ペアの配列**(左から右。kind は :gp / :sse4 / :sse8) | 左から右へ、:gp は edi..r9d の次の空き、:sse4/:sse8 は xmm0..7 の次の空き(movss/movsd でロード)に割り当てる。クラスのレジスタがあふれた引数はクラス問わず 8 バイトスロット内容のまま逆順 push でスタック渡し(あふれた引数同士は左→右の順序を保つ)。`size` = nil または [fixed, ret](§4)。可変長 callee には call 直前に al = 使用 xmm 数(mov al, imm8) |
+| :call | dst ← f(args)。a = callee 名(String)、b = **[vreg, kind] ペアの配列**(左から右。kind は :gp / :sse4 / :sse8 / :mem) | kind は**ジェネレータが配置シミュレーションで確定済みの着信位置**: :gp は edi..r9d の次の空き、:sse4/:sse8 は xmm0..7 の次の空き(movss/movsd でロード)、:mem は 8 バイトスロット内容のまま逆順 push のスタック渡し(:mem 同士は左→右の順序を保つ)。バックエンドは指定に従うだけで、超過(7 個目の :gp 等)は契約違反として raise。struct 引数はジェネレータが eightbyte ごとの複数ペアに展開済み(psABI の all-or-nothing 規則も配置時に適用済み)。MEMORY 戻りの callee には隠れ結果ポインタの [vreg, :gp] ペアが先頭に加わる。`size` = nil または [fixed, ret](§4)。可変長 callee には call 直前に al = 使用 xmm 数(mov al, imm8) |
 | :call_indirect | dst ← (*a)(args)。a = 関数アドレスの vreg、b = [vreg, kind] ペアの配列 | 引数・size の扱いは :call と同一。バックエンドはスクラッチレジスタ(r10)経由で call |
 | :func_addr | dst ← &func。a = 関数名(String) | 関数指示子の退化・`&f` の値。:global_addr 同様の PC 相対再配置で解決 |
 
@@ -219,7 +219,7 @@ Instruction(op, dst:, a:, b:, size:)
 
 | 命令 | 形 | 意味 |
 |---|---|---|
-| :va_start | a = __va_list_tag のアドレス vreg、b = 取り囲む関数の固定パラメータ数 | SysV va_list の 4 フィールド(gp_offset / fp_offset / overflow_arg_area / reg_save_area)を初期化。名前付きパラメータが消費済みの GP/SSE レジスタ数は b ではなく **Function.param_kinds から導出**する: gp_offset = 8×min(GP 名前付き, 6)、fp_offset = 48 + 16×min(SSE 名前付き, 8)、overflow_arg_area はスタック渡しになった名前付きパラメータ数(GP 7 本目以降 + SSE 9 本目以降)を反映。reg_save_area は可変長プロローグが確保した退避領域を指す。**va_arg / va_end に専用命令は無い** — ジェネレータが通常の load/store/分岐に降ろす(double は fp_offset を `:ult 176` で分岐し、レジスタ側 +=16 / あふれ側 +=8、:load size 8) |
+| :va_start | a = __va_list_tag のアドレス vreg、b = 取り囲む関数の固定パラメータ数 | SysV va_list の 4 フィールド(gp_offset / fp_offset / overflow_arg_area / reg_save_area)を初期化。名前付きパラメータが消費済みの GP/SSE レジスタ数は b ではなく **Function.param_kinds のカウントから導出**する: gp_offset = 8×count(:gp)、fp_offset = 48 + 16×(count(:sse4)+count(:sse8))、overflow_arg_area の開始は count(:mem)(スタック渡しになった名前付きスロット数)を反映。reg_save_area は可変長プロローグが確保した退避領域を指す。**va_arg / va_end に専用命令は無い** — ジェネレータが通常の load/store/分岐に降ろす(double は fp_offset を `:ult 176` で分岐し、レジスタ側 +=16 / あふれ側 +=8、:load size 8) |
 
 ## 6. バックエンドとの契約(参考)
 
@@ -233,11 +233,17 @@ IR 自体の仕様ではないが、IR を書く側・読む側が共有する�
   引数個数によらず発行コードが固定になり決定性を保つ)。
 - **パラメータ**: param_kinds に従い、:gp は edi..r9d の次の空きから、
   :sse4/:sse8 は xmm0..7 の次の空きから(movss/movsd で)vreg スロットへ
-  spill。クラスのレジスタからあふれた分は [rbp + 16 + 8k](k はスタック渡し
-  通し番号)からコピー。狭い整数パラメータの 32 bit 正規化は
-  ジェネレータが :sext/:zext で行う(バックエンドは関知しない)。
-- **戻り値**: 整数/ポインタは rax、float/double は xmm0(:ret の size と
-  :call の ret クラスが movss/movsd を選ぶ)。
+  spill、:mem は [rbp + 16 + 8k](k は :mem の通し番号)からコピー。
+  配置はジェネレータ確定済みで、バックエンドはレジスタ超過を契約違反として
+  raise する。struct パラメータのスロット→stack object 再組み立てと、
+  狭い整数パラメータの 32 bit 正規化(:sext/:zext)はジェネレータが行う
+  (バックエンドは関知しない)。
+- **戻り値**: 整数/ポインタ(および MEMORY struct の隠れポインタ)は rax、
+  float/double は xmm0(:ret の size と :call の ret クラスが movss/movsd を
+  選ぶ)。レジスタ返しの struct は eightbyte のクラス順に INTEGER = rax→rdx、
+  SSE = xmm0→xmm1(callee は :ret のバッファから収集、caller は :call の
+  [buffer_vreg, classes] でスクラッチバッファへ散布。どちらもバッファアドレスは
+  rcx 経由 — rcx は戻りレジスタと重ならない)。
 - **再配置**: 関数コンパイル結果(`Backend::X86_64::Result`)の relocations
   は kind 付き — :call(call rel32、R_X86_64_PLT32)、:func(lea の関数
   アドレス、:call と同経路)、:global(lea のデータシンボル、R_X86_64_PC32)、

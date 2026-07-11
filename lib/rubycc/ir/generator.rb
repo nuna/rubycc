@@ -339,15 +339,18 @@ module Rubycc
       # also covers arity) and that a body is defined at most once.
       def declare_function(name, return_type, param_types, variadic:, defined:, token:)
         error_at(token, "redefinition of '#{name}'") if @global_bindings.key?(name)
-        # Passing or returning a struct by value is out of scope for this step
-        # (a struct pointer is the way to hand a struct across a call), so a
-        # struct-typed parameter or return type is rejected up front, before any
-        # call site can rely on it.
-        if return_type.struct?
-          error_at(token, "struct return values are not supported yet")
+        # A struct passed or returned by value must have a known layout for its
+        # System V eightbyte classification, so an incomplete struct is rejected
+        # here. C would permit an incomplete type in a never-called prototype, but
+        # this subset diagnoses it at the declaration for simplicity (a struct
+        # argument or result whose tag is never completed is a program error).
+        if return_type.struct? && !return_type.complete?
+          error_at(token, "return type is an incomplete type")
         end
-        if param_types.any?(&:struct?)
-          error_at(token, "struct parameters are not supported yet")
+        param_types.each do |param_type|
+          if param_type.struct? && !param_type.complete?
+            error_at(token, "parameter has incomplete type")
+          end
         end
         existing = @signatures[name]
         if existing
@@ -409,25 +412,7 @@ module Rubycc
         # the comparison chain already assigned to it.
         @case_label_stack = []
 
-        # Parameters take the first vregs (0..n-1) in the outermost scope; the
-        # backend spills the incoming argument registers into these slots.
-        func.params.each do |param|
-          @scopes.last[param.name] = Local.new(type: param.type, storage: new_vreg, global: false, const: param.const)
-        end
-
-        # A narrow integer parameter (char/short and their unsigned forms,
-        # _Bool) arrives in a register with an unspecified high half; re-derive
-        # its value from the low bytes in place, by the type's signedness, so
-        # its slot holds the properly extended value like any other narrow
-        # lvalue. Wider parameters (int/long and their unsigned forms, pointers)
-        # already arrive in the right representation.
-        func.params.each do |param|
-          type = param.type
-          next unless type.integer? && (type.size == 1 || type.size == 2)
-
-          slot = @scopes.last[param.name].storage
-          emit(type.signed? ? :sext : :zext, dst: slot, a: slot, size: type.size)
-        end
+        setup_parameters(func)
 
         func.body.each { |stmt| gen_statement(stmt) }
 
@@ -450,6 +435,20 @@ module Rubycc
         unless @insts.last&.op == :ret
           if @current_return_type.void?
             emit(:ret, a: nil)
+          elsif @current_return_type.struct?
+            # Falling off a struct-returning function is undefined; keep the
+            # caller safe rather than model a value. A MEMORY return hands back
+            # its hidden result pointer (so the caller's rax is a valid address);
+            # a register return hands back a 0 in rax with a nil size, and the
+            # caller merely stores whatever the return registers hold into its
+            # scratch buffer, never dereferencing anything invalid.
+            if @struct_return_class == :memory
+              emit(:ret, a: @struct_return_ptr, size: nil)
+            else
+              zero = new_vreg
+              emit(:const, dst: zero, a: 0)
+              emit(:ret, a: zero, size: nil)
+            end
           else
             # A zero-bit slot reads as an integer 0, a +0.0f or a +0.0 alike, so
             # a floating function's fall-off return still hands back a valid
@@ -460,21 +459,220 @@ module Rubycc
           end
         end
 
-        param_kinds = func.params.map { |param| argument_kind(param.type) }
-        Function.new(func.name, @insts, @vreg_count, func.params.size, @stack_objects, linkage,
-                     func.variadic, param_kinds)
+        Function.new(func.name, @insts, @vreg_count, @param_count, @stack_objects, linkage,
+                     func.variadic, @param_kinds)
+      end
+
+      # Binds the function's parameters and records its ABI slot layout. Each C
+      # parameter maps to one or more System V eightbyte slots — a scalar to one,
+      # a struct to its classified eightbytes (a MEMORY struct to ceil(size/8)
+      # stack eightbytes) — and a MEMORY-returning function prepends a hidden
+      # pointer slot for the caller's result buffer. Those slots occupy the first
+      # vregs (0..param_count-1) in flattened order, so the backend spills each
+      # incoming argument register straight into its slot; a struct parameter is
+      # then reassembled into a stack object from its slots, and a scalar
+      # parameter's slot is its storage directly. @param_kinds records where every
+      # slot arrives (from the shared placement simulation) and @param_count the
+      # total, both handed to the IR::Function.
+      def setup_parameters(func)
+        return_type = func.return_type
+        # A MEMORY-classified result is written through a hidden pointer the caller
+        # supplies as an implicit first integer argument; @struct_return_ptr holds
+        # its slot for #gen_return, and @struct_return_class steers the return.
+        @struct_return_class = return_type.struct? ? classify_struct(return_type) : nil
+        @struct_return_ptr = nil
+        hidden_return = @struct_return_class == :memory
+
+        # One candidate-kind list per ABI entity, in slot order: the hidden return
+        # pointer (if any) first, then each parameter's eightbyte classes.
+        slot_lists = []
+        slot_lists << [:gp] if hidden_return
+        param_lists = func.params.map { |param| parameter_slot_kinds(param.type) }
+        slot_lists.concat(param_lists)
+
+        # Allocate the slot vregs first (0..param_count-1) so they align with the
+        # flattened param_kinds the backend spills into.
+        slot_vregs = slot_lists.map { |list| list.map { new_vreg } }
+        @param_count = slot_vregs.sum(&:size)
+        @param_kinds = place_argument_kinds(slot_lists).flatten
+
+        index = 0
+        if hidden_return
+          @struct_return_ptr = slot_vregs[index].first
+          index += 1
+        end
+        func.params.each do |param|
+          vregs = slot_vregs[index]
+          index += 1
+          if param.type.struct?
+            bind_struct_parameter(param, vregs)
+          else
+            @scopes.last[param.name] =
+              Local.new(type: param.type, storage: vregs.first, global: false, const: param.const)
+          end
+        end
+
+        # A narrow integer parameter (char/short and their unsigned forms, _Bool)
+        # arrives in a register with an unspecified high half; re-derive its value
+        # from the low bytes in place, by the type's signedness, so its slot holds
+        # the properly extended value like any other narrow lvalue. Wider scalars
+        # and structs need no fix-up.
+        func.params.each do |param|
+          type = param.type
+          next unless type.integer? && (type.size == 1 || type.size == 2)
+
+          slot = @scopes.last[param.name].storage
+          emit(type.signed? ? :sext : :zext, dst: slot, a: slot, size: type.size)
+        end
+      end
+
+      # The candidate eightbyte-kind list a parameter of `type` contributes to the
+      # ABI slot layout: a scalar is a single register-class eightbyte, a
+      # register-classified struct its INTEGER/SSE eightbytes, and a MEMORY struct
+      # ceil(size/8) stack eightbytes (which #place_argument_kinds leaves as :mem).
+      def parameter_slot_kinds(type)
+        return [argument_kind(type)] unless type.struct?
+
+        classes = classify_struct(type)
+        classes == :memory ? Array.new((type.size + 7) / 8, :mem) : classes
+      end
+
+      # Reassembles a struct parameter from its incoming ABI slots into a fresh
+      # stack object the parameter name is bound to (the same by-address form every
+      # struct lvalue uses). Each slot vreg holds one eightbyte of the argument;
+      # storing it at base + 8*i writes the struct back into contiguous memory. The
+      # final eightbyte's full 8-byte store stays within the 16-byte-aligned,
+      # rounded-up stack object even when the struct's size is not a multiple of 8.
+      def bind_struct_parameter(param, slot_vregs)
+        type = param.type
+        object_id = new_object(type.size)
+        @scopes.last[param.name] = Local.new(type: type, storage: object_id, global: false, const: param.const)
+        base = new_vreg
+        emit(:object_addr, dst: base, a: object_id)
+        slot_vregs.each_with_index do |vreg, i|
+          emit(:store, a: eightbyte_address(base, i), b: vreg, size: 8)
+        end
+      end
+
+      # The address of eightbyte `i` within an aggregate whose base address is in
+      # `base_vreg`: the base itself for the first eightbyte, or base + 8*i
+      # otherwise. Shared by the struct-parameter reassembly and struct-argument
+      # lowering, both of which read or write a struct one eightbyte at a time.
+      def eightbyte_address(base_vreg, i)
+        return base_vreg if i.zero?
+
+        offset = new_vreg
+        emit(:const, dst: offset, a: 8 * i)
+        addr = new_vreg
+        emit(:add, dst: addr, a: base_vreg, b: offset, size: 8)
+        addr
       end
 
       # Classifies a type for the System V AMD64 argument/return convention: a
       # `float` is an :sse4 (a scalar single in an xmm register), a `double` an
       # :sse8 (a scalar double), and every integer, pointer or other scalar a
-      # :gp (an integer register). The backend uses this to route each parameter
-      # and argument to a register class, and to mark a float/double return.
+      # :gp (an integer register). This is only the *candidate* class an argument
+      # would take with registers available; #place_argument_kinds then decides,
+      # over the whole list, which candidates actually land in a register and
+      # which spill to the stack (:mem). The kind is also used unqualified to mark
+      # a float/double return.
       def argument_kind(type)
         return :sse4 if type.float? && type.size == 4
         return :sse8 if type.float? && type.size == 8
 
         :gp
+      end
+
+      # The number of registers each System V AMD64 argument class provides: six
+      # integer registers (rdi..r9) and eight xmm registers (xmm0..7). Once a
+      # class's registers are used up, its further arguments pass on the stack.
+      GP_ARG_REGISTERS = 6
+      SSE_ARG_REGISTERS = 8
+
+      # Fixes the register/stack placement of an argument list ahead of the
+      # backend, so the classification the backend follows is decided where every
+      # argument's type is known. `arguments` is one entry per argument, each a
+      # list of that argument's eightbyte candidate kinds (:gp / :sse4 / :sse8 for
+      # an in-register class, or :mem for a MEMORY-classified aggregate). A scalar
+      # argument is a single eightbyte, so its list has length one; a struct's
+      # list holds one entry per eightbyte, which is what lets the psABI 3.2.3
+      # all-or-nothing rule act on a whole argument at once.
+      #
+      # Each argument is placed as a unit: its required integer and vector
+      # registers are counted first, and only if *both* fit in what remains do its
+      # eightbytes take those registers (consuming them); otherwise the entire
+      # argument spills, every eightbyte becoming :mem, and no register is used —
+      # the psABI rule that an argument whose parts do not all fit in registers
+      # passes wholly in memory. A candidate list already all :mem (a MEMORY
+      # struct) passes straight through, consuming no register. The :mem eightbytes
+      # keep their left-to-right order, which the backend lays out as ascending
+      # stack addresses. The result mirrors `arguments`: one placed kind list per
+      # argument.
+      def place_argument_kinds(arguments)
+        next_gp = 0
+        next_sse = 0
+        arguments.map do |candidates|
+          if candidates.all?(:mem)
+            candidates
+          else
+            need_gp = candidates.count(:gp)
+            need_sse = candidates.count { |k| k == :sse4 || k == :sse8 }
+            if next_gp + need_gp <= GP_ARG_REGISTERS && next_sse + need_sse <= SSE_ARG_REGISTERS
+              next_gp += need_gp
+              next_sse += need_sse
+              candidates
+            else
+              Array.new(candidates.size, :mem)
+            end
+          end
+        end
+      end
+
+      # Classifies an aggregate for the System V AMD64 argument/return convention
+      # (psABI 3.2.3). A struct or union larger than two eightbytes is passed in
+      # memory; otherwise each of its one or two eightbytes gets a class from the
+      # scalar fields that fall in it. Returns :memory, or an array (one entry per
+      # eightbyte) of :gp (an INTEGER eightbyte, taken in an integer register) or
+      # :sse8 (an SSE eightbyte, moved as a full 8-byte double even when it holds
+      # two packed floats, since a single movsd carries the whole eightbyte).
+      def classify_struct(struct_type)
+        size = struct_type.size
+        return :memory if size > 16
+
+        eightbytes = Array.new((size + 7) / 8, nil)
+        classify_eightbytes(eightbytes, struct_type, 0)
+        # A NO_CLASS eightbyte (only padding fell in it) defaults to SSE, the
+        # psABI's benign choice; INTEGER otherwise wins over SSE per #merge_class.
+        eightbytes.map { |cls| cls == :integer ? :gp : :sse8 }
+      end
+
+      # Walks `type` at byte offset `base` and folds each scalar field's class
+      # into the eightbyte (offset / 8) it lands in. A nested struct or union
+      # recurses at its member offsets (a union overlays every member at the same
+      # offset, which the members' zero offsets already encode), and an array
+      # recurses element by element. This subset's layouts are naturally aligned,
+      # so no scalar ever straddles an eightbyte boundary.
+      def classify_eightbytes(eightbytes, type, base)
+        if type.struct?
+          type.members.each { |m| classify_eightbytes(eightbytes, m.type, base + m.offset) }
+        elsif type.array?
+          type.length.times { |i| classify_eightbytes(eightbytes, type.element, base + i * type.element.size) }
+        else
+          index = base / 8
+          eightbytes[index] = merge_class(eightbytes[index], type.float? ? :sse : :integer)
+        end
+      end
+
+      # Combines two field classes sharing an eightbyte: NO_CLASS (nil) yields to
+      # the other, and INTEGER dominates SSE (a mixed integer/float eightbyte is
+      # passed in an integer register), matching the psABI merge rule this subset
+      # needs.
+      def merge_class(current, incoming)
+        return incoming if current.nil?
+        return current if incoming.nil?
+        return :integer if current == :integer || incoming == :integer
+
+        :sse
       end
 
       def gen_statement(stmt)
@@ -818,6 +1016,8 @@ module Rubycc
 
         error_at(node.token, "return without a value") unless node.expr
 
+        return gen_struct_return(node) if @current_return_type.struct?
+
         value, value_type = gen_value(node.expr)
         unless compatible_assignment?(@current_return_type, node.expr, value_type)
           error_at(node.token, "incompatible return type")
@@ -827,6 +1027,31 @@ module Rubycc
         # (4/8) to select movss/movsd; every other return goes back in rax
         # (size nil).
         emit(:ret, a: converted, size: (@current_return_type.size if @current_return_type.float?))
+      end
+
+      # "return expr;" from a struct-returning function. The returned value is a
+      # struct address (the struct's own by-value representation), which must have
+      # the function's exact struct type (identity). A MEMORY result is copied
+      # through the hidden result pointer and that pointer returned in rax, per the
+      # psABI; a register result is copied into a scratch stack object first (so
+      # the eightbyte loads never read past a struct whose size is not a multiple
+      # of 8), whose address and eightbyte classes ride on :ret for the backend to
+      # load into the return registers.
+      def gen_struct_return(node)
+        src, src_type = gen_value(node.expr)
+        error_at(node.token, "incompatible return type") unless src_type == @current_return_type
+
+        size = @current_return_type.size
+        if @struct_return_class == :memory
+          emit(:memcpy, a: @struct_return_ptr, b: src, size: size)
+          emit(:ret, a: @struct_return_ptr, size: nil)
+        else
+          scratch = new_object(size)
+          base = new_vreg
+          emit(:object_addr, dst: base, a: scratch)
+          emit(:memcpy, a: base, b: src, size: size)
+          emit(:ret, a: base, size: @struct_return_class)
+        end
       end
 
       def gen_variable_decl(decl)
@@ -2021,8 +2246,13 @@ module Rubycc
         end
         return gen_struct_copy(addr, value, element_type) if element_type.struct?
 
-        emit(:store, a: addr, b: value, size: element_type.size)
-        [value, element_type]
+        # v is only assignment-compatible with the element type, not
+        # necessarily identical to it (e.g. an int assigned into a long
+        # element), so it needs the same conversion as a variable assignment
+        # before its bytes are stored.
+        converted = convert_for_assignment(value, value_type, element_type, token: node.token)
+        emit(:store, a: addr, b: converted, size: element_type.size)
+        [converted, element_type]
       end
 
       # "s.m = v" / "p->m = v": compute the member's address (see
@@ -2040,8 +2270,11 @@ module Rubycc
         end
         return gen_struct_copy(addr, value, member_type) if member_type.struct?
 
-        emit(:store, a: addr, b: value, size: member_type.size)
-        [value, member_type]
+        # v is only assignment-compatible with the member type, not
+        # necessarily identical to it, so convert before storing.
+        converted = convert_for_assignment(value, value_type, member_type, token: node.token)
+        emit(:store, a: addr, b: converted, size: member_type.size)
+        [converted, member_type]
       end
 
       # "*p = v": evaluate p (an address) and v, then write v through the
@@ -2057,8 +2290,11 @@ module Rubycc
         end
         return gen_struct_copy(addr, value, target_type) if target_type.struct?
 
-        emit(:store, a: addr, b: value, size: target_type.size)
-        [value, target_type]
+        # v is only assignment-compatible with the pointee type, not
+        # necessarily identical to it, so convert before storing.
+        converted = convert_for_assignment(value, value_type, target_type, token: node.token)
+        emit(:store, a: addr, b: converted, size: target_type.size)
+        [converted, target_type]
       end
 
       # Lowers a call. A callee that is a bare function name not shadowed by a
@@ -2086,11 +2322,13 @@ module Rubycc
       # A direct call to the named function, its signature already known.
       def gen_direct_call(node, name)
         sig = @signatures[name]
-        args = lower_call_arguments(node, sig[:param_types], sig[:variadic], name)
-        dst = new_vreg
-        emit(:call, dst: dst, a: name, b: args,
-                    size: call_size(sig[:variadic] ? sig[:param_types].size : nil, sig[:return_type]))
-        [dst, sig[:return_type]]
+        plumb = struct_return_plumbing(sig[:return_type])
+        args = lower_call_arguments(node, sig[:param_types], sig[:variadic], name, plumb[:hidden])
+        fixed = sig[:variadic] ? sig[:param_types].size : nil
+        emit_call_result(plumb, sig[:return_type]) do |dst|
+          emit(:call, dst: dst, a: name, b: args,
+                      size: call_size(fixed, call_ret_descriptor(sig[:return_type], plumb)))
+        end
       end
 
       # An indirect call through a function-pointer value. The callee is
@@ -2101,23 +2339,77 @@ module Rubycc
       def gen_indirect_call(node)
         target, callee_type = gen_value(node.callee)
         func_type = called_function_type(callee_type, node.token)
-        args = lower_call_arguments(node, func_type.param_types, func_type.variadic, nil)
-        dst = new_vreg
-        emit(:call_indirect, dst: dst, a: target, b: args,
-                             size: call_size(func_type.variadic ? func_type.param_types.size : nil,
-                                             func_type.return_type))
-        [dst, func_type.return_type]
+        plumb = struct_return_plumbing(func_type.return_type)
+        args = lower_call_arguments(node, func_type.param_types, func_type.variadic, nil, plumb[:hidden])
+        fixed = func_type.variadic ? func_type.param_types.size : nil
+        emit_call_result(plumb, func_type.return_type) do |dst|
+          emit(:call_indirect, dst: dst, a: target, b: args,
+                               size: call_size(fixed, call_ret_descriptor(func_type.return_type, plumb)))
+        end
+      end
+
+      # Prepares a call's struct-return handling. Returns a descriptor with:
+      #   :mode     — :normal (scalar/void result), :memory (a MEMORY struct
+      #               returned through a hidden pointer) or :register (a struct
+      #               small enough to come back in registers);
+      #   :hidden   — the [buffer_addr, :gp] pair to prepend to the argument list
+      #               for a MEMORY result, else nil;
+      #   :ret      — the [buffer_addr, classes] descriptor a register result
+      #               rides on the call's `size`, else nil;
+      #   :buf_addr — the scratch buffer's address for either struct mode.
+      # For a struct result a scratch stack object holds the value: a MEMORY
+      # callee writes it through the hidden pointer and returns that pointer in
+      # rax, while a register callee's eightbytes are stored into the buffer by
+      # the backend.
+      def struct_return_plumbing(return_type)
+        return { mode: :normal, hidden: nil, ret: nil, buf_addr: nil } unless return_type.struct?
+
+        classes = classify_struct(return_type)
+        buf = new_object(return_type.size)
+        addr = new_vreg
+        emit(:object_addr, dst: addr, a: buf)
+        if classes == :memory
+          { mode: :memory, hidden: [addr, :gp], ret: nil, buf_addr: addr }
+        else
+          { mode: :register, hidden: nil, ret: [addr, classes], buf_addr: addr }
+        end
+      end
+
+      # Emits a call (via the block, which receives the destination vreg) and
+      # yields its [value, type] result. A register-returned struct writes nothing
+      # to a call dst (its eightbytes land in the scratch buffer), so the block
+      # gets a nil dst and the value is the buffer address; every other call takes
+      # a fresh dst holding rax — the scalar/pointer result, or, for a MEMORY
+      # struct, the hidden pointer the callee returns, which is the buffer address
+      # too.
+      def emit_call_result(plumb, return_type)
+        if plumb[:mode] == :register
+          yield nil
+          [plumb[:buf_addr], return_type]
+        else
+          dst = new_vreg
+          yield dst
+          value = plumb[:mode] == :memory ? plumb[:buf_addr] : dst
+          [value, return_type]
+        end
+      end
+
+      # The `ret` half of a call's `size` descriptor: :sse4/:sse8 for a
+      # float/double result the backend reads from xmm0, a [buffer_addr, classes]
+      # descriptor for an in-register struct result the backend scatters into the
+      # buffer, or nil for an integer/pointer/void/MEMORY-struct result read from
+      # rax.
+      def call_ret_descriptor(return_type, plumb)
+        return argument_kind(return_type) if return_type.float?
+
+        plumb[:ret]
       end
 
       # Builds a call's `size` descriptor: a [fixed, ret] pair, or nil when both
       # halves are. `fixed` is the callee's fixed parameter count for a variadic
       # call (nil otherwise), which the backend turns into the al = xmm-count the
-      # ABI wants; `ret` is :sse4/:sse8 for a float/double result the backend
-      # reads back from xmm0, nil for an integer/pointer/void one it reads from
-      # rax.
-      def call_size(fixed, return_type)
-        ret = argument_kind(return_type)
-        ret = nil unless return_type.float?
+      # ABI wants; `ret` is the return descriptor from #call_ret_descriptor.
+      def call_size(fixed, ret)
         return nil if fixed.nil? && ret.nil?
 
         [fixed, ret]
@@ -2143,8 +2435,10 @@ module Rubycc
       # (only a shortfall below the fixed count is an error, never a surplus) and
       # each takes the default argument promotions (see #promote_variadic_argument)
       # instead of an assignment conversion. `name` names the callee in the
-      # diagnostics of a direct call, or is nil for an indirect one.
-      def lower_call_arguments(node, param_types, variadic, name)
+      # diagnostics of a direct call, or is nil for an indirect one. `hidden` is
+      # the [vreg, :gp] hidden result pointer to pass as the implicit first
+      # argument of a MEMORY-returning call, or nil.
+      def lower_call_arguments(node, param_types, variadic, name, hidden)
         callee_desc = name ? "function '#{name}'" : "function pointer"
         fixed = param_types.size
         if node.args.size < fixed
@@ -2153,20 +2447,71 @@ module Rubycc
           error_at(node.token, "too many arguments to #{callee_desc}")
         end
 
-        node.args.each_with_index.map do |arg, i|
+        # One candidate group per argument (a list of [vreg, kind] eightbyte
+        # pairs), the hidden result pointer prepended so it shares the placement.
+        groups = []
+        groups << [hidden] if hidden
+        node.args.each_with_index do |arg, i|
           vreg, arg_type = gen_value(arg)
-          if i < fixed
-            unless compatible_assignment?(param_types[i], arg, arg_type)
-              suffix = name ? " of '#{name}'" : ""
-              error_at(node.token, "incompatible type for argument #{i + 1}#{suffix}")
-            end
-            converted = convert_for_assignment(vreg, arg_type, param_types[i], token: node.token)
-            # A fixed argument's register class follows the parameter's own type
-            # (the value has already been converted to it).
-            [converted, argument_kind(param_types[i])]
-          else
-            promote_variadic_argument(vreg, arg_type, node.token)
-          end
+          groups << if i < fixed
+                      lower_fixed_argument(node, i, arg, vreg, arg_type, param_types[i], name)
+                    else
+                      [promote_variadic_argument(vreg, arg_type, node.token)]
+                    end
+        end
+        place_call_groups(groups)
+      end
+
+      # Lowers a fixed (named-parameter) argument to its candidate eightbyte
+      # group. A struct argument is checked for type identity and expanded into
+      # its eightbytes (see #lower_struct_argument); a scalar is assignment-checked,
+      # converted to the parameter's type and passed as a single eightbyte.
+      def lower_fixed_argument(node, index, arg, vreg, arg_type, param_type, name)
+        unless compatible_assignment?(param_type, arg, arg_type)
+          suffix = name ? " of '#{name}'" : ""
+          error_at(node.token, "incompatible type for argument #{index + 1}#{suffix}")
+        end
+        return lower_struct_argument(vreg, param_type) if param_type.struct?
+
+        converted = convert_for_assignment(vreg, arg_type, param_type, token: node.token)
+        [[converted, argument_kind(param_type)]]
+      end
+
+      # Expands a by-value struct argument (whose value is its address in `addr`)
+      # into its System V eightbyte [vreg, kind] pairs. The struct is copied into
+      # a scratch stack object first, so reading whole 8-byte eightbytes never
+      # reads past a struct whose size is not a multiple of 8 (a stack object is
+      # 16-byte aligned and rounded up, so the final eightbyte's 8-byte load stays
+      # in bounds). Each eightbyte is loaded from base + 8*i; its kind is the
+      # classification's (:gp/:sse8 for a register struct, all :mem for a MEMORY
+      # one).
+      def lower_struct_argument(addr, struct_type)
+        classes = classify_struct(struct_type)
+        size = struct_type.size
+        scratch = new_object(size)
+        base = new_vreg
+        emit(:object_addr, dst: base, a: scratch)
+        emit(:memcpy, a: base, b: addr, size: size)
+
+        count = (size + 7) / 8
+        kinds = classes == :memory ? Array.new(count, :mem) : classes
+        (0...count).map do |i|
+          value = new_vreg
+          emit(:load, dst: value, a: eightbyte_address(base, i), size: 8)
+          [value, kinds[i]]
+        end
+      end
+
+      # Runs the shared placement simulation over the argument groups (each a list
+      # of [vreg, candidate_kind] eightbyte pairs) and flattens the result to the
+      # [vreg, placed_kind] pairs a :call/:call_indirect carries. Placement acts on
+      # a whole group at once (the all-or-nothing rule), so a struct's eightbytes
+      # all land in registers or all spill together; the left-to-right vreg order
+      # is preserved.
+      def place_call_groups(groups)
+        placed = place_argument_kinds(groups.map { |group| group.map { |_vreg, kind| kind } })
+        groups.each_with_index.flat_map do |group, gi|
+          group.each_with_index.map { |(vreg, _candidate), ei| [vreg, placed[gi][ei]] }
         end
       end
 
@@ -2327,8 +2672,12 @@ module Rubycc
         unless compatible_types?(member_type, result_type)
           error_at(node.token, "incompatible types in assignment")
         end
-        emit(:store, a: addr, b: result, size: member_type.size)
-        [result, member_type]
+        # gen_binary_op's usual arithmetic conversions may widen the result
+        # past the member's type (e.g. a float member combined with a double
+        # value), so narrow it back before storing.
+        converted = convert_for_assignment(result, result_type, member_type, token: node.token)
+        emit(:store, a: addr, b: converted, size: member_type.size)
+        [converted, member_type]
       end
 
       def gen_compound_assignment_to_variable(node, target)
@@ -2358,8 +2707,11 @@ module Rubycc
         unless compatible_types?(element_type, result_type)
           error_at(node.token, "incompatible types in assignment")
         end
-        emit(:store, a: addr, b: result, size: element_type.size)
-        [result, element_type]
+        # gen_binary_op's usual arithmetic conversions may widen the result
+        # past the element's type, so narrow it back before storing.
+        converted = convert_for_assignment(result, result_type, element_type, token: node.token)
+        emit(:store, a: addr, b: converted, size: element_type.size)
+        [converted, element_type]
       end
 
       def gen_compound_assignment_through_pointer(node, target)
@@ -2375,8 +2727,11 @@ module Rubycc
         unless compatible_types?(target_type, result_type)
           error_at(node.token, "incompatible types in assignment")
         end
-        emit(:store, a: addr, b: result, size: target_type.size)
-        [result, target_type]
+        # gen_binary_op's usual arithmetic conversions may widen the result
+        # past the pointee's type, so narrow it back before storing.
+        converted = convert_for_assignment(result, result_type, target_type, token: node.token)
+        emit(:store, a: addr, b: converted, size: target_type.size)
+        [converted, target_type]
       end
 
       # Prefix/postfix "++"/"--" is a compound assignment by the constant 1,

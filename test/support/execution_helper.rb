@@ -62,6 +62,29 @@ module ExecutionHelper
     stderr
   end
 
+  # Compiles each [c_source, compiler] pair to its own object file, links them
+  # all into one executable with gcc, runs it, and returns [exit_status, stdout].
+  # Mixing compilers across translation units is what proves the calling
+  # convention: both sides must agree on the psABI, not merely be self-consistent.
+  def link_units_and_run(units)
+    in_tmpdir do |dir|
+      object_paths = units.each_with_index.map do |(c_source, compiler), index|
+        object_path = File.join(dir, "unit#{index}.o")
+        compile_source(c_source, object_path, compiler)
+        object_path
+      end
+
+      exe_path = File.join(dir, "exe")
+      stdout_and_stderr, status = Open3.capture2e("gcc", "-o", exe_path, *object_paths)
+      unless status.success?
+        raise "gcc failed to link object files (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
+      end
+
+      stdout, run_status = Open3.capture2(exe_path)
+      [run_status.exitstatus, stdout]
+    end
+  end
+
   # Compiles `c_source` to `object_path` with the requested compiler.
   def compile_source(c_source, object_path, compiler)
     case compiler
