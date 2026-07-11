@@ -2081,4 +2081,45 @@ class TestParser < Minitest::Test
     assert_kind_of AST::AlignofType, expr
     assert_equal Type::Long, expr.type
   end
+
+  # --- floating types (Step 24 Phase A) ------------------------------------
+
+  def test_floating_literal_defaults_to_double
+    expr = parse_expr("1.5")
+    assert_kind_of AST::FloatLit, expr
+    assert_in_delta 1.5, expr.value, 1e-12
+    assert_equal Type::Double, expr.type
+  end
+
+  def test_float_suffixed_literal_is_float
+    expr = parse_expr("1.5f")
+    assert_kind_of AST::FloatLit, expr
+    assert_equal Type::Float, expr.type
+  end
+
+  def test_long_double_suffixed_literal_is_double
+    expr = parse_expr("1.5L")
+    assert_kind_of AST::FloatLit, expr
+    assert_equal Type::Double, expr.type
+  end
+
+  def test_float_declaration_type
+    decl = parse_decl("float x;")
+    assert_equal Type::Float, decl.type
+  end
+
+  def test_double_declaration_type
+    decl = parse_decl("double x;")
+    assert_equal Type::Double, decl.type
+  end
+
+  def test_long_double_declaration_is_double
+    decl = parse_decl("long double x;")
+    assert_equal Type::Double, decl.type
+  end
+
+  def test_pointer_to_double_declaration
+    decl = parse_decl("double *p;")
+    assert_equal Type::Pointer.new(Type::Double), decl.type
+  end
 end

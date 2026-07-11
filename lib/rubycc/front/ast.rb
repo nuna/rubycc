@@ -11,6 +11,12 @@ module Rubycc
       # int.
       IntLit = Data.define(:value, :token, :type)
 
+      # Floating-point literal. `value` is a Ruby Float and `type` its
+      # Rubycc::Type — Type::Float for an f/F-suffixed constant, Type::Double
+      # otherwise (a plain or l/L-suffixed one) — fixed by the parser from the
+      # constant's suffix (6.4.4.2).
+      FloatLit = Data.define(:value, :type, :token)
+
       # String literal. `value` is the escape-resolved bytes as an ASCII-8BIT
       # String, without the NUL terminator. Its type is char[N+1] (N being the
       # byte count); in every expression context except sizeof it decays to a

@@ -9,7 +9,7 @@ module Rubycc
     # and keeps each source line around so tokens (and errors) can be reported
     # with source excerpts. Handles // and /* */ comments and whitespace.
     class Lexer
-      KEYWORDS = %w[int char void short long signed unsigned _Bool struct union
+      KEYWORDS = %w[int char void short long signed unsigned _Bool float double struct union
                     enum typedef static extern const volatile inline register auto
                     return if else while do for break continue
                     switch case default goto sizeof
@@ -134,6 +134,12 @@ module Rubycc
 
         if ch =~ /[0-9]/
           lex_number(line, column)
+        elsif ch == "." && peek(1) =~ /[0-9]/
+          # A leading-dot floating constant (".5"): a "." immediately followed
+          # by a digit is the fractional-only form, which #lex_number routes to
+          # the floating path. A "." in any other position is the member-access
+          # punctuator (or part of "..."), handled by #lex_punctuator.
+          lex_number(line, column)
         elsif ch =~ /[A-Za-z_]/
           lex_identifier(line, column)
         elsif ch == "'"
@@ -237,21 +243,61 @@ module Rubycc
         end
       end
 
-      # An integer constant in one of three bases — hexadecimal (0x/0X), octal
-      # (a leading 0) or decimal — with an optional u/U and l/L/ll/LL suffix
-      # run. The token carries the folded value together with its base and
+      # A numeric constant. A "0x"/"0X" prefix is hexadecimal (an integer, or a
+      # hexadecimal floating constant this subset does not lower yet); otherwise
+      # a "." or an exponent anywhere in the run marks a decimal floating
+      # constant (#lex_floating_constant), and its absence a decimal or octal
+      # integer (#lex_integer_constant). The floating check precedes the octal
+      # one so "08.5" reads as the float 8.5 rather than tripping the octal-digit
+      # rule on its '8'.
+      def lex_number(line, column)
+        if current_char == "0" && (peek(1) == "x" || peek(1) == "X")
+          lex_hexadecimal_constant(line, column)
+        elsif floating_constant_ahead?
+          lex_floating_constant(line, column)
+        else
+          lex_integer_constant(line, column)
+        end
+      end
+
+      # Whether the digit run at the cursor is a decimal floating constant: it is
+      # exactly when a "." or an exponent marker ('e'/'E') follows the leading
+      # digits. Only ever consulted for a decimal constant (hexadecimal is split
+      # off first), so an 'e'/'E' here is always an exponent, never a hex digit.
+      def floating_constant_ahead?
+        i = @pos
+        i += 1 while @src[i] =~ /[0-9]/
+        ch = @src[i]
+        ch == "." || ch == "e" || ch == "E"
+      end
+
+      # A hexadecimal integer constant "0x...". A '.' or a binary-exponent marker
+      # ('p'/'P') after the hex digits is a hexadecimal *floating* constant
+      # (0x1.8p3), a distinct grammar this subset does not lower yet, so it is
+      # diagnosed rather than silently misread as an integer.
+      def lex_hexadecimal_constant(line, column)
+        advance # 0
+        advance # x
+        digits = +""
+        digits << advance while !at_end? && current_char =~ /[0-9A-Fa-f]/
+        raise_error("invalid hexadecimal constant", line, column) if digits.empty?
+        if current_char == "." || current_char == "p" || current_char == "P"
+          raise_error("hexadecimal floating constants are not supported yet", line, column)
+        end
+        suffix = lex_integer_suffix(line, column)
+        if !at_end? && current_char =~ /[A-Za-z0-9_]/
+          raise_error("invalid suffix on integer constant", @line, @column)
+        end
+        make_num_token(digits.to_i(16), 16, suffix, line, column)
+      end
+
+      # A decimal or octal integer constant, with an optional u/U and l/L/ll/LL
+      # suffix run. The token carries the folded value together with its base and
       # normalized suffix, from which the parser fixes the constant's type
       # (6.4.4.1). A trailing identifier character (e.g. 12abc, once the real
       # suffix letters are consumed) is rejected.
-      def lex_number(line, column)
-        if current_char == "0" && (peek(1) == "x" || peek(1) == "X")
-          advance # 0
-          advance # x
-          digits = +""
-          digits << advance while !at_end? && current_char =~ /[0-9A-Fa-f]/
-          raise_error("invalid hexadecimal constant", line, column) if digits.empty?
-          base = 16
-        elsif current_char == "0" && peek(1) =~ /[0-9]/
+      def lex_integer_constant(line, column)
+        if current_char == "0" && peek(1) =~ /[0-9]/
           advance # leading 0
           digits = +"0"
           while !at_end? && current_char =~ /[0-9]/
@@ -272,6 +318,54 @@ module Rubycc
           raise_error("invalid suffix on integer constant", @line, @column)
         end
         make_num_token(digits.to_i(base), base, suffix, line, column)
+      end
+
+      # A decimal floating constant (6.4.4.2): an integer part, an optional
+      # fraction after a ".", and an optional exponent ("e"/"E" with an optional
+      # sign and required digits), any of the three shapes "1.5", "1.", ".5",
+      # "1e3", "1.5e-2". A trailing f/F makes it `float`, l/L `long double`
+      # (treated as `double`), and no suffix `double`; the parser fixes the type
+      # from that suffix. String#to_f parses every admitted spelling (including
+      # the "1." and ".5" forms Kernel#Float rejects) over the characters already
+      # validated here. An exponent with no digits, and a trailing identifier or
+      # "." character, are rejected.
+      def lex_floating_constant(line, column)
+        text = +""
+        text << advance while !at_end? && current_char =~ /[0-9]/
+        if current_char == "."
+          text << advance
+          text << advance while !at_end? && current_char =~ /[0-9]/
+        end
+        if current_char == "e" || current_char == "E"
+          text << advance
+          text << advance if current_char == "+" || current_char == "-"
+          unless !at_end? && current_char =~ /[0-9]/
+            raise_error("exponent has no digits", line, column)
+          end
+          text << advance while !at_end? && current_char =~ /[0-9]/
+        end
+        suffix = lex_floating_suffix
+        if !at_end? && current_char =~ /[A-Za-z0-9_.]/
+          raise_error("invalid suffix on floating constant", @line, @column)
+        end
+        make_float_token(text.to_f, suffix, line, column)
+      end
+
+      # Consumes a floating constant's f/F or l/L suffix, returning it normalized
+      # ("f" for float, "l" for long double, "" for a plain double). At most one
+      # letter is valid; a longer run is caught by #lex_floating_constant's
+      # trailing-character check.
+      def lex_floating_suffix
+        ch = current_char
+        if ch == "f" || ch == "F"
+          advance
+          "f"
+        elsif ch == "l" || ch == "L"
+          advance
+          "l"
+        else
+          ""
+        end
       end
 
       # Consumes an integer constant's u/U and l/L suffix run and returns it in
@@ -320,6 +414,20 @@ module Rubycc
           column: column,
           source_line: source_line_for(line),
           base: base,
+          suffix: suffix
+        )
+      end
+
+      # A :float token carrying the folded Ruby Float value and the normalized
+      # floating suffix the parser fixes the constant's type from.
+      def make_float_token(value, suffix, line, column)
+        Token.new(
+          type: :float,
+          value: value,
+          filename: @filename,
+          line: line,
+          column: column,
+          source_line: source_line_for(line),
           suffix: suffix
         )
       end

@@ -414,4 +414,36 @@ class TestType < Minitest::Test
     assert_equal 24, Type::BuiltinVaList.size
     assert_equal Type::VaListTag, Type::BuiltinVaList.element
   end
+
+  # Step 24 Phase A: the floating types.
+  def test_float_predicates_and_size
+    assert_predicate Type::Float, :float?
+    assert_predicate Type::Float, :arithmetic?
+    refute_predicate Type::Float, :integer?
+    refute_predicate Type::Float, :pointer?
+    assert_equal 4, Type::Float.size
+    assert_equal 4, Type::Float.alignment
+    assert_equal "float", Type::Float.to_s
+  end
+
+  def test_double_predicates_and_size
+    assert_predicate Type::Double, :float?
+    assert_predicate Type::Double, :arithmetic?
+    refute_predicate Type::Double, :integer?
+    assert_equal 8, Type::Double.size
+    assert_equal 8, Type::Double.alignment
+    assert_equal "double", Type::Double.to_s
+  end
+
+  def test_float_and_double_are_distinct_types
+    refute_equal Type::Float, Type::Double
+    assert_equal Type::Float, Type::Float
+  end
+
+  def test_integer_and_pointer_types_are_not_float
+    refute_predicate Type::Int, :float?
+    refute_predicate Type::Long, :float?
+    refute_predicate Type::Pointer.new(Type::Double), :float?
+    refute_predicate Type::VaListTag, :float?
+  end
 end

@@ -397,4 +397,73 @@ class TestLexer < Minitest::Test
     error = assert_raises(Rubycc::CompileError) { lex("1z;") }
     assert_match(/invalid suffix on integer constant/, error.description)
   end
+
+  # --- floating constants (Step 24 Phase A) --------------------------------
+
+  def test_floating_constant_is_a_float_token
+    tok = lex("1.5;").first
+    assert_equal :float, tok.type
+    assert_in_delta 1.5, tok.value, 1e-12
+    assert_kind_of Float, tok.value
+    assert_equal "", tok.suffix
+  end
+
+  def test_trailing_dot_floating_constant
+    tok = lex("1.;").first
+    assert_equal :float, tok.type
+    assert_in_delta 1.0, tok.value, 1e-12
+  end
+
+  def test_leading_dot_floating_constant
+    tok = lex(".5;").first
+    assert_equal :float, tok.type
+    assert_in_delta 0.5, tok.value, 1e-12
+  end
+
+  def test_exponent_floating_constant
+    tok = lex("1e3;").first
+    assert_equal :float, tok.type
+    assert_in_delta 1000.0, tok.value, 1e-9
+  end
+
+  def test_signed_exponent_floating_constant
+    tok = lex("1.5e-2;").first
+    assert_equal :float, tok.type
+    assert_in_delta 0.015, tok.value, 1e-12
+  end
+
+  def test_float_suffix_marks_single_precision
+    tok = lex("1.5f;").first
+    assert_equal :float, tok.type
+    assert_equal "f", tok.suffix
+  end
+
+  def test_long_double_suffix_is_recorded
+    tok = lex("1.5L;").first
+    assert_equal :float, tok.type
+    assert_equal "l", tok.suffix
+  end
+
+  def test_member_access_dot_is_not_a_floating_constant
+    types = lex("s.m").map(&:type)
+    assert_equal %i[ident punct ident eof], types
+  end
+
+  def test_octal_looking_decimal_float_is_floating
+    # "08.5" is the float 8.5, not an octal integer (the '8' would be illegal
+    # octal); the floating check runs before the octal one.
+    tok = lex("08.5;").first
+    assert_equal :float, tok.type
+    assert_in_delta 8.5, tok.value, 1e-12
+  end
+
+  def test_hexadecimal_floating_constant_raises
+    error = assert_raises(Rubycc::CompileError) { lex("0x1p3;") }
+    assert_match(/hexadecimal floating constants are not supported yet/, error.description)
+  end
+
+  def test_exponent_without_digits_raises
+    error = assert_raises(Rubycc::CompileError) { lex("1e;") }
+    assert_match(/exponent has no digits/, error.description)
+  end
 end

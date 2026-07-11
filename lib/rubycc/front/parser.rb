@@ -158,7 +158,7 @@ module Rubycc
       # into a single Rubycc::Type. "void" is only ever valid as a function's
       # return type or as the target of a pointer; every other use is rejected
       # by #reject_void_type.
-      DECL_SPECIFIER_KEYWORDS = %w[void char short int long signed unsigned _Bool].freeze
+      DECL_SPECIFIER_KEYWORDS = %w[void char short int long signed unsigned _Bool float double].freeze
 
       # The storage-class specifiers (6.7.1): at most one may appear in a
       # declaration. "typedef", "static" and "extern" are recorded in
@@ -469,6 +469,17 @@ module Rubycc
 
         return normalize_standalone(Type::Void, "void", specs, tok) if counts["void"].positive?
         return normalize_standalone(Type::Bool, "_Bool", specs, tok) if counts["_Bool"].positive?
+        return normalize_standalone(Type::Float, "float", specs, tok) if counts["float"].positive?
+        # `double` stands alone or pairs with a single `long` ("long double",
+        # treated as `double` here); any other keyword, a second `double` or a
+        # second `long` is an ill-formed combination.
+        if counts["double"].positive?
+          non_long = specs.reject { |s| s == "long" }
+          unless non_long == ["double"] && counts["long"] <= 1
+            error_at(tok, "cannot combine 'double' with other type specifiers")
+          end
+          return Type::Double
+        end
 
         signed = counts["signed"].positive?
         unsigned = counts["unsigned"].positive?
@@ -1878,6 +1889,12 @@ module Rubycc
         if tok.type == :num
           advance
           AST::IntLit.new(tok.value, tok, integer_literal_type(tok.value, tok.base, tok.suffix, tok))
+        elsif tok.type == :float
+          advance
+          # The suffix (from the lexer) fixes the constant's type: "f"/"F" is
+          # float, everything else (plain, or "l"/"L" long double) is double.
+          type = tok.suffix == "f" ? Type::Float : Type::Double
+          AST::FloatLit.new(tok.value, type, tok)
         elsif tok.type == :string
           advance
           AST::StringLit.new(tok.value, tok)

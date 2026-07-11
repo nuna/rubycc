@@ -1264,4 +1264,58 @@ class TestDiagnostics < Minitest::Test
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/redefinition of 'g'/, error.description)
   end
+
+  # --- floating types (Step 24 Phase A) ------------------------------------
+
+  def test_hexadecimal_floating_constant_is_rejected
+    source = "int main(void) { double d = 0x1p3; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/hexadecimal floating constants are not supported yet/, error.description)
+  end
+
+  def test_modulo_on_a_floating_operand_is_a_constraint_violation
+    source = "int main(void) { double d = 1.5; return (int)(d % 2); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_bitwise_and_on_a_floating_operand_is_a_constraint_violation
+    source = "int main(void) { double d = 1.5; return (int)(d & 1); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  def test_shift_on_a_floating_operand_is_a_constraint_violation
+    source = "int main(void) { double d = 1.5; return (int)(d << 1); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid operands to binary expression/, error.description)
+  end
+
+  # float is of promotable type: the default argument promotions widen it to
+  # double at the call, so va_arg(float) would read the wrong width. double is
+  # the type the caller must fetch (and is admissible, see the execution tests).
+  def test_va_arg_of_float_type_is_rejected_as_promotable
+    source = "int f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); " \
+             "return (int)__builtin_va_arg(ap, float); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/second argument to 'va_arg' is of promotable type 'float'/, error.description)
+  end
+
+  def test_unsigned_long_to_floating_conversion_is_deferred
+    source = "int main(void) { unsigned long u = 5; double d = u; return (int)d; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/conversion between 'unsigned long' and a floating type is not supported yet/, error.description)
+  end
+
+  def test_casting_a_floating_value_to_a_pointer_is_rejected
+    source = "int main(void) { double d = 1.5; int *p = (int *)d; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/cannot cast 'double' to 'int \*'/, error.description)
+  end
+
+  def test_double_combined_with_another_type_specifier_is_rejected
+    source = "int main(void) { unsigned double d; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/cannot combine 'double' with other type specifiers/, error.description)
+  end
 end

@@ -1580,6 +1580,84 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
+  # float/double in-function arithmetic (Step 24 Phase A), each checked
+  # bit-for-bit against gcc's exit code. Every case keeps its floating work
+  # inside main (Phase A crosses no call boundary), casts the result to int
+  # before returning, and stays within a 0..255 exit code. Coverage: the four
+  # arithmetic operators for float and for double, all six comparisons, the
+  # int<->float<->double conversions in both directions, unary minus, floating
+  # conditions (if / while / && / || / ?: / !), mixed int-and-double
+  # expressions, sizeof, casts, the f suffix, exponent notation and the
+  # leading/trailing-dot literal forms.
+  FLOAT_ARITHMETIC_DIFFERENTIAL_SOURCES = [
+    # Double four-function arithmetic.
+    "int main(void) { double a = 3.5; double b = 2.0; return (int)(a + b); }",
+    "int main(void) { double a = 3.5; double b = 2.0; return (int)(a - b); }",
+    "int main(void) { double a = 3.5; double b = 2.0; return (int)(a * b); }",
+    "int main(void) { double a = 9.0; double b = 2.0; return (int)(a / b); }",
+    # Float four-function arithmetic (the f suffix, single precision).
+    "int main(void) { float a = 1.5f; float b = 2.5f; return (int)(a + b); }",
+    "int main(void) { float a = 5.5f; float b = 2.0f; return (int)(a - b); }",
+    "int main(void) { float a = 2.5f; float b = 3.0f; return (int)(a * b); }",
+    "int main(void) { float a = 7.5f; float b = 2.5f; return (int)(a / b); }",
+    # All six double comparisons, each a 0/1 result.
+    "int main(void) { double a = 1.5; double b = 2.5; return a < b; }",
+    "int main(void) { double a = 1.5; double b = 2.5; return a > b; }",
+    "int main(void) { double a = 2.5; double b = 2.5; return a <= b; }",
+    "int main(void) { double a = 2.5; double b = 2.5; return a >= b; }",
+    "int main(void) { double a = 2.5; double b = 2.5; return a == b; }",
+    "int main(void) { double a = 2.5; double b = 2.5; return a != b; }",
+    # Float comparisons.
+    "int main(void) { float a = 1.25f; float b = 1.5f; return a < b; }",
+    "int main(void) { float a = 1.5f; return a == 1.5f; }",
+    # int -> double -> int round trip, and float -> double widening.
+    "int main(void) { int i = 7; double d = i; return (int)(d * 2.0); }",
+    "int main(void) { double d = 3.9; int i = d; return i; }",
+    "int main(void) { float f = 1.25f; double d = f; return (int)(d * 4.0); }",
+    "int main(void) { double d = 2.5; float f = (float)d; return (int)(f * 2.0f); }",
+    # long -> double and char -> double conversions.
+    "int main(void) { long l = 5; double d = l; return (int)(d * 3.0); }",
+    "int main(void) { char c = 4; double d = c; return (int)(d + 0.5); }",
+    # unsigned int -> double: a value above the signed-int range converts
+    # correctly (the whole 0..2^32-1 range), the result scaled back into range.
+    "int main(void) { unsigned int u = 3000000000u; double d = u; return (int)(d / 100000000.0); }",
+    # Unary minus on double and on float (the sign-bit flip).
+    "int main(void) { double x = -2.5; return (int)(-x); }",
+    "int main(void) { float f = -1.5f; return (int)(-f * 2.0f); }",
+    # Floating values in every control condition.
+    "int main(void) { double d = 0.0; if (d) return 1; return 42; }",
+    "int main(void) { double d = 1.5; if (d) return 42; return 1; }",
+    "int main(void) { double d = 0.0; return !d; }",
+    "int main(void) { double d = 3.0; int n = 0; while (d > 0.5) { d = d - 1.0; n++; } return n; }",
+    "int main(void) { double a = 1.5; double b = 0.0; return (a > 1.0 && b < 1.0) ? 42 : 7; }",
+    "int main(void) { double a = 0.0; double b = 2.0; return (a > 1.0 || b > 1.0) ? 42 : 7; }",
+    "int main(void) { double d = 2.5; int r = d > 2.0 ? 10 : 20; return r; }",
+    # Mixed int-and-double expressions (the usual arithmetic conversions).
+    "int main(void) { int i = 3; return (int)(i + 2.5); }",
+    "int main(void) { int i = 10; double d = 4.0; return (int)(i / d); }",
+    "int main(void) { double d = 2.5; int i = 3; return (int)(d * i + 1); }",
+    # sizeof of the floating types.
+    "int main(void) { return sizeof(float) + sizeof(double); }",
+    "int main(void) { float f; double d; return sizeof f + sizeof d; }",
+    # Exponent and leading/trailing-dot literal forms.
+    "int main(void) { double d = 1e2; return (int)d; }",
+    "int main(void) { double d = 1.5e-1; return (int)(d * 100.0); }",
+    "int main(void) { double d = .5; return (int)(d * 10.0); }",
+    "int main(void) { double d = 1.; return (int)(d * 3.0); }",
+    # A compound assignment and a running sum on a double accumulator.
+    "int main(void) { double d = 1.0; d += 2.5; d *= 2.0; return (int)d; }",
+    "int main(void) { double s = 0.0; for (int i = 0; i < 4; i++) s = s + 0.25; return (int)(s * 4.0); }"
+  ].freeze
+
+  def test_float_arithmetic_matches_gcc_exit_codes
+    FLOAT_ARITHMETIC_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
   # The extended integer types (Step 17): unsigned wrap-around, signed vs.
   # unsigned division/remainder/shift/comparison, a wide long computation that
   # overflows 32 bits, hexadecimal/octal literals and suffixed literals,
@@ -2123,6 +2201,113 @@ class TestExecutionHarness < Minitest::Test
 
   def test_variadic_definitions_match_gcc
     VARIADIC_DEFINITION_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc = program_output(source, compiler: :rubycc)
+      gcc = program_output(source, compiler: :gcc)
+      assert_equal gcc, rubycc,
+                   "rubycc and gcc disagree on [exit, stdout] for: #{source}"
+    end
+  end
+
+  # The float/double call boundary (Step 24 Phase B): the System V xmm argument
+  # and return convention. Every case keeps its result an integer 0..255 exit
+  # code, casting the floating value before returning, and crosses a real call
+  # boundary so the xmm register/stack routing, the al xmm-count, the float/
+  # double return in xmm0, the register-save-area SSE walk of va_arg(double) and
+  # the .data/.bss floating globals are all exercised against gcc.
+  FLOAT_CALL_DIFFERENTIAL_SOURCES = [
+    # A double and a float parameter with a matching return.
+    "double add(double a, double b) { return a + b; } " \
+    "int main(void) { return (int)add(1.5, 2.25); }",
+    "float scale(float x, int n) { return x * (float)n; } " \
+    "int main(void) { return (int)scale(1.25f, 4); }",
+    # An int argument converts to the double parameter at the call.
+    "double twice(double x) { return x * 2.0; } " \
+    "int main(void) { return (int)twice(21); }",
+    # Nine arguments alternating int and double: the two classes draw from their
+    # own register sequences (five of six GP, four of eight xmm), so each class's
+    # walk must skip over the other's arguments.
+    "double mix9(int a, double b, int c, double d, int e, double f, int g, double h, int i) { " \
+    "return b + d + f + h + (double)(a + c + e + g + i); } " \
+    "int main(void) { return (int)mix9(1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5); }",
+    # Nine doubles: the ninth spills past xmm0..7 onto the stack.
+    "double sum9(double a, double b, double c, double d, double e, double f, double g, double h, double i) { " \
+    "return a + b + c + d + e + f + g + h + i; } " \
+    "int main(void) { return (int)sum9(1, 2, 3, 4, 5, 6, 7, 8, 9); }",
+    # Both classes overflow at once (seven ints, nine doubles, then one more
+    # int): the seventh int, ninth double and final int all land on the stack,
+    # where they must keep their left-to-right argument order interleaved.
+    "double spill2(int a, int b, int c, int d, int e, int f, int g, " \
+    "double p, double q, double r, double s, double t, double u, double v, double w, double x, int y) { " \
+    "return p + q + r + s + t + u + v + w + x + (double)(a + b + c + d + e + f + g + y); } " \
+    "int main(void) { return (int)spill2(1, 2, 3, 4, 5, 6, 7, " \
+    "0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9); }",
+    # A chain of double-returning calls used within an expression.
+    "double sq(double x) { return x * x; } double half(double x) { return x / 2.0; } " \
+    "int main(void) { return (int)(half(sq(4.0)) + sq(2.0)); }",
+    # A double returned through a function pointer, and a float through one.
+    "double addd(double a, double b) { return a + b; } " \
+    "int main(void) { double (*fp)(double, double) = addd; return (int)fp(2.5, 3.5); }",
+    "float mulf(float a, float b) { return a * b; } " \
+    "int main(void) { float (*fp)(float, float) = mulf; return (int)fp(1.5f, 4.0f); }",
+    # va_arg(double) over a variadic function: four doubles averaged, all in xmm.
+    "double avg(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); " \
+    "double t = 0.0; int i; for (i = 0; i < n; i = i + 1) t = t + __builtin_va_arg(ap, double); " \
+    "__builtin_va_end(ap); return t / (double)n; } " \
+    "int main(void) { return (int)avg(4, 2.0, 4.0, 6.0, 8.0); }",
+    # A variadic call mixing int and double variable arguments: gp_offset and
+    # fp_offset advance independently, so each va_arg reaches its own slot.
+    "double blend(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); " \
+    "int a = __builtin_va_arg(ap, int); double b = __builtin_va_arg(ap, double); " \
+    "int c = __builtin_va_arg(ap, int); double d = __builtin_va_arg(ap, double); " \
+    "__builtin_va_end(ap); return b + d + (double)(a + c); } " \
+    "int main(void) { return (int)blend(0, 10, 1.5, 20, 2.5); }",
+    # Nine variadic doubles: the ninth is read from the stack overflow area.
+    "double vsum9(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); " \
+    "double t = 0.0; int i; for (i = 0; i < n; i = i + 1) t = t + __builtin_va_arg(ap, double); " \
+    "__builtin_va_end(ap); return t; } " \
+    "int main(void) { return (int)vsum9(9, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0); }",
+    # float promotes to double in the variable part, fetched as double.
+    "double firstd(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); " \
+    "double v = __builtin_va_arg(ap, double); __builtin_va_end(ap); return v; } " \
+    "int main(void) { float f = 3.5f; return (int)firstd(1, f); }",
+    # Floating globals and a block-scope static: an initialized double/float lands
+    # in .data, an uninitialized one in .bss, and a negative folds through unary
+    # minus.
+    "double g = 1.5; float f = 2.5f; static double sg = -3.25; " \
+    "int main(void) { static float lf = 0.5f; return (int)(g + f + sg + lf); }",
+    "double z; float zf; int main(void) { return (int)(z + zf) + 42; }",
+    # An integer constant initializing a floating global (int -> double).
+    "double d = 7; int main(void) { return (int)d; }"
+  ].freeze
+
+  def test_float_call_boundary_matches_gcc_exit_codes
+    FLOAT_CALL_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
+  # printf with floating conversions (Step 24 Phase B): a float argument promotes
+  # to double in the variable part and al carries the xmm-argument count, so the
+  # formatted stdout must match gcc byte-for-byte. Exit codes (printf's byte
+  # count) stay small.
+  FLOAT_PRINTF_DIFFERENTIAL_SOURCES = [
+    # %f and %g on double literals, alongside an int (al = 2 xmm registers).
+    "int printf(const char *, ...); " \
+    "int main(void) { return printf(\"%f %g %d\\n\", 1.5, 2.5, 7); }",
+    # A float argument promotes to double for %f; a double prints too.
+    "int printf(const char *, ...); " \
+    "int main(void) { float f = 3.5f; double d = 2.25; return printf(\"%.2f %.2f\\n\", f, d); }",
+    # Many floating arguments, past the count a single line of xmm registers
+    # would hold in a fixed call, so al reports the full eight-or-fewer here.
+    "int printf(const char *, ...); " \
+    "int main(void) { return printf(\"%g %g %g %g %g\\n\", 1.0, 2.0, 3.0, 4.0, 5.0); }"
+  ].freeze
+
+  def test_float_printf_matches_gcc
+    FLOAT_PRINTF_DIFFERENTIAL_SOURCES.each do |source|
       rubycc = program_output(source, compiler: :rubycc)
       gcc = program_output(source, compiler: :gcc)
       assert_equal gcc, rubycc,

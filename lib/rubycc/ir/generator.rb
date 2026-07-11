@@ -186,13 +186,53 @@ module Rubycc
       # (see #pack_global_pointer). Any other slot type has no constant form.
       def pack_global_scalar(offset, type, value, image, relocations)
         if type.integer?
-          folded = fold_global_constant(value)
+          # A floating constant assigned to an integer global truncates toward
+          # zero (6.3.1.4); every other integer initializer folds as an integer
+          # constant expression.
+          folded = floating_constant?(value) ? fold_global_float(value).to_i : fold_global_constant(value)
           image[offset, type.size] = pack_integer(folded, type.size)
         elsif type.pointer?
           pack_global_pointer(offset, type, value, image, relocations)
+        elsif type.float?
+          # A floating global folds to its IEEE754 image (single for float,
+          # double for double). A block-scope `static` reaches here through the
+          # same global-initializer path, so it is covered too.
+          image[offset, type.size] = pack_float(fold_global_float(value), type.size)
         else
           error_at(value.token, "unsupported initializer for global variable")
         end
+      end
+
+      # Folds a global's floating initializer to a Ruby Float: a floating literal
+      # is its value, a unary minus negates its operand, and an integer constant
+      # expression converts to its floating value (int -> float/double). Anything
+      # else is not a constant a floating global admits.
+      def fold_global_float(node)
+        case node
+        when Front::AST::FloatLit
+          node.value
+        when Front::AST::Unary
+          error_at(node.token, "initializer element is not a constant") unless node.op == :neg
+
+          -fold_global_float(node.operand)
+        else
+          Float(fold_global_constant(node))
+        end
+      end
+
+      # Whether `node` is a floating constant (a floating literal, possibly under
+      # a unary minus), so an integer global can tell a truncating float
+      # initializer from an integer constant expression.
+      def floating_constant?(node)
+        node.is_a?(Front::AST::FloatLit) ||
+          (node.is_a?(Front::AST::Unary) && node.op == :neg && floating_constant?(node.operand))
+      end
+
+      # Packs a Ruby Float into `size` little-endian IEEE754 bytes: a double to
+      # eight ("E"), a float to four ("e"), matching how a floating value is
+      # stored in a slot so a load reads exactly these bits.
+      def pack_float(value, size)
+        size == 8 ? [value].pack("E") : [value].pack("e")
       end
 
       # Packs a global pointer slot. The address constants this subset admits
@@ -411,13 +451,30 @@ module Rubycc
           if @current_return_type.void?
             emit(:ret, a: nil)
           else
+            # A zero-bit slot reads as an integer 0, a +0.0f or a +0.0 alike, so
+            # a floating function's fall-off return still hands back a valid
+            # value; :ret's float width just routes it through xmm0.
             zero = new_vreg
             emit(:const, dst: zero, a: 0)
-            emit(:ret, a: zero)
+            emit(:ret, a: zero, size: (@current_return_type.size if @current_return_type.float?))
           end
         end
 
-        Function.new(func.name, @insts, @vreg_count, func.params.size, @stack_objects, linkage, func.variadic)
+        param_kinds = func.params.map { |param| argument_kind(param.type) }
+        Function.new(func.name, @insts, @vreg_count, func.params.size, @stack_objects, linkage,
+                     func.variadic, param_kinds)
+      end
+
+      # Classifies a type for the System V AMD64 argument/return convention: a
+      # `float` is an :sse4 (a scalar single in an xmm register), a `double` an
+      # :sse8 (a scalar double), and every integer, pointer or other scalar a
+      # :gp (an integer register). The backend uses this to route each parameter
+      # and argument to a register class, and to mark a float/double return.
+      def argument_kind(type)
+        return :sse4 if type.float? && type.size == 4
+        return :sse8 if type.float? && type.size == 8
+
+        :gp
       end
 
       def gen_statement(stmt)
@@ -765,7 +822,11 @@ module Rubycc
         unless compatible_assignment?(@current_return_type, node.expr, value_type)
           error_at(node.token, "incompatible return type")
         end
-        emit(:ret, a: convert_for_assignment(value, value_type, @current_return_type))
+        converted = convert_for_assignment(value, value_type, @current_return_type, token: node.token)
+        # A floating return travels in xmm0, so :ret carries the float width
+        # (4/8) to select movss/movsd; every other return goes back in rax
+        # (size nil).
+        emit(:ret, a: converted, size: (@current_return_type.size if @current_return_type.float?))
       end
 
       def gen_variable_decl(decl)
@@ -860,7 +921,7 @@ module Rubycc
         unless compatible_assignment?(decl.type, value_node, value_type)
           error_at(decl.token, "incompatible types in assignment")
         end
-        emit(:copy, dst: vreg, a: convert_for_assignment(value, value_type, decl.type))
+        emit(:copy, dst: vreg, a: convert_for_assignment(value, value_type, decl.type, token: decl.token))
       end
 
       # An aggregate local (array or struct). A structural initializer (a brace
@@ -926,7 +987,7 @@ module Rubycc
             unless compatible_assignment?(entry.type, entry.value, value_type)
               error_at(entry.value.token, "incompatible types in initialization")
             end
-            converted = convert_for_assignment(value, value_type, entry.type)
+            converted = convert_for_assignment(value, value_type, entry.type, token: entry.value.token)
             emit(:store, a: addr, b: converted, size: entry.type.size)
           when Front::StringInit
             write_string_bytes(base, entry.offset, entry.bytes)
@@ -985,6 +1046,8 @@ module Rubycc
           # valid, a narrower one a 32-bit immediate.
           emit(:const, dst: dst, a: node.value, size: (8 if node.type.size == 8))
           [dst, node.type]
+        when Front::AST::FloatLit
+          gen_float_literal(node)
         when Front::AST::StringLit
           gen_string_literal(node)
         when Front::AST::Unary
@@ -1078,12 +1141,20 @@ module Rubycc
         type = node.type
         require_va_arg_type(type, node.token)
 
-        gp_field = offset_address(ap, Type::VaListTag.member("gp_offset").offset)
         result_addr = new_vreg
         overflow_label = new_label
         end_label = new_label
 
-        emit_va_arg_dispatch(ap, gp_field, result_addr, overflow_label, end_label)
+        # A double walks the SSE side of the register-save area (fp_offset), an
+        # integer/pointer the GP side (gp_offset); the two counters advance
+        # independently, so a mixed argument list reaches each argument's slot.
+        if type.float?
+          fp_field = offset_address(ap, Type::VaListTag.member("fp_offset").offset)
+          emit_va_arg_fp_dispatch(ap, fp_field, result_addr, overflow_label, end_label)
+        else
+          gp_field = offset_address(ap, Type::VaListTag.member("gp_offset").offset)
+          emit_va_arg_dispatch(ap, gp_field, result_addr, overflow_label, end_label)
+        end
 
         dst = new_vreg
         emit_scalar_load(dst, result_addr, type)
@@ -1111,6 +1182,44 @@ module Rubycc
         emit(:add, dst: reg_addr, a: reg_save, b: gp_wide, size: 8)
         emit(:copy, dst: result_addr, a: reg_addr)
         emit(:store, a: gp_field, b: bump(gp, 8), size: 4)
+        emit(:jump, a: end_label)
+
+        # Overflow arm: addr = overflow_arg_area; overflow_arg_area += 8.
+        emit(:label, a: overflow_label)
+        overflow_field = offset_address(ap, Type::VaListTag.member("overflow_arg_area").offset)
+        overflow = new_vreg
+        emit(:load, dst: overflow, a: overflow_field, size: 8)
+        emit(:copy, dst: result_addr, a: overflow)
+        emit(:store, a: overflow_field, b: bump(overflow, 8, size: 8), size: 8)
+        emit(:label, a: end_label)
+      end
+
+      # The SSE counterpart of #emit_va_arg_dispatch, for a va_arg(double). It
+      # reads fp_offset, which the register-save area seeds at 48 (past the six
+      # GP slots) and steps by 16 (an xmm slot is 16 bytes wide) per double: while
+      # it is below 176 (48 + 8*16, the end of the eight saved xmm registers) the
+      # argument still sits in a saved register (reg_save_area + fp_offset), and
+      # once it reaches 176 the argument has spilled onto the stack
+      # (overflow_arg_area, advanced by 8 like a GP overflow, a double occupying
+      # one eightbyte there). Both arms leave the argument's address in
+      # `result_addr` for the size-8 load the merge point performs.
+      def emit_va_arg_fp_dispatch(ap, fp_field, result_addr, overflow_label, end_label)
+        fp = new_vreg
+        emit(:uload, dst: fp, a: fp_field, size: 4)
+        limit = new_vreg
+        emit(:const, dst: limit, a: 176)
+        below = new_vreg
+        emit(:ult, dst: below, a: fp, b: limit)
+        emit(:jump_if_zero, a: below, b: overflow_label)
+
+        # Register arm: addr = reg_save_area + fp; fp_offset += 16.
+        reg_save = new_vreg
+        emit(:load, dst: reg_save, a: offset_address(ap, Type::VaListTag.member("reg_save_area").offset), size: 8)
+        fp_wide = convert(fp, from: Type::UInt, to: Type::Long)
+        reg_addr = new_vreg
+        emit(:add, dst: reg_addr, a: reg_save, b: fp_wide, size: 8)
+        emit(:copy, dst: result_addr, a: reg_addr)
+        emit(:store, a: fp_field, b: bump(fp, 16), size: 4)
         emit(:jump, a: end_label)
 
         # Overflow arm: addr = overflow_arg_area; overflow_arg_area += 8.
@@ -1166,7 +1275,13 @@ module Rubycc
         if type.integer? && type.size < 4
           error_at(token, "second argument to 'va_arg' is of promotable type '#{type}'")
         end
-        return if (type.integer? && type.size >= 4) || type.pointer?
+        # `float` is of promotable type too: the default argument promotions
+        # widened it to `double` at the call, so va_arg(float) would read the
+        # wrong width — the caller must use `double`. (double itself is fine.)
+        if type.float? && type.size == 4
+          error_at(token, "second argument to 'va_arg' is of promotable type '#{type}'")
+        end
+        return if (type.integer? && type.size >= 4) || type.pointer? || (type.float? && type.size == 8)
 
         error_at(token, "second argument to 'va_arg' has type '#{type}', which va_arg cannot yield")
       end
@@ -1245,6 +1360,38 @@ module Rubycc
         dst = new_vreg
         emit(:func_addr, dst: dst, a: name)
         [dst, Type::Pointer.new(function_type_of(sig))]
+      end
+
+      # A floating literal. No dedicated IR op exists: the constant is lowered to
+      # its IEEE754 bit pattern (single for float, double for double) loaded as
+      # an ordinary 64-bit integer immediate, which the value representation
+      # keeps intact in the slot's low bytes until a floating op reads it back
+      # through movss/movsd. The whole slot is loaded (size 8) even for a float,
+      # whose pattern occupies only the low 32 bits with the high half zero.
+      def gen_float_literal(node)
+        dst = new_vreg
+        emit(:const, dst: dst, a: float_bit_pattern(node.value, node.type), size: 8)
+        [dst, node.type]
+      end
+
+      # The IEEE754 bit pattern of a Ruby Float as an unsigned Integer, in the
+      # width `type` calls for: a double packs to 8 bytes ("E" little-endian
+      # double), a float to 4 ("e" little-endian single), each read back as a
+      # little-endian unsigned integer so :const materializes exactly those bits.
+      def float_bit_pattern(value, type)
+        if type.size == 8
+          [value].pack("E").unpack1("Q<")
+        else
+          [value].pack("e").unpack1("L<")
+        end
+      end
+
+      # Materializes a floating constant of `type` into a fresh vreg, used by the
+      # truth/zero tests that compare a floating value against 0.0.
+      def emit_float_const(value, type)
+        dst = new_vreg
+        emit(:const, dst: dst, a: float_bit_pattern(value, type), size: 8)
+        dst
       end
 
       # A string literal decays, in every expression context, to a char *
@@ -1430,12 +1577,22 @@ module Rubycc
         error_at(node.token, "cannot cast '#{value_type}' to '#{target}'")
       end
 
-      # A cast to an arithmetic type. An integer source is converted to the
-      # destination type (narrowing, widening or a sign change, per #convert); a
-      # pointer source is reinterpreted as an unsigned 64-bit value and then
-      # converted to the destination width. A struct source has no arithmetic
-      # value.
+      # A cast to an arithmetic type. When a floating type is on either side the
+      # source must itself be arithmetic and #convert lowers the int<->float or
+      # float<->float change. Otherwise an integer source is converted to the
+      # destination type (narrowing, widening or a sign change, per #convert),
+      # and a pointer source is reinterpreted as an unsigned 64-bit value and
+      # then converted to the destination width; a struct source has no
+      # arithmetic value.
       def gen_cast_to_arithmetic(node, target, value, value_type)
+        if target.float? || value_type.float?
+          # A pointer has no floating value and a struct no arithmetic one; only
+          # an arithmetic source converts to (or from) a floating type.
+          unless value_type.arithmetic?
+            error_at(node.token, "cannot cast '#{value_type}' to '#{target}'")
+          end
+          return [convert(value, from: value_type, to: target, token: node.token), target]
+        end
         source_type = value_type.pointer? ? Type::ULong : value_type
         unless source_type.integer?
           error_at(node.token, "cannot cast '#{value_type}' to '#{target}'")
@@ -1487,7 +1644,7 @@ module Rubycc
         result_type = binary_result_type(op, lhs_type, rhs_type, token)
 
         if comparison_op?(op)
-          gen_comparison(op, lhs, lhs_type, rhs, rhs_type)
+          gen_comparison(op, lhs, lhs_type, rhs, rhs_type, token)
         elsif SHIFT_OPS.include?(op)
           gen_shift(op, lhs, lhs_type, rhs, result_type)
         elsif lhs_type.pointer? && rhs_type.pointer?
@@ -1497,6 +1654,8 @@ module Rubycc
         elsif rhs_type.pointer?
           # int + pointer (subtraction in this order was already rejected).
           gen_pointer_int_arith(op, rhs, lhs, lhs_type, rhs_type)
+        elsif result_type.float?
+          gen_float_arithmetic(op, lhs, lhs_type, rhs, rhs_type, result_type, token)
         else
           gen_integer_arithmetic(op, lhs, lhs_type, rhs, rhs_type, result_type)
         end
@@ -1504,24 +1663,44 @@ module Rubycc
 
       # A comparison, yielding int 0/1. Two pointers compare as full 64-bit
       # values: equality with the sign-independent :eq/:ne, ordering with the
-      # unsigned :ult family, since an address is unsigned. Two integers are
-      # first brought to their common type (6.3.1.8), then compared with the
-      # signed or unsigned setcc that the common type's signedness selects; the
-      # comparison is 64-bit only when the common type is 8 bytes.
-      def gen_comparison(op, lhs, lhs_type, rhs, rhs_type)
+      # unsigned :ult family, since an address is unsigned. Two arithmetic
+      # operands are first brought to their common type (6.3.1.8); a floating
+      # common type compares with the NaN-aware f-prefixed op (:feq..:fge), an
+      # integer one with the signed or unsigned setcc its signedness selects
+      # (64-bit only when the common type is 8 bytes). `token` locates an
+      # unsupported-floating-conversion diagnostic a mixed unsigned-long/floating
+      # comparison would raise.
+      def gen_comparison(op, lhs, lhs_type, rhs, rhs_type, token)
         dst = new_vreg
         if lhs_type.pointer? && rhs_type.pointer?
           cmp = EQUALITY_OPS.include?(op) ? op : UNSIGNED_COMPARISONS.fetch(op)
           emit(cmp, dst: dst, a: lhs, b: rhs, size: 8)
         else
           common = common_arithmetic_type(lhs_type, rhs_type)
-          l = convert(lhs, from: lhs_type, to: common)
-          r = convert(rhs, from: rhs_type, to: common)
-          cmp = op
-          cmp = UNSIGNED_COMPARISONS.fetch(op) if common.unsigned? && !EQUALITY_OPS.include?(op)
-          emit(cmp, dst: dst, a: l, b: r, size: (8 if common.size == 8))
+          l = convert(lhs, from: lhs_type, to: common, token: token)
+          r = convert(rhs, from: rhs_type, to: common, token: token)
+          if common.float?
+            emit(FLOAT_COMPARISONS.fetch(op), dst: dst, a: l, b: r, size: common.size)
+          else
+            cmp = op
+            cmp = UNSIGNED_COMPARISONS.fetch(op) if common.unsigned? && !EQUALITY_OPS.include?(op)
+            emit(cmp, dst: dst, a: l, b: r, size: (8 if common.size == 8))
+          end
         end
         [dst, Type::Int]
+      end
+
+      # Floating arithmetic (+ - * /). Both operands are converted to the common
+      # floating type (the result type), then combined with the width-selecting
+      # f-prefixed op. Reached only for :add/:sub/:mul/:div; % and the bitwise
+      # operators reject a floating operand in #binary_result_type. `token`
+      # locates an unsupported-conversion diagnostic.
+      def gen_float_arithmetic(op, lhs, lhs_type, rhs, rhs_type, result_type, token)
+        l = convert(lhs, from: lhs_type, to: result_type, token: token)
+        r = convert(rhs, from: rhs_type, to: result_type, token: token)
+        dst = new_vreg
+        emit(FLOAT_ARITHMETIC.fetch(op), dst: dst, a: l, b: r, size: result_type.size)
+        [dst, result_type]
       end
 
       # A shift promotes each operand on its own — never the usual arithmetic
@@ -1626,9 +1805,11 @@ module Rubycc
           gen_logical_not(node)
         when :neg
           operand, operand_type = gen_value(node.operand)
-          unless operand_type.integer?
+          unless operand_type.arithmetic?
             error_at(node.token, "wrong type argument to unary minus")
           end
+          return gen_float_negate(operand, operand_type) if operand_type.float?
+
           # Unary minus promotes its operand and negates in the promoted type,
           # so "-x" of a long is long (negated 64-bit) and of a char is int.
           result_type = integer_promote(operand_type)
@@ -1643,6 +1824,20 @@ module Rubycc
         end
       end
 
+      # Floating unary minus "-x": no floating negate op exists, so the sign bit
+      # is flipped with an integer :xor of the format's sign mask (bit 31 of a
+      # float, bit 63 of a double), operating on the whole 64-bit slot. This is
+      # exact for every value, ±0.0 and NaN included, since only the sign bit
+      # changes. The result keeps the operand's floating type (no promotion).
+      def gen_float_negate(operand, type)
+        mask = type.size == 8 ? 0x8000_0000_0000_0000 : 0x8000_0000
+        mask_reg = new_vreg
+        emit(:const, dst: mask_reg, a: mask, size: 8)
+        dst = new_vreg
+        emit(:xor, dst: dst, a: operand, b: mask_reg, size: 8)
+        [dst, type]
+      end
+
       # Logical negation "!x" is lowered to the comparison "x == 0", reusing
       # the :eq path rather than introducing a dedicated IR opcode. Its operand
       # is a truth value, so a pointer is allowed too ("!p" is "p is null"),
@@ -1650,6 +1845,14 @@ module Rubycc
       def gen_logical_not(node)
         operand, operand_type = gen_value(node.operand)
         require_scalar_for_truth(operand_type, node.operand.token)
+        # A floating "!x" is "x == 0.0" with the NaN-aware :feq (a NaN is not
+        # equal to 0.0, so "!NaN" is 0), mirroring the integer "x == 0".
+        if operand_type.float?
+          zero = emit_float_const(0.0, operand_type)
+          dst = new_vreg
+          emit(:feq, dst: dst, a: operand, b: zero, size: operand_type.size)
+          return [dst, Type::Int]
+        end
         zero = new_vreg
         emit(:const, dst: zero, a: 0)
         dst = new_vreg
@@ -1769,7 +1972,7 @@ module Rubycc
           dest, = gen_variable_ref(target)
           return gen_struct_copy(dest, value, local.type)
         end
-        stored = store_scalar_variable(local, value, value_type)
+        stored = store_scalar_variable(local, value, value_type, token: node.token)
         [stored, local.type]
       end
 
@@ -1789,12 +1992,14 @@ module Rubycc
 
       # Writes `value_vreg` (of type `value_type`) into a scalar variable,
       # converting it to the variable's type first (the usual assignment
-      # conversion — a narrowing, widening or sign change). A local is a plain
-      # :copy into its slot; a global is a :store through its address, the store
-      # width following its type. Returns the vreg holding the stored (converted)
-      # value, which is the assignment expression's value.
-      def store_scalar_variable(local, value_vreg, value_type)
-        converted = convert_for_assignment(value_vreg, value_type, local.type)
+      # conversion — a narrowing, widening, sign change or integer<->floating
+      # format change). A local is a plain :copy into its slot; a global is a
+      # :store through its address, the store width following its type. Returns
+      # the vreg holding the stored (converted) value, which is the assignment
+      # expression's value. `token` locates a diagnostic for an unsupported
+      # floating conversion.
+      def store_scalar_variable(local, value_vreg, value_type, token: nil)
+        converted = convert_for_assignment(value_vreg, value_type, local.type, token: token)
         if local.global
           addr = new_vreg
           emit(:global_addr, dst: addr, a: local.storage)
@@ -1881,12 +2086,10 @@ module Rubycc
       # A direct call to the named function, its signature already known.
       def gen_direct_call(node, name)
         sig = @signatures[name]
-        arg_vregs = lower_call_arguments(node, sig[:param_types], sig[:variadic], name)
+        args = lower_call_arguments(node, sig[:param_types], sig[:variadic], name)
         dst = new_vreg
-        # A variadic callee carries its fixed parameter count in `size` (non-nil
-        # marks the call variadic), which the backend turns into the al=0 the
-        # System V ABI wants (no xmm arguments in this subset).
-        emit(:call, dst: dst, a: name, b: arg_vregs, size: (sig[:param_types].size if sig[:variadic]))
+        emit(:call, dst: dst, a: name, b: args,
+                    size: call_size(sig[:variadic] ? sig[:param_types].size : nil, sig[:return_type]))
         [dst, sig[:return_type]]
       end
 
@@ -1898,13 +2101,26 @@ module Rubycc
       def gen_indirect_call(node)
         target, callee_type = gen_value(node.callee)
         func_type = called_function_type(callee_type, node.token)
-        arg_vregs = lower_call_arguments(node, func_type.param_types, func_type.variadic, nil)
+        args = lower_call_arguments(node, func_type.param_types, func_type.variadic, nil)
         dst = new_vreg
-        # `size` marks a variadic callee for the backend's al=0, exactly as in a
-        # direct call; the function pointer's own type supplies the flag.
-        emit(:call_indirect, dst: dst, a: target, b: arg_vregs,
-                             size: (func_type.param_types.size if func_type.variadic))
+        emit(:call_indirect, dst: dst, a: target, b: args,
+                             size: call_size(func_type.variadic ? func_type.param_types.size : nil,
+                                             func_type.return_type))
         [dst, func_type.return_type]
+      end
+
+      # Builds a call's `size` descriptor: a [fixed, ret] pair, or nil when both
+      # halves are. `fixed` is the callee's fixed parameter count for a variadic
+      # call (nil otherwise), which the backend turns into the al = xmm-count the
+      # ABI wants; `ret` is :sse4/:sse8 for a float/double result the backend
+      # reads back from xmm0, nil for an integer/pointer/void one it reads from
+      # rax.
+      def call_size(fixed, return_type)
+        ret = argument_kind(return_type)
+        ret = nil unless return_type.float?
+        return nil if fixed.nil? && ret.nil?
+
+        [fixed, ret]
       end
 
       # The FunctionType a call's callee names, or a diagnostic when the callee
@@ -1944,7 +2160,10 @@ module Rubycc
               suffix = name ? " of '#{name}'" : ""
               error_at(node.token, "incompatible type for argument #{i + 1}#{suffix}")
             end
-            convert_for_assignment(vreg, arg_type, param_types[i])
+            converted = convert_for_assignment(vreg, arg_type, param_types[i], token: node.token)
+            # A fixed argument's register class follows the parameter's own type
+            # (the value has already been converted to it).
+            [converted, argument_kind(param_types[i])]
           else
             promote_variadic_argument(vreg, arg_type, node.token)
           end
@@ -1952,19 +2171,24 @@ module Rubycc
       end
 
       # The default argument promotions applied to an argument in a variadic
-      # call's variable part (6.5.2.2p6): an integer narrower than int (char,
-      # short and their unsigned forms, and _Bool) widens to int, while int,
-      # long, their unsigned forms and any pointer pass through unchanged.
-      # (A floating type would promote double, but this subset has none.) A
-      # struct has no promoted form the callee could recover through va_arg in a
-      # register/stack layout this step models, so passing one is rejected.
+      # call's variable part (6.5.2.2p6), returning the [vreg, kind] pair the
+      # call lowering wants: an integer narrower than int (char, short and their
+      # unsigned forms, and _Bool) widens to int, a `float` widens to `double`
+      # (so it travels as an :sse8 in an xmm register, which al then counts),
+      # while int, long, their unsigned forms, double and any pointer pass
+      # through unchanged. A struct has no promoted form the callee could recover
+      # through va_arg in a register/stack layout this step models, so passing
+      # one is rejected.
       def promote_variadic_argument(vreg, arg_type, token)
         if arg_type.struct?
           error_at(token, "passing a struct to a variadic function is not supported yet")
         end
-        return vreg unless arg_type.integer?
+        # A float promotes to double; a double passes through. Either lands in an
+        # xmm register as an :sse8.
+        return [convert(vreg, from: arg_type, to: Type::Double, token: token), :sse8] if arg_type.float?
+        return [vreg, :gp] unless arg_type.integer?
 
-        convert(vreg, from: arg_type, to: integer_promote(arg_type))
+        [convert(vreg, from: arg_type, to: integer_promote(arg_type)), :gp]
       end
 
       # "lhs && rhs": short-circuit, so rhs is only evaluated when lhs is
@@ -2040,12 +2264,12 @@ module Rubycc
         emit(:jump_if_zero, a: cond, b: else_label)
 
         then_value, then_type = gen_value(node.then_expr)
-        emit(:copy, dst: result, a: convert_for_assignment(then_value, then_type, result_type))
+        emit(:copy, dst: result, a: convert_for_assignment(then_value, then_type, result_type, token: node.token))
         emit(:jump, a: end_label)
 
         emit(:label, a: else_label)
         else_value, else_type = gen_value(node.else_expr)
-        emit(:copy, dst: result, a: convert_for_assignment(else_value, else_type, result_type))
+        emit(:copy, dst: result, a: convert_for_assignment(else_value, else_type, result_type, token: node.token))
         emit(:label, a: end_label)
 
         [result, result_type]
@@ -2064,7 +2288,7 @@ module Rubycc
           then_type
         elsif else_type.pointer? && Front::AST.null_pointer_constant?(then_node)
           else_type
-        elsif then_type.integer? && else_type.integer?
+        elsif then_type.arithmetic? && else_type.arithmetic?
           common_arithmetic_type(then_type, else_type)
         else
           error_at(token, "type mismatch in conditional expression")
@@ -2119,7 +2343,7 @@ module Rubycc
         unless compatible_types?(local.type, result_type)
           error_at(node.token, "incompatible types in assignment")
         end
-        stored = store_scalar_variable(local, result, result_type)
+        stored = store_scalar_variable(local, result, result_type, token: node.token)
         [stored, local.type]
       end
 
@@ -2212,7 +2436,7 @@ module Rubycc
         unless compatible_types?(local.type, result_type)
           error_at(node.token, "incompatible types in assignment")
         end
-        stored = store_scalar_variable(local, result, result_type)
+        stored = store_scalar_variable(local, result, result_type, token: node.token)
         node.prefix ? [stored, local.type] : [old_value, local.type]
       end
 
@@ -2261,14 +2485,17 @@ module Rubycc
       end
 
       # Assignment/initialization/argument/return compatibility. The arithmetic
-      # types int and char convert to one another implicitly (int -> char
-      # narrows; char -> int promotes), so any arithmetic pair is compatible.
+      # types (the integer types and the floating types) convert to one another
+      # implicitly — a narrowing, widening, sign change or integer<->floating
+      # format change — so any arithmetic pair is compatible.
       # Two pointers are compatible when they share the same target type or
       # either side is void * (void * converts to and from any pointer type,
       # both directions); mixing an arithmetic type with a pointer (either
       # direction) is rejected.
       def compatible_types?(expected, actual)
-        return true if expected.integer? && actual.integer?
+        # Any two arithmetic types (integer or floating, in any mix) convert to
+        # one another implicitly, so any arithmetic pair is compatible.
+        return true if expected.arithmetic? && actual.arithmetic?
         # Any scalar converts to _Bool (the "!= 0" rule), pointers included.
         return true if expected.bool? && actual.pointer?
         return true if expected.pointer? && actual.pointer? &&
@@ -2302,13 +2529,20 @@ module Rubycc
         type.size < 4 ? Type::Int : type
       end
 
-      # The common type of two arithmetic operands (6.3.1.8), after each has
-      # been integer-promoted. Same signedness picks the wider rank; mixed
-      # signedness gives the unsigned type when its rank is at least the signed
-      # type's, otherwise the signed type — which under LP64 always represents
-      # every value of a strictly narrower unsigned type (e.g. long covers
-      # unsigned int, so "long + unsigned int" is long).
+      # The common type of two arithmetic operands (6.3.1.8). A floating operand
+      # dominates: if either side is a floating type the result is `double` when
+      # either floating operand is `double`, otherwise `float` (so "int + double"
+      # is double, "long + float" is float). With no floating operand the two
+      # integers are integer-promoted, then the same-signedness case picks the
+      # wider rank; mixed signedness gives the unsigned type when its rank is at
+      # least the signed type's, otherwise the signed type — which under LP64
+      # always represents every value of a strictly narrower unsigned type (e.g.
+      # long covers unsigned int, so "long + unsigned int" is long).
       def common_arithmetic_type(lhs_type, rhs_type)
+        if lhs_type.float? || rhs_type.float?
+          double = (lhs_type.float? && lhs_type.size == 8) || (rhs_type.float? && rhs_type.size == 8)
+          return double ? Type::Double : Type::Float
+        end
         a = integer_promote(lhs_type)
         b = integer_promote(rhs_type)
         return a if a == b
@@ -2318,17 +2552,22 @@ module Rubycc
         unsigned.size >= signed.size ? unsigned : signed
       end
 
-      # Converts `vreg` (a value of integer type `from`) to integer type `to`,
-      # emitting the width/sign change the value representation calls for and
-      # returning the vreg holding the result. A conversion to _Bool is the
-      # truth test "value != 0". Widening to 8 bytes extends by the *source*
+      # Converts `vreg` (a value of arithmetic type `from`) to arithmetic type
+      # `to`, emitting the width/sign/format change the value representation
+      # calls for and returning the vreg holding the result. A conversion to
+      # _Bool is the truth test "value != 0". A conversion touching a floating
+      # type (either side) is delegated to #convert_floating (:itof / :ftoi /
+      # :ftof). For two integers: widening to 8 bytes extends by the *source*
       # signedness (preserving the numeric value); a 1/2-byte destination
       # re-derives its low bytes by the *destination* signedness; a 4-byte
       # destination, and same-bit-pattern reinterpretations (int <-> unsigned
-      # int, long <-> unsigned long), need no code at all.
-      def convert(vreg, from:, to:)
+      # int, long <-> unsigned long), need no code at all. `token` locates the
+      # diagnostic an unsupported floating conversion raises; it is nil on the
+      # integer-only call sites that never reach one.
+      def convert(vreg, from:, to:, token: nil)
         return vreg if from == to
         return to_bool(vreg, from) if to.bool?
+        return convert_floating(vreg, from, to, token) if to.float? || from.float?
 
         if to.size == 8
           return vreg if from.size == 8 # long <-> unsigned long: same 64 bits
@@ -2345,26 +2584,73 @@ module Rubycc
         end
       end
 
+      # A conversion where a floating type is on at least one side, lowered to
+      # the format-changing IR (no integer widen/narrow reaches here). float<->
+      # double is a single :ftof; a floating-to-integer conversion truncates
+      # toward zero with :ftoi (then narrows to a <4-byte destination just as an
+      # integer conversion would, so the slot holds a correctly ranged value);
+      # an integer-to-floating conversion is :itof. A conversion between a
+      # floating type and `unsigned long` is not lowered yet (its 64-bit
+      # unsigned round trip needs extra code), so it is diagnosed here.
+      def convert_floating(vreg, from, to, token)
+        if from.float? && to.float?
+          dst = new_vreg
+          emit(:ftof, dst: dst, a: vreg, size: from.size)
+          dst
+        elsif from.float?
+          reject_unsupported_float_int_conversion(to, token)
+          dst = new_vreg
+          emit(:ftoi, dst: dst, a: vreg, b: [to.size, to.signed?], size: from.size)
+          return dst if to.size >= 4
+
+          narrowed = new_vreg
+          emit(to.signed? ? :sext : :zext, dst: narrowed, a: dst, size: to.size)
+          narrowed
+        else
+          reject_unsupported_float_int_conversion(from, token)
+          dst = new_vreg
+          emit(:itof, dst: dst, a: vreg, b: [from.size, from.signed?], size: to.size)
+          dst
+        end
+      end
+
+      # Rejects the one integer/floating conversion this phase does not lower:
+      # `unsigned long` <-> a floating type, whose correct 64-bit unsigned
+      # handling is deferred. Every other integer width/signedness is fine.
+      def reject_unsupported_float_int_conversion(int_type, token)
+        return unless int_type.integer? && int_type.unsigned? && int_type.size == 8
+
+        error_at(token, "conversion between 'unsigned long' and a floating type is not supported yet")
+      end
+
       # The implicit conversion an assignment context (=, initialization, an
       # argument, a return, a "?:" arm) applies to a value of type `from_type`
-      # bound to a `to_type` target. An arithmetic-to-arithmetic conversion goes
-      # through #convert; a conversion of any scalar to _Bool is "value != 0";
-      # a pointer (or null pointer constant, already full-width) otherwise
-      # passes through unchanged.
-      def convert_for_assignment(value_vreg, from_type, to_type)
-        if to_type.bool? && (from_type.integer? || from_type.pointer?)
+      # bound to a `to_type` target. An arithmetic-to-arithmetic conversion
+      # (integer, floating, or a mix) goes through #convert; a conversion of any
+      # scalar to _Bool is "value != 0"; a pointer (or null pointer constant,
+      # already full-width) otherwise passes through unchanged. `token` locates
+      # an unsupported-floating-conversion diagnostic.
+      def convert_for_assignment(value_vreg, from_type, to_type, token: nil)
+        if to_type.bool? && (from_type.integer? || from_type.pointer? || from_type.float?)
           return to_bool(value_vreg, from_type)
         end
-        return value_vreg unless to_type.integer? && from_type.integer?
+        return value_vreg unless to_type.arithmetic? && from_type.arithmetic?
 
-        convert(value_vreg, from: from_type, to: to_type)
+        convert(value_vreg, from: from_type, to: to_type, token: token)
       end
 
       # "value != 0", the conversion of a scalar to _Bool: a nonzero source
-      # becomes 1, zero becomes 0. A pointer or 8-byte integer source compares
-      # at 64 bits so its whole value decides. The int 0/1 result is already a
-      # valid _Bool representation.
+      # becomes 1, zero becomes 0. A floating source compares against 0.0 with
+      # the NaN-aware :fne (a NaN is nonzero, so becomes 1); a pointer or 8-byte
+      # integer source compares at 64 bits so its whole value decides. The int
+      # 0/1 result is already a valid _Bool representation.
       def to_bool(value_vreg, from_type)
+        if from_type.float?
+          zero = emit_float_const(0.0, from_type)
+          dst = new_vreg
+          emit(:fne, dst: dst, a: value_vreg, b: zero, size: from_type.size)
+          return dst
+        end
         zero = new_vreg
         emit(:const, dst: zero, a: 0)
         dst = new_vreg
@@ -2452,6 +2738,14 @@ module Rubycc
       def gen_condition(node)
         value, type = gen_value(node)
         require_scalar_for_truth(type, node.token)
+        # A floating condition is its NaN-aware truth "value != 0.0" (:fne),
+        # lowered to an int 0/1 the branch then reads.
+        if type.float?
+          zero = emit_float_const(0.0, type)
+          dst = new_vreg
+          emit(:fne, dst: dst, a: value, b: zero, size: type.size)
+          return dst
+        end
         # A 4-byte-or-narrower integer's low 32 bits already hold its value, so
         # the 32-bit :jump_if_zero test reads it directly. A pointer or an
         # 8-byte integer must be tested at 64 bits so its whole value decides,
@@ -2491,6 +2785,15 @@ module Rubycc
       # operand type is unsigned (and always for pointer ordering). Equality
       # (:eq/:ne) is sign-independent and so absent here.
       UNSIGNED_COMPARISONS = { lt: :ult, le: :ule, gt: :ugt, ge: :uge }.freeze
+
+      # The source arithmetic operators that have a floating lowering, mapped to
+      # their f-prefixed IR ops; % and the bitwise operators have no floating
+      # form (a floating operand is rejected as a constraint violation).
+      FLOAT_ARITHMETIC = { add: :fadd, sub: :fsub, mul: :fmul, div: :fdiv }.freeze
+
+      # The comparison operators mapped to their NaN-aware floating IR ops,
+      # chosen when the operands' common type is a floating one.
+      FLOAT_COMPARISONS = { eq: :feq, ne: :fne, lt: :flt, le: :fle, gt: :fgt, ge: :fge }.freeze
 
       # "==" and "!=" alone let a void * mix with any other pointer type (as
       # in an assignment); every other pointer comparison ("<", "<=", ">",
@@ -2537,26 +2840,32 @@ module Rubycc
       def binary_result_type(op, lhs_type, rhs_type, token)
         result =
           if comparison_op?(op)
-            if lhs_type.integer? && rhs_type.integer? then Type::Int
+            if lhs_type.arithmetic? && rhs_type.arithmetic? then Type::Int
             elsif lhs_type.pointer? && rhs_type.pointer? && pointer_comparable?(op, lhs_type, rhs_type) then Type::Int
             end
           elsif SHIFT_OPS.include?(op)
+            # A shift's operands are integers only; a floating operand is a
+            # constraint violation, so the promoted-left result is withheld.
             integer_promote(lhs_type) if lhs_type.integer? && rhs_type.integer?
           else
             case op
             when :add
-              if lhs_type.integer? && rhs_type.integer? then common_arithmetic_type(lhs_type, rhs_type)
+              if lhs_type.arithmetic? && rhs_type.arithmetic? then common_arithmetic_type(lhs_type, rhs_type)
               elsif lhs_type.pointer? && rhs_type.integer? then require_non_void_pointer(lhs_type, token)
               elsif lhs_type.integer? && rhs_type.pointer? then require_non_void_pointer(rhs_type, token)
               end
             when :sub
-              if lhs_type.integer? && rhs_type.integer? then common_arithmetic_type(lhs_type, rhs_type)
+              if lhs_type.arithmetic? && rhs_type.arithmetic? then common_arithmetic_type(lhs_type, rhs_type)
               elsif lhs_type.pointer? && rhs_type.integer? then require_non_void_pointer(lhs_type, token)
               elsif lhs_type.pointer? && rhs_type.pointer? && lhs_type == rhs_type
                 require_non_void_pointer(lhs_type, token)
                 Type::Int
               end
-            else # :mul, :div, :mod, :and, :or, :xor
+            when :mul, :div
+              # Multiplication and division admit a floating operand (unlike %
+              # and the bitwise operators below); their common type is the result.
+              common_arithmetic_type(lhs_type, rhs_type) if lhs_type.arithmetic? && rhs_type.arithmetic?
+            else # :mod, :and, :or, :xor — integer operands only
               common_arithmetic_type(lhs_type, rhs_type) if lhs_type.integer? && rhs_type.integer?
             end
           end
@@ -2606,6 +2915,8 @@ module Rubycc
       def static_type(node)
         case node
         when Front::AST::IntLit
+          node.type
+        when Front::AST::FloatLit
           node.type
         when Front::AST::SizeofExpr, Front::AST::SizeofType, Front::AST::AlignofType
           Type::ULong

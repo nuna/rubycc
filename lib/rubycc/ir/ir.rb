@@ -28,6 +28,34 @@ module Rubycc
     #                               setb/setbe/seta/setae; also used for pointer
     #                               ordering, addresses being unsigned)
     #   :neg    dst <- -a
+    #   :fadd/:fsub/:fmul/:fdiv    dst <- a op b   (floating arithmetic; size is
+    #                               the operand width, 4 for float / 8 for
+    #                               double, selecting the ss/sd form). A floating
+    #                               "-a" has no op of its own: the generator
+    #                               flips the sign bit with an integer :xor
+    #                               (0x80000000 / 0x8000000000000000, size 8)
+    #   :feq/:fne                   dst <- (a op b) ? 1 : 0   (floating equality;
+    #                               size 4/8. NaN-aware: :feq is false and :fne
+    #                               true when either operand is NaN)
+    #   :flt/:fle/:fgt/:fge         dst <- (a op b) ? 1 : 0   (floating ordering;
+    #                               size 4/8. Every one is false when either
+    #                               operand is NaN, the backend reversing the
+    #                               ucomis operands for :flt/:fle so an unordered
+    #                               compare clears the flag)
+    #   :itof   dst <- (float)a     integer a converted to a floating value.
+    #                               size is the destination float width (4/8);
+    #                               b is the [width, signed?] descriptor of the
+    #                               integer *source* (an unsigned long source is
+    #                               rejected by the generator, so never reaches
+    #                               here)
+    #   :ftoi   dst <- (int)a       floating a truncated toward zero to an
+    #                               integer. size is the float *source* width
+    #                               (4/8); b is the [width, signed?] descriptor
+    #                               of the integer destination (an unsigned long
+    #                               destination is likewise rejected upstream)
+    #   :ftof   dst <- a            float<->double width change. size is the
+    #                               *source* float width (4 widening to double,
+    #                               8 narrowing to float)
     #   :sext   dst <- a  (size: 1/2/4)  a's low `size` bytes sign-extended to
     #                               the register's full width. size 4 is a
     #                               movsxd; size 1/2 a movsx of the low byte/word
@@ -37,24 +65,39 @@ module Rubycc
     #                               size 1/2 a movzx
     #   :ret    return a           (a is nil for a void function's "return;"
     #                              or its implicit fall-off-the-end return,
-    #                              which emits no value-loading code at all)
+    #                              which emits no value-loading code at all).
+    #                              `size` is nil for an integer/pointer return
+    #                              (the value goes in rax/eax) or 4/8 for a
+    #                              floating one, which the backend loads from a's
+    #                              slot into xmm0 with movss/movsd, the System V
+    #                              register a float/double result is returned in
     #   :label        a = label id (a jump target; emits no code itself)
     #   :jump         a = label id (unconditional branch)
     #   :jump_if_zero a = condition vreg, b = label id (branch when a == 0)
     #   :call   dst <- f(args)  a = callee name (String),
-    #                           b = array of argument vregs (left to right).
-    #                           Arguments past the sixth are passed on the stack
-    #                           (System V AMD64), pushed in reverse below the
-    #                           first six in registers. `size` non-nil marks a
-    #                           variadic callee (its value is the fixed parameter
-    #                           count); the backend then zeroes al before the call
-    #                           (the System V count of vector registers used, 0
-    #                           here since this subset passes nothing in xmm)
+    #                           b = array of [arg_vreg, kind] pairs (left to
+    #                           right). `kind` classifies each argument for the
+    #                           System V AMD64 convention: :gp (integer/pointer)
+    #                           takes the next free integer register
+    #                           (edi,esi,edx,ecx,r8d,r9d), :sse4 (float) / :sse8
+    #                           (double) the next free xmm (xmm0..7), loaded from
+    #                           the slot with movss/movsd; whatever class overflows
+    #                           its registers spills to the stack (pushed in
+    #                           reverse, an eightbyte each, the slot's low bits
+    #                           carrying either class). `size` is nil, or a
+    #                           [fixed, ret] pair when either half is non-nil:
+    #                           `fixed` is the callee's fixed parameter count for a
+    #                           variadic call (else nil), which makes the backend
+    #                           set al to the count of xmm registers it used before
+    #                           the call, as the ABI requires; `ret` is :sse4/:sse8
+    #                           when the result is a float/double (loaded from xmm0
+    #                           with movss/movsd into dst's slot), else nil (the
+    #                           result comes back in rax as usual)
     #   :call_indirect dst <- (*a)(args)  a = a vreg holding the function's
     #                           address (a function pointer value), b = the
-    #                           argument vregs, passed exactly as for :call; `size`
-    #                           marks a variadic callee just as for :call. The
-    #                           backend calls through a scratch register
+    #                           [arg_vreg, kind] pairs, passed exactly as for
+    #                           :call; `size` carries the same [fixed, ret] pair.
+    #                           The backend calls through a scratch register
     #   :func_addr dst <- &func(a)  dst gets the address of the function named a
     #                           (a String symbol), the value a function
     #                           designator decays to (and "&f" yields); resolved
@@ -88,7 +131,10 @@ module Rubycc
     #                               so a later __builtin_va_arg reads the variable
     #                               arguments; the backend fills them from the
     #                               register-save area its variadic prologue set
-    #                               up. va_arg/va_end need no IR op of their own —
+    #                               up, deriving the named GP and SSE counts (which
+    #                               seed gp_offset/fp_offset and the overflow start)
+    #                               from Function.param_kinds rather than from b.
+    #                               va_arg/va_end need no IR op of their own —
     #                               the generator lowers them to ordinary
     #                               load/store/branch instructions
     #
@@ -100,6 +146,10 @@ module Rubycc
     # values and pointer-offset scaling; a nil (or 4) size means the default
     # 32-bit arithmetic, whose natural wrap-around matches a 4-byte C type. On
     # :sext / :zext, `size` is instead the *source* width being extended from.
+    # On the floating ops (:fadd..:fge) `size` is the floating operand width
+    # (4 float / 8 double); on :itof it is the destination float width, on :ftoi
+    # and :ftof the *source* float width, with the paired integer width carried
+    # in `b` as a [width, signed?] descriptor for :itof / :ftoi.
     class Instruction
       attr_reader :op, :dst, :a, :b, :size
 
@@ -121,6 +171,12 @@ module Rubycc
     # `param_count` is the number of parameters; by convention they occupy the
     # first `param_count` virtual registers (0..param_count-1), so the backend
     # can spill the incoming argument registers into their slots.
+    # `param_kinds` is an array of length `param_count` classifying each
+    # parameter for the System V AMD64 convention (:gp integer/pointer, :sse4
+    # float, :sse8 double), in declaration order, so the prologue knows whether
+    # each parameter arrives in an integer register, an xmm register, or the
+    # stack overflow area; a variadic function also derives its gp_offset /
+    # fp_offset / overflow start for :va_start from these counts.
     # `stack_objects` is an array indexed by object id whose entries are the
     # byte sizes of aggregate stack objects (arrays); the backend lays these
     # out below the virtual-register slots and resolves :object_addr against
@@ -133,9 +189,9 @@ module Rubycc
     # backend emit a register-save-area prologue so :va_start / __builtin_va_arg
     # can reach the variable arguments; a fixed-arity function leaves it false.
     class Function
-      attr_reader :name, :insts, :vreg_count, :param_count, :stack_objects, :linkage, :variadic
+      attr_reader :name, :insts, :vreg_count, :param_count, :stack_objects, :linkage, :variadic, :param_kinds
 
-      def initialize(name, insts, vreg_count, param_count, stack_objects, linkage, variadic)
+      def initialize(name, insts, vreg_count, param_count, stack_objects, linkage, variadic, param_kinds)
         @name = name
         @insts = insts
         @vreg_count = vreg_count
@@ -143,6 +199,7 @@ module Rubycc
         @stack_objects = stack_objects
         @linkage = linkage
         @variadic = variadic
+        @param_kinds = param_kinds
       end
     end
 

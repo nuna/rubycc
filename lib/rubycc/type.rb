@@ -23,14 +23,16 @@ module Rubycc
   # an incomplete struct likewise has neither until it is completed.
   #
   # #integer? groups the standard integer types that mix freely in expressions
-  # and convert to one another implicitly (#arithmetic? is its synonym, kept for
-  # the day a floating type widens the notion of "arithmetic"). #signed? /
-  # #unsigned? report an integer type's signedness — the axis that decides
-  # signed vs unsigned division, right shift and comparison — and #bool? names
-  # `_Bool` specifically (whose only values are 0 and 1). #int? and #char? still
-  # name those two specific types (never their unsigned cousins), #void? names
-  # `void` and #struct? names a structure or a union (both are aggregates that
-  # share the same lvalue/copy machinery; #union? tells the two apart).
+  # and convert to one another implicitly; #float? (FloatType) names the two
+  # floating types, and #arithmetic? is the union of the two — every integer or
+  # floating type — the notion "arithmetic" the usual arithmetic conversions act
+  # on. #signed? / #unsigned? report an integer type's signedness — the axis
+  # that decides signed vs unsigned division, right shift and comparison — and
+  # #bool? names `_Bool` specifically (whose only values are 0 and 1). #int? and
+  # #char? still name those two specific types (never their unsigned cousins),
+  # #void? names `void` and #struct? names a structure or a union (both are
+  # aggregates that share the same lvalue/copy machinery; #union? tells the two
+  # apart).
   module Type
     # A standard integer type, identified by its C spelling (`name`), its width
     # in bytes (`size`, one of 1/2/4/8) and its signedness (`signed`). A single
@@ -77,10 +79,15 @@ module Rubycc
         true
       end
 
-      # Synonym for #integer?: every integer type is an arithmetic type. The two
-      # names diverge only once a floating type exists, which this subset lacks.
+      # Every integer type is an arithmetic type; #float? tells it apart from a
+      # floating one (see Type::FloatType), which is likewise #arithmetic? but
+      # not #integer?.
       def arithmetic?
         true
+      end
+
+      def float?
+        false
       end
 
       def signed?
@@ -154,6 +161,10 @@ module Rubycc
         false
       end
 
+      def float?
+        false
+      end
+
       def bool?
         false
       end
@@ -188,6 +199,77 @@ module Rubycc
       end
     end
 
+    # A floating type: `float` (4 bytes, IEEE754 single precision) or `double`
+    # (8 bytes, IEEE754 double precision). A single shared instance stands for
+    # each (Type::Float, Type::Double); being a Data, identity and value
+    # comparison coincide, so two `double`s name the very same type. `long
+    # double` normalizes to `double` at parse time (same width here), so no
+    # separate instance exists. #arithmetic? is true — a floating type mixes with
+    # the integer types under the usual arithmetic conversions — while #integer?
+    # is false and #float? true, which is how the generator tells a floating
+    # operand apart to emit the f-prefixed IR (:fadd, :flt, ...) and the
+    # integer/float conversions (:itof / :ftoi / :ftof).
+    #
+    # Value representation (see Backend::X86_64): a `float` value lives in its
+    # virtual-register slot's low 4 bytes as an IEEE754 single-precision bit
+    # pattern, a `double` in the whole 8-byte slot as a double-precision one; a
+    # `float`'s spare bits 32..63 follow the same indeterminate rule a narrow
+    # integer's do.
+    FloatType = Data.define(:name, :size) do
+      def pointer?
+        false
+      end
+
+      def int?
+        false
+      end
+
+      def char?
+        false
+      end
+
+      def void?
+        false
+      end
+
+      def integer?
+        false
+      end
+
+      def arithmetic?
+        true
+      end
+
+      def float?
+        true
+      end
+
+      def bool?
+        false
+      end
+
+      def array?
+        false
+      end
+
+      def struct?
+        false
+      end
+
+      def function?
+        false
+      end
+
+      # A floating type is aligned to its own width: float 4, double 8.
+      def alignment
+        size
+      end
+
+      def to_s
+        name
+      end
+    end
+
     # The shared integer-type instances, one per distinct C type. LP64 governs
     # the widths: int is 4 bytes, long and any pointer 8. `char` is signed (this
     # subset's implementation-defined choice), and `signed char` normalizes to
@@ -204,6 +286,10 @@ module Rubycc
     # `_Bool` is treated as an unsigned 1-byte type whose stored value is only
     # ever 0 or 1; a conversion to it lowers to "value != 0" (see the generator).
     Bool = IntegerType.new("_Bool", 1, false, bool: true)
+
+    # The shared floating-type instances (Type::Float, Type::Double).
+    Float = FloatType.new("float", 4)
+    Double = FloatType.new("double", 8)
 
     # The lone `void`. Referred to everywhere as Type::Void.
     Void = VoidType.new
@@ -248,6 +334,10 @@ module Rubycc
       end
 
       def function?
+        false
+      end
+
+      def float?
         false
       end
 
@@ -327,6 +417,10 @@ module Rubycc
         false
       end
 
+      def float?
+        false
+      end
+
       # The whole array's byte size: the element width times the count.
       def size
         element.size * length
@@ -403,6 +497,10 @@ module Rubycc
 
       def function?
         true
+      end
+
+      def float?
+        false
       end
 
       # A function type has no storage, so it cannot be laid out; every path
@@ -518,6 +616,10 @@ module Rubycc
       end
 
       def function?
+        false
+      end
+
+      def float?
         false
       end
 
