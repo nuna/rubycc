@@ -2489,6 +2489,59 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
+  # Function-like macros are text substitution with argument expansion and
+  # rescanning, so gcc is the oracle: each program folds a macro call into its
+  # exit code and both compilers must agree.
+  FUNCTION_MACRO_DIFFERENTIAL_SOURCES = [
+    # A macro used twice with different arguments.
+    "#define SQR(x) ((x) * (x))\nint main(void) { return SQR(3) + SQR(4) - 33; }\n",
+    # A conditional-expression macro whose call spans a newline.
+    "#define MAX(a, b) ((a) > (b) ? (a) : (b))\n" \
+    "int main(void) { return MAX(40, 2) + MAX(1,\n2); }\n",
+    # A macro whose replacement calls another macro (rescanning).
+    "#define ADD(a, b) ((a) + (b))\n#define DOUBLE(x) ADD(x, x)\n" \
+    "int main(void) { return DOUBLE(21); }\n"
+  ].freeze
+
+  def test_function_macros_match_gcc_exit_codes
+    FUNCTION_MACRO_DIFFERENTIAL_SOURCES.each do |source|
+      assert_equal run_source(source, compiler: :gcc),
+                   run_source(source, compiler: :rubycc),
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
+  # The "#" and "##" operators are text operations, so gcc is again the oracle:
+  # the pasted identifier must name the same variable and the stringized label
+  # must print byte-for-byte, so [exit, stdout] has to agree.
+  SHOW_PROGRAM = "int printf(const char *format, ...);\n" \
+                 "#define SHOW(expr) printf(\"%s = %d\\n\", #expr, (expr))\n" \
+                 "#define MAX(a, b) ((a) > (b) ? (a) : (b))\n" \
+                 "int main(void) { int n = 5; SHOW(MAX(n, 8)); SHOW(n * n); return 0; }\n"
+
+  def test_stringize_program_matches_gcc_stdout_and_exit
+    assert_equal program_output(SHOW_PROGRAM, compiler: :gcc),
+                 program_output(SHOW_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on [exit, stdout] for the stringize program"
+  end
+
+  PASTE_DIFFERENTIAL_SOURCES = [
+    # "##" pastes a prefix onto a name to reach the variable declared under it.
+    "#define VAR(name) slot_ ## name\n" \
+    "int main(void) { int VAR(a) = 40; int VAR(b) = 2; return slot_a + slot_b; }\n",
+    # A pasted number fragment and a left-to-right chain fold into the result.
+    "#define CAT(a, b) a ## b\n#define TRIP(a, b, c) a ## b ## c\n" \
+    "int main(void) { return CAT(3, 9) + TRIP(1, 0, 0) - 97; }\n"
+  ].freeze
+
+  def test_paste_programs_match_gcc_exit_codes
+    PASTE_DIFFERENTIAL_SOURCES.each do |source|
+      assert_equal run_source(source, compiler: :gcc),
+                   run_source(source, compiler: :rubycc),
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
   # Conditional inclusion is again pure text selection, so gcc is the oracle:
   # each program compiles to whichever return value its #if chain selects, and
   # both compilers must agree.

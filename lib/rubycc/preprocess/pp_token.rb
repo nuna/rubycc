@@ -20,10 +20,18 @@ module Rubycc
     # line (a token spliced across a line continuation keeps its start line).
     # `space_before` records whether whitespace or a comment preceded the token,
     # which the directive layer consults to classify a macro definition.
+    # `suppress` is the token's own set of macro names it must not be re-expanded
+    # as (6.10.3.4, "painted blue"): a frozen list carried along every copy, so
+    # each token remembers the expansions it was already born from.
     class PPToken
-      attr_reader :type, :text, :filename, :line, :column, :source_line, :space_before
+      # The suppression set of a token that came straight from source and has yet
+      # to pass through any macro; shared so unpainted tokens cost no allocation.
+      NO_SUPPRESS = [].freeze
 
-      def initialize(type:, text:, filename:, line:, column:, source_line:, space_before: false)
+      attr_reader :type, :text, :filename, :line, :column, :source_line, :space_before, :suppress
+
+      def initialize(type:, text:, filename:, line:, column:, source_line:, space_before: false,
+                     suppress: NO_SUPPRESS)
         @type = type
         @text = text
         @filename = filename
@@ -31,6 +39,7 @@ module Rubycc
         @column = column
         @source_line = source_line
         @space_before = space_before
+        @suppress = suppress
       end
 
       def newline?
