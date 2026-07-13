@@ -1014,9 +1014,56 @@ compound literal・文式 ({…})(Data_Make_Struct が要求、早期 M2)・
 
 ---
 
+## Step 29 — ELF リーダ(M2 L1: .o の読み戻しと .so の動的シンボル)(96aefa6)
+
+**内容**: Rubycc::ObjFile::ELFReader(ELFWriter の対)。ET_REL のフルパース
+(セクション・.symtab・SHT_RELA)と、ET_DYN の動的リンクインターフェイス読み取り
+(.dynsym / DT_SONAME / DT_NEEDED)。M2 の最初のステップ(計画ラベル L1)。
+コンパイラ本体とは独立した新コンポーネント(heavy-implementer 1 フェーズ)。
+
+**設計判断**:
+- **load-then-query 型のオブジェクトモデル**: read/read_file が画像全体を先に
+  解析し、配列 + 名前引き(section/symbol/dynamic_symbol/relocations_for)を
+  提供する。ストリーミング/コールバック型にしなかったのは、L3 リンカが
+  セクション・シンボル・再配置へランダムアクセスするため。値オブジェクトは
+  Ruby Struct(Section/Symbol/Relocation/RelocationSection/DynamicEntry)で、
+  binding/type/visibility は :local/:global/:weak 等のシンボルへ復号
+  (未知値は整数のまま通す)。
+- **未知の再配置タイプは拒否せず数値で保持**(type_name のみ nil): 見慣れない
+  オブジェクトも読める状態を保ち、扱えるかどうかの判断は適用側(L3)に委ねる。
+- **RELA は sh_info の対象セクション毎にグループ化**(RelocationSection#target):
+  リンカの fixup 適用がセクション単位の走査になる形をそのまま表現。シンボル解決は
+  各 RELA セクションの sh_link が指すシンボルテーブル経由(.symtab と .dynsym を
+  テーブル毎に保持)。
+- **.so はセクションヘッダ経由のみ**(sh_size / sh_entsize 第一経路): alloc
+  セクションは strip で消えないため、セクションヘッダ無し .so への PT_DYNAMIC
+  フォールバック(DT_HASH/DT_GNU_HASH からの個数導出)は ROADMAP どおり YAGNI と
+  して非実装をコメントで明示。verdef/verneed(シンボルバージョニング)も無視。
+- **e_shnum==0 / SHN_XINDEX の第 0 セクション経由エスケープ**は、現入力では
+  発火しないが実物 .so の頑健性のため最小実装。全構造読み取りは境界検査付きで、
+  切り詰め・不整合は ELFFormatError(欠陥を名指しするメッセージ)。
+- **検証 3 層(N7 の背骨)**: (1) ELFWriter の全機能マトリクス(text/rodata/
+  data+R_X86_64_64/bss/local/global/undefined/PLT32/PC32/FILE シンボル)との
+  ラウンドトリップ golden — 書いた構造がそのまま読み戻ることでライタ・リーダ
+  双方の契約を固定。(2) rubycc と gcc 両方の実 .o(gcc 版はバージョン差に頑健な
+  「存在と関係」のみ検証)。(3) readelf -s / -d / --dyn-syms との行単位
+  突き合わせ + 実物 libc.so.6(printf/malloc がエクスポートされ SONAME が
+  libc.so.6)。readelf / libc 不在環境は skip ガード。
+- **examples のステップサンプルは対象外**: ELF リーダは C 言語機能を追加しない
+  (「そのステップで書けるようになった C」が存在しない)ため、examples/ の
+  ステップ毎サンプルの慣習は M2 ではコンパイラ機能に触れるステップ(L4 の PIC
+  等)にのみ適用する。
+
+**トレードオフ**: ET_EXEC(実行ファイル)は読まない(L7 で必要になれば拡張)。
+プログラムヘッダは未解析(ET_REL に不要、.so は SONAME 用途のみ)。シンボル
+バージョン付き名(printf@GLIBC_2.2.5 等)は .dynstr の生の名前のまま。
+
+---
+
 ## 現在のテスト規模
 
-Step 28 完了時点: **1,316 runs / 3,661 assertions / 0 failures / 19 skips**
-(`rake test`)。内訳: 字句・パーサ・型・ELF・診断・CLI・プリプロセッサの
-ユニットテスト + 実行テスト(gcc 差分比較・クロスリンク ABI 差分・gcc -E
-トークン列差分込み)+ c-testsuite 220 ケース + ruby.h スモークテスト。
+Step 29 完了時点: **1,335 runs / 3,803 assertions / 0 failures / 19 skips**
+(`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ)・診断・CLI・
+プリプロセッサのユニットテスト + 実行テスト(gcc 差分比較・クロスリンク ABI
+差分・gcc -E トークン列差分込み)+ c-testsuite 220 ケース + ruby.h
+スモークテスト。
