@@ -63,16 +63,84 @@ module Rubycc
       BUILTIN_MACROS = %w[__FILE__ __LINE__ __STDC__ __STDC_VERSION__ __RUBYCC__].freeze
 
       # The identifiers __has_builtin (6.10.1) answers true for: the varargs
-      # intrinsics this compiler recognizes. Every other builtin query is false.
-      KNOWN_BUILTINS = %w[__builtin_va_start __builtin_va_arg __builtin_va_end].freeze
+      # intrinsics, the branch-prediction hint (__builtin_expect) and the stack
+      # allocator (__builtin_alloca) this compiler recognizes. Every other
+      # builtin query is false.
+      KNOWN_BUILTINS = %w[__builtin_va_start __builtin_va_arg __builtin_va_end
+                          __builtin_expect __builtin_alloca].freeze
+
+      # The target-identifying macros gcc keeps predefined even under strict ISO
+      # C (-std=c11): only the reserved forms (a leading underscore followed by
+      # another underscore or an uppercase letter, 7.1.3), so headers relying on
+      # "linux", "unix" or "i386" (the non-reserved spellings, gcc drops these
+      # under -std=c11) still see them undefined here. __GNUC__ is deliberately
+      # excluded (DESIGN R7): rubycc is x86-64 Linux/ELF only, so this fixed set
+      # is enough for glibc's own architecture dispatch (e.g. gnu/stubs.h) to
+      # settle on the right branch, without claiming gcc compatibility beyond
+      # that. Unlike BUILTIN_MACROS these are ordinary #define'd entries in
+      # @macros, so a translation unit may #undef or redefine them (gcc allows
+      # this too).
+      PREDEFINED_TARGET_MACROS = %w[__x86_64__ __amd64__ __linux__ __gnu_linux__
+                                    __unix__ __ELF__ __LP64__ _LP64 __STDC_HOSTED__].freeze
+
+      # The numeric limit/size macros gcc predefines describing the target's
+      # fundamental types. glibc's headers reach for these directly when __GNUC__
+      # is absent (e.g. limits.h's __LONG_MAX__ via ruby's special_consts.h), so
+      # they must carry gcc's exact spellings — value base (hex vs decimal) and
+      # integer suffix — for a gcc-differential #if to agree. The right-hand sides
+      # are the verbatim replacement texts of `gcc -dM -E </dev/null` on this
+      # x86-64 LP64 target; they become ordinary object macros (a translation unit
+      # may #undef or redefine them). __WCHAR_MIN__'s value is a parenthesized
+      # expression referring to another of these, which expands recursively at the
+      # use site like any macro. Only the reserved "__X__" forms are provided;
+      # __GNUC__ and version macros stay absent (DESIGN R7). The replacement text
+      # is re-scanned into pp-tokens rather than hand-built, so multi-token values
+      # need no special casing.
+      PREDEFINED_NUMERIC_MACROS = {
+        "__CHAR_BIT__" => "8",
+        "__SCHAR_MAX__" => "0x7f",
+        "__SHRT_MAX__" => "0x7fff",
+        "__INT_MAX__" => "0x7fffffff",
+        "__LONG_MAX__" => "0x7fffffffffffffffL",
+        "__LONG_LONG_MAX__" => "0x7fffffffffffffffLL",
+        "__WCHAR_MAX__" => "0x7fffffff",
+        "__WCHAR_MIN__" => "(-__WCHAR_MAX__ - 1)",
+        "__WINT_MAX__" => "0xffffffffU",
+        "__WINT_MIN__" => "0U",
+        "__PTRDIFF_MAX__" => "0x7fffffffffffffffL",
+        "__SIZE_MAX__" => "0xffffffffffffffffUL",
+        "__INTMAX_MAX__" => "0x7fffffffffffffffL",
+        "__UINTMAX_MAX__" => "0xffffffffffffffffUL",
+        "__INTPTR_MAX__" => "0x7fffffffffffffffL",
+        "__UINTPTR_MAX__" => "0xffffffffffffffffUL",
+        "__SIZEOF_INT__" => "4",
+        "__SIZEOF_LONG__" => "8",
+        "__SIZEOF_LONG_LONG__" => "8",
+        "__SIZEOF_SHORT__" => "2",
+        "__SIZEOF_POINTER__" => "8",
+        "__SIZEOF_SIZE_T__" => "8",
+        "__SIZEOF_PTRDIFF_T__" => "8",
+        "__SIZEOF_FLOAT__" => "4",
+        "__SIZEOF_DOUBLE__" => "8",
+        "__SIZEOF_WCHAR_T__" => "4",
+        "__SIZEOF_WINT_T__" => "4"
+      }.freeze
 
       def initialize
         # name (String) => Macro.
         @macros = {}
+        PREDEFINED_TARGET_MACROS.each { |name| @macros[name] = predefined_target_macro }
+        PREDEFINED_NUMERIC_MACROS.each { |name, text| @macros[name] = predefined_numeric_macro(text) }
         @include_depth = 0
         # Absolute paths of files that asked (via "#pragma once") to be read at
         # most once; a later #include resolving to one of them is skipped.
         @pragma_once = {}
+        # Absolute path => index into @include_paths of the -I directory a file
+        # was found in. Only files resolved along the search path get an entry
+        # (the main source file and a quote-relative resolution beside its
+        # includer never do), which is exactly what #include_next needs to tell
+        # "resume the search past here" from "there is no here" (GNU extension).
+        @include_origin = {}
       end
 
       def run(source, filename:, include_paths: [])
@@ -167,11 +235,12 @@ module Rubycc
         end
 
         case name.text
-        when "include" then handle_include(hash, body, output, filename)
-        when "define"  then handle_define(name, body)
-        when "undef"   then handle_undef(name, body)
-        when "error"   then handle_error(hash, body)
-        when "pragma"  then handle_pragma(body, filename)
+        when "include"      then handle_include(hash, body, output, filename)
+        when "include_next" then handle_include_next(hash, body, output, filename)
+        when "define"       then handle_define(name, body)
+        when "undef"        then handle_undef(name, body)
+        when "error"        then handle_error(hash, body)
+        when "pragma"       then handle_pragma(body, filename)
         else
           raise_at(name, "invalid preprocessing directive '##{name.text}'")
         end
@@ -262,15 +331,21 @@ module Rubycc
       # Evaluates a #if/#elif controlling constant-expression (6.10.1) to a
       # boolean. In order: fold each preprocessor operator (`defined` and the
       # `__has_*` queries) to 1/0 with its operand unexpanded, macro-expand what
-      # remains, replace every surviving identifier with 0, convert to ordinary
-      # tokens, and evaluate the parsed expression with the shared constant
-      # evaluator. A non-zero result is true.
+      # remains, fold operators a second time (a header may hide a __has_* query
+      # behind a macro, e.g. RBIMPL_HAS_BUILTIN(x) -> __has_builtin(x), so the
+      # operator only surfaces after expansion; gcc likewise re-honors a
+      # macro-produced `defined`), then replace every surviving identifier with 0,
+      # convert to ordinary tokens, and evaluate the parsed expression with the
+      # shared constant evaluator. A non-zero result is true. One post-expansion
+      # pass suffices: fold_operators never expands its own operands, so a query
+      # it uncovers cannot itself reveal another.
       def evaluate_if_expression(directive, body)
         raise_at(directive, "##{directive.text} with no expression") if body.empty?
 
         expanded = []
         expand_tokens(fold_operators(body), expanded)
-        neutral = expanded.map { |tok| tok.type == :identifier ? number_zero(tok) : tok }
+        refolded = fold_operators(expanded)
+        neutral = refolded.map { |tok| tok.type == :identifier ? number_zero(tok) : tok }
         tokens = to_front_tokens(neutral, directive)
         node = ConstantExpressionParser.new(tokens, directive.text).parse
         evaluate_constant(node)
@@ -301,7 +376,8 @@ module Rubycc
       # Rewrites each preprocessor operator in a #if expression to the pp-number 1
       # or 0, its operand left unexpanded (6.10.1p1, p4): `defined` against the
       # macro table, `__has_include` against the include search, `__has_attribute`
-      # always 0 until Step 28 gives aligned/packed a value, and `__has_builtin`
+      # true only for the layout attributes rubycc honors (aligned/packed), and
+      # `__has_builtin`
       # true only for the varargs intrinsics. Any other token passes through to be
       # macro-expanded (an unrecognized identifier later neutralizes to 0).
       def fold_operators(body)
@@ -328,7 +404,16 @@ module Rubycc
 
       def fold_defined(operator, body, index)
         name, index = read_defined_operand(operator, body, index)
-        [@macros.key?(name), index]
+        [@macros.key?(name) || query_operator_name?(name), index]
+      end
+
+      # gcc treats the __has_* query operators as satisfying `defined`, so
+      # `#if defined(__has_builtin)` is 1 there; a header uses that to prefer
+      # the operator over a config.h fallback (ruby/internal/has/builtin.h).
+      # The `defined` operator itself is not answered here (only the __has_*
+      # queries), so this excludes it from PP_OPERATORS.
+      def query_operator_name?(name)
+        PP_OPERATORS.key?(name) && name != "defined"
       end
 
       # __has_include ( "f" | <f> ): true when the header resolves like the same
@@ -341,11 +426,29 @@ module Rubycc
         [include_exists?(kind, name, operator.filename), close + 1]
       end
 
-      # __has_attribute ( X ): no attribute is recognized before Step 28, which
-      # will answer true for aligned and packed; until then every query is false.
+      # The GNU attributes rubycc gives real semantics (Step 28): the layout
+      # attributes the parser honors on a struct/union. Every other attribute is
+      # accepted and discarded, so __has_attribute answers true only for these.
+      KNOWN_ATTRIBUTES = %w[aligned packed].freeze
+
+      # __has_attribute ( X ): true for the attributes rubycc actually acts on
+      # (aligned and packed, in either the plain or the "__name__" spelling),
+      # false for every other name. The name is normalized the same way the
+      # parser normalizes an attribute token.
       def fold_has_attribute(operator, body, index)
-        _name, index = read_paren_identifier(operator, body, index, "__has_attribute")
-        [false, index]
+        name, index = read_paren_identifier(operator, body, index, "__has_attribute")
+        [KNOWN_ATTRIBUTES.include?(normalize_attribute_name(name)), index]
+      end
+
+      # Collapses a "__name__" attribute spelling to "name" (a single leading and
+      # trailing "__" pair stripped when both are present), matching the parser's
+      # #normalize_attribute_name so "__aligned__" and "aligned" agree here too.
+      def normalize_attribute_name(name)
+        if name.start_with?("__") && name.end_with?("__") && name.length > 4
+          name[2..-3]
+        else
+          name
+        end
       end
 
       def fold_has_builtin(operator, body, index)
@@ -414,6 +517,32 @@ module Rubycc
         )
       end
 
+      # A PREDEFINED_TARGET_MACROS entry: an ordinary object macro whose sole
+      # replacement token is the pp-number "1". Its position ("<built-in>", line
+      # 0) is a placeholder that no diagnostic ever surfaces: #substitute always
+      # relocates a replacement token to the invocation site via #relocate
+      # before it can reach the token stream, so this position only ever exists
+      # transiently inside the macro table.
+      def predefined_target_macro
+        token = PPToken.new(
+          type: :pp_number, text: "1",
+          filename: "<built-in>", line: 0, column: 0, source_line: ""
+        )
+        Macro.new(:object, [], false, [token])
+      end
+
+      # A PREDEFINED_NUMERIC_MACROS entry: an ordinary object macro whose
+      # replacement is `text` re-scanned into pp-tokens, so a multi-token value
+      # (like __WCHAR_MIN__'s parenthesized expression) becomes a proper token
+      # list without hand-building each token. The scanner appends an :eof (and
+      # never a newline for a single line), dropped here. As with the target
+      # macros the tokens carry a placeholder "<built-in>" location that #relocate
+      # replaces with the use site before any diagnostic could reference it.
+      def predefined_numeric_macro(text)
+        tokens = Scanner.new(text, filename: "<built-in>").scan.reject(&:eof?)
+        Macro.new(:object, [], false, tokens)
+      end
+
       # The tokens of the logical line starting at `start` (up to but excluding
       # the newline), paired with the index just past that newline. A line ended
       # by end-of-file yields the eof index so the caller's loop can stop there.
@@ -425,11 +554,31 @@ module Rubycc
         [rest, next_index]
       end
 
-      # --- #include --------------------------------------------------------------
+      # --- #include ----------------------------------------------------------
 
       def handle_include(hash, body, output, includer)
         kind, name = parse_header_name(hash, body)
         path = resolve_include(kind, name, includer, hash)
+        process_include(hash, name, path, output)
+      end
+
+      # #include_next NAME (GNU extension): like #include, but the search for
+      # NAME resumes just past the -I directory `includer` itself was found in,
+      # rather than starting over from the front of the list. It exists so a
+      # header can shadow a same-named one further down the search path while
+      # still #including that later copy (gcc's fixinclude wrappers use it on
+      # limits.h and syslimits.h). Both "NAME" and <NAME> are accepted, but
+      # unlike a plain #include the quote form does not additionally search
+      # `includer`'s own directory (gcc's behavior).
+      def handle_include_next(hash, body, output, includer)
+        kind, name = parse_header_name(hash, body)
+        path = resolve_include_next(kind, name, includer, hash)
+        process_include(hash, name, path, output)
+      end
+
+      # Reads and processes the header resolved to `path`, shared by #include
+      # and #include_next once each has found its file.
+      def process_include(hash, name, path, output)
         # A header that asked for "#pragma once" is read at most once per unit; a
         # later #include resolving to the same file is silently skipped (6.10.6).
         return if @pragma_once.key?(File.expand_path(path))
@@ -475,16 +624,52 @@ module Rubycc
 
       # Resolves a header name to a filesystem path. A quoted include is looked
       # for first beside the file that names it, then along the search path; an
-      # angled include only along the search path (6.10.2p2-3).
+      # angled include only along the search path (6.10.2p2-3). A match found
+      # along the search path records which directory it came from, so a later
+      # #include_next from this same file knows where to resume.
       def resolve_include(kind, name, includer, hash)
-        directories = []
-        directories << File.dirname(includer) if kind == :quote
-        directories.concat(@include_paths)
-        directories.each do |dir|
-          candidate = File.join(dir, name)
-          return candidate if File.file?(candidate)
+        if kind == :quote
+          beside = File.join(File.dirname(includer), name)
+          return beside if File.file?(beside)
         end
-        raise_at(hash, "#{name}: No such file or directory")
+
+        index, path = search_include_paths(name, 0)
+        raise_at(hash, "#{name}: No such file or directory") unless path
+
+        record_include_origin(path, index)
+        path
+      end
+
+      # Resolves a header name for #include_next: search resumes one directory
+      # past wherever `includer` itself was found along the search path. A file
+      # with no recorded origin (the main source file, or a quote-relative
+      # resolution beside its includer) has no "here" to resume past, so gcc
+      # falls back to plain #include semantics for it, which this does too.
+      def resolve_include_next(kind, name, includer, hash)
+        origin = @include_origin[File.expand_path(includer)]
+        return resolve_include(kind, name, includer, hash) unless origin
+
+        index, path = search_include_paths(name, origin + 1)
+        raise_at(hash, "#{name}: No such file or directory") unless path
+
+        record_include_origin(path, index)
+        path
+      end
+
+      # The first directory in @include_paths, starting the scan at `start`,
+      # holding `name`; returns [its index, the joined path] or [nil, nil].
+      def search_include_paths(name, start)
+        @include_paths.each_with_index do |dir, index|
+          next if index < start
+
+          candidate = File.join(dir, name)
+          return [index, candidate] if File.file?(candidate)
+        end
+        [nil, nil]
+      end
+
+      def record_include_origin(path, index)
+        @include_origin[File.expand_path(path)] = index
       end
 
       def read_source(path, name, hash)
@@ -641,7 +826,8 @@ module Rubycc
 
       # Acts on a "#pragma" (6.10.6). "#pragma once" records the current file so a
       # future #include of it is skipped; every other pragma (including a bare
-      # one) is accepted and discarded. "_Pragma" is not yet supported (ROADMAP).
+      # one) is accepted and discarded. The "_Pragma" operator form (6.10.9) is
+      # handled during rescanning; see #consume_pragma_operator.
       def handle_pragma(body, filename)
         first = body[0]
         return unless first&.type == :identifier && first.text == "once"
@@ -668,7 +854,9 @@ module Rubycc
         queue = tokens.dup
         until queue.empty?
           tok = queue.shift
-          if expandable_builtin?(tok)
+          if pragma_operator?(tok)
+            consume_pragma_operator(tok, queue)
+          elsif expandable_builtin?(tok)
             queue.unshift(*expand_builtin(tok))
           elsif expandable_macro?(tok)
             macro = @macros[tok.text]
@@ -694,6 +882,41 @@ module Rubycc
       # each expands to a non-identifier, so it can neither recurse nor need paint.
       def expandable_builtin?(tok)
         tok.type == :identifier && BUILTIN_MACROS.include?(tok.text)
+      end
+
+      # Whether `tok` is the "_Pragma" operator (6.10.9). It is handled during
+      # rescanning, not as a directive, so it works whether written literally or
+      # produced by macro expansion (Ruby's config.h defines its symbol-export
+      # markers as "_Pragma(...)"), which is exactly the case that must be
+      # accepted for <ruby.h> to preprocess.
+      def pragma_operator?(tok)
+        tok.type == :identifier && tok.text == "_Pragma"
+      end
+
+      # Consumes a "_Pragma ( string-literal )" operator and drops all four
+      # tokens. The operand would destringize into a #pragma line, but the only
+      # pragma this compiler acts on is "once", which is meaningless mid-file via
+      # _Pragma, so every operand is accepted and ignored (ROADMAP's "accept
+      # only"). Newlines between the tokens are inter-token whitespace. A "_Pragma"
+      # not followed by a parenthesized string literal is a hard error.
+      def consume_pragma_operator(operator, queue)
+        skip_queued_newlines(queue)
+        malformed_pragma(operator) unless queue.first&.punct?("(")
+        queue.shift # "("
+        skip_queued_newlines(queue)
+        malformed_pragma(operator) unless queue.first&.type == :string
+        queue.shift # the string literal (ignored)
+        skip_queued_newlines(queue)
+        malformed_pragma(operator) unless queue.first&.punct?(")")
+        queue.shift # ")"
+      end
+
+      def skip_queued_newlines(queue)
+        queue.shift while queue.first&.newline?
+      end
+
+      def malformed_pragma(operator)
+        raise_at(operator, "_Pragma takes a parenthesized string literal")
       end
 
       # The single token a builtin macro stands for at its use site: the current

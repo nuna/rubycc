@@ -618,7 +618,9 @@ class TestDiagnostics < Minitest::Test
   end
 
   def test_global_redefinition_is_rejected
-    source = "int g; int g = 1; int main(void) { return 0; }"
+    # Two *initialized* definitions are a redefinition (6.9.2); a tentative
+    # definition followed by one initializer is not (see the tentative tests).
+    source = "int g = 0; int g = 1; int main(void) { return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
 
     assert_equal "foo.c", error.filename
@@ -966,10 +968,13 @@ class TestDiagnostics < Minitest::Test
     assert_raises(Rubycc::CompileError) { compile(source) }
   end
 
-  def test_undefined_enum_tag_is_rejected
+  def test_object_of_undefined_enum_tag_is_rejected
+    # A forward-referenced enum tag is now allowed as an incomplete type (a
+    # pointer target, a prototype return); an *object* of that type still needs a
+    # size, so it is rejected as an incomplete type.
     source = "int main(void) { enum Missing x; return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/use of undefined enum 'Missing'/, error.description)
+    assert_match(/invalid use of incomplete type 'enum Missing'/, error.description)
   end
 
   def test_struct_tag_reused_as_enum_is_rejected
@@ -1087,11 +1092,19 @@ class TestDiagnostics < Minitest::Test
   end
 
   def test_overlong_string_initializer_for_char_array_is_rejected
-    # The array must hold the terminating NUL too, so "hi" (three bytes with
-    # the NUL) does not fit a char[2].
-    source = "int main(void) { char s[2] = \"hi\"; return 0; }"
+    # A char array sized exactly to the characters may drop the terminating NUL
+    # (6.7.9p14), but a string with *more* characters than the array has
+    # elements still cannot fit: "abc" (three characters) does not fit a char[2].
+    source = "int main(void) { char s[2] = \"abc\"; return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/initializer-string for char array is too long/, error.description)
+  end
+
+  def test_exact_fit_string_initializer_for_char_array_is_accepted
+    # 6.7.9p14: a char array sized exactly to the string's characters is
+    # initialized by them with the terminating NUL simply dropped, so "hi" fits
+    # a char[2] with no room to spare.
+    assert compile("int main(void) { char s[2] = \"hi\"; return s[0]; }")
   end
 
   def test_non_constant_global_aggregate_element_is_rejected
@@ -1261,10 +1274,10 @@ class TestDiagnostics < Minitest::Test
     assert_match(/conflicting types for 'g'/, error.description)
   end
 
-  def test_two_definitions_of_a_global_are_still_a_redefinition
-    source = "int g; int g; int main(void) { return 0; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/redefinition of 'g'/, error.description)
+  def test_repeated_bare_tentative_definition_is_allowed
+    # Two bare (uninitialized) file-scope declarations are tentative definitions
+    # of one object (6.9.2), which merge rather than clashing as a redefinition.
+    compile("int g; int g; int main(void) { return 0; }")
   end
 
   # --- floating types (Step 24 Phase A) ------------------------------------
@@ -1319,5 +1332,148 @@ class TestDiagnostics < Minitest::Test
     source = "int main(void) { unsigned double d; return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/cannot combine 'double' with other type specifiers/, error.description)
+  end
+
+  # --- bit-fields (Step 28 Phase C2) --------------------------------------
+
+  # Bit-fields are laid out but never extracted; any read of one is rejected.
+  def test_bitfield_read_is_rejected
+    source = "struct S { int a:3; };\nint f(struct S *s) { return s->a; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/bit-field access is not supported yet/, error.description)
+  end
+
+  def test_bitfield_write_is_rejected
+    source = "struct S { int a:3; };\nvoid f(struct S *s) { s->a = 1; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/bit-field access is not supported yet/, error.description)
+  end
+
+  def test_named_zero_width_bitfield_is_rejected
+    source = "struct S { int a:0; };"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/named bit-field 'a' has zero width/, error.description)
+  end
+
+  def test_negative_width_bitfield_is_rejected
+    source = "struct S { int a:-1; };"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/negative width in bit-field/, error.description)
+  end
+
+  def test_bitfield_width_exceeding_type_is_rejected
+    source = "struct S { int a:40; };"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/width of bit-field exceeds its type/, error.description)
+  end
+
+  def test_non_integral_bitfield_is_rejected
+    source = "struct S { int *p:3; };"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/bit-field has non-integral type 'int \*'/, error.description)
+  end
+
+  def test_packed_bitfield_is_rejected
+    source = "struct __attribute__((packed)) S { int a:3; };"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/packed bit-fields are not supported/, error.description)
+  end
+
+  # --- tentative definitions (6.9.2) -----------------------------------------
+
+  def test_repeated_tentative_definition_is_not_a_redefinition
+    # A tentative definition may be repeated any number of times; only one may
+    # initialize. This compiles without error.
+    compile("int x; int x = 3; int x;\nint main(void) { return x; }")
+  end
+
+  def test_two_initialized_definitions_is_a_redefinition
+    source = "int x = 1; int x = 2;\nint main(void) { return x; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/redefinition of 'x'/, error.description)
+  end
+
+  def test_tentative_definitions_must_agree_in_type
+    source = "int x; long x;\nint main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/conflicting types for 'x'/, error.description)
+  end
+
+  def test_static_after_non_static_tentative_is_rejected
+    source = "int x; static int x;\nint main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/static declaration of 'x' follows non-static declaration/, error.description)
+  end
+
+  def test_non_static_after_static_tentative_is_rejected
+    source = "static int x; int x;\nint main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/non-static declaration of 'x' follows static declaration/, error.description)
+  end
+
+  def test_single_declaration_tentative_form_is_accepted
+    # "int x, x = 3, x;" — three declarators of one object in one declaration.
+    compile("int x, x = 3, x;\nint main(void) { return x; }")
+  end
+
+  # --- incomplete enum completeness diagnostics ------------------------------
+
+  def test_object_of_incomplete_enum_type_is_rejected
+    source = "enum E x;\nint main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/invalid use of incomplete type 'enum E'/, error.description)
+  end
+
+  def test_sizeof_incomplete_enum_is_rejected
+    source = "int main(void) { return sizeof(enum E); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/incomplete type 'enum E'/, error.description)
+  end
+
+  def test_incomplete_enum_pointer_is_accepted
+    # A pointer to an incomplete enum is complete, so it is allowed.
+    compile("enum E *p;\nint main(void) { return 0; }")
+  end
+
+  # --- __int128: the operations left out of this phase each diagnose crisply ---
+
+  def test_int128_division_is_rejected
+    source = "unsigned long g(void) { unsigned __int128 a = 10, b = 3, c; c = a / b; return (unsigned long)c; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(%r{'/' on 128-bit integers is not supported yet}, error.description)
+  end
+
+  def test_int128_shift_is_rejected
+    source = "unsigned long g(void) { unsigned __int128 a = 10, c; c = a << 3; return (unsigned long)c; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/'<<' on 128-bit integers is not supported yet/, error.description)
+  end
+
+  def test_int128_bitwise_and_is_rejected
+    source = "unsigned long g(void) { unsigned __int128 a = 10, b = 3, c; c = a & b; return (unsigned long)c; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/'&' on 128-bit integers is not supported yet/, error.description)
+  end
+
+  def test_int128_by_value_parameter_is_rejected
+    error = assert_raises(Rubycc::CompileError) { compile("void f(__int128 a) { }") }
+    assert_match(/passing a 128-bit integer by value is not supported yet/, error.description)
+  end
+
+  def test_int128_by_value_return_is_rejected
+    error = assert_raises(Rubycc::CompileError) { compile("__int128 f(void) { __int128 a; return a; }") }
+    assert_match(/returning a 128-bit integer by value is not supported yet/, error.description)
+  end
+
+  def test_int128_variadic_argument_is_rejected
+    source = "int printf(const char *fmt, ...); void f(void) { __int128 a = 1; printf(\"%d\", a); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/passing a 128-bit integer to a variadic function is not supported yet/, error.description)
+  end
+
+  def test_int128_to_floating_conversion_is_rejected
+    source = "double g(void) { __int128 a = 5; return (double)a; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/conversion between '__int128' and a floating type is not supported yet/, error.description)
   end
 end

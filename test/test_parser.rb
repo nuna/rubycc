@@ -182,6 +182,26 @@ class TestParser < Minitest::Test
     assert_equal Type::Int, decl.type
   end
 
+  def test_parses_int128_specifier_spellings
+    assert_equal Type::Int128, parse_decl("__int128 x;").type
+    assert_equal Type::Int128, parse_decl("signed __int128 x;").type
+    assert_equal Type::UInt128, parse_decl("unsigned __int128 x;").type
+    # The two-keyword forms are order-independent.
+    assert_equal Type::UInt128, parse_decl("__int128 unsigned x;").type
+    assert_equal Type::Int128, parse_decl("__int128 signed x;").type
+  end
+
+  def test_int128_cannot_combine_with_a_width_specifier
+    assert_raises(Rubycc::CompileError) { parse_decl("__int128 int x;") }
+    assert_raises(Rubycc::CompileError) { parse_decl("long __int128 x;") }
+    assert_raises(Rubycc::CompileError) { parse_decl("__int128 __int128 x;") }
+  end
+
+  def test_int128_is_a_keyword_not_an_identifier
+    # As a reserved keyword, __int128 cannot name a variable.
+    assert_raises(Rubycc::CompileError) { parse_decl("int __int128;") }
+  end
+
   def test_parses_pointer_declaration_type
     program = parse("int main(void) { int *p; return 0; }")
     decl = program.functions.first.body.first
@@ -858,6 +878,17 @@ class TestParser < Minitest::Test
     assert_equal Type::Pointer.new(Type::Int), param.type
   end
 
+  def test_unsized_array_parameter_is_adjusted_to_a_pointer
+    # 6.7.6.3p7: an incomplete array declarator in a parameter also adjusts to
+    # a pointer, unlike everywhere else "[]" needs an initializer to size it
+    # (e.g. glibc's "extern int getloadavg(double __loadavg[], int __nelem)").
+    program = parse("int f(double a[], int n) { return 0; }")
+    params = program.functions.first.params
+
+    assert_equal ["a", "n"], params.map(&:name)
+    assert_equal Type::Pointer.new(Type::Double), params[0].type
+  end
+
   def test_function_parameter_is_adjusted_to_a_function_pointer
     # 6.7.6.3: "int g(int)" as a parameter is adjusted to "int (*g)(int)".
     program = parse("int f(int g(int)) { return 0; }")
@@ -878,6 +909,42 @@ class TestParser < Minitest::Test
     assert_equal "handler", decl.name
     func = Type::FunctionType.new(Type::Int, [Type::Int], false)
     assert_equal Type::Pointer.new(func), decl.type
+  end
+
+  def test_declarator_through_a_function_typedef_is_a_prototype
+    # "typedef int F(int, int *); F g;": the declarator has no parameter list of
+    # its own, so its parameters are synthesized (unnamed) from the typedef's
+    # parameter types — a prototype, exactly like "int g(int, int *);".
+    program = parse("typedef int F(int, int *); F g;")
+    decl = program.functions.first
+
+    assert_kind_of AST::FunctionDecl, decl
+    assert_equal "g", decl.name
+    assert_equal Type::Int, decl.return_type
+    assert_equal [nil, nil], decl.params.map(&:name)
+    assert_equal [Type::Int, Type::Pointer.new(Type::Int)], decl.params.map(&:type)
+    refute decl.variadic
+  end
+
+  def test_variadic_function_typedef_declarator_is_a_prototype
+    # A variadic function typedef carries its ellipsis onto the synthesized
+    # prototype: "typedef int F(int, ...); F g;" keeps the fixed parameter and
+    # flags the variable part.
+    program = parse("typedef int F(int, ...); F g;")
+    decl = program.functions.first
+
+    assert_kind_of AST::FunctionDecl, decl
+    assert decl.variadic
+    assert_equal [Type::Int], decl.params.map(&:type)
+  end
+
+  def test_defining_a_function_through_a_typedef_is_rejected
+    # 6.9.1p2: a function definition must declare its parameters through its own
+    # declarator, so a definition spelled through a function typedef is an error.
+    error = assert_raises(Rubycc::CompileError) do
+      parse("typedef int F(int); F g { return 0; }")
+    end
+    assert_match(/function definition through a typedef/, error.message)
   end
 
   def test_struct_member_function_pointer
@@ -969,6 +1036,66 @@ class TestParser < Minitest::Test
     assert_kind_of AST::VaEnd, expr
     assert_kind_of AST::VariableRef, expr.ap
     assert_equal "ap", expr.ap.name
+  end
+
+  def test_builtin_expect_ast_shape
+    expr = parse_expr("__builtin_expect(x == 0, 1)")
+
+    assert_kind_of AST::BuiltinExpect, expr
+    assert_kind_of AST::Binary, expr.exp
+    assert_kind_of AST::IntLit, expr.c
+    assert_equal 1, expr.c.value
+  end
+
+  def test_builtin_expect_too_few_arguments_is_rejected
+    error = assert_raises(Rubycc::CompileError) { parse_expr("__builtin_expect(x)") }
+    assert_match(/'__builtin_expect' expects 2 arguments/, error.description)
+  end
+
+  def test_builtin_expect_too_many_arguments_is_rejected
+    error = assert_raises(Rubycc::CompileError) { parse_expr("__builtin_expect(x, 1, 2)") }
+    assert_match(/'__builtin_expect' expects 2 arguments/, error.description)
+  end
+
+  def test_builtin_alloca_ast_shape
+    expr = parse_expr("__builtin_alloca(n)")
+
+    assert_kind_of AST::BuiltinAlloca, expr
+    assert_kind_of AST::VariableRef, expr.size
+    assert_equal "n", expr.size.name
+  end
+
+  def test_builtin_alloca_wrong_arity_is_rejected
+    error = assert_raises(Rubycc::CompileError) { parse_expr("__builtin_alloca(1, 2)") }
+    assert_match(/'__builtin_alloca' expects 1 argument/, error.description)
+  end
+
+  def test_asm_barrier_statement_is_accepted
+    program = parse('int main(void) { __asm__ volatile("" ::: "memory"); return 0; }')
+    stmt = program.functions.first.body.first
+
+    assert_kind_of AST::InlineAsm, stmt
+  end
+
+  def test_asm_accepts_double_underscore_volatile_and_bare_form
+    program = parse('int main(void) { __asm__ __volatile__(""); __asm__(""); return 0; }')
+
+    assert_kind_of AST::InlineAsm, program.functions.first.body[0]
+    assert_kind_of AST::InlineAsm, program.functions.first.body[1]
+  end
+
+  def test_asm_non_empty_template_is_rejected
+    error = assert_raises(Rubycc::CompileError) do
+      parse('int main(void) { __asm__ volatile("nop"); return 0; }')
+    end
+    assert_match(/non-empty inline assembly is not supported/, error.description)
+  end
+
+  def test_asm_operand_expression_is_rejected
+    error = assert_raises(Rubycc::CompileError) do
+      parse('int main(void) { int x; __asm__("" : "=r"(x)); return 0; }')
+    end
+    assert_match(/inline assembly operands are not supported/, error.description)
   end
 
   def test_abstract_function_pointer_type_in_sizeof
@@ -2121,5 +2248,274 @@ class TestParser < Minitest::Test
   def test_pointer_to_double_declaration
     decl = parse_decl("double *p;")
     assert_equal Type::Pointer.new(Type::Double), decl.type
+  end
+
+  # --- GNU __attribute__ / __extension__ (Step 28 Phase A) -----------------
+
+  # The StructType of the first file-scope object declaration, used to inspect
+  # the layout a struct/union attribute produced.
+  def global_type(source)
+    program = parse(source)
+    program.functions.find { |d| d.is_a?(AST::GlobalDecl) }.type
+  end
+
+  def test_attribute_among_declaration_specifiers_is_accepted
+    program = parse("__attribute__((const)) int f(void) { return 1; } int main(void) { return f(); }")
+    assert_equal "f", program.functions.first.name
+  end
+
+  def test_attribute_interleaved_with_specifiers_is_accepted
+    decl = parse_decl("int __attribute__((unused)) x;")
+    assert_equal "x", decl.name
+    assert_equal Type::Int, decl.type
+  end
+
+  def test_attribute_after_a_declarator_is_accepted
+    program = parse("int f(void) __attribute__((noreturn)); int main(void) { return 0; }")
+    assert_kind_of AST::FunctionDecl, program.functions.first
+  end
+
+  def test_attribute_on_a_parameter_declarator_is_accepted
+    program = parse("int f(int x __attribute__((unused))) { return x; } int main(void) { return f(0); }")
+    assert_equal "f", program.functions.first.name
+  end
+
+  def test_attribute_in_parameter_specifier_position_is_accepted
+    program = parse("int f(__attribute__((unused)) int x) { return x; } int main(void) { return f(0); }")
+    assert_equal "f", program.functions.first.name
+  end
+
+  def test_attribute_at_start_of_cast_type_name_is_accepted
+    # "(__attribute__((noreturn)) int (*)(void)) fp": an attribute opening a
+    # type-name's specifier-qualifier list, accepted and discarded.
+    program = parse("int actual(void) { return 42; } " \
+                    "int main(void) { void *fp = &actual; " \
+                    "return ((__attribute__((noreturn)) int (*)(void)) fp)(); }")
+    assert_equal "main", program.functions.last.name
+  end
+
+  def test_attribute_inside_abstract_declarator_is_accepted
+    # "(int (__attribute__((noreturn)) *)(void)) fp": an attribute between the
+    # nested "(" and the "*" of an abstract declarator (00210's misparse case).
+    program = parse("int actual(void) { return 42; } " \
+                    "int main(void) { void *fp = &actual; " \
+                    "return ((int (__attribute__((noreturn)) *)(void)) fp)(); }")
+    assert_equal "main", program.functions.last.name
+  end
+
+  # Mirrors c-testsuite 00170: a function whose return type is a
+  # forward-referenced enum (completed only after the prototype) is assignable
+  # to a function-pointer member whose type resolves that enum, post-definition,
+  # to int. Completing the enum in place makes the two return types agree, so
+  # the whole translation unit compiles without a type error.
+  def test_enum_returning_function_is_assignable_to_int_returning_pointer
+    source = <<~C
+      enum efoo;
+      extern enum efoo it_real_fn(void);
+      enum efoo { ONE, TWO };
+      struct S2 { enum efoo (*f2)(void); };
+      void should_compile(struct S2 *s) { s->f2 = it_real_fn; }
+      enum efoo it_real_fn(void) { return TWO; }
+    C
+    assert Rubycc::Compiler.new.compile(source, filename: "test.c")
+  end
+
+  def test_attribute_after_a_struct_member_declarator_is_accepted
+    type = global_type("struct S { int m __attribute__((packed)); int n; }; struct S g;")
+    # A member-level attribute is discarded here, so the layout stays natural.
+    assert_equal [0, 4], type.members.map(&:offset)
+    assert_equal 8, type.size
+  end
+
+  def test_empty_attribute_list_is_accepted
+    type = global_type("struct __attribute__(()) S { int a; }; struct S g;")
+    assert_equal 4, type.size
+  end
+
+  def test_attribute_with_empty_elements_is_accepted
+    type = global_type("struct __attribute__((,)) S { int a; }; struct S g;")
+    assert_equal 4, type.size
+  end
+
+  def test_attribute_with_multiple_comma_arguments_is_accepted
+    program = parse("int f(const char *fmt, ...) __attribute__((format(printf, 1, 2))); " \
+                    "int main(void) { return 0; }")
+    assert_kind_of AST::FunctionDecl, program.functions.first
+  end
+
+  def test_unknown_attribute_is_silently_ignored
+    # gcc warns; rubycc quietly accepts and discards an unrecognized attribute.
+    type = global_type("struct __attribute__((totally_made_up)) S { char c; }; struct S g;")
+    assert_equal 1, type.size
+    assert_equal 1, type.alignment
+  end
+
+  def test_aligned_attribute_on_a_struct_raises_alignment_and_size
+    type = global_type("struct __attribute__((aligned(16))) S { char c; }; struct S g;")
+    assert_equal 16, type.alignment
+    assert_equal 16, type.size
+  end
+
+  def test_aligned_without_argument_uses_biggest_alignment
+    type = global_type("struct __attribute__((aligned)) S { char c; }; struct S g;")
+    assert_equal 16, type.alignment
+    assert_equal 16, type.size
+  end
+
+  def test_underscored_aligned_spelling_normalizes
+    type = global_type("struct __attribute__((__aligned__(8))) S { char c; }; struct S g;")
+    assert_equal 8, type.alignment
+    assert_equal 8, type.size
+  end
+
+  def test_packed_attribute_removes_padding
+    type = global_type("struct __attribute__((packed)) S { char c; int i; }; struct S g;")
+    assert_equal [0, 1], type.members.map(&:offset)
+    assert_equal 5, type.size
+    assert_equal 1, type.alignment
+  end
+
+  def test_packed_after_the_closing_brace_is_accepted
+    type = global_type("struct S { char c; int i; } __attribute__((packed)); struct S g;")
+    assert_equal [0, 1], type.members.map(&:offset)
+    assert_equal 5, type.size
+  end
+
+  def test_packed_and_aligned_combine
+    type = global_type("struct __attribute__((packed, aligned(4))) S { char c; char d; char e; }; struct S g;")
+    assert_equal [0, 1, 2], type.members.map(&:offset)
+    assert_equal 4, type.size
+    assert_equal 4, type.alignment
+  end
+
+  def test_leading_and_trailing_attributes_combine
+    type = global_type("struct __attribute__((packed)) S { char c; int i; } __attribute__((aligned(4))); " \
+                        "struct S g;")
+    assert_equal [0, 1], type.members.map(&:offset)
+    assert_equal 8, type.size
+    assert_equal 4, type.alignment
+  end
+
+  def test_aligned_with_a_non_power_of_two_is_a_diagnostic
+    error = assert_raises(Rubycc::CompileError) do
+      parse("struct __attribute__((aligned(3))) S { char c; }; struct S g;")
+    end
+    assert_match(/power of 2/, error.message)
+  end
+
+  def test_aligned_with_a_non_constant_is_a_diagnostic
+    error = assert_raises(Rubycc::CompileError) do
+      parse("int n; struct __attribute__((aligned(n))) S { char c; }; struct S g;")
+    end
+    assert_match(/aligned.*not an integer constant/, error.message)
+  end
+
+  def test_extension_prefix_on_a_declaration_is_accepted
+    decl = parse_decl("__extension__ int z = 3;")
+    assert_equal "z", decl.name
+    assert_equal Type::Int, decl.type
+  end
+
+  def test_extension_prefix_on_a_file_scope_declaration_is_accepted
+    program = parse("__extension__ int g; int main(void) { return 0; }")
+    assert_equal "g", program.functions.first.name
+  end
+
+  def test_extension_prefix_on_a_unary_expression_is_accepted
+    # "__extension__ z" binds like a cast prefix, so the operand is the plain z.
+    expr = parse_expr("__extension__ z")
+    assert_kind_of AST::VariableRef, expr
+    assert_equal "z", expr.name
+  end
+
+  # --- multiple declarators in one external declaration ----------------------
+
+  def test_declaration_mixes_function_prototypes_and_an_object
+    # "int f(int a), g(int a), a;" — two prototypes and one object; a
+    # function-typed first declarator does not commit the line to a definition.
+    program = parse("int f(int a), g(int a), a;")
+    assert_equal 3, program.functions.size
+    assert_kind_of AST::FunctionDecl, program.functions[0]
+    assert_equal "f", program.functions[0].name
+    assert_kind_of AST::FunctionDecl, program.functions[1]
+    assert_equal "g", program.functions[1].name
+    assert_kind_of AST::GlobalDecl, program.functions[2]
+    assert_equal "a", program.functions[2].name
+  end
+
+  def test_function_definition_still_parses_after_the_dispatch_rework
+    program = parse("int main(void) { return 0; }")
+    assert_kind_of AST::FunctionDef, program.functions.first
+  end
+
+  # --- array-parameter type qualifiers and static (6.7.6.3p7) ----------------
+
+  def test_static_array_parameter_is_accepted
+    program = parse("int f(int a[static 5]);")
+    decl = program.functions.first
+    assert_kind_of AST::FunctionDecl, decl
+    # The array parameter adjusts to a plain (unqualified) pointer to int.
+    assert_equal Type::Pointer.new(Type::Int), decl.params.first.type
+  end
+
+  def test_array_parameter_qualifiers_are_accepted
+    ["const", "volatile", "restrict"].each do |qual|
+      program = parse("void f(int a[#{qual} 5]);")
+      assert_equal Type::Pointer.new(Type::Int), program.functions.first.params.first.type,
+                   "expected [#{qual} 5] to adjust to a plain pointer"
+    end
+  end
+
+  def test_unnamed_qualified_array_parameter_is_accepted
+    program = parse("void f(int [const 5]);")
+    assert_equal Type::Pointer.new(Type::Int), program.functions.first.params.first.type
+  end
+
+  def test_unspecified_size_array_parameter_is_accepted
+    program = parse("void f(int a[const *]);")
+    assert_equal Type::Pointer.new(Type::Int), program.functions.first.params.first.type
+  end
+
+  # --- restrict spellings as pointer qualifiers ------------------------------
+
+  def test_restrict_spellings_are_accepted_as_pointer_qualifiers
+    ["restrict", "__restrict", "__restrict__"].each do |spelling|
+      program = parse("void f(char *#{spelling} p);")
+      assert_equal Type::Pointer.new(Type::Char), program.functions.first.params.first.type,
+                   "expected *#{spelling} to parse as a pointer qualifier"
+    end
+  end
+
+  def test_glibc_style_restrict_prototype_parses
+    program = parse("int fprintf(void *__restrict, const char *__restrict, ...);")
+    decl = program.functions.first
+    assert_kind_of AST::FunctionDecl, decl
+    assert_equal "fprintf", decl.name
+    assert decl.variadic
+  end
+
+  # --- incomplete enum declarations (6.7.2.2) --------------------------------
+
+  def test_incomplete_enum_pointer_declaration_parses
+    program = parse("enum E *e; int main(void) { return 0; }")
+    decl = program.functions.first
+    assert_kind_of AST::GlobalDecl, decl
+    assert_kind_of Type::EnumType, decl.type.target
+    assert_equal "E", decl.type.target.tag
+  end
+
+  def test_incomplete_enum_with_qualifiers_parses
+    # "const enum E *" and "enum E const *" both name a pointer to incomplete E.
+    ["const enum E *e;", "enum E const *e;"].each do |src|
+      program = parse("#{src} int main(void) { return 0; }")
+      assert_kind_of Type::EnumType, program.functions.first.type.target
+    end
+  end
+
+  def test_incomplete_enum_as_prototype_return_type_parses
+    program = parse("enum E f(void); int main(void) { return 0; }")
+    decl = program.functions.first
+    assert_kind_of AST::FunctionDecl, decl
+    assert_kind_of Type::EnumType, decl.return_type
   end
 end

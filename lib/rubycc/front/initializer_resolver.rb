@@ -286,12 +286,14 @@ module Rubycc
       end
 
       # Records a char array's string initializer and, for a top-level "[]",
-      # completes its bound to the string length plus the NUL. M1 requires the
-      # array to hold the NUL too (a length exactly equal to the character count,
-      # legal in C, is rejected as too long).
+      # completes its bound to the string length plus the NUL. An array sized
+      # exactly to the character count (excluding the NUL) is allowed (6.7.9p14):
+      # the terminating NUL is simply dropped, so "char x[3] = \"abc\"" fills the
+      # array with no room to spare. Only a string longer than the array — one
+      # whose characters alone will not fit — is diagnosed as too long.
       def place_string(type, offset, bytes, node)
         length = type.length || bytes.bytesize + 1
-        if length < bytes.bytesize + 1
+        if length < bytes.bytesize
           error(node.token, "initializer-string for char array is too long")
         end
         @entries << StringInit.new(offset, bytes)

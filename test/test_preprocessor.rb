@@ -537,6 +537,47 @@ class TestPreprocessor < Minitest::Test
     assert_match(/"defined" cannot be used as a macro name/, error.description)
   end
 
+  # --- predefined target macros -----------------------------------------------
+
+  def test_x86_64_selects_its_ifdef_branch
+    source = "#ifdef __x86_64__\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_lp64_expands_to_one
+    tokens = pp("int a = __LP64__; int b = _LP64;").reject(&:eof?)
+    assert_equal [1, 1], tokens.select { |t| t.type == :num }.map(&:value)
+  end
+
+  def test_linux_and_kin_are_predefined
+    %w[__amd64__ __linux__ __gnu_linux__ __unix__ __ELF__ __STDC_HOSTED__].each do |name|
+      source = "#ifdef #{name}\nint yes;\n#else\nint no;\n#endif"
+      assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value),
+                   "expected #{name} to be predefined"
+    end
+  end
+
+  def test_linux_may_be_undefined_unlike_a_builtin
+    # Unlike __FILE__ and kin, a predefined target macro is an ordinary
+    # #define'd entry: #undef is allowed, matching gcc.
+    source = "#undef __linux__\n#ifdef __linux__\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_gnuc_is_not_predefined
+    # DESIGN R7: no gcc-compatibility macro, so a header cannot select a
+    # gcc-specific path through it.
+    source = "#ifdef __GNUC__\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_non_reserved_target_spellings_are_absent
+    # gcc drops the non-reserved forms ("linux", "unix", "i386") under
+    # -std=c11; only the reserved __..__ spellings are predefined here.
+    source = "#ifdef linux\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
   # --- __has_include / __has_attribute / __has_builtin (in #if) --------------
 
   def test_has_include_detects_a_present_header
@@ -566,14 +607,37 @@ class TestPreprocessor < Minitest::Test
     end
   end
 
-  def test_has_attribute_is_always_false_for_now
+  def test_has_attribute_is_true_for_the_layout_attributes
     source = "#if __has_attribute(packed)\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_has_attribute_is_true_for_aligned
+    source = "#if __has_attribute(aligned)\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_has_attribute_normalizes_the_underscore_spelling
+    source = "#if __has_attribute(__aligned__)\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_has_attribute_is_false_for_an_unknown_attribute
+    source = "#if __has_attribute(noreturn)\nint yes;\n#else\nint no;\n#endif"
     assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
   end
 
   def test_has_builtin_recognizes_the_varargs_intrinsics
     source = "#if __has_builtin(__builtin_va_start)\nint yes;\n#else\nint no;\n#endif"
     assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_has_builtin_recognizes_expect_and_alloca
+    %w[__builtin_expect __builtin_alloca].each do |builtin|
+      source = "#if __has_builtin(#{builtin})\nint yes;\n#else\nint no;\n#endif"
+      assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value),
+                   "expected __has_builtin(#{builtin}) to be true"
+    end
   end
 
   def test_has_builtin_is_false_for_unknown_builtins
@@ -585,6 +649,97 @@ class TestPreprocessor < Minitest::Test
     # Only #if folds __has_include; elsewhere it is an ordinary name.
     tokens = pp("int __has_include;").reject(&:eof?)
     assert_equal ["int", "__has_include", ";"], tokens.map(&:value)
+  end
+
+  # --- defined() answers true for the __has_* query operators ----------------
+
+  def test_defined_is_true_for_the_query_operators
+    %w[__has_builtin __has_include __has_attribute].each do |op|
+      source = "#if defined(#{op})\nint yes;\n#else\nint no;\n#endif"
+      assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value),
+                   "expected defined(#{op}) to be 1"
+    end
+  end
+
+  def test_defined_without_parens_is_true_for_a_query_operator
+    source = "#if defined __has_builtin\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_defined_of_defined_stays_false
+    # gcc answers defined() true for the __has_* queries but not for `defined`
+    # itself, which is not among them.
+    source = "#if defined(defined)\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  # --- a macro-wrapped __has_* query folds after expansion -------------------
+
+  def test_macro_wrapped_has_builtin_is_folded_post_expansion
+    %w[__builtin_va_start __builtin_expect __builtin_alloca].each do |builtin|
+      source = "#define HAS(x) __has_builtin(x)\n" \
+               "#if HAS(#{builtin})\nint yes;\n#else\nint no;\n#endif"
+      assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value),
+                   "expected macro-wrapped __has_builtin(#{builtin}) to be true"
+    end
+  end
+
+  def test_macro_wrapped_has_builtin_is_false_for_unknown
+    source = "#define HAS(x) __has_builtin(x)\n" \
+             "#if HAS(__builtin_nope)\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_macro_wrapped_has_include_folds_after_expansion
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "there.h"), "int x;\n")
+      main = File.join(dir, "main.c")
+      source = "#define HAS_INC(x) __has_include(x)\n" \
+               "#if HAS_INC(\"there.h\")\nint yes;\n#else\nint no;\n#endif"
+      assert_equal ["int", "yes", ";"], pp(source, filename: main).reject(&:eof?).map(&:value)
+    end
+  end
+
+  # --- numeric predefined macros (gcc -dM spellings) -------------------------
+
+  def test_numeric_predefined_macros_expand_to_gcc_spellings
+    # [value, base, suffix] as the converter reads back the gcc -dM spelling: the
+    # value base (hex vs decimal) and integer suffix must match so a
+    # gcc-differential #if agrees.
+    {
+      "__CHAR_BIT__" => [8, 10, ""], "__INT_MAX__" => [0x7fffffff, 16, ""],
+      "__LONG_MAX__" => [0x7fffffffffffffff, 16, "l"],
+      "__SIZE_MAX__" => [0xffffffffffffffff, 16, "ul"],
+      "__SIZEOF_POINTER__" => [8, 10, ""], "__WINT_MAX__" => [0xffffffff, 16, "u"]
+    }.each do |name, (value, base, suffix)|
+      tokens = pp(name).reject(&:eof?)
+      assert_equal 1, tokens.length, "#{name} should expand to one token"
+      assert_equal [value, base, suffix], [tokens.first.value, tokens.first.base, tokens.first.suffix],
+                   "#{name} should expand to gcc's exact spelling"
+    end
+  end
+
+  def test_long_max_compares_equal_in_if
+    source = "#if __LONG_MAX__ == 0x7fffffffffffffffL\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_int_and_pointer_size_macros_compare_in_if
+    source = "#if __INT_MAX__ == 2147483647 && __SIZEOF_POINTER__ == 8\n" \
+             "int yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_wchar_min_expression_evaluates_negative_in_if
+    # __WCHAR_MIN__ is the parenthesized expression "(-__WCHAR_MAX__ - 1)",
+    # which must expand as a multi-token replacement and fold in #if.
+    source = "#if __WCHAR_MIN__ < 0\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_numeric_predefined_macro_is_undefinable
+    source = "#undef __LONG_MAX__\n#ifdef __LONG_MAX__\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
   end
 
   # --- #pragma ---------------------------------------------------------------
@@ -662,6 +817,52 @@ class TestPreprocessor < Minitest::Test
       error = assert_raises(Rubycc::CompileError) { pp("#include \"loop.h\"\n", filename: main) }
       assert_match(/#include nested too deeply/, error.description)
     end
+  end
+
+  # --- #include_next (GNU extension) ------------------------------------------
+
+  def test_include_next_resumes_past_the_including_directory
+    Dir.mktmpdir do |dir1|
+      Dir.mktmpdir do |dir2|
+        File.write(File.join(dir1, "h.h"), "#include_next <h.h>\nint from = 1;\n")
+        File.write(File.join(dir2, "h.h"), "int from_dir2;\n")
+        tokens = Rubycc::Preprocess::Preprocessor.new
+                   .run("#include <h.h>\n", filename: "main.c", include_paths: [dir1, dir2])
+                   .reject(&:eof?)
+        assert_equal ["int", "from_dir2", ";", "int", "from", "=", 1, ";"], tokens.map(&:value)
+      end
+    end
+  end
+
+  def test_include_next_quote_form_ignores_the_includer_directory
+    Dir.mktmpdir do |dir1|
+      Dir.mktmpdir do |dir2|
+        File.write(File.join(dir1, "h.h"), "#include_next \"h.h\"\nint from = 1;\n")
+        File.write(File.join(dir2, "h.h"), "int from_dir2;\n")
+        tokens = Rubycc::Preprocess::Preprocessor.new
+                   .run("#include <h.h>\n", filename: "main.c", include_paths: [dir1, dir2])
+                   .reject(&:eof?)
+        assert_equal ["int", "from_dir2", ";", "int", "from", "=", 1, ";"], tokens.map(&:value)
+      end
+    end
+  end
+
+  def test_include_next_from_the_main_file_behaves_like_include
+    # The main source file was never resolved along the search path, so it has
+    # no -I directory to resume past; #include_next falls back to a plain
+    # #include search from the front of the list.
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "h.h"), "int fromsys;\n")
+      tokens = Rubycc::Preprocess::Preprocessor.new
+                 .run("#include_next <h.h>\n", filename: "main.c", include_paths: [dir])
+                 .reject(&:eof?)
+      assert_equal ["int", "fromsys", ";"], tokens.map(&:value)
+    end
+  end
+
+  def test_include_next_missing_header_is_rejected
+    error = assert_raises(Rubycc::CompileError) { pp("#include_next <gone.h>\n") }
+    assert_match(%r{gone\.h: No such file or directory}, error.description)
   end
 
   # --- #error ----------------------------------------------------------------
@@ -780,6 +981,89 @@ class TestPreprocessor < Minitest::Test
   def test_bad_defined_operator_is_rejected
     error = assert_raises(Rubycc::CompileError) { pp("#if defined 3\n#endif") }
     assert_match(/operator 'defined' requires an identifier/, error.description)
+  end
+
+  # --- wide character constants (Step 28 Phase C2) ---------------------------
+
+  # glibc's bits/wchar.h guards with "#elif L'\0' - 1 > 0"; a wide constant
+  # evaluates like a plain one here (int, value 0), so 0 - 1 > 0 is false and the
+  # group is dropped.
+  def test_if_wide_null_character_matches_plain
+    tokens = pp("#if L'\\0' - 1 > 0\nint a;\n#else\nint b;\n#endif").reject(&:eof?)
+    assert_equal ["int", "b", ";"], tokens.map(&:value)
+  end
+
+  def test_wide_character_constant_value_equals_plain
+    tokens = pp("int x = L'a';").reject(&:eof?)
+    assert_equal [:keyword, :ident, :punct, :num, :punct], tokens.map(&:type)
+    assert_equal 97, tokens[3].value
+  end
+
+  def test_identifier_named_l_is_unaffected
+    # "L" only opens a wide literal when it abuts a quote; a plain identifier
+    # named L (or Lx) still lexes as an identifier.
+    tokens = pp("int L = 0; int Lx = 0;").reject(&:eof?)
+    assert_equal %w[int L = 0 ; int Lx = 0 ;], tokens.map { |t| t.value.to_s }
+  end
+
+  def test_wide_string_literal_is_rejected
+    error = assert_raises(Rubycc::CompileError) { pp("char *s = L\"ab\";") }
+    assert_match(/wide string literals are not supported/, error.description)
+  end
+
+  # --- adjacent string-literal concatenation (translation phase 6) -----------
+
+  def test_two_adjacent_string_literals_concatenate
+    tokens = pp("char *s = \"abc\" \"def\";").reject(&:eof?)
+    string = tokens.find { |t| t.type == :string }
+    assert_equal "abcdef".b, string.value
+  end
+
+  def test_three_adjacent_string_literals_concatenate
+    tokens = pp("char *s = \"a\" \"b\" \"c\";").reject(&:eof?)
+    assert_equal "abc".b, tokens.find { |t| t.type == :string }.value
+  end
+
+  def test_escapes_decode_per_literal_before_concatenation
+    # "\x41" is the single byte 'A'; the following "1" is not swallowed into the
+    # hex escape (6.4.5p4), so the run is the two bytes "A1", never "\x411".
+    tokens = pp("char *s = \"\\x41\" \"1\";").reject(&:eof?)
+    assert_equal "A1".b, tokens.find { |t| t.type == :string }.value
+  end
+
+  def test_macro_produced_adjacency_concatenates
+    source = "#define B \"b\"\nchar *s = \"a\" B \"c\";"
+    assert_equal "abc".b, pp(source).find { |t| t.type == :string }.value
+  end
+
+  def test_stringize_result_concatenates_with_a_literal
+    # Ruby's static-assert fallback abuts a #x stringize with plain literals.
+    source = "#define S(x) #x \": \" \"end\"\nchar *s = S(name);"
+    assert_equal "name: end".b, pp(source).find { |t| t.type == :string }.value
+  end
+
+  # --- _Pragma operator (6.10.9), accepted and discarded ---------------------
+
+  def test_pragma_operator_written_literally_is_dropped
+    tokens = pp("_Pragma(\"GCC visibility push(default)\") int x;").reject(&:eof?)
+    assert_equal %w[int x ;], tokens.map(&:value)
+  end
+
+  def test_pragma_operator_produced_by_a_macro_is_dropped
+    # config.h defines its export markers as _Pragma(...); the operator must be
+    # recognized after macro expansion, not only when written by hand.
+    source = "#define OPEN _Pragma(\"GCC visibility push(default)\")\nOPEN int y;"
+    assert_equal %w[int y ;], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_pragma_operator_without_parenthesized_string_is_rejected
+    error = assert_raises(Rubycc::CompileError) { pp("_Pragma 5;") }
+    assert_match(/_Pragma takes a parenthesized string literal/, error.description)
+  end
+
+  def test_pragma_operator_with_non_string_operand_is_rejected
+    error = assert_raises(Rubycc::CompileError) { pp("_Pragma(once);") }
+    assert_match(/_Pragma takes a parenthesized string literal/, error.description)
   end
 
   # --- gcc -E differential ---------------------------------------------------

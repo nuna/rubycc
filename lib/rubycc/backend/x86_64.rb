@@ -81,6 +81,10 @@ module Rubycc
       # register, so it can hold an indirect call's target without clobbering
       # any argument already loaded into edi..r9d.
       R10 = 10
+      # The stack pointer's register number (its ModR/M reg/rm field). It is only
+      # ever named as the source of a "mov [rbp+disp], rsp" that captures the
+      # post-alloca rsp as the block's base address.
+      RSP = 4
 
       # The two vector (xmm) scratch registers the floating ops use. Their
       # numbers 0/1 double as the ModR/M reg/rm fields, so no REX.R is ever
@@ -261,6 +265,8 @@ module Rubycc
           emit_binary(inst.dst, inst.a, inst.b, [0x29, 0xC8], inst.size) # sub eax, ecx
         when :mul
           emit_binary(inst.dst, inst.a, inst.b, [0x0F, 0xAF, 0xC1], inst.size) # imul eax, ecx
+        when :mulhi
+          emit_mulhi(inst.dst, inst.a, inst.b) # high 64 bits of an unsigned 64x64 product
         when :div
           emit_divmod(inst.dst, inst.a, inst.b, EAX, inst.size) # quotient in eax
         when :mod
@@ -347,6 +353,8 @@ module Rubycc
           emit_memcpy(inst.a, inst.b, inst.size)
         when :va_start
           emit_va_start(inst.a, inst.b)
+        when :alloca
+          emit_alloca(inst.dst, inst.a)
         when :ret
           emit_ret(inst.a, inst.size)
         else
@@ -769,6 +777,24 @@ module Rubycc
         emit(0x4C, 0x89, 0x50, 0x10)        # mov [rax+16], r10
       end
 
+      # :alloca — dynamic stack allocation (__builtin_alloca). Loads the
+      # requested byte count, rounds it up to a 16-byte multiple (add 15; and
+      # -16), lowers rsp by that amount, and captures the resulting rsp as the
+      # block's base address. The rounding keeps rsp 16-aligned — so the block is
+      # 16-byte aligned as gcc guarantees, and a later call still meets the ABI's
+      # alignment — while the storage lives until the function's "leave" (mov
+      # rsp, rbp) reclaims the whole frame on return. Every vreg slot and stack
+      # object is rbp-relative, so the moved rsp disturbs none of them; a call's
+      # push-based argument setup works off this lowered rsp and restores it
+      # afterwards, leaving the block intact across the call.
+      def emit_alloca(dst, size_vreg)
+        load_reg(EAX, size_vreg)            # rax = requested byte count
+        emit(0x48, 0x83, 0xC0, 0x0F)        # add rax, 15
+        emit(0x48, 0x83, 0xE0, 0xF0)        # and rax, -16  (round up to 16)
+        emit(0x48, 0x29, 0xC4)              # sub rsp, rax
+        store_reg(RSP, dst)                 # dst = rsp (block base address)
+      end
+
       # A size of 8 compares full 64-bit pointer values (REX.W cmp rax, rcx);
       # otherwise the 32-bit int compare is used. The signed setcc still suits
       # pointer ordering here, since stack addresses stay within the positive
@@ -977,6 +1003,20 @@ module Rubycc
         emit(0x48) if size == 8
         emit(*opcode_bytes)
         store_reg(EAX, dst)
+      end
+
+      # :mulhi — the unsigned high 64 bits of a 64x64 product, the piece a
+      # synthesized __int128 multiply needs beyond the low 64 that :mul gives.
+      # `mul rcx` (REX.W F7 /4) multiplies rax by rcx into rdx:rax; the high half
+      # lands in rdx, which is stored to the destination. The one-operand `mul`
+      # is the unsigned multiply, so this is the unsigned high product regardless
+      # of the operands' declared signedness (the low 64 bits, and hence a full
+      # 128-bit low result, are identical for signed and unsigned).
+      def emit_mulhi(dst, a, b)
+        load_reg(EAX, a)                # rax = a
+        load_reg(ECX, b)                # rcx = b
+        emit(0x48, 0xF7, 0xE1)          # mul rcx  -> rdx:rax = rax * rcx
+        store_reg(EDX, dst)             # dst = high 64 bits
       end
 
       # A size of 8 does a 64-bit signed division (REX.W cqo + REX.W idiv rcx),

@@ -189,6 +189,8 @@ module Rubycc
             scan_pp_number
           elsif ch == "." && peek =~ /[0-9]/
             scan_pp_number
+          elsif ch == "L" && (peek == "'" || peek == "\"")
+            scan_wide_literal
           elsif ch =~ /[A-Za-z_]/
             scan_identifier
           elsif ch == "'"
@@ -242,6 +244,21 @@ module Rubycc
 
       def scan_char_constant
         [:char, scan_quoted("'")]
+      end
+
+      # A wide character constant L'c' or wide string literal L"..." (6.4.4.4,
+      # 6.4.5): recognized only when the "L" abuts the quote, so an identifier
+      # named "L" is unaffected. The "L" is kept in the spelling so the converter
+      # can tell a wide literal from a plain one; it decides a wide character's
+      # value (int here, as for a plain constant) and rejects a wide string. The
+      # u/U/u8 prefixes are out of scope, so they still scan as an identifier.
+      def scan_wide_literal
+        prefix = advance # "L"
+        if current_char == "'"
+          [:char, prefix + scan_quoted("'")]
+        else
+          [:string, prefix + scan_quoted("\"")]
+        end
       end
 
       def scan_quoted(quote)

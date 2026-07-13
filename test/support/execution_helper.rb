@@ -67,6 +67,23 @@ module ExecutionHelper
     [run_status.exitstatus, stdout]
   end
 
+  # Like `link_and_run`, but also links against libm (`-lm`), for object
+  # files that reference math functions (sqrt, sin, ...) resolved from a
+  # separate archive on the host toolchain. Returns [stdout_and_stderr,
+  # process_status] (unlike `link_and_run`) so callers can inspect both the
+  # combined output and the exit status themselves.
+  def link_and_run_with_libm(object_path)
+    dir = File.dirname(object_path)
+    exe_path = File.join(dir, "#{File.basename(object_path, ".*")}.out")
+
+    stdout_and_stderr, status = Open3.capture2e("gcc", "-o", exe_path, object_path, "-lm")
+    unless status.success?
+      raise "gcc failed to link object file (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
+    end
+
+    Open3.capture2e(exe_path)
+  end
+
   # Links `object_path` into an executable and returns the linker's combined
   # stderr, so tests can assert it is warning-free (e.g. no missing
   # .note.GNU-stack executable-stack warning).

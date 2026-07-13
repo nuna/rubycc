@@ -158,7 +158,25 @@ module Rubycc
       # into a single Rubycc::Type. "void" is only ever valid as a function's
       # return type or as the target of a pointer; every other use is rejected
       # by #reject_void_type.
-      DECL_SPECIFIER_KEYWORDS = %w[void char short int long signed unsigned _Bool float double].freeze
+      DECL_SPECIFIER_KEYWORDS = %w[void char short int long signed unsigned _Bool float double __int128].freeze
+
+      # The x86_64 "biggest alignment" gcc gives a bare
+      # `__attribute__((aligned))` with no argument (BIGGEST_ALIGNMENT, 16
+      # bytes): the most useful boundary, enough for any scalar or vector type.
+      BIGGEST_ALIGNMENT = 16
+
+      # The GNU attribute names Step 28 gives real layout meaning; every other
+      # attribute is accepted and silently discarded. Kept in sync with the
+      # preprocessor's __has_attribute answer (see Preprocessor#fold_has_attribute).
+      LAYOUT_ATTRIBUTES = %w[aligned packed].freeze
+
+      # The spellings of the "restrict" type qualifier this subset recognizes.
+      # ISO "restrict" is not a keyword here (it never gains semantics — a
+      # restricted pointer is treated like any other), and glibc prototypes use
+      # the reserved GNU spellings "__restrict"/"__restrict__" unconditionally, so
+      # all three arrive as ordinary identifiers and are accepted and discarded
+      # wherever a pointer or array-parameter qualifier may appear.
+      RESTRICT_SPELLINGS = %w[restrict __restrict __restrict__].freeze
 
       # The storage-class specifiers (6.7.1): at most one may appear in a
       # declaration. "typedef", "static" and "extern" are recorded in
@@ -263,6 +281,11 @@ module Rubycc
       # function form (its declarator having read the "(" parameter list), any
       # other type the variable form.
       def parse_external_declaration
+        # A leading "__extension__" (a GNU marker that silences pedantic
+        # warnings) prefixes a declaration with no semantic effect; every
+        # external declaration is a declaration, so any run of them is discarded.
+        skip_extension_markers
+
         # A file-scope "_Static_assert(expr, "msg");" is a declaration that binds
         # nothing; it is checked and flattened away here (see #parse_static_assert).
         return parse_static_assert if peek.keyword?("_Static_assert")
@@ -286,51 +309,89 @@ module Rubycc
 
         name_tok, type, function_params, pointer_quals =
           parse_declarator(base_type, allow_incomplete_array: true)
+        # A GNU attribute may trail the declarator (position d):
+        # "int f(void) __attribute__((noreturn));". Accepted and discarded, on a
+        # function prototype/definition or a variable alike.
+        parse_attribute_specifiers
 
-        if type.function?
-          parse_function(name_tok, type, function_params, type_tok, spec_info)
-        else
-          parse_global_declaration(base_type, name_tok, type, pointer_quals, spec_info)
+        # A function definition is the one external declaration whose declarator
+        # is followed by a compound statement (6.9.1); the declarator must be a
+        # function type and it stands alone. Every other shape — a function
+        # prototype, an object, or a comma-separated run mixing the two
+        # ("int f(int a), g(int a), a;") — is a declaration list, so a
+        # function-typed *first* declarator does not by itself commit the line to
+        # a definition: only a following "{" does.
+        if type.function? && peek.punct?("{")
+          # A function's parameters must be declared by the definition's own
+          # declarator (6.9.1p2): a function type reached through a typedef
+          # ("typedef int F(int); F f { ... }") supplies no parameter list of
+          # its own — `function_params` is nil — so it may declare a prototype
+          # but not a definition.
+          if function_params.nil?
+            error_at(name_tok, "function definition through a typedef is not allowed")
+          end
+          declare_ordinary_name(name_tok.value)
+          return parse_function_definition(name_tok.value, type.return_type, function_params,
+                                           type_tok, spec_info.storage, type.variadic)
         end
+
+        parse_external_declaration_list(base_type, name_tok, type, function_params,
+                                        pointer_quals, spec_info, type_tok)
       end
 
-      # The function form of an external declaration, its declarator already
-      # read into `func_type` (a Type::FunctionType) and `params` (the Parameter
-      # objects of its outermost function suffix). A ";" is a prototype, a
-      # compound-statement a definition. The return type is func_type's — int,
-      # char, void or a pointer to any of those (including "void *").
-      # `spec_info` carries the function's storage class (nil/:static/:extern,
-      # recorded for Phase B) and an "inline" flag that is accepted and folded
-      # away here; a function is the one place "inline" is legal, so it is simply
-      # not rejected (unlike an object declaration, see #reject_object_specifiers).
-      def parse_function(name_tok, func_type, params, return_tok, spec_info)
-        # A function name is an ordinary identifier at file scope, recorded so an
-        # inner block declaring the same name shadows it against a typedef check.
-        declare_ordinary_name(name_tok.value)
-
-        if peek.punct?(";")
-          advance
-          AST::FunctionDecl.new(name_tok.value, func_type.return_type, params, return_tok,
-                                spec_info.storage, func_type.variadic)
-        else
-          parse_function_definition(name_tok.value, func_type.return_type, params, return_tok,
-                                    spec_info.storage, func_type.variadic)
-        end
-      end
-
-      # The file-scope variable form of an external declaration: a
-      # comma-separated run of declarators sharing `base_type`, the first of
-      # which (`first_type`/`first_name_tok`) has already been read. Each
-      # declarator yields one GlobalDecl; the run ends at ";".
-      def parse_global_declaration(base_type, first_name_tok, first_type, first_pointer_quals, spec_info)
-        decls = [parse_global_declarator(first_type, first_name_tok, first_pointer_quals, spec_info)]
+      # The declaration-list form of an external declaration: a comma-separated
+      # run of init-declarators sharing `base_type`, the first already read into
+      # `first_*`. Each declarator independently becomes a FunctionDecl (a
+      # function prototype) or a GlobalDecl (a file-scope object), so one
+      # declaration may mix the two ("int f(int a), g(int a), a;"). The run ends
+      # at ";".
+      def parse_external_declaration_list(base_type, first_name_tok, first_type, first_params,
+                                          first_pointer_quals, spec_info, return_tok)
+        decls = [parse_external_declarator(first_name_tok, first_type, first_params,
+                                           first_pointer_quals, spec_info, return_tok)]
         while peek.punct?(",")
           advance
-          name_tok, type, _params, pointer_quals = parse_declarator(base_type, allow_incomplete_array: true)
-          decls << parse_global_declarator(type, name_tok, pointer_quals, spec_info)
+          name_tok, type, params, pointer_quals = parse_declarator(base_type, allow_incomplete_array: true)
+          parse_attribute_specifiers # position d: a trailing attribute on this declarator
+          decls << parse_external_declarator(name_tok, type, params, pointer_quals, spec_info, return_tok)
         end
         expect_punct(";")
         decls
+      end
+
+      # One init-declarator of an external declaration list. A function-typed
+      # declarator is a prototype — a FunctionDecl whose name is recorded as an
+      # ordinary identifier (so an inner block shadowing it is told from a typedef
+      # use); every other declarator is a file-scope object (see
+      # #parse_global_declarator, which reads any "=" initializer). `spec_info`
+      # carries the shared storage class and an "inline" flag, legal only on the
+      # function declarators (an object declarator rejects it downstream).
+      def parse_external_declarator(name_tok, type, params, pointer_quals, spec_info, return_tok)
+        if type.function?
+          declare_ordinary_name(name_tok.value)
+          AST::FunctionDecl.new(name_tok.value, type.return_type,
+                                declarator_prototype_params(type, params, return_tok), return_tok,
+                                spec_info.storage, type.variadic)
+        else
+          parse_global_declarator(type, name_tok, pointer_quals, spec_info)
+        end
+      end
+
+      # The Parameter list a function-typed declarator contributes to its
+      # prototype. When the declarator carries its own "( parameter-list )"
+      # suffix, `params` is that list (each with the declared name). When the
+      # function type instead arrives through a typedef — "typedef VALUE
+      # getter_t(ID, VALUE *); getter_t g;" — the declarator has no parameter
+      # suffix of its own, so `params` is nil; the prototype's parameters are
+      # then synthesized from the typedef's parameter types as unnamed
+      # parameters (6.7.6.3), exactly as an explicit "int f(int, int);"
+      # prototype models its own. Such a declaration is always a prototype: a
+      # function may not be *defined* through a typedef (6.9.1p2), which the
+      # definition path rejects separately.
+      def declarator_prototype_params(type, params, token)
+        return params if params
+
+        type.param_types.map { |param_type| AST::Parameter.new(nil, param_type, token, false) }
       end
 
       # One global declarator's tail, its type (array suffix included) already
@@ -437,6 +498,12 @@ module Rubycc
           elsif tok.keyword?("enum")
             error_at(tok, "two or more data types in declaration specifiers") if composite || !specs.empty?
             composite = parse_enum_specifier
+          elsif tok.keyword?("__attribute__")
+            # A GNU attribute may open the specifier run or sit between
+            # specifiers (position a): "__attribute__((const)) int f(...)",
+            # "int __attribute__((unused)) x;". None affects an object's type, so
+            # the collected attributes are discarded.
+            parse_attribute_specifiers
           elsif composite.nil? && specs.empty? && tok.type == :ident && typedef_name?(tok.value)
             composite, typedef_const = lookup_ordinary(tok.value).value
             advance
@@ -479,6 +546,23 @@ module Rubycc
             error_at(tok, "cannot combine 'double' with other type specifiers")
           end
           return Type::Double
+        end
+
+        # `__int128` (a GNU keyword) stands alone or pairs with a single
+        # `signed`/`unsigned`, in any order ("unsigned __int128", "__int128
+        # unsigned", "signed __int128"); no width keyword may join it. Its
+        # signedness follows the same rule the standard integers use — a bare
+        # `__int128` is signed, `unsigned` makes it unsigned.
+        if counts["__int128"].positive?
+          error_at(tok, "duplicate '__int128'") if counts["__int128"] > 1
+          non_sign = specs.reject { |s| s == "signed" || s == "unsigned" }
+          unless non_sign == ["__int128"]
+            error_at(tok, "cannot combine '__int128' with other type specifiers")
+          end
+          if counts["signed"].positive? && counts["unsigned"].positive?
+            error_at(tok, "both 'signed' and 'unsigned' in declaration specifiers")
+          end
+          return counts["unsigned"].positive? ? Type::UInt128 : Type::Int128
         end
 
         signed = counts["signed"].positive?
@@ -531,18 +615,175 @@ module Rubycc
       def parse_struct_or_union_specifier
         keyword_tok = advance # "struct" or "union"
         kind = keyword_tok.value == "union" ? :union : :struct
+        # A GNU attribute may sit right after the keyword, before the tag or "{"
+        # (position b): "struct __attribute__((aligned(8))) S { ... }". Only its
+        # aligned/packed carry layout meaning, and only on a definition.
+        leading_attrs = parse_attribute_specifiers
         tag_tok = peek.type == :ident ? advance : nil
         tag = tag_tok&.value
 
         if peek.punct?("{")
           struct_type = tag ? define_struct_tag(tag, kind, keyword_tok) : Type::StructType.new(nil, kind: kind)
-          parse_struct_body(struct_type)
+          raw_members = parse_struct_body
+          # A second attribute run may follow the closing "}" (position c),
+          # before the declarator list or ";"; the two runs combine on the layout.
+          trailing_attrs = parse_attribute_specifiers
+          aligned, packed = resolve_layout_attributes(leading_attrs + trailing_attrs)
+          # A packed aggregate that also carries a bit-field would need bit-level
+          # packing across storage units this subset does not model, so the
+          # combination is rejected rather than laid out wrongly (Step 28 C2).
+          if packed && raw_members.any? { |triple| triple[2] }
+            error_at(keyword_tok, "packed bit-fields are not supported")
+          end
+          struct_type.define(raw_members, packed: packed, aligned: aligned)
           struct_type
         elsif tag
           reference_struct_tag(tag, kind, tag_tok)
         else
           error_at(keyword_tok, "expected identifier or '{' after '#{keyword_tok.value}'")
         end
+      end
+
+      # Consumes a run of GNU __attribute__ specifiers (each
+      # "__attribute__ ( ( attribute-list ) )", ISO C23's attribute-specifier
+      # sequence spelled the GNU way), returning the collected [name, argument]
+      # pairs for the caller to interpret. A caller that gives attributes no
+      # meaning (every position but a struct/union specifier) simply discards
+      # the result. `__attribute__` is a keyword here, so it never collides with
+      # an ordinary identifier. Nothing is consumed when no attribute is present.
+      def parse_attribute_specifiers
+        attributes = []
+        while peek.keyword?("__attribute__")
+          advance # "__attribute__"
+          expect_punct("(")
+          expect_punct("(")
+          parse_attribute_list(attributes)
+          expect_punct(")")
+          expect_punct(")")
+        end
+        attributes
+      end
+
+      # attribute-list: a comma-separated sequence of attributes, possibly empty
+      # ("__attribute__(())") and admitting empty elements ("__attribute__((,))",
+      # which gcc allows), each appended to `attributes` as a [name, argument]
+      # pair (argument is the folded aligned value, or nil).
+      def parse_attribute_list(attributes)
+        loop do
+          parse_attribute(attributes) unless peek.punct?(",") || peek.punct?(")")
+          break unless peek.punct?(",")
+
+          advance # ","
+        end
+      end
+
+      # One attribute: an attribute-token (an identifier, or a keyword — gcc
+      # spells several attributes with keywords, e.g. "__attribute__((const))")
+      # optionally followed by a parenthesized argument clause. Its name is
+      # normalized (see #normalize_attribute_name) and paired with the folded
+      # argument value #parse_attribute_arguments returns (meaningful only for
+      # "aligned"; nil otherwise).
+      def parse_attribute(attributes)
+        name_tok = peek
+        unless name_tok.type == :ident || name_tok.type == :keyword
+          error_at(name_tok, "expected attribute name")
+        end
+        advance
+        name = normalize_attribute_name(name_tok.value)
+        argument = peek.punct?("(") ? parse_attribute_arguments(name) : nil
+        attributes << [name, argument]
+      end
+
+      # An attribute's parenthesized argument clause. "aligned(N)" carries a
+      # single integer constant-expression that must be folded and range-checked
+      # here, so it is parsed for real; every other attribute's arguments (bare
+      # identifiers, string literals, comma-separated integers such as
+      # "format(printf, 1, 2)") are accepted and discarded, so its balanced
+      # parentheses are skipped verbatim. Returns the folded aligned value, or
+      # nil for any other attribute.
+      def parse_attribute_arguments(name)
+        return skip_balanced_parentheses && nil unless name == "aligned"
+
+        advance # "("
+        expr = parse_conditional_expression
+        expect_punct(")")
+        value = evaluate_constant_expression(expr, "'aligned' attribute argument is not an integer constant")
+        unless value.positive? && (value & (value - 1)).zero?
+          error_at(expr.token, "requested alignment '#{value}' is not a positive power of 2")
+        end
+        value
+      end
+
+      # Skips a balanced-parenthesis token run (an attribute argument clause we
+      # give no meaning), from the opening "(" through its matching ")". Returns
+      # true so #parse_attribute_arguments can chain it with "&& nil".
+      def skip_balanced_parentheses
+        expect_punct("(")
+        depth = 1
+        until depth.zero?
+          tok = peek
+          error_at(tok, "unterminated attribute argument list") if tok.eof?
+          depth += 1 if tok.punct?("(")
+          depth -= 1 if tok.punct?(")")
+          advance
+        end
+        true
+      end
+
+      # Normalizes a GNU attribute name: a "__name__" spelling collapses to
+      # "name" — exactly one leading and one trailing "__" stripped when both are
+      # present — so "__aligned__" and "aligned" name the same attribute. A name
+      # underscored on only one side, or too short to carry both pairs, is left
+      # as written.
+      def normalize_attribute_name(name)
+        if name.start_with?("__") && name.end_with?("__") && name.length > 4
+          name[2..-3]
+        else
+          name
+        end
+      end
+
+      # Reduces a struct/union specifier's collected attributes to the layout
+      # override StructType#define takes: [aligned, packed]. `aligned` is the
+      # largest power-of-two boundary any "aligned" attribute asked for (a bare
+      # "aligned" with no argument meaning BIGGEST_ALIGNMENT), or nil when none
+      # appeared; `packed` is whether any "packed" attribute was present. Every
+      # unrecognized attribute has already been discarded, so only these two
+      # remain to interpret.
+      def resolve_layout_attributes(attributes)
+        aligned = nil
+        packed = false
+        attributes.each do |name, argument|
+          case name
+          when "aligned"
+            value = argument || BIGGEST_ALIGNMENT
+            aligned = value if aligned.nil? || value > aligned
+          when "packed"
+            packed = true
+          end
+        end
+        [aligned, packed]
+      end
+
+      # Consumes any run of leading "__extension__" markers (a GNU keyword that
+      # only silences pedantic diagnostics). Used wherever a declaration may be
+      # prefixed by one; the unary-expression prefix form is handled separately
+      # in #parse_cast_expression.
+      def skip_extension_markers
+        advance while peek.keyword?("__extension__")
+      end
+
+      # Whether the token `offset` tokens ahead of a run of "__extension__"
+      # markers opens a declaration, so block-item and for-init can tell a
+      # "__extension__ int x;" declaration from a "__extension__ expr;"
+      # expression statement without committing to either first.
+      def extension_prefixes_declaration?
+        return false unless peek.keyword?("__extension__")
+
+        offset = 1
+        offset += 1 while peek_ahead(offset)&.keyword?("__extension__")
+        following = peek_ahead(offset)
+        !following.nil? && (type_specifier?(following) || following.keyword?("_Static_assert"))
       end
 
       # enum-specifier (6.7.2.2): "enum identifier? { enumerator-list ,? }"
@@ -571,33 +812,51 @@ module Rubycc
       end
 
       # Registers an enum tag being defined in the current scope. A name already
-      # taken there by another enum is a redefinition; one taken by a struct tag
-      # is the wrong kind of tag (struct, union and enum share one namespace).
+      # taken there by a *complete* enum is a redefinition; one taken by a struct
+      # tag is the wrong kind of tag (struct, union and enum share one namespace).
+      # A tag already forward-declared incomplete in this scope (an EnumType, from
+      # "enum E *p;") is completed here: the marker becomes an EnumTag, so later
+      # "enum E" references resolve to int. Earlier pointer references keep the
+      # incomplete EnumType they captured, which stays valid as a pointer target.
       def register_enum_tag(tag, token)
         existing = @tag_scopes.last[tag]
         if existing
           if existing.is_a?(EnumTag)
             error_at(token, "redefinition of 'enum #{tag}'")
-          else
+          elsif !existing.is_a?(Type::EnumType)
             error_at(token, "'#{tag}' defined as wrong kind of tag")
+          else
+            # An earlier forward reference ("enum efoo;", or a prototype's
+            # "enum efoo" return type) captured this incomplete EnumType. Complete
+            # it in place so that captured object now answers as the int an enum
+            # object is — the reference and this definition then agree on the type.
+            existing.complete!
           end
         end
         @tag_scopes.last[tag] = EnumTag.new(tag)
       end
 
-      # Resolves a bare "enum tag" reference (innermost scope outward) to
-      # Type::Int. A tag bound to a struct is the wrong kind of tag; a tag with
-      # no visible binding at all is undefined — an enum type cannot be used
-      # incomplete, so this is an error rather than a forward declaration.
+      # Resolves a bare "enum tag" reference (innermost scope outward). A defined
+      # tag (an EnumTag) resolves to Type::Int, since an enum object is an int; a
+      # tag bound to a struct is the wrong kind of tag. A tag with no visible
+      # binding is forward-declared incomplete — mirroring an incomplete struct —
+      # so "enum E *p;" names a pointer to an as-yet-undefined enum; a later
+      # in-scope forward reference reuses that same incomplete EnumType. The
+      # generator rejects an incomplete enum wherever a size or arithmetic is
+      # actually required.
       def resolve_enum_tag(tag, token)
         @tag_scopes.reverse_each do |scope|
           found = scope[tag]
           next unless found
 
-          error_at(token, "'#{tag}' defined as wrong kind of tag") unless found.is_a?(EnumTag)
-          return Type::Int
+          return Type::Int if found.is_a?(EnumTag)
+          return found if found.is_a?(Type::EnumType)
+
+          error_at(token, "'#{tag}' defined as wrong kind of tag")
         end
-        error_at(token, "use of undefined enum '#{tag}'")
+        incomplete = Type::EnumType.new(tag)
+        @tag_scopes.last[tag] = incomplete
+        incomplete
       end
 
       # Parses "{ enumerator-list ,? }" (the enumerator-list must be non-empty).
@@ -680,10 +939,12 @@ module Rubycc
       # Rejects a tag whose existing binding disagrees with the kind now written
       # for it: struct, union and enum share one namespace (6.7.2.3), so "union
       # S" against a "struct S", or either against an "enum S", is the wrong kind
-      # of tag. An enum binding is an EnumTag; a struct/union binding is a
+      # of tag. An enum binding is an EnumTag (a defined enum) or a Type::EnumType
+      # (an incomplete, forward-declared one); a struct/union binding is a
       # StructType told apart by #union?.
       def reject_wrong_tag_kind(existing, kind, tag, token)
-        wrong = existing.is_a?(EnumTag) || existing.union? != (kind == :union)
+        wrong = existing.is_a?(EnumTag) || existing.is_a?(Type::EnumType) ||
+                existing.union? != (kind == :union)
         error_at(token, "'#{tag}' defined as wrong kind of tag") if wrong
       end
 
@@ -692,8 +953,10 @@ module Rubycc
         kind == :union ? "union" : "struct"
       end
 
-      # Parses a struct/union's "{ struct-declaration+ }" body and lays
-      # `struct_type` out. A struct-declaration is either a type-specifier
+      # Parses a struct/union's "{ struct-declaration+ }" body, returning the
+      # raw [name, Type] member pairs the caller hands to StructType#define
+      # (deferred so an attribute after "}" can still steer the layout). A
+      # struct-declaration is either a type-specifier
       # followed by one or more comma-separated declarators (each contributing a
       # "*" run and an optional array suffix), just like a local declaration but
       # with no initializer, or — for an anonymous member (C11 6.7.2.1p13) — a
@@ -703,7 +966,7 @@ module Rubycc
       # since a pointer is always complete. `seen` tracks every member name
       # visible from this body, folding in the names an anonymous member exposes
       # transparently, so a collision through one is diagnosed like any other.
-      def parse_struct_body(struct_type)
+      def parse_struct_body
         expect_punct("{")
         raw_members = []
         seen = {}
@@ -713,12 +976,12 @@ module Rubycc
           if peek.punct?(";")
             parse_anonymous_member(member_base, spec_tok, raw_members, seen)
           else
-            parse_member_declarators(member_base, raw_members, seen)
+            parse_member_declarators(member_base, spec_tok, raw_members, seen)
           end
           expect_punct(";")
         end
         expect_punct("}")
-        struct_type.define(raw_members)
+        raw_members
       end
 
       # A struct-declaration with no declarator. It is well-formed only as an
@@ -736,28 +999,81 @@ module Rubycc
           error_at(spec_tok, "duplicate member '#{name}'") if seen.key?(name)
           seen[name] = true
         end
-        raw_members << [nil, member_base]
+        raw_members << [nil, member_base, nil]
       end
 
-      # The comma-separated declarators sharing `member_base`, each a named
-      # member with its own declarator (a "*" run, an array suffix, or a
-      # function-pointer shape such as "int (*handler)(int)"). A member may not
-      # be a bare function; a pointer to one is fine. Each name is checked for a
-      # duplicate against `seen` (which already holds any transparently exposed
-      # names) and then added to it.
-      def parse_member_declarators(member_base, raw_members, seen)
+      # The comma-separated struct-declarators sharing `member_base`. Each is
+      # either a declarator naming a member (a "*" run, an array suffix, or a
+      # function-pointer shape such as "int (*handler)(int)"), optionally followed
+      # by ": constant-expression" to make it a bit-field, or a bare
+      # ": constant-expression" with no declarator — an unnamed bit-field that
+      # shapes the layout but declares nothing (6.7.2.1). A member may not be a
+      # bare function; a pointer to one is fine. Each named member is checked for
+      # a duplicate against `seen` (which already holds any transparently exposed
+      # names) and then added to it. Every recorded triple is
+      # [name, Type, bit_width], bit_width nil for a plain member.
+      def parse_member_declarators(member_base, spec_tok, raw_members, seen)
         loop do
-          name_tok, type = parse_declarator(member_base)
-          error_at(name_tok, "field '#{name_tok.value}' declared as a function") if type.function?
-          reject_void_type(type, name_tok)
-          reject_incomplete_member(type, name_tok)
-          error_at(name_tok, "duplicate member '#{name_tok.value}'") if seen.key?(name_tok.value)
-          seen[name_tok.value] = true
-          raw_members << [name_tok.value, type]
+          if peek.punct?(":")
+            advance # ":"
+            raw_members << [nil, member_base, parse_bitfield_width(member_base, spec_tok)]
+          else
+            parse_named_member(member_base, raw_members, seen)
+          end
           break unless peek.punct?(",")
 
           advance
         end
+      end
+
+      # One named struct-declarator: a declarator, then either a ": width"
+      # bit-field tail or a plain member. A named bit-field of zero width is a
+      # constraint violation (6.7.2.1p3, "only an unnamed member may be
+      # zero-width"). A plain member may not be a function, void, or an
+      # incomplete aggregate by value.
+      def parse_named_member(member_base, raw_members, seen)
+        name_tok, type = parse_declarator(member_base)
+        if peek.punct?(":")
+          advance # ":"
+          width = parse_bitfield_width(type, name_tok)
+          error_at(name_tok, "named bit-field '#{name_tok.value}' has zero width") if width.zero?
+          register_member_name(name_tok, seen)
+          raw_members << [name_tok.value, type, width]
+        else
+          # A GNU attribute may trail a member declarator (position f):
+          # "int m __attribute__((packed));". Accepted and discarded — a
+          # member-level packed/aligned has no effect on this subset's layout
+          # (only a whole-struct attribute steers #layout_struct).
+          parse_attribute_specifiers
+          error_at(name_tok, "field '#{name_tok.value}' declared as a function") if type.function?
+          reject_void_type(type, name_tok)
+          reject_incomplete_member(type, name_tok)
+          register_member_name(name_tok, seen)
+          raw_members << [name_tok.value, type, nil]
+        end
+      end
+
+      # Records a member name in `seen`, diagnosing a collision with a name
+      # already visible in this body (a directly declared member or one an
+      # anonymous member exposes transparently).
+      def register_member_name(name_tok, seen)
+        error_at(name_tok, "duplicate member '#{name_tok.value}'") if seen.key?(name_tok.value)
+        seen[name_tok.value] = true
+      end
+
+      # Parses and validates a bit-field's ": constant-expression" width, the ":"
+      # already consumed. `type` is the field's declared type and `anchor` the
+      # token a diagnostic points at. The type must be an integer type, and the
+      # width a non-negative integer constant no wider than that type (6.7.2.1p4).
+      def parse_bitfield_width(type, anchor)
+        unless type.integer?
+          error_at(anchor, "bit-field has non-integral type '#{type}'")
+        end
+        expr = parse_conditional_expression
+        width = evaluate_constant_expression(expr, "bit-field width is not an integer constant")
+        error_at(expr.token, "negative width in bit-field") if width.negative?
+        error_at(expr.token, "width of bit-field exceeds its type") if width > type.size * 8
+        width
       end
 
       # Every member name an anonymous member exposes to its enclosing
@@ -803,7 +1119,11 @@ module Rubycc
                  token.value == "struct" || token.value == "union" ||
                  token.value == "enum" ||
                  token.value == "const" || token.value == "volatile" ||
-                 token.value == "inline"
+                 token.value == "inline" ||
+                 # A leading GNU attribute opens a declaration too
+                 # ("__attribute__((unused)) int x;"), so block-item and
+                 # for-init recognize it as one rather than a statement.
+                 token.value == "__attribute__"
         end
         token.type == :ident && typedef_name?(token.value)
       end
@@ -888,7 +1208,15 @@ module Rubycc
         # A parameter's specifiers admit const/volatile but not a storage class
         # or inline (allow_storage_class: false); only its const survives.
         base_type, spec_info = parse_declaration_specifiers(allow_storage_class: false)
-        name_tok, type, _params, pointer_quals = parse_declarator(base_type, name_mode: :optional)
+        # A parameter's array declarator adjusts to a pointer (6.7.6.3p7), so an
+        # empty "[]" is admitted here just as it is for an external declaration's
+        # incomplete array; #adjust_parameter_type resolves it below.
+        name_tok, type, _params, pointer_quals =
+          parse_declarator(base_type, name_mode: :optional, allow_incomplete_array: true)
+        # A GNU attribute may trail a parameter declarator (position e):
+        # "int f(int x __attribute__((unused)))". Accepted and discarded; the
+        # specifier-position form is already handled in the specifier parse.
+        parse_attribute_specifiers
         type = adjust_parameter_type(type)
         # The const-ness is settled on the adjusted type, so "const int a[10]"
         # (a pointer to const int after adjustment) yields a non-const parameter,
@@ -908,6 +1236,16 @@ module Rubycc
         # A block-scope "_Static_assert(expr, "msg");" is a declaration that
         # binds nothing; it is checked and flattened away like a bare tag decl.
         return parse_static_assert if peek.keyword?("_Static_assert")
+
+        # A "__extension__" prefixing a declaration ("__extension__ int x;") is
+        # discarded here; a "__extension__" prefixing an expression statement is
+        # left for #parse_cast_expression, which binds it like a cast prefix.
+        if extension_prefixes_declaration?
+          skip_extension_markers
+          return parse_static_assert if peek.keyword?("_Static_assert")
+
+          return parse_declaration
+        end
 
         if type_specifier?(peek)
           parse_declaration
@@ -948,6 +1286,7 @@ module Rubycc
       def parse_typedef_declaration(base_type, spec_info)
         loop do
           name_tok, type, _params, pointer_quals = parse_declarator(base_type)
+          parse_attribute_specifiers # position d: a trailing attribute on the typedef name
           if peek.punct?("=")
             error_at(peek, "typedef '#{name_tok.value}' must not be initialized")
           end
@@ -967,6 +1306,7 @@ module Rubycc
 
       def parse_init_declarator(base_type, spec_info)
         name_tok, type, _params, pointer_quals = parse_declarator(base_type, allow_incomplete_array: true)
+        parse_attribute_specifiers # position d: a trailing attribute on this local declarator
         reject_void_type(type, name_tok)
         reject_object_specifiers(name_tok, spec_info)
         const = declarator_object_const(type, spec_info.const, pointer_quals)
@@ -1130,6 +1470,11 @@ module Rubycc
       # then wrap that — which is exactly why "int *f(int)" is a function
       # returning "int *" while "int (*f)(int)" is a pointer to a function.
       def parse_declarator_builder(name_mode:, allow_incomplete_array:)
+        # A GNU attribute may open a declarator ("int (__attribute__((packed))
+        # *p)"), including the nested declarator inside a "(...)"; it qualifies
+        # nothing this subset models, so it is accepted and discarded here just
+        # as at every other declarator position.
+        parse_attribute_specifiers
         pointer_quals = parse_pointer_qualifiers
         name_tok, direct_build, function_params =
           parse_direct_declarator(name_mode: name_mode, allow_incomplete_array: allow_incomplete_array)
@@ -1158,6 +1503,16 @@ module Rubycc
               advance
             elsif peek.keyword?("volatile")
               advance
+            elsif peek.keyword?("__attribute__")
+              # A GNU attribute may follow a pointer's "*" ("int * __attribute__
+              # ((x)) p", "int (ATTR *)(void)"); it qualifies nothing modeled
+              # here, so it is accepted and discarded like the other qualifiers.
+              parse_attribute_specifiers
+            elsif restrict_qualifier?(peek)
+              # A "restrict" (or "__restrict"/"__restrict__") qualifier on this
+              # pointer level: carries no semantics in this subset, so consumed
+              # and dropped, exactly as "volatile" is.
+              advance
             else
               break
             end
@@ -1165,6 +1520,12 @@ module Rubycc
           quals << const_here
         end
         quals
+      end
+
+      # Whether `tok` is one of the recognized "restrict" spellings — an ordinary
+      # identifier, since none is a keyword here (see RESTRICT_SPELLINGS).
+      def restrict_qualifier?(tok)
+        tok.type == :ident && RESTRICT_SPELLINGS.include?(tok.value)
       end
 
       # direct-declarator = (identifier | "(" declarator ")") suffix*, where a
@@ -1250,11 +1611,43 @@ module Rubycc
       # int). A type-specifier, a typedef name or a ")" after the "(" instead
       # opens a parameter list.
       def paren_starts_declarator?
-        nxt = peek_ahead(1)
+        # A GNU attribute may sit right after the "(" and before the inner
+        # declarator ("int (__attribute__((packed)) *p)(void)"); look past it so
+        # the token that actually decides — a "*", "[", "(" or a plain
+        # identifier — is the one classified. A parameter list whose first
+        # parameter opens with an attribute ("(__attribute__((x)) int a)") still
+        # resolves correctly: past the attribute sits a type-specifier, which is
+        # none of those, so it stays a parameter list.
+        nxt = @tokens[index_after_attributes(@pos + 1)]
         return false if nxt.nil?
         return true if nxt.punct?("*") || nxt.punct?("[") || nxt.punct?("(")
 
         nxt.type == :ident && !typedef_name?(nxt.value)
+      end
+
+      # The token index just past any run of "__attribute__ (( ... ))" specifiers
+      # starting at `index`, matching parentheses so an argument list of any
+      # shape is skipped whole. Used only for lookahead (nothing is consumed):
+      # #paren_starts_declarator? peers past an attribute to the token that
+      # classifies a "(". Returns `index` unchanged when no attribute is present.
+      def index_after_attributes(index)
+        while @tokens[index]&.keyword?("__attribute__")
+          index += 1
+          depth = 0
+          loop do
+            tok = @tokens[index]
+            break if tok.nil? || tok.eof?
+
+            index += 1
+            if tok.punct?("(")
+              depth += 1
+            elsif tok.punct?(")")
+              depth -= 1
+              break if depth.zero?
+            end
+          end
+        end
+        index
       end
 
       # A direct-declarator's array suffix "[" size? "]". A bracketed length is
@@ -1266,8 +1659,24 @@ module Rubycc
       # #apply_declarator_suffix.
       def parse_array_suffix(allow_incomplete:)
         bracket_tok = advance # "["
+        # A parameter's array declarator may carry type qualifiers and/or
+        # "static" inside the brackets (6.7.6.3p7): they qualify the pointer the
+        # parameter adjusts to, and "static" is an optimization hint. This subset
+        # adjusts a parameter array to an *unqualified* pointer, so these are
+        # parsed and discarded. They are accepted in any array declarator here,
+        # not only a parameter's — a mild over-acceptance of a strict-conformance
+        # error this subset does not otherwise diagnose.
+        skip_array_qualifiers
         if peek.punct?("]")
           error_at(bracket_tok, "array size must be an integer constant") unless allow_incomplete
+          advance # "]"
+          length = nil
+        elsif peek.punct?("*") && peek_ahead(1)&.punct?("]")
+          # "[*]" is an unspecified-size (VLA) array bound in a function
+          # prototype (6.7.6.2p4); treated like "[]", an incomplete array the
+          # parameter adjustment turns into a pointer.
+          error_at(bracket_tok, "'[*]' not allowed in this context") unless allow_incomplete
+          advance # "*"
           advance # "]"
           length = nil
         else
@@ -1277,6 +1686,23 @@ module Rubycc
           error_at(expr.token, "array size must be positive") unless length.positive?
         end
         [:array, length, bracket_tok]
+      end
+
+      # Consumes the qualifier/"static" run allowed at the start of a parameter's
+      # array declarator brackets (6.7.6.3p7), in any order ("static const 5",
+      # "const static 5"). All are discarded: this subset neither qualifies the
+      # adjusted pointer nor acts on the "static" size hint. "restrict" appears
+      # here in its identifier spellings (see #restrict_qualifier?).
+      def skip_array_qualifiers
+        loop do
+          if peek.keyword?("const") || peek.keyword?("volatile") || peek.keyword?("static")
+            advance
+          elsif restrict_qualifier?(peek)
+            advance
+          else
+            break
+          end
+        end
       end
 
       # A direct-declarator's function suffix "(" parameter-type-list? ")". The
@@ -1359,6 +1785,8 @@ module Rubycc
           parse_continue_statement
         elsif peek.keyword?("goto")
           parse_goto_statement
+        elsif peek.keyword?("__asm__")
+          parse_asm_statement
         elsif peek.punct?("{")
           parse_compound_statement
         # A bare identifier immediately followed by ":" opens a labeled
@@ -1472,6 +1900,86 @@ module Rubycc
         name_tok = expect_ident
         expect_punct(";")
         AST::Goto.new(name_tok.value, goto_tok)
+      end
+
+      # A GNU inline-assembly statement (DESIGN R7): only the degenerate barrier
+      # form is supported, spelled `__asm__` (never `asm`/`__asm`). The grammar
+      # is `__asm__ (volatile|__volatile__)* "(" template (":" section)* ")" ";"`.
+      # The template must be an (adjacent run of) empty string literal(s); a
+      # non-empty one, or any real operand in the output/input sections, is
+      # diagnosed. The clobber section's strings ("memory", "cc", ...) are
+      # accepted and discarded. Nothing is lowered — see AST::InlineAsm.
+      def parse_asm_statement
+        asm_tok = advance # "__asm__"
+        # Any number of volatile qualifiers, in the keyword or __volatile__
+        # spelling (the latter arrives as an ordinary identifier).
+        while peek.keyword?("volatile") || (peek.type == :ident && peek.value == "__volatile__")
+          advance
+        end
+        expect_punct("(")
+        parse_asm_template(asm_tok)
+        parse_asm_operand_sections(asm_tok) if peek.punct?(":")
+        expect_punct(")")
+        expect_punct(";")
+        AST::InlineAsm.new(asm_tok)
+      end
+
+      # The assembly template: one or more adjacent string literals, whose
+      # concatenation must be empty. A non-empty template names real instructions
+      # this backend cannot emit, so it is rejected at the keyword.
+      def parse_asm_template(asm_tok)
+        tok = peek
+        error_at(tok, "expected string literal in inline assembly") unless tok.type == :string
+        empty = true
+        while peek.type == :string
+          empty &&= peek.value.empty?
+          advance
+        end
+        error_at(asm_tok, "non-empty inline assembly is not supported") unless empty
+      end
+
+      # The ":"-separated sections after the template. By position the first is
+      # the output operands and the second the input operands, both of which must
+      # be empty (a real operand is unsupported); the third and any later section
+      # is a clobber list of string literals, accepted and discarded.
+      def parse_asm_operand_sections(asm_tok)
+        section = 0
+        while peek.punct?(":")
+          advance # ":"
+          if section < 2
+            parse_asm_empty_operand_section(asm_tok)
+          else
+            parse_asm_clobbers(asm_tok)
+          end
+          section += 1
+        end
+      end
+
+      # An output/input operand section, which must be empty: the next token ends
+      # the section (":" for the next one, ")" for the whole construct). Anything
+      # else is an operand expression this subset does not support.
+      def parse_asm_empty_operand_section(asm_tok)
+        return if peek.punct?(":") || peek.punct?(")")
+
+        error_at(peek, "inline assembly operands are not supported")
+      end
+
+      # A clobber section: a comma-separated list of string literals (or empty).
+      # The names are discarded — this backend never reorders, so a clobber
+      # constrains nothing.
+      def parse_asm_clobbers(_asm_tok)
+        return if peek.punct?(":") || peek.punct?(")")
+
+        loop do
+          tok = peek
+          unless tok.type == :string
+            error_at(tok, "expected string literal in inline assembly clobber list")
+          end
+          advance
+          break unless peek.punct?(",")
+
+          advance # ","
+        end
       end
 
       # "switch (expression) statement": the controlling expression and the body
@@ -1680,6 +2188,14 @@ module Rubycc
       # name after "(" — so "(int)x" and "(T)x" are casts while "(x)(y)", x
       # being neither, is a call.
       def parse_cast_expression
+        # A "__extension__" prefix (a GNU marker with no semantic effect) binds
+        # like a cast operator: it is consumed here and the cast-expression it
+        # governs is parsed in its place ("__extension__ x", "y = __extension__ z").
+        if peek.keyword?("__extension__")
+          advance
+          return parse_cast_expression
+        end
+
         if peek.punct?("(") && peek_ahead(1) && type_specifier?(peek_ahead(1))
           paren_tok = advance # "("
           type = parse_type_name
@@ -1716,6 +2232,10 @@ module Rubycc
           parse_va_arg
         elsif peek.keyword?("__builtin_va_end")
           parse_va_end
+        elsif peek.keyword?("__builtin_expect")
+          parse_builtin_expect
+        elsif peek.keyword?("__builtin_alloca")
+          parse_builtin_alloca
         elsif peek.punct?("+")
           advance # unary + is a no-op; fold it away
           parse_cast_expression
@@ -1826,6 +2346,35 @@ module Rubycc
         ap = parse_assignment_expression
         expect_punct(")")
         AST::VaEnd.new(ap, keyword_tok)
+      end
+
+      # "__builtin_expect ( exp , c )": exactly two arguments, parsed as an
+      # ordinary argument list so a wrong count is reported as an arity error
+      # rather than a bare punctuator-mismatch. The generator settles their
+      # conversion to `long`.
+      def parse_builtin_expect
+        keyword_tok = advance # "__builtin_expect"
+        expect_punct("(")
+        args = parse_argument_expression_list
+        expect_punct(")")
+        unless args.size == 2
+          error_at(keyword_tok, "'__builtin_expect' expects 2 arguments, have #{args.size}")
+        end
+        AST::BuiltinExpect.new(args[0], args[1], keyword_tok)
+      end
+
+      # "__builtin_alloca ( n )": exactly one argument, the byte count. Like
+      # __builtin_expect it is parsed as an argument list so a wrong count is an
+      # arity diagnostic.
+      def parse_builtin_alloca
+        keyword_tok = advance # "__builtin_alloca"
+        expect_punct("(")
+        args = parse_argument_expression_list
+        expect_punct(")")
+        unless args.size == 1
+          error_at(keyword_tok, "'__builtin_alloca' expects 1 argument, have #{args.size}")
+        end
+        AST::BuiltinAlloca.new(args[0], keyword_tok)
       end
 
       # type-name = type-specifier abstract-declarator?: a base type-specifier

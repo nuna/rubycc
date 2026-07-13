@@ -24,6 +24,16 @@ module Rubycc
       # compound assignment or "++"/"--") is diagnosed as writing a read-only
       # variable; reads and "&" are unaffected.
       Local = Data.define(:type, :storage, :global, :const)
+
+      # The merged state of a file-scope object's tentative/real definitions
+      # (6.9.2), one per name in @object_records. `type` and `linkage` are the
+      # agreed type and linkage of the run, `initialized` records whether any
+      # declaration has supplied an initializer (so a second one is a
+      # redefinition), and `index` locates the object's single IR::Global entry in
+      # @globals, which an initializer arriving after a tentative .bss definition
+      # rewrites in place to .data. Mutable, since a later declaration in the run
+      # updates it.
+      ObjectRecord = Struct.new(:type, :linkage, :initialized, :index)
       # Returns an IR::Program: an IR::Function per AST::FunctionDef plus the
       # translation unit's read-only string pool. Prototypes
       # (AST::FunctionDecl) contribute only a signature-table entry and emit no
@@ -51,11 +61,15 @@ module Rubycc
         # lay out into .data/.bss.
         @global_bindings = {}
         @globals = []
-        # Names of file-scope variables that have a real definition here (storage
-        # reserved), as opposed to a bare `extern` reference. A second definition
-        # of a name already in this set is a redefinition, while any number of
-        # `extern` references may coexist with (at most) one definition.
-        @defined_globals = {}
+        # File-scope objects that reserve storage, keyed by name: each ObjectRecord
+        # tracks the merged state of a run of tentative/real definitions (6.9.2) —
+        # its type, linkage, whether any declaration has initialized it, and the
+        # index of its single IR::Global entry. A bare `extern` reference reserves
+        # nothing and gets no record. A repeated declaration merges into the
+        # record (types must agree); a second *initialized* definition is the real
+        # redefinition error, and an object emitted tentatively in .bss is upgraded
+        # in place to .data when a later declaration supplies an initializer.
+        @object_records = {}
         # A monotonic counter that names each block-scope `static` uniquely as
         # "<var>.<n>". A '.' cannot appear in a C identifier, so these names
         # never collide with a real symbol; the counter runs over the whole
@@ -96,9 +110,9 @@ module Rubycc
       #   * `extern` is a reference declaration — it registers the binding (so
       #     later code sees the name and its type) but reserves no storage, and
       #     any number may coexist with each other and with one real definition;
-      #   * an absent or `static` specifier is a definition — it lays out an
-      #     IR::Global (external or internal linkage) and marks the name defined,
-      #     so a second definition is caught as a redefinition.
+      #   * an absent or `static` specifier is a *definition*, tentative when it
+      #     has no initializer (6.9.2): a run of such declarations of one name
+      #     merges into a single object, at most one of them initializing it.
       # Whenever a binding already exists (from an earlier reference or
       # definition), the two must agree on type.
       def declare_global(decl)
@@ -111,38 +125,91 @@ module Rubycc
         # keeps its declared type and lands in .bss (a nil init).
         type = decl.type
         init = nil
+        has_init = false
         if decl.initializer_node
           type, init = build_global_init(type, decl.initializer_node, decl.token)
+          has_init = true
         elsif !decl.initializer_value.nil?
           init = GlobalInit.new(bytes: pack_integer(decl.initializer_value, type.size), relocations: [])
+          has_init = true
         end
         # A global needs a known storage width and boundary, so an incomplete
-        # struct (a tag never defined) cannot be laid out in .bss/.data — and an
-        # `extern` reference likewise needs a concrete type to bind here.
+        # struct/enum (a tag never defined) cannot be laid out in .bss/.data —
+        # and an `extern` reference likewise needs a concrete type to bind here.
         require_complete(type, decl.token)
 
+        if decl.storage == :extern
+          declare_extern_global(decl, type)
+        else
+          merge_object_definition(decl, type, init, has_init)
+        end
+      end
+
+      # An `extern` reference declaration: it binds the name (once) with no
+      # storage, agreeing in type with any binding already present. A real
+      # definition, before or after, supplies the object; if none does, a use of
+      # the name becomes an undefined symbol for the linker.
+      def declare_extern_global(decl, type)
+        existing = @global_bindings[decl.name]
+        if existing && existing.type != type
+          error_at(decl.token, "conflicting types for '#{decl.name}'")
+        end
+        @global_bindings[decl.name] ||=
+          Local.new(type: type, storage: decl.name, global: true, const: decl.const)
+      end
+
+      # Merges one non-extern (tentative or real) file-scope definition into the
+      # object's record (6.9.2). The first such declaration reserves the object —
+      # .data if it initializes, else a tentative .bss object; a later declaration
+      # of the same name must agree in type and linkage, may add the one allowed
+      # initializer (upgrading a tentative .bss object to .data in place), and a
+      # second initializer is the redefinition error.
+      def merge_object_definition(decl, type, init, has_init)
+        linkage = decl.storage == :static ? :internal : :external
         existing = @global_bindings[decl.name]
         if existing && existing.type != type
           error_at(decl.token, "conflicting types for '#{decl.name}'")
         end
 
-        if decl.storage == :extern
-          # A reference declaration: bind the name (once) with no storage. A real
-          # definition, before or after, supplies the object; if none does, a
-          # reference to it becomes an undefined symbol for the linker.
-          @global_bindings[decl.name] ||=
-            Local.new(type: type, storage: decl.name, global: true, const: decl.const)
+        record = @object_records[decl.name]
+        if record
+          reject_linkage_mismatch(decl, record.linkage, linkage)
+          upgrade_tentative_global(decl, type, init, linkage, record) if has_init
           return
         end
 
-        if @defined_globals[decl.name]
-          error_at(decl.token, "redefinition of '#{decl.name}'")
-        end
-        @defined_globals[decl.name] = true
-        linkage = decl.storage == :static ? :internal : :external
-        @global_bindings[decl.name] = Local.new(type: type, storage: decl.name, global: true, const: decl.const)
+        index = @globals.length
         @globals << Global.new(name: decl.name, size: type.size, align: type.alignment,
                                init: init, linkage: linkage)
+        @object_records[decl.name] = ObjectRecord.new(type, linkage, has_init, index)
+        @global_bindings[decl.name] = Local.new(type: type, storage: decl.name, global: true, const: decl.const)
+      end
+
+      # Applies the initializer of a real definition arriving after one or more
+      # tentative ones: a second initialized definition is a redefinition, and the
+      # first rewrites the tentative .bss IR::Global in place to the initialized
+      # .data form (and refreshes the binding, since an initializer may have
+      # completed an inferred array bound).
+      def upgrade_tentative_global(decl, type, init, linkage, record)
+        error_at(decl.token, "redefinition of '#{decl.name}'") if record.initialized
+
+        record.initialized = true
+        record.type = type
+        @globals[record.index] = Global.new(name: decl.name, size: type.size,
+                                             align: type.alignment, init: init, linkage: linkage)
+        @global_bindings[decl.name] = Local.new(type: type, storage: decl.name, global: true, const: decl.const)
+      end
+
+      # Diagnoses a static/non-static disagreement across the declarations of one
+      # file-scope object (6.2.2): the run must settle on a single linkage.
+      def reject_linkage_mismatch(decl, prior, current)
+        return if prior == current
+
+        if current == :internal
+          error_at(decl.token, "static declaration of '#{decl.name}' follows non-static declaration")
+        else
+          error_at(decl.token, "non-static declaration of '#{decl.name}' follows static declaration")
+        end
       end
 
       # Materializes a global's deferred initializer into [final_type,
@@ -318,6 +385,7 @@ module Rubycc
         when 1 then [masked].pack("C")
         when 2 then [masked].pack("S<")
         when 4 then [masked].pack("L<")
+        when 16 then [masked & 0xFFFF_FFFF_FFFF_FFFF, masked >> 64].pack("Q<Q<")
         else [masked].pack("Q<")
         end
       end
@@ -347,9 +415,18 @@ module Rubycc
         if return_type.struct? && !return_type.complete?
           error_at(token, "return type is an incomplete type")
         end
+        # Passing or returning a 128-bit integer by value would use two System V
+        # registers (a psABI detail out of this phase's scope), so it is diagnosed
+        # here — the one place both a prototype and a definition pass through.
+        if wide128?(return_type)
+          error_at(token, "returning a 128-bit integer by value is not supported yet")
+        end
         param_types.each do |param_type|
           if param_type.struct? && !param_type.complete?
             error_at(token, "parameter has incomplete type")
+          end
+          if wide128?(param_type)
+            error_at(token, "passing a 128-bit integer by value is not supported yet")
           end
         end
         existing = @signatures[name]
@@ -629,15 +706,24 @@ module Rubycc
       end
 
       # Classifies an aggregate for the System V AMD64 argument/return convention
-      # (psABI 3.2.3). A struct or union larger than two eightbytes is passed in
-      # memory; otherwise each of its one or two eightbytes gets a class from the
-      # scalar fields that fall in it. Returns :memory, or an array (one entry per
-      # eightbyte) of :gp (an INTEGER eightbyte, taken in an integer register) or
-      # :sse8 (an SSE eightbyte, moved as a full 8-byte double even when it holds
-      # two packed floats, since a single movsd carries the whole eightbyte).
+      # (psABI 3.2.3). A struct or union larger than two eightbytes — or one with
+      # any unaligned field — is passed in memory; otherwise each of its one or
+      # two eightbytes gets a class from the scalar fields that fall in it.
+      # Returns :memory, or an array (one entry per eightbyte) of :gp (an INTEGER
+      # eightbyte, taken in an integer register) or :sse8 (an SSE eightbyte, moved
+      # as a full 8-byte double even when it holds two packed floats, since a
+      # single movsd carries the whole eightbyte).
+      #
+      # The unaligned-field test is what a GNU __attribute__((packed)) demands
+      # (Step 28): the psABI gives an aggregate "containing unaligned fields"
+      # class MEMORY, and gcc follows it — a packed struct whose field would
+      # straddle an eightbyte boundary is passed on the stack, not in registers.
+      # Every non-packed layout here is naturally aligned, so this only ever
+      # fires for a packed struct.
       def classify_struct(struct_type)
         size = struct_type.size
         return :memory if size > 16
+        return :memory if unaligned_field?(struct_type, 0)
 
         eightbytes = Array.new((size + 7) / 8, nil)
         classify_eightbytes(eightbytes, struct_type, 0)
@@ -646,20 +732,65 @@ module Rubycc
         eightbytes.map { |cls| cls == :integer ? :gp : :sse8 }
       end
 
+      # Whether any scalar field of `type`, placed at absolute byte offset `base`,
+      # sits on an offset that does not satisfy its own alignment — the mark of a
+      # packed layout. A nested aggregate recurses at its members' offsets (a
+      # union's members all at 0) and an array at its element's; a scalar checks
+      # base against its alignment directly.
+      def unaligned_field?(type, base)
+        if type.struct?
+          # A bit-field is packed into a storage unit by design, so it is never an
+          # "unaligned field" in the psABI sense; only its plain neighbours are
+          # tested. gcc likewise passes a small bit-field struct in registers.
+          type.members.reject(&:bitfield?).any? { |m| unaligned_field?(m.type, base + m.offset) }
+        elsif type.array?
+          unaligned_field?(type.element, base)
+        else
+          (base % type.alignment) != 0
+        end
+      end
+
       # Walks `type` at byte offset `base` and folds each scalar field's class
       # into the eightbyte (offset / 8) it lands in. A nested struct or union
       # recurses at its member offsets (a union overlays every member at the same
       # offset, which the members' zero offsets already encode), and an array
-      # recurses element by element. This subset's layouts are naturally aligned,
-      # so no scalar ever straddles an eightbyte boundary.
+      # recurses element by element. A struct reaching here has already passed the
+      # unaligned-field test in #classify_struct, so no scalar straddles an
+      # eightbyte boundary and each falls wholly in the eightbyte at offset / 8.
       def classify_eightbytes(eightbytes, type, base)
         if type.struct?
-          type.members.each { |m| classify_eightbytes(eightbytes, m.type, base + m.offset) }
+          type.members.each do |m|
+            if m.bitfield?
+              classify_bitfield(eightbytes, base, m)
+            else
+              classify_eightbytes(eightbytes, m.type, base + m.offset)
+            end
+          end
         elsif type.array?
           type.length.times { |i| classify_eightbytes(eightbytes, type.element, base + i * type.element.size) }
         else
-          index = base / 8
-          eightbytes[index] = merge_class(eightbytes[index], type.float? ? :sse : :integer)
+          # A scalar folds its class into every eightbyte it spans. All scalars but
+          # a 128-bit integer fit in one (they are naturally aligned); a 16-byte
+          # __int128 spans two, both INTEGER, so a struct wrapping one passes by
+          # value in two integer registers, as gcc does.
+          cls = type.float? ? :sse : :integer
+          (base / 8..(base + type.size - 1) / 8).each do |index|
+            eightbytes[index] = merge_class(eightbytes[index], cls)
+          end
+        end
+      end
+
+      # Folds a bit-field member into the eightbytes its bits span. Every
+      # bit-field type in this subset is an integer type, so the field
+      # contributes INTEGER to each eightbyte it touches (a field wide enough, or
+      # placed so, that it straddles an eightbyte boundary marks both). `base` is
+      # the enclosing aggregate's byte offset and the member's `bit_offset` its
+      # bit position within that aggregate.
+      def classify_bitfield(eightbytes, base, member)
+        first_bit = base * 8 + member.bit_offset
+        last_bit = first_bit + member.bit_width - 1
+        (first_bit / 64..last_bit / 64).each do |index|
+          eightbytes[index] = merge_class(eightbytes[index], :integer)
         end
       end
 
@@ -685,6 +816,9 @@ module Rubycc
           gen_expr(stmt.expr)
         when Front::AST::EmptyStmt
           # no-op
+        when Front::AST::InlineAsm
+          # An empty asm barrier lowers to nothing: rubycc performs no
+          # reordering, so a "memory" clobber already constrains nothing.
         when Front::AST::If
           gen_if(stmt)
         when Front::AST::Block
@@ -1084,10 +1218,32 @@ module Rubycc
         else
           if decl.type.array? || decl.type.struct?
             gen_aggregate_decl(decl, scope)
+          elsif wide128?(decl.type)
+            gen_int128_decl(decl, scope)
           else
             gen_scalar_decl(decl, scope)
           end
         end
+      end
+
+      # A 128-bit local. Like a struct, it lives in a stack object (16 bytes here)
+      # whose address is its value, not in a single vreg. A brace-wrapped scalar
+      # initializer ("__int128 x = {5};") is unwrapped first; every initializer is
+      # then converted to the 128-bit type (widening a narrower source with sign or
+      # zero fill) and copied into the object with #store_int128.
+      def gen_int128_decl(decl, scope)
+        base = bind_stack_object(scope, decl.name, decl.type, decl.const)
+        return unless decl.initializer
+
+        value_node = decl.initializer
+        if value_node.is_a?(Front::AST::InitializerList)
+          value_node = Front::InitializerResolver.resolve(decl.type, value_node).entries.first.value
+        end
+        value, value_type = gen_value(value_node)
+        unless compatible_assignment?(decl.type, value_node, value_type)
+          error_at(decl.token, "incompatible types in assignment")
+        end
+        store_int128(base, value, value_type, decl.type, decl.token)
       end
 
       # A block-scope `static` object. It has automatic-storage *scope* (visible
@@ -1134,6 +1290,10 @@ module Rubycc
       # plain expression. The binding is created before the initializer runs, so
       # a (pathological) self-reference resolves to this very variable.
       def gen_scalar_decl(decl, scope)
+        # A scalar's type is always complete for the built-in scalars, but a
+        # forward-referenced enum ("enum E x;" with E undefined) reaches here as
+        # an incomplete type that has no storage to reserve, so it is rejected.
+        require_complete(decl.type, decl.token)
         vreg = new_vreg
         scope[decl.name] = Local.new(type: decl.type, storage: vreg, global: false, const: decl.const)
         return unless decl.initializer
@@ -1315,6 +1475,10 @@ module Rubycc
           gen_va_arg(node)
         when Front::AST::VaEnd
           gen_va_end(node)
+        when Front::AST::BuiltinExpect
+          gen_builtin_expect(node)
+        when Front::AST::BuiltinAlloca
+          gen_builtin_alloca(node)
         else
           raise "unsupported expression: #{node.class}"
         end
@@ -1475,6 +1639,45 @@ module Rubycc
         [ap, Type::Void]
       end
 
+      # "__builtin_expect(exp, c)": gcc's branch-prediction hint, typed
+      # `long(long, long)`. rubycc has no optimizer, so the hint carries no
+      # weight — it evaluates both operands left to right, converting each to the
+      # `long` parameter type, and its value is the converted `exp`. `c` is
+      # evaluated for its side effects (it is an ordinary argument) and discarded.
+      def gen_builtin_expect(node)
+        exp = convert_builtin_argument_to_long(node.exp, "__builtin_expect")
+        convert_builtin_argument_to_long(node.c, "__builtin_expect") # evaluated, discarded
+        [exp, Type::Long]
+      end
+
+      # Evaluates a __builtin_expect operand and converts it to `long`, the
+      # parameter type. Any scalar (integer, pointer or floating value) converts
+      # the way an argument bound to a `long` parameter would; a non-scalar has
+      # no such conversion and is diagnosed.
+      def convert_builtin_argument_to_long(expr, name)
+        value, type = gen_value(expr)
+        unless type.integer? || type.pointer? || type.float?
+          error_at(expr.token, "argument to '#{name}' is not of scalar type")
+        end
+        convert(value, from: type, to: Type::Long, token: expr.token)
+      end
+
+      # "__builtin_alloca(n)": reserves `n` bytes of automatic storage on the
+      # stack, freed when the enclosing *function* returns. The count is
+      # converted to `unsigned long` (the size_t parameter) and passed to the
+      # :alloca op, which rounds it up to a 16-byte multiple and lowers rsp; the
+      # value is the block's base address, a `void *` the ABI keeps 16-aligned.
+      def gen_builtin_alloca(node)
+        size, type = gen_value(node.size)
+        unless type.integer?
+          error_at(node.size.token, "argument to '__builtin_alloca' is not of integer type")
+        end
+        size = convert(size, from: type, to: Type::ULong)
+        dst = new_vreg
+        emit(:alloca, dst: dst, a: size)
+        [dst, Type::Pointer.new(Type::Void)]
+      end
+
       # Evaluates a va_* builtin's first operand and returns the vreg holding the
       # address of its __va_list_tag. Both a local `__builtin_va_list` (a one-tag
       # array that decays to a __va_list_tag *) and a forwarded parameter (a
@@ -1538,11 +1741,11 @@ module Rubycc
           dst = new_vreg
           emit(:object_addr, dst: dst, a: local.storage)
           [dst, Type::Pointer.new(local.type.element)]
-        elsif local.type.struct?
-          # A struct does not decay: unlike an array it keeps its struct type,
-          # but its "value" is likewise its object's base address, which member
-          # access, "&s" and struct assignment all build on. Nothing is loaded
-          # here; a whole struct never lives in a single vreg.
+        elsif local.type.struct? || wide128?(local.type)
+          # Neither a struct nor a 128-bit integer decays or lives in a single
+          # vreg: like a struct, a 128-bit local's "value" is its object's base
+          # address, which member/half access, "&" and assignment build on.
+          # Nothing is loaded here.
           dst = new_vreg
           emit(:object_addr, dst: dst, a: local.storage)
           [dst, local.type]
@@ -1561,9 +1764,9 @@ module Rubycc
         emit(:global_addr, dst: addr, a: local.storage)
         if local.type.array?
           [addr, Type::Pointer.new(local.type.element)]
-        elsif local.type.struct?
-          # Like a local struct (and unlike a scalar global), a global struct's
-          # value is its base address, not a load: it keeps its struct type.
+        elsif local.type.struct? || wide128?(local.type)
+          # Like a local struct or 128-bit integer (and unlike a scalar global),
+          # its value is its base address, not a load: it keeps its own type.
           [addr, local.type]
         else
           dst = new_vreg
@@ -1635,7 +1838,7 @@ module Rubycc
       # an array of structs yields the addressed struct.
       def gen_subscript(node)
         addr, element_type = gen_element_address(node)
-        return [addr, element_type] if element_type.struct?
+        return [addr, element_type] if element_type.struct? || wide128?(element_type)
 
         dst = new_vreg
         emit_scalar_load(dst, addr, element_type)
@@ -1649,7 +1852,7 @@ module Rubycc
       # variable and an array variable each behave.
       def gen_member_access(node)
         addr, member_type = gen_member_address(node)
-        if member_type.struct?
+        if member_type.struct? || wide128?(member_type)
           [addr, member_type]
         elsif member_type.array?
           [addr, Type::Pointer.new(member_type.element)]
@@ -1670,6 +1873,14 @@ module Rubycc
         member = struct_type.member(node.member)
         unless member
           error_at(node.token, "no member named '#{node.member}' in '#{struct_type}'")
+        end
+        # Bit-fields are laid out (so sizeof/alignof and by-value ABI are right)
+        # but not yet extractable: reading, writing or "&"-ing one would need the
+        # shift/mask lowering this subset does not emit (recorded M2 debt). No
+        # inline function reachable from <ruby.h> touches a bit-field, so this
+        # diagnostic never fires on the headers it exists to support.
+        if member.bitfield?
+          error_at(node.token, "bit-field access is not supported yet")
         end
         return [base_addr, member.type] if member.offset.zero?
 
@@ -1871,7 +2082,7 @@ module Rubycc
         if comparison_op?(op)
           gen_comparison(op, lhs, lhs_type, rhs, rhs_type, token)
         elsif SHIFT_OPS.include?(op)
-          gen_shift(op, lhs, lhs_type, rhs, result_type)
+          gen_shift(op, lhs, lhs_type, rhs, result_type, token)
         elsif lhs_type.pointer? && rhs_type.pointer?
           gen_pointer_difference(lhs, rhs, lhs_type)
         elsif lhs_type.pointer?
@@ -1882,7 +2093,7 @@ module Rubycc
         elsif result_type.float?
           gen_float_arithmetic(op, lhs, lhs_type, rhs, rhs_type, result_type, token)
         else
-          gen_integer_arithmetic(op, lhs, lhs_type, rhs, rhs_type, result_type)
+          gen_integer_arithmetic(op, lhs, lhs_type, rhs, rhs_type, result_type, token)
         end
       end
 
@@ -1904,6 +2115,10 @@ module Rubycc
           common = common_arithmetic_type(lhs_type, rhs_type)
           l = convert(lhs, from: lhs_type, to: common, token: token)
           r = convert(rhs, from: rhs_type, to: common, token: token)
+          # A 128-bit common type compares its two eightbytes (l and r are the
+          # operands' addresses), signed or unsigned per the type's signedness.
+          return gen_int128_comparison(op, l, r, common.signed?) if wide128?(common)
+
           if common.float?
             emit(FLOAT_COMPARISONS.fetch(op), dst: dst, a: l, b: r, size: common.size)
           else
@@ -1934,7 +2149,13 @@ module Rubycc
       # logical :shl; ">>" is the arithmetic :sar for a signed left operand and
       # the logical :shr for an unsigned one. The count rides in b (its low byte,
       # read from cl by the backend); a size-8 left operand shifts 64-bit.
-      def gen_shift(op, lhs, lhs_type, rhs, result_type)
+      def gen_shift(op, lhs, lhs_type, rhs, result_type, token)
+        # A 128-bit shift would need a multi-word shift-with-count lowering this
+        # phase does not emit, so it is diagnosed (the count operand is untouched).
+        if wide128?(result_type)
+          spelling = op == :shl ? "<<" : ">>"
+          error_at(token, "'#{spelling}' on 128-bit integers is not supported yet")
+        end
         value = convert(lhs, from: lhs_type, to: result_type)
         opcode = if op == :shl
                    :shl
@@ -1952,9 +2173,14 @@ module Rubycc
       # shared across signedness (their bit patterns coincide, wrap-around
       # included), while division and remainder pick the signed or unsigned
       # opcode. A common type of 8 bytes runs the operation 64-bit.
-      def gen_integer_arithmetic(op, lhs, lhs_type, rhs, rhs_type, result_type)
+      def gen_integer_arithmetic(op, lhs, lhs_type, rhs, rhs_type, result_type, token)
         l = convert(lhs, from: lhs_type, to: result_type)
         r = convert(rhs, from: rhs_type, to: result_type)
+        # A 128-bit result is synthesized from 64-bit ops on the halves (l and r
+        # are the operands' addresses); only *, +, - are implemented, the rest
+        # diagnosed by #gen_int128_arith.
+        return [gen_int128_arith(op, l, r, token), result_type] if wide128?(result_type)
+
         opcode = case op
                  when :div then result_type.unsigned? ? :udiv : :div
                  when :mod then result_type.unsigned? ? :umod : :mod
@@ -2033,6 +2259,9 @@ module Rubycc
           unless operand_type.arithmetic?
             error_at(node.token, "wrong type argument to unary minus")
           end
+          if wide128?(operand_type)
+            error_at(node.token, "unary minus on a 128-bit integer is not supported yet")
+          end
           return gen_float_negate(operand, operand_type) if operand_type.float?
 
           # Unary minus promotes its operand and negates in the promoted type,
@@ -2070,6 +2299,15 @@ module Rubycc
       def gen_logical_not(node)
         operand, operand_type = gen_value(node.operand)
         require_scalar_for_truth(operand_type, node.operand.token)
+        # A 128-bit "!x" is "(lo | hi) == 0", the negation of its truth value.
+        if wide128?(operand_type)
+          merged = int128_or_halves(operand)
+          zero = new_vreg
+          emit(:const, dst: zero, a: 0, size: 8)
+          dst = new_vreg
+          emit(:eq, dst: dst, a: merged, b: zero, size: 8)
+          return [dst, Type::Int]
+        end
         # A floating "!x" is "x == 0.0" with the NaN-aware :feq (a NaN is not
         # equal to 0.0, so "!NaN" is 0), mirroring the integer "x == 0".
         if operand_type.float?
@@ -2104,7 +2342,7 @@ module Rubycc
           # and just retag it as a pointer to the whole object. A scalar's
           # address is its symbol (:global_addr) or the absolute address of its
           # stack slot (:addr_of).
-          if local.type.struct? || local.type.array?
+          if local.type.struct? || local.type.array? || wide128?(local.type)
             addr, = gen_variable_ref(operand)
             return [addr, Type::Pointer.new(local.type)]
           end
@@ -2137,8 +2375,9 @@ module Rubycc
         result_type = ptr_type.target
         # "*p" of a struct pointer is a struct lvalue: its value is the pointer
         # itself (the struct's address), so nothing is loaded, just as a struct
-        # variable yields its address.
-        return [addr, result_type] if result_type.struct?
+        # variable yields its address. A pointer to a 128-bit integer behaves the
+        # same — its value is that object's address.
+        return [addr, result_type] if result_type.struct? || wide128?(result_type)
         # "*fp" of a function pointer is a function designator, which decays
         # right back to the same pointer value (its code address), so it is
         # returned unchanged — this is what lets "(*fp)(x)" and "(**fp)(x)"
@@ -2197,6 +2436,14 @@ module Rubycc
           dest, = gen_variable_ref(target)
           return gen_struct_copy(dest, value, local.type)
         end
+        # A 128-bit variable converts the value to its type (widening a narrower
+        # source) and copies both eightbytes into its object; its value is that
+        # object's address.
+        if wide128?(local.type)
+          dest, = gen_variable_ref(target)
+          store_int128(dest, value, value_type, local.type, node.token)
+          return [dest, local.type]
+        end
         stored = store_scalar_variable(local, value, value_type, token: node.token)
         [stored, local.type]
       end
@@ -2245,6 +2492,10 @@ module Rubycc
           error_at(node.token, "incompatible types in assignment")
         end
         return gen_struct_copy(addr, value, element_type) if element_type.struct?
+        if wide128?(element_type)
+          store_int128(addr, value, value_type, element_type, node.token)
+          return [addr, element_type]
+        end
 
         # v is only assignment-compatible with the element type, not
         # necessarily identical to it (e.g. an int assigned into a long
@@ -2269,6 +2520,10 @@ module Rubycc
           error_at(node.token, "incompatible types in assignment")
         end
         return gen_struct_copy(addr, value, member_type) if member_type.struct?
+        if wide128?(member_type)
+          store_int128(addr, value, value_type, member_type, node.token)
+          return [addr, member_type]
+        end
 
         # v is only assignment-compatible with the member type, not
         # necessarily identical to it, so convert before storing.
@@ -2289,6 +2544,10 @@ module Rubycc
           error_at(node.token, "incompatible types in assignment")
         end
         return gen_struct_copy(addr, value, target_type) if target_type.struct?
+        if wide128?(target_type)
+          store_int128(addr, value, value_type, target_type, node.token)
+          return [addr, target_type]
+        end
 
         # v is only assignment-compatible with the pointee type, not
         # necessarily identical to it, so convert before storing.
@@ -2528,6 +2787,11 @@ module Rubycc
         if arg_type.struct?
           error_at(token, "passing a struct to a variadic function is not supported yet")
         end
+        # A 128-bit integer has no default-promoted form this step can hand a
+        # variadic callee to recover through va_arg, so passing one is diagnosed.
+        if wide128?(arg_type)
+          error_at(token, "passing a 128-bit integer to a variadic function is not supported yet")
+        end
         # A float promotes to double; a double passes through. Either lands in an
         # xmm register as an :sse8.
         return [convert(vreg, from: arg_type, to: Type::Double, token: token), :sse8] if arg_type.float?
@@ -2623,21 +2887,42 @@ module Rubycc
       # The type of "condition ? then : else": identical types are kept as is,
       # a mixed arithmetic pair (int/char) promotes to int, and a pointer arm
       # paired with a null pointer constant (in either position) takes the
-      # pointer type, so "cond ? p : 0" is a pointer. Anything else (a pointer
-      # vs a non-null int, or two different pointer types) is rejected. Both
-      # arms are passed as AST nodes so the null-pointer-constant check can look
-      # at the literal, not just its int type.
+      # pointer type, so "cond ? p : 0" is a pointer. A pointer to an object type
+      # paired with a "void *" (in either position) yields "void *" (6.5.15p6),
+      # so "cond ? (char *)s : v" is well-typed. Anything else (a pointer vs a
+      # non-null int, or two unrelated pointer types) is rejected. Both arms are
+      # passed as AST nodes so the null-pointer-constant check can look at the
+      # literal, not just its int type.
       def conditional_result_type(then_node, then_type, else_node, else_type, token)
         return then_type if then_type == else_type
         if then_type.pointer? && Front::AST.null_pointer_constant?(else_node)
           then_type
         elsif else_type.pointer? && Front::AST.null_pointer_constant?(then_node)
           else_type
+        elsif void_pointer_composite?(then_type, else_type)
+          Type::Pointer.new(Type::Void)
         elsif then_type.arithmetic? && else_type.arithmetic?
           common_arithmetic_type(then_type, else_type)
         else
           error_at(token, "type mismatch in conditional expression")
         end
+      end
+
+      # Whether one arm is a pointer to an object type and the other a "void *"
+      # (6.5.15p6): the composite of that pair is "void *". Qualifiers on the
+      # pointed-to type are not modeled in this subset, so the composite is a
+      # plain "void *" and the pointer stays unqualified. Two "void *" arms are
+      # already handled by the identical-type case above; a function pointer is
+      # not a pointer to an object type, so it is excluded here.
+      def void_pointer_composite?(one, other)
+        return false unless one.pointer? && other.pointer?
+
+        (one.target.void? && object_pointee?(other.target)) ||
+          (other.target.void? && object_pointee?(one.target))
+      end
+
+      def object_pointee?(target)
+        !target.void? && !target.function?
       end
 
       # A compound assignment "target op= value" reads through the target's
@@ -2685,6 +2970,7 @@ module Rubycc
         reject_readonly_write(local, target, node.token)
         error_at(node.token, "array type is not assignable") if local.type.array?
         error_at(node.token, "invalid operands to binary expression") if local.type.struct?
+        require_scalar_target(local.type, node.token)
 
         value, value_type = gen_value(node.value)
         current = load_scalar_variable(local)
@@ -2777,6 +3063,7 @@ module Rubycc
         reject_readonly_write(local, target, node.token)
         error_at(node.token, "array type is not assignable") if local.type.array?
         error_at(node.token, "invalid operands to binary expression") if local.type.struct?
+        require_scalar_target(local.type, node.token)
 
         current = load_scalar_variable(local)
         old_value = nil
@@ -2919,8 +3206,282 @@ module Rubycc
       # int, long <-> unsigned long), need no code at all. `token` locates the
       # diagnostic an unsupported floating conversion raises; it is nil on the
       # integer-only call sites that never reach one.
+      # Whether `type` is a 128-bit integer (`__int128` / `unsigned __int128`).
+      # Its width alone tells it apart from every other integer type, and the
+      # generator uses that to route it through the address-carried, two-eightbyte
+      # value model rather than the single-slot scalar machinery.
+      def wide128?(type)
+        type.integer? && type.size == 16
+      end
+
+      # Reserves a fresh 16-byte stack object for a 128-bit temporary and returns
+      # a vreg holding its base address — the "value" of a 128-bit result, mirroring
+      # how a small struct's value is its object's address. The low eightbyte lives
+      # at +0, the high at +8 (little endian).
+      def new_int128_temp
+        object_id = new_object(16)
+        base = new_vreg
+        emit(:object_addr, dst: base, a: object_id)
+        base
+      end
+
+      # Loads one 8-byte half of a 128-bit value at `offset` (0 low, 8 high) from
+      # the object `base` addresses.
+      def load_int128_half(base, offset)
+        dst = new_vreg
+        emit(:load, dst: dst, a: offset_address(base, offset), size: 8)
+        dst
+      end
+
+      # Stores an 8-byte half into a 128-bit object at `offset` (0 low, 8 high).
+      def store_int128_half(base, offset, value)
+        emit(:store, a: offset_address(base, offset), b: value, size: 8)
+      end
+
+      # (lo | hi) of the 128-bit value at `addr`: nonzero exactly when the whole
+      # value is nonzero, which the truth tests and _Bool conversion reduce to.
+      def int128_or_halves(addr)
+        merged = new_vreg
+        emit(:or, dst: merged, a: load_int128_half(addr, 0), b: load_int128_half(addr, 8), size: 8)
+        merged
+      end
+
+      # "value != 0" for a 128-bit value: (lo | hi) != 0, an int 0/1. Shared by the
+      # _Bool conversion and the truth tests (conditions, "!").
+      def int128_to_bool(addr)
+        zero = new_vreg
+        emit(:const, dst: zero, a: 0, size: 8)
+        dst = new_vreg
+        emit(:ne, dst: dst, a: int128_or_halves(addr), b: zero, size: 8)
+        dst
+      end
+
+      # A conversion with a 128-bit integer on at least one side. int128<->int128
+      # is only a signedness reinterpretation (identical bits), so the address
+      # passes through. Widening a narrower value fills the low eightbyte with its
+      # (sign- or zero-extended) 64-bit value and the high eightbyte with the sign
+      # fill (arithmetic shift of the low half by 63) for a signed source or zero
+      # for an unsigned one. Narrowing from 128-bit takes the low eightbyte and
+      # truncates it like any narrowing conversion; a _Bool destination is the
+      # "!= 0" test over both halves. A conversion to or from a floating type is
+      # not lowered (out of scope) and diagnosed here.
+      def convert_int128(vreg, from, to, token)
+        return vreg if wide128?(from) && wide128?(to)
+
+        if wide128?(to)
+          if from.float?
+            error_at(token, "conversion between a floating type and '#{to}' is not supported yet")
+          end
+          lo = convert(vreg, from: from, to: from.signed? ? Type::Long : Type::ULong, token: token)
+          base = new_int128_temp
+          store_int128_half(base, 0, lo)
+          store_int128_half(base, 8, int128_high_fill(lo, from.signed?))
+          base
+        else
+          if to.float?
+            error_at(token, "conversion between '#{from}' and a floating type is not supported yet")
+          end
+          return int128_to_bool(vreg) if to.bool?
+
+          # The low eightbyte holds the low-order value; treat it as a 64-bit
+          # integer that the ordinary narrowing conversion truncates. Its own
+          # signedness does not affect a narrowing, so Type::Long stands in.
+          convert(load_int128_half(vreg, 0), from: Type::Long, to: to, token: token)
+        end
+      end
+
+      # The high eightbyte of a 128-bit value widened from a 64-bit low half: the
+      # sign fill (low >> 63, arithmetic) for a signed source so a negative value
+      # sign-extends, or zero for an unsigned source (zero-extension).
+      def int128_high_fill(lo, signed)
+        if signed
+          count = new_vreg
+          emit(:const, dst: count, a: 63)
+          hi = new_vreg
+          emit(:sar, dst: hi, a: lo, b: count, size: 8)
+          hi
+        else
+          hi = new_vreg
+          emit(:const, dst: hi, a: 0, size: 8)
+          hi
+        end
+      end
+
+      # Stores a value into the 128-bit object at `dest_addr`, converting it to the
+      # object's 128-bit type first (a narrower source widens with sign/zero fill,
+      # another 128-bit value copies as-is), then copying both eightbytes with a
+      # 16-byte :memcpy. Shared by every 128-bit assignment, initialization and
+      # store-through-lvalue path, mirroring #gen_struct_copy for a struct.
+      def store_int128(dest_addr, value_vreg, value_type, target_type, token)
+        src = convert(value_vreg, from: value_type, to: target_type, token: token)
+        emit(:memcpy, a: dest_addr, b: src, size: 16)
+      end
+
+      # The spelling of a binary operator for the "not supported yet" diagnostics
+      # a 128-bit operand raises on an unimplemented operation.
+      INT128_OP_SPELLINGS = {
+        add: "+", sub: "-", mul: "*", div: "/", mod: "%",
+        and: "&", or: "|", xor: "^", shl: "<<", shr: ">>"
+      }.freeze
+
+      # Dispatches a 128-bit binary arithmetic operation on two 128-bit operand
+      # addresses. Multiplication, addition and subtraction are synthesized from
+      # 64-bit halves; every other operator (division, remainder, the bitwise ops)
+      # is out of scope and diagnosed with the shared message.
+      def gen_int128_arith(op, l_addr, r_addr, token)
+        case op
+        when :mul then gen_int128_mul(l_addr, r_addr)
+        when :add then gen_int128_add(l_addr, r_addr)
+        when :sub then gen_int128_sub(l_addr, r_addr)
+        else
+          error_at(token, "'#{INT128_OP_SPELLINGS.fetch(op, op)}' on 128-bit integers is not supported yet")
+        end
+      end
+
+      # 128-bit multiply: the low 64 bits are the 64-bit product of the low halves
+      # (:mul), and the high 64 bits are the unsigned high product of the low
+      # halves (:mulhi) plus the two cross products lo_a*hi_b and hi_a*lo_b — the
+      # standard schoolbook expansion truncated to 128 bits, so the result is
+      # correct for both signednesses (their low 128 bits coincide). Returns the
+      # temporary's address.
+      def gen_int128_mul(l_addr, r_addr)
+        lo_a = load_int128_half(l_addr, 0)
+        hi_a = load_int128_half(l_addr, 8)
+        lo_b = load_int128_half(r_addr, 0)
+        hi_b = load_int128_half(r_addr, 8)
+        lo = new_vreg
+        emit(:mul, dst: lo, a: lo_a, b: lo_b, size: 8)
+        hi = new_vreg
+        emit(:mulhi, dst: hi, a: lo_a, b: lo_b)
+        hi = int128_add64(hi, int128_mul64(lo_a, hi_b))
+        hi = int128_add64(hi, int128_mul64(hi_a, lo_b))
+        int128_pack(lo, hi)
+      end
+
+      # 128-bit addition with carry: the low halves add, and the high halves add
+      # together with the carry out of the low add, detected as "the low sum wrapped
+      # below its first addend" (an unsigned compare). Returns the temp's address.
+      def gen_int128_add(l_addr, r_addr)
+        lo_a = load_int128_half(l_addr, 0)
+        hi_a = load_int128_half(l_addr, 8)
+        lo_b = load_int128_half(r_addr, 0)
+        hi_b = load_int128_half(r_addr, 8)
+        lo = int128_add64(lo_a, lo_b)
+        carry = new_vreg
+        emit(:ult, dst: carry, a: lo, b: lo_a, size: 8) # lo < lo_a => wrapped
+        hi = int128_add64(int128_add64(hi_a, hi_b), carry)
+        int128_pack(lo, hi)
+      end
+
+      # 128-bit subtraction with borrow: the low halves subtract, and the high
+      # halves subtract together with the borrow (the low minuend was smaller than
+      # the subtrahend, an unsigned compare). Returns the temp's address.
+      def gen_int128_sub(l_addr, r_addr)
+        lo_a = load_int128_half(l_addr, 0)
+        hi_a = load_int128_half(l_addr, 8)
+        lo_b = load_int128_half(r_addr, 0)
+        hi_b = load_int128_half(r_addr, 8)
+        lo = new_vreg
+        emit(:sub, dst: lo, a: lo_a, b: lo_b, size: 8)
+        borrow = new_vreg
+        emit(:ult, dst: borrow, a: lo_a, b: lo_b, size: 8) # lo_a < lo_b => borrow
+        hi = new_vreg
+        emit(:sub, dst: hi, a: hi_a, b: hi_b, size: 8)
+        hi2 = new_vreg
+        emit(:sub, dst: hi2, a: hi, b: borrow, size: 8)
+        int128_pack(lo, hi2)
+      end
+
+      # A 64-bit a + b into a fresh vreg (a building block for the 128-bit adds).
+      def int128_add64(a, b)
+        dst = new_vreg
+        emit(:add, dst: dst, a: a, b: b, size: 8)
+        dst
+      end
+
+      # A 64-bit a * b (low 64 of the product) into a fresh vreg.
+      def int128_mul64(a, b)
+        dst = new_vreg
+        emit(:mul, dst: dst, a: a, b: b, size: 8)
+        dst
+      end
+
+      # Packs a low and high 64-bit half into a fresh 128-bit temporary and returns
+      # its address.
+      def int128_pack(lo, hi)
+        base = new_int128_temp
+        store_int128_half(base, 0, lo)
+        store_int128_half(base, 8, hi)
+        base
+      end
+
+      # A 128-bit comparison, yielding an int 0/1, lowered branchlessly from 64-bit
+      # compares of the halves. Equality is "both halves equal"; inequality "either
+      # half differs". An ordering compares the high halves first — signed for a
+      # signed __int128, unsigned for an unsigned one — and falls back to an
+      # unsigned low compare when the highs are equal. When the highs differ the
+      # *strict* high compare decides regardless of the operator's strictness (if
+      # hi_a < hi_b then a < b, so "<=" too), so the result is
+      # "hi != hi ? strict_hi_cmp : lo_cmp", assembled from 0/1 values with and/or/
+      # xor (a select without a dedicated instruction).
+      def gen_int128_comparison(op, l_addr, r_addr, signed)
+        lo_a = load_int128_half(l_addr, 0)
+        hi_a = load_int128_half(l_addr, 8)
+        lo_b = load_int128_half(r_addr, 0)
+        hi_b = load_int128_half(r_addr, 8)
+        result =
+          case op
+          when :eq
+            int128_bool_and(int128_cmp64(:eq, hi_a, hi_b), int128_cmp64(:eq, lo_a, lo_b))
+          when :ne
+            int128_bool_or(int128_cmp64(:ne, hi_a, hi_b), int128_cmp64(:ne, lo_a, lo_b))
+          else
+            strict_hi = if %i[lt le].include?(op) then (signed ? :lt : :ult) else (signed ? :gt : :ugt) end
+            hi_cmp = int128_cmp64(strict_hi, hi_a, hi_b)
+            lo_cmp = int128_cmp64(UNSIGNED_COMPARISONS.fetch(op), lo_a, lo_b)
+            hi_ne = int128_cmp64(:ne, hi_a, hi_b)
+            # result = hi_ne ? hi_cmp : lo_cmp, over 0/1 values.
+            int128_bool_or(int128_bool_and(hi_ne, hi_cmp),
+                           int128_bool_and(int128_bool_not(hi_ne), lo_cmp))
+          end
+        [result, Type::Int]
+      end
+
+      # A 64-bit compare `op` of a and b into a fresh int 0/1 vreg.
+      def int128_cmp64(op, a, b)
+        dst = new_vreg
+        emit(op, dst: dst, a: a, b: b, size: 8)
+        dst
+      end
+
+      # AND / OR / logical-NOT over 0/1 int values, used to assemble a 128-bit
+      # comparison from its 64-bit pieces.
+      def int128_bool_and(a, b)
+        dst = new_vreg
+        emit(:and, dst: dst, a: a, b: b)
+        dst
+      end
+
+      def int128_bool_or(a, b)
+        dst = new_vreg
+        emit(:or, dst: dst, a: a, b: b)
+        dst
+      end
+
+      def int128_bool_not(a)
+        one = new_vreg
+        emit(:const, dst: one, a: 1)
+        dst = new_vreg
+        emit(:xor, dst: dst, a: a, b: one)
+        dst
+      end
+
       def convert(vreg, from:, to:, token: nil)
         return vreg if from == to
+        # A conversion touching a 128-bit integer (either side) needs the
+        # two-eightbyte handling of #convert_int128, not the single-slot
+        # width/sign changes below.
+        return convert_int128(vreg, from, to, token) if wide128?(from) || wide128?(to)
         return to_bool(vreg, from) if to.bool?
         return convert_floating(vreg, from, to, token) if to.float? || from.float?
 
@@ -3000,6 +3561,8 @@ module Rubycc
       # integer source compares at 64 bits so its whole value decides. The int
       # 0/1 result is already a valid _Bool representation.
       def to_bool(value_vreg, from_type)
+        return int128_to_bool(value_vreg) if wide128?(from_type)
+
         if from_type.float?
           zero = emit_float_const(0.0, from_type)
           dst = new_vreg
@@ -3061,14 +3624,21 @@ module Rubycc
         require_complete(type.target, token)
       end
 
-      # Rejects an incomplete struct (a tag never defined) wherever a complete
-      # object type is required — a variable or global, a sizeof, a member's
-      # base struct, an array/pointer element being sized. Only a struct can be
-      # incomplete here; every other type is already complete.
+      # Rejects an incomplete type (a struct tag never defined, or a
+      # forward-referenced enum tag with no visible enumerators) wherever a
+      # complete object type is required — a variable or global, a sizeof, a
+      # member's base struct, an array/pointer element being sized. A pointer to
+      # either stays complete, so "enum E *p;" / "struct S *p;" pass this guard.
       def require_complete(type, token)
-        return unless type.struct? && !type.complete?
+        return unless incomplete_type?(type)
 
         error_at(token, "invalid use of incomplete type '#{type}'")
+      end
+
+      # Whether `type` is an incomplete object type: an undefined struct/union, or
+      # an incomplete (forward-referenced) enum. Every other type is complete.
+      def incomplete_type?(type)
+        (type.struct? && !type.complete?) || type.is_a?(Type::EnumType)
       end
 
       # Guards a compound-assignment or "++"/"--" target that must be a scalar
@@ -3076,6 +3646,12 @@ module Rubycc
       # member) has no arithmetic, so it is rejected with the same wording a
       # bad binary operand gets.
       def require_scalar_target(type, token)
+        # A read-modify-write of a 128-bit integer (op= or ++/--) would need the
+        # multi-word load/store this phase does not emit for such a target, so it
+        # is diagnosed before the (invalid) narrow load would be produced.
+        if wide128?(type)
+          error_at(token, "compound assignment or increment on a 128-bit integer is not supported yet")
+        end
         return unless type.struct? || type.array?
 
         error_at(token, "invalid operands to binary expression")
@@ -3093,6 +3669,9 @@ module Rubycc
       def gen_condition(node)
         value, type = gen_value(node)
         require_scalar_for_truth(type, node.token)
+        # A 128-bit condition tests both eightbytes (value is its address).
+        return int128_to_bool(value) if wide128?(type)
+
         # A floating condition is its NaN-aware truth "value != 0.0" (:fne),
         # lowered to an int 0/1 the branch then reads.
         if type.float?

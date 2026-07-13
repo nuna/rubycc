@@ -35,13 +35,19 @@ module Rubycc
                     enum typedef static extern const volatile inline register auto
                     return if else while do for break continue
                     switch case default goto sizeof
-                    _Static_assert _Alignof
-                    __builtin_va_start __builtin_va_arg __builtin_va_end].freeze
+                    _Static_assert _Alignof __int128
+                    __builtin_va_start __builtin_va_arg __builtin_va_end
+                    __builtin_expect __builtin_alloca
+                    __asm__
+                    __attribute__ __extension__].freeze
 
       # Escape sequences shared by character constants and string literals,
       # mapping the letter after the backslash to the byte value it denotes.
+      # "\x" (hexadecimal, any number of digits) and octal ("\ooo", 1-3 digits,
+      # "0" included) are handled separately in #read_escaped_byte since their
+      # value comes from digits rather than a fixed table lookup.
       ESCAPES = {
-        "n" => 10, "t" => 9, "r" => 13, "0" => 0, "\\" => 92,
+        "n" => 10, "t" => 9, "r" => 13, "\\" => 92,
         "'" => 39, "\"" => 34, "a" => 7, "b" => 8, "f" => 12, "v" => 11
       }.freeze
 
@@ -169,9 +175,11 @@ module Rubycc
       end
 
       # Reads one logical character and returns its byte value, decoding a
-      # backslash escape via ESCAPES. Shared by character constants and string
-      # literals; `context` names the construct for error messages and `start`
-      # locates the opening quote for a positioned error.
+      # backslash escape via ESCAPES, a hexadecimal escape ("\x" then one or
+      # more hex digits) or an octal escape ("\ooo", 1-3 octal digits, 6.4.4.4).
+      # Shared by character constants and string literals; `context` names the
+      # construct for error messages and `start` locates the opening quote for
+      # a positioned error.
       def read_escaped_byte(start, context)
         ch = current
         if ch.nil? || ch == "\n"
@@ -181,16 +189,53 @@ module Rubycc
           esc = current
           if esc.nil? || esc == "\n"
             raise LexError.new("unterminated #{context}", start)
-          end
-          code = ESCAPES[esc]
-          raise LexError.new("unknown escape sequence in #{context}", start) unless code
+          elsif esc == "x"
+            advance
+            read_hex_escape(start)
+          elsif octal_digit?(esc)
+            read_octal_escape(start)
+          else
+            code = ESCAPES[esc]
+            raise LexError.new("unknown escape sequence in #{context}", start) unless code
 
-          advance
-          code
+            advance
+            code
+          end
         else
           advance
           ch.ord
         end
+      end
+
+      # A "\x" escape's value: one or more hex digits (unbounded in the grammar,
+      # 6.4.4.4), rejected here when it exceeds a byte's range since a char or a
+      # string element is one byte in this implementation. At least one digit is
+      # required ("\x" alone is ill-formed).
+      def read_hex_escape(start)
+        digits = +""
+        digits << advance while hex_digit?(current)
+        raise LexError.new("\\x used with no following hex digits", start) if digits.empty?
+
+        value = digits.to_i(16)
+        raise LexError.new("hex escape sequence out of range", start) if value > 255
+
+        value
+      end
+
+      # An octal escape's value: 1-3 octal digits (the leading one already
+      # confirmed present by the caller), rejected when it exceeds a byte's
+      # range ("\777" is 511, past 255).
+      def read_octal_escape(start)
+        digits = +""
+        3.times do
+          break unless octal_digit?(current)
+
+          digits << advance
+        end
+        value = digits.to_i(8)
+        raise LexError.new("octal escape sequence out of range", start) if value > 255
+
+        value
       end
 
       # Whether the digit run at the cursor is a decimal floating constant: it is

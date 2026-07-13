@@ -12,6 +12,13 @@ module Rubycc
     #   :div/:mod                  dst <- a op b   (signed division/remainder)
     #   :udiv/:umod                dst <- a op b   (unsigned division/remainder;
     #                               the backend zeroes edx and uses `div`)
+    #   :mulhi  dst <- hi64(a * b)  the unsigned high 64 bits of the 128-bit
+    #                               product of two 64-bit values (x86 `mul r64`,
+    #                               REX.W F7 /4: rax*b -> rdx:rax, result taken
+    #                               from rdx). Used only to synthesize a 128-bit
+    #                               (`__int128`) multiply from 64-bit halves; the
+    #                               generator pairs it with ordinary :mul (the low
+    #                               64) and :add. size is always 8
     #   :and/:or/:xor              dst <- a op b   (bitwise)
     #   :shl    dst <- a << b       (logical left shift; b's low byte is the
     #                               shift count, taken from cl by the backend)
@@ -165,6 +172,16 @@ module Rubycc
     #                               va_arg/va_end need no IR op of their own —
     #                               the generator lowers them to ordinary
     #                               load/store/branch instructions
+    #   :alloca dst <- alloca(a)    a = a vreg holding a byte count; dst gets the
+    #                               base address of that many bytes of automatic
+    #                               storage carved from the stack (__builtin_alloca).
+    #                               The backend rounds the count up to a 16-byte
+    #                               multiple and subtracts it from rsp, so rsp stays
+    #                               16-aligned and the block is 16-byte aligned; the
+    #                               storage is reclaimed wholesale when the function
+    #                               returns (its epilogue restores rsp from rbp), not
+    #                               at end of scope. Every other value is rbp-relative,
+    #                               so the moving rsp is safe
     #
     # `dst`, `a`, `b` are virtual register numbers (Integers) unless noted;
     # unused fields are nil. `size` is an operand width in bytes. On :load /

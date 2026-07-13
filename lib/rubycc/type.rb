@@ -124,6 +124,19 @@ module Rubycc
         @size
       end
 
+      # Each integer type is a shared singleton, so equality is normally
+      # identity. The one exception: a completed enum is an int object
+      # (6.7.2.2), so the plain `int` singleton is equal to any EnumType
+      # completed to int — this makes the equality symmetric with EnumType#==,
+      # so a function-type compatibility check matches whichever side holds the
+      # `int`. #eql?/#hash are left as identity, so this does not disturb the
+      # singletons' use as hash keys.
+      def ==(other)
+        return true if equal?(other)
+
+        int? && other.is_a?(EnumType) && other.complete?
+      end
+
       def to_s
         @name
       end
@@ -286,6 +299,18 @@ module Rubycc
     # `_Bool` is treated as an unsigned 1-byte type whose stored value is only
     # ever 0 or 1; a conversion to it lowers to "value != 0" (see the generator).
     Bool = IntegerType.new("_Bool", 1, false, bool: true)
+
+    # The GNU 128-bit integer types (`__int128` and `unsigned __int128`), 16
+    # bytes wide and 16-byte aligned. They are ordinary IntegerTypes for
+    # classification (#integer?, #signed?, sizeof/_Alignof, the usual arithmetic
+    # conversions), but their value does not fit a single 64-bit slot: the
+    # generator represents a 128-bit value the way it represents a small struct —
+    # as a 16-byte stack object whose low eightbyte lives at +0 and high at +8,
+    # its address carried in an ordinary vreg — and lowers each supported
+    # operation to 64-bit ops on the two halves. The width alone (size 16) marks
+    # them apart from every other integer type; the generator's #wide128? tests it.
+    Int128 = IntegerType.new("__int128", 16, true)
+    UInt128 = IntegerType.new("unsigned __int128", 16, false)
 
     # The shared floating-type instances (Type::Float, Type::Double).
     Float = FloatType.new("float", 4)
@@ -536,9 +561,170 @@ module Rubycc
       end
     end
 
+    # An incomplete enumeration type: a reference to an "enum tag" whose
+    # enumerator list is not visible (a forward-referenced tag, or one never
+    # defined in the translation unit). A *complete* enum has no dedicated type
+    # here — an enum object is an int (6.7.2.2), so #parse_enum_specifier resolves
+    # a defined tag straight to Type::Int. This class exists only so an
+    # *incomplete* enum can flow exactly where an incomplete struct may (a
+    # pointer's target, a prototype's return type, an extern reference) while any
+    # use that needs a size or arithmetic still rejects it. It mirrors an
+    # incomplete StructType: every category predicate is false, #complete? is
+    # false, and #size/#alignment raise behind the generator's completeness
+    # guard. Two are equal when their tags match, so "enum E *" == "enum E *".
+    class EnumType
+      attr_reader :tag
+
+      def initialize(tag)
+        @tag = tag
+        @complete = false
+      end
+
+      def pointer?
+        false
+      end
+
+      def int?
+        false
+      end
+
+      def char?
+        false
+      end
+
+      def void?
+        false
+      end
+
+      # Once completed, an enum object is an int (6.7.2.2), so the integer
+      # predicates and measurements answer as `int` does. Before completion
+      # every one is false/raising, exactly as for any other incomplete type.
+      def integer?
+        @complete
+      end
+
+      def arithmetic?
+        @complete
+      end
+
+      def signed?
+        raise "incomplete enum has no signedness" unless @complete
+
+        true
+      end
+
+      def unsigned?
+        raise "incomplete enum has no signedness" unless @complete
+
+        false
+      end
+
+      def bool?
+        false
+      end
+
+      def array?
+        false
+      end
+
+      def struct?
+        false
+      end
+
+      def function?
+        false
+      end
+
+      def float?
+        false
+      end
+
+      # A forward-referenced enum tag ("enum efoo;" before its "{...}") is
+      # incomplete until #register_enum_tag sees the definition. A *defined* enum
+      # normally resolves straight to Type::Int, so completion is modeled on the
+      # object only for the one case that captured this incomplete type before
+      # the definition (a prototype's return type, "enum efoo it_real_fn(void)").
+      # #complete! then turns that very object into an int in place, so both the
+      # earlier reference and the later "enum efoo" (an int) agree.
+      def complete?
+        @complete
+      end
+
+      # Completes this forward-referenced enum in place: the object that stood in
+      # for an undefined tag starts answering as the `int` an enum object is.
+      # Idempotent, since one tag may complete after several incomplete
+      # references captured the same object.
+      def complete!
+        @complete = true
+        self
+      end
+
+      # Guarded like Type::Void and an incomplete StructType while incomplete;
+      # once completed it measures like `int` (4 bytes, 4-byte aligned).
+      def size
+        raise "incomplete enum has no size" unless @complete
+
+        4
+      end
+
+      def alignment
+        raise "incomplete enum has no alignment" unless @complete
+
+        4
+      end
+
+      # Value equality by tag while incomplete, so two references to the same
+      # undefined tag share a type (which is what a tentative-definition merge
+      # and a redeclaration check compare). Once completed, an enum object is an
+      # int, so a completed enum is equal to Type::Int (and to any other
+      # completed enum) — this is the identity a function-type compatibility
+      # check needs when "enum efoo (*)(void)" (resolved to int post-definition)
+      # is assigned a function returning the once-incomplete "enum efoo".
+      def ==(other)
+        if @complete
+          return true if other.equal?(Type::Int)
+          return other.complete? if other.is_a?(EnumType)
+
+          return false
+        end
+        other.is_a?(EnumType) && !other.complete? && other.tag == tag
+      end
+
+      def eql?(other)
+        self == other
+      end
+
+      def hash
+        [EnumType, tag].hash
+      end
+
+      def to_s
+        "enum #{tag}"
+      end
+    end
+
     # One laid-out member of a struct: its `name`, its declared Type and the
     # byte `offset` of its first byte from the start of the enclosing struct.
-    Member = Data.define(:name, :type, :offset)
+    #
+    # A bit-field member carries two extra fields (both nil for a plain member):
+    # `bit_width`, the declared width in bits, and `bit_offset`, the field's bit
+    # position measured from the start of the enclosing aggregate. `offset` for a
+    # bit-field is the byte containing its first bit (bit_offset / 8), kept only
+    # so ABI classification and diagnostics have a byte anchor — this subset
+    # diagnoses every bit-field *access*, so no read or write ever consults these
+    # bit fields to extract a value (recorded M2 debt). An unnamed bit-field
+    # declares no member and is never recorded here; it only shapes the layout.
+    Member = Data.define(:name, :type, :offset, :bit_width, :bit_offset) do
+      def initialize(name:, type:, offset:, bit_width: nil, bit_offset: nil)
+        super
+      end
+
+      # Whether this member is a bit-field, distinguishing it from a plain member
+      # occupying whole bytes; the generator consults it to diagnose an access.
+      def bitfield?
+        !bit_width.nil?
+      end
+    end
 
     # A structure or a union type. Both are aggregates (6.7.2.1) that share this
     # one class, told apart by `kind` (:struct or :union); a union differs only
@@ -656,14 +842,20 @@ module Rubycc
           next unless m.name.nil? && m.type.struct?
 
           inner = m.type.member(name)
-          return Member.new(inner.name, inner.type, m.offset + inner.offset) if inner
+          if inner
+            return Member.new(name: inner.name, type: inner.type, offset: m.offset + inner.offset,
+                              bit_width: inner.bit_width,
+                              bit_offset: inner.bit_offset && inner.bit_offset + m.offset * 8)
+          end
         end
         nil
       end
 
-      # Lays out the aggregate from `raw_members` (an array of [name, Type]
-      # pairs in declaration order; an anonymous struct/union member has a nil
-      # name). A struct follows the System V AMD64 rules: each member starts at
+      # Lays out the aggregate from `raw_members` (an array of [name, Type,
+      # bit_width] triples in declaration order; an anonymous struct/union member
+      # has a nil name, and a plain member a nil bit_width — see #layout_struct
+      # for how a bit-field is placed). A struct follows the System V AMD64 rules:
+      # each member starts at
       # the next offset that satisfies its own alignment (inserting padding as
       # needed), the alignment is the widest member's, and the size is rounded
       # up to that alignment so arrays keep every element aligned. A union
@@ -671,8 +863,17 @@ module Rubycc
       # member's but its size is the largest member's rounded up to that
       # alignment. Completing the type in place means any reference taken while
       # it was incomplete now sees the finished layout.
-      def define(raw_members)
-        @members, @size, @alignment = union? ? layout_union(raw_members) : layout_struct(raw_members)
+      #
+      # `packed` and `aligned` carry the GNU __attribute__ layout overrides
+      # (Step 28). `packed` drops every member to a 1-byte boundary — no padding
+      # between members and no tail padding — and, on its own, the whole
+      # aggregate to alignment 1. `aligned` (a power-of-two integer, or nil for
+      # none) raises the aggregate's alignment to at least that value, rounding
+      # the size up to it; combined with `packed` the members stay packed while
+      # the aggregate takes `aligned` as its boundary and tail-rounding.
+      def define(raw_members, packed: false, aligned: nil)
+        @members, @size, @alignment =
+          union? ? layout_union(raw_members, packed, aligned) : layout_struct(raw_members, packed, aligned)
         @complete = true
       end
 
@@ -711,31 +912,105 @@ module Rubycc
 
       private
 
-      # The struct layout: members packed in order at their own alignment, the
-      # whole rounded up to the widest member's alignment. Returns
-      # [members, size, alignment].
-      def layout_struct(raw_members)
-        offset = 0
+      # The struct layout: plain members placed in order at their own alignment
+      # (or at a 1-byte boundary when `packed`), and bit-fields packed into
+      # storage units by the System V x86-64 rules, the whole rounded up to the
+      # aggregate's alignment. `aligned` (when set) raises that final alignment.
+      # Returns [members, size, alignment].
+      #
+      # A running bit cursor (`bit_pos`, bits from the start) drives both kinds so
+      # a bit-field and its neighbours share bytes exactly as gcc lays them out. A
+      # bit-field `T name : W` takes the next W bits, but must not straddle a
+      # T-sized storage unit: when it would, the cursor advances to the next
+      # unit boundary first (6.7.2.1, psABI). A named bit-field raises the
+      # aggregate's alignment to alignof(T); an unnamed one never does (psABI:
+      # "Unnamed bit-fields' types do not affect the alignment of a structure"),
+      # and an unnamed `T : 0` only forces the cursor to the next unit boundary.
+      # `packed` never coexists with a bit-field here (the parser rejects that
+      # combination), so its 1-byte-boundary branch only governs plain members.
+      def layout_struct(raw_members, packed, aligned)
+        bit_pos = 0
         max_alignment = 1
-        members = raw_members.map do |name, type|
-          member_alignment = type.alignment
-          offset = align_up(offset, member_alignment)
-          member = Member.new(name, type, offset)
-          offset += type.size
-          max_alignment = member_alignment if member_alignment > max_alignment
-          member
+        members = []
+        raw_members.each do |name, type, bit_width|
+          if bit_width.nil?
+            member_alignment = packed ? 1 : type.alignment
+            byte_offset = align_up(bits_to_bytes(bit_pos), member_alignment)
+            members << Member.new(name: name, type: type, offset: byte_offset)
+            bit_pos = (byte_offset + type.size) * 8
+            max_alignment = member_alignment if member_alignment > max_alignment
+          else
+            bit_pos = place_bitfield(members, name, type, bit_width, bit_pos) do |alignment|
+              max_alignment = alignment if alignment > max_alignment
+            end
+          end
         end
-        [members, align_up(offset, max_alignment), max_alignment]
+        struct_alignment = final_alignment(max_alignment, aligned)
+        [members, align_up(bits_to_bytes(bit_pos), struct_alignment), struct_alignment]
+      end
+
+      # Places one bit-field at bit cursor `bit_pos`, recording a Member for a
+      # named one and yielding alignof(T) so #layout_struct can raise the
+      # aggregate's alignment (a named field only). Returns the advanced cursor.
+      # A zero-width field is always unnamed (the parser rejects a named one) and
+      # merely realigns the cursor to the next storage-unit boundary.
+      def place_bitfield(members, name, type, bit_width, bit_pos)
+        unit_bits = type.size * 8
+        return align_up(bit_pos, unit_bits) if bit_width.zero?
+
+        bit_pos = align_up(bit_pos, unit_bits) if (bit_pos % unit_bits) + bit_width > unit_bits
+        if name
+          members << Member.new(name: name, type: type, offset: bit_pos / 8,
+                                bit_width: bit_width, bit_offset: bit_pos)
+          yield type.alignment
+        end
+        bit_pos + bit_width
       end
 
       # The union layout: every member overlaid at offset 0, the size the widest
-      # member's rounded up to the widest alignment. Returns
-      # [members, size, alignment].
-      def layout_union(raw_members)
-        members = raw_members.map { |name, type| Member.new(name, type, 0) }
-        max_alignment = members.map { |m| m.type.alignment }.max || 1
-        max_size = members.map { |m| m.type.size }.max || 0
-        [members, align_up(max_size, max_alignment), max_alignment]
+      # member's rounded up to the aggregate alignment. `packed` drops the
+      # aggregate to a 1-byte boundary and `aligned` raises it. A bit-field is
+      # laid at bit 0 and spans ceil(W/8) bytes; a named one raises the alignment
+      # to its type's, an unnamed one contributes only its byte span (and a
+      # `T : 0` nothing at all). Returns [members, size, alignment].
+      def layout_union(raw_members, packed, aligned)
+        members = []
+        max_size = 0
+        natural_alignment = 1
+        raw_members.each do |name, type, bit_width|
+          if bit_width.nil?
+            members << Member.new(name: name, type: type, offset: 0)
+            byte_size = type.size
+            member_alignment = packed ? 1 : type.alignment
+          else
+            next if bit_width.zero?
+
+            byte_size = bits_to_bytes(bit_width)
+            member_alignment = 1
+            if name
+              members << Member.new(name: name, type: type, offset: 0,
+                                    bit_width: bit_width, bit_offset: 0)
+              member_alignment = type.alignment
+            end
+          end
+          max_size = byte_size if byte_size > max_size
+          natural_alignment = member_alignment if member_alignment > natural_alignment
+        end
+        union_alignment = final_alignment(natural_alignment, aligned)
+        [members, align_up(max_size, union_alignment), union_alignment]
+      end
+
+      # The number of whole bytes needed to hold `bits` bits (rounding up).
+      def bits_to_bytes(bits)
+        (bits + 7) / 8
+      end
+
+      # The aggregate's final alignment: its natural (or packed) alignment,
+      # raised to `aligned` when a larger __attribute__((aligned(N))) asks for
+      # it. A packed aggregate whose natural alignment is 1 thus still takes N
+      # when aligned(N) is combined with packed.
+      def final_alignment(natural, aligned)
+        aligned && aligned > natural ? aligned : natural
       end
 
       def align_up(value, alignment)

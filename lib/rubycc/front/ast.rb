@@ -182,6 +182,14 @@ module Rubycc
       # The empty statement ";".
       EmptyStmt = Data.define(:token)
 
+      # A GNU inline-assembly statement in its only accepted (degenerate) form
+      # (DESIGN R7): `__asm__` with optional volatile qualifiers and an empty
+      # template, e.g. `__asm__ volatile("" ::: "memory");`. The parser has
+      # already verified the template is empty and no real operand appears, so
+      # nothing is carried but the keyword token; it lowers to no code at all —
+      # rubycc never reorders, so a memory-clobber barrier is a natural no-op.
+      InlineAsm = Data.define(:token)
+
       # `if (condition) then_stmt` with an optional `else else_stmt`.
       # `else_stmt` is nil when there is no else clause.
       If = Data.define(:condition, :then_stmt, :else_stmt, :token)
@@ -273,6 +281,21 @@ module Rubycc
       # no-op beyond type-checking the operand, so the node carries only the
       # va_list expression and the keyword token; its value is void.
       VaEnd = Data.define(:ap, :token)
+
+      # "__builtin_expect ( exp , c )": gcc's branch-prediction hint, typed
+      # `long(long, long)`. `exp` is the tested expression and `c` the value it
+      # is expected to take. rubycc has no optimizer, so the hint carries no
+      # weight: both operands are evaluated (left to right, `c` for its side
+      # effects) and the whole expression is `exp` converted to `long`. `token`
+      # is the builtin keyword.
+      BuiltinExpect = Data.define(:exp, :c, :token)
+
+      # "__builtin_alloca ( n )": reserves `n` bytes of automatic storage on the
+      # stack, released when the enclosing *function* returns. `size` is the
+      # byte-count expression (converted to size_t) and `token` the keyword; the
+      # whole expression's value is the block's base address, a `void *` the ABI
+      # keeps 16-byte aligned.
+      BuiltinAlloca = Data.define(:size, :token)
 
       # A single function parameter. `name` is the identifier String, or nil
       # for an unnamed parameter in a prototype (e.g. "int f(int, int);").

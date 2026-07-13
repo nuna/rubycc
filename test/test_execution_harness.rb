@@ -1325,6 +1325,138 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
+  # --- GNU __attribute__ aligned/packed layout + ABI (Step 28 Phase A) ------
+
+  # Structs bearing __attribute__((packed)) or ((aligned(N))) passed and
+  # returned by value. A packed struct with an unaligned field is MEMORY-class
+  # per the psABI (rubycc's classifier matches gcc here), while a naturally
+  # aligned aligned(16) struct still rides its registers; each program folds the
+  # round-tripped result into an exit code, so gcc's own ABI is the oracle.
+  ATTRIBUTE_ABI_DIFFERENTIAL_SOURCES = [
+    # A packed { char; int; } is 5 bytes with the int unaligned at offset 1, so
+    # it is MEMORY-classified: passed and returned through the stack.
+    "struct __attribute__((packed)) P { char c; int i; }; struct P id(struct P p) { return p; } " \
+    "int main(void) { struct P p; p.c = 7; p.i = 35; struct P r = id(p); return r.c + r.i; }",
+    # A packed { char; long; } is 9 bytes: the long would straddle the eightbyte
+    # boundary, another MEMORY case.
+    "struct __attribute__((packed)) Q { char c; long l; }; struct Q id(struct Q q) { return q; } " \
+    "int main(void) { struct Q q; q.c = 5; q.l = 37; struct Q r = id(q); return r.c + (int)r.l; }",
+    # A packed all-char { char; char; char; } has no unaligned field, so it stays
+    # a single INTEGER eightbyte in a register.
+    "struct __attribute__((packed)) C { char a; char b; char c; }; struct C id(struct C c) { return c; } " \
+    "int main(void) { struct C c; c.a = 10; c.b = 14; c.c = 18; struct C r = id(c); return r.a + r.b + r.c; }",
+    # An aligned(16) { int; int; } is naturally aligned and 16 bytes: two INTEGER
+    # eightbytes, still passed in registers.
+    "struct __attribute__((aligned(16))) A { int x; int y; }; struct A id(struct A a) { return a; } " \
+    "int main(void) { struct A a; a.x = 40; a.y = 2; struct A r = id(a); return r.x + r.y; }"
+  ].freeze
+
+  def test_attribute_layout_abi_matches_gcc_exit_codes
+    ATTRIBUTE_ABI_DIFFERENTIAL_SOURCES.each do |source|
+      rubycc_exit = run_source(source, compiler: :rubycc)
+      gcc_exit = run_source(source, compiler: :gcc)
+      assert_equal gcc_exit, rubycc_exit,
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
+  # sizeof / _Alignof of packed and aligned structs printed to stdout: rubycc's
+  # layout must render byte-for-byte identically to gcc's.
+  ATTRIBUTE_LAYOUT_SIZEOF_PROGRAM =
+    "int printf(char *fmt, ...); " \
+    "struct __attribute__((packed)) P { char c; int i; }; " \
+    "struct __attribute__((aligned(16))) A { char c; }; " \
+    "struct __attribute__((packed, aligned(4))) PA { char c; char d; char e; }; " \
+    "struct Plain { char c; int i; }; " \
+    "int main(void) { " \
+    "printf(\"P %d %d\\n\", (int)sizeof(struct P), (int)_Alignof(struct P)); " \
+    "printf(\"A %d %d\\n\", (int)sizeof(struct A), (int)_Alignof(struct A)); " \
+    "printf(\"PA %d %d\\n\", (int)sizeof(struct PA), (int)_Alignof(struct PA)); " \
+    "printf(\"Plain %d %d\\n\", (int)sizeof(struct Plain), (int)_Alignof(struct Plain)); " \
+    "return 0; }"
+
+  def test_attribute_layout_sizeof_matches_gcc_stdout
+    rubycc = program_output(ATTRIBUTE_LAYOUT_SIZEOF_PROGRAM, compiler: :rubycc)
+    gcc = program_output(ATTRIBUTE_LAYOUT_SIZEOF_PROGRAM, compiler: :gcc)
+    assert_equal gcc, rubycc, "rubycc and gcc disagree on sizeof/_Alignof output"
+  end
+
+  # --- __builtin_expect / __builtin_alloca / empty __asm__ (Step 28 Phase B) --
+
+  # __builtin_expect(exp, c) has no optimizer weight in rubycc: it evaluates both
+  # operands and yields `exp` converted to long. Each program folds that value
+  # into an exit code, so gcc's own unoptimized result is the oracle.
+  BUILTIN_EXPECT_DIFFERENTIAL_SOURCES = [
+    # A truthy exp passes through as the tested value (37 != 0 -> 37).
+    "int main(void) { return (int)__builtin_expect(37, 1); }",
+    # A falsy exp passes through as 0.
+    "int main(void) { return (int)__builtin_expect(0, 1) + 42; }",
+    # Used as an if condition: the branch is taken because the tested value is
+    # truthy, exactly as gcc's unoptimized build does.
+    "int main(void) { int x = 9; if (__builtin_expect(x == 9, 1)) return 42; return 0; }",
+    # A falsy hint still drives the else arm.
+    "int main(void) { int x = 3; if (__builtin_expect(x == 9, 1)) return 1; return 42; }"
+  ].freeze
+
+  def test_builtin_expect_value_matches_gcc_exit_codes
+    BUILTIN_EXPECT_DIFFERENTIAL_SOURCES.each do |source|
+      assert_equal run_source(source, compiler: :gcc),
+                   run_source(source, compiler: :rubycc),
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
+  # __builtin_alloca carves automatic storage from the stack. Each program folds
+  # a byte-pattern total (or an alignment flag) into an exit code, so gcc is the
+  # oracle for both the runtime effect and the ABI-guaranteed alignment.
+  BUILTIN_ALLOCA_DIFFERENTIAL_SOURCES = [
+    # Write then read a rising byte pattern through the alloca'd block: the
+    # low byte of 0+1+...+9 == 45.
+    "int main(void) { unsigned char *p = (unsigned char *)__builtin_alloca(10); " \
+    "for (int i = 0; i < 10; i++) p[i] = (unsigned char)i; " \
+    "int s = 0; for (int i = 0; i < 10; i++) s += p[i]; return s; }",
+    # Two independent blocks: writing the second must not disturb the first.
+    "int main(void) { unsigned char *p = (unsigned char *)__builtin_alloca(8); " \
+    "unsigned char *q = (unsigned char *)__builtin_alloca(8); " \
+    "for (int i = 0; i < 8; i++) p[i] = 1; " \
+    "for (int i = 0; i < 8; i++) q[i] = 4; " \
+    "int s = 0; for (int i = 0; i < 8; i++) s += p[i] + q[i]; return s; }",
+    # The block survives an intervening call (whose own stack arguments must not
+    # clobber it): fill it, call a 3-arg helper, then total the block. 1+..+16==136.
+    "int add3(int a, int b, int c) { return a + b + c; } " \
+    "int main(void) { unsigned char *p = (unsigned char *)__builtin_alloca(16); " \
+    "for (int i = 0; i < 16; i++) p[i] = (unsigned char)(i + 1); " \
+    "int t = add3(1, 2, 3); " \
+    "int s = 0; for (int i = 0; i < 16; i++) s += p[i]; return s + t - t; }",
+    # The returned pointer is at least 16-byte aligned, as gcc guarantees.
+    "int main(void) { char *p = (char *)__builtin_alloca(1); " \
+    "return (((unsigned long)p & 15) == 0) ? 42 : 0; }"
+  ].freeze
+
+  def test_builtin_alloca_matches_gcc_exit_codes
+    BUILTIN_ALLOCA_DIFFERENTIAL_SOURCES.each do |source|
+      assert_equal run_source(source, compiler: :gcc),
+                   run_source(source, compiler: :rubycc),
+                   "rubycc and gcc disagree on exit code for: #{source}"
+    end
+  end
+
+  # An empty __asm__ barrier emits no code, so a program printing around it must
+  # produce exactly the surrounding output under both compilers.
+  ASM_BARRIER_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "int main(void) { " \
+    "printf(\"before\\n\"); " \
+    "__asm__ volatile(\"\" ::: \"memory\"); " \
+    "printf(\"after\\n\"); " \
+    "return 0; }"
+
+  def test_asm_barrier_matches_gcc_stdout
+    assert_equal program_output(ASM_BARRIER_PROGRAM, compiler: :gcc),
+                 program_output(ASM_BARRIER_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on output around an empty asm barrier"
+  end
+
   # --- casts, null pointer constants and pointer conditions (Step 14) ------
 
   def test_cast_truncates_int_to_char
@@ -2565,6 +2697,135 @@ class TestExecutionHarness < Minitest::Test
                    run_source(source, compiler: :rubycc),
                    "rubycc and gcc disagree on exit code for: #{source}"
     end
+  end
+
+  # "\x" and octal escapes decode to bytes, so gcc is the oracle: the mixed
+  # hex/octal/named spelling must print byte-for-byte identical stdout.
+  HEX_OCTAL_ESCAPE_PROGRAM = "int printf(const char *format, ...);\n" \
+                             "int main(void) { printf(\"\\x41\\102\\x43\\n\"); return 0; }\n"
+
+  def test_hex_and_octal_escapes_match_gcc_stdout_and_exit
+    assert_equal program_output(HEX_OCTAL_ESCAPE_PROGRAM, compiler: :gcc),
+                 program_output(HEX_OCTAL_ESCAPE_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on [exit, stdout] for mixed hex/octal escapes"
+  end
+
+  # 6.7.6.3p7: an unsized array parameter adjusts to a pointer, so a caller may
+  # pass an array by decay and the callee may index it as usual.
+  ARRAY_PARAMETER_PROGRAM = "int sum(int a[], int n) { int i; int total = 0; " \
+                            "for (i = 0; i < n; i = i + 1) total = total + a[i]; return total; } " \
+                            "int main(void) { int values[5] = {1, 2, 3, 4, 5}; return sum(values, 5); }"
+
+  def test_unsized_array_parameter_matches_gcc_exit_code
+    assert_equal run_source(ARRAY_PARAMETER_PROGRAM, compiler: :gcc),
+                 run_source(ARRAY_PARAMETER_PROGRAM, compiler: :rubycc)
+  end
+
+  # --- __int128 / unsigned __int128 (Step 28 Phase C4) -----------------------
+
+  # The rb_mul_size_overflow shape from <ruby.h>'s memory.h, driven with (a,b,max)
+  # triples spanning: no overflow, product > max within 128 bits, a product that
+  # needs the high word, and max = SIZE_MAX. gcc is the oracle for both the 0/1
+  # outcome and the low-word result printed on success.
+  INT128_MUL_OVERFLOW_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "int mul_ov(unsigned long a, unsigned long b, unsigned long max, unsigned long *c) { " \
+    "  unsigned __int128 da, db, c2; " \
+    "  da = a; db = b; c2 = da * db; " \
+    "  if (c2 > max) return 1; " \
+    "  *c = (unsigned long)c2; return 0; } " \
+    "void one(unsigned long a, unsigned long b, unsigned long max) { " \
+    "  unsigned long c = 0; int r = mul_ov(a, b, max, &c); " \
+    "  printf(\"%d %lu\\n\", r, r ? 0 : c); } " \
+    "int main(void) { " \
+    "  one(3, 4, 100); " \
+    "  one(3, 4, 10); " \
+    "  one(0xFFFFFFFFUL, 0xFFFFFFFFUL, 0xFFFFFFFFFFFFFFFFUL); " \
+    "  one(0x100000000UL, 0x100000000UL, 0xFFFFFFFFFFFFFFFFUL); " \
+    "  one(2, 5, 10); " \
+    "  return 0; }"
+
+  def test_int128_mul_overflow_matches_gcc_stdout
+    assert_equal program_output(INT128_MUL_OVERFLOW_PROGRAM, compiler: :gcc),
+                 program_output(INT128_MUL_OVERFLOW_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on the rb_mul_size_overflow shape"
+  end
+
+  # The mixed compare "(unsigned __int128)x * y > (unsigned long)max" as a truth
+  # table over several x, y and max (including SIZE_MAX): the narrower operand
+  # must convert up to the 128-bit type (unsigned wins) and compare there.
+  INT128_MIXED_COMPARE_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "int main(void) { " \
+    "  unsigned long xs[4]; unsigned long ys[3]; unsigned long ms[4]; " \
+    "  xs[0]=0; xs[1]=1; xs[2]=100; xs[3]=0xFFFFFFFFUL; " \
+    "  ys[0]=0; ys[1]=2; ys[2]=100; " \
+    "  ms[0]=0; ms[1]=50; ms[2]=10000; ms[3]=0xFFFFFFFFFFFFFFFFUL; " \
+    "  for (int i=0;i<4;i++) for (int j=0;j<3;j++) for (int k=0;k<4;k++) " \
+    "    printf(\"%d\", (unsigned __int128)xs[i] * ys[j] > (unsigned long)ms[k]); " \
+    "  printf(\"\\n\"); return 0; }"
+
+  def test_int128_mixed_compare_matches_gcc_stdout
+    assert_equal program_output(INT128_MIXED_COMPARE_PROGRAM, compiler: :gcc),
+                 program_output(INT128_MIXED_COMPARE_PROGRAM, compiler: :rubycc)
+  end
+
+  # A signed __int128 converted from a negative long sign-fills its high half, so
+  # it compares as a negative value; a truncating cast recovers the low long.
+  INT128_SIGNED_CONVERT_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "int main(void) { " \
+    "  long a = -5; __int128 x = a; __int128 y = 3; " \
+    "  printf(\"%d %d %d %d %d\\n\", x < y, x > y, x == y, x <= y, x < 0); " \
+    "  __int128 z = -1; printf(\"%d\\n\", z < 0); " \
+    "  printf(\"%ld\\n\", (long)x); return 0; }"
+
+  def test_int128_signed_conversion_matches_gcc_stdout
+    assert_equal program_output(INT128_SIGNED_CONVERT_PROGRAM, compiler: :gcc),
+                 program_output(INT128_SIGNED_CONVERT_PROGRAM, compiler: :rubycc)
+  end
+
+  # A high-word-bearing product truncated back to unsigned long / unsigned int.
+  INT128_TRUNCATE_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "int main(void) { " \
+    "  unsigned __int128 c = (unsigned __int128)0xFFFFFFFFUL * (unsigned __int128)0x100000001UL; " \
+    "  printf(\"%lu %u\\n\", (unsigned long)c, (unsigned)c); return 0; }"
+
+  def test_int128_truncating_cast_matches_gcc_stdout
+    assert_equal program_output(INT128_TRUNCATE_PROGRAM, compiler: :gcc),
+                 program_output(INT128_TRUNCATE_PROGRAM, compiler: :rubycc)
+  end
+
+  # Addition across the low-word carry boundary and subtraction with a borrow,
+  # for both signednesses; gcc is the oracle for the truncated low results.
+  INT128_ADD_SUB_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "int main(void) { " \
+    "  unsigned __int128 a = (unsigned __int128)0xFFFFFFFFFFFFFFFFUL; " \
+    "  unsigned __int128 s = a + (unsigned __int128)1; " \
+    "  unsigned __int128 d = s - (unsigned __int128)1; " \
+    "  __int128 sa = -3; __int128 sb = 10; __int128 diff = sb - sa; __int128 sum = sa + sb; " \
+    "  printf(\"%lu %lu %ld %ld\\n\", (unsigned long)s, (unsigned long)d, (long)diff, (long)sum); " \
+    "  return 0; }"
+
+  def test_int128_add_sub_matches_gcc_stdout
+    assert_equal program_output(INT128_ADD_SUB_PROGRAM, compiler: :gcc),
+                 program_output(INT128_ADD_SUB_PROGRAM, compiler: :rubycc)
+  end
+
+  # A 16-byte struct containing a single __int128 passes by value in two integer
+  # registers, exactly as gcc classifies it; the callee reads back both halves.
+  INT128_STRUCT_BYVALUE_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "struct W { unsigned __int128 x; }; " \
+    "unsigned long low(struct W w) { return (unsigned long)w.x; } " \
+    "int main(void) { struct W w; w.x = (unsigned __int128)0xFFFFFFFFUL * (unsigned __int128)3; " \
+    "  printf(\"%lu\\n\", low(w)); return 0; }"
+
+  def test_int128_struct_passed_by_value_matches_gcc_stdout
+    assert_equal program_output(INT128_STRUCT_BYVALUE_PROGRAM, compiler: :gcc),
+                 program_output(INT128_STRUCT_BYVALUE_PROGRAM, compiler: :rubycc)
   end
 
   private

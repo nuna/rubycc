@@ -309,6 +309,53 @@ class TestLexer < Minitest::Test
     assert_match(/unknown escape sequence in character constant/, error.description)
   end
 
+  # --- hexadecimal and octal character escapes (6.4.4.4) -------------------
+
+  def test_hex_escape_in_character_constant
+    tokens = lex("'\\x41'").reject(&:eof?)
+    assert_equal 65, tokens[0].value
+  end
+
+  def test_hex_escape_with_two_digits
+    tokens = lex("'\\x7f'").reject(&:eof?)
+    assert_equal 127, tokens[0].value
+  end
+
+  def test_hex_escape_in_string_literal
+    tokens = lex('"\\x41\\x42"').reject(&:eof?)
+    assert_equal "AB".b, tokens[0].value
+  end
+
+  def test_octal_escape_with_three_digits
+    tokens = lex("'\\101'").reject(&:eof?)
+    assert_equal 65, tokens[0].value
+  end
+
+  def test_octal_escape_with_one_digit
+    tokens = lex("'\\7'").reject(&:eof?)
+    assert_equal 7, tokens[0].value
+  end
+
+  def test_octal_escape_with_two_digits
+    tokens = lex("'\\77'").reject(&:eof?)
+    assert_equal 63, tokens[0].value
+  end
+
+  def test_hex_escape_out_of_range_raises
+    error = assert_raises(Rubycc::CompileError) { lex("'\\x100'") }
+    assert_match(/hex escape sequence out of range/, error.description)
+  end
+
+  def test_octal_escape_out_of_range_raises
+    error = assert_raises(Rubycc::CompileError) { lex("'\\777'") }
+    assert_match(/octal escape sequence out of range/, error.description)
+  end
+
+  def test_hex_escape_with_no_digits_raises
+    error = assert_raises(Rubycc::CompileError) { lex("'\\x'") }
+    assert_match(/\\x used with no following hex digits/, error.description)
+  end
+
   def test_unterminated_string_literal_raises
     error = assert_raises(Rubycc::CompileError) { lex('"oops') }
     assert_match(/unterminated string literal/, error.description)

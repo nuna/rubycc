@@ -169,10 +169,11 @@ module Rubycc
       end
 
       # sizeof(type-name) folds to the type's byte size; an incomplete type
-      # (void, or a struct/union never completed) has none to fold.
+      # (void, a struct/union never completed, or a forward-referenced enum) has
+      # none to fold.
       def evaluate_sizeof_type(node)
         type = node.type
-        raise NotConstant, node.token if type.void? || (type.struct? && !type.complete?)
+        raise NotConstant, node.token if type.void? || incomplete_aggregate?(type)
 
         type.size
       end
@@ -182,11 +183,17 @@ module Rubycc
       # rejects for the same construct.
       def evaluate_alignof_type(node)
         type = node.type
-        if type.void? || type.function? || (type.struct? && !type.complete?)
+        if type.void? || type.function? || incomplete_aggregate?(type)
           raise NotConstant, node.token
         end
 
         type.alignment
+      end
+
+      # Whether `type` is an incomplete tagged type with no size or alignment: a
+      # struct/union never completed, or an incomplete (forward-referenced) enum.
+      def incomplete_aggregate?(type)
+        (type.struct? && !type.complete?) || type.is_a?(Rubycc::Type::EnumType)
       end
     end
   end
