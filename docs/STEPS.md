@@ -1104,10 +1104,57 @@ heavy-implementer 1 フェーズ。
 
 ---
 
+## Step 31 — 静的リンクコア(M2 L3 前半: ld -r 併合)(f4417c3)
+
+**内容**: Rubycc::Link::PartialLinker — 複数 ET_REL オブジェクト + ar アーカイブを
+単一 ET_REL へ併合する `ld -r` 相当。再配置は付け替えのみで適用しない(適用
+エンジンは L5/L7 の最終リンク側)。汎用 ET_REL ライタ
+Rubycc::ObjFile::RelocatableWriter を併設。heavy-implementer 1 フェーズ。
+
+**設計判断**:
+- **L3 を「ld -r(付け替え)」と「最終リンク(適用)」に分割**: ROADMAP の
+  中間マイルストーンをそのまま独立ステップにした。ld -r 出力は再配置を保持する
+  ものなので、バイトパッチ無しで「併合の正しさ」だけを先に固められる —
+  受け入れ検証も「rubycc .o 群を本コアで併合 → 単一 .o を gcc でリンクして
+  実行結果一致」という強い形にできる。
+- **リンカ IR は作らない**(ROADMAP): ELFReader が返す構造の上で直接、
+  選択(左→右、.o 無条件・アーカイブは未解決シンボル駆動で同一アーカイブ内
+  不動点まで・通過済み再訪なしの古典的 single-pass)→ 併合(セクション結合・
+  シンボル解決・再配置付け替え)の 2 フェーズ。
+- **汎用 RelocatableWriter を新設**: コンパイラの ELFWriter は固定セクション
+  メニュー + 固定再配置種別で ld -r 出力(任意セクション集合・任意タイプ/addend・
+  出力セクションシンボル)を表現できない。流用で歪めず併存させ、コンパイラは
+  従来のライタのまま。新ライタは build-then-emit(add_section/add_symbol/
+  add_relocation がハンドルを返し identity で参照)で、ELFReader との
+  ラウンドトリップで検証。
+- **セクションシンボル参照の addend 補正が唯一の微妙な点**: 入力断片が出力
+  セクション内の新オフセットへ動くため、セクションシンボル基準の addend には
+  断片の配置オフセットを加算して出力セクションシンボルへ付け替える。名前付き
+  シンボル参照はシンボル値自体がシフト済みなので addend 不変。ユニットと
+  readelf -r の実測(`.rodata + 6` の生存)で検証。
+- **シンボル解決規則**: strong+strong は両入力を名指しする multiple definition
+  エラー、strong>weak、weak+weak 先勝ち、defined>undefined、全 UND は UND の
+  まま(ld -r で合法)、COMMON は非対応診断(rubycc も gcc の -fno-common 既定も
+  出さない)。エラーは Link::LinkError(CompileError とは別系統)。
+- **開発中に踏んだ罠(記録)**: Ruby の Struct は値ハッシュなので、レイアウト中に
+  index を書き換える Section 構造体を Hash キーにすると突然引けなくなる —
+  再配置のグループ化が全滅し .rela が丸ごと消えた。identity(equal?)照合へ修正。
+  「ミュータブルな Struct を Hash キーにしない」は本リポジトリの一般則にする。
+- **検証**: 併合 .o の gcc リンク実行一致(関数呼び出し PLT32・グローバル PC32・
+  rodata 文字列のセクションシンボル再配置・.bss 横断)、gcc 産 .o の併合、
+  system ld -r との解決結果一致(バイトではなく帰結の比較)、決定的出力
+  (同一入力 → バイト同一)。
+
+**トレードオフ**: COMMON シンボル・SHT_GROUP(COMDAT)・REL 形式(RELA のみ)・
+アーカイブの複数回走査(--start-group 相当)は対象外。examples サンプルは
+Step 29/30 と同じ理由で対象外。
+
+---
+
 ## 現在のテスト規模
 
-Step 30 完了時点: **1,358 runs / 3,886 assertions / 0 failures / 19 skips**
-(`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ)・ar・診断・CLI・
-プリプロセッサのユニットテスト + 実行テスト(gcc 差分比較・クロスリンク ABI
-差分・gcc -E トークン列差分込み)+ c-testsuite 220 ケース + ruby.h
-スモークテスト。
+Step 31 完了時点: **1,374 runs / 3,948 assertions / 0 failures / 19 skips**
+(`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
+ar・リンク・診断・CLI・プリプロセッサのユニットテスト + 実行テスト(gcc 差分
+比較・クロスリンク ABI 差分・gcc -E トークン列差分込み)+ c-testsuite 220
+ケース + ruby.h スモークテスト。
