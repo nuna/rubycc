@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M1 の途中、Step 27(プリプロセッサ完成)まで完了**。
+現在地: **M1 完了(Step 28)。次は M2(リンカと ar、§5 の L1 から)**。
 
 ---
 
@@ -82,50 +82,20 @@
 | `&arr[i]` 等の計算アドレス定数 | グローバル初期化子で診断エラー | 実害が出た時点 |
 | 指し先 const の書き込み検出 | `const int *p` の `*p = x` を診断しない(型に修飾を載せない簡略化) | 実害が出た時点 |
 | unsigned long ⇔ float/double 変換 | 64 bit 符号無しの往復に追加コードが要るため診断エラー | 実害が出た時点 |
+| 文式 `({ … })` | config.h が HAVE_STMT_AND_DECL_IN_EXPR=1 を焼き込むため Data_Make_Struct / TypedData_Make_Struct / rb_intern() が展開時に踏む。スモークテスト単体は未展開で通るが実 gem はほぼ即座に要求 | **早期 M2(最優先負債)** |
+| ビットフィールドのアクセス | レイアウト・ABI 分類は実装済み(Step 28)。読み書き・& は診断エラー(shift/mask 生成が未実装) | M2(gem コーパスで再判定) |
+| マクロ再展開の hide-set 交差 | `CAT(A,B)(x)` の CAT2 経由再展開が gcc と相違(c-testsuite 00201 で実証)。修正方針記録済み: 置換 paint を「呼び出し名の suppress ∩ 閉じ括弧の suppress + 自名」へ | M2 |
+| 128 ビット整数の演算残り | 乗算・加減算・比較・変換のみ実装(Step 28)。除算・シフト・ビット演算・値渡し/返し・可変長渡しは診断エラー | 実害が出た時点 |
+| enum の unsigned 底型 | 全 enum を int へ写像(gcc は全非負 enum を unsigned int に)。c-testsuite 00170 のポインタ符号不一致で顕在 | 実害が出た時点 |
+| compound literal / VLA / _Generic / ワイド文字列 / #pragma push_macro / K&R `int ()` 型 | 各々診断エラー(c-testsuite スキップ表に理由記録) | 実害が出た時点 |
 
-## 4. M1 残りの実行計画(Step 28〜)
+## 4. M1 実行計画 — **完了**
 
-順序の方針: (1) C 適合性の逸脱を早く解消する、(2) 型システムの土台(整数型)を
-struct 系の応用(union/enum/typedef)より先に固める、(3) ruby.h が要求する機能
-(関数ポインタ・varargs・プリプロセッサ・GNU 拡張最小セット)を M1 後半に集める。
-各ステップの受け入れ基準は共通で「新機能の実行テスト(gcc 差分込み)+ 診断テスト +
-既存テスト全 green」。
-
-### Step 28 — GNU 拡張の最小セットと ruby.h スモークテスト
-ruby-3.4.0 ヘッダ実物の事前調査(Step 27 完了時に実施)を反映済み:
-- __attribute__((...)) の構文受理(aligned/packed のみ意味を実装、他は無視)、
-  __builtin_expect(素通し)、__builtin_alloca、__extension__、
-  空テンプレートのインラインasm(`__asm__ volatile("" ::: "memory")`)の受理(DESIGN R7)。
-  - 構文受理が**回避不能**な理由: `x86_64-linux/ruby/config.h` は Ruby ビルド時に
-    実 gcc で生成された成果物で、CONSTFUNC/PUREFUNC/NORETURN 等を生の
-    `__attribute__((...))` で無条件定義する(ruby/st.h の file-scope 宣言に実際に
-    到達)。受理が要る属性名: const, pure, noreturn, deprecated, noinline,
-    always_inline, unused, warn_unused_result, error("m"), warning("m"), weak,
-    aligned(N), packed, cold, format(printf,N,M), visibility("s")。引数文法は
-    裸識別子・文字列・整数・コンマ区切り複数、**連続する複数の
-    `__attribute__((…)) __attribute__((…))`**(glibc に頻出)。
-  - **aligned は構文受理でなく実セマンティクスが必須**: `struct RBasic` が
-    `__attribute__((__aligned__(8)))` を ABI として要求する。__has_attribute は
-    aligned/packed に 1 を返すよう更新(Step 27 は常に 0)。
-  - packed は ruby.h 到達範囲では未使用(gem 直接使用に備えた受理+実装)。
-- ビットフィールド: **調査完了 — 不要**。ruby-3.4.0 ツリー全体に実物の struct
-  ビットフィールドはゼロ(コロン+数字のヒットは Doxygen コメントのみ)。診断
-  エラーのまま M2 へ(DESIGN R9 のとおりコーパスで再判定)。
-- プリプロセッサ側の追加要求も**なし**: #include_next / #line / _Pragma の実行 /
-  __VA_OPT__ / `[[...]]` / __has_c_attribute はすべて __GNUC__・__has_* 経由で
-  到達不能に畳まれる(未実装のままが正しい: R7 の最小表面)。
-- **スモークテストは実システムの glibc 開発ヘッダに対して行う**(同梱ヘッダは
-  B7/M5 スコープ)。glibc の sys/cdefs.h は __GNUC__/__clang__ 不在時に自前で
-  no-op へ退化するため、__GNUC__ を定義しない方針がそのまま効く。
-- **既知の次の壁(Step 28 スコープ外・要記録)**: 文式(statement expression
-  `({ … })`)。config.h が HAVE_STMT_AND_DECL_IN_EXPR=1 を焼き込むため
-  Data_Make_Struct / TypedData_Make_Struct / rb_intern() の高速路が bare `({…})`
-  に展開される。`#include <ruby.h>` 単体では未展開なのでスモークテストは通るが、
-  実 gem はほぼ即座に踏む — M1 負債として早期 M2 で対応。
-- **M1 の完了判定**: (1) c-testsuite 等の外部テストスイートから本サブセット範囲の
-  ケースを流用して合格、(2) ruby.h を #include した最小の拡張ソースが .o まで
-  コンパイルできる(リンクは M2)。ここで見つかった不足(未実装の GNU 拡張・ヘッダ)を
-  棚卸しして M2 と並行で潰す。
+Step 28 で M1 の完了判定を満たした(c-testsuite 201/220 合格・失敗ゼロ、
+`#include <ruby.h>` + rb_define_module / LONG2NUM を使う拡張ソースが ELF64 .o まで
+コンパイル可能。test/test_ruby_smoke.rb が常時検証)。スモークテストは実システムの
+glibc 開発ヘッダに対して行う(同梱ヘッダは B7/M5 スコープ)。棚卸しした不足は
+§3 の負債表に記録済みで、筆頭(文式)は M2 と並行で潰す。
 
 ## 5. M2 — リンカと ar(json/msgpack を手動ビルド)
 

@@ -909,8 +909,114 @@ __has_include / __has_attribute / __has_builtin、#pragma once。実装は 2 フ
 
 ---
 
+## Step 28 — GNU 拡張と ISO 適合の仕上げ、ruby.h スモークテスト(M1 完了)(c2f4f71)
+
+**内容**: __attribute__((...)) 構文受理と aligned/packed の実レイアウト、
+__builtin_expect / __builtin_alloca / 空インライン asm、そして「`#include <ruby.h>`
+を .o までコンパイルする」M1 完了判定に向けた反復プローブ駆動の適合修正群:
+定義済みターゲット/数値リミットマクロ、#include_next、_Pragma、隣接文字列連結、
+L'x'、ビットフィールドレイアウト、__int128 最小サブセット、一時定義ほか宣言まわりの
+ISO 適合、c-testsuite 220 ケースのベンダリングと常時実行ハーネス。
+実装は 8 フェーズ(A/B/C1〜C4/C5b = heavy-implementer(C1 のみ implementer)、
+C5a = implementer)。C 系は「実ヘッダを試しにコンパイル → 最初の診断を修正 →
+再試行」の反復で範囲を確定した。
+
+**設計判断**:
+- **__attribute__ は全宣言位置 + 型名/抽象宣言子で構文受理、意味は struct/union の
+  aligned/packed のみ**: Ruby の config.h(実 gcc で生成されたビルド成果物)が
+  CONSTFUNC 等を生の __attribute__ で無条件定義するため受理は回避不能。
+  struct RBasic の aligned(8) は ABI 実体なので、StructType#define(packed:,
+  aligned:) にレイアウト上書きを実装。裸 aligned = 16(BIGGEST_ALIGNMENT)。
+- **packed の psABI 帰結**: 非整列フィールドを持つ集合体は MEMORY クラス
+  (psABI 3.2.3)。classify_struct に unaligned_field? ガードを追加 —
+  同一コンパイラの差分テストでは出ず、クロスコンパイラ検証(rubycc ユニット ↔
+  gcc ユニット)で顕在化した実 ABI 差。
+- **__builtin_alloca は「rsp を恒久的に動かす」初の op**: :alloca は 16 の倍数へ
+  切り上げて sub rsp。正しさは新規の簿記ではなく既存不変条件(全値 rbp 相対、
+  push 方式の自己回収する引数積み、leave エピローグ)に依拠。
+  __builtin_expect は両オペランドを long へ変換し値は exp(最適化器が無いので
+  ヒントは無意味)。インライン asm は空テンプレート+空オペランドのみ受理、
+  クロバー文字列は破棄(並べ替えをしない処理系ではメモリバリアは自然に no-op)。
+- **プローブ駆動の C フェーズ**: 実ヘッダの最初の診断を直し再試行する反復で、
+  当初調査の見落とし 3 点が判明 — (1) _Pragma は config.h が無条件に吐く、
+  (2) ビットフィールドは glibc の bits/timex.h(無名 int :32 パディング)経由で
+  到達する、(3) gcc の数値リミット定義済みマクロ(__LONG_MAX__ 等)に glibc が
+  __GNUC__ 不在時も依存する。「調査 → 一括実装」より「診断 → 修正 → 再試行」の
+  ループの方が実ヘッダ相手には正確だった。
+- **定義済みマクロは「予約形のみ・#undef 可能な普通のマクロ」**: ターゲット系
+  (__x86_64__ __linux__ __LP64__ 等 9 種)と数値系(__LONG_MAX__ 等 27 種、
+  gcc -dM の綴りを 16 進・サフィックス込みで一致)。__GNUC__・非予約形
+  (linux/unix)は定義しない(R7)。置換列は Scanner で再走査して生成
+  (__WCHAR_MIN__ の複数トークン式も特別扱い不要)。
+- **#include_next は「-I 起点インデックスの再開」**: 各ファイルの解決元 -I
+  ディレクトリを記録し、その次から探索。起点なし(主ファイル・quote 相対)は
+  gcc と同じく通常 #include にフォールバック。gcc fixinclude の limits.h 連鎖が
+  要求(gcc の内部 include ディレクトリは stdarg.h/stddef.h の唯一の供給元なので
+  探索パスから外せない)。
+- **__has_* は「defined に応える」「展開後にも畳む」**: gcc 同様
+  defined(__has_builtin) は 1(偽だと ruby は config.h の焼き込み
+  HAVE_BUILTIN_* へフォールバックし __builtin_unreachable を吐く)。
+  RBIMPL_HAS_BUILTIN(x)→__has_builtin(x) のようなマクロ包みは展開後に演算子が
+  現れるため、#if 評価で展開後に fold_operators を再実行(fold はオペランドを
+  展開しないため 1 パスで停止)。
+- **翻訳フェーズ 6(隣接文字列連結)は TokenConverter**: パイプライン上
+  フェーズ 5〜7 が住む場所。エスケープはリテラル毎に復号してから連結
+  ("\x41" "1" ≠ "\x411"、6.4.5p4)。ストリーミング Lexer(ユニットテスト専用路)は
+  意図的に連結しない。
+- **_Pragma は再走査中に 4 トークン消費して破棄**: ディレクティブでなく演算子として
+  処理するのでマクロ産出形(config.h の RUBY_SYMBOL_EXPORT_BEGIN =
+  _Pragma("GCC visibility push(default)"))にも効く。
+- **ビットフィールドは「レイアウトは忠実、アクセスは診断」**: ビットカーソルで
+  単位跨ぎ禁止・:0 強制整列・無名は整列に不寄与(psABI)を実装し、sizeof/_Alignof
+  を gcc と全一致(struct timex 208 バイト実測込み)。読み書き・& は
+  「bit-field access is not supported yet」(M2 負債)。ABI 分類はビットが跨る
+  eightbyte 全てに INTEGER を寄与、packed の非整列テストからは除外。
+  packed + ビットフィールドの組合せは診断。
+- **__int128 は「16 バイト struct 的オブジェクト」表現**: 16 バイト vreg を
+  導入せず、値=スタックオブジェクトのアドレス(low +0 / high +8)。演算は半語の
+  64 ビット op へ展開 — 乗算は新 IR op :mulhi(mul r64 の rdx)+ :mul + :add、
+  加減算はキャリー/ボロー手計算、比較は high 優先の分岐無し合成。変換は
+  符号/ゼロ充填と low 半語切り捨て。除算・シフト・ビット演算・値渡し/返し・
+  可変長渡しは診断(到達コーパスは rb_mul_size_overflow の乗算・比較・変換と
+  onigmo.h のメンバレイアウトのみ)。struct メンバは 2 eightbyte とも INTEGER。
+- **一時定義(6.9.2)は ObjectRecord マージ表**: 「2 回目の定義は即エラー」から
+  「型一致でマージ・初期化子は 1 回だけ・後着初期化子が .bss を .data に昇格」へ。
+  static/非 static 混在は双方向診断。
+- **enum の不完全型と in-place 完成**: 未定義タグは Type::EnumType として前方宣言
+  (不完全 struct の鏡映)。定義到達時に complete! でその場で int として振る舞い
+  始め、先行プロトタイプが捕まえた型と後続参照(Int 解決)の同一性が成立する。
+- **typedef 経由の関数宣言**: 宣言子自身にパラメータ並びが無い場合、typedef の
+  FunctionType から無名パラメータを合成してプロトタイプ化(intern.h の
+  rb_gvar_getter_t 群)。typedef 経由の関数「定義」は 6.9.1p2 で診断。
+- **c-testsuite は「ベンダリング + 明示スキップ表」**: 220 ケースを
+  test/external/ に取り込み(LICENSE・.otags の出自記録込み)、upstream posix
+  ランナーと同じ合否(コンパイル・リンク(-lm)・exit 0・stdout+stderr バイト
+  一致)。スキップは理由 1 行付きハッシュで、消し込みがそのまま進捗になる。
+  201/220 合格・19 スキップ・0 失敗。R11 はテストケースの流用を妨げない
+  (ROADMAP が明示計画)。
+- **既知の逸脱の実証**: 00201(CAT(A,B)(x) の CAT2 経由再展開)が Step 27 の
+  Prosser hide-set 交差逸脱の実世界再現と確定。修正方針(置換 paint を
+  「呼び出し名の suppress ∩ 閉じ括弧の suppress + 自名」にする)まで記録し M2 へ。
+
+**M1 完了判定**: (1) c-testsuite 201/220 合格(スキップは全て理由記録済みの
+機能不足、失敗ゼロ・誤コンパイルゼロ)。(2) test/test_ruby_smoke.rb —
+`#include <ruby.h>` + rb_define_module、および LONG2NUM/NUM2LONG/
+rb_define_module_function を使う実質的な拡張ソースが ELF64 .o まで
+コンパイルできる(リンクは M2)。glibc 開発ヘッダは実システムのものを使用
+(同梱ヘッダは B7/M5)。
+
+**トレードオフ**: メンバ単位 packed/aligned は受理のみ。ビットフィールド
+アクセス・128 ビットの除算/シフト等・ワイド文字列・VLA・_Generic・
+compound literal・文式 ({…})(Data_Make_Struct が要求、早期 M2)・
+#pragma push_macro/pop_macro・K&R の int () 型・enum の unsigned 底型
+(00170 の残り)は未対応(スキップ表と ROADMAP に記録)。restrict / [static N]
+は受理して破棄。__STDC_VERSION__ は 201112L 固定。
+
+---
+
 ## 現在のテスト規模
 
-Step 27 完了時点: **934 runs / 2,878 assertions / 0 failures**(`rake test`)。
-内訳: 字句・パーサ・型・ELF・診断・CLI・プリプロセッサのユニットテスト +
-実行テスト(gcc 差分比較・クロスリンク ABI 差分・gcc -E トークン列差分込み)。
+Step 28 完了時点: **1,316 runs / 3,661 assertions / 0 failures / 19 skips**
+(`rake test`)。内訳: 字句・パーサ・型・ELF・診断・CLI・プリプロセッサの
+ユニットテスト + 実行テスト(gcc 差分比較・クロスリンク ABI 差分・gcc -E
+トークン列差分込み)+ c-testsuite 220 ケース + ruby.h スモークテスト。
