@@ -1193,10 +1193,57 @@ gem コーパス(R10)での実測に応じて再調整しうる。
 
 ---
 
+## Step 33 — PIC データアクセス(M2 L4: -fPIC の GOT 経由参照)(84be163)
+
+**内容**: `-fPIC` の下で、この翻訳単位が定義しないファイルスコープの
+オブジェクト/関数のアドレス取得を GOT 経由に切り替える。.so が外部データ
+シンボル(libruby の VALUE 変数等)を参照する前提。heavy-implementer 1 フェーズ。
+
+**設計判断**:
+- **新 IR op `:got_addr` を1つ追加**(フラグ拡張ではなく): `:global_addr`/
+  `:func_addr` に got フラグを持たせる案は Instruction の固定フィールド
+  (op/dst/a/b/size)にマーカーを押し込み全命令共通のインターフェイスを汚す。
+  GOT ロード(リンカ管理スロットからの特殊再配置付きロード)は既存 op の脱糖で
+  表現できない独立した機械プリミティブで、「IR 命令は最後の手段」の趣旨
+  (脱糖できるものを op 化しない)にも抵触しない。データ・関数を「シンボルの
+  アドレス」の一点で共通化でき、1 命令追加でバックエンド 1 メソッド・ELF 1
+  再配置種に閉じる。
+- **判定はジェネレータで1箇所に集約**: 全 `:global_addr` 発行を emit_global_addr
+  へ集約し、pic_extern_object?(データは @object_records の有無)/
+  pic_extern_func?(関数は @signatures の defined 有無)で「この TU の定義か」を
+  判定。TU 内定義・static・文字列リテラルは PC32 lea のまま、外部参照だけ
+  `:got_addr`。関数呼び出しは PLT32 のまま(PLT 生成はリンカの仕事)。
+- **非 PIC はバイト不変**(N4): @pic 既定 false のとき出し分けヘルパは常に
+  false を返し、既存経路と新再配置を一切通らない。同一ソースの pic 有無
+  コンパイルで非 PIC 側が 2 回とも決定的一致、自己完結ソースは pic 有無で
+  バイト同一、を検証。
+- **GOT mov エンコード**: `48 8B 05 <disp32>` = `mov rax,[rip+disp32]`。disp32 は
+  ゼロプレースホルダで `{ kind: :got }` 再配置に記録、ELFWriter が
+  R_X86_64_REX_GOTPCRELX(type 42)・addend −4 を発行(PC32 と同じ −4 バイアス)。
+  GOT スロットに実アドレスが入るのでロード結果がそのままポインタで以降不変。
+- **受容トレードオフ(コメント明記)**: 「定義有無」で外部性を判定するため
+  同一 .so 内の別 TU のグローバルも GOT 経由になり 1 命令遅い(正しさ優先 N2)。
+  参照より後方で定義されるオブジェクトも(未記録のため)外部扱いになるが、
+  GOT スロットがローカル定義に解決されるので正しさは保たれる。interpose は
+  既定で許容(-Bsymbolic 相当にはしない)。GOTPCRELX→lea 緩和はリンカ将来最適化。
+- **検証**: GOT mov のバイト列・type 42/addend −4 のラウンドトリップ・出し分けの
+  網羅(外部データ→GOT / TU 内定義→PC32 / static→PC32 / 文字列→.rodata PC32 /
+  外部関数アドレス→GOT・呼び出し→PLT32 / TU 内定義関数→PC32)、gcc -fPIC -c が
+  同アクセスに GOTPCREL 系を使うことの相互チェック、受け入れ(rubycc -fPIC の .o を
+  gcc -shared で .so 化 → readelf -d に TEXTREL なし → Fiddle で dlopen し
+  GOT 経由 extern データ往復)。
+
+**トレードオフ**: 上記の別 TU グローバルの 1 命令コスト。examples の
+ステップサンプルは対象外(PIC はコンパイルフラグで、test_examples.rb は -fPIC を
+渡さず gcc 差分をとるため GOT 経路を実行検証できない。実行検証は test_pic.rb の
+.so + Fiddle 受け入れテストで担保)。
+
+---
+
 ## 現在のテスト規模
 
-Step 32 完了時点: **1,395 runs / 4,011 assertions / 0 failures / 19 skips**
+Step 33 完了時点: **1,409 runs / 4,074 assertions / 0 failures / 19 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
-ar・リンク・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
-(gcc 差分比較・クロスリンク ABI 差分・gcc -E トークン列差分込み)+
+ar・リンク・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行
+テスト(gcc 差分比較・クロスリンク ABI 差分・gcc -E トークン列差分込み)+
 c-testsuite 220 ケース + ruby.h スモークテスト。

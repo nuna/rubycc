@@ -205,6 +205,7 @@ Instruction(op, dst:, a:, b:, size:)
 | :object_addr | dst ← &object(a)。a = オブジェクト id | stack_objects の基底アドレス(配列の先頭要素) |
 | :string_addr | dst ← &string(a)。a = 文字列プール id | 読み取り専用文字列のアドレス(減衰済み char *) |
 | :global_addr | dst ← &global(a)。a = シンボル名(String) | ファイルスコープ変数のアドレス。グローバルの読み書き・`&g`・配列減衰はすべてこれを経由 |
+| :got_addr | dst ← &symbol(a) via GOT。a = シンボル名(String) | `-fPIC` 指定時、この翻訳単位が定義しないファイルスコープのオブジェクト/関数のアドレスを、PC 相対で形成する代わりに Global Offset Table スロットから読み込む(`mov rax,[rip+disp32]`、リンカが `R_X86_64_REX_GOTPCRELX` type 42・addend −4 で解決)。他 DSO の定義が interpose し得るため。この TU が定義するシンボルは同一 DSO 内で必ず解決されるので `:global_addr`/`:func_addr` を保つ。データ・関数共通(GOT スロットにはシンボルの実アドレスが入るので以降の load/store は不変) |
 
 ### メモリアクセス
 
