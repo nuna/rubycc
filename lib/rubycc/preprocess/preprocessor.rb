@@ -27,6 +27,42 @@ module Rubycc
       # itself); 200 is comfortably deeper than any sane header nesting.
       INCLUDE_DEPTH_LIMIT = 200
 
+      # The cumulative ceiling on how many tokens macro expansion may process
+      # across a whole translation unit. Blue-painting (see #expand_tokens) stops
+      # self-reference and mutual recursion, but nothing otherwise bounds an
+      # exponentially expanding macro — the classic "#define B1 B0 B0 ... #define
+      # B40 B39 B39" doubles its output each level, so "B40" would materialize
+      # 2^40 tokens and exhaust CPU and memory long before finishing. Charging one
+      # unit per token pulled from the work queue and tripping this ceiling turns
+      # that runaway into a located CompileError. The bound is a whole-run
+      # cumulative budget (expand_tokens runs once per gathered line and once per
+      # #if condition, and recurses for each argument), so an expansion that
+      # explodes across many small calls is still caught. The real #include
+      # <ruby.h> header graph — the whole CRuby + libc header set, a worst-case
+      # legitimate input — consumes about 137k, so one million leaves a 7x margin
+      # while it never fires on real code. It is deliberately not larger: because
+      # a doubling macro is rejected only after the full budget is processed, the
+      # ceiling also caps the worst-case work a hostile input can force (about
+      # three seconds here), so raising it would trade rejection latency for
+      # headroom no real translation unit needs.
+      EXPANSION_TOKEN_LIMIT = 1_000_000
+
+      # The ceiling on conditional-directive nesting within a single file. A
+      # deeply nested tower of "#if"s is not a stack risk (the frames are held in
+      # a heap array, not on the Ruby stack), but capping it keeps a hostile
+      # source from building an arbitrarily large conditional stack; 256 is far
+      # beyond any real header's conditional nesting.
+      CONDITIONAL_NESTING_LIMIT = 256
+
+      # The ceiling on parenthesis nesting inside a function-like macro's argument
+      # list. #collect_arguments balances parentheses with a plain integer depth
+      # counter (no recursion, so this is not a stack guard), but bounding it
+      # rejects a pathological "M(((((...)))))" up front rather than scanning an
+      # unbounded run. It is generous — a macro argument is a full expression, and
+      # the parser re-checks nesting downstream — so this only trips on clearly
+      # abusive input.
+      MACRO_ARGUMENT_NESTING_LIMIT = 2000
+
       # The directives that steer a conditional group (6.10.1). They are acted on
       # whether or not the enclosing group is active, so nesting stays balanced
       # inside a skipped region; every other directive is inert while skipping.
@@ -145,6 +181,9 @@ module Rubycc
 
       def run(source, filename:, include_paths: [])
         @include_paths = include_paths
+        # The whole-run macro-expansion budget (see EXPANSION_TOKEN_LIMIT), reset
+        # here so every translation unit starts with a full allowance.
+        @expansion_tokens = 0
         pp_tokens = Scanner.new(source, filename: filename).scan
         output = []
         process_lines(pp_tokens, filename, output)
@@ -266,6 +305,10 @@ module Rubycc
       # and the condition is left unread, so an undefined name or bad expression
       # there is not diagnosed (6.10.1p6, and matching gcc).
       def handle_if(name, body, stack, kind)
+        if stack.length >= CONDITIONAL_NESTING_LIMIT
+          raise_at(name, "#{name.text} directives nested too deeply")
+        end
+
         if active?(stack)
           condition = evaluate_group(name, body, kind)
           stack.push(Frame.new(condition, condition, false, true, name))
@@ -854,6 +897,14 @@ module Rubycc
         queue = tokens.dup
         until queue.empty?
           tok = queue.shift
+          # Charge one unit of the whole-run expansion budget per token examined.
+          # A macro's substitution is pushed back onto the queue and re-examined,
+          # so an exponentially expanding macro is charged for every token it
+          # generates and trips this ceiling instead of running away.
+          @expansion_tokens += 1
+          if @expansion_tokens > EXPANSION_TOKEN_LIMIT
+            raise_at(tok, "macro expansion is too large (possible runaway or exponentially expanding macro)")
+          end
           if pragma_operator?(tok)
             consume_pragma_operator(tok, queue)
           elsif expandable_builtin?(tok)
@@ -1003,7 +1054,12 @@ module Rubycc
             commas << token
             current = []
           else
-            depth += 1 if token.punct?("(")
+            if token.punct?("(")
+              depth += 1
+              if depth > MACRO_ARGUMENT_NESTING_LIMIT
+                raise_at(token, "macro argument parentheses nested too deeply")
+              end
+            end
             depth -= 1 if token.punct?(")")
             current << token
           end

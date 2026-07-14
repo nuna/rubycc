@@ -95,6 +95,11 @@ module Rubycc
         end
 
         pos = AR_MAGIC.bytesize
+        # This loop always terminates: parse_member advances pos by at least the
+        # 60-byte header plus a non-negative member size (a size field that is not
+        # a non-negative decimal is rejected outright), so pos strictly increases
+        # by >= 60 each turn and reaches @data.bytesize in a bounded number of
+        # steps — a malformed archive cannot make it stall or loop.
         pos = parse_member(pos) while pos < @data.bytesize
         resolve_symbol_index
         self

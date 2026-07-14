@@ -43,11 +43,23 @@ module Rubycc
       # before "?:" is considered.
       LOGICAL_OR_PRECEDENCE = 2
 
+      # The recursion-depth ceiling, mirroring the main parser's guard: a hostile
+      # "#if (((...)))" or "#if !!!...1" would otherwise recurse until the Ruby
+      # stack overflows with a bare SystemStackError. This grammar is far lighter
+      # than the main parser's (a single precedence-climbing loop rather than a
+      # deep chain), so its stack gives out only around 2500 nested parentheses;
+      # 500 stops a pathological input after roughly 250 levels — an order of
+      # magnitude below that, and far above the trivial nesting any real
+      # controlling expression uses (well under ten).
+      MAX_NESTING_DEPTH = 500
+
       def initialize(tokens, directive)
         @tokens = tokens
         @pos = 0
         # The directive keyword ("if"/"elif"), used only to name diagnostics.
         @directive = directive
+        # Live recursion depth, capped at MAX_NESTING_DEPTH by #with_nesting_guard.
+        @depth = 0
       end
 
       def parse
@@ -63,17 +75,23 @@ module Rubycc
 
       # conditional-expression: a logical-OR expression optionally followed by
       # "? expression : conditional-expression". Right associativity falls out of
-      # recursing on the else arm.
+      # recursing on the else arm. Every parenthesized sub-expression re-enters
+      # here (a "(" primary recurses back into #parse_conditional), so guarding
+      # this entry bounds the depth of nested parentheses and "?:" chains alike.
       def parse_conditional
-        condition = parse_binary(LOGICAL_OR_PRECEDENCE)
-        return condition unless current.punct?("?")
-
-        question = advance
-        then_expr = parse_conditional
-        expect(":", "expected ':' in preprocessor conditional expression")
-        else_expr = parse_conditional
-        Front::AST::Conditional.new(condition: condition, then_expr: then_expr,
-                                    else_expr: else_expr, token: question)
+        with_nesting_guard do
+          condition = parse_binary(LOGICAL_OR_PRECEDENCE)
+          if current.punct?("?")
+            question = advance
+            then_expr = parse_conditional
+            expect(":", "expected ':' in preprocessor conditional expression")
+            else_expr = parse_conditional
+            Front::AST::Conditional.new(condition: condition, then_expr: then_expr,
+                                        else_expr: else_expr, token: question)
+          else
+            condition
+          end
+        end
       end
 
       # Precedence climbing: parse a unary operand, then keep folding in any
@@ -106,23 +124,27 @@ module Rubycc
 
       # unary-expression: a chain of "+ - ~ !" prefixes over a primary. Unary "+"
       # folds away; "~x" desugars to "x ^ -1", the same lowering the main parser
-      # uses so the evaluator meets a single :xor form.
+      # uses so the evaluator meets a single :xor form. A prefix chain recurses
+      # here without passing through #parse_conditional, so it carries its own
+      # depth guard against a long "!!!...1"/"~~~...1" run.
       def parse_unary
-        if current.punct?("+")
-          advance
-          parse_unary
-        elsif current.punct?("-")
-          token = advance
-          Front::AST::Unary.new(op: :neg, operand: parse_unary, token: token)
-        elsif current.punct?("!")
-          token = advance
-          Front::AST::Unary.new(op: :not, operand: parse_unary, token: token)
-        elsif current.punct?("~")
-          token = advance
-          operand = parse_unary
-          Front::AST::Binary.new(op: :xor, lhs: operand, rhs: int_literal(-1, token), token: token)
-        else
-          parse_primary
+        with_nesting_guard do
+          if current.punct?("+")
+            advance
+            parse_unary
+          elsif current.punct?("-")
+            token = advance
+            Front::AST::Unary.new(op: :neg, operand: parse_unary, token: token)
+          elsif current.punct?("!")
+            token = advance
+            Front::AST::Unary.new(op: :not, operand: parse_unary, token: token)
+          elsif current.punct?("~")
+            token = advance
+            operand = parse_unary
+            Front::AST::Binary.new(op: :xor, lhs: operand, rhs: int_literal(-1, token), token: token)
+          else
+            parse_primary
+          end
         end
       end
 
@@ -150,6 +172,23 @@ module Rubycc
       # nominally computes in.
       def int_literal(value, token)
         Front::AST::IntLit.new(value: value, token: token, type: Type::Long)
+      end
+
+      # Runs `block` one level deeper, rejecting a pathologically nested
+      # controlling expression with a located diagnostic (rather than letting it
+      # overflow the Ruby stack) once MAX_NESTING_DEPTH levels are live. The
+      # depth is decremented in an ensure so a parse error still unwinds it.
+      def with_nesting_guard
+        if @depth >= MAX_NESTING_DEPTH
+          raise_at(current, "##{@directive} expression nested too deeply")
+        end
+
+        @depth += 1
+        begin
+          yield
+        ensure
+          @depth -= 1
+        end
       end
 
       def current

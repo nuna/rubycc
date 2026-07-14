@@ -260,6 +260,17 @@ module Rubycc
           strndx = first.link if strndx == SHN_XINDEX
         end
 
+        # The whole section-header table must lie within the file. e_shnum is a
+        # bounded 16-bit field, but the e_shnum==0 escape hatch above takes the
+        # count from the zeroth header's 64-bit sh_size, which a hostile object
+        # could set enormous to make the map below try to allocate a giant array
+        # (or spin reading headers) before any per-entry bound trips. Rejecting a
+        # count whose table cannot physically fit stops that up front; a genuine
+        # object's table always fits, since the file holds it.
+        if count.positive? && @shoff + count * SHDR_SIZE > @data.bytesize
+          raise ELFFormatError, "section header table of #{count} entries extends past end of file"
+        end
+
         raw = (0...count).map { |i| read_section_header(i) }
         shstr = raw[strndx] or raise ELFFormatError, "section-name string table index #{strndx} is out of range"
         strtab = section_bytes(shstr)
@@ -336,6 +347,11 @@ module Rubycc
       def parse_symbols(sec)
         strtab = string_table_for(sec)
         entsize = sec.entsize.zero? ? SYM_ENTSIZE : sec.entsize
+        # `count` cannot run away: parse_sections already validated that this
+        # section's [offset, size) span lies within the file (section_bytes), so
+        # size — and thus size/entsize — is bounded by the file's own length. The
+        # per-entry require_range below is a second, exact guard. (The same holds
+        # for parse_rela and parse_dynamic, whose sizes were validated alike.)
         count = sec.size / entsize
         (0...count).map do |i|
           base = sec.offset + i * entsize

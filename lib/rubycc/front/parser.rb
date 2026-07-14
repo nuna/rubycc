@@ -178,6 +178,39 @@ module Rubycc
       # wherever a pointer or array-parameter qualifier may appear.
       RESTRICT_SPELLINGS = %w[restrict __restrict __restrict__].freeze
 
+      # The hard ceiling on how deeply the recursive descent will nest before it
+      # rejects an input rather than recurse further. A hostile source (tens of
+      # thousands of nested parentheses, unary operators, braces, ...) would
+      # otherwise drive the descent until the Ruby machine stack overflows,
+      # raising a bare SystemStackError that escapes as an unhandled crash
+      # instead of a diagnostic. Capping the depth turns that into an ordinary
+      # located CompileError.
+      #
+      # The value is deliberately well below the depth at which the stack
+      # actually gives out. On this toolchain the full pipeline (parser plus IR
+      # generation plus the backend, all of which recurse over the same AST)
+      # overflows at roughly 330 nested parentheses — the parenthesized-
+      # expression path is the most expensive, spending the entire binary-
+      # precedence chain per level. A single counter is shared across every
+      # recursive path — parenthesized/unary/cast/ternary/assignment expressions,
+      # compound statements, initializer lists, nested declarators and
+      # struct/union bodies — because these forms interleave (an expression
+      # inside a statement inside an initializer ...), so it is their *combined*
+      # live depth that threatens the stack, and bounding it here also bounds the
+      # AST depth every later pass recurses over.
+      #
+      # Because the expression grammar's right-recursive tiers each carry their
+      # own guard (assignment, conditional, unary, cast), one parenthesized level
+      # descends through several of them, so the counter climbs about 4 per
+      # nested parenthesis — the worst multiplier of any construct. 500 therefore
+      # admits roughly 122 nested parentheses: comfortably above C11 §5.2.4.1's
+      # 63-level implementation minimum, and about 12x the deepest nesting real
+      # inputs reach (measured: 41 in the c-testsuite, 32 for the ruby.h smoke
+      # header graph, 22 in the examples). At that ceiling the parser rejects
+      # after ~4900 live frames, well under the ~13000 at which Ruby's stack
+      # gives out, leaving headroom for a caller that starts from a deeper stack.
+      MAX_NESTING_DEPTH = 500
+
       # The storage-class specifiers (6.7.1): at most one may appear in a
       # declaration. "typedef", "static" and "extern" are recorded in
       # DeclSpecInfo#storage and consumed downstream, while "register" and "auto"
@@ -218,6 +251,10 @@ module Rubycc
       def initialize(tokens)
         @tokens = tokens
         @pos = 0
+        # The number of recursive-descent nesting levels currently live, capped
+        # at MAX_NESTING_DEPTH by #with_nesting_guard. One counter is shared by
+        # every recursive construct so their interleaved depth is what is bounded.
+        @nesting_depth = 0
         # Struct and enum tags live in their own namespace, separate from
         # variables and functions, and follow the same block scoping.
         # @tag_scopes is a stack of "tag name -> Type::StructType | EnumTag"
@@ -272,6 +309,24 @@ module Rubycc
         tok = @tokens[@pos]
         @pos += 1 unless tok.eof?
         tok
+      end
+
+      # Runs `block` one recursive-descent level deeper, first rejecting the
+      # input with a located CompileError once MAX_NESTING_DEPTH levels are
+      # already live — so a pathologically nested source is diagnosed rather than
+      # left to overflow the Ruby stack with a bare SystemStackError. The counter
+      # is decremented in an ensure, so a parse error thrown from within the
+      # block still unwinds the depth correctly. `token` locates the diagnostic
+      # and `what` names the construct (e.g. "expression", "block").
+      def with_nesting_guard(token, what)
+        error_at(token, "#{what} nested too deeply") if @nesting_depth >= MAX_NESTING_DEPTH
+
+        @nesting_depth += 1
+        begin
+          yield
+        ensure
+          @nesting_depth -= 1
+        end
       end
 
       # An external declaration is either a function (a prototype ending in ";"
@@ -615,32 +670,38 @@ module Rubycc
       def parse_struct_or_union_specifier
         keyword_tok = advance # "struct" or "union"
         kind = keyword_tok.value == "union" ? :union : :struct
-        # A GNU attribute may sit right after the keyword, before the tag or "{"
-        # (position b): "struct __attribute__((aligned(8))) S { ... }". Only its
-        # aligned/packed carry layout meaning, and only on a definition.
-        leading_attrs = parse_attribute_specifiers
-        tag_tok = peek.type == :ident ? advance : nil
-        tag = tag_tok&.value
+        # A struct/union body may hold members whose own type is a further
+        # struct/union definition ("struct { struct { ... } a; } b;"), which
+        # recurses back here through #parse_struct_body; guarding at the keyword
+        # bounds that nesting on the shared counter.
+        with_nesting_guard(keyword_tok, "type definition") do
+          # A GNU attribute may sit right after the keyword, before the tag or "{"
+          # (position b): "struct __attribute__((aligned(8))) S { ... }". Only its
+          # aligned/packed carry layout meaning, and only on a definition.
+          leading_attrs = parse_attribute_specifiers
+          tag_tok = peek.type == :ident ? advance : nil
+          tag = tag_tok&.value
 
-        if peek.punct?("{")
-          struct_type = tag ? define_struct_tag(tag, kind, keyword_tok) : Type::StructType.new(nil, kind: kind)
-          raw_members = parse_struct_body
-          # A second attribute run may follow the closing "}" (position c),
-          # before the declarator list or ";"; the two runs combine on the layout.
-          trailing_attrs = parse_attribute_specifiers
-          aligned, packed = resolve_layout_attributes(leading_attrs + trailing_attrs)
-          # A packed aggregate that also carries a bit-field would need bit-level
-          # packing across storage units this subset does not model, so the
-          # combination is rejected rather than laid out wrongly (Step 28 C2).
-          if packed && raw_members.any? { |triple| triple[2] }
-            error_at(keyword_tok, "packed bit-fields are not supported")
+          if peek.punct?("{")
+            struct_type = tag ? define_struct_tag(tag, kind, keyword_tok) : Type::StructType.new(nil, kind: kind)
+            raw_members = parse_struct_body
+            # A second attribute run may follow the closing "}" (position c),
+            # before the declarator list or ";"; the two runs combine on the layout.
+            trailing_attrs = parse_attribute_specifiers
+            aligned, packed = resolve_layout_attributes(leading_attrs + trailing_attrs)
+            # A packed aggregate that also carries a bit-field would need bit-level
+            # packing across storage units this subset does not model, so the
+            # combination is rejected rather than laid out wrongly (Step 28 C2).
+            if packed && raw_members.any? { |triple| triple[2] }
+              error_at(keyword_tok, "packed bit-fields are not supported")
+            end
+            struct_type.define(raw_members, packed: packed, aligned: aligned)
+            struct_type
+          elsif tag
+            reference_struct_tag(tag, kind, tag_tok)
+          else
+            error_at(keyword_tok, "expected identifier or '{' after '#{keyword_tok.value}'")
           end
-          struct_type.define(raw_members, packed: packed, aligned: aligned)
-          struct_type
-        elsif tag
-          reference_struct_tag(tag, kind, tag_tok)
-        else
-          error_at(keyword_tok, "expected identifier or '{' after '#{keyword_tok.value}'")
         end
       end
 
@@ -1395,17 +1456,19 @@ module Rubycc
       # which may itself be a nested brace list.
       def parse_initializer_list
         brace_tok = expect_punct("{")
-        items = []
-        until peek.punct?("}")
-          designators = parse_designation
-          value = parse_initializer
-          items << AST::InitItem.new(designators, value)
-          break unless peek.punct?(",")
+        with_nesting_guard(brace_tok, "initializer") do
+          items = []
+          until peek.punct?("}")
+            designators = parse_designation
+            value = parse_initializer
+            items << AST::InitItem.new(designators, value)
+            break unless peek.punct?(",")
 
-          advance # ","
+            advance # ","
+          end
+          expect_punct("}")
+          AST::InitializerList.new(items, brace_tok)
         end
-        expect_punct("}")
-        AST::InitializerList.new(items, brace_tok)
       end
 
       # designation = designator+ "=", where designator is "[" constant-expression
@@ -1470,20 +1533,26 @@ module Rubycc
       # then wrap that — which is exactly why "int *f(int)" is a function
       # returning "int *" while "int (*f)(int)" is a pointer to a function.
       def parse_declarator_builder(name_mode:, allow_incomplete_array:)
-        # A GNU attribute may open a declarator ("int (__attribute__((packed))
-        # *p)"), including the nested declarator inside a "(...)"; it qualifies
-        # nothing this subset models, so it is accepted and discarded here just
-        # as at every other declarator position.
-        parse_attribute_specifiers
-        pointer_quals = parse_pointer_qualifiers
-        name_tok, direct_build, function_params =
-          parse_direct_declarator(name_mode: name_mode, allow_incomplete_array: allow_incomplete_array)
-        build = lambda do |base|
-          type = base
-          pointer_quals.each { type = Type::Pointer.new(type) }
-          direct_build.call(type)
+        # A parenthesized declarator recurses back here through
+        # #parse_declarator_core, so guarding this entry bounds "int
+        # ((((x))))"-style nesting (and the matching build-lambda recursion,
+        # which can only run as deep as the syntactic nesting that survived).
+        with_nesting_guard(peek, "declarator") do
+          # A GNU attribute may open a declarator ("int (__attribute__((packed))
+          # *p)"), including the nested declarator inside a "(...)"; it qualifies
+          # nothing this subset models, so it is accepted and discarded here just
+          # as at every other declarator position.
+          parse_attribute_specifiers
+          pointer_quals = parse_pointer_qualifiers
+          name_tok, direct_build, function_params =
+            parse_direct_declarator(name_mode: name_mode, allow_incomplete_array: allow_incomplete_array)
+          build = lambda do |base|
+            type = base
+            pointer_quals.each { type = Type::Pointer.new(type) }
+            direct_build.call(type)
+          end
+          [name_tok, build, function_params, pointer_quals]
         end
-        [name_tok, build, function_params, pointer_quals]
       end
 
       # A declarator's "*" run, each star optionally followed by a type-qualifier
@@ -2032,17 +2101,19 @@ module Rubycc
 
       def parse_compound_statement
         brace_tok = expect_punct("{")
-        # A nested block introduces its own tag and ordinary scopes, mirroring
-        # its variable scope: a struct, an enum constant or a typedef defined
-        # here shadows an outer one and is gone at "}".
-        @tag_scopes.push({})
-        @ordinary_scopes.push({})
-        items = []
-        items.concat(parse_block_item) until peek.punct?("}")
-        @ordinary_scopes.pop
-        @tag_scopes.pop
-        expect_punct("}")
-        AST::Block.new(items, brace_tok)
+        with_nesting_guard(brace_tok, "block") do
+          # A nested block introduces its own tag and ordinary scopes, mirroring
+          # its variable scope: a struct, an enum constant or a typedef defined
+          # here shadows an outer one and is gone at "}".
+          @tag_scopes.push({})
+          @ordinary_scopes.push({})
+          items = []
+          items.concat(parse_block_item) until peek.punct?("}")
+          @ordinary_scopes.pop
+          @tag_scopes.pop
+          expect_punct("}")
+          AST::Block.new(items, brace_tok)
+        end
       end
 
       def parse_expression_statement
@@ -2077,22 +2148,26 @@ module Rubycc
       end
 
       # Right-associative: "a = b = c" parses as "a = (b = c)"; likewise for
-      # the compound-assignment operators.
+      # the compound-assignment operators. The right operand recurses back here,
+      # so a long "a = b = c = ..." chain deepens through this method rather than
+      # through #parse_cast_expression (which has already returned by the time the
+      # "=" is seen); it therefore carries its own nesting guard.
       def parse_assignment_expression
-        node = parse_conditional_expression
-        tok = peek
-        if tok.punct?("=")
-          advance
-          error_at(tok, "expression is not assignable") unless assignable?(node)
-          return AST::Assignment.new(node, parse_assignment_expression, tok)
+        with_nesting_guard(peek, "expression") do
+          node = parse_conditional_expression
+          tok = peek
+          if tok.punct?("=")
+            advance
+            error_at(tok, "expression is not assignable") unless assignable?(node)
+            AST::Assignment.new(node, parse_assignment_expression, tok)
+          elsif (op = tok.type == :punct ? COMPOUND_ASSIGNMENT_OPERATORS[tok.value] : nil)
+            advance
+            error_at(tok, "expression is not assignable") unless assignable?(node)
+            AST::CompoundAssignment.new(op, node, parse_assignment_expression, tok)
+          else
+            node
+          end
         end
-
-        op = tok.type == :punct ? COMPOUND_ASSIGNMENT_OPERATORS[tok.value] : nil
-        return node unless op
-
-        advance
-        error_at(tok, "expression is not assignable") unless assignable?(node)
-        AST::CompoundAssignment.new(op, node, parse_assignment_expression, tok)
       end
 
       # Syntactically, only a variable reference, a subscript "e[i]", a struct
@@ -2111,15 +2186,23 @@ module Rubycc
       # "a ? b : (c ? d : e)". The middle operand is a full expression (not a
       # conditional-expression), per ISO C, so a bare assignment may appear
       # there without parentheses.
+      # Both arms recurse — the "then" through #parse_expression and the "else"
+      # directly — so a "a ? b : c ? d : ..." chain deepens through this method,
+      # above where #parse_cast_expression's guard would catch it; it is guarded
+      # here on the shared counter.
       def parse_conditional_expression
-        node = parse_logical_or_expression
-        return node unless peek.punct?("?")
-
-        question_tok = advance
-        then_expr = parse_expression
-        expect_punct(":")
-        else_expr = parse_conditional_expression
-        AST::Conditional.new(node, then_expr, else_expr, question_tok)
+        with_nesting_guard(peek, "expression") do
+          node = parse_logical_or_expression
+          if peek.punct?("?")
+            question_tok = advance
+            then_expr = parse_expression
+            expect_punct(":")
+            else_expr = parse_conditional_expression
+            AST::Conditional.new(node, then_expr, else_expr, question_tok)
+          else
+            node
+          end
+        end
       end
 
       def parse_logical_or_expression
@@ -2187,22 +2270,28 @@ module Rubycc
       # choice with a single token of lookahead — a type keyword or a typedef
       # name after "(" — so "(int)x" and "(T)x" are casts while "(x)(y)", x
       # being neither, is a call.
+      # This is the single choke point every deepening expression form re-enters
+      # exactly once per nesting level — a parenthesized "( expression )" (via
+      # primary-expression), a "!"/"-"/"*"/... unary chain, a "( type-name )"
+      # cast chain, a "?:" arm, a subscript or a call argument all descend back
+      # through here — so guarding it alone bounds the depth of the whole
+      # expression grammar with no double counting.
       def parse_cast_expression
-        # A "__extension__" prefix (a GNU marker with no semantic effect) binds
-        # like a cast operator: it is consumed here and the cast-expression it
-        # governs is parsed in its place ("__extension__ x", "y = __extension__ z").
-        if peek.keyword?("__extension__")
-          advance
-          return parse_cast_expression
-        end
-
-        if peek.punct?("(") && peek_ahead(1) && type_specifier?(peek_ahead(1))
-          paren_tok = advance # "("
-          type = parse_type_name
-          expect_punct(")")
-          AST::Cast.new(type, parse_cast_expression, paren_tok)
-        else
-          parse_unary_expression
+        with_nesting_guard(peek, "expression") do
+          # A "__extension__" prefix (a GNU marker with no semantic effect) binds
+          # like a cast operator: it is consumed here and the cast-expression it
+          # governs is parsed in its place ("__extension__ x", "y = __extension__ z").
+          if peek.keyword?("__extension__")
+            advance
+            parse_cast_expression
+          elsif peek.punct?("(") && peek_ahead(1) && type_specifier?(peek_ahead(1))
+            paren_tok = advance # "("
+            type = parse_type_name
+            expect_punct(")")
+            AST::Cast.new(type, parse_cast_expression, paren_tok)
+          else
+            parse_unary_expression
+          end
         end
       end
 
@@ -2221,42 +2310,49 @@ module Rubycc
         end
       end
 
+      # The unary tier recurses through several forms that never pass through
+      # #parse_cast_expression — "sizeof sizeof ... x" recurses back here, and a
+      # prefix "++"/"--" likewise — so a chain of them would escape a guard placed
+      # only on the cast tier. Guarding the unary entry catches those, and the
+      # "!"/"-"/... operators (which do recurse through the cast tier) as well.
       def parse_unary_expression
-        if peek.keyword?("sizeof")
-          parse_sizeof
-        elsif peek.keyword?("_Alignof")
-          parse_alignof
-        elsif peek.keyword?("__builtin_va_start")
-          parse_va_start
-        elsif peek.keyword?("__builtin_va_arg")
-          parse_va_arg
-        elsif peek.keyword?("__builtin_va_end")
-          parse_va_end
-        elsif peek.keyword?("__builtin_expect")
-          parse_builtin_expect
-        elsif peek.keyword?("__builtin_alloca")
-          parse_builtin_alloca
-        elsif peek.punct?("+")
-          advance # unary + is a no-op; fold it away
-          parse_cast_expression
-        elsif peek.punct?("-")
-          op_tok = advance
-          AST::Unary.new(:neg, parse_cast_expression, op_tok)
-        elsif peek.punct?("!")
-          op_tok = advance
-          AST::Unary.new(:not, parse_cast_expression, op_tok)
-        elsif peek.punct?("~")
-          parse_bitwise_not
-        elsif peek.punct?("&")
-          op_tok = advance
-          AST::Unary.new(:addr, parse_cast_expression, op_tok)
-        elsif peek.punct?("*")
-          op_tok = advance
-          AST::Unary.new(:deref, parse_cast_expression, op_tok)
-        elsif peek.punct?("++") || peek.punct?("--")
-          parse_prefix_inc_dec
-        else
-          parse_postfix_expression
+        with_nesting_guard(peek, "expression") do
+          if peek.keyword?("sizeof")
+            parse_sizeof
+          elsif peek.keyword?("_Alignof")
+            parse_alignof
+          elsif peek.keyword?("__builtin_va_start")
+            parse_va_start
+          elsif peek.keyword?("__builtin_va_arg")
+            parse_va_arg
+          elsif peek.keyword?("__builtin_va_end")
+            parse_va_end
+          elsif peek.keyword?("__builtin_expect")
+            parse_builtin_expect
+          elsif peek.keyword?("__builtin_alloca")
+            parse_builtin_alloca
+          elsif peek.punct?("+")
+            advance # unary + is a no-op; fold it away
+            parse_cast_expression
+          elsif peek.punct?("-")
+            op_tok = advance
+            AST::Unary.new(:neg, parse_cast_expression, op_tok)
+          elsif peek.punct?("!")
+            op_tok = advance
+            AST::Unary.new(:not, parse_cast_expression, op_tok)
+          elsif peek.punct?("~")
+            parse_bitwise_not
+          elsif peek.punct?("&")
+            op_tok = advance
+            AST::Unary.new(:addr, parse_cast_expression, op_tok)
+          elsif peek.punct?("*")
+            op_tok = advance
+            AST::Unary.new(:deref, parse_cast_expression, op_tok)
+          elsif peek.punct?("++") || peek.punct?("--")
+            parse_prefix_inc_dec
+          else
+            parse_postfix_expression
+          end
         end
       end
 
