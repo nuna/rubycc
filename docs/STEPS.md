@@ -1332,11 +1332,52 @@ conftest/gem 用途では実害なし、堅牢化は将来)。UND へのテキ�
 
 ---
 
+## Step 36 — ライブラリ解決(M2 L6: -l/-L 探索とリンカスクリプト)(9bd39df)
+
+**内容**: Rubycc::Link::LibraryResolver — `-l名`/`-L` から実ライブラリを探索し、
+共有(.so)は SharedLinker の needed へ、静的(.a)/オブジェクトは遅延取り込みの
+inputs へ振り分ける。glibc の libc.so がテキストのリンカスクリプトである現実にも
+対応。heavy-implementer 1 フェーズ。
+
+**設計判断**:
+- **探索・振り分けを独立コンポーネント化**: SharedLinker/PartialLinker は
+  「解決済みの needed/inputs」を受ける契約のまま、その手前に LibraryResolver を
+  置いた。L8 ドライバは探索路の知識を持たず、構造化データ(-l 名の配列 + -L
+  配列)を渡すだけで .so を得られる。
+- **.so/.a 優先はディレクトリ内に閉じる**: 各 -L(コマンドライン順)→ 実在する
+  システム既定パス(/usr/lib/x86_64-linux-gnu → /usr/lib → /lib/x86_64-linux-gnu
+  → /lib → /usr/local/lib)を順に見て、ディレクトリ内で lib名.so 優先・lib名.a
+  フォールバック、最初に該当したディレクトリで確定。GNU ld と同じく「跨ぎ優先に
+  しない」(先行ディレクトリの .a が後続ディレクトリの .so に勝つ)ことで混在
+  環境での挙動を伝統的リンカと一致させる。-l:filename 厳密名も受理。
+- **glibc の libc.so がテキストスクリプトである現実への対応**: ELF/ar の
+  どちらの magic でもないファイルをリンカスクリプトと見なし、GROUP/INPUT/
+  AS_NEEDED(ネスト可)/OUTPUT_FORMAT(読み飛ばし)/ /* */ コメントだけの最小
+  パーサで実ファイル群へ展開。スクリプト内の絶対パスと -l 名(再帰解決)を
+  たどる。本物のスクリプト言語(SECTIONS/PROVIDE/ENTRY 等)は実装せず、未知
+  ディレクティブは半解釈を避けて無視(誤展開の防止)。R11 上、参照したのは
+  スクリプト構文の観察のみで ld の実装コードは見ない。
+- **推移閉包を辿らない / .so に未解決検査を課さない**(ROADMAP): リンク時は
+  直接要求されたライブラリのみ扱い、.so の DT_NEEDED 連鎖は実行時ローダに委ねる。
+  UND 残存は合法。DT_NEEDED の as-needed トリムは SharedLinker 既存ロジックに委譲。
+- **決定性(N4)**: needed/inputs は初出順、realpath デデュープで同一ライブラリの
+  重複到達(直接指定とスクリプト経由)を単一化。
+- **検証は実物ライブラリまで**: -lz で zlib を解決し Fiddle dlopen で
+  crc32(0,"123456789",9)=0xCBF43926 を実行(SONAME libz.so.1 が DT_NEEDED)、
+  -lc の libc.so GROUP スクリプトを展開して strlen 実行、ar 静的ライブラリの
+  遅延取り込み(使用メンバのみ)、gcc -shared -lz との DT_NEEDED 一致。
+
+**トレードオフ**: --start-group/--end-group(単一パスで足りる範囲)・シンボル
+バージョニングは対象外。CLI フラグのパース自体は L8(本ステップは -l/-L を
+構造化データとして受ける)。examples サンプルは他のリンカ系ステップと同じく対象外。
+
+---
+
 ## 現在のテスト規模
 
-Step 35 完了時点: **1,434 runs / 4,190 assertions / 0 failures / 19 skips**
+Step 36 完了時点: **1,454 runs / 4,235 assertions / 0 failures / 19 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
-ar・リンク(ld -r 併合 + .so + 外部 import)・PIC・DoS 耐性・診断・CLI・
-プリプロセッサのユニットテスト + 実行テスト(gcc 差分比較・クロスリンク ABI
-差分・gcc -E トークン列差分・Fiddle dlopen 実呼び出し(内部/外部 libc 関数)
-込み)+ c-testsuite 220 ケース + ruby.h スモークテスト。
+ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決)・PIC・DoS 耐性・
+診断・CLI・プリプロセッサのユニットテスト + 実行テスト(gcc 差分比較・クロス
+リンク ABI 差分・gcc -E トークン列差分・Fiddle dlopen 実呼び出し(内部/外部
+libc・実物 zlib)込み)+ c-testsuite 220 ケース + ruby.h スモークテスト。
