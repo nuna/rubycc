@@ -86,15 +86,22 @@ module Rubycc
       # Symbol visibility (st_other & 0x3).
       SYM_VISIBILITIES = { 0 => :default, 1 => :internal, 2 => :hidden, 3 => :protected }.freeze
 
-      # x86_64 relocation types (r_info & 0xFFFFFFFF). The five the toolchain
+      # x86_64 relocation types (r_info & 0xFFFFFFFF). The ones the toolchain
       # emits are named; any other type is preserved numerically (its name is nil)
       # rather than rejected, so an unfamiliar object is still fully readable.
+      # The GOTPCREL family addresses a symbol's Global Offset Table slot: 9 is
+      # the plain PC-relative GOT reference, and 41/42 its "relaxable" forms the
+      # psABI defines for a `mov` that a linker may rewrite in place to a `lea`
+      # (42 is the REX-prefixed form a 64-bit `mov rax, sym@GOTPCREL(%rip)` uses).
       RELOC_TYPES = {
         1 => :R_X86_64_64,
         2 => :R_X86_64_PC32,
         4 => :R_X86_64_PLT32,
+        9 => :R_X86_64_GOTPCREL,
         10 => :R_X86_64_32,
-        11 => :R_X86_64_32S
+        11 => :R_X86_64_32S,
+        41 => :R_X86_64_GOTPCRELX,
+        42 => :R_X86_64_REX_GOTPCRELX
       }.freeze
 
       # Dynamic array tags (.dynamic) this reader interprets: the terminator, the

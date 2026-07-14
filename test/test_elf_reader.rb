@@ -24,6 +24,10 @@ class TestElfReader < Minitest::Test
   # lea rax, [rip + 0] ; ret — the rel32 displacement at offset 3 is relocated.
   LEA_CODE = [0x48, 0x8D, 0x05, 0x00, 0x00, 0x00, 0x00, 0xC3].pack("C*")
   LEA_REL32_OFFSET = 3
+  # mov rax, [rip + 0] ; ret — the PIC GOT-load form (48 8B 05 + placeholder),
+  # whose rel32 at offset 3 an R_X86_64_REX_GOTPCRELX relocation targets.
+  GOT_CODE = [0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0xC3].pack("C*")
+  GOT_REL32_OFFSET = 3
   # "hi\0world\0": "hi" at .rodata offset 0, "world" at offset 3.
   RODATA = "hi\0world\0".b
   WORLD_OFFSET = 3
@@ -129,6 +133,27 @@ class TestElfReader < Minitest::Test
     # back to the .rodata section itself.
     assert_equal :section, reloc.symbol.type
     assert_equal ".rodata", reloc.symbol.section.name
+  end
+
+  # A PIC GOT reference (add_got_relocation) round-trips as an
+  # R_X86_64_REX_GOTPCRELX (type 42) against its symbol, with the -4 PC-relative
+  # bias a "mov rax, sym@GOTPCREL(rip)" needs.
+  def test_got_relocation_round_trips
+    obj = read_writer do |w|
+      w.add_file_symbol("foo.c")
+      w.add_text_section(GOT_CODE)
+      w.add_global_func("main", 0, GOT_CODE.bytesize)
+      w.add_undefined_symbol("x")
+      w.add_got_relocation(offset: GOT_REL32_OFFSET, symbol: "x")
+    end
+
+    reloc = obj.relocations_for(".text").first
+    assert_equal GOT_REL32_OFFSET, reloc.offset
+    assert_equal 42, reloc.type
+    assert_equal :R_X86_64_REX_GOTPCRELX, reloc.type_name
+    assert_equal(-4, reloc.addend)
+    assert_equal "x", reloc.symbol.name
+    assert reloc.symbol.undefined?, "x is SHN_UNDEF"
   end
 
   def test_data_section_and_absolute_relocation_round_trip

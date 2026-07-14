@@ -64,7 +64,11 @@ module Rubycc
       #   * { kind: :func, offset:, symbol: } — a "lea rip" displacement taking
       #     the address of the function `symbol` (a function designator or
       #     "&f"), resolved like a `call` against that (defined or undefined)
-      #     symbol.
+      #     symbol;
+      #   * { kind: :got, offset:, symbol: } — a "mov rax, [rip+disp32]" that
+      #     loads `symbol`'s address from its Global Offset Table slot (the PIC
+      #     form of :global/:func for a symbol this unit does not define),
+      #     resolved as R_X86_64_REX_GOTPCRELX against that symbol.
       Result = Data.define(:bytes, :symbols, :relocations)
 
       # Register numbers. For eax/ecx/edx these are the low 3 bits of the
@@ -327,6 +331,8 @@ module Rubycc
           emit_string_addr(inst.dst, inst.a)
         when :global_addr
           emit_global_addr(inst.dst, inst.a)
+        when :got_addr
+          emit_got_addr(inst.dst, inst.a)
         when :label
           @labels[inst.a] = @code.bytesize
         when :jump
@@ -608,6 +614,23 @@ module Rubycc
       def emit_global_addr(dst, symbol)
         emit(0x48, 0x8D, 0x05)              # REX.W lea rax, [rip + disp32]
         @relocations << { kind: :global, offset: @code.bytesize, symbol: symbol }
+        emit_bytes([0].pack("l<"))
+        store_reg(EAX, dst)
+      end
+
+      # :got_addr — the PIC form of :global_addr / :func_addr. "mov rax, [rip +
+      # disp32]" (48 8B 05) loads the address of `symbol` from its Global Offset
+      # Table slot rather than forming it PC-relatively: the slot holds the
+      # symbol's run-time address, so the load yields a usable pointer directly
+      # and any following load/store through it is unchanged. The disp32 is a
+      # zero placeholder recorded as a { kind: :got } relocation; the linker
+      # patches it PC-relatively against the symbol's GOT entry
+      # (R_X86_64_REX_GOTPCRELX). Emitted only under -fPIC, and only for a symbol
+      # this translation unit does not itself define, so a definition in another
+      # shared object can interpose on it.
+      def emit_got_addr(dst, symbol)
+        emit(0x48, 0x8B, 0x05)              # REX.W mov rax, [rip + disp32]
+        @relocations << { kind: :got, offset: @code.bytesize, symbol: symbol }
         emit_bytes([0].pack("l<"))
         store_reg(EAX, dst)
       end

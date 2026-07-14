@@ -18,11 +18,13 @@ module Rubycc
     # symbols (defined functions, then defined file-scope objects, then
     # undefined externals); r_info in .rela.text indexes into that final order.
     #
-    # .rela.text carries three relocation kinds: each `call` site as an
+    # .rela.text carries four relocation kinds: each `call` site as an
     # R_X86_64_PLT32 against its (defined or undefined) symbol, each string
     # reference as an R_X86_64_PC32 against the .rodata section symbol with the
-    # string's byte offset (minus 4) as its addend, and each global reference as
-    # an R_X86_64_PC32 against that global's own object symbol (addend -4).
+    # string's byte offset (minus 4) as its addend, each global reference as
+    # an R_X86_64_PC32 against that global's own object symbol (addend -4), and
+    # each PIC GOT reference (a "-fPIC" access to a symbol this unit does not
+    # define) as an R_X86_64_REX_GOTPCRELX against that symbol (addend -4).
     #
     # .rela.data carries the absolute R_X86_64_64 relocations that patch a .data
     # pointer slot: one against another object's symbol (addend 0) for a "&other"
@@ -72,11 +74,14 @@ module Rubycc
 
       # x86_64 relocation types: 64 for an absolute 64-bit address (a pointer
       # slot in .data initialized to another object's address), PC32 for a plain
-      # PC-relative reference (e.g. a "lea rip" into .rodata) and PLT32 for a near
-      # call (PC-relative, PLT-aware).
-      R_X86_64_64    = 1
-      R_X86_64_PC32  = 2
-      R_X86_64_PLT32 = 4
+      # PC-relative reference (e.g. a "lea rip" into .rodata), PLT32 for a near
+      # call (PC-relative, PLT-aware) and REX_GOTPCRELX for a PIC data access
+      # (a "mov rax, sym@GOTPCREL(rip)" reading the symbol's GOT slot; the "REX"
+      # form marks the REX.W-prefixed mov a linker may relax back to a lea).
+      R_X86_64_64             = 1
+      R_X86_64_PC32           = 2
+      R_X86_64_PLT32          = 4
+      R_X86_64_REX_GOTPCRELX  = 42
 
       SYM_ENTSIZE = 24
       RELA_ENTSIZE = 24
@@ -184,6 +189,16 @@ module Rubycc
       # Resolved against that symbol as R_X86_64_PC32 with an addend of -4.
       def add_global_relocation(offset:, symbol:)
         @relocations << { kind: :global, offset: offset, symbol: symbol }
+        self
+      end
+
+      # Records a PIC reference from .text to the named symbol's Global Offset
+      # Table slot (a "mov rax, sym@GOTPCREL(rip)" that loads the symbol's
+      # run-time address). `offset` is the rel32 field within .text. Resolved
+      # against that symbol as R_X86_64_REX_GOTPCRELX with an addend of -4, the
+      # same PC-relative bias a "lea rip" uses.
+      def add_got_relocation(offset:, symbol:)
+        @relocations << { kind: :got, offset: offset, symbol: symbol }
         self
       end
 
@@ -360,7 +375,9 @@ module Rubycc
       # :call points at its symbol with R_X86_64_PLT32 and an addend of -4 (the
       # PC-relative bias for a "call rel32"); a :string points at the .rodata
       # section symbol with R_X86_64_PC32 and the relocation's own addend (the
-      # string's .rodata offset minus 4).
+      # string's .rodata offset minus 4); a :global points at that global's
+      # object symbol with R_X86_64_PC32 (addend -4); a :got points at the
+      # symbol's GOT slot with R_X86_64_REX_GOTPCRELX (addend -4).
       def build_rela(symbol_indices, rodata_sym_index)
         buf = +"".b
         @relocations.each do |reloc|
@@ -371,6 +388,8 @@ module Rubycc
             append_rela(buf, reloc[:offset], rodata_sym_index, R_X86_64_PC32, reloc[:addend])
           when :global
             append_rela(buf, reloc[:offset], symbol_indices.fetch(reloc[:symbol]), R_X86_64_PC32, -4)
+          when :got
+            append_rela(buf, reloc[:offset], symbol_indices.fetch(reloc[:symbol]), R_X86_64_REX_GOTPCRELX, -4)
           end
         end
         buf

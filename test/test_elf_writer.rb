@@ -442,6 +442,40 @@ class TestElfWriter < Minitest::Test
     end
   end
 
+  # mov rax, [rip + 0] ; ret — the PIC GOT-load form; its rel32 at offset 3 is
+  # what an R_X86_64_REX_GOTPCRELX relocation targets.
+  GOT_CODE = [0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0xC3].pack("C*")
+  GOT_REL32_OFFSET = 3
+
+  # Builds an object whose code loads an undefined symbol's address from its GOT
+  # slot, producing one R_X86_64_REX_GOTPCRELX relocation against that symbol.
+  def build_object_with_got_relocation
+    writer = Rubycc::ObjFile::ELFWriter.new
+    writer.add_file_symbol("foo.c")
+    writer.add_text_section(GOT_CODE)
+    writer.add_global_func("main", 0, GOT_CODE.bytesize)
+    writer.add_undefined_symbol("x")
+    writer.add_got_relocation(offset: GOT_REL32_OFFSET, symbol: "x")
+    writer.to_binary
+  end
+
+  # The GOT relocation is emitted as type 42 (R_X86_64_REX_GOTPCRELX) with an
+  # addend of -4 against the referenced symbol.
+  def test_got_relocation_is_rex_gotpcrelx_against_the_symbol
+    bin = build_object_with_got_relocation
+    rela = find_section(bin, ".rela.text")
+    refute_nil rela, ".rela.text section should be emitted"
+    assert_equal 1, rela[:size] / 24
+
+    r_offset = bin[rela[:offset], 8].unpack1("Q<")
+    r_info = bin[rela[:offset] + 8, 8].unpack1("Q<")
+    r_addend = bin[rela[:offset] + 16, 8].unpack1("q<")
+    assert_equal GOT_REL32_OFFSET, r_offset
+    assert_equal 42, r_info & 0xFFFFFFFF                 # R_X86_64_REX_GOTPCRELX
+    assert_equal(-4, r_addend)
+    assert_equal "x", symbol_name(bin, r_info >> 32)
+  end
+
   def test_readelf_reports_the_relocation
     with_object_file(build_object_with_relocation) do |path|
       stdout, status = Open3.capture2("readelf", "-r", path)

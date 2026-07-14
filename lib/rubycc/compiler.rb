@@ -13,10 +13,10 @@ module Rubycc
   class Compiler
     # Compiles C source into an ELF64 relocatable object, returned as an
     # ASCII-8BIT String. Raises Rubycc::CompileError on user errors.
-    def compile(source, filename:, include_paths: [])
+    def compile(source, filename:, include_paths: [], pic: false)
       tokens = Preprocess::Preprocessor.new.run(source, filename: filename, include_paths: include_paths)
       program = Front::Parser.new(tokens).parse
-      ir_program = IR::Generator.new.generate(program)
+      ir_program = IR::Generator.new.generate(program, pic: pic)
 
       backend = Backend::X86_64.new
       writer = ObjFile::ELFWriter.new
@@ -132,6 +132,15 @@ module Rubycc
           # symbol for the linker, just like an undefined call target.
           writer.add_undefined_symbol(reloc[:symbol]) unless known_names.include?(reloc[:symbol])
           writer.add_global_relocation(offset: reloc[:offset], symbol: reloc[:symbol])
+        when :got
+          # A PIC access (-fPIC) through the Global Offset Table: a "mov rax,
+          # sym@GOTPCREL(rip)" loading the address of a symbol this unit does not
+          # define — an extern file-scope object, or an external function whose
+          # address is taken. The symbol becomes an undefined symbol for the
+          # linker to bind (unless another part of this unit defines it), and the
+          # GOT slot is addressed by an R_X86_64_REX_GOTPCRELX relocation.
+          writer.add_undefined_symbol(reloc[:symbol]) unless known_names.include?(reloc[:symbol])
+          writer.add_got_relocation(offset: reloc[:offset], symbol: reloc[:symbol])
         end
       end
 
@@ -183,9 +192,9 @@ module Rubycc
 
     # Convenience: read `input_path`, compile it and write the object to
     # `output_path`.
-    def self.compile_file(input_path, output_path, include_paths: [])
+    def self.compile_file(input_path, output_path, include_paths: [], pic: false)
       source = File.read(input_path)
-      binary = new.compile(source, filename: input_path, include_paths: include_paths)
+      binary = new.compile(source, filename: input_path, include_paths: include_paths, pic: pic)
       File.binwrite(output_path, binary)
       output_path
     end

@@ -158,6 +158,21 @@ module Rubycc
     #                                   variable named a (a String symbol name),
     #                                   the lvalue every global read/write and
     #                                   "&g"/array decay is lowered through
+    #   :got_addr dst <- &symbol(a) via GOT  dst gets the address of the
+    #                               file-scope object or function named a (a
+    #                               String symbol), loaded from its Global Offset
+    #                               Table slot rather than formed PC-relatively.
+    #                               The generator emits it in place of
+    #                               :global_addr / :func_addr only under -fPIC,
+    #                               and only for a symbol this translation unit
+    #                               does not define, so a definition in another
+    #                               shared object may interpose; the backend reads
+    #                               the slot with "mov rax, [rip+disp32]" and the
+    #                               linker fills the disp with an
+    #                               R_X86_64_REX_GOTPCRELX relocation against the
+    #                               symbol. A symbol defined here keeps the
+    #                               PC-relative :global_addr / :func_addr form,
+    #                               being always resolved within this DSO
     #   :va_start                   a = a vreg holding the address of a
     #                               __va_list_tag, b = the enclosing function's
     #                               fixed (named) parameter count. Initializes the

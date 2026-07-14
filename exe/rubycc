@@ -11,6 +11,7 @@ end
 input = nil
 output = nil
 include_paths = []
+pic = false
 args = ARGV.dup
 i = 0
 while i < args.length
@@ -19,6 +20,11 @@ while i < args.length
   when "-c"
     # Compile-to-object mode. This is the only mode this slice supports, so the
     # flag is accepted but implied.
+  when "-fPIC", "-fpic"
+    # Emit position-independent code: a reference to a file-scope object or
+    # function this translation unit does not define is addressed through the
+    # GOT, so the object can be linked into a shared library.
+    pic = true
   when "-o"
     i += 1
     output = args[i]
@@ -64,7 +70,7 @@ if output.nil?
 end
 
 begin
-  Rubycc::Compiler.compile_file(input, output, include_paths: include_paths)
+  Rubycc::Compiler.compile_file(input, output, include_paths: include_paths, pic: pic)
 rescue Rubycc::CompileError => e
   warn e.message
   exit 1

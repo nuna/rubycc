@@ -84,6 +84,24 @@ class TestCli < Minitest::Test
     assert_match(/unrecognized option/, stderr)
   end
 
+  # -fPIC (and its lowercase synonym -fpic) is accepted and drives the GOT-based
+  # data access; here it need only compile cleanly to an object file.
+  def test_fpic_option_is_accepted
+    ["-fPIC", "-fpic"].each do |flag|
+      Dir.mktmpdir("rubycc-cli") do |dir|
+        File.write(File.join(dir, "foo.c"), "extern int x;\nint get(void) { return x; }\n")
+
+        _stdout, stderr, status = Open3.capture3(
+          "ruby", "-I#{lib_dir}", EXE_PATH, "-c", flag, "foo.c", "-o", "foo.o",
+          chdir: dir
+        )
+
+        assert_equal 0, status.exitstatus, "#{flag} stderr: #{stderr}"
+        assert File.exist?(File.join(dir, "foo.o")), "expected foo.o for #{flag}"
+      end
+    end
+  end
+
   def test_include_path_option_resolves_a_header
     Dir.mktmpdir("rubycc-cli") do |dir|
       headers = File.join(dir, "include")

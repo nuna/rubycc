@@ -40,7 +40,15 @@ module Rubycc
       # code. The table is filled in source order so a definition can reference
       # itself (recursion) or an earlier prototype (mutual recursion), while a
       # call to a still-unknown name is diagnosed as an implicit declaration.
-      def generate(program)
+      def generate(program, pic: false)
+        # Position-independent code mode (-fPIC): when set, a reference that takes
+        # the address of a file-scope object or function this translation unit
+        # does not itself define is lowered through the Global Offset Table
+        # (:got_addr) instead of a PC-relative :global_addr / :func_addr, so a
+        # definition in another shared object can interpose on it. A symbol
+        # defined here, a `static`, and a string literal keep the PC-relative
+        # form. When false the lowering is byte-for-byte the non-PIC one.
+        @pic = pic
         # name -> { param_types:, return_type:, variadic:, defined: }.
         # `param_types` is the array of parameter Rubycc::Types (its length being
         # the fixed arity — for a variadic function, only the named parameters);
@@ -1761,7 +1769,7 @@ module Rubycc
       # fix like a local's is needed).
       def gen_global_ref(local)
         addr = new_vreg
-        emit(:global_addr, dst: addr, a: local.storage)
+        emit_global_addr(addr, local.storage)
         if local.type.array?
           [addr, Type::Pointer.new(local.type.element)]
         elsif local.type.struct? || wide128?(local.type)
@@ -1779,15 +1787,48 @@ module Rubycc
       # (or under sizeof) decays to a pointer to the function (6.3.2.1p4), so
       # "fp = f", "&f", passing "f" as an argument and comparing two function
       # names all see the same Pointer(FunctionType) value. Its value is the
-      # function's own address, materialized by :func_addr; a name that is
-      # neither a visible variable nor a declared function is undeclared.
+      # function's own address, materialized by :func_addr — or, under -fPIC for
+      # a function this unit does not define, loaded from the GOT (:got_addr); a
+      # name that is neither a visible variable nor a declared function is
+      # undeclared.
       def gen_function_designator(name, token)
         sig = @signatures[name]
         error_at(token, "undeclared variable '#{name}'") unless sig
 
         dst = new_vreg
-        emit(:func_addr, dst: dst, a: name)
+        emit(pic_extern_func?(name) ? :got_addr : :func_addr, dst: dst, a: name)
         [dst, Type::Pointer.new(function_type_of(sig))]
+      end
+
+      # Materializes the address of the file-scope object named `symbol` into
+      # `dst`: a PC-relative :global_addr normally, or a GOT load (:got_addr)
+      # under -fPIC for an object this unit does not define (see #pic_extern?).
+      # Every :global_addr site of a file-scope *object* routes through here so
+      # the PIC choice is made in one place.
+      def emit_global_addr(dst, symbol)
+        emit(pic_extern_object?(symbol) ? :got_addr : :global_addr, dst: dst, a: symbol)
+      end
+
+      # Whether a reference to the file-scope object `name` must go through the
+      # GOT: only under -fPIC, and only when this translation unit does not
+      # define the object itself. @object_records holds every name given a
+      # (tentative or real) definition here — a `static` or ordinary global —
+      # while a bare `extern` reference reserves no storage and gets no record,
+      # so it is the external case. (An object defined later in the unit than the
+      # reference is not yet recorded and so is treated as external: still
+      # correct, since its GOT slot resolves to the local definition, only a slot
+      # slower — the L4 trade-off that favors correctness over that one case.)
+      def pic_extern_object?(name)
+        @pic && !@object_records.key?(name)
+      end
+
+      # Whether a reference to the function `name` must go through the GOT: only
+      # under -fPIC, and only when this translation unit does not define the
+      # function (its signature is present but not yet `defined`). A function
+      # defined here keeps the PC-relative :func_addr, being resolved within this
+      # DSO; its call sites stay PLT32 regardless, PLT stubs being the linker's.
+      def pic_extern_func?(name)
+        @pic && !@signatures.dig(name, :defined)
       end
 
       # A floating literal. No dedicated IR op exists: the constant is lowered to
@@ -2347,7 +2388,11 @@ module Rubycc
             return [addr, Type::Pointer.new(local.type)]
           end
           dst = new_vreg
-          emit(local.global ? :global_addr : :addr_of, dst: dst, a: local.storage)
+          if local.global
+            emit_global_addr(dst, local.storage)
+          else
+            emit(:addr_of, dst: dst, a: local.storage)
+          end
           [dst, Type::Pointer.new(local.type)]
         elsif operand.is_a?(Front::AST::Subscript)
           addr, element_type = gen_element_address(operand)
@@ -2456,7 +2501,7 @@ module Rubycc
         return read_local_scalar(local) unless local.global
 
         addr = new_vreg
-        emit(:global_addr, dst: addr, a: local.storage)
+        emit_global_addr(addr, local.storage)
         dst = new_vreg
         emit_scalar_load(dst, addr, local.type)
         dst
@@ -2474,7 +2519,7 @@ module Rubycc
         converted = convert_for_assignment(value_vreg, value_type, local.type, token: token)
         if local.global
           addr = new_vreg
-          emit(:global_addr, dst: addr, a: local.storage)
+          emit_global_addr(addr, local.storage)
           emit(:store, a: addr, b: converted, size: local.type.size)
         else
           emit(:copy, dst: local.storage, a: converted)
