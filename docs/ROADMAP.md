@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 の途中。L5 第一段(自己完結 .so)= Step 34 まで完了。次は L5 第二段(.gnu.hash・外部シンボル解決・SONAME)**。
+現在地: **M2 の途中。L5 第二段(外部シンボル解決)= Step 35 まで完了。次は L6(ライブラリ解決 -l/-L)。L5 第三段(.gnu.hash)は .hash で動くため適合性仕上げとして後続**。
 
 ---
 
@@ -144,12 +144,16 @@ system ar と双方向相互運用・決定的出力)。設計記録は STEPS.md
   SysV .hash/.dynamic、エクスポート、決定的出力。**Fiddle で dlopen して
   エクスポート関数を実呼び出し**するところまで検証済み。設計記録は STEPS.md の
   Step 34。
-- **第二段(残り)**: **.gnu.hash**(ブルームフィルタ・バケット。公式仕様が薄いので
-  binutils の出力を readelf で観察して外形を合わせる。実装コードは見ない: R11)/
-  外部シンボル解決(.plt / .got.plt / .rela.plt の JUMP_SLOT、GLOB_DAT、
-  DT_NEEDED)/ SONAME(DT_SONAME)/ 未解決 rb_* を UND のまま残す(dlopen 時
-  解決: DESIGN 4.2)。glibc は gnu.hash 優先・musl 対応も含め .hash と両方持つ
-  安全側(DESIGN 5.3)。
+- **第二段(外部シンボル解決)= 完了(Step 35、6736c6c)**: 外部関数を
+  PLT/GOT.plt/JUMP_SLOT、外部データを GLOB_DAT で import、DT_NEEDED
+  (--as-needed 相当)・DT_SONAME、未解決 UND は残す。遅延バインドの複雑さを
+  避け BIND_NOW を既定。**Fiddle dlopen で外部 libc 関数(strlen/puts/environ)を
+  実呼び出し**まで検証済み。設計記録は STEPS.md の Step 35。
+- **第三段(残り)**: **.gnu.hash**(ブルームフィルタ・バケット。公式仕様が薄いので
+  binutils の出力を readelf で観察して外形を合わせる。実装コードは見ない: R11)。
+  glibc は gnu.hash 優先・musl 対応も含め .hash と両方持つ安全側(DESIGN 5.3)。
+  .hash のみでも dlopen は動く(Step 34/35 で実証済み)ので、これは適合性・
+  性能の仕上げ。RELRO(.got.plt の読み取り専用化)もここで検討。
 - 検証: readelf / eu-elflint 構造検査 + Fiddle dlopen 実呼び出しを glibc・musl
   両コンテナで CI 化(動的リンクの libc 差リスク: DESIGN 7 章の関所)。シンボル
   バージョン(GLIBC_2.x)は参照側で無版本解決される想定だが実物 libc.so で確認。

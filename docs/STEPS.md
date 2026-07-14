@@ -1289,11 +1289,54 @@ SharedLinker はローダ非依存に S+A−P で解決するので**実行は�
 
 ---
 
+## Step 35 — 外部シンボル解決(M2 L5 第二段: PLT/GOT import と DT_NEEDED)(6736c6c)
+
+**内容**: SharedLinker(Step 34)を拡張し、別の共有ライブラリ(libc.so.6 等)が
+提供する外部関数・外部データを import して実際に呼べる .so を生成する。第一段の
+「UND 拒否」を外部シンボル解決へ置換。.gnu.hash は第三段(次段)。heavy-implementer
+1 フェーズ。
+
+**設計判断**:
+- **即時バインド(BIND_NOW)を既定にして遅延リゾルバを不採用**: 遅延バインドは
+  .got.plt[1][2] と _dl_runtime_resolve トランポリン(PLT[0])の連携が必要で
+  複雑。DF_BIND_NOW / DF_1_NOW でローダが起動時に全 JUMP_SLOT/GLOB_DAT を解決
+  するようにすれば、PLT スタブは単純な間接 jmp(FF 25 disp32 + NOP パディング、
+  16 バイト)だけで済み、PLT[0] とリゾルバ機構が丸ごと不要になる。conftest/gem の
+  用途では起動時解決のコストは問題にならず、実装が大幅に単純化する。
+- **GOT を 2 系統に分離**: 内部データ用 `.got`(RELATIVE と外部 GLOB_DAT を同居、
+  symbol 名で dedup)と関数用 `.got.plt`(予約 3 スロット [0]=&_DYNAMIC + 各
+  外部関数)。.rela.dyn は RELATIVE 先頭固定で DT_RELACOUNT を維持 → GLOB_DAT →
+  シンボル付き 64、の順。
+- **内部/外部の出し分けを scan で一元判定**(external_import? = UND かつ非
+  section): 外部関数 PLT32 → PLT スタブ + JUMP_SLOT、外部データ GOTPCREL →
+  GLOB_DAT、内部は Step 34 どおり(PLT32 直接・内部 GOT は RELATIVE)。UND への
+  テキスト再配置(PC32/32/32S)は rubycc -fPIC が生成しないため明確にエラー。
+- **DT_NEEDED は --as-needed 相当**: 各 UND を依存 .so の dynamic_symbols で
+  解決し、実際に 1 つ以上供給した依存だけを DT_NEEDED に記録(名前は依存の
+  DT_SONAME)。どの依存にも無い UND はエラーにせず UND のまま残す(共有
+  ライブラリでは合法、実行時の別 .so 連鎖で解決されうる: DESIGN 4.2)。
+- **第一段のバイト完全互換を維持**: 外部 import が無い入力では .plt/.got.plt/
+  .rela.plt と BIND_NOW 系 DT タグを一切生成せず、Step 34 と同一出力(自己完結
+  .so テストが継続 green で担保)。
+- **.dynsym/.hash の構成**: .dynsym は [null] + exports + imports(UND,
+  SHN_UNDEF/value 0)。SysV .hash は nchain=全 dynsym 数だが buckets には
+  defined export のみを連鎖(import は lookup 対象外)。
+- **検証は「外部 libc 関数を実際に呼ぶ」まで**: Fiddle で dlopen し
+  strlen(my_len("hello")=5)・puts・environ(GLOB_DAT 経由データ読み取り)が
+  実走。gcc -shared -lc との DT_NEEDED・実行結果一致、readelf -a クリーンも確認。
+
+**トレードオフ / 既知の負債**: RELRO 未実装(.got.plt は書き込み可能なまま。
+conftest/gem 用途では実害なし、堅牢化は将来)。UND へのテキスト再配置は非対応。
+.gnu.hash・遅延バインド PLT・-l/-L 探索とリンカスクリプト(GROUP)解析・シンボル
+バージョニングは第三段/L6。
+
+---
+
 ## 現在のテスト規模
 
-Step 34 完了時点: **1,425 runs / 4,142 assertions / 0 failures / 19 skips**
+Step 35 完了時点: **1,434 runs / 4,190 assertions / 0 failures / 19 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
-ar・リンク(ld -r 併合 + .so)・PIC・DoS 耐性・診断・CLI・プリプロセッサの
-ユニットテスト + 実行テスト(gcc 差分比較・クロスリンク ABI 差分・gcc -E
-トークン列差分・Fiddle dlopen 実呼び出し込み)+ c-testsuite 220 ケース +
-ruby.h スモークテスト。
+ar・リンク(ld -r 併合 + .so + 外部 import)・PIC・DoS 耐性・診断・CLI・
+プリプロセッサのユニットテスト + 実行テスト(gcc 差分比較・クロスリンク ABI
+差分・gcc -E トークン列差分・Fiddle dlopen 実呼び出し(内部/外部 libc 関数)
+込み)+ c-testsuite 220 ケース + ruby.h スモークテスト。
