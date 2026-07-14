@@ -35,8 +35,36 @@ class TestSharedObject < Minitest::Test
   PF_W = 0x2
   PF_R = 0x4
 
-  R_X86_64_RELATIVE = 8
+  R_X86_64_RELATIVE  = 8
+  R_X86_64_GLOB_DAT  = 6
+  R_X86_64_JUMP_SLOT = 7
   STN_UNDEF = 0
+
+  # Dynamic tags and flag bits the external-import assertions reference by name.
+  DT_NEEDED   = 1
+  DT_PLTRELSZ = 2
+  DT_PLTGOT   = 3
+  DT_SONAME   = 14
+  DT_PLTREL   = 20
+  DT_JMPREL   = 23
+  DT_FLAGS    = 30
+  DT_FLAGS_1  = 0x6FFFFFFB
+  DF_BIND_NOW = 0x8
+  DF_1_NOW    = 0x1
+  SHN_UNDEF   = 0
+
+  # A translation unit that imports from libc: an external function call
+  # (strlen, puts -> R_X86_64_PLT32, resolved through a .plt stub and a
+  # JUMP_SLOT) and an external data reference (environ -> R_X86_64_GOTPCREL,
+  # resolved through a GOT slot and a GLOB_DAT).
+  EXTERNAL = <<~C
+    unsigned long strlen(const char *s);
+    int puts(const char *s);
+    extern char **environ;
+    unsigned long my_len(const char *s) { return strlen(s); }
+    int emit(const char *s) { return puts(s); }
+    int env_present(void) { return environ != 0; }
+  C
 
   # A self-contained translation unit exercising every relocation the first
   # stage applies within one object: an internal call (PLT32), an internal
@@ -200,17 +228,189 @@ class TestSharedObject < Minitest::Test
                  "identical inputs must yield byte-identical shared objects"
   end
 
-  # --- undefined-symbol rejection ----------------------------------------
+  # --- external imports (structure) --------------------------------------
 
-  def test_undefined_external_symbol_is_rejected
+  # An imported symbol with no supplying dependency is left undefined rather
+  # than rejected: a shared object may be completed by the runtime scope. It
+  # enters .dynsym as a UND entry and pulls in no DT_NEEDED.
+  def test_unresolved_import_is_left_undefined_without_a_needed
     src = <<~C
       int printf(const char *, ...);
       int shout(void) { return printf("x"); }
     C
-    error = assert_raises(Rubycc::Link::LinkError) { build_so([src]) }
-    assert_match(/printf/, error.message)
-    assert_match(/undefined/, error.message)
-    assert_match(/L5b/, error.message, "the message must point at the stage that will resolve imports")
+    r = Reader.read(build_so([src]))
+    printf = r.dynamic_symbol("printf")
+    refute_nil printf, "an imported symbol must enter .dynsym"
+    assert printf.undefined?, "with no supplying dependency the import stays undefined"
+    assert_empty r.needed, "an unresolved import records no DT_NEEDED"
+  end
+
+  # A referenced external symbol resolved against a dependency stays a UND
+  # .dynsym entry (its definition lives in the dependency) while the dependency
+  # is recorded as DT_NEEDED under its SONAME.
+  def test_resolved_imports_enter_dynsym_and_pull_in_dt_needed
+    skip "libc unavailable" unless libc_path
+
+    r = Reader.read(build_so([EXTERNAL], needed: [libc_path], soname: "libext.so"))
+    %w[strlen puts environ].each do |name|
+      sym = r.dynamic_symbol(name)
+      refute_nil sym, "#{name} must be imported into .dynsym"
+      assert sym.undefined?, "#{name} is imported, so its .dynsym entry is UND"
+      assert_equal 0, sym.value
+    end
+    assert_equal ["libc.so.6"], r.needed, "the resolving dependency is a DT_NEEDED by SONAME"
+    assert_equal "libext.so", r.soname, "DT_SONAME is the given name"
+  end
+
+  # A dependency that supplies nothing must not be recorded (--as-needed).
+  def test_unused_dependency_is_not_recorded_as_needed
+    skip "libc unavailable" unless libc_path
+
+    r = Reader.read(build_so([SELF_CONTAINED], needed: [libc_path]))
+    assert_empty r.needed, "a dependency supplying no symbol earns no DT_NEEDED"
+  end
+
+  def test_external_function_gets_a_jump_slot_and_data_gets_a_glob_dat
+    skip "libc unavailable" unless libc_path
+
+    r = Reader.read(build_so([EXTERNAL], needed: [libc_path]))
+
+    plt = r.relocation_sections.find { |rs| rs.section.name == ".rela.plt" }
+    refute_nil plt, ".rela.plt must hold the external-call bindings"
+    assert_equal %w[puts strlen],
+                 plt.relocations.map { |x| x.symbol.name }.sort
+    plt.relocations.each do |reloc|
+      assert_equal R_X86_64_JUMP_SLOT, reloc.type, "each external call binds through a JUMP_SLOT"
+      assert_equal 0, reloc.addend
+    end
+
+    dyn = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    glob = dyn.relocations.select { |x| x.type == R_X86_64_GLOB_DAT }
+    assert_equal ["environ"], glob.map { |x| x.symbol.name }, "external data binds through a GLOB_DAT"
+  end
+
+  # The .rela.plt JUMP_SLOT offsets must land on the per-function .got.plt slots
+  # (past the three reserved entries), which DT_PLTGOT points at.
+  def test_got_plt_layout_and_dynamic_plt_tags
+    skip "libc unavailable" unless libc_path
+
+    r = Reader.read(build_so([EXTERNAL], needed: [libc_path]))
+    gotplt = r.section(".got.plt")
+    refute_nil gotplt
+    # Three reserved slots then one per external function (strlen, puts).
+    assert_equal (3 + 2) * 8, gotplt.size
+
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+    assert_equal gotplt.addr, by_tag[DT_PLTGOT], "DT_PLTGOT points at .got.plt"
+    assert_equal r.section(".rela.plt").addr, by_tag[DT_JMPREL], "DT_JMPREL points at .rela.plt"
+    assert_equal r.section(".rela.plt").size, by_tag[DT_PLTRELSZ]
+    assert_equal 7, by_tag[DT_PLTREL], "DT_PLTREL is DT_RELA"
+
+    first_slot = gotplt.addr + 3 * 8
+    offsets = r.relocation_sections.find { |rs| rs.section.name == ".rela.plt" }
+                .relocations.map(&:offset).sort
+    assert_equal [first_slot, first_slot + 8], offsets,
+                 "the JUMP_SLOTs target the per-function .got.plt slots"
+
+    # The first reserved .got.plt slot holds &_DYNAMIC (spec convention).
+    reserved0 = gotplt.data[0, 8].unpack1("Q<")
+    assert_equal r.section(".dynamic").addr, reserved0, ".got.plt[0] is the &_DYNAMIC pointer"
+  end
+
+  # BIND_NOW is requested so the loader resolves every JUMP_SLOT / GLOB_DAT at
+  # load time, which is why the .plt stub needs no lazy-resolver trampoline.
+  def test_bind_now_flags_are_set_when_there_are_imports
+    skip "libc unavailable" unless libc_path
+
+    r = Reader.read(build_so([EXTERNAL], needed: [libc_path]))
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+    assert_equal DF_BIND_NOW, by_tag[DT_FLAGS] & DF_BIND_NOW, "DT_FLAGS must request BIND_NOW"
+    assert_equal DF_1_NOW, by_tag[DT_FLAGS_1] & DF_1_NOW, "DT_FLAGS_1 must request DF_1_NOW"
+
+    # A self-contained object needs no eager binding, so it carries neither flag.
+    self_contained = Reader.read(build_so([SELF_CONTAINED]))
+    self_tags = self_contained.dynamic_entries.map(&:tag)
+    refute_includes self_tags, DT_FLAGS
+    refute_includes self_tags, DT_FLAGS_1
+  end
+
+  # Each .plt stub is `jmp *slot(%rip)` — FF 25 followed by a PC-relative disp32
+  # to its .got.plt slot — padded with single-byte NOPs to the 16-byte entry.
+  def test_plt_stub_encoding_jumps_to_its_got_plt_slot
+    skip "libc unavailable" unless libc_path
+
+    r = Reader.read(build_so([EXTERNAL], needed: [libc_path]))
+    plt = r.section(".plt")
+    refute_nil plt
+    assert_equal 2 * 16, plt.size, "one 16-byte stub per external function"
+
+    rela = r.relocation_sections.find { |rs| rs.section.name == ".rela.plt" }
+    # The stubs are laid in .plt in the same first-seen order the JUMP_SLOTs are,
+    # so stub i drives .got.plt slot named by rela entry i.
+    rela.relocations.each_with_index do |reloc, i|
+      stub_off = i * 16
+      assert_equal "\xFF\x25".b, plt.data[stub_off, 2], "stub #{i} is an indirect jmp (FF 25)"
+      disp = plt.data[stub_off + 2, 4].unpack1("l<")
+      stub_vaddr = plt.addr + stub_off
+      assert_equal reloc.offset, stub_vaddr + 6 + disp,
+                   "the disp32 must reach the stub's .got.plt slot"
+      assert_equal ("\x90".b * 10), plt.data[stub_off + 6, 10], "the stub pads to 16 bytes with NOPs"
+    end
+  end
+
+  # --- external imports (dlopen acceptance, the second stage's whole point) ---
+
+  def test_dlopen_calls_libc_through_plt_and_got
+    skip "libc unavailable" unless libc_path
+
+    with_so([EXTERNAL], needed: [libc_path], soname: "libext.so") do |so|
+      lib = Fiddle.dlopen(so)
+      my_len = call(lib, "my_len", [Fiddle::TYPE_VOIDP], Fiddle::TYPE_LONG)
+      assert_equal 5, my_len.call("hello"), "an external strlen call must run through the PLT"
+
+      # puts returns a non-negative count on success; a successful return proves
+      # the imported call was bound and ran (its buffered stdout output, which
+      # bypasses Ruby's $stdout, is not asserted).
+      emit = call(lib, "emit", [Fiddle::TYPE_VOIDP], Fiddle::TYPE_INT)
+      assert_operator emit.call("printed via an imported puts"), :>=, 0,
+                      "an external puts call must run through the PLT and return"
+
+      env = call(lib, "env_present", [], Fiddle::TYPE_INT)
+      assert_equal 1, env.call, "an external data (environ) read must run through the GOT"
+    ensure
+      lib&.close
+    end
+  end
+
+  def test_external_import_output_is_deterministic
+    skip "libc unavailable" unless libc_path
+
+    a = build_so([EXTERNAL], needed: [libc_path], soname: "libext.so")
+    b = build_so([EXTERNAL], needed: [libc_path], soname: "libext.so")
+    assert_equal a, b, "identical inputs and dependencies must yield byte-identical shared objects"
+  end
+
+  # gcc's own shared object built from the same objects must import the same
+  # libc dependency and compute the same result, cross-checking our binding.
+  def test_matches_gcc_external_shared_object
+    skip "gcc unavailable" unless tool?("gcc")
+    skip "libc unavailable" unless libc_path
+
+    in_tmpdir do |dir|
+      objects = objects_for([EXTERNAL], dir)
+      ours = File.join(dir, "ours.so")
+      Linker.link_to(objects, ours, needed: [libc_path])
+
+      theirs = File.join(dir, "theirs.so")
+      out, status = Open3.capture2e("gcc", "-shared", "-o", theirs, *objects, "-lc")
+      skip "gcc -shared failed:\n#{out}" unless status.success?
+
+      assert_includes Reader.read_file(ours).needed, "libc.so.6"
+      assert_includes Reader.read_file(theirs).needed, "libc.so.6"
+
+      assert_equal run_my_len(theirs), run_my_len(ours),
+                   "both shared objects must compute the same imported result"
+    end
   end
 
   # --- dlopen acceptance (the first stage's whole point) ------------------
@@ -313,16 +513,35 @@ class TestSharedObject < Minitest::Test
 
   private
 
-  def build_so(sources)
-    in_tmpdir { |dir| Linker.link(objects_for(sources, dir)) }
+  def build_so(sources, needed: [], soname: nil)
+    in_tmpdir { |dir| Linker.link(objects_for(sources, dir), needed: needed, soname: soname) }
   end
 
-  def with_so(sources)
+  def with_so(sources, needed: [], soname: nil)
     in_tmpdir do |dir|
       so = File.join(dir, "libtest.so")
-      Linker.link_to(objects_for(sources, dir), so)
+      Linker.link_to(objects_for(sources, dir), so, needed: needed, soname: soname)
       yield so
     end
+  end
+
+  # The host's libc shared object, located at the usual multiarch path or via
+  # `ldconfig`, or nil when neither turns it up (the external-import cases skip).
+  def libc_path
+    return @libc_path if defined?(@libc_path)
+
+    @libc_path = ["/lib/x86_64-linux-gnu/libc.so.6", "/lib64/libc.so.6", "/usr/lib/libc.so.6"]
+                 .find { |p| File.exist?(p) } || libc_from_ldconfig
+  end
+
+  def libc_from_ldconfig
+    out, status = Open3.capture2e("ldconfig", "-p")
+    return nil unless status.success?
+
+    line = out.lines.find { |l| l =~ /\blibc\.so\.6\b.*=>\s*(\S+)/ }
+    line && Regexp.last_match(1)
+  rescue Errno::ENOENT
+    nil
   end
 
   # Compiles each source with rubycc under -fPIC into its own object file and
@@ -347,6 +566,13 @@ class TestSharedObject < Minitest::Test
   def run_add3(so)
     lib = Fiddle.dlopen(so)
     call(lib, "add3", [Fiddle::TYPE_INT] * 3, Fiddle::TYPE_INT).call(4, 5, 6)
+  ensure
+    lib&.close
+  end
+
+  def run_my_len(so)
+    lib = Fiddle.dlopen(so)
+    call(lib, "my_len", [Fiddle::TYPE_VOIDP], Fiddle::TYPE_LONG).call("acceptance")
   ensure
     lib&.close
   end

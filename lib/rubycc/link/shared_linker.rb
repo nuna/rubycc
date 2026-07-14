@@ -10,32 +10,43 @@ module Rubycc
     # and synthesizes the dynamic-linking metadata a runtime loader (glibc's
     # dlopen, in particular) reads to bind and run the object.
     #
-    # This is the first stage of the shared-library writer. It handles a
-    # *self-contained* object — one that calls neither libc nor any other shared
-    # library, i.e. the kind rubycc emits for internal arithmetic, internal
-    # function calls, internal globals/strings and internal function pointers.
-    # Every relocation therefore resolves within this object; an undefined
-    # (imported) symbol is rejected, since external symbol resolution — PLT/GOT
-    # imports, JUMP_SLOT/GLOB_DAT, DT_NEEDED — is a later stage.
+    # It handles both a self-contained object — one that calls neither libc nor
+    # any other shared library — and one that imports functions and data from
+    # other shared libraries. Every relocation against an internal definition is
+    # resolved within this object; a relocation against an *undefined* (imported)
+    # symbol is bound through the standard dynamic mechanisms: an external call
+    # goes through a .plt stub whose .got.plt slot the loader fills from a
+    # JUMP_SLOT relocation, and an external data reference goes through a GOT slot
+    # the loader fills from a GLOB_DAT relocation. Each dependency `.so` that
+    # actually supplies at least one resolved symbol is recorded as a DT_NEEDED
+    # (an --as-needed-style trim); a still-undefined reference is left undefined,
+    # since a shared object may legitimately be completed by the runtime scope.
+    #
+    # Binding is eager (BIND_NOW): DF_BIND_NOW / DF_1_NOW ask the loader to
+    # resolve every JUMP_SLOT and GLOB_DAT at load time, so the .plt stub is just
+    # an indirect `jmp *slot(%rip)` and the lazy-resolution trampoline (the
+    # reserved .got.plt[1]/[2] and PLT[0]) is unneeded.
     #
     # Pipeline: the inputs are first merged into one ET_REL image by PartialLinker
     # (reusing its section concatenation, symbol resolution and archive pull-in),
     # then read back through ELFReader so this stage works from resolved
-    # Section/Symbol/Relocation values. From there it (1) lays the allocatable
-    # sections into three page-aligned PT_LOAD segments by permission — r-x, r--,
-    # rw- — with the ELF and program headers at the head of the first, choosing
+    # Section/Symbol/Relocation values. From there it (1) selects the exported and
+    # imported dynamic symbols and resolves the imports against the dependency
+    # `.so`s; (2) lays the allocatable sections into three page-aligned PT_LOAD
+    # segments by permission — r-x (text + .plt), r-- (rodata + the read-only
+    # dynamic tables), rw- (data + .got/.got.plt + .dynamic) — choosing
     # `p_vaddr == p_offset` for every placed section so the `p_vaddr ≡ p_offset
-    # (mod page)` load constraint holds trivially; (2) builds the dynamic tables
-    # (.dynsym/.dynstr exporting every defined global and weak, a SysV .hash, and
-    # a .dynamic array); (3) applies each relocation against the assigned
-    # addresses, creating a GOT slot for a GOT-relative reference and emitting an
-    # R_X86_64_RELATIVE dynamic relocation for every absolute address the loader
-    # must rebase (a GOT slot's contents and an R_X86_64_64 data initializer).
+    # (mod page)` load constraint holds trivially; (3) builds the dynamic tables
+    # (.dynsym/.dynstr, a SysV .hash, .rela.dyn, .rela.plt and .dynamic); and (4)
+    # applies each relocation against the assigned addresses, filling internal GOT
+    # slots (rebased with R_X86_64_RELATIVE), external GOT slots (GLOB_DAT) and
+    # the .got.plt (JUMP_SLOT).
     #
     # Output is deterministic (N4): sections keep the merged object's order, the
-    # dynamic symbol table follows the merged symbol order, the hash bucket count
-    # is derived from the symbol count, and no timestamp or address randomness is
-    # embedded — identical inputs yield byte-identical `.so` output.
+    # dynamic symbol table follows the merged symbol order (exports then imports),
+    # the hash bucket count is derived from the export count, the relocation tables
+    # are ordered by slot, and no timestamp or address randomness is embedded —
+    # identical inputs yield byte-identical `.so` output.
     class SharedLinker
       include ObjFile
 
@@ -84,8 +95,10 @@ module Rubycc
 
       # x86_64 relocation types this stage applies. The GOT-relative family
       # (9/41/42) all address a symbol's GOT slot PC-relatively and are handled
-      # alike; R_X86_64_RELATIVE (8) is the only *dynamic* relocation emitted, for
-      # an absolute address the loader must rebase.
+      # alike. Of the *dynamic* relocations emitted, R_X86_64_RELATIVE (8) rebases
+      # an absolute address (an internal GOT slot or an R_X86_64_64 initializer),
+      # R_X86_64_GLOB_DAT (6) fills an external data GOT slot, and
+      # R_X86_64_JUMP_SLOT (7) fills a .got.plt slot for an external function.
       R_X86_64_64            = 1
       R_X86_64_PC32          = 2
       R_X86_64_PLT32         = 4
@@ -95,10 +108,15 @@ module Rubycc
       R_X86_64_GOTPCRELX     = 41
       R_X86_64_REX_GOTPCRELX = 42
       R_X86_64_RELATIVE      = 8
+      R_X86_64_GLOB_DAT      = 6
+      R_X86_64_JUMP_SLOT     = 7
       GOT_RELOC_TYPES = [R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_REX_GOTPCRELX].freeze
 
       # Dynamic array tags emitted into .dynamic.
       DT_NULL      = 0
+      DT_NEEDED    = 1
+      DT_PLTRELSZ  = 2
+      DT_PLTGOT    = 3
       DT_HASH      = 4
       DT_STRTAB    = 5
       DT_SYMTAB    = 6
@@ -107,35 +125,55 @@ module Rubycc
       DT_RELAENT   = 9
       DT_STRSZ     = 10
       DT_SYMENT    = 11
+      DT_SONAME    = 14
+      DT_PLTREL    = 20
+      DT_JMPREL    = 23
+      DT_FLAGS     = 30
       DT_RELACOUNT = 0x6FFFFFF9
+      DT_FLAGS_1   = 0x6FFFFFFB
+
+      # Dynamic flags requesting eager binding.
+      DF_BIND_NOW = 0x8
+      DF_1_NOW    = 0x1
 
       SYM_ENTSIZE  = 24
       RELA_ENTSIZE = 24
       DYN_ENTSIZE  = 16
 
+      # Each .plt stub is a 16-byte-aligned entry; a .got.plt reserves three
+      # leading slots (spec convention: [0] = &_DYNAMIC, [1]/[2] the lazy-resolver
+      # hooks left zero under BIND_NOW) before the per-function slots.
+      PLT_ENTSIZE   = 16
+      GOTPLT_RESERVED = 3
+
       class << self
         # Links `inputs` (an ordered array; each element a filesystem path, or the
         # raw bytes of an ET_REL object or an ar archive — the same shapes
         # PartialLinker accepts) into a shared object, returned as an ASCII-8BIT
-        # String.
-        def link(inputs)
-          new(inputs).link
+        # String. `needed` lists the dependency shared libraries to resolve
+        # imports against (each a `.so` filesystem path or an already-parsed
+        # ELFReader); `soname` sets this object's DT_SONAME.
+        def link(inputs, needed: [], soname: nil)
+          new(inputs, needed: needed, soname: soname).link
         end
 
         # Convenience: link and write the shared object to `path`.
-        def link_to(inputs, path)
-          File.binwrite(path, link(inputs))
+        def link_to(inputs, path, needed: [], soname: nil)
+          File.binwrite(path, link(inputs, needed: needed, soname: soname))
         end
       end
 
-      def initialize(inputs)
+      def initialize(inputs, needed: [], soname: nil)
         @inputs = inputs
+        @needed = needed
+        @soname = soname
       end
 
       def link
         @reader = ELFReader.read(PartialLinker.link(@inputs))
         plan_dynamic_symbols
         scan_relocations
+        resolve_imports
         place_sections
         apply_relocations
         assemble
@@ -151,6 +189,11 @@ module Rubycc
         :name, :type, :flags, :addralign, :entsize, :size, :data,
         :vaddr, :offset, :link, :info, :index, keyword_init: true
       )
+
+      # A dependency shared library the imports resolve against: its DT_NEEDED
+      # name (its own DT_SONAME, or the base filename when it carries none) and
+      # the set of symbol names it defines and exports.
+      Dependency = Struct.new(:name, :provides, keyword_init: true)
 
       # --- dynamic symbols ---------------------------------------------------
 
@@ -168,14 +211,20 @@ module Rubycc
 
       # --- relocation scan (sizing pass) -------------------------------------
 
-      # Walks every relocation to reject unresolved externals and to size the
-      # GOT and the dynamic relocation table before addresses are assigned: it
-      # collects the ordered set of symbols that need a GOT slot and counts the
-      # absolute-64 initializers that will each need an R_X86_64_RELATIVE entry.
+      # Walks every relocation to size the tables before addresses are assigned:
+      # it collects the ordered set of imported (undefined) symbols, the symbols
+      # needing a data GOT slot (internal or external), the external functions
+      # needing a .plt stub, and the counts of absolute-64 initializers (internal
+      # rebased by RELATIVE, external bound by a symbolic R_X86_64_64).
       def scan_relocations
-        @got_order = []   # symbols needing a GOT slot, first-seen order
-        @got_index = {}   # got key => slot index
-        @data64_count = 0
+        @got_order = []     # symbols needing a data GOT slot, first-seen order
+        @got_index = {}     # got key => slot index
+        @plt_order = []     # external functions needing a .plt stub, first-seen
+        @plt_index = {}     # function name => stub index
+        @import_order = []  # imported (undefined) symbols, first-seen order
+        @import_index = {}  # import name => position
+        @data64_count = 0     # internal R_X86_64_64 -> RELATIVE
+        @data64_dyn_count = 0 # external R_X86_64_64 -> symbolic
         allocatable_relocation_sections.each do |rs|
           rs.relocations.each { |reloc| scan_relocation(reloc) }
         end
@@ -188,16 +237,21 @@ module Rubycc
         end
 
         sym = reloc.symbol
-        reject_undefined(sym)
+        external = external_import?(sym)
+        if external
+          if [R_X86_64_PC32, R_X86_64_32, R_X86_64_32S].include?(type)
+            raise LinkError, "unsupported text relocation against external symbol " \
+                             "'#{sym.name}' in a shared object"
+          end
+          register_import(sym)
+        end
 
         if GOT_RELOC_TYPES.include?(type)
-          key = got_key(sym)
-          unless @got_index.key?(key)
-            @got_index[key] = @got_order.size
-            @got_order << sym
-          end
+          register_got(sym)
+        elsif type == R_X86_64_PLT32
+          register_plt(sym) if external
         elsif type == R_X86_64_64
-          @data64_count += 1
+          external ? (@data64_dyn_count += 1) : (@data64_count += 1)
         end
       end
 
@@ -206,15 +260,32 @@ module Rubycc
          *GOT_RELOC_TYPES].include?(type)
       end
 
-      # An undefined (imported) symbol cannot be bound within a self-contained
-      # object; report it clearly and point at the stage that will handle it.
-      def reject_undefined(sym)
-        return unless sym && sym.type != :section && sym.undefined?
+      # An imported reference: an undefined named symbol (a section symbol always
+      # names a section within this object and so is never an import).
+      def external_import?(sym)
+        sym && sym.type != :section && sym.undefined?
+      end
 
-        raise LinkError, "cannot build a self-contained shared object: symbol " \
-                         "'#{sym.name}' is undefined. External symbol resolution " \
-                         "(PLT/GOT imports, DT_NEEDED) is not yet implemented " \
-                         "(planned for the next shared-library stage, L5b)"
+      def register_import(sym)
+        return if @import_index.key?(sym.name)
+
+        @import_index[sym.name] = @import_order.size
+        @import_order << sym
+      end
+
+      def register_got(sym)
+        key = got_key(sym)
+        return if @got_index.key?(key)
+
+        @got_index[key] = @got_order.size
+        @got_order << sym
+      end
+
+      def register_plt(sym)
+        return if @plt_index.key?(sym.name)
+
+        @plt_index[sym.name] = @plt_order.size
+        @plt_order << sym
       end
 
       # A stable key identifying the symbol a GOT slot stands for: a named symbol
@@ -234,6 +305,53 @@ module Rubycc
         (section.flags & SHF_ALLOC) != 0
       end
 
+      # --- import resolution -------------------------------------------------
+
+      # Resolves each imported symbol against the dependency `.so`s, in dependency
+      # order, recording (as-needed) only the dependencies that actually supply a
+      # resolved symbol as DT_NEEDED. A still-unresolved import is left undefined:
+      # a shared object may be completed by the runtime scope, so this is not an
+      # error.
+      def resolve_imports
+        @deps = build_dependencies
+        used = {}
+        @import_order.each do |sym|
+          dep = @deps.find { |d| d.provides.key?(sym.name) }
+          used[dep] = true if dep
+        end
+        @used_deps = @deps.select { |d| used[d] }
+      end
+
+      # Parses each dependency into a Dependency: its DT_NEEDED name and the set
+      # (a name => true hash) of the global/weak symbols it defines and exports.
+      def build_dependencies
+        @needed.map do |entry|
+          reader, name = load_dependency(entry)
+          provides = {}
+          reader.dynamic_symbols.each do |sym|
+            next unless sym.defined? && !sym.name.to_s.empty? &&
+                        (sym.bind == :global || sym.bind == :weak)
+
+            provides[sym.name] = true
+          end
+          Dependency.new(name: name, provides: provides)
+        end
+      end
+
+      # A dependency given either as an already-parsed ELFReader or a `.so`
+      # filesystem path; its DT_NEEDED name is its DT_SONAME, falling back to the
+      # base filename for a path input (a reader without a SONAME has no name).
+      def load_dependency(entry)
+        if entry.is_a?(ELFReader)
+          soname = entry.soname or
+            raise LinkError, "dependency shared object carries no DT_SONAME; pass its path instead"
+          [entry, soname]
+        else
+          reader = ELFReader.read_file(entry)
+          [reader, reader.soname || File.basename(entry)]
+        end
+      end
+
       # --- address assignment ------------------------------------------------
 
       # Lays the allocatable input sections and the synthesized dynamic sections
@@ -243,7 +361,7 @@ module Rubycc
       # the r-- and rw- segments each start on a fresh page. .bss (NOBITS) sits
       # last in the rw- segment, extending its memory size past its file size.
       def place_sections
-        rx = input_sections { |s| executable?(s) }
+        rx = input_sections { |s| executable?(s) } + plt_sections
         ro = dynamic_ro_sections + input_sections { |s| !executable?(s) && !writable?(s) }
         rw_files = input_sections { |s| writable?(s) && s.type != SHT_NOBITS } + writable_dynamic_sections
         bss = input_sections { |s| writable?(s) && s.type == SHT_NOBITS }
@@ -314,24 +432,36 @@ module Rubycc
         @shstrtab_index = @placed.size + 1
       end
 
-      # The three synthesized read-only dynamic sections, in the order the loader
+      # The executable .plt (one stub per imported function), or none when there
+      # are no external calls.
+      def plt_sections
+        return [] unless plt?
+
+        [placed_generated(".plt", SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 16, 0, @plt_order.size * PLT_ENTSIZE)]
+      end
+
+      # The synthesized read-only dynamic sections, in the order the loader
       # expects to find them addressed from .dynamic: the SysV hash, the dynamic
-      # symbol table, and its string table, followed by .rela.dyn when present.
+      # symbol table, and its string table, followed by .rela.dyn (RELATIVE /
+      # GLOB_DAT / symbolic 64) and .rela.plt (JUMP_SLOT) when present.
       def dynamic_ro_sections
         secs = [
           placed_generated(".hash", SHT_HASH, SHF_ALLOC, 8, 4, hash_bytes.bytesize),
           placed_generated(".dynsym", SHT_DYNSYM, SHF_ALLOC, 8, SYM_ENTSIZE, dynsym_size),
           placed_generated(".dynstr", SHT_STRTAB, SHF_ALLOC, 1, 0, dynstr_bytes.bytesize)
         ]
-        secs << placed_generated(".rela.dyn", SHT_RELA, SHF_ALLOC, 8, RELA_ENTSIZE, rela_size) if rela?
+        secs << placed_generated(".rela.dyn", SHT_RELA, SHF_ALLOC, 8, RELA_ENTSIZE, rela_dyn_size) if rela_dyn?
+        secs << placed_generated(".rela.plt", SHT_RELA, SHF_ALLOC, 8, RELA_ENTSIZE, rela_plt_size) if plt?
         secs
       end
 
-      # The synthesized writable dynamic sections: the GOT (only when a GOT slot
-      # is needed) and the .dynamic array.
+      # The synthesized writable dynamic sections: the data GOT (only when a data
+      # GOT slot is needed), the .got.plt (only when there are external calls),
+      # and the .dynamic array.
       def writable_dynamic_sections
         secs = []
         secs << placed_generated(".got", SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 8, 8, @got_order.size * 8) unless @got_order.empty?
+        secs << placed_generated(".got.plt", SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 8, 8, gotplt_size) if plt?
         secs << placed_generated(".dynamic", SHT_DYNAMIC, SHF_ALLOC | SHF_WRITE, 8, DYN_ENTSIZE, dynamic_size)
         secs
       end
@@ -341,27 +471,46 @@ module Rubycc
                    entsize: entsize, size: size, data: nil)
       end
 
-      def rela? = @data64_count.positive? || !@got_order.empty?
-      def rela_size = rela_count * RELA_ENTSIZE
-      def rela_count = @got_order.size + @data64_count
-      def dynsym_size = (@exports.size + 1) * SYM_ENTSIZE
+      def plt? = !@plt_order.empty?
+      def bind_now? = !@import_order.empty?
+
+      def gotplt_size = (GOTPLT_RESERVED + @plt_order.size) * 8
+      def rela_plt_count = @plt_order.size
+      def rela_plt_size = rela_plt_count * RELA_ENTSIZE
+
+      # A .rela.dyn is present when any internal address must be rebased (a GOT
+      # slot or an R_X86_64_64 initializer) or any external data reference bound
+      # (a GLOB_DAT slot or a symbolic R_X86_64_64).
+      def rela_dyn? = rela_dyn_count.positive?
+      def rela_dyn_size = rela_dyn_count * RELA_ENTSIZE
+      def rela_dyn_count = @got_order.size + @data64_count + @data64_dyn_count
+      # The number of leading RELATIVE entries in .rela.dyn (DT_RELACOUNT): the
+      # internal GOT slots and internal absolute-64 initializers, which precede
+      # the GLOB_DAT and symbolic entries.
+      def relacount = internal_got_count + @data64_count
+      def internal_got_count = @got_order.count { |sym| !external_import?(sym) }
+
+      def dynsym_size = (@exports.size + @import_order.size + 1) * SYM_ENTSIZE
       # The dynamic array's size depends only on which tags are present, not on
-      # the addresses filled in later, so it can be computed during sizing: the
-      # five always-present tags, the four relocation tags when .rela.dyn exists,
-      # and the DT_NULL terminator.
-      def dynamic_size = (5 + (rela? ? 4 : 0) + 1) * DYN_ENTSIZE
+      # the addresses filled in later, so it can be computed during sizing.
+      def dynamic_size = dynamic_entry_count * DYN_ENTSIZE
+      def dynamic_entry_count
+        @used_deps.size + (@soname ? 1 : 0) + 5 +
+          (rela_dyn? ? 4 : 0) + (plt? ? 4 : 0) + (bind_now? ? 2 : 0) + 1
+      end
 
       # --- relocation application --------------------------------------------
 
       # Patches every allocatable target section against the assigned addresses,
-      # filling the GOT slots and collecting the R_X86_64_RELATIVE entries. The
-      # relative entries are ordered GOT slots first (in slot order), then the
+      # then builds the GOT, the .plt and their dynamic relocation entries. The
+      # relative entries are ordered internal GOT slots (in slot order) then the
       # absolute-64 initializers (in relocation order), for a deterministic
       # .rela.dyn.
       def apply_relocations
         @section_data = {}
         @placed.each { |sec| @section_data[sec.name] = sec.data if sec.data }
-        @rela_data = []
+        @rela_data = []      # internal R_X86_64_64 -> [offset, addend] RELATIVE
+        @rela_data_sym = []  # external R_X86_64_64 -> [offset, dynindex, addend]
 
         allocatable_relocation_sections.each do |rs|
           base = @vaddr[rs.target.name]
@@ -369,40 +518,87 @@ module Rubycc
           rs.relocations.each { |reloc| apply_relocation(reloc, base, buf) }
         end
 
-        build_got_and_relative
+        build_got
+        build_plt if plt?
       end
 
       def apply_relocation(reloc, base, buf)
-        s = symbol_address(reloc.symbol)
+        sym = reloc.symbol
         a = reloc.addend
         p = base + reloc.offset
+        external = external_import?(sym)
         case reloc.type
-        when R_X86_64_PC32, R_X86_64_PLT32
-          patch32(buf, reloc.offset, s + a - p)
+        when R_X86_64_PLT32
+          target = external ? plt_stub_addr(sym) : symbol_address(sym)
+          patch32(buf, reloc.offset, target + a - p)
+        when R_X86_64_PC32
+          patch32(buf, reloc.offset, symbol_address(sym) + a - p)
         when R_X86_64_32, R_X86_64_32S
-          patch32(buf, reloc.offset, s + a)
+          patch32(buf, reloc.offset, symbol_address(sym) + a)
         when *GOT_RELOC_TYPES
-          slot = @vaddr[".got"] + @got_index[got_key(reloc.symbol)] * 8
+          slot = got_addr + @got_index[got_key(sym)] * 8
           patch32(buf, reloc.offset, slot + a - p)
         when R_X86_64_64
-          value = s + a
-          patch64(buf, reloc.offset, value)
-          @rela_data << [p, value]
+          if external
+            patch64(buf, reloc.offset, 0)
+            @rela_data_sym << [p, import_dynindex(sym), a]
+          else
+            value = symbol_address(sym) + a
+            patch64(buf, reloc.offset, value)
+            @rela_data << [p, value]
+          end
         end
       end
 
-      # Fills each GOT slot with the link-time address of its symbol and records
-      # an R_X86_64_RELATIVE entry so the loader rewrites the slot to base + that
-      # address. The self-contained target is why every GOT slot is a plain
-      # relative rebase rather than a JUMP_SLOT/GLOB_DAT import.
-      def build_got_and_relative
+      # Fills the data GOT: an internal slot holds its symbol's link-time address
+      # and is rebased by an R_X86_64_RELATIVE; an external slot is left zero and
+      # bound by an R_X86_64_GLOB_DAT naming the imported symbol.
+      def build_got
         @got_bytes = +"".b
-        @rela_got = []
+        @rela_relative_got = []
+        @rela_glob_dat = []
         @got_order.each_with_index do |sym, i|
-          address = symbol_address(sym)
-          @got_bytes << [address].pack("Q<")
-          @rela_got << [@vaddr[".got"] + i * 8, address]
+          slot = got_addr + i * 8
+          if external_import?(sym)
+            @got_bytes << [0].pack("Q<")
+            @rela_glob_dat << [slot, import_dynindex(sym)]
+          else
+            address = symbol_address(sym)
+            @got_bytes << [address].pack("Q<")
+            @rela_relative_got << [slot, address]
+          end
         end
+      end
+
+      # Builds the .plt stubs, the .got.plt and its JUMP_SLOT relocations. Each
+      # stub is `jmp *slot(%rip)` (FF 25 + a PC-relative disp32 to its .got.plt
+      # slot) padded with single-byte NOPs to the 16-byte entry; under BIND_NOW
+      # the loader has already stored the resolved target in the slot, so the
+      # first call jumps straight there. The .got.plt reserves three leading slots
+      # ([0] = &_DYNAMIC, [1]/[2] zero) before the per-function slots.
+      def build_plt
+        @plt_bytes = +"".b
+        @gotplt_bytes = +[@vaddr[".dynamic"], 0, 0].pack("Q<Q<Q<")
+        @rela_plt = []
+        @plt_order.each_with_index do |sym, i|
+          stub = plt_stub_addr(sym)
+          slot = gotplt_slot_addr(i)
+          disp = slot - (stub + 6)
+          @plt_bytes << [0xFF, 0x25].pack("C2") << [disp].pack("l<")
+          @plt_bytes << ([0x90] * (PLT_ENTSIZE - 6)).pack("C*")
+          @gotplt_bytes << [0].pack("Q<")
+          @rela_plt << [slot, import_dynindex(sym)]
+        end
+      end
+
+      def got_addr = @vaddr[".got"]
+      def plt_stub_addr(sym) = @vaddr[".plt"] + @plt_index[sym.name] * PLT_ENTSIZE
+      def gotplt_slot_addr(i) = @vaddr[".got.plt"] + (GOTPLT_RESERVED + i) * 8
+
+      # The .dynsym index of an imported symbol: after the null entry and the
+      # exported symbols.
+      def import_dynindex(sym)
+        @exports.size + 1 + @import_index[sym.name]
       end
 
       # The load-time virtual address of a relocation's symbol: a section
@@ -418,26 +614,33 @@ module Rubycc
 
       # --- dynamic table contents --------------------------------------------
 
-      # Builds .dynstr and the exported-name offset map, memoized so the sizing
-      # pass and the emit share one table.
+      # Builds .dynstr and the name -> offset map, memoized so the sizing pass and
+      # the emit share one table. It holds every exported and imported symbol name,
+      # every recorded DT_NEEDED name and this object's DT_SONAME.
       def dynstr
         @dynstr ||= begin
           buf = +"\0".b
           offsets = {}
-          @exports.each do |sym|
-            next if offsets.key?(sym.name)
+          dynstr_names.each do |name|
+            next if name.nil? || name.empty? || offsets.key?(name)
 
-            offsets[sym.name] = buf.bytesize
-            buf << sym.name.b << "\0".b
+            offsets[name] = buf.bytesize
+            buf << name.b << "\0".b
           end
           [buf, offsets]
         end
       end
 
+      def dynstr_names
+        @exports.map(&:name) + @import_order.map(&:name) + @used_deps.map(&:name) + [@soname]
+      end
+
       def dynstr_bytes = dynstr[0]
+      def dynstr_offset(name) = dynstr[1].fetch(name)
 
       # The .dynsym payload: the reserved null entry, then one entry per exported
-      # symbol carrying its load address, size, binding/type and defining section.
+      # symbol carrying its load address, size, binding/type and defining section,
+      # then one UND entry per imported symbol (st_shndx = SHN_UNDEF, value 0).
       def dynsym_bytes
         _, name_offsets = dynstr
         buf = +("\0".b * SYM_ENTSIZE)
@@ -448,14 +651,22 @@ module Rubycc
                            shndx: @section_index.fetch(sym.section.name),
                            value: @vaddr[sym.section.name] + sym.value, size: sym.size)
         end
+        @import_order.each do |sym|
+          info = (STB.fetch(sym.bind, 1) << 4) | STT.fetch(sym.type, 0)
+          buf << sym_entry(name: name_offsets.fetch(sym.name), info: info,
+                           other: STV.fetch(sym.visibility, 0),
+                           shndx: SHN_UNDEF, value: 0, size: 0)
+        end
         buf
       end
 
       # The SysV (.hash) table: nbucket, nchain, then the bucket heads and the
-      # collision chain. Each dynamic symbol is hashed into a bucket and prepended
-      # to that bucket's chain, in symbol-index order for a deterministic layout.
+      # collision chain. Every dynamic symbol (exports and imports) occupies a
+      # chain slot so nchain equals the .dynsym count, but only the exported
+      # (defined) symbols are hashed into the buckets — an import is never looked
+      # up here — in symbol-index order for a deterministic layout.
       def hash_bytes
-        nsyms = @exports.size + 1
+        nsyms = @exports.size + @import_order.size + 1
         nbucket = bucket_count(@exports.size)
         buckets = Array.new(nbucket, SHN_UNDEF)
         chain = Array.new(nsyms, SHN_UNDEF)
@@ -490,36 +701,68 @@ module Rubycc
         h
       end
 
-      # The concatenated .rela.dyn payload: the GOT-slot relatives, then the
-      # data initializer relatives. Every entry is an R_X86_64_RELATIVE (no
-      # symbol), so r_info is just the type.
-      def rela_bytes
+      # The .rela.dyn payload: the RELATIVE entries (internal GOT slots then data
+      # initializers) first, so DT_RELACOUNT can cover them, then the GLOB_DAT
+      # entries for external data GOT slots, then the symbolic R_X86_64_64 data
+      # initializers pointing at imported data.
+      def rela_dyn_bytes
         buf = +"".b
-        (@rela_got + @rela_data).each do |offset, addend|
-          buf << [offset].pack("Q<") << [R_X86_64_RELATIVE].pack("Q<") << [addend].pack("q<")
+        (@rela_relative_got + @rela_data).each do |offset, addend|
+          buf << rela_entry(offset, R_X86_64_RELATIVE, 0, addend)
+        end
+        @rela_glob_dat.each do |offset, dynindex|
+          buf << rela_entry(offset, R_X86_64_GLOB_DAT, dynindex, 0)
+        end
+        @rela_data_sym.each do |offset, dynindex, addend|
+          buf << rela_entry(offset, R_X86_64_64, dynindex, addend)
         end
         buf
       end
 
-      # The .dynamic array: pointers/sizes for the hash and symbol/string tables,
-      # the relocation table when present (including DT_RELACOUNT, since every
-      # entry is relative), and the DT_NULL terminator.
+      # The .rela.plt payload: one JUMP_SLOT per external function, naming its
+      # imported symbol; the loader stores the resolved address into the slot.
+      def rela_plt_bytes
+        buf = +"".b
+        @rela_plt.each { |offset, dynindex| buf << rela_entry(offset, R_X86_64_JUMP_SLOT, dynindex, 0) }
+        buf
+      end
+
+      def rela_entry(offset, type, sym_index, addend)
+        [offset, (sym_index << 32) | type].pack("Q<Q<") + [addend].pack("q<")
+      end
+
+      # The .dynamic array: the DT_NEEDED dependencies and DT_SONAME first, then
+      # pointers/sizes for the hash and symbol/string tables, the .rela.dyn table
+      # (with DT_RELACOUNT), the .plt relocation table (DT_PLTGOT/PLTRELSZ/
+      # PLTREL/JMPREL), the BIND_NOW flags, and the DT_NULL terminator.
       def dynamic_entries
-        entries = [
+        entries = []
+        @used_deps.each { |dep| entries << [DT_NEEDED, dynstr_offset(dep.name)] }
+        entries << [DT_SONAME, dynstr_offset(@soname)] if @soname
+        entries += [
           [DT_HASH, @vaddr[".hash"]],
           [DT_STRTAB, @vaddr[".dynstr"]],
           [DT_SYMTAB, @vaddr[".dynsym"]],
           [DT_STRSZ, dynstr_bytes.bytesize],
           [DT_SYMENT, SYM_ENTSIZE]
         ]
-        if rela?
+        if rela_dyn?
           entries += [
             [DT_RELA, @vaddr[".rela.dyn"]],
-            [DT_RELASZ, rela_size],
+            [DT_RELASZ, rela_dyn_size],
             [DT_RELAENT, RELA_ENTSIZE],
-            [DT_RELACOUNT, rela_count]
+            [DT_RELACOUNT, relacount]
           ]
         end
+        if plt?
+          entries += [
+            [DT_PLTGOT, @vaddr[".got.plt"]],
+            [DT_PLTRELSZ, rela_plt_size],
+            [DT_PLTREL, DT_RELA],
+            [DT_JMPREL, @vaddr[".rela.plt"]]
+          ]
+        end
+        entries += [[DT_FLAGS, DF_BIND_NOW], [DT_FLAGS_1, DF_1_NOW]] if bind_now?
         entries << [DT_NULL, 0]
         entries
       end
@@ -540,6 +783,11 @@ module Rubycc
         dynsym.info = 1 # first non-local dynamic symbol (only the null entry is local)
         named(".dynamic").link = named(".dynstr").index
         named(".rela.dyn")&.link = dynsym.index
+        rela_plt = named(".rela.plt")
+        return unless rela_plt
+
+        rela_plt.link = dynsym.index
+        rela_plt.info = named(".got.plt").index # the section the JUMP_SLOTs modify
       end
 
       def named(name)
@@ -553,8 +801,11 @@ module Rubycc
         when ".hash"     then hash_bytes
         when ".dynsym"   then dynsym_bytes
         when ".dynstr"   then dynstr_bytes
-        when ".rela.dyn" then rela_bytes
+        when ".rela.dyn" then rela_dyn_bytes
+        when ".rela.plt" then rela_plt_bytes
+        when ".plt"      then @plt_bytes
         when ".got"      then @got_bytes
+        when ".got.plt"  then @gotplt_bytes
         when ".dynamic"  then dynamic_bytes
         else @section_data[sec.name]
         end
