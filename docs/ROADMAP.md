@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 の途中。L3 前半 = Step 31、DoS フェイルセーフ = Step 32、L4(PIC データアクセス)= Step 33 まで完了。次は L5(共有ライブラリライタ .so)**。
+現在地: **M2 の途中。L5 第一段(自己完結 .so)= Step 34 まで完了。次は L5 第二段(.gnu.hash・外部シンボル解決・SONAME)**。
 
 ---
 
@@ -89,6 +89,7 @@
 | enum の unsigned 底型 | 全 enum を int へ写像(gcc は全非負 enum を unsigned int に)。c-testsuite 00170 のポインタ符号不一致で顕在 | 実害が出た時点 |
 | compound literal / VLA / _Generic / ワイド文字列 / #pragma push_macro / K&R `int ()` 型 | 各々診断エラー(c-testsuite スキップ表に理由記録) | 実害が出た時点 |
 | DoS フェイルセーフの上限値 | パーサ再帰深さ 500・#if 式 500・マクロ展開 100 万トークン等(Step 32)は実行環境のスタックサイズ(本環境 ~330 括弧段)前提。極端に浅いスタックの環境では再評価が必要。詳細は docs/security-dos-review.md | コーパス(R10)実測で再調整 |
+| -fPIC で定義済みエクスポートグローバルを PC32 参照 | Step 33 は TU 内定義グローバルを PC32(interpose 非対応の -Bsymbolic 相当)。rubycc の SharedLinker は S+A−P で正しく解決するが、GNU ld は preemptible シンボルへの PC32 を共有オブジェクト規則違反として拒否(gcc -shared 相互リンク不可)。実行は正しい | 真の interpose 対応(エクスポート定義グローバルも GOT 経由)を M2 終盤か PIC 改善で。実 gem がグローバル変数をエクスポートするか R10 コーパスで判定 |
 
 ## 4. M1 実行計画 — **完了**
 
@@ -137,21 +138,21 @@ system ar と双方向相互運用・決定的出力)。設計記録は STEPS.md
 設計記録は STEPS.md の Step 33。
 
 ### L5 — 共有ライブラリライタ(.so)
-- レイアウト: ELF ヘッダ / プログラムヘッダ(PT_LOAD(r-x / r-- / rw-)、PT_DYNAMIC、
-  PT_GNU_STACK)/ .dynsym .dynstr **.gnu.hash と .hash の両方**(glibc は gnu.hash 優先、
-  musl 対応も含め安全側: DESIGN 5.3)/ .rela.dyn(GLOB_DAT / RELATIVE / 64)/
-  .rela.plt(JUMP_SLOT)/ .plt / .got / .got.plt / .text .rodata .data .bss / .dynamic。
-- エクスポート方針: 定義済みグローバルを全て動的シンボルに出す(gcc 既定と同じ。
-  mkmf は Init_xxx が見えることを要求する)。未解決の rb_* は UND のまま残す
-  (共有ライブラリでは合法。dlopen 時に解決: DESIGN 4.2)。
-- .gnu.hash(ブルームフィルタ・バケット)は公式仕様が薄いので、binutils の出力を
-  readelf で**観察して外形を合わせる**(実装コードは見ない: R11)。
-- 決定的出力(N4): ハッシュのバケット数等もサイズから決定的に導出する。
-- 検証: readelf / eu-elflint での構造検査に加え、**Ruby の Fiddle で dlopen して
-  エクスポート関数を実際に呼ぶ**実地テストを glibc・musl 両コンテナで CI 化。
-  ここが「動的リンクの細部は libc 差が出やすい」リスク(DESIGN 7 章)の関所。
-  シンボルバージョン(GLIBC_2.x)は参照側としては無版本参照で解決される想定だが、
-  実物の libc.so で必ず確認する。
+- **第一段(自己完結 .so)= 完了(Step 34、77209d8)**: SharedLinker。3 PT_LOAD +
+  PT_DYNAMIC + PT_GNU_STACK、静的再配置の適用エンジン(PC32/PLT32/32/32S、
+  GOTPCREL 系はスロット生成、.data 絶対アドレスは RELATIVE)、.dynsym/.dynstr/
+  SysV .hash/.dynamic、エクスポート、決定的出力。**Fiddle で dlopen して
+  エクスポート関数を実呼び出し**するところまで検証済み。設計記録は STEPS.md の
+  Step 34。
+- **第二段(残り)**: **.gnu.hash**(ブルームフィルタ・バケット。公式仕様が薄いので
+  binutils の出力を readelf で観察して外形を合わせる。実装コードは見ない: R11)/
+  外部シンボル解決(.plt / .got.plt / .rela.plt の JUMP_SLOT、GLOB_DAT、
+  DT_NEEDED)/ SONAME(DT_SONAME)/ 未解決 rb_* を UND のまま残す(dlopen 時
+  解決: DESIGN 4.2)。glibc は gnu.hash 優先・musl 対応も含め .hash と両方持つ
+  安全側(DESIGN 5.3)。
+- 検証: readelf / eu-elflint 構造検査 + Fiddle dlopen 実呼び出しを glibc・musl
+  両コンテナで CI 化(動的リンクの libc 差リスク: DESIGN 7 章の関所)。シンボル
+  バージョン(GLIBC_2.x)は参照側で無版本解決される想定だが実物 libc.so で確認。
 
 ### L6 — ライブラリ解決(-l / -L / DT_NEEDED)
 - -L 探索順 → `libfoo.so` 優先・`libfoo.a` フォールバック。静的ライブラリは L2/L3 の

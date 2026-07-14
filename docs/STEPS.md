@@ -1240,10 +1240,60 @@ gem コーパス(R10)での実測に応じて再調整しうる。
 
 ---
 
+## Step 34 — 自己完結 共有ライブラリライタ(M2 L5 第一段: .so と dlopen)(77209d8)
+
+**内容**: Rubycc::Link::SharedLinker — 複数 .o + アーカイブを ET_DYN(.so)へ
+最終リンクする。まず外部依存を持たない自己完結 .so を生成し、Ruby の Fiddle で
+dlopen してエクスポート関数を実際に呼べる状態を作る。GNU hash・外部シンボル解決
+(PLT/GOT/JUMP_SLOT/GLOB_DAT/DT_NEEDED)・SONAME は後続(L5b/L6)。L5 は一体だと
+巨大かつ .gnu.hash の実装リスクが高いため段階分割した第一段。heavy-implementer
+1 フェーズ(session limit で中断・再開)。
+
+**設計判断**:
+- **最終リンクの基盤を PartialLinker の上に載せる**: SharedLinker は入力を
+  PartialLinker で単一 ET_REL に併合 → ELFReader で読み戻し → ET_DYN 生成。
+  併合(セクション結合・シンボル解決・遅延取り込み)を再利用し、SharedLinker は
+  「仮想アドレス配置 + 再配置適用 + 動的セクション生成」に集中。L6(ライブラリ
+  解決)は「UND を残す + DT_NEEDED」でこの併合リーダに合流でき、L7(実行ファイル)は
+  同じ配置・適用エンジンを ET_EXEC/e_entry 付きで再利用できる分離。
+- **配置は p_vaddr = p_offset で自明化**: 役割別 3 PT_LOAD(r-x / r-- / rw-)、
+  各セグメント先頭を 0x1000 整列。全配置セクションで p_vaddr = p_offset を採ると
+  p_vaddr≡p_offset(mod page)が自明に満たされ、配置ロジックが単純になる
+  (ファイルとメモリで同一レイアウト)。ehdr+phdr は先頭 r-x に同梱、.bss は
+  NOBITS で memsz のみ拡張、PT_GNU_STACK で非実行スタック。
+- **静的再配置の適用エンジン(L3 後半に相当)**: PC32/PLT32 は S+A−P で直接
+  (同一 .so 内なので PLT スタブ不要)、32/32S は絶対直書き、GOTPCREL 系は
+  シンボルごとに GOT スロットを実際に生成しスロット経由参照、.data の絶対
+  アドレス初期化子(R_X86_64_64)はベース相対値を書いて R_X86_64_RELATIVE を
+  発行。GOT スロット自体にも RELATIVE。**第一段で出す動的再配置は RELATIVE のみ**
+  (位置独立オブジェクトの絶対アドレスはすべてローダの base 加算で解決)。
+- **.hash のみ(SysV)**: nchain = dynsym 数、nbucket はエクスポート数から
+  サイズ決定的なラダーで導出(平均チェイン長 ~1)。glibc は .gnu.hash 不在時に
+  .hash へフォールバックするので dlsym が動く。.gnu.hash は次段。
+- **併合が生む 2 つの再配置形を確認**: (1) クロスユニット併合で内部化した
+  シンボルへの GOTPCRELX(-fPIC の別 TU 参照)、(2) ファイルスコープポインタが
+  生む .data の R_X86_64_64。どちらも Fiddle 実行で往復を確認。
+- **検証は「実際に dlopen して呼ぶ」まで**: ラウンドトリップ + readelf -a
+  クリーン + eu-elflint(存在時)に加え、Fiddle で dlopen し内部関数・グローバル
+  読み書き・文字列・クロスユニット GOT・データポインタが全て期待値を返すことを
+  実走で確認(受け入れの肝)。
+
+**トレードオフ / 既知の負債**: (1) rubycc -fPIC は**定義済みでエクスポートされる
+グローバル**を PC32 で参照する(Step 33 の -Bsymbolic 相当の割り切り)。
+SharedLinker はローダ非依存に S+A−P で解決するので**実行は正しい**が、GNU ld は
+これを「preemptible シンボルへの PC32」= 共有オブジェクト規則違反として拒否する。
+よって定義済みグローバルを含む入力は `gcc -shared` 相互比較が不可(gcc 互換
+テストは関数+文字列入力を使用)。これはコンパイラ側 PIC コード生成の限界で、
+真の interpose 対応(エクスポートされる定義済みグローバルも GOT 経由にする)は
+将来の PIC 改善課題(ROADMAP §3)。(2) .gnu.hash・外部シンボル・SONAME は L5b/L6。
+
+---
+
 ## 現在のテスト規模
 
-Step 33 完了時点: **1,409 runs / 4,074 assertions / 0 failures / 19 skips**
+Step 34 完了時点: **1,425 runs / 4,142 assertions / 0 failures / 19 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
-ar・リンク・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行
-テスト(gcc 差分比較・クロスリンク ABI 差分・gcc -E トークン列差分込み)+
-c-testsuite 220 ケース + ruby.h スモークテスト。
+ar・リンク(ld -r 併合 + .so)・PIC・DoS 耐性・診断・CLI・プリプロセッサの
+ユニットテスト + 実行テスト(gcc 差分比較・クロスリンク ABI 差分・gcc -E
+トークン列差分・Fiddle dlopen 実呼び出し込み)+ c-testsuite 220 ケース +
+ruby.h スモークテスト。
