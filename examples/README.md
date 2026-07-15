@@ -54,3 +54,14 @@ Step 1〜9 の機能(式・変数・if/ループ・関数・ポインタ・配�
 | `step28_headerisms.c` | Step 28(後半): `<ruby.h>` を塞いでいた機能群。隣接文字列リテラルの連結(翻訳フェーズ 6、stringize 結果との隣接込み)・ワイド文字定数 `L'x'`・`_Pragma` 演算子の受理(ファイルスコープで無効果)・ビットフィールドの System V レイアウト(単位共有・跨ぎ・`:0` 強制整列・無名パディング)を `sizeof`/`_Alignof` で確認(値の読み書きは M2 まで診断エラー) |
 | `step28_declarations.c` | Step 28(宣言まわりの ISO 適合): 一時定義(6.9.2、複数回宣言 + 初期化 1 回・カンマ形式・static 版)・関数プロトタイプとオブジェクトが混在する 1 宣言(`int f(int), g(int), a;`)・パラメータ配列の `[static N]`/型修飾子・glibc 流の `__restrict` 修飾・不完全 enum へのポインタ・`char *` と `void *` の条件演算子合成(6.5.15p6) |
 | `step28_wideint.c` | Step 28(Phase C4): `__int128` / `unsigned __int128` の最小サブセット(`<ruby.h>` の config.h を塞いでいた最後の機能)。狭い整数からの変換(符号/ゼロ充填)・128 ビット乗算(memory.h の `rb_mul_size_overflow` 形状)・キャリー/ボローを跨ぐ加減算・混合型比較(狭いオペランドを 128 ビットへ昇格)・`sizeof`/`_Alignof`・16 バイトの struct メンバ(char の後にオフセット 16)。未実装の演算(除算・シフト・ビット演算・値渡し/返し・可変長渡し)は診断エラー |
+
+## m2 のサンプル一覧
+
+M2 のリンカ基盤ステップ(Step 29〜36: ELF リーダ・ar・ld -r 併合・PIC・.so
+ライタ・ライブラリ解決)は C 言語機能を追加しないため、サンプルは持たない
+(実地検証は各コンポーネントのテストが担う)。実行ファイルを作れるようになった
+Step 37(L7)から M2 のサンプルを追加する。
+
+| ファイル | 実演するステップと機能 |
+|---|---|
+| `step37_conftest.c` | Step 37: 実行ファイルと crt(mkmf の try_run プローブの形)。libc 関数(`strlen`/`printf`)を使い、終了コードと stdout の両方で結果を報告する — rubycc の `ExecutableLinker` が合成 crt の `_start`→`__libc_start_main` で C ランタイムを初期化して実行する経路の実演。`test_examples.rb` は gcc 差分で、`test_executable.rb` は rubycc 自身の実行ファイルライタでエンドツーエンド駆動する |

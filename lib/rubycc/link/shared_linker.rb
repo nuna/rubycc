@@ -170,7 +170,8 @@ module Rubycc
       end
 
       def link
-        @reader = ELFReader.read(PartialLinker.link(@inputs))
+        @reader = ELFReader.read(PartialLinker.link(link_inputs))
+        after_merge
         plan_dynamic_symbols
         scan_relocations
         resolve_imports
@@ -180,6 +181,26 @@ module Rubycc
       end
 
       private
+
+      # --- subclass hooks ----------------------------------------------------
+      # The final-link core is shared with the executable writer (ExecutableLinker),
+      # which differs from a shared object only in a handful of decisions expressed
+      # through these hooks. A shared object links its inputs as given (an
+      # executable prepends a synthesized crt), needs no post-merge validation,
+      # loads at virtual address 0 so p_vaddr == p_offset (an executable loads at a
+      # fixed non-PIE base), rebases every internal absolute address at load time
+      # through R_X86_64_RELATIVE (an executable, mapped at a fixed address, writes
+      # the final address directly and needs no base relocation), places no section
+      # ahead of .text (an executable places .interp), and is an entry-less ET_DYN
+      # (an executable is an ET_EXEC entered at _start). Each default keeps the
+      # shared-object behavior byte-for-byte.
+      def link_inputs = @inputs
+      def after_merge; end
+      def load_base = 0
+      def rebase_internal? = true
+      def leading_sections = []
+      def e_type = ET_DYN
+      def e_entry = 0
 
       # A section placed into the image: its ELF section-header fields plus the
       # assigned load address and file offset. `data` holds the file bytes (nil
@@ -361,7 +382,7 @@ module Rubycc
       # the r-- and rw- segments each start on a fresh page. .bss (NOBITS) sits
       # last in the rw- segment, extending its memory size past its file size.
       def place_sections
-        rx = input_sections { |s| executable?(s) } + plt_sections
+        rx = leading_sections + input_sections { |s| executable?(s) } + plt_sections
         ro = dynamic_ro_sections + input_sections { |s| !executable?(s) && !writable?(s) }
         rw_files = input_sections { |s| writable?(s) && s.type != SHT_NOBITS } + writable_dynamic_sections
         bss = input_sections { |s| writable?(s) && s.type == SHT_NOBITS }
@@ -408,8 +429,11 @@ module Rubycc
         placed = []
         sections.each do |sec|
           cursor = align(cursor, sec.addralign)
-          sec.vaddr = cursor
+          # The file offset is the raw cursor; the virtual address adds the load
+          # base (zero for a shared object, so vaddr == offset as before; a fixed
+          # base for a non-PIE executable).
           sec.offset = cursor
+          sec.vaddr = load_base + cursor
           cursor += sec.size
           placed << sec
         end
@@ -483,12 +507,19 @@ module Rubycc
       # (a GLOB_DAT slot or a symbolic R_X86_64_64).
       def rela_dyn? = rela_dyn_count.positive?
       def rela_dyn_size = rela_dyn_count * RELA_ENTSIZE
-      def rela_dyn_count = @got_order.size + @data64_count + @data64_dyn_count
+      # The GLOB_DAT entries (external data GOT slots) and symbolic-64 entries
+      # (external absolute-64 initializers) are always dynamic; the RELATIVE
+      # entries only exist when internal absolute addresses are rebased at load
+      # time (a shared object). A non-PIE executable writes those addresses
+      # directly, so it emits no RELATIVE entry.
+      def rela_dyn_count = external_got_count + @data64_dyn_count + relacount
       # The number of leading RELATIVE entries in .rela.dyn (DT_RELACOUNT): the
       # internal GOT slots and internal absolute-64 initializers, which precede
-      # the GLOB_DAT and symbolic entries.
-      def relacount = internal_got_count + @data64_count
+      # the GLOB_DAT and symbolic entries. None when internal addresses are not
+      # rebased (a non-PIE executable).
+      def relacount = rebase_internal? ? (internal_got_count + @data64_count) : 0
       def internal_got_count = @got_order.count { |sym| !external_import?(sym) }
+      def external_got_count = @got_order.count { |sym| external_import?(sym) }
 
       def dynsym_size = (@exports.size + @import_order.size + 1) * SYM_ENTSIZE
       # The dynamic array's size depends only on which tags are present, not on
@@ -545,7 +576,9 @@ module Rubycc
           else
             value = symbol_address(sym) + a
             patch64(buf, reloc.offset, value)
-            @rela_data << [p, value]
+            # A shared object rebases this absolute initializer at load time; a
+            # non-PIE executable's address is already final, so no RELATIVE.
+            @rela_data << [p, value] if rebase_internal?
           end
         end
       end
@@ -565,7 +598,9 @@ module Rubycc
           else
             address = symbol_address(sym)
             @got_bytes << [address].pack("Q<")
-            @rela_relative_got << [slot, address]
+            # The slot already holds its final address; a shared object still
+            # rebases it with a RELATIVE, a non-PIE executable does not.
+            @rela_relative_got << [slot, address] if rebase_internal?
           end
         end
       end
@@ -875,10 +910,10 @@ module Rubycc
         e_ident = [0x7F, 0x45, 0x4C, 0x46, ELFCLASS64, ELFDATA2LSB, EV_CURRENT,
                    0, 0, 0, 0, 0, 0, 0, 0, 0].pack("C16")
         e_ident +
-          [ET_DYN].pack("S<") +
+          [e_type].pack("S<") +           # ET_DYN for a .so, ET_EXEC for an executable
           [EM_X86_64].pack("S<") +
           [EV_CURRENT].pack("L<") +
-          [0].pack("Q<") +                # e_entry (a shared object has no entry)
+          [e_entry].pack("Q<") +          # 0 for a shared object, _start's vaddr for an executable
           [EHDR_SIZE].pack("Q<") +        # e_phoff (program headers follow the header)
           [shoff].pack("Q<") +            # e_shoff
           [0].pack("L<") +                # e_flags

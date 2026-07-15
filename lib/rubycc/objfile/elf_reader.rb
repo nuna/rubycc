@@ -46,10 +46,13 @@ module Rubycc
       EHDR_SIZE   = 64
       SHDR_SIZE   = 64
 
-      # e_type values (only the two the linker consumes are named; others are
-      # reported numerically and rejected by #read).
-      ET_REL = 1
-      ET_DYN = 3
+      # e_type values the reader consumes; others are reported numerically and
+      # rejected by #read. ET_EXEC is read back like a shared object — through the
+      # allocated .dynsym / .dynamic tables located by the section header table —
+      # so the executable writer's output can be inspected the same way.
+      ET_REL  = 1
+      ET_EXEC = 2
+      ET_DYN  = 3
 
       EM_X86_64 = 62
 
@@ -191,6 +194,7 @@ module Rubycc
       end
 
       def relocatable? = @type == ET_REL
+      def executable? = @type == ET_EXEC
       def shared_object? = @type == ET_DYN
 
       # The first section with the given name, or nil. Section names are not
@@ -237,8 +241,8 @@ module Rubycc
         @machine = u16(18)
         raise ELFFormatError, "unsupported machine #{@machine} (only EM_X86_64 is supported)" \
           unless @machine == EM_X86_64
-        unless [ET_REL, ET_DYN].include?(@type)
-          raise ELFFormatError, "unsupported ELF type #{@type} (only ET_REL and ET_DYN are supported)"
+        unless [ET_REL, ET_EXEC, ET_DYN].include?(@type)
+          raise ELFFormatError, "unsupported ELF type #{@type} (only ET_REL, ET_EXEC and ET_DYN are supported)"
         end
 
         @entry = u64(24)
