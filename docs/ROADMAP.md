@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 の途中。L6(ライブラリ解決)= Step 36 まで完了。次は L7(実行ファイル + crt、conftest 用)。L5 第三段(.gnu.hash)は .hash で動くため適合性仕上げとして後続**。
+現在地: **M2 の大詰め。L7(実行ファイル + crt)= Step 37 まで完了。残りは L8(ドライバ統合と M2 受け入れ = json/msgpack 実ビルド)。L5 第三段(.gnu.hash)は .hash で動くため適合性仕上げとして後続**。
 
 ---
 
@@ -165,18 +165,13 @@ system ar と双方向相互運用・決定的出力)。設計記録は STEPS.md
 libc.so スクリプト解決・gcc -shared -lz 一致を検証済み。設計記録は STEPS.md の
 Step 36。
 
-### L7 — 実行ファイルと crt(conftest 用)
-- 目的は mkmf の conftest(try_link / try_run)のみ。一般の実行ファイル生成品質は狙わない。
-- 形式: **非 PIE の ET_EXEC + PT_INTERP** を選ぶ(PIE より再配置が単純。ASLR 適合性は
-  conftest には不要)。インタプリタパスは実在確認で選択
-  (glibc: /lib64/ld-linux-x86-64.so.2、musl: /lib/ld-musl-x86_64.so.1)。
-- crt: _start は **__libc_start_main 呼び出し方式**(glibc / musl 両方が提供し、libc 初期化・
-  atexit・環境変数を正しく通す)。「main 直呼び + exit syscall」の自前方式は printf 等の
-  libc 初期化前提が崩れるので採らない。glibc 2.34+ で __libc_start_main がバージョン付き
-  シンボルになっている点は、無版本参照での解決可否を実物で確認してから確定する。
-  機械語は Ruby 内で合成(DESIGN 5.3 crt/)。
-- 検証: mkmf が生成する典型 conftest ソース(have_func / have_header / try_run の実物)を
-  ビルド・実行して終了コードを確認。glibc / musl 両方。
+### ~~L7 — 実行ファイルと crt(conftest 用)~~ **完了(Step 37、f9ba9dc)**
+計画どおり実装(ExecutableLinker: 非 PIE ET_EXEC + PT_INTERP、__libc_start_main
+呼び出し方式の合成 crt _start、libc 既定 needed)。非 PIE で内部絶対再配置を
+直接解決し RELATIVE 不要に。**__libc_start_main の無版本参照が実機 glibc 2.34+ の
+デフォルト版に束縛され動作する(verneed 不要)ことを実証**、return 42→exit 42・
+puts/printf・conftest try_run 風を実走で検証、gcc -no-pie と一致。設計記録は
+STEPS.md の Step 37。musl での検証は L8 の M2 受け入れ(両コンテナ)で行う。
 
 ### L8 — ドライバ統合と M2 受け入れ
 - exe/rubycc を gcc 互換ドライバに拡張(R6): 複数入力(.c / .o 混在)、-c 無しの

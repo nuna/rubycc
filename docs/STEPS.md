@@ -1373,11 +1373,59 @@ inputs へ振り分ける。glibc の libc.so がテキストのリンカスク�
 
 ---
 
+## Step 37 — 実行ファイルと crt(M2 L7: 非 PIE ET_EXEC と _start 合成)(f9ba9dc)
+
+**内容**: Rubycc::Link::ExecutableLinker(SharedLinker のサブクラス)— mkmf の
+conftest(try_link/try_run)を通すための、動的リンクされた非 PIE ET_EXEC 実行
+ファイルを生成。Ruby 内で合成した crt(_start)経由で __libc_start_main を呼び
+C ランタイムを初期化。heavy-implementer 1 フェーズ。
+
+**設計判断**:
+- **SharedLinker をサブクラス化して再利用**(共通基底の抽出はリスクが高いため):
+  配置・再配置適用・PLT/GOT・.dynsym/.hash/.dynamic は SharedLinker のものを
+  そのまま使い、差分だけを「挙動を一切変えないフック」で表現(link_inputs/
+  after_merge/load_base=0/rebase_internal?=true/leading_sections=[]/e_type=ET_DYN/
+  e_entry=0)。既定値が .so の従来挙動とバイト完全一致し、既存 .so テストで担保。
+  ExecutableLinker は build_phdrs/phnum/plan_dynamic_symbols/section_bytes と
+  上記フックのみ override。
+- **非 PIE の簡略化が核心**: e_type=ET_EXEC・固定ベース 0x400000 なので絶対
+  アドレスが確定し、内部の絶対再配置(64/32/32S)をリンク時に最終値で直接解決
+  でき、**RELATIVE 動的再配置が一切不要**(rebase_internal?=false で .rela.dyn の
+  RELATIVE を抑止)。内部 GOT スロットも絶対値直書き。外部シンボル(libc)は
+  従来どおり PLT/GOT + JUMP_SLOT/GLOB_DAT。PIE より再配置が単純という L7 の
+  狙いどおり。
+- **crt を「ET_REL 化して入力先頭に prepend」**: psABI のプロセス起動慣例から
+  _start を 31 バイト機械語合成(各命令に英語コメント)し、RelocatableWriter で
+  1 セクションの ET_REL にして入力の先頭に置く。PartialLinker が併合し、_start の
+  2 参照(main=非 PIE の絶対 32bit R_X86_64_32、__libc_start_main=PLT32)を
+  既存の再配置パイプラインが処理する。専用の再配置経路を新設しない設計。
+- **__libc_start_main の無版本参照で足りることを実証**: glibc 2.34+ は
+  __libc_start_main@@GLIBC_2.34 がデフォルト版。rubycc の無版本 UND 参照は
+  そのデフォルト版に束縛され、7 引数 ABI(init/fini=NULL)で正しく起動する。
+  verneed(GLIBC_2.34)を張る必要はない(実機 glibc 2.39 で return 42→exit 42、
+  puts/printf 動作を確認)。
+- **実行ファイルリンク時は libc を既定 needed に**: _start の __libc_start_main
+  呼び出しが libc を要求するため、gcc が crt1.o 経由で libc を暗黙リンクするのと
+  同様に既定で追加(libc: :auto で既定パス群から発見、DT_NEEDED は SONAME 文字列
+  "libc.so.6" で決定的)。実行ファイルは何もエクスポートしない(exports 空)。
+  ELFReader は ET_EXEC を .so と同じ section header 経由で読み戻せるよう拡張。
+- **検証は実際に走らせて終了コードまで**: return 42→exit 42、puts("hi")→stdout
+  "hi"+exit 0、printf、argc/argv マーシャリング、conftest try_run 風→exit 0、
+  gcc -no-pie との stdout/終了コード一致。examples/m2/ を新設し step37_conftest.c
+  (mkmf try_run の形)を追加。
+
+**トレードオフ**: PIE・静的リンク実行ファイル・一般的な実行ファイル品質は対象外
+(conftest を通すことに限定)。SharedLinker の r-x セグメント filesz が
+offset 0 で `finish - first.offset`(ページ丸めに救われる既存の癖)は .so 側を
+壊さないため据え置き、ExecutableLinker 側でのみ正しい filesz を算出。
+
+---
+
 ## 現在のテスト規模
 
-Step 36 完了時点: **1,454 runs / 4,235 assertions / 0 failures / 19 skips**
+Step 37 完了時点: **1,472 runs / 4,285 assertions / 0 failures / 19 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
-ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決)・PIC・DoS 耐性・
-診断・CLI・プリプロセッサのユニットテスト + 実行テスト(gcc 差分比較・クロス
-リンク ABI 差分・gcc -E トークン列差分・Fiddle dlopen 実呼び出し(内部/外部
-libc・実物 zlib)込み)+ c-testsuite 220 ケース + ruby.h スモークテスト。
+ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
+PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト(gcc 差分
+比較・クロスリンク ABI 差分・gcc -E トークン列差分・Fiddle dlopen 実呼び出し・
+生成実行ファイルの実走込み)+ c-testsuite 220 ケース + ruby.h スモークテスト。
