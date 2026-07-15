@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 の大詰め。L7(実行ファイル + crt)= Step 37 まで完了。残りは L8(ドライバ統合と M2 受け入れ = json/msgpack 実ビルド)。L5 第三段(.gnu.hash)は .hash で動くため適合性仕上げとして後続**。
+現在地: **M2 の大詰め。L8 前半(gcc 互換ドライバ)= Step 38 まで完了。残りは L8 後半 = M2 受け入れ(json/msgpack を実ビルドして gem テスト合格)。L5 第三段(.gnu.hash)は .hash で動くため適合性仕上げとして後続**。
 
 ---
 
@@ -174,10 +174,13 @@ puts/printf・conftest try_run 風を実走で検証、gcc -no-pie と一致。�
 STEPS.md の Step 37。musl での検証は L8 の M2 受け入れ(両コンテナ)で行う。
 
 ### L8 — ドライバ統合と M2 受け入れ
-- exe/rubycc を gcc 互換ドライバに拡張(R6): 複数入力(.c / .o 混在)、-c 無しの
-  コンパイル+リンク一気通貫、-shared、-l / -L / -Wl,、-fPIC、-O(受理して無視)、
-  未知の GCC 固有フラグは警告のみで無視。
-- **M2 受け入れ**: json と msgpack を「extconf.rb が生成した Makefile のコマンドを
+- ~~exe/rubycc を gcc 互換ドライバに拡張(R6)~~ **完了(Step 38、e9b48a7)**:
+  複数入力・一気通貫・-shared・-c・-o・-l/-L・-Wl,・-fPIC・-D/-U・-E・
+  -O 等の受理・未知フラグ警告のみ。lib/rubycc/driver.rb にクラス化、exe は薄い
+  起動役。中間 .o をメモリ経由で作らない。実物 -lz 一気通貫・複数 TU 実行ファイルが
+  gcc 一致。設計記録は STEPS.md の Step 38。
+- **M2 受け入れ(残り、次ステップ)**: json と msgpack を「extconf.rb が生成した
+  Makefile のコマンドを
   手動で rubycc に置き換えて」ビルドし、**gem 自身のテストスイートに合格**。
   glibc / musl 両コンテナで確認。
 - 検証環境の前提: この時点では同梱 libc ヘッダ(R8)が無いので、

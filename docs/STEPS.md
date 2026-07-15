@@ -1421,11 +1421,56 @@ offset 0 で `finish - first.offset`(ページ丸めに救われる既存の癖)
 
 ---
 
+## Step 38 — gcc 互換ドライバ(M2 L8 前半: exe/rubycc の統合)(e9b48a7)
+
+**内容**: exe/rubycc を gcc 互換ドライバに全面拡張。複数入力・コンパイル+リンク
+一気通貫・-shared/-c/-o・-l/-L・-fPIC・-D/-U・-Wl,・-E・-O 等の受理を実装し、
+既存のコンパイラ・リンカ部品を束ねる。M2 受け入れ(json/msgpack 実ビルド)の下地。
+heavy-implementer 1 フェーズ。
+
+**設計判断**:
+- **駆動ロジックを lib/rubycc/driver.rb にクラス化、exe は薄い起動役**: Driver.run
+  (argv, stdout:, stderr:)はストリーム注入でユニットテスト可能。exe/rubycc は
+  `exit Rubycc::Driver.run(ARGV)` の 1 行。コンパイル/リンクのロジックは新規実装
+  せず、Compiler / PartialLinker / SharedLinker / ExecutableLinker /
+  LibraryResolver を束ねるだけ(R11 上も既存 CLI 実装を写さない独自構成)。
+- **一気通貫は中間 .o を作らない**: -c 無しで .c を渡すと Compiler が返す ELF
+  バイト列をメモリ上で直接リンカへ渡す(PartialLinker が生バイト列とパスを判別
+  する既存仕様を利用)。Tempfile 不要で、tmp 名に依存しない決定性(N4)。
+- **モード優先は gcc に合わせる**: -E > -c > -shared > 既定(実行ファイル)。
+  入力は拡張子で分類(.c=source / .o=object / .a=archive / .so=needed 依存 /
+  他=linker input)。
+- **-D/-U はディレクティブ文字列へ変換して既存経路に載せる**: コマンドラインの
+  -DNAME[=VAL]/-U を `#define`/`#undef` 相当のディレクティブ列に変換し、既存の
+  process_lines へ流す。プリプロセッサの再定義検査・検証をそのまま活用し、
+  大きな改造を避けた。順序も gcc 同様に保持(後の -U が先の -D を打ち消す)。
+  compiler.rb/preprocessor.rb に defines: を追加、-E 用に PPToken 列を返す
+  Preprocessor#preprocess を切り出し。
+- **未知フラグは警告のみで無視(R6)**: -O/-g/-W/-f/-std/-pipe/-pthread/-no-pie は
+  無警告で受理・無視、-m* や不明な -フラグは `warning: unknown option ... ignored`
+  を出してビルド継続(mkmf が環境依存フラグを渡すため)。引数を取るオプション
+  (-Xlinker/-z/-MF/-include 等)は operand を消費して入力ファイル誤認を防ぐ。
+- **-shared は libc を自動 needed しない**: 未定義 libc シンボルは実行時にローダの
+  グローバルスコープで解決(共有ライブラリの通例)。実行ファイルのみ
+  ExecutableLinker が libc を既定 needed。生成物は chmod 0755。
+- **検証は mkmf 典型コマンド形と gcc 相互運用まで**: 複数 TU 一気通貫が
+  gcc -no-pie と stdout/終了コード一致、実物 -lz 一気通貫で crc32=0xCBF43926、
+  -DFOO が #if に効く、未知フラグ警告のみでビルド成功、`rubycc -c -fPIC -I -o` と
+  `rubycc -shared -o *.o -L -l` の 2 段が通る。examples/m2/step38_driver.c 追加。
+
+**トレードオフ**: -E の出力は PPToken 列からの best-effort 再構成で gcc -E との
+バイト一致は保証しない(mkmf のマクロ展開/インクルード確認用途には十分)。
+ユーザーが -lc を明示しつつ実行ファイルを作ると resolver の libc と
+ExecutableLinker 既定 libc でパスが違えば DT_NEEDED が二重化しうる(稀・無害)。
+
+---
+
 ## 現在のテスト規模
 
-Step 37 完了時点: **1,472 runs / 4,285 assertions / 0 failures / 19 skips**
+Step 38 完了時点: **1,489 runs / 4,344 assertions / 0 failures / 19 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
-PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト(gcc 差分
-比較・クロスリンク ABI 差分・gcc -E トークン列差分・Fiddle dlopen 実呼び出し・
-生成実行ファイルの実走込み)+ c-testsuite 220 ケース + ruby.h スモークテスト。
+ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
+(gcc 差分比較・クロスリンク ABI 差分・gcc -E トークン列差分・Fiddle dlopen 実
+呼び出し・生成実行ファイルの実走・一気通貫ビルド込み)+ c-testsuite 220 ケース +
+ruby.h スモークテスト。
