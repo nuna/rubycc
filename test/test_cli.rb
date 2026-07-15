@@ -77,11 +77,32 @@ class TestCli < Minitest::Test
     end
   end
 
-  def test_unknown_option_exits_one
+  # An unknown option is a warning, not a hard error (R6): a build driver must
+  # tolerate an environment-specific flag mkmf hands it. Here the option is the
+  # only argument, so the run still fails — but on "no input file", after warning.
+  def test_unknown_option_warns_but_does_not_error_on_the_option
     _stdout, stderr, status = run_cli("--frobnicate")
 
     assert_equal 1, status.exitstatus
-    assert_match(/unrecognized option/, stderr)
+    assert_match(/warning: unknown option '--frobnicate' ignored/, stderr)
+    assert_match(/no input file/, stderr)
+  end
+
+  # With a valid input alongside it, the unknown option is warned about and the
+  # compilation still succeeds.
+  def test_unknown_option_is_ignored_and_build_succeeds
+    Dir.mktmpdir("rubycc-cli") do |dir|
+      File.write(File.join(dir, "foo.c"), "int main(void) { return 0; }")
+
+      _stdout, stderr, status = Open3.capture3(
+        "ruby", "-I#{lib_dir}", EXE_PATH, "-c", "-mavx2", "foo.c", "-o", "foo.o",
+        chdir: dir
+      )
+
+      assert_equal 0, status.exitstatus, "stderr: #{stderr}"
+      assert File.exist?(File.join(dir, "foo.o")), "expected foo.o despite the unknown flag"
+      assert_match(/warning: unknown option '-mavx2' ignored/, stderr)
+    end
   end
 
   # -fPIC (and its lowercase synonym -fpic) is accepted and drives the GOT-based

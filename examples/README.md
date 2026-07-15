@@ -65,3 +65,4 @@ Step 37(L7)から M2 のサンプルを追加する。
 | ファイル | 実演するステップと機能 |
 |---|---|
 | `step37_conftest.c` | Step 37: 実行ファイルと crt(mkmf の try_run プローブの形)。libc 関数(`strlen`/`printf`)を使い、終了コードと stdout の両方で結果を報告する — rubycc の `ExecutableLinker` が合成 crt の `_start`→`__libc_start_main` で C ランタイムを初期化して実行する経路の実演。`test_examples.rb` は gcc 差分で、`test_executable.rb` は rubycc 自身の実行ファイルライタでエンドツーエンド駆動する |
+| `step38_driver.c` | Step 38: gcc 互換ドライバ(`Rubycc::Driver`)が 1 コマンドでビルドするプログラムの形。libc(`printf`)を呼び計算結果を終了コードと stdout に反映する — `rubycc -o prog step38_driver.c` のコンパイル+リンク一気通貫の実演。ドライバ自体(複数 TU 一気通貫・`-shared`/`-lz`・`-D`/`-U`・`-E`)は `test_driver.rb` が駆動し、本サンプルは `test_examples.rb` が gcc 差分で検証する |

@@ -179,21 +179,60 @@ module Rubycc
         @include_origin = {}
       end
 
-      def run(source, filename:, include_paths: [])
+      def run(source, filename:, include_paths: [], defines: [])
+        TokenConverter.new.convert(
+          preprocess(source, filename: filename, include_paths: include_paths, defines: defines)
+        )
+      end
+
+      # Runs translation phases 1-4 and returns the resulting preprocessing-token
+      # stream (terminated by the unit's :eof), before it is converted into
+      # Front tokens. It is what #run builds on, and what the `-E` driver mode
+      # re-spells into preprocessed text. `defines` is the ordered command-line
+      # `-D`/`-U` list (see #apply_command_line_definitions).
+      def preprocess(source, filename:, include_paths: [], defines: [])
         @include_paths = include_paths
         # The whole-run macro-expansion budget (see EXPANSION_TOKEN_LIMIT), reset
         # here so every translation unit starts with a full allowance.
         @expansion_tokens = 0
+        apply_command_line_definitions(defines)
         pp_tokens = Scanner.new(source, filename: filename).scan
         output = []
         process_lines(pp_tokens, filename, output)
         # process_lines stops at the unit's end-of-file marker without emitting
         # it; carry it through so the converter can terminate its stream.
         output << pp_tokens.last
-        TokenConverter.new.convert(output)
+        output
       end
 
       private
+
+      # Applies the driver's command-line `-D`/`-U` requests before the source is
+      # read, in the order they were given (so a later `-U` undoes an earlier
+      # `-D`, as gcc does). Each is turned into the directive it stands for and
+      # run through the ordinary directive machinery — `-DNAME` into
+      # `#define NAME 1`, `-DNAME=VALUE` into `#define NAME VALUE` (the split on
+      # the first `=` keeps a function-like `-DF(x)=…` intact), and `-UNAME` into
+      # `#undef NAME` — so redefinition and validation behave exactly as an
+      # in-source directive would. Their (empty) output is discarded; only the
+      # effect on the shared macro table matters.
+      def apply_command_line_definitions(defines)
+        return if defines.empty?
+
+        preamble = defines.map { |op, arg| command_line_directive(op, arg) }.join("\n") + "\n"
+        tokens = Scanner.new(preamble, filename: "<command-line>").scan
+        process_lines(tokens, "<command-line>", [])
+      end
+
+      def command_line_directive(op, arg)
+        case op
+        when :define
+          name, value = arg.split("=", 2)
+          "#define #{name} #{value || "1"}"
+        when :undef
+          "#undef #{arg}"
+        end
+      end
 
       # Walks one file's preprocessing tokens a logical line at a time. A line
       # whose first token is "#" is a directive (6.10); every other line has its
