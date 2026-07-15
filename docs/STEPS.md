@@ -1465,12 +1465,46 @@ ExecutableLinker 既定 libc でパスが違えば DT_NEEDED が二重化しう�
 
 ---
 
+## Step 39 — C 拡張ビルドの受け入れ(M2: require して動く)(8e5f8f1)
+
+**内容**: M2 受け入れの核心「rubycc のドライバ単体で Ruby C 拡張を .so にビルドし、
+Ruby から require して実際に呼べる」ことを常設回帰テスト化(test/
+test_extension_build.rb)。メインセッションで手動実証(rb_define_module /
+rb_define_module_function / INT2NUM / NUM2INT / rb_str_new_cstr を使う最小拡張が
+`SmokeExt.add(40,2)=42` を返す)した事実をテストへ落とし込んだ implementer
+1 フェーズ。
+
+**設計判断**:
+- **受け入れの本質は「.o まで」でなく「require して動く」**: Step 28 の ruby.h
+  スモークは .o までだったが、M2 では SharedLinker/ExecutableLinker が揃い、
+  rubycc ドライバ単体で .so までリンクできる。rb_* シンボルは .so に UND のまま
+  残り、**require 時に Ruby 本体(既にプロセスにある libruby)から解決される** —
+  C 拡張の本来の動作機構がそのまま働く。これを実プロセスで検証する。
+- **3 ケースで受け入れを固める**: (1) 最小拡張を rubycc で .so 化 → 子プロセスの
+  Ruby で require して呼び出し、(2) 同一ソースの gcc -shared 版と挙動一致、
+  (3) 複数 TU を 1 回の rubycc -shared コマンドで一気通貫。子プロセスの require
+  結果は Marshal 経由で親へ返してアサート、10 秒タイムアウトでハング防止。
+- **既存の受け入れ資産を再利用**: インクルードパスは test_ruby_smoke.rb /
+  test_c_suite.rb と同一の pin 済み定数、ドライバ起動は test_driver.rb の
+  サブプロセス方式。skip ガードも既存と同一。
+- **位置づけ**: これで「rubycc の C 拡張ツールチェーンが実際に機能する」ことが
+  CI で常時保証される。ROADMAP の M2 受け入れの最終形(json/msgpack の実 gem
+  テスト合格)へ向けた土台の確立であり、次は実 gem で ruby.h の全機能を踏んで
+  M1 の残穴(文式 ({…}) 等、ROADMAP §3)を棚卸し・追補ステップで潰す段階に入る。
+
+**トレードオフ**: 本ステップの拡張は最小(整数演算・文字列生成)で、実 gem が
+要求する文式・複雑な型・大量の rb_* API はまだ踏んでいない。M2 受け入れの完了
+判定(json/msgpack が gem テストに合格)は後続ステップで、そこで露見する不足を
+追補ステップとして通し番号で処理する。
+
+---
+
 ## 現在のテスト規模
 
-Step 38 完了時点: **1,489 runs / 4,344 assertions / 0 failures / 19 skips**
+Step 39 完了時点: **1,492 runs / 4,364 assertions / 0 failures / 19 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
 (gcc 差分比較・クロスリンク ABI 差分・gcc -E トークン列差分・Fiddle dlopen 実
-呼び出し・生成実行ファイルの実走・一気通貫ビルド込み)+ c-testsuite 220 ケース +
-ruby.h スモークテスト。
+呼び出し・生成実行ファイルの実走・一気通貫ビルド・C 拡張の require 実行込み)+
+c-testsuite 220 ケース + ruby.h スモークテスト。
