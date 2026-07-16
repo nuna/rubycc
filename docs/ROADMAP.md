@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 の大詰め。gcc 互換ドライバ = Step 38、C 拡張の require 実行受け入れ = Step 39、文式サポート(M1 追補・最優先負債)= Step 40 まで完了(rubycc 単体で C 拡張を .so 化 → require して動くことを実証・常設化。ruby.h の割り当てマクロが踏む文式も通る)。残りは M2 受け入れの最終形 = json/msgpack を実ビルドして gem テスト合格(ここで露見する M1 の残穴を追補ステップで潰す)。L5 第三段(.gnu.hash)は後続**。
+現在地: **M2 の大詰め。gcc 互換ドライバ = Step 38、C 拡張の require 実行受け入れ = Step 39、文式サポート = Step 40、同梱 freestanding ヘッダと既定インクルードパス(gcc 内部ヘッダ依存の排除)= Step 41 まで完了。rubycc は gcc/binutils 一切なしで実 TypedData 拡張を .so 化 → require して動くことを実証・常設化(Box 拡張が CRuby ヘッダのみで `[1,2,3]` を返す)。実 gem が最初に踏む二つの壁(文式・freestanding ヘッダ)を撤去済み。残りは M2 受け入れの最終形 = json/msgpack を実ビルドして gem テスト合格(ここで露見する M1 の残穴 = 定数文脈 offsetof 等を追補ステップで潰す)。L5 第三段(.gnu.hash)は後続**。
 
 ---
 
@@ -83,6 +83,7 @@
 | 指し先 const の書き込み検出 | `const int *p` の `*p = x` を診断しない(型に修飾を載せない簡略化) | 実害が出た時点 |
 | unsigned long ⇔ float/double 変換 | 64 bit 符号無しの往復に追加コードが要るため診断エラー | 実害が出た時点 |
 | ~~文式 `({ … })`~~ | **解消(Step 40、4466e68)**: 一次式で `(` の直後が `{` のとき複合文をパースし最後の式文の値・型を採る文式を実装。`?:` の片側 void アーム(GCC 拡張)対応込み。c-testsuite 00213/00214 合格。Data_Make_Struct / TypedData_Make_Struct / rb_intern() の展開先が通る | ~~早期 M2(最優先負債)~~ **完了** |
+| `__builtin_offsetof` / 定数文脈 offsetof | 同梱 stddef.h の offsetof は従来型 `((size_t)&(((t*)0)->m))`(Step 41)。実行時文脈は正しいが、static 初期化子・配列サイズ・case ラベル等の定数式文脈で「unsupported initializer」等になる。`__builtin_offsetof` を実装しパーサ + 定数畳み込みで両文脈に対応する | **早期(Step 42 予定)。実 gem が offsetof を定数文脈で踏む** |
 | ビットフィールドのアクセス | レイアウト・ABI 分類は実装済み(Step 28)。読み書き・& は診断エラー(shift/mask 生成が未実装) | M2(gem コーパスで再判定) |
 | マクロ再展開の hide-set 交差 | `CAT(A,B)(x)` の CAT2 経由再展開が gcc と相違(c-testsuite 00201 で実証)。修正方針記録済み: 置換 paint を「呼び出し名の suppress ∩ 閉じ括弧の suppress + 自名」へ | M2 |
 | 128 ビット整数の演算残り | 乗算・加減算・比較・変換のみ実装(Step 28)。除算・シフト・ビット演算・値渡し/返し・可変長渡しは診断エラー | 実害が出た時点 |
@@ -187,6 +188,12 @@ STEPS.md の Step 37。musl での検証は L8 の M2 受け入れ(両コンテ�
   実装(`?:` の片側 void アーム対応込み)。ruby.h の TypedData_Make_Struct /
   Data_Make_Struct / rb_intern の展開先が通る。c-testsuite 00213/00214 合格。
   設計記録は STEPS.md の Step 40。
+- ~~同梱 freestanding ヘッダと既定インクルードパス(M2 追補・gcc 依存の排除)~~
+  **完了(Step 41、6ac0586)**: gem ルート直下 include/ に stdarg/stddef/stdbool/
+  stdalign/iso646/stdnoreturn/float を同梱し、既定インクルードパス(同梱 → libc)に
+  自動注入。gcc の内部 include ディレクトリへの依存を完全排除。`__need_*` 部分
+  インクルード規約対応。`-nostdinc` 新設。Box(TypedData)拡張が CRuby ヘッダのみで
+  .so 化 → require → `[1,2,3]` を常設化。設計記録は STEPS.md の Step 41。
 - **M2 受け入れの最終形(残り、次ステップ)**: json と msgpack を「extconf.rb が
   生成した Makefile のコマンドを
   手動で rubycc に置き換えて」ビルドし、**gem 自身のテストスイートに合格**。

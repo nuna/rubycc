@@ -1539,9 +1539,59 @@ ruby.h の `TypedData_Make_Struct` / `Data_Make_Struct` / `rb_intern` 等が文�
 
 ---
 
+## Step 41 — 同梱 freestanding ヘッダと既定インクルードパス(M2 追補・gcc 依存の排除)
+
+Step 40 で実 C 拡張(TypedData)が .so 化・require できることを確認した際、次の壁が
+`#include <stdarg.h>` の未解決だった。stdarg/stddef/stdbool/stdalign 等は **glibc に無く
+コンパイラが供給すべき freestanding ヘッダ**で、それまで既存テストは gcc の内部 include
+ディレクトリ(`/usr/lib/gcc/.../13/include`)を pin して借りていた。これは「gcc/binutils
+なしで C 拡張をビルドする」目標に反する依存。本ステップでこの依存を断つ。メインセッションで
+実 ruby.h・実 TypedData 拡張を通して必要なヘッダ内容・解決モデルを実測確定し、
+heavy-implementer へ移譲・レビューして確定。
+
+**設計判断**:
+- **同梱ヘッダは gem ルート直下 `include/`**: stdarg/stddef/stdbool/stdalign/iso646/
+  stdnoreturn/float の 7 本を同梱。rubycc のビルトイン(`__builtin_va_*`・`_Alignof`・
+  `_Bool`)と predefine 済み数値マクロ(`__SIZEOF_*__` 等)へ写像し、**具体型は x86_64
+  SysV LP64 固定**(size_t=unsigned long 等)。ガード名は `_RUBYCC_*`、コメントも独自
+  文面で R11 遵守(gcc/glibc のヘッダ構成・文面に似せない)。ISO/ABI 規定値(float.h の
+  各定数等)は共通で問題なし。
+- **glibc の `__need_*` 部分インクルード規約に対応**: glibc の stdio.h は
+  `#define __need___va_list` してから stdarg を、`#define __need_NULL` してから stddef を
+  インクルードして `__gnuc_va_list` / `NULL` だけを取り込む。この規約に対応しないと
+  stdio.h が壊れる(実測)。stdarg は `__gnuc_va_list` を、stddef は
+  `__need_NULL/size_t/wchar_t/ptrdiff_t` を個別に定義する分岐を持つ。
+- **既定システムインクルードパス**: [同梱 include/] → [libc: /usr/include/
+  x86_64-linux-gnu, /usr/include] の順。同梱を先頭に置き rubycc の stdarg/stddef を
+  glibc より優先させる。gcc の内部 include ディレクトリは**含めない**(排除が目的)。
+  ユーザ `-I`/`-isystem` の後ろに連結し、angled include が `-I` 無しで解決する。
+  `-nostdinc`(driver)/ `system_includes:`(Compiler)で無効化(ハーメティックなテスト用)。
+- **注入は Preprocessor に集約**: 既定パス定数を Preprocessor に持たせ、Compiler・Driver
+  から `system_includes:` で一貫制御。同梱ディレクトリは lib からの相対(`File.expand_path`)
+  で解決し、ソースチェックアウトでもインストール済み gem でも動く。
+- **offsetof は従来型**: rubycc は `__builtin_offsetof` を未サポート(パースエラー)の
+  ため、stddef.h の offsetof は `((size_t)&(((t*)0)->m))`。**実行時文脈でのみ正しく、
+  定数式文脈(static 初期化子・配列サイズ・case ラベル)では未対応**。`__builtin_offsetof`
+  サポートと定数文脈 offsetof は Step 42 へ送る(ROADMAP §3)。
+
+**トレードオフ**: libc システムパスは x86_64-linux-gnu トリプレットをハードコード
+(rubycc は x86_64 Linux 専用ターゲットなので許容)。同梱 libc ヘッダ(R8、ヘッダレス
+distroless 対応)は M5 スコープで、本ステップは freestanding ヘッダのみ供給しコンパイラ
+依存を切るに留める。`va_copy`→`__builtin_va_copy`・`alignas`→`_Alignas`・`noreturn`→
+`_Noreturn` は rubycc 側が未対応だが、マクロは未展開なら無害(ruby.h・Box・新テストは
+踏まない)。
+
+**位置づけ**: これで rubycc は **gcc の内部ヘッダに一切依存せず**実 TypedData 拡張を
+ビルドできる(Box 拡張を CRuby ヘッダのみで .so 化 → require → `[1,2,3]` を常設回帰化)。
+文式(Step 40)と本ステップで、実 gem が最初に踏む二つの壁(文式・freestanding ヘッダ)を
+撤去した。次は json/msgpack の実 gem ビルドで残る不足(定数文脈 offsetof 含む)を追補
+ステップで潰す段階に入る。
+
+---
+
 ## 現在のテスト規模
 
-Step 40 完了時点: **1,510 runs / 4,396 assertions / 0 failures / 17 skips**
+Step 41 完了時点: **1,519 runs / 4,428 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
