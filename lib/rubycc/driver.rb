@@ -73,6 +73,7 @@ module Rubycc
       @lib_dirs = []        # -L directories, in order
       @pic = false
       @soname = nil
+      @system_includes = true  # -nostdinc clears this
     end
 
     def run
@@ -126,6 +127,7 @@ module Rubycc
       when "-shared"                             then @mode_flag = :shared;  i + 1
       when "-E"                                  then @mode_flag = :preprocess; i + 1
       when "-fPIC", "-fpic", "-fPIE", "-fpie"    then @pic = true; i + 1
+      when "-nostdinc"                           then @system_includes = false; i + 1
       when "-o"          then @output = value(arg, i); i + 2
       when "-I"          then @include_paths << value(arg, i); i + 2
       when /\A-I(.+)\z/m then @include_paths << Regexp.last_match(1); i + 1
@@ -257,7 +259,8 @@ module Rubycc
       sources.each do |input|
         output = @output || default_object_name(input[:path])
         Compiler.compile_file(input[:path], output, include_paths: @include_paths,
-                                                     pic: @pic, defines: @defines)
+                                                     pic: @pic, defines: @defines,
+                                                     system_includes: @system_includes)
       end
     end
 
@@ -312,7 +315,8 @@ module Rubycc
 
     def compile_source(input)
       Compiler.new.compile(File.read(input[:path]), filename: input[:path],
-                           include_paths: @include_paths, pic: @pic, defines: @defines)
+                           include_paths: @include_paths, pic: @pic, defines: @defines,
+                           system_includes: @system_includes)
     end
 
     # --- preprocess-only (-E) ----------------------------------------------
@@ -330,7 +334,8 @@ module Rubycc
 
         tokens = Preprocess::Preprocessor.new.preprocess(
           File.read(input[:path]), filename: input[:path],
-          include_paths: @include_paths, defines: @defines
+          include_paths: @include_paths, defines: @defines,
+          system_includes: @system_includes
         )
         text << render_preprocessed(tokens.reject(&:eof?))
       end

@@ -20,11 +20,11 @@ class TestExtensionBuild < Minitest::Test
   RUBY_HDR_DIR = RbConfig::CONFIG["rubyhdrdir"]
   RUBY_ARCH_HDR_DIR = RbConfig::CONFIG["rubyarchhdrdir"]
 
-  # Same pinned system header set as TestRubySmoke / TestCSuite: rubycc has no
-  # header-discovery logic of its own yet, so the harness pins the paths this
-  # environment's gcc reports.
+  # The libc header directories on this host, matching TestRubySmoke /
+  # TestCSuite. gcc's private include directory is deliberately absent: rubycc
+  # supplies the compiler-provided headers itself and injects them as its
+  # default system search path (Step 41), so the build never reads /usr/lib/gcc.
   SYSTEM_INCLUDE_PATHS = [
-    "/usr/lib/gcc/x86_64-linux-gnu/13/include",
     "/usr/local/include",
     "/usr/include/x86_64-linux-gnu",
     "/usr/include"
@@ -32,6 +32,13 @@ class TestExtensionBuild < Minitest::Test
 
   INCLUDE_PATHS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR, *SYSTEM_INCLUDE_PATHS].freeze
   INCLUDE_FLAGS = INCLUDE_PATHS.map { |p| "-I#{p}" }.freeze
+
+  # For the freestanding-header acceptance (Step 41): only the CRuby header
+  # directories are passed as -I. The compiler-supplied headers ruby.h pulls in
+  # (stdarg.h, stddef.h, ...) and the libc headers must come entirely from
+  # rubycc's own default system search path, so this list names nothing under
+  # /usr/lib/gcc and nothing under /usr/include.
+  RUBY_ONLY_INCLUDE_FLAGS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR].map { |p| "-I#{p}" }.freeze
 
   EXE_PATH = File.expand_path("../exe/rubycc", __dir__)
   LIB_DIR  = File.expand_path("../lib", __dir__)
@@ -72,6 +79,49 @@ class TestExtensionBuild < Minitest::Test
   C
   MULTI_EXT_HELPER_SOURCE = <<~C
     int helper_double(int x) { return x * 2; }
+  C
+
+  # A TypedData extension (Step 41 acceptance): it exercises the CRuby object
+  # machinery a real gem uses — TypedData_Make_Struct / TypedData_Get_Struct,
+  # rb_define_alloc_func and xfree — and drags in the compiler-supplied headers
+  # (stdarg.h, stddef.h, ...) through ruby.h. Building it with only the CRuby
+  # header directories on -I proves rubycc's own bundled freestanding headers
+  # plus its default libc search path are sufficient, with no /usr/lib/gcc.
+  # Mirrors tmp/step41_box_probe.c (kept as the manual probe of record).
+  BOX_EXT_SOURCE = <<~C
+    #include <ruby.h>
+
+    typedef struct { long counter; char *name; } box_t;
+
+    static void box_free(void *p) { box_t *b = p; if (b->name) xfree(b->name); xfree(b); }
+    static size_t box_size(const void *p) { return sizeof(box_t); }
+
+    static const rb_data_type_t box_type = {
+      "Box",
+      { 0, box_free, box_size, },
+      0, 0, RUBY_TYPED_FREE_IMMEDIATELY,
+    };
+
+    static VALUE box_alloc(VALUE klass) {
+      box_t *b;
+      VALUE obj = TypedData_Make_Struct(klass, box_t, &box_type, b);
+      b->counter = 0;
+      b->name = 0;
+      return obj;
+    }
+
+    static VALUE box_incr(VALUE self) {
+      box_t *b;
+      TypedData_Get_Struct(self, box_t, &box_type, b);
+      b->counter++;
+      return LONG2NUM(b->counter);
+    }
+
+    void Init_box(void) {
+      VALUE cBox = rb_define_class("Box", rb_cObject);
+      rb_define_alloc_func(cBox, box_alloc);
+      rb_define_method(cBox, "incr", box_incr, 0);
+    }
   C
 
   def setup
@@ -145,6 +195,30 @@ class TestExtensionBuild < Minitest::Test
 
       result = require_and_probe(dir, "multi_ext", "MultiExt.double(21)")
       assert_equal 42, result
+    end
+  end
+
+  # A TypedData extension built with rubycc's bundled freestanding headers and
+  # default libc search path only (the CRuby headers are the sole -I), with no
+  # /usr/lib/gcc anywhere, must load under require and return the counter's
+  # successive values.
+  def test_typeddata_extension_builds_with_bundled_headers_only
+    in_tmpdir do |dir|
+      source_path = File.join(dir, "box.c")
+      File.write(source_path, BOX_EXT_SOURCE)
+
+      so_path = File.join(dir, "box.so")
+      _out, err, status = rubycc(
+        "-shared", "-fPIC", *RUBY_ONLY_INCLUDE_FLAGS, "-o", so_path, source_path, dir: dir
+      )
+      assert_equal 0, status.exitstatus, err
+      assert_valid_shared_object(so_path)
+
+      result = require_and_probe(dir, "box", <<~RUBY)
+        b = Box.new
+        [b.incr, b.incr, b.incr]
+      RUBY
+      assert_equal [1, 2, 3], result
     end
   end
 

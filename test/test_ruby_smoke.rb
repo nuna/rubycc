@@ -25,22 +25,20 @@ class TestRubySmoke < Minitest::Test
   RUBY_HDR_DIR = RbConfig::CONFIG["rubyhdrdir"]
   RUBY_ARCH_HDR_DIR = RbConfig::CONFIG["rubyarchhdrdir"]
 
-  # The system header search path gcc (13, on this host) uses by default
-  # (`gcc -xc -E -v /dev/null`, "#include <...> search starts here"). rubycc
-  # has no header-discovery logic of its own yet (ROADMAP), so the harness pins
-  # the paths this environment's gcc reports rather than shelling out to
-  # rediscover them on every run; if the host toolchain moves (gcc version,
-  # distro layout), these need updating alongside it. Kept identical to
-  # TestCSuite::SYSTEM_INCLUDE_PATHS so both harnesses see the same libc headers.
+  # The libc header directories on this host. gcc's private include directory
+  # (/usr/lib/gcc/.../include, where stdarg.h and kin live) is deliberately
+  # absent: rubycc now ships those compiler-supplied headers itself and injects
+  # them (with the libc directories) as its default system search path (Step 41),
+  # so this test relies on nothing under /usr/lib/gcc.
   SYSTEM_INCLUDE_PATHS = [
-    "/usr/lib/gcc/x86_64-linux-gnu/13/include",
     "/usr/local/include",
     "/usr/include/x86_64-linux-gnu",
     "/usr/include"
   ].freeze
 
   # The Ruby headers first (so <ruby.h> and its arch "ruby/config.h" resolve),
-  # then the system set for the libc headers they pull in.
+  # then the libc set; rubycc's bundled freestanding headers are appended
+  # automatically as part of the default system search path.
   INCLUDE_PATHS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR, *SYSTEM_INCLUDE_PATHS].freeze
 
   # A minimal but real extension: define one module in the init entry point.

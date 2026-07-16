@@ -19,7 +19,8 @@ Gem::Specification.new do |spec|
   spec.metadata["homepage_uri"] = spec.homepage
   spec.metadata["rubygems_mfa_required"] = "true"
 
-  spec.files = Dir.glob("lib/**/*.rb") + Dir.glob("exe/*") + ["LICENSE.txt", "README.md"]
+  spec.files = Dir.glob("lib/**/*.rb") + Dir.glob("include/**/*.h") + Dir.glob("exe/*") +
+               ["LICENSE.txt", "README.md"]
   spec.bindir = "exe"
   spec.executables = ["rubycc"]
   spec.require_paths = ["lib"]

@@ -13,9 +13,10 @@ module Rubycc
   class Compiler
     # Compiles C source into an ELF64 relocatable object, returned as an
     # ASCII-8BIT String. Raises Rubycc::CompileError on user errors.
-    def compile(source, filename:, include_paths: [], pic: false, defines: [])
+    def compile(source, filename:, include_paths: [], pic: false, defines: [], system_includes: true)
       tokens = Preprocess::Preprocessor.new.run(source, filename: filename,
-                                                include_paths: include_paths, defines: defines)
+                                                include_paths: include_paths, defines: defines,
+                                                system_includes: system_includes)
       program = Front::Parser.new(tokens).parse
       ir_program = IR::Generator.new.generate(program, pic: pic)
 
@@ -193,10 +194,11 @@ module Rubycc
 
     # Convenience: read `input_path`, compile it and write the object to
     # `output_path`.
-    def self.compile_file(input_path, output_path, include_paths: [], pic: false, defines: [])
+    def self.compile_file(input_path, output_path, include_paths: [], pic: false, defines: [],
+                          system_includes: true)
       source = File.read(input_path)
       binary = new.compile(source, filename: input_path, include_paths: include_paths,
-                                   pic: pic, defines: defines)
+                                   pic: pic, defines: defines, system_includes: system_includes)
       File.binwrite(output_path, binary)
       output_path
     end

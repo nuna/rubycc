@@ -19,14 +19,12 @@ class TestCSuite < Minitest::Test
 
   CASE_SOURCES = Dir.glob(File.join(SUITE_DIR, "*.c")).sort.freeze
 
-  # The system header search path gcc (13, on this host) uses by default
-  # (`gcc -xc -E -v /dev/null`, "#include <...> search starts here"). rubycc
-  # has no header-discovery logic of its own yet (ROADMAP), so the harness
-  # pins the paths this environment's gcc reports rather than shelling out to
-  # rediscover them on every run; if the host toolchain moves (gcc version,
-  # distro layout), these need updating alongside it.
+  # The libc header directories on this host. gcc's private include directory
+  # (/usr/lib/gcc/.../include, home to stdarg.h and the other compiler-supplied
+  # headers) is deliberately absent: rubycc ships those itself and injects them,
+  # together with the libc directories, as its default system search path
+  # (Step 41), so this suite compiles without touching /usr/lib/gcc.
   SYSTEM_INCLUDE_PATHS = [
-    "/usr/lib/gcc/x86_64-linux-gnu/13/include",
     "/usr/local/include",
     "/usr/include/x86_64-linux-gnu",
     "/usr/include"

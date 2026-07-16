@@ -23,6 +23,25 @@ module Rubycc
     # compiler-supplied macros (__FILE__ and kin), the __has_* queries and
     # "#pragma once" complete the model.
     class Preprocessor
+      # The compiler-supplied ("freestanding") headers rubycc ships in the gem's
+      # top-level include/ directory: stdarg.h, stddef.h and kin, which glibc
+      # does not provide because they are the compiler's responsibility. Resolved
+      # relative to this file so it works from a source checkout and an installed
+      # gem alike (preprocess -> rubycc -> lib -> gem root, then include/).
+      BUNDLED_INCLUDE_DIR = File.expand_path("../../../include", __dir__).freeze
+
+      # The libc system header directories on this x86-64 Linux host, in the order
+      # gcc reports them for angled includes. Only the C library's own directories
+      # are listed; the compiler's private include directory is deliberately
+      # absent, because BUNDLED_INCLUDE_DIR supplies those headers instead.
+      LIBC_SYSTEM_INCLUDE_PATHS = %w[/usr/include/x86_64-linux-gnu /usr/include].freeze
+
+      # The default system include search path: the bundled freestanding headers
+      # first (so rubycc's stdarg.h/stddef.h win over any same-named file further
+      # down), then the libc directories. Appended after the user's -I/-isystem
+      # directories unless system includes are disabled (-nostdinc).
+      DEFAULT_SYSTEM_INCLUDE_PATHS = [BUNDLED_INCLUDE_DIR, *LIBC_SYSTEM_INCLUDE_PATHS].freeze
+
       # A guard against unbounded #include recursion (a header that includes
       # itself); 200 is comfortably deeper than any sane header nesting.
       INCLUDE_DEPTH_LIMIT = 200
@@ -179,9 +198,10 @@ module Rubycc
         @include_origin = {}
       end
 
-      def run(source, filename:, include_paths: [], defines: [])
+      def run(source, filename:, include_paths: [], defines: [], system_includes: true)
         TokenConverter.new.convert(
-          preprocess(source, filename: filename, include_paths: include_paths, defines: defines)
+          preprocess(source, filename: filename, include_paths: include_paths,
+                             defines: defines, system_includes: system_includes)
         )
       end
 
@@ -190,8 +210,12 @@ module Rubycc
       # Front tokens. It is what #run builds on, and what the `-E` driver mode
       # re-spells into preprocessed text. `defines` is the ordered command-line
       # `-D`/`-U` list (see #apply_command_line_definitions).
-      def preprocess(source, filename:, include_paths: [], defines: [])
-        @include_paths = include_paths
+      # `system_includes` (the default) appends the compiler-supplied and libc
+      # directories after the caller's -I/-isystem set, so an angled #include of
+      # <stdarg.h> or a libc header resolves with no explicit -I; the driver's
+      # -nostdinc passes it false to search only the caller's directories.
+      def preprocess(source, filename:, include_paths: [], defines: [], system_includes: true)
+        @include_paths = include_paths + (system_includes ? DEFAULT_SYSTEM_INCLUDE_PATHS : [])
         # The whole-run macro-expansion budget (see EXPANSION_TOKEN_LIMIT), reset
         # here so every translation unit starts with a full allowance.
         @expansion_tokens = 0
