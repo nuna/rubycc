@@ -2555,10 +2555,23 @@ module Rubycc
             AST::VariableRef.new(tok.value, tok)
           end
         elsif tok.punct?("(")
-          advance
-          node = parse_expression
-          expect_punct(")")
-          node
+          # A "(" immediately followed by "{" opens a GNU statement expression
+          # "( { block-item* } )" (a GCC extension): the braces enclose a
+          # compound-statement, and its last expression-statement (if any) gives
+          # the whole construct its value and type. Every other "(" is an
+          # ordinary parenthesized expression. #parse_compound_statement carries
+          # its own nesting guard and pushes the block's tag/ordinary scopes.
+          if peek_ahead(1)&.punct?("{")
+            advance # "("
+            body = parse_compound_statement
+            expect_punct(")")
+            AST::StatementExpr.new(body, tok)
+          else
+            advance
+            node = parse_expression
+            expect_punct(")")
+            node
+          end
         else
           error_at(tok, "expected expression")
         end

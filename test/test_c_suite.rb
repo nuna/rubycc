@@ -49,8 +49,6 @@ class TestCSuite < Minitest::Test
     "00206" => "#pragma push_macro/pop_macro (silently-ignored pragma)",
     "00207" => "variable-length arrays (out of scope)",
     "00209" => "K&R unspecified-parameter function type as parameter (out of scope)",
-    "00213" => "statement expressions (recorded M1 debt, early M2)",
-    "00214" => "statement expressions (recorded M1 debt, early M2)",
     "00216" => "compound literals / empty struct (known debt)",
     "00218" => "bit-field access (recorded M2 debt)",
     "00219" => "_Generic (out of scope for M1)",

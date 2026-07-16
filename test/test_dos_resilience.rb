@@ -75,6 +75,12 @@ class TestDosResilience < Minitest::Test
     assert_match(/nested too deeply/, error.description)
   end
 
+  def test_deeply_nested_statement_expressions_are_rejected
+    source = "int main(void) { return #{"({" * DEEP}1;#{"})" * DEEP}; }"
+    error = assert_raises(CompileError) { compile(source) }
+    assert_match(/nested too deeply/, error.description)
+  end
+
   def test_deeply_nested_declarator_parentheses_are_rejected
     source = "int #{"(" * DEEP}x#{")" * DEEP};"
     error = assert_raises(CompileError) { compile(source) }

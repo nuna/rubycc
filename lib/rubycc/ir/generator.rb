@@ -1477,6 +1477,8 @@ module Rubycc
           gen_inc_dec(node)
         when Front::AST::Comma
           gen_comma(node)
+        when Front::AST::StatementExpr
+          gen_statement_expr(node)
         when Front::AST::VaStart
           gen_va_start(node)
         when Front::AST::VaArg
@@ -1500,6 +1502,34 @@ module Rubycc
       def gen_comma(node)
         gen_expr(node.left)
         gen_expr(node.right)
+      end
+
+      # A GNU statement expression "( { block-item* } )". The braces are a
+      # compound-statement, so a fresh scope is pushed for the block's locals
+      # and popped at its end, exactly as #gen_block does. Every block-item but
+      # the last is lowered as an ordinary statement (for its side effects);
+      # when the last item is an expression-statement, its expression is lowered
+      # with #gen_expr and its value and type become the whole construct's.
+      # Otherwise (an empty block, or a last item that is not an
+      # expression-statement) the construct is void — a placeholder value the
+      # discarding contexts (an expression-statement, a comma operand) ignore,
+      # and #gen_value rejects wherever a value is actually required.
+      def gen_statement_expr(node)
+        items = node.body.items
+        @scopes.push({})
+        begin
+          result = [nil, Type::Void]
+          items.each_with_index do |item, index|
+            if index == items.size - 1 && item.is_a?(Front::AST::ExpressionStmt)
+              result = gen_expr(item.expr)
+            else
+              gen_statement(item)
+            end
+          end
+          result
+        ensure
+          @scopes.pop
+        end
       end
 
       # "__builtin_va_start(ap, last)": initializes `ap` so a following
@@ -2917,6 +2947,19 @@ module Rubycc
         result = new_vreg
         emit(:jump_if_zero, a: cond, b: else_label)
 
+        # A void conditional (one arm void, the GCC extension) yields no value:
+        # each arm is lowered with #gen_expr for its side effects only — no
+        # convert-and-store into the result slot, which #gen_value would reject
+        # for the void arm and there is no value to keep anyway.
+        if result_type.void?
+          gen_expr(node.then_expr)
+          emit(:jump, a: end_label)
+          emit(:label, a: else_label)
+          gen_expr(node.else_expr)
+          emit(:label, a: end_label)
+          return [nil, Type::Void]
+        end
+
         then_value, then_type = gen_value(node.then_expr)
         emit(:copy, dst: result, a: convert_for_assignment(then_value, then_type, result_type, token: node.token))
         emit(:jump, a: end_label)
@@ -2935,9 +2978,13 @@ module Rubycc
       # pointer type, so "cond ? p : 0" is a pointer. A pointer to an object type
       # paired with a "void *" (in either position) yields "void *" (6.5.15p6),
       # so "cond ? (char *)s : v" is well-typed. Anything else (a pointer vs a
-      # non-null int, or two unrelated pointer types) is rejected. Both arms are
-      # passed as AST nodes so the null-pointer-constant check can look at the
-      # literal, not just its int type.
+      # non-null int, or two unrelated pointer types) is rejected. When either
+      # arm is void the whole conditional is void, which ISO C only admits when
+      # both arms are void but GCC extends to a single void arm — the shape a
+      # statement expression ending in a jump takes ("1 ? printf(...) : ({ ...;
+      # goto L; })"), so the two features work together. Both arms are passed as
+      # AST nodes so the null-pointer-constant check can look at the literal, not
+      # just its int type.
       def conditional_result_type(then_node, then_type, else_node, else_type, token)
         return then_type if then_type == else_type
         if then_type.pointer? && Front::AST.null_pointer_constant?(else_node)
@@ -2946,6 +2993,8 @@ module Rubycc
           else_type
         elsif void_pointer_composite?(then_type, else_type)
           Type::Pointer.new(Type::Void)
+        elsif then_type.void? || else_type.void?
+          Type::Void
         elsif then_type.arithmetic? && else_type.arithmetic?
           common_arithmetic_type(then_type, else_type)
         else
@@ -3937,8 +3986,36 @@ module Rubycc
           Type::Int
         when Front::AST::Conditional
           static_conditional_type(node)
+        when Front::AST::StatementExpr
+          static_statement_expr_type(node)
         else
           raise "unsupported expression: #{node.class}"
+        end
+      end
+
+      # The type of a GNU statement expression without emitting code, mirroring
+      # #gen_statement_expr: a block whose last item is not an
+      # expression-statement is void; otherwise the type is that last
+      # expression's. The last expression may reference a variable the block
+      # declares, so a scope is pushed and every top-level declaration's declared
+      # type is bound into it (storage is irrelevant to type inference) before
+      # the last expression's type is inferred, then the scope is popped.
+      def static_statement_expr_type(node)
+        items = node.body.items
+        last = items.last
+        return Type::Void unless last.is_a?(Front::AST::ExpressionStmt)
+
+        @scopes.push({})
+        begin
+          items.each do |item|
+            next unless item.is_a?(Front::AST::VariableDecl)
+
+            @scopes.last[item.name] =
+              Local.new(type: item.type, storage: nil, global: false, const: item.const)
+          end
+          static_type(last.expr)
+        ensure
+          @scopes.pop
         end
       end
 

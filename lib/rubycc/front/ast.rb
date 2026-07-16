@@ -198,6 +198,15 @@ module Rubycc
       # `items` is a flat array of declaration/statement nodes.
       Block = Data.define(:items, :token)
 
+      # A GNU statement expression "( { block-item* } )" (a GCC extension, not
+      # ISO C). `body` is the AST::Block the parentheses wrap around a compound
+      # statement; the braces introduce the block's own scope, just like any
+      # compound-statement. When the block's last block-item is an
+      # expression-statement, that expression's value and type are the whole
+      # construct's; otherwise (an empty block, or a last item that is a
+      # declaration, a loop, a bare ";" and so on) the construct is void.
+      StatementExpr = Data.define(:body, :token)
+
       # `while (condition) body`
       While = Data.define(:condition, :body, :token)
 

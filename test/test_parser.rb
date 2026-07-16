@@ -1516,6 +1516,34 @@ class TestParser < Minitest::Test
     assert_kind_of AST::Comma, call.args[0]
   end
 
+  def test_parses_statement_expression
+    # "({ int a = 2; a + 3; })" is a StatementExpr whose body is a Block whose
+    # last block-item is the value-yielding expression-statement.
+    expr = parse_expr("({ int a = 2; a + 3; })")
+    assert_kind_of AST::StatementExpr, expr
+    assert_kind_of AST::Block, expr.body
+    assert_equal 2, expr.body.items.size
+    assert_kind_of AST::VariableDecl, expr.body.items.first
+    last = expr.body.items.last
+    assert_kind_of AST::ExpressionStmt, last
+    assert_kind_of AST::Binary, last.expr
+  end
+
+  def test_parses_extension_prefixed_statement_expression
+    # "__extension__ ({ ... })" is accepted, the marker discarded, leaving the
+    # same StatementExpr the bare form yields.
+    expr = parse_expr("__extension__ ({ 1; })")
+    assert_kind_of AST::StatementExpr, expr
+    assert_equal 1, expr.body.items.size
+  end
+
+  def test_ordinary_parenthesized_expression_is_not_a_statement_expression
+    # A "(" not immediately followed by "{" stays a plain parenthesized
+    # expression, so this must not become a StatementExpr.
+    expr = parse_expr("(1 + 2)")
+    assert_kind_of AST::Binary, expr
+  end
+
   def test_compound_assignment_to_non_lvalue_reports_compile_error
     error = assert_raises(Rubycc::CompileError) do
       parse("int main(void) { 1 += 2; return 0; }")
