@@ -1499,9 +1499,49 @@ rb_define_module_function / INT2NUM / NUM2INT / rb_str_new_cstr を使う最小�
 
 ---
 
+## Step 40 — GNU 文式 `({ 文... 最後の式 })`(M1 追補・最優先負債の解消)
+
+M2 受け入れ(Step 39)で確認した「実 C 拡張を塞ぐ最初の壁」を潰す M1 追補ステップ。
+ruby.h の `TypedData_Make_Struct` / `Data_Make_Struct` / `rb_intern` 等が文式に
+展開されるため、これが無いと実 gem のコンパイルが即座に止まる(証拠: 上記マクロを
+含むソースが `error: expected expression` で失敗)。heavy-implementer へ移譲し、
+メインセッションで差分レビュー + gcc 差分実測 + 全スイート再実行して確定。
+
+**設計判断**:
+- **一次式での分岐で実装**: `(` の直後が `{` のときだけ複合文をパースして `)` で
+  閉じ、`AST::StatementExpr(body, token)` を返す。通常の括弧式 `( expr )` とは
+  別経路に分け、既存の `parse_compound_statement` をそのまま呼ぶことで、入れ子
+  ガード(MAX_NESTING_DEPTH=500)とブロックの tag/ordinary スコープ push を
+  無改造で継承する(DoS フェイルセーフを迂回しない)。
+- **値・型の規則は「最後の式文」**: IR 生成で最後の要素以外を文として実行し、
+  最後が式文ならその式の値・型を、そうでなければ(空ブロック・宣言・ループ・空文で
+  終わる場合)void を構文全体の結果とする。`static_type` にも同じ規則を実装し、
+  sizeof(文式) が値生成なしに型だけで評価できる経路を用意(最後の式が参照しうる
+  ブロック局所宣言の型をスコープに束縛してから最終式の型を推論)。**新しい IR
+  命令は追加せず**、既存の `gen_statement`/`gen_expr` を再利用したため IR.md は不変。
+- **`?:` の片側 void アーム(GCC 拡張)を同時対応**: 文式が `goto` 等で終わって
+  void 型になると、c-testsuite 00213 の `1 ? printf(...) : ({ ...; goto L; })` が
+  現れる。ISO C は両アーム void のみ許容だが GCC は片側 void を許容するため、
+  `conditional_result_type` で片側 void を void 合成とし、`gen_conditional` に
+  void 経路(各アームを値変換せず副作用のみ)を追加した。この 2 機能が噛み合って
+  初めて 00213 が通る。
+- **`__extension__ ({ … })`**: 既存の cast 前置での `__extension__` 読み飛ばし
+  経由で自動的に受理され、追加変更は不要だった。
+
+**トレードオフ**: `static_statement_expr_type` はブロック直下の `VariableDecl` の
+型のみをスコープに束縛する(sizeof(文式) の最終式がブロック局所変数を参照する稀な
+場合の型推論用)。多重宣言子や局所 typedef/tag を最終式で踏む極端なケースは未対応
+だが、実行経路(`gen_statement_expr`)は通常の宣言処理を通るため影響なし。
+
+**位置づけ**: これで実 C 拡張が要求する ruby.h の割り当てマクロが展開時に通る。
+次は json/msgpack の実 gem ビルドで ruby.h の全機能を踏み、露見する M1 の残穴を
+追補ステップとして通し番号で潰す段階(M2 受け入れの最終形)に入る。
+
+---
+
 ## 現在のテスト規模
 
-Step 39 完了時点: **1,492 runs / 4,364 assertions / 0 failures / 19 skips**
+Step 40 完了時点: **1,510 runs / 4,396 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト

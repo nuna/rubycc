@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 の大詰め。gcc 互換ドライバ = Step 38、C 拡張の require 実行受け入れ = Step 39 まで完了(rubycc 単体で C 拡張を .so 化 → require して動くことを実証・常設化)。残りは M2 受け入れの最終形 = json/msgpack を実ビルドして gem テスト合格(ここで M1 の残穴を追補ステップで潰す)。L5 第三段(.gnu.hash)は後続**。
+現在地: **M2 の大詰め。gcc 互換ドライバ = Step 38、C 拡張の require 実行受け入れ = Step 39、文式サポート(M1 追補・最優先負債)= Step 40 まで完了(rubycc 単体で C 拡張を .so 化 → require して動くことを実証・常設化。ruby.h の割り当てマクロが踏む文式も通る)。残りは M2 受け入れの最終形 = json/msgpack を実ビルドして gem テスト合格(ここで露見する M1 の残穴を追補ステップで潰す)。L5 第三段(.gnu.hash)は後続**。
 
 ---
 
@@ -82,7 +82,7 @@
 | `&arr[i]` 等の計算アドレス定数 | グローバル初期化子で診断エラー | 実害が出た時点 |
 | 指し先 const の書き込み検出 | `const int *p` の `*p = x` を診断しない(型に修飾を載せない簡略化) | 実害が出た時点 |
 | unsigned long ⇔ float/double 変換 | 64 bit 符号無しの往復に追加コードが要るため診断エラー | 実害が出た時点 |
-| 文式 `({ … })` | config.h が HAVE_STMT_AND_DECL_IN_EXPR=1 を焼き込むため Data_Make_Struct / TypedData_Make_Struct / rb_intern() が展開時に踏む。スモークテスト単体は未展開で通るが実 gem はほぼ即座に要求 | **早期 M2(最優先負債)** |
+| ~~文式 `({ … })`~~ | **解消(Step 40、4466e68)**: 一次式で `(` の直後が `{` のとき複合文をパースし最後の式文の値・型を採る文式を実装。`?:` の片側 void アーム(GCC 拡張)対応込み。c-testsuite 00213/00214 合格。Data_Make_Struct / TypedData_Make_Struct / rb_intern() の展開先が通る | ~~早期 M2(最優先負債)~~ **完了** |
 | ビットフィールドのアクセス | レイアウト・ABI 分類は実装済み(Step 28)。読み書き・& は診断エラー(shift/mask 生成が未実装) | M2(gem コーパスで再判定) |
 | マクロ再展開の hide-set 交差 | `CAT(A,B)(x)` の CAT2 経由再展開が gcc と相違(c-testsuite 00201 で実証)。修正方針記録済み: 置換 paint を「呼び出し名の suppress ∩ 閉じ括弧の suppress + 自名」へ | M2 |
 | 128 ビット整数の演算残り | 乗算・加減算・比較・変換のみ実装(Step 28)。除算・シフト・ビット演算・値渡し/返し・可変長渡しは診断エラー | 実害が出た時点 |
@@ -97,7 +97,7 @@ Step 28 で M1 の完了判定を満たした(c-testsuite 201/220 合格・失�
 `#include <ruby.h>` + rb_define_module / LONG2NUM を使う拡張ソースが ELF64 .o まで
 コンパイル可能。test/test_ruby_smoke.rb が常時検証)。スモークテストは実システムの
 glibc 開発ヘッダに対して行う(同梱ヘッダは B7/M5 スコープ)。棚卸しした不足は
-§3 の負債表に記録済みで、筆頭(文式)は M2 と並行で潰す。
+§3 の負債表に記録済みで、筆頭(文式)は Step 40 で解消済み。
 
 ## 5. M2 — リンカと ar(json/msgpack を手動ビルド)
 
@@ -182,6 +182,11 @@ STEPS.md の Step 37。musl での検証は L8 の M2 受け入れ(両コンテ�
 - ~~最小 C 拡張の require 実行受け入れ~~ **完了(Step 39、8e5f8f1)**: rubycc
   ドライバ単体で -shared -fPIC ビルドした C 拡張を Ruby から require して実際に
   呼べることを常設テスト化(単一 TU・gcc 一致・複数 TU)。M2 受け入れの土台。
+- ~~文式 `({ … })` サポート(M1 追補・最優先負債)~~ **完了(Step 40、4466e68)**:
+  一次式で `(` の直後が `{` のとき複合文をパースし最後の式文の値・型を採る文式を
+  実装(`?:` の片側 void アーム対応込み)。ruby.h の TypedData_Make_Struct /
+  Data_Make_Struct / rb_intern の展開先が通る。c-testsuite 00213/00214 合格。
+  設計記録は STEPS.md の Step 40。
 - **M2 受け入れの最終形(残り、次ステップ)**: json と msgpack を「extconf.rb が
   生成した Makefile のコマンドを
   手動で rubycc に置き換えて」ビルドし、**gem 自身のテストスイートに合格**。
