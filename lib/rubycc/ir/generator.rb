@@ -2151,13 +2151,18 @@ module Rubycc
         [dst, element_type]
       end
 
-      # "s.m" / "p->m" read: compute the member's address (see
-      # #gen_member_address) and, for a scalar member, load through it. A struct
-      # member yields its own address (a nested struct lvalue) and an array
+      # "s.m" / "p->m" read: resolve the member (see #resolve_member) and yield
+      # its value. A bit-field is extracted with a shift and mask (see
+      # #gen_bitfield_load); a whole-byte scalar is loaded through its address; a
+      # struct member yields its own address (a nested struct lvalue) and an array
       # member decays to a pointer to its first element, matching how a struct
       # variable and an array variable each behave.
       def gen_member_access(node)
-        addr, member_type = gen_member_address(node)
+        base_addr, member = resolve_member(node)
+        return gen_bitfield_load(base_addr, member) if member.bitfield?
+
+        member_type = member.type
+        addr = member_field_address(base_addr, member)
         if member_type.struct? || wide128?(member_type)
           [addr, member_type]
         elsif member_type.array?
@@ -2169,32 +2174,165 @@ module Rubycc
         end
       end
 
-      # The address of a struct member — the lvalue shared by member reads and
-      # writes and by "&s.m". It is the base struct's address (see
-      # #gen_struct_base) plus the member's constant byte offset; a zero offset
-      # (the first member) needs no arithmetic. Returns [address_vreg,
-      # member_type].
-      def gen_member_address(node)
+      # Resolves a "." / "->" selection to [base_struct_address, Member],
+      # evaluating the selected-from object exactly once (see #gen_struct_base).
+      # Every member read, write, compound assignment and "&" shares it, then
+      # branches on whether the member is a bit-field or occupies whole bytes.
+      def resolve_member(node)
         base_addr, struct_type = gen_struct_base(node)
         member = struct_type.member(node.member)
         unless member
           error_at(node.token, "no member named '#{node.member}' in '#{struct_type}'")
         end
-        # Bit-fields are laid out (so sizeof/alignof and by-value ABI are right)
-        # but not yet extractable: reading, writing or "&"-ing one would need the
-        # shift/mask lowering this subset does not emit (recorded M2 debt). No
-        # inline function reachable from <ruby.h> touches a bit-field, so this
-        # diagnostic never fires on the headers it exists to support.
+        [base_addr, member]
+      end
+
+      # The address of a struct member — the lvalue shared by member reads and
+      # writes and by "&s.m". It is the base struct's address (see
+      # #gen_member_address) plus the member's constant byte offset; a zero offset
+      # (the first member) needs no arithmetic. A bit-field has no byte address,
+      # so this is only reached for a whole-byte member.
+      def gen_member_address(node)
+        base_addr, member = resolve_member(node)
+        # A bit-field occupies a fraction of a storage unit, so "&s.field" would
+        # not name a whole-byte object (6.5.3.2p1 forbids "&" on it).
         if member.bitfield?
-          error_at(node.token, "bit-field access is not supported yet")
+          error_at(node.token, "cannot take address of bit-field '#{node.member}'")
         end
-        return [base_addr, member.type] if member.offset.zero?
+        [member_field_address(base_addr, member), member.type]
+      end
+
+      # The address of a whole-byte member: the base struct's address plus the
+      # member's constant byte offset (no arithmetic for a zero-offset member).
+      def member_field_address(base_addr, member)
+        offset_address(base_addr, member.offset)
+      end
+
+      # `base_addr` displaced by a constant `byte_offset`; the base is returned
+      # unchanged for a zero displacement. Used both for a member's byte offset
+      # and for a bit-field's storage-unit offset.
+      def offset_address(base_addr, byte_offset)
+        return base_addr if byte_offset.zero?
 
         offset = new_vreg
-        emit(:const, dst: offset, a: member.offset)
+        emit(:const, dst: offset, a: byte_offset)
         addr = new_vreg
         emit(:add, dst: addr, a: base_addr, b: offset, size: 8)
-        [addr, member.type]
+        addr
+      end
+
+      # A bit-field's storage unit: its byte address (base + the unit's byte
+      # offset within the struct) and the field's shift (its low bit's position
+      # inside that unit). The layout guarantees a field never straddles a unit,
+      # so one aligned load/store of the declared type's width covers it. Returns
+      # [unit_address, shift].
+      def bitfield_unit(base_addr, member)
+        unit_bytes = member.type.size
+        unit_bits = unit_bytes * 8
+        unit_offset = (member.bit_offset / unit_bits) * unit_bytes
+        shift = member.bit_offset % unit_bits
+        [offset_address(base_addr, unit_offset), shift]
+      end
+
+      # The rvalue type a bit-field read produces (6.3.1.1): a field narrower
+      # than int, or as wide as int but signed, promotes to int; an unsigned
+      # field as wide as int stays unsigned int (its top value would not fit a
+      # signed int); a long-based field keeps its own 64-bit type (it does not
+      # promote). A _Bool field promotes to int, its value being 0 or 1.
+      def bitfield_promoted_type(member)
+        type = member.type
+        return type if type.size >= 8
+        return Type::UInt if type.unsigned? && member.bit_width >= 32
+
+        Type::Int
+      end
+
+      # Reads a bit-field: load its storage unit, bring the field down to bit 0
+      # with a logical right shift, then sign- or zero-extend its `width` bits
+      # (see #extract_bitfield_bits). The result is the promoted rvalue type.
+      def gen_bitfield_load(base_addr, member)
+        unit_addr, shift = bitfield_unit(base_addr, member)
+        raw = new_vreg
+        emit(:uload, dst: raw, a: unit_addr, size: member.type.size)
+        raw = emit_shift(:shr, raw, shift, bitfield_op_size(member)) if shift.positive?
+        extract_bitfield_bits(raw, member)
+      end
+
+      # Extends the low `width` bits of `raw` to the bit-field's promoted rvalue
+      # value: a signed field left-justifies then arithmetically shifts back so
+      # its sign bit replicates; an unsigned field masks off the higher bits (or,
+      # when the field already fills the register, is left as loaded). Returns
+      # [value_vreg, promoted_type].
+      def extract_bitfield_bits(raw, member)
+        result_type = bitfield_promoted_type(member)
+        width = member.bit_width
+        reg_bits = result_type.size * 8
+        size = bitfield_op_size(member)
+        if member.type.signed?
+          top = reg_bits - width
+          value = top.positive? ? emit_shift(:sar, emit_shift(:shl, raw, top, size), top, size) : raw
+        elsif width < reg_bits
+          value = emit_and_const(raw, (1 << width) - 1, size)
+        else
+          value = raw
+        end
+        [value, result_type]
+      end
+
+      # Writes `value` (of `value_type`) into a bit-field by read-modify-write:
+      # convert the value to the field's declared type (normalizing a _Bool to
+      # 0/1), load the storage unit, clear the field's bits, splice the value's
+      # low `width` bits in at the field's shift, and store the unit back so the
+      # neighbouring fields sharing it are untouched. The expression's value is
+      # the truncated field read back — the same bits #gen_bitfield_load would
+      # yield — which for a signed field is sign-extended (gcc's rule).
+      def store_bitfield(base_addr, member, value, value_type, token)
+        unit_addr, shift = bitfield_unit(base_addr, member)
+        size = bitfield_op_size(member)
+        width = member.bit_width
+        mask = (1 << width) - 1
+        converted = convert_for_assignment(value, value_type, member.type, token: token)
+
+        old = new_vreg
+        emit(:uload, dst: old, a: unit_addr, size: member.type.size)
+        cleared = emit_and_const(old, ~(mask << shift), size)
+        field = emit_and_const(converted, mask, size)
+        field = emit_shift(:shl, field, shift, size) if shift.positive?
+        merged = new_vreg
+        emit(:or, dst: merged, a: cleared, b: field, size: size)
+        emit(:store, a: unit_addr, b: merged, size: member.type.size)
+
+        extract_bitfield_bits(converted, member)
+      end
+
+      # The IR operand size for a bit-field's storage-unit arithmetic: 8 (64-bit)
+      # for a long-based unit, otherwise the default 32-bit width (nil), which
+      # covers every unit up to four bytes and the int/unsigned int promoted type.
+      def bitfield_op_size(member)
+        8 if member.type.size == 8
+      end
+
+      # Emits "value op count" for a shift op (:shl/:sar/:shr) with a constant
+      # count, materializing the count into a fresh vreg the backend reads from
+      # cl. Returns the result vreg.
+      def emit_shift(op, value, count, size)
+        count_reg = new_vreg
+        emit(:const, dst: count_reg, a: count)
+        dst = new_vreg
+        emit(op, dst: dst, a: value, b: count_reg, size: size)
+        dst
+      end
+
+      # Emits "value & mask" with a constant mask, materializing the mask into a
+      # fresh vreg (a full 64-bit immediate when size is 8). A negative Ruby mask
+      # (a "~" clear mask) is packed by #emit_const to the operand width. Returns
+      # the result vreg.
+      def emit_and_const(value, mask, size)
+        mask_reg = new_vreg
+        emit(:const, dst: mask_reg, a: mask, size: size)
+        dst = new_vreg
+        emit(:and, dst: dst, a: value, b: mask_reg, size: size)
+        dst
       end
 
       # Evaluates the object a "." or "->" selects from, returning
@@ -2833,12 +2971,22 @@ module Rubycc
         [converted, element_type]
       end
 
-      # "s.m = v" / "p->m = v": compute the member's address (see
-      # #gen_member_address) and write v through it. A struct member is copied
-      # whole; an array member is not assignable, like an array variable; every
-      # other member is a scalar store the member's width wide.
+      # "s.m = v" / "p->m = v": resolve the member (see #resolve_member) and write
+      # v into it. A bit-field is spliced into its storage unit by read-modify-write
+      # (see #store_bitfield); a struct member is copied whole; an array member is
+      # not assignable, like an array variable; every other member is a scalar
+      # store the member's width wide.
       def gen_store_through_member(node, target)
-        addr, member_type = gen_member_address(target)
+        base_addr, member = resolve_member(target)
+        member_type = member.type
+        if member.bitfield?
+          value, value_type = gen_value(node.value)
+          unless compatible_assignment?(member_type, node.value, value_type)
+            error_at(node.token, "incompatible types in assignment")
+          end
+          return store_bitfield(base_addr, member, value, value_type, node.token)
+        end
+        addr = member_field_address(base_addr, member)
         if member_type.array?
           error_at(node.token, "array type is not assignable")
         end
@@ -3293,7 +3441,21 @@ module Rubycc
       # under #gen_binary_op's rules, and write it back. An aggregate member (a
       # struct or an array) has no arithmetic, so it is rejected before the read.
       def gen_compound_assignment_through_member(node, target)
-        addr, member_type = gen_member_address(target)
+        base_addr, member = resolve_member(target)
+        # A bit-field reads and writes through the shift/mask lowering rather than
+        # a plain load/store, but the "op=" arithmetic is otherwise identical: read
+        # once, combine, splice back.
+        if member.bitfield?
+          current, current_type = gen_bitfield_load(base_addr, member)
+          value, value_type = gen_value(node.value)
+          result, result_type = gen_binary_op(node.op, current, current_type, value, value_type, node.token)
+          unless compatible_types?(member.type, result_type)
+            error_at(node.token, "incompatible types in assignment")
+          end
+          return store_bitfield(base_addr, member, result, result_type, node.token)
+        end
+        member_type = member.type
+        addr = member_field_address(base_addr, member)
         require_scalar_target(member_type, node.token)
         current = new_vreg
         emit_scalar_load(current, addr, member_type)
@@ -3389,7 +3551,23 @@ module Rubycc
       # arithmetic and is rejected first. Prefix yields the new value, postfix
       # the value read before the step.
       def gen_inc_dec_through_member(node, target)
-        addr, member_type = gen_member_address(target)
+        base_addr, member = resolve_member(target)
+        # A bit-field steps through the same shift/mask read-modify-write as a
+        # compound assignment: prefix yields the new (truncated) field, postfix
+        # the value read before the step.
+        if member.bitfield?
+          current, current_type = gen_bitfield_load(base_addr, member)
+          one = new_vreg
+          emit(:const, dst: one, a: 1)
+          result, result_type = gen_binary_op(node.op, current, current_type, one, Type::Int, node.token)
+          unless compatible_types?(member.type, result_type)
+            error_at(node.token, "incompatible types in assignment")
+          end
+          stored = store_bitfield(base_addr, member, result, result_type, node.token)
+          return node.prefix ? stored : [current, current_type]
+        end
+        member_type = member.type
+        addr = member_field_address(base_addr, member)
         require_scalar_target(member_type, node.token)
         current = new_vreg
         emit_scalar_load(current, addr, member_type)

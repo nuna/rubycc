@@ -1336,17 +1336,12 @@ class TestDiagnostics < Minitest::Test
 
   # --- bit-fields (Step 28 Phase C2) --------------------------------------
 
-  # Bit-fields are laid out but never extracted; any read of one is rejected.
-  def test_bitfield_read_is_rejected
-    source = "struct S { int a:3; };\nint f(struct S *s) { return s->a; }"
+  # Bit-fields are now read and written (Step 48), but one cannot name a
+  # whole-byte object, so "&s.field" is still rejected (6.5.3.2p1).
+  def test_bitfield_address_is_rejected
+    source = "struct S { int a:3; };\nint *f(struct S *s) { return &s->a; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/bit-field access is not supported yet/, error.description)
-  end
-
-  def test_bitfield_write_is_rejected
-    source = "struct S { int a:3; };\nvoid f(struct S *s) { s->a = 1; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/bit-field access is not supported yet/, error.description)
+    assert_match(/cannot take address of bit-field 'a'/, error.description)
   end
 
   def test_named_zero_width_bitfield_is_rejected

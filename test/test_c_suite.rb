@@ -48,7 +48,7 @@ class TestCSuite < Minitest::Test
     "00207" => "variable-length arrays (out of scope)",
     "00209" => "K&R unspecified-parameter function type as parameter (out of scope)",
     "00216" => "compound literals / empty struct (known debt)",
-    "00218" => "bit-field access (recorded M2 debt)",
+    "00218" => "bit-field access now works (Step 48), but this case reads an all-non-negative enum bit-field, which gcc zero-extends (its enum underlying type is unsigned); rubycc models enums as signed int, so the read sign-extends — the same enum-signedness modeling deviation as 00170",
     "00219" => "_Generic (out of scope for M1)",
     "00220" => "wide string literals (deliberate diagnostic)"
   }.freeze
