@@ -2331,6 +2331,8 @@ module Rubycc
             parse_builtin_expect
           elsif peek.keyword?("__builtin_alloca")
             parse_builtin_alloca
+          elsif peek.keyword?("__builtin_offsetof")
+            parse_builtin_offsetof
           elsif peek.punct?("+")
             advance # unary + is a no-op; fold it away
             parse_cast_expression
@@ -2471,6 +2473,47 @@ module Rubycc
           error_at(keyword_tok, "'__builtin_alloca' expects 1 argument, have #{args.size}")
         end
         AST::BuiltinAlloca.new(args[0], keyword_tok)
+      end
+
+      # "__builtin_offsetof ( type-name , member-designator )": the aggregate
+      # type and the member whose offset is wanted. The member-designator is a
+      # leading member name followed by any run of ".name" and "[ expression ]"
+      # steps (the gcc extension over a bare identifier, so "s.a.b[2].c" is
+      # writable). The steps are collected into a designator array the constant
+      # evaluator later walks to fold the offset; the array is never empty, since
+      # a designator always begins with a member name.
+      def parse_builtin_offsetof
+        keyword_tok = advance # "__builtin_offsetof"
+        expect_punct("(")
+        type = parse_type_name
+        expect_punct(",")
+        designator = parse_member_designator
+        expect_punct(")")
+        AST::BuiltinOffsetof.new(type, designator, keyword_tok)
+      end
+
+      # member-designator = identifier ( "." identifier | "[" expression "]" )*:
+      # the leading member name has no ".", every following member step does, and
+      # a subscript step takes a constant-expression closed by "]". Any other
+      # token where a "." or "[" is expected ends the designator, leaving the ")"
+      # for the caller.
+      def parse_member_designator
+        first_tok = expect_ident
+        designator = [AST::OffsetofMember.new(first_tok.value, first_tok)]
+        loop do
+          if peek.punct?(".")
+            advance # "."
+            member_tok = expect_ident
+            designator << AST::OffsetofMember.new(member_tok.value, member_tok)
+          elsif peek.punct?("[")
+            bracket_tok = advance # "["
+            index = parse_conditional_expression
+            expect_punct("]")
+            designator << AST::OffsetofIndex.new(index, bracket_tok)
+          else
+            return designator
+          end
+        end
       end
 
       # type-name = type-specifier abstract-declarator?: a base type-specifier

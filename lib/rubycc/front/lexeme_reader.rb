@@ -37,7 +37,7 @@ module Rubycc
                     switch case default goto sizeof
                     _Static_assert _Alignof __int128
                     __builtin_va_start __builtin_va_arg __builtin_va_end
-                    __builtin_expect __builtin_alloca
+                    __builtin_expect __builtin_alloca __builtin_offsetof
                     __asm__
                     __attribute__ __extension__].freeze
 

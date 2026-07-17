@@ -51,6 +51,22 @@ module Rubycc
         end
       end
 
+      # Raised when a __builtin_offsetof designator cannot name a byte offset:
+      # its type is not a struct/union or is incomplete, a step names no such
+      # member, a subscript step applies to a non-array member, or the target is
+      # a bit-field (which has no addressable byte offset). It is a NotConstant
+      # so every context that already reports a non-constant expression catches
+      # it too; `detail` carries the specific wording for a caller (the
+      # generator) that can surface it, over NotConstant's generic message.
+      class OffsetofError < NotConstant
+        attr_reader :detail
+
+        def initialize(token, detail)
+          @detail = detail
+          super(token)
+        end
+      end
+
       BINARY_OPERATIONS = {
         add: ->(a, b) { a + b },
         sub: ->(a, b) { a - b },
@@ -94,6 +110,8 @@ module Rubycc
           evaluate_sizeof_type(node)
         when AST::AlignofType
           evaluate_alignof_type(node)
+        when AST::BuiltinOffsetof
+          evaluate_builtin_offsetof(node)
         else
           # Every other node — VariableRef, Call, Assignment,
           # CompoundAssignment, IncDec, MemberAccess, Subscript, StringLit,
@@ -188,6 +206,57 @@ module Rubycc
         end
 
         type.alignment
+      end
+
+      # __builtin_offsetof(type-name, member-designator) folds to the byte offset
+      # of the designated member, walking the designator one step at a time from
+      # the aggregate type. A member step adds the member's offset and descends
+      # into its type; a subscript step (over an array member) adds the index
+      # times the element size and descends into the element type. Every failure
+      # — a non-aggregate or incomplete type, a missing member, a subscript of a
+      # non-array, or a bit-field target with no addressable offset — is an
+      # OffsetofError carrying the diagnostic wording. The member lookup goes
+      # through Type::StructType#member, so an anonymous struct/union member is
+      # traversed transparently with its own offset already folded in.
+      def evaluate_builtin_offsetof(node)
+        type = node.type
+        offset = 0
+        node.designator.each do |step|
+          case step
+          when AST::OffsetofMember
+            offset, type = offsetof_member_step(type, step, offset)
+          when AST::OffsetofIndex
+            offset, type = offsetof_index_step(type, step, offset)
+          end
+        end
+        offset
+      end
+
+      def offsetof_member_step(type, step, offset)
+        unless type.struct?
+          raise OffsetofError.new(step.token,
+                                  "request for member '#{step.name}' in something not a structure or union")
+        end
+        unless type.complete?
+          raise OffsetofError.new(step.token, "offsetof of incomplete type '#{type}'")
+        end
+
+        member = type.member(step.name)
+        raise OffsetofError.new(step.token, "no member named '#{step.name}' in '#{type}'") if member.nil?
+        if member.bitfield?
+          raise OffsetofError.new(step.token, "attempt to get the offset of a bit-field member '#{step.name}'")
+        end
+
+        [offset + member.offset, member.type]
+      end
+
+      def offsetof_index_step(type, step, offset)
+        unless type.array?
+          raise OffsetofError.new(step.token, "subscripted value in offsetof is not an array")
+        end
+
+        index = evaluate(step.index)
+        [offset + index * type.element.size, type.element]
       end
 
       # Whether `type` is an incomplete tagged type with no size or alignment: a

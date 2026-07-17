@@ -49,9 +49,12 @@ typedef int wchar_t;
 #ifndef NULL
 #define NULL ((void*)0)
 #endif
-/* Traditional address-of-member form: rubycc has no __builtin_offsetof yet,
-   and this evaluates correctly in a run-time context. */
-#define offsetof(t, m) ((size_t)&(((t*)0)->m))
+/* Folds to a size_t constant via __builtin_offsetof, so it holds in a
+   constant-expression context (a static initializer, an array bound, a case
+   label) as well as at run time — unlike the traditional address-of-member
+   form "((size_t)&(((t*)0)->m))", which rubycc's constant evaluator cannot
+   fold. */
+#define offsetof(t, m) __builtin_offsetof(t, m)
 typedef struct { long long __ll; long double __ld; } max_align_t;
 #endif
 #endif

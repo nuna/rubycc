@@ -306,6 +306,29 @@ module Rubycc
       # keeps 16-byte aligned.
       BuiltinAlloca = Data.define(:size, :token)
 
+      # "__builtin_offsetof ( type-name , member-designator )": the byte offset of
+      # a member within a struct/union, folded to a size_t constant. Unlike the
+      # traditional "((size_t)&(((t*)0)->m))" macro, it is a genuine
+      # constant-expression, so it holds in a static initializer, an array bound
+      # or a case label — the reason gcc/clang provide it. `type` is the resolved
+      # aggregate type; `designator` is the parsed member-designator, a non-empty
+      # array whose first element is always an OffsetofMember (the leading member
+      # name carries no "."). Each element is either an OffsetofMember (".name",
+      # or the leading bare name) or an OffsetofIndex ("[ constant-expression ]"),
+      # so a nested field ("a.b[2].c") reaches its target one element at a time.
+      # `token` is the builtin keyword, locating every diagnostic.
+      BuiltinOffsetof = Data.define(:type, :designator, :token)
+
+      # One member step of a __builtin_offsetof designator: the member named
+      # `name` of the aggregate reached so far. `token` is the member identifier,
+      # for a "no member named ..." diagnostic.
+      OffsetofMember = Data.define(:name, :token)
+
+      # One subscript step of a __builtin_offsetof designator: element `index`
+      # (a constant-expression node) of the array reached so far. `token` is the
+      # "[" token, for a "subscript of non-array" diagnostic.
+      OffsetofIndex = Data.define(:index, :token)
+
       # A single function parameter. `name` is the identifier String, or nil
       # for an unnamed parameter in a prototype (e.g. "int f(int, int);").
       # `type` is the parameter's Rubycc::Type (int, char or a pointer; never

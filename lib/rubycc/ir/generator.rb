@@ -1459,6 +1459,8 @@ module Rubycc
           gen_sizeof(node.type, node.token)
         when Front::AST::AlignofType
           gen_alignof(node.type, node.token)
+        when Front::AST::BuiltinOffsetof
+          gen_offsetof(node)
         when Front::AST::Cast
           gen_cast(node)
         when Front::AST::Assignment
@@ -2028,6 +2030,23 @@ module Rubycc
         # valid unsigned long value (its upper half zeroed).
         emit(:const, dst: dst, a: type.alignment)
         [dst, Type::ULong]
+      end
+
+      # __builtin_offsetof folds to a size_t (unsigned long) constant, the byte
+      # offset of the designated member, mirroring #gen_sizeof: the offset comes
+      # straight from type information (via the constant evaluator, the same
+      # fold a static initializer or array bound uses), so no code beyond the
+      # constant is emitted and the aggregate is never materialized. A designator
+      # that cannot name an offset — a non-aggregate or incomplete type, a
+      # missing member, a subscript of a non-array, or a bit-field target — is
+      # reported at the token the evaluator flags, with its specific wording.
+      def gen_offsetof(node)
+        offset = Front::ConstantEvaluator.evaluate(node)
+        dst = new_vreg
+        emit(:const, dst: dst, a: offset)
+        [dst, Type::ULong]
+      rescue Front::ConstantEvaluator::OffsetofError => e
+        error_at(e.token, e.detail)
       end
 
       # A cast "( type-name ) operand". The destination type steers the whole
@@ -3946,7 +3965,8 @@ module Rubycc
           node.type
         when Front::AST::FloatLit
           node.type
-        when Front::AST::SizeofExpr, Front::AST::SizeofType, Front::AST::AlignofType
+        when Front::AST::SizeofExpr, Front::AST::SizeofType, Front::AST::AlignofType,
+             Front::AST::BuiltinOffsetof
           Type::ULong
         when Front::AST::Call
           call_return_type(node)
