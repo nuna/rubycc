@@ -441,15 +441,22 @@ module Rubycc
         macro = body[0]
         raise_at(macro, "macro names must be identifiers") unless macro.type == :identifier
         raise_at(body[1], "extra tokens at end of ##{name.text} directive") if body.length > 1
-        # gcc makes "#ifdef __has_builtin" true, and a header uses that to prefer
-        # the operator over a config.h fallback. __has_builtin is safe to expose
-        # this way because it answers honestly (0 for a builtin rubycc lacks), so
-        # a guarded fallback is always taken. __has_include is deliberately NOT
-        # exposed to "#ifdef": it reports a header as present that rubycc may not
-        # be able to compile (e.g. a kernel UAPI header using "__signed__"), so a
-        # "#ifdef __has_include"-gated probe there would pull it in and fail.
-        defined_here = @macros.key?(macro.text) || macro.text == "__has_builtin"
-        defined_here == want_defined
+        # gcc makes "#ifdef" of the __has_* query operators true, and a header
+        # uses that to prefer the operator over a config.h fallback. They are
+        # safe to expose because each answers honestly — __has_builtin says 0
+        # for a builtin rubycc lacks, and a header __has_include reports present
+        # is one rubycc can now compile (the gcc alternate keywords the kernel
+        # UAPI headers lean on, "__signed__" and kin, are recognized).
+        defined_macro_name?(macro.text) == want_defined
+      end
+
+      # Whether `defined`/#ifdef/#ifndef sees NAME as a macro (6.10.8p1): an
+      # ordinary entry in the macro table, one of the self-supplied builtins
+      # (__FILE__ etc., 6.10.8.1) that never occupies a table slot because its
+      # value is computed at the use site, or a __has_* query operator (gcc
+      # extension both directives share, see query_operator_name?).
+      def defined_macro_name?(name)
+        @macros.key?(name) || BUILTIN_MACROS.include?(name) || query_operator_name?(name)
       end
 
       # Evaluates a #if/#elif controlling constant-expression (6.10.1) to a
@@ -528,7 +535,7 @@ module Rubycc
 
       def fold_defined(operator, body, index)
         name, index = read_defined_operand(operator, body, index)
-        [@macros.key?(name) || query_operator_name?(name), index]
+        [defined_macro_name?(name), index]
       end
 
       # gcc treats the __has_* query operators as satisfying `defined`, so

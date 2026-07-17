@@ -2030,18 +2030,17 @@ module Rubycc
 
       # A GNU inline-assembly statement (DESIGN R7): only the degenerate barrier
       # form is supported, spelled `__asm__` (never `asm`/`__asm`). The grammar
-      # is `__asm__ (volatile|__volatile__)* "(" template (":" section)* ")" ";"`.
-      # The template must be an (adjacent run of) empty string literal(s); a
-      # non-empty one, or any real operand in the output/input sections, is
-      # diagnosed. The clobber section's strings ("memory", "cc", ...) are
-      # accepted and discarded. Nothing is lowered — see AST::InlineAsm.
+      # is `__asm__ volatile* "(" template (":" section)* ")" ";"`, "volatile"
+      # admitting its GNU "__volatile"/"__volatile__" spellings too (both lex to
+      # the same keyword token, see LexemeReader::KEYWORD_ALIASES). The template
+      # must be an (adjacent run of) empty string literal(s); a non-empty one, or
+      # any real operand in the output/input sections, is diagnosed. The clobber
+      # section's strings ("memory", "cc", ...) are accepted and discarded.
+      # Nothing is lowered — see AST::InlineAsm.
       def parse_asm_statement
         asm_tok = advance # "__asm__"
-        # Any number of volatile qualifiers, in the keyword or __volatile__
-        # spelling (the latter arrives as an ordinary identifier).
-        while peek.keyword?("volatile") || (peek.type == :ident && peek.value == "__volatile__")
-          advance
-        end
+        # Any number of volatile qualifiers.
+        advance while peek.keyword?("volatile")
         expect_punct("(")
         parse_asm_template(asm_tok)
         parse_asm_operand_sections(asm_tok) if peek.punct?(":")

@@ -630,6 +630,28 @@ class TestPreprocessor < Minitest::Test
     assert_equal "l", version.suffix
   end
 
+  def test_defined_and_ifdef_see_the_builtin_macros
+    # A builtin macro never occupies a slot in @macros (its value is computed
+    # at the use site), but gcc still answers `defined`/#ifdef true for it, so
+    # this must too.
+    source = "#if defined(__STDC__)\nint has_stdc;\n#else\nint no_stdc;\n#endif\n" \
+             "#ifdef __FILE__\nint has_file;\n#endif\n" \
+             "#ifdef __LINE__\nint has_line;\n#endif\n" \
+             "#ifndef __STDC_VERSION__\nint no_version;\n#endif\n"
+    assert_equal ["int", "has_stdc", ";", "int", "has_file", ";", "int", "has_line", ";"],
+                 pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_defined_sees_the_rubycc_identifier_macro
+    source = "#if defined(__RUBYCC__)\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_defined_is_false_for_an_unknown_name
+    source = "#if defined(__NOT_A_MACRO__)\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
   def test_defining_a_builtin_is_rejected
     error = assert_raises(Rubycc::CompileError) { pp("#define __LINE__ 5\n") }
     assert_match(/cannot define builtin macro "__LINE__"/, error.description)
@@ -1192,6 +1214,9 @@ class TestPreprocessor < Minitest::Test
     "#if 1 << 4 > 8 ? 1 : 0\nint a;\n#endif\n",
     # defined in parenthesized and bare forms.
     "#define HAVE 1\n#if defined(HAVE) && defined NOPE\nint a;\n#else\nint b;\n#endif\n",
+    # defined() also sees a compiler-supplied builtin macro, not just a
+    # #define'd entry (gcc answers __STDC__ true here too).
+    "#if defined(__STDC__)\nint a;\n#else\nint b;\n#endif\n",
     # #ifdef / #ifndef against the macro table.
     "#define FLAG\n#ifdef FLAG\nint a;\n#endif\n#ifndef OTHER\nint b;\n#endif\n",
     # An #elif chain and nested conditionals.
@@ -1233,6 +1258,20 @@ class TestPreprocessor < Minitest::Test
       actual = pp(source).map { |t| pp_signature(t) }
       assert_equal expected, actual, "token streams differ from gcc -E for #{source.inspect}"
     end
+  end
+
+  # --- gcc's reserved "__x"/"__x__" alternate keyword spellings (Step 49) ----
+
+  def test_alternate_keyword_spellings_are_recognized_through_the_preprocessor
+    # The real compile pipeline always runs through the preprocessor (unlike
+    # the streaming Lexer, which only unit tests use directly), so the
+    # "__x"/"__x__" alias normalization (Front::LexemeReader::KEYWORD_ALIASES)
+    # must apply on this path too. This is what glibc's asm-generic/int-ll64.h
+    # ("typedef __signed__ char __s8;") reaches once defined(__STDC_VERSION__)
+    # is answered correctly (see the defined()/#ifdef fix above).
+    tokens = pp("__signed__ char c = -1;").reject(&:eof?)
+    assert_equal %i[keyword keyword ident punct punct num punct], tokens.map(&:type)
+    assert_equal ["signed", "char", "c", "=", "-", 1, ";"], tokens.map(&:value)
   end
 
   private

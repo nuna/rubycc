@@ -44,6 +44,23 @@ module Rubycc
                     __asm__
                     __attribute__ __extension__].freeze
 
+      # gcc's reserved "__x"/"__x__" alternate spellings for a handful of
+      # keywords (6.10.8.4's rationale: a header built with strict-ISO options
+      # such as -ansi still needs the keyword's meaning without colliding with
+      # a user identifier of the plain name). glibc's uapi-derived headers lean
+      # on these unconditionally, e.g. asm-generic/int-ll64.h's
+      # "typedef __signed__ char __s8". Each maps straight to the plain
+      # keyword's own spelling, so every downstream check keyed on that
+      # spelling (DECL_SPECIFIER_KEYWORDS, "const"/"volatile"/"inline" in
+      # Front::Parser, ...) sees an ordinary keyword token and needs no
+      # separate case for the alias.
+      KEYWORD_ALIASES = {
+        "__signed" => "signed", "__signed__" => "signed",
+        "__const" => "const", "__const__" => "const",
+        "__volatile" => "volatile", "__volatile__" => "volatile",
+        "__inline" => "inline", "__inline__" => "inline"
+      }.freeze
+
       # Escape sequences shared by character constants and string literals,
       # mapping the letter after the backslash to the byte value it denotes.
       # "\x" (hexadecimal, any number of digits) and octal ("\ooo", 1-3 digits,
@@ -79,6 +96,16 @@ module Rubycc
         KEYWORDS.include?(name)
       end
 
+      # The keyword token `name` denotes: itself when it already is one of
+      # KEYWORDS, or the plain spelling it aliases (see KEYWORD_ALIASES) when it
+      # is one of gcc's reserved "__x"/"__x__" spellings. nil when `name` names
+      # neither, so the caller lexes it as an ordinary identifier.
+      def self.keyword_spelling(name)
+        return name if KEYWORDS.include?(name)
+
+        KEYWORD_ALIASES[name]
+      end
+
       attr_reader :pos
 
       def initialize(text, start = 0)
@@ -91,7 +118,8 @@ module Rubycc
       def read_identifier
         name = +""
         name << advance while identifier_char?(current)
-        Result.new(LexemeReader.keyword?(name) ? :keyword : :ident, name, nil, nil)
+        spelling = LexemeReader.keyword_spelling(name)
+        Result.new(spelling ? :keyword : :ident, spelling || name, nil, nil)
       end
 
       # A numeric constant. A "0x"/"0X" prefix is hexadecimal (an integer, or a

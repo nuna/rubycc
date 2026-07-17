@@ -1084,6 +1084,12 @@ class TestParser < Minitest::Test
     assert_kind_of AST::InlineAsm, program.functions.first.body[1]
   end
 
+  def test_asm_accepts_single_underscore_volatile
+    program = parse('int main(void) { __asm__ __volatile(""); return 0; }')
+
+    assert_kind_of AST::InlineAsm, program.functions.first.body.first
+  end
+
   def test_asm_non_empty_template_is_rejected
     error = assert_raises(Rubycc::CompileError) do
       parse('int main(void) { __asm__ volatile("nop"); return 0; }')
@@ -2520,6 +2526,43 @@ class TestParser < Minitest::Test
     assert_kind_of AST::FunctionDecl, decl
     assert_equal "fprintf", decl.name
     assert decl.variadic
+  end
+
+  # --- gcc's reserved "__x"/"__x__" alternate keyword spellings (Step 49) ----
+  #
+  # Unlike "restrict" (never a keyword here, see RESTRICT_SPELLINGS), "signed",
+  # "const", "volatile" and "inline" are keywords this parser matches by exact
+  # spelling; gcc's "__signed__" and kin lex to that same keyword (see
+  # Front::LexemeReader::KEYWORD_ALIASES) so every check keyed on the plain
+  # spelling still fires. glibc's uapi-derived headers rely on this
+  # unconditionally (asm-generic/int-ll64.h's "typedef __signed__ char __s8;").
+
+  def test_signed_alternate_spellings_normalize_like_signed
+    ["signed", "__signed", "__signed__"].each do |spelling|
+      assert_equal Type::Char, parse_decl("#{spelling} char c = -1;").type,
+                   "expected '#{spelling} char' to normalize like 'signed char'"
+    end
+  end
+
+  def test_const_alternate_spellings_are_tracked_like_const
+    ["const", "__const", "__const__"].each do |spelling|
+      assert parse_decl("#{spelling} int x = 1;").const,
+             "expected '#{spelling} int' to be tracked as const"
+    end
+  end
+
+  def test_volatile_alternate_spellings_are_accepted
+    ["volatile", "__volatile", "__volatile__"].each do |spelling|
+      decl = parse_decl("#{spelling} int x = 1;")
+      assert_equal Type::Int, decl.type
+    end
+  end
+
+  def test_inline_alternate_spellings_are_accepted
+    ["inline", "__inline", "__inline__"].each do |spelling|
+      program = parse("#{spelling} int f(void) { return 1; } int main(void) { return f(); }")
+      assert_kind_of AST::FunctionDef, program.functions.first
+    end
   end
 
   # --- incomplete enum declarations (6.7.2.2) --------------------------------

@@ -36,8 +36,8 @@ module Rubycc
             tokens << front_token(pp, :eof, nil)
             index += 1
           when :identifier
-            type = Front::LexemeReader.keyword?(pp.text) ? :keyword : :ident
-            tokens << front_token(pp, type, pp.text)
+            spelling = Front::LexemeReader.keyword_spelling(pp.text)
+            tokens << front_token(pp, spelling ? :keyword : :ident, spelling || pp.text)
             index += 1
           when :pp_number
             tokens << convert_number(pp)

@@ -227,6 +227,17 @@ class TestLexer < Minitest::Test
     assert_equal %w[static extern register auto const volatile inline x], tokens.map(&:value)
   end
 
+  def test_gcc_alternate_keyword_spellings_normalize_to_the_plain_keyword
+    # gcc's reserved "__x"/"__x__" spellings (glibc leans on these under
+    # -ansi/-std=c89) lex to the same :keyword token as the plain spelling, so
+    # every downstream check keyed on "signed"/"const"/"volatile"/"inline"
+    # sees an ordinary keyword and needs no separate case for the alias.
+    tokens = lex("__signed __signed__ __const __const__ " \
+                 "__volatile __volatile__ __inline __inline__").reject(&:eof?)
+    assert_equal [:keyword] * 8, tokens.map(&:type)
+    assert_equal %w[signed signed const const volatile volatile inline inline], tokens.map(&:value)
+  end
+
   def test_static_assert_and_alignof_are_keywords
     tokens = lex("_Static_assert _Alignof").reject(&:eof?)
     assert_equal %i[keyword keyword], tokens.map(&:type)
