@@ -298,6 +298,12 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
 - **受け入れ(最終)**: cc / make / sh / libc ヘッダの無い distroless 相当イメージ +
   システム .so(libz, libsqlite3, libpq)ありの構成で `gem install json msgpack sqlite3 pg`
   が成功 = **M3 完了**。glibc / musl 両方。
+- **M3 完了時の成果物(ユーザ指示、2026-07-17)**: 実装済み C11 仕様の網羅
+  ドキュメントを作成する。**N1570(ISO/IEC 9899:201x Committee Draft、
+  DESIGN §9.1 に原典 URL 記載)の章番号・見出しをベース**に、各条項の
+  「実装済み / 部分実装(制限内容)/ 非対応(診断)/ スコープ外」を一覧化する。
+  §3 の負債表・test_c_suite.rb のスキップ表・STEPS.md の設計記録が原資料。
+  配置先は docs/C11-COVERAGE.md(新規)を想定。
 
 ## 7. M4 — aarch64 バックエンド
 
