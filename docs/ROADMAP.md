@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 受け入れ(json/msgpack 実ビルド)進行中。Step 39(C 拡張 require 受け入れ)〜 Step 44(gcc ビルトイン群 + __has_builtin)まで完了。msgpack は 12 ファイル中 7 が .o 到達。残る壁(実測): (a) グローバル初期化子のアドレス定数(キャスト付き文字列リテラル・symbol+addend、json generator)= Step 45 予定、(b) 可変長配列メンバ `VALUE arr[];`(msgpack buffer_class)= Step 46 予定、(c) ビットフィールドアクセス(§3 記録済み負債、msgpack 4 ファイル)= Step 47 予定、(d) 複合リテラル(json parser、c-testsuite 00216 と同根)= Step 48 候補。L5 第三段(.gnu.hash)は後続**。
+現在地: **M2 受け入れ(json/msgpack 実ビルド)進行中。Step 39(C 拡張 require 受け入れ)〜 Step 45(アドレス定数初期化子)まで完了。msgpack は 12 ファイル中 7 が .o 到達。残る壁(実測): (a) 可変長配列メンバ `VALUE arr[];`(msgpack buffer_class)= Step 46 予定、(b) ビットフィールドアクセス(§3 記録済み負債、msgpack 4 ファイル)= Step 47 予定、(c) 浮動小数点リテラルの整数キャスト `u32(1e2)`(json generator、§3 負債「unsigned long ⇔ float/double」の顕在化。定数畳み込みで足りる見込み)= Step 48 候補、(d) 複合リテラル(json parser、c-testsuite 00216 と同根)= Step 49 候補。L5 第三段(.gnu.hash)は後続**。
 
 ---
 
@@ -79,7 +79,7 @@
 | 可変長部への struct 渡し・va_arg(struct) | 診断エラーにして先送り | 実害が出た時点 |
 | 内側スコープの `struct S;` 再宣言 | C 6.7.2.3p7 に従わず外側タグを参照 | 実害が出た時点 |
 | ブロックスコープの関数宣言 | 外部リンケージ未モデルで診断エラー | 実害が出た時点 |
-| `&arr[i]` 等の計算アドレス定数 | グローバル初期化子で診断エラー | 実害が出た時点 |
+| ~~`&arr[i]` 等の計算アドレス定数~~ | **解消(Step 45、b4be1fe)**: 初期化子を「基点シンボル/文字列 + 定数変位 + pointee」へ畳む walker を追加し、キャスト・`&arr[i]`・`arr ± n`・`&rec.member` を R_X86_64_64 の addend に乗せる。json jeaiii-ltoa の「文字列リテラルを struct ポインタにキャストした桁テーブル」が通る | ~~実害が出た時点~~ **完了** |
 | 指し先 const の書き込み検出 | `const int *p` の `*p = x` を診断しない(型に修飾を載せない簡略化) | 実害が出た時点 |
 | unsigned long ⇔ float/double 変換 | 64 bit 符号無しの往復に追加コードが要るため診断エラー | 実害が出た時点 |
 | ~~文式 `({ … })`~~ | **解消(Step 40、4466e68)**: 一次式で `(` の直後が `{` のとき複合文をパースし最後の式文の値・型を採る文式を実装。`?:` の片側 void アーム(GCC 拡張)対応込み。c-testsuite 00213/00214 合格。Data_Make_Struct / TypedData_Make_Struct / rb_intern() の展開先が通る | ~~早期 M2(最優先負債)~~ **完了** |

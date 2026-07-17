@@ -1705,9 +1705,41 @@ json parser.c は複合リテラル(c-testsuite 00216 と同根)へ前進。
 
 ---
 
+## Step 45 — グローバル初期化子のアドレス定数(M2 追補)
+
+json gem の generator.c(vendor/jeaiii-ltoa.h)が「200 文字の文字列リテラルを
+`struct digit_pair *` にキャストして桁ルックアップテーブルにする」形で
+"unsupported initializer" になっていた。同時に ROADMAP §3 の記録済み負債
+「`&arr[i]` 等の計算アドレス定数」も同類として一括解消。heavy-implementer へ
+移譲(セッション上限で中断したが実装は完了済みで、検証・確定はメインセッションが
+引き継いだ)。
+
+**設計判断**:
+- **AddressConstant への畳み込み walker**: 初期化子式を「基点(シンボル or interned
+  文字列)+ 定数バイト変位 + 現在の pointee 型」へ再帰的に畳む。pointee を持ち回る
+  ことで、後続の添字・`+ n` が「1 要素 = 何バイト」を知り、ポインタキャストは
+  **アドレス不変で pointee だけ差し替える**(ビット表現は変わらないという 6.6 の
+  実質)。対応形: キャスト(ネスト可)・文字列リテラル・&global/配列 decay・
+  `&arr[i]`・`arr ± n`(+ は両オペランド順)・`&rec.member`(StructType#member で
+  匿名メンバ透過、ビットフィールドは拒否)・`&*p`。畳めない形(実行時値・非定数
+  添字)は NotAddressConstant → 従来の診断。
+- **変位は relocation の addend に乗せる**: GlobalReloc に addend(既定 0)を追加し、
+  R_X86_64_64 の r_addend として ELF ライタまで配線(:string kind は「rodata 内の
+  interned 文字列オフセット + addend」)。ライタ・リンカは Step 31〜37 で addend を
+  既にモデル化済みだったため、受け渡しの配線のみで済んだ。実行ファイル/共有
+  ライブラリ両リンク経路の実行テストで addend 適用を検証。
+- **関数アドレス定数は既存経路を維持**: `f`/`&f` はシグネチャ検査付きの既存判定を
+  先に通し、walker はオブジェクト系のみを担当。
+
+**位置づけ**: json generator.c の壁が浮動小数点リテラルの整数キャスト
+(`u32(1e2)`、§3 の負債「unsigned long ⇔ float/double 変換」の顕在化)へ前進。
+msgpack 側の残り(FAM・ビットフィールド)と合わせ、次の追補ステップで潰す。
+
+---
+
 ## 現在のテスト規模
 
-Step 44 完了時点: **1,550 runs / 4,499 assertions / 0 failures / 17 skips**
+Step 45 完了時点: **1,564 runs / 4,529 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
