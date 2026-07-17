@@ -120,12 +120,19 @@ module Rubycc
       # header cannot select a gcc-specific path. None may be redefined or undefined.
       BUILTIN_MACROS = %w[__FILE__ __LINE__ __STDC__ __STDC_VERSION__ __RUBYCC__].freeze
 
-      # The identifiers __has_builtin (6.10.1) answers true for: the varargs
-      # intrinsics, the branch-prediction hint (__builtin_expect) and the stack
-      # allocator (__builtin_alloca) this compiler recognizes. Every other
-      # builtin query is false.
+      # The identifiers __has_builtin (6.10.1) answers true for: exactly the
+      # builtins rubycc's front end actually recognizes — the varargs intrinsics,
+      # the branch-prediction hint, the stack allocator, offsetof, the
+      # constant/choose folds, the count-leading/trailing-zero scans, the
+      # unreachable hint and memcpy. Every other builtin query is false, so a
+      # header that guards a fallback behind __has_builtin (e.g. json's bswap
+      # path) takes the fallback for one rubycc does not provide. Kept in sync
+      # with the parser's builtin keywords.
       KNOWN_BUILTINS = %w[__builtin_va_start __builtin_va_arg __builtin_va_end
-                          __builtin_expect __builtin_alloca].freeze
+                          __builtin_expect __builtin_alloca __builtin_offsetof
+                          __builtin_constant_p __builtin_choose_expr
+                          __builtin_ctz __builtin_ctzll __builtin_clz __builtin_clzll
+                          __builtin_unreachable __builtin_memcpy].freeze
 
       # The target-identifying macros gcc keeps predefined even under strict ISO
       # C (-std=c11): only the reserved forms (a leading underscore followed by
@@ -434,7 +441,15 @@ module Rubycc
         macro = body[0]
         raise_at(macro, "macro names must be identifiers") unless macro.type == :identifier
         raise_at(body[1], "extra tokens at end of ##{name.text} directive") if body.length > 1
-        @macros.key?(macro.text) == want_defined
+        # gcc makes "#ifdef __has_builtin" true, and a header uses that to prefer
+        # the operator over a config.h fallback. __has_builtin is safe to expose
+        # this way because it answers honestly (0 for a builtin rubycc lacks), so
+        # a guarded fallback is always taken. __has_include is deliberately NOT
+        # exposed to "#ifdef": it reports a header as present that rubycc may not
+        # be able to compile (e.g. a kernel UAPI header using "__signed__"), so a
+        # "#ifdef __has_include"-gated probe there would pull it in and fail.
+        defined_here = @macros.key?(macro.text) || macro.text == "__has_builtin"
+        defined_here == want_defined
       end
 
       # Evaluates a #if/#elif controlling constant-expression (6.10.1) to a

@@ -38,6 +38,9 @@ module Rubycc
                     _Static_assert _Alignof __int128
                     __builtin_va_start __builtin_va_arg __builtin_va_end
                     __builtin_expect __builtin_alloca __builtin_offsetof
+                    __builtin_constant_p __builtin_choose_expr
+                    __builtin_ctz __builtin_ctzll __builtin_clz __builtin_clzll
+                    __builtin_unreachable __builtin_memcpy
                     __asm__
                     __attribute__ __extension__].freeze
 
@@ -100,6 +103,8 @@ module Rubycc
       def read_number
         if current == "0" && (peek == "x" || peek == "X")
           read_hexadecimal_constant
+        elsif current == "0" && (peek == "b" || peek == "B")
+          read_binary_constant
         elsif floating_constant_ahead?
           read_floating_constant
         else
@@ -268,6 +273,28 @@ module Rubycc
           raise LexError.new("invalid suffix on integer constant", @pos)
         end
         Result.new(:num, digits.to_i(16), 16, suffix)
+      end
+
+      # A binary integer constant "0b...."/"0B...." (a GNU extension, made
+      # standard in C23): the "0b" prefix, one or more binary digits, and an
+      # optional integer suffix. It shares the octal/hexadecimal type rules (a
+      # non-decimal constant may take an unsigned type without a "u" suffix), so
+      # the result carries base 2 for #integer_literal_type to treat it as such.
+      # At least one digit is required; a trailing identifier character after the
+      # suffix is rejected like any other invalid suffix.
+      def read_binary_constant
+        start = @pos
+        advance # 0
+        advance # b / B
+        digits = +""
+        digits << advance while current == "0" || current == "1"
+        raise LexError.new("invalid binary constant", start) if digits.empty?
+
+        suffix = read_integer_suffix(start)
+        if identifier_char?(current)
+          raise LexError.new("invalid suffix on integer constant", @pos)
+        end
+        Result.new(:num, digits.to_i(2), 2, suffix)
       end
 
       # A decimal or octal integer constant, with an optional u/U and l/L/ll/LL

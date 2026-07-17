@@ -361,6 +361,8 @@ module Rubycc
           emit_va_start(inst.a, inst.b)
         when :alloca
           emit_alloca(inst.dst, inst.a)
+        when :bit_scan
+          emit_bit_scan(inst.dst, inst.a, inst.b, inst.size)
         when :ret
           emit_ret(inst.a, inst.size)
         else
@@ -684,6 +686,28 @@ module Rubycc
           emit(0x0F, 0xB7, 0xC0)        # movzx eax, ax
         else # 4
           emit(0x89, 0xC0)              # mov eax, eax
+        end
+        store_reg(EAX, dst)
+      end
+
+      # :bit_scan — count the zero bits of a's value (__builtin_ctz/clz). The
+      # value is loaded into rcx and the result computed into rax. A :forward
+      # scan is `bsf eax, ecx` (0F BC /r), which yields the trailing zero count
+      # directly. A :reverse scan is `bsr eax, ecx` (0F BD /r), giving the index
+      # of the highest set bit; xor-ing that with (bits-1) turns it into the
+      # leading zero count (since the index lies in 0..bits-1, the xor equals
+      # (bits-1) - index). A size-8 operand adds a REX.W prefix throughout. A zero
+      # operand is undefined, so no guard is emitted.
+      def emit_bit_scan(dst, src_vreg, direction, size)
+        load_reg(ECX, src_vreg)          # rcx = value to scan
+        if direction == :forward
+          emit(0x48) if size == 8        # REX.W: 64-bit bsf
+          emit(0x0F, 0xBC, 0xC1)         # bsf eax, ecx  (trailing zero count)
+        else
+          emit(0x48) if size == 8        # REX.W: 64-bit bsr
+          emit(0x0F, 0xBD, 0xC1)         # bsr eax, ecx  (index of highest set bit)
+          emit(0x48) if size == 8        # REX.W: 64-bit xor
+          emit(0x83, 0xF0, size * 8 - 1) # xor eax, bits-1  ->  (bits-1) - index
         end
         store_reg(EAX, dst)
       end

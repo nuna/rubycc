@@ -222,6 +222,12 @@ Instruction(op, dst:, a:, b:, size:)
 |---|---|---|
 | :va_start | a = __va_list_tag のアドレス vreg、b = 取り囲む関数の固定パラメータ数 | SysV va_list の 4 フィールド(gp_offset / fp_offset / overflow_arg_area / reg_save_area)を初期化。名前付きパラメータが消費済みの GP/SSE レジスタ数は b ではなく **Function.param_kinds のカウントから導出**する: gp_offset = 8×count(:gp)、fp_offset = 48 + 16×(count(:sse4)+count(:sse8))、overflow_arg_area の開始は count(:mem)(スタック渡しになった名前付きスロット数)を反映。reg_save_area は可変長プロローグが確保した退避領域を指す。**va_arg / va_end に専用命令は無い** — ジェネレータが通常の load/store/分岐に降ろす(double は fp_offset を `:ult 176` で分岐し、レジスタ側 +=16 / あふれ側 +=8、:load size 8) |
 
+### ビットスキャン
+
+| 命令 | 形 | 意味 |
+|---|---|---|
+| :bit_scan | dst ← scan(a)。b = 方向、size = 4/8 | 整数 a の 0 ビット数を数える(__builtin_ctz/clz とその ll 形)。b = `:forward` は末尾 0 の個数(ctz)で `bsf` に、`:reverse` は先頭 0 の個数(clz)で `bsr` の後 (size*8−1) との `xor`(= (幅−1) − 最上位セットビット位置)に降ろす。size 8 は REX.W 付き。オペランド 0 は未定義(gcc 準拠)なのでゼロ処理は出さない。結果は int |
+
 ## 6. バックエンドとの契約(参考)
 
 IR 自体の仕様ではないが、IR を書く側・読む側が共有する前提。

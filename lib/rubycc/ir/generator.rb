@@ -58,6 +58,18 @@ module Rubycc
         # a prototype from a completed definition so redefinitions can be
         # rejected.
         @signatures = {}
+        # gcc provides memcpy as a builtin, and the parser rewrites
+        # __builtin_memcpy(...) into a plain call to "memcpy". Seed its prototype
+        # up front — void *memcpy(void *, const void *, unsigned long) — so such a
+        # call compiles even when the translation unit never declares memcpy (no
+        # <string.h>); a later, identical string.h prototype merges in without
+        # conflict, and the reference resolves to libc's memcpy at link time.
+        @signatures["memcpy"] = {
+          param_types: [Type::Pointer.new(Type::Void), Type::Pointer.new(Type::Void), Type::ULong],
+          return_type: Type::Pointer.new(Type::Void),
+          variadic: false,
+          defined: false
+        }
         # The translation-unit-wide string pool: `@strings` holds each interned
         # byte string in id order, `@string_ids` maps content back to its id so
         # identical literals collapse to one entry (and one .rodata address).
@@ -1491,6 +1503,12 @@ module Rubycc
           gen_builtin_expect(node)
         when Front::AST::BuiltinAlloca
           gen_builtin_alloca(node)
+        when Front::AST::BuiltinConstantP
+          gen_builtin_constant_p(node)
+        when Front::AST::BuiltinBitScan
+          gen_builtin_bit_scan(node)
+        when Front::AST::BuiltinUnreachable
+          gen_builtin_unreachable(node)
         else
           raise "unsupported expression: #{node.class}"
         end
@@ -1716,6 +1734,44 @@ module Rubycc
         dst = new_vreg
         emit(:alloca, dst: dst, a: size)
         [dst, Type::Pointer.new(Type::Void)]
+      end
+
+      # "__builtin_constant_p(expr)": folds to the int 1 when `expr` reduces to a
+      # compile-time constant and 0 otherwise. The whole node is handed to the
+      # constant evaluator, which never raises for this form (it swallows a
+      # non-constant operand to 0), so the result is always a plain :const. The
+      # operand is never evaluated for value, so it produces no code or side
+      # effects — matching gcc.
+      def gen_builtin_constant_p(node)
+        dst = new_vreg
+        emit(:const, dst: dst, a: Front::ConstantEvaluator.evaluate(node))
+        [dst, Type::Int]
+      end
+
+      # "__builtin_ctz/ctzll/clz/clzll(x)": counts x's trailing (ctz) or leading
+      # (clz) zero bits, as an int. The operand is converted to the unsigned
+      # integer of the builtin's width (4 or 8 bytes), then a single :bit_scan op
+      # lowers to bsf (forward/ctz) or bsr-based (reverse/clz) hardware. A
+      # zero operand is undefined behavior (gcc), so no zero handling is emitted.
+      def gen_builtin_bit_scan(node)
+        value, type = gen_value(node.operand)
+        unless type.integer?
+          error_at(node.operand.token, "argument to a bit-scan builtin is not of integer type")
+        end
+        value = convert(value, from: type, to: node.width == 8 ? Type::ULong : Type::UInt,
+                               token: node.token)
+        dst = new_vreg
+        emit(:bit_scan, dst: dst, a: value, b: node.direction, size: node.width)
+        [dst, Type::Int]
+      end
+
+      # "__builtin_unreachable()": an optimization hint that control never reaches
+      # this point. rubycc does no optimization, so it lowers to no code and its
+      # value is void — a placeholder the discarding contexts (a comma operand, an
+      # expression-statement, a "?:" void arm) ignore. This is what lets CRuby's
+      # UNREACHABLE_RETURN ("(__builtin_unreachable(), value)") compile.
+      def gen_builtin_unreachable(_node)
+        [nil, Type::Void]
       end
 
       # Evaluates a va_* builtin's first operand and returns the vreg holding the
@@ -4002,8 +4058,11 @@ module Rubycc
           # (the left operand is evaluated only for effect), so "sizeof(a, b)"
           # measures b's type.
           static_type(node.right)
-        when Front::AST::LogicalAnd, Front::AST::LogicalOr
+        when Front::AST::LogicalAnd, Front::AST::LogicalOr,
+             Front::AST::BuiltinConstantP, Front::AST::BuiltinBitScan
           Type::Int
+        when Front::AST::BuiltinUnreachable
+          Type::Void
         when Front::AST::Conditional
           static_conditional_type(node)
         when Front::AST::StatementExpr

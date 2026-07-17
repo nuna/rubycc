@@ -197,6 +197,17 @@ module Rubycc
     #                               returns (its epilogue restores rsp from rbp), not
     #                               at end of scope. Every other value is rbp-relative,
     #                               so the moving rsp is safe
+    #   :bit_scan dst <- scan(a)    counts the zero bits of the integer in vreg a,
+    #                               for __builtin_ctz/clz (and their "ll" forms).
+    #                               b is the direction — :forward for a trailing
+    #                               count (ctz), :reverse for a leading count
+    #                               (clz) — and `size` the operand width (4 or 8).
+    #                               The backend lowers :forward to `bsf` and
+    #                               :reverse to `bsr` followed by `xor` with
+    #                               (size*8 - 1), so clz = (width-1) - bsr; a
+    #                               size-8 scan takes a REX.W prefix. A zero
+    #                               operand is undefined (as in gcc), so no zero
+    #                               case is emitted. The result is an int
     #
     # `dst`, `a`, `b` are virtual register numbers (Integers) unless noted;
     # unused fields are nil. `size` is an operand width in bytes. On :load /

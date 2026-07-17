@@ -112,6 +112,10 @@ module Rubycc
           evaluate_alignof_type(node)
         when AST::BuiltinOffsetof
           evaluate_builtin_offsetof(node)
+        when AST::BuiltinConstantP
+          evaluate_builtin_constant_p(node)
+        when AST::BuiltinBitScan
+          evaluate_builtin_bit_scan(node)
         else
           # Every other node — VariableRef, Call, Assignment,
           # CompoundAssignment, IncDec, MemberAccess, Subscript, StringLit,
@@ -257,6 +261,38 @@ module Rubycc
 
         index = evaluate(step.index)
         [offset + index * type.element.size, type.element]
+      end
+
+      # __builtin_constant_p(expr) folds to 1 when its operand is itself a
+      # constant-expression and 0 otherwise. The operand is probed by trying to
+      # evaluate it: success means it reduced to a constant (so 1), while a
+      # NotConstant (a variable, call, ...) or a DivisionByZero means it did not
+      # (so 0). It never propagates the failure — unlike an ordinary
+      # sub-expression, a non-constant operand here is a legitimate 0, not an
+      # error — so the probe swallows both. The operand is evaluated only to test
+      # foldability; the caller discards the value.
+      def evaluate_builtin_constant_p(node)
+        evaluate(node.expr)
+        1
+      rescue NotConstant, DivisionByZero
+        0
+      end
+
+      # __builtin_ctz/clz(x) folds to the trailing/leading zero-bit count of a
+      # constant operand, over its `width`-byte value, matching gcc so the same
+      # fold serves a HAVE_BUILTIN___BUILTIN_CLZLL-guarded constant context. A
+      # zero operand is undefined behavior (gcc), so it is left unfolded (a
+      # NotConstant) rather than given an arbitrary value.
+      def evaluate_builtin_bit_scan(node)
+        bits = node.width * 8
+        value = evaluate(node.operand) & ((1 << bits) - 1)
+        raise NotConstant, node.token if value.zero?
+
+        if node.direction == :forward
+          (value & -value).bit_length - 1        # trailing zero count
+        else
+          bits - value.bit_length                # leading zero count
+        end
       end
 
       # Whether `type` is an incomplete tagged type with no size or alignment: a

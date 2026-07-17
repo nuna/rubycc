@@ -2333,6 +2333,22 @@ module Rubycc
             parse_builtin_alloca
           elsif peek.keyword?("__builtin_offsetof")
             parse_builtin_offsetof
+          elsif peek.keyword?("__builtin_constant_p")
+            parse_builtin_constant_p
+          elsif peek.keyword?("__builtin_choose_expr")
+            parse_builtin_choose_expr
+          elsif peek.keyword?("__builtin_ctz")
+            parse_builtin_bit_scan(:forward, 4)
+          elsif peek.keyword?("__builtin_ctzll")
+            parse_builtin_bit_scan(:forward, 8)
+          elsif peek.keyword?("__builtin_clz")
+            parse_builtin_bit_scan(:reverse, 4)
+          elsif peek.keyword?("__builtin_clzll")
+            parse_builtin_bit_scan(:reverse, 8)
+          elsif peek.keyword?("__builtin_unreachable")
+            parse_builtin_unreachable
+          elsif peek.keyword?("__builtin_memcpy")
+            parse_builtin_memcpy
           elsif peek.punct?("+")
             advance # unary + is a no-op; fold it away
             parse_cast_expression
@@ -2490,6 +2506,78 @@ module Rubycc
         designator = parse_member_designator
         expect_punct(")")
         AST::BuiltinOffsetof.new(type, designator, keyword_tok)
+      end
+
+      # "__builtin_constant_p ( assignment-expression )": one operand, which is
+      # never evaluated — the fold to 1/0 happens later (the constant evaluator
+      # and the generator), so any expression at all is accepted here, including
+      # one that references a variable or calls a function. The value is int.
+      def parse_builtin_constant_p
+        keyword_tok = advance # "__builtin_constant_p"
+        expect_punct("(")
+        expr = parse_assignment_expression
+        expect_punct(")")
+        AST::BuiltinConstantP.new(expr, keyword_tok)
+      end
+
+      # "__builtin_choose_expr ( const-expr , expr-true , expr-false )": the
+      # first operand is an integer constant-expression evaluated now; the whole
+      # form is replaced at parse time by whichever of the two remaining operands
+      # it selects (non-zero picks expr-true, zero picks expr-false), so no AST
+      # node of its own is needed and the chosen operand's type flows through
+      # unchanged. All three are still parsed, so a syntax error in the branch
+      # that loses is still caught; only the winner reaches code generation. A
+      # non-constant first operand is diagnosed.
+      def parse_builtin_choose_expr
+        keyword_tok = advance # "__builtin_choose_expr"
+        expect_punct("(")
+        condition = parse_assignment_expression
+        expect_punct(",")
+        when_true = parse_assignment_expression
+        expect_punct(",")
+        when_false = parse_assignment_expression
+        expect_punct(")")
+        selector = evaluate_constant_expression(
+          condition, "first argument to '__builtin_choose_expr' is not a constant expression"
+        )
+        selector.zero? ? when_false : when_true
+      end
+
+      # "__builtin_ctz/ctzll/clz/clzll ( assignment-expression )": one integer
+      # operand whose trailing (`:forward`) or leading (`:reverse`) zero bits are
+      # counted over `width` bytes. The generator settles the operand's integer
+      # type check and lowers the bit scan; the result is int.
+      def parse_builtin_bit_scan(direction, width)
+        keyword_tok = advance # the "__builtin_ctz"/... keyword
+        expect_punct("(")
+        operand = parse_assignment_expression
+        expect_punct(")")
+        AST::BuiltinBitScan.new(operand, direction, width, keyword_tok)
+      end
+
+      # "__builtin_unreachable ()": no operands. Lowers to no code (rubycc does
+      # not optimize); its value is void.
+      def parse_builtin_unreachable
+        keyword_tok = advance # "__builtin_unreachable"
+        expect_punct("(")
+        expect_punct(")")
+        AST::BuiltinUnreachable.new(keyword_tok)
+      end
+
+      # "__builtin_memcpy ( dst , src , n )": rewritten to an ordinary call of
+      # the libc function "memcpy", so it links against the C library's memcpy
+      # like the plain call would. The generator seeds a builtin prototype for
+      # "memcpy" (void *(void *, const void *, unsigned long)), so this compiles
+      # even when <string.h> is not included, matching gcc's builtin.
+      def parse_builtin_memcpy
+        keyword_tok = advance # "__builtin_memcpy"
+        expect_punct("(")
+        args = parse_argument_expression_list
+        expect_punct(")")
+        unless args.size == 3
+          error_at(keyword_tok, "'__builtin_memcpy' expects 3 arguments, have #{args.size}")
+        end
+        AST::Call.new(AST::VariableRef.new("memcpy", keyword_tok), args, keyword_tok)
       end
 
       # member-designator = identifier ( "." identifier | "[" expression "]" )*:

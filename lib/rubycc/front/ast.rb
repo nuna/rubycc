@@ -329,6 +329,29 @@ module Rubycc
       # "[" token, for a "subscript of non-array" diagnostic.
       OffsetofIndex = Data.define(:index, :token)
 
+      # "__builtin_constant_p ( expr )": gcc's compile-time-constant test, typed
+      # int. `expr` is the (unevaluated) operand and `token` the builtin keyword.
+      # The whole expression folds to 1 when `expr` reduces to a compile-time
+      # constant and 0 otherwise — including when it references a variable or a
+      # function call, which is not an error here (unlike an ordinary constant
+      # expression) but simply yields 0. `expr` is never evaluated, so it
+      # produces no code and no side effects.
+      BuiltinConstantP = Data.define(:expr, :token)
+
+      # "__builtin_ctz/ctzll/clz/clzll ( x )": counts the trailing (ctz) or
+      # leading (clz) zero bits of an integer, typed int. `operand` is the value
+      # scanned, `direction` is :forward for ctz or :reverse for clz, and `width`
+      # is the operand's byte width (4 for the plain form, 8 for the "ll" form).
+      # `x == 0` is undefined behavior (gcc), so no zero handling is implied.
+      # `token` is the builtin keyword.
+      BuiltinBitScan = Data.define(:operand, :direction, :width, :token)
+
+      # "__builtin_unreachable ()": marks a point control never reaches, typed
+      # void. rubycc performs no optimization, so it lowers to no code at all —
+      # its only role is to let constructs like CRuby's UNREACHABLE_RETURN
+      # ("(__builtin_unreachable(), value)") compile. `token` is the keyword.
+      BuiltinUnreachable = Data.define(:token)
+
       # A single function parameter. `name` is the identifier String, or nil
       # for an unnamed parameter in a prototype (e.g. "int f(int, int);").
       # `type` is the parameter's Rubycc::Type (int, char or a pointer; never
