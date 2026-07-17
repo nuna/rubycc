@@ -99,10 +99,13 @@ module Rubycc
 
       # One entry of the macro table. `kind` is :object or :function; `params`
       # is the ordered parameter-name list (empty for an object macro, and for a
-      # function macro it excludes the trailing "..."); `variadic` records that
-      # trailing "..." so __VA_ARGS__ is meaningful; `replacement` is the raw
+      # function macro it excludes any trailing "..."); `variadic` records that a
+      # variable part is present so the rest arguments are meaningful; `va_name`
+      # is the identifier that stands for the rest arguments in the replacement
+      # list -- "__VA_ARGS__" for the ISO bare-"..." form and the written name for
+      # the GNU "name..." form, nil when not variadic; `replacement` is the raw
       # replacement-list tokens as written.
-      Macro = Struct.new(:kind, :params, :variadic, :replacement)
+      Macro = Struct.new(:kind, :params, :variadic, :replacement, :va_name)
 
       # One function-like invocation's arguments. `raw` is each argument's
       # unexpanded tokens (what "#" and "##" operate on), `commas` the top-level
@@ -817,23 +820,36 @@ module Rubycc
       end
 
       # Parses a function-like macro's parameter list, `rest` being the tokens
-      # after the macro name with rest[0] the opening "(". Returns the Macro,
-      # its `replacement` the tokens past the closing ")". The list is a comma-
+      # after the macro name with rest[0] the opening "(". Returns the Macro, its
+      # `replacement` the tokens past the closing ")". The list is a comma-
       # separated run of identifiers, optionally empty, optionally ending in a
-      # "..." that marks the macro variadic (and "(...)" alone is allowed).
+      # variable part: the ISO bare "..." (spelled "__VA_ARGS__" in the body, and
+      # "(...)" alone is allowed) or the GNU "name..." (a parameter name fused to
+      # "...", spelled by that name in the body).
       def parse_function_macro(name, rest)
         params = []
         variadic = false
+        va_name = nil
         index = 1
         unless rest[index]&.punct?(")")
           loop do
             token = rest[index]
             if token&.punct?("...")
               variadic = true
+              va_name = "__VA_ARGS__"
               index += 1
               break
             elsif token&.type == :identifier
               raise_at(token, "duplicate macro parameter \"#{token.text}\"") if params.include?(token.text)
+
+              # A "name..." names the variable part; the name owns the rest
+              # arguments and no further parameters may follow it.
+              if rest[index + 1]&.punct?("...")
+                variadic = true
+                va_name = token.text
+                index += 2
+                break
+              end
 
               params << token.text
               index += 1
@@ -852,7 +868,7 @@ module Rubycc
           end
           raise_at(rest[index] || name, "missing ')' in macro parameter list") unless rest[index]&.punct?(")")
         end
-        Macro.new(:function, params, variadic, rest[(index + 1)..] || [])
+        Macro.new(:function, params, variadic, rest[(index + 1)..] || [], va_name)
       end
 
       # Checks a replacement list for well-formed "#" and "##" placement at
@@ -876,12 +892,13 @@ module Rubycc
         end
       end
 
-      # Whether `tok` names one of `macro`'s parameters, counting __VA_ARGS__ as a
-      # parameter for a variadic macro; the two spellings "#" and "##" may take.
+      # Whether `tok` names one of `macro`'s parameters, counting the variable
+      # part's name (ISO "__VA_ARGS__" or the GNU "name...") as a parameter; the
+      # two spellings "#" and "##" may take.
       def parameter_ref?(macro, tok)
         return false unless tok&.type == :identifier
 
-        macro.params.include?(tok.text) || (macro.variadic && tok.text == "__VA_ARGS__")
+        macro.params.include?(tok.text) || variadic_ref?(macro, tok)
       end
 
       # A macro name may not shadow a builtin (6.10.8.4) nor be the "defined"
@@ -907,10 +924,12 @@ module Rubycc
       end
 
       # Two definitions are the same when their kind, parameter names, variadic
-      # flag and replacement-list spellings all agree (6.10.3p1-2).
+      # flag, variable-part name and replacement-list spellings all agree
+      # (6.10.3p1-2); the name distinguishes an ISO from a GNU named variadic.
       def identical_macro?(one, other)
         one.kind == other.kind && one.variadic == other.variadic &&
-          one.params == other.params && identical_replacement?(one.replacement, other.replacement)
+          one.va_name == other.va_name && one.params == other.params &&
+          identical_replacement?(one.replacement, other.replacement)
       end
 
       def identical_replacement?(one, other)
@@ -1184,8 +1203,13 @@ module Rubycc
             span = 1
             index += 2
           elsif cur.punct?("##")
-            right = paste_operand(macro, invocation, rep[index + 1], tok, painted)
-            span = paste(result, span, right, tok, painted)
+            operand = rep[index + 1]
+            if gnu_comma_paste?(macro, invocation, rep[index - 1], operand)
+              span = comma_paste(macro, invocation, result, tok, painted)
+            else
+              right = paste_operand(macro, invocation, operand, tok, painted)
+              span = paste(result, span, right, tok, painted)
+            end
             index += 2
           else
             placed = replacement_tokens(macro, invocation, cur, tok, painted, raw: following_paste)
@@ -1234,8 +1258,11 @@ module Rubycc
         rep.type == :identifier ? macro.params.index(rep.text) : nil
       end
 
+      # Whether `rep` is the identifier standing for the variable arguments: the
+      # macro's `va_name` (ISO "__VA_ARGS__" or the GNU written name). In a named
+      # form "__VA_ARGS__" is an ordinary identifier and does not match here.
       def variadic_ref?(macro, rep)
-        macro.variadic && rep.type == :identifier && rep.text == "__VA_ARGS__"
+        macro.variadic && rep.type == :identifier && rep.text == macro.va_name
       end
 
       # One argument's fully expanded tokens, computed on first use and cached in
@@ -1315,6 +1342,43 @@ module Rubycc
       def concat_span(result, tokens)
         result.concat(tokens)
         tokens.length
+      end
+
+      # Whether a "##" is the GNU comma-paste ", ## <variable-arguments>": a
+      # literal comma written immediately to its left and the variable-part name
+      # immediately to its right, inside a function-like call. Only this exact
+      # shape overrides the ordinary paste; every other "##" keeps its meaning.
+      def gnu_comma_paste?(macro, invocation, left, operand)
+        invocation && left&.punct?(",") && variadic_ref?(macro, operand)
+      end
+
+      # Carries out a GNU comma-paste. It is not a token paste: when the call
+      # supplies no variable arguments the preceding comma, already placed as the
+      # left operand, is dropped and nothing is spliced in. Otherwise the comma
+      # stays and the variable arguments are spliced in expanded, exactly as a
+      # plain use of the variable-part name would produce -- so an argument slot
+      # that is present but empty (a trailing comma) keeps the comma. Returns the
+      # new span.
+      def comma_paste(macro, invocation, result, site, painted)
+        if no_variable_arguments?(macro, invocation)
+          result.pop if result.last&.punct?(",")
+          0
+        else
+          args = variable_arguments(site, macro, invocation, painted)
+          concat_span(result, args)
+        end
+      end
+
+      # Whether the call supplied no variable arguments (so a GNU comma-paste
+      # drops its comma). That holds when nothing was written past the named
+      # parameters, and also -- matching gcc -- when the macro has no named
+      # parameters and the whole argument list is empty ("Z()" for "Z(...)"),
+      # which reads as zero variable arguments, not one empty one. A trailing
+      # comma with nothing after it ("F(a,)") does supply one empty argument.
+      def no_variable_arguments?(macro, invocation)
+        return true if invocation.raw.length <= macro.params.length
+
+        macro.params.empty? && invocation.raw.length == 1 && invocation.raw[0].empty?
       end
 
       # Fuses two tokens into one by re-lexing their joined spelling through the

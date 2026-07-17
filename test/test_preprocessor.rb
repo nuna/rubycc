@@ -314,6 +314,74 @@ class TestPreprocessor < Minitest::Test
     assert_equal ["int", "y", "=", 1, ":", 2, ",", 3, ";"], tokens.map(&:value)
   end
 
+  # --- GNU named variable arguments ("name...") ------------------------------
+
+  def test_named_variadic_carries_the_variable_part
+    # The linux/stddef.h __struct_group shape: a trailing "name..." parameter
+    # names the rest arguments, spelled by that name in the body.
+    tokens = pp("#define GROUP(TAG, MEMBERS...) struct TAG { MEMBERS }\n" \
+                "GROUP(pair, int a; int b;)").reject(&:eof?)
+    assert_equal ["struct", "pair", "{", "int", "a", ";", "int", "b", ";", "}"],
+                 tokens.map(&:value)
+  end
+
+  def test_named_variadic_can_be_empty
+    tokens = pp("#define CALL(a, rest...) f(a rest)\nint y = CALL(1);").reject(&:eof?)
+    assert_equal ["int", "y", "=", "f", "(", 1, ")", ";"], tokens.map(&:value)
+  end
+
+  def test_named_variadic_keeps_commas_of_the_variable_part
+    tokens = pp("#define M(a, rest...) a rest\nint y = M(1, 2, 3);").reject(&:eof?)
+    assert_equal ["int", "y", "=", 1, 2, ",", 3, ";"], tokens.map(&:value)
+  end
+
+  def test_named_variadic_stringize
+    # "#args" stringizes the named variable part verbatim, commas and their
+    # spacing included, exactly as "#__VA_ARGS__" does for the ISO form.
+    tokens = pp("#define S(a, args...) #args\nchar *s = S(x, a ,b);").reject(&:eof?)
+    assert_equal "a ,b".b, tokens.find { |t| t.type == :string }.value
+  end
+
+  def test_named_variadic_paste
+    tokens = pp("#define P(a, rest...) a ## rest\nint P(x, y);").reject(&:eof?)
+    assert_equal ["int", "xy", ";"], tokens.map(&:value)
+  end
+
+  def test_va_args_is_ordinary_in_a_named_variadic
+    # In the named form "__VA_ARGS__" is not special, so it is a plain literal
+    # token in the replacement list (matching gcc's diagnostic that it may not
+    # appear there); here it survives to the output unchanged.
+    tokens = pp("#define M(a, rest...) a __VA_ARGS__ rest\nint M(1, 2);").reject(&:eof?)
+    assert_equal ["int", 1, "__VA_ARGS__", 2, ";"], tokens.map(&:value)
+  end
+
+  def test_named_variadic_rejects_stringize_of_va_args
+    error = assert_raises(Rubycc::CompileError) { pp("#define M(a, rest...) #__VA_ARGS__\n") }
+    assert_match(/'#' is not followed by a macro parameter/, error.description)
+  end
+
+  def test_named_variadic_requires_its_named_parameters
+    error = assert_raises(Rubycc::CompileError) do
+      pp("#define M(a, b, rest...) a\nint y = M(1);")
+    end
+    assert_match(/requires at least 2 arguments/, error.description)
+  end
+
+  def test_named_and_iso_variadic_are_not_identical_redefinitions
+    # The variable-part name is part of a definition's identity, so redefining an
+    # ISO variadic as a named one (or vice versa) is a conflicting redefinition.
+    error = assert_raises(Rubycc::CompileError) do
+      pp("#define M(a, ...) a\n#define M(a, rest...) a\n")
+    end
+    assert_match(/macro 'M' redefined/, error.description)
+  end
+
+  def test_identical_named_variadic_redefinition_is_allowed
+    tokens = pp("#define M(a, rest...) a rest\n#define M(a, rest...) a rest\n" \
+                "int y = M(1, + 2);").reject(&:eof?)
+    assert_equal ["int", "y", "=", 1, "+", 2, ";"], tokens.map(&:value)
+  end
+
   # --- function-like macro diagnostics ---------------------------------------
 
   def test_too_few_arguments_is_rejected
@@ -482,6 +550,46 @@ class TestPreprocessor < Minitest::Test
     tokens = pp("#define N 5\n#define F(x) #x + x\nint a[] = { F(N) };").reject(&:eof?)
     values = tokens.map(&:value)
     assert_equal ["int", "a", "[", "]", "=", "{", "N".b, "+", 5, "}", ";"], values
+  end
+
+  # --- GNU comma-paste (", ## variable-arguments") ---------------------------
+
+  def test_comma_paste_drops_the_comma_when_the_variable_part_is_omitted
+    # "LOG(fmt)" supplies no variable arguments, so ", ##__VA_ARGS__" removes the
+    # comma rather than pasting (matching gcc), leaving a single-argument call.
+    tokens = pp("#define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)\n" \
+                "LOG(\"hi\");").reject(&:eof?)
+    assert_equal ["printf", "(", "hi".b, ")", ";"], tokens.map(&:value)
+  end
+
+  def test_comma_paste_keeps_the_comma_when_the_variable_part_is_present
+    tokens = pp("#define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)\n" \
+                "LOG(\"hi\", 1, 2);").reject(&:eof?)
+    assert_equal ["printf", "(", "hi".b, ",", 1, ",", 2, ")", ";"], tokens.map(&:value)
+  end
+
+  def test_comma_paste_keeps_the_comma_for_a_present_empty_argument
+    # A trailing comma supplies one empty variable argument, which is present, so
+    # the comma stays (gcc keeps it here even though __VA_ARGS__ is empty).
+    tokens = pp("#define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)\n" \
+                "LOG(\"hi\",);").reject(&:eof?)
+    assert_equal ["printf", "(", "hi".b, ",", ")", ";"], tokens.map(&:value)
+  end
+
+  def test_comma_paste_with_named_variable_arguments
+    tokens = pp("#define LOG(fmt, args...) printf(fmt, ##args)\n" \
+                "int a = 0;\nLOG(\"a\");\nLOG(\"b\", 1);").reject(&:eof?)
+    values = tokens.map(&:value)
+    assert_equal ["int", "a", "=", 0, ";",
+                  "printf", "(", "a".b, ")", ";",
+                  "printf", "(", "b".b, ",", 1, ")", ";"], values
+  end
+
+  def test_comma_paste_of_a_variadic_only_macro_drops_the_comma_on_empty_call
+    # A "(...)"-only macro invoked as "Z()" supplies zero variable arguments, so
+    # the comma is dropped (gcc reads empty parens as no variable arguments).
+    tokens = pp("#define Z(...) f(x, ##__VA_ARGS__)\nZ();").reject(&:eof?)
+    assert_equal ["f", "(", "x", ")", ";"], tokens.map(&:value)
   end
 
   # --- compiler-supplied macros (6.10.8) -------------------------------------
