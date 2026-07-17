@@ -2476,17 +2476,25 @@ module Rubycc
 
       # A cast to an arithmetic type. When a floating type is on either side the
       # source must itself be arithmetic and #convert lowers the int<->float or
-      # float<->float change. Otherwise an integer source is converted to the
-      # destination type (narrowing, widening or a sign change, per #convert),
-      # and a pointer source is reinterpreted as an unsigned 64-bit value and
-      # then converted to the destination width; a struct source has no
-      # arithmetic value.
+      # float<->float change — unless the source is a floating-point constant
+      # cast to an integer type, which #gen_folded_float_cast folds away at
+      # compile time (6.3.1.4p1) before any conversion instruction is emitted,
+      # sidestepping the run-time float<->`unsigned long` gap #convert still
+      # diagnoses for a non-constant operand. Otherwise an integer source is
+      # converted to the destination type (narrowing, widening or a sign
+      # change, per #convert), and a pointer source is reinterpreted as an
+      # unsigned 64-bit value and then converted to the destination width; a
+      # struct source has no arithmetic value.
       def gen_cast_to_arithmetic(node, target, value, value_type)
         if target.float? || value_type.float?
           # A pointer has no floating value and a struct no arithmetic one; only
           # an arithmetic source converts to (or from) a floating type.
           unless value_type.arithmetic?
             error_at(node.token, "cannot cast '#{value_type}' to '#{target}'")
+          end
+          if value_type.float? && target.integer?
+            folded = gen_folded_float_cast(node, target)
+            return folded if folded
           end
           return [convert(value, from: value_type, to: target, token: node.token), target]
         end
@@ -2495,6 +2503,21 @@ module Rubycc
           error_at(node.token, "cannot cast '#{value_type}' to '#{target}'")
         end
         [convert(value, from: source_type, to: target), target]
+      end
+
+      # Folds "(int-type)floating-constant" to a plain :const, the same
+      # truncating wrap ConstantEvaluator::evaluate_cast applies in a
+      # constant-expression context, reused here by handing it the whole Cast
+      # node. Returns nil (rather than raising) when the operand is not itself
+      # a floating-point constant, so the caller falls back to the ordinary
+      # run-time conversion.
+      def gen_folded_float_cast(node, target)
+        value = Front::ConstantEvaluator.evaluate(node)
+        dst = new_vreg
+        emit(:const, dst: dst, a: value, size: (8 if target.size == 8))
+        [dst, target]
+      rescue Front::ConstantEvaluator::NotConstant
+        nil
       end
 
       # A binary operation. Its result type (and the legality of its operands)

@@ -173,11 +173,32 @@ module Rubycc
 
       # A cast to an integer type wraps the operand's value into that type's
       # width and signedness; any other destination (a pointer, a struct) is
-      # not something this evaluator folds.
+      # not something this evaluator folds. When the operand is itself a
+      # floating-point constant (a literal, or a negated literal — a nested
+      # cast such as "(long)(double)1e2" is not chased any further), 6.3.1.4p1
+      # truncates it toward zero before the wrap; #evaluate never sees a Float
+      # for any other node, so the arithmetic above stays purely integral.
       def evaluate_cast(node)
         raise NotConstant, node.token unless node.type.integer?
 
+        float_value = float_constant_value(node.operand)
+        return wrap_to_type(float_value.truncate, node.type) unless float_value.nil?
+
         wrap_to_type(evaluate(node.operand), node.type)
+      end
+
+      # The Float a floating-point constant operand denotes, or nil when
+      # `node` is not one — a plain FloatLit, or a unary minus directly over
+      # one.
+      def float_constant_value(node)
+        case node
+        when AST::FloatLit
+          node.value
+        when AST::Unary
+          return nil unless node.op == :neg && node.operand.is_a?(AST::FloatLit)
+
+          -node.operand.value
+        end
       end
 
       def wrap_to_type(value, type)
