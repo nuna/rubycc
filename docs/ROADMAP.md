@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 受け入れ(json/msgpack 実ビルド)進行中。Step 39(C 拡張 require 受け入れ)〜 Step 52(実行時 unsigned ⇔ 浮動変換)まで完了。msgpack は rubycc 単体で完全動作(全 12 TU 一発 .so 化 → require → Packer/Unpacker round-trip 一致)、json は generator.c が .o 完走。**残る壁は json parser.c の複合リテラル(c-testsuite 00216 と同根)= Step 53 のみ**。それが落ちれば両 gem の全 TU が .o 化でき、extconf/Makefile 手動置換ビルド + gem テストスイート合格(M2 完了判定)の手順整備に入る。L5 第三段(.gnu.hash)は後続**。
+現在地: **M2 受け入れの大詰め。Step 53(複合リテラル)完了で C 言語側の壁は全て撤去され、**json/msgpack 両 gem が rubycc 単体ツールチェーンで動作**する状態に到達: msgpack = 全 12 TU 一発 .so 化 → require → Packer/Unpacker round-trip 一致、json = parser.so/generator.so を .so 化 → gem lib と結合して JSON.parser == JSON::Ext::Parser で parse/generate/pretty_generate/round-trip 正常。残る M2 完了判定は「extconf/Makefile 手動置換の手順で両 gem をビルドし、**gem 自身のテストスイートに合格**」の実施(= 次ステップ、Step 54)。L5 第三段(.gnu.hash)は後続**。
 
 ---
 

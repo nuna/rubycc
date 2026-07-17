@@ -1947,9 +1947,44 @@ unsigned long キャスト)が診断で停止していた。heavy-implementer �
 
 ---
 
+## Step 53 — 複合リテラル(ブロックスコープ、M2 追補)
+
+json の最後の壁。parser.c がスタックフレームを `(json_frame){ .type = …, … }`
+(ブロックスコープの複合リテラル + 指示付き初期化子、struct 値渡し)で push する。
+heavy-implementer へ移譲・レビューして確定。
+
+**設計判断**:
+- **弁別はキャスト解析点の 1 箇所**: `( type-name )` の直後が `{` なら複合リテラル、
+  それ以外は従来キャスト。文式 `({` は type_specifier? が偽になるため衝突しない。
+  postfix を parse_postfix_suffixes に分割し、`(T){...}.member` / `[i]` / 呼び出しを
+  後置可能にした。`(int[]){...}` は既存の `[]` 長さ推論(parse_init_declarator と
+  同じ InitializerResolver 経由)で確定。
+- **generator は既存機構の再利用のみ(新 IR なし)**: 無名オブジェクト = 既存の
+  ローカル割り付け(new_object)+ 既存の初期化 lowering(zero_fill + placement)。
+  未指定メンバのゼロ埋め・ループ毎の再初期化は既存経路の性質がそのまま効く。
+  値カテゴリも既存規約に一致(struct=アドレス / 配列=decay / スカラー=ロード、
+  `&(T){...}` は lvalue アドレス)。
+- **ファイルスコープ形(静的記憶域)は診断で先送り**: json/msgpack は踏まない
+  ことを実測確認。c-testsuite 00149/00150/00216 はファイルスコープ形ほか
+  (empty struct・`[a ... b]` 範囲指示子・6.7.9p13 の whole-struct メンバ初期化)が
+  残るためスキップ理由を更新して残置。
+- 付随修正: static_type の BuiltinAlloca(→ void *)欠落を補完(CRuby の
+  RB_ALLOCV の ?: alloca アームで露見)。
+
+**位置づけ**: json parser.c が .o 完走し、**json/msgpack 両 gem の全 TU が .o 化
+可能**になった。メインセッションで json 両拡張(parser.so / generator.so)を
+rubycc ドライバで .so 化 → gem の lib と組み合わせて require したところ、
+**JSON.parser == JSON::Ext::Parser(C 拡張が選択され)、JSON.parse / generate /
+pretty_generate / round-trip が全て正常動作**。M2 対象の 2 gem が rubycc 単体
+ツールチェーンで動作する状態に到達。残る M2 完了判定は「gem 自身のテストスイート
+合格」の実施(次ステップ)。GNU ld 相互運用(PC32 拒否)は §3 記録済みの既知制約の
+まま(rubycc 自身の SharedLinker では問題なし)。
+
+---
+
 ## 現在のテスト規模
 
-Step 52 完了時点: **1,616 runs / 4,652 assertions / 0 failures / 17 skips**
+Step 53 完了時点: **1,632 runs / 4,674 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
