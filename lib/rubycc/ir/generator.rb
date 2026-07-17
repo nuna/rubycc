@@ -3953,10 +3953,15 @@ module Rubycc
         error_at(token, "invalid use of incomplete type '#{type}'")
       end
 
-      # Whether `type` is an incomplete object type: an undefined struct/union, or
-      # an incomplete (forward-referenced) enum. Every other type is complete.
+      # Whether `type` is an incomplete object type: an undefined struct/union, an
+      # incomplete (forward-referenced) enum, or an incomplete array — an
+      # unbounded "[]", the shape a struct's flexible array member has, which has
+      # no size so "sizeof s.fam" / "_Alignof(int[])" are rejected here. Every
+      # other type is complete.
       def incomplete_type?(type)
-        (type.struct? && !type.complete?) || type.is_a?(Type::EnumType)
+        (type.struct? && !type.complete?) ||
+          type.is_a?(Type::EnumType) ||
+          (type.array? && type.incomplete?)
       end
 
       # Guards a compound-assignment or "++"/"--" target that must be a scalar

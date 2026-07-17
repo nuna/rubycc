@@ -215,16 +215,29 @@ module Rubycc
             break unless designator.is_a?(AST::MemberDesignator)
 
             member, index = locate_member(type, designator)
+            reject_flexible_array_init(member, item)
             init_subobject(member.type, base + member.offset, cursor, item, item.designators[1..])
             index += 1
           else
             break if index >= members.size
 
             member = members[index]
+            reject_flexible_array_init(member, item)
             init_subobject(member.type, base + member.offset, cursor, item, [])
             index += 1
           end
         end
+      end
+
+      # A flexible array member cannot be initialized: it has no reserved
+      # storage (it contributes nothing to sizeof), so an initializer for it
+      # would write past the object (6.7.2.1p18). An initializer that only fills
+      # the struct's other members is fine — this fires solely when an item is
+      # actually directed at the FAM.
+      def reject_flexible_array_init(member, item)
+        return unless member.type.array? && member.type.incomplete?
+
+        error(item_token(item), "initialization of a flexible array member is not allowed")
       end
 
       # A union holds one member at a time: the first by default, or the one a

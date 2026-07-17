@@ -401,6 +401,17 @@ module Rubycc
     # A one-dimensional array of `length` elements, each of type `element`
     # (itself a Type: an int or a pointer in this subset). Two arrays are equal
     # when both their element type and length match.
+    #
+    # A `length` of nil is an *incomplete* array type (6.7.2.1): an unbounded
+    # "[]" whose element count is unknown. It reaches this subset as a struct's
+    # flexible array member (the last member, "T name[];", ISO C 6.7.2.1p18) and
+    # nowhere a size is needed — #size raises, and every path that could demand
+    # one (a variable, a plain sizeof/_Alignof of the array, an array-of-array
+    # element) is rejected first by the parser or the generator's completeness
+    # guard. A flexible array member still lays out (at its element's boundary,
+    # contributing nothing to the struct's size), and an lvalue of this type
+    # decays to a pointer to its element exactly as a bounded array does, so
+    # "p->fam[i]" indexes it.
     Array = Data.define(:element, :length) do
       def pointer?
         false
@@ -446,8 +457,20 @@ module Rubycc
         false
       end
 
-      # The whole array's byte size: the element width times the count.
+      # Whether this is an incomplete array — an unbounded "[]" with no element
+      # count, the shape a struct's flexible array member takes. It has no size,
+      # so every size-needing use is diagnosed before #size would raise.
+      def incomplete?
+        length.nil?
+      end
+
+      # The whole array's byte size: the element width times the count. An
+      # incomplete array ("[]") has no count and therefore no size; every path
+      # that could reach one where a size is needed rejects it first with a
+      # proper diagnostic, so a raise here is a missing guard.
       def size
+        raise "incomplete array has no size" if length.nil?
+
         element.size * length
       end
 
@@ -458,7 +481,8 @@ module Rubycc
       end
 
       # Renders like a C array declarator: the element type, a space, then the
-      # bracketed length ("int [10]", "int * [4]").
+      # bracketed length ("int [10]", "int * [4]"); an incomplete array shows an
+      # empty "[]" ("int []").
       def to_s
         "#{element} [#{length}]"
       end
@@ -822,6 +846,19 @@ module Rubycc
         @complete
       end
 
+      # Whether this aggregate ends in a flexible array member (an unbounded
+      # "[]", 6.7.2.1p18). A struct with one taints its uses: it may not be an
+      # array element or (this subset) laid out by value inside another
+      # aggregate, since its true size depends on a run-time element count the
+      # enclosing layout cannot know. Only a defined struct can carry one, so an
+      # incomplete type (no members yet) answers false.
+      def flexible_array_member?
+        return false unless @members
+
+        last = @members.last
+        !last.nil? && last.type.array? && last.type.incomplete?
+      end
+
       # The member named `name`, or nil when there is none — the generator uses
       # the nil to diagnose "no member named ...". A named member wins directly;
       # failing that, an anonymous struct/union member (name nil, an aggregate
@@ -937,7 +974,13 @@ module Rubycc
             member_alignment = packed ? 1 : type.alignment
             byte_offset = align_up(bits_to_bytes(bit_pos), member_alignment)
             members << Member.new(name: name, type: type, offset: byte_offset)
-            bit_pos = (byte_offset + type.size) * 8
+            # A flexible array member (the trailing "T name[]") sits at its
+            # element's boundary but contributes nothing to the struct's size —
+            # sizeof is as if it were absent (6.7.2.1p18) — so the cursor stops
+            # at its offset. Its element alignment still joins the aggregate's
+            # (raising it when the element is wider than every earlier member).
+            member_size = type.array? && type.incomplete? ? 0 : type.size
+            bit_pos = (byte_offset + member_size) * 8
             max_alignment = member_alignment if member_alignment > max_alignment
           else
             bit_pos = place_bitfield(members, name, type, bit_width, bit_pos) do |alignment|

@@ -684,7 +684,7 @@ module Rubycc
 
           if peek.punct?("{")
             struct_type = tag ? define_struct_tag(tag, kind, keyword_tok) : Type::StructType.new(nil, kind: kind)
-            raw_members = parse_struct_body
+            raw_members = parse_struct_body(kind, keyword_tok)
             # A second attribute run may follow the closing "}" (position c),
             # before the declarator list or ";"; the two runs combine on the layout.
             trailing_attrs = parse_attribute_specifiers
@@ -1027,21 +1027,30 @@ module Rubycc
       # since a pointer is always complete. `seen` tracks every member name
       # visible from this body, folding in the names an anonymous member exposes
       # transparently, so a collision through one is diagnosed like any other.
-      def parse_struct_body
+      def parse_struct_body(kind, keyword_tok)
         expect_punct("{")
         raw_members = []
         seen = {}
+        # Tracks a flexible array member as the body is read (ISO C 6.7.2.1p18):
+        # `token` is the FAM's name once seen, so any further member declared
+        # after it is diagnosed (a FAM must be the struct's last member), and
+        # `others` counts the ordinary members, so a struct whose *only* member
+        # is a FAM is rejected. `kind` lets a FAM in a union be rejected.
+        flex = { kind: kind, token: nil, others: 0 }
         until peek.punct?("}")
           spec_tok = peek
           member_base = parse_type_specifier
           if peek.punct?(";")
-            parse_anonymous_member(member_base, spec_tok, raw_members, seen)
+            parse_anonymous_member(member_base, spec_tok, raw_members, seen, flex)
           else
-            parse_member_declarators(member_base, spec_tok, raw_members, seen)
+            parse_member_declarators(member_base, spec_tok, raw_members, seen, flex)
           end
           expect_punct(";")
         end
         expect_punct("}")
+        if flex[:token] && flex[:others].zero?
+          error_at(flex[:token], "flexible array member '#{flex[:token].value}' in a struct with no other members")
+        end
         raw_members
       end
 
@@ -1052,7 +1061,8 @@ module Rubycc
       # declares nothing and is rejected. The member is recorded with a nil name
       # and its inner type; every name it exposes transparently is added to
       # `seen` so a later member cannot shadow one of them.
-      def parse_anonymous_member(member_base, spec_tok, raw_members, seen)
+      def parse_anonymous_member(member_base, spec_tok, raw_members, seen, flex)
+        reject_member_after_flexible_array(flex, spec_tok)
         unless member_base.struct? && member_base.tag.nil?
           error_at(spec_tok, "declaration does not declare anything")
         end
@@ -1060,6 +1070,7 @@ module Rubycc
           error_at(spec_tok, "duplicate member '#{name}'") if seen.key?(name)
           seen[name] = true
         end
+        flex[:others] += 1
         raw_members << [nil, member_base, nil]
       end
 
@@ -1073,13 +1084,16 @@ module Rubycc
       # a duplicate against `seen` (which already holds any transparently exposed
       # names) and then added to it. Every recorded triple is
       # [name, Type, bit_width], bit_width nil for a plain member.
-      def parse_member_declarators(member_base, spec_tok, raw_members, seen)
+      def parse_member_declarators(member_base, spec_tok, raw_members, seen, flex)
         loop do
+          reject_member_after_flexible_array(flex, spec_tok)
           if peek.punct?(":")
             advance # ":"
+            # An unnamed bit-field declares no member, so it does not satisfy the
+            # "a FAM needs another named member" rule (flex[:others] untouched).
             raw_members << [nil, member_base, parse_bitfield_width(member_base, spec_tok)]
           else
-            parse_named_member(member_base, raw_members, seen)
+            parse_named_member(member_base, raw_members, seen, flex)
           end
           break unless peek.punct?(",")
 
@@ -1092,13 +1106,18 @@ module Rubycc
       # constraint violation (6.7.2.1p3, "only an unnamed member may be
       # zero-width"). A plain member may not be a function, void, or an
       # incomplete aggregate by value.
-      def parse_named_member(member_base, raw_members, seen)
-        name_tok, type = parse_declarator(member_base)
+      def parse_named_member(member_base, raw_members, seen, flex)
+        # A trailing "[]" (an incomplete array) is admitted here so the last
+        # member may be a flexible array member; #reject_flexible_array_member
+        # then enforces the 6.7.2.1p18 constraints (struct only, and never
+        # followed by another member — see #reject_member_after_flexible_array).
+        name_tok, type = parse_declarator(member_base, allow_incomplete_array: true)
         if peek.punct?(":")
           advance # ":"
           width = parse_bitfield_width(type, name_tok)
           error_at(name_tok, "named bit-field '#{name_tok.value}' has zero width") if width.zero?
           register_member_name(name_tok, seen)
+          flex[:others] += 1
           raw_members << [name_tok.value, type, width]
         else
           # A GNU attribute may trail a member declarator (position f):
@@ -1110,7 +1129,40 @@ module Rubycc
           reject_void_type(type, name_tok)
           reject_incomplete_member(type, name_tok)
           register_member_name(name_tok, seen)
+          if type.array? && type.incomplete?
+            reject_flexible_array_member(type, name_tok, flex)
+            flex[:token] = name_tok
+          else
+            flex[:others] += 1
+          end
           raw_members << [name_tok.value, type, nil]
+        end
+      end
+
+      # Rejects a member declared after a flexible array member: a FAM must be
+      # the struct's last member (6.7.2.1p18), so anything that follows it — a
+      # further declarator in the same list ("int f[], g;"), a later declaration,
+      # or an anonymous member — is a constraint violation reported at the FAM's
+      # own name. Does nothing until a FAM has actually been seen.
+      def reject_member_after_flexible_array(flex, _anchor)
+        return unless flex[:token]
+
+        error_at(flex[:token],
+                 "flexible array member '#{flex[:token].value}' must be the last member of the struct")
+      end
+
+      # Enforces the two constraints a flexible array member must satisfy at the
+      # point it is declared (6.7.2.1p18): it is legal only in a struct, never a
+      # union, and only when the element type is complete — an "[]" of an
+      # incomplete struct has no element size to index. The "must be last" and
+      # "needs another member" rules are enforced by the surrounding body parse,
+      # which alone sees the whole member sequence.
+      def reject_flexible_array_member(type, name_tok, flex)
+        if flex[:kind] == :union
+          error_at(name_tok, "flexible array member '#{name_tok.value}' not allowed in union")
+        end
+        if type.element.struct? && !type.element.complete?
+          error_at(name_tok, "flexible array member '#{name_tok.value}' has incomplete element type")
         end
       end
 
@@ -1803,6 +1855,11 @@ module Rubycc
         else
           error_at(tok, "array of functions is not allowed") if inner.function?
           error_at(tok, "multidimensional arrays are not supported yet") if inner.array?
+          # A struct ending in a flexible array member has no fixed size, so it
+          # cannot be an array element (6.7.2.1p18; its stride is unknown).
+          if inner.struct? && inner.flexible_array_member?
+            error_at(tok, "array type has a struct with a flexible array member as its element")
+          end
           Type::Array.new(inner, data)
         end
       end
