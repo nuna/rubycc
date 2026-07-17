@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 の大詰め。gcc 互換ドライバ = Step 38、C 拡張の require 実行受け入れ = Step 39、文式サポート = Step 40、同梱 freestanding ヘッダと既定インクルードパス(gcc 内部ヘッダ依存の排除)= Step 41、`__builtin_offsetof`(定数文脈 offsetof)= Step 42 まで完了。rubycc は gcc/binutils 一切なしで実 TypedData 拡張を .so 化 → require して動くことを実証・常設化(Box 拡張が CRuby ヘッダのみで `[1,2,3]` を返す)。実 gem が最初に踏む壁(文式・freestanding ヘッダ・定数文脈 offsetof)を撤去済み。残りは M2 受け入れの最終形 = json/msgpack を実ビルドして gem テスト合格(ここで露見する M1 の残穴を追補ステップで潰す)。L5 第三段(.gnu.hash)は後続**。
+現在地: **M2 受け入れ(json/msgpack 実ビルド)進行中。Step 39(C 拡張 require 受け入れ)〜 Step 43(GNU 可変長マクロ拡張)まで完了し、実 gem の全 C ファイルを extconf 実フラグで rubycc コンパイルする壁潰しの段階。msgpack は全ヘッダを通過して本体コード到達済み。残る壁のインベントリ(実測): (a) gcc ビルトイン群(__builtin_ctz/clzll/choose_expr/constant_p/unreachable — CRuby config.h の HAVE_BUILTIN_* 焼き込みで必須)+ __has_builtin + x86intrin.h スタブ + 2進リテラル = Step 44 予定、(b) グローバル初期化子のアドレス定数(キャスト付き文字列リテラル・symbol+addend、json)= Step 45 予定、(c) 可変長配列メンバ `VALUE arr[];`(msgpack)= Step 46 予定、(d) ビットフィールドアクセス(§3 記録済み負債、msgpack)= Step 47 予定。L5 第三段(.gnu.hash)は後続**。
 
 ---
 

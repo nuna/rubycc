@@ -1627,9 +1627,44 @@ Step 41・定数文脈 offsetof = Step 42)を撤去。次は json/msgpack の実
 
 ---
 
+## Step 43 — GNU 可変長マクロ拡張(名前付き引数とカンマ削除、M2 追補)
+
+M2 受け入れの本丸(json/msgpack の実 gem ビルド)に着手し、extconf.rb が生成した
+実フラグで全 C ファイルを rubycc コンパイルして壁のインベントリを作成した。最初の壁が
+本ステップ: linux/stddef.h の `__struct_group(TAG, NAME, ATTRS, MEMBERS...)`(glibc の
+`<sys/types.h>` → linux/posix_types.h 経由で事実上全 TU が踏む)が名前付き可変長引数で、
+msgpack 12 ファイル中 10 がマクロ定義の時点で全滅。GNU カンマ削除 `, ## __VA_ARGS__` も
+未対応だった(glibc/CRuby ヘッダの printf 転送マクロが多用)。メインセッションで両
+ギャップを実測特定し、heavy-implementer へ移譲・レビューして確定。
+
+**設計判断**:
+- **Macro に va_name を一元化**: 可変長部の名前(ISO 裸 `...` = "__VA_ARGS__"、
+  GNU 名前付き形 = その識別子、非可変長 = nil)を Macro 構造体に持たせ、可変長参照の
+  判定(`variadic_ref?`)を「トークン名 == va_name」に一本化。実引数束縛・stringize
+  (`#args`)・paste・再定義同一性判定(va_name を比較に含め ISO 形と名前付き形を
+  別物と扱う)が両形で同じ経路を通る。名前付き形では `__VA_ARGS__` は通常識別子
+  (gcc 準拠)。
+- **カンマ削除は「貼り付け」ではなく特別指示**: `##` の左が literal カンマ・右が
+  可変長引数の並びだけを `gnu_comma_paste?` で検出し、可変長実引数が**省略**された
+  ときのみ直前のカンマを削除、存在すれば(空でも)カンマを残して展開済み引数を
+  貼り付けなしで差し込む。`Z()`(0 引数扱いで削除)と `F(a,)`(空スロットは残す)の
+  gcc の細部を `no_variable_arguments?` で再現し、gcc -E トークン列比較で全組み合わせを
+  検証。それ以外の `##`(Step 27)の意味論は不変。
+- **DoS フェイルセーフは不変**: EXPANSION_TOKEN_LIMIT 等の予算は迂回しない。
+
+**位置づけ**: msgpack 全 12 ファイルが glibc・CRuby の全ヘッダを通過し本体コードへ
+到達。露見した次の壁は (a) 未実装 gcc ビルトイン(__builtin_ctz / choose_expr /
+constant_p / unreachable。CRuby config.h が gcc ビルド時の HAVE_BUILTIN_* を焼き込んで
+いるため必須)、(b) 2進リテラル 0b0001、(c) 可変長配列メンバ `VALUE arr[];`、
+(d) ビットフィールドアクセス(記録済み M2 負債)。json 側は x86intrin.h
+(config.h 焼き込みの HAVE_X86INTRIN_H)と __builtin_clzll、グローバル初期化子の
+アドレス定数(キャスト付き文字列リテラル)。これらを Step 44 以降の追補で潰す。
+
+---
+
 ## 現在のテスト規模
 
-Step 42 完了時点: **1,525 runs / 4,448 assertions / 0 failures / 17 skips**
+Step 43 完了時点: **1,540 runs / 4,470 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
