@@ -37,12 +37,16 @@ module Rubycc
 
       # A folded address constant (ISO C 6.6): a base object plus a constant byte
       # displacement, the form a pointer global's initializer must reduce to.
-      # `base_kind` is :symbol (a file-scope object named by `symbol`) or :string
-      # (an interned string literal indexed by `string_id`); `offset` is the byte
-      # displacement past that base, accumulated from subscripts, member accesses
-      # and pointer arithmetic; `pointee` is the type of the object presently at
-      # base+offset, so a further subscript or "+ n" knows how many bytes one step
-      # spans (and a cast overrides it without moving the address).
+      # `base_kind` is :symbol (a file-scope object named by `symbol`), :string
+      # (an interned string literal indexed by `string_id`), or :absolute (no
+      # object at all — `symbol` and `string_id` are nil and `offset` is the raw
+      # bit pattern, from a pointer cast of an integer constant such as
+      # "(dfree_t)-1"); `offset` is the byte displacement past that base for
+      # :symbol/:string (accumulated from subscripts, member accesses and
+      # pointer arithmetic), or the absolute value itself for :absolute;
+      # `pointee` is the type of the object presently at base+offset, so a
+      # further subscript or "+ n" knows how many bytes one step spans (and a
+      # cast overrides it without moving the address).
       AddressConstant = Data.define(:base_kind, :symbol, :string_id, :offset, :pointee)
 
       # Raised while folding an initializer that is not an address constant this
@@ -349,13 +353,20 @@ module Rubycc
       # any of these. The displacement rides along as the relocation's addend.
       # A form that does not fold (a run-time value, a non-constant index) draws
       # the "unsupported initializer" diagnostic.
-      def pack_global_pointer(offset, type, value, _image, relocations)
+      def pack_global_pointer(offset, type, value, image, relocations)
         if Front::AST.null_pointer_constant?(value)
           nil # eight zero bytes are already in the image
         elsif (name = function_address_constant(type, value))
           relocations << GlobalReloc.new(offset: offset, kind: :symbol, symbol: name, string_id: nil)
         else
-          relocations << address_relocation(offset, fold_address_constant(value))
+          addr = fold_address_constant(value)
+          if addr.base_kind == :absolute
+            # No object to relocate against: the bit pattern goes straight into
+            # the slot, exactly like a scalar integer initializer.
+            image[offset, 8] = pack_integer(addr.offset, 8)
+          else
+            relocations << address_relocation(offset, addr)
+          end
         end
       rescue NotAddressConstant
         error_at(value.token, "unsupported initializer for global variable")
@@ -410,7 +421,10 @@ module Rubycc
       # Folds a pointer-valued constant expression to an AddressConstant whose
       # `pointee` is the type the pointer points at. A string literal decays to a
       # char pointer at the interned bytes; a pointer cast reinterprets the
-      # pointee without moving the address; "&lvalue" is the lvalue's own address;
+      # pointee without moving the address when its operand itself folds as a
+      # pointer, or — when it does not (e.g. an integer constant such as
+      # "(dfree_t)-1") — takes the operand's integer constant value as the
+      # pointer's raw bit pattern instead; "&lvalue" is the lvalue's own address;
       # "pointer +/- n" (either operand order for "+") shifts by n elements; and
       # any other lvalue of array type decays to a pointer to its first element.
       def pointer_value(node)
@@ -421,8 +435,12 @@ module Rubycc
         when Front::AST::Cast
           raise NotAddressConstant unless node.type.pointer?
 
-          inner = pointer_value(node.operand)
-          inner.with(pointee: node.type.target)
+          if (inner = maybe_pointer_value(node.operand))
+            inner.with(pointee: node.type.target)
+          else
+            AddressConstant.new(base_kind: :absolute, symbol: nil, string_id: nil,
+                                offset: fold_absolute_constant(node.operand), pointee: node.type.target)
+          end
         when Front::AST::Unary
           raise NotAddressConstant unless node.op == :addr
 
@@ -527,6 +545,16 @@ module Rubycc
       # rejecting a non-constant one (a variable, a call) as breaking the address
       # constant rather than surfacing the evaluator's own diagnostic.
       def fold_constant_index(node)
+        Front::ConstantEvaluator.evaluate(node)
+      rescue Front::ConstantEvaluator::NotConstant, Front::ConstantEvaluator::DivisionByZero
+        raise NotAddressConstant
+      end
+
+      # Evaluates a pointer cast's operand as a constant integer — the pointer's
+      # absolute bit pattern when it is not itself an address constant — rejecting
+      # a non-constant operand (a variable, a call) the same way #fold_constant_index
+      # does.
+      def fold_absolute_constant(node)
         Front::ConstantEvaluator.evaluate(node)
       rescue Front::ConstantEvaluator::NotConstant, Front::ConstantEvaluator::DivisionByZero
         raise NotAddressConstant

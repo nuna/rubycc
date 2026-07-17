@@ -9,7 +9,10 @@ require "tmpdir"
 # pointer initializer may fold to: a pointer cast of a string literal, "&arr[i]",
 # "arr + n"/"n + arr"/"arr - n", "&rec.member" and nested designators, all
 # carried into the object file as an R_X86_64_64 relocation whose r_addend is the
-# folded byte displacement.
+# folded byte displacement. Also a pointer cast of a plain integer constant
+# (e.g. "(void *)0x1000" or "(dfree_t)-1", the latter CRuby's
+# RUBY_TYPED_DEFAULT_FREE), which has no object to relocate against and so is
+# stored as a raw bit pattern with no relocation at all.
 #
 # The runtime cases compile with rubycc and, as an oracle, link and run with the
 # system gcc (proving the emitted addend is right against a real linker). Two
@@ -114,6 +117,45 @@ class TestAddressConstantGlobals < Minitest::Test
       int main(void) { return *v.lo + *v.hi; }
     C
     assert_matches_gcc(70, src)
+  end
+
+  # --- absolute (integer) address constants -------------------------------
+
+  # The msgpack buffer_class.c shape that motivated this: a function-pointer
+  # struct member set to CRuby's RUBY_TYPED_DEFAULT_FREE, "(RUBY_DATA_FUNC)-1".
+  def test_pointer_cast_of_negative_integer_constant
+    src = <<~C
+      typedef void (*dfree_t)(void *);
+      struct dtype { const char *name; dfree_t dfree; };
+      static const struct dtype t = { "box", (dfree_t)-1 };
+      int main(void) { return t.dfree == (dfree_t)-1; }
+    C
+    assert_matches_gcc(1, src)
+  end
+
+  def test_void_pointer_cast_of_integer_literal
+    src = <<~C
+      static void *p = (void *)0x1000;
+      int main(void) { return p == (void *)0x1000; }
+    C
+    assert_matches_gcc(1, src)
+  end
+
+  # An absolute pointer cast still accepts further constant pointer arithmetic.
+  def test_absolute_pointer_plus_integer
+    src = <<~C
+      static char *q = (char *)16 + 2;
+      int main(void) { return (long)q == 18; }
+    C
+    assert_matches_gcc(1, src)
+  end
+
+  def test_pointer_cast_of_variable_is_rejected
+    src = <<~C
+      int n;
+      void *p = (void *)n;
+    C
+    assert_unsupported_initializer(src)
   end
 
   # --- rubycc's own linkers (addend applied by our toolchain) -------------
