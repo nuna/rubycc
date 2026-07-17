@@ -63,13 +63,15 @@ IR::Program
 - `GlobalInit(bytes, relocations)` — `size` バイトのリトルエンディアン像。
   ポインタスロットは 8 バイトのゼロのまま置き、`GlobalReloc` がリンク時に
   埋める。「全ゼロだが明示初期化」は nil init(.bss)と区別される。
-- `GlobalReloc(offset, kind, symbol, string_id)` — グローバル像内のバイト
-  オフセット `offset` にある 8 バイトスロットへの再配置。
+- `GlobalReloc(offset, kind, symbol, string_id, addend)` — グローバル像内のバイト
+  オフセット `offset` にある 8 バイトスロットへの再配置。`addend`(既定 0)は
+  基点アドレスに加える定数バイト変位で、`&arr[i]`・`arr + n`・`&rec.member` の
+  ような計算アドレス定数(ISO C 6.6)で非ゼロになり、R_X86_64_64 の r_addend となる。
   - `kind: :symbol` — 他のファイルスコープオブジェクトまたは関数のアドレス
-    (`&global`・グローバル配列名の減衰・関数名 `f`/`&f`)。絶対 64 bit
-    (R_X86_64_64)で解決。
+    (`&global`・グローバル配列名の減衰・関数名 `f`/`&f`、および `&arr[i]` 等の
+    計算アドレス)。絶対 64 bit(R_X86_64_64、addend = `addend`)で解決。
   - `kind: :string` — 文字列リテラル。`string_id` が文字列プールを指し、
-    コンパイラが .rodata オフセットへ解決。
+    コンパイラが .rodata オフセット + `addend` へ解決。
 
 ## 3. 値表現規約(スロット規約)
 

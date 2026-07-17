@@ -178,15 +178,18 @@ module Rubycc
 
     # Registers one global-image relocation with the ELF writer, translating a
     # within-global slot offset into a .data-section offset. A :symbol reloc
-    # points at another object's symbol (an absolute 64-bit address); a :string
-    # reloc points into .rodata, its addend the interned string's byte offset.
+    # points at another object's symbol (an absolute 64-bit address, plus the
+    # relocation's own byte displacement for a computed "&arr[i]"); a :string
+    # reloc points into .rodata, its addend the interned string's byte offset
+    # plus that same displacement.
     def register_data_relocation(writer, reloc, global_offset, string_offsets)
       case reloc.kind
       when :symbol
-        writer.add_data_relocation(offset: global_offset + reloc.offset, symbol: reloc.symbol)
+        writer.add_data_relocation(offset: global_offset + reloc.offset,
+                                   symbol: reloc.symbol, addend: reloc.addend)
       when :string
         writer.add_data_rodata_relocation(offset: global_offset + reloc.offset,
-                                          addend: string_offsets[reloc.string_id])
+                                          addend: string_offsets[reloc.string_id] + reloc.addend)
       end
     end
 

@@ -203,11 +203,13 @@ module Rubycc
       end
 
       # Records an absolute 64-bit reference inside .data to the named file-scope
-      # object `symbol` (a pointer global initialized with "&other" or a decayed
-      # global array). `offset` is the pointer slot's byte offset within .data.
-      # Resolved against that symbol as R_X86_64_64 with an addend of 0.
-      def add_data_relocation(offset:, symbol:)
-        @data_relocations << { kind: :symbol, offset: offset, symbol: symbol }
+      # object `symbol` (a pointer global initialized with "&other", a decayed
+      # global array, or a computed address constant like "&arr[i]"). `offset` is
+      # the pointer slot's byte offset within .data and `addend` the constant byte
+      # displacement past the symbol (0 for a bare "&other"). Resolved against that
+      # symbol as R_X86_64_64 with that addend.
+      def add_data_relocation(offset:, symbol:, addend: 0)
+        @data_relocations << { kind: :symbol, offset: offset, symbol: symbol, addend: addend }
         self
       end
 
@@ -397,15 +399,16 @@ module Rubycc
 
       # Builds the .rela.data payload, one entry per recorded data relocation,
       # all absolute R_X86_64_64. A :symbol reloc points at another object's
-      # symbol with an addend of 0 (the pointer slot holds that object's
-      # address); a :rodata reloc points at the .rodata section symbol with the
-      # string's byte offset as its addend.
+      # symbol with its recorded addend (the pointer slot holds that object's
+      # address, plus any "&arr[i]" displacement); a :rodata reloc points at the
+      # .rodata section symbol with the string's byte offset (plus a cast/computed
+      # displacement) as its addend.
       def build_rela_data(symbol_indices, rodata_sym_index)
         buf = +"".b
         @data_relocations.each do |reloc|
           case reloc[:kind]
           when :symbol
-            append_rela(buf, reloc[:offset], symbol_indices.fetch(reloc[:symbol]), R_X86_64_64, 0)
+            append_rela(buf, reloc[:offset], symbol_indices.fetch(reloc[:symbol]), R_X86_64_64, reloc[:addend])
           when :rodata
             append_rela(buf, reloc[:offset], rodata_sym_index, R_X86_64_64, reloc[:addend])
           end

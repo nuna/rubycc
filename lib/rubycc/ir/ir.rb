@@ -308,8 +308,15 @@ module Rubycc
     # absolute 64-bit address (a "&global" or a decayed global array) — or
     # :string for a string literal, where `string_id` indexes the translation
     # unit's string pool and the compiler resolves it to a .rodata offset. The
-    # unused field is nil for each kind.
-    GlobalReloc = Data.define(:offset, :kind, :symbol, :string_id)
+    # unused field is nil for each kind. `addend` is a constant byte displacement
+    # added to the base address (0 for a bare "&global" or string, non-zero for a
+    # computed address constant such as "&arr[i]", "arr + n" or "&rec.member");
+    # it becomes the R_X86_64_64 relocation's r_addend.
+    GlobalReloc = Data.define(:offset, :kind, :symbol, :string_id, :addend) do
+      def initialize(offset:, kind:, symbol:, string_id:, addend: 0)
+        super
+      end
+    end
 
     # A whole translation unit lowered to IR: its `functions` (an array of
     # Function), the shared read-only string pool `strings` (an array of

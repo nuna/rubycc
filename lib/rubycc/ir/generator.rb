@@ -34,6 +34,23 @@ module Rubycc
       # rewrites in place to .data. Mutable, since a later declaration in the run
       # updates it.
       ObjectRecord = Struct.new(:type, :linkage, :initialized, :index)
+
+      # A folded address constant (ISO C 6.6): a base object plus a constant byte
+      # displacement, the form a pointer global's initializer must reduce to.
+      # `base_kind` is :symbol (a file-scope object named by `symbol`) or :string
+      # (an interned string literal indexed by `string_id`); `offset` is the byte
+      # displacement past that base, accumulated from subscripts, member accesses
+      # and pointer arithmetic; `pointee` is the type of the object presently at
+      # base+offset, so a further subscript or "+ n" knows how many bytes one step
+      # spans (and a cast overrides it without moving the address).
+      AddressConstant = Data.define(:base_kind, :symbol, :string_id, :offset, :pointee)
+
+      # Raised while folding an initializer that is not an address constant this
+      # subset admits (a run-time value, a non-constant index, an unsupported
+      # form). Caught at #pack_global_pointer, which turns it into the same
+      # "unsupported initializer" diagnostic a scalar global gives.
+      class NotAddressConstant < StandardError; end
+
       # Returns an IR::Program: an IR::Function per AST::FunctionDef plus the
       # translation unit's read-only string pool. Prototypes
       # (AST::FunctionDecl) contribute only a signature-table entry and emit no
@@ -323,23 +340,39 @@ module Rubycc
       end
 
       # Packs a global pointer slot. The address constants this subset admits
-      # are: a null pointer constant (the eight zero bytes already in place); a
-      # string literal (a .rodata relocation on the interned string); a "&global"
-      # or a decayed global array name (an absolute relocation against that
-      # object's symbol); and a function name "f" or "&f" (the same, against the
-      # function's symbol, its signature checked against the pointer's target).
-      # A computed address like "&arr[i]" still has no constant form.
+      # (6.6p7/p9): a null pointer constant (the eight zero bytes already in
+      # place); a function name "f" or "&f" (an absolute relocation against the
+      # function's symbol, its signature checked against the pointer's target);
+      # and any base-plus-offset address a #fold_address_constant walk reduces to
+      # — a string literal, a "&global" or decayed array, and now a computed
+      # constant such as "&arr[i]", "arr + n", "&rec.member" or a pointer cast of
+      # any of these. The displacement rides along as the relocation's addend.
+      # A form that does not fold (a run-time value, a non-constant index) draws
+      # the "unsupported initializer" diagnostic.
       def pack_global_pointer(offset, type, value, _image, relocations)
         if Front::AST.null_pointer_constant?(value)
           nil # eight zero bytes are already in the image
-        elsif value.is_a?(Front::AST::StringLit)
-          relocations << GlobalReloc.new(offset: offset, kind: :string,
-                                         symbol: nil, string_id: intern_string(value.value))
-        elsif (name = function_address_constant(type, value)) ||
-              (name = address_constant_symbol(value))
+        elsif (name = function_address_constant(type, value))
           relocations << GlobalReloc.new(offset: offset, kind: :symbol, symbol: name, string_id: nil)
         else
-          error_at(value.token, "unsupported initializer for global variable")
+          relocations << address_relocation(offset, fold_address_constant(value))
+        end
+      rescue NotAddressConstant
+        error_at(value.token, "unsupported initializer for global variable")
+      end
+
+      # Builds the GlobalReloc for a folded AddressConstant: a :string base
+      # relocates against .rodata (the string id resolved to its offset later),
+      # a :symbol base against that object's own symbol, either carrying the
+      # folded byte displacement as its addend.
+      def address_relocation(offset, addr)
+        case addr.base_kind
+        when :string
+          GlobalReloc.new(offset: offset, kind: :string, symbol: nil,
+                          string_id: addr.string_id, addend: addr.offset)
+        when :symbol
+          GlobalReloc.new(offset: offset, kind: :symbol, symbol: addr.symbol,
+                          string_id: nil, addend: addr.offset)
         end
       end
 
@@ -367,20 +400,136 @@ module Rubycc
         name
       end
 
-      # The file-scope object symbol a pointer initializer takes the address of,
-      # or nil when `value` is not such an address constant: "&g" against a global
-      # variable, or a bare global array name that decays to a pointer to its
-      # first element.
-      def address_constant_symbol(value)
-        if value.is_a?(Front::AST::Unary) && value.op == :addr &&
-           value.operand.is_a?(Front::AST::VariableRef)
-          binding = @global_bindings[value.operand.name]
-          return binding.storage if binding
-        elsif value.is_a?(Front::AST::VariableRef)
-          binding = @global_bindings[value.name]
-          return binding.storage if binding&.type&.array?
+      # Folds a pointer global's initializer to an AddressConstant, or raises
+      # NotAddressConstant when it is not one. This is the entry point; it just
+      # asks for the initializer's pointer value.
+      def fold_address_constant(value)
+        pointer_value(value)
+      end
+
+      # Folds a pointer-valued constant expression to an AddressConstant whose
+      # `pointee` is the type the pointer points at. A string literal decays to a
+      # char pointer at the interned bytes; a pointer cast reinterprets the
+      # pointee without moving the address; "&lvalue" is the lvalue's own address;
+      # "pointer +/- n" (either operand order for "+") shifts by n elements; and
+      # any other lvalue of array type decays to a pointer to its first element.
+      def pointer_value(node)
+        case node
+        when Front::AST::StringLit
+          AddressConstant.new(base_kind: :string, symbol: nil,
+                              string_id: intern_string(node.value), offset: 0, pointee: Type::Char)
+        when Front::AST::Cast
+          raise NotAddressConstant unless node.type.pointer?
+
+          inner = pointer_value(node.operand)
+          inner.with(pointee: node.type.target)
+        when Front::AST::Unary
+          raise NotAddressConstant unless node.op == :addr
+
+          object_address(node.operand)
+        when Front::AST::Binary
+          pointer_arithmetic(node)
+        else
+          decayed = object_address(node)
+          raise NotAddressConstant unless decayed.pointee.array?
+
+          decayed.with(offset: decayed.offset, pointee: decayed.pointee.element)
         end
+      end
+
+      # Folds an lvalue expression to the AddressConstant of the object it
+      # designates, its `pointee` the object's own type. A file-scope variable is
+      # its symbol; a subscript adds index times element size; a member access
+      # adds the member's offset (through StructType#member, so an anonymous
+      # member is traversed transparently); "*p" is the address p holds. Anything
+      # else — a local, an unknown name, a run-time value — is not an address
+      # constant.
+      def object_address(node)
+        case node
+        when Front::AST::VariableRef
+          binding = @global_bindings[node.name]
+          raise NotAddressConstant unless binding&.global
+
+          AddressConstant.new(base_kind: :symbol, symbol: binding.storage,
+                              string_id: nil, offset: 0, pointee: binding.type)
+        when Front::AST::Subscript
+          subscript_address(node)
+        when Front::AST::MemberAccess
+          member_address(node)
+        when Front::AST::Unary
+          raise NotAddressConstant unless node.op == :deref
+
+          pointer_value(node.operand)
+        else
+          raise NotAddressConstant
+        end
+      end
+
+      # The address of "target[index]": the target's pointer value shifted by the
+      # constant index times the element size.
+      def subscript_address(node)
+        base = pointer_value(node.target)
+        element = base.pointee
+        raise NotAddressConstant unless element&.size
+
+        base.with(offset: base.offset + fold_constant_index(node.index) * element.size)
+      end
+
+      # The address of "base.member" (a struct lvalue) or "base->member" (a struct
+      # pointer): the base's address plus the member's byte offset. A bit-field has
+      # no addressable offset, so it is not an address constant.
+      def member_address(node)
+        base = node.arrow ? pointer_value(node.base) : object_address(node.base)
+        struct = base.pointee
+        raise NotAddressConstant unless struct.respond_to?(:member) && struct.struct?
+
+        member = struct.member(node.member)
+        raise NotAddressConstant if member.nil? || member.bitfield?
+
+        base.with(offset: base.offset + member.offset, pointee: member.type)
+      end
+
+      # Folds "pointer +/- n" (or "n + pointer" for "+"): the pointer operand's
+      # address shifted by n elements. A pointer minus a pointer, or a non-constant
+      # count, is not an address constant.
+      def pointer_arithmetic(node)
+        raise NotAddressConstant unless node.op == :add || node.op == :sub
+
+        base, count_node = pointer_operand(node)
+        step = base.pointee
+        raise NotAddressConstant unless step&.size
+
+        delta = fold_constant_index(count_node) * step.size
+        base.with(offset: node.op == :sub ? base.offset - delta : base.offset + delta)
+      end
+
+      # Splits an additive node into [pointer AddressConstant, integer operand].
+      # For "+", either operand may be the pointer; for "-", only the left one is.
+      def pointer_operand(node)
+        if (base = maybe_pointer_value(node.lhs))
+          [base, node.rhs]
+        elsif node.op == :add && (base = maybe_pointer_value(node.rhs))
+          [base, node.lhs]
+        else
+          raise NotAddressConstant
+        end
+      end
+
+      # Attempts #pointer_value, returning nil instead of raising when `node` is
+      # not a pointer constant — so #pointer_operand can probe each side.
+      def maybe_pointer_value(node)
+        pointer_value(node)
+      rescue NotAddressConstant
         nil
+      end
+
+      # Evaluates a subscript or pointer-arithmetic count to a constant integer,
+      # rejecting a non-constant one (a variable, a call) as breaking the address
+      # constant rather than surfacing the evaluator's own diagnostic.
+      def fold_constant_index(node)
+        Front::ConstantEvaluator.evaluate(node)
+      rescue Front::ConstantEvaluator::NotConstant, Front::ConstantEvaluator::DivisionByZero
+        raise NotAddressConstant
       end
 
       # Folds a global's scalar-integer initializer element to a constant, the
