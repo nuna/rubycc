@@ -1589,9 +1589,47 @@ distroless 対応)は M5 スコープで、本ステップは freestanding ヘ�
 
 ---
 
+## Step 42 — `__builtin_offsetof`(定数文脈 offsetof、M2 追補)
+
+Step 41 の同梱 stddef.h は offsetof を従来型 `((size_t)&(((t*)0)->m))` で定義したが、
+これは rubycc の定数評価器がアドレス演算を畳めないため**定数式文脈(static 初期化子・
+配列サイズ・case ラベル)で失敗**する。gcc/clang が `__builtin_offsetof` を提供する
+理由がまさにこれで、実 C 拡張は「フィールド名 → バイトオフセットの静的テーブル」の
+形で定数文脈 offsetof を踏む。メインセッションで接続先(lexer キーワード表・ビルトイン
+解析の流儀・ConstantEvaluator・`StructType#member`・`gen_sizeof` の畳み込みパターン)を
+特定して仕様を確定し、heavy-implementer へ移譲・レビューして確定。
+
+**設計判断**:
+- **6 層の最小接続**: lexer(KEYWORDS に追加)→ AST(`BuiltinOffsetof(type, designator,
+  token)` + designator 要素の `OffsetofMember`/`OffsetofIndex`)→ parser(既存ビルトイン
+  分岐に追加、member-designator = 先頭識別子 + `.name`/`[定数式]` の連鎖)→
+  ConstantEvaluator(オフセット畳み込み)→ generator(`gen_sizeof` を鏡写しに
+  `:const` を emit して `[dst, Type::ULong]`)→ 同梱 stddef.h(offsetof を
+  `__builtin_offsetof` 展開へ変更)。**新 IR 命令なし**(既存 `:const` を使用)。
+- **畳み込みは ConstantEvaluator に一本化**: 定数文脈(case ラベル・配列サイズ・
+  グローバル初期化子)は既存の `evaluate_constant_expression` 経由で自動的に効き、
+  実行時文脈の `gen_offsetof` も同じ評価器を呼ぶ。オフセット計算は型情報のみ
+  (`StructType#member` が匿名 struct/union メンバをオフセット込み合成 Member で
+  透過解決するのをそのまま利用)で、メンバステップは `offset += m.offset`、
+  添字ステップは `offset += idx * 要素サイズ`。
+- **診断は `OffsetofError < NotConstant`**: 非集約/不完全型・メンバ無し・非配列への
+  添字・ビットフィールド(バイトオフセットを持たない)を具体的文言で報告。
+  NotConstant のサブクラスなので、既存の定数文脈 rescue(汎用文言)でも安全に
+  捕捉され、実行時文脈では generator が `detail` を `error_at` で表面化する。
+
+**トレードオフ**: 定数文脈でビットフィールド offsetof を書いた場合の診断は既存の
+汎用文言(「not a constant」系)になる(NotConstant 経由で捕捉されるため)。専用文言は
+実行時文脈のみ。実害は薄く、診断の文言改善は必要になった時点で。
+
+**位置づけ**: 実 gem が最初に踏む三つの壁(文式 = Step 40・freestanding ヘッダ =
+Step 41・定数文脈 offsetof = Step 42)を撤去。次は json/msgpack の実 gem ビルドに
+進み、露見する残穴を追補ステップで潰す(M2 受け入れの最終形)。
+
+---
+
 ## 現在のテスト規模
 
-Step 41 完了時点: **1,519 runs / 4,428 assertions / 0 failures / 17 skips**
+Step 42 完了時点: **1,525 runs / 4,448 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
