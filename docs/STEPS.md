@@ -1786,9 +1786,45 @@ AddressConstant walker への小拡張として implementer(仕様確定済み�
 
 ---
 
+## Step 48 — ビットフィールドの読み書き(M2 追補・§3 負債の解消)
+
+msgpack 実ビルドの最後の壁(4 ファイル)。レイアウト・ABI 分類は Step 28 で実装済み
+だったが、アクセス(shift/mask の lowering)が診断エラーのままだった(ROADMAP §3 の
+記録済み負債)。heavy-implementer へ移譲・レビューして確定。
+
+**設計判断**:
+- **lvalue を 2 形に分離**: メンバアクセスの解決を resolve_member(基底式を 1 回
+  だけ評価して [基底アドレス, Member] を返す)に共通化し、読み・書き・複合代入・
+  ++/--・& の全 5 サイトが bitfield? で分岐。基底式の二重評価(副作用重複)を防ぐ。
+  ビットフィールドは「アドレス」を持たないので、gen_member_address は & 用途に縮小し
+  「cannot take address of bit-field」を診断(6.5.3.2p1)。
+- **読みは load→shift→拡張**: 格納単位(宣言型幅、レイアウト保証により単位跨ぎ
+  なし)を uload し、論理右シフトでビット 0 へ、符号付きは shl→sar の対で符号拡張・
+  unsigned/_Bool はマスク。結果型は 6.3.1.1 の昇格(int / unsigned int(width≥32 の
+  unsigned)/ long 系は自型)。
+- **書きは read-modify-write**: 単位 load → `& ~(mask<<shift)` → 値の低 width
+  ビットを `<<shift` して OR → store。隣接フィールドを壊さない。代入式の値は
+  「切り詰め後の読み直し値」(符号付きは符号拡張、gcc 同値)。複合代入・++/-- も
+  同じ部品の組み合わせで実装。
+- **新 IR 命令なし**: 既存の :uload/:store/:shl/:sar/:shr/:and/:or/:const で完結。
+  無名 struct/union 越しは Member#bit_offset が集約絶対ビット位置なので自然に正しい。
+
+**c-testsuite 00218**: ビットフィールドアクセス自体は通るが、enum 基底型ビット
+フィールドのゼロ拡張(gcc は全非負 enum を unsigned 扱い)が rubycc の「enum = int」
+モデル(00170 と同根の §3 負債)と衝突して不一致。スキップ理由を更新して残置。
+
+**位置づけ**: **msgpack 全 12 ファイルの .o 化を達成**し、rubycc ドライバ一発で
+msgpack.so(777KB)のリンクまで成功。require は `rb_gc_guarded_ptr_val` 1 シンボル
+のみで停止 — RB_GC_GUARD が `#ifdef __GNUC__` の asm 版でなく非 GNUC フォールバック
+(extern 関数版。gcc ビルドの CRuby はエクスポートしない)に落ちるため。あわせて
+`defined(__STDC__)`/`#ifdef __FILE__` がビルトインマクロを認識しない予想外の
+プリプロセッサ非適合も発見(gcc は 1)。次ステップ群で対処。
+
+---
+
 ## 現在のテスト規模
 
-Step 47 完了時点: **1,579 runs / 4,572 assertions / 0 failures / 17 skips**
+Step 48 完了時点: **1,584 runs / 4,588 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト

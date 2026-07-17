@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 受け入れ(json/msgpack 実ビルド)進行中。Step 39(C 拡張 require 受け入れ)〜 Step 47(整数→ポインタ初期化子)まで完了。msgpack は 8/12 ファイルが .o 到達、残る壁はビットフィールドアクセスの 4 ファイルのみ。残る壁(実測): (a) ビットフィールドアクセス(§3 記録済み負債)= Step 48 予定、(b) 浮動小数点リテラルの整数キャスト `u32(1e2)`(json generator、§3 負債「unsigned long ⇔ float/double」の顕在化。定数畳み込みで足りる見込み)= Step 49 候補、(c) 複合リテラル(json parser、c-testsuite 00216 と同根)= Step 50 候補。L5 第三段(.gnu.hash)は後続**。
+現在地: **M2 受け入れ(json/msgpack 実ビルド)進行中。Step 39(C 拡張 require 受け入れ)〜 Step 48(ビットフィールドアクセス)まで完了。msgpack は全 12 ファイルの .o 化を達成し、rubycc ドライバ一発で msgpack.so のリンクまで成功。require は `rb_gc_guarded_ptr_val` 1 シンボルのみで停止(RB_GC_GUARD の非 GNUC フォールバック。gcc ビルドの CRuby は未エクスポート)。残る壁(実測): (a) `defined()`/`#ifdef` がビルトインマクロ(__STDC__/__FILE__ 等)を認識しないプリプロセッサ非適合(gcc は 1)= Step 49 予定、(b) RB_GC_GUARD 対処(__GNUC__ 定義の可否判断込み)= Step 50 予定、(c) 浮動小数点リテラルの整数キャスト `u32(1e2)`(json generator、§3 負債の顕在化。定数畳み込みで足りる見込み)= Step 51 候補、(d) 複合リテラル(json parser、c-testsuite 00216 と同根)= Step 52 候補。L5 第三段(.gnu.hash)は後続**。
 
 ---
 
@@ -84,7 +84,7 @@
 | unsigned long ⇔ float/double 変換 | 64 bit 符号無しの往復に追加コードが要るため診断エラー | 実害が出た時点 |
 | ~~文式 `({ … })`~~ | **解消(Step 40、4466e68)**: 一次式で `(` の直後が `{` のとき複合文をパースし最後の式文の値・型を採る文式を実装。`?:` の片側 void アーム(GCC 拡張)対応込み。c-testsuite 00213/00214 合格。Data_Make_Struct / TypedData_Make_Struct / rb_intern() の展開先が通る | ~~早期 M2(最優先負債)~~ **完了** |
 | ~~`__builtin_offsetof` / 定数文脈 offsetof~~ | **解消(Step 42)**: `__builtin_offsetof(type-name, member-designator)` を実装(ネスト `.name`・添字 `[expr]`・匿名メンバ対応、ビットフィールドは診断)。ConstantEvaluator が畳むため static 初期化子・配列サイズ・case ラベルの定数文脈で使え、同梱 stddef.h の offsetof も __builtin_offsetof 展開に変更 | ~~早期(Step 42 予定)~~ **完了** |
-| ビットフィールドのアクセス | レイアウト・ABI 分類は実装済み(Step 28)。読み書き・& は診断エラー(shift/mask 生成が未実装) | M2(gem コーパスで再判定) |
+| ~~ビットフィールドのアクセス~~ | **解消(Step 48、d1da0bf)**: 読み・書き・複合代入・++/-- を格納単位の load → shift/mask → read-modify-write store で実装(符号付きは符号拡張、代入式の値は切り詰め後の読み直し)。& は 6.5.3.2p1 の診断。00218 は enum 符号性(00170 と同根)で残置 | ~~M2~~ **完了** |
 | マクロ再展開の hide-set 交差 | `CAT(A,B)(x)` の CAT2 経由再展開が gcc と相違(c-testsuite 00201 で実証)。修正方針記録済み: 置換 paint を「呼び出し名の suppress ∩ 閉じ括弧の suppress + 自名」へ | M2 |
 | 128 ビット整数の演算残り | 乗算・加減算・比較・変換のみ実装(Step 28)。除算・シフト・ビット演算・値渡し/返し・可変長渡しは診断エラー | 実害が出た時点 |
 | enum の unsigned 底型 | 全 enum を int へ写像(gcc は全非負 enum を unsigned int に)。c-testsuite 00170 のポインタ符号不一致で顕在 | 実害が出た時点 |
