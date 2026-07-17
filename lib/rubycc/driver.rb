@@ -8,6 +8,7 @@ require_relative "link/partial_linker"
 require_relative "link/shared_linker"
 require_relative "link/executable_linker"
 require_relative "link/library_resolver"
+require_relative "link/compat_runtime"
 
 module Rubycc
   # The gcc-compatible command-line driver: it reads the same option and input
@@ -74,6 +75,7 @@ module Rubycc
       @pic = false
       @soname = nil
       @system_includes = true  # -nostdinc clears this
+      @default_libs = true     # -nodefaultlibs clears this
     end
 
     def run
@@ -128,6 +130,7 @@ module Rubycc
       when "-E"                                  then @mode_flag = :preprocess; i + 1
       when "-fPIC", "-fpic", "-fPIE", "-fpie"    then @pic = true; i + 1
       when "-nostdinc"                           then @system_includes = false; i + 1
+      when "-nodefaultlibs"                       then @default_libs = false; i + 1
       when "-o"          then @output = value(arg, i); i + 2
       when "-I"          then @include_paths << value(arg, i); i + 2
       when /\A-I(.+)\z/m then @include_paths << Regexp.last_match(1); i + 1
@@ -287,8 +290,11 @@ module Rubycc
     # passed by path; a `.so` input becomes a dependency. The `-l`/`-L` requests
     # are resolved into further archive inputs (appended after the objects so the
     # lazy archive pull-in sees the objects' undefined symbols first) and the
-    # dependency shared objects imports bind against. The output is made
-    # executable so it can be run in place, as gcc leaves its own output.
+    # dependency shared objects imports bind against. rubycc's compiler-support
+    # runtime is appended last, after the user inputs and the resolved libraries,
+    # so its members are pulled in lazily only when something ahead still leaves
+    # one of their symbols undefined (the libgcc-style default link). The output
+    # is made executable so it can be run in place, as gcc leaves its own output.
     def link
       output = @output || "a.out"
       link_inputs = []
@@ -304,6 +310,7 @@ module Rubycc
       resolution = Link::LibraryResolver.resolve(@libraries, search_dirs: @lib_dirs)
       link_inputs.concat(resolution.inputs)
       needed.concat(resolution.needed)
+      link_inputs << Link::CompatRuntime.archive_bytes if @default_libs
 
       if mode == :shared
         Link::SharedLinker.link_to(link_inputs, output, needed: needed, soname: @soname)
