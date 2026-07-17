@@ -2342,9 +2342,25 @@ module Rubycc
             parse_cast_expression
           elsif peek.punct?("(") && peek_ahead(1) && type_specifier?(peek_ahead(1))
             paren_tok = advance # "("
-            type = parse_type_name
+            # An unsized "[]" is admitted here so a compound literal can infer its
+            # bound ("(int[]){1,2,3}"); a plain cast to that incomplete type is
+            # rejected below, once the following "{" (or its absence) settles the
+            # two forms apart.
+            type = parse_type_name(allow_incomplete_array: true)
             expect_punct(")")
-            AST::Cast.new(type, parse_cast_expression, paren_tok)
+            # A "{" after "( type-name )" opens a compound literal (6.5.2.5),
+            # not a cast: "( type-name ) { initializer-list }" builds an unnamed
+            # object of that type. It is a postfix-expression, so any trailing
+            # postfix suffix ("(json_frame){...}.type") binds to it. Every other
+            # token keeps the ordinary cast reading "( type-name ) cast-expr".
+            if peek.punct?("{")
+              parse_postfix_suffixes(parse_compound_literal(type, paren_tok))
+            else
+              if type.array? && type.length.nil?
+                error_at(paren_tok, "array size missing in cast to array type")
+              end
+              AST::Cast.new(type, parse_cast_expression, paren_tok)
+            end
           else
             parse_unary_expression
           end
@@ -2665,9 +2681,26 @@ module Rubycc
       # and the cast "( type-name )", so a function pointer, an array pointer or
       # a plain pointer type can be written there ("sizeof(int (*)(int))",
       # "(int (*)(int))p").
-      def parse_type_name
-        _name_tok, type = parse_declarator(parse_type_specifier, name_mode: :forbidden)
+      def parse_type_name(allow_incomplete_array: false)
+        _name_tok, type = parse_declarator(parse_type_specifier, name_mode: :forbidden,
+                                                                 allow_incomplete_array: allow_incomplete_array)
         type
+      end
+
+      # A compound literal "( type-name ) { initializer-list }" (6.5.2.5), the
+      # "(" and type-name already consumed by the cast tier. The brace list is
+      # parsed with the ordinary initializer machinery; when it structurally
+      # fits `type` (a brace list always does, a string an aggregate char array)
+      # the type is resolved once here so an inferred "(int[]){...}" bound is
+      # filled in — the same completion #parse_init_declarator performs — and the
+      # finished type rides on the node. The generator lays out the object and
+      # re-resolves the placements.
+      def parse_compound_literal(type, paren_tok)
+        initializer = parse_initializer_list
+        if InitializerResolver.structural?(type, initializer)
+          type = InitializerResolver.resolve(type, initializer).type
+        end
+        AST::CompoundLiteral.new(type, initializer, paren_tok)
       end
 
       # A postfix-expression is a primary-expression followed by any run of
@@ -2677,7 +2710,16 @@ module Rubycc
       # "f(x)", "(*fp)(x)", "table[i](x)" and "s.fp(x)" all parse the same way,
       # with the AST::Call carrying the callee expression it followed.
       def parse_postfix_expression
-        node = parse_primary_expression
+        parse_postfix_suffixes(parse_primary_expression)
+      end
+
+      # Applies any run of postfix suffixes (call, subscript, member access,
+      # postfix "++"/"--") to an already-parsed postfix-expression head. Split
+      # out from #parse_postfix_expression so a compound literal — which the cast
+      # tier builds after "( type-name )" and which is itself a
+      # postfix-expression (6.5.2p1) — can carry the same suffixes, letting
+      # "(json_frame){...}.type" and "(int[]){1,2,3}[i]" parse.
+      def parse_postfix_suffixes(node)
         loop do
           if peek.punct?("(")
             paren_tok = advance # "("

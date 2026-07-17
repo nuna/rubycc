@@ -158,6 +158,21 @@ module Rubycc
       # narrowing needs; the parser only builds the node.
       Cast = Data.define(:type, :operand, :token)
 
+      # A compound literal "( type-name ) { initializer-list }" (ISO C 6.5.2.5).
+      # `type` is the resolved Rubycc::Type of the unnamed object the literal
+      # denotes, with any inferred "[]" array bound already completed by the
+      # parser (so "(int[]){1,2,3}" carries int[3]); `initializer` is the
+      # AST::InitializerList that fills it. In block scope the object has
+      # automatic storage lasting the enclosing block, so the literal is an
+      # lvalue: the generator lays it out on a stack object, initializes it, and
+      # yields the object's value the same way a variable of `type` would (a
+      # struct/union as its base address, an array decayed to an element pointer,
+      # a scalar as a load) — which is what lets "&(T){...}", "(T){...}.member",
+      # a by-value argument and an assignment right-hand side all work. A
+      # compound literal in a static-storage-duration (file-scope) initializer is
+      # diagnosed as unsupported by the generator. `token` is the opening "(".
+      CompoundLiteral = Data.define(:type, :initializer, :token)
+
       # A null pointer constant, as this subset defines it: an integer literal
       # whose value is 0, which also covers a character constant like '\0'
       # (the lexer already lowers it to an integer 0). ISO C additionally admits

@@ -293,6 +293,7 @@ module Rubycc
       # constant and stored little-endian; a pointer slot is an address constant
       # (see #pack_global_pointer). Any other slot type has no constant form.
       def pack_global_scalar(offset, type, value, image, relocations)
+        reject_file_scope_compound_literal(value)
         if type.integer?
           # A floating constant assigned to an integer global truncates toward
           # zero (6.3.1.4); every other integer initializer folds as an integer
@@ -309,6 +310,23 @@ module Rubycc
         else
           error_at(value.token, "unsupported initializer for global variable")
         end
+      end
+
+      # A compound literal in a static-storage-duration initializer (a file-scope
+      # object, or a block-scope `static`) is not supported yet: the unnamed
+      # object would itself need static storage and a constant image, which this
+      # subset does not lay out. It is diagnosed rather than silently mishandled,
+      # whether the literal is used directly ("T g = (T){...};"), decayed
+      # ("int *p = (int[]){1,2,3};") or addressed ("int *p = &(int){5};"). The
+      # walk peels the address-of and pointer-cast wrappers a constant pointer
+      # initializer may carry to reach the literal underneath.
+      def reject_file_scope_compound_literal(node)
+        while (node.is_a?(Front::AST::Unary) && node.op == :addr) || node.is_a?(Front::AST::Cast)
+          node = node.operand
+        end
+        return unless node.is_a?(Front::AST::CompoundLiteral)
+
+        error_at(node.token, "compound literal at file scope is not supported yet")
       end
 
       # Folds a global's floating initializer to a Ruby Float: a floating literal
@@ -1652,6 +1670,8 @@ module Rubycc
           gen_offsetof(node)
         when Front::AST::Cast
           gen_cast(node)
+        when Front::AST::CompoundLiteral
+          gen_compound_literal(node)
         when Front::AST::Assignment
           gen_assignment(node)
         when Front::AST::Call
@@ -2445,6 +2465,48 @@ module Rubycc
         end
       end
 
+      # A compound literal "( type-name ) { ... }" (6.5.2.5). The unnamed object
+      # is laid out on a stack object of the enclosing block and initialized in
+      # place (see #gen_compound_literal_object); the whole expression is its
+      # value, taken exactly as a variable of the same type would be — a struct
+      # (or 128-bit integer) as its base address, an array decayed to a pointer
+      # to its first element, and a scalar as a load through the object. The
+      # object is a genuine lvalue, so "&(T){...}" reaches #gen_address_of
+      # instead and takes its address there without loading.
+      def gen_compound_literal(node)
+        base, type = gen_compound_literal_object(node)
+        if type.struct? || wide128?(type)
+          [base, type]
+        elsif type.array?
+          [base, Type::Pointer.new(type.element)]
+        else
+          dst = new_vreg
+          emit_scalar_load(dst, base, type)
+          [dst, type]
+        end
+      end
+
+      # Reserves and initializes a compound literal's unnamed object, returning
+      # [base_address_vreg, object_type] with no rvalue conversion applied — the
+      # non-decayed lvalue both #gen_compound_literal (which then converts) and
+      # #gen_address_of (which takes the address) build on. Every scalar/string
+      # placement the resolver produces is lowered onto the object exactly like a
+      # local aggregate declaration, so a partially designated literal has its
+      # unspecified members zero-filled and a fresh initialization runs on each
+      # evaluation (e.g. once per loop iteration). A scalar or array literal is
+      # supported too, not only aggregates, so it also carries the whole-object
+      # zeroing and placement path rather than a single store.
+      def gen_compound_literal_object(node)
+        type = node.type
+        require_complete(type, node.token)
+        object_id = new_object(type.size)
+        base = new_vreg
+        emit(:object_addr, dst: base, a: object_id)
+        resolved = Front::InitializerResolver.resolve(type, node.initializer)
+        lower_resolved_init(base, resolved.type, resolved.entries)
+        [base, resolved.type]
+      end
+
       # "(void)e": e is evaluated (with #gen_expr, not #gen_value, so a void
       # operand such as a call to a void function is allowed) and its value is
       # thrown away. The result is a void value, which nothing may consume —
@@ -2849,6 +2911,14 @@ module Rubycc
           addr, ptr_type = gen_expr(operand.operand)
           require_pointer(ptr_type, operand.token)
           [addr, ptr_type]
+        elsif operand.is_a?(Front::AST::CompoundLiteral)
+          # "&(T){...}": a compound literal is an lvalue with the enclosing
+          # block's lifetime, so its address is the base of the object laid out
+          # for it — taken without the rvalue conversion (no decay, no load) that
+          # #gen_compound_literal applies. A pointer to the whole object results,
+          # even for an array literal ("&(int[]){...}" is int(*)[N]).
+          addr, type = gen_compound_literal_object(operand)
+          [addr, Type::Pointer.new(type)]
         else
           error_at(node.token, "lvalue required as unary '&' operand")
         end
@@ -4482,6 +4552,10 @@ module Rubycc
           # so "sizeof s.arr" measures the whole member array, like "sizeof a"
           # for a bare array variable.
           static_member(node).type
+        elsif node.is_a?(Front::AST::CompoundLiteral)
+          # "sizeof (T){...}" measures the whole object, with no array-to-pointer
+          # decay, exactly as "sizeof a" does for a variable of that type.
+          node.type
         else
           static_type(node)
         end
@@ -4524,6 +4598,11 @@ module Rubycc
           # sizeof rejects a "(void)e" operand through gen_sizeof's void guard,
           # just as it would a bare void.
           node.type
+        when Front::AST::CompoundLiteral
+          # A compound literal's rvalue type mirrors #gen_compound_literal: an
+          # array decays to a pointer to its element, every other object type
+          # (struct, scalar) is itself.
+          decay(node.type)
         when Front::AST::Unary
           static_unary_type(node)
         when Front::AST::Assignment, Front::AST::CompoundAssignment, Front::AST::IncDec
@@ -4538,6 +4617,11 @@ module Rubycc
           Type::Int
         when Front::AST::BuiltinUnreachable
           Type::Void
+        when Front::AST::BuiltinAlloca
+          # "__builtin_alloca(n)" yields a "void *" (see #gen_builtin_alloca), the
+          # type CRuby's RB_ALLOCV macro relies on when it picks between the
+          # alloca and heap arms of a "?:" — a context that reaches type inference.
+          Type::Pointer.new(Type::Void)
         when Front::AST::Conditional
           static_conditional_type(node)
         when Front::AST::StatementExpr
@@ -4674,6 +4758,10 @@ module Rubycc
           type = static_type(operand.operand)
           require_pointer(type, operand.token)
           type
+        elsif operand.is_a?(Front::AST::CompoundLiteral)
+          # "&(T){...}" is a pointer to the unnamed object of type T (no decay),
+          # mirroring the CompoundLiteral branch of #gen_address_of.
+          Type::Pointer.new(operand.type)
         else
           error_at(node.token, "lvalue required as unary '&' operand")
         end
