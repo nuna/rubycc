@@ -1316,10 +1316,12 @@ class TestDiagnostics < Minitest::Test
     assert_match(/second argument to 'va_arg' is of promotable type 'float'/, error.description)
   end
 
-  def test_unsigned_long_to_floating_conversion_is_deferred
+  # The run-time conversion between `unsigned long` and a floating type is now
+  # lowered (Step 52), so it compiles cleanly rather than being diagnosed. Its
+  # numeric behavior is cross-checked against gcc in TestUnsignedLongFloatConversion.
+  def test_unsigned_long_to_floating_conversion_is_lowered
     source = "int main(void) { unsigned long u = 5; double d = u; return (int)d; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/conversion between 'unsigned long' and a floating type is not supported yet/, error.description)
+    assert compile(source).is_a?(String)
   end
 
   def test_casting_a_floating_value_to_a_pointer_is_rejected

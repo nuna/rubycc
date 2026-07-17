@@ -109,9 +109,9 @@ class TestFloatIntCastFolding < Minitest::Test
     assert_matches_gcc(10, src)
   end
 
-  # A non-constant float->unsigned long conversion (the run-time float<->int
-  # gap unrelated to this fold) is still diagnosed, exactly as before.
-  def test_non_constant_float_to_unsigned_long_still_rejected
+  # A non-constant float->unsigned long conversion is now lowered at run time
+  # (Step 52, see TestUnsignedLongFloatConversion), no longer diagnosed.
+  def test_non_constant_float_to_unsigned_long_lowered
     src = <<~C
       int main(void) {
         double f = 1.5;
@@ -119,10 +119,7 @@ class TestFloatIntCastFolding < Minitest::Test
         return (int)a;
       }
     C
-    error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(src, filename: "cast.c")
-    end
-    assert_match(/conversion between 'unsigned long' and a floating type is not supported yet/, error.message)
+    assert_matches_gcc(1, src)
   end
 
   private

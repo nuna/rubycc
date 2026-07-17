@@ -4052,38 +4052,130 @@ module Rubycc
       # double is a single :ftof; a floating-to-integer conversion truncates
       # toward zero with :ftoi (then narrows to a <4-byte destination just as an
       # integer conversion would, so the slot holds a correctly ranged value);
-      # an integer-to-floating conversion is :itof. A conversion between a
-      # floating type and `unsigned long` is not lowered yet (its 64-bit
-      # unsigned round trip needs extra code), so it is diagnosed here.
+      # an integer-to-floating conversion is :itof. Because cvtsi2s*/cvttss2si
+      # are signed-only, a 64-bit *unsigned* integer on either side cannot ride
+      # the plain :itof/:ftoi (whose top bit the hardware reads as a sign), so it
+      # is synthesized branchwise from the signed primitives by
+      # #u64_to_floating / #floating_to_u64. An `unsigned int` (32-bit) source is
+      # already handled by :itof/:ftoi, whose 64-bit form covers its full range.
       def convert_floating(vreg, from, to, token)
         if from.float? && to.float?
           dst = new_vreg
           emit(:ftof, dst: dst, a: vreg, size: from.size)
           dst
         elsif from.float?
-          reject_unsupported_float_int_conversion(to, token)
+          return floating_to_u64(vreg, from) if unsigned_long?(to)
+
+          # cvttss2si/cvttsd2si is signed, so a 32-bit *unsigned* destination
+          # whose value falls in (INT_MAX, UINT_MAX] would overflow a 32-bit
+          # truncation. Truncating at 64 bits is exact across the whole 0..2^32-1
+          # range, and the destination keeps only its low bytes.
+          width = to.unsigned? && to.size < 8 ? 8 : to.size
           dst = new_vreg
-          emit(:ftoi, dst: dst, a: vreg, b: [to.size, to.signed?], size: from.size)
+          emit(:ftoi, dst: dst, a: vreg, b: [width, to.signed?], size: from.size)
           return dst if to.size >= 4
 
           narrowed = new_vreg
           emit(to.signed? ? :sext : :zext, dst: narrowed, a: dst, size: to.size)
           narrowed
         else
-          reject_unsupported_float_int_conversion(from, token)
+          return u64_to_floating(vreg, to) if unsigned_long?(from)
+
           dst = new_vreg
           emit(:itof, dst: dst, a: vreg, b: [from.size, from.signed?], size: to.size)
           dst
         end
       end
 
-      # Rejects the one integer/floating conversion this phase does not lower:
-      # `unsigned long` <-> a floating type, whose correct 64-bit unsigned
-      # handling is deferred. Every other integer width/signedness is fine.
-      def reject_unsupported_float_int_conversion(int_type, token)
-        return unless int_type.integer? && int_type.unsigned? && int_type.size == 8
+      # Whether `type` is a 64-bit unsigned integer (`unsigned long` / `unsigned
+      # long long`) — the one integer width whose top bit the signed float
+      # conversion instructions would misread, so it takes the synthesized path.
+      def unsigned_long?(type)
+        type.integer? && type.unsigned? && type.size == 8
+      end
 
-        error_at(token, "conversion between 'unsigned long' and a floating type is not supported yet")
+      # `unsigned long` -> `to` (float or double), synthesized from the signed
+      # :itof because cvtsi2s* reads a 64-bit source's top bit as a sign. When
+      # that bit is clear the value fits a non-negative signed long and converts
+      # directly. When it is set, the value is halved before the signed
+      # conversion and the float result doubled back: `half = (x >> 1) | (x & 1)`
+      # keeps a "sticky" low bit so a value dropped by the shift still rounds to
+      # nearest-even, then `2 * (float)half` restores the magnitude with only the
+      # single rounding the target width would apply directly. The result vreg is
+      # written by both arms and read at the merge, mirroring the branch-and-join
+      # slot pattern the va_arg lowering uses.
+      def u64_to_floating(vreg, to)
+        result = new_vreg
+        small_label = new_label
+        end_label = new_label
+
+        top = emit_shift(:shr, vreg, 63, 8) # 1 when the top bit is set
+        emit(:jump_if_zero, a: top, b: small_label)
+
+        # Top bit set: convert x/2 (with a preserved sticky bit) and double it.
+        lsb = emit_and_const(vreg, 1, 8)
+        shifted = emit_shift(:shr, vreg, 1, 8)
+        half = new_vreg
+        emit(:or, dst: half, a: shifted, b: lsb, size: 8)
+        halved = new_vreg
+        emit(:itof, dst: halved, a: half, b: [8, true], size: to.size)
+        doubled = new_vreg
+        emit(:fadd, dst: doubled, a: halved, b: halved, size: to.size)
+        emit(:copy, dst: result, a: doubled)
+        emit(:jump, a: end_label)
+
+        # Top bit clear: the value is a non-negative signed long, converted directly.
+        emit(:label, a: small_label)
+        direct = new_vreg
+        emit(:itof, dst: direct, a: vreg, b: [8, true], size: to.size)
+        emit(:copy, dst: result, a: direct)
+        emit(:label, a: end_label)
+        result
+      end
+
+      # `from` (float or double) -> `unsigned long`, synthesized from the signed
+      # truncating :ftoi because cvttss2si yields a signed 64-bit result. A float
+      # source widens to double first (an exact :ftof) so one double-width path
+      # serves both. When the value is below 2^63 it fits a signed long and
+      # truncates directly. Otherwise 2^63 is subtracted first so the remainder
+      # fits the signed range, truncated, then the top bit is set back with an OR
+      # — reconstructing `truncate(x)` for x in [2^63, 2^64). Out-of-range and NaN
+      # inputs are undefined behavior in C, so the natural cvttsd2si result stands.
+      def floating_to_u64(vreg, from)
+        if from.size == 4
+          widened = new_vreg
+          emit(:ftof, dst: widened, a: vreg, size: 4) # float -> double, exact
+          vreg = widened
+        end
+
+        result = new_vreg
+        big_label = new_label
+        end_label = new_label
+
+        threshold = emit_float_const(9223372036854775808.0, Type::Double) # 2^63
+        below = new_vreg
+        emit(:flt, dst: below, a: vreg, b: threshold, size: 8) # x < 2^63 ? 1 : 0
+        emit(:jump_if_zero, a: below, b: big_label)
+
+        # Below 2^63: a plain signed truncation already yields the right bits.
+        small = new_vreg
+        emit(:ftoi, dst: small, a: vreg, b: [8, true], size: 8)
+        emit(:copy, dst: result, a: small)
+        emit(:jump, a: end_label)
+
+        # 2^63 and up: truncate x - 2^63 (now in signed range) and set the top bit.
+        emit(:label, a: big_label)
+        reduced = new_vreg
+        emit(:fsub, dst: reduced, a: vreg, b: threshold, size: 8)
+        truncated = new_vreg
+        emit(:ftoi, dst: truncated, a: reduced, b: [8, true], size: 8)
+        top_bit = new_vreg
+        emit(:const, dst: top_bit, a: 1 << 63, size: 8)
+        restored = new_vreg
+        emit(:or, dst: restored, a: truncated, b: top_bit, size: 8)
+        emit(:copy, dst: result, a: restored)
+        emit(:label, a: end_label)
+        result
       end
 
       # The implicit conversion an assignment context (=, initialization, an
