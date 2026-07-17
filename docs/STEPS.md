@@ -1764,9 +1764,31 @@ msgpack の buffer_class.c(held-buffer: `size_t` ヘッダ + `VALUE mapped_strin
 
 ---
 
+## Step 47 — グローバル初期化子の整数→ポインタキャスト(M2 追補)
+
+msgpack buffer_class.c の `static const rb_data_type_t` が CRuby の
+`RUBY_TYPED_DEFAULT_FREE`(展開 = `(RUBY_DATA_FUNC)-1`、xfree を意味する番兵)を
+関数ポインタスロットに置く形で "unsupported initializer" になっていた。Step 45 の
+AddressConstant walker への小拡張として implementer(仕様確定済み・単一ファイル)へ
+移譲・レビューして確定。
+
+**設計判断**:
+- **:absolute 基点の追加**: AddressConstant の base_kind に :absolute(symbol も
+  string も無し、offset = 生ビットパターン)を追加。ポインタキャストのオペランドが
+  アドレス定数として畳めないときだけ整数定数として畳んでこの基点に落とす
+  (`(dfree_t)-1`・`(void *)0x1000`)。既存の offset 機構がそのまま働くため、
+  `(char *)16 + 2` のような絶対値算術も追加コードなしで成立。
+- **relocation を作らず直書き**: :absolute はリンク時に解決すべきものが無いので、
+  スロットへ pack_integer の 8 バイトを直接書く(スカラー整数初期化子と同じ扱い)。
+
+**位置づけ**: msgpack は buffer_class.c が .o 到達し、残る壁はビットフィールド
+アクセスの 4 ファイルのみ(Step 48)。
+
+---
+
 ## 現在のテスト規模
 
-Step 46 完了時点: **1,575 runs / 4,562 assertions / 0 failures / 17 skips**
+Step 47 完了時点: **1,579 runs / 4,572 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
