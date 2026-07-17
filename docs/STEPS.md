@@ -1856,9 +1856,44 @@ RB_GC_GUARD の非 GNUC フォールバックシンボル(rb_gc_guarded_ptr_val)
 
 ---
 
+## Step 50 — 互換ランタイム(lazily linked compat runtime、M2 追補)
+
+msgpack.so(Step 48 で全 12 TU の .o 化・リンクまで到達)の require を止めていた
+唯一の未解決シンボル `rb_gc_guarded_ptr_val` への対処。CRuby の RB_GC_GUARD は
+`#ifdef __GNUC__` の asm バリア版と、extern 関数を呼ぶ非 GNUC フォールバック版を
+持ち、rubycc は `__GNUC__` を定義しない方針(DESIGN R7)なので後者に展開される —
+だが gcc でビルドされた CRuby は自分が asm 版を使ったためこの関数をエクスポート
+しない。heavy-implementer へ移譲・レビューして確定。
+
+**設計判断**:
+- **`__GNUC__` 定義は不採用**: 定義すれば asm 版に乗れるが、glibc 全域が gcc 経路
+  (`__REDIRECT` の asm リネーム・gcc の limits.h との include_next 連携等)に切り
+  替わり爆発半径が大きすぎる。実測でも `-D__GNUC__` は即座に別の壁に当たる。
+  R7 の方針(「__GNUC__ 非定義でフォールバック面積を減らす」)を維持し、
+  フォールバック側が要求する**実体を rubycc が供給する**方向を採った。
+- **libgcc 相当の「コンパイラ支援ランタイム」**: gcc が libgcc を暗黙リンクする
+  のと同じ位置づけで、rubycc ドライバがリンク入力の最末尾に互換アーカイブを自動
+  追加する。ar のシンボルインデックス + PartialLinker の既存遅延抽出 fixpoint に
+  より、**シンボルが参照された時だけ**メンバが実体化し、非参照リンクには 1 バイトも
+  入らない。1 メンバ 1 関数の定数テーブル構成で将来のシンボル追加も外科的。
+  `-nodefaultlibs` で無効化可(gcc 互換)。
+- **セルフホスト**: 互換ソースは rubycc 自身が実行時にコンパイルする(pic)。
+  `rb_gc_guarded_ptr_val` はポインタをそのまま返す — 呼び出しの存在自体が最適化
+  バリアであり、rubycc は最適化しないため、これで契約が完全に満たされる。
+
+**位置づけ**: **msgpack 全 12 TU → rubycc ドライバ一発 .so 化 → require →
+Packer/Unpacker round-trip 完全一致**。実 gem の C 拡張が rubycc 単体ツール
+チェーンで動作した初の事例(M2 受け入れの msgpack 側のコンパイル・リンク・実行の
+実証。gem 自身のテストスイート合格は extconf/Makefile 置換の手順整備後)。
+リンカ/ランタイム機能のため examples は追加しない(Step 29〜36 と同じ扱い)。
+残る json 側の壁: 浮動小数点リテラルの整数キャスト(Step 51)→ 複合リテラル
+(Step 52)。
+
+---
+
 ## 現在のテスト規模
 
-Step 49 完了時点: **1,594 runs / 4,610 assertions / 0 failures / 17 skips**
+Step 50 完了時点: **1,599 runs / 4,625 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
