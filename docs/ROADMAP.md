@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 受け入れ(json/msgpack 実ビルド)進行中。Step 39(C 拡張 require 受け入れ)〜 Step 48(ビットフィールドアクセス)まで完了。msgpack は全 12 ファイルの .o 化を達成し、rubycc ドライバ一発で msgpack.so のリンクまで成功。require は `rb_gc_guarded_ptr_val` 1 シンボルのみで停止(RB_GC_GUARD の非 GNUC フォールバック。gcc ビルドの CRuby は未エクスポート)。残る壁(実測): (a) `defined()`/`#ifdef` がビルトインマクロ(__STDC__/__FILE__ 等)を認識しないプリプロセッサ非適合(gcc は 1)= Step 49 予定、(b) RB_GC_GUARD 対処(__GNUC__ 定義の可否判断込み)= Step 50 予定、(c) 浮動小数点リテラルの整数キャスト `u32(1e2)`(json generator、§3 負債の顕在化。定数畳み込みで足りる見込み)= Step 51 候補、(d) 複合リテラル(json parser、c-testsuite 00216 と同根)= Step 52 候補。L5 第三段(.gnu.hash)は後続**。
+現在地: **M2 受け入れ(json/msgpack 実ビルド)進行中。Step 39(C 拡張 require 受け入れ)〜 Step 48(ビットフィールドアクセス)まで完了。msgpack は全 12 ファイルの .o 化を達成し、rubycc ドライバ一発で msgpack.so のリンクまで成功。require は `rb_gc_guarded_ptr_val` 1 シンボルのみで停止(RB_GC_GUARD の非 GNUC フォールバック。gcc ビルドの CRuby は未エクスポート)。Step 49(defined() のビルトインマクロ認識 + gcc 別名キーワード)完了。残る壁(実測): (a) RB_GC_GUARD の非 GNUC フォールバックシンボル rb_gc_guarded_ptr_val を互換ランタイム(libgcc 相当の遅延リンクアーカイブ)で供給 = Step 50 予定(__GNUC__ 定義は爆発半径大で不採用と判断済み)、(b) 浮動小数点リテラルの整数キャスト `u32(1e2)`(json generator、§3 負債の顕在化。定数畳み込みで足りる見込み)= Step 51 候補、(c) 複合リテラル(json parser、c-testsuite 00216 と同根)= Step 52 候補。L5 第三段(.gnu.hash)は後続**。
 
 ---
 

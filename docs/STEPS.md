@@ -1822,9 +1822,43 @@ msgpack.so(777KB)のリンクまで成功。require は `rb_gc_guarded_ptr_val` 
 
 ---
 
+## Step 49 — defined() のビルトインマクロ認識と gcc 別名キーワード(M2 追補)
+
+msgpack.so の require を塞ぐ RB_GC_GUARD 問題の調査中に、`defined(__STDC__)` /
+`#ifdef __FILE__` が偽になるプリプロセッサ非適合(gcc は 1)を発見。ビルトイン
+マクロは展開時に特別処理され @macros 表に居ないため、defined 系だけが見落として
+いた。implementer へ移譲し、途中で判明した波及(下記)を含めて 1 ステップで確定。
+
+**設計判断**:
+- **判定の一元化**: 「defined に見える名前」= @macros のエントリ + ビルトイン
+  マクロ + __has_* 問い合わせ演算子、を defined_macro_name? ヘルパに集約し、
+  #ifdef/#ifndef(defined_condition)と #if の defined 演算子(fold_defined)の
+  両サイトから使う(N1570 6.10.8p1)。
+- **適合修正が新しい glibc 経路を開いた**: 正しくなった `defined(__STDC_VERSION__)`
+  により glibc sys/cdefs.h が rubycc を「gcc 以外の C99 準拠コンパイラ」と判別する
+  経路を初めて選び、その先の kernel UAPI ヘッダ(asm-generic/int-ll64.h の
+  `typedef __signed__ char __s8;`)が gcc 別名キーワードを無条件に使うため、
+  ruby.h スモーク等 6 テストが赤に。**適合修正と「それによって初めて到達する経路」
+  の対応は一体**と判断し、別名キーワード対応を同ステップに含めた。
+- **別名は lexer で正規綴りへ正規化**: `__signed(__)` → signed・`__const(__)` →
+  const・`__volatile(__)` → volatile・`__inline(__)` → inline を KEYWORD_ALIASES
+  として字句解析時に畳む。`tok.keyword?("const")` 等の完全一致判定が多数あるため、
+  各判定サイトに別名分岐を足すのではなく入口で 1 回だけ写像する設計
+  (RESTRICT_SPELLINGS は restrict がどの綴りでも非キーワードなので従来方式のまま)。
+  parse_asm_statement の `__volatile__` 専用分岐は正規化で不要になり削除
+  (二重管理の解消)。
+
+**位置づけ**: glibc の「非 gcc C99」経路が常用経路になった(スモーク・拡張ビルド
+とも green)。`#ifdef __has_include` も gcc と一致して真になり、旧コメントの
+「意図的に晒さない」制約は別名キーワード対応により不要になった。次は
+RB_GC_GUARD の非 GNUC フォールバックシンボル(rb_gc_guarded_ptr_val)を
+互換ランタイムで供給する Step 50。
+
+---
+
 ## 現在のテスト規模
 
-Step 48 完了時点: **1,584 runs / 4,588 assertions / 0 failures / 17 skips**
+Step 49 完了時点: **1,594 runs / 4,610 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
