@@ -1737,9 +1737,36 @@ msgpack 側の残り(FAM・ビットフィールド)と合わせ、次の追補�
 
 ---
 
+## Step 46 — 可変長配列メンバ(flexible array member、M2 追補)
+
+msgpack の buffer_class.c(held-buffer: `size_t` ヘッダ + `VALUE mapped_strings[];`)が
+「array size must be an integer constant」で失敗していた。ISO C 6.7.2.1p18 の FAM を
+実装。heavy-implementer へ移譲・レビューして確定。
+
+**設計判断**:
+- **不完全配列は length=nil の Type::Array**: 新しい型クラスを作らず既存 Array に
+  不完全形を導入。`#size` は guard raise とし、サイズを要求しうる全経路(変数宣言・
+  plain sizeof/_Alignof・配列要素・レイアウト)は**先に診断で止まる**ことをスイートで
+  保証する設計。lvalue の decay は有界配列と同一経路で、`p->fam[i]` は既存のメンバ
+  アクセス lowering がそのまま働く(新 IR 命令なし)。
+- **レイアウトは「オフセットに置くがサイズ寄与ゼロ」**: FAM は要素型の境界に整列した
+  オフセットを持つがカーソルを進めず、sizeof は FAM が無いかのような値(6.7.2.1p18)。
+  要素型のアライメントは集約に参加。gcc と sizeof/_Alignof/offsetof 一致を差分検証。
+- **ISO の制約を診断で固める**: 最後以外のメンバ(`int f[], g;` の宣言子リスト内
+  兄弟も検出)・union 内・FAM のみの struct・FAM 付き struct の配列要素・FAM への
+  初期化子(gcc の static 初期化拡張は採らず、オブジェクト外書き込みの不正コード
+  生成を防ぐ)を拒否。
+
+**位置づけ**: msgpack の FAM の壁を突破。同ファイルの次の壁は
+`RUBY_TYPED_DEFAULT_FREE`(= `(RUBY_DATA_FUNC)-1`、整数定数の関数ポインタキャスト)を
+持つ `static const rb_data_type_t` 初期化子 — Step 45 のアドレス定数 walker に
+「絶対値(整数→ポインタキャスト)」基点を足す小拡張で、Step 47 として処理。
+
+---
+
 ## 現在のテスト規模
 
-Step 45 完了時点: **1,564 runs / 4,529 assertions / 0 failures / 17 skips**
+Step 46 完了時点: **1,575 runs / 4,562 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト

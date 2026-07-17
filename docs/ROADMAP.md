@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 受け入れ(json/msgpack 実ビルド)進行中。Step 39(C 拡張 require 受け入れ)〜 Step 45(アドレス定数初期化子)まで完了。msgpack は 12 ファイル中 7 が .o 到達。残る壁(実測): (a) 可変長配列メンバ `VALUE arr[];`(msgpack buffer_class)= Step 46 予定、(b) ビットフィールドアクセス(§3 記録済み負債、msgpack 4 ファイル)= Step 47 予定、(c) 浮動小数点リテラルの整数キャスト `u32(1e2)`(json generator、§3 負債「unsigned long ⇔ float/double」の顕在化。定数畳み込みで足りる見込み)= Step 48 候補、(d) 複合リテラル(json parser、c-testsuite 00216 と同根)= Step 49 候補。L5 第三段(.gnu.hash)は後続**。
+現在地: **M2 受け入れ(json/msgpack 実ビルド)進行中。Step 39(C 拡張 require 受け入れ)〜 Step 46(可変長配列メンバ)まで完了。残る壁(実測): (a) 整数→ポインタキャストのグローバル初期化子(`RUBY_TYPED_DEFAULT_FREE` = `(RUBY_DATA_FUNC)-1`、msgpack buffer_class)= Step 47 予定、(b) ビットフィールドアクセス(§3 記録済み負債、msgpack 4 ファイル)= Step 48 予定、(c) 浮動小数点リテラルの整数キャスト `u32(1e2)`(json generator、§3 負債「unsigned long ⇔ float/double」の顕在化。定数畳み込みで足りる見込み)= Step 49 候補、(d) 複合リテラル(json parser、c-testsuite 00216 と同根)= Step 50 候補。L5 第三段(.gnu.hash)は後続**。
 
 ---
 
