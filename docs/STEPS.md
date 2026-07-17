@@ -1662,9 +1662,52 @@ constant_p / unreachable。CRuby config.h が gcc ビルド時の HAVE_BUILTIN_*
 
 ---
 
+## Step 44 — gcc ビルトイン群と __has_builtin(M2 追補)
+
+CRuby の config.h(x86_64-linux/ruby/config.h)は CRuby 自身が gcc でビルドされた
+時点の probe 結果(`HAVE_BUILTIN___BUILTIN_*`・`HAVE_X86INTRIN_H`)を焼き込んでおり、
+CRuby ヘッダと gem のコードはそれを信じて無条件にビルトインを呼ぶ — Step 41 の
+HAVE_STMT_AND_DECL_IN_EXPR と同じ「焼き込まれた gcc 能力」問題の第 2 弾。実測の壁:
+`__builtin_choose_expr`+`constant_p`(ruby.h の INT2FIX 経路、msgpack 3 ファイル)、
+`__builtin_ctz`(msgpack rmem.h、無ガード)、`__builtin_clzll`(json の float パーサ、
+焼き込みガード)、`__builtin_unreachable`(CRuby assert.h の UNREACHABLE_RETURN)、
+`<x86intrin.h>`(焼き込みガードで include)、2進リテラル 0b0001(msgpack フラグ)。
+メインセッションで全サイトを特定し使用形状を精査、heavy-implementer へ移譲・レビュー。
+
+**設計判断**:
+- **__has_builtin は正直に答える**: 対応ビルトインの表(KNOWN_BUILTINS)に 1/0 を
+  返し、`#ifdef __has_builtin` / `#if defined(__has_builtin)` の両形を真にする。
+  ガード付きコード(json の `__has_builtin(__builtin_bswap64)` 等)は正直な 0 で
+  フォールバックへ逃げるため、**bswap 等の実装自体が不要になる** — 実装面積を最小に
+  保つ要。`#ifdef __has_include` は意図的に据え置き(真にすると kernel UAPI ヘッダの
+  `__signed__` 経路を引き込み拡張ビルドが壊れることを実測)。
+- **choose_expr はパース時解決**: 第 1 引数を既存の定数評価で畳み、選ばれた側の
+  AST ノードをそのまま返す(専用 AST 不要)。選ばれない側は構文チェックのみで評価も
+  コード生成もされず、型は選ばれた側 — generator・ConstantEvaluator の変更なしで
+  定数文脈(static 初期化子の INT2FIX)にも自動で効く。
+- **constant_p は「試し畳み」**: ConstantEvaluator で引数を evaluate してみて成功なら
+  1、NotConstant/DivisionByZero なら rescue して 0。非定数がエラーでなく正当な 0 に
+  なるのが要点(gcc 準拠)。引数は評価されない。
+- **ctz/clz は新 IR :bit_scan 1 命令**(a=対象、b=:forward/:reverse、size=4/8)。
+  backend で bsf(0F BC)/ bsr(0F BD)+ `xor eax, 幅-1`(clz = (幅-1) − 最上位
+  ビット位置)に降ろす。オペランド 0 は UB(gcc 準拠)でゼロ処理を出さない。
+  定数畳み込みも gcc 同値で対応(焼き込みガード下の定数文脈に耐える)。
+- **unreachable は無コード**: rubycc は最適化しないので、void 値を返すだけで意味論上
+  安全。`return (__builtin_unreachable(), val)` のコンマ式は既存の void 対応で通る。
+- **memcpy は書き換え**: パース時に `Call("memcpy", …)` へ書き換え、組み込み
+  プロトタイプを seed(未宣言でも可、libc に UND 解決)。
+- **x86intrin.h は空スタブ**: 実 intrinsic の使用は全て `__AVX2__`/`__LZCNT__` 等の
+  別ガードで守られ、rubycc はそれらを定義しないため空で安全(実測確認)。
+
+**位置づけ**: msgpack 12 ファイル中 7 が .o 到達。残る壁は可変長配列メンバ
+(buffer_class.c、Step 46)とビットフィールドアクセス(4 ファイル、Step 47)。
+json parser.c は複合リテラル(c-testsuite 00216 と同根)へ前進。
+
+---
+
 ## 現在のテスト規模
 
-Step 43 完了時点: **1,540 runs / 4,470 assertions / 0 failures / 17 skips**
+Step 44 完了時点: **1,550 runs / 4,499 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
