@@ -1891,9 +1891,35 @@ Packer/Unpacker round-trip 完全一致**。実 gem の C 拡張が rubycc 単�
 
 ---
 
+## Step 51 — 浮動小数点定数の整数キャスト畳み込み(M2 追補)
+
+json generator(vendor/jeaiii-ltoa.h)が 10 進しきい値を `u32(1e2)`〜`u64(1e15)`
+(double リテラルの unsigned long キャスト、u32_t/u64_t は LP64 で unsigned long)と
+綴り、比較だけでなく除算・剰余のオペランドにも使う。rubycc は §3 負債
+「unsigned long ⇔ float/double 変換」の診断で停止していた — その**定数側だけ**を
+先に解消する外科的ステップ。implementer へ移譲(仕様確定済み・2 箇所)。
+
+**設計判断**:
+- **畳み込みは 2 箇所に同じ規則で**: ConstantEvaluator の evaluate_cast(定数文脈:
+  配列サイズ・case・static 初期化子)と generator の gen_cast_to_arithmetic
+  (実行時式中の定数キャスト。診断の手前で試み、成功なら :const)。どちらも
+  「FloatLit / 単項マイナス付き FloatLit → 6.3.1.4p1 のゼロ方向切り捨て → 幅と
+  符号でラップ」。ネストしたキャスト越し(`(long)(double)1e2`)は追わない最小実装。
+- **evaluate 本体に Float を流さない**: 浮動値の取り出しは float_constant_value
+  ヘルパに閉じ、定数評価器の演算は純整数のまま(既存の全畳み込みの前提を保つ)。
+- **実行時変換は据え置き**: 非定数の float ⇔ unsigned long は従来どおり診断。
+  負債の本体(実行時変換)は次ステップで cvt 系 + 補正シーケンスとして対処。
+
+**位置づけ**: json generator の壁は実行時式 `u32((10*(1<<24)/1e3+1)*n)` の
+double → unsigned long 変換(§3 負債の本体)へ前進。既存 IR は符号付き変換のみ
+(:itof/:ftoi)だが、unsigned 64bit 変換は分岐 + 符号付き変換 + 補正の組み合わせで
+generator 内に降ろせる見込み(新 IR 不要)= Step 52。
+
+---
+
 ## 現在のテスト規模
 
-Step 50 完了時点: **1,599 runs / 4,625 assertions / 0 failures / 17 skips**
+Step 51 完了時点: **1,608 runs / 4,645 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト

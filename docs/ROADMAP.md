@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 受け入れ(json/msgpack 実ビルド)進行中。Step 39(C 拡張 require 受け入れ)〜 Step 48(ビットフィールドアクセス)まで完了。msgpack は全 12 ファイルの .o 化を達成し、rubycc ドライバ一発で msgpack.so のリンクまで成功。require は `rb_gc_guarded_ptr_val` 1 シンボルのみで停止(RB_GC_GUARD の非 GNUC フォールバック。gcc ビルドの CRuby は未エクスポート)。Step 50(互換ランタイム)完了で **msgpack が rubycc 単体で完全動作**(全 12 TU 一発 .so 化 → require → Packer/Unpacker round-trip 一致。実 gem の C 拡張が rubycc 単体ツールチェーンで動いた初の事例)。残る json 側の壁(実測): (a) 浮動小数点リテラルの整数キャスト `u32(1e2)`(json generator、§3 負債の顕在化。定数畳み込みで足りる見込み)= Step 51 予定、(b) 複合リテラル(json parser、c-testsuite 00216 と同根)= Step 52 予定。その後: 両 gem の extconf/Makefile 手動置換ビルド + gem テストスイート合格(M2 完了判定)。L5 第三段(.gnu.hash)は後続**。
+現在地: **M2 受け入れ(json/msgpack 実ビルド)進行中。Step 39(C 拡張 require 受け入れ)〜 Step 48(ビットフィールドアクセス)まで完了。msgpack は全 12 ファイルの .o 化を達成し、rubycc ドライバ一発で msgpack.so のリンクまで成功。require は `rb_gc_guarded_ptr_val` 1 シンボルのみで停止(RB_GC_GUARD の非 GNUC フォールバック。gcc ビルドの CRuby は未エクスポート)。Step 50(互換ランタイム)完了で **msgpack が rubycc 単体で完全動作**(全 12 TU 一発 .so 化 → require → Packer/Unpacker round-trip 一致)。Step 51(float 定数キャスト畳み込み)完了。残る json 側の壁(実測): (a) 実行時の unsigned long ⇔ float/double 変換(jeaiii の `u32((…/1e3+1)*n)`、§3 負債の本体。分岐 + 符号付き cvt + 補正で generator 内に降ろせる見込み)= Step 52 予定、(b) 複合リテラル(json parser、c-testsuite 00216 と同根)= Step 53 予定。その後: 両 gem の extconf/Makefile 手動置換ビルド + gem テストスイート合格(M2 完了判定)。L5 第三段(.gnu.hash)は後続**。
 
 ---
 
