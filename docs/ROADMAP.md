@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 受け入れ(json/msgpack 実ビルド)進行中。Step 39(C 拡張 require 受け入れ)〜 Step 48(ビットフィールドアクセス)まで完了。msgpack は全 12 ファイルの .o 化を達成し、rubycc ドライバ一発で msgpack.so のリンクまで成功。require は `rb_gc_guarded_ptr_val` 1 シンボルのみで停止(RB_GC_GUARD の非 GNUC フォールバック。gcc ビルドの CRuby は未エクスポート)。Step 50(互換ランタイム)完了で **msgpack が rubycc 単体で完全動作**(全 12 TU 一発 .so 化 → require → Packer/Unpacker round-trip 一致)。Step 51(float 定数キャスト畳み込み)完了。残る json 側の壁(実測): (a) 実行時の unsigned long ⇔ float/double 変換(jeaiii の `u32((…/1e3+1)*n)`、§3 負債の本体。分岐 + 符号付き cvt + 補正で generator 内に降ろせる見込み)= Step 52 予定、(b) 複合リテラル(json parser、c-testsuite 00216 と同根)= Step 53 予定。その後: 両 gem の extconf/Makefile 手動置換ビルド + gem テストスイート合格(M2 完了判定)。L5 第三段(.gnu.hash)は後続**。
+現在地: **M2 受け入れ(json/msgpack 実ビルド)進行中。Step 39(C 拡張 require 受け入れ)〜 Step 52(実行時 unsigned ⇔ 浮動変換)まで完了。msgpack は rubycc 単体で完全動作(全 12 TU 一発 .so 化 → require → Packer/Unpacker round-trip 一致)、json は generator.c が .o 完走。**残る壁は json parser.c の複合リテラル(c-testsuite 00216 と同根)= Step 53 のみ**。それが落ちれば両 gem の全 TU が .o 化でき、extconf/Makefile 手動置換ビルド + gem テストスイート合格(M2 完了判定)の手順整備に入る。L5 第三段(.gnu.hash)は後続**。
 
 ---
 
@@ -81,7 +81,7 @@
 | ブロックスコープの関数宣言 | 外部リンケージ未モデルで診断エラー | 実害が出た時点 |
 | ~~`&arr[i]` 等の計算アドレス定数~~ | **解消(Step 45、b4be1fe)**: 初期化子を「基点シンボル/文字列 + 定数変位 + pointee」へ畳む walker を追加し、キャスト・`&arr[i]`・`arr ± n`・`&rec.member` を R_X86_64_64 の addend に乗せる。json jeaiii-ltoa の「文字列リテラルを struct ポインタにキャストした桁テーブル」が通る | ~~実害が出た時点~~ **完了** |
 | 指し先 const の書き込み検出 | `const int *p` の `*p = x` を診断しない(型に修飾を載せない簡略化) | 実害が出た時点 |
-| unsigned long ⇔ float/double 変換 | 64 bit 符号無しの往復に追加コードが要るため診断エラー | 実害が出た時点 |
+| ~~unsigned long ⇔ float/double 変換~~ | **解消(Step 51 定数側 1c65c47 + Step 52 実行時側 45b6606)**: 定数キャストは 6.3.1.4p1 で畳み込み、実行時は分岐 + 符号付き cvt + 補正(sticky ビット/2^63 しきい値)の IR 合成で lowering。float → unsigned int の既存オーバーフローも修正 | ~~実害が出た時点~~ **完了** |
 | ~~文式 `({ … })`~~ | **解消(Step 40、4466e68)**: 一次式で `(` の直後が `{` のとき複合文をパースし最後の式文の値・型を採る文式を実装。`?:` の片側 void アーム(GCC 拡張)対応込み。c-testsuite 00213/00214 合格。Data_Make_Struct / TypedData_Make_Struct / rb_intern() の展開先が通る | ~~早期 M2(最優先負債)~~ **完了** |
 | ~~`__builtin_offsetof` / 定数文脈 offsetof~~ | **解消(Step 42)**: `__builtin_offsetof(type-name, member-designator)` を実装(ネスト `.name`・添字 `[expr]`・匿名メンバ対応、ビットフィールドは診断)。ConstantEvaluator が畳むため static 初期化子・配列サイズ・case ラベルの定数文脈で使え、同梱 stddef.h の offsetof も __builtin_offsetof 展開に変更 | ~~早期(Step 42 予定)~~ **完了** |
 | ~~ビットフィールドのアクセス~~ | **解消(Step 48、d1da0bf)**: 読み・書き・複合代入・++/-- を格納単位の load → shift/mask → read-modify-write store で実装(符号付きは符号拡張、代入式の値は切り詰め後の読み直し)。& は 6.5.3.2p1 の診断。00218 は enum 符号性(00170 と同根)で残置 | ~~M2~~ **完了** |

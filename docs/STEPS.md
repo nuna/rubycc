@@ -1917,9 +1917,39 @@ generator 内に降ろせる見込み(新 IR 不要)= Step 52。
 
 ---
 
+## Step 52 — 実行時の unsigned long ⇔ float/double 変換(M2 追補・§3 負債の解消)
+
+Step 51 で定数側を畳んだ §3 負債「unsigned long ⇔ float/double 変換」の本体。
+json jeaiii-ltoa の `u32((10*(1<<24)/1e3+1)*n)`(実行時変数を含む double 式の
+unsigned long キャスト)が診断で停止していた。heavy-implementer へ移譲・レビュー。
+
+**設計判断**:
+- **既存 IR の分岐合成で generator 内に降ろす(新 IR・backend 変更なし)**:
+  x86-64 の cvtsi2s*/cvtts*2si は符号付きのみで、64bit 符号無しの最上位ビットを
+  符号と誤読する。標準手法(分岐 + 符号付き変換 + 補正)を :shr/:and/:or/:itof/
+  :ftoi/:fadd/:fsub/:flt/:jump_if_zero の合成で書き、両アームが result vreg に
+  :copy して合流点で読む(va_arg lowering と同じスロット方式)。
+- **u64 → 浮動は目的幅で単段合成**: 最上位ビット set 時は `half=(x>>1)|(x&1)`
+  (sticky ビット保存)→ 符号付き変換 → 自身加算で 2 倍。double 経由の 2 段丸めを
+  避け、丸めビットが効く値(0x8000000000000401 等)も gcc と %a ビット一致。
+- **浮動 → u64 は 2^63 しきい値分岐**: 未満は直行、以上は 2^63 を引いて変換後に
+  最上位ビットを OR で戻す。float 源は :ftof で double へ広げて(exact)一本化。
+  範囲外・NaN は C の UB につき特別処理なし。
+- **既存バグの修正が付随**: float → unsigned int(size 4)が (INT_MAX, UINT_MAX]
+  で 32bit 符号付き truncate によりオーバーフローしていた(変更前からの欠陥)。
+  符号無し 4byte 目的先は 64bit 幅で truncate して下位を採る。
+- **診断の削除**: reject_unsupported_float_int_conversion は全ケースを lowering
+  したため削除。負債表のこの行は完全解消。
+
+**位置づけ**: json generator.c が .o 完走。json の残る壁は parser.c の複合リテラル
+のみ(Step 53)。それが落ちれば json/msgpack 両 gem の全 TU が .o 化でき、M2
+完了判定(gem テストスイート合格)の手順整備に入る。
+
+---
+
 ## 現在のテスト規模
 
-Step 51 完了時点: **1,608 runs / 4,645 assertions / 0 failures / 17 skips**
+Step 52 完了時点: **1,616 runs / 4,652 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
