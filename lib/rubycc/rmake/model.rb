@@ -86,13 +86,19 @@ module Rubycc
     end
 
     # A single node of the execution plan: the target that would be (re)built and
-    # the ordered, fully-expanded commands that would build it.
+    # the ordered, fully-expanded commands that would build it. +prereqs+ names
+    # the other steps that must complete before this one may start — the edges a
+    # parallel scheduler (B3 `-j`) needs. It is empty for a step with no stale
+    # step among its prerequisites, and the sequential runner ignores it entirely
+    # (the plan is already emitted in a valid dependency order).
     class Step
       attr_reader :target, :commands
+      attr_accessor :prereqs
 
-      def initialize(target:, commands:)
+      def initialize(target:, commands:, prereqs: [])
         @target = target
         @commands = commands
+        @prereqs = prereqs
       end
     end
 

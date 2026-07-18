@@ -56,16 +56,38 @@ module Rubycc
         Plan.new(@steps)
       end
 
-      # Plan +goal+ and then run it through the shell-less Executor (B2). This is
-      # the "make it" entry point that pairs with #plan (the "what would make do"
-      # entry point). +dry_run+ prints the recipe lines without running them
-      # (make -n) and matches #plan's #command_lines. Returns the Plan that was
-      # executed; raises CommandFailedError / UnsupportedRecipeError on the first
-      # failing or uninterpretable recipe line.
-      def run(goal = nil, out: $stdout, err: $stderr, dry_run: false, env: ENV, now: Time.now)
+      # Plan +goal+ and then run it through the shell-less Executor (B2/B3). This
+      # is the "make it" entry point that pairs with #plan (the "what would make
+      # do" entry point). +dry_run+ prints the recipe lines without running them
+      # (make -n) and matches #plan's #command_lines.
+      #
+      # +tools+ turns on in-process tool substitution (B3): when truthy the
+      # recipe commands whose argv[0] is this Makefile's compiler/linker program
+      # (the first word of `$(CC)` / `$(LDSHARED)`, normally "gcc") are run by
+      # rubycc's own Driver in a forked child instead of being exec'd, so no
+      # external compiler is needed. It defaults off, leaving the B2 behaviour
+      # (every command exec'd) exactly as it was. +jobs+ is the maximum number of
+      # independent steps to build concurrently (`-j`; default 1 = sequential).
+      #
+      # Returns the Plan that was executed; raises CommandFailedError /
+      # UnsupportedRecipeError on the first failing or uninterpretable recipe line.
+      def run(goal = nil, out: $stdout, err: $stderr, dry_run: false, env: ENV, now: Time.now,
+              tools: nil, jobs: 1)
         computed = plan(goal, now: now)
-        Executor.new(dir: @dir, out: out, err: err, dry_run: dry_run, env: env).execute(computed)
+        Executor.new(dir: @dir, out: out, err: err, dry_run: dry_run, env: env,
+                     tools: tools ? tool_programs : [], jobs: jobs).execute(computed)
         computed
+      end
+
+      # The set of program names a `-`tools run substitutes for rubycc: the first
+      # word of `$(CC)` and of `$(LDSHARED)` (the compile and shared-link drivers
+      # mkmf emits). `$(LDSHARED)` is normally `$(CC) -shared`, so its flag words
+      # already sit inside the expanded recipe and only the leading program name
+      # is matched here; for the mkmf corpus both reduce to "gcc".
+      def tool_programs
+        [variable_value("CC"), variable_value("LDSHARED")]
+          .map { |value| value.split(/\s+/).reject(&:empty?).first }
+          .compact.uniq
       end
 
       # The fully-expanded value of a variable (empty string when undefined).
@@ -111,29 +133,46 @@ module Rubycc
 
       # --- dependency walk + staleness ------------------------------------
 
-      # Returns [stale?, mtime_or_nil]. +stale?+ propagates upward: a prerequisite
-      # that will be rebuilt makes its dependents stale even if their own file is
-      # newer, matching make's dry-run reasoning.
+      # Returns [stale?, mtime_or_nil, exposed_steps]. +stale?+ propagates upward:
+      # a prerequisite that will be rebuilt makes its dependents stale even if
+      # their own file is newer, matching make's dry-run reasoning.
+      #
+      # +exposed_steps+ is the set of step targets a parent must wait for before
+      # this target counts as ready — the dependency edges the `-j` scheduler
+      # walks. A target that is itself a step exposes just itself (its own
+      # prerequisite steps become that step's #prereqs and are hidden behind it);
+      # a target that is not a step forwards its prerequisites' exposed steps, so
+      # a phony aggregate like `all` exposes the real steps beneath it.
       def build(target)
         return @state[target] if @state.key?(target)
 
         # Tentative entry breaks any dependency cycle without looping forever.
-        @state[target] = [false, file_mtime(target)]
+        @state[target] = [false, file_mtime(target), []]
         node = resolve(target)
 
         rebuilt = false
         newest = nil
+        dep_steps = []
         node[:prereqs].each do |p|
-          stale, mtime = build(p)
+          stale, mtime, exposed = build(p)
           rebuilt ||= stale
           newest = newer(newest, mtime)
+          dep_steps.concat(exposed)
         end
 
         own = node[:mtime]
         stale = node[:phony] || own.nil? || rebuilt || (newest && own && newest > own)
-        @steps << build_step(target, node) if stale && node[:recipe]
 
-        @state[target] = [stale, own]
+        if stale && node[:recipe]
+          step = build_step(target, node)
+          step.prereqs = dep_steps.uniq
+          @steps << step
+          exposed = [target]
+        else
+          exposed = dep_steps.uniq
+        end
+
+        @state[target] = [stale, own, exposed]
       end
 
       # Assemble everything needed to judge and, if stale, build +target+: its

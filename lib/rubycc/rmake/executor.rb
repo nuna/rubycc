@@ -21,6 +21,15 @@ module Rubycc
     # and no process is spawned for them. Everything the runner does not recognise
     # as a builtin (the compiler and linker, `$(CC)`/`$(LDSHARED)`) is exec'd
     # directly with an argv array; the runner never builds a shell command string.
+    #
+    # B3 adds two things on top of that. First, in-process tool substitution: when
+    # a set of program names is passed as +tools+, a command whose argv[0] is one
+    # of them (the first word of `$(CC)`/`$(LDSHARED)`) is not exec'd but run by
+    # rubycc's own Driver — inside a forked child, so a compiler crash cannot take
+    # rmake down and the Driver's per-invocation state stays isolated. Second, a
+    # `-j` scheduler that forks independent stale steps up to +jobs+ at a time,
+    # honouring the plan's dependency edges and buffering each worker's output to
+    # flush it whole when the step finishes (make -O's un-interleaved output).
     class Executor
       # The utilities reimplemented in-process, keyed by the command's basename so
       # that `/usr/bin/mkdir` and `mkdir` resolve to the same builtin. `:` is
@@ -50,22 +59,34 @@ module Rubycc
       # the redirections that apply to it.
       SimpleCommand = Struct.new(:assignments, :argv, :redirections)
 
-      def initialize(dir:, out: $stdout, err: $stderr, dry_run: false, env: ENV)
+      def initialize(dir:, out: $stdout, err: $stderr, dry_run: false, env: ENV,
+                     tools: [], jobs: 1)
         @dir = File.expand_path(dir)
         @out = out
         @err = err
         @dry_run = dry_run
         @env = env
+        @tools = Array(tools)
+        @jobs = [jobs.to_i, 1].max
+        # In sequential mode a substituted tool is fork-isolated for its own sake;
+        # a parallel worker is already a forked step child, so it runs the Driver
+        # in-process rather than forking a second time.
+        @isolate_tool = true
       end
 
-      # Run every step of +plan+ in order. Prerequisites already precede their
-      # dependents in the plan, so a straight sequential walk is a valid build
-      # order. Returns the plan; raises CommandFailedError / UnsupportedRecipeError
-      # at the first command that fails (and is not `-`-prefixed) or cannot be
-      # interpreted.
+      # Run every step of +plan+. With +jobs+ == 1 (or under -n) this is a
+      # straight sequential walk: prerequisites already precede their dependents
+      # in the plan, so the order is a valid build order. With +jobs+ > 1 the
+      # steps are dispatched by the parallel scheduler instead. Returns the plan;
+      # raises CommandFailedError / UnsupportedRecipeError at the first command
+      # that fails (and is not `-`-prefixed) or cannot be interpreted.
       def execute(plan)
-        plan.steps.each do |step|
-          step.commands.each { |command| run_line(step.target, command) }
+        if @jobs > 1 && !@dry_run
+          execute_parallel(plan)
+        else
+          plan.steps.each do |step|
+            step.commands.each { |command| run_line(step.target, command) }
+          end
         end
         plan
       end
@@ -241,9 +262,46 @@ module Rubycc
         name = File.basename(argv[0])
         if BUILTINS.include?(name)
           run_builtin(target, name, argv, cmd, state, text)
+        elsif tool?(argv[0])
+          run_tool(argv, cmd, state)
         else
           run_external(target, argv, cmd, state)
         end
+      end
+
+      # Whether argv[0] names one of the substituted tool programs (matched by the
+      # word as written and by its basename, so both `gcc` and `/usr/bin/gcc`
+      # resolve). Empty when substitution is off, which keeps the default path
+      # (exec every unknown command) untouched.
+      def tool?(arg0)
+        return false if @tools.empty?
+
+        @tools.include?(arg0) || @tools.include?(File.basename(arg0))
+      end
+
+      # Run a substituted compiler/linker command through rubycc's Driver, which
+      # takes the gcc-style argv minus its program word. The compile line and the
+      # `-shared` link line map through the same Driver entry point (it selects
+      # its mode from the flags), so the two need no special-casing here. Sequential
+      # runs fork for crash isolation; a parallel worker is already isolated and
+      # runs the Driver in-process.
+      def run_tool(argv, cmd, state)
+        driver_argv = argv.drop(1)
+        ok, reason = @isolate_tool ? fork_driver(driver_argv, state.cwd, cmd) \
+                                   : inline_driver(driver_argv, state.cwd, cmd)
+        state.failure_reason = reason unless ok
+        ok
+      end
+
+      # rubycc's Driver, loaded on first use so rmake stays loadable on its own
+      # (the whole compiler/linker stack it drags in is not needed for a plain
+      # Makefile parse/plan). The umbrella `rubycc` is required rather than just
+      # `rubycc/driver` so every constant the link path reaches — the ELF reader's
+      # error classes the archive writer rescues among them — is defined; loading
+      # only the driver leaves some of those unresolved.
+      def driver_class
+        require "rubycc" unless defined?(Rubycc::Driver)
+        Rubycc::Driver
       end
 
       # Expand `*`/`?`/`[...]` globs against the command's cwd. A pattern that
@@ -301,6 +359,182 @@ module Rubycc
           name, value = a.split("=", 2)
           h[name] = value
         end
+      end
+
+      # --- in-process tool invocation (Driver) -----------------------------
+
+      # Run the Driver in a forked child (sequential mode). The child chdirs,
+      # applies the command's `VAR=value` prefixes, points the Driver's streams at
+      # the command's redirections or a capture pipe, and exits with the Driver's
+      # status; the parent drains the pipe, waits, and forwards whatever the child
+      # printed to its own output. `exit!` is used so the child never runs Ruby's
+      # at_exit hooks (Minitest's reporter among them). Returns [ok?, reason].
+      def fork_driver(driver_argv, cwd, cmd)
+        reader, writer = IO.pipe
+        pid = fork do
+          reader.close
+          status = 1
+          begin
+            Dir.chdir(cwd)
+            env_overrides(cmd.assignments).each { |k, v| ENV[k] = v }
+            out_io, err_io = redirection_ios(cmd.redirections, cwd)
+            status = driver_class.run(driver_argv, stdout: out_io || writer, stderr: err_io || writer)
+            [out_io, err_io].compact.each(&:close)
+          rescue Exception => e # rubocop:disable Lint/RescueException
+            safe_puts(writer, "rmake: rubycc: #{e.class}: #{e.message}")
+            status = 1
+          end
+          writer.flush
+          exit!(status)
+        end
+        writer.close
+        output = reader.read
+        reader.close
+        _, status = Process.waitpid2(pid)
+        @out.write(output) unless output.empty?
+        status.success? ? [true, nil] : [false, tool_reason(status)]
+      end
+
+      # Run the Driver in the current process (parallel mode: the caller is
+      # already an isolated step worker). chdir is block-scoped so a step's later
+      # commands are unaffected. Returns [ok?, reason].
+      def inline_driver(driver_argv, cwd, cmd)
+        out_io, err_io = redirection_ios(cmd.redirections, cwd)
+        status = 1
+        Dir.chdir(cwd) do
+          with_env(env_overrides(cmd.assignments)) do
+            status = driver_class.run(driver_argv, stdout: out_io || @out, stderr: err_io || @err)
+          end
+        end
+        [out_io, err_io].compact.each(&:close)
+        status.zero? ? [true, nil] : [false, "rubycc exited with status #{status}"]
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        [false, "#{e.class}: #{e.message}"]
+      end
+
+      def tool_reason(status)
+        if status.signaled?
+          "rubycc terminated by signal #{status.termsig}"
+        else
+          "rubycc exited with status #{status.exitstatus}"
+        end
+      end
+
+      # Temporarily overlay ENV with +overrides+ for the block, restoring it after
+      # (used so a tool line's `VAR=value` prefix does not leak into later work).
+      def with_env(overrides)
+        return yield if overrides.empty?
+
+        saved = overrides.keys.to_h { |k| [k, ENV[k]] }
+        overrides.each { |k, v| ENV[k] = v }
+        begin
+          yield
+        ensure
+          saved.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
+        end
+      end
+
+      # Open a command's redirections and return [stdout_io, stderr_io] (nil for a
+      # stream that is not redirected). The non-block sibling of #with_redirections,
+      # used where the Driver needs the IO objects handed to it directly.
+      def redirection_ios(redirections, cwd)
+        out_io = err_io = nil
+        redirections.each do |r|
+          path = r.path == "/dev/null" ? File::NULL : absolute(r.path, cwd)
+          io = File.open(path, r.mode == :append ? "a" : "w")
+          r.stream == :stderr ? (err_io = io) : (out_io = io)
+        end
+        [out_io, err_io]
+      end
+
+      def safe_puts(io, message)
+        io.puts(message)
+      rescue StandardError
+        nil
+      end
+
+      # --- parallel scheduling (-j) ----------------------------------------
+
+      # Build +plan+ with up to @jobs step workers running at once. Each ready
+      # step (all its prerequisite steps finished) is forked; the worker runs the
+      # whole step in-process with its output captured, so a step's lines stay
+      # together and a compiler crash is contained. On a worker failure no new
+      # step is launched, the ones already running are drained, and then the
+      # failure is raised — make's default "-k off" behaviour.
+      def execute_parallel(plan)
+        remaining = plan.steps.dup
+        done = {}
+        running = {}
+        failure = nil
+
+        loop do
+          while failure.nil? && running.size < @jobs && (step = next_ready(remaining, done, running))
+            remaining.delete(step)
+            launch_step(step, running)
+          end
+          break if running.empty?
+
+          pid, status = Process.wait2
+          finished = running.delete(pid)
+          next unless finished
+
+          @out.write(finished[:thread].value)
+          if status.success?
+            done[finished[:step].target] = true
+          else
+            failure ||= [finished[:step], status]
+          end
+        end
+
+        return unless failure
+
+        step, status = failure
+        raise CommandFailedError.new(target: step.target,
+                                     command: "recipe for #{step.target}",
+                                     reason: tool_reason(status))
+      end
+
+      # The first remaining step all of whose prerequisite steps have finished and
+      # none of which is still running. nil when nothing is currently runnable
+      # (every remaining step waits on an in-flight one).
+      def next_ready(remaining, done, running)
+        pending = running.values.map { |r| r[:step].target }
+        remaining.find do |step|
+          step.prereqs.all? { |p| done[p] } && pending.none? { |t| step.prereqs.include?(t) }
+        end
+      end
+
+      # Fork a worker for +step+. The child funnels every stream (builtin echo,
+      # the Driver, any spawned helper) into a capture pipe by reopening its
+      # stdout/stderr, then runs the step's recipe lines with tool substitution
+      # inline (it is already isolated). The parent records the child's pid and a
+      # thread that drains the pipe so a large transcript cannot dead-lock the
+      # write.
+      def launch_step(step, running)
+        reader, writer = IO.pipe
+        pid = fork do
+          reader.close
+          run_step_worker(step, writer)
+        end
+        writer.close
+        running[pid] = { step: step, reader: reader, thread: Thread.new { reader.read } }
+      end
+
+      def run_step_worker(step, writer)
+        $stdout.reopen(writer)
+        $stderr.reopen(writer)
+        @out = $stdout
+        @err = $stderr
+        @isolate_tool = false
+        step.commands.each { |command| run_line(step.target, command) }
+        writer.flush
+        exit!(0)
+      rescue RmakeError => e
+        safe_puts(writer, e.message)
+        exit!(1)
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        safe_puts(writer, "rmake: #{e.class}: #{e.message}")
+        exit!(1)
       end
 
       # --- builtins --------------------------------------------------------
