@@ -2103,9 +2103,41 @@ $(CC)/$(LDSHARED)/$(AR) の rubycc 内部 API への in-process 置換 + fork �
 
 ---
 
+## Step 58 — rmake の in-process ツール置換と -j 並列(M3 B3)
+
+「実物 Makefile → rmake → rubycc 製 .so」の統合点。heavy-implementer へ移譲・
+レビューして確定。
+
+**設計判断**:
+- **置換は「argv[0] ↔ $(CC)/$(LDSHARED) 第 1 語」の具体名一致**: rubycc の
+  Driver が gcc 互換 CLI であることが効き、コンパイル行(-c)もリンク行(-shared)も
+  同一写像(argv[0] を落として Driver.run へ)で済む。-shared 等の残り語は展開時に
+  レシピへ入っているため前置不要。$(AR) は全 fixture でレシピ出現ゼロ = 写像対象外
+  (mkmf の static: は STATIC_LIB 空値依存のみ、という実物の発見)。既定 OFF で
+  従来経路は不変。
+- **fork + in-process ハイブリッド**(ROADMAP B3 の想定どおり): 逐次はツール
+  ごとに fork してクラッシュ隔離、並列は step 単位 fork の worker 内で in-process
+  (二重 fork なし)。Driver の再入性は無状態経路の確認 + 「2 回の独立ビルドが
+  バイト一致」の決定性テストで担保。
+- **-j は Step#prereqs の導出から**: planner の build を「stale step は自身を
+  露出、非 step は prereq の露出集合を転送」に拡張し、phony(all)越しの実依存辺を
+  線形 Plan 上に張る。失敗時は新規 launch 停止 + drain 後に停止(make の -k off
+  相当)、出力は worker ごとにバッファして step 完了時に一括 flush(make -O 相当)。
+- **受け入れ**: 実物 json parser Makefile(fixtures 非改変、コピー先の srcdir
+  のみ書き換え)で parser.so 生成 → Init_parser dlopen。msgpack はフル 12 TU を
+  jobs: 4 で約 30 秒完走(手動確認)。並列の重なり・依存順・失敗隔離は疑似 CC の
+  常設テストで検証(ネットワーク前提の実物受け入れは RMAKE_ACCEPTANCE=1 の opt-in)。
+
+**位置づけ**: rmake は mkmf Makefile を最後まで自力で走らせられる。次は B4
+(pkg-config シム)→ B5(conftest 完全対応 = mkmf を rubycc で動かす)→
+B6(rubygems_plugin で gem install 統合)。
+
+---
+
 ## 現在のテスト規模
 
-Step 57 完了時点: **1,722 runs / 4,849 assertions / 0 failures / 17 skips**
+Step 58 完了時点: **1,733 runs / 4,872 assertions / 0 failures / 18 skips**
+(+1 skip はネットワーク前提の opt-in 受け入れ)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
