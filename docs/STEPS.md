@@ -2046,9 +2046,37 @@ provenance.txt(採取日・ruby/CC バージョン)。mkmf の conftest ソー�
 
 ---
 
+## Step 56 — rmake コア: Makefile パーサと実行計画(M3 B1)
+
+mkmf 生成 Makefile を /bin/sh も make も無い環境で処理する make 互換サブセットの
+第一段。heavy-implementer へ移譲・レビューして確定。
+
+**設計判断**:
+- **コーパス駆動の機能セット**: Step 55 の実物 6 本(全て同一テンプレートで値のみ
+  相違、diff で構造差ゼロ)を棚卸しし、現れる構文だけを実装。結果は想定より狭い —
+  変数代入は再帰 `=` **のみ**(:=/?=/+= は出現ゼロ)、関数(wildcard/shell 等)も
+  出現ゼロで未実装、置換参照 `$(V:0=@)` と自動変数($@ $< $(@D) 等)が本命。
+  「mkmf が生成しないものは作らない」方針が実装面積を大きく削った。
+- **make の細部の再現が golden 一致の鍵**: 代入値の**末尾空白保持**(`dldflags =
+  ... `)がリンク行の空白数に効く、`$(V:0=)` の語末サフィックス置換、等は GNU make
+  の実測で確認して合わせた。
+- **計画と実行の分離**: B1 は「パース → 展開 → タイムスタンプ stale 判定
+  (後順 DFS + 伝播)→ トポロジカル順の Plan」まで。レシピは展開して @/- 属性を
+  保持するだけで実行しない(実行器 = B2)。`Plan#command_lines` が make -n 相当。
+- **DoS フェイルセーフ**: 再帰変数の循環(`A=$(B)`/`B=$(A)`)は展開深さ上限
+  (MAX_EXPANSION_DEPTH=200)で ExpansionError に。
+- **golden 検証**: fixtures 6 本を一時 dir に展開してダミーソースを touch し、
+  `make -n` の出力と Plan のコマンド列を逐語比較(正規化は rstrip + 空行除去のみ)。
+  **6 本全て一致**。
+
+**位置づけ**: 次は B2(シェルレス内蔵コマンド実行器)→ B3(in-process ツール
+呼び出し + fork 並列)で、実物 Makefile を rmake だけで最後まで走らせる。
+
+---
+
 ## 現在のテスト規模
 
-Step 55 完了時点: **1,635 runs / 4,703 assertions / 0 failures / 17 skips**
+Step 56 完了時点: **1,666 runs / 4,749 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
