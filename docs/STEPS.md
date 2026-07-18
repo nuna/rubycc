@@ -2157,10 +2157,42 @@ have_header/have_func/try_link/try_run と mkmf.log の体裁まで通す)。
 
 ---
 
+## Step 60 — conftest 完全対応: mkmf 統合 shim(M3 B5)
+
+mkmf の conftest(have_header/have_func/try_link/try_run/check_sizeof …)を
+rubycc ツールチェーンで動かす統合点。メインセッションで mkmf ソースを精査して
+設計を確定し、heavy-implementer へ移譲(セッション上限で一度中断、再開で完遂)。
+
+**設計判断**:
+- **差し替えは RbConfig の 4 キーだけ**: mkmf は conftest コマンドを
+  `RbConfig::expand("$(CC) …")` で組み、単一文字列 system(メタ文字なしなら直接
+  exec)で実行する。CC/LDSHARED/CPP/PKG_CONFIG を rubycc 実行ファイルへ向ける
+  shim(lib/rubycc/mkmf_shim.rb、プロセス内のみ・冪等)を mkmf より先に require
+  するだけで全 probe が rubycc 経由になる。**mkmf を一切パッチしない**ので
+  mkmf.log の体裁は本物のまま(N3)。CONFIG と MAKEFILE_CONFIG の両方を書き換え、
+  probe と生成 Makefile の CC = が揃う。
+- **実測が炙り出した本質的ギャップ 2 件**(shim 自体より価値が大きい):
+  (a) **have_func の偽陽性**: ExecutableLinker が未解決の強参照を残したまま
+  実行ファイルを出していた。ROADMAP B5 が予告していた「リンカの未解決検査の
+  厳密さがここで効く」の実物で、非 weak の未解決 import を undefined reference
+  エラーにして解消(共有オブジェクト側は実行時スコープ補完のため据え置き)。
+  (b) **check_sizeof の `sizeof <式>` 定数畳み込み**: ConstantEvaluator は型情報を
+  持たないため SizeofExpr を非定数として弾いていた。リゾルバ注入(型を知る IR
+  generator だけが供給)で解決し、型文脈の無い場面(パーサの配列長)は従来どおり。
+- **受け入れの実り**: msgpack extconf の -DHAVE_* 集合が gcc 採取の fixture と
+  一致(= probe の真偽が gcc と同じ)。json は SIMD probe が rubycc に対して
+  **自然に偽**になり、M2 受け入れで必要だった JSON_DISABLE_SIMD が不要になった
+  (probe 駆動の設計が正しく機能した証左)。
+
+**位置づけ**: extconf.rb → mkmf → conftest → Makefile 生成が rubycc だけで通る。
+次は B6(rubygems_plugin: ENV["MAKE"]=rmake 注入で素の gem install を通す)。
+
+---
+
 ## 現在のテスト規模
 
-Step 59 完了時点: **1,761 runs / 4,960 assertions / 0 failures / 19 skips**
-(skips: c-testsuite 由来 + opt-in 受け入れ + 本家 pkg-config 差分)
+Step 60 完了時点: **1,767 runs / 4,990 assertions / 0 failures / 21 skips**
+(skips: c-testsuite 由来 + opt-in 受け入れ/corpus + 本家 pkg-config 差分)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
