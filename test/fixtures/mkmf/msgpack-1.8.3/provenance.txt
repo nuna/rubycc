@@ -1,0 +1,8 @@
+gem: msgpack 1.8.3
+collected_at: 2026-07-18T00:25:16Z
+ruby_version: 3.4.5 (x86_64-linux)
+cc: gcc
+rubygems_version: 3.6.9
+collector: tools/collect_mkmf_corpus.rb
+exts:
+  msgpack: ok (Makefile 273 lines, 12 conftest entries in mkmf.log)

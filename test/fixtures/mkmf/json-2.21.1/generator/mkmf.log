@@ -1,0 +1,102 @@
+append_cflags: checking for whether -std=c99 is accepted as CFLAGS... -------------------- yes
+
+LD_LIBRARY_PATH=.:/home/nuna/.rbenv/versions/3.4.5/lib ASAN_OPTIONS=detect_leaks=0 "gcc -o conftest -I/home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0/x86_64-linux -I/home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0/ruby/backward -I/home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0 -I.    -fstack-protector-strong -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2  -O3 -fno-fast-math -ggdb3 -Wall -Wextra -Wdeprecated-declarations -Wdiv-by-zero -Wduplicated-cond -Wimplicit-function-declaration -Wimplicit-int -Wpointer-arith -Wwrite-strings -Wold-style-definition -Wimplicit-fallthrough=0 -Wmissing-noreturn -Wno-cast-function-type -Wno-constant-logical-operand -Wno-long-long -Wno-missing-field-initializers -Wno-overlength-strings -Wno-packed-bitfield-compat -Wno-parentheses-equality -Wno-self-assign -Wno-tautological-compare -Wno-unused-parameter -Wno-unused-value -Wsuggest-attribute=format -Wsuggest-attribute=noreturn -Wunused-variable -Wmisleading-indentation -Wundef  -fPIC conftest.c -L. -L/home/nuna/.rbenv/versions/3.4.5/lib -Wl,-rpath,/home/nuna/.rbenv/versions/3.4.5/lib -L. -fstack-protector-strong -rdynamic -Wl,-export-dynamic -Wl,--no-as-needed     -Wl,-rpath,/home/nuna/.rbenv/versions/3.4.5/lib -L/home/nuna/.rbenv/versions/3.4.5/lib -lruby  -lm -lpthread  -lc"
+checked program was:
+/* begin */
+1: #include "ruby.h"
+2: 
+3: int main(int argc, char **argv)
+4: {
+5:   return !!argv[argc];
+6: }
+/* end */
+
+LD_LIBRARY_PATH=.:/home/nuna/.rbenv/versions/3.4.5/lib ASAN_OPTIONS=detect_leaks=0 "gcc -I/home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0/x86_64-linux -I/home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0/ruby/backward -I/home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0 -I.    -fstack-protector-strong -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2  -O3 -fno-fast-math -ggdb3 -Wall -Wextra -Wdeprecated-declarations -Wdiv-by-zero -Wduplicated-cond -Wimplicit-function-declaration -Wimplicit-int -Wpointer-arith -Wwrite-strings -Wold-style-definition -Wimplicit-fallthrough=0 -Wmissing-noreturn -Wno-cast-function-type -Wno-constant-logical-operand -Wno-long-long -Wno-missing-field-initializers -Wno-overlength-strings -Wno-packed-bitfield-compat -Wno-parentheses-equality -Wno-self-assign -Wno-tautological-compare -Wno-unused-parameter -Wno-unused-value -Wsuggest-attribute=format -Wsuggest-attribute=noreturn -Wunused-variable -Wmisleading-indentation -Wundef  -fPIC  -std=c99 -Werror -c conftest.c"
+checked program was:
+/* begin */
+1: #include "ruby.h"
+2: 
+3: int main(int argc, char **argv)
+4: {
+5:   return !!argv[argc];
+6: }
+/* end */
+
+--------------------
+
+have_const: checking for RUBY_TYPED_EMBEDDABLE in ruby.h... -------------------- yes
+
+LD_LIBRARY_PATH=.:/home/nuna/.rbenv/versions/3.4.5/lib ASAN_OPTIONS=detect_leaks=0 "gcc -I/home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0/x86_64-linux -I/home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0/ruby/backward -I/home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0 -I.    -fstack-protector-strong -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2  -O3 -fno-fast-math -ggdb3 -Wall -Wextra -Wdeprecated-declarations -Wdiv-by-zero -Wduplicated-cond -Wimplicit-function-declaration -Wimplicit-int -Wpointer-arith -Wwrite-strings -Wold-style-definition -Wimplicit-fallthrough=0 -Wmissing-noreturn -Wno-cast-function-type -Wno-constant-logical-operand -Wno-long-long -Wno-missing-field-initializers -Wno-overlength-strings -Wno-packed-bitfield-compat -Wno-parentheses-equality -Wno-self-assign -Wno-tautological-compare -Wno-unused-parameter -Wno-unused-value -Wsuggest-attribute=format -Wsuggest-attribute=noreturn -Wunused-variable -Wmisleading-indentation -Wundef  -fPIC -std=c99   -c conftest.c"
+checked program was:
+/* begin */
+1: #include "ruby.h"
+2: 
+3: #include <ruby.h>
+4: 
+5: /*top*/
+6: typedef int conftest_type;
+7: conftest_type conftestval = (int)RUBY_TYPED_EMBEDDABLE;
+/* end */
+
+--------------------
+
+have_func: checking for ruby_xfree_sized() in ruby.h... -------------------- no
+
+LD_LIBRARY_PATH=.:/home/nuna/.rbenv/versions/3.4.5/lib ASAN_OPTIONS=detect_leaks=0 "gcc -o conftest -I/home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0/x86_64-linux -I/home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0/ruby/backward -I/home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0 -I.    -fstack-protector-strong -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2  -O3 -fno-fast-math -ggdb3 -Wall -Wextra -Wdeprecated-declarations -Wdiv-by-zero -Wduplicated-cond -Wimplicit-function-declaration -Wimplicit-int -Wpointer-arith -Wwrite-strings -Wold-style-definition -Wimplicit-fallthrough=0 -Wmissing-noreturn -Wno-cast-function-type -Wno-constant-logical-operand -Wno-long-long -Wno-missing-field-initializers -Wno-overlength-strings -Wno-packed-bitfield-compat -Wno-parentheses-equality -Wno-self-assign -Wno-tautological-compare -Wno-unused-parameter -Wno-unused-value -Wsuggest-attribute=format -Wsuggest-attribute=noreturn -Wunused-variable -Wmisleading-indentation -Wundef  -fPIC -std=c99 conftest.c -L. -L/home/nuna/.rbenv/versions/3.4.5/lib -Wl,-rpath,/home/nuna/.rbenv/versions/3.4.5/lib -L. -fstack-protector-strong -rdynamic -Wl,-export-dynamic -Wl,--no-as-needed     -Wl,-rpath,/home/nuna/.rbenv/versions/3.4.5/lib -L/home/nuna/.rbenv/versions/3.4.5/lib -lruby  -lm -lpthread  -lc"
+conftest.c: In function ‘t’:
+conftest.c:16:57: error: ‘ruby_xfree_sized’ undeclared (first use in this function); did you mean ‘rb_file_size’?
+   16 | int t(void) { void ((*volatile p)()); p = (void ((*)()))ruby_xfree_sized; return !p; }
+      |                                                         ^~~~~~~~~~~~~~~~
+      |                                                         rb_file_size
+conftest.c:16:57: note: each undeclared identifier is reported only once for each function it appears in
+At top level:
+cc1: note: unrecognized command-line option ‘-Wno-self-assign’ may have been intended to silence earlier diagnostics
+cc1: note: unrecognized command-line option ‘-Wno-parentheses-equality’ may have been intended to silence earlier diagnostics
+cc1: note: unrecognized command-line option ‘-Wno-constant-logical-operand’ may have been intended to silence earlier diagnostics
+checked program was:
+/* begin */
+ 1: #include "ruby.h"
+ 2: 
+ 3: #include <ruby.h>
+ 4: 
+ 5: /*top*/
+ 6: extern int t(void);
+ 7: int main(int argc, char **argv)
+ 8: {
+ 9:   if (argc > 1000000) {
+10:     int (* volatile tp)(void)=(int (*)(void))&t;
+11:     printf("%d", (*tp)());
+12:   }
+13: 
+14:   return !!argv[argc];
+15: }
+16: int t(void) { void ((*volatile p)()); p = (void ((*)()))ruby_xfree_sized; return !p; }
+/* end */
+
+LD_LIBRARY_PATH=.:/home/nuna/.rbenv/versions/3.4.5/lib ASAN_OPTIONS=detect_leaks=0 "gcc -o conftest -I/home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0/x86_64-linux -I/home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0/ruby/backward -I/home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0 -I.    -fstack-protector-strong -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2  -O3 -fno-fast-math -ggdb3 -Wall -Wextra -Wdeprecated-declarations -Wdiv-by-zero -Wduplicated-cond -Wimplicit-function-declaration -Wimplicit-int -Wpointer-arith -Wwrite-strings -Wold-style-definition -Wimplicit-fallthrough=0 -Wmissing-noreturn -Wno-cast-function-type -Wno-constant-logical-operand -Wno-long-long -Wno-missing-field-initializers -Wno-overlength-strings -Wno-packed-bitfield-compat -Wno-parentheses-equality -Wno-self-assign -Wno-tautological-compare -Wno-unused-parameter -Wno-unused-value -Wsuggest-attribute=format -Wsuggest-attribute=noreturn -Wunused-variable -Wmisleading-indentation -Wundef  -fPIC -std=c99 conftest.c -L. -L/home/nuna/.rbenv/versions/3.4.5/lib -Wl,-rpath,/home/nuna/.rbenv/versions/3.4.5/lib -L. -fstack-protector-strong -rdynamic -Wl,-export-dynamic -Wl,--no-as-needed     -Wl,-rpath,/home/nuna/.rbenv/versions/3.4.5/lib -L/home/nuna/.rbenv/versions/3.4.5/lib -lruby  -lm -lpthread  -lc"
+/usr/bin/ld: /tmp/ccNDl5Sh.o: in function `t':
+/tmp/rubycc_corpus/json-2.21.1/ext/json/ext/generator/conftest.c:17:(.text+0xb): undefined reference to `ruby_xfree_sized'
+collect2: error: ld returned 1 exit status
+checked program was:
+/* begin */
+ 1: #include "ruby.h"
+ 2: 
+ 3: #include <ruby.h>
+ 4: 
+ 5: /*top*/
+ 6: extern int t(void);
+ 7: int main(int argc, char **argv)
+ 8: {
+ 9:   if (argc > 1000000) {
+10:     int (* volatile tp)(void)=(int (*)(void))&t;
+11:     printf("%d", (*tp)());
+12:   }
+13: 
+14:   return !!argv[argc];
+15: }
+16: extern void ruby_xfree_sized();
+17: int t(void) { ruby_xfree_sized(); return 0; }
+/* end */
+
+--------------------
+

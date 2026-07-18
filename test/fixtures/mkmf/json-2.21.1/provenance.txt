@@ -1,0 +1,9 @@
+gem: json 2.21.1
+collected_at: 2026-07-18T00:25:01Z
+ruby_version: 3.4.5 (x86_64-linux)
+cc: gcc
+rubygems_version: 3.6.9
+collector: tools/collect_mkmf_corpus.rb
+exts:
+  parser: ok (Makefile 273 lines, 13 conftest entries in mkmf.log)
+  generator: ok (Makefile 273 lines, 5 conftest entries in mkmf.log)

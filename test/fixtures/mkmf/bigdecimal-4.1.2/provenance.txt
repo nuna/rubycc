@@ -1,0 +1,8 @@
+gem: bigdecimal 4.1.2
+collected_at: 2026-07-18T00:25:29Z
+ruby_version: 3.4.5 (x86_64-linux)
+cc: gcc
+rubygems_version: 3.6.9
+collector: tools/collect_mkmf_corpus.rb
+exts:
+  bigdecimal: ok (Makefile 274 lines, 24 conftest entries in mkmf.log)
