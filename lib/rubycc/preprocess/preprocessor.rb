@@ -30,6 +30,19 @@ module Rubycc
       # gem alike (preprocess -> rubycc -> lib -> gem root, then include/).
       BUNDLED_INCLUDE_DIR = File.expand_path("../../../include", __dir__).freeze
 
+      # The bundled libc compatibility headers (R8): rubycc's own copies of the C
+      # library's headers (stdio.h, stdlib.h, string.h and kin), shipped so a
+      # hosted translation unit compiles on a host that lacks the system libc's
+      # development headers (the distroless target). They live in two layers under
+      # include/libc/: a common declaration layer (BUNDLED_LIBC_INCLUDE_DIR) and a
+      # target-specific layer (BUNDLED_LIBC_ARCH_INCLUDE_DIR) that pins the type
+      # widths, struct layouts and macro values to one concrete libc-and-arch ABI.
+      # Only the glibc/x86-64 layer exists today; musl and aarch64 are future work.
+      # The arch layer is searched before the common layer so a same-named header
+      # in it (an ABI-specific override) wins over the shared declaration.
+      BUNDLED_LIBC_ARCH_INCLUDE_DIR = File.expand_path("../../../include/libc/glibc/x86_64", __dir__).freeze
+      BUNDLED_LIBC_INCLUDE_DIR = File.expand_path("../../../include/libc", __dir__).freeze
+
       # The libc system header directories on this x86-64 Linux host, in the order
       # gcc reports them for angled includes. Only the C library's own directories
       # are listed; the compiler's private include directory is deliberately
@@ -38,9 +51,20 @@ module Rubycc
 
       # The default system include search path: the bundled freestanding headers
       # first (so rubycc's stdarg.h/stddef.h win over any same-named file further
-      # down), then the libc directories. Appended after the user's -I/-isystem
-      # directories unless system includes are disabled (-nostdinc).
-      DEFAULT_SYSTEM_INCLUDE_PATHS = [BUNDLED_INCLUDE_DIR, *LIBC_SYSTEM_INCLUDE_PATHS].freeze
+      # down), then the bundled libc compatibility headers (arch layer before
+      # common layer), then the host libc directories. A bundled libc header thus
+      # wins over the host's same-named one, yet can still reach the host copy via
+      # #include_next, which resumes the search past whichever directory the
+      # bundled header was found in. The host directories stay on the path by
+      # default (they are only dropped in the distroless mode, where they are
+      # absent anyway); the whole default path is appended after the user's
+      # -I/-isystem directories, and suppressed entirely by -nostdinc.
+      DEFAULT_SYSTEM_INCLUDE_PATHS = [
+        BUNDLED_INCLUDE_DIR,
+        BUNDLED_LIBC_ARCH_INCLUDE_DIR,
+        BUNDLED_LIBC_INCLUDE_DIR,
+        *LIBC_SYSTEM_INCLUDE_PATHS
+      ].freeze
 
       # A guard against unbounded #include recursion (a header that includes
       # itself); 200 is comfortably deeper than any sane header nesting.

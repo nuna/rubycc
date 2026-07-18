@@ -995,6 +995,24 @@ class TestPreprocessor < Minitest::Test
     assert_match(%r{gone\.h: No such file or directory}, error.description)
   end
 
+  # --- default system include path order (M5 H1 wiring) -----------------------
+
+  # The bundled compatibility layers must sit ahead of the host libc on the
+  # default search path so a bundled libc header wins over the system's
+  # same-named one, and the arch-specific layer must precede the common layer so
+  # an ABI override wins over the shared declaration. #include_next (above) is
+  # what lets a bundled header still reach the host copy further down this order.
+  def test_default_system_include_path_prefers_bundled_libc_over_host
+    pp = Rubycc::Preprocess::Preprocessor
+    order = pp::DEFAULT_SYSTEM_INCLUDE_PATHS
+    assert_equal [pp::BUNDLED_INCLUDE_DIR, pp::BUNDLED_LIBC_ARCH_INCLUDE_DIR,
+                  pp::BUNDLED_LIBC_INCLUDE_DIR],
+                 order.first(3)
+    first_system = order.index(pp::LIBC_SYSTEM_INCLUDE_PATHS.first)
+    assert_operator order.index(pp::BUNDLED_LIBC_ARCH_INCLUDE_DIR), :<, first_system
+    assert_operator order.index(pp::BUNDLED_LIBC_INCLUDE_DIR), :<, first_system
+  end
+
   # --- #error ----------------------------------------------------------------
 
   def test_error_directive_reports_its_message_and_line
