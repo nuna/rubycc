@@ -2189,10 +2189,39 @@ rubycc ツールチェーンで動かす統合点。メインセッションで 
 
 ---
 
+## Step 61 — rubygems_plugin と rmake CLI(M3 B6・第一段受け入れ達成)
+
+「ユーザがフラグを渡さず `gem install` するだけで C 拡張が rubycc ビルドされる」
+統合点。heavy-implementer へ移譲・レビューして確定。
+
+**設計判断**:
+- **RubyGems の契約は実測で棚卸し**: Gem::Ext::Builder は ENV["MAKE"] を
+  shellsplit して argv 起動(シェル非経由)、実測の起動は
+  `rmake DESTDIR= sitearchdir=… sitelibdir=… [clean|(all)|install]` の 4 連で
+  **-j は渡されない**。sitearchdir 上書きが install-so の出力先を賄うため、
+  **コマンドライン変数上書き(Makefile 内定義より優先)**が CLI の肝(rmake
+  ライブラリに新規実装)。
+- **exe/rmake は tools: :rubycc 常時 ON**: rmake は rubycc のビルド専用 CLI
+  なので、生成 Makefile の CC が gcc のままでも rubycc に差し替える。
+- **プラグインは「無効時に完全に不活性」**: rubygems_plugin.rb は全 gem コマンドで
+  ロードされるため、RUBYCC=0 / 判定オフでは ENV に一切触れない(テストで担保)。
+  有効時のみ MAKE / PKG_CONFIG / RUBYLIB / RUBYOPT(-rrubycc/mkmf_shim)を冪等注入。
+  判定は RUBYCC=1/0 / 未設定は「PATH に cc/gcc/make が無ければ自動有効」
+  (DESIGN 5.4)。
+- **受け入れ**: 素の `RUBYCC=1 gem install json / msgpack` が一時 GEM_HOME で
+  成功し、require して round-trip 動作。gem_make.out の exe/rmake と mkmf.log の
+  exe/rubycc で「本当に rubycc 経由だった」ことを assert。**ROADMAP B6 の第一段
+  受け入れ(ヘッダあり環境での素の gem install)をローカルで達成**。
+
+**位置づけ**: M3 の残りは B7(同梱 libc ヘッダ先行版 + distroless 相当受け入れ =
+M3 完了判定)。H1(互換ヘッダ基盤の設計)を先に確定させてから着手する。
+
+---
+
 ## 現在のテスト規模
 
-Step 60 完了時点: **1,767 runs / 4,990 assertions / 0 failures / 21 skips**
-(skips: c-testsuite 由来 + opt-in 受け入れ/corpus + 本家 pkg-config 差分)
+Step 61 完了時点: **1,794 runs / 5,042 assertions / 0 failures / 23 skips**
+(skips: c-testsuite 由来 + opt-in 受け入れ/corpus/gem install + 本家 pkg-config 差分)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
