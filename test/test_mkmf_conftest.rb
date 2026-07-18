@@ -1,0 +1,243 @@
+# frozen_string_literal: true
+
+require_relative "test_helper"
+require "rbconfig"
+require "tmpdir"
+require "fileutils"
+require "open3"
+require "set"
+
+# Step 60 (M3 / ROADMAP §6 B5): conftest 完全対応(mkmf 統合 shim)。
+#
+# lib/rubycc/mkmf_shim.rb を require すると、mkmf が conftest コマンドを組み立てる
+# RbConfig の CC / LDSHARED / CPP / PKG_CONFIG が rubycc 実行ファイルへ差し替わる。
+# ここでは shim を読み込んだ *子プロセス* で本物の mkmf を動かし、代表的な probe
+# API(have_header / have_func / have_library / try_compile / try_link / try_run /
+# check_sizeof)が gcc と同じ真偽・値を返すこと、mkmf.log が本物の体裁で rubycc の
+# コマンド行と "checked program was" 節を残すことを検証する。
+#
+# msgpack / json の extconf 再現(ネットワーク使用)は RMAKE_ACCEPTANCE=1 の opt-in
+# ガード付きで、生成 Makefile の probe 結果(-DHAVE_* 集合)を Step 55 採取 fixtures と
+# 突き合わせる。
+class TestMkmfConftest < Minitest::Test
+  LIB_DIR    = File.expand_path("../lib", __dir__)
+  EXE_PATH   = File.expand_path("../exe/rubycc", __dir__)
+  FIXTURES_ROOT = File.expand_path("fixtures/mkmf", __dir__)
+
+  # Runs `ruby_body` in a child interpreter that has loaded the mkmf shim and
+  # then `require "mkmf"`, inside a fresh working directory. mkmf's console
+  # chatter is redirected to a file (it still writes mkmf.log in the cwd); only
+  # the Marshal-encoded value the body assigns to `result` reaches the parent,
+  # plus the mkmf.log contents. Returns [result, mkmf_log, stderr, status].
+  def run_in_mkmf(ruby_body)
+    script = <<~RUBY
+      require "rubycc/mkmf_shim"
+      require "tmpdir"
+      require "fileutils"
+      work = Dir.mktmpdir("rubycc_mkmf")
+      Dir.chdir(work)
+      real_out = STDOUT.dup
+      chatter = File.open("mkmf_stdout.log", "w")
+      STDOUT.reopen(chatter)
+      $stdout = chatter
+      require "mkmf"
+      result = nil
+      begin
+        #{ruby_body}
+      ensure
+        $stdout = STDOUT
+        STDOUT.reopen(real_out)
+        log = File.exist?("mkmf.log") ? File.read("mkmf.log") : ""
+        real_out.write(Marshal.dump([result, log]))
+        real_out.flush
+      end
+    RUBY
+
+    out, err, status = Open3.capture3(RbConfig.ruby, "-I#{LIB_DIR}", "-e", script)
+    result, log =
+      begin
+        Marshal.load(out)
+      rescue ArgumentError, TypeError
+        [nil, ""]
+      end
+    [result, log, err, status]
+  end
+
+  # --- the probe API surface, driven through real mkmf -----------------------
+
+  def test_conftest_probe_api_matches_gcc_truth
+    result, _log, err, status = run_in_mkmf(<<~RUBY)
+      result = {
+        hdr_present: have_header("stdio.h"),
+        hdr_missing: have_header("rubycc_definitely_no_such_header.h"),
+        func_present: have_func("printf"),
+        func_missing: have_func("rubycc_no_such_func_xyz"),
+        lib_crc32: have_library("z", "crc32"),
+        compile: try_compile("int main(void){return 0;}"),
+        link: try_link("int main(void){return 0;}"),
+        run: try_run("int main(void){return 0;}"),
+        sizeof_int: check_sizeof("int"),
+        sizeof_long: check_sizeof("long")
+      }
+    RUBY
+
+    assert status.success?, "the mkmf child exited nonzero:\n#{err}"
+    refute_nil result, "no Marshal result from the mkmf child:\n#{err}"
+
+    assert_equal true, result[:hdr_present], "have_header('stdio.h') should be true"
+    assert_equal false, result[:hdr_missing], "have_header of a missing header should be false"
+    assert_equal true, result[:func_present], "have_func('printf') should be true"
+    assert_equal false, result[:func_missing], "have_func of a missing function should be false"
+    assert_equal true, result[:lib_crc32], "have_library('z','crc32') should be true"
+    assert_equal true, result[:compile], "try_compile of a trivial program should be true"
+    assert_equal true, result[:link], "try_link of a trivial program should be true"
+    assert_equal true, result[:run], "try_run of an exit-0 program should be true"
+    assert_equal 4, result[:sizeof_int], "check_sizeof('int') should be 4"
+    assert_equal 8, result[:sizeof_long], "check_sizeof('long') should be 8"
+  end
+
+  # mkmf.log is written by mkmf itself, so its format is the genuine article:
+  # the shim only changes which program the echoed command lines name. It must
+  # record rubycc's compile command and the "checked program was" source dump.
+  def test_mkmf_log_records_rubycc_commands_and_program
+    _result, log, err, status = run_in_mkmf(<<~RUBY)
+      result = have_func("printf")
+    RUBY
+
+    assert status.success?, "the mkmf child exited nonzero:\n#{err}"
+    refute_empty log, "mkmf.log should have been written"
+    assert_includes log, EXE_PATH, "mkmf.log should echo the rubycc executable in its command lines"
+    assert_includes log, "checked program was:", "mkmf.log should keep the checked-program section"
+  end
+
+  # The shim rewrites exactly the toolchain keys, in both RbConfig hashes, and
+  # leaves everything else (CXX, the include flags, the ruby header dirs) intact.
+  def test_shim_rewrites_toolchain_config_keys
+    out, err, status = Open3.capture3(
+      RbConfig.ruby, "-I#{LIB_DIR}", "-e", <<~RUBY
+        require "rubycc/mkmf_shim"
+        keys = %w[CC LDSHARED CPP CXX]
+        data = {}
+        keys.each { |k| data["CONFIG:\#{k}"] = RbConfig::CONFIG[k] }
+        keys.each { |k| data["MAKEFILE:\#{k}"] = RbConfig::MAKEFILE_CONFIG[k] }
+        STDOUT.write(Marshal.dump(data))
+      RUBY
+    )
+    assert status.success?, err
+    data = Marshal.load(out)
+
+    assert_equal EXE_PATH, data["CONFIG:CC"]
+    assert_equal "#{EXE_PATH} -shared", data["CONFIG:LDSHARED"]
+    assert_equal "#{EXE_PATH} -E", data["CONFIG:CPP"]
+    # MAKEFILE_CONFIG is rewritten too, so the generated Makefile's CC line is rubycc.
+    assert_equal EXE_PATH, data["MAKEFILE:CC"]
+    assert_equal "#{EXE_PATH} -shared", data["MAKEFILE:LDSHARED"]
+    # CXX is deliberately untouched (rubycc compiles no C++).
+    refute_equal EXE_PATH, data["CONFIG:CXX"]
+  end
+
+  # The shim is idempotent: requiring it twice leaves one lib/ entry at the
+  # front of RUBYLIB and the same rewritten commands.
+  def test_shim_is_idempotent
+    out, err, status = Open3.capture3(
+      RbConfig.ruby, "-I#{LIB_DIR}", "-e", <<~RUBY
+        require "rubycc/mkmf_shim"
+        require "rubycc/mkmf_shim"
+        Rubycc::MkmfShim.install!
+        data = { cc: RbConfig::CONFIG["CC"],
+                 rubylib_head: ENV["RUBYLIB"].to_s.split(File::PATH_SEPARATOR).first,
+                 rubylib_count: ENV["RUBYLIB"].to_s.split(File::PATH_SEPARATOR).count(#{LIB_DIR.inspect}) }
+        STDOUT.write(Marshal.dump(data))
+      RUBY
+    )
+    assert status.success?, err
+    data = Marshal.load(out)
+    assert_equal EXE_PATH, data[:cc]
+    assert_equal LIB_DIR, data[:rubylib_head]
+    assert_equal 1, data[:rubylib_count], "lib/ should be on RUBYLIB exactly once"
+  end
+
+  # --- corpus extconf reproduction (opt-in, networked) -----------------------
+
+  # msgpack 1.8.3's extconf.rb, run under the shim, must generate a Makefile
+  # whose probe result — the set of -DHAVE_* macros in its CPPFLAGS — matches the
+  # Step 55 fixture (collected with the real toolchain). Tool-name differences
+  # (CC = rubycc vs gcc) are excluded because only the HAVE_ set is compared.
+  def test_msgpack_extconf_probe_set_matches_fixture
+    skip "set RMAKE_ACCEPTANCE=1 to run the networked msgpack extconf acceptance" unless acceptance?
+
+    ext_dir = fetch_and_unpack_ext("msgpack", "1.8.3", "ext/msgpack")
+    makefile = run_extconf(ext_dir)
+
+    expected = have_macros(File.read(File.join(FIXTURES_ROOT, "msgpack-1.8.3/msgpack/Makefile")))
+    actual = have_macros(makefile)
+    assert_equal expected, actual,
+                 "rubycc's msgpack probe set (-DHAVE_*) must match the fixture's"
+  end
+
+  # json 2.21.1's parser extconf, run under the shim with no JSON_DISABLE_SIMD
+  # override, must settle the SIMD probe to *off* on its own: rubycc does not
+  # ship the SIMD dispatch headers (cpuid.h / x86intrin.h) its own default search
+  # path, so have_header for them is false and the extconf never enables SIMD —
+  # the env-var workaround M2 needed is gone. The Makefile is generated (exit 0)
+  # and carries no SIMD-enabling macro.
+  def test_json_extconf_simd_probe_is_naturally_off
+    skip "set RMAKE_ACCEPTANCE=1 to run the networked json SIMD acceptance" unless acceptance?
+
+    ext_dir = fetch_and_unpack_ext("json", "2.21.1", "ext/json/ext/parser")
+    makefile = run_extconf(ext_dir)
+
+    refute_match(/JSON_ENABLE_SIMD/, makefile, "SIMD must not be enabled for rubycc")
+    refute_match(/-DHAVE_CPUID_H\b/, makefile, "cpuid.h must probe absent for rubycc")
+  end
+
+  private
+
+  def acceptance?
+    ENV["RMAKE_ACCEPTANCE"] == "1"
+  end
+
+  # The set of HAVE_* macro names a Makefile defines through its CPPFLAGS, read
+  # straight off the `-DHAVE_...` tokens anywhere in the file (a value, if any,
+  # is dropped so only the macro name is compared).
+  def have_macros(makefile_text)
+    makefile_text.scan(/-D(HAVE_[A-Za-z0-9_]+)/).flatten.map { |m| m.split("=").first }.to_set
+  end
+
+  # Runs `extconf.rb` in `ext_dir` under the shim and returns the generated
+  # Makefile's text. Fails loudly (with the child's output) when no Makefile is
+  # produced.
+  def run_extconf(ext_dir)
+    out, err, status = Open3.capture3(
+      RbConfig.ruby, "-I#{LIB_DIR}", "-r", "rubycc/mkmf_shim", "extconf.rb",
+      chdir: ext_dir
+    )
+    makefile_path = File.join(ext_dir, "Makefile")
+    assert status.success?, "extconf.rb failed (#{status.exitstatus}):\n#{out}\n#{err}"
+    assert File.exist?(makefile_path), "extconf.rb produced no Makefile:\n#{out}\n#{err}"
+    File.read(makefile_path)
+  end
+
+  # Fetches and unpacks a gem, returning the absolute path of one of its ext
+  # directories. Skips (rather than fails) when the network or gem tooling is
+  # unavailable, matching the opt-in acceptance flow elsewhere in the suite.
+  def fetch_and_unpack_ext(gem_name, version, ext_subdir)
+    work = File.join(Dir.tmpdir, "rubycc_mkmf_acceptance", "#{gem_name}-#{version}")
+    FileUtils.mkdir_p(work)
+    unpacked = File.join(work, "#{gem_name}-#{version}")
+    ext_dir = File.join(unpacked, ext_subdir)
+    return ext_dir if File.exist?(File.join(ext_dir, "extconf.rb"))
+
+    gem_file = File.join(work, "#{gem_name}-#{version}.gem")
+    unless File.exist?(gem_file)
+      _out, status = Open3.capture2e("gem", "fetch", gem_name, "--version", version,
+                                     "--platform", "ruby", chdir: work)
+      skip "could not fetch #{gem_name} gem (offline?)" unless status.success?
+    end
+    FileUtils.rm_rf(unpacked)
+    _out, status = Open3.capture2e("gem", "unpack", gem_file, chdir: work)
+    skip "could not unpack #{gem_name} gem" unless status.success?
+    assert File.exist?(File.join(ext_dir, "extconf.rb")), "#{ext_subdir}/extconf.rb missing after unpack"
+    ext_dir
+  end
+end

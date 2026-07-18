@@ -582,11 +582,29 @@ module Rubycc
       # rule (6.6) a global requires; a non-constant element (a call, a variable)
       # or a division by zero is diagnosed at its own token.
       def fold_global_constant(node)
-        Front::ConstantEvaluator.evaluate(node)
+        Front::ConstantEvaluator.evaluate(node, sizeof_expr: sizeof_expr_resolver)
       rescue Front::ConstantEvaluator::NotConstant => e
         error_at(e.token, "initializer element is not a constant")
       rescue Front::ConstantEvaluator::DivisionByZero => e
         error_at(e.token, "division by zero in constant expression")
+      end
+
+      # A resolver the constant evaluator calls to fold a "sizeof <expression>"
+      # operand in a static initializer: it infers the operand's type (the same
+      # code-free inference sizeof of an operand uses at run time) and returns
+      # its byte size, applying gen_sizeof's identical rejections for an operand
+      # with no size (void, function or incomplete type). Type inference needs
+      # the symbol table the generator holds, which the evaluator lacks, so it is
+      # supplied as a callback rather than duplicated inside the evaluator.
+      def sizeof_expr_resolver
+        lambda do |node|
+          type = sizeof_operand_type(node.operand)
+          token = node.token
+          error_at(token, "invalid application of 'sizeof' to void type") if type.void?
+          error_at(token, "invalid application of 'sizeof' to a function type") if type.function?
+          require_complete(type, token)
+          type.size
+        end
       end
 
       # Packs an integer into `size` little-endian two's-complement bytes. The
@@ -4772,7 +4790,12 @@ module Rubycc
       # nil when no variable binds the name — the caller decides whether the
       # name might instead be a function designator or is simply undeclared.
       def lookup_variable(name)
-        @scopes.reverse_each do |scope|
+        # Before any function body is entered @scopes is unset; a file-scope
+        # initializer folded in that phase (a "sizeof <expression>" whose operand
+        # names a global) still needs to resolve names, so fall back to the
+        # file-scope bindings alone.
+        scopes = @scopes || [@global_bindings]
+        scopes.reverse_each do |scope|
           local = scope[name]
           return local if local
         end

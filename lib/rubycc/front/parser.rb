@@ -478,7 +478,14 @@ module Rubycc
           if InitializerResolver.structural?(type, init)
             type = InitializerResolver.resolve(type, init).type
             initializer_node = init
-          elsif type.integer?
+          elsif type.integer? && !references_sizeof_expr?(init)
+            # An integer scalar initializer is folded to a value here, where the
+            # constant evaluator carries no type table. A `sizeof <expression>`
+            # operand needs the operand's type, which only the generator can
+            # infer, so an initializer that uses one is deferred as a raw node
+            # for the generator to fold instead (it reaches the same
+            # "unsupported initializer" diagnostic there when genuinely not a
+            # constant).
             initializer_value = evaluate_constant_expression(init, "unsupported initializer for global variable")
           else
             initializer_node = init
@@ -2917,6 +2924,32 @@ module Rubycc
         error_at(e.token, message)
       rescue ConstantEvaluator::DivisionByZero => e
         error_at(e.token, "division by zero in constant expression")
+      end
+
+      # Whether the initializer subtree uses `sizeof <expression>` (as opposed to
+      # `sizeof(type-name)`) anywhere. Such an operand's type can only be
+      # inferred with the symbol table the generator holds, so its presence tells
+      # #parse_global_declarator to defer folding to the generator rather than
+      # evaluate the initializer here. The walk descends only through AST nodes
+      # (each a `Data` under this AST module), so it never recurses into the
+      # Type or Token objects a node's fields also carry.
+      def references_sizeof_expr?(node)
+        return true if node.is_a?(AST::SizeofExpr)
+        return false unless ast_node?(node)
+
+        node.deconstruct_keys(nil).each_value do |field|
+          values = field.is_a?(Array) ? field : [field]
+          return true if values.any? { |value| references_sizeof_expr?(value) }
+        end
+        false
+      end
+
+      # Whether `value` is one of this module's AST nodes — a `Data` instance
+      # whose class lives under `Rubycc::Front::AST` — so the initializer walk
+      # descends into it but not into the tokens, types or literals a field may
+      # hold.
+      def ast_node?(value)
+        value.is_a?(Data) && AST.constants.any? { |c| AST.const_get(c).equal?(value.class) }
       end
     end
   end

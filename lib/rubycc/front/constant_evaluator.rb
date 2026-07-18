@@ -86,8 +86,20 @@ module Rubycc
         ge: ->(a, b) { a >= b ? 1 : 0 }
       }.freeze
 
-      def self.evaluate(node)
-        new.evaluate(node)
+      def self.evaluate(node, sizeof_expr: nil)
+        new(sizeof_expr: sizeof_expr).evaluate(node)
+      end
+
+      # `sizeof_expr`, when supplied, resolves a `sizeof <expression>` operand
+      # (AST::SizeofExpr) to its byte size. The evaluator itself carries no
+      # symbol table, so it cannot infer an expression's type on its own; a
+      # caller that can (the IR generator, which knows every declaration's type)
+      # passes a resolver here so a static initializer or other constant context
+      # can fold "sizeof x". Without one, `sizeof <expression>` stays a
+      # non-constant, as it is in a context with no type information (an array
+      # bound folded during parsing).
+      def initialize(sizeof_expr: nil)
+        @sizeof_expr = sizeof_expr
       end
 
       def evaluate(node)
@@ -106,6 +118,8 @@ module Rubycc
           evaluate(node.condition).zero? ? evaluate(node.else_expr) : evaluate(node.then_expr)
         when AST::Cast
           evaluate_cast(node)
+        when AST::SizeofExpr
+          evaluate_sizeof_expr(node)
         when AST::SizeofType
           evaluate_sizeof_type(node)
         when AST::AlignofType
@@ -119,7 +133,7 @@ module Rubycc
         else
           # Every other node — VariableRef, Call, Assignment,
           # CompoundAssignment, IncDec, MemberAccess, Subscript, StringLit,
-          # SizeofExpr, Comma — is not a constant-expression here.
+          # Comma — is not a constant-expression here.
           raise NotConstant, node.token
         end
       end
@@ -209,6 +223,18 @@ module Rubycc
         return wrapped if type.unsigned? || wrapped < (1 << (bits - 1))
 
         wrapped - (1 << bits)
+      end
+
+      # sizeof(expression) folds to the byte size of the operand's type, which
+      # only a caller carrying type information can supply (see #initialize): the
+      # resolver returns the size, applying the same "no size" rejections
+      # sizeof(type-name) does. Without a resolver it is a non-constant, so a
+      # context with no type table (an array bound folded while parsing) reports
+      # "not an integer constant" rather than a wrong value.
+      def evaluate_sizeof_expr(node)
+        raise NotConstant, node.token unless @sizeof_expr
+
+        @sizeof_expr.call(node)
       end
 
       # sizeof(type-name) folds to the type's byte size; an incomplete type

@@ -140,6 +140,24 @@ module Rubycc
           raise LinkError, "the synthesized _start is missing from the merged object"
       end
 
+      # A shared object may be completed by the runtime scope, so an unresolved
+      # import is left undefined there; an executable, by contrast, must have
+      # every strong reference bound at link time — the loader will not invent a
+      # missing symbol — so a non-weak import that no dependency supplies is a
+      # hard "undefined reference", exactly as a real linker reports it (and as a
+      # conftest probe such as mkmf's have_func relies on to tell a present
+      # function from an absent one).
+      def resolve_imports
+        super
+        unresolved = @import_order.reject do |sym|
+          sym.bind == :weak || @deps.any? { |dep| dep.provides.key?(sym.name) }
+        end
+        return if unresolved.empty?
+
+        names = unresolved.map(&:name).uniq
+        raise LinkError, "undefined reference to #{names.map { |n| "`#{n}'" }.join(', ')}"
+      end
+
       def load_base = LOAD_BASE
       def e_type = ET_EXEC
       def e_entry = symbol_address(@start_symbol)
