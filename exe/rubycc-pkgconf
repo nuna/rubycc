@@ -1,0 +1,8 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "rubycc/pkgconf/pkgconf"
+
+# The executable is a thin launcher: all argument parsing, .pc resolution and
+# rendering lives in Rubycc::Pkgconf, which returns the process exit status.
+exit Rubycc::Pkgconf.run(ARGV)
