@@ -2021,10 +2021,34 @@ msgpack をビルドし、**gem 自身のテストスイートに合格**」を�
 
 ---
 
+## Step 55 — mkmf コーパスの採取(M3 着手前作業)
+
+M3 の順序方針(ROADMAP §6: 一次資料は実物の mkmf 生成物。POSIX make から演繹しない)
+に従い、代表 gem の extconf.rb を実行して生成物を test/fixtures/mkmf/ にコーパス化。
+implementer へ移譲(機械的採取)。
+
+**採取内容**: json 2.21.1(parser/generator)・msgpack 1.8.3・racc 1.8.1(cparse)・
+redcarpet 3.6.1・bigdecimal 4.1.2 の 6 ext。各 Makefile + mkmf.log + extconf.h +
+provenance.txt(採取日・ruby/CC バージョン)。mkmf の conftest ソースは probe 後に
+削除されるが mkmf.log に "checked program was:" として全文が残るため(合計 54 probe)、
+これで conftest も網羅。tools/collect_mkmf_corpus.rb で再生成可能。
+
+**実物からの発見(B1 の仕様に直結)**:
+- サフィックスルールは計画の想定(`.c.$(OBJEXT)`)と違い**展開済みの `.c.o:` 形式**。
+- racc / redcarpet の extconf は probe を一切呼ばず **mkmf.log 自体が生成されない**
+  (mkmf の正常挙動。conftest 対応が不要な gem が実在する)。
+- sqlite3 / pg は本環境に dev ヘッダが無く extconf が失敗するため未収載
+  (README に導入後の再実行手順を記録)。
+
+**位置づけ**: B1(rmake コア)の golden テストの一次資料が揃った。次は B1 =
+「採取 Makefile 群のパース → 実行計画ダンプの golden 化 + GNU make -n との
+突き合わせ」から。
+
+---
+
 ## 現在のテスト規模
 
-Step 54 完了時点: **1,632 runs / 4,674 assertions / 0 failures / 17 skips**
-(tools/ 追加のみのためスイートは不変)
+Step 55 完了時点: **1,635 runs / 4,703 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト

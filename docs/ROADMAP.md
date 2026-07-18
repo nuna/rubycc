@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 完了判定を達成(Step 54、glibc 環境)**: json 2.21.1 = rubycc ビルドの C 拡張で **606 tests / 100% passed**、msgpack 1.8.3 = **455 examples / 0 failures**(手順は tools/m2_acceptance.rb で再現可能)。残項目: musl コンテナでの確認(M3 のコンテナマトリクス整備時)、L5 第三段(.gnu.hash・RELRO、適合性磨き込み)。**次は M3(rmake / rubygems_plugin / pkg-config / conftest = gem install 統合、§6)**。着手前に §6 冒頭の「実物 Makefile/conftest のコーパス化」から。
+現在地: **M2 完了判定を達成(Step 54、glibc 環境)**: json 2.21.1 = rubycc ビルドの C 拡張で **606 tests / 100% passed**、msgpack 1.8.3 = **455 examples / 0 failures**(手順は tools/m2_acceptance.rb で再現可能)。残項目: musl コンテナでの確認(M3 のコンテナマトリクス整備時)、L5 第三段(.gnu.hash・RELRO、適合性磨き込み)。**M3 着手済み**: §6 冒頭のコーパス化 = Step 55 完了(json/msgpack/racc/redcarpet/bigdecimal の 6 ext、Makefile + mkmf.log(conftest 54 probe 込み)を test/fixtures/mkmf/ へ。実物の発見: サフィックスルールは展開済み `.c.o:` 形式・probe 無し gem は mkmf.log 自体が無い)。次 = B1(rmake コア: 採取 Makefile のパース → 実行計画ダンプ golden + GNU make -n 突き合わせ)。
 
 ---
 
