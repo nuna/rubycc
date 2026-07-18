@@ -82,6 +82,38 @@ class TestRmake < Minitest::Test
     assert_equal "first", fresh.variable_value("N")
   end
 
+  # --- command-line variable overrides (B6) ---------------------------------
+
+  # A command-line `VAR=value` beats the Makefile's own assignment to the same
+  # name — make's precedence rule, and what lets RubyGems' `DESTDIR=` blank out
+  # the Makefile's value.
+  def test_command_line_override_wins_over_makefile_assignment
+    mk = Makefile.parse("DESTDIR = /makefile\nOUT = $(DESTDIR)/x\n", overrides: { "DESTDIR" => "/cli" })
+    assert_equal "/cli", mk.variable_value("DESTDIR")
+    assert_equal "/cli/x", mk.variable_value("OUT")
+  end
+
+  # An empty override (`DESTDIR=`) still wins, replacing the Makefile value with
+  # the empty string rather than being ignored.
+  def test_empty_command_line_override_wins
+    mk = Makefile.parse("DESTDIR = /makefile\n", overrides: { "DESTDIR" => "" })
+    assert_equal "", mk.variable_value("DESTDIR")
+  end
+
+  # An override is visible while a `:=` (simple) assignment elsewhere is being
+  # expanded during the parse, not only afterwards.
+  def test_override_is_seen_by_simple_assignment_during_parse
+    mk = Makefile.parse("DESTDIR = /makefile\nP := $(DESTDIR)/lib\n", overrides: { "DESTDIR" => "/cli" })
+    assert_equal "/cli/lib", mk.variable_value("P")
+  end
+
+  # An override beats even `?=`/`+=`, which the makefile cannot use to sneak past
+  # a command-line definition.
+  def test_override_wins_over_conditional_and_append
+    mk = Makefile.parse("V ?= a\nV += b\n", overrides: { "V" => "cli" })
+    assert_equal "cli", mk.variable_value("V")
+  end
+
   # --- expansion ------------------------------------------------------------
 
   def test_nested_expansion

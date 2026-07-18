@@ -28,18 +28,26 @@ module Rubycc
       # is never read as `:=`.
       ASSIGN = /\A[ \t]*(#{NAME})[ \t]*(\+=|\?=|::=|:=|=)(.*)\z/
 
-      def initialize
+      # +overrides+ are command-line variable definitions (make's `VAR=value`
+      # operands): they are seeded before parsing and win over any assignment the
+      # Makefile makes to the same name, which is make's rule that a command-line
+      # variable overrides a makefile variable. They are stored as simple
+      # (already-expanded) variables so a `:=` assignment referencing one during
+      # the parse sees the command-line value.
+      def initialize(overrides: {})
         @variables = {}
         @rules = []
         @order = 0
         @current_rule = nil
         @expander = Expander.new(@variables)
+        @overrides = overrides || {}
+        @overrides.each { |name, value| @variables[name] = Variable.new(:simple, value.to_s) }
       end
 
       attr_reader :variables, :rules
 
-      def self.parse(text)
-        new.tap { |p| p.run(text) }
+      def self.parse(text, overrides: {})
+        new(overrides: overrides).tap { |p| p.run(text) }
       end
 
       def run(text)
@@ -132,6 +140,10 @@ module Rubycc
       end
 
       def apply_assignment(name, op, rhs)
+        # A command-line override wins over every makefile assignment to the same
+        # name (make's precedence rule), so ignore the assignment entirely.
+        return if @overrides.key?(name)
+
         # make strips leading whitespace after the operator but keeps trailing
         # whitespace in the value (a documented make behaviour the golden tests
         # depend on, e.g. `dldflags = ... zlib ` contributes its trailing space).

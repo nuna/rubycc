@@ -24,8 +24,11 @@ module Rubycc
 
       attr_reader :variables, :dir, :default_goal, :phony, :suffixes
 
-      def self.parse(text, dir: ".")
-        parsed = Parser.parse(text)
+      # +overrides+ are command-line variable definitions (make's `VAR=value`
+      # operands) that take precedence over the Makefile's own assignments; they
+      # are threaded to the Parser, which seeds and protects them.
+      def self.parse(text, dir: ".", overrides: {})
+        parsed = Parser.parse(text, overrides: overrides)
         new(parsed.variables, parsed.rules, dir: dir)
       end
 

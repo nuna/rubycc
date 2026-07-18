@@ -1,0 +1,16 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# rmake — rubycc's build-only make (M3 / ROADMAP §6 B6). RubyGems runs this as
+# `$(MAKE)` when the rubygems_plugin has set ENV["MAKE"] to it, so it must be
+# launchable directly by path. The repository lib/ is put on the load path here
+# (mirroring exe/rubycc) so the require resolves both from an installed gem and
+# from a source checkout, regardless of RUBYLIB.
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+
+require "rubycc/rmake/rmake"
+
+# The executable is a thin launcher: all argument parsing, Makefile loading and
+# the always-on rubycc tool substitution live in Rubycc::Rmake::CLI, which
+# returns the process exit status.
+exit Rubycc::Rmake::CLI.run(ARGV)
