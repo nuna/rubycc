@@ -30,5 +30,42 @@ module Rubycc
     # not a diagnosis of the exact cycle — the budget stops unbounded recursion
     # before it can exhaust the Ruby stack.
     class ExpansionError < RmakeError; end
+
+    # Base for a failure that happens while *running* a plan (as opposed to
+    # parsing or planning it). It always names the target whose recipe was
+    # executing and the exact expanded recipe line at fault, so a build failure
+    # points back at "which command of which target" the way make's own
+    # `*** [target] Error` line does (N3).
+    class ExecutionError < RmakeError
+      attr_reader :target, :command
+
+      def initialize(message, target:, command:)
+        @target = target
+        @command = command
+        super("#{target}: #{message}: #{command.inspect}")
+      end
+    end
+
+    # A recipe command exited non-zero (or an internal utility reported failure)
+    # and the line was not marked to ignore errors (`-`). Carries the exit reason
+    # when one is known (a missing external tool, a utility's own message).
+    class CommandFailedError < ExecutionError
+      def initialize(target:, command:, reason: nil)
+        super(reason ? "recipe command failed (#{reason})" : "recipe command failed",
+              target: target, command: command)
+      end
+    end
+
+    # The shell-less runner met a construct it does not interpret (a pipe,
+    # background `&`, command substitution, an unterminated quote, ...). Since
+    # rubycc runs recipes without /bin/sh, an unhandled construct must fail
+    # loudly with the offending target and line rather than be silently dropped —
+    # this is the signal that a gem's recipe needs to be added to the runner's
+    # scope or the gem listed as unsupported (ROADMAP §6 B2).
+    class UnsupportedRecipeError < ExecutionError
+      def initialize(construct, target:, command:)
+        super("unsupported shell construct (#{construct})", target: target, command: command)
+      end
+    end
   end
 end

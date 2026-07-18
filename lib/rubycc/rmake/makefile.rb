@@ -4,6 +4,7 @@ require_relative "errors"
 require_relative "model"
 require_relative "expander"
 require_relative "parser"
+require_relative "executor"
 
 module Rubycc
   module Rmake
@@ -53,6 +54,18 @@ module Rubycc
         @state = {}
         build(goal)
         Plan.new(@steps)
+      end
+
+      # Plan +goal+ and then run it through the shell-less Executor (B2). This is
+      # the "make it" entry point that pairs with #plan (the "what would make do"
+      # entry point). +dry_run+ prints the recipe lines without running them
+      # (make -n) and matches #plan's #command_lines. Returns the Plan that was
+      # executed; raises CommandFailedError / UnsupportedRecipeError on the first
+      # failing or uninterpretable recipe line.
+      def run(goal = nil, out: $stdout, err: $stderr, dry_run: false, env: ENV, now: Time.now)
+        computed = plan(goal, now: now)
+        Executor.new(dir: @dir, out: out, err: err, dry_run: dry_run, env: env).execute(computed)
+        computed
       end
 
       # The fully-expanded value of a variable (empty string when undefined).
