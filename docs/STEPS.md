@@ -2134,10 +2134,33 @@ B6(rubygems_plugin で gem install 統合)。
 
 ---
 
+## Step 59 — pkg-config シム(M3 B4)
+
+mkmf の pkg_config() が呼ぶ $PKGCONFIG を純 Ruby で置き換えるシム。implementer へ
+移譲(一次資料 = mkmf ソースと実物 .pc、仕様確定済み)・レビューして確定。
+
+**設計判断**:
+- **CLI 表面は mkmf の棚卸しから**: mkmf.rb の pkg_config(1953 行)が起動する形は
+  --exists と xpopen の --{option} 群だけで、既定パスでは libs / cflags-only-I /
+  cflags-only-other / cflags / libs-only-l を個別に呼ぶ。この 7 オプションのみ実装
+  (pkg-config 本家の全表面は作らない — rmake と同じコーパス駆動)。
+- **バージョン制約は CLI 非対応で正しい**: mkmf は pkg をモジュール名のみで渡す
+  (制約付き文字列を渡す経路が無い)。.pc 内の Requires に制約が現れた場合は評価
+  せず診断(UnsupportedError)。
+- **重複除去はしない素朴連結**: 本環境に本家が無く実測不可のため保守的に。
+  Requires グラフのモジュール単位再訪問だけはガード(循環防止)。本家差分テストは
+  skip ガード付きで、pkg-config のある環境で自動的に検証が効く。
+- fixture は実物 .pc のバイトコピー(zlib・openssl→libssl→libcrypto の連鎖)。
+
+**位置づけ**: 次は B5(conftest 完全対応 = mkmf を rubycc ツールチェーンで動かし、
+have_header/have_func/try_link/try_run と mkmf.log の体裁まで通す)。
+
+---
+
 ## 現在のテスト規模
 
-Step 58 完了時点: **1,733 runs / 4,872 assertions / 0 failures / 18 skips**
-(+1 skip はネットワーク前提の opt-in 受け入れ)
+Step 59 完了時点: **1,761 runs / 4,960 assertions / 0 failures / 19 skips**
+(skips: c-testsuite 由来 + opt-in 受け入れ + 本家 pkg-config 差分)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト

@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 完了判定を達成(Step 54、glibc 環境)**: json 2.21.1 = rubycc ビルドの C 拡張で **606 tests / 100% passed**、msgpack 1.8.3 = **455 examples / 0 failures**(手順は tools/m2_acceptance.rb で再現可能)。残項目: musl コンテナでの確認(M3 のコンテナマトリクス整備時)、L5 第三段(.gnu.hash・RELRO、適合性磨き込み)。**M3 進行中**: コーパス化 = Step 55、B1(rmake コア)= Step 56、B2(シェルレス実行器)= Step 57、B3(in-process ツール置換 + -j 並列)= Step 58 完了。**実物 mkmf Makefile → rmake → rubycc 製 .so の柱が通った**(json parser.so dlopen 確認、msgpack フル 12 TU を jobs:4 で約 30 秒完走)。次 = B4(pkg-config シム。注: 本環境は pkg-config 本体が無いので本家との出力一致テストは skip ガード付きで設計、実物 .pc は /usr/lib/x86_64-linux-gnu/pkgconfig にある zlib.pc 等を使用)→ B5(conftest 完全対応)→ B6(rubygems_plugin)。
+現在地: **M2 完了判定を達成(Step 54、glibc 環境)**: json 2.21.1 = rubycc ビルドの C 拡張で **606 tests / 100% passed**、msgpack 1.8.3 = **455 examples / 0 failures**(手順は tools/m2_acceptance.rb で再現可能)。残項目: musl コンテナでの確認(M3 のコンテナマトリクス整備時)、L5 第三段(.gnu.hash・RELRO、適合性磨き込み)。**M3 進行中**: コーパス化 = Step 55、B1(rmake コア)= Step 56、B2(シェルレス実行器)= Step 57、B3(in-process ツール置換 + -j 並列)= Step 58 完了。**実物 mkmf Makefile → rmake → rubycc 製 .so の柱が通った**(json parser.so dlopen 確認、msgpack フル 12 TU を jobs:4 で約 30 秒完走)。B4(pkg-config シム)= Step 59 完了(CLI 表面は mkmf pkg_config() の棚卸しから 7 オプションのみ。実物 .pc fixture + 本家差分 skip ガード)。次 = B5(conftest 完全対応: mkmf を rubycc ツールチェーンで動かし have_header/have_func/try_compile/try_link/try_run/check_sizeof と mkmf.log の体裁まで。$CC/$LDSHARED 等の差し込み方の設計から)→ B6(rubygems_plugin)。
 
 ---
 
