@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 完了判定を達成(Step 54、glibc 環境)**: json 2.21.1 = rubycc ビルドの C 拡張で **606 tests / 100% passed**、msgpack 1.8.3 = **455 examples / 0 failures**(手順は tools/m2_acceptance.rb で再現可能)。残項目: musl コンテナでの確認(M3 のコンテナマトリクス整備時)、L5 第三段(.gnu.hash・RELRO、適合性磨き込み)。**M3 進行中**: コーパス化 = Step 55、B1(rmake コア)= Step 56 完了(lib/rubycc/rmake/。実物 6 本の golden で GNU make -n と全一致。棚卸しの結果、変数代入は `=` のみ・関数出現ゼロなど機能セットは想定より狭かった)。次 = B2(シェルレス内蔵コマンド実行器: 単純コマンド・&&・;・リダイレクト・cd・VAR=x 前置・rm -f/mkdir -p 等の内蔵ユーティリティ)→ B3(in-process ツール呼び出し + fork 並列)。
+現在地: **M2 完了判定を達成(Step 54、glibc 環境)**: json 2.21.1 = rubycc ビルドの C 拡張で **606 tests / 100% passed**、msgpack 1.8.3 = **455 examples / 0 failures**(手順は tools/m2_acceptance.rb で再現可能)。残項目: musl コンテナでの確認(M3 のコンテナマトリクス整備時)、L5 第三段(.gnu.hash・RELRO、適合性磨き込み)。**M3 進行中**: コーパス化 = Step 55、B1(rmake コア)= Step 56、B2(シェルレス実行器)= Step 57 完了。rmake は「パース → 計画(make -n 全一致)→ シェルレス実行(実物 clean レシピの再生検証済み)」まで通った。コーパス発見: `||`・glob・`exit >`(TOUCH)が想定外で出現し実装、パイプ等は出現ゼロで明確失敗化。次 = B3(in-process ツール呼び出し: $(CC)/$(LDSHARED) を rubycc 内部 API へ置換 + fork 並列 → 実物 Makefile から rubycc 製 .so を作る統合点)。
 
 ---
 

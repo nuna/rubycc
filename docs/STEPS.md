@@ -2074,9 +2074,38 @@ mkmf 生成 Makefile を /bin/sh も make も無い環境で処理する make �
 
 ---
 
+## Step 57 — rmake のシェルレス実行器(M3 B2)
+
+/bin/sh の無い環境で Makefile レシピを自前解釈する実行層。heavy-implementer へ
+移譲(セッション上限で一度中断、SendMessage 再開で完遂)・レビューして確定。
+
+**設計判断**:
+- **語彙はコーパスの全ターゲットから確定**: fixtures 6 本の all だけでなく
+  install/clean/distclean/realclean まで Plan 展開して棚卸し。ROADMAP の想定に
+  無かった `||`・glob(clean の rm 引数)・`rmdir --ignore-fail-on-non-empty -p`・
+  `exit >`(mkmf の TOUCH の実体!)が出現して実装対象に、逆にパイプ・サブシェル・
+  コマンド置換は出現ゼロで UnsupportedRecipeError(ターゲット + レシピ行を明示)の
+  明確失敗にした。
+- **and-or リストは sh 同等の左→右単一ステータス**: `&&`/`||`/`;` を 1 本の
+  成否が流れる連接として評価。`cd` は行内スコープ(次行は基点から)、`VAR=` 前置は
+  その 1 プロセスのみ — make が各行を独立シェルで走らせる意味論の再現。
+- **内蔵ユーティリティが正**: rm/mkdir/rmdir/cp/install/echo/touch/true/:/exit を
+  FileUtils ベースで内蔵し、**basename ディスパッチ**で `/usr/bin/install` も内蔵に
+  解決(実物 Makefile は絶対パスで書く)。外部コマンド(gcc 等)は配列 argv の
+  spawn 直接実行でシェル文字列を一切組み立てない。
+- **再生テストは実物レシピ**: fixtures 6 本の clean をそのまま実行してファイル
+  システム効果を assert(外部コマンド不要の実レシピ)。all は疑似 CC で依存順と
+  exit 伝播を確認(実 CC の in-process 置換は B3)。
+
+**位置づけ**: rmake は「パース → 計画 → シェルレス実行」まで通った。次は B3 =
+$(CC)/$(LDSHARED)/$(AR) の rubycc 内部 API への in-process 置換 + fork 並列で、
+実物 Makefile から rubycc 製 .so を作る統合点。
+
+---
+
 ## 現在のテスト規模
 
-Step 56 完了時点: **1,666 runs / 4,749 assertions / 0 failures / 17 skips**
+Step 57 完了時点: **1,722 runs / 4,849 assertions / 0 failures / 17 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
