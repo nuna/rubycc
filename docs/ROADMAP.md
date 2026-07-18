@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 受け入れの大詰め。Step 53(複合リテラル)完了で C 言語側の壁は全て撤去され、**json/msgpack 両 gem が rubycc 単体ツールチェーンで動作**する状態に到達: msgpack = 全 12 TU 一発 .so 化 → require → Packer/Unpacker round-trip 一致、json = parser.so/generator.so を .so 化 → gem lib と結合して JSON.parser == JSON::Ext::Parser で parse/generate/pretty_generate/round-trip 正常。残る M2 完了判定は「extconf/Makefile 手動置換の手順で両 gem をビルドし、**gem 自身のテストスイートに合格**」の実施(= 次ステップ、Step 54)。L5 第三段(.gnu.hash)は後続**。
+現在地: **M2 完了判定を達成(Step 54、glibc 環境)**: json 2.21.1 = rubycc ビルドの C 拡張で **606 tests / 100% passed**、msgpack 1.8.3 = **455 examples / 0 failures**(手順は tools/m2_acceptance.rb で再現可能)。残項目: musl コンテナでの確認(M3 のコンテナマトリクス整備時)、L5 第三段(.gnu.hash・RELRO、適合性磨き込み)。**次は M3(rmake / rubygems_plugin / pkg-config / conftest = gem install 統合、§6)**。着手前に §6 冒頭の「実物 Makefile/conftest のコーパス化」から。
 
 ---
 

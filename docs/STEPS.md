@@ -1982,9 +1982,49 @@ pretty_generate / round-trip が全て正常動作**。M2 対象の 2 gem が ru
 
 ---
 
+## Step 54 — M2 受け入れの実施と再現ツール(M2 完了判定の達成)
+
+Step 53 までで C 言語側の壁が全て撤去されたため、M2 の完了判定
+「extconf.rb が生成した Makefile のコマンドを手動で rubycc に置き換えて json /
+msgpack をビルドし、**gem 自身のテストスイートに合格**」を実施した。メイン
+セッションで全手順を実測し、implementer が tools/m2_acceptance.rb として永続化。
+
+**結果(実測、2 回再現)**:
+- **json 2.21.1**: rubycc ビルドの parser.so + generator.so で
+  **606 tests / 3433 assertions / 100% passed**。テスト前に
+  `JSON.parser == JSON::Ext::Parser` を検証(pure-Ruby フォールバックでなく
+  C 拡張が使われていることの確認)。
+- **msgpack 1.8.3**: rubycc ビルドの msgpack.so(12 TU 一発)で
+  **455 examples / 0 failures / 1 pending**(pending は msgpack リポジトリ自身が
+  期待値として記す既知項目)。
+
+**設計判断**:
+- **受け入れは常設スイートでなくツール**: ネットワーク(gem fetch / GitHub
+  tarball のテスト取得)と rspec 等の外部依存を持つため、rake test には含めず
+  tools/m2_acceptance.rb(冪等・一気通貫・PASS/FAIL 判定で exit code)として残す。
+  常設回帰は Step 39/50 の C 拡張スモーク(require 実行込み)が担う。
+- **json の SIMD は gem 公式スイッチで無効化**: json の extconf は環境 gcc の
+  probe で JSON_ENABLE_SIMD/HAVE_CPUID_H を焼き込み、simd.h が SSE intrinsics と
+  <cpuid.h>(gcc 同梱ヘッダ)を要求する。SIMD intrinsics は DESIGN 3.3 の明示
+  スコープ外なので、**gem 自身が提供する公式オプション** `JSON_DISABLE_SIMD=1` で
+  無効化(R4 の「gem が公式に提供するインストールオプションの選択」= 無修正の
+  範囲内)。M3 の mkmf 統合では probe が rubycc に対して自然に失敗するため、
+  この env var 自体が不要になる見込み。
+- **残項目の明示**: musl コンテナでの確認は未実施(本環境は glibc のみ。M3 の
+  コンテナマトリクス整備時に実施)。L5 第三段(.gnu.hash・RELRO)は適合性の
+  磨き込みとして後続。GNU ld 相互運用(PC32)は §3 記録済みの既知制約のまま。
+
+**位置づけ**: **M2 のマイルストーン定義(json / msgpack 級の gem を手動ビルドし
+テスト合格)を glibc 環境で達成**。Step 29 のELFリーダから 26 ステップ・追補
+15 ステップで、リンカ・ar・ドライバ・互換ランタイム・C 言語残穴の全てを埋めた。
+次は M3(rmake / rubygems_plugin / pkg-config / conftest = gem install 統合)。
+
+---
+
 ## 現在のテスト規模
 
-Step 53 完了時点: **1,632 runs / 4,674 assertions / 0 failures / 17 skips**
+Step 54 完了時点: **1,632 runs / 4,674 assertions / 0 failures / 17 skips**
+(tools/ 追加のみのためスイートは不変)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
