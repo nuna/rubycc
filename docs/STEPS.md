@@ -2218,10 +2218,35 @@ M3 完了判定)。H1(互換ヘッダ基盤の設計)を先に確定させてか
 
 ---
 
+## Step 62 — ヘッダ ABI ハーネスと libc 配線(M3 B7 前段 = H1)
+
+同梱 libc ヘッダ(R8)の前段。ROADMAP H1 の「ABI 一致の検証機構をヘッダより先に
+作る」を実施。heavy-implementer へ移譲(上限中断 → 再開で完遂)・レビューして確定。
+
+**設計判断**:
+- **ハーネスは宣言的 Spec → 生成ソース → 二重実行**: sizeof/_Alignof・整数マクロ・
+  浮動マクロ(%a 厳密)・offsetof・コンパイル可否 snippet を、gcc + 実ヘッダと
+  rubycc + 同梱優先の両方で実行して出力一致を取る。以降のヘッダ追加は必ず
+  ケース追加とセット(目視に頼らない)。freestanding 6 ケースで green 稼働。
+- **検索パスは 4 層**: freestanding → 同梱 libc ABI 切替層(glibc/x86_64)→
+  同梱 libc 共通層 → ホスト。同梱が先勝ちし、include_next(既実装と確認)で
+  実ヘッダへ委譲する逃げ道を確保。ホスト層は distroless で自然に消える。
+- **棚卸しの発見**: gem 自身が直接 include する libc は assert.h/string.h のみで、
+  libc 表面はほぼ全て ruby.h 経由。対象はトップレベル 25 本(宣言のみ 13 /
+  型レイアウト要 6 / UAPI 連鎖 6。最難は sys/stat の struct stat と
+  ネットワーク系連鎖)。bits/ 84 本は同梱側でフラット定義に畳むため移植対象でない。
+- **ハーネスの初仕事**: float リテラルの binary32 丸めバグ(FLT_MAX の 10 進綴りが
+  +inf)と max_align_t 相違(long double = double の既知制限の帰結)を検出。
+  §3 に負債記録し該当検査は解除条件付きの非 assert。
+
+**位置づけ**: 次 = Step 63(libc ヘッダ第一陣: 棚卸しリストの (a)(b) 群を実装し
+ハーネスのケースとセットで固める)→ Step 64(distroless 相当受け入れ = M3 完了)。
+
+---
+
 ## 現在のテスト規模
 
-Step 61 完了時点: **1,794 runs / 5,042 assertions / 0 failures / 23 skips**
-(skips: c-testsuite 由来 + opt-in 受け入れ/corpus/gem install + 本家 pkg-config 差分)
+Step 62 完了時点: **1,801 runs / 5,063 assertions / 0 failures / 23 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
