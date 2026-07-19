@@ -2268,9 +2268,32 @@ json/msgpack フルビルド受け入れ = M3 完了判定)。
 
 ---
 
+## Step 64 — distroless 姿勢の受け入れ = M3 完了判定(M3 B7 の締め)
+
+heavy-implementer へ移譲・レビューして確定。
+
+**結果(実測)**:
+- json / msgpack の全 TU が **-nostdinc + 同梱ヘッダのみ**(ホスト /usr/include
+  完全不使用)でコンパイル → .so 化 → require → round-trip まで成功。
+- 不足はただ 1 本: msgpack の sysdep_endian.h が要求する arpa/inet.h。ソケットは
+  未使用のため UAPI 連鎖(netinet/in・sys/socket)は**作らず**、必要面だけを
+  collapse した自己完結ヘッダで対応(実測駆動の最小主義が最後まで機能)。
+- **hermetic ヘッダモード**(RUBYCC_HERMETIC_HEADERS)を新設し、
+  `RUBYCC=1 RUBYCC_HERMETIC_HEADERS=1 gem install json / msgpack` が成功・動作。
+  mkmf.log 等にホスト include が皆無であることを assert(opt-in 常設)。
+
+**判定**: DESIGN M3 の受け入れ「cc / make / sh / libc ヘッダの無い distroless
+相当で gem install が成功」のうち、**ローカルで検証可能な全て**(libc 開発ヘッダ
+不使用・cc/make/sh 不使用・conftest はホスト libc.so のリンクのみ = DESIGN 4.2 の
+前提どおり)を達成。**M3 完了**。残項目: 真の distroless イメージ / musl コンテナ
+での検証(コンテナ環境が無いため未実施。CI 整備時に実施)。sqlite3 / pg の
+受け入れも dev ライブラリ導入後(コーパス CI)。
+
+---
+
 ## 現在のテスト規模
 
-Step 63 完了時点: **1,823 runs / 5,130 assertions / 0 failures / 23 skips**
+Step 64 完了時点: **1,826 runs / 5,133 assertions / 0 failures / 25 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
