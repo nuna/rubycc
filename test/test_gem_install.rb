@@ -168,19 +168,53 @@ class TestGemInstall < Minitest::Test
     end
   end
 
+  # --- hermetic (bundled-headers-only) acceptance (opt-in) ------------------
+  #
+  # The M3 distroless criterion (Step 64): the same plain `gem install`, but with
+  # RUBYCC_HERMETIC_HEADERS=1 so rubycc drops the host libc directories from its
+  # search path and compiles every translation unit against its bundled headers
+  # alone -- the posture a headerless (distroless) image forces. This proves the
+  # bundled first batch carries everything json/msgpack reach for, end to end
+  # through a real RubyGems install, and that no conftest or build step quietly
+  # borrowed a declaration from /usr/include. (mkmf's conftests still *link*
+  # against the host libc.so -- the linker reads only the .so binary, no dev
+  # headers, per DESIGN 4.2 -- so that is expected and not asserted against.)
+
+  def test_gem_install_json_hermetic_headers
+    acceptance_gem_install("json", "2.21.1", hermetic: true) do |gem_home|
+      out = child_ruby(gem_home, <<~RUBY)
+        gem "json"; require "json"
+        print JSON.parse(JSON.generate({"a" => [1, 2, 3]}))["a"].sum
+      RUBY
+      assert_equal "6", out, "json round-trip must work in the hermetically built gem"
+    end
+  end
+
+  def test_gem_install_msgpack_hermetic_headers
+    acceptance_gem_install("msgpack", "1.8.3", hermetic: true) do |gem_home|
+      out = child_ruby(gem_home, <<~RUBY)
+        gem "msgpack"; require "msgpack"
+        packed = MessagePack::Packer.new.write([1, "x", true]).to_s
+        print MessagePack::Unpacker.new.feed(packed).read.inspect
+      RUBY
+      assert_equal '[1, "x", true]', out, "msgpack round-trip must work in the hermetically built gem"
+    end
+  end
+
   private
 
   # Build+install rubycc into a fresh GEM_HOME, install +name+-+version+ from the
   # network with RUBYCC=1, assert success and a produced .so, verify the build
   # went through exe/rmake and rubycc (gem_make.out evidence), and yield the
   # GEM_HOME so the caller can require and drive the built gem.
-  def acceptance_gem_install(name, version)
+  def acceptance_gem_install(name, version, hermetic: false)
     skip "set RMAKE_ACCEPTANCE=1 to run the networked gem-install acceptance" unless ENV["RMAKE_ACCEPTANCE"] == "1"
 
     Dir.mktmpdir("rubycc-gem-install") do |gem_home|
       install_rubycc_into(gem_home)
 
       env = { "RUBYCC" => "1", "GEM_HOME" => gem_home, "GEM_PATH" => gem_home }
+      env["RUBYCC_HERMETIC_HEADERS"] = "1" if hermetic
       out, status = Open3.capture2e(env, "gem", "install", name, "--version", version,
                                     "--install-dir", gem_home, "--no-document")
       assert status.success?, "gem install #{name} failed:\n#{out}"
@@ -189,6 +223,7 @@ class TestGemInstall < Minitest::Test
       refute_empty sos, "#{name} should have produced at least one .so"
 
       assert_build_used_rubycc(gem_home, name)
+      assert_no_host_include_headers(gem_home, name) if hermetic
       yield gem_home
     end
   end
@@ -225,6 +260,36 @@ class TestGemInstall < Minitest::Test
     refute_empty mkmf_logs, "mkmf.log should exist for #{name}"
     mkmf_out = mkmf_logs.map { |f| File.read(f) }.join("\n")
     assert_match(%r{gems/rubycc-[^/]+/exe/rubycc}, mkmf_out, "conftests must have run through the rubycc compiler")
+  end
+
+  # The host libc development-header directories rubycc drops in hermetic mode
+  # (the same set Preprocessor::LIBC_SYSTEM_INCLUDE_PATHS carries). A hermetic
+  # build must never pass one of these on a compile command line.
+  HOST_LIBC_INCLUDE_DIRS = %w[/usr/include/x86_64-linux-gnu /usr/include].freeze
+
+  # Best-effort evidence, from the RubyGems install transcripts, that the
+  # hermetic build did not reach into the host libc development headers. The
+  # strong guarantee is structural: RUBYCC_HERMETIC_HEADERS=1 makes rubycc drop
+  # the host libc directories from its own default search path, so a translation
+  # unit that needed a host-only declaration would have failed the build outright
+  # (which it did not, since we got here). As a corroborating check, neither
+  # transcript may show a host libc include directory passed on a compile command
+  # line -- mkmf/extconf must not have injected one. The ruby header dir and the
+  # libc.so the linker binds against (DESIGN 4.2: the linker reads only the .so
+  # binary, no dev headers) are legitimate host paths and are not what this
+  # checks.
+  def assert_no_host_include_headers(gem_home, name)
+    logs = Dir.glob(File.join(gem_home, "**", "gem_make.out")) +
+           Dir.glob(File.join(gem_home, "**", "mkmf.log"))
+    refute_empty logs, "install transcripts should exist for #{name}"
+    logs.each do |path|
+      File.foreach(path) do |line|
+        HOST_LIBC_INCLUDE_DIRS.each do |dir|
+          refute_match(/-I\s*#{Regexp.escape(dir)}(?:\s|\z)/, line,
+                       "#{File.basename(path)} passed host libc include #{dir}:\n#{line}")
+        end
+      end
+    end
   end
 
   # Run a one-liner in a child Ruby with the scratch GEM_HOME active, returning

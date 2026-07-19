@@ -66,6 +66,27 @@ module Rubycc
         *LIBC_SYSTEM_INCLUDE_PATHS
       ].freeze
 
+      # The hermetic-headers system search path: the bundled freestanding and
+      # bundled libc layers only, with the host libc directories dropped. Selected
+      # by RUBYCC_HERMETIC_HEADERS (see #default_system_include_paths) so a full
+      # `gem install` can be driven with rubycc's own headers exclusively -- the
+      # distroless posture -- without every conftest command having to pass
+      # -nostdinc explicitly. It is the same set the distroless ruby.h build uses,
+      # so if a translation unit reaches for a declaration only the host's real
+      # headers carry, it fails here the way it would on a headerless image
+      # instead of silently borrowing it from /usr/include.
+      HERMETIC_SYSTEM_INCLUDE_PATHS = [
+        BUNDLED_INCLUDE_DIR,
+        BUNDLED_LIBC_ARCH_INCLUDE_DIR,
+        BUNDLED_LIBC_INCLUDE_DIR
+      ].freeze
+
+      # The environment variable that switches the default system search path to
+      # the hermetic (bundled-only) set. Any non-empty value other than "0"
+      # enables it; the default (unset) keeps the host libc directories on the
+      # path, so existing behaviour is unchanged.
+      HERMETIC_HEADERS_ENV = "RUBYCC_HERMETIC_HEADERS"
+
       # A guard against unbounded #include recursion (a header that includes
       # itself); 200 is comfortably deeper than any sane header nesting.
       INCLUDE_DEPTH_LIMIT = 200
@@ -249,7 +270,7 @@ module Rubycc
       # <stdarg.h> or a libc header resolves with no explicit -I; the driver's
       # -nostdinc passes it false to search only the caller's directories.
       def preprocess(source, filename:, include_paths: [], defines: [], system_includes: true)
-        @include_paths = include_paths + (system_includes ? DEFAULT_SYSTEM_INCLUDE_PATHS : [])
+        @include_paths = include_paths + (system_includes ? default_system_include_paths : [])
         # The whole-run macro-expansion budget (see EXPANSION_TOKEN_LIMIT), reset
         # here so every translation unit starts with a full allowance.
         @expansion_tokens = 0
@@ -264,6 +285,21 @@ module Rubycc
       end
 
       private
+
+      # The system search path appended after the caller's -I/-isystem set: the
+      # full default (bundled headers ahead of the host libc directories), or the
+      # hermetic bundled-only set when RUBYCC_HERMETIC_HEADERS selects it. Read
+      # from the environment per call rather than cached so a process can flip the
+      # mode between translation units (the mkmf conftest sequence does not, but a
+      # test driving several compiles in-process may).
+      def default_system_include_paths
+        hermetic_headers? ? HERMETIC_SYSTEM_INCLUDE_PATHS : DEFAULT_SYSTEM_INCLUDE_PATHS
+      end
+
+      def hermetic_headers?
+        value = ENV[HERMETIC_HEADERS_ENV]
+        !value.nil? && !value.empty? && value != "0"
+      end
 
       # Applies the driver's command-line `-D`/`-U` requests before the source is
       # read, in the order they were given (so a later `-U` undoes an earlier

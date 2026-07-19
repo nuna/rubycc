@@ -373,6 +373,32 @@ class TestHeaderAbi < Minitest::Test
     snippets: ["static int abi_stat(const char *p, struct stat *b) { return stat(p, b); }"]
   )
 
+  # <arpa/inet.h> (Step 64): brought forward for msgpack, which includes it for
+  # the endian macros and the ntoh*/hton* conversions. The bundled header
+  # collapses glibc's socket + UAPI fan-out to the flat surface the gem actually
+  # uses, so the ABI checked is the byte-order conversions (constant-folded on
+  # both sides to the same swapped value), the address types' widths and layout,
+  # and that the inet_* / socklen_t declarations exist. The endian macros come in
+  # through the same <endian.h> the endian case already asserts.
+  ARPA_INET = HeaderAbiHarness::Spec.new(
+    header: "arpa/inet.h",
+    sizes: ["in_addr_t", "in_port_t", "socklen_t", "struct in_addr"],
+    ints: ["ntohs(0x1234)", "ntohl(0x12345678)", "htons(0x1234)", "htonl(0x12345678)",
+           "__BYTE_ORDER", "__LITTLE_ENDIAN", "__BIG_ENDIAN"],
+    offsets: [["struct in_addr", "s_addr"]],
+    snippets: [<<~C.chomp]
+      static int abi_arpa_inet(struct in_addr *a, const char *s) {
+        char buf[64]; socklen_t n = sizeof(buf);
+        return inet_aton(s, a) + (int)inet_addr(s) + (inet_ntoa(*a) != (void *)0)
+             + inet_pton(2, s, a) + (inet_ntop(2, a, buf, n) != (void *)0);
+      }
+    C
+  )
+
+  def test_arpa_inet_abi_matches_gcc
+    assert_abi_matches(ARPA_INET)
+  end
+
   def test_errno_abi_matches_gcc
     assert_abi_matches(ERRNO)
   end
