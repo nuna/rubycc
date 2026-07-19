@@ -1,0 +1,16 @@
+{
+  "json": {
+    "versions": ["2.21.1"],
+    "verified_at": "2026-07-17",
+    "environment": "glibc x86_64 / ruby 3.4.5",
+    "evidence": "Built with rubycc (parser.so + generator.so via rmake); gem's own test suite passed 606 tests / 100% (Step 54). B6 in-process rmake build re-confirmed (Step 61), hermetic distroless-headers gem install succeeded (Step 64).",
+    "notes": "The gem's SIMD probe (parser-use-simd/generator-use-simd) is naturally disabled when its conftests run through rubycc, so the scalar fallback path is what is built (Step 60). No JSON_DISABLE_SIMD flag needed via mkmf_shim."
+  },
+  "msgpack": {
+    "versions": ["1.8.3"],
+    "verified_at": "2026-07-17",
+    "environment": "glibc x86_64 / ruby 3.4.5",
+    "evidence": "Built with rubycc (12 translation units via rmake, jobs:4); gem's own RSpec suite passed 455 examples / 0 failures (Step 54). B6 in-process rmake build re-confirmed (Step 61), hermetic distroless-headers gem install succeeded (Step 64).",
+    "notes": "No known issues on glibc x86_64. musl and aarch64 not yet verified."
+  }
+}

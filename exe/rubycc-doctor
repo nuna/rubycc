@@ -1,0 +1,14 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# rubycc-doctor — the adoption-check command (ROADMAP §6 "M3 完了後のツール").
+# The repository lib/ is put on the load path (mirroring exe/rubycc and exe/rmake)
+# so the require resolves both from an installed gem and from a source checkout.
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+
+require "rubycc/doctor"
+
+# Thin launcher: all option parsing, the verified-database lookup and the
+# on-the-spot build orchestration live in Rubycc::Doctor::CLI, which returns the
+# process exit status.
+exit Rubycc::Doctor::CLI.run(ARGV)
