@@ -2304,10 +2304,37 @@ M3 完了後成果物の 2 件(2026-07-17 指示)。implementer へ移譲・レ�
 
 ---
 
+## Step 66 — gcc 速度比較ベンチマーク(ユーザ指示成果物)
+
+M3 完了後成果物(2026-07-18 指示)。heavy-implementer へ移譲(上限中断 → 再開で
+完遂、ドキュメントはユーザ指示により日本語で作成)・レビューして確定。
+
+- benchmark/ にコード一式(C カーネル 5 本 + json/msgpack 実ワークロード +
+  3-way ハーネス)、docs/BENCHMARKS.md に実測・考察。
+- **劣位ケースを含む実測**(指示要件): 最大は json の gcc-O2 比 7.65x・
+  arrayscan 7.41x(tight loop、レジスタ割付/ベクトル化の不在)。gcc-O0 比では
+  全ケース 1.1〜2.9x で、非最適化コード同士では十分競合。分岐・VM 律速では
+  差が縮む(treesum 1.22x / msgpack 2.60x)。N2(gcc-O2 比 2〜5x)は tight loop
+  系で超過 — 構造的帰結として記録し、M6 レジスタ割付を改善余地と明記。
+
+## Step 67 — rubycc-doctor と確認済み gem データ(ユーザ指示成果物)
+
+M3 完了後成果物(2026-07-17 指示)。heavy-implementer へ移譲(上限中断 → 再開で
+完遂)・レビューして確定。
+
+- exe/rubycc-doctor: Gemfile.lock(推移閉包)→ C 拡張判定(.gem 取得 +
+  Gem::Package。API は extensions を返さないことを実測確認)→
+  data/verified_gems.json 一次参照 → 未確認はその場ビルド(extconf(shim)→
+  rmake → require)で失敗段階特定 → 判定表 + 採用可否サマリ。
+- 実測: 未収載の racc 1.8.1 がその場ビルド → require OK → ADOPTABLE。
+- これで **M3 完了後のユーザ指示成果物 4 件(C11-COVERAGE / GCC-EXTENSIONS /
+  ベンチマーク / doctor)が全て完了**。
+
+---
+
 ## 現在のテスト規模
 
-Step 64 完了時点: **1,826 runs / 5,133 assertions / 0 failures / 25 skips**
-(Step 65 はドキュメントのみで不変)
+Step 67 完了時点: **1,846 runs / 5,231 assertions / 0 failures / 27 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
