@@ -90,6 +90,373 @@ class TestHeaderAbi < Minitest::Test
     snippets: ["static int abi_iso646(int a, int b) { return (a and b) or (a bitor b); }"]
   )
 
+  # ---------------------------------------------------------------------------
+  # Step 63 (M3 B7): the bundled libc first batch. Each Spec probes the ABI
+  # surface the bundled header commits to -- macro values, type widths, struct
+  # layouts and the presence of the core declarations -- so it is machine-checked
+  # against the host glibc rather than eyeballed. Snippets that merely need a
+  # declaration to exist reference the symbol without calling it (or wrap it in
+  # sizeof), so the probe links with plain gcc (no -lm) as the harness expects.
+  # ---------------------------------------------------------------------------
+
+  # <stdio.h>: the glibc macro values and that FILE* and the core stream calls
+  # are usable. FILE itself is opaque, so it is probed only through a pointer.
+  STDIO = HeaderAbiHarness::Spec.new(
+    header: "stdio.h",
+    sizes: %w[fpos_t],
+    ints: %w[EOF SEEK_SET SEEK_CUR SEEK_END _IOFBF _IOLBF _IONBF
+             BUFSIZ FOPEN_MAX FILENAME_MAX L_tmpnam TMP_MAX],
+    snippets: [<<~C.chomp]
+      static int abi_stdio(FILE *f, const char *s) {
+        return fputc('x', f) + fputs(s, f) + (stdin != stdout);
+      }
+    C
+  )
+
+  # <stdlib.h>: the div_t family's LP64 layout, the exit/rand macros, and the
+  # allocation/conversion declarations.
+  STDLIB = HeaderAbiHarness::Spec.new(
+    header: "stdlib.h",
+    sizes: ["div_t", "ldiv_t", "lldiv_t", "size_t"],
+    ints: %w[EXIT_SUCCESS EXIT_FAILURE RAND_MAX],
+    offsets: [["div_t", "quot"], ["div_t", "rem"],
+              ["ldiv_t", "quot"], ["ldiv_t", "rem"]],
+    snippets: [<<~C.chomp]
+      static long abi_stdlib(const char *s) {
+        void *p = malloc(8); free(p);
+        return strtol(s, (char **)0, 10) + atoi(s);
+      }
+    C
+  )
+
+  # <string.h>: the mem*/str* prototypes are present and usable.
+  STRING = HeaderAbiHarness::Spec.new(
+    header: "string.h",
+    sizes: %w[size_t],
+    snippets: [<<~C.chomp]
+      static int abi_string(char *d, const char *s) {
+        memcpy(d, s, strlen(s) + 1);
+        return strcmp(d, s) + (memchr(s, 'a', 4) != (void *)0);
+      }
+    C
+  )
+
+  # <strings.h>: the BSD byte-string prototypes.
+  STRINGS = HeaderAbiHarness::Spec.new(
+    header: "strings.h",
+    snippets: [<<~C.chomp]
+      static int abi_strings(const char *a, const char *b) {
+        return strcasecmp(a, b) + strncasecmp(a, b, 3) + ffs(0x10);
+      }
+    C
+  )
+
+  # <ctype.h>: glibc does not return a bare 0/1 -- the classifiers yield the
+  # masked table bits, so the exact return values (and the _IS* masks) are part
+  # of the ABI and are asserted here. The __ctype_*_loc accessors resolve from
+  # the host libc at link time.
+  CTYPE = HeaderAbiHarness::Spec.new(
+    header: "ctype.h",
+    ints: ["isalpha('a')", "isdigit('5')", "isspace(' ')", "isupper('A')",
+           "islower('a')", "isxdigit('f')", "isalnum('z')", "ispunct('!')",
+           "toupper('a')", "tolower('A')",
+           "_ISupper", "_ISlower", "_ISalpha", "_ISdigit", "_ISspace",
+           "_ISblank", "_IScntrl", "_ISpunct", "_ISalnum"]
+  )
+
+  # <assert.h>: the assert macro expands to usable code (its __assert_fail hook
+  # resolves from libc), and static_assert is available.
+  ASSERT = HeaderAbiHarness::Spec.new(
+    header: "assert.h",
+    snippets: [<<~C.chomp]
+      static_assert(sizeof(int) == 4, "int is 4 bytes");
+      static int abi_assert(int x) { assert(x > 0); return x; }
+    C
+  )
+
+  # <alloca.h>: alloca maps onto the compiler builtin.
+  ALLOCA = HeaderAbiHarness::Spec.new(
+    header: "alloca.h",
+    snippets: ["static void *abi_alloca(unsigned long n) { return alloca(n); }"]
+  )
+
+  # <math.h>: the FP_* classification codes and math_errhandling value, the
+  # special magnitudes and constants as exact hex floats, and that the core
+  # function declarations exist (probed under sizeof so no libm link is needed).
+  MATH = HeaderAbiHarness::Spec.new(
+    header: "math.h",
+    ints: %w[FP_NAN FP_INFINITE FP_ZERO FP_SUBNORMAL FP_NORMAL
+             MATH_ERRNO MATH_ERREXCEPT math_errhandling FP_ILOGB0 FP_ILOGBNAN],
+    floats: %w[M_PI M_E M_SQRT2 M_LN2 M_LOG2E HUGE_VAL],
+    snippets: [<<~C.chomp]
+      static int abi_math(double x) {
+        return isnan(x) + isinf(x) + (signbit(x) != 0)
+             + (sizeof(sqrt(x)) == 8) + (sizeof(pow(x, x)) == 8)
+             + (sizeof(floor(x)) == 8) + (sizeof(ldexp(x, 2)) == 8);
+      }
+    C
+  )
+
+  # <limits.h>: the arithmetic-type ranges. The unsigned maxima print as -1 when
+  # cast to (long long), but identically so on both sides, so they still verify.
+  LIMITS = HeaderAbiHarness::Spec.new(
+    header: "limits.h",
+    ints: %w[CHAR_BIT MB_LEN_MAX SCHAR_MIN SCHAR_MAX UCHAR_MAX CHAR_MIN CHAR_MAX
+             SHRT_MIN SHRT_MAX USHRT_MAX INT_MIN INT_MAX UINT_MAX
+             LONG_MIN LONG_MAX ULONG_MAX LLONG_MIN LLONG_MAX ULLONG_MAX]
+  )
+
+  # <endian.h>: the byte-order identity macros and the host<->be/le conversions.
+  ENDIAN = HeaderAbiHarness::Spec.new(
+    header: "endian.h",
+    ints: ["__BYTE_ORDER", "__LITTLE_ENDIAN", "__BIG_ENDIAN",
+           "BYTE_ORDER", "LITTLE_ENDIAN", "BIG_ENDIAN",
+           "htobe16(0x1234)", "htole16(0x1234)", "be16toh(0x1234)",
+           "htobe32(0x12345678)", "be32toh(0x12345678)",
+           "htole64(0x1122334455667788UL)", "htobe64(0x1122334455667788UL)"]
+  )
+
+  # <stdint.h>: the exact/least/fast widths and their limit and constant macros.
+  STDINT = HeaderAbiHarness::Spec.new(
+    header: "stdint.h",
+    sizes: %w[int8_t int16_t int32_t int64_t uint8_t uint16_t uint32_t uint64_t
+              int_least8_t int_least16_t int_least32_t int_least64_t
+              int_fast8_t int_fast16_t int_fast32_t int_fast64_t
+              uint_fast8_t uint_fast16_t uint_fast32_t uint_fast64_t
+              intptr_t uintptr_t intmax_t uintmax_t],
+    ints: %w[INT8_MIN INT8_MAX UINT8_MAX INT16_MIN INT16_MAX UINT16_MAX
+             INT32_MIN INT32_MAX UINT32_MAX INT64_MIN INT64_MAX UINT64_MAX
+             INT_FAST16_MAX INT_FAST32_MAX INT_FAST64_MAX
+             INTPTR_MAX UINTPTR_MAX INTMAX_MAX UINTMAX_MAX
+             PTRDIFF_MAX SIZE_MAX SIG_ATOMIC_MIN SIG_ATOMIC_MAX
+             WCHAR_MIN WCHAR_MAX WINT_MAX] +
+          ["INT8_C(3)", "UINT8_C(3)", "INT64_C(3)", "UINT64_C(3)",
+           "INTMAX_C(3)", "UINTMAX_C(3)"]
+  )
+
+  # <inttypes.h>: the imaxdiv_t layout, plus the PRI/SCN format-specifier macros
+  # verified through their length and first character (so a wrong length modifier
+  # for this LP64 ABI is caught), and the greatest-width call declarations.
+  INTTYPES = HeaderAbiHarness::Spec.new(
+    header: "inttypes.h",
+    sizes: %w[imaxdiv_t],
+    offsets: [["imaxdiv_t", "quot"], ["imaxdiv_t", "rem"]],
+    ints: ["sizeof(PRId8)", "PRId8[0]", "sizeof(PRId64)", "PRId64[0]", "PRId64[1]",
+           "sizeof(PRIu32)", "PRIu32[0]", "sizeof(PRIx64)", "PRIx64[0]",
+           "sizeof(PRIdPTR)", "PRIdPTR[0]", "sizeof(PRIdMAX)", "PRIdMAX[0]",
+           "sizeof(SCNd8)", "SCNd8[0]", "SCNd8[1]", "sizeof(SCNu16)", "SCNu16[0]",
+           "sizeof(SCNx64)", "SCNx64[0]", "sizeof(SCNd32)", "SCNd32[0]"],
+    snippets: [<<~C.chomp]
+      static intmax_t abi_inttypes(const char *s) {
+        return imaxabs(strtoimax(s, (char **)0, 10));
+      }
+    C
+  )
+
+  # <time.h>: time_t's width, struct tm's 56-byte glibc layout (tm_gmtoff/tm_zone
+  # included), struct timespec, the CLOCKS_PER_SEC / clock-id macros, and the
+  # calendar-call declarations.
+  TIME = HeaderAbiHarness::Spec.new(
+    header: "time.h",
+    sizes: ["time_t", "clock_t", "struct tm", "struct timespec"],
+    ints: %w[CLOCKS_PER_SEC TIME_UTC CLOCK_REALTIME CLOCK_MONOTONIC
+             CLOCK_PROCESS_CPUTIME_ID TIMER_ABSTIME],
+    offsets: [["struct tm", "tm_sec"], ["struct tm", "tm_min"], ["struct tm", "tm_hour"],
+              ["struct tm", "tm_mday"], ["struct tm", "tm_mon"], ["struct tm", "tm_year"],
+              ["struct tm", "tm_wday"], ["struct tm", "tm_yday"], ["struct tm", "tm_isdst"],
+              ["struct tm", "tm_gmtoff"], ["struct tm", "tm_zone"],
+              ["struct timespec", "tv_sec"], ["struct timespec", "tv_nsec"]],
+    snippets: [<<~C.chomp]
+      static time_t abi_time(struct tm *tp) {
+        time_t t = time((time_t *)0);
+        return t + mktime(tp) + (long)difftime(t, 0);
+      }
+    C
+  )
+
+  # <sys/types.h>: the width-critical POSIX typedefs.
+  SYS_TYPES = HeaderAbiHarness::Spec.new(
+    header: "sys/types.h",
+    sizes: %w[ssize_t off_t pid_t uid_t gid_t mode_t dev_t ino_t nlink_t
+              blksize_t blkcnt_t fsblkcnt_t time_t clock_t suseconds_t
+              id_t key_t clockid_t timer_t]
+  )
+
+  # <sys/time.h>: struct timeval's 16-byte layout and the BSD time calls.
+  SYS_TIME = HeaderAbiHarness::Spec.new(
+    header: "sys/time.h",
+    sizes: %w[struct\ timeval],
+    offsets: [["struct timeval", "tv_sec"], ["struct timeval", "tv_usec"]],
+    snippets: [<<~C.chomp]
+      static int abi_systime(struct timeval *tv) {
+        return gettimeofday(tv, (void *)0);
+      }
+    C
+  )
+
+  # <sys/select.h>: fd_set's 128-byte layout, FD_SETSIZE, and the FD_* macros.
+  SYS_SELECT = HeaderAbiHarness::Spec.new(
+    header: "sys/select.h",
+    sizes: %w[fd_set],
+    ints: %w[FD_SETSIZE],
+    snippets: [<<~C.chomp]
+      static int abi_select(int fd) {
+        fd_set s; FD_ZERO(&s); FD_SET(fd, &s);
+        return FD_ISSET(fd, &s); FD_CLR(fd, &s);
+      }
+    C
+  )
+
+  # <unistd.h>: the standard file-descriptor and access-mode constants, the few
+  # ABI-typed names' widths, and that the core system-call declarations exist.
+  UNISTD = HeaderAbiHarness::Spec.new(
+    header: "unistd.h",
+    sizes: %w[ssize_t off_t pid_t uid_t gid_t],
+    ints: %w[STDIN_FILENO STDOUT_FILENO STDERR_FILENO F_OK R_OK W_OK X_OK
+             SEEK_SET SEEK_CUR SEEK_END],
+    snippets: [<<~C.chomp]
+      static long abi_unistd(int fd, void *buf, unsigned long n) {
+        return read(fd, buf, n) + write(fd, buf, n) + close(fd) + getpid();
+      }
+    C
+  )
+
+  # <features.h>: the glibc version macros the version-gated header code branches
+  # on.
+  FEATURES = HeaderAbiHarness::Spec.new(
+    header: "features.h",
+    ints: ["__GLIBC__", "__GLIBC_MINOR__",
+           "__GLIBC_PREREQ(2, 17)", "__GLIBC_PREREQ(2, 99)", "__GLIBC_PREREQ(3, 0)"]
+  )
+
+  # <sys/cdefs.h>: the compiler-abstraction macros expand to usable code. The
+  # __GNUC_PREREQ value is deliberately not asserted: rubycc does not define
+  # __GNUC__ (DESIGN R7), so it evaluates to 0 where gcc yields 1 -- a real,
+  # intended toolchain difference rather than a header defect.
+  SYS_CDEFS = HeaderAbiHarness::Spec.new(
+    header: "sys/cdefs.h",
+    snippets: [<<~C.chomp]
+      __BEGIN_DECLS
+      extern int abi_cdefs(int) __THROW __attribute_pure__;
+      __END_DECLS
+      static int abi_cdefs_use(int x) { return __glibc_likely(x > 0) ? x : -x; }
+    C
+  )
+
+  # <errno.h> and <sys/stat.h> are (c)-group headers brought forward as measured
+  # stubs so the distroless ruby.h build resolves; they are ABI-checked here too
+  # since they ship and shadow the host copies. <errno.h>: the errno numbers and
+  # the errno lvalue (its __errno_location hook resolves from libc).
+  ERRNO = HeaderAbiHarness::Spec.new(
+    header: "errno.h",
+    ints: %w[EPERM ENOENT ESRCH EINTR EIO ENXIO E2BIG ENOEXEC EBADF ECHILD
+             EAGAIN ENOMEM EACCES EFAULT EBUSY EEXIST ENODEV ENOTDIR EISDIR
+             EINVAL EMFILE ENOSPC EPIPE ERANGE ENAMETOOLONG ENOSYS
+             EWOULDBLOCK EDEADLK ECONNRESET ETIMEDOUT],
+    snippets: ["static int abi_errno(void) { errno = 0; return errno; }"]
+  )
+
+  # <sys/stat.h>: struct stat's 144-byte kernel layout and the S_IF* mode bits.
+  SYS_STAT = HeaderAbiHarness::Spec.new(
+    header: "sys/stat.h",
+    sizes: %w[struct\ stat mode_t],
+    ints: ["S_IFMT", "S_IFDIR", "S_IFREG", "S_IFLNK", "S_IFCHR", "S_IFBLK",
+           "S_IFIFO", "S_IFSOCK", "S_ISUID", "S_ISGID", "S_ISVTX", "S_IRWXU",
+           "S_IRWXG", "S_IRWXO", "S_ISDIR(0040000)", "S_ISREG(0100000)"],
+    offsets: [["struct stat", "st_dev"], ["struct stat", "st_ino"],
+              ["struct stat", "st_nlink"], ["struct stat", "st_mode"],
+              ["struct stat", "st_uid"], ["struct stat", "st_gid"],
+              ["struct stat", "st_rdev"], ["struct stat", "st_size"],
+              ["struct stat", "st_blksize"], ["struct stat", "st_blocks"],
+              ["struct stat", "st_atim"], ["struct stat", "st_mtim"],
+              ["struct stat", "st_ctim"]],
+    snippets: ["static int abi_stat(const char *p, struct stat *b) { return stat(p, b); }"]
+  )
+
+  def test_errno_abi_matches_gcc
+    assert_abi_matches(ERRNO)
+  end
+
+  def test_sys_stat_abi_matches_gcc
+    assert_abi_matches(SYS_STAT)
+  end
+
+  def test_stdio_abi_matches_gcc
+    assert_abi_matches(STDIO)
+  end
+
+  def test_stdlib_abi_matches_gcc
+    assert_abi_matches(STDLIB)
+  end
+
+  def test_string_abi_matches_gcc
+    assert_abi_matches(STRING)
+  end
+
+  def test_strings_abi_matches_gcc
+    assert_abi_matches(STRINGS)
+  end
+
+  def test_ctype_abi_matches_gcc
+    assert_abi_matches(CTYPE)
+  end
+
+  def test_assert_abi_matches_gcc
+    assert_abi_matches(ASSERT)
+  end
+
+  def test_alloca_abi_matches_gcc
+    assert_abi_matches(ALLOCA)
+  end
+
+  def test_math_abi_matches_gcc
+    assert_abi_matches(MATH)
+  end
+
+  def test_limits_abi_matches_gcc
+    assert_abi_matches(LIMITS)
+  end
+
+  def test_endian_abi_matches_gcc
+    assert_abi_matches(ENDIAN)
+  end
+
+  def test_stdint_abi_matches_gcc
+    assert_abi_matches(STDINT)
+  end
+
+  def test_inttypes_abi_matches_gcc
+    assert_abi_matches(INTTYPES)
+  end
+
+  def test_time_abi_matches_gcc
+    assert_abi_matches(TIME)
+  end
+
+  def test_sys_types_abi_matches_gcc
+    assert_abi_matches(SYS_TYPES)
+  end
+
+  def test_sys_time_abi_matches_gcc
+    assert_abi_matches(SYS_TIME)
+  end
+
+  def test_sys_select_abi_matches_gcc
+    assert_abi_matches(SYS_SELECT)
+  end
+
+  def test_unistd_abi_matches_gcc
+    assert_abi_matches(UNISTD)
+  end
+
+  def test_features_abi_matches_gcc
+    assert_abi_matches(FEATURES)
+  end
+
+  def test_sys_cdefs_abi_matches_gcc
+    assert_abi_matches(SYS_CDEFS)
+  end
+
   def test_stddef_abi_matches_gcc
     assert_abi_matches(STDDEF)
   end

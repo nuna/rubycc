@@ -1,0 +1,44 @@
+rubycc
+======
+
+This product bundles a set of C library compatibility headers under
+`include/libc/` so that hosted translation units can be compiled without the
+target system's own libc development headers (the "distroless" use case).
+
+Portions of the bundled libc headers are derived from musl libc
+(https://musl.libc.org/), used as the starting point for the standard
+declarations, and then modified so their type widths, structure layouts and
+macro values match the glibc x86-64 ABI (measured from the reference platform,
+not copied from glibc). Each derived header carries a one-line provenance note
+in its opening comment; headers whose entire mechanism is glibc/arch specific
+(for example the <ctype.h> classification table accessors) are written clean
+room against the published ABI rather than derived from either source.
+
+No source was copied from glibc (which is LGPL); only observable ABI values
+(sizeof/_Alignof, offsetof, and macro values, printed by the reference
+compiler) were measured and reproduced.
+
+musl libc
+---------
+
+Copyright (C) 2005-2020 Rich Felker, et al.
+
+musl is licensed under the MIT license:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

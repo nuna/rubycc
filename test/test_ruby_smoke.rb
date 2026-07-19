@@ -41,6 +41,22 @@ class TestRubySmoke < Minitest::Test
   # automatically as part of the default system search path.
   INCLUDE_PATHS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR, *SYSTEM_INCLUDE_PATHS].freeze
 
+  # The bundled header directories, resolved from the gem checkout: the
+  # freestanding layer, then the two bundled-libc layers (arch before common).
+  BUNDLED_INCLUDE = File.expand_path("../include", __dir__)
+  BUNDLED_LIBC_ARCH_INCLUDE = File.expand_path("../include/libc/glibc/x86_64", __dir__)
+  BUNDLED_LIBC_INCLUDE = File.expand_path("../include/libc", __dir__)
+
+  # The distroless include path (Step 63 acceptance 2): the bundled freestanding
+  # and libc layers plus the CRuby header dirs, with NO host /usr/include on it.
+  # Compiling <ruby.h> against this proves the bundled libc first batch carries
+  # everything ruby.h reaches for -- without borrowing a single declaration from
+  # the host libc's development headers.
+  DISTROLESS_INCLUDE_PATHS = [
+    BUNDLED_INCLUDE, BUNDLED_LIBC_ARCH_INCLUDE, BUNDLED_LIBC_INCLUDE,
+    RUBY_ARCH_HDR_DIR, File.join(RUBY_HDR_DIR.to_s, "ruby/backward"), RUBY_HDR_DIR
+  ].freeze
+
   # A minimal but real extension: define one module in the init entry point.
   SMOKE_SOURCE = <<~C
     #include <ruby.h>
@@ -81,6 +97,28 @@ class TestRubySmoke < Minitest::Test
   def test_compiles_a_module_function_using_value_conversion_macros
     object = compile_extension(RICHER_SOURCE, "smoke2.c")
     refute_empty object, "expected a non-empty relocatable object for the richer extension"
+  end
+
+  # The distroless criterion (Step 63): <ruby.h> compiles to an object using only
+  # the bundled headers and the CRuby dirs, with the host /usr/include suppressed
+  # entirely (-nostdinc, i.e. system_includes: false, and no /usr/include on the
+  # -I list). This is the M3 "no host libc dev headers" target. The bundled first
+  # batch supplies the C library surface; the errno/sys-stat (c)-group headers it
+  # transitively reaches are provided as measured minimal stubs brought forward
+  # from the next step.
+  def test_ruby_h_compiles_against_bundled_headers_only_no_host_libc
+    [["smoke.c", SMOKE_SOURCE], ["smoke2.c", RICHER_SOURCE]].each do |filename, source|
+      object = Dir.mktmpdir("rubycc-distroless") do |dir|
+        obj = Rubycc::Compiler.new.compile(
+          source, filename: filename,
+          include_paths: DISTROLESS_INCLUDE_PATHS, system_includes: false
+        )
+        File.binwrite(File.join(dir, "#{File.basename(filename, ".c")}.o"), obj)
+        obj
+      end
+      refute_empty object,
+                   "expected #{filename} to compile against bundled headers with no host libc"
+    end
   end
 
   private
