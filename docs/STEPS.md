@@ -2244,9 +2244,33 @@ M3 完了判定)。H1(互換ヘッダ基盤の設計)を先に確定させてか
 
 ---
 
+## Step 63 — 同梱 libc ヘッダ第一陣(M3 B7)
+
+R8(libc 互換ヘッダの同梱)の第一陣 21 本。heavy-implementer へ移譲(上限中断 →
+メインセッションが検証を引き継いで確定)。
+
+**設計判断**:
+- **musl 派生 + glibc 実測 ABI**(H1 方針の実施): 宣言の出発点は musl(MIT、
+  NOTICE に表記)、型幅・レイアウト・マクロ値は ABI ハーネスで gcc に印字させた
+  glibc x86_64 実測値に合わせる。bits/ 間接は使わずフラット定義。glibc 実物の
+  コピーは一切しない(LGPL)。
+- **層の割当**: どの libc でも同じ宣言は共通層(stdio の FILE 不透明ポインタ等)、
+  型幅・レイアウトが libc/arch 固有のものは ABI 切替層(stdint/limits/time/
+  sys/types 等)。(c) UAPI 群から errno と sys/stat を必要最小で先取り
+  (ruby.h スモークが要求)。
+- **検証はハーネス駆動**: 21 本全てにケースを付け 27 runs / 81 assertions green。
+  **distroless 模擬**(-nostdinc + 同梱のみ、ホスト /usr/include 不使用)で
+  ruby.h 拡張が .o 到達することを常設テスト化 — B7 の受け入れの核心が
+  コンパイル段について達成された。
+
+**位置づけ**: 次 = Step 64(残りの (c) UAPI 群の充実 + distroless 相当での
+json/msgpack フルビルド受け入れ = M3 完了判定)。
+
+---
+
 ## 現在のテスト規模
 
-Step 62 完了時点: **1,801 runs / 5,063 assertions / 0 failures / 23 skips**
+Step 63 完了時点: **1,823 runs / 5,130 assertions / 0 failures / 23 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
