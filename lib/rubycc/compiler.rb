@@ -32,11 +32,13 @@ module Rubycc
       "x86_64" => { backend: Backend::X86_64, machine: ObjFile::ELFWriter::X86_64,
                     char_signed: true,
                     arch_macros: Preprocess::Preprocessor::X86_64_ARCH_MACROS,
-                    unnamed_bitfields_align: false },
+                    unnamed_bitfields_align: false,
+                    convention: IR::CallConvention::SYSTEM_V_AMD64 },
       "aarch64" => { backend: Backend::AArch64, machine: ObjFile::ELFWriter::AARCH64,
                      char_signed: false,
                      arch_macros: Preprocess::Preprocessor::AARCH64_ARCH_MACROS,
-                     unnamed_bitfields_align: true }
+                     unnamed_bitfields_align: true,
+                     convention: IR::CallConvention::AAPCS64 }
     }.freeze
 
     # Compiles C source into an ELF64 relocatable object, returned as an
@@ -59,7 +61,8 @@ module Rubycc
                                             system_includes: system_includes)
       program = Front::Parser.new(tokens, plain_char: plain_char,
                                           unnamed_bitfields_align: entry[:unnamed_bitfields_align]).parse
-      ir_program = IR::Generator.new(plain_char: plain_char).generate(program, pic: pic)
+      ir_program = IR::Generator.new(plain_char: plain_char,
+                                     convention: entry[:convention]).generate(program, pic: pic)
 
       backend = entry[:backend].new
       writer = ObjFile::ELFWriter.new(machine: entry[:machine])

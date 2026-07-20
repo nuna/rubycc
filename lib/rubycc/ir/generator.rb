@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "ir"
+require_relative "call_convention"
 require_relative "../front/ast"
 require_relative "../front/constant_evaluator"
 require_relative "../front/initializer_resolver"
@@ -62,8 +63,13 @@ module Rubycc
       # a byte read out of one sign- or zero-extends following the target's
       # plain-char signedness. It defaults to the signed instance, the x86-64
       # System V choice, for a caller with no target in hand.
-      def initialize(plain_char: Type::Char)
+      #
+      # `convention` is the target's CallConvention, which fixes how many
+      # registers an argument list may draw on before it spills to the stack.
+      # It defaults to System V AMD64 for the same reason `plain_char` does.
+      def initialize(plain_char: Type::Char, convention: CallConvention::SYSTEM_V_AMD64)
         @plain_char = plain_char
+        @convention = convention
       end
 
       # Returns an IR::Program: an IR::Function per AST::FunctionDef plus the
@@ -868,7 +874,7 @@ module Rubycc
         # One candidate-kind list per ABI entity, in slot order: the hidden return
         # pointer (if any) first, then each parameter's eightbyte classes.
         slot_lists = []
-        slot_lists << [:gp] if hidden_return
+        slot_lists << [@convention.hidden_result_kind] if hidden_return
         param_lists = func.params.map { |param| parameter_slot_kinds(param.type) }
         slot_lists.concat(param_lists)
 
@@ -911,12 +917,15 @@ module Rubycc
       # The candidate eightbyte-kind list a parameter of `type` contributes to the
       # ABI slot layout: a scalar is a single register-class eightbyte, a
       # register-classified struct its INTEGER/SSE eightbytes, and a MEMORY struct
-      # ceil(size/8) stack eightbytes (which #place_argument_kinds leaves as :mem).
+      # ceil(size/8) eightbytes tagged with the convention's memory-aggregate kind
+      # (which #place_argument_kinds passes through untouched).
       def parameter_slot_kinds(type)
         return [argument_kind(type)] unless type.struct?
 
         classes = classify_struct(type)
-        classes == :memory ? Array.new((type.size + 7) / 8, :mem) : classes
+        return classes unless classes == :memory
+
+        Array.new((type.size + 7) / 8, @convention.memory_aggregate_kind)
       end
 
       # Reassembles a struct parameter from its incoming ABI slots into a fresh
@@ -965,41 +974,39 @@ module Rubycc
         :gp
       end
 
-      # The number of registers each System V AMD64 argument class provides: six
-      # integer registers (rdi..r9) and eight xmm registers (xmm0..7). Once a
-      # class's registers are used up, its further arguments pass on the stack.
-      GP_ARG_REGISTERS = 6
-      SSE_ARG_REGISTERS = 8
-
       # Fixes the register/stack placement of an argument list ahead of the
       # backend, so the classification the backend follows is decided where every
       # argument's type is known. `arguments` is one entry per argument, each a
       # list of that argument's eightbyte candidate kinds (:gp / :sse4 / :sse8 for
-      # an in-register class, or :mem for a MEMORY-classified aggregate). A scalar
-      # argument is a single eightbyte, so its list has length one; a struct's
-      # list holds one entry per eightbyte, which is what lets the psABI 3.2.3
-      # all-or-nothing rule act on a whole argument at once.
+      # an in-register class, or the convention's memory-aggregate kind for an
+      # aggregate it never puts in registers). A scalar argument is a single
+      # eightbyte, so its list has length one; a struct's list holds one entry per
+      # eightbyte, which is what lets the psABI 3.2.3 all-or-nothing rule act on a
+      # whole argument at once.
       #
       # Each argument is placed as a unit: its required integer and vector
       # registers are counted first, and only if *both* fit in what remains do its
       # eightbytes take those registers (consuming them); otherwise the entire
       # argument spills, every eightbyte becoming :mem, and no register is used —
       # the psABI rule that an argument whose parts do not all fit in registers
-      # passes wholly in memory. A candidate list already all :mem (a MEMORY
-      # struct) passes straight through, consuming no register. The :mem eightbytes
-      # keep their left-to-right order, which the backend lays out as ascending
-      # stack addresses. The result mirrors `arguments`: one placed kind list per
-      # argument.
+      # passes wholly in memory. AAPCS64 6.4.2 stage C reaches the same layout for
+      # the arguments this generator classifies, differing only in how many
+      # registers there are to run out of, which is what @convention supplies. A
+      # candidate list already all memory-aggregate passes straight through,
+      # consuming no register. The :mem eightbytes keep their left-to-right order,
+      # which the backend lays out as ascending stack addresses. The result mirrors
+      # `arguments`: one placed kind list per argument.
       def place_argument_kinds(arguments)
         next_gp = 0
         next_sse = 0
+        aggregate = @convention.memory_aggregate_kind
         arguments.map do |candidates|
-          if candidates.all?(:mem)
+          if candidates.all?(aggregate)
             candidates
           else
             need_gp = candidates.count(:gp)
             need_sse = candidates.count { |k| k == :sse4 || k == :sse8 }
-            if next_gp + need_gp <= GP_ARG_REGISTERS && next_sse + need_sse <= SSE_ARG_REGISTERS
+            if next_gp + need_gp <= @convention.gp_registers && next_sse + need_sse <= @convention.fp_registers
               next_gp += need_gp
               next_sse += need_sse
               candidates
@@ -3288,7 +3295,7 @@ module Rubycc
         addr = new_vreg
         emit(:object_addr, dst: addr, a: buf)
         if classes == :memory
-          { mode: :memory, hidden: [addr, :gp], ret: nil, buf_addr: addr }
+          { mode: :memory, hidden: [addr, @convention.hidden_result_kind], ret: nil, buf_addr: addr }
         else
           { mode: :register, hidden: nil, ret: [addr, classes], buf_addr: addr }
         end
@@ -3402,8 +3409,8 @@ module Rubycc
       # reads past a struct whose size is not a multiple of 8 (a stack object is
       # 16-byte aligned and rounded up, so the final eightbyte's 8-byte load stays
       # in bounds). Each eightbyte is loaded from base + 8*i; its kind is the
-      # classification's (:gp/:sse8 for a register struct, all :mem for a MEMORY
-      # one).
+      # classification's (:gp/:sse8 for a register struct, all the convention's
+      # memory-aggregate kind for a MEMORY one).
       def lower_struct_argument(addr, struct_type)
         classes = classify_struct(struct_type)
         size = struct_type.size
@@ -3413,7 +3420,7 @@ module Rubycc
         emit(:memcpy, a: base, b: addr, size: size)
 
         count = (size + 7) / 8
-        kinds = classes == :memory ? Array.new(count, :mem) : classes
+        kinds = classes == :memory ? Array.new(count, @convention.memory_aggregate_kind) : classes
         (0...count).map do |i|
           value = new_vreg
           emit(:load, dst: value, a: eightbyte_address(base, i), size: 8)

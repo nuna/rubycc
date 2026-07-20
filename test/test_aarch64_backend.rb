@@ -23,8 +23,8 @@ require "tmpdir"
 #      checked.
 #
 # Alongside these, the constructs the backend deliberately does not lower yet
-# (floating point, structs by value, varargs, indirect calls, stack-passed
-# arguments) are asserted to raise rather than to produce quietly wrong code.
+# (structs by value, varargs) are asserted to raise rather than to produce
+# quietly wrong code.
 class TestAArch64Backend < Minitest::Test
   Backend = Rubycc::Backend::AArch64
   IR = Rubycc::IR
@@ -41,9 +41,13 @@ class TestAArch64Backend < Minitest::Test
   FP = 29
   LR = 30
 
-  # The saved frame record occupies [sp, #0..15]; vreg n's slot follows it.
+  # The outgoing argument area sits at the bottom of the frame, the saved record
+  # just above it, and vreg n's slot above that. A test whose function makes a
+  # call with stack arguments sets @outgoing to the area's size; every other one
+  # leaves it nil, which is the ordinary zero-width case.
   SAVE_AREA_SIZE = 16
-  def slot(vreg) = SAVE_AREA_SIZE + 8 * vreg
+  def outgoing = @outgoing || 0
+  def slot(vreg) = outgoing + SAVE_AREA_SIZE + 8 * vreg
 
   # ------------------------------------------------------------------------
   # Expected-encoding builders.
@@ -369,7 +373,7 @@ class TestAArch64Backend < Minitest::Test
   # followed by the frame-record store, so the body starts just past that stp.
   def body(fn)
     all = words(fn)
-    all.drop(all.index(stp_x(FP, LR, SP, 0)) + 1)
+    all.drop(all.index(stp_x(FP, LR, SP, outgoing)) + 1)
   end
 
   # Compiles a single instruction between `vregs` slots and returns the body.
@@ -849,15 +853,89 @@ class TestAArch64Backend < Minitest::Test
   end
 
   # Eight floating arguments fill v0..v7 while the integer sequence stays
-  # untouched, and a ninth is refused rather than misplaced.
+  # untouched. A ninth :sse8 tag is a generator contract violation, not valid C
+  # this backend has yet to grow: the generator classifies against this target's
+  # eight vector registers and would have tagged that argument :mem. It raises
+  # plainly, as the x86_64 backend does for the same overrun.
   def test_eight_floating_arguments_fill_the_vector_registers
     args = (0..7).map { |i| [i, :sse8] }
     fn = func([inst(:call, dst: nil, a: "g", b: args)], vregs: 9)
     assert_words (0..7).map { |i| ldr_fp_slot(i, i, 8) } + [bl_imm(0)], body(fn)
 
     ninth = func([inst(:call, dst: nil, a: "g", b: args + [[8, :sse8]])], vregs: 9)
-    assert_match(/more than eight floating call arguments/,
-                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(ninth) }.message)
+    assert_match(/overruns the vector registers/,
+                 assert_raises(RuntimeError) { compile(ninth) }.message)
+  end
+
+  # A ninth integer argument goes to the outgoing argument area at [sp + 0],
+  # copied there through the A scratch as a whole eightbyte, while the first
+  # eight still fill x0..x7. The area is written before any argument register is
+  # loaded, so the copy's scratch can never hold a value already placed.
+  def test_ninth_integer_argument_goes_to_the_outgoing_area
+    @outgoing = 16
+    args = (0..8).map { |i| [i, i < 8 ? :gp : :mem] }
+    fn = func([inst(:call, dst: nil, a: "g", b: args)], vregs: 9)
+    assert_words [ldr_slot(A, 8), str_x(A, SP, 0)] +
+                 (0..7).map { |i| ldr_slot(i, i) } + [bl_imm(0)],
+                 body(fn)
+  end
+
+  # Two stack arguments keep their left-to-right order as ascending addresses in
+  # the area, eight bytes apart, which is the layout AAPCS64 6.4.2 gives them.
+  def test_stack_arguments_ascend_in_left_to_right_order
+    @outgoing = 16
+    args = (0..9).map { |i| [i, i < 8 ? :gp : :mem] }
+    fn = func([inst(:call, dst: nil, a: "g", b: args)], vregs: 10)
+    assert_words [ldr_slot(A, 8), str_x(A, SP, 0), ldr_slot(A, 9), str_x(A, SP, 8)] +
+                 (0..7).map { |i| ldr_slot(i, i) } + [bl_imm(0)],
+                 body(fn)
+  end
+
+  # A stack argument past the vector registers travels the same way: the tag is
+  # :mem whatever the value's type, and moving the whole eightbyte carries a
+  # float's low four bytes intact.
+  def test_ninth_floating_argument_uses_the_outgoing_area
+    @outgoing = 16
+    args = (0..8).map { |i| [i, i < 8 ? :sse8 : :mem] }
+    fn = func([inst(:call, dst: nil, a: "g", b: args)], vregs: 9)
+    assert_words [ldr_slot(A, 8), str_x(A, SP, 0)] +
+                 (0..7).map { |i| ldr_fp_slot(i, i, 8) } + [bl_imm(0)],
+                 body(fn)
+  end
+
+  # The area is reserved once by the prologue, sized for the widest call, and sp
+  # does not move again: the frame record therefore sits above it and every slot
+  # offset is shifted by its size. Reserving it up front is what lets a slot keep
+  # a fixed sp-relative address across a call.
+  def test_the_outgoing_area_is_reserved_by_the_prologue
+    @outgoing = 16
+    wide = (0..9).map { |i| [i, i < 8 ? :gp : :mem] }
+    narrow = (0..8).map { |i| [i, i < 8 ? :gp : :mem] }
+    fn = func([inst(:call, dst: nil, a: "g", b: narrow),
+               inst(:call, dst: nil, a: "h", b: wide)], vregs: 10)
+    # 16 outgoing + 16 record + align16(10*8) = 112.
+    assert_words [sub_imm(SP, SP, 112), stp_x(FP, LR, SP, 16)], words(fn).first(2)
+  end
+
+  # A function making no call with stack arguments reserves no area at all, so
+  # its frame and every slot offset are exactly what they were before the area
+  # existed.
+  def test_no_outgoing_area_without_stack_arguments
+    fn = func([inst(:call, dst: nil, a: "g", b: [[0, :gp]])], vregs: 1)
+    assert_words [sub_imm(SP, SP, 32), stp_x(FP, LR, SP, 0)], words(fn).first(2)
+  end
+
+  # A ninth integer parameter is read back from the caller's own argument area.
+  # Nothing separates the two frames — AArch64 keeps the return address in x30
+  # rather than pushing it — so the first stack argument sits at exactly
+  # [sp + frame size] once the prologue has lowered sp.
+  def test_ninth_integer_parameter_is_read_from_the_callers_area
+    kinds = Array.new(8, :gp) + [:mem]
+    fn = func([inst(:ret)], vregs: 9, params: 9, param_kinds: kinds)
+    frame = SAVE_AREA_SIZE + 80 # 16 record + align16(9*8)
+    assert_words (0..7).map { |i| str_slot(i, i) } +
+                 [ldr_x(A, SP, frame), str_slot(A, 8)],
+                 body(fn).first(10)
   end
 
   # A floating return loads v0 at the value's width and then runs the ordinary
@@ -977,19 +1055,22 @@ class TestAArch64Backend < Minitest::Test
     end
   end
 
-  # An argument or parameter the IR has classified onto the stack is refused:
-  # a :mem tag comes out of the System V rules, where it may mean a seventh
-  # integer argument (which AAPCS64 would pass in x6) or an eightbyte of a
-  # MEMORY struct, and the two need different placement, so guessing would
-  # miscompile silently.
-  def test_stack_argument_placement_is_refused
-    mem_call = func([inst(:call, dst: nil, a: "g", b: [[0, :mem]])], vregs: 1)
-    assert_match(/stack-passed call arguments/,
-                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(mem_call) }.message)
+  # The two AAPCS64 aggregate mechanisms the generator tags but this backend
+  # does not lower — a large struct passed by reference, and a large result
+  # written through the indirect result register x8 — are refused by name rather
+  # than laid out as if they were ordinary stack eightbytes.
+  def test_by_reference_aggregate_kinds_are_refused
+    indirect_call = func([inst(:call, dst: nil, a: "g", b: [[0, :indirect], [1, :indirect]])], vregs: 2)
+    assert_match(/by-reference struct arguments/,
+                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(indirect_call) }.message)
 
-    mem_param = func([inst(:ret)], vregs: 1, params: 1, param_kinds: [:mem])
-    assert_match(/stack-passed parameters/,
-                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(mem_param) }.message)
+    indirect_param = func([inst(:ret)], vregs: 1, params: 1, param_kinds: [:indirect])
+    assert_match(/by-reference struct parameters/,
+                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(indirect_param) }.message)
+
+    hidden_result = func([inst(:ret)], vregs: 1, params: 1, param_kinds: [:indirect_result])
+    assert_match(/aggregate \(struct\) return values/,
+                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(hidden_result) }.message)
   end
 
   # An aggregate result — of a call or of the function itself — is still
@@ -1014,8 +1095,8 @@ class TestAArch64Backend < Minitest::Test
   def test_unsupported_c_constructs_are_refused_end_to_end
     {
       "struct S { int a[8]; }; void f(struct S *a, struct S *b){ *a = *b; }" => /struct copies/,
-      "int g(int,int,int,int,int,int,int); int f(void){ return g(1,2,3,4,5,6,7); }" =>
-        /stack-passed call arguments/,
+      "struct S { long a, b, c; }; int g(struct S); int f(struct S s){ return g(s); }" =>
+        /by-reference struct parameters/,
       "void *f(int n){ return __builtin_alloca(n); }" => /alloca/
     }.each do |source, pattern|
       error = assert_raises(Rubycc::Backend::UnsupportedError, source) { compile_c(source) }

@@ -24,12 +24,24 @@ module Rubycc
     # off, because AArch64's ldr/str unsigned-offset form scales a 12-bit
     # immediate by the access size (reaching 0..32760 for a 64-bit load) while
     # the fp-relative signed form is only a 9-bit unscaled window (-256..255)
-    # that a modest frame overruns at once. The saved frame record (x29/x30)
-    # sits at [sp + 0] so its stp/ldp always uses a zero offset; the vreg slots
-    # start just above it and the stack objects above those. A slot whose offset
-    # still overflows the scaled immediate is reached by composing its address
-    # into a scratch register with add-immediate(s) — the path is built in from
-    # the start rather than bolted on for large frames.
+    # that a modest frame overruns at once. From sp upward the frame holds the
+    # outgoing argument area, the saved frame record (x29/x30), the vreg slots
+    # and the stack objects. A slot whose offset still overflows the scaled
+    # immediate is reached by composing its address into a scratch register with
+    # add-immediate(s) — the path is built in from the start rather than bolted
+    # on for large frames.
+    #
+    # The outgoing argument area sits at the very bottom because AAPCS64 places
+    # a call's stack arguments starting at the caller's sp, and it is reserved
+    # once by the prologue — sized for the widest call in the function — rather
+    # than pushed per call. That is the whole reason it exists: every value in
+    # this backend is named as [sp + off], so moving sp to push arguments would
+    # invalidate the offset of every slot at once, including the ones holding
+    # the arguments still to be placed. Reserving the area up front leaves sp
+    # fixed for the function's whole body, keeps it 16-aligned at the call (the
+    # area's size is rounded to 16, and AAPCS64 requires sp 16-aligned at a
+    # public interface), and costs nothing at run time. A function that makes no
+    # call with stack arguments reserves nothing, so its frame is unchanged.
     #
     # Value representation is identical to the x86_64 backend's slot discipline
     # (see backend/x86_64.rb): a slot is always read and written 64 bits at a
@@ -44,18 +56,24 @@ module Rubycc
     # floating arguments arrive in v0..v7, allocated from a counter of their
     # own, and a floating result comes back in v0. The two sequences are
     # independent, exactly as System V's integer and xmm sequences are, which is
-    # why the IR's :gp/:sse4/:sse8 tags carry over unchanged.
+    # why the IR's :gp/:sse4/:sse8 tags carry over unchanged. The generator
+    # classifies against this target's register budget (IR::CallConvention),
+    # so a :gp tag really does mean one of the eight and a :mem tag really does
+    # mean the stack — no seventh integer argument is spilled here that AAPCS64
+    # would have kept in a register.
     #
-    # The IR, however, still classifies every argument by the System V AMD64
-    # rules (the generator fixes each one as :gp/:sse4/:sse8/:mem before a
-    # backend sees it), and that ABI has only six integer registers. So while
-    # the eight AAPCS64 registers are all wired up here, an argument the
-    # generator has already classified :mem is refused rather than guessed at: a
-    # :mem slot may be a scalar seventh integer argument — which AAPCS64 would
-    # pass in x6, not on the stack — or an eightbyte of a MEMORY-classified
-    # struct, and the two need different placement. Teaching the generator a
-    # per-target classification is later work; until then the practical limit is
-    # six integer arguments.
+    # A stack argument occupies eight bytes, whatever its type: AAPCS64 6.4.2
+    # rounds each argument's size on the stack up to a multiple of eight and
+    # aligns it to at least eight, so the IR's eightbyte view of the overflow
+    # area is exactly the ABI's. A stack-passed `float` therefore travels as a
+    # whole eightbyte whose low four bytes carry the value, which is what the
+    # slot discipline already promises.
+    #
+    # The two aggregate mechanisms AAPCS64 has and System V does not — a large
+    # struct passed by reference to a caller-made copy, and a large result
+    # written through the indirect result register x8 — are not lowered here.
+    # The generator tags their slots :indirect / :indirect_result rather than
+    # laying them out by the System V rule, and they are refused by name below.
     #
     # Under AAPCS64 a variadic call on this platform places its arguments in the
     # same registers a fixed call would, so the `fixed` half of a call's size
@@ -133,6 +151,11 @@ module Rubycc
       # composed address instead.
       MAX_SCALED_OFFSET = 4095 * 8
 
+      # The largest byte offset the stp/ldp immediate can name (a 7-bit signed
+      # field scaled by 8). The saved record is reached through a composed
+      # address past this.
+      MAX_PAIR_OFFSET = 63 * 8
+
       # IR comparison op -> AArch64 condition code applied to the flags left by
       # `cmp a, b` (a - b). The signed forms use the N/V-based conditions
       # (lt/le/gt/ge), the unsigned ones the carry-based conditions
@@ -172,7 +195,7 @@ module Rubycc
         @fixups = []
         @relocations = []
 
-        layout_frame(ir_func.vreg_count, ir_func.stack_objects)
+        layout_frame(ir_func.vreg_count, ir_func.stack_objects, ir_func.insts)
         emit_prologue(ir_func.param_kinds)
         ir_func.insts.each { |inst| emit_instruction(inst) }
         resolve_fixups
@@ -187,13 +210,16 @@ module Rubycc
       private
 
       # Computes the frame's size and every object's base offset. From sp
-      # upward: the 16-byte saved record, then the vreg slots (8 bytes each,
-      # the region rounded to 16 so the objects stay 16-aligned), then each
-      # stack object at a 16-byte-aligned size above the previous. All offsets
-      # are non-negative displacements from sp.
-      def layout_frame(vreg_count, stack_objects)
+      # upward: the outgoing argument area (empty unless some call in this
+      # function passes an argument on the stack), the 16-byte saved record,
+      # the vreg slots (8 bytes each, the region rounded to 16 so the objects
+      # stay 16-aligned), then each stack object at a 16-byte-aligned size above
+      # the previous. All offsets are non-negative displacements from sp.
+      def layout_frame(vreg_count, stack_objects, insts)
+        @outgoing_size = outgoing_argument_bytes(insts)
+        @save_offset = @outgoing_size
         vreg_region = align16(vreg_count * 8)
-        running = SAVE_AREA_SIZE + vreg_region
+        running = @save_offset + SAVE_AREA_SIZE + vreg_region
         @object_offsets = []
         stack_objects.each do |object_size|
           @object_offsets << running
@@ -202,49 +228,101 @@ module Rubycc
         @frame_size = align16(running)
       end
 
-      # sp + 8*n above the saved record: the byte offset of vreg n's slot.
-      def slot_offset(vreg)
-        SAVE_AREA_SIZE + 8 * vreg
+      # The size of the outgoing argument area: eight bytes per stack argument
+      # of the call in this function that passes the most of them, rounded to 16
+      # so the saved record above it — and sp itself at every call — stays
+      # 16-aligned. Sizing it for the widest call lets every call share the one
+      # area, since only one call is in flight at a time.
+      def outgoing_argument_bytes(insts)
+        widest = 0
+        insts.each do |inst|
+          next unless inst.op == :call || inst.op == :call_indirect
+
+          count = inst.b.count { |_vreg, kind| kind == :mem }
+          widest = count if count > widest
+        end
+        align16(widest * 8)
       end
 
-      # Lowers sp by the frame size, saves x29/x30 into the record at [sp+0],
-      # and spills the incoming arguments to their parameter slots. x29 is not
-      # used as a frame pointer (every slot is sp-relative), but the pair is
-      # saved and restored so the callee-saved x29 and the return address in x30
-      # round-trip across any call this function makes.
+      # sp + 8*n above the saved record: the byte offset of vreg n's slot.
+      def slot_offset(vreg)
+        @save_offset + SAVE_AREA_SIZE + 8 * vreg
+      end
+
+      # The byte offset of incoming stack argument `index`. The caller laid its
+      # stack arguments out from its own sp upward, and this function's prologue
+      # lowered sp by the whole frame, so the caller's sp is [sp + @frame_size]
+      # here. Nothing sits between the two — AArch64 keeps the return address in
+      # x30 rather than pushing it — so the first stack argument is at exactly
+      # that address.
+      def incoming_stack_offset(index)
+        @frame_size + 8 * index
+      end
+
+      # Lowers sp by the frame size, saves x29/x30 into the record just above
+      # the outgoing argument area, and spills the incoming arguments to their
+      # parameter slots. x29 is not used as a frame pointer (every slot is
+      # sp-relative), but the pair is saved and restored so the callee-saved x29
+      # and the return address in x30 round-trip across any call this function
+      # makes.
       def emit_prologue(param_kinds)
         adjust_sp(@frame_size, sub: true)
-        emit_stp(FP, LR, SP, 0)
+        emit_save_record(store: true)
         spill_parameters(param_kinds)
       end
 
       # Restores x29/x30, raises sp back, and returns. Emitted at every :ret.
       def emit_epilogue
-        emit_ldp(FP, LR, SP, 0)
+        emit_save_record(store: false)
         adjust_sp(@frame_size, sub: false)
         emit_word(0xD65F03C0) # ret (branch to x30)
+      end
+
+      # Stores or reloads the x29/x30 pair at [sp + @save_offset]. The stp/ldp
+      # immediate is a 7-bit signed field scaled by 8, so it reaches 504 bytes;
+      # an outgoing argument area wider than that (a call with 64 or more stack
+      # arguments) is addressed through the ADDR scratch instead, which holds no
+      # live value in either the prologue or the epilogue.
+      def emit_save_record(store:)
+        if @save_offset <= MAX_PAIR_OFFSET
+          store ? emit_stp(FP, LR, SP, @save_offset) : emit_ldp(FP, LR, SP, @save_offset)
+        else
+          emit_slot_address(ADDR, @save_offset)
+          store ? emit_stp(FP, LR, ADDR, 0) : emit_ldp(FP, LR, ADDR, 0)
+        end
       end
 
       # Brings each incoming argument into its parameter slot so it reads back
       # like any other vreg. Integer/pointer parameters come out of x0..x7 and
       # floating ones out of v0..v7, each sequence advancing its own counter; a
-      # :mem (stack-passed) parameter belongs to a later milestone and raises
-      # rather than miscompiling.
+      # :mem parameter is copied down from the caller's stack argument area
+      # (through the A scratch, which is not an argument register, so the copies
+      # never disturb an argument still to be spilled) as a whole eightbyte,
+      # which is right for a narrow or floating value too since the slot
+      # discipline only promises its low bytes. A kind that would overrun its
+      # register file is a generator contract violation and raises.
       def spill_parameters(param_kinds)
         next_gp = 0
         next_fp = 0
+        next_stack = 0
         param_kinds.each_with_index do |kind, i|
           case kind
           when :gp
-            unsupported("more than eight integer parameters") if next_gp >= ARG_REGISTERS.size
+            raise "parameter :gp overruns the integer registers" if next_gp >= ARG_REGISTERS.size
+
             store_reg(ARG_REGISTERS[next_gp], i)
             next_gp += 1
           when :mem
-            unsupported("stack-passed parameters")
+            load_at(A, incoming_stack_offset(next_stack))
+            store_reg(A, i)
+            next_stack += 1
           when :sse4, :sse8
-            unsupported("more than eight floating parameters") if next_fp >= FP_ARG_REGISTERS.size
+            raise "parameter #{kind} overruns the vector registers" if next_fp >= FP_ARG_REGISTERS.size
+
             store_fp(FP_ARG_REGISTERS[next_fp], i, kind == :sse8 ? 8 : 4)
             next_fp += 1
+          when :indirect then unsupported("by-reference struct parameters")
+          when :indirect_result then unsupported("aggregate (struct) return values")
           else
             raise "unknown parameter kind #{kind.inspect}"
           end
@@ -508,26 +586,46 @@ module Rubycc
         end
       end
 
-      # Loads each argument into its AAPCS64 register: an integer/pointer one
-      # into the next of x0..x7, a floating one into the next of v0..v7. Each ldr
-      # writes only its own destination and reads sp (or the ADDR scratch), so
-      # loading a later argument never clobbers an earlier one, and the two
-      # register files never collide. Stack-passed arguments are refused.
+      # Places a call's arguments: an integer/pointer one into the next of
+      # x0..x7, a floating one into the next of v0..v7, and a :mem one into the
+      # outgoing argument area at [sp + 8*k] in left-to-right order, which is
+      # where AAPCS64 6.4.2 has the callee look for it. A stack argument is moved
+      # as a whole eightbyte, matching how the callee reads it back.
+      #
+      # The stack arguments are written first, in a pass of their own, because
+      # they travel through the A scratch: doing them after the register loads
+      # would be safe for A itself (no argument register is A), but keeping the
+      # two passes apart makes the order independent of how the argument list
+      # happens to interleave. Each load then writes only its own destination
+      # and reads sp, so placing a later argument never clobbers an earlier one,
+      # and the integer and vector register files never collide.
       def place_arguments(args)
+        next_stack = 0
+        args.each do |vreg, kind|
+          next unless kind == :mem
+
+          load_reg(A, vreg)
+          store_at(A, 8 * next_stack)
+          next_stack += 1
+        end
+
         next_gp = 0
         next_fp = 0
         args.each do |vreg, kind|
           case kind
           when :gp
-            unsupported("more than eight integer call arguments") if next_gp >= ARG_REGISTERS.size
+            raise "call argument :gp overruns the integer registers" if next_gp >= ARG_REGISTERS.size
+
             load_reg(ARG_REGISTERS[next_gp], vreg)
             next_gp += 1
-          when :mem
-            unsupported("stack-passed call arguments")
+          when :mem then next
           when :sse4, :sse8
-            unsupported("more than eight floating call arguments") if next_fp >= FP_ARG_REGISTERS.size
+            raise "call argument #{kind} overruns the vector registers" if next_fp >= FP_ARG_REGISTERS.size
+
             load_fp(FP_ARG_REGISTERS[next_fp], vreg, kind == :sse8 ? 8 : 4)
             next_fp += 1
+          when :indirect then unsupported("by-reference struct arguments")
+          when :indirect_result then unsupported("aggregate (struct) return values")
           else
             raise "unknown call argument kind #{kind.inspect}"
           end
@@ -555,7 +653,19 @@ module Rubycc
       # produced. Reaches the slot through the scaled immediate when it fits,
       # otherwise through a composed address in the ADDR scratch.
       def load_reg(reg, vreg)
-        offset = slot_offset(vreg)
+        load_at(reg, slot_offset(vreg))
+      end
+
+      # str X{reg}, [slot]. The counterpart of #load_reg.
+      def store_reg(reg, vreg)
+        store_at(reg, slot_offset(vreg))
+      end
+
+      # ldr X{reg}, [sp + offset] for any frame offset, not just a vreg slot's:
+      # the outgoing argument area and the caller's incoming one are addressed
+      # this way too. Reaches the address through the scaled immediate when it
+      # fits, otherwise through a composed address in the ADDR scratch.
+      def load_at(reg, offset)
         if offset <= MAX_SCALED_OFFSET
           emit_word(0xF9400000 | ((offset / 8) << 10) | (SP << 5) | reg) # ldr x, [sp, #off]
         else
@@ -564,9 +674,8 @@ module Rubycc
         end
       end
 
-      # str X{reg}, [slot]. The counterpart of #load_reg.
-      def store_reg(reg, vreg)
-        offset = slot_offset(vreg)
+      # str X{reg}, [sp + offset]. The counterpart of #load_at.
+      def store_at(reg, offset)
         if offset <= MAX_SCALED_OFFSET
           emit_word(0xF9000000 | ((offset / 8) << 10) | (SP << 5) | reg) # str x, [sp, #off]
         else

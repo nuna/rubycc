@@ -239,21 +239,32 @@ module Rubycc
 
     # A function in IR form: a name, a flat list of instructions and the number
     # of virtual registers used (so the backend can size its stack frame).
-    # `param_count` is the number of System V AMD64 argument slots (eightbytes),
+    # `param_count` is the number of ABI argument slots (eightbytes),
     # not the number of C parameters: a scalar parameter is one slot, a by-value
     # struct parameter its one-or-more eightbyte slots, and a MEMORY-returning
     # function's hidden result pointer an extra leading slot. Those slots occupy
     # the first `param_count` virtual registers (0..param_count-1) in that order,
     # so the backend can spill the incoming argument registers into them; the
     # generator then reassembles a struct parameter's slots into a stack object.
-    # `param_kinds` is an array of length `param_count` giving each slot's System V
-    # AMD64 arrival, in that flattened order, which the generator has fixed by the
-    # same placement simulation a call's arguments use: :gp (integer register),
-    # :sse4 (float xmm), :sse8 (double xmm — also each eightbyte of a struct
-    # arriving in a vector register) or :mem (the stack overflow area). The
-    # prologue spills each slot straight from that location, and a variadic
-    # function derives its gp_offset / fp_offset / overflow start for :va_start
-    # from the counts of each kind.
+    # `param_kinds` is an array of length `param_count` giving each slot's arrival
+    # under the *target's* calling convention (IR::CallConvention), in that
+    # flattened order, which the generator has fixed by the same placement
+    # simulation a call's arguments use: :gp (integer register), :sse4 (float
+    # vector register), :sse8 (double vector register — also each eightbyte of a
+    # struct arriving in one) or :mem (the stack overflow area). How many
+    # registers there are to hand out before a scalar spills to :mem is the
+    # target's business, which is why the tags are fixed here and not by a
+    # backend: System V AMD64 offers six integer registers and AAPCS64 eight, so
+    # the same C call classifies differently on the two. Two further kinds name
+    # mechanisms only some conventions have and no backend need implement: an
+    # :indirect slot is an eightbyte of an aggregate the convention passes by
+    # reference, and an :indirect_result slot the implicit pointer to a
+    # caller-provided result buffer when the convention reserves a register of
+    # its own for it (AAPCS64's x8). A backend that has not grown those refuses
+    # them rather than laying them out by another convention's rule. The prologue
+    # spills each slot straight from its location, and a variadic function derives
+    # its gp_offset / fp_offset / overflow start for :va_start from the counts of
+    # each kind.
     # `stack_objects` is an array indexed by object id whose entries are the
     # byte sizes of aggregate stack objects (arrays); the backend lays these
     # out below the virtual-register slots and resolves :object_addr against

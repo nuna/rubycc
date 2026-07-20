@@ -51,7 +51,7 @@ IR::Program
 | `insts` | 命令のフラットな配列 |
 | `vreg_count` | 使用 vreg 数(バックエンドのフレームサイズ計算用) |
 | `param_count` | **ABI スロット数**(パラメータ数ではない)。スカラパラメータは 1 スロット、struct パラメータは分類された eightbyte 数(MEMORY struct は ceil(size/8))、MEMORY 戻りの関数は隠れ結果ポインタが先頭に 1 スロット加わる。**スロットは vreg 0..param_count-1 を占める**規約で、バックエンドが着信引数レジスタ / スタック引数をこのスロットへ写す。struct パラメータのスロットからの再組み立て(stack object への :store)はジェネレータがプロローグ IR で行う |
-| `param_kinds` | 長さ param_count の配列。各 ABI スロットの**着信位置**(`:gp` 整数レジスタ、`:sse4`/`:sse8` xmm、`:mem` スタック)を宣言順に持つ。配置はジェネレータが呼び出し側と同じシミュレーションで確定済みで、バックエンドはこの指定に従うだけ(超過時は契約違反として raise)。可変長関数は :va_start の gp_offset / fp_offset / overflow 開始位置もここから導く |
+| `param_kinds` | 長さ param_count の配列。各 ABI スロットの**着信位置**(`:gp` 整数レジスタ、`:sse4`/`:sse8` ベクタレジスタ、`:mem` スタック)を宣言順に持つ。配置はジェネレータが呼び出し側と同じシミュレーションで確定済みで、バックエンドはこの指定に従うだけ(超過時は契約違反として raise)。**分類はターゲット依存**(`IR::CallConvention`): 整数引数レジスタ数は System V AMD64 が 6、AAPCS64 が 8 なので、同じ C の呼び出しでもターゲットにより :gp と :mem の切れ目が異なる。さらに一部の規約にしかない機構を名指す 2 種のタグがある — `:indirect` は参照渡しされる集約の eightbyte、`:indirect_result` は専用レジスタ(AAPCS64 の x8)で渡す隠れ結果ポインタ。未実装のバックエンドは他規約の規則で配置せず名指しで拒否する |
 | `stack_objects` | オブジェクト id で索引する配列。各要素は集約オブジェクト(配列・struct)のバイトサイズ。バックエンドは vreg スロットの下に配置し :object_addr を解決する |
 | `linkage` | `:external`(通常)/ `:internal`(`static`。STB_LOCAL で発行) |
 | `variadic` | `...` 付き定義なら true。バックエンドがレジスタ退避領域つきプロローグを出す |
@@ -195,7 +195,7 @@ Instruction(op, dst:, a:, b:, size:)
 
 | 命令 | 形 | 意味 |
 |---|---|---|
-| :call | dst ← f(args)。a = callee 名(String)、b = **[vreg, kind] ペアの配列**(左から右。kind は :gp / :sse4 / :sse8 / :mem) | kind は**ジェネレータが配置シミュレーションで確定済みの着信位置**: :gp は edi..r9d の次の空き、:sse4/:sse8 は xmm0..7 の次の空き(movss/movsd でロード)、:mem は 8 バイトスロット内容のまま逆順 push のスタック渡し(:mem 同士は左→右の順序を保つ)。バックエンドは指定に従うだけで、超過(7 個目の :gp 等)は契約違反として raise。struct 引数はジェネレータが eightbyte ごとの複数ペアに展開済み(psABI の all-or-nothing 規則も配置時に適用済み)。MEMORY 戻りの callee には隠れ結果ポインタの [vreg, :gp] ペアが先頭に加わる。`size` = nil または [fixed, ret](§4)。可変長 callee には call 直前に al = 使用 xmm 数(mov al, imm8) |
+| :call | dst ← f(args)。a = callee 名(String)、b = **[vreg, kind] ペアの配列**(左から右。kind は :gp / :sse4 / :sse8 / :mem、および §2 param_kinds の :indirect / :indirect_result) | kind は**ジェネレータがターゲットの CallConvention で配置シミュレーションを行い確定済みの着信位置**(以下は x86_64 の場合): :gp は edi..r9d の次の空き、:sse4/:sse8 は xmm0..7 の次の空き(movss/movsd でロード)、:mem は 8 バイトスロット内容のまま逆順 push のスタック渡し(:mem 同士は左→右の順序を保つ)。バックエンドは指定に従うだけで、超過(7 個目の :gp 等)は契約違反として raise。struct 引数はジェネレータが eightbyte ごとの複数ペアに展開済み(psABI の all-or-nothing 規則も配置時に適用済み)。MEMORY 戻りの callee には隠れ結果ポインタの [vreg, :gp] ペアが先頭に加わる。`size` = nil または [fixed, ret](§4)。可変長 callee には call 直前に al = 使用 xmm 数(mov al, imm8) |
 | :call_indirect | dst ← (*a)(args)。a = 関数アドレスの vreg、b = [vreg, kind] ペアの配列 | 引数・size の扱いは :call と同一。バックエンドはスクラッチレジスタ(r10)経由で call |
 | :func_addr | dst ← &func。a = 関数名(String) | 関数指示子の退化・`&f` の値。:global_addr 同様の PC 相対再配置で解決 |
 
@@ -317,6 +317,7 @@ DESIGN.md §9.1 の一次資料に基づく。仕様への準拠であり、実�
 | 要素 | 出典 |
 |---|---|
 | 引数レジスタ順(rdi, rsi, rdx, rcx, r8, r9)、7 個目以降のスタック渡し、16 バイト整列(§5 :call・§6) | System V AMD64 psABI |
+| 引数レジスタ本数のターゲット差(整数 x0..x7 の 8 本、ベクタ v0..v7 の 8 本)、スタック引数の 8 バイト単位・8 バイト整列、隠れ結果ポインタの x8(§2 param_kinds の :indirect_result) | AAPCS64 §6.4.2 |
 | 可変長呼び出しの al = 使用ベクタレジスタ数、レジスタ退避領域、va_list の 4 フィールド構造(gp_offset / fp_offset / overflow_arg_area / reg_save_area)(§5 :va_start・§6) | System V AMD64 psABI §3.5.7 |
 | 再配置種別(R_X86_64_PLT32 / PC32 / 64)(§2 GlobalReloc・§6) | System V AMD64 psABI / System V gABI |
 | 符号別の命令分割(:div/:udiv、:sar/:shr、:lt/:ult 系)と movsx/movzx 対応(§5) | x86-64 の機械命令が符号で分かれること(Intel SDM)への 1:1 対応 |

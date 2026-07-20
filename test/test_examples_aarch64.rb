@@ -28,7 +28,6 @@ class TestExamplesAArch64 < Minitest::Test
   # Each builds and runs on x86-64 today; the reason is the backend's own
   # UnsupportedError message.
   PENDING = {
-    "step21_dispatch" => "A4: stack-passed parameters",
     "step23_sum" => "A4: variadic functions",
     "step24_floats" => "A4: variadic functions",
     "step25_records" => "A4: struct copies",
