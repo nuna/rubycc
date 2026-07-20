@@ -290,6 +290,54 @@ class TestDriver < Minitest::Test
     end
   end
 
+  # --- target selection (-target / --target) ------------------------------
+
+  # The default target is the host CPU, so an ordinary -c on an x86_64 host
+  # compiles without a -target flag (the object's e_machine is EM_X86_64=62).
+  def test_default_target_compiles_on_host
+    skip "not an x86_64 host" unless RbConfig::CONFIG["host_cpu"] == "x86_64"
+
+    in_tmpdir do |dir|
+      File.write(File.join(dir, "u.c"), "int main(void){ return 0; }")
+      _out, err, status = rubycc("-c", "u.c", "-o", "u.o", dir: dir)
+      assert_equal 0, status.exitstatus, err
+      assert_equal 62, File.binread(File.join(dir, "u.o"), 2, 18).unpack1("S<")
+    end
+  end
+
+  # An explicit -target x86_64 is accepted and produces the same object.
+  def test_explicit_x86_64_target_is_accepted
+    in_tmpdir do |dir|
+      File.write(File.join(dir, "u.c"), "int main(void){ return 0; }")
+      _out, err, status = rubycc("-c", "u.c", "-target", "x86_64", "-o", "u.o", dir: dir)
+      assert_equal 0, status.exitstatus, err
+      assert_equal "\x7FELF".b, File.binread(File.join(dir, "u.o"), 4)
+    end
+  end
+
+  # A recognized-but-unimplemented architecture draws a clear diagnostic and a
+  # non-zero exit, whether spelled as a bare CPU or a full triple.
+  def test_aarch64_target_is_diagnosed_as_unimplemented
+    in_tmpdir do |dir|
+      File.write(File.join(dir, "u.c"), "int main(void){ return 0; }")
+      ["aarch64", "arm64", "aarch64-linux-gnu"].each do |spelling|
+        _out, err, status = rubycc("-c", "u.c", "--target=#{spelling}", "-o", "u.o", dir: dir)
+        assert_equal 1, status.exitstatus
+        assert_match(/aarch64 backend is not implemented yet/, err)
+      end
+    end
+  end
+
+  # An entirely unknown target is rejected as unsupported.
+  def test_unknown_target_is_unsupported
+    in_tmpdir do |dir|
+      File.write(File.join(dir, "u.c"), "int main(void){ return 0; }")
+      _out, err, status = rubycc("-c", "u.c", "-target", "riscv64", "-o", "u.o", dir: dir)
+      assert_equal 1, status.exitstatus
+      assert_match(/unsupported target 'riscv64'/, err)
+    end
+  end
+
   private
 
   def in_tmpdir(&block)

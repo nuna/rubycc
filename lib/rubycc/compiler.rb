@@ -11,17 +11,30 @@ module Rubycc
   # Orchestrates every compilation stage: source -> tokens -> AST -> IR ->
   # machine code -> ELF relocatable object.
   class Compiler
+    # The backend dispatch table: a normalized target name selects the code
+    # generator that lowers IR to that machine's instructions and the ELF
+    # machine description (e_machine value + relocation-type table) the object
+    # writer emits under. Only x86_64 is implemented; a second entry (aarch64)
+    # would slot in here without changing any orchestration logic below.
+    TARGETS = {
+      "x86_64" => { backend: Backend::X86_64, machine: ObjFile::ELFWriter::X86_64 }
+    }.freeze
+
     # Compiles C source into an ELF64 relocatable object, returned as an
-    # ASCII-8BIT String. Raises Rubycc::CompileError on user errors.
-    def compile(source, filename:, include_paths: [], pic: false, defines: [], system_includes: true)
+    # ASCII-8BIT String. Raises Rubycc::CompileError on user errors. `target`
+    # names the machine to generate code for (see TARGETS); it defaults to
+    # x86_64 and an unknown value is a caller error.
+    def compile(source, filename:, include_paths: [], pic: false, defines: [], system_includes: true,
+                target: "x86_64")
+      entry = TARGETS.fetch(target) { raise ArgumentError, "unsupported target: #{target.inspect}" }
       tokens = Preprocess::Preprocessor.new.run(source, filename: filename,
                                                 include_paths: include_paths, defines: defines,
                                                 system_includes: system_includes)
       program = Front::Parser.new(tokens).parse
       ir_program = IR::Generator.new.generate(program, pic: pic)
 
-      backend = Backend::X86_64.new
-      writer = ObjFile::ELFWriter.new
+      backend = entry[:backend].new
+      writer = ObjFile::ELFWriter.new(machine: entry[:machine])
       writer.add_file_symbol(File.basename(filename))
 
       # Lay out the translation unit's string pool as .rodata: each interned
@@ -198,10 +211,11 @@ module Rubycc
     # Convenience: read `input_path`, compile it and write the object to
     # `output_path`.
     def self.compile_file(input_path, output_path, include_paths: [], pic: false, defines: [],
-                          system_includes: true)
+                          system_includes: true, target: "x86_64")
       source = File.read(input_path)
       binary = new.compile(source, filename: input_path, include_paths: include_paths,
-                                   pic: pic, defines: defines, system_includes: system_includes)
+                                   pic: pic, defines: defines, system_includes: system_includes,
+                                   target: target)
       File.binwrite(output_path, binary)
       output_path
     end

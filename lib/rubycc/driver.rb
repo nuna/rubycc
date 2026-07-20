@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "rbconfig"
 require_relative "compile_error"
 require_relative "compiler"
 require_relative "preprocess/preprocessor"
@@ -76,6 +77,7 @@ module Rubycc
       @soname = nil
       @system_includes = true  # -nostdinc clears this
       @default_libs = true     # -nodefaultlibs clears this
+      @target = nil            # -target/--target; defaults to the host CPU
     end
 
     def run
@@ -131,6 +133,8 @@ module Rubycc
       when "-fPIC", "-fpic", "-fPIE", "-fpie"    then @pic = true; i + 1
       when "-nostdinc"                           then @system_includes = false; i + 1
       when "-nodefaultlibs"                       then @default_libs = false; i + 1
+      when "-target", "--target" then @target = normalize_target(value(arg, i)); i + 2
+      when /\A--?target=(.+)\z/m then @target = normalize_target(Regexp.last_match(1)); i + 1
       when "-o"          then @output = value(arg, i); i + 2
       when "-I"          then @include_paths << value(arg, i); i + 2
       when /\A-I(.+)\z/m then @include_paths << Regexp.last_match(1); i + 1
@@ -235,8 +239,43 @@ module Rubycc
 
       case mode
       when :preprocess           then preprocess_only
-      when :compile              then compile_only
-      when :shared, :executable  then link
+      when :compile              then ensure_supported_target && compile_only
+      when :shared, :executable  then ensure_supported_target && link
+      end
+    end
+
+    # The code-generation target: the value of -target/--target if given,
+    # otherwise the host CPU (RbConfig::CONFIG["host_cpu"], normalized). Both
+    # paths run through #normalize_target so a triple like "x86_64-linux-gnu"
+    # collapses to its architecture and aliases (amd64) canonicalize.
+    def target
+      @target ||= normalize_target(RbConfig::CONFIG["host_cpu"])
+    end
+
+    # Reduces a target spelling — a bare CPU name, a gcc/clang triple, or a
+    # host_cpu string — to a canonical architecture name: the part before the
+    # first "-" of a triple, with common aliases folded (amd64/x64 -> x86_64,
+    # arm64 -> aarch64).
+    def normalize_target(spec)
+      cpu = spec.to_s.split("-", 2).first.to_s
+      case cpu
+      when "amd64", "x64" then "x86_64"
+      when "arm64"        then "aarch64"
+      else cpu
+      end
+    end
+
+    # Verifies the selected target has an implemented backend, raising a
+    # gcc-style usage error otherwise: a recognized-but-unbuilt architecture
+    # (aarch64) gets a "not implemented yet" diagnostic, an entirely unknown one
+    # a plain "unsupported target". Returns true so it can gate #dispatch.
+    def ensure_supported_target
+      return true if Compiler::TARGETS.key?(target)
+
+      if target == "aarch64"
+        raise UsageError, "aarch64 backend is not implemented yet"
+      else
+        raise UsageError, "unsupported target '#{target}'"
       end
     end
 
@@ -263,7 +302,8 @@ module Rubycc
         output = @output || default_object_name(input[:path])
         Compiler.compile_file(input[:path], output, include_paths: @include_paths,
                                                      pic: @pic, defines: @defines,
-                                                     system_includes: @system_includes)
+                                                     system_includes: @system_includes,
+                                                     target: target)
       end
     end
 
@@ -323,7 +363,7 @@ module Rubycc
     def compile_source(input)
       Compiler.new.compile(File.read(input[:path]), filename: input[:path],
                            include_paths: @include_paths, pic: @pic, defines: @defines,
-                           system_includes: @system_includes)
+                           system_includes: @system_includes, target: target)
     end
 
     # --- preprocess-only (-E) ----------------------------------------------

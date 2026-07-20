@@ -18,7 +18,10 @@ module Rubycc
     # symbols (defined functions, then defined file-scope objects, then
     # undefined externals); r_info in .rela.text indexes into that final order.
     #
-    # .rela.text carries four relocation kinds: each `call` site as an
+    # .rela.text carries four machine-independent relocation kinds — :call,
+    # :string, :global and :got — each translated through the injected machine
+    # description (see MachineDescription) into a concrete ELF relocation type.
+    # On the default x86_64 machine that gives: each `call` site as an
     # R_X86_64_PLT32 against its (defined or undefined) symbol, each string
     # reference as an R_X86_64_PC32 against the .rodata section symbol with the
     # string's byte offset (minus 4) as its addend, each global reference as
@@ -83,12 +86,46 @@ module Rubycc
       R_X86_64_PLT32          = 4
       R_X86_64_REX_GOTPCRELX  = 42
 
+      # Machine description: the injected, target-specific half of the writer.
+      # It pairs the ELF e_machine value with a table translating each
+      # machine-independent relocation `kind` (the vocabulary the backend
+      # records — :call/:string/:global/:got in .text, :symbol/:rodata in .data)
+      # into a per-target RelocDesc. `type` is the concrete ELF relocation type
+      # (an R_<arch>_* number); `addend` is either a fixed PC-relative bias or
+      # :recorded, meaning the relocation carries its own addend; `symbol` is
+      # :named to resolve against the relocation's own symbol or :rodata_section
+      # to resolve against the .rodata section symbol. Retargeting the writer is
+      # a matter of injecting a different MachineDescription — the section
+      # layout and symbol-table logic below is machine-independent.
+      RelocDesc = Data.define(:type, :addend, :symbol)
+      MachineDescription = Data.define(:e_machine, :relocations)
+
+      # The default machine: x86_64. Its relocation table fixes the exact ELF
+      # types and addend conventions the System V AMD64 psABI defines for each
+      # kind (a "call rel32" and a "lea rip" both bias the rel32 field by -4,
+      # while a string/data reference carries its own byte offset as the addend).
+      X86_64 = MachineDescription.new(
+        e_machine: EM_X86_64,
+        relocations: {
+          call:   RelocDesc.new(type: R_X86_64_PLT32,        addend: -4,        symbol: :named),
+          string: RelocDesc.new(type: R_X86_64_PC32,         addend: :recorded, symbol: :rodata_section),
+          global: RelocDesc.new(type: R_X86_64_PC32,         addend: -4,        symbol: :named),
+          got:    RelocDesc.new(type: R_X86_64_REX_GOTPCRELX, addend: -4,       symbol: :named),
+          symbol: RelocDesc.new(type: R_X86_64_64,           addend: :recorded, symbol: :named),
+          rodata: RelocDesc.new(type: R_X86_64_64,           addend: :recorded, symbol: :rodata_section)
+        }.freeze
+      )
+
       SYM_ENTSIZE = 24
       RELA_ENTSIZE = 24
       SHDR_ENTSIZE = 64
       EHDR_SIZE = 64
 
-      def initialize
+      # `machine` is the injected MachineDescription selecting the target's
+      # e_machine value and relocation-type table; it defaults to x86_64 so an
+      # existing caller needs no change.
+      def initialize(machine: X86_64)
+        @machine = machine
         @text_bytes = "".b
         @rodata_bytes = nil
         @data_bytes = nil
@@ -373,47 +410,43 @@ module Rubycc
         buf
       end
 
-      # Builds the .rela.text payload, one entry per recorded relocation. A
-      # :call points at its symbol with R_X86_64_PLT32 and an addend of -4 (the
-      # PC-relative bias for a "call rel32"); a :string points at the .rodata
-      # section symbol with R_X86_64_PC32 and the relocation's own addend (the
-      # string's .rodata offset minus 4); a :global points at that global's
-      # object symbol with R_X86_64_PC32 (addend -4); a :got points at the
-      # symbol's GOT slot with R_X86_64_REX_GOTPCRELX (addend -4).
+      # Builds the .rela.text payload, one entry per recorded relocation. Each
+      # kind (:call/:string/:global/:got) is translated through the injected
+      # machine description into its concrete ELF relocation type, addend and
+      # target symbol (see #append_machine_reloc). On x86_64 that yields a
+      # :call as R_X86_64_PLT32 (addend -4), a :string as R_X86_64_PC32 against
+      # the .rodata section symbol (its own addend), a :global as R_X86_64_PC32
+      # against that global's symbol (addend -4), and a :got as
+      # R_X86_64_REX_GOTPCRELX against the symbol's GOT slot (addend -4).
       def build_rela(symbol_indices, rodata_sym_index)
         buf = +"".b
-        @relocations.each do |reloc|
-          case reloc[:kind]
-          when :call
-            append_rela(buf, reloc[:offset], symbol_indices.fetch(reloc[:symbol]), R_X86_64_PLT32, -4)
-          when :string
-            append_rela(buf, reloc[:offset], rodata_sym_index, R_X86_64_PC32, reloc[:addend])
-          when :global
-            append_rela(buf, reloc[:offset], symbol_indices.fetch(reloc[:symbol]), R_X86_64_PC32, -4)
-          when :got
-            append_rela(buf, reloc[:offset], symbol_indices.fetch(reloc[:symbol]), R_X86_64_REX_GOTPCRELX, -4)
-          end
-        end
+        @relocations.each { |reloc| append_machine_reloc(buf, reloc, symbol_indices, rodata_sym_index) }
         buf
       end
 
-      # Builds the .rela.data payload, one entry per recorded data relocation,
-      # all absolute R_X86_64_64. A :symbol reloc points at another object's
-      # symbol with its recorded addend (the pointer slot holds that object's
-      # address, plus any "&arr[i]" displacement); a :rodata reloc points at the
-      # .rodata section symbol with the string's byte offset (plus a cast/computed
-      # displacement) as its addend.
+      # Builds the .rela.data payload, one entry per recorded data relocation.
+      # Both kinds resolve through the machine description; on x86_64 they are
+      # absolute R_X86_64_64 relocations. A :symbol reloc points at another
+      # object's symbol with its recorded addend (the pointer slot holds that
+      # object's address, plus any "&arr[i]" displacement); a :rodata reloc
+      # points at the .rodata section symbol with the string's byte offset (plus
+      # a cast/computed displacement) as its addend.
       def build_rela_data(symbol_indices, rodata_sym_index)
         buf = +"".b
-        @data_relocations.each do |reloc|
-          case reloc[:kind]
-          when :symbol
-            append_rela(buf, reloc[:offset], symbol_indices.fetch(reloc[:symbol]), R_X86_64_64, reloc[:addend])
-          when :rodata
-            append_rela(buf, reloc[:offset], rodata_sym_index, R_X86_64_64, reloc[:addend])
-          end
-        end
+        @data_relocations.each { |reloc| append_machine_reloc(buf, reloc, symbol_indices, rodata_sym_index) }
         buf
+      end
+
+      # Emits one Elf64_Rela entry from a machine-independent relocation record,
+      # looking its kind up in the injected machine description: the concrete ELF
+      # relocation type, the addend (a fixed PC-relative bias or the record's own
+      # recorded addend) and the target symbol (the record's own named symbol, or
+      # the .rodata section symbol for a :rodata_section descriptor).
+      def append_machine_reloc(buf, reloc, symbol_indices, rodata_sym_index)
+        desc = @machine.relocations.fetch(reloc[:kind])
+        sym_index = desc.symbol == :rodata_section ? rodata_sym_index : symbol_indices.fetch(reloc[:symbol])
+        addend = desc.addend == :recorded ? reloc[:addend] : desc.addend
+        append_rela(buf, reloc[:offset], sym_index, desc.type, addend)
       end
 
       # Appends a single 24-byte Elf64_Rela entry (r_offset, r_info, r_addend).
@@ -511,7 +544,7 @@ module Rubycc
                    0, 0, 0, 0, 0, 0, 0, 0, 0].pack("C16")
         e_ident +
           [ET_REL].pack("S<") +                 # e_type
-          [EM_X86_64].pack("S<") +              # e_machine
+          [@machine.e_machine].pack("S<") +     # e_machine
           [EV_CURRENT].pack("L<") +             # e_version
           [0].pack("Q<") +                      # e_entry
           [0].pack("Q<") +                      # e_phoff

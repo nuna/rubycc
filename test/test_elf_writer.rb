@@ -334,6 +334,33 @@ class TestElfWriter < Minitest::Test
     assert_equal 5, e_shstrndx
   end
 
+  # An injected MachineDescription retargets the writer without touching its
+  # layout logic: e_machine follows the description's value and each relocation
+  # kind is emitted with that machine's relocation type. A stand-in description
+  # (a fictional e_machine and a distinct type for :call) proves the mapping is
+  # table-driven rather than hard-coded to x86_64.
+  def test_injected_machine_description_parameterizes_e_machine_and_reloc_types
+    fake = Rubycc::ObjFile::ELFWriter::X86_64
+    machine = Rubycc::ObjFile::ELFWriter::MachineDescription.new(
+      e_machine: 0xABCD,
+      relocations: fake.relocations.merge(
+        call: Rubycc::ObjFile::ELFWriter::RelocDesc.new(type: 99, addend: -4, symbol: :named)
+      )
+    )
+    writer = Rubycc::ObjFile::ELFWriter.new(machine: machine)
+    writer.add_file_symbol("foo.c")
+    writer.add_text_section(CALL_CODE)
+    writer.add_global_func("main", 0, CALL_CODE.bytesize)
+    writer.add_undefined_symbol("abs")
+    writer.add_text_relocation(offset: CALL_REL32_OFFSET, symbol: "abs")
+    bin = writer.to_binary
+
+    assert_equal 0xABCD, bin[18, 2].unpack1("S<") # e_machine from the description
+    rela = find_section(bin, ".rela.text")
+    r_info = bin[rela[:offset] + 8, 8].unpack1("Q<")
+    assert_equal 99, r_info & 0xFFFFFFFF          # :call mapped to the injected type
+  end
+
   def test_note_gnu_stack_section_is_present
     bin = build_object
     shdr = find_section(bin, ".note.GNU-stack")

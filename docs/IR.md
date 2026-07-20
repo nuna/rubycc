@@ -253,11 +253,29 @@ IR 自体の仕様ではないが、IR を書く側・読む側が共有する�
   SSE = xmm0→xmm1(callee は :ret のバッファから収集、caller は :call の
   [buffer_vreg, classes] でスクラッチバッファへ散布。どちらもバッファアドレスは
   rcx 経由 — rcx は戻りレジスタと重ならない)。
-- **再配置**: 関数コンパイル結果(`Backend::X86_64::Result`)の relocations
-  は kind 付き — :call(call rel32、R_X86_64_PLT32)、:func(lea の関数
-  アドレス、:call と同経路)、:global(lea のデータシンボル、R_X86_64_PC32)、
-  :string(lea の .rodata、セクションシンボル + addend)。compiler.rb が
-  ELF の .rela.text / .rela.data に変換する。
+- **再配置**: 関数コンパイル結果(`Backend::X86_64::Result`)の relocations は
+  **機種非依存のリロケーション語彙**で記録される。バックエンドは機種別の
+  リロケーション型番号(`R_X86_64_*`)を一切知らず、抽象 kind を出すだけ:
+  - .text 用(`result.relocations`): `:call`(call rel32)、`:func`(lea の
+    関数アドレス。compiler.rb が `:call` と同一の .rela.text 経路に集約)、
+    `:global`(lea のデータシンボル)、`:string`(lea の .rodata、`string_id`
+    付き)、`:got`(GOT スロット参照。`-fPIC` のみ)。
+  - .data 用(`GlobalInit.relocations`、§2): `:symbol`(他オブジェクト/関数の
+    絶対アドレス)、`:string`(.rodata の文字列)。ELF ライタ内部では前者を
+    `:symbol`、後者を `:rodata` kind として保持する。
+  この語彙から機種別リロケーション型への変換は **ELF ライタに注入される機種記述**
+  (`ObjFile::ELFWriter::MachineDescription`)が担う。機種記述は `e_machine` 値と
+  「kind → `RelocDesc(type, addend, symbol)`」表の対だけを持ち、`type` が具体的な
+  ELF リロケーション型、`addend` が固定の PC 相対バイアス(x86_64 では call/global/
+  got が −4)または `:recorded`(reloc 自身の addend を使う。string/symbol/rodata)、
+  `symbol` が解決先シンボル(`:named` = reloc 自身のシンボル / `:rodata_section` =
+  .rodata セクションシンボル)を表す。既定の機種記述 `ELFWriter::X86_64` が
+  x86_64 の型・addend 規約(`:call`→PLT32/−4、`:string`→PC32/自 addend、
+  `:global`→PC32/−4、`:got`→REX_GOTPCRELX/−4、`:symbol`/`:rodata`→R_X86_64_64/
+  自 addend)を固定する。セクションレイアウトとシンボルテーブル生成は機種非依存で、
+  第二バックエンド(aarch64)は別の機種記述を注入するだけで対応できる。
+  ターゲット選択は `Compiler::TARGETS`(ターゲット名 → backend クラス + 機種記述)が
+  ディスパッチし、ドライバの `-target`/`--target=`(既定はホスト CPU 検出)が指定する。
 - **呼び出し時の整列**: プロローグが rsp を常に 16 バイト整列に保ち、
   スタック引数の push 本数が奇数のときだけ 8 バイトの先行パディングを入れる。
 
