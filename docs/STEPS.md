@@ -2332,9 +2332,32 @@ M3 完了後成果物(2026-07-17 指示)。heavy-implementer へ移譲(上限中
 
 ---
 
+## Step 68 — バックエンド抽象化リファクタ(M4 A1)
+
+M4 の初手。heavy-implementer へ移譲・レビューして確定。**挙動変更ゼロ**が受け入れ基準
+(A1 の定義)で、リファクタ前後の .o バイト一致(git stash 旧実装との比較 3/3)で裏取り。
+
+- リロケーション語彙を**機種非依存の 6 種**に固定: .text 側 :call(:func は
+  compiler.rb が同経路に集約)/ :string / :global / :got、.data 側 :symbol / :rodata。
+  バックエンドは R_X86_64_* を一切知らない。
+- `ObjFile::ELFWriter::MachineDescription`(Data)= e_machine 値 + 「kind →
+  `RelocDesc(type, addend, symbol)`」表をコンストラクタ注入。addend は固定バイアス
+  (x86_64 の PC 相対 −4)か :recorded(reloc 自身の addend)、symbol は :named か
+  :rodata_section。build_rela / build_rela_data は共通の append_machine_reloc に
+  テーブル駆動で一本化。既定機種 `ELFWriter::X86_64` が psABI の型・addend 規約を固定。
+- `Compiler::TARGETS`(ターゲット名 → backend クラス + 機種記述)でディスパッチ。
+  ドライバに `-target`/`--target=` を追加(既定はホスト検出 =
+  RbConfig::CONFIG["host_cpu"]、amd64/x64 → x86_64・arm64 → aarch64 の正規化と
+  triple の先頭要素採用)。aarch64 は「not implemented yet」、未知は
+  「unsupported target」の UsageError。
+- 契約の明文化は docs/IR.md §6 に追記(バックエンドとの契約の一部のため、IR 例外
+  ルールの範囲)。aarch64 のコードは一行も書いていない。
+
+---
+
 ## 現在のテスト規模
 
-Step 67 完了時点: **1,846 runs / 5,231 assertions / 0 failures / 27 skips**
+Step 68 完了時点: **1,851 runs / 5,249 assertions / 0 failures / 27 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
