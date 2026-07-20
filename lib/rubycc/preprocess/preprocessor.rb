@@ -179,19 +179,29 @@ module Rubycc
                           __builtin_ctz __builtin_ctzll __builtin_clz __builtin_clzll
                           __builtin_unreachable __builtin_memcpy].freeze
 
-      # The target-identifying macros gcc keeps predefined even under strict ISO
-      # C (-std=c11): only the reserved forms (a leading underscore followed by
+      # The platform macros gcc keeps predefined even under strict ISO C
+      # (-std=c11): only the reserved forms (a leading underscore followed by
       # another underscore or an uppercase letter, 7.1.3), so headers relying on
       # "linux", "unix" or "i386" (the non-reserved spellings, gcc drops these
       # under -std=c11) still see them undefined here. __GNUC__ is deliberately
-      # excluded (DESIGN R7): rubycc is x86-64 Linux/ELF only, so this fixed set
-      # is enough for glibc's own architecture dispatch (e.g. gnu/stubs.h) to
-      # settle on the right branch, without claiming gcc compatibility beyond
-      # that. Unlike BUILTIN_MACROS these are ordinary #define'd entries in
-      # @macros, so a translation unit may #undef or redefine them (gcc allows
-      # this too).
-      PREDEFINED_TARGET_MACROS = %w[__x86_64__ __amd64__ __linux__ __gnu_linux__
-                                    __unix__ __ELF__ __LP64__ _LP64 __STDC_HOSTED__].freeze
+      # excluded (DESIGN R7): rubycc targets Linux/ELF LP64 only, so this fixed
+      # set is enough for glibc's own dispatch (e.g. gnu/stubs.h) to settle on
+      # the right branch, without claiming gcc compatibility beyond that. Unlike
+      # BUILTIN_MACROS these are ordinary #define'd entries in @macros, so a
+      # translation unit may #undef or redefine them (gcc allows this too).
+      #
+      # These are the macros every supported target shares; the CPU-identifying
+      # ones are per-target and arrive through `arch_macros` below.
+      PREDEFINED_PLATFORM_MACROS = %w[__linux__ __gnu_linux__ __unix__ __ELF__
+                                      __LP64__ _LP64 __STDC_HOSTED__].freeze
+
+      # The CPU-identifying macros for each target, the subset of gcc's that
+      # glibc's own headers dispatch on. Getting these from the target rather
+      # than fixing them was forced by the aarch64 backend: a unit compiled for
+      # aarch64 that asked `#ifdef __x86_64__` used to take the x86-64 branch,
+      # and the cross libc headers were being read under the wrong CPU identity.
+      X86_64_ARCH_MACROS = %w[__x86_64__ __amd64__].freeze
+      AARCH64_ARCH_MACROS = %w[__aarch64__ __AARCH64EL__].freeze
 
       # The numeric limit/size macros gcc predefines describing the target's
       # fundamental types. glibc's headers reach for these directly when __GNUC__
@@ -242,10 +252,12 @@ module Rubycc
       # predefined macros with the value gcc gives it, so a header can select the
       # same branch it would there — the bundled <limits.h> uses exactly that to
       # pick CHAR_MIN/CHAR_MAX.
-      def initialize(char_unsigned: false)
+      # `arch_macros` names the target's CPU-identifying macros (see
+      # X86_64_ARCH_MACROS); it defaults to x86-64's, the default target.
+      def initialize(char_unsigned: false, arch_macros: X86_64_ARCH_MACROS)
         # name (String) => Macro.
         @macros = {}
-        PREDEFINED_TARGET_MACROS.each { |name| @macros[name] = predefined_target_macro }
+        (arch_macros + PREDEFINED_PLATFORM_MACROS).each { |name| @macros[name] = predefined_target_macro }
         @macros["__CHAR_UNSIGNED__"] = predefined_target_macro if char_unsigned
         PREDEFINED_NUMERIC_MACROS.each { |name, text| @macros[name] = predefined_numeric_macro(text) }
         @include_depth = 0

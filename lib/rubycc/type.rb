@@ -924,9 +924,18 @@ module Rubycc
       # none) raises the aggregate's alignment to at least that value, rounding
       # the size up to it; combined with `packed` the members stay packed while
       # the aggregate takes `aligned` as its boundary and tail-rounding.
-      def define(raw_members, packed: false, aligned: nil)
+      #
+      # `unnamed_bitfields_align` selects the one layout rule the two supported
+      # ABIs spell differently (see #layout_struct): whether an unnamed
+      # bit-field's declared type raises the aggregate's alignment. It does not
+      # under the x86-64 System V psABI (the default) and does under AAPCS64.
+      def define(raw_members, packed: false, aligned: nil, unnamed_bitfields_align: false)
         @members, @size, @alignment =
-          union? ? layout_union(raw_members, packed, aligned) : layout_struct(raw_members, packed, aligned)
+          if union?
+            layout_union(raw_members, packed, aligned, unnamed_bitfields_align)
+          else
+            layout_struct(raw_members, packed, aligned, unnamed_bitfields_align)
+          end
         @complete = true
       end
 
@@ -975,13 +984,17 @@ module Rubycc
       # a bit-field and its neighbours share bytes exactly as gcc lays them out. A
       # bit-field `T name : W` takes the next W bits, but must not straddle a
       # T-sized storage unit: when it would, the cursor advances to the next
-      # unit boundary first (6.7.2.1, psABI). A named bit-field raises the
-      # aggregate's alignment to alignof(T); an unnamed one never does (psABI:
-      # "Unnamed bit-fields' types do not affect the alignment of a structure"),
-      # and an unnamed `T : 0` only forces the cursor to the next unit boundary.
+      # unit boundary first (6.7.2.1, psABI). A named bit-field always raises the
+      # aggregate's alignment to alignof(T). Whether an unnamed one does too is
+      # where the two ABIs part company, which is what `unnamed_bitfields_align`
+      # selects: the x86-64 System V psABI says "unnamed bit-fields' types do not
+      # affect the alignment of a structure", while AAPCS64 has every bit-field's
+      # container contribute, so `struct { int : 32; }` is 4-byte aligned there
+      # and 1-byte aligned here. Either way an unnamed `T : 0` places nothing and
+      # only forces the cursor to the next unit boundary.
       # `packed` never coexists with a bit-field here (the parser rejects that
       # combination), so its 1-byte-boundary branch only governs plain members.
-      def layout_struct(raw_members, packed, aligned)
+      def layout_struct(raw_members, packed, aligned, unnamed_bitfields_align)
         bit_pos = 0
         max_alignment = 1
         members = []
@@ -999,7 +1012,8 @@ module Rubycc
             bit_pos = (byte_offset + member_size) * 8
             max_alignment = member_alignment if member_alignment > max_alignment
           else
-            bit_pos = place_bitfield(members, name, type, bit_width, bit_pos) do |alignment|
+            bit_pos = place_bitfield(members, name, type, bit_width, bit_pos,
+                                     unnamed_bitfields_align) do |alignment|
               max_alignment = alignment if alignment > max_alignment
             end
           end
@@ -1010,11 +1024,15 @@ module Rubycc
 
       # Places one bit-field at bit cursor `bit_pos`, recording a Member for a
       # named one and yielding alignof(T) so #layout_struct can raise the
-      # aggregate's alignment (a named field only). Returns the advanced cursor.
+      # aggregate's alignment — for a named field always, for an unnamed one only
+      # when `unnamed_bitfields_align` (AAPCS64). Returns the advanced cursor.
       # A zero-width field is always unnamed (the parser rejects a named one) and
-      # merely realigns the cursor to the next storage-unit boundary.
-      def place_bitfield(members, name, type, bit_width, bit_pos)
+      # merely realigns the cursor to the next storage-unit boundary; it still
+      # contributes its container's alignment under AAPCS64, which is why the
+      # yield precedes the early return.
+      def place_bitfield(members, name, type, bit_width, bit_pos, unnamed_bitfields_align)
         unit_bits = type.size * 8
+        yield type.alignment if unnamed_bitfields_align && name.nil?
         return align_up(bit_pos, unit_bits) if bit_width.zero?
 
         bit_pos = align_up(bit_pos, unit_bits) if (bit_pos % unit_bits) + bit_width > unit_bits
@@ -1030,9 +1048,12 @@ module Rubycc
       # member's rounded up to the aggregate alignment. `packed` drops the
       # aggregate to a 1-byte boundary and `aligned` raises it. A bit-field is
       # laid at bit 0 and spans ceil(W/8) bytes; a named one raises the alignment
-      # to its type's, an unnamed one contributes only its byte span (and a
-      # `T : 0` nothing at all). Returns [members, size, alignment].
-      def layout_union(raw_members, packed, aligned)
+      # to its type's. An unnamed one contributes only its byte span (and a
+      # `T : 0` nothing at all) under the x86-64 System V psABI, and its
+      # container's alignment as well under AAPCS64 — the same divergence
+      # #layout_struct documents, selected by `unnamed_bitfields_align`.
+      # Returns [members, size, alignment].
+      def layout_union(raw_members, packed, aligned, unnamed_bitfields_align)
         members = []
         max_size = 0
         natural_alignment = 1
@@ -1042,10 +1063,14 @@ module Rubycc
             byte_size = type.size
             member_alignment = packed ? 1 : type.alignment
           else
-            next if bit_width.zero?
+            unnamed_alignment = unnamed_bitfields_align && name.nil? ? type.alignment : 1
+            if bit_width.zero?
+              natural_alignment = unnamed_alignment if unnamed_alignment > natural_alignment
+              next
+            end
 
             byte_size = bits_to_bytes(bit_width)
-            member_alignment = 1
+            member_alignment = unnamed_alignment
             if name
               members << Member.new(name: name, type: type, offset: 0,
                                     bit_width: bit_width, bit_offset: 0)

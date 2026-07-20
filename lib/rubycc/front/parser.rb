@@ -254,9 +254,15 @@ module Rubycc
       # defaulting to the signed instance keeps a target-less caller on the
       # x86-64 System V choice. `signed char` and `unsigned char` are unaffected —
       # both are separate types with a fixed signedness.
-      def initialize(tokens, plain_char: Type::Char)
+      #
+      # `unnamed_bitfields_align` is the second such per-ABI trait: whether an
+      # unnamed bit-field's type raises its aggregate's alignment (it does under
+      # AAPCS64, not under the x86-64 System V psABI). It is passed straight to
+      # StructType#define, which documents the rule.
+      def initialize(tokens, plain_char: Type::Char, unnamed_bitfields_align: false)
         @tokens = tokens
         @plain_char = plain_char
+        @unnamed_bitfields_align = unnamed_bitfields_align
         @pos = 0
         # The number of recursive-descent nesting levels currently live, capped
         # at MAX_NESTING_DEPTH by #with_nesting_guard. One counter is shared by
@@ -715,7 +721,8 @@ module Rubycc
             if packed && raw_members.any? { |triple| triple[2] }
               error_at(keyword_tok, "packed bit-fields are not supported")
             end
-            struct_type.define(raw_members, packed: packed, aligned: aligned)
+            struct_type.define(raw_members, packed: packed, aligned: aligned,
+                                            unnamed_bitfields_align: @unnamed_bitfields_align)
             struct_type
           elsif tag
             reference_struct_tag(tag, kind, tag_tok)

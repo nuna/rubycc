@@ -708,6 +708,28 @@ class TestPreprocessor < Minitest::Test
     assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
   end
 
+  def test_arch_macros_follow_the_selected_target
+    # The CPU-identifying macros belong to the target, not to the compiler: a
+    # unit compiled for aarch64 must take the aarch64 branch of its own #ifdef
+    # (and of the cross libc headers'), so __x86_64__ has to be absent there.
+    source = "#ifdef __aarch64__\nint arm;\n#endif\n#ifdef __x86_64__\nint intel;\n#endif"
+
+    aarch64 = Rubycc::Preprocess::Preprocessor.new(
+      arch_macros: Rubycc::Preprocess::Preprocessor::AARCH64_ARCH_MACROS
+    ).run(source, filename: "t.c", system_includes: false)
+    assert_equal ["int", "arm", ";"], aarch64.reject(&:eof?).map(&:value)
+
+    assert_equal ["int", "intel", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_platform_macros_are_shared_by_every_target
+    # Only the CPU identity varies; Linux/ELF/LP64 hold for both targets.
+    tokens = Rubycc::Preprocess::Preprocessor.new(
+      arch_macros: Rubycc::Preprocess::Preprocessor::AARCH64_ARCH_MACROS
+    ).run("int a = __LP64__ + __ELF__ + __linux__;", filename: "t.c", system_includes: false)
+    assert_equal [1, 1, 1], tokens.select { |t| t.type == :num }.map(&:value)
+  end
+
   # --- __has_include / __has_attribute / __has_builtin (in #if) --------------
 
   def test_has_include_detects_a_present_header

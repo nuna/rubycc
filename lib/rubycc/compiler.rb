@@ -20,13 +20,23 @@ module Rubycc
     # the front end target-aware at all: the signedness of plain `char` is
     # implementation-defined (6.2.5p15) and each ABI pins it, signed under the
     # x86-64 System V psABI and unsigned under AAPCS64, so it has to reach type
-    # resolution rather than being decided once for the whole compiler. Apart
-    # from it every entry shares the orchestration logic below unchanged.
+    # resolution rather than being decided once for the whole compiler. The
+    # `arch_macros` entry is the same idea one stage earlier: the CPU-identifying
+    # predefined macros a translation unit (and the libc headers it includes)
+    # dispatches on. `unnamed_bitfields_align` is a third: the ABIs disagree on
+    # whether an unnamed bit-field's type raises its aggregate's alignment, so
+    # sizeof and _Alignof of such a struct are target-dependent (see
+    # StructType#define). Apart from those three every entry shares the
+    # orchestration logic below unchanged.
     TARGETS = {
       "x86_64" => { backend: Backend::X86_64, machine: ObjFile::ELFWriter::X86_64,
-                    char_signed: true },
+                    char_signed: true,
+                    arch_macros: Preprocess::Preprocessor::X86_64_ARCH_MACROS,
+                    unnamed_bitfields_align: false },
       "aarch64" => { backend: Backend::AArch64, machine: ObjFile::ELFWriter::AARCH64,
-                     char_signed: false }
+                     char_signed: false,
+                     arch_macros: Preprocess::Preprocessor::AARCH64_ARCH_MACROS,
+                     unnamed_bitfields_align: true }
     }.freeze
 
     # Compiles C source into an ELF64 relocatable object, returned as an
@@ -42,11 +52,13 @@ module Rubycc
       # `char` type-specifier to it) and the generator (which types a string
       # literal's elements with it).
       plain_char = Type.plain_char(entry[:char_signed])
-      tokens = Preprocess::Preprocessor.new(char_unsigned: plain_char.unsigned?)
+      tokens = Preprocess::Preprocessor.new(char_unsigned: plain_char.unsigned?,
+                                            arch_macros: entry[:arch_macros])
                                        .run(source, filename: filename,
                                             include_paths: include_paths, defines: defines,
                                             system_includes: system_includes)
-      program = Front::Parser.new(tokens, plain_char: plain_char).parse
+      program = Front::Parser.new(tokens, plain_char: plain_char,
+                                          unnamed_bitfields_align: entry[:unnamed_bitfields_align]).parse
       ir_program = IR::Generator.new(plain_char: plain_char).generate(program, pic: pic)
 
       backend = entry[:backend].new

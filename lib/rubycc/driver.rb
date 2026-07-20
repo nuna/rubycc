@@ -380,7 +380,7 @@ module Rubycc
       @inputs.each do |input|
         next unless input[:kind] == :source
 
-        tokens = Preprocess::Preprocessor.new.preprocess(
+        tokens = preprocessor_for_target.preprocess(
           File.read(input[:path]), filename: input[:path],
           include_paths: @include_paths, defines: @defines,
           system_includes: @system_includes
@@ -393,6 +393,17 @@ module Rubycc
       else
         @out.print(text)
       end
+    end
+
+    # A preprocessor configured for the selected target, so `-E` predefines the
+    # same macros a full compile of the same command line would. An unknown
+    # target falls back to the x86-64 entry: `-E` never reaches
+    # #ensure_supported_target, and reporting a bad -target as a preprocessing
+    # crash would be worse than preprocessing under the default identity.
+    def preprocessor_for_target
+      entry = Compiler::TARGETS.fetch(target) { Compiler::TARGETS.fetch("x86_64") }
+      Preprocess::Preprocessor.new(char_unsigned: !entry[:char_signed],
+                                   arch_macros: entry[:arch_macros])
     end
 
     def render_preprocessed(tokens)
