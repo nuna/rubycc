@@ -20,10 +20,6 @@ things the next ABI-hardening pass should close:
 - **`max_align_t` (stddef.h)** — rubycc models `long double` as an 8-byte double,
   so `sizeof/_Alignof` are `16/8` where the glibc psABI is `32/16`. Fixing this
   needs x87 80-bit `long double` support in the backend, not a header change.
-- **`FLT_MAX` (float.h)** — rubycc's float32 literal conversion rounds the
-  bundled `3.40282347e+38F` up to `+inf`; gcc yields `0x1.fffffep+127`. Every
-  other `float`/`double` magnitude macro (`FLT_MIN`, `DBL_MAX`, epsilons, true
-  minimums, all integer characteristics) matches to the byte.
 
 ---
 

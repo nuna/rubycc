@@ -354,11 +354,72 @@ module Rubycc
           (node.is_a?(Front::AST::Unary) && node.op == :neg && floating_constant?(node.operand))
       end
 
+      # Converts a Ruby Float (binary64) to its correctly-rounded IEEE754
+      # binary32 bit pattern, returned as an unsigned 32-bit Integer. Ruby's
+      # own `Array#pack("e")` does not round: a magnitude past FLT_MAX
+      # saturates straight to infinity even when the true binary32 result is
+      # FLT_MAX (round-to-nearest, ties-to-even, keeps some of that range).
+      # This walks the binary64 bit fields (sign, exponent, mantissa) and
+      # narrows the 52-bit fraction to 23 bits itself, so overflow to
+      # infinity, underflow to a subnormal or zero, and the FLT_MAX boundary
+      # all fall out of one rounding step rather than special-cased ranges.
+      def double_to_binary32_bits(value)
+        bits64 = [value].pack("E").unpack1("Q<")
+        sign = (bits64 >> 63) & 1
+        exp64 = (bits64 >> 52) & 0x7FF
+        frac64 = bits64 & 0xF_FFFF_FFFF_FFFF
+
+        return (sign << 31) | 0x7F800000 if exp64 == 0x7FF && frac64.zero? # +-infinity
+        return (sign << 31) | 0x7FC00000 if exp64 == 0x7FF # NaN: a quiet NaN, payload not preserved
+
+        # A zero and every double subnormal (magnitude < 2**-1022) are far
+        # below binary32's smallest subnormal (2**-149), so both round to a
+        # signed zero.
+        return sign << 31 if exp64.zero?
+
+        unbiased_exp = exp64 - 1023
+        mantissa53 = (1 << 52) | frac64 # the implicit leading 1 restored: 2**52..2**53-1
+
+        # binary32 subnormals all share one fixed exponent, -126; an unbiased
+        # exponent below that must give up that many extra mantissa bits to
+        # land on the same exponent, the same as widening a right shift.
+        extra_shift = unbiased_exp < -126 ? -126 - unbiased_exp : 0
+        rounded = round_shift_ties_to_even(mantissa53, 29 + extra_shift) # 52 - 23 = 29 fraction bits narrowed away
+
+        if unbiased_exp >= -126
+          if rounded == (1 << 24) # rounding carried the mantissa out of range
+            rounded >>= 1
+            unbiased_exp += 1
+          end
+          return (sign << 31) | 0x7F800000 if unbiased_exp > 127 # overflow: rounds past FLT_MAX to infinity
+
+          (sign << 31) | ((unbiased_exp + 127) << 23) | (rounded - (1 << 23))
+        elsif rounded == (1 << 23) # rounded up into the smallest normal value
+          (sign << 31) | (1 << 23)
+        else
+          (sign << 31) | rounded
+        end
+      end
+
+      # Shifts `value` right by `shift` bits (shift > 0), rounding to the
+      # nearest integer with ties broken to the even result, using Ruby's
+      # unbounded Integer so an oversized shift (deep underflow) is exact
+      # rather than depending on any fixed-width rounding primitive.
+      def round_shift_ties_to_even(value, shift)
+        half = 1 << (shift - 1)
+        remainder = value & ((half << 1) - 1)
+        shifted = value >> shift
+        remainder > half || (remainder == half && shifted.odd?) ? shifted + 1 : shifted
+      end
+
       # Packs a Ruby Float into `size` little-endian IEEE754 bytes: a double to
-      # eight ("E"), a float to four ("e"), matching how a floating value is
-      # stored in a slot so a load reads exactly these bits.
+      # eight ("E"), matching how a floating value is stored in a slot so a
+      # load reads exactly these bits. A float is narrowed through
+      # #double_to_binary32_bits rather than pack("e"): that directive
+      # saturates a magnitude past FLT_MAX to infinity instead of rounding it
+      # to FLT_MAX, which is wrong for a value within half an ULP of FLT_MAX.
       def pack_float(value, size)
-        size == 8 ? [value].pack("E") : [value].pack("e")
+        size == 8 ? [value].pack("E") : [double_to_binary32_bits(value)].pack("L<")
       end
 
       # Packs a global pointer slot. The address constants this subset admits
@@ -2148,13 +2209,15 @@ module Rubycc
 
       # The IEEE754 bit pattern of a Ruby Float as an unsigned Integer, in the
       # width `type` calls for: a double packs to 8 bytes ("E" little-endian
-      # double), a float to 4 ("e" little-endian single), each read back as a
-      # little-endian unsigned integer so :const materializes exactly those bits.
+      # double) and reads back as a little-endian unsigned integer, while a
+      # float goes through #double_to_binary32_bits (not pack("e"), which
+      # saturates to infinity instead of rounding to FLT_MAX near the top of
+      # binary32's range) so :const materializes exactly those bits.
       def float_bit_pattern(value, type)
         if type.size == 8
           [value].pack("E").unpack1("Q<")
         else
-          [value].pack("e").unpack1("L<")
+          double_to_binary32_bits(value)
         end
       end
 

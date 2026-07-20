@@ -11,12 +11,11 @@ require_relative "abi_harness/harness"
 # compatible and gives the harness a green baseline before the bundled libc
 # headers (the next step) start adding cases of their own.
 #
-# Two freestanding discrepancies are deliberately *not* asserted here, because
-# they are open rubycc gaps rather than harness or header defects (see
+# One freestanding discrepancy is deliberately *not* asserted here, because it
+# is an open rubycc gap rather than a harness or header defect (see
 # test/abi_harness/README.md): sizeof/_Alignof of max_align_t (rubycc models long
-# double as 8-byte double, so the type is 16/8 where glibc's is 32/16), and the
-# value of FLT_MAX (rubycc's float32 literal conversion rounds the bundled
-# 3.40282347e+38F up to +inf). Every other freestanding check matches to the byte.
+# double as 8-byte double, so the type is 16/8 where glibc's is 32/16). Every
+# other freestanding check, including FLT_MAX, matches to the byte.
 class TestHeaderAbi < Minitest::Test
   include ExecutionHelper
   include HeaderAbiHarness
@@ -71,15 +70,15 @@ class TestHeaderAbi < Minitest::Test
   )
 
   # <float.h>: the integer characteristics of every floating type, and the
-  # float/double magnitude macros compared as exact hex floats. FLT_MAX is
-  # omitted (see the class comment); every macro listed here matches gcc exactly.
+  # float/double magnitude macros compared as exact hex floats; every macro
+  # listed here matches gcc exactly.
   FLOAT = HeaderAbiHarness::Spec.new(
     header: "float.h",
     ints: %w[FLT_RADIX FLT_EVAL_METHOD DECIMAL_DIG
              FLT_MANT_DIG FLT_DIG FLT_MIN_EXP FLT_MAX_EXP
              DBL_MANT_DIG DBL_DIG DBL_MIN_EXP DBL_MAX_EXP
              LDBL_MANT_DIG LDBL_DIG LDBL_MIN_EXP LDBL_MAX_EXP],
-    floats: %w[FLT_MIN FLT_EPSILON FLT_TRUE_MIN DBL_MAX DBL_MIN DBL_EPSILON DBL_TRUE_MIN]
+    floats: %w[FLT_MIN FLT_MAX FLT_EPSILON FLT_TRUE_MIN DBL_MAX DBL_MIN DBL_EPSILON DBL_TRUE_MIN]
   )
 
   # <iso646.h>: a header with no printable ABI surface at all; its correctness is
