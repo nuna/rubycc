@@ -345,7 +345,8 @@ class TestElfWriter < Minitest::Test
       e_machine: 0xABCD,
       relocations: fake.relocations.merge(
         call: Rubycc::ObjFile::ELFWriter::RelocDesc.new(type: 99, addend: -4, symbol: :named)
-      )
+      ),
+      text_padding: fake.text_padding
     )
     writer = Rubycc::ObjFile::ELFWriter.new(machine: machine)
     writer.add_file_symbol("foo.c")

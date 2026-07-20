@@ -94,6 +94,11 @@ module Rubycc
       # and caret, so it is printed verbatim.
       @err.puts e.message
       1
+    rescue Backend::UnsupportedError => e
+      # A construct the selected backend cannot lower yet: valid C the target is
+      # not ready for, reported as a diagnostic rather than a Ruby crash.
+      @err.puts "#{PROG}: error: #{e.message}"
+      1
     rescue Link::LinkError => e
       @err.puts "#{PROG}: error: #{e.message}"
       1
@@ -266,17 +271,13 @@ module Rubycc
     end
 
     # Verifies the selected target has an implemented backend, raising a
-    # gcc-style usage error otherwise: a recognized-but-unbuilt architecture
-    # (aarch64) gets a "not implemented yet" diagnostic, an entirely unknown one
-    # a plain "unsupported target". Returns true so it can gate #dispatch.
+    # gcc-style usage error for an entirely unknown architecture. x86_64 and
+    # aarch64 are both built; anything else is a plain "unsupported target".
+    # Returns true so it can gate #dispatch.
     def ensure_supported_target
       return true if Compiler::TARGETS.key?(target)
 
-      if target == "aarch64"
-        raise UsageError, "aarch64 backend is not implemented yet"
-      else
-        raise UsageError, "unsupported target '#{target}'"
-      end
+      raise UsageError, "unsupported target '#{target}'"
     end
 
     # The output mode gcc's precedence selects: -E over -c over -shared, and an

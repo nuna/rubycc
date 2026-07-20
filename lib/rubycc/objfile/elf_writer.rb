@@ -48,6 +48,7 @@ module Rubycc
       EV_CURRENT  = 1
       ET_REL      = 1
       EM_X86_64   = 62
+      EM_AARCH64  = 183
 
       SHN_UNDEF = 0
       SHN_ABS = 0xFFF1
@@ -86,6 +87,12 @@ module Rubycc
       R_X86_64_PLT32          = 4
       R_X86_64_REX_GOTPCRELX  = 42
 
+      # aarch64 relocation type: CALL26 patches the 26-bit immediate of a `bl`
+      # (or `b`) with the PC-relative word distance to its target — the only
+      # relocation the aarch64 A2 core emits (a direct call). Its addend is a
+      # fixed 0: a plain `bl sym` names the target with no displacement.
+      R_AARCH64_CALL26        = 283
+
       # Machine description: the injected, target-specific half of the writer.
       # It pairs the ELF e_machine value with a table translating each
       # machine-independent relocation `kind` (the vocabulary the backend
@@ -94,11 +101,21 @@ module Rubycc
       # (an R_<arch>_* number); `addend` is either a fixed PC-relative bias or
       # :recorded, meaning the relocation carries its own addend; `symbol` is
       # :named to resolve against the relocation's own symbol or :rodata_section
-      # to resolve against the .rodata section symbol. Retargeting the writer is
+      # to resolve against the .rodata section symbol. `text_padding` is the
+      # filler the compiler repeats in the alignment gap between two functions —
+      # a no-op encoding of the target, so the gap disassembles cleanly and a
+      # stray fall-through lands on nothing harmful. Retargeting the writer is
       # a matter of injecting a different MachineDescription — the section
       # layout and symbol-table logic below is machine-independent.
       RelocDesc = Data.define(:type, :addend, :symbol)
-      MachineDescription = Data.define(:e_machine, :relocations)
+      MachineDescription = Data.define(:e_machine, :relocations, :text_padding)
+
+      # Inter-function padding: x86_64's one-byte `nop` (0x90), and aarch64's
+      # four-byte `nop` word 0xD503201F stored little-endian (every aarch64
+      # instruction is four bytes, so the unit of padding is a whole word and
+      # the 16-byte function alignment is always a whole number of them).
+      X86_64_NOP  = "\x90".b
+      AARCH64_NOP = [0xD503201F].pack("L<")
 
       # The default machine: x86_64. Its relocation table fixes the exact ELF
       # types and addend conventions the System V AMD64 psABI defines for each
@@ -113,7 +130,21 @@ module Rubycc
           got:    RelocDesc.new(type: R_X86_64_REX_GOTPCRELX, addend: -4,       symbol: :named),
           symbol: RelocDesc.new(type: R_X86_64_64,           addend: :recorded, symbol: :named),
           rodata: RelocDesc.new(type: R_X86_64_64,           addend: :recorded, symbol: :rodata_section)
-        }.freeze
+        }.freeze,
+        text_padding: X86_64_NOP
+      )
+
+      # The aarch64 machine. The A2 code generator emits only the :call kind (a
+      # `bl` site), translated to an R_AARCH64_CALL26 against the call target
+      # with a fixed zero addend. Any other relocation kind reaching the writer
+      # is not part of the A2 core and raises a clear KeyError from the table
+      # lookup rather than being emitted with the wrong type.
+      AARCH64 = MachineDescription.new(
+        e_machine: EM_AARCH64,
+        relocations: {
+          call: RelocDesc.new(type: R_AARCH64_CALL26, addend: 0, symbol: :named)
+        }.freeze,
+        text_padding: AARCH64_NOP
       )
 
       SYM_ENTSIZE = 24

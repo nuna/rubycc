@@ -315,16 +315,33 @@ class TestDriver < Minitest::Test
     end
   end
 
-  # A recognized-but-unimplemented architecture draws a clear diagnostic and a
-  # non-zero exit, whether spelled as a bare CPU or a full triple.
-  def test_aarch64_target_is_diagnosed_as_unimplemented
+  # -target aarch64 is accepted under every spelling the target normalizer
+  # recognizes, and each produces an EM_AARCH64 (183) object — cross-compiling
+  # on an x86_64 host, so this asserts on the object's header rather than
+  # running it.
+  def test_aarch64_target_produces_an_aarch64_object
     in_tmpdir do |dir|
       File.write(File.join(dir, "u.c"), "int main(void){ return 0; }")
       ["aarch64", "arm64", "aarch64-linux-gnu"].each do |spelling|
         _out, err, status = rubycc("-c", "u.c", "--target=#{spelling}", "-o", "u.o", dir: dir)
-        assert_equal 1, status.exitstatus
-        assert_match(/aarch64 backend is not implemented yet/, err)
+        assert_equal 0, status.exitstatus, err
+        obj = Reader.read_file(File.join(dir, "u.o"))
+        assert_equal Reader::EM_AARCH64, obj.machine, "#{spelling} selects the aarch64 backend"
+        assert obj.relocatable?
       end
+    end
+  end
+
+  # A construct the aarch64 backend does not lower yet (a string literal, which
+  # is A3 work) fails as a driver diagnostic with a non-zero exit, never as a
+  # silently wrong object.
+  def test_aarch64_unsupported_construct_is_diagnosed
+    in_tmpdir do |dir|
+      File.write(File.join(dir, "u.c"), "char *m(void){ return \"hi\"; }")
+      _out, err, status = rubycc("-c", "u.c", "-target", "aarch64", "-o", "u.o", dir: dir)
+      assert_equal 1, status.exitstatus
+      assert_match(/aarch64: not yet supported: string-literal references/, err)
+      refute File.exist?(File.join(dir, "u.o")), "no object is written for a refused compilation"
     end
   end
 

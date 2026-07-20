@@ -54,7 +54,13 @@ module Rubycc
       ET_EXEC = 2
       ET_DYN  = 3
 
-      EM_X86_64 = 62
+      # The machines this reader understands. Both are little-endian ELF64, so
+      # the whole header/section/symbol layer is shared; only the relocation
+      # type names differ (see RELOC_TYPES).
+      EM_X86_64  = 62
+      EM_AARCH64 = 183
+
+      SUPPORTED_MACHINES = [EM_X86_64, EM_AARCH64].freeze
 
       # Section header types.
       SHT_NULL     = 0
@@ -89,22 +95,30 @@ module Rubycc
       # Symbol visibility (st_other & 0x3).
       SYM_VISIBILITIES = { 0 => :default, 1 => :internal, 2 => :hidden, 3 => :protected }.freeze
 
-      # x86_64 relocation types (r_info & 0xFFFFFFFF). The ones the toolchain
-      # emits are named; any other type is preserved numerically (its name is nil)
-      # rather than rejected, so an unfamiliar object is still fully readable.
-      # The GOTPCREL family addresses a symbol's Global Offset Table slot: 9 is
-      # the plain PC-relative GOT reference, and 41/42 its "relaxable" forms the
-      # psABI defines for a `mov` that a linker may rewrite in place to a `lea`
-      # (42 is the REX-prefixed form a 64-bit `mov rax, sym@GOTPCREL(%rip)` uses).
+      # Relocation types (r_info & 0xFFFFFFFF), keyed by e_machine because the
+      # numbering is per-architecture. The ones the toolchain emits are named;
+      # any other type is preserved numerically (its name is nil) rather than
+      # rejected, so an unfamiliar object is still fully readable.
+      # The x86_64 GOTPCREL family addresses a symbol's Global Offset Table
+      # slot: 9 is the plain PC-relative GOT reference, and 41/42 its
+      # "relaxable" forms the psABI defines for a `mov` that a linker may
+      # rewrite in place to a `lea` (42 is the REX-prefixed form a 64-bit
+      # `mov rax, sym@GOTPCREL(%rip)` uses). On aarch64, CALL26 is the 26-bit
+      # branch immediate of a `bl`/`b` to a named symbol.
       RELOC_TYPES = {
-        1 => :R_X86_64_64,
-        2 => :R_X86_64_PC32,
-        4 => :R_X86_64_PLT32,
-        9 => :R_X86_64_GOTPCREL,
-        10 => :R_X86_64_32,
-        11 => :R_X86_64_32S,
-        41 => :R_X86_64_GOTPCRELX,
-        42 => :R_X86_64_REX_GOTPCRELX
+        EM_X86_64 => {
+          1 => :R_X86_64_64,
+          2 => :R_X86_64_PC32,
+          4 => :R_X86_64_PLT32,
+          9 => :R_X86_64_GOTPCREL,
+          10 => :R_X86_64_32,
+          11 => :R_X86_64_32S,
+          41 => :R_X86_64_GOTPCRELX,
+          42 => :R_X86_64_REX_GOTPCRELX
+        }.freeze,
+        EM_AARCH64 => {
+          283 => :R_AARCH64_CALL26
+        }.freeze
       }.freeze
 
       # Dynamic array tags (.dynamic) this reader interprets: the terminator, the
@@ -239,8 +253,8 @@ module Rubycc
 
         @type = u16(16)
         @machine = u16(18)
-        raise ELFFormatError, "unsupported machine #{@machine} (only EM_X86_64 is supported)" \
-          unless @machine == EM_X86_64
+        raise ELFFormatError, "unsupported machine #{@machine} (only EM_X86_64 and EM_AARCH64 are supported)" \
+          unless SUPPORTED_MACHINES.include?(@machine)
         unless [ET_REL, ET_EXEC, ET_DYN].include?(@type)
           raise ELFFormatError, "unsupported ELF type #{@type} (only ET_REL, ET_EXEC and ET_DYN are supported)"
         end
@@ -410,6 +424,12 @@ module Rubycc
         end
       end
 
+      # The relocation-type name table for this object's machine; an object of a
+      # machine with no table still reads, its types simply staying unnamed.
+      def reloc_type_names
+        @reloc_type_names ||= RELOC_TYPES.fetch(@machine, {})
+      end
+
       def parse_rela(sec)
         symbols = symbol_table_by_index[sec.link] || []
         entsize = sec.entsize.zero? ? RELA_ENTSIZE : sec.entsize
@@ -423,7 +443,7 @@ module Rubycc
           Relocation.new(
             offset: u64(base),
             type: type,
-            type_name: RELOC_TYPES[type],
+            type_name: reloc_type_names[type],
             symbol: symbols[sym_index],
             addend: s64(base + 16)
           )

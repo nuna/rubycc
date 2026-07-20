@@ -5,6 +5,7 @@ require_relative "preprocess/preprocessor"
 require_relative "front/parser"
 require_relative "ir/generator"
 require_relative "backend/x86_64"
+require_relative "backend/aarch64"
 require_relative "objfile/elf_writer"
 
 module Rubycc
@@ -14,10 +15,11 @@ module Rubycc
     # The backend dispatch table: a normalized target name selects the code
     # generator that lowers IR to that machine's instructions and the ELF
     # machine description (e_machine value + relocation-type table) the object
-    # writer emits under. Only x86_64 is implemented; a second entry (aarch64)
-    # would slot in here without changing any orchestration logic below.
+    # writer emits under. Both entries share the orchestration logic below
+    # unchanged; the target only swaps the backend and the machine description.
     TARGETS = {
-      "x86_64" => { backend: Backend::X86_64, machine: ObjFile::ELFWriter::X86_64 }
+      "x86_64" => { backend: Backend::X86_64, machine: ObjFile::ELFWriter::X86_64 },
+      "aarch64" => { backend: Backend::AArch64, machine: ObjFile::ELFWriter::AARCH64 }
     }.freeze
 
     # Compiles C source into an ELF64 relocatable object, returned as an
@@ -95,9 +97,9 @@ module Rubycc
       relocations = []
       ir_program.functions.each do |ir_func|
         result = backend.compile(ir_func)
-        # Align each function to 16 bytes with NOP (0x90) padding, keeping the
-        # output deterministic and every entry point aligned.
-        pad_to_alignment(text, 16)
+        # Align each function to 16 bytes with the target's NOP filler, keeping
+        # the output deterministic and every entry point aligned.
+        pad_to_alignment(text, 16, entry[:machine].text_padding)
         base = text.bytesize
         text << result.bytes
         result.symbols.each do |sym|
@@ -166,11 +168,16 @@ module Rubycc
 
     private
 
-    # Pads `buffer` with NOP (0x90) bytes until its length is a multiple of
-    # `alignment`.
-    def pad_to_alignment(buffer, alignment)
+    # Pads `buffer` with repetitions of the target's NOP encoding until its
+    # length is a multiple of `alignment`. `filler` may be several bytes wide
+    # (aarch64's NOP is a whole 32-bit word), so the gap is filled in whole
+    # units; a gap that is not a multiple of the filler width cannot arise
+    # because the alignment is a multiple of the instruction size.
+    def pad_to_alignment(buffer, alignment, filler)
       remainder = buffer.bytesize % alignment
-      buffer << ("\x90".b * (alignment - remainder)) if remainder.positive?
+      return unless remainder.positive?
+
+      buffer << (filler * ((alignment - remainder) / filler.bytesize))
     end
 
     # Rounds `value` up to the next multiple of `alignment`.
