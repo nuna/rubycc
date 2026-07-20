@@ -51,7 +51,9 @@ class TestElfWriter < Minitest::Test
     writer.add_text_section(LEA_CODE)
     writer.add_global_func("main", 0, LEA_CODE.bytesize)
     writer.set_rodata(RODATA)
-    writer.add_rodata_relocation(offset: LEA_REL32_OFFSET, addend: WORLD_OFFSET - 4)
+    # The string's plain .rodata offset: the -4 a rel32 field needs is the
+    # x86_64 machine description's business, not the caller's.
+    writer.add_rodata_relocation(offset: LEA_REL32_OFFSET, addend: WORLD_OFFSET)
     writer.to_binary
   end
 
@@ -344,7 +346,7 @@ class TestElfWriter < Minitest::Test
     machine = Rubycc::ObjFile::ELFWriter::MachineDescription.new(
       e_machine: 0xABCD,
       relocations: fake.relocations.merge(
-        call: Rubycc::ObjFile::ELFWriter::RelocDesc.new(type: 99, addend: -4, symbol: :named)
+        call: [Rubycc::ObjFile::ELFWriter::RelocDesc.new(type: 99, addend: -4, symbol: :named)]
       ),
       text_padding: fake.text_padding
     )

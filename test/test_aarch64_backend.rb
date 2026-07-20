@@ -22,10 +22,9 @@ require "tmpdir"
 #      the repository's own ELF reader and its machine and relocation types
 #      checked.
 #
-# Alongside these, the constructs the A2 core deliberately does not lower yet
-# (globals, string literals, floating point, structs by value, varargs, indirect
-# calls, stack-passed arguments) are asserted to raise rather than to produce
-# quietly wrong code.
+# Alongside these, the constructs the backend deliberately does not lower yet
+# (floating point, structs by value, varargs, indirect calls, stack-passed
+# arguments) are asserted to raise rather than to produce quietly wrong code.
 class TestAArch64Backend < Minitest::Test
   Backend = Rubycc::Backend::AArch64
   IR = Rubycc::IR
@@ -198,6 +197,19 @@ class TestAArch64Backend < Minitest::Test
 
   def add_imm(rd, rn, imm12, shift12: false) = addsub_imm(0, 1, rd, rn, imm12, shift12)
   def sub_imm(rd, rn, imm12, shift12: false) = addsub_imm(1, 1, rd, rn, imm12, shift12)
+
+  # "PC-rel. addressing", the ADRP form:
+  #   op(31) immlo(30:29) 10000(28:24) immhi(23:5) Rd(4:0)
+  # op = 1 selects ADRP, which forms the address of the 4 KiB page the target
+  # lies in: the 21-bit immediate (immhi:immlo) is a page count relative to the
+  # page of the instruction itself, and the low 12 bits of the result are zero.
+  # Both immediate fields are left zero here because the linker fills them in
+  # through R_AARCH64_ADR_PREL_PG_HI21 / R_AARCH64_ADR_GOT_PAGE.
+  def adrp(rd, pages = 0)
+    immlo = pages & 0b11
+    immhi = (pages >> 2) & 0x7FFFF
+    (1 << 31) | (immlo << 29) | (0b10000 << 24) | (immhi << 5) | rd
+  end
 
   # "Unconditional branch (immediate)": op(31) 00101(30:26) imm26(25:0).
   # op = 0 is B, 1 is BL (which also sets X30 to the return address). The
@@ -600,6 +612,51 @@ class TestAArch64Backend < Minitest::Test
     assert_words (0..7).map { |i| ldr_slot(i, i) } + [bl_imm(0)], body(fn)
   end
 
+  # --- symbol addresses ----------------------------------------------------
+
+  # A global's address is formed by an adrp/add pair with both immediates left
+  # zero for the linker, and the result parked in the destination slot.
+  def test_global_address_is_an_adrp_add_pair
+    fn = func([inst(:global_addr, dst: 0, a: "g")], vregs: 1)
+    assert_words [adrp(A), add_imm(A, A, 0), str_slot(A, 0)], body(fn)
+  end
+
+  # A string literal's address uses the same pair; the interned string's id
+  # travels on the relocation record rather than in the instruction.
+  def test_string_address_is_an_adrp_add_pair
+    fn = func([inst(:string_addr, dst: 0, a: 3)], vregs: 1)
+    assert_words [adrp(A), add_imm(A, A, 0), str_slot(A, 0)], body(fn)
+  end
+
+  # A taken function address is an address like any other, not a branch.
+  def test_function_address_is_an_adrp_add_pair
+    fn = func([inst(:func_addr, dst: 0, a: "g")], vregs: 1)
+    assert_words [adrp(A), add_imm(A, A, 0), str_slot(A, 0)], body(fn)
+  end
+
+  # A PIC reference instead *reads* the symbol's GOT slot: the second
+  # instruction is a 64-bit load through the page register, not an add.
+  def test_got_address_is_an_adrp_ldr_pair
+    fn = func([inst(:got_addr, dst: 0, a: "g")], vregs: 1)
+    assert_words [adrp(A), ldr_x(A, A, 0), str_slot(A, 0)], body(fn)
+  end
+
+  # Each address-forming op records exactly one relocation, whose offset is
+  # that of the leading adrp. Splitting it into the machine's actual pair of
+  # ELF entries is the object writer's job, so the backend's record stays a
+  # single machine-independent item.
+  def test_symbol_addresses_record_one_relocation_at_the_adrp
+    {
+      inst(:global_addr, dst: 0, a: "g") => { kind: :global, offset: 8, symbol: "g" },
+      inst(:func_addr, dst: 0, a: "g") => { kind: :func, offset: 8, symbol: "g" },
+      inst(:got_addr, dst: 0, a: "g") => { kind: :got, offset: 8, symbol: "g" },
+      inst(:string_addr, dst: 0, a: 3) => { kind: :string, offset: 8, string_id: 3 }
+    }.each do |instruction, expected|
+      result = compile(func([instruction], vregs: 1))
+      assert_equal [expected], result.relocations, instruction.op.to_s
+    end
+  end
+
   # --- whole functions -----------------------------------------------------
 
   # A complete function — parameters, arithmetic, a compare, a conditional
@@ -646,14 +703,10 @@ class TestAArch64Backend < Minitest::Test
 
   # --- refusals ------------------------------------------------------------
 
-  # The IR ops that belong to A3/A4 are refused by name rather than lowered to
+  # The IR ops that belong to A4 are refused by name rather than lowered to
   # something plausible-looking.
   def test_later_milestone_ops_are_refused
     {
-      inst(:global_addr, dst: 0, a: "g") => /global-variable references/,
-      inst(:string_addr, dst: 0, a: 0) => /string-literal references/,
-      inst(:got_addr, dst: 0, a: "g") => /PIC\/GOT references/,
-      inst(:func_addr, dst: 0, a: "g") => /function-address values/,
       inst(:call_indirect, dst: 0, a: 1, b: []) => /indirect calls/,
       inst(:memcpy, a: 0, b: 1, size: 16) => /struct copies/,
       inst(:va_start, a: 0, b: 0) => /variadic functions/,
@@ -712,11 +765,9 @@ class TestAArch64Backend < Minitest::Test
   end
 
   # The same refusals seen from the front of the compiler: valid C that uses an
-  # A3/A4 feature stops with a clear error instead of producing an object.
+  # A4 feature stops with a clear error instead of producing an object.
   def test_unsupported_c_constructs_are_refused_end_to_end
     {
-      "int g; int f(void){ return g; }" => /global-variable references/,
-      "char *f(void){ return \"hi\"; }" => /string-literal references/,
       "double f(double a){ return a * 2; }" => /floating-point/,
       "struct S { int a[8]; }; void f(struct S *a, struct S *b){ *a = *b; }" => /struct copies/,
       "int f(int (*p)(int)){ return p(1); }" => /indirect calls/,

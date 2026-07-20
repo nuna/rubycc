@@ -332,15 +332,17 @@ class TestDriver < Minitest::Test
     end
   end
 
-  # A construct the aarch64 backend does not lower yet (a string literal, which
-  # is A3 work) fails as a driver diagnostic with a non-zero exit, never as a
-  # silently wrong object.
+  # A construct the aarch64 backend does not lower yet (an indirect call,
+  # which is A4 work) fails as a driver diagnostic with a non-zero exit, never
+  # as a silently wrong object. String-literal and global-variable references
+  # were this diagnostic's example before A3 (Step 72) added the memory-access
+  # layer that lowers them; indirect calls remain refused until A4.
   def test_aarch64_unsupported_construct_is_diagnosed
     in_tmpdir do |dir|
-      File.write(File.join(dir, "u.c"), "char *m(void){ return \"hi\"; }")
+      File.write(File.join(dir, "u.c"), "int call_it(int (*f)(int), int x){ return f(x); }")
       _out, err, status = rubycc("-c", "u.c", "-target", "aarch64", "-o", "u.o", dir: dir)
       assert_equal 1, status.exitstatus
-      assert_match(/aarch64: not yet supported: string-literal references/, err)
+      assert_match(/aarch64: not yet supported: indirect calls/, err)
       refute File.exist?(File.join(dir, "u.o")), "no object is written for a refused compilation"
     end
   end

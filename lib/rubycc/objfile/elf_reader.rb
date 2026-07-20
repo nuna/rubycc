@@ -103,8 +103,16 @@ module Rubycc
       # slot: 9 is the plain PC-relative GOT reference, and 41/42 its
       # "relaxable" forms the psABI defines for a `mov` that a linker may
       # rewrite in place to a `lea` (42 is the REX-prefixed form a 64-bit
-      # `mov rax, sym@GOTPCREL(%rip)` uses). On aarch64, CALL26 is the 26-bit
-      # branch immediate of a `bl`/`b` to a named symbol.
+      # `mov rax, sym@GOTPCREL(%rip)` uses).
+      #
+      # On aarch64 the picture is different because that machine forms an
+      # address in two instructions: CALL26 is the 26-bit branch immediate of a
+      # `bl`/`b` to a named symbol, ABS64 an absolute 64-bit pointer slot, and
+      # the remaining four come in pairs. ADR_PREL_PG_HI21 carries the 21-bit
+      # page distance of an `adrp` and ADD_ABS_LO12_NC the 12-bit within-page
+      # offset of the `add` behind it; ADR_GOT_PAGE and LD64_GOT_LO12_NC are the
+      # same split applied to a symbol's Global Offset Table slot, the second
+      # patching the scaled immediate of the `ldr` that reads it.
       RELOC_TYPES = {
         EM_X86_64 => {
           1 => :R_X86_64_64,
@@ -117,7 +125,12 @@ module Rubycc
           42 => :R_X86_64_REX_GOTPCRELX
         }.freeze,
         EM_AARCH64 => {
-          283 => :R_AARCH64_CALL26
+          257 => :R_AARCH64_ABS64,
+          275 => :R_AARCH64_ADR_PREL_PG_HI21,
+          277 => :R_AARCH64_ADD_ABS_LO12_NC,
+          283 => :R_AARCH64_CALL26,
+          311 => :R_AARCH64_ADR_GOT_PAGE,
+          312 => :R_AARCH64_LD64_GOT_LO12_NC
         }.freeze
       }.freeze
 

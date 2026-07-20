@@ -131,31 +131,39 @@ module Rubycc
         when :call, :func
           # A call, or a taken function address, whose target is not defined in
           # this translation unit becomes an undefined symbol for the linker to
-          # resolve (e.g. libc's abs). Both are PC-relative and share the same
-          # PLT32 text relocation.
+          # resolve (e.g. libc's abs). The two are recorded as distinct kinds
+          # because they only coincide on some targets: x86_64 resolves both with
+          # the same PC-relative PLT32, while aarch64 needs a `bl`'s CALL26 for
+          # one and an address-forming instruction pair for the other.
           writer.add_undefined_symbol(reloc[:symbol]) unless defined_names.include?(reloc[:symbol])
-          writer.add_text_relocation(offset: reloc[:offset], symbol: reloc[:symbol])
+          if reloc[:kind] == :call
+            writer.add_text_relocation(offset: reloc[:offset], symbol: reloc[:symbol])
+          else
+            writer.add_func_relocation(offset: reloc[:offset], symbol: reloc[:symbol])
+          end
         when :string
-          # A "lea rip" displacement into .rodata: a PC-relative reference to
-          # the .rodata section symbol biased by the string's offset. The -4
-          # accounts for the rel32 field sitting 4 bytes before its own end.
-          addend = string_offsets[reloc[:string_id]] - 4
-          writer.add_rodata_relocation(offset: reloc[:offset], addend: addend)
+          # A reference from .text into .rodata, resolved against the .rodata
+          # section symbol and displaced by the string's byte offset within the
+          # pool. The offset is passed unbiased: whatever a target's own field
+          # placement demands on top of it belongs to its machine description,
+          # not to this machine-independent layer.
+          writer.add_rodata_relocation(offset: reloc[:offset],
+                                       addend: string_offsets[reloc[:string_id]])
         when :global
-          # A "lea rip" displacement addressing a file-scope variable: a
-          # PC-relative reference to that variable's own object symbol. A
-          # variable only declared `extern` in this unit (referenced but never
-          # defined here) has no local object symbol, so it becomes an undefined
-          # symbol for the linker, just like an undefined call target.
+          # A reference from .text addressing a file-scope variable, resolved
+          # against that variable's own object symbol. A variable only declared
+          # `extern` in this unit (referenced but never defined here) has no
+          # local object symbol, so it becomes an undefined symbol for the
+          # linker, just like an undefined call target.
           writer.add_undefined_symbol(reloc[:symbol]) unless known_names.include?(reloc[:symbol])
           writer.add_global_relocation(offset: reloc[:offset], symbol: reloc[:symbol])
         when :got
-          # A PIC access (-fPIC) through the Global Offset Table: a "mov rax,
-          # sym@GOTPCREL(rip)" loading the address of a symbol this unit does not
-          # define — an extern file-scope object, or an external function whose
-          # address is taken. The symbol becomes an undefined symbol for the
-          # linker to bind (unless another part of this unit defines it), and the
-          # GOT slot is addressed by an R_X86_64_REX_GOTPCRELX relocation.
+          # A PIC access (-fPIC) through the Global Offset Table: a load of the
+          # address of a symbol this unit does not define — an extern file-scope
+          # object, or an external function whose address is taken — from that
+          # symbol's GOT slot. The symbol becomes an undefined symbol for the
+          # linker to bind (unless another part of this unit defines it); which
+          # relocation addresses the slot is the machine description's business.
           writer.add_undefined_symbol(reloc[:symbol]) unless known_names.include?(reloc[:symbol])
           writer.add_got_relocation(offset: reloc[:offset], symbol: reloc[:symbol])
         end

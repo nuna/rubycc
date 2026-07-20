@@ -51,17 +51,23 @@ module Rubycc
     # classification is A3 work; until then the practical limit is six.
     #
     # This backend covers the A2 core — control flow, integer arithmetic, local
-    # variables, pointers to locals and direct calls. Features the
-    # generator can still hand it that belong to later milestones (global and
-    # string references, floating point, struct value passing, varargs, indirect
-    # calls) are refused with an explicit "not yet supported" error rather than
-    # miscompiled.
+    # variables, pointers to locals and direct calls — plus the A3 memory-access
+    # layer: the addresses of global variables, string literals and functions,
+    # formed with an adrp/add pair, and their -fPIC counterpart read from the
+    # GOT with an adrp/ldr pair. Features the generator can still hand it that
+    # belong to a later milestone (floating point, struct value passing,
+    # varargs, indirect calls) are refused with an explicit "not yet supported"
+    # error rather than miscompiled.
     class AArch64
       # Result of compiling one function, the same shape the x86_64 backend
       # returns: `bytes` the machine code, `symbols` an array of
       # { name:, offset:, size: }, and `relocations` an array of kind-tagged
-      # records. In the A2 core the only kind emitted is :call — a `bl` site the
-      # linker fills in with an R_AARCH64_CALL26 against the named symbol.
+      # records. The kinds emitted are :call (a `bl` site the linker fills in
+      # with an R_AARCH64_CALL26) and the four address-forming kinds :string,
+      # :global, :func and :got. Each of the latter records a single offset —
+      # that of the leading `adrp` — even though it needs two ELF relocations;
+      # splitting one record into the pair is the object writer's job, since how
+      # many relocations an address costs is a property of the machine.
       Result = Data.define(:bytes, :symbols, :relocations)
 
       # Integer argument / result registers, in AAPCS64 order. Every argument
@@ -231,10 +237,10 @@ module Rubycc
         when :fadd, :fsub, :fmul, :fdiv, :feq, :fne, :flt, :fle, :fgt, :fge,
              :itof, :ftoi, :ftof
           unsupported("floating-point arithmetic")
-        when :string_addr then unsupported("string-literal references")
-        when :global_addr then unsupported("global-variable references")
-        when :got_addr then unsupported("PIC/GOT references")
-        when :func_addr then unsupported("function-address values")
+        when :string_addr then emit_symbol_address(inst.dst, kind: :string, string_id: inst.a)
+        when :global_addr then emit_symbol_address(inst.dst, kind: :global, symbol: inst.a)
+        when :func_addr then emit_symbol_address(inst.dst, kind: :func, symbol: inst.a)
+        when :got_addr then emit_got_address(inst.dst, inst.a)
         when :call_indirect then unsupported("indirect calls")
         when :memcpy then unsupported("struct copies")
         when :va_start then unsupported("variadic functions")
@@ -472,6 +478,46 @@ module Rubycc
           emit_slot_address(ADDR, offset)
           emit_word(0xF9000000 | (ADDR << 5) | reg) # str x, [ADDR]
         end
+      end
+
+      # --- symbol addresses --------------------------------------------------
+
+      # :string_addr / :global_addr / :func_addr — forms the address of a symbol
+      # that lives outside the frame (a string literal in .rodata, a file-scope
+      # variable, or a function whose address is taken).
+      #
+      # AArch64 cannot name a 64-bit address in one instruction, so the address
+      # is built in two: `adrp` puts the base of the symbol's 4 KiB page into the
+      # register (its 21-bit immediate reaching +/-4 GiB from the referring
+      # instruction's own page) and `add` then applies the symbol's offset within
+      # that page. Both immediates are emitted as zero and left to the linker,
+      # which is why the relocation is recorded once, at the `adrp`, with the
+      # machine description spelling out that this kind costs two ELF entries
+      # four bytes apart (see ELFWriter::AARCH64). The pair is position-
+      # independent by construction — nothing here depends on where the code is
+      # finally loaded — but it does bind the symbol at link time, which is what
+      # separates it from the GOT path below.
+      def emit_symbol_address(dst, reloc)
+        @relocations << reloc.merge(offset: @code.bytesize)
+        emit_word(0x90000000 | A)              # adrp A, <page of sym>
+        emit_add_imm(A, A, 0, shift12: false)  # add  A, A, #:lo12:sym
+        store_reg(A, dst)
+      end
+
+      # :got_addr — the PIC form of the above. Under -fPIC a symbol this unit
+      # does not define must stay interposable, so its address is not formed but
+      # *read*: `adrp` names the page of the symbol's Global Offset Table slot
+      # and `ldr` loads the slot's contents, which the dynamic linker has filled
+      # in with the symbol's run-time address. The shape is the same two-
+      # instruction, two-relocation pair, differing only in the relocation types
+      # and in the second instruction being a load rather than an add — so the
+      # value that lands in the destination slot is a usable pointer either way
+      # and every load or store through it is unchanged.
+      def emit_got_address(dst, symbol)
+        @relocations << { kind: :got, offset: @code.bytesize, symbol: symbol }
+        emit_word(0x90000000 | A)             # adrp A, <page of sym's GOT slot>
+        emit_word(0xF9400000 | (A << 5) | A)  # ldr  A, [A, #:got_lo12:sym]
+        store_reg(A, dst)
       end
 
       # :addr_of / :object_addr — compute a frame address (sp + offset) into a

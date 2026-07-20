@@ -18,16 +18,21 @@ module Rubycc
     # symbols (defined functions, then defined file-scope objects, then
     # undefined externals); r_info in .rela.text indexes into that final order.
     #
-    # .rela.text carries four machine-independent relocation kinds — :call,
-    # :string, :global and :got — each translated through the injected machine
-    # description (see MachineDescription) into a concrete ELF relocation type.
-    # On the default x86_64 machine that gives: each `call` site as an
-    # R_X86_64_PLT32 against its (defined or undefined) symbol, each string
+    # .rela.text carries five machine-independent relocation kinds — :call,
+    # :func, :string, :global and :got — each translated through the injected
+    # machine description (see MachineDescription) into one or more concrete ELF
+    # relocation entries. On the default x86_64 machine each kind costs exactly
+    # one entry: a `call` site as an R_X86_64_PLT32 against its (defined or
+    # undefined) symbol, a taken function address the same way, a string
     # reference as an R_X86_64_PC32 against the .rodata section symbol with the
-    # string's byte offset (minus 4) as its addend, each global reference as
-    # an R_X86_64_PC32 against that global's own object symbol (addend -4), and
-    # each PIC GOT reference (a "-fPIC" access to a symbol this unit does not
-    # define) as an R_X86_64_REX_GOTPCRELX against that symbol (addend -4).
+    # string's byte offset as its addend, a global reference as an
+    # R_X86_64_PC32 against that global's own object symbol, and a PIC GOT
+    # reference (a "-fPIC" access to a symbol this unit does not define) as an
+    # R_X86_64_REX_GOTPCRELX against that symbol — all four PC-relative kinds
+    # biased by -4 for the rel32 field's placement. On aarch64 an address-forming
+    # kind instead costs a *pair* of entries, one per instruction of the adrp/add
+    # (or adrp/ldr) sequence that machine needs; the writer emits whatever the
+    # description lists.
     #
     # .rela.data carries the absolute R_X86_64_64 relocations that patch a .data
     # pointer slot: one against another object's symbol (addend 0) for a "&other"
@@ -87,27 +92,68 @@ module Rubycc
       R_X86_64_PLT32          = 4
       R_X86_64_REX_GOTPCRELX  = 42
 
-      # aarch64 relocation type: CALL26 patches the 26-bit immediate of a `bl`
-      # (or `b`) with the PC-relative word distance to its target — the only
-      # relocation the aarch64 A2 core emits (a direct call). Its addend is a
-      # fixed 0: a plain `bl sym` names the target with no displacement.
-      R_AARCH64_CALL26        = 283
+      # aarch64 relocation types. CALL26 patches the 26-bit immediate of a `bl`
+      # (or `b`) with the PC-relative word distance to its target. The remaining
+      # four come in pairs, because aarch64 forms a symbol's address in two
+      # instructions rather than one: ADR_PREL_PG_HI21 fills the 21-bit
+      # page-offset immediate of an `adrp` (the distance from the referring
+      # instruction's own 4 KiB page to the symbol's), and ADD_ABS_LO12_NC fills
+      # the 12-bit immediate of the following `add` with the symbol's offset
+      # within that page. The GOT pair is the same split applied to the symbol's
+      # Global Offset Table slot: ADR_GOT_PAGE names the slot's page and
+      # LD64_GOT_LO12_NC the scaled 12-bit immediate of the `ldr` reading it.
+      # "NC" is "no check": the low half cannot overflow, so the linker does not
+      # range-check it. The numbers were read off real `aarch64-linux-gnu-gcc`
+      # output rather than transcribed.
+      # ABS64 is aarch64's absolute 64-bit pointer slot, the counterpart of
+      # R_X86_64_64, used in .data rather than .text.
+      R_AARCH64_ABS64            = 257
+      R_AARCH64_ADR_PREL_PG_HI21 = 275
+      R_AARCH64_ADD_ABS_LO12_NC  = 277
+      R_AARCH64_CALL26           = 283
+      R_AARCH64_ADR_GOT_PAGE     = 311
+      R_AARCH64_LD64_GOT_LO12_NC = 312
 
       # Machine description: the injected, target-specific half of the writer.
       # It pairs the ELF e_machine value with a table translating each
       # machine-independent relocation `kind` (the vocabulary the backend
-      # records — :call/:string/:global/:got in .text, :symbol/:rodata in .data)
-      # into a per-target RelocDesc. `type` is the concrete ELF relocation type
-      # (an R_<arch>_* number); `addend` is either a fixed PC-relative bias or
-      # :recorded, meaning the relocation carries its own addend; `symbol` is
-      # :named to resolve against the relocation's own symbol or :rodata_section
-      # to resolve against the .rodata section symbol. `text_padding` is the
-      # filler the compiler repeats in the alignment gap between two functions —
-      # a no-op encoding of the target, so the gap disassembles cleanly and a
-      # stray fall-through lands on nothing harmful. Retargeting the writer is
-      # a matter of injecting a different MachineDescription — the section
-      # layout and symbol-table logic below is machine-independent.
-      RelocDesc = Data.define(:type, :addend, :symbol)
+      # records — :call/:func/:string/:global/:got in .text, :symbol/:rodata in
+      # .data) into that target's ELF relocation entries.
+      #
+      # A kind maps to an *array* of RelocDesc, not a single one, because how
+      # many ELF entries one source-level reference costs is a property of the
+      # machine. x86_64 forms an address in a single instruction with a single
+      # patched field, so every kind is a one-element array; aarch64 needs two
+      # instructions (adrp + add, or adrp + ldr) with a relocation apiece, so its
+      # address-forming kinds are two-element arrays. The writer simply emits
+      # each descriptor in order.
+      #
+      # Within a descriptor: `type` is the concrete ELF relocation type (an
+      # R_<arch>_* number). `addend` is either a fixed value or :recorded,
+      # meaning the relocation record carries its own addend. `addend_bias` is
+      # added on top of it and is where a target's field-placement convention
+      # lives — x86_64's PC-relative fields are measured from the *end* of the
+      # instruction, so a rel32 whose four bytes precede that end needs -4, while
+      # aarch64's adrp/add pair is biased by nothing. Keeping the bias here, and
+      # not in the caller, lets the compiler hand over a plain unbiased byte
+      # offset in the machine-independent vocabulary. `offset_delta` is the byte
+      # distance from the offset the backend recorded (always the first
+      # instruction of the sequence) to the field this descriptor patches: 0 and
+      # 4 for an aarch64 pair, 0 everywhere on x86_64. `symbol` is :named to
+      # resolve against the relocation's own symbol or :rodata_section to resolve
+      # against the .rodata section symbol.
+      #
+      # `text_padding` is the filler the compiler repeats in the alignment gap
+      # between two functions — a no-op encoding of the target, so the gap
+      # disassembles cleanly and a stray fall-through lands on nothing harmful.
+      # Retargeting the writer is a matter of injecting a different
+      # MachineDescription — the section layout and symbol-table logic below is
+      # machine-independent.
+      RelocDesc = Data.define(:type, :addend, :symbol, :addend_bias, :offset_delta) do
+        def initialize(addend_bias: 0, offset_delta: 0, **rest)
+          super
+        end
+      end
       MachineDescription = Data.define(:e_machine, :relocations, :text_padding)
 
       # Inter-function padding: x86_64's one-byte `nop` (0x90), and aarch64's
@@ -119,30 +165,61 @@ module Rubycc
 
       # The default machine: x86_64. Its relocation table fixes the exact ELF
       # types and addend conventions the System V AMD64 psABI defines for each
-      # kind (a "call rel32" and a "lea rip" both bias the rel32 field by -4,
-      # while a string/data reference carries its own byte offset as the addend).
+      # kind. Every .text kind patches a rel32 field measured from the end of the
+      # instruction it belongs to, hence the uniform -4 bias; a :call and a taken
+      # :func address are both near PC-relative references and share PLT32. A
+      # string reference carries the interned string's .rodata byte offset as its
+      # recorded addend, which the same -4 then biases.
       X86_64 = MachineDescription.new(
         e_machine: EM_X86_64,
         relocations: {
-          call:   RelocDesc.new(type: R_X86_64_PLT32,        addend: -4,        symbol: :named),
-          string: RelocDesc.new(type: R_X86_64_PC32,         addend: :recorded, symbol: :rodata_section),
-          global: RelocDesc.new(type: R_X86_64_PC32,         addend: -4,        symbol: :named),
-          got:    RelocDesc.new(type: R_X86_64_REX_GOTPCRELX, addend: -4,       symbol: :named),
-          symbol: RelocDesc.new(type: R_X86_64_64,           addend: :recorded, symbol: :named),
-          rodata: RelocDesc.new(type: R_X86_64_64,           addend: :recorded, symbol: :rodata_section)
+          call:   [RelocDesc.new(type: R_X86_64_PLT32, addend: 0, symbol: :named, addend_bias: -4)],
+          func:   [RelocDesc.new(type: R_X86_64_PLT32, addend: 0, symbol: :named, addend_bias: -4)],
+          string: [RelocDesc.new(type: R_X86_64_PC32, addend: :recorded, symbol: :rodata_section,
+                                 addend_bias: -4)],
+          global: [RelocDesc.new(type: R_X86_64_PC32, addend: 0, symbol: :named, addend_bias: -4)],
+          got:    [RelocDesc.new(type: R_X86_64_REX_GOTPCRELX, addend: 0, symbol: :named,
+                                 addend_bias: -4)],
+          symbol: [RelocDesc.new(type: R_X86_64_64, addend: :recorded, symbol: :named)],
+          rodata: [RelocDesc.new(type: R_X86_64_64, addend: :recorded, symbol: :rodata_section)]
         }.freeze,
         text_padding: X86_64_NOP
       )
 
-      # The aarch64 machine. The A2 code generator emits only the :call kind (a
-      # `bl` site), translated to an R_AARCH64_CALL26 against the call target
-      # with a fixed zero addend. Any other relocation kind reaching the writer
-      # is not part of the A2 core and raises a clear KeyError from the table
-      # lookup rather than being emitted with the wrong type.
+      # The aarch64 machine. A direct :call is a single `bl` and so a single
+      # CALL26; every other .text kind forms an address across two instructions
+      # and therefore takes two entries, the second four bytes past the first.
+      #
+      # :string, :global and :func all use the adrp/add pair, differing only in
+      # what they resolve against — the .rodata section symbol for a string
+      # (biased by the string's own byte offset, which the linker folds into the
+      # page computation for both halves alike) and the named symbol otherwise.
+      # :got uses the adrp/ldr pair addressing the symbol's GOT slot. None of
+      # them takes a bias: aarch64's relocations name the symbol directly rather
+      # than a displacement from the end of a field.
+      #
+      # The .data kinds (:symbol, :rodata) are absolute 64-bit pointer slots and
+      # so are not machine-shaped at all beyond the type number; ABS64 is
+      # aarch64's spelling of the same thing R_X86_64_64 does.
       AARCH64 = MachineDescription.new(
         e_machine: EM_AARCH64,
         relocations: {
-          call: RelocDesc.new(type: R_AARCH64_CALL26, addend: 0, symbol: :named)
+          call:   [RelocDesc.new(type: R_AARCH64_CALL26, addend: 0, symbol: :named)],
+          string: [RelocDesc.new(type: R_AARCH64_ADR_PREL_PG_HI21, addend: :recorded,
+                                 symbol: :rodata_section),
+                   RelocDesc.new(type: R_AARCH64_ADD_ABS_LO12_NC, addend: :recorded,
+                                 symbol: :rodata_section, offset_delta: 4)],
+          global: [RelocDesc.new(type: R_AARCH64_ADR_PREL_PG_HI21, addend: 0, symbol: :named),
+                   RelocDesc.new(type: R_AARCH64_ADD_ABS_LO12_NC, addend: 0, symbol: :named,
+                                 offset_delta: 4)],
+          func:   [RelocDesc.new(type: R_AARCH64_ADR_PREL_PG_HI21, addend: 0, symbol: :named),
+                   RelocDesc.new(type: R_AARCH64_ADD_ABS_LO12_NC, addend: 0, symbol: :named,
+                                 offset_delta: 4)],
+          got:    [RelocDesc.new(type: R_AARCH64_ADR_GOT_PAGE, addend: 0, symbol: :named),
+                   RelocDesc.new(type: R_AARCH64_LD64_GOT_LO12_NC, addend: 0, symbol: :named,
+                                 offset_delta: 4)],
+          symbol: [RelocDesc.new(type: R_AARCH64_ABS64, addend: :recorded, symbol: :named)],
+          rodata: [RelocDesc.new(type: R_AARCH64_ABS64, addend: :recorded, symbol: :rodata_section)]
         }.freeze,
         text_padding: AARCH64_NOP
       )
@@ -243,10 +320,21 @@ module Rubycc
         self
       end
 
-      # Records a PC-relative reference from .text into .rodata: `offset` is the
-      # rel32 field within .text and `addend` is the string's .rodata byte
-      # offset minus 4. Resolved against the .rodata section symbol as
-      # R_X86_64_PC32.
+      # Records a taken function address in .text (a function pointer value, as
+      # opposed to a call site). x86_64 resolves it exactly as a call does, but
+      # aarch64 does not — a `bl`'s CALL26 and an adrp/add address pair are
+      # different sequences — so the two kinds stay distinct here and the machine
+      # description decides whether they coincide.
+      def add_func_relocation(offset:, symbol:)
+        @relocations << { kind: :func, offset: offset, symbol: symbol }
+        self
+      end
+
+      # Records a reference from .text into .rodata: `offset` is the start of the
+      # referring instruction sequence within .text and `addend` the string's
+      # plain byte offset within .rodata, with no target-specific bias applied —
+      # the machine description supplies that (see RelocDesc#addend_bias).
+      # Resolved against the .rodata section symbol.
       def add_rodata_relocation(offset:, addend:)
         @relocations << { kind: :string, offset: offset, addend: addend }
         self
@@ -468,16 +556,21 @@ module Rubycc
         buf
       end
 
-      # Emits one Elf64_Rela entry from a machine-independent relocation record,
-      # looking its kind up in the injected machine description: the concrete ELF
-      # relocation type, the addend (a fixed PC-relative bias or the record's own
-      # recorded addend) and the target symbol (the record's own named symbol, or
-      # the .rodata section symbol for a :rodata_section descriptor).
+      # Emits the Elf64_Rela entries for one machine-independent relocation
+      # record, looking its kind up in the injected machine description. A kind
+      # maps to one descriptor per ELF entry the target needs — one on x86_64,
+      # two for an aarch64 address-forming pair — and each yields its own
+      # relocation type, offset (the recorded offset plus the descriptor's byte
+      # delta into the instruction sequence), addend (a fixed value or the
+      # record's own recorded one, plus the target's field-placement bias) and
+      # target symbol (the record's named symbol, or the .rodata section symbol
+      # for a :rodata_section descriptor).
       def append_machine_reloc(buf, reloc, symbol_indices, rodata_sym_index)
-        desc = @machine.relocations.fetch(reloc[:kind])
-        sym_index = desc.symbol == :rodata_section ? rodata_sym_index : symbol_indices.fetch(reloc[:symbol])
-        addend = desc.addend == :recorded ? reloc[:addend] : desc.addend
-        append_rela(buf, reloc[:offset], sym_index, desc.type, addend)
+        @machine.relocations.fetch(reloc[:kind]).each do |desc|
+          sym_index = desc.symbol == :rodata_section ? rodata_sym_index : symbol_indices.fetch(reloc[:symbol])
+          addend = (desc.addend == :recorded ? reloc[:addend] : desc.addend) + desc.addend_bias
+          append_rela(buf, reloc[:offset] + desc.offset_delta, sym_index, desc.type, addend)
+        end
       end
 
       # Appends a single 24-byte Elf64_Rela entry (r_offset, r_info, r_addend).

@@ -47,23 +47,26 @@ module AArch64ExecutionHelper
          "#{AArch64ExecutionHelper::CROSS_GCC}) is not installed"
   end
 
-  # Compiles `c_source` to an aarch64 relocatable object with rubycc.
-  def compile_with_rubycc_aarch64(c_source, object_path)
+  # Compiles `c_source` to an aarch64 relocatable object with rubycc. `pic`
+  # selects the -fPIC lowering, which routes a reference to a symbol this unit
+  # does not define through the GOT instead of forming its address directly.
+  def compile_with_rubycc_aarch64(c_source, object_path, pic: false)
     filename = "#{File.basename(object_path, ".*")}.c"
-    binary = Rubycc::Compiler.new.compile(c_source, filename: filename, target: "aarch64")
+    binary = Rubycc::Compiler.new.compile(c_source, filename: filename, target: "aarch64", pic: pic)
     File.binwrite(object_path, binary)
     object_path
   end
 
   # Compiles `c_source` to an aarch64 object with the cross gcc, the reference
   # side of every differential test.
-  def compile_with_cross_gcc(c_source, object_path)
+  def compile_with_cross_gcc(c_source, object_path, pic: false)
     dir = File.dirname(object_path)
     source_path = File.join(dir, "#{File.basename(object_path, ".*")}.c")
     File.write(source_path, c_source)
 
-    stdout_and_stderr, status = Open3.capture2e(AArch64ExecutionHelper::CROSS_GCC, "-c",
-                                                "-o", object_path, source_path)
+    args = [AArch64ExecutionHelper::CROSS_GCC, "-c"]
+    args << "-fPIC" if pic
+    stdout_and_stderr, status = Open3.capture2e(*args, "-o", object_path, source_path)
     unless status.success?
       raise "#{AArch64ExecutionHelper::CROSS_GCC} failed to compile source " \
             "(exit #{status.exitstatus}):\n#{stdout_and_stderr}"
@@ -93,12 +96,12 @@ module AArch64ExecutionHelper
 
   # Builds `c_source` for aarch64 with the requested compiler, runs it under
   # qemu and returns [exit_status, stdout].
-  def run_aarch64(c_source, compiler:)
+  def run_aarch64(c_source, compiler:, pic: false)
     in_tmpdir do |dir|
       object_path = File.join(dir, "test.o")
       case compiler
-      when :rubycc then compile_with_rubycc_aarch64(c_source, object_path)
-      when :gcc then compile_with_cross_gcc(c_source, object_path)
+      when :rubycc then compile_with_rubycc_aarch64(c_source, object_path, pic: pic)
+      when :gcc then compile_with_cross_gcc(c_source, object_path, pic: pic)
       else raise ArgumentError, "unknown compiler: #{compiler.inspect}"
       end
 
@@ -107,18 +110,19 @@ module AArch64ExecutionHelper
   end
 
   # The differential assertion: rubycc's aarch64 output and the cross gcc's must
-  # agree on exit status and standard output for the same source.
+  # agree on exit status and standard output for the same source. `pic` builds
+  # both sides as position-independent code.
   #
-  # Two properties of the oracle shape what the sources under test may do. Only
+  # One property of the oracle shapes what the sources under test may do: only
   # the low 8 bits of main's return value reach the exit status, so a case that
-  # computes a wider value reports it through stdout instead; and the A2 core
-  # has no string literals, so stdout is produced with putchar(int) rather than
-  # printf.
-  def assert_aarch64_matches_gcc(c_source)
+  # computes a wider value reports it through stdout instead. Since A3 that
+  # output can go through printf, string literals being available; before it,
+  # putchar(int) was the whole of the stdout oracle.
+  def assert_aarch64_matches_gcc(c_source, pic: false)
     skip_unless_aarch64_toolchain
 
-    rubycc_status, rubycc_stdout = run_aarch64(c_source, compiler: :rubycc)
-    gcc_status, gcc_stdout = run_aarch64(c_source, compiler: :gcc)
+    rubycc_status, rubycc_stdout = run_aarch64(c_source, compiler: :rubycc, pic: pic)
+    gcc_status, gcc_stdout = run_aarch64(c_source, compiler: :gcc, pic: pic)
 
     assert_equal gcc_status, rubycc_status,
                  "exit status mismatch: gcc #{gcc_status}, rubycc #{rubycc_status}"

@@ -118,7 +118,9 @@ class TestElfReader < Minitest::Test
       w.add_text_section(LEA_CODE)
       w.add_global_func("main", 0, LEA_CODE.bytesize)
       w.set_rodata(RODATA)
-      w.add_rodata_relocation(offset: LEA_REL32_OFFSET, addend: WORLD_OFFSET - 4)
+      # The caller passes the string's unbiased .rodata offset; the machine
+      # description applies x86_64's -4 rel32 bias on the way out.
+      w.add_rodata_relocation(offset: LEA_REL32_OFFSET, addend: WORLD_OFFSET)
     end
 
     rodata = obj.section(".rodata")
