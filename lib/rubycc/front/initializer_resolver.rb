@@ -75,10 +75,12 @@ module Rubycc
           (char_array?(type) && init.is_a?(AST::StringLit))
       end
 
-      # A char/unsigned char array — the one aggregate a string literal may
-      # initialize as a whole (6.7.9p14).
+      # An array of character type — the one aggregate a string literal may
+      # initialize as a whole (6.7.9p14). Any of the three character types
+      # qualifies (plain `char` under either target signedness, `signed char`,
+      # `unsigned char`), since the literal's bytes are copied in unchanged.
       def self.char_array?(type)
-        type.array? && (type.element.equal?(Type::Char) || type.element.equal?(Type::UChar))
+        type.array? && Type.character?(type.element)
       end
 
       def self.resolve(type, initializer)

@@ -61,8 +61,11 @@ module Rubycc
       end
 
       # #int? and #char? name the plain `int` and `char` types alone, so an
-      # `unsigned int` is not #int? and an `unsigned char` is not #char?; code
-      # that means "any integer" asks #integer? instead.
+      # `unsigned int` is not #int? and neither `signed char` nor `unsigned char`
+      # is #char?; code that means "any integer" asks #integer? instead, and code
+      # that means "any character type" asks Type.character?. Plain `char` is
+      # #char? under either signedness, since both instances spell themselves the
+      # same way (see Type.plain_char).
       def int?
         @name == "int"
       end
@@ -284,11 +287,24 @@ module Rubycc
     end
 
     # The shared integer-type instances, one per distinct C type. LP64 governs
-    # the widths: int is 4 bytes, long and any pointer 8. `char` is signed (this
-    # subset's implementation-defined choice), and `signed char` normalizes to
-    # it. `long long` normalizes to `long` (same width under LP64) at the point
-    # it is parsed, so no separate instance is needed here.
+    # the widths: int is 4 bytes, long and any pointer 8. `long long` normalizes
+    # to `long` (same width under LP64) at the point it is parsed, so no separate
+    # instance is needed here.
+    #
+    # The character types are three distinct types (6.2.5p15): `signed char` and
+    # `unsigned char` have a fixed signedness, while plain `char` behaves as one
+    # or the other, and which one is implementation-defined — pinned per ABI, so
+    # it is a property of the target rather than of this subset: the x86-64
+    # System V psABI makes plain `char` signed, AAPCS64 makes it unsigned. Both
+    # plain-`char` instances therefore exist side by side and spell themselves
+    # "char" (so #char?, #to_s and every diagnostic read alike whichever is in
+    # play); Type.plain_char picks the one a target uses, and the front end
+    # carries that choice from Compiler#compile down to every place a `char` type
+    # is built. Type::Char stays the signed one, which is what a caller with no
+    # target in hand (the default x86-64) means by "char".
     Char = IntegerType.new("char", 1, true)
+    UnsignedChar = IntegerType.new("char", 1, false)
+    SChar = IntegerType.new("signed char", 1, true)
     UChar = IntegerType.new("unsigned char", 1, false)
     Short = IntegerType.new("short", 2, true)
     UShort = IntegerType.new("unsigned short", 2, false)
@@ -1089,5 +1105,22 @@ module Rubycc
     # write through it), while a local declaration still reserves the whole
     # 24-byte tag as a stack object — exactly the System V convention.
     BuiltinVaList = Array.new(VaListTag, 1)
+
+    # The plain-`char` instance a target uses: the signed one when its ABI makes
+    # plain `char` signed (x86-64 System V), the unsigned one otherwise
+    # (AAPCS64). Neither is `signed char`/`unsigned char`, which keep their own
+    # fixed-signedness instances whatever the target.
+    def self.plain_char(signed)
+      signed ? Char : UnsignedChar
+    end
+
+    # True for the character types (6.2.5p15): either plain `char` and the two
+    # explicitly signed ones. This is what "an array of character type", the
+    # form a string literal may initialize, means; `_Bool` is one byte wide too
+    # but is not a character type.
+    def self.character?(type)
+      type.equal?(Char) || type.equal?(UnsignedChar) ||
+        type.equal?(SChar) || type.equal?(UChar)
+    end
   end
 end

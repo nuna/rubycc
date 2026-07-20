@@ -1915,7 +1915,7 @@ class TestParser < Minitest::Test
       "unsigned int x;" => Type::UInt, "signed x;" => Type::Int,
       "signed int x;" => Type::Int, "short x;" => Type::Short,
       "short int x;" => Type::Short, "unsigned short x;" => Type::UShort,
-      "short unsigned int x;" => Type::UShort, "signed char x;" => Type::Char,
+      "short unsigned int x;" => Type::UShort, "signed char x;" => Type::SChar,
       "char x;" => Type::Char, "unsigned char x;" => Type::UChar,
       "_Bool x;" => Type::Bool }.each do |source, expected|
       assert_equal expected, parse_decl(source).type, "#{source.inspect} should normalize to #{expected}"
@@ -2539,7 +2539,7 @@ class TestParser < Minitest::Test
 
   def test_signed_alternate_spellings_normalize_like_signed
     ["signed", "__signed", "__signed__"].each do |spelling|
-      assert_equal Type::Char, parse_decl("#{spelling} char c = -1;").type,
+      assert_equal Type::SChar, parse_decl("#{spelling} char c = -1;").type,
                    "expected '#{spelling} char' to normalize like 'signed char'"
     end
   end

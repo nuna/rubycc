@@ -13,13 +13,20 @@ module Rubycc
   # machine code -> ELF relocatable object.
   class Compiler
     # The backend dispatch table: a normalized target name selects the code
-    # generator that lowers IR to that machine's instructions and the ELF
-    # machine description (e_machine value + relocation-type table) the object
-    # writer emits under. Both entries share the orchestration logic below
-    # unchanged; the target only swaps the backend and the machine description.
+    # generator that lowers IR to that machine's instructions, the ELF machine
+    # description (e_machine value + relocation-type table) the object writer
+    # emits under, and the one ABI trait the machine-independent front end has to
+    # know about — whether plain `char` is signed. That last entry is what makes
+    # the front end target-aware at all: the signedness of plain `char` is
+    # implementation-defined (6.2.5p15) and each ABI pins it, signed under the
+    # x86-64 System V psABI and unsigned under AAPCS64, so it has to reach type
+    # resolution rather than being decided once for the whole compiler. Apart
+    # from it every entry shares the orchestration logic below unchanged.
     TARGETS = {
-      "x86_64" => { backend: Backend::X86_64, machine: ObjFile::ELFWriter::X86_64 },
-      "aarch64" => { backend: Backend::AArch64, machine: ObjFile::ELFWriter::AARCH64 }
+      "x86_64" => { backend: Backend::X86_64, machine: ObjFile::ELFWriter::X86_64,
+                    char_signed: true },
+      "aarch64" => { backend: Backend::AArch64, machine: ObjFile::ELFWriter::AARCH64,
+                     char_signed: false }
     }.freeze
 
     # Compiles C source into an ELF64 relocatable object, returned as an
@@ -29,11 +36,18 @@ module Rubycc
     def compile(source, filename:, include_paths: [], pic: false, defines: [], system_includes: true,
                 target: "x86_64")
       entry = TARGETS.fetch(target) { raise ArgumentError, "unsupported target: #{target.inspect}" }
-      tokens = Preprocess::Preprocessor.new.run(source, filename: filename,
-                                                include_paths: include_paths, defines: defines,
-                                                system_includes: system_includes)
-      program = Front::Parser.new(tokens).parse
-      ir_program = IR::Generator.new.generate(program, pic: pic)
+      # The target's plain-`char` type, threaded through every stage that builds
+      # or reasons about one: the preprocessor (which predefines
+      # __CHAR_UNSIGNED__ when it is unsigned), the parser (which resolves the
+      # `char` type-specifier to it) and the generator (which types a string
+      # literal's elements with it).
+      plain_char = Type.plain_char(entry[:char_signed])
+      tokens = Preprocess::Preprocessor.new(char_unsigned: plain_char.unsigned?)
+                                       .run(source, filename: filename,
+                                            include_paths: include_paths, defines: defines,
+                                            system_includes: system_includes)
+      program = Front::Parser.new(tokens, plain_char: plain_char).parse
+      ir_program = IR::Generator.new(plain_char: plain_char).generate(program, pic: pic)
 
       backend = entry[:backend].new
       writer = ObjFile::ELFWriter.new(machine: entry[:machine])

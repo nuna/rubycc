@@ -55,6 +55,17 @@ module Rubycc
       # "unsupported initializer" diagnostic a scalar global gives.
       class NotAddressConstant < StandardError; end
 
+      # `plain_char` is the Rubycc::Type of a plain `char` on the target being
+      # generated for, matching what the parser resolved the `char` specifier to.
+      # The generator needs it because a string literal's type is written here
+      # rather than by the parser: its element type is plain `char` (6.4.5p6), so
+      # a byte read out of one sign- or zero-extends following the target's
+      # plain-char signedness. It defaults to the signed instance, the x86-64
+      # System V choice, for a caller with no target in hand.
+      def initialize(plain_char: Type::Char)
+        @plain_char = plain_char
+      end
+
       # Returns an IR::Program: an IR::Function per AST::FunctionDef plus the
       # translation unit's read-only string pool. Prototypes
       # (AST::FunctionDecl) contribute only a signature-table entry and emit no
@@ -510,7 +521,7 @@ module Rubycc
         case node
         when Front::AST::StringLit
           AddressConstant.new(base_kind: :string, symbol: nil,
-                              string_id: intern_string(node.value), offset: 0, pointee: Type::Char)
+                              string_id: intern_string(node.value), offset: 0, pointee: @plain_char)
         when Front::AST::Cast
           raise NotAddressConstant unless node.type.pointer?
 
@@ -2236,7 +2247,7 @@ module Rubycc
         id = intern_string(node.value)
         dst = new_vreg
         emit(:string_addr, dst: dst, a: id)
-        [dst, Type::Pointer.new(Type::Char)]
+        [dst, Type::Pointer.new(@plain_char)]
       end
 
       # "e[i]" read: compute the element address (see #gen_element_address) and,
@@ -4627,7 +4638,7 @@ module Rubycc
                 error_at(node.token, "undeclared variable '#{node.name}'")
           function_type_of(sig)
         elsif node.is_a?(Front::AST::StringLit)
-          Type::Array.new(Type::Char, node.value.bytesize + 1)
+          Type::Array.new(@plain_char, node.value.bytesize + 1)
         elsif node.is_a?(Front::AST::MemberAccess)
           # A member keeps its declared type here (no array-to-pointer decay),
           # so "sizeof s.arr" measures the whole member array, like "sizeof a"
@@ -4657,7 +4668,7 @@ module Rubycc
         when Front::AST::Call
           call_return_type(node)
         when Front::AST::StringLit
-          Type::Pointer.new(Type::Char)
+          Type::Pointer.new(@plain_char)
         when Front::AST::VariableRef
           local = lookup_variable(node.name)
           if local

@@ -248,8 +248,15 @@ module Rubycc
       # type.
       OrdinaryName = Data.define(:kind, :value)
 
-      def initialize(tokens)
+      # `plain_char` is the Rubycc::Type a bare `char` type-specifier resolves
+      # to. Its signedness is implementation-defined and pinned per ABI, so the
+      # caller that knows the target hands it in (see Compiler#compile);
+      # defaulting to the signed instance keeps a target-less caller on the
+      # x86-64 System V choice. `signed char` and `unsigned char` are unaffected —
+      # both are separate types with a fixed signedness.
+      def initialize(tokens, plain_char: Type::Char)
         @tokens = tokens
+        @plain_char = plain_char
         @pos = 0
         # The number of recursive-descent nesting levels currently live, capped
         # at MAX_NESTING_DEPTH by #with_nesting_guard. One counter is shared by
@@ -641,7 +648,13 @@ module Rubycc
           if short || long.positive? || counts["int"].positive?
             error_at(tok, "both 'char' and a size specifier in declaration specifiers")
           end
-          return unsigned ? Type::UChar : Type::Char
+          # The three character types are distinct: "unsigned char" and "signed
+          # char" name their own fixed-signedness types, while a bare "char"
+          # takes the target's plain-char instance (see #initialize).
+          return Type::UChar if unsigned
+          return Type::SChar if signed
+
+          return @plain_char
         end
 
         error_at(tok, "both 'short' and 'long' in declaration specifiers") if short && long.positive?

@@ -236,10 +236,17 @@ module Rubycc
         "__SIZEOF_WINT_T__" => "4"
       }.freeze
 
-      def initialize
+      # `char_unsigned` says whether plain `char` is unsigned on the target being
+      # compiled for (it is under AAPCS64, and is not under the x86-64 System V
+      # psABI, hence the default). When it is, __CHAR_UNSIGNED__ joins the
+      # predefined macros with the value gcc gives it, so a header can select the
+      # same branch it would there — the bundled <limits.h> uses exactly that to
+      # pick CHAR_MIN/CHAR_MAX.
+      def initialize(char_unsigned: false)
         # name (String) => Macro.
         @macros = {}
         PREDEFINED_TARGET_MACROS.each { |name| @macros[name] = predefined_target_macro }
+        @macros["__CHAR_UNSIGNED__"] = predefined_target_macro if char_unsigned
         PREDEFINED_NUMERIC_MACROS.each { |name, text| @macros[name] = predefined_numeric_macro(text) }
         @include_depth = 0
         # Absolute paths of files that asked (via "#pragma once") to be read at

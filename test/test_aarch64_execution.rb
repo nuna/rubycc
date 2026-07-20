@@ -474,11 +474,12 @@ class TestAArch64Execution < Minitest::Test
   # --- type conversions ---------------------------------------------------
 
   # Note on `char`: these sources always write `signed char` or `unsigned char`
-  # explicitly, never plain `char`. rubycc's front end fixes plain `char` as
-  # signed for every target, while the aarch64 Linux psABI makes it unsigned, so
-  # a plain-`char` source would differ from the cross gcc for a reason that has
-  # nothing to do with code generation. Pinning the signedness keeps these tests
-  # measuring the backend.
+  # explicitly, never plain `char`, so the byte width being converted is the only
+  # variable and these tests stay squarely about code generation. Plain `char` is
+  # no longer off limits — its signedness follows the target now (unsigned under
+  # AAPCS64, as here), and test_plain_char_signedness.rb is where that is checked
+  # against the cross gcc — but keeping the spelling explicit here means a change
+  # to the target's choice cannot silently reinterpret these conversions.
   def test_integer_conversions
     assert_aarch64_matches_gcc(source(<<~C))
       int main(void) {
