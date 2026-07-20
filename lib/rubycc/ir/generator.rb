@@ -1698,6 +1698,8 @@ module Rubycc
           gen_va_arg(node)
         when Front::AST::VaEnd
           gen_va_end(node)
+        when Front::AST::VaCopy
+          gen_va_copy(node)
         when Front::AST::BuiltinExpect
           gen_builtin_expect(node)
         when Front::AST::BuiltinAlloca
@@ -1791,14 +1793,21 @@ module Rubycc
         overflow_label = new_label
         end_label = new_label
 
-        # A double walks the SSE side of the register-save area (fp_offset), an
-        # integer/pointer the GP side (gp_offset); the two counters advance
-        # independently, so a mixed argument list reaches each argument's slot.
-        if type.float?
-          fp_field = offset_address(ap, Type::VaListTag.member("fp_offset").offset)
+        # The two ABIs walk different tags, so the lowering splits here. AAPCS64
+        # reads a signed offset from the end of a per-file save area; System V an
+        # unsigned offset from a shared base. Keeping them apart (rather than
+        # threading one lowering through a descriptor) leaves the System V path
+        # byte-for-byte what it was, which its x86-64 output relies on.
+        if @convention.va_list_abi == :aapcs64
+          emit_va_arg_aapcs64(ap, type, result_addr, overflow_label, end_label)
+        elsif type.float?
+          # A double walks the SSE side of the register-save area (fp_offset), an
+          # integer/pointer the GP side (gp_offset); the two counters advance
+          # independently, so a mixed argument list reaches each argument's slot.
+          fp_field = offset_address(ap, @convention.va_list_tag.member("fp_offset").offset)
           emit_va_arg_fp_dispatch(ap, fp_field, result_addr, overflow_label, end_label)
         else
-          gp_field = offset_address(ap, Type::VaListTag.member("gp_offset").offset)
+          gp_field = offset_address(ap, @convention.va_list_tag.member("gp_offset").offset)
           emit_va_arg_dispatch(ap, gp_field, result_addr, overflow_label, end_label)
         end
 
@@ -1822,7 +1831,7 @@ module Rubycc
 
         # Register arm: addr = reg_save_area + gp; gp_offset += 8.
         reg_save = new_vreg
-        emit(:load, dst: reg_save, a: offset_address(ap, Type::VaListTag.member("reg_save_area").offset), size: 8)
+        emit(:load, dst: reg_save, a: offset_address(ap, @convention.va_list_tag.member("reg_save_area").offset), size: 8)
         gp_wide = convert(gp, from: Type::UInt, to: Type::Long)
         reg_addr = new_vreg
         emit(:add, dst: reg_addr, a: reg_save, b: gp_wide, size: 8)
@@ -1832,7 +1841,7 @@ module Rubycc
 
         # Overflow arm: addr = overflow_arg_area; overflow_arg_area += 8.
         emit(:label, a: overflow_label)
-        overflow_field = offset_address(ap, Type::VaListTag.member("overflow_arg_area").offset)
+        overflow_field = offset_address(ap, @convention.va_list_tag.member("overflow_arg_area").offset)
         overflow = new_vreg
         emit(:load, dst: overflow, a: overflow_field, size: 8)
         emit(:copy, dst: result_addr, a: overflow)
@@ -1860,7 +1869,7 @@ module Rubycc
 
         # Register arm: addr = reg_save_area + fp; fp_offset += 16.
         reg_save = new_vreg
-        emit(:load, dst: reg_save, a: offset_address(ap, Type::VaListTag.member("reg_save_area").offset), size: 8)
+        emit(:load, dst: reg_save, a: offset_address(ap, @convention.va_list_tag.member("reg_save_area").offset), size: 8)
         fp_wide = convert(fp, from: Type::UInt, to: Type::Long)
         reg_addr = new_vreg
         emit(:add, dst: reg_addr, a: reg_save, b: fp_wide, size: 8)
@@ -1870,11 +1879,71 @@ module Rubycc
 
         # Overflow arm: addr = overflow_arg_area; overflow_arg_area += 8.
         emit(:label, a: overflow_label)
-        overflow_field = offset_address(ap, Type::VaListTag.member("overflow_arg_area").offset)
+        overflow_field = offset_address(ap, @convention.va_list_tag.member("overflow_arg_area").offset)
         overflow = new_vreg
         emit(:load, dst: overflow, a: overflow_field, size: 8)
         emit(:copy, dst: result_addr, a: overflow)
         emit(:store, a: overflow_field, b: bump(overflow, 8, size: 8), size: 8)
+        emit(:label, a: end_label)
+      end
+
+      # The AAPCS64 va_arg walk. It has the same register-or-stack shape as the
+      # System V one but reads the five-field tag the other way round: a double
+      # walks the vector file (__vr_offs against __vr_top), an integer/pointer the
+      # integer file (__gr_offs against __gr_top), the two counters advancing
+      # independently as they do on System V.
+      def emit_va_arg_aapcs64(ap, type, result_addr, overflow_label, end_label)
+        tag = @convention.va_list_tag
+        if type.float?
+          # A saved vector register occupies a full 16-byte slot (its low eight
+          # hold the double), so __vr_offs steps by 16.
+          emit_va_arg_aapcs64_dispatch(ap, tag.member("__vr_offs").offset,
+                                       tag.member("__vr_top").offset, 16,
+                                       result_addr, overflow_label, end_label)
+        else
+          emit_va_arg_aapcs64_dispatch(ap, tag.member("__gr_offs").offset,
+                                       tag.member("__gr_top").offset, 8,
+                                       result_addr, overflow_label, end_label)
+        end
+      end
+
+      # One file's AAPCS64 dispatch. `offs_disp` addresses the signed byte offset
+      # (int) into the save area, `top_disp` the pointer to that area's *end*, and
+      # `step` how far one argument advances the offset (8 for a GP slot, 16 for a
+      # VR one). While the offset is negative a saved register remains, and the
+      # argument sits at top + offset (offset being negative, this counts back
+      # from the end); once it reaches zero the register file is spent and the
+      # argument comes off __stack, one eightbyte at a time. Both arms leave the
+      # argument's address in `result_addr` for the caller's typed load.
+      def emit_va_arg_aapcs64_dispatch(ap, offs_disp, top_disp, step, result_addr, overflow_label, end_label)
+        offs_field = offset_address(ap, offs_disp)
+
+        # offs = __gr_offs/__vr_offs; if offs >= 0 the file is exhausted.
+        offs = new_vreg
+        emit(:load, dst: offs, a: offs_field, size: 4)
+        zero = new_vreg
+        emit(:const, dst: zero, a: 0)
+        below = new_vreg
+        emit(:lt, dst: below, a: offs, b: zero)
+        emit(:jump_if_zero, a: below, b: overflow_label)
+
+        # Register arm: addr = top + offs (offs < 0); offs += step.
+        top = new_vreg
+        emit(:load, dst: top, a: offset_address(ap, top_disp), size: 8)
+        offs_wide = convert(offs, from: Type::Int, to: Type::Long)
+        reg_addr = new_vreg
+        emit(:add, dst: reg_addr, a: top, b: offs_wide, size: 8)
+        emit(:copy, dst: result_addr, a: reg_addr)
+        emit(:store, a: offs_field, b: bump(offs, step), size: 4)
+        emit(:jump, a: end_label)
+
+        # Overflow arm: addr = __stack; __stack += 8.
+        emit(:label, a: overflow_label)
+        stack_field = offset_address(ap, @convention.va_list_tag.member("__stack").offset)
+        stack = new_vreg
+        emit(:load, dst: stack, a: stack_field, size: 8)
+        emit(:copy, dst: result_addr, a: stack)
+        emit(:store, a: stack_field, b: bump(stack, 8, size: 8), size: 8)
         emit(:label, a: end_label)
       end
 
@@ -1894,6 +1963,18 @@ module Rubycc
       def gen_va_end(node)
         ap = gen_va_list_address(node.ap, node.token, "va_end")
         [ap, Type::Void]
+      end
+
+      # "__builtin_va_copy(dest, src)": duplicates a va_list's traversal state so
+      # the two may be walked apart (7.16.1.2). Both operands decay to their tag
+      # addresses, and the whole tag is copied from src to dest with the same
+      # :memcpy a struct assignment uses — the tag being the entirety of the
+      # state on either ABI, whatever its field count. The value is void.
+      def gen_va_copy(node)
+        dest = gen_va_list_address(node.dest, node.token, "va_copy")
+        src = gen_va_list_address(node.src, node.token, "va_copy")
+        emit(:memcpy, a: dest, b: src, size: @convention.va_list_tag.size)
+        [nil, Type::Void]
       end
 
       # "__builtin_expect(exp, c)": gcc's branch-prediction hint, typed
@@ -1981,7 +2062,7 @@ module Rubycc
       # and rejects anything else (`builtin` names the site in the diagnostic).
       def gen_va_list_address(node, token, builtin)
         ap, ap_type = gen_value(node)
-        unless ap_type.pointer? && ap_type.target == Type::VaListTag
+        unless ap_type.pointer? && ap_type.target == @convention.va_list_tag
           error_at(token, "first argument to '#{builtin}' is not of type '__builtin_va_list'")
         end
         ap

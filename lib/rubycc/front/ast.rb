@@ -306,6 +306,12 @@ module Rubycc
       # va_list expression and the keyword token; its value is void.
       VaEnd = Data.define(:ap, :token)
 
+      # "__builtin_va_copy ( dest , src )": copies the traversal state of `src`
+      # into `dest` so the two can be walked independently (7.16.1.2). Both are
+      # va_list expressions; the generator lowers the copy to a whole-tag move
+      # between their (decayed) addresses. The value is void, like va_end.
+      VaCopy = Data.define(:dest, :src, :token)
+
       # "__builtin_expect ( exp , c )": gcc's branch-prediction hint, typed
       # `long(long, long)`. `exp` is the tested expression and `c` the value it
       # is expected to take. rubycc has no optimizer, so the hint carries no

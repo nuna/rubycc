@@ -1131,6 +1131,37 @@ module Rubycc
     # 24-byte tag as a stack object — exactly the System V convention.
     BuiltinVaList = Array.new(VaListTag, 1)
 
+    # The AAPCS64 representation of a `va_list` element. AArch64 splits the two
+    # register files System V folds into one save area, so the tag has five
+    # fields rather than four (AAPCS64 §B.4 / the Arm-64 va_list): `__stack` the
+    # next stack argument, `__gr_top` and `__vr_top` the *ends* of the integer
+    # and vector save areas, and `__gr_offs` / `__vr_offs` signed byte offsets
+    # from those tops. The offsets run the other way from System V's: they start
+    # negative (the whole file still to be read) and climb toward zero, at which
+    # point the file is spent and the argument comes off `__stack`. The layout
+    # (size 32, 8-byte aligned) is what the AArch64 C library agrees on, and the
+    # tag compares by identity, so the generator recognizes it exactly as it does
+    # the System V one.
+    AArch64VaListTag = StructType.new("__va_list").tap do |tag|
+      tag.define([
+                   ["__stack", Pointer.new(Void)],
+                   ["__gr_top", Pointer.new(Void)],
+                   ["__vr_top", Pointer.new(Void)],
+                   ["__gr_offs", Int],
+                   ["__vr_offs", Int]
+                 ])
+    end
+
+    # The AArch64 counterpart of BuiltinVaList: a one-element array of the
+    # five-field tag. Making it an array (rather than the bare struct gcc's
+    # __builtin_va_list happens to be) has the same decay-to-pointer effect the
+    # System V form relies on, and it is ABI-identical at a call boundary: a
+    # 32-byte va_list is passed by reference under AAPCS64 6.4.2 (a pointer to
+    # the object in a single integer register), which is exactly what the decayed
+    # array pointer already is. Forwarding a va_list to vprintf therefore lands
+    # the same pointer in the same register a gcc caller would.
+    AArch64BuiltinVaList = Array.new(AArch64VaListTag, 1)
+
     # The plain-`char` instance a target uses: the signed one when its ABI makes
     # plain `char` signed (x86-64 System V), the unsigned one otherwise
     # (AAPCS64). Neither is `signed char`/`unsigned char`, which keep their own

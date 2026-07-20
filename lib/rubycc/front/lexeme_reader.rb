@@ -36,7 +36,7 @@ module Rubycc
                     return if else while do for break continue
                     switch case default goto sizeof
                     _Static_assert _Alignof __int128
-                    __builtin_va_start __builtin_va_arg __builtin_va_end
+                    __builtin_va_start __builtin_va_arg __builtin_va_end __builtin_va_copy
                     __builtin_expect __builtin_alloca __builtin_offsetof
                     __builtin_constant_p __builtin_choose_expr
                     __builtin_ctz __builtin_ctzll __builtin_clz __builtin_clzll

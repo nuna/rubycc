@@ -370,8 +370,9 @@ class TestAArch64Backend < Minitest::Test
 
   def inst(op, **fields) = IR::Instruction.new(op, **fields)
 
-  def func(insts, vregs:, params: 0, param_kinds: nil, objects: [], name: "f", linkage: :external)
-    IR::Function.new(name, insts, vregs, params, objects, linkage, false,
+  def func(insts, vregs:, params: 0, param_kinds: nil, objects: [], name: "f", linkage: :external,
+           variadic: false)
+    IR::Function.new(name, insts, vregs, params, objects, linkage, variadic,
                      param_kinds || Array.new(params, :gp))
   end
 
@@ -1051,13 +1052,66 @@ class TestAArch64Backend < Minitest::Test
     assert_equal 2, words(fn).count(ldp_x(FP, LR, SP, 0))
   end
 
+  # --- variadic functions --------------------------------------------------
+
+  # A variadic function's prologue reserves a register-save area at the top of
+  # the frame and spills all eight integer argument registers into its 8-byte
+  # slots and all eight vector ones into the low half of their 16-byte slots, so
+  # a later :va_start can point __gr_top / __vr_top at the areas' ends. The
+  # frame here is 16 outgoing (none) + 16 record + align16(1*8) vreg = 32, then
+  # 128 for the vector area and 64 for the integer one, so the vector slots
+  # start at 32 and the integer ones at 160.
+  def test_variadic_prologue_saves_the_argument_registers
+    fn = func([inst(:va_start, a: 0, b: 0)], vregs: 1, variadic: true)
+    gp_saves = (0..7).map { |i| str_x(i, SP, 160 + 8 * i) }
+    vr_saves = (0..7).map { |i| str_d(i, SP, 32 + 16 * i) }
+    saves = words(fn).drop(words(fn).index(stp_x(FP, LR, SP, 0)) + 1).first(16)
+    assert_words gp_saves + vr_saves, saves
+  end
+
+  # :va_start writes the five AAPCS64 fields at the tag address. With no named
+  # parameters __gr_offs seeds at -(8)*8 = -64 and __vr_offs at -(8)*16 = -128,
+  # while __stack and __gr_top both address the top of the 224-byte frame and
+  # __vr_top the end of the vector area at 160.
+  def test_va_start_writes_the_five_fields
+    fn = func([inst(:va_start, a: 0, b: 0)], vregs: 1, variadic: true)
+    all = words(fn)
+    start = all.index(ldr_x(A, SP, slot(0))) # ldr x9, [sp, &tag]
+    expected = [
+      ldr_x(A, SP, slot(0)),
+      add_imm(B, SP, 224), str_x(B, A, 0),   # __stack  = sp + 224
+      add_imm(B, SP, 224), str_x(B, A, 8),   # __gr_top = sp + 224
+      add_imm(B, SP, 160), str_x(B, A, 16),  # __vr_top = sp + 160
+      movz(0, B, 0xFFC0, 0), movk(0, B, 0xFFFF, 1), str_w(B, A, 24), # __gr_offs = -64
+      movz(0, B, 0xFF80, 0), movk(0, B, 0xFFFF, 1), str_w(B, A, 28)  # __vr_offs = -128
+    ]
+    assert_words expected, all[start, expected.size]
+  end
+
+  # A named parameter that itself spilled onto the caller's stack pushes the
+  # first variable argument one eightbyte higher, so __stack seeds past it while
+  # __gr_top still marks the frame top. Nine :gp parameters put the ninth on the
+  # stack (__gr_offs then seeds at zero, the integer file being spent by the
+  # named part).
+  def test_va_start_skips_a_stacked_named_parameter
+    kinds = Array.new(8, :gp) + [:mem]
+    fn = func([inst(:va_start, a: 9, b: 9)], vregs: 10, params: 9, param_kinds: kinds,
+              variadic: true)
+    all = words(fn)
+    start = all.index(ldr_x(A, SP, slot(9)))
+    # frame = 16 record + align16(10*8)=80 + 192 save area = 288; the stacked
+    # named parameter sits at [sp + 288], so __stack seeds at sp + 296.
+    assert_equal add_imm(B, SP, 296), all[start + 1] # __stack past the named slot
+    assert_equal add_imm(B, SP, 288), all[start + 3] # __gr_top at the frame top
+    assert_equal movz(0, B, 0, 0), all[start + 7]    # __gr_offs = 0 (file spent)
+  end
+
   # --- refusals ------------------------------------------------------------
 
   # The IR ops that belong to A4 are refused by name rather than lowered to
   # something plausible-looking.
   def test_later_milestone_ops_are_refused
     {
-      inst(:va_start, a: 0, b: 0) => /variadic functions/,
       inst(:alloca, dst: 0, a: 1) => /alloca/,
       inst(:mulhi, dst: 0, a: 0, b: 1, size: 8) => /128-bit multiply/,
       inst(:bit_scan, dst: 0, a: 1, b: :forward, size: 4) => /bit-scan builtins/

@@ -173,7 +173,7 @@ module Rubycc
       # header that guards a fallback behind __has_builtin (e.g. json's bswap
       # path) takes the fallback for one rubycc does not provide. Kept in sync
       # with the parser's builtin keywords.
-      KNOWN_BUILTINS = %w[__builtin_va_start __builtin_va_arg __builtin_va_end
+      KNOWN_BUILTINS = %w[__builtin_va_start __builtin_va_arg __builtin_va_end __builtin_va_copy
                           __builtin_expect __builtin_alloca __builtin_offsetof
                           __builtin_constant_p __builtin_choose_expr
                           __builtin_ctz __builtin_ctzll __builtin_clz __builtin_clzll

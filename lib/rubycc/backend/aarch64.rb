@@ -96,11 +96,12 @@ module Rubycc
     # formed with an adrp/add pair, and their -fPIC counterpart read from the
     # GOT with an adrp/ldr pair) and most of A4: indirect calls through a
     # function pointer, floating-point arithmetic, comparison, conversion,
-    # argument passing and return, whole-object copies, and aggregates passed
-    # and returned by value. Features the generator can still hand it that
-    # belong to the rest of A4 (varargs, alloca, the bit-scan builtins, a
-    # 128-bit multiply) are refused with an explicit "not yet supported" error
-    # rather than miscompiled.
+    # argument passing and return, whole-object copies, aggregates passed and
+    # returned by value, and variadic function definitions (a register-save-area
+    # prologue and the AAPCS64 :va_start seed __builtin_va_arg walks). Features
+    # the generator can still hand it that belong to the rest of A4 (alloca, the
+    # bit-scan builtins, a 128-bit multiply) are refused with an explicit "not
+    # yet supported" error rather than miscompiled.
     class AArch64
       # Result of compiling one function, the same shape the x86_64 backend
       # returns: `bytes` the machine code, `symbols` an array of
@@ -223,8 +224,12 @@ module Rubycc
         @fixups = []
         @relocations = []
 
-        layout_frame(ir_func.vreg_count, ir_func.stack_objects, ir_func.insts)
-        emit_prologue(ir_func.param_kinds)
+        # Kept for :va_start, which reads the named parameters' register classes
+        # to seed __gr_offs / __vr_offs past the registers the fixed arguments
+        # consumed.
+        @param_kinds = ir_func.param_kinds
+        layout_frame(ir_func.vreg_count, ir_func.stack_objects, ir_func.insts, ir_func.variadic)
+        emit_prologue(ir_func.param_kinds, ir_func.variadic)
         ir_func.insts.each { |inst| emit_instruction(inst) }
         resolve_fixups
 
@@ -243,7 +248,7 @@ module Rubycc
       # the vreg slots (8 bytes each, the region rounded to 16 so the objects
       # stay 16-aligned), then each stack object at a 16-byte-aligned size above
       # the previous. All offsets are non-negative displacements from sp.
-      def layout_frame(vreg_count, stack_objects, insts)
+      def layout_frame(vreg_count, stack_objects, insts, variadic)
         @outgoing_size = outgoing_argument_bytes(insts)
         @save_offset = @outgoing_size
         vreg_region = align16(vreg_count * 8)
@@ -252,6 +257,22 @@ module Rubycc
         stack_objects.each do |object_size|
           @object_offsets << running
           running += align16(object_size)
+        end
+        # A variadic function reserves the argument register-save area at the
+        # very top of the frame — just below the caller's sp, exactly where the
+        # AArch64 C library expects __gr_top/__vr_top to point. The vector area
+        # (eight 16-byte slots) sits below the integer one (eight 8-byte slots),
+        # and both tops (the ends of each) are the addresses :va_start writes.
+        # The whole block is 192 bytes, a multiple of 16, so the frame stays
+        # 16-aligned; a non-variadic function reserves nothing here.
+        @vr_save_offset = @gr_save_offset = @gr_top_offset = @vr_top_offset = nil
+        if variadic
+          @vr_save_offset = running
+          running += FP_ARG_REGISTERS.size * 16
+          @vr_top_offset = running
+          @gr_save_offset = running
+          running += ARG_REGISTERS.size * 8
+          @gr_top_offset = running
         end
         @frame_size = align16(running)
       end
@@ -293,10 +314,66 @@ module Rubycc
       # sp-relative), but the pair is saved and restored so the callee-saved x29
       # and the return address in x30 round-trip across any call this function
       # makes.
-      def emit_prologue(param_kinds)
+      def emit_prologue(param_kinds, variadic)
         adjust_sp(@frame_size, sub: true)
         emit_save_record(store: true)
         spill_parameters(param_kinds)
+        save_argument_registers if variadic
+      end
+
+      # Spills every argument register into the variadic save area so a later
+      # :va_start can hand __builtin_va_arg a pointer to each. The eight integer
+      # registers go into the 8-byte slots at the top of the frame and the eight
+      # vector ones into the 16-byte slots below them; parameter spilling above
+      # only read the argument registers, so each still holds its incoming value
+      # here. A vector register is saved at its low 8 bytes (the double a
+      # va_arg(double) reads back) rather than the full 16 — like the x86_64
+      # backend's movsd, this subset never fetches a wider vector argument — which
+      # keeps the store to the ordinary 64-bit form. All eight of each file are
+      # saved unconditionally, keeping the prologue's shape fixed regardless of
+      # how many arguments the fixed part named.
+      def save_argument_registers
+        ARG_REGISTERS.each_with_index do |reg, i|
+          store_at(reg, @gr_save_offset + 8 * i)
+        end
+        FP_ARG_REGISTERS.each_with_index do |reg, i|
+          emit_fp_slot_access(reg, @vr_save_offset + 16 * i, 8, load: false)
+        end
+      end
+
+      # :va_start — fills the five AAPCS64 va_list fields at the address in
+      # `ap_vreg`'s slot, seeding __builtin_va_arg's walk of the register-save
+      # area the prologue laid down. The named parameters' classes (from
+      # @param_kinds, the generator having resolved register-vs-stack placement)
+      # count how far the fixed part consumed each register file: `named_gp` of
+      # the eight integer registers and `named_fp` of the eight vector ones, the
+      # rest being where the variable part begins. The fields (their byte offsets
+      # fixed by AArch64VaListTag):
+      #   [A+0]  __stack   = sp + frame_size + 8*named_stack (the first stacked
+      #                      variable argument, past any named parameter that
+      #                      itself spilled onto the caller's stack)
+      #   [A+8]  __gr_top  = sp + gr_top_offset (the end of the integer area)
+      #   [A+16] __vr_top  = sp + vr_top_offset (the end of the vector area)
+      #   [A+24] __gr_offs = -(8 - named_gp) * 8   (negative, climbs to zero)
+      #   [A+28] __vr_offs = -(8 - named_fp) * 16
+      def emit_va_start(ap_vreg)
+        named_gp = @param_kinds.count(:gp)
+        named_fp = @param_kinds.count(:sse4) + @param_kinds.count(:sse8)
+        named_stack = @param_kinds.count(:mem)
+        gr_offs = -(ARG_REGISTERS.size - named_gp) * 8
+        vr_offs = -(FP_ARG_REGISTERS.size - named_fp) * 16
+
+        load_reg(A, ap_vreg) # A = &__va_list
+        emit_slot_address(B, incoming_stack_offset(named_stack))
+        emit_piece_access(B, A, 0, 8, load: false, fp: false)
+        emit_slot_address(B, @gr_top_offset)
+        emit_piece_access(B, A, 8, 8, load: false, fp: false)
+        emit_slot_address(B, @vr_top_offset)
+        emit_piece_access(B, A, 16, 8, load: false, fp: false)
+        materialize(B, gr_offs, 32)
+        emit_piece_access(B, A, 24, 4, load: false, fp: false)
+        materialize(B, vr_offs, 32)
+        emit_piece_access(B, A, 28, 4, load: false, fp: false)
       end
 
       # Restores x29/x30, raises sp back, and returns. Emitted at every :ret.
@@ -411,7 +488,7 @@ module Rubycc
         when :func_addr then emit_symbol_address(inst.dst, kind: :func, symbol: inst.a)
         when :got_addr then emit_got_address(inst.dst, inst.a)
         when :memcpy then emit_memcpy(inst.a, inst.b, inst.size)
-        when :va_start then unsupported("variadic functions")
+        when :va_start then emit_va_start(inst.a)
         when :alloca then unsupported("alloca")
         when :bit_scan then unsupported("bit-scan builtins")
         else

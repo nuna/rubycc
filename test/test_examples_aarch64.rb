@@ -28,11 +28,8 @@ class TestExamplesAArch64 < Minitest::Test
   # Each builds and runs on x86-64 today; the reason is the backend's own
   # UnsupportedError message.
   PENDING = {
-    "step23_sum" => "A4: variadic functions",
-    "step24_floats" => "A4: variadic functions",
     "step28_extensions" => "A4: alloca",
     "step28_wideint" => "A4: 128-bit multiply",
-    "step41_freestanding" => "A4: variadic functions",
     "step44_builtins" => "A4: bit-scan builtins"
   }.freeze
 

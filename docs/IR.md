@@ -222,7 +222,7 @@ Instruction(op, dst:, a:, b:, size:)
 
 | 命令 | 形 | 意味 |
 |---|---|---|
-| :va_start | a = __va_list_tag のアドレス vreg、b = 取り囲む関数の固定パラメータ数 | SysV va_list の 4 フィールド(gp_offset / fp_offset / overflow_arg_area / reg_save_area)を初期化。名前付きパラメータが消費済みの GP/SSE レジスタ数は b ではなく **Function.param_kinds のカウントから導出**する: gp_offset = 8×count(:gp)、fp_offset = 48 + 16×(count(:sse4)+count(:sse8))、overflow_arg_area の開始は count(:mem)(スタック渡しになった名前付きスロット数)を反映。reg_save_area は可変長プロローグが確保した退避領域を指す。**va_arg / va_end に専用命令は無い** — ジェネレータが通常の load/store/分岐に降ろす(double は fp_offset を `:ult 176` で分岐し、レジスタ側 +=16 / あふれ側 +=8、:load size 8) |
+| :va_start | a = __va_list_tag のアドレス vreg、b = 取り囲む関数の固定パラメータ数 | ターゲットの va_list フィールドを初期化する。SysV は 4 フィールド(gp_offset / fp_offset / overflow_arg_area / reg_save_area)、AAPCS64 は 5 フィールド(__stack / __gr_top / __vr_top / __gr_offs / __vr_offs)。名前付きパラメータが消費済みの GP/SSE レジスタ数は b ではなく **Function.param_kinds のカウントから導出**する。SysV: gp_offset = 8×count(:gp)、fp_offset = 48 + 16×(count(:sse4)+count(:sse8))、overflow_arg_area の開始は count(:mem) を反映、reg_save_area は退避領域を指す。AAPCS64: __gr_offs = −(8−count(:gp))×8、__vr_offs = −(8−count(:sse4/:sse8))×16(退避領域の末尾 __gr_top/__vr_top からの負オフセットで 0 に向かって増える)、__stack と __gr_top/__vr_top は退避領域とスタック引数の境界を指す。**va_arg / va_end / va_copy に専用命令は無い** — ジェネレータが通常の load/store/分岐に降ろす(SysV の double は fp_offset を `:ult 176` で分岐しレジスタ側 +=16 / あふれ側 +=8;AAPCS64 は offs を `:lt 0` で分岐しレジスタ側は top+offs、offs += 8/16;va_copy はタグ全体の :memcpy) |
 
 ### ビットスキャン
 

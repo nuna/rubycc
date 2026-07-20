@@ -60,7 +60,8 @@ module Rubycc
                                             include_paths: include_paths, defines: defines,
                                             system_includes: system_includes)
       program = Front::Parser.new(tokens, plain_char: plain_char,
-                                          unnamed_bitfields_align: entry[:unnamed_bitfields_align]).parse
+                                          unnamed_bitfields_align: entry[:unnamed_bitfields_align],
+                                          builtin_va_list: entry[:convention].va_list_type).parse
       ir_program = IR::Generator.new(plain_char: plain_char,
                                      convention: entry[:convention]).generate(program, pic: pic)
 

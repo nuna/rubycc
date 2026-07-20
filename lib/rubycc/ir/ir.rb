@@ -184,17 +184,20 @@ module Rubycc
     #   :va_start                   a = a vreg holding the address of a
     #                               __va_list_tag, b = the enclosing function's
     #                               fixed (named) parameter count. Initializes the
-    #                               four System V va_list fields (gp_offset,
-    #                               fp_offset, overflow_arg_area, reg_save_area)
-    #                               so a later __builtin_va_arg reads the variable
-    #                               arguments; the backend fills them from the
-    #                               register-save area its variadic prologue set
-    #                               up, deriving the named GP and SSE counts (which
-    #                               seed gp_offset/fp_offset and the overflow start)
-    #                               from Function.param_kinds rather than from b.
-    #                               va_arg/va_end need no IR op of their own —
-    #                               the generator lowers them to ordinary
-    #                               load/store/branch instructions
+    #                               target's va_list fields (the four System V ones
+    #                               gp_offset/fp_offset/overflow_arg_area/reg_save_area,
+    #                               or the five AAPCS64 ones __stack/__gr_top/
+    #                               __vr_top/__gr_offs/__vr_offs) so a later
+    #                               __builtin_va_arg reads the variable arguments;
+    #                               the backend fills them from the register-save
+    #                               area its variadic prologue set up, deriving the
+    #                               named GP and SSE counts (which seed the offsets
+    #                               and the overflow/stack start) from
+    #                               Function.param_kinds rather than from b.
+    #                               va_arg/va_end/va_copy need no IR op of their
+    #                               own — the generator lowers them to ordinary
+    #                               load/store/branch (and, for va_copy, :memcpy)
+    #                               instructions
     #   :alloca dst <- alloca(a)    a = a vreg holding a byte count; dst gets the
     #                               base address of that many bytes of automatic
     #                               storage carved from the stack (__builtin_alloca).

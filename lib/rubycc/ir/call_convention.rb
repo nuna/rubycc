@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "../type"
+
 module Rubycc
   module IR
     # One piece of a by-value aggregate as its convention moves it: the byte
@@ -71,13 +73,30 @@ module Rubycc
     # caller-provided result buffer: an ordinary leading integer argument under
     # System V, and its own mechanism (:indirect_result, the x8 register) under
     # AAPCS64.
+    #
+    # The `va_list_*` trio is the fourth target-specific thing the convention
+    # owns, and it belongs here for the same reason the others do: a `va_list`
+    # walks exactly the register/stack layout the convention laid a call's
+    # arguments out in, so the shape of the tag, the type the front end declares
+    # `__builtin_va_list` to name, and the flavour of the va_arg walk are all
+    # facets of the one ABI. `va_list_abi` is a plain tag (:system_v / :aapcs64)
+    # the generator switches its va_arg lowering on: the two walks read a
+    # different structure with the offsets running opposite ways, so they are
+    # kept as separate lowerings rather than one merged over a descriptor — and
+    # keeping the System V path untouched is what guarantees its emitted code
+    # does not shift by a byte.
     class CallConvention
-      attr_reader :gp_registers, :fp_registers, :hidden_result_kind
+      attr_reader :gp_registers, :fp_registers, :hidden_result_kind,
+                  :va_list_tag, :va_list_type, :va_list_abi
 
-      def initialize(gp_registers:, fp_registers:, hidden_result_kind: :gp)
+      def initialize(gp_registers:, fp_registers:, va_list_tag:, va_list_type:, va_list_abi:,
+                     hidden_result_kind: :gp)
         @gp_registers = gp_registers
         @fp_registers = fp_registers
         @hidden_result_kind = hidden_result_kind
+        @va_list_tag = va_list_tag
+        @va_list_type = va_list_type
+        @va_list_abi = va_list_abi
         freeze
       end
 
@@ -105,7 +124,9 @@ module Rubycc
     # System V AMD64 (psABI 3.2.3).
     class SystemVAMD64Convention < CallConvention
       def initialize
-        super(gp_registers: 6, fp_registers: 8)
+        super(gp_registers: 6, fp_registers: 8,
+              va_list_tag: Type::VaListTag, va_list_type: Type::BuiltinVaList,
+              va_list_abi: :system_v)
       end
 
       # Classifies an aggregate by the psABI's eightbyte rules. A struct or
@@ -265,7 +286,9 @@ module Rubycc
       MAX_REGISTER_AGGREGATE = 16
 
       def initialize
-        super(gp_registers: 8, fp_registers: 8, hidden_result_kind: :indirect_result)
+        super(gp_registers: 8, fp_registers: 8, hidden_result_kind: :indirect_result,
+              va_list_tag: Type::AArch64VaListTag, va_list_type: Type::AArch64BuiltinVaList,
+              va_list_abi: :aapcs64)
       end
 
       # Classifies an aggregate by AAPCS64 6.4.2, in the order the standard

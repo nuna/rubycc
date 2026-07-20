@@ -259,10 +259,19 @@ module Rubycc
       # unnamed bit-field's type raises its aggregate's alignment (it does under
       # AAPCS64, not under the x86-64 System V psABI). It is passed straight to
       # StructType#define, which documents the rule.
-      def initialize(tokens, plain_char: Type::Char, unnamed_bitfields_align: false)
+      #
+      # `builtin_va_list` is the third: the type `__builtin_va_list` names, whose
+      # tag layout differs between the ABIs (four fields on System V, five on
+      # AAPCS64). The caller hands in the target's from its CallConvention so the
+      # typedef the parser seeds below reserves the right-sized object and, being
+      # the same tag instance the generator type-checks against, is recognized by
+      # identity there.
+      def initialize(tokens, plain_char: Type::Char, unnamed_bitfields_align: false,
+                     builtin_va_list: Type::BuiltinVaList)
         @tokens = tokens
         @plain_char = plain_char
         @unnamed_bitfields_align = unnamed_bitfields_align
+        @builtin_va_list = builtin_va_list
         @pos = 0
         # The number of recursive-descent nesting levels currently live, capped
         # at MAX_NESTING_DEPTH by #with_nesting_guard. One counter is shared by
@@ -284,11 +293,12 @@ module Rubycc
         # plain declarator names that shadow them, so a name is looked up here to
         # decide whether an identifier opens a declaration (a typedef name), folds
         # to a constant (an enumerator) or is an ordinary reference. The outermost
-        # scope is pre-seeded with `__builtin_va_list` as a typedef for the System
-        # V va_list type (a one-element __va_list_tag array), exactly as gcc
-        # predeclares it, so "__builtin_va_list ap;" is parsed as a declaration
-        # with no dedicated keyword and a program may still shadow the name.
-        @ordinary_scopes = [{ "__builtin_va_list" => OrdinaryName.new(:typedef, [Type::BuiltinVaList, false]) }]
+        # scope is pre-seeded with `__builtin_va_list` as a typedef for the
+        # target's va_list type (a one-element __va_list_tag array), exactly as
+        # gcc predeclares it, so "__builtin_va_list ap;" is parsed as a
+        # declaration with no dedicated keyword and a program may still shadow the
+        # name.
+        @ordinary_scopes = [{ "__builtin_va_list" => OrdinaryName.new(:typedef, [@builtin_va_list, false]) }]
       end
 
       # Parses the whole translation unit into an AST::Program. An external
@@ -2426,6 +2436,8 @@ module Rubycc
             parse_va_arg
           elsif peek.keyword?("__builtin_va_end")
             parse_va_end
+          elsif peek.keyword?("__builtin_va_copy")
+            parse_va_copy
           elsif peek.keyword?("__builtin_expect")
             parse_builtin_expect
           elsif peek.keyword?("__builtin_alloca")
@@ -2559,6 +2571,19 @@ module Rubycc
         ap = parse_assignment_expression
         expect_punct(")")
         AST::VaEnd.new(ap, keyword_tok)
+      end
+
+      # "__builtin_va_copy ( assignment-expression , assignment-expression )":
+      # the destination and source va_lists, whose state the generator copies as
+      # a whole tag from the second to the first.
+      def parse_va_copy
+        keyword_tok = advance # "__builtin_va_copy"
+        expect_punct("(")
+        dest = parse_assignment_expression
+        expect_punct(",")
+        src = parse_assignment_expression
+        expect_punct(")")
+        AST::VaCopy.new(dest, src, keyword_tok)
       end
 
       # "__builtin_expect ( exp , c )": exactly two arguments, parsed as an
