@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 完了判定を達成(Step 54、glibc 環境)**: json 2.21.1 = rubycc ビルドの C 拡張で **606 tests / 100% passed**、msgpack 1.8.3 = **455 examples / 0 failures**(手順は tools/m2_acceptance.rb で再現可能)。残項目: musl コンテナでの確認(M3 のコンテナマトリクス整備時)、L5 第三段(.gnu.hash・RELRO、適合性磨き込み)。**M3 進行中**: コーパス化 = Step 55、B1(rmake コア)= Step 56、B2(シェルレス実行器)= Step 57、B3(in-process ツール置換 + -j 並列)= Step 58 完了。**実物 mkmf Makefile → rmake → rubycc 製 .so の柱が通った**(json parser.so dlopen 確認、msgpack フル 12 TU を jobs:4 で約 30 秒完走)。B4 = Step 59、B5(conftest 完全対応)= Step 60 完了(RbConfig 4 キー差し替えの mkmf_shim。実測で have_func 偽陽性(実行ファイルリンカの未解決検査)と check_sizeof(sizeof 式のリゾルバ注入畳み込み)を修正。msgpack extconf の probe が gcc fixture と一致、json の SIMD probe は自然に偽化して JSON_DISABLE_SIMD 不要に)。**M3 完了(Step 64)**: distroless 姿勢(libc 開発ヘッダ不使用 = RUBYCC_HERMETIC_HEADERS・cc/make/sh 不使用)での `gem install json / msgpack` が成功・動作。同梱 libc ヘッダは 22 本で足りた(不足は arpa/inet 1 本のみ、実測駆動)。残項目: 真の distroless / musl コンテナ検証(環境なし、CI 整備時)・sqlite3/pg(dev ライブラリ導入後)。**M3 完了後のユーザ指示成果物 4 件も完了**(Step 65 = C11-COVERAGE.md + GCC-EXTENSIONS.md、Step 66 = ベンチマーク(benchmark/ + docs/BENCHMARKS.md、劣位ケース実測込み)、Step 67 = rubycc-doctor + data/verified_gems.json)。**M4 進行中**: A1(バックエンド抽象化リファクタ)= Step 68 完了(機種非依存リロケーション語彙 6 種・MachineDescription 注入・`Compiler::TARGETS`・`-target`。リファクタ前後で .o バイト一致 3/3 = 挙動変更ゼロを実証)。A2(aarch64 コーデジェン・コア)= Step 70 完了(sp 正オフセットのフレーム・MOVZ/MOVK・CSET・B/CBZ バックパッチ・AAPCS64 x0-x7。副産物として x86_64 の暗黙仮定 2 件 = 関数間パディングの NOP と ELF リーダのアーキ固定を是正)。Step 71 で **qemu-user + クロス gcc を導入し、aarch64 の実行オラクル検証を達成**(差分実行テスト 34 件、実バグ検出なし)。A3(メモリアクセスとリロケーション)= Step 72 完了(ADRP+ADD / ADRP+LDR のペア・リロケーション。x86_64 は 68 サンプルでバイト一致)。**次: 素の char の符号性のターゲット化 + 既存実行テスト全件の aarch64 展開**(A3 の締め)、その後 A4(ABI 完全化)。並行して float binary32 丸めバグを解消(Step 69、§3 の債務消し込み)。残項目(随時): 引数分類の per-target 化(A4)・musl/distroless コンテナ検証・sqlite3/pg コーパス。
+現在地: **M2 完了判定を達成(Step 54、glibc 環境)**: json 2.21.1 = rubycc ビルドの C 拡張で **606 tests / 100% passed**、msgpack 1.8.3 = **455 examples / 0 failures**(手順は tools/m2_acceptance.rb で再現可能)。残項目: musl コンテナでの確認(M3 のコンテナマトリクス整備時)、L5 第三段(.gnu.hash・RELRO、適合性磨き込み)。**M3 進行中**: コーパス化 = Step 55、B1(rmake コア)= Step 56、B2(シェルレス実行器)= Step 57、B3(in-process ツール置換 + -j 並列)= Step 58 完了。**実物 mkmf Makefile → rmake → rubycc 製 .so の柱が通った**(json parser.so dlopen 確認、msgpack フル 12 TU を jobs:4 で約 30 秒完走)。B4 = Step 59、B5(conftest 完全対応)= Step 60 完了(RbConfig 4 キー差し替えの mkmf_shim。実測で have_func 偽陽性(実行ファイルリンカの未解決検査)と check_sizeof(sizeof 式のリゾルバ注入畳み込み)を修正。msgpack extconf の probe が gcc fixture と一致、json の SIMD probe は自然に偽化して JSON_DISABLE_SIMD 不要に)。**M3 完了(Step 64)**: distroless 姿勢(libc 開発ヘッダ不使用 = RUBYCC_HERMETIC_HEADERS・cc/make/sh 不使用)での `gem install json / msgpack` が成功・動作。同梱 libc ヘッダは 22 本で足りた(不足は arpa/inet 1 本のみ、実測駆動)。残項目: 真の distroless / musl コンテナ検証(環境なし、CI 整備時)・sqlite3/pg(dev ライブラリ導入後)。**M3 完了後のユーザ指示成果物 4 件も完了**(Step 65 = C11-COVERAGE.md + GCC-EXTENSIONS.md、Step 66 = ベンチマーク(benchmark/ + docs/BENCHMARKS.md、劣位ケース実測込み)、Step 67 = rubycc-doctor + data/verified_gems.json)。**M4 進行中**: A1(バックエンド抽象化リファクタ)= Step 68 完了(機種非依存リロケーション語彙 6 種・MachineDescription 注入・`Compiler::TARGETS`・`-target`。リファクタ前後で .o バイト一致 3/3 = 挙動変更ゼロを実証)。A2(aarch64 コーデジェン・コア)= Step 70 完了(sp 正オフセットのフレーム・MOVZ/MOVK・CSET・B/CBZ バックパッチ・AAPCS64 x0-x7。副産物として x86_64 の暗黙仮定 2 件 = 関数間パディングの NOP と ELF リーダのアーキ固定を是正)。Step 71 で **qemu-user + クロス gcc を導入し、aarch64 の実行オラクル検証を達成**(差分実行テスト 34 件、実バグ検出なし)。A3(メモリアクセスとリロケーション)= Step 72 完了(ADRP+ADD / ADRP+LDR のペア・リロケーション。x86_64 は 68 サンプルでバイト一致)。素の char の符号性のターゲット化 = Step 73 完了(文字型を 4 実体に分離。x86_64 は 12 サンプルでバイト一致)。**次: 既存実行テスト全件の aarch64 展開**(A3 の締め)、その後 A4(ABI 完全化)。並行して float binary32 丸めバグを解消(Step 69、§3 の債務消し込み)。残項目(随時): 引数分類の per-target 化(A4)・aarch64 での定義済みターゲットマクロの整理・musl/distroless コンテナ検証・sqlite3/pg コーパス。
 
 ---
 
@@ -89,7 +89,9 @@
 | 128 ビット整数の演算残り | 乗算・加減算・比較・変換のみ実装(Step 28)。除算・シフト・ビット演算・値渡し/返し・可変長渡しは診断エラー | 実害が出た時点 |
 | enum の unsigned 底型 | 全 enum を int へ写像(gcc は全非負 enum を unsigned int に)。c-testsuite 00170 のポインタ符号不一致で顕在 | 実害が出た時点 |
 | compound literal / VLA / _Generic / ワイド文字列 / #pragma push_macro / K&R `int ()` 型 | 各々診断エラー(c-testsuite スキップ表に理由記録) | 実害が出た時点 |
-| 素の `char` の符号性がターゲット依存 | rubycc は全ターゲットで素の `char` を**符号あり**として扱うが、aarch64 Linux psABI では**符号なし**(x86_64 psABI は符号あり)。Step 71 の実行差分テストが検出(`(char)0xF0` が gcc 240 対 rubycc −16)。バックエンドではなく型システム側のターゲット依存プロパティで、テスト側は `signed char`/`unsigned char` を明示して回避中 | A3(型のターゲット記述化と併せて) |
+| ~~素の `char` の符号性がターゲット依存~~ | **解消(Step 73)**: 文字型を 4 実体に分離し(素の char の符号あり/なし + ターゲット非依存の signed/unsigned char)、`Compiler::TARGETS` の `char_signed` からプリプロセッサ・パーサ・IR ジェネレータの 3 段へ配る。同梱 limits.h も `__CHAR_UNSIGNED__` で分岐 | ~~A3~~ **完了** |
+| `char *` と `signed char *` の非互換化(受理範囲の縮小) | Step 73 の副作用。C 標準どおりだが gcc は警告どまりのため、実 gem のコードが診断エラーで落ちる可能性がある。現状は全テスト(実 C 拡張ビルド込み)が green。問題が出たら `Type.character?` で 1 バイト文字型間のポインタ互換を緩める(1 箇所で書ける) | M5 コーパスで実害が出た時点 |
+| aarch64 ターゲットでも `__x86_64__`/`__amd64__` を定義 | `PREDEFINED_TARGET_MACROS` がホスト固定のまま。Step 73 では `__CHAR_UNSIGNED__` のみターゲット化した。`__aarch64__` の定義も含めて整理が必要 | A4/A5(aarch64 で実 gem をビルドする前) |
 | ~~float リテラルの binary32 丸め~~ | **解消(Step 69)**: `pack("e")` が FLT_MAX 超を +inf へ飽和させていた。double のビット界から 23 ビットへ最近接・偶数丸めで縮約する変換に置き換え、ABI ハーネスの FLT_MAX 検査を通常の assert へ復帰 | ~~早期~~ **完了** |
 | long double = double 扱いによる max_align_t 相違 | rubycc は long double を 8 バイト double として扱う(DESIGN 3.3 の既知制限)ため max_align_t が 16/8(glibc は 32/16)。x87 80bit 対応まで ABI ハーネスの該当検査は非 assert | x87 80bit 対応時(将来) |
 | DoS フェイルセーフの上限値 | パーサ再帰深さ 500・#if 式 500・マクロ展開 100 万トークン等(Step 32)は実行環境のスタックサイズ(本環境 ~330 括弧段)前提。極端に浅いスタックの環境では再評価が必要。詳細は docs/security-dos-review.md | コーパス(R10)実測で再調整 |
@@ -397,8 +399,8 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   ADRP+ADD / ADRP+LDR、ELF リーダの型登録、差分実行テスト 23 件まで完了。
   クロス gcc/ld へのリンクと `readelf -r` での読み出しも確認済み。
   x86_64 は 68 サンプルでバイト一致(挙動変更ゼロ)。
-  **残: 素の char の符号性のターゲット化と、既存実行テスト全件の aarch64 展開**
-  (char が符号ありのままだと既存テストが aarch64 で落ちるため、この 2 つは同じステップで扱う)。
+  素の char の符号性のターゲット化は **Step 73 で完了**。
+  **残: 既存実行テスト全件の aarch64 展開**(どこまで通るかの実測)。
 
 ### A4 — ABI 完全化(struct 値渡し・varargs・浮動小数)
 - **引数分類の per-target 化(A2 からの持ち越し)**: 現在 IR ジェネレータが引数を
