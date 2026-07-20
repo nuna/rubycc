@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 完了判定を達成(Step 54、glibc 環境)**: json 2.21.1 = rubycc ビルドの C 拡張で **606 tests / 100% passed**、msgpack 1.8.3 = **455 examples / 0 failures**(手順は tools/m2_acceptance.rb で再現可能)。残項目: musl コンテナでの確認(M3 のコンテナマトリクス整備時)、L5 第三段(.gnu.hash・RELRO、適合性磨き込み)。**M3 進行中**: コーパス化 = Step 55、B1(rmake コア)= Step 56、B2(シェルレス実行器)= Step 57、B3(in-process ツール置換 + -j 並列)= Step 58 完了。**実物 mkmf Makefile → rmake → rubycc 製 .so の柱が通った**(json parser.so dlopen 確認、msgpack フル 12 TU を jobs:4 で約 30 秒完走)。B4 = Step 59、B5(conftest 完全対応)= Step 60 完了(RbConfig 4 キー差し替えの mkmf_shim。実測で have_func 偽陽性(実行ファイルリンカの未解決検査)と check_sizeof(sizeof 式のリゾルバ注入畳み込み)を修正。msgpack extconf の probe が gcc fixture と一致、json の SIMD probe は自然に偽化して JSON_DISABLE_SIMD 不要に)。**M3 完了(Step 64)**: distroless 姿勢(libc 開発ヘッダ不使用 = RUBYCC_HERMETIC_HEADERS・cc/make/sh 不使用)での `gem install json / msgpack` が成功・動作。同梱 libc ヘッダは 22 本で足りた(不足は arpa/inet 1 本のみ、実測駆動)。残項目: 真の distroless / musl コンテナ検証(環境なし、CI 整備時)・sqlite3/pg(dev ライブラリ導入後)。**M3 完了後のユーザ指示成果物 4 件も完了**(Step 65 = C11-COVERAGE.md + GCC-EXTENSIONS.md、Step 66 = ベンチマーク(benchmark/ + docs/BENCHMARKS.md、劣位ケース実測込み)、Step 67 = rubycc-doctor + data/verified_gems.json)。**M4 進行中**: A1(バックエンド抽象化リファクタ)= Step 68 完了(機種非依存リロケーション語彙 6 種・MachineDescription 注入・`Compiler::TARGETS`・`-target`。リファクタ前後で .o バイト一致 3/3 = 挙動変更ゼロを実証)。A2(aarch64 コーデジェン・コア)= Step 70 完了(sp 正オフセットのフレーム・MOVZ/MOVK・CSET・B/CBZ バックパッチ・AAPCS64 x0-x7。副産物として x86_64 の暗黙仮定 2 件 = 関数間パディングの NOP と ELF リーダのアーキ固定を是正)。Step 71 で **qemu-user + クロス gcc を導入し、aarch64 の実行オラクル検証を達成**(差分実行テスト 34 件、実バグ検出なし)。A3(メモリアクセスとリロケーション)= Step 72 完了(ADRP+ADD / ADRP+LDR のペア・リロケーション。x86_64 は 68 サンプルでバイト一致)。素の char の符号性のターゲット化 = Step 73 完了(文字型を 4 実体に分離。x86_64 は 12 サンプルでバイト一致)。**A3 完了(Step 72 + 73 + 74)**: c-testsuite 220 中 191 件・examples 36 中 26 本が aarch64 で通過し、残りはすべて A4 の未対応機能に由来。この過程で x86_64 の暗黙仮定に由来する実バグ 2 件(名前なしビットフィールドの整列規則、CPU 識別マクロ)を検出・修正した。**A4 進行中**: 浮動小数・間接呼び出し = Step 75 完了(c-testsuite の A4 保留 12 件中 11 件通過。残り 1 件と examples/step21_dispatch は引数分類が原因)。**次: 引数分類の per-target 化(最優先。整数 7 引数以上が全て止まる最大のボトルネック)**、その後 struct 値渡し・varargs。並行して float binary32 丸めバグを解消(Step 69、§3 の債務消し込み)。残項目(随時): musl/distroless コンテナ検証・sqlite3/pg コーパス。
+現在地: **M2 完了判定を達成(Step 54、glibc 環境)**: json 2.21.1 = rubycc ビルドの C 拡張で **606 tests / 100% passed**、msgpack 1.8.3 = **455 examples / 0 failures**(手順は tools/m2_acceptance.rb で再現可能)。残項目: musl コンテナでの確認(M3 のコンテナマトリクス整備時)、L5 第三段(.gnu.hash・RELRO、適合性磨き込み)。**M3 進行中**: コーパス化 = Step 55、B1(rmake コア)= Step 56、B2(シェルレス実行器)= Step 57、B3(in-process ツール置換 + -j 並列)= Step 58 完了。**実物 mkmf Makefile → rmake → rubycc 製 .so の柱が通った**(json parser.so dlopen 確認、msgpack フル 12 TU を jobs:4 で約 30 秒完走)。B4 = Step 59、B5(conftest 完全対応)= Step 60 完了(RbConfig 4 キー差し替えの mkmf_shim。実測で have_func 偽陽性(実行ファイルリンカの未解決検査)と check_sizeof(sizeof 式のリゾルバ注入畳み込み)を修正。msgpack extconf の probe が gcc fixture と一致、json の SIMD probe は自然に偽化して JSON_DISABLE_SIMD 不要に)。**M3 完了(Step 64)**: distroless 姿勢(libc 開発ヘッダ不使用 = RUBYCC_HERMETIC_HEADERS・cc/make/sh 不使用)での `gem install json / msgpack` が成功・動作。同梱 libc ヘッダは 22 本で足りた(不足は arpa/inet 1 本のみ、実測駆動)。残項目: 真の distroless / musl コンテナ検証(環境なし、CI 整備時)・sqlite3/pg(dev ライブラリ導入後)。**M3 完了後のユーザ指示成果物 4 件も完了**(Step 65 = C11-COVERAGE.md + GCC-EXTENSIONS.md、Step 66 = ベンチマーク(benchmark/ + docs/BENCHMARKS.md、劣位ケース実測込み)、Step 67 = rubycc-doctor + data/verified_gems.json)。**M4 進行中**: A1(バックエンド抽象化リファクタ)= Step 68 完了(機種非依存リロケーション語彙 6 種・MachineDescription 注入・`Compiler::TARGETS`・`-target`。リファクタ前後で .o バイト一致 3/3 = 挙動変更ゼロを実証)。A2(aarch64 コーデジェン・コア)= Step 70 完了(sp 正オフセットのフレーム・MOVZ/MOVK・CSET・B/CBZ バックパッチ・AAPCS64 x0-x7。副産物として x86_64 の暗黙仮定 2 件 = 関数間パディングの NOP と ELF リーダのアーキ固定を是正)。Step 71 で **qemu-user + クロス gcc を導入し、aarch64 の実行オラクル検証を達成**(差分実行テスト 34 件、実バグ検出なし)。A3(メモリアクセスとリロケーション)= Step 72 完了(ADRP+ADD / ADRP+LDR のペア・リロケーション。x86_64 は 68 サンプルでバイト一致)。素の char の符号性のターゲット化 = Step 73 完了(文字型を 4 実体に分離。x86_64 は 12 サンプルでバイト一致)。**A3 完了(Step 72 + 73 + 74)**: c-testsuite 220 中 191 件・examples 36 中 26 本が aarch64 で通過し、残りはすべて A4 の未対応機能に由来。この過程で x86_64 の暗黙仮定に由来する実バグ 2 件(名前なしビットフィールドの整列規則、CPU 識別マクロ)を検出・修正した。**A4 進行中**: 浮動小数・間接呼び出し = Step 75、スカラ引数分類の per-target 化 = Step 76 完了(**c-testsuite の aarch64 保留が空に。220 件中 203 件通過**、examples は 36 中 28 本)。**次: struct 分類のターゲット化(HFA・x8 間接返し・:memcpy。`struct {float,float}` の silent miscompile が最優先)**、その後 varargs 定義。並行して float binary32 丸めバグを解消(Step 69、§3 の債務消し込み)。残項目(随時): musl/distroless コンテナ検証・sqlite3/pg コーパス。
 
 ---
 
@@ -92,6 +92,7 @@
 | ~~素の `char` の符号性がターゲット依存~~ | **解消(Step 73)**: 文字型を 4 実体に分離し(素の char の符号あり/なし + ターゲット非依存の signed/unsigned char)、`Compiler::TARGETS` の `char_signed` からプリプロセッサ・パーサ・IR ジェネレータの 3 段へ配る。同梱 limits.h も `__CHAR_UNSIGNED__` で分岐 | ~~A3~~ **完了** |
 | `char *` と `signed char *` の非互換化(受理範囲の縮小) | Step 73 の副作用。C 標準どおりだが gcc は警告どまりのため、実 gem のコードが診断エラーで落ちる可能性がある。現状は全テスト(実 C 拡張ビルド込み)が green。問題が出たら `Type.character?` で 1 バイト文字型間のポインタ互換を緩める(1 箇所で書ける) | M5 コーパスで実害が出た時点 |
 | ~~aarch64 ターゲットでも `__x86_64__`/`__amd64__` を定義~~ | **解消(Step 74)**: CPU 識別マクロを共通部(`PREDEFINED_PLATFORM_MACROS`)と per-target(`X86_64_ARCH_MACROS`/`AARCH64_ARCH_MACROS`)に分割し `TARGETS` から供給。target を無視していた `-E` 経路も是正 | ~~A4/A5~~ **完了** |
+| **`struct { float a, b; }` の値渡しが aarch64 で silent miscompile** | System V は 2 つの float を 1 eightbyte にまとめて d0 へ渡すが、AAPCS64 は HFA として s0/s1 へ渡す。ジェネレータの struct 分類が System V 固定のため一致しない。`struct {double,double}` や整数を含む struct は偶然一致する。`:memcpy` 未対応のため到達経路は「引数として直接渡す形」のみと細いが、**拒否されず黙って誤る**点が危険 | **A4 の struct 分類ターゲット化で最優先**(Step 76 で判明) |
 | 同梱 `stddef.h` の `wchar_t` が `int` 固定 | aarch64 gcc の `wchar_t` は `unsigned int`(`__WCHAR_MAX__` = `0xffffffffU`)。ワイド文字リテラルは意図的な診断で拒否しているため観測可能な誤りには至っていない | ワイド文字を扱う時点(A4 以降) |
 | ~~float リテラルの binary32 丸め~~ | **解消(Step 69)**: `pack("e")` が FLT_MAX 超を +inf へ飽和させていた。double のビット界から 23 ビットへ最近接・偶数丸めで縮約する変換に置き換え、ABI ハーネスの FLT_MAX 検査を通常の assert へ復帰 | ~~早期~~ **完了** |
 | long double = double 扱いによる max_align_t 相違 | rubycc は long double を 8 バイト double として扱う(DESIGN 3.3 の既知制限)ため max_align_t が 16/8(glibc は 32/16)。x87 80bit 対応まで ABI ハーネスの該当検査は非 assert | x87 80bit 対応時(将来) |
@@ -410,13 +411,16 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
 ### A4 — ABI 完全化(struct 値渡し・varargs・浮動小数)
 - 浮動小数と間接呼び出し = **Step 75 完了**(v0-v7、fadd/fcmp/scvtf 等、blr。
   c-testsuite の A4 保留 12 件中 11 件が通過)。
-- **引数分類の per-target 化(最優先。Step 75 で優先度が判明)**: 現在 IR ジェネレータが
-  引数を System V AMD64 の規則で :gp/:sse4/:sse8/:mem に分類してから backend へ渡しており、
-  aarch64 では GP レジスタ本数(6 対 8)も struct 分類規則も違うため正しく載らない。
-  分類をターゲット記述側へ移すか、backend に生の型情報を渡す形へ IR 契約を拡張する。
-  **これが残る最大のボトルネック**: 整数 7 個以上の呼び出し(`printf` に値を 6 個
-  並べただけの形)が全て止まる。c-testsuite 00174 と examples/step21_dispatch の
-  唯一の原因で、バックエンド側では原理的に解けない。struct 値渡しより先に着手する。
+- スカラ引数分類の per-target 化 = **Step 76 完了**(`IR::CallConvention`。整数レジスタ
+  6 対 8 の差を吸収し、aarch64 のスタック引数も実装。**c-testsuite の aarch64 保留が空に**、
+  220 件中 203 件通過)。
+- **struct 分類のターゲット化(残る A4 の本体)**: eightbyte 分類は今も System V 固定。
+  AAPCS64 は規則が違う — 16 バイト以下は連続レジスタ、**HFA(同一浮動小数型 4 個まで)は
+  v レジスタ**、超過は参照渡し + x8 間接返し。Step 76 で `:indirect`/`:indirect_result` の
+  タグ枠は用意済み(未実装のバックエンドが名指しで拒否する)。
+  **最優先は `struct { float a, b; }` の silent miscompile**(§3 参照): System V は
+  1 eightbyte で d0、AAPCS64 は HFA で s0/s1 と食い違うが拒否されず黙って誤る。
+  併せて `:memcpy`(struct コピー)の aarch64 実装も必要。
 - struct 値渡し・値返し: AAPCS64 の分類(2 レジスタまでの合成、HFA(同一浮動小数型
   4 個まで)は vレジスタ、超過はメモリ / x8 間接返し)。**SysV と規則が全く違う**ので、
   Step 25 で作った ABI ファジングハーネスを機種パラメタ化して回すことが受け入れ条件。
