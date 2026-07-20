@@ -233,6 +233,102 @@ class TestAArch64Backend < Minitest::Test
     (0b1101011 << 25) | (0b0010 << 21) | (0b11111 << 16) | (LR << 5)
   end
 
+  # "Unconditional branch (register)" again, this time BLR (opc = 0001), which
+  # branches to Rn and leaves the return address in X30 — the register-operand
+  # counterpart of BL.
+  def blr(rn)
+    (0b1101011 << 25) | (0b0001 << 21) | (0b11111 << 16) | (rn << 5)
+  end
+
+  # ------------------------------------------------------------------------
+  # Floating-point expected-encoding builders.
+  #
+  # `ptype` is the two-bit type field every floating instruction carries: 00
+  # selects the single-precision (S register) form, 01 the double-precision (D)
+  # one. It is derived here from the IR operand size so the tests read in the
+  # same terms the backend does.
+  # ------------------------------------------------------------------------
+
+  def ptype(size) = size == 8 ? 0b01 : 0b00
+
+  # "Floating-point data-processing (2 source)":
+  #   M(31)=0 S(30)=0 0(29) 11110(28:24) ptype(23:22) 1(21) Rm(20:16)
+  #   opcode(15:12) 10(11:10) Rn(9:5) Rd(4:0)
+  # opcode = 0000 FMUL, 0001 FDIV, 0010 FADD, 0011 FSUB.
+  def fp_dp2(opcode, size, rd, rn, rm)
+    (0b11110 << 24) | (ptype(size) << 22) | (1 << 21) | (rm << 16) |
+      (opcode << 12) | (0b10 << 10) | (rn << 5) | rd
+  end
+
+  def fmul(size, rd, rn, rm) = fp_dp2(0b0000, size, rd, rn, rm)
+  def fdiv(size, rd, rn, rm) = fp_dp2(0b0001, size, rd, rn, rm)
+  def fadd(size, rd, rn, rm) = fp_dp2(0b0010, size, rd, rn, rm)
+  def fsub(size, rd, rn, rm) = fp_dp2(0b0011, size, rd, rn, rm)
+
+  # "Floating-point compare":
+  #   M(31)=0 S(30)=0 0(29) 11110(28:24) ptype(23:22) 1(21) Rm(20:16)
+  #   op(15:14)=00 1000(13:10) Rn(9:5) opcode2(4:0)
+  # opcode2 = 00000 is FCMP against Rm; the result goes to NZCV, so the
+  # instruction names no destination register.
+  def fcmp(size, rn, rm)
+    (0b11110 << 24) | (ptype(size) << 22) | (1 << 21) | (rm << 16) |
+      (0b1000 << 10) | (rn << 5)
+  end
+
+  # "Floating-point data-processing (1 source)", the FCVT (precision change)
+  # form:
+  #   M(31)=0 S(30)=0 0(29) 11110(28:24) ptype(23:22) 1(21) opcode(20:15)
+  #   10000(14:10) Rn(9:5) Rd(4:0)
+  # opcode = 0001xx, where the low two bits are the *destination* type while
+  # ptype names the source: 000101 converts to double, 000100 to single.
+  def fcvt(from_size, rd, rn)
+    opcode = from_size == 8 ? 0b000100 : 0b000101
+    (0b11110 << 24) | (ptype(from_size) << 22) | (1 << 21) | (opcode << 15) |
+      (0b10000 << 10) | (rn << 5) | rd
+  end
+
+  # "Conversion between floating-point and integer":
+  #   sf(31) 0(30) S(29)=0 11110(28:24) ptype(23:22) 1(21) rmode(20:19)
+  #   opcode(18:16) 000000(15:10) Rn(9:5) Rd(4:0)
+  # rmode 00 with opcode 010/011 is SCVTF/UCVTF (integer -> floating, rounding
+  # to nearest); rmode 11 with opcode 000/001 is FCVTZS/FCVTZU (floating ->
+  # integer, rounding toward zero, which is the C cast's rule). sf selects the
+  # X (1) or W (0) view of the integer side.
+  def fp_int_cvt(sf, size, rmode, opcode, rd, rn)
+    (sf << 31) | (0b11110 << 24) | (ptype(size) << 22) | (1 << 21) |
+      (rmode << 19) | (opcode << 16) | (rn << 5) | rd
+  end
+
+  def scvtf(sf, size, rd, rn)  = fp_int_cvt(sf, size, 0b00, 0b010, rd, rn)
+  def ucvtf(sf, size, rd, rn)  = fp_int_cvt(sf, size, 0b00, 0b011, rd, rn)
+  def fcvtzs(sf, size, rd, rn) = fp_int_cvt(sf, size, 0b11, 0b000, rd, rn)
+  def fcvtzu(sf, size, rd, rn) = fp_int_cvt(sf, size, 0b11, 0b001, rd, rn)
+
+  # "Load/store register (unsigned immediate)" with V(26) = 1, which selects the
+  # vector register file. The size field follows the access width — 10 for a
+  # 32-bit S register, 11 for a 64-bit D — and scales imm12 by it, so a floating
+  # slot access reaches only as far as its own width allows.
+  def fp_ldst_uimm(size_field, opc, rt, rn, byte_offset)
+    scaled = byte_offset / (1 << size_field)
+    (size_field << 30) | (0b111 << 27) | (1 << 26) | (0b01 << 24) | (opc << 22) |
+      (scaled << 10) | (rn << 5) | rt
+  end
+
+  def ldr_s(rt, rn, off = 0) = fp_ldst_uimm(0b10, 0b01, rt, rn, off)
+  def str_s(rt, rn, off = 0) = fp_ldst_uimm(0b10, 0b00, rt, rn, off)
+  def ldr_d(rt, rn, off = 0) = fp_ldst_uimm(0b11, 0b01, rt, rn, off)
+  def str_d(rt, rn, off = 0) = fp_ldst_uimm(0b11, 0b00, rt, rn, off)
+
+  # A floating vreg slot access, at the value's own width (see the backend's
+  # #load_fp for why a float is not moved 64 bits at a time).
+  def ldr_fp_slot(rt, vreg, size)
+    size == 8 ? ldr_d(rt, SP, slot(vreg)) : ldr_s(rt, SP, slot(vreg))
+  end
+
+  def str_fp_slot(rt, vreg, size)
+    size == 8 ? str_d(rt, SP, slot(vreg)) : str_s(rt, SP, slot(vreg))
+  end
+
   # Condition codes (ARM ARM, "Condition codes"): the 4-bit field a CSINC or a
   # conditional branch tests. Only the ones the backend maps IR comparisons to
   # are listed.
@@ -246,6 +342,12 @@ class TestAArch64Backend < Minitest::Test
   COND_LT = 0b1011
   COND_GT = 0b1100
   COND_LE = 0b1101
+  COND_MI = 0b0100
+
+  # The vector scratch pair the backend evaluates one floating instruction in,
+  # clear of the v0..v7 argument registers and of the callee-saved v8..v15.
+  FA = 16
+  FB = 17
 
   # ------------------------------------------------------------------------
   # IR construction and compilation helpers.
@@ -612,6 +714,161 @@ class TestAArch64Backend < Minitest::Test
     assert_words (0..7).map { |i| ldr_slot(i, i) } + [bl_imm(0)], body(fn)
   end
 
+  # An indirect call places its arguments first and loads the callee's address
+  # afterwards, into the A scratch — which is not an argument register, so the
+  # target can never be one of the values just placed — then branches with BLR.
+  def test_indirect_call_branches_through_a_scratch_register
+    args = [[1, :gp], [2, :gp]]
+    fn = func([inst(:call_indirect, dst: 3, a: 0, b: args)], vregs: 4)
+    assert_words [ldr_slot(0, 1), ldr_slot(1, 2), ldr_slot(A, 0), blr(A), str_slot(0, 3)],
+                 body(fn)
+  end
+
+  # BLR needs no relocation: unlike BL, its target is an ordinary run-time value
+  # rather than a symbol the linker resolves.
+  def test_indirect_call_records_no_relocation
+    fn = func([inst(:call_indirect, dst: nil, a: 0, b: [])], vregs: 1)
+    assert_empty compile(fn).relocations
+  end
+
+  # --- floating point ------------------------------------------------------
+
+  # Each floating binary op loads its operands into the vector scratch pair at
+  # the IR's operand width, combines them with the two-source form of that
+  # width, and stores the result back — the floating mirror of the integer path.
+  def test_floating_arithmetic_selects_the_single_and_double_forms
+    { fadd: method(:fadd), fsub: method(:fsub),
+      fmul: method(:fmul), fdiv: method(:fdiv) }.each do |op, expected|
+      [4, 8].each do |size|
+        assert_words [ldr_fp_slot(FA, 1, size), ldr_fp_slot(FB, 2, size),
+                      expected.call(size, FA, FA, FB), str_fp_slot(FA, 0, size)],
+                     body_of(op, dst: 0, a: 1, b: 2, size: size),
+                     "#{op} size #{size}"
+      end
+    end
+  end
+
+  # A floating comparison is FCMP followed by a CSET, exactly as an integer one
+  # is CMP followed by a CSET; the result is an int 0/1 in a general slot, so
+  # the store is the ordinary 64-bit one.
+  def test_floating_comparison_is_fcmp_then_cset
+    assert_words [ldr_fp_slot(FA, 1, 8), ldr_fp_slot(FB, 2, 8),
+                  fcmp(8, FA, FB), cset(0, A, COND_EQ), str_slot(A, 0)],
+                 body_of(:feq, dst: 0, a: 1, b: 2, size: 8)
+  end
+
+  # The condition each floating comparison selects. FCMP reports an unordered
+  # (NaN) compare as N=0 Z=0 C=1 V=1, and every condition below reads false
+  # there, which is what C requires of <, <=, > and >= against a NaN — and of
+  # "==", while "!=" must read true, which NE does since FCMP leaves Z clear.
+  def test_every_floating_comparison_selects_its_condition_code
+    {
+      feq: COND_EQ, fne: COND_NE,
+      flt: COND_MI, fle: COND_LS, fgt: COND_GT, fge: COND_GE
+    }.each do |op, condition|
+      words = body_of(op, dst: 0, a: 1, b: 2, size: 4)
+      assert_equal cset(0, A, condition), words[3], op.to_s
+    end
+  end
+
+  # :itof reads the integer side through the X view for a width-8 source and the
+  # W view otherwise (where the value already sits sign- or zero-extended), and
+  # picks SCVTF or UCVTF from the descriptor's signedness — the machine offering
+  # both, so an unsigned source needs no widening trick.
+  def test_integer_to_floating_selects_the_view_and_the_signedness
+    {
+      [4, true] => [0, method(:scvtf)],
+      [8, true] => [1, method(:scvtf)],
+      [1, false] => [0, method(:ucvtf)],
+      [8, false] => [1, method(:ucvtf)]
+    }.each do |desc, (sf, expected)|
+      [4, 8].each do |float_size|
+        assert_words [ldr_slot(A, 1), expected.call(sf, float_size, FA, A),
+                      str_fp_slot(FA, 0, float_size)],
+                     body_of(:itof, dst: 0, a: 1, b: desc, size: float_size),
+                     "#{desc.inspect} -> float #{float_size}"
+      end
+    end
+  end
+
+  # :ftoi truncates toward zero (rmode 11), the C cast's rule, into the X view
+  # for a width-8 destination and the W view otherwise. `size` names the source
+  # float width, which selects the type field.
+  def test_floating_to_integer_truncates_toward_zero
+    {
+      [4, true] => [0, method(:fcvtzs)],
+      [8, true] => [1, method(:fcvtzs)],
+      [8, false] => [1, method(:fcvtzu)]
+    }.each do |desc, (sf, expected)|
+      [4, 8].each do |float_size|
+        assert_words [ldr_fp_slot(FA, 1, float_size), expected.call(sf, float_size, A, FA),
+                      str_slot(A, 0)],
+                     body_of(:ftoi, dst: 0, a: 1, b: desc, size: float_size),
+                     "float #{float_size} -> #{desc.inspect}"
+      end
+    end
+  end
+
+  # :ftof is a single FCVT whose type field names the source and whose opc field
+  # names the destination; the result is stored at the opposite width to the one
+  # it was loaded at.
+  def test_floating_width_change_is_one_fcvt
+    assert_words [ldr_fp_slot(FA, 1, 4), fcvt(4, FA, FA), str_fp_slot(FA, 0, 8)],
+                 body_of(:ftof, dst: 0, a: 1, size: 4)
+    assert_words [ldr_fp_slot(FA, 1, 8), fcvt(8, FA, FA), str_fp_slot(FA, 0, 4)],
+                 body_of(:ftof, dst: 0, a: 1, size: 8)
+  end
+
+  # A floating value moves between its slot and a vector register at its own
+  # width, not always 64 bits: a float slot holds four meaningful bytes, so
+  # reading it as a D register would feed the arithmetic a different number.
+  def test_float_slots_are_moved_four_bytes_at_a_time
+    words = body_of(:fadd, dst: 0, a: 1, b: 2, size: 4)
+    assert_equal ldr_s(FA, SP, slot(1)), words[0]
+    assert_equal str_s(FA, SP, slot(0)), words.last
+  end
+
+  # Floating parameters arrive in v0.., integer ones in x0.., each sequence
+  # advancing its own counter — so a mixed list writes each register once and
+  # the two files never collide.
+  def test_floating_and_integer_parameters_use_independent_sequences
+    kinds = [:gp, :sse8, :gp, :sse4]
+    fn = func([inst(:ret)], vregs: 4, params: 4, param_kinds: kinds)
+    assert_words [str_slot(0, 0), str_fp_slot(0, 1, 8), str_slot(1, 2), str_fp_slot(1, 3, 4)],
+                 body(fn).first(4)
+  end
+
+  # The same independence at a call site, and the result of a floating call
+  # comes back from v0 rather than x0.
+  def test_floating_and_integer_call_arguments_use_independent_sequences
+    args = [[0, :gp], [1, :sse8], [2, :gp], [3, :sse4]]
+    fn = func([inst(:call, dst: 4, a: "g", b: args, size: [nil, :sse8])], vregs: 5)
+    assert_words [ldr_slot(0, 0), ldr_fp_slot(0, 1, 8), ldr_slot(1, 2), ldr_fp_slot(1, 3, 4),
+                  bl_imm(0), str_fp_slot(0, 4, 8)],
+                 body(fn)
+  end
+
+  # Eight floating arguments fill v0..v7 while the integer sequence stays
+  # untouched, and a ninth is refused rather than misplaced.
+  def test_eight_floating_arguments_fill_the_vector_registers
+    args = (0..7).map { |i| [i, :sse8] }
+    fn = func([inst(:call, dst: nil, a: "g", b: args)], vregs: 9)
+    assert_words (0..7).map { |i| ldr_fp_slot(i, i, 8) } + [bl_imm(0)], body(fn)
+
+    ninth = func([inst(:call, dst: nil, a: "g", b: args + [[8, :sse8]])], vregs: 9)
+    assert_match(/more than eight floating call arguments/,
+                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(ninth) }.message)
+  end
+
+  # A floating return loads v0 at the value's width and then runs the ordinary
+  # epilogue; an integer return still loads x0.
+  def test_floating_return_loads_v0
+    assert_words [ldr_fp_slot(0, 0, 8), ldp_x(FP, LR, SP, 0), add_imm(SP, SP, 32), ret_x30],
+                 body(func([inst(:ret, a: 0, size: 8)], vregs: 1))
+    assert_words [ldr_fp_slot(0, 0, 4), ldp_x(FP, LR, SP, 0), add_imm(SP, SP, 32), ret_x30],
+                 body(func([inst(:ret, a: 0, size: 4)], vregs: 1))
+  end
+
   # --- symbol addresses ----------------------------------------------------
 
   # A global's address is formed by an adrp/add pair with both immediates left
@@ -707,14 +964,11 @@ class TestAArch64Backend < Minitest::Test
   # something plausible-looking.
   def test_later_milestone_ops_are_refused
     {
-      inst(:call_indirect, dst: 0, a: 1, b: []) => /indirect calls/,
       inst(:memcpy, a: 0, b: 1, size: 16) => /struct copies/,
       inst(:va_start, a: 0, b: 0) => /variadic functions/,
       inst(:alloca, dst: 0, a: 1) => /alloca/,
       inst(:mulhi, dst: 0, a: 0, b: 1, size: 8) => /128-bit multiply/,
-      inst(:bit_scan, dst: 0, a: 1, b: :forward, size: 4) => /bit-scan builtins/,
-      inst(:fadd, dst: 0, a: 1, b: 2, size: 8) => /floating-point arithmetic/,
-      inst(:itof, dst: 0, a: 1, b: [4, true], size: 8) => /floating-point arithmetic/
+      inst(:bit_scan, dst: 0, a: 1, b: :forward, size: 4) => /bit-scan builtins/
     }.each do |instruction, pattern|
       error = assert_raises(Rubycc::Backend::UnsupportedError, instruction.op.to_s) do
         compile(func([instruction], vregs: 4))
@@ -723,54 +977,43 @@ class TestAArch64Backend < Minitest::Test
     end
   end
 
-  # An argument or parameter the IR has classified onto the stack, or into a
-  # vector register, is refused: its placement is not something this core can
-  # infer, so guessing would miscompile silently.
-  def test_stack_and_floating_argument_placement_is_refused
+  # An argument or parameter the IR has classified onto the stack is refused:
+  # a :mem tag comes out of the System V rules, where it may mean a seventh
+  # integer argument (which AAPCS64 would pass in x6) or an eightbyte of a
+  # MEMORY struct, and the two need different placement, so guessing would
+  # miscompile silently.
+  def test_stack_argument_placement_is_refused
     mem_call = func([inst(:call, dst: nil, a: "g", b: [[0, :mem]])], vregs: 1)
     assert_match(/stack-passed call arguments/,
                  assert_raises(Rubycc::Backend::UnsupportedError) { compile(mem_call) }.message)
 
-    sse_call = func([inst(:call, dst: nil, a: "g", b: [[0, :sse8]])], vregs: 1)
-    assert_match(/floating-point call arguments/,
-                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(sse_call) }.message)
-
     mem_param = func([inst(:ret)], vregs: 1, params: 1, param_kinds: [:mem])
     assert_match(/stack-passed parameters/,
                  assert_raises(Rubycc::Backend::UnsupportedError) { compile(mem_param) }.message)
-
-    sse_param = func([inst(:ret)], vregs: 1, params: 1, param_kinds: [:sse4])
-    assert_match(/floating-point parameters/,
-                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(sse_param) }.message)
   end
 
-  # A floating or aggregate result — of a call or of the function itself — is
-  # refused for the same reason: it arrives somewhere this core does not read.
-  def test_floating_and_aggregate_results_are_refused
-    float_ret = func([inst(:ret, a: 0, size: 8)], vregs: 1)
-    assert_match(/floating-point return values/,
-                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(float_ret) }.message)
-
+  # An aggregate result — of a call or of the function itself — is still
+  # refused: it arrives somewhere this core does not read.
+  def test_aggregate_results_are_refused
     struct_ret = func([inst(:ret, a: 0, size: [:gp, :gp])], vregs: 1)
     assert_match(/aggregate \(struct\) return values/,
                  assert_raises(Rubycc::Backend::UnsupportedError) { compile(struct_ret) }.message)
 
-    float_call = func([inst(:call, dst: 0, a: "g", b: [], size: [nil, :sse8])], vregs: 1)
-    assert_match(/floating-point return values/,
-                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(float_call) }.message)
-
     struct_call = func([inst(:call, dst: nil, a: "g", b: [], size: [nil, [1, [:gp]]])], vregs: 2)
     assert_match(/aggregate \(struct\) return values/,
                  assert_raises(Rubycc::Backend::UnsupportedError) { compile(struct_call) }.message)
+
+    struct_indirect = func([inst(:call_indirect, dst: nil, a: 0, b: [], size: [nil, [1, [:gp]]])],
+                           vregs: 2)
+    assert_match(/aggregate \(struct\) return values/,
+                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(struct_indirect) }.message)
   end
 
   # The same refusals seen from the front of the compiler: valid C that uses an
   # A4 feature stops with a clear error instead of producing an object.
   def test_unsupported_c_constructs_are_refused_end_to_end
     {
-      "double f(double a){ return a * 2; }" => /floating-point/,
       "struct S { int a[8]; }; void f(struct S *a, struct S *b){ *a = *b; }" => /struct copies/,
-      "int f(int (*p)(int)){ return p(1); }" => /indirect calls/,
       "int g(int,int,int,int,int,int,int); int f(void){ return g(1,2,3,4,5,6,7); }" =>
         /stack-passed call arguments/,
       "void *f(int n){ return __builtin_alloca(n); }" => /alloca/

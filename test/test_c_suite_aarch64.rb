@@ -51,18 +51,14 @@ class TestCSuiteAArch64 < Minitest::Test
   # construct that stops it: the backend raises Backend::UnsupportedError rather
   # than emitting wrong code, which is why these are named here one by one.
   AARCH64_PENDING = {
-    "00087" => "A4: indirect calls (call through a function pointer)",
-    "00089" => "A4: indirect calls (call through a function pointer)",
-    "00113" => "A4: floating-point arithmetic",
-    "00119" => "A4: floating-point arithmetic",
-    "00123" => "A4: floating-point arithmetic",
-    "00124" => "A4: indirect calls (call through a function pointer)",
-    "00159" => "A4: indirect calls (call through a function pointer)",
-    "00174" => "A4: floating-point arithmetic",
-    "00175" => "A4: floating-point parameters",
-    "00189" => "A4: indirect calls (call through a function pointer)",
-    "00195" => "A4: floating-point call arguments",
-    "00210" => "A4: indirect calls (call through a function pointer)"
+    # A seventh integer argument. The IR classifies arguments by the System V
+    # AMD64 rules, whose six integer registers this call overruns, so the
+    # argument arrives tagged :mem — while AAPCS64 would pass it in x6, its
+    # seventh integer register. The backend refuses the tag rather than place a
+    # stack argument the callee will look for in a register; making it work
+    # needs a per-target argument classification in the generator, not a change
+    # here.
+    "00174" => "A4: stack-passed call arguments (needs per-target argument classification)"
   }.freeze
 
   # The cases the host suite already skips are skipped here for the same

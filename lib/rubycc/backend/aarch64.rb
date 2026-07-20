@@ -40,24 +40,38 @@ module Rubycc
     # wrap-around for `int` exactly as x86's eax does.
     #
     # AAPCS64 calling convention: the first eight integer/pointer arguments
-    # arrive in x0..x7 and the result comes back in x0. The IR, however, still
-    # classifies every argument by the System V AMD64 rules (the generator fixes
-    # each one as :gp/:sse4/:sse8/:mem before a backend sees it), and that ABI
-    # has only six integer registers. So while the eight AAPCS64 registers are
-    # all wired up here, an argument the generator has already classified :mem
-    # is refused rather than guessed at: a :mem slot may be a scalar seventh
-    # integer argument or an eightbyte of a MEMORY-classified struct, and the
-    # two need different placement. Teaching the generator a per-target
-    # classification is A3 work; until then the practical limit is six.
+    # arrive in x0..x7 and the result comes back in x0; the first eight
+    # floating arguments arrive in v0..v7, allocated from a counter of their
+    # own, and a floating result comes back in v0. The two sequences are
+    # independent, exactly as System V's integer and xmm sequences are, which is
+    # why the IR's :gp/:sse4/:sse8 tags carry over unchanged.
+    #
+    # The IR, however, still classifies every argument by the System V AMD64
+    # rules (the generator fixes each one as :gp/:sse4/:sse8/:mem before a
+    # backend sees it), and that ABI has only six integer registers. So while
+    # the eight AAPCS64 registers are all wired up here, an argument the
+    # generator has already classified :mem is refused rather than guessed at: a
+    # :mem slot may be a scalar seventh integer argument — which AAPCS64 would
+    # pass in x6, not on the stack — or an eightbyte of a MEMORY-classified
+    # struct, and the two need different placement. Teaching the generator a
+    # per-target classification is later work; until then the practical limit is
+    # six integer arguments.
+    #
+    # Under AAPCS64 a variadic call on this platform places its arguments in the
+    # same registers a fixed call would, so the `fixed` half of a call's size
+    # pair needs no action here — unlike System V, where it drives the count of
+    # vector registers written to al.
     #
     # This backend covers the A2 core — control flow, integer arithmetic, local
     # variables, pointers to locals and direct calls — plus the A3 memory-access
-    # layer: the addresses of global variables, string literals and functions,
+    # layer (the addresses of global variables, string literals and functions,
     # formed with an adrp/add pair, and their -fPIC counterpart read from the
-    # GOT with an adrp/ldr pair. Features the generator can still hand it that
-    # belong to a later milestone (floating point, struct value passing,
-    # varargs, indirect calls) are refused with an explicit "not yet supported"
-    # error rather than miscompiled.
+    # GOT with an adrp/ldr pair) and the first half of A4: indirect calls
+    # through a function pointer, and floating-point arithmetic, comparison,
+    # conversion, argument passing and return. Features the generator can still
+    # hand it that belong to the rest of A4 (struct value passing, varargs,
+    # alloca, the bit-scan builtins, a 128-bit multiply) are refused with an
+    # explicit "not yet supported" error rather than miscompiled.
     class AArch64
       # Result of compiling one function, the same shape the x86_64 backend
       # returns: `bytes` the machine code, `symbols` an array of
@@ -76,6 +90,12 @@ module Rubycc
       # class comment).
       ARG_REGISTERS = [0, 1, 2, 3, 4, 5, 6, 7].freeze
 
+      # Floating argument / result registers, v0..v7, allocated from a counter
+      # independent of the integer one. They share the numbering of the integer
+      # argument registers but not the register file: v0 and x0 are different
+      # registers, so a call passing both an int and a double writes each once.
+      FP_ARG_REGISTERS = [0, 1, 2, 3, 4, 5, 6, 7].freeze
+
       # Scratch (temporary, caller-saved) registers used to evaluate one
       # instruction. A/B hold the two operands, C an extra working value (the
       # quotient a remainder needs), and ADDR composes a slot address when the
@@ -85,6 +105,14 @@ module Rubycc
       B = 10
       C = 11
       ADDR = 12
+
+      # The floating counterparts of A/B, holding the operands of one floating
+      # instruction. v16..v31 are caller-saved like x9..x15 (v8..v15 are the
+      # callee-saved vector registers, so they are avoided), and being clear of
+      # v0..v7 means evaluating a floating value never disturbs an argument
+      # already placed.
+      FA = 16
+      FB = 17
 
       # Special register numbers. In the load/store, add/sub-immediate and
       # stp/ldp encodings a register field of 31 denotes the stack pointer; in
@@ -113,6 +141,26 @@ module Rubycc
         eq: 0,  ne: 1,
         lt: 11, le: 13, gt: 12, ge: 10,
         ult: 3, ule: 9, ugt: 8, uge: 2
+      }.freeze
+
+      # IR floating comparison -> the condition code applied to the flags left by
+      # `fcmp a, b`. FCMP reports an unordered compare (either operand NaN) as
+      # N=0 Z=0 C=1 V=1, a combination no ordered result produces, and the four
+      # conditions below are chosen so every one of them reads false there — which
+      # is what C requires of <, <=, > and >= against a NaN:
+      #
+      #   :flt -> MI (N set)       only a strictly-less compare sets N
+      #   :fle -> LS (C clear or Z) less clears C, equal sets Z; unordered sets C
+      #                             and clears Z
+      #   :fgt -> GT (Z clear, N=V) unordered has N=0, V=1, so N != V
+      #   :fge -> GE (N=V)          likewise false when unordered
+      #
+      # Equality needs no combining pair the way x86's ucomis does: FCMP leaves Z
+      # clear for an unordered compare (where x86 sets ZF), so plain EQ is already
+      # false on NaN and plain NE already true.
+      FLOAT_CONDITIONS = {
+        feq: 0, fne: 1,
+        flt: 4, fle: 9, fgt: 12, fge: 10
       }.freeze
 
       def compile(ir_func)
@@ -178,11 +226,13 @@ module Rubycc
       end
 
       # Brings each incoming argument into its parameter slot so it reads back
-      # like any other vreg. Only integer/pointer parameters in x0..x7 are
-      # supported here; a :mem (stack-passed) or floating parameter belongs to a
-      # later milestone and raises rather than miscompiling.
+      # like any other vreg. Integer/pointer parameters come out of x0..x7 and
+      # floating ones out of v0..v7, each sequence advancing its own counter; a
+      # :mem (stack-passed) parameter belongs to a later milestone and raises
+      # rather than miscompiling.
       def spill_parameters(param_kinds)
         next_gp = 0
+        next_fp = 0
         param_kinds.each_with_index do |kind, i|
           case kind
           when :gp
@@ -192,7 +242,9 @@ module Rubycc
           when :mem
             unsupported("stack-passed parameters")
           when :sse4, :sse8
-            unsupported("floating-point parameters")
+            unsupported("more than eight floating parameters") if next_fp >= FP_ARG_REGISTERS.size
+            store_fp(FP_ARG_REGISTERS[next_fp], i, kind == :sse8 ? 8 : 4)
+            next_fp += 1
           else
             raise "unknown parameter kind #{kind.inspect}"
           end
@@ -231,17 +283,23 @@ module Rubycc
         when :uload then emit_load(inst.dst, inst.a, inst.size, signed: false)
         when :store then emit_store(inst.a, inst.b, inst.size)
         when :ret then emit_ret(inst.a, inst.size)
-        # The remaining ops belong to later milestones (A3/A4). They are refused
+        when :fadd then emit_float_binary(inst, FADD)
+        when :fsub then emit_float_binary(inst, FSUB)
+        when :fmul then emit_float_binary(inst, FMUL)
+        when :fdiv then emit_float_binary(inst, FDIV)
+        when :feq, :fne, :flt, :fle, :fgt, :fge
+          emit_float_comparison(inst.dst, inst.a, inst.b, FLOAT_CONDITIONS.fetch(inst.op), inst.size)
+        when :itof then emit_itof(inst.dst, inst.a, inst.b, inst.size)
+        when :ftoi then emit_ftoi(inst.dst, inst.a, inst.b, inst.size)
+        when :ftof then emit_ftof(inst.dst, inst.a, inst.size)
+        when :call_indirect then emit_call_indirect(inst.dst, inst.a, inst.b, inst.size)
+        # The remaining ops belong to the rest of A4. They are refused
         # explicitly so a program using them fails loudly instead of silently.
         when :mulhi then unsupported("128-bit multiply")
-        when :fadd, :fsub, :fmul, :fdiv, :feq, :fne, :flt, :fle, :fgt, :fge,
-             :itof, :ftoi, :ftof
-          unsupported("floating-point arithmetic")
         when :string_addr then emit_symbol_address(inst.dst, kind: :string, string_id: inst.a)
         when :global_addr then emit_symbol_address(inst.dst, kind: :global, symbol: inst.a)
         when :func_addr then emit_symbol_address(inst.dst, kind: :func, symbol: inst.a)
         when :got_addr then emit_got_address(inst.dst, inst.a)
-        when :call_indirect then unsupported("indirect calls")
         when :memcpy then unsupported("struct copies")
         when :va_start then unsupported("variadic functions")
         when :alloca then unsupported("alloca")
@@ -407,26 +465,57 @@ module Rubycc
         emit_word(0x34000000 | A) # cbz w{A}, <patched>
       end
 
-      # :call — a direct call. Arguments are placed in x0..x7, then `bl` (its
-      # 26-bit immediate left zero and recorded as an R_AARCH64_CALL26
-      # relocation the linker resolves), and the x0 result is stored back. A
-      # struct or floating result is a later milestone and is refused.
+      # :call — a direct call. Arguments are placed in x0..x7 / v0..v7, then `bl`
+      # (its 26-bit immediate left zero and recorded as an R_AARCH64_CALL26
+      # relocation the linker resolves), and the result is stored back from x0 or
+      # v0. A struct result is a later milestone and is refused.
       def emit_call(dst, name, args, size)
         _fixed, ret = size || [nil, nil]
         unsupported("aggregate (struct) return values") if ret.is_a?(Array)
-        unsupported("floating-point return values") if ret == :sse4 || ret == :sse8
         place_arguments(args)
         @relocations << { kind: :call, offset: @code.bytesize, symbol: name }
         emit_word(0x94000000) # bl <patched by R_AARCH64_CALL26>
-        store_reg(ARG_REGISTERS[0], dst) if dst
+        store_call_result(dst, ret)
       end
 
-      # Loads each integer argument into its AAPCS64 register. Each ldr writes
-      # only its own destination and reads sp (or the ADDR scratch), so loading a
-      # later argument never clobbers an earlier one. Stack-passed or floating
-      # arguments are refused.
+      # :call_indirect — the same sequence through a computed target. The
+      # arguments go into their registers first and the callee's address is
+      # loaded only afterwards, into the A scratch: A is not an argument register,
+      # so the branch target cannot be one of the values just placed, and loading
+      # it last means the argument loads never have to work around it. `blr`
+      # branches to the register and sets x30, exactly as `bl` does to a label —
+      # no relocation, the address being an ordinary run-time value.
+      def emit_call_indirect(dst, target_vreg, args, size)
+        _fixed, ret = size || [nil, nil]
+        unsupported("aggregate (struct) return values") if ret.is_a?(Array)
+        place_arguments(args)
+        load_reg(A, target_vreg)
+        emit_word(0xD63F0000 | (A << 5)) # blr A
+        store_call_result(dst, ret)
+      end
+
+      # Parks a call's result in its destination slot. `ret` is :sse4/:sse8 when
+      # the value comes back in v0 (stored at its own width, like any floating
+      # value), otherwise the result is the integer/pointer one in x0. A call
+      # whose value is discarded has no destination and stores nothing.
+      def store_call_result(dst, ret)
+        return unless dst
+
+        if ret == :sse4 || ret == :sse8
+          store_fp(FP_ARG_REGISTERS[0], dst, ret == :sse8 ? 8 : 4)
+        else
+          store_reg(ARG_REGISTERS[0], dst)
+        end
+      end
+
+      # Loads each argument into its AAPCS64 register: an integer/pointer one
+      # into the next of x0..x7, a floating one into the next of v0..v7. Each ldr
+      # writes only its own destination and reads sp (or the ADDR scratch), so
+      # loading a later argument never clobbers an earlier one, and the two
+      # register files never collide. Stack-passed arguments are refused.
       def place_arguments(args)
         next_gp = 0
+        next_fp = 0
         args.each do |vreg, kind|
           case kind
           when :gp
@@ -436,20 +525,26 @@ module Rubycc
           when :mem
             unsupported("stack-passed call arguments")
           when :sse4, :sse8
-            unsupported("floating-point call arguments")
+            unsupported("more than eight floating call arguments") if next_fp >= FP_ARG_REGISTERS.size
+            load_fp(FP_ARG_REGISTERS[next_fp], vreg, kind == :sse8 ? 8 : 4)
+            next_fp += 1
           else
             raise "unknown call argument kind #{kind.inspect}"
           end
         end
       end
 
-      # :ret — loads the return value into x0 and runs the epilogue. size nil is
-      # an integer/pointer return; a floating (4/8) or struct (array) return is a
-      # later milestone. A void return (nil operand) loads nothing.
+      # :ret — loads the return value into its result register and runs the
+      # epilogue. size nil is an integer/pointer return (x0), size 4/8 a floating
+      # one (v0, loaded at that width); a struct (array) return is a later
+      # milestone. A void return (nil operand) loads nothing.
       def emit_ret(value_vreg, size)
         unsupported("aggregate (struct) return values") if size.is_a?(Array)
-        unsupported("floating-point return values") if size == 4 || size == 8
-        load_reg(ARG_REGISTERS[0], value_vreg) if value_vreg
+        if size == 4 || size == 8
+          load_fp(FP_ARG_REGISTERS[0], value_vreg, size)
+        elsif value_vreg
+          load_reg(ARG_REGISTERS[0], value_vreg)
+        end
         emit_epilogue
       end
 
@@ -479,6 +574,121 @@ module Rubycc
           emit_word(0xF9000000 | (ADDR << 5) | reg) # str x, [ADDR]
         end
       end
+
+      # ldr S{reg}/D{reg}, [slot]. Unlike the integer path, a floating value is
+      # moved at its *own* width rather than always 64 bits: a `float` slot holds
+      # four meaningful bytes and its upper half is indeterminate, so reading the
+      # slot as a D register would feed the arithmetic a different number
+      # entirely. That is the same rule the x86_64 backend follows with
+      # movss/movsd, and it stays consistent with the slot discipline, which only
+      # ever promises the low `size` bytes of a value narrower than eight.
+      #
+      # The value travels between slot and vector register directly, never
+      # through a general-purpose register: an `fmov` round trip would cost two
+      # extra instructions per operand and buy nothing, since ldr/str address a
+      # V register with the same sp-relative form the X registers use — the sole
+      # difference being the V bit that selects the register file.
+      def load_fp(reg, vreg, size)
+        emit_fp_slot_access(reg, slot_offset(vreg), size, load: true)
+      end
+
+      # str S{reg}/D{reg}, [slot]. The counterpart of #load_fp.
+      def store_fp(reg, vreg, size)
+        emit_fp_slot_access(reg, slot_offset(vreg), size, load: false)
+      end
+
+      # The shared body of #load_fp / #store_fp. The unsigned-offset immediate is
+      # scaled by the access size, so a 4-byte access reaches half as far as an
+      # 8-byte one; either way a slot past the field is reached through an
+      # address composed into the ADDR scratch, exactly as the integer path does.
+      def emit_fp_slot_access(reg, offset, size, load:)
+        base = FP_LDST.fetch(size)[load ? :load : :store]
+        if offset <= 4095 * size
+          emit_word(base | ((offset / size) << 10) | (SP << 5) | reg)
+        else
+          emit_slot_address(ADDR, offset)
+          emit_word(base | (ADDR << 5) | reg)
+        end
+      end
+
+      # --- floating-point arithmetic ----------------------------------------
+
+      # :fadd/:fsub/:fmul/:fdiv — the operands are loaded into the FA/FB vector
+      # scratch pair at the IR's operand width and combined by the single/double
+      # form of the same three-register instruction, `size` selecting the type
+      # field. A floating negation has no op of its own: the generator flips the
+      # sign bit with an integer :xor, which the integer path already lowers.
+      def emit_float_binary(inst, base_table)
+        size = inst.size
+        load_fp(FA, inst.a, size)
+        load_fp(FB, inst.b, size)
+        emit_word(base_table.fetch(size) | (FB << 16) | (FA << 5) | FA)
+        store_fp(FA, inst.dst, size)
+      end
+
+      # :feq..:fge — materialized into the destination as an int 0/1 the same way
+      # an integer comparison is, but through `fcmp`, whose NZCV encoding of an
+      # unordered result lets a single `cset` carry the NaN rule (see
+      # FLOAT_CONDITIONS). The `cset` is the 32-bit form, so the slot gets a
+      # clean int with its upper half zeroed.
+      def emit_float_comparison(dst, a, b, condition, size)
+        load_fp(FA, a, size)
+        load_fp(FB, b, size)
+        emit_word(FCMP.fetch(size) | (FB << 16) | (FA << 5)) # fcmp FA, FB
+        emit_cset(A, condition)
+        store_reg(A, dst)
+      end
+
+      # :itof — an integer in a slot converted to a floating value. `int_desc` is
+      # the source [width, signed?]: a width-8 source reads the X view and a
+      # narrower one the W view (where it already sits sign- or zero-extended),
+      # and the descriptor's signedness picks `scvtf` or `ucvtf`. Because the
+      # machine offers both, no widening trick is needed for an `unsigned int`
+      # source the way the signed-only x86 instruction requires. (An `unsigned
+      # long` source never reaches a backend; the generator synthesizes it.)
+      def emit_itof(dst, src_vreg, int_desc, float_size)
+        int_width, signed = int_desc
+        load_reg(A, src_vreg)
+        emit_word(fp_int_convert(int_width == 8 ? 1 : 0, float_size,
+                                 0b00, signed ? 0b010 : 0b011, A, FA))
+        store_fp(FA, dst, float_size)
+      end
+
+      # :ftoi — a floating value truncated toward zero into an integer slot.
+      # `size` is the *source* float width and `int_desc` the destination
+      # [width, signed?]; rmode 11 is the round-toward-zero mode the C cast
+      # requires, and the descriptor picks `fcvtzs` or `fcvtzu`. A width-8
+      # descriptor produces an X result, which is also how the generator asks for
+      # an unsigned 32-bit destination — truncating at 64 bits is exact across
+      # the whole 0..2^32-1 range, and only the low bytes are kept afterwards.
+      def emit_ftoi(dst, src_vreg, int_desc, float_size)
+        int_width, signed = int_desc
+        load_fp(FA, src_vreg, float_size)
+        emit_word(fp_int_convert(int_width == 8 ? 1 : 0, float_size,
+                                 0b11, signed ? 0b000 : 0b001, FA, A))
+        store_reg(A, dst)
+      end
+
+      # :ftof — a float<->double width change, the one-source `fcvt`. `size` is
+      # the source width, so the result is stored at the opposite one.
+      def emit_ftof(dst, src_vreg, src_size)
+        load_fp(FA, src_vreg, src_size)
+        # fcvt: the type field names the source, the opc field the destination.
+        emit_word((src_size == 8 ? 0x1E624000 : 0x1E22C000) | (FA << 5) | FA)
+        store_fp(FA, dst, src_size == 8 ? 4 : 8)
+      end
+
+      # "Conversion between floating-point and integer": sf selects the X (1) or
+      # W (0) view of the integer side, the type field the float side, rmode the
+      # rounding mode and opcode the direction and signedness.
+      def fp_int_convert(sf, float_size, rmode, opcode, rn, rd)
+        (sf << 31) | 0x1E200000 | (fp_type(float_size) << 22) |
+          (rmode << 19) | (opcode << 16) | (rn << 5) | rd
+      end
+
+      # The two-bit type field every floating instruction carries: 00 names the
+      # single-precision (S register) form, 01 the double-precision (D) one.
+      def fp_type(size) = size == 8 ? 0b01 : 0b00
 
       # --- symbol addresses --------------------------------------------------
 
@@ -667,6 +877,25 @@ module Rubycc
       LSLV = { 32 => 0x1AC02000, 64 => 0x9AC02000 }.freeze
       LSRV = { 32 => 0x1AC02400, 64 => 0x9AC02400 }.freeze
       ASRV = { 32 => 0x1AC02800, 64 => 0x9AC02800 }.freeze
+
+      # Base opcodes for the floating instructions, keyed by the IR operand size
+      # (4 float / 8 double), which is the type field the encoding carries. The
+      # first four are "Floating-point data-processing (2 source)" and differ
+      # only in their opcode field; FCMP is the compare whose result goes to the
+      # flags rather than to a register, so it names no destination.
+      FMUL = { 4 => 0x1E200800, 8 => 0x1E600800 }.freeze
+      FDIV = { 4 => 0x1E201800, 8 => 0x1E601800 }.freeze
+      FADD = { 4 => 0x1E202800, 8 => 0x1E602800 }.freeze
+      FSUB = { 4 => 0x1E203800, 8 => 0x1E603800 }.freeze
+      FCMP = { 4 => 0x1E202000, 8 => 0x1E602000 }.freeze
+
+      # "Load/store register (unsigned immediate)" with V = 1, which selects the
+      # vector/floating register file. The size field follows the access width:
+      # 10 for a 32-bit S register, 11 for a 64-bit D register.
+      FP_LDST = {
+        4 => { load: 0xBD400000, store: 0xBD000000 },
+        8 => { load: 0xFD400000, store: 0xFD000000 }
+      }.freeze
 
       def align16(value)
         (value + 15) & ~15

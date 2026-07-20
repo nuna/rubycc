@@ -28,15 +28,14 @@ class TestExamplesAArch64 < Minitest::Test
   # Each builds and runs on x86-64 today; the reason is the backend's own
   # UnsupportedError message.
   PENDING = {
-    "step21_dispatch" => "A4: indirect calls",
+    "step21_dispatch" => "A4: stack-passed parameters",
     "step23_sum" => "A4: variadic functions",
-    "step24_floats" => "A4: floating-point parameters",
+    "step24_floats" => "A4: variadic functions",
     "step25_records" => "A4: struct copies",
     "step28_extensions" => "A4: alloca",
     "step28_wideint" => "A4: struct copies",
     "step41_freestanding" => "A4: variadic functions",
     "step44_builtins" => "A4: bit-scan builtins",
-    "step52_unsigned_float" => "A4: floating-point arithmetic",
     "step53_compound_literals" => "A4: struct copies"
   }.freeze
 
