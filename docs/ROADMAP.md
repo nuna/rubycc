@@ -13,7 +13,7 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 完了判定を達成(Step 54、glibc 環境)**: json 2.21.1 = rubycc ビルドの C 拡張で **606 tests / 100% passed**、msgpack 1.8.3 = **455 examples / 0 failures**(手順は tools/m2_acceptance.rb で再現可能)。残項目: musl コンテナでの確認(M3 のコンテナマトリクス整備時)、L5 第三段(.gnu.hash・RELRO、適合性磨き込み)。**M3 進行中**: コーパス化 = Step 55、B1(rmake コア)= Step 56、B2(シェルレス実行器)= Step 57、B3(in-process ツール置換 + -j 並列)= Step 58 完了。**実物 mkmf Makefile → rmake → rubycc 製 .so の柱が通った**(json parser.so dlopen 確認、msgpack フル 12 TU を jobs:4 で約 30 秒完走)。B4 = Step 59、B5(conftest 完全対応)= Step 60 完了(RbConfig 4 キー差し替えの mkmf_shim。実測で have_func 偽陽性(実行ファイルリンカの未解決検査)と check_sizeof(sizeof 式のリゾルバ注入畳み込み)を修正。msgpack extconf の probe が gcc fixture と一致、json の SIMD probe は自然に偽化して JSON_DISABLE_SIMD 不要に)。**M3 完了(Step 64)**: distroless 姿勢(libc 開発ヘッダ不使用 = RUBYCC_HERMETIC_HEADERS・cc/make/sh 不使用)での `gem install json / msgpack` が成功・動作。同梱 libc ヘッダは 22 本で足りた(不足は arpa/inet 1 本のみ、実測駆動)。残項目: 真の distroless / musl コンテナ検証(環境なし、CI 整備時)・sqlite3/pg(dev ライブラリ導入後)。**M3 完了後のユーザ指示成果物 4 件も完了**(Step 65 = C11-COVERAGE.md + GCC-EXTENSIONS.md、Step 66 = ベンチマーク(benchmark/ + docs/BENCHMARKS.md、劣位ケース実測込み)、Step 67 = rubycc-doctor + data/verified_gems.json)。**M4 進行中**: A1(バックエンド抽象化リファクタ)= Step 68 完了(機種非依存リロケーション語彙 6 種・MachineDescription 注入・`Compiler::TARGETS`・`-target`。リファクタ前後で .o バイト一致 3/3 = 挙動変更ゼロを実証)。A2(aarch64 コーデジェン・コア)= Step 70 完了(sp 正オフセットのフレーム・MOVZ/MOVK・CSET・B/CBZ バックパッチ・AAPCS64 x0-x7。副産物として x86_64 の暗黙仮定 2 件 = 関数間パディングの NOP と ELF リーダのアーキ固定を是正)。Step 71 で **qemu-user + クロス gcc を導入し、aarch64 の実行オラクル検証を達成**(差分実行テスト 34 件、実バグ検出なし)。A3(メモリアクセスとリロケーション)= Step 72 完了(ADRP+ADD / ADRP+LDR のペア・リロケーション。x86_64 は 68 サンプルでバイト一致)。素の char の符号性のターゲット化 = Step 73 完了(文字型を 4 実体に分離。x86_64 は 12 サンプルでバイト一致)。**A3 完了(Step 72 + 73 + 74)**: c-testsuite 220 中 191 件・examples 36 中 26 本が aarch64 で通過し、残りはすべて A4 の未対応機能に由来。この過程で x86_64 の暗黙仮定に由来する実バグ 2 件(名前なしビットフィールドの整列規則、CPU 識別マクロ)を検出・修正した。**A4 進行中**: 浮動小数・間接呼び出し = Step 75、スカラ引数分類の per-target 化 = Step 76 完了(**c-testsuite の aarch64 保留が空に。220 件中 203 件通過**、examples は 36 中 28 本)。集約分類のターゲット化 = Step 77 完了(**HFA の silent miscompile を解消**。x86_64 は 254 ファイルでバイト一致、examples の保留は 6 件に)。**次: 可変長関数の定義(AAPCS64 の 5 フィールド va_list。呼び出し側は対応済みで残るは定義側のみ)**、その後 A5(リンカ対応と M4 受け入れ)。並行して float binary32 丸めバグを解消(Step 69、§3 の債務消し込み)。残項目(随時): musl/distroless コンテナ検証・sqlite3/pg コーパス。
+現在地: **M2 完了判定を達成(Step 54、glibc 環境)**: json 2.21.1 = rubycc ビルドの C 拡張で **606 tests / 100% passed**、msgpack 1.8.3 = **455 examples / 0 failures**(手順は tools/m2_acceptance.rb で再現可能)。残項目: musl コンテナでの確認(M3 のコンテナマトリクス整備時)、L5 第三段(.gnu.hash・RELRO、適合性磨き込み)。**M3 進行中**: コーパス化 = Step 55、B1(rmake コア)= Step 56、B2(シェルレス実行器)= Step 57、B3(in-process ツール置換 + -j 並列)= Step 58 完了。**実物 mkmf Makefile → rmake → rubycc 製 .so の柱が通った**(json parser.so dlopen 確認、msgpack フル 12 TU を jobs:4 で約 30 秒完走)。B4 = Step 59、B5(conftest 完全対応)= Step 60 完了(RbConfig 4 キー差し替えの mkmf_shim。実測で have_func 偽陽性(実行ファイルリンカの未解決検査)と check_sizeof(sizeof 式のリゾルバ注入畳み込み)を修正。msgpack extconf の probe が gcc fixture と一致、json の SIMD probe は自然に偽化して JSON_DISABLE_SIMD 不要に)。**M3 完了(Step 64)**: distroless 姿勢(libc 開発ヘッダ不使用 = RUBYCC_HERMETIC_HEADERS・cc/make/sh 不使用)での `gem install json / msgpack` が成功・動作。同梱 libc ヘッダは 22 本で足りた(不足は arpa/inet 1 本のみ、実測駆動)。残項目: 真の distroless / musl コンテナ検証(環境なし、CI 整備時)・sqlite3/pg(dev ライブラリ導入後)。**M3 完了後のユーザ指示成果物 4 件も完了**(Step 65 = C11-COVERAGE.md + GCC-EXTENSIONS.md、Step 66 = ベンチマーク(benchmark/ + docs/BENCHMARKS.md、劣位ケース実測込み)、Step 67 = rubycc-doctor + data/verified_gems.json)。**M4 進行中**: A1(バックエンド抽象化リファクタ)= Step 68 完了(機種非依存リロケーション語彙 6 種・MachineDescription 注入・`Compiler::TARGETS`・`-target`。リファクタ前後で .o バイト一致 3/3 = 挙動変更ゼロを実証)。A2(aarch64 コーデジェン・コア)= Step 70 完了(sp 正オフセットのフレーム・MOVZ/MOVK・CSET・B/CBZ バックパッチ・AAPCS64 x0-x7。副産物として x86_64 の暗黙仮定 2 件 = 関数間パディングの NOP と ELF リーダのアーキ固定を是正)。Step 71 で **qemu-user + クロス gcc を導入し、aarch64 の実行オラクル検証を達成**(差分実行テスト 34 件、実バグ検出なし)。A3(メモリアクセスとリロケーション)= Step 72 完了(ADRP+ADD / ADRP+LDR のペア・リロケーション。x86_64 は 68 サンプルでバイト一致)。素の char の符号性のターゲット化 = Step 73 完了(文字型を 4 実体に分離。x86_64 は 12 サンプルでバイト一致)。**A3 完了(Step 72 + 73 + 74)**: c-testsuite 220 中 191 件・examples 36 中 26 本が aarch64 で通過し、残りはすべて A4 の未対応機能に由来。この過程で x86_64 の暗黙仮定に由来する実バグ 2 件(名前なしビットフィールドの整列規則、CPU 識別マクロ)を検出・修正した。**A4 進行中**: 浮動小数・間接呼び出し = Step 75、スカラ引数分類の per-target 化 = Step 76 完了(**c-testsuite の aarch64 保留が空に。220 件中 203 件通過**、examples は 36 中 28 本)。集約分類のターゲット化 = Step 77、可変長関数の定義 = Step 78 完了で **A4(ABI 完全化)が完了**(c-testsuite 220 中 203 件・examples 36 中 33 件が aarch64 で通過。残りはすべて aarch64 固有ではない既存の未実装機能)。**次: A5(リンカ対応と M4 受け入れ = 自作リンカの aarch64 再配置適用・PLT/GOT・crt、そして aarch64 で全スイート + gem install)**。並行して float binary32 丸めバグを解消(Step 69、§3 の債務消し込み)。残項目(随時): musl/distroless コンテナ検証・sqlite3/pg コーパス。
 
 ---
 
@@ -409,7 +409,7 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   この過程で x86_64 の暗黙の仮定に由来する実バグを 2 件検出・修正した
   (名前なしビットフィールドの整列規則、CPU 識別マクロのターゲット追従)。
 
-### A4 — ABI 完全化(struct 値渡し・varargs・浮動小数)
+### A4 — ABI 完全化(struct 値渡し・varargs・浮動小数)【済: Step 75〜78】
 - 浮動小数と間接呼び出し = **Step 75 完了**(v0-v7、fadd/fcmp/scvtf 等、blr。
   c-testsuite の A4 保留 12 件中 11 件が通過)。
 - スカラ引数分類の per-target 化 = **Step 76 完了**(`IR::CallConvention`。整数レジスタ
@@ -418,23 +418,25 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
 - 集約分類のターゲット化 = **Step 77 完了**(`IR::CallConvention` の 2 実装、`AbiPiece` に
   オフセットと幅、HFA 判定、x8 間接返し、参照渡し、`:memcpy`。**silent miscompile を解消**。
   x86_64 は 254 ファイルでバイト一致)。
-- **残る A4: 可変長関数の定義(varargs)**。AAPCS64 の `va_list` は 5 フィールドの構造体
-  (`__stack` / `__gr_top` / `__vr_top` / `__gr_offs` / `__vr_offs`)で System V と別物。
-  `__builtin_va_*` の実装をバックエンド別に分け、同梱ヘッダの `va_list` 定義も
-  ターゲットで切り替える。**呼び出し側は Step 75/76 で対応済み**(AAPCS64 では可変長引数も
-  固定引数と同じレジスタ規則のため)で、残るのは**関数定義側**のみ。
-  examples の残り 6 件のうち 3 件がこれ。
-- struct 値渡し・値返し: AAPCS64 の分類(2 レジスタまでの合成、HFA(同一浮動小数型
-  4 個まで)は vレジスタ、超過はメモリ / x8 間接返し)。**SysV と規則が全く違う**ので、
-  Step 25 で作った ABI ファジングハーネスを機種パラメタ化して回すことが受け入れ条件。
-- varargs: AAPCS64 の va_list は 5 フィールドの構造体(__stack / __gr_top / __vr_top /
-  __gr_offs / __vr_offs)で SysV と別物。__builtin_va_* の実装を backend 別に分ける
-  (同梱ヘッダの va_list 定義もターゲットで切替)。
-- **受け入れ**: ABI ファジング(構造体レイアウト・varargs 網羅)が aarch64 で green。
+- 可変長関数の定義 = **Step 78 完了**(AAPCS64 の 5 フィールド va_list を
+  `IR::CallConvention` でターゲット化。va_arg を別 lowering に、va_copy を新規実装。
+  呼び出し側は Step 75/76 で対応済みだった)。
+- **A4 の受け入れ達成**: c-testsuite 220 中 203 件通過(残り 17 件はターゲット非依存の
+  既知債務)、examples 36 中 33 件一致(残り 3 件 = alloca・128 ビット乗算・bit-scan は
+  aarch64 固有ではない既存の未実装機能)。x86_64 は各ステップで 254 ファイル規模の
+  バイト一致を維持。**未達**: Step 25 の ABI ファジングハーネスの機種パラメタ化は
+  未実施(現状は c-testsuite + examples + 専用差分テストで代替。ハーネスは
+  ホスト gcc 前提でクロス経路を持たないため。A5 で QEMU マトリクス整備時に検討)。
+- 残る既知の穴(§3): 可変長への struct 渡し(両ターゲットで診断)、スタック引数の
+  16 バイト整列(x86_64 にも元からある)、`struct{float,float}` 以外の HFA は解消済み。
 
 ### A5 — リンカ対応と M4 受け入れ
 - リンカの再配置適用・PLT/GOT 生成を aarch64 に対応(PLT エントリの命令列、
-  ページ境界計算)。crt(_start)の aarch64 版。
+  ページ境界計算)。crt(_start)の aarch64 版。**現状 A2〜A4 の実行検証はすべて
+  クロス gcc(aarch64-linux-gnu-gcc)でリンクしている**ので、A5 は自作リンカ・自作 crt を
+  aarch64 の .o に適用してクロス gcc なしで実行可能にするのが主眼。
+- A4 から持ち越し: **ABI ファジングハーネス(Step 25/62)の機種パラメタ化**。現状は
+  ホスト gcc 前提でクロス経路を持たないため、QEMU マトリクス整備と併せて対応する。
 - **CI 環境のトレードオフ**: QEMU(binfmt_misc)はどこでも動くが遅く、まれに実機と
   挙動が違う。既定は QEMU の Docker マトリクスとし、リリース前検証だけ実機
   (Apple Silicon 上の Linux か ARM ランナー)で流す二段構えにする。

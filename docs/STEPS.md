@@ -2691,9 +2691,45 @@ System V は 2 つの float を 1 eightbyte にまとめて d0 へ渡すが、**
 
 ---
 
+## Step 78 — aarch64 の可変長関数の定義(M4 A4 完了)
+
+A4 の最後の項目。呼び出し側は Step 75/76 で対応済み(AAPCS64 では可変長引数も固定引数と
+同じレジスタ規則のため)で、残るは**定義側**だけだった。
+
+- **va_list はターゲットで構造が全く違う**のが本質。System V の 4 フィールド
+  (gp_offset/fp_offset/overflow_arg_area/reg_save_area)に対し、AAPCS64 は 5 フィールド
+  (`__stack`/`__gr_top`/`__vr_top`/`__gr_offs`/`__vr_offs`)。しかもセマンティクスが逆で、
+  System V は「先頭からの正のオフセット」、**AAPCS64 は top からの負のオフセットが 0 に
+  向かって増える**(0 に達したらそのファイルは尽きて `__stack` から取る)。
+- ターゲット化は `IR::CallConvention` に持たせた(`va_list_tag`/`va_list_type`/
+  `va_list_abi`)。va_list は呼び出し規約が引数を並べたレジスタ/スタック配置を
+  そのまま歩くものなので、タグの形・型・va_arg 歩行の流儀はすべて同一 ABI の別側面。
+- `AArch64VaListTag`(5 フィールド)は**タグ 1 要素配列**にしてポインタ decay を統一した。
+  gcc の aarch64 は素の struct だが、配列 decay で得られる「32 バイト tag へのポインタを
+  1 整数レジスタに載せる」形は AAPCS64 の参照渡しとバイト等価で、vprintf 転送も同じ
+  レジスタに同じポインタが載る。
+- **va_arg の lowering を `va_list_abi` で分岐**し、System V パスは**一切変更しない**
+  (x86 バイト等価の担保)。AAPCS64 は別 lowering として新設した。2 つの歩行は逆向きの
+  オフセットで別構造を読むので、記述子で 1 つにまとめず別実装にするのが素直。
+- **va_copy を新規実装**した(既存はキーワード未対応だった)。lexer/preprocessor/parser/
+  AST/generator に `__builtin_va_copy` を追加し、タグ全体の `:memcpy` に降ろす
+  (IR 命令の追加なし)。
+- aarch64 の可変長プロローグはフレーム最上部に VR 退避域(128B)+ GP 退避域(64B)を確保し、
+  x0-x7 と d0-d7 を退避。`:va_start` で 5 フィールドを書き込む。
+- **実装中に発見した不具合**: `__stack` を caller_sp としていたが、gcc は名前付き引数が
+  スタックに溢れた分だけ進める(`__stack = caller_sp + 8*named_stack`)。9 整数引数の
+  実行テストで露見し、gcc の asm(frame 240 / `__stack` = 248)と突き合わせて修正した。
+- **x86_64 は 254 ファイルでバイト一致**。examples の保留は 6 → **3 件**(variadic 3 件が
+  通過。残りは alloca・128 ビット乗算・bit-scan で、いずれも aarch64 固有ではない
+  既存の未実装機能)。
+- 残る制約: 可変長への struct 渡しは依然未対応(両ターゲットで診断。c-suite 00140 も
+  既存 SKIP のまま)。va_arg の許容型は int/long/pointer/double のみ(既存どおり)。
+
+---
+
 ## 現在のテスト規模
 
-Step 77 完了時点: **2,327 runs / 6,176 assertions / 0 failures / 50 skips**
+Step 78 完了時点: **2,339 runs / 6,199 assertions / 0 failures / 47 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
