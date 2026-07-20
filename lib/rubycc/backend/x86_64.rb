@@ -403,7 +403,7 @@ module Rubycc
       end
 
       # Reads a call's result into its destination. An in-register struct result
-      # (`ret` a [buffer_vreg, classes] array) is scattered into the caller's
+      # (`ret` a [buffer_vreg, pieces] array) is scattered into the caller's
       # scratch buffer (dst is unused, the value being that buffer's address); a
       # float/double comes back in xmm0 (movss/movsd, `ret` being :sse4/:sse8);
       # every other value — including a MEMORY struct's hidden pointer — in rax.
@@ -418,39 +418,43 @@ module Rubycc
       end
 
       # Scatters an in-register struct result into the caller's scratch buffer.
-      # `ret` is [buffer_vreg, classes]; buffer_vreg's slot (kept live across the
+      # `ret` is [buffer_vreg, pieces]; buffer_vreg's slot (kept live across the
       # call) holds the buffer address, loaded into rcx — a register the return
       # values (rax/rdx, xmm0/xmm1) never occupy, so loading it clobbers none of
-      # them. Each eightbyte is stored at buffer + 8*i from its return register:
-      # INTEGER eightbytes from rax then rdx, SSE eightbytes from xmm0 then xmm1,
-      # taken in eightbyte order.
+      # them. Each eightbyte is stored at its piece's offset from its return
+      # register: INTEGER eightbytes from rax then rdx, SSE eightbytes from xmm0
+      # then xmm1, taken in eightbyte order.
       def store_struct_call_result(ret)
-        buffer_vreg, classes = ret
+        buffer_vreg, pieces = ret
         load_reg(ECX, buffer_vreg)          # rcx = buffer address
-        each_return_eightbyte(classes) do |i, reg, sse|
+        each_return_eightbyte(pieces) do |offset, reg, sse|
           if sse
             emit(0xF2, 0x0F, 0x11)          # movsd [rcx + disp8], xmm
-            emit(0x40 | (reg << 3) | 0x01, 8 * i)
+            emit(0x40 | (reg << 3) | 0x01, offset)
           else
             emit(0x48, 0x89)                # mov [rcx + disp8], r64
-            emit(0x40 | (reg << 3) | 0x01, 8 * i)
+            emit(0x40 | (reg << 3) | 0x01, offset)
           end
         end
       end
 
-      # Yields each result eightbyte's [index, register, sse?], handing out the
-      # INTEGER (rax, rdx) and SSE (xmm0, xmm1) return registers in classification
-      # order. Shared by the caller-side scatter (#store_struct_call_result) and
-      # the callee-side gather (#emit_struct_ret).
-      def each_return_eightbyte(classes)
+      # Yields each result eightbyte's [byte offset in the buffer, register,
+      # sse?], handing out the INTEGER (rax, rdx) and SSE (xmm0, xmm1) return
+      # registers in classification order. Shared by the caller-side scatter
+      # (#store_struct_call_result) and the callee-side gather (#emit_struct_ret).
+      #
+      # A System V aggregate piece is always a whole eightbyte, so the movsd /
+      # mov r64 below carry it entire and only the piece's offset is read here;
+      # its width needs no attention the way an AAPCS64 HFA member's would.
+      def each_return_eightbyte(pieces)
         next_gp = 0
         next_sse = 0
-        classes.each_with_index do |cls, i|
-          if cls == :gp
-            yield i, GP_RETURN_REGISTERS[next_gp], false
+        pieces.each do |piece|
+          if piece.kind == :gp
+            yield piece.offset, GP_RETURN_REGISTERS[next_gp], false
             next_gp += 1
           else
-            yield i, SSE_RETURN_REGISTERS[next_sse], true
+            yield piece.offset, SSE_RETURN_REGISTERS[next_sse], true
             next_sse += 1
           end
         end
@@ -549,7 +553,7 @@ module Rubycc
 
       # :ret — loads the return value into its ABI register(s), then "leave; ret".
       # `size` is nil for an integer/pointer return (rax, via load_reg), 4/8 for a
-      # floating one (movss/movsd into xmm0), or a class array for an in-register
+      # floating one (movss/movsd into xmm0), or a piece array for an in-register
       # struct return, whose eightbytes are gathered from the buffer `value_vreg`
       # points at into the return registers. A void return (a nil operand) loads
       # nothing.
@@ -569,18 +573,18 @@ module Rubycc
 
       # Gathers an in-register struct return into its result registers. `buffer_vreg`
       # holds the address of the value (a stack object the generator filled), loaded
-      # into rcx; each eightbyte at buffer + 8*i is loaded into its return register —
+      # into rcx; each eightbyte at its piece's offset is loaded into its return register —
       # INTEGER eightbytes into rax then rdx, SSE into xmm0 then xmm1 — leaving them
       # set for "leave; ret". rcx is loaded first and never itself a return register.
-      def emit_struct_ret(buffer_vreg, classes)
+      def emit_struct_ret(buffer_vreg, pieces)
         load_reg(ECX, buffer_vreg)          # rcx = buffer address
-        each_return_eightbyte(classes) do |i, reg, sse|
+        each_return_eightbyte(pieces) do |offset, reg, sse|
           if sse
             emit(0xF2, 0x0F, 0x10)          # movsd xmm, [rcx + disp8]
-            emit(0x40 | (reg << 3) | 0x01, 8 * i)
+            emit(0x40 | (reg << 3) | 0x01, offset)
           else
             emit(0x48, 0x8B)                # mov r64, [rcx + disp8]
-            emit(0x40 | (reg << 3) | 0x01, 8 * i)
+            emit(0x40 | (reg << 3) | 0x01, offset)
           end
         end
       end

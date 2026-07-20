@@ -69,11 +69,21 @@ module Rubycc
     # whole eightbyte whose low four bytes carry the value, which is what the
     # slot discipline already promises.
     #
-    # The two aggregate mechanisms AAPCS64 has and System V does not — a large
-    # struct passed by reference to a caller-made copy, and a large result
-    # written through the indirect result register x8 — are not lowered here.
-    # The generator tags their slots :indirect / :indirect_result rather than
-    # laying them out by the System V rule, and they are refused by name below.
+    # Aggregates arrive here already cut into the pieces AAPCS64 6.4.2 moves
+    # them in, the generator having classified them against this target's rules
+    # rather than System V's (IR::CallConvention). What that leaves for this
+    # backend is placing the pieces: an HFA's members each take a vector
+    # register of their own, so struct { float a, b; } really does travel in s0
+    # and s1 rather than packed into one — the one shape whose System V reading
+    # would have been silently wrong rather than merely unsupported. A smaller
+    # non-HFA aggregate's eightbytes take consecutive x registers, and one too
+    # large for either is passed by reference, which the generator has already
+    # reduced to an ordinary pointer argument.
+    #
+    # The one aggregate mechanism that needs a register no other kind names is
+    # the indirect result: a result too large for registers is written through a
+    # buffer address the caller puts in x8, tagged :indirect_result so it can be
+    # kept clear of both argument sequences (see INDIRECT_RESULT_REGISTER).
     #
     # Under AAPCS64 a variadic call on this platform places its arguments in the
     # same registers a fixed call would, so the `fixed` half of a call's size
@@ -84,12 +94,13 @@ module Rubycc
     # variables, pointers to locals and direct calls — plus the A3 memory-access
     # layer (the addresses of global variables, string literals and functions,
     # formed with an adrp/add pair, and their -fPIC counterpart read from the
-    # GOT with an adrp/ldr pair) and the first half of A4: indirect calls
-    # through a function pointer, and floating-point arithmetic, comparison,
-    # conversion, argument passing and return. Features the generator can still
-    # hand it that belong to the rest of A4 (struct value passing, varargs,
-    # alloca, the bit-scan builtins, a 128-bit multiply) are refused with an
-    # explicit "not yet supported" error rather than miscompiled.
+    # GOT with an adrp/ldr pair) and most of A4: indirect calls through a
+    # function pointer, floating-point arithmetic, comparison, conversion,
+    # argument passing and return, whole-object copies, and aggregates passed
+    # and returned by value. Features the generator can still hand it that
+    # belong to the rest of A4 (varargs, alloca, the bit-scan builtins, a
+    # 128-bit multiply) are refused with an explicit "not yet supported" error
+    # rather than miscompiled.
     class AArch64
       # Result of compiling one function, the same shape the x86_64 backend
       # returns: `bytes` the machine code, `symbols` an array of
@@ -113,6 +124,23 @@ module Rubycc
       # argument registers but not the register file: v0 and x0 are different
       # registers, so a call passing both an int and a double writes each once.
       FP_ARG_REGISTERS = [0, 1, 2, 3, 4, 5, 6, 7].freeze
+
+      # x8, the indirect result register. AAPCS64 6.4.1 reserves it for the
+      # address of the buffer a result too large for registers is written into,
+      # which is what makes an aggregate return differ from System V's: there the
+      # same pointer is an ordinary leading integer argument that eats x0's
+      # equivalent, here it rides a register of its own and every real argument
+      # keeps the place it would have had.
+      INDIRECT_RESULT_REGISTER = 8
+
+      # The registers an aggregate result comes back in, in piece order. An
+      # integer piece fills x0 then x1 (an aggregate reaching here is 16 bytes or
+      # less, so two is all it can need) and a floating one v0..v3 (an HFA has at
+      # most four members). Which file a piece draws on follows its kind, so a
+      # struct of two floats returns in s0/s1 while a struct of two longs returns
+      # in x0/x1.
+      RESULT_GP_REGISTERS = [0, 1].freeze
+      RESULT_FP_REGISTERS = [0, 1, 2, 3].freeze
 
       # Scratch (temporary, caller-saved) registers used to evaluate one
       # instruction. A/B hold the two operands, C an extra working value (the
@@ -321,8 +349,12 @@ module Rubycc
 
             store_fp(FP_ARG_REGISTERS[next_fp], i, kind == :sse8 ? 8 : 4)
             next_fp += 1
-          when :indirect then unsupported("by-reference struct parameters")
-          when :indirect_result then unsupported("aggregate (struct) return values")
+          when :indirect_result
+            # The caller's result-buffer address arrives in x8, which is
+            # caller-saved and would not survive the first call this function
+            # makes; spilling it here, before any of them, is what lets the
+            # eventual :ret still write through it.
+            store_reg(INDIRECT_RESULT_REGISTER, i)
           else
             raise "unknown parameter kind #{kind.inspect}"
           end
@@ -378,7 +410,7 @@ module Rubycc
         when :global_addr then emit_symbol_address(inst.dst, kind: :global, symbol: inst.a)
         when :func_addr then emit_symbol_address(inst.dst, kind: :func, symbol: inst.a)
         when :got_addr then emit_got_address(inst.dst, inst.a)
-        when :memcpy then unsupported("struct copies")
+        when :memcpy then emit_memcpy(inst.a, inst.b, inst.size)
         when :va_start then unsupported("variadic functions")
         when :alloca then unsupported("alloca")
         when :bit_scan then unsupported("bit-scan builtins")
@@ -549,7 +581,6 @@ module Rubycc
       # v0. A struct result is a later milestone and is refused.
       def emit_call(dst, name, args, size)
         _fixed, ret = size || [nil, nil]
-        unsupported("aggregate (struct) return values") if ret.is_a?(Array)
         place_arguments(args)
         @relocations << { kind: :call, offset: @code.bytesize, symbol: name }
         emit_word(0x94000000) # bl <patched by R_AARCH64_CALL26>
@@ -565,24 +596,60 @@ module Rubycc
       # no relocation, the address being an ordinary run-time value.
       def emit_call_indirect(dst, target_vreg, args, size)
         _fixed, ret = size || [nil, nil]
-        unsupported("aggregate (struct) return values") if ret.is_a?(Array)
         place_arguments(args)
         load_reg(A, target_vreg)
         emit_word(0xD63F0000 | (A << 5)) # blr A
         store_call_result(dst, ret)
       end
 
-      # Parks a call's result in its destination slot. `ret` is :sse4/:sse8 when
-      # the value comes back in v0 (stored at its own width, like any floating
-      # value), otherwise the result is the integer/pointer one in x0. A call
-      # whose value is discarded has no destination and stores nothing.
+      # Parks a call's result in its destination slot. An in-register aggregate
+      # result (`ret` a [buffer_vreg, pieces] array) is scattered into the
+      # caller's scratch buffer and has no destination slot at all, the value
+      # being that buffer's address; `ret` :sse4/:sse8 means the value comes back
+      # in v0 (stored at its own width, like any floating value); otherwise the
+      # result is the integer/pointer one in x0. A call whose value is discarded
+      # has no destination and stores nothing.
       def store_call_result(dst, ret)
+        return store_struct_call_result(ret) if ret.is_a?(Array)
         return unless dst
 
         if ret == :sse4 || ret == :sse8
           store_fp(FP_ARG_REGISTERS[0], dst, ret == :sse8 ? 8 : 4)
         else
           store_reg(ARG_REGISTERS[0], dst)
+        end
+      end
+
+      # Scatters an in-register aggregate result into the caller's scratch
+      # buffer. `ret` is [buffer_vreg, pieces]; buffer_vreg's slot holds the
+      # buffer address, loaded into the A scratch — which is neither an integer
+      # nor a vector result register, so loading it clobbers nothing the callee
+      # just set. Each piece is written at its own offset and width, so a struct
+      # of two floats lands as s0 at +0 and s1 at +4 while a struct of two longs
+      # lands as x0 at +0 and x1 at +8.
+      def store_struct_call_result(ret)
+        buffer_vreg, pieces = ret
+        load_reg(A, buffer_vreg)
+        each_result_piece(pieces) do |piece, reg, fp|
+          emit_piece_access(reg, A, piece.offset, piece.size, load: false, fp: fp)
+        end
+      end
+
+      # Yields each aggregate-result piece with the register it travels in and
+      # whether that register is a vector one, handing out x0/x1 and v0..v3 in
+      # piece order. Shared by the caller-side scatter and the callee-side
+      # gather, so the two cannot drift apart.
+      def each_result_piece(pieces)
+        next_gp = 0
+        next_fp = 0
+        pieces.each do |piece|
+          if piece.kind == :gp
+            yield piece, RESULT_GP_REGISTERS[next_gp], false
+            next_gp += 1
+          else
+            yield piece, RESULT_FP_REGISTERS[next_fp], true
+            next_fp += 1
+          end
         end
       end
 
@@ -624,8 +691,10 @@ module Rubycc
 
             load_fp(FP_ARG_REGISTERS[next_fp], vreg, kind == :sse8 ? 8 : 4)
             next_fp += 1
-          when :indirect then unsupported("by-reference struct arguments")
-          when :indirect_result then unsupported("aggregate (struct) return values")
+          when :indirect_result
+            # The result buffer's address goes in x8, outside both argument
+            # sequences, so it never displaces a real argument.
+            load_reg(INDIRECT_RESULT_REGISTER, vreg)
           else
             raise "unknown call argument kind #{kind.inspect}"
           end
@@ -634,11 +703,15 @@ module Rubycc
 
       # :ret — loads the return value into its result register and runs the
       # epilogue. size nil is an integer/pointer return (x0), size 4/8 a floating
-      # one (v0, loaded at that width); a struct (array) return is a later
-      # milestone. A void return (nil operand) loads nothing.
+      # one (v0, loaded at that width) and a piece array an aggregate returned in
+      # registers. A void return (nil operand) loads nothing. An aggregate too
+      # large for registers is not returned this way: its callee copies the
+      # result through the hidden x8 pointer, which reaches here as a plain
+      # size-nil return of that pointer.
       def emit_ret(value_vreg, size)
-        unsupported("aggregate (struct) return values") if size.is_a?(Array)
-        if size == 4 || size == 8
+        if size.is_a?(Array)
+          emit_struct_ret(value_vreg, size)
+        elsif size == 4 || size == 8
           load_fp(FP_ARG_REGISTERS[0], value_vreg, size)
         elsif value_vreg
           load_reg(ARG_REGISTERS[0], value_vreg)
@@ -646,7 +719,101 @@ module Rubycc
         emit_epilogue
       end
 
+      # Gathers an in-register aggregate return into its result registers.
+      # `buffer_vreg` holds the address of the value (a stack object the
+      # generator has already filled), loaded into the A scratch — never itself a
+      # result register — and each piece is read from its own offset at its own
+      # width, leaving x0/x1 and v0..v3 set for the epilogue's `ret`.
+      def emit_struct_ret(buffer_vreg, pieces)
+        load_reg(A, buffer_vreg)
+        each_result_piece(pieces) do |piece, reg, fp|
+          emit_piece_access(reg, A, piece.offset, piece.size, load: true, fp: fp)
+        end
+      end
+
+      # --- whole-object copies ----------------------------------------------
+
+      # The most eightbytes #emit_memcpy will move with a straight-line run of
+      # load/store pairs before it switches to a counted loop. Below the limit
+      # the unrolled form is both shorter and branchless; above it the code size
+      # would grow with the struct, which a loop bounds at a fixed six
+      # instructions however large the object is.
+      MEMCPY_UNROLL_LIMIT = 8
+
+      # :memcpy — copies `byte_count` bytes from the address in `src_vreg`'s slot
+      # to the address in `dest_vreg`'s slot. This is the whole-object move a
+      # struct assignment needs, and equally the one that makes a struct
+      # argument's private copy and brings a by-reference parameter into storage
+      # of the callee's own.
+      #
+      # The count is a compile-time constant, so the shape of the copy is decided
+      # here rather than tested at run time: the eightbytes go through a counted
+      # loop when there are enough of them to be worth one and a straight run of
+      # load/store pairs otherwise, and the trailing bytes (a struct's size need
+      # not be a multiple of eight) follow in one access each of 4, 2 and 1
+      # bytes. Every tail access is naturally aligned against the block before it
+      # — a 4 follows a multiple of 8, a 2 a multiple of 4, a 1 a multiple of 2 —
+      # so each fits the scaled unsigned-offset form without composing an address.
+      #
+      # A and B hold the two addresses, C the loop counter and ADDR the value in
+      # flight. None is an argument register, so a copy made while a call's
+      # arguments are being prepared never disturbs one already placed.
+      def emit_memcpy(dest_vreg, src_vreg, byte_count)
+        load_reg(A, dest_vreg) # A = destination address
+        load_reg(B, src_vreg)  # B = source address
+        chunks = byte_count / 8
+        if chunks > MEMCPY_UNROLL_LIMIT
+          emit_memcpy_loop(chunks)
+          offset = 0 # the loop leaves A and B just past the eightbytes it moved
+        else
+          chunks.times { |i| emit_memcpy_step(8 * i, 8) }
+          offset = 8 * chunks
+        end
+
+        remaining = byte_count - 8 * chunks
+        [4, 2, 1].each do |width|
+          next if remaining < width
+
+          emit_memcpy_step(offset, width)
+          offset += width
+          remaining -= width
+        end
+      end
+
+      # Moves `chunks` eightbytes with a counted loop, advancing both addresses
+      # as it goes so the caller's tail accesses start from offset zero. The
+      # counter is decremented by a flag-setting `subs` and the branch taken
+      # while it is non-zero, which needs no label fixup: the target is behind
+      # the branch and its distance is already known.
+      def emit_memcpy_loop(chunks)
+        materialize(C, chunks, 64)
+        start = @code.bytesize
+        emit_memcpy_step(0, 8)
+        emit_add_imm(B, B, 8, shift12: false)
+        emit_add_imm(A, A, 8, shift12: false)
+        emit_word(0xF1000400 | (C << 5) | C) # subs C, C, #1
+        words = (start - @code.bytesize) / 4
+        emit_word(0x54000000 | ((words & 0x7FFFF) << 5) | CONDITIONS.fetch(:ne)) # b.ne <start>
+      end
+
+      # One load/store pair of `width` bytes at `offset` from both addresses,
+      # relaying the value through the ADDR scratch.
+      def emit_memcpy_step(offset, width)
+        emit_piece_access(ADDR, B, offset, width, load: true, fp: false)
+        emit_piece_access(ADDR, A, offset, width, load: false, fp: false)
+      end
+
       # --- register / slot access -------------------------------------------
+
+      # One ldr/str of `reg` at [base + offset], `size` bytes wide, from either
+      # register file. The unsigned-offset immediate is scaled by the access
+      # size, and every offset reaching here is a multiple of its own width (an
+      # aggregate piece sits at a multiple of its width, and a copy step advances
+      # by its own), so the scaled form always names it exactly.
+      def emit_piece_access(reg, base, offset, size, load:, fp:)
+        table = fp ? FP_LDST : INT_LDST
+        emit_word(table.fetch(size)[load ? :load : :store] | ((offset / size) << 10) | (base << 5) | reg)
+      end
 
       # ldr X{reg}, [slot]. Slots are always moved 64 bits at a time so a pointer
       # is never truncated; a 32-bit value's high half was zeroed when it was
@@ -1004,6 +1171,18 @@ module Rubycc
       FP_LDST = {
         4 => { load: 0xBD400000, store: 0xBD000000 },
         8 => { load: 0xFD400000, store: 0xFD000000 }
+      }.freeze
+
+      # The same form with V = 0, the general-purpose register file, at each of
+      # the four access widths. The narrow loads are the zero-extending ones
+      # (ldrb/ldrh rather than ldrsb/ldrsh): both a whole-object copy and an
+      # aggregate piece move bytes rather than numbers, so nothing here should
+      # give them a sign.
+      INT_LDST = {
+        1 => { load: 0x39400000, store: 0x39000000 },
+        2 => { load: 0x79400000, store: 0x79000000 },
+        4 => { load: 0xB9400000, store: 0xB9000000 },
+        8 => { load: 0xF9400000, store: 0xF9000000 }
       }.freeze
 
       def align16(value)

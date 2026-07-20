@@ -332,19 +332,19 @@ class TestDriver < Minitest::Test
     end
   end
 
-  # A construct the aarch64 backend does not lower yet (a whole-struct
-  # assignment, which is the remaining half of A4) fails as a driver diagnostic
-  # with a non-zero exit, never as a silently wrong object. This diagnostic's
-  # example has moved twice as the backend grew: string-literal and
-  # global-variable references before A3 (Step 72) added the memory-access
-  # layer, then indirect calls until A4's first half lowered them.
+  # A construct the aarch64 backend does not lower yet (alloca, part of what is
+  # left of A4) fails as a driver diagnostic with a non-zero exit, never as a
+  # silently wrong object. This diagnostic's example has moved three times as the
+  # backend grew: string-literal and global-variable references before A3
+  # (Step 72) added the memory-access layer, then indirect calls until A4's first
+  # half lowered them, then whole-struct assignment until aggregates by value
+  # arrived with the target-dependent classification.
   def test_aarch64_unsupported_construct_is_diagnosed
     in_tmpdir do |dir|
-      File.write(File.join(dir, "u.c"),
-                 "struct S { int a[8]; }; void copy(struct S *a, struct S *b){ *a = *b; }")
+      File.write(File.join(dir, "u.c"), "void *f(int n){ return __builtin_alloca(n); }")
       _out, err, status = rubycc("-c", "u.c", "-target", "aarch64", "-o", "u.o", dir: dir)
       assert_equal 1, status.exitstatus
-      assert_match(/aarch64: not yet supported: struct copies/, err)
+      assert_match(/aarch64: not yet supported: alloca/, err)
       refute File.exist?(File.join(dir, "u.o")), "no object is written for a refused compilation"
     end
   end

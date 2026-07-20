@@ -30,12 +30,10 @@ class TestExamplesAArch64 < Minitest::Test
   PENDING = {
     "step23_sum" => "A4: variadic functions",
     "step24_floats" => "A4: variadic functions",
-    "step25_records" => "A4: struct copies",
     "step28_extensions" => "A4: alloca",
-    "step28_wideint" => "A4: struct copies",
+    "step28_wideint" => "A4: 128-bit multiply",
     "step41_freestanding" => "A4: variadic functions",
-    "step44_builtins" => "A4: bit-scan builtins",
-    "step53_compound_literals" => "A4: struct copies"
+    "step44_builtins" => "A4: bit-scan builtins"
   }.freeze
 
   EXAMPLE_SOURCES.each do |path|

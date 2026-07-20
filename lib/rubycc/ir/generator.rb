@@ -830,7 +830,7 @@ module Rubycc
             # a register return hands back a 0 in rax with a nil size, and the
             # caller merely stores whatever the return registers hold into its
             # scratch buffer, never dereferencing anything invalid.
-            if @struct_return_class == :memory
+            if hidden_result?(@struct_return_plan)
               emit(:ret, a: @struct_return_ptr, size: nil)
             else
               zero = new_vreg
@@ -852,48 +852,60 @@ module Rubycc
       end
 
       # Binds the function's parameters and records its ABI slot layout. Each C
-      # parameter maps to one or more System V eightbyte slots — a scalar to one,
-      # a struct to its classified eightbytes (a MEMORY struct to ceil(size/8)
-      # stack eightbytes) — and a MEMORY-returning function prepends a hidden
-      # pointer slot for the caller's result buffer. Those slots occupy the first
-      # vregs (0..param_count-1) in flattened order, so the backend spills each
-      # incoming argument register straight into its slot; a struct parameter is
-      # then reassembled into a stack object from its slots, and a scalar
-      # parameter's slot is its storage directly. @param_kinds records where every
-      # slot arrives (from the shared placement simulation) and @param_count the
-      # total, both handed to the IR::Function.
+      # parameter maps to one or more ABI slots — a scalar to one, a struct to
+      # one per piece the target's convention cuts it into (an eightbyte each
+      # under System V, a member each for an AAPCS64 HFA, a single pointer for
+      # an aggregate passed by reference) — and a function whose result does not
+      # come back in registers prepends a hidden pointer slot for the caller's
+      # result buffer. Those slots occupy the first vregs (0..param_count-1) in
+      # flattened order, so the backend spills each incoming argument register
+      # straight into its slot; a struct parameter is then reassembled into a
+      # stack object from its slots, and a scalar parameter's slot is its storage
+      # directly. @param_kinds records where every slot arrives (from the same
+      # placement the caller side runs) and @param_count the total, both handed
+      # to the IR::Function.
       def setup_parameters(func)
         return_type = func.return_type
-        # A MEMORY-classified result is written through a hidden pointer the caller
-        # supplies as an implicit first integer argument; @struct_return_ptr holds
-        # its slot for #gen_return, and @struct_return_class steers the return.
-        @struct_return_class = return_type.struct? ? classify_struct(return_type) : nil
+        # A result the convention does not put in registers is written through a
+        # hidden pointer the caller supplies — an implicit leading integer
+        # argument under System V, the x8 register under AAPCS64.
+        # @struct_return_ptr holds its slot for #gen_return, and
+        # @struct_return_plan steers the return.
+        @struct_return_plan = return_type.struct? ? @convention.aggregate_plan(return_type) : nil
         @struct_return_ptr = nil
-        hidden_return = @struct_return_class == :memory
+        hidden_return = hidden_result?(@struct_return_plan)
 
-        # One candidate-kind list per ABI entity, in slot order: the hidden return
-        # pointer (if any) first, then each parameter's eightbyte classes.
-        slot_lists = []
-        slot_lists << [@convention.hidden_result_kind] if hidden_return
-        param_lists = func.params.map { |param| parameter_slot_kinds(param.type) }
-        slot_lists.concat(param_lists)
+        # One plan per by-value parameter (nil for a scalar), then the placement
+        # of every ABI entity in slot order: the hidden return pointer (if any)
+        # first, then the parameters left to right.
+        plans = func.params.map { |param| param.type.struct? ? @convention.aggregate_plan(param.type) : nil }
+        placer = @convention.placer
+        placer.place(ArgumentRequest.new(kinds: [@convention.hidden_result_kind], even_gp: false)) if hidden_return
+        placements = func.params.each_with_index.map { |param, i| placer.place(abi_request(param.type, plans[i])) }
 
-        # Allocate the slot vregs first (0..param_count-1) so they align with the
-        # flattened param_kinds the backend spills into.
-        slot_vregs = slot_lists.map { |list| list.map { new_vreg } }
+        # The pieces each entity is taken apart into, now that placement is
+        # known, and one slot vreg per piece. The vregs are allocated first
+        # (0..param_count-1) so they align with the flattened param_kinds the
+        # backend spills into.
+        piece_lists = []
+        piece_lists << [AbiPiece.new(offset: 0, size: 8, kind: @convention.hidden_result_kind)] if hidden_return
+        func.params.each_with_index { |param, i| piece_lists << placed_pieces(param.type, plans[i], placements[i]) }
+
+        slot_vregs = piece_lists.map { |pieces| pieces.map { new_vreg } }
         @param_count = slot_vregs.sum(&:size)
-        @param_kinds = place_argument_kinds(slot_lists).flatten
+        @param_kinds = piece_lists.flatten.map(&:kind)
 
         index = 0
         if hidden_return
           @struct_return_ptr = slot_vregs[index].first
           index += 1
         end
-        func.params.each do |param|
+        func.params.each_with_index do |param, i|
           vregs = slot_vregs[index]
+          pieces = piece_lists[index]
           index += 1
           if param.type.struct?
-            bind_struct_parameter(param, vregs)
+            bind_struct_parameter(param, vregs, pieces, plans[i].mode == :by_reference)
           else
             @scopes.last[param.name] =
               Local.new(type: param.type, storage: vregs.first, global: false, const: param.const)
@@ -914,208 +926,99 @@ module Rubycc
         end
       end
 
-      # The candidate eightbyte-kind list a parameter of `type` contributes to the
-      # ABI slot layout: a scalar is a single register-class eightbyte, a
-      # register-classified struct its INTEGER/SSE eightbytes, and a MEMORY struct
-      # ceil(size/8) eightbytes tagged with the convention's memory-aggregate kind
-      # (which #place_argument_kinds passes through untouched).
-      def parameter_slot_kinds(type)
-        return [argument_kind(type)] unless type.struct?
+      # Whether a struct result travels through a hidden pointer rather than in
+      # registers — true of a System V MEMORY result and of an AAPCS64 aggregate
+      # too large for registers alike, the two differing only in where the
+      # pointer itself rides (an ordinary leading argument, or x8).
+      def hidden_result?(plan)
+        !plan.nil? && plan.mode != :registers
+      end
 
-        classes = classify_struct(type)
-        return classes unless classes == :memory
+      # The request the placement pass needs for a by-value argument of `type`:
+      # the candidate kind of each of its ABI slots. A scalar contributes one
+      # slot of its own class; an aggregate contributes its plan's pieces, or a
+      # single integer slot when the convention passes it by reference (the
+      # value travels as an ordinary pointer to a copy, which is all the
+      # register files see of it).
+      def abi_request(type, plan)
+        return ArgumentRequest.new(kinds: [argument_kind(type)], even_gp: false) if plan.nil?
+        return ArgumentRequest.new(kinds: [:gp], even_gp: false) if plan.mode == :by_reference
 
-        Array.new((type.size + 7) / 8, @convention.memory_aggregate_kind)
+        ArgumentRequest.new(kinds: plan.pieces.map(&:kind), even_gp: plan.even_gp)
+      end
+
+      # The pieces an argument of `type` is actually taken apart into, now that
+      # placement has said where it goes. An argument that got the registers it
+      # asked for keeps its plan's pieces; one that spilled travels as plain
+      # eightbytes instead, whatever shape it would have had in registers (an
+      # aarch64 HFA that runs out of vector registers is packed into the stack
+      # area, not spread one member per slot). A by-reference aggregate is one
+      # pointer either way, and a scalar one slot carrying its own value.
+      def placed_pieces(type, plan, placement)
+        kind = placement == :stack ? :mem : nil
+        if plan.nil?
+          [AbiPiece.new(offset: 0, size: type.size, kind: kind || argument_kind(type))]
+        elsif plan.mode == :by_reference
+          [AbiPiece.new(offset: 0, size: 8, kind: kind || :gp)]
+        elsif placement == :stack
+          CallConvention.memory_pieces(type.size)
+        else
+          plan.pieces
+        end
       end
 
       # Reassembles a struct parameter from its incoming ABI slots into a fresh
       # stack object the parameter name is bound to (the same by-address form every
-      # struct lvalue uses). Each slot vreg holds one eightbyte of the argument;
-      # storing it at base + 8*i writes the struct back into contiguous memory. The
-      # final eightbyte's full 8-byte store stays within the 16-byte-aligned,
-      # rounded-up stack object even when the struct's size is not a multiple of 8.
-      def bind_struct_parameter(param, slot_vregs)
+      # struct lvalue uses). An aggregate passed by reference arrives as a pointer
+      # to the caller's copy, which is copied into the object so the parameter is
+      # storage of the callee's own like any other. Otherwise each slot vreg holds
+      # one piece of the argument, written back at the piece's own offset and
+      # width — which is what puts an AAPCS64 HFA's members back at 4-byte
+      # spacing while a System V eightbyte lands every 8. A trailing eightbyte's
+      # full 8-byte store stays within the 16-byte-aligned, rounded-up stack
+      # object even when the struct's size is not a multiple of 8.
+      def bind_struct_parameter(param, slot_vregs, pieces, by_reference)
         type = param.type
         object_id = new_object(type.size)
         @scopes.last[param.name] = Local.new(type: type, storage: object_id, global: false, const: param.const)
         base = new_vreg
         emit(:object_addr, dst: base, a: object_id)
-        slot_vregs.each_with_index do |vreg, i|
-          emit(:store, a: eightbyte_address(base, i), b: vreg, size: 8)
+        if by_reference
+          emit(:memcpy, a: base, b: slot_vregs.first, size: type.size)
+        else
+          pieces.each_with_index do |piece, i|
+            emit(:store, a: piece_address(base, piece.offset), b: slot_vregs[i], size: piece.size)
+          end
         end
       end
 
-      # The address of eightbyte `i` within an aggregate whose base address is in
-      # `base_vreg`: the base itself for the first eightbyte, or base + 8*i
+      # The address of the piece at byte `offset` within an aggregate whose base
+      # address is in `base_vreg`: the base itself at offset 0, or base + offset
       # otherwise. Shared by the struct-parameter reassembly and struct-argument
-      # lowering, both of which read or write a struct one eightbyte at a time.
-      def eightbyte_address(base_vreg, i)
-        return base_vreg if i.zero?
+      # lowering, both of which read or write a struct one piece at a time.
+      def piece_address(base_vreg, byte_offset)
+        return base_vreg if byte_offset.zero?
 
         offset = new_vreg
-        emit(:const, dst: offset, a: 8 * i)
+        emit(:const, dst: offset, a: byte_offset)
         addr = new_vreg
         emit(:add, dst: addr, a: base_vreg, b: offset, size: 8)
         addr
       end
 
-      # Classifies a type for the System V AMD64 argument/return convention: a
-      # `float` is an :sse4 (a scalar single in an xmm register), a `double` an
-      # :sse8 (a scalar double), and every integer, pointer or other scalar a
-      # :gp (an integer register). This is only the *candidate* class an argument
-      # would take with registers available; #place_argument_kinds then decides,
-      # over the whole list, which candidates actually land in a register and
-      # which spill to the stack (:mem). The kind is also used unqualified to mark
-      # a float/double return.
+      # Classifies a scalar for argument passing: a `float` is an :sse4 (a
+      # single in a vector register), a `double` an :sse8, and every integer,
+      # pointer or other scalar a :gp (an integer register). Both conventions
+      # agree on this much; they differ only in how many registers of each kind
+      # there are, which is the placer's business. This is the *candidate* class
+      # an argument would take with registers available — the placer then says
+      # whether it really got one or spills to the stack (:mem). The kind is
+      # also used unqualified to mark a float/double return.
       def argument_kind(type)
         return :sse4 if type.float? && type.size == 4
         return :sse8 if type.float? && type.size == 8
 
         :gp
-      end
-
-      # Fixes the register/stack placement of an argument list ahead of the
-      # backend, so the classification the backend follows is decided where every
-      # argument's type is known. `arguments` is one entry per argument, each a
-      # list of that argument's eightbyte candidate kinds (:gp / :sse4 / :sse8 for
-      # an in-register class, or the convention's memory-aggregate kind for an
-      # aggregate it never puts in registers). A scalar argument is a single
-      # eightbyte, so its list has length one; a struct's list holds one entry per
-      # eightbyte, which is what lets the psABI 3.2.3 all-or-nothing rule act on a
-      # whole argument at once.
-      #
-      # Each argument is placed as a unit: its required integer and vector
-      # registers are counted first, and only if *both* fit in what remains do its
-      # eightbytes take those registers (consuming them); otherwise the entire
-      # argument spills, every eightbyte becoming :mem, and no register is used —
-      # the psABI rule that an argument whose parts do not all fit in registers
-      # passes wholly in memory. AAPCS64 6.4.2 stage C reaches the same layout for
-      # the arguments this generator classifies, differing only in how many
-      # registers there are to run out of, which is what @convention supplies. A
-      # candidate list already all memory-aggregate passes straight through,
-      # consuming no register. The :mem eightbytes keep their left-to-right order,
-      # which the backend lays out as ascending stack addresses. The result mirrors
-      # `arguments`: one placed kind list per argument.
-      def place_argument_kinds(arguments)
-        next_gp = 0
-        next_sse = 0
-        aggregate = @convention.memory_aggregate_kind
-        arguments.map do |candidates|
-          if candidates.all?(aggregate)
-            candidates
-          else
-            need_gp = candidates.count(:gp)
-            need_sse = candidates.count { |k| k == :sse4 || k == :sse8 }
-            if next_gp + need_gp <= @convention.gp_registers && next_sse + need_sse <= @convention.fp_registers
-              next_gp += need_gp
-              next_sse += need_sse
-              candidates
-            else
-              Array.new(candidates.size, :mem)
-            end
-          end
-        end
-      end
-
-      # Classifies an aggregate for the System V AMD64 argument/return convention
-      # (psABI 3.2.3). A struct or union larger than two eightbytes — or one with
-      # any unaligned field — is passed in memory; otherwise each of its one or
-      # two eightbytes gets a class from the scalar fields that fall in it.
-      # Returns :memory, or an array (one entry per eightbyte) of :gp (an INTEGER
-      # eightbyte, taken in an integer register) or :sse8 (an SSE eightbyte, moved
-      # as a full 8-byte double even when it holds two packed floats, since a
-      # single movsd carries the whole eightbyte).
-      #
-      # The unaligned-field test is what a GNU __attribute__((packed)) demands
-      # (Step 28): the psABI gives an aggregate "containing unaligned fields"
-      # class MEMORY, and gcc follows it — a packed struct whose field would
-      # straddle an eightbyte boundary is passed on the stack, not in registers.
-      # Every non-packed layout here is naturally aligned, so this only ever
-      # fires for a packed struct.
-      def classify_struct(struct_type)
-        size = struct_type.size
-        return :memory if size > 16
-        return :memory if unaligned_field?(struct_type, 0)
-
-        eightbytes = Array.new((size + 7) / 8, nil)
-        classify_eightbytes(eightbytes, struct_type, 0)
-        # A NO_CLASS eightbyte (only padding fell in it) defaults to SSE, the
-        # psABI's benign choice; INTEGER otherwise wins over SSE per #merge_class.
-        eightbytes.map { |cls| cls == :integer ? :gp : :sse8 }
-      end
-
-      # Whether any scalar field of `type`, placed at absolute byte offset `base`,
-      # sits on an offset that does not satisfy its own alignment — the mark of a
-      # packed layout. A nested aggregate recurses at its members' offsets (a
-      # union's members all at 0) and an array at its element's; a scalar checks
-      # base against its alignment directly.
-      def unaligned_field?(type, base)
-        if type.struct?
-          # A bit-field is packed into a storage unit by design, so it is never an
-          # "unaligned field" in the psABI sense; only its plain neighbours are
-          # tested. gcc likewise passes a small bit-field struct in registers.
-          type.members.reject(&:bitfield?).any? { |m| unaligned_field?(m.type, base + m.offset) }
-        elsif type.array?
-          unaligned_field?(type.element, base)
-        else
-          (base % type.alignment) != 0
-        end
-      end
-
-      # Walks `type` at byte offset `base` and folds each scalar field's class
-      # into the eightbyte (offset / 8) it lands in. A nested struct or union
-      # recurses at its member offsets (a union overlays every member at the same
-      # offset, which the members' zero offsets already encode), and an array
-      # recurses element by element. A struct reaching here has already passed the
-      # unaligned-field test in #classify_struct, so no scalar straddles an
-      # eightbyte boundary and each falls wholly in the eightbyte at offset / 8.
-      def classify_eightbytes(eightbytes, type, base)
-        if type.struct?
-          type.members.each do |m|
-            if m.bitfield?
-              classify_bitfield(eightbytes, base, m)
-            else
-              classify_eightbytes(eightbytes, m.type, base + m.offset)
-            end
-          end
-        elsif type.array?
-          type.length.times { |i| classify_eightbytes(eightbytes, type.element, base + i * type.element.size) }
-        else
-          # A scalar folds its class into every eightbyte it spans. All scalars but
-          # a 128-bit integer fit in one (they are naturally aligned); a 16-byte
-          # __int128 spans two, both INTEGER, so a struct wrapping one passes by
-          # value in two integer registers, as gcc does.
-          cls = type.float? ? :sse : :integer
-          (base / 8..(base + type.size - 1) / 8).each do |index|
-            eightbytes[index] = merge_class(eightbytes[index], cls)
-          end
-        end
-      end
-
-      # Folds a bit-field member into the eightbytes its bits span. Every
-      # bit-field type in this subset is an integer type, so the field
-      # contributes INTEGER to each eightbyte it touches (a field wide enough, or
-      # placed so, that it straddles an eightbyte boundary marks both). `base` is
-      # the enclosing aggregate's byte offset and the member's `bit_offset` its
-      # bit position within that aggregate.
-      def classify_bitfield(eightbytes, base, member)
-        first_bit = base * 8 + member.bit_offset
-        last_bit = first_bit + member.bit_width - 1
-        (first_bit / 64..last_bit / 64).each do |index|
-          eightbytes[index] = merge_class(eightbytes[index], :integer)
-        end
-      end
-
-      # Combines two field classes sharing an eightbyte: NO_CLASS (nil) yields to
-      # the other, and INTEGER dominates SSE (a mixed integer/float eightbyte is
-      # passed in an integer register), matching the psABI merge rule this subset
-      # needs.
-      def merge_class(current, incoming)
-        return incoming if current.nil?
-        return current if incoming.nil?
-        return :integer if current == :integer || incoming == :integer
-
-        :sse
       end
 
       def gen_statement(stmt)
@@ -1477,18 +1380,20 @@ module Rubycc
 
       # "return expr;" from a struct-returning function. The returned value is a
       # struct address (the struct's own by-value representation), which must have
-      # the function's exact struct type (identity). A MEMORY result is copied
-      # through the hidden result pointer and that pointer returned in rax, per the
-      # psABI; a register result is copied into a scratch stack object first (so
-      # the eightbyte loads never read past a struct whose size is not a multiple
-      # of 8), whose address and eightbyte classes ride on :ret for the backend to
-      # load into the return registers.
+      # the function's exact struct type (identity). A result the convention does
+      # not put in registers is copied through the hidden result pointer, and that
+      # pointer returned as the integer result too (which is what the psABI asks
+      # of a System V MEMORY return and AAPCS64 leaves unspecified); a register
+      # result is copied into a scratch stack object first (so a piece's load
+      # never reads past a struct whose size is not a multiple of 8), whose
+      # address and pieces ride on :ret for the backend to load into the return
+      # registers.
       def gen_struct_return(node)
         src, src_type = gen_value(node.expr)
         error_at(node.token, "incompatible return type") unless src_type == @current_return_type
 
         size = @current_return_type.size
-        if @struct_return_class == :memory
+        if hidden_result?(@struct_return_plan)
           emit(:memcpy, a: @struct_return_ptr, b: src, size: size)
           emit(:ret, a: @struct_return_ptr, size: nil)
         else
@@ -1496,7 +1401,7 @@ module Rubycc
           base = new_vreg
           emit(:object_addr, dst: base, a: scratch)
           emit(:memcpy, a: base, b: src, size: size)
-          emit(:ret, a: base, size: @struct_return_class)
+          emit(:ret, a: base, size: @struct_return_plan.pieces)
         end
       end
 
@@ -3275,29 +3180,30 @@ module Rubycc
       end
 
       # Prepares a call's struct-return handling. Returns a descriptor with:
-      #   :mode     — :normal (scalar/void result), :memory (a MEMORY struct
-      #               returned through a hidden pointer) or :register (a struct
-      #               small enough to come back in registers);
-      #   :hidden   — the [buffer_addr, :gp] pair to prepend to the argument list
-      #               for a MEMORY result, else nil;
-      #   :ret      — the [buffer_addr, classes] descriptor a register result
+      #   :mode     — :normal (scalar/void result), :hidden (a struct the
+      #               convention returns through a caller-supplied pointer) or
+      #               :register (a struct that comes back in registers);
+      #   :hidden   — the [buffer_addr, kind] pair to prepend to the argument
+      #               list for a hidden-pointer result, else nil;
+      #   :ret      — the [buffer_addr, pieces] descriptor a register result
       #               rides on the call's `size`, else nil;
       #   :buf_addr — the scratch buffer's address for either struct mode.
-      # For a struct result a scratch stack object holds the value: a MEMORY
-      # callee writes it through the hidden pointer and returns that pointer in
-      # rax, while a register callee's eightbytes are stored into the buffer by
-      # the backend.
+      # For a struct result a scratch stack object holds the value: a callee that
+      # returns through the hidden pointer writes it there itself, while a
+      # register callee's pieces are stored into the buffer by the backend. The
+      # pointer's kind is the convention's — an ordinary leading integer argument
+      # under System V, x8's own :indirect_result under AAPCS64.
       def struct_return_plumbing(return_type)
         return { mode: :normal, hidden: nil, ret: nil, buf_addr: nil } unless return_type.struct?
 
-        classes = classify_struct(return_type)
+        plan = @convention.aggregate_plan(return_type)
         buf = new_object(return_type.size)
         addr = new_vreg
         emit(:object_addr, dst: addr, a: buf)
-        if classes == :memory
-          { mode: :memory, hidden: [addr, @convention.hidden_result_kind], ret: nil, buf_addr: addr }
+        if hidden_result?(plan)
+          { mode: :hidden, hidden: [addr, @convention.hidden_result_kind], ret: nil, buf_addr: addr }
         else
-          { mode: :register, hidden: nil, ret: [addr, classes], buf_addr: addr }
+          { mode: :register, hidden: nil, ret: [addr, plan.pieces], buf_addr: addr }
         end
       end
 
@@ -3305,9 +3211,9 @@ module Rubycc
       # yields its [value, type] result. A register-returned struct writes nothing
       # to a call dst (its eightbytes land in the scratch buffer), so the block
       # gets a nil dst and the value is the buffer address; every other call takes
-      # a fresh dst holding rax — the scalar/pointer result, or, for a MEMORY
-      # struct, the hidden pointer the callee returns, which is the buffer address
-      # too.
+      # a fresh dst holding the integer result register — the scalar/pointer
+      # result, or, for a hidden-pointer struct return, a value that is ignored in
+      # favour of the buffer address the caller already holds.
       def emit_call_result(plumb, return_type)
         if plumb[:mode] == :register
           yield nil
@@ -3315,7 +3221,7 @@ module Rubycc
         else
           dst = new_vreg
           yield dst
-          value = plumb[:mode] == :memory ? plumb[:buf_addr] : dst
+          value = plumb[:mode] == :hidden ? plumb[:buf_addr] : dst
           [value, return_type]
         end
       end
@@ -3362,8 +3268,15 @@ module Rubycc
       # each takes the default argument promotions (see #promote_variadic_argument)
       # instead of an assignment conversion. `name` names the callee in the
       # diagnostics of a direct call, or is nil for an indirect one. `hidden` is
-      # the [vreg, :gp] hidden result pointer to pass as the implicit first
-      # argument of a MEMORY-returning call, or nil.
+      # the [vreg, kind] hidden result pointer to pass for a call whose struct
+      # result comes back through one, or nil.
+      #
+      # Placement runs alongside the evaluation rather than over the finished
+      # list: an argument's placement depends only on the arguments to its left,
+      # so the answer is available the moment the lowering reaches it — which is
+      # what lets an aggregate be taken apart in the shape it actually travels
+      # in (its convention's register pieces, or plain eightbytes when it
+      # spills) without holding its loads back behind the rest of the list.
       def lower_call_arguments(node, param_types, variadic, name, hidden)
         callee_desc = name ? "function '#{name}'" : "function pointer"
         fixed = param_types.size
@@ -3373,71 +3286,76 @@ module Rubycc
           error_at(node.token, "too many arguments to #{callee_desc}")
         end
 
-        # One candidate group per argument (a list of [vreg, kind] eightbyte
-        # pairs), the hidden result pointer prepended so it shares the placement.
-        groups = []
-        groups << [hidden] if hidden
+        placer = @convention.placer
+        args = []
+        if hidden
+          placer.place(ArgumentRequest.new(kinds: [hidden.last], even_gp: false))
+          args << hidden
+        end
         node.args.each_with_index do |arg, i|
           vreg, arg_type = gen_value(arg)
-          groups << if i < fixed
-                      lower_fixed_argument(node, i, arg, vreg, arg_type, param_types[i], name)
-                    else
-                      [promote_variadic_argument(vreg, arg_type, node.token)]
-                    end
+          args.concat(
+            if i < fixed
+              lower_fixed_argument(node, i, arg, vreg, arg_type, param_types[i], name, placer)
+            else
+              [place_scalar_argument(*promote_variadic_argument(vreg, arg_type, node.token), placer)]
+            end
+          )
         end
-        place_call_groups(groups)
+        args
       end
 
-      # Lowers a fixed (named-parameter) argument to its candidate eightbyte
-      # group. A struct argument is checked for type identity and expanded into
-      # its eightbytes (see #lower_struct_argument); a scalar is assignment-checked,
-      # converted to the parameter's type and passed as a single eightbyte.
-      def lower_fixed_argument(node, index, arg, vreg, arg_type, param_type, name)
+      # Lowers a fixed (named-parameter) argument to its [vreg, kind] ABI slot
+      # pairs. A struct argument is checked for type identity and taken apart by
+      # its convention's plan (see #lower_struct_argument); a scalar is
+      # assignment-checked, converted to the parameter's type and passed in a
+      # single slot.
+      def lower_fixed_argument(node, index, arg, vreg, arg_type, param_type, name, placer)
         unless compatible_assignment?(param_type, arg, arg_type)
           suffix = name ? " of '#{name}'" : ""
           error_at(node.token, "incompatible type for argument #{index + 1}#{suffix}")
         end
-        return lower_struct_argument(vreg, param_type) if param_type.struct?
+        return lower_struct_argument(vreg, param_type, placer) if param_type.struct?
 
         converted = convert_for_assignment(vreg, arg_type, param_type, token: node.token)
-        [[converted, argument_kind(param_type)]]
+        [place_scalar_argument(converted, argument_kind(param_type), placer)]
       end
 
-      # Expands a by-value struct argument (whose value is its address in `addr`)
-      # into its System V eightbyte [vreg, kind] pairs. The struct is copied into
-      # a scratch stack object first, so reading whole 8-byte eightbytes never
-      # reads past a struct whose size is not a multiple of 8 (a stack object is
-      # 16-byte aligned and rounded up, so the final eightbyte's 8-byte load stays
-      # in bounds). Each eightbyte is loaded from base + 8*i; its kind is the
-      # classification's (:gp/:sse8 for a register struct, all the convention's
-      # memory-aggregate kind for a MEMORY one).
-      def lower_struct_argument(addr, struct_type)
-        classes = classify_struct(struct_type)
+      # Asks the placer where a one-slot scalar argument of candidate kind
+      # `kind` lands and returns the [vreg, kind] pair the call carries: the
+      # candidate itself when it got its register, :mem when it spilled.
+      def place_scalar_argument(vreg, kind, placer)
+        placement = placer.place(ArgumentRequest.new(kinds: [kind], even_gp: false))
+        [vreg, placement == :stack ? :mem : kind]
+      end
+
+      # Takes a by-value struct argument (whose value is its address in `addr`)
+      # apart into the [vreg, kind] pairs its ABI slots carry. The struct is
+      # copied into a scratch stack object first, so reading a whole eightbyte
+      # never reads past a struct whose size is not a multiple of 8 (a stack
+      # object is 16-byte aligned and rounded up, so a trailing 8-byte load stays
+      # in bounds) — and, for an aggregate the convention passes by reference,
+      # that copy *is* what the callee receives: its address travels as a plain
+      # pointer, which is the caller-made copy AAPCS64 6.4.2 stage B asks for.
+      # Otherwise each piece is loaded from its own offset at its own width, so
+      # an AAPCS64 HFA yields one single-precision value per member where a
+      # System V struct yields whole eightbytes.
+      def lower_struct_argument(addr, struct_type, placer)
+        plan = @convention.aggregate_plan(struct_type)
         size = struct_type.size
         scratch = new_object(size)
         base = new_vreg
         emit(:object_addr, dst: base, a: scratch)
         emit(:memcpy, a: base, b: addr, size: size)
 
-        count = (size + 7) / 8
-        kinds = classes == :memory ? Array.new(count, @convention.memory_aggregate_kind) : classes
-        (0...count).map do |i|
-          value = new_vreg
-          emit(:load, dst: value, a: eightbyte_address(base, i), size: 8)
-          [value, kinds[i]]
-        end
-      end
+        placement = placer.place(abi_request(struct_type, plan))
+        pieces = placed_pieces(struct_type, plan, placement)
+        return [[base, pieces.first.kind]] if plan.mode == :by_reference
 
-      # Runs the shared placement simulation over the argument groups (each a list
-      # of [vreg, candidate_kind] eightbyte pairs) and flattens the result to the
-      # [vreg, placed_kind] pairs a :call/:call_indirect carries. Placement acts on
-      # a whole group at once (the all-or-nothing rule), so a struct's eightbytes
-      # all land in registers or all spill together; the left-to-right vreg order
-      # is preserved.
-      def place_call_groups(groups)
-        placed = place_argument_kinds(groups.map { |group| group.map { |_vreg, kind| kind } })
-        groups.each_with_index.flat_map do |group, gi|
-          group.each_with_index.map { |(vreg, _candidate), ei| [vreg, placed[gi][ei]] }
+        pieces.map do |piece|
+          value = new_vreg
+          emit(:load, dst: value, a: piece_address(base, piece.offset), size: piece.size)
+          [value, piece.kind]
         end
       end
 

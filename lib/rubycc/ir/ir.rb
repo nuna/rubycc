@@ -79,15 +79,18 @@ module Rubycc
     #                              slot into xmm0 with movss/movsd, the System V
     #                              register a float/double result is returned in.
     #                              For an in-register struct return `size` is
-    #                              instead an eightbyte-class array (:gp/:sse8 per
-    #                              eightbyte): a is the address of the struct's
-    #                              buffer, and the backend gathers each eightbyte
-    #                              into its return register (INTEGER eightbytes
-    #                              into rax then rdx, SSE into xmm0 then xmm1). A
-    #                              MEMORY-classified struct is not returned this
-    #                              way — its callee copies the result through the
-    #                              hidden pointer parameter and returns that
-    #                              pointer in rax (a plain size-nil :ret)
+    #                              instead an IR::AbiPiece array, one per piece
+    #                              the target's convention cuts the aggregate
+    #                              into (offset, width and kind): a is the address
+    #                              of the struct's buffer, and the backend gathers
+    #                              each piece into its return register — under
+    #                              System V an eightbyte at a time into rax/rdx
+    #                              (:gp) or xmm0/xmm1 (:sse8), under AAPCS64 an
+    #                              HFA member at a time into v0..v3. A struct the
+    #                              convention does not return in registers is not
+    #                              returned this way — its callee copies the
+    #                              result through the hidden pointer parameter and
+    #                              returns that pointer too (a plain size-nil :ret)
     #   :label        a = label id (a jump target; emits no code itself)
     #   :jump         a = label id (unconditional branch)
     #   :jump_if_zero a = condition vreg, b = label id (branch when a == 0)
@@ -107,12 +110,17 @@ module Rubycc
     #                           lands at the lowest address (an eightbyte each, the
     #                           slot's low bits carrying its value). A by-value
     #                           struct argument fans out into one [vreg, kind] pair
-    #                           per eightbyte (its System V class :gp/:sse8, or :mem
-    #                           for every eightbyte of a MEMORY-classified struct),
-    #                           all placed together so the whole argument stays in
-    #                           registers or spills as a unit; a MEMORY-returning
-    #                           call also prepends a hidden [vreg, :gp] result
-    #                           pointer as the first argument. `size` is nil, or a
+    #                           per piece its convention cuts it into (a System V
+    #                           eightbyte's class :gp/:sse8, an AAPCS64 HFA
+    #                           member's :sse4/:sse8, or :mem per eightbyte when it
+    #                           spills whole), all placed together so the argument
+    #                           stays in registers or spills as a unit; an
+    #                           aggregate AAPCS64 passes by reference is reduced by
+    #                           the generator to a single :gp pointer to a
+    #                           caller-made copy, so no backend needs a rule of its
+    #                           own for it. A call whose struct result comes back
+    #                           through a hidden pointer also prepends that
+    #                           [vreg, kind] pointer as the first argument. `size` is nil, or a
     #                           [fixed, ret] pair when either half is non-nil:
     #                           `fixed` is the callee's fixed parameter count for a
     #                           variadic call (else nil), which makes the backend
@@ -120,13 +128,13 @@ module Rubycc
     #                           the call, as the ABI requires; `ret` is :sse4/:sse8
     #                           when the result is a float/double (loaded from xmm0
     #                           with movss/movsd into dst's slot), a
-    #                           [buffer_vreg, classes] pair when the result is a
+    #                           [buffer_vreg, pieces] pair when the result is a
     #                           struct returned in registers (dst is nil and the
-    #                           backend scatters each eightbyte from its return
-    #                           register — rax/rdx for INTEGER, xmm0/xmm1 for SSE —
-    #                           into the buffer buffer_vreg points at), else nil
-    #                           (the result comes back in rax as usual, which for a
-    #                           MEMORY struct is the returned hidden pointer)
+    #                           backend scatters each IR::AbiPiece from its return
+    #                           register — rax/rdx or xmm0/xmm1 under System V,
+    #                           x0/x1 or v0..v3 under AAPCS64 — into the buffer
+    #                           buffer_vreg points at), else nil (the result comes
+    #                           back in the integer result register as usual)
     #   :call_indirect dst <- (*a)(args)  a = a vreg holding the function's
     #                           address (a function pointer value), b = the
     #                           [arg_vreg, kind] pairs (the same generator-fixed
@@ -239,10 +247,11 @@ module Rubycc
 
     # A function in IR form: a name, a flat list of instructions and the number
     # of virtual registers used (so the backend can size its stack frame).
-    # `param_count` is the number of ABI argument slots (eightbytes),
-    # not the number of C parameters: a scalar parameter is one slot, a by-value
-    # struct parameter its one-or-more eightbyte slots, and a MEMORY-returning
-    # function's hidden result pointer an extra leading slot. Those slots occupy
+    # `param_count` is the number of ABI argument slots, not the number of C
+    # parameters: a scalar parameter is one slot, a by-value struct parameter one
+    # per piece its convention cuts it into, and the hidden result pointer of a
+    # function whose result does not come back in registers an extra leading
+    # slot. Those slots occupy
     # the first `param_count` virtual registers (0..param_count-1) in that order,
     # so the backend can spill the incoming argument registers into them; the
     # generator then reassembles a struct parameter's slots into a stack object.
@@ -251,17 +260,19 @@ module Rubycc
     # flattened order, which the generator has fixed by the same placement
     # simulation a call's arguments use: :gp (integer register), :sse4 (float
     # vector register), :sse8 (double vector register — also each eightbyte of a
-    # struct arriving in one) or :mem (the stack overflow area). How many
-    # registers there are to hand out before a scalar spills to :mem is the
-    # target's business, which is why the tags are fixed here and not by a
-    # backend: System V AMD64 offers six integer registers and AAPCS64 eight, so
-    # the same C call classifies differently on the two. Two further kinds name
-    # mechanisms only some conventions have and no backend need implement: an
-    # :indirect slot is an eightbyte of an aggregate the convention passes by
-    # reference, and an :indirect_result slot the implicit pointer to a
-    # caller-provided result buffer when the convention reserves a register of
-    # its own for it (AAPCS64's x8). A backend that has not grown those refuses
-    # them rather than laying them out by another convention's rule. The prologue
+    # struct arriving in one, and each member of an AAPCS64 HFA of doubles) or
+    # :mem (the stack overflow area). How many registers there are to hand out
+    # before a scalar spills to :mem, and how an aggregate is cut into slots at
+    # all, are the target's business — which is why the tags are fixed here and
+    # not by a backend: System V AMD64 offers six integer registers and AAPCS64
+    # eight, and struct { float a, b; } is one :sse8 slot on the first and two
+    # :sse4 slots on the second, so the same C call classifies differently on the
+    # two. One further kind names a mechanism only some conventions have: an
+    # :indirect_result slot is the implicit pointer to a caller-provided result
+    # buffer when the convention reserves a register of its own for it (AAPCS64's
+    # x8). An aggregate passed by reference needs no kind of its own — the
+    # generator reduces it to an ordinary :gp pointer to a caller-made copy. The
+    # prologue
     # spills each slot straight from its location, and a variadic function derives
     # its gp_offset / fp_offset / overflow start for :va_start from the counts of
     # each kind.

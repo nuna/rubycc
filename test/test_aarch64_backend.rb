@@ -202,6 +202,17 @@ class TestAArch64Backend < Minitest::Test
   def add_imm(rd, rn, imm12, shift12: false) = addsub_imm(0, 1, rd, rn, imm12, shift12)
   def sub_imm(rd, rn, imm12, shift12: false) = addsub_imm(1, 1, rd, rn, imm12, shift12)
 
+  # The flag-setting subtract (S = 1), which is what lets a loop counter be
+  # tested by the branch that follows it.
+  def subs_imm(rd, rn, imm12) = addsub_imm(1, 1, rd, rn, imm12, false) | (1 << 29)
+
+  # "Conditional branch (immediate)":
+  #   0101010(31:25) o1(24)=0 imm19(23:5) o0(4)=0 cond(3:0)
+  # The immediate is the signed word displacement from the branch itself.
+  def b_cond(cond, words)
+    (0b0101010 << 25) | ((words & 0x7FFFF) << 5) | cond
+  end
+
   # "PC-rel. addressing", the ADRP form:
   #   op(31) immlo(30:29) 10000(28:24) immhi(23:5) Rd(4:0)
   # op = 1 selects ADRP, which forms the address of the 4 KiB page the target
@@ -365,6 +376,10 @@ class TestAArch64Backend < Minitest::Test
   end
 
   def compile(fn) = Backend.new.compile(fn)
+
+  # One piece of an aggregate as the generator hands it over: the byte offset it
+  # is read from, the width of that access and the kind of register it rides.
+  def piece(offset, size, kind) = IR::AbiPiece.new(offset: offset, size: size, kind: kind)
 
   # The instruction words of a compiled function.
   def words(fn) = compile(fn).bytes.unpack("L<*")
@@ -1042,7 +1057,6 @@ class TestAArch64Backend < Minitest::Test
   # something plausible-looking.
   def test_later_milestone_ops_are_refused
     {
-      inst(:memcpy, a: 0, b: 1, size: 16) => /struct copies/,
       inst(:va_start, a: 0, b: 0) => /variadic functions/,
       inst(:alloca, dst: 0, a: 1) => /alloca/,
       inst(:mulhi, dst: 0, a: 0, b: 1, size: 8) => /128-bit multiply/,
@@ -1055,49 +1069,94 @@ class TestAArch64Backend < Minitest::Test
     end
   end
 
-  # The two AAPCS64 aggregate mechanisms the generator tags but this backend
-  # does not lower — a large struct passed by reference, and a large result
-  # written through the indirect result register x8 — are refused by name rather
-  # than laid out as if they were ordinary stack eightbytes.
-  def test_by_reference_aggregate_kinds_are_refused
-    indirect_call = func([inst(:call, dst: nil, a: "g", b: [[0, :indirect], [1, :indirect]])], vregs: 2)
-    assert_match(/by-reference struct arguments/,
-                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(indirect_call) }.message)
+  # --- aggregates ----------------------------------------------------------
 
-    indirect_param = func([inst(:ret)], vregs: 1, params: 1, param_kinds: [:indirect])
-    assert_match(/by-reference struct parameters/,
-                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(indirect_param) }.message)
-
-    hidden_result = func([inst(:ret)], vregs: 1, params: 1, param_kinds: [:indirect_result])
-    assert_match(/aggregate \(struct\) return values/,
-                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(hidden_result) }.message)
+  # An aggregate result too large for registers is written through a buffer
+  # whose address AAPCS64 6.4.1 puts in x8. The register is outside both
+  # argument sequences, so the parameter spilling stores it without disturbing
+  # the x0.. sequence a real argument would use — and it is spilled at all
+  # because x8 is caller-saved and would not survive the function's first call.
+  def test_indirect_result_pointer_is_spilled_from_x8
+    fn = func([inst(:ret)], vregs: 3, params: 3, param_kinds: [:indirect_result, :gp, :gp])
+    assert_words [str_slot(8, 0), str_slot(0, 1), str_slot(1, 2)], body(fn).first(3)
   end
 
-  # An aggregate result — of a call or of the function itself — is still
-  # refused: it arrives somewhere this core does not read.
-  def test_aggregate_results_are_refused
-    struct_ret = func([inst(:ret, a: 0, size: [:gp, :gp])], vregs: 1)
-    assert_match(/aggregate \(struct\) return values/,
-                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(struct_ret) }.message)
+  # The same register on the calling side: the buffer address goes to x8 while
+  # the ordinary arguments keep x0 and x1, none of them displaced by it.
+  def test_indirect_result_pointer_is_placed_in_x8_at_a_call
+    args = [[0, :indirect_result], [1, :gp], [2, :gp]]
+    fn = func([inst(:call, dst: nil, a: "g", b: args)], vregs: 3)
+    assert_words [ldr_slot(8, 0), ldr_slot(0, 1), ldr_slot(1, 2)], body(fn).first(3)
+  end
 
-    struct_call = func([inst(:call, dst: nil, a: "g", b: [], size: [nil, [1, [:gp]]])], vregs: 2)
-    assert_match(/aggregate \(struct\) return values/,
-                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(struct_call) }.message)
+  # An aggregate returned in registers is gathered out of the buffer the
+  # generator filled, each piece read at its own offset and width. A homogeneous
+  # pair of floats is two single-precision loads four bytes apart into s0 and s1
+  # — the AAPCS64 shape whose System V reading (one 8-byte load into d0) would
+  # have been silently wrong rather than merely unsupported.
+  def test_hfa_return_is_gathered_into_separate_vector_registers
+    pieces = [piece(0, 4, :sse4), piece(4, 4, :sse4)]
+    fn = func([inst(:ret, a: 0, size: pieces)], vregs: 1)
+    assert_words [ldr_slot(A, 0), ldr_s(0, A, 0), ldr_s(1, A, 4)], body(fn).first(3)
+  end
 
-    struct_indirect = func([inst(:call_indirect, dst: nil, a: 0, b: [], size: [nil, [1, [:gp]]])],
-                           vregs: 2)
-    assert_match(/aggregate \(struct\) return values/,
-                 assert_raises(Rubycc::Backend::UnsupportedError) { compile(struct_indirect) }.message)
+  # A non-homogeneous aggregate of 16 bytes takes the integer pair instead, one
+  # whole eightbyte per register.
+  def test_small_aggregate_return_is_gathered_into_the_integer_pair
+    pieces = [piece(0, 8, :gp), piece(8, 8, :gp)]
+    fn = func([inst(:ret, a: 0, size: pieces)], vregs: 1)
+    assert_words [ldr_slot(A, 0), ldr_x(0, A, 0), ldr_x(1, A, 8)], body(fn).first(3)
+  end
+
+  # The caller side of the same return: each piece is scattered from its result
+  # register into the scratch buffer at its own offset and width.
+  def test_aggregate_call_result_is_scattered_into_the_buffer
+    pieces = [piece(0, 8, :sse8), piece(8, 8, :sse8)]
+    fn = func([inst(:call, dst: nil, a: "g", b: [], size: [nil, [1, pieces]])], vregs: 2)
+    assert_words [ldr_slot(A, 1), str_d(0, A, 0), str_d(1, A, 8)], body(fn).drop(1).first(3)
+  end
+
+  # --- whole-object copies -------------------------------------------------
+
+  # A copy of a whole number of eightbytes, few enough to unroll, is a run of
+  # load/store pairs through the ADDR scratch — no loop, no counter.
+  def test_small_memcpy_is_unrolled
+    expected = [ldr_slot(A, 0), ldr_slot(B, 1)]
+    2.times { |i| expected += [ldr_x(ADDR, B, 8 * i), str_x(ADDR, A, 8 * i)] }
+    assert_words expected, body_of(:memcpy, a: 0, b: 1, size: 16)
+  end
+
+  # A size that is not a multiple of eight finishes with one access per
+  # remaining 4/2/1 bytes, each naturally aligned against the block before it so
+  # the scaled immediate names it exactly.
+  def test_memcpy_tail_moves_the_odd_bytes
+    expected = [ldr_slot(A, 0), ldr_slot(B, 1),
+                ldr_x(ADDR, B, 0), str_x(ADDR, A, 0),
+                ldr_w(ADDR, B, 8), str_w(ADDR, A, 8),
+                ldrh(ADDR, B, 12), strh(ADDR, A, 12),
+                ldrb(ADDR, B, 14), strb(ADDR, A, 14)]
+    assert_words expected, body_of(:memcpy, a: 0, b: 1, size: 15)
+  end
+
+  # Past the unroll limit the eightbytes go through a counted loop instead, so
+  # the code size stops growing with the object. The loop advances both
+  # addresses, decrements the counter with a flag-setting subs and branches back
+  # while it is non-zero; the branch needs no fixup, its target being behind it.
+  def test_large_memcpy_uses_a_counted_loop
+    emitted = body_of(:memcpy, a: 0, b: 1, size: 8 * 12)
+    assert_words [ldr_slot(A, 0), ldr_slot(B, 1), movz(1, C, 12, 0)], emitted.first(3)
+    assert_words [ldr_x(ADDR, B, 0), str_x(ADDR, A, 0),
+                  add_imm(B, B, 8), add_imm(A, A, 8),
+                  subs_imm(C, C, 1), b_cond(COND_NE, -5)],
+                 emitted.drop(3)
   end
 
   # The same refusals seen from the front of the compiler: valid C that uses an
   # A4 feature stops with a clear error instead of producing an object.
   def test_unsupported_c_constructs_are_refused_end_to_end
     {
-      "struct S { int a[8]; }; void f(struct S *a, struct S *b){ *a = *b; }" => /struct copies/,
-      "struct S { long a, b, c; }; int g(struct S); int f(struct S s){ return g(s); }" =>
-        /by-reference struct parameters/,
-      "void *f(int n){ return __builtin_alloca(n); }" => /alloca/
+      "void *f(int n){ return __builtin_alloca(n); }" => /alloca/,
+      "int f(unsigned x){ return __builtin_ctz(x); }" => /bit-scan builtins/
     }.each do |source, pattern|
       error = assert_raises(Rubycc::Backend::UnsupportedError, source) { compile_c(source) }
       assert_match pattern, error.message, source

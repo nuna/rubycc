@@ -50,8 +50,8 @@ IR::Program
 | `name` | シンボル名(String) |
 | `insts` | 命令のフラットな配列 |
 | `vreg_count` | 使用 vreg 数(バックエンドのフレームサイズ計算用) |
-| `param_count` | **ABI スロット数**(パラメータ数ではない)。スカラパラメータは 1 スロット、struct パラメータは分類された eightbyte 数(MEMORY struct は ceil(size/8))、MEMORY 戻りの関数は隠れ結果ポインタが先頭に 1 スロット加わる。**スロットは vreg 0..param_count-1 を占める**規約で、バックエンドが着信引数レジスタ / スタック引数をこのスロットへ写す。struct パラメータのスロットからの再組み立て(stack object への :store)はジェネレータがプロローグ IR で行う |
-| `param_kinds` | 長さ param_count の配列。各 ABI スロットの**着信位置**(`:gp` 整数レジスタ、`:sse4`/`:sse8` ベクタレジスタ、`:mem` スタック)を宣言順に持つ。配置はジェネレータが呼び出し側と同じシミュレーションで確定済みで、バックエンドはこの指定に従うだけ(超過時は契約違反として raise)。**分類はターゲット依存**(`IR::CallConvention`): 整数引数レジスタ数は System V AMD64 が 6、AAPCS64 が 8 なので、同じ C の呼び出しでもターゲットにより :gp と :mem の切れ目が異なる。さらに一部の規約にしかない機構を名指す 2 種のタグがある — `:indirect` は参照渡しされる集約の eightbyte、`:indirect_result` は専用レジスタ(AAPCS64 の x8)で渡す隠れ結果ポインタ。未実装のバックエンドは他規約の規則で配置せず名指しで拒否する |
+| `param_count` | **ABI スロット数**(パラメータ数ではない)。スカラパラメータは 1 スロット、struct パラメータは規約が切り分ける**ピース数**(System V は eightbyte ごと、AAPCS64 の HFA はメンバごと、参照渡しはポインタ 1 つ)、レジスタ返しできない戻り値の関数は隠れ結果ポインタが先頭に 1 スロット加わる。**スロットは vreg 0..param_count-1 を占める**規約で、バックエンドが着信引数レジスタ / スタック引数をこのスロットへ写す。struct パラメータのスロットからの再組み立て(stack object への :store)はジェネレータがプロローグ IR で行う |
+| `param_kinds` | 長さ param_count の配列。各 ABI スロットの**着信位置**(`:gp` 整数レジスタ、`:sse4`/`:sse8` ベクタレジスタ、`:mem` スタック)を宣言順に持つ。配置はジェネレータが呼び出し側と同じシミュレーションで確定済みで、バックエンドはこの指定に従うだけ(超過時は契約違反として raise)。**分類はターゲット依存**(`IR::CallConvention`): 整数引数レジスタ数は System V AMD64 が 6、AAPCS64 が 8 であり、さらに**集約の切り分け方自体が異なる** — `struct { float a, b; }` は System V では 1 個の `:sse8` スロット(xmm0)、AAPCS64 では HFA として 2 個の `:sse4` スロット(s0/s1)になる。一部の規約にしかない機構を名指すタグが 1 種ある — `:indirect_result` は専用レジスタ(AAPCS64 の x8)で渡す隠れ結果ポインタ。参照渡しされる集約に専用タグは不要で、ジェネレータが呼び出し側のコピーへの通常の `:gp` ポインタに落とす |
 | `stack_objects` | オブジェクト id で索引する配列。各要素は集約オブジェクト(配列・struct)のバイトサイズ。バックエンドは vreg スロットの下に配置し :object_addr を解決する |
 | `linkage` | `:external`(通常)/ `:internal`(`static`。STB_LOCAL で発行) |
 | `variadic` | `...` 付き定義なら true。バックエンドがレジスタ退避領域つきプロローグを出す |
@@ -117,8 +117,8 @@ Instruction(op, dst:, a:, b:, size:)
 | :const | 8 = 64 bit 即値ロード(long/ポインタ定数)。それ以外は 32 bit 即値 |
 | 浮動小数点演算(:fadd 系・:f 比較) | 浮動小数点オペランド幅(4 = float / 8 = double) |
 | :itof / :ftoi / :ftof | :itof は変換**先**の浮動小数点幅、:ftoi / :ftof は変換**元**の幅(§5) |
-| :call / :call_indirect | nil、または **[fixed, ret] ペア**(どちらかが非 nil のとき)。fixed = 可変長 callee の固定パラメータ数(非可変長は nil)で、バックエンドは call 直前に al = 使用 xmm 数を出す。ret = 戻り値が float/double なら :sse4/:sse8(xmm0 から回収)、レジスタ返しの struct なら **[buffer_vreg, classes]**(classes は :gp/:sse8 の eightbyte クラス配列。バックエンドが戻りレジスタ rax→rdx / xmm0→xmm1 の内容を buffer_vreg の指すスクラッチバッファへ 8×i で散布)、それ以外は nil(rax。MEMORY struct の隠れポインタ戻りもここ) |
-| :ret | nil = 整数/ポインタ戻り値(rax)。4/8 = 浮動小数点戻り値(スロットから movss/movsd で xmm0 へ)。**クラス配列** = レジスタ返しの struct(a の指すバッファから各 eightbyte を戻りレジスタへ収集) |
+| :call / :call_indirect | nil、または **[fixed, ret] ペア**(どちらかが非 nil のとき)。fixed = 可変長 callee の固定パラメータ数(非可変長は nil)で、バックエンドは call 直前に al = 使用 xmm 数を出す。ret = 戻り値が float/double なら :sse4/:sse8(xmm0 から回収)、レジスタ返しの struct なら **[buffer_vreg, pieces]**(pieces は `IR::AbiPiece` の配列で各ピースの offset / size / kind を持つ。バックエンドが戻りレジスタ — System V は rax→rdx / xmm0→xmm1、AAPCS64 は x0→x1 / v0..v3 — の内容を buffer_vreg の指すスクラッチバッファへ各ピースの offset・幅で散布)、それ以外は nil(整数戻りレジスタ) |
+| :ret | nil = 整数/ポインタ戻り値(rax)。4/8 = 浮動小数点戻り値(スロットから movss/movsd で xmm0 へ)。**AbiPiece 配列** = レジスタ返しの struct(a の指すバッファから各ピースを自身の offset・幅で戻りレジスタへ収集) |
 | :memcpy | コピーするバイト数(struct 全体代入) |
 
 ## 5. 命令一覧
@@ -189,13 +189,13 @@ Instruction(op, dst:, a:, b:, size:)
 | :label | a = ラベル id | ジャンプ先。それ自体はコードを出さない |
 | :jump | a = ラベル id | 無条件分岐 |
 | :jump_if_zero | a = 条件 vreg、b = ラベル id | a == 0 のとき分岐 |
-| :ret | a = 値 vreg または nil | 関数から戻る。nil は void の `return;` / 末尾到達(値ロードなし)。`size` nil = rax 戻り、4/8 = 浮動小数点戻り(スロットから movss/movsd で xmm0 へ)、クラス配列 = レジスタ返しの struct — a はジェネレータが memcpy 済みのスクラッチバッファのアドレス vreg で、バックエンドはそれを rcx にロードし [rcx + 8i] から各 eightbyte を INTEGER = rax→rdx / SSE = xmm0→xmm1 の順に収集する。MEMORY struct の `return` は隠れ結果ポインタへの :memcpy の後、そのポインタを size nil で返す(rax = 結果アドレス、psABI どおり) |
+| :ret | a = 値 vreg または nil | 関数から戻る。nil は void の `return;` / 末尾到達(値ロードなし)。`size` nil = rax 戻り、4/8 = 浮動小数点戻り(スロットから movss/movsd で xmm0 へ)、AbiPiece 配列 = レジスタ返しの struct — a はジェネレータが memcpy 済みのスクラッチバッファのアドレス vreg で、バックエンドはそれをスクラッチにロードし各ピースの offset・幅で戻りレジスタへ収集する(System V は INTEGER = rax→rdx / SSE = xmm0→xmm1、AAPCS64 は :gp = x0→x1 / HFA メンバ = v0..v3)。レジスタ返しできない struct の `return` は隠れ結果ポインタへの :memcpy の後、そのポインタを size nil で返す |
 
 ### 呼び出し
 
 | 命令 | 形 | 意味 |
 |---|---|---|
-| :call | dst ← f(args)。a = callee 名(String)、b = **[vreg, kind] ペアの配列**(左から右。kind は :gp / :sse4 / :sse8 / :mem、および §2 param_kinds の :indirect / :indirect_result) | kind は**ジェネレータがターゲットの CallConvention で配置シミュレーションを行い確定済みの着信位置**(以下は x86_64 の場合): :gp は edi..r9d の次の空き、:sse4/:sse8 は xmm0..7 の次の空き(movss/movsd でロード)、:mem は 8 バイトスロット内容のまま逆順 push のスタック渡し(:mem 同士は左→右の順序を保つ)。バックエンドは指定に従うだけで、超過(7 個目の :gp 等)は契約違反として raise。struct 引数はジェネレータが eightbyte ごとの複数ペアに展開済み(psABI の all-or-nothing 規則も配置時に適用済み)。MEMORY 戻りの callee には隠れ結果ポインタの [vreg, :gp] ペアが先頭に加わる。`size` = nil または [fixed, ret](§4)。可変長 callee には call 直前に al = 使用 xmm 数(mov al, imm8) |
+| :call | dst ← f(args)。a = callee 名(String)、b = **[vreg, kind] ペアの配列**(左から右。kind は :gp / :sse4 / :sse8 / :mem、および §2 param_kinds の :indirect_result) | kind は**ジェネレータがターゲットの CallConvention で配置シミュレーションを行い確定済みの着信位置**(以下は x86_64 の場合): :gp は edi..r9d の次の空き、:sse4/:sse8 は xmm0..7 の次の空き(movss/movsd でロード)、:mem は 8 バイトスロット内容のまま逆順 push のスタック渡し(:mem 同士は左→右の順序を保つ)。バックエンドは指定に従うだけで、超過(7 個目の :gp 等)は契約違反として raise。struct 引数はジェネレータが規約のピースごとの複数ペアに展開済み(all-or-nothing 規則も配置時に適用済み。AAPCS64 が参照渡しする集約はコピーへの :gp ポインタ 1 つに縮約済み)。隠れ結果ポインタ戻りの callee には [vreg, kind] ペアが先頭に加わる。`size` = nil または [fixed, ret](§4)。可変長 callee には call 直前に al = 使用 xmm 数(mov al, imm8) |
 | :call_indirect | dst ← (*a)(args)。a = 関数アドレスの vreg、b = [vreg, kind] ペアの配列 | 引数・size の扱いは :call と同一。バックエンドはスクラッチレジスタ(r10)経由で call |
 | :func_addr | dst ← &func。a = 関数名(String) | 関数指示子の退化・`&f` の値。:global_addr 同様の PC 相対再配置で解決 |
 
@@ -317,7 +317,7 @@ DESIGN.md §9.1 の一次資料に基づく。仕様への準拠であり、実�
 | 要素 | 出典 |
 |---|---|
 | 引数レジスタ順(rdi, rsi, rdx, rcx, r8, r9)、7 個目以降のスタック渡し、16 バイト整列(§5 :call・§6) | System V AMD64 psABI |
-| 引数レジスタ本数のターゲット差(整数 x0..x7 の 8 本、ベクタ v0..v7 の 8 本)、スタック引数の 8 バイト単位・8 バイト整列、隠れ結果ポインタの x8(§2 param_kinds の :indirect_result) | AAPCS64 §6.4.2 |
+| 引数レジスタ本数のターゲット差(整数 x0..x7 の 8 本、ベクタ v0..v7 の 8 本)、スタック引数の 8 バイト単位・8 バイト整列、隠れ結果ポインタの x8(§2 param_kinds の :indirect_result)、集約の分類(HFA は 4 メンバまで各自 v レジスタ、非 HFA は 16 バイト以下なら x レジスタ連番・16 バイト超は参照渡し、レジスタ不足時は NGRN/NSRN が 8 に飽和) | AAPCS64 §6.4.2 |
 | 可変長呼び出しの al = 使用ベクタレジスタ数、レジスタ退避領域、va_list の 4 フィールド構造(gp_offset / fp_offset / overflow_arg_area / reg_save_area)(§5 :va_start・§6) | System V AMD64 psABI §3.5.7 |
 | 再配置種別(R_X86_64_PLT32 / PC32 / 64)(§2 GlobalReloc・§6) | System V AMD64 psABI / System V gABI |
 | 符号別の命令分割(:div/:udiv、:sar/:shr、:lt/:ult 系)と movsx/movzx 対応(§5) | x86-64 の機械命令が符号で分かれること(Intel SDM)への 1:1 対応 |
