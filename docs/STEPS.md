@@ -2641,9 +2641,59 @@ Step 75 の実測で「残る最大のボトルネックは struct 値渡しで�
 
 ---
 
+## Step 77 — 集約分類のターゲット化(M4 A4 の本体)
+
+Step 76 で記録した **`struct { float a, b; }` の silent miscompile** の解消が最優先目的。
+System V は 2 つの float を 1 eightbyte にまとめて d0 へ渡すが、**AAPCS64 は HFA
+(Homogeneous Floating-point Aggregate)として s0/s1 の別レジスタへ渡す**。
+
+- `IR::CallConvention` を抽象基底とし `SystemVAMD64Convention` / `AAPCS64Convention` の
+  2 実装に分けた。System V の eightbyte 分類ロジックはジェネレータから**そのまま移設**
+  (挙動不変)。ターゲット依存なものは 3 つ: レジスタ本数、`aggregate_plan`(集約の
+  切り分け)、`placer`(引数リストの走査規則)。
+- **`AbiPiece(offset, size, kind)` にオフセットと幅を持たせたのが設計の要点**。
+  System V は常に `(8*i, 8)`、AAPCS64 の HFA は `(4*i, 4)`。「同じ struct が x86-64 では
+  1 eightbyte、aarch64 では 2 レジスタ」という差がこの 1 箇所に閉じる。
+- **配置器を逐次型にしたのは x86_64 のバイト一致のため**。集約は「レジスタに乗るか
+  溢れるか」で切り分け方自体が変わる(溢れた HFA は eightbyte 単位で積む)ので配置決定が
+  必要だが、配置は左側の引数にしか依存しない。引数生成と同じ順で問い合わせれば
+  命令の発行順が一切変わらない。
+- **HFA 判定**は要素サイズと個数を再帰的に求め(struct は加算・配列は乗算・**union は最大**・
+  スカラは `[size, 1]`、ビットフィールドや整数が 1 つでもあれば失格)、さらに
+  **`size == count * element_size` を検証**する。`aligned(16)` を付けた
+  `struct {float,float}` はメンバ 2 個でも 16 バイトを占め、gcc は HFA 扱いせず x0/x1 で
+  渡す — 個数だけ見ると誤判定する。実物の `gcc -S` 出力と突き合わせて確定させた規則:
+  - HFA 判定は **16 バイト制限より先**(double×4 = 32 バイトでも d0..d3)
+  - **packed struct は memory 化しない**(System V の unaligned-field 規則に AAPCS64 の
+    対応物は無い)
+  - HFA が溢れると **NSRN のみ**飽和(後続の int は x0 に届く)、非 HFA 集約が溢れると
+    **NGRN のみ**飽和(後続の int はスタック)
+  - 16 バイト整列の集約は**偶数番 x レジスタから**
+  - 溢れた HFA はメンバごとではなく **eightbyte 単位**で積む
+- aarch64 backend に x8 間接結果・参照渡し・HFA の v レジスタ配置・`:memcpy` を実装。
+- **IR 契約の変更 2 点**(`ir.rb` と `docs/IR.md` の両方を更新):
+  1. **`:indirect` タグを削除**。参照渡しされる集約は、ジェネレータが「呼び出し側コピーへの
+     通常の `:gp` ポインタ」に縮約する。backend 側に専用規則が要らなくなり、未使用タグを
+     残すより契約が正直になる。`:indirect_result`(x8)は専用レジスタが要るので残す。
+  2. **戻り記述子をクラス配列から `AbiPiece` 配列へ**。HFA のメンバ幅・オフセットを
+     表現するために必要だった。
+- **x86_64 は 254 ファイルでバイト一致**(examples 全件 + c-testsuite 本体。旧実装は
+  `git archive HEAD` で作業ツリーに触れず取り出して比較)。メインセッションでも
+  20 ファイルで独立に裏取りした。
+- 検証: IR レベルで `param_kinds` が `[:sse8]` 対 `[:sse4, :sse4]` に分岐することを確認し、
+  実行でも rubycc / gcc(aarch64)/ x86_64 の三者が一致。逆アセンブルでも rubycc が
+  gcc と同じく s0/s1 で受け取ることを確認した。
+- examples の保留は 8 → 6 件(`step25_records` と `step53_compound_literals` が通過。
+  `step28_wideint` は struct copies を抜けたが 128 ビット乗算で止まるため理由を書き換えた)。
+- **残る制約**: スタック引数の 16 バイト整列は未対応(IR の `:mem` スロットが 8 バイト単位
+  固定のため、`__int128` を含む集約がスタックに溢れる場合)。ただしこれは **x86_64 側にも
+  元からある同じ穴**で、今回入ったものではない。レジスタ側の偶数番規則は実装済み。
+
+---
+
 ## 現在のテスト規模
 
-Step 76 完了時点: **2,310 runs / 6,167 assertions / 0 failures / 52 skips**
+Step 77 完了時点: **2,327 runs / 6,176 assertions / 0 failures / 50 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
