@@ -2355,9 +2355,33 @@ M4 の初手。heavy-implementer へ移譲・レビューして確定。**挙動
 
 ---
 
+## Step 69 — binary64 → binary32 の正しい丸め(§3 債務の消し込み)
+
+ABI ハーネス(Step 62)が検出していた「同梱 float.h の `FLT_MAX` が +inf になる」
+バグの解消。原因は Ruby の `Array#pack("e")` が binary32 の表現範囲を超える大きさを
+**丸めずに +inf へ飽和**させることで、`3.40282347e+38F` は真値が FLT_MAX から半 ULP
+以内にあり最近接丸めなら FLT_MAX になるべきものだった。
+
+- 特別扱いの範囲分岐を積む代わりに、double のビット界(符号・指数・仮数)を辿って
+  52 ビット仮数を 23 ビットへ**最近接・偶数丸め**で縮約する 1 本の変換
+  (`#double_to_binary32_bits`)に統一。オーバーフロー(→ 無限大)・非正規数への
+  段階的縮退・最小正規数への繰り上がりが、いずれも同じ丸め 1 回の結果として出る。
+  シフト量は Ruby の多倍長 Integer で扱うので、深い underflow でも正確。
+- 定数材料化(`#float_bit_pattern`)とグローバル初期化子のパック(`#pack_float`)の
+  両経路が同じ変換を通る。double 側(8 バイト)は従来どおり `pack("E")`。
+- 検証は単体 15 件(FLT_MAX の 10 進綴り・厳密な同点が偶数側=無限大へ倒れること・
+  同点の直下は FLT_MAX へ・偶数丸めの上下・FLT_TRUE_MIN・その半分の underflow・
+  符号付きゼロ・無限大・NaN)+ gcc 差分の実行テスト。ハーネス側は FLT_MAX を
+  非 assert から通常の検査へ戻し、README の既知ギャップから当該行を削除した
+  (残る非 assert は long double = double 由来の max_align_t のみ)。
+- 新機能ではなくバグ修正のため examples の追加はなし(値の一致は gcc 差分テストが
+  常時検証する)。
+
+---
+
 ## 現在のテスト規模
 
-Step 68 完了時点: **1,851 runs / 5,249 assertions / 0 failures / 27 skips**
+Step 69 完了時点: **1,866 runs / 5,266 assertions / 0 failures / 27 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
