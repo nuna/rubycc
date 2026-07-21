@@ -15,9 +15,8 @@ require "tmpdir"
 # status and stdout. Structure: the emitted image is read back through the
 # project's own ELFReader and asserted to be a well-formed aarch64 ET_EXEC (the
 # crt's _start at e_entry, libc.so.6 a default NEEDED, external calls bound
-# through JUMP_SLOTs, no RELATIVE in a non-PIE image). A companion test pins the
-# out-of-scope decision: an aarch64 *shared* object link is refused, not
-# silently mis-linked with x86_64 logic.
+# through JUMP_SLOTs, no RELATIVE in a non-PIE image). The aarch64 *shared*
+# object counterpart is covered by TestAArch64SharedObject.
 #
 # The run cases are skip-guarded on the sysroot loader/libc being available.
 class TestAArch64SelfLink < Minitest::Test
@@ -219,22 +218,6 @@ class TestAArch64SelfLink < Minitest::Test
     a = build_exe("int puts(const char*s); int main(void){ return puts(\"d\"); }")
     b = build_exe("int puts(const char*s); int main(void){ return puts(\"d\"); }")
     assert_equal a, b, "identical inputs must yield byte-identical executables"
-  end
-
-  # --- out-of-scope decision: no aarch64 shared object -------------------
-
-  # The shared-object linker is not part of A5; an aarch64 .so request must be
-  # refused explicitly rather than run through the x86_64 logic and produce a
-  # broken object.
-  def test_aarch64_shared_object_is_refused
-    in_tmpdir do |dir|
-      obj = File.join(dir, "lib.o")
-      compile_with_rubycc_aarch64("int inc(int x) { return x + 1; }", obj)
-      err = assert_raises(Rubycc::Link::LinkError) do
-        Rubycc::Link::SharedLinker.link([obj], soname: "libt.so")
-      end
-      assert_match(/aarch64/, err.message)
-    end
   end
 
   private

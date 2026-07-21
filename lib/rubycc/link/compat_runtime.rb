@@ -60,22 +60,25 @@ module Rubycc
 
       class << self
         # The compiler-support runtime as an `ar` archive (an ASCII-8BIT String),
-        # ready to append to a link's input list. Memoized: the bytes are
-        # deterministic (N4) and their construction — compiling every fragment —
-        # is done once per process.
-        def archive_bytes
-          @archive_bytes ||= build_archive
+        # ready to append to a link's input list. `target` selects the machine the
+        # fragments are compiled for, so the runtime members match the objects they
+        # are merged with — an aarch64 link must not pull in an x86_64 definition.
+        # Memoized per target: the bytes are deterministic (N4) and their
+        # construction — compiling every fragment — is done once per target per
+        # process.
+        def archive_bytes(target: "x86_64")
+          (@archive_bytes ||= {})[target] ||= build_archive(target)
         end
 
         private
 
-        # Compiles each source fragment to a PIC ET_REL object and lays them out
-        # as archive members in table order, producing a symbol-indexed archive
-        # the linker can extract from lazily.
-        def build_archive
+        # Compiles each source fragment to a PIC ET_REL object for `target` and
+        # lays them out as archive members in table order, producing a
+        # symbol-indexed archive the linker can extract from lazily.
+        def build_archive(target)
           writer = ObjFile::ArWriter.new
           SOURCES.each do |name, source|
-            object = Compiler.new.compile(source, filename: SOURCE_FILENAME, pic: true)
+            object = Compiler.new.compile(source, filename: SOURCE_FILENAME, pic: true, target: target)
             writer.add_member("#{name}.o", object)
           end
           writer.to_binary

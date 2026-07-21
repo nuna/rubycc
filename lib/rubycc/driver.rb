@@ -351,7 +351,7 @@ module Rubycc
       resolution = Link::LibraryResolver.resolve(@libraries, search_dirs: @lib_dirs)
       link_inputs.concat(resolution.inputs)
       needed.concat(resolution.needed)
-      link_inputs << Link::CompatRuntime.archive_bytes if @default_libs
+      link_inputs << Link::CompatRuntime.archive_bytes(target: target) if @default_libs
 
       if mode == :shared
         Link::SharedLinker.link_to(link_inputs, output, needed: needed, soname: @soname)

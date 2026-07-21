@@ -32,6 +32,11 @@ module AArch64ExecutionHelper
   SYSROOT_INTERP = "#{SYSROOT}/lib/ld-linux-aarch64.so.1"
   SYSROOT_LIBC = "#{SYSROOT}/lib/libc.so.6"
 
+  # The canonical on-target dynamic-loader path a consumer executable names in
+  # its PT_INTERP; qemu resolves it beneath QEMU_LD_PREFIX, so it is the target
+  # spelling (not the host sysroot path, which qemu would prefix a second time).
+  TARGET_INTERP = "/lib/ld-linux-aarch64.so.1"
+
   # True when every tool the aarch64 execution tests need is on PATH. The probe
   # runs once per process (each tool is exec'd to see whether it exists at all)
   # and the answer is memoized, since every test in the file asks.
@@ -206,5 +211,48 @@ module AArch64ExecutionHelper
     raise "#{AArch64ExecutionHelper::CROSS_OBJDUMP} failed (exit #{status.exitstatus}):\n#{stderr}" unless status.success?
 
     stdout
+  end
+
+  # Links `object_paths` into an aarch64 shared object with rubycc's OWN linker
+  # (Rubycc::Link::SharedLinker) and returns the .so path. Imports (libc
+  # functions and data) are resolved against the sysroot libc, the same way the
+  # driver supplies -lc; a self-contained object passes no dependency. This is
+  # the A5 shared-object acceptance path: rubycc compiles and links the whole
+  # `.so` itself, with no cross gcc or cross ld.
+  def link_shared_aarch64_rubycc(object_paths, so_path, soname:, needed: [AArch64ExecutionHelper::SYSROOT_LIBC])
+    Rubycc::Link::SharedLinker.link_to(object_paths, so_path, needed: needed, soname: soname)
+    so_path
+  end
+
+  # Builds a consumer executable from `consumer_source` against the rubycc-linked
+  # shared object `so_path` with the cross gcc, then runs it under qemu with the
+  # `.so` on the library path; returns [exit_status, stdout]. The consumer names
+  # the on-target loader and finds the `.so` (and, transitively, libc) beneath
+  # QEMU_LD_PREFIX, so the object is loaded by the real dynamic loader and its
+  # exports are called — an execution oracle for the `.so`, since the host is
+  # x86_64 and cannot dlopen an aarch64 object directly. Only the cross gcc is
+  # used to build the reference *consumer*; the `.so` under test is rubycc's own.
+  def run_against_aarch64_so(consumer_source, so_path)
+    dir = File.dirname(so_path)
+    consumer_c = File.join(dir, "consumer.c")
+    File.write(consumer_c, consumer_source)
+    exe = File.join(dir, "consumer")
+    lib = File.basename(so_path).sub(/\Alib/, "").sub(/\.so\z/, "")
+
+    out, status = Open3.capture2e(
+      AArch64ExecutionHelper::CROSS_GCC, consumer_c, "-o", exe,
+      "-L", dir, "-l#{lib}", "-Wl,-rpath,#{dir}",
+      "-Wl,--dynamic-linker=#{AArch64ExecutionHelper::TARGET_INTERP}"
+    )
+    unless status.success?
+      raise "#{AArch64ExecutionHelper::CROSS_GCC} failed to link the consumer " \
+            "(exit #{status.exitstatus}):\n#{out}"
+    end
+
+    stdout, run_status = Open3.capture2(
+      { "QEMU_LD_PREFIX" => AArch64ExecutionHelper::SYSROOT, "LD_LIBRARY_PATH" => dir },
+      AArch64ExecutionHelper::QEMU, exe
+    )
+    [run_status.exitstatus, stdout]
   end
 end

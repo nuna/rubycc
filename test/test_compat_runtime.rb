@@ -69,6 +69,20 @@ class TestCompatRuntime < Minitest::Test
     assert guard.defined?, "#{GUARD_SYMBOL} must be a defined symbol in the member"
   end
 
+  # The archive member must be compiled for the requested target, so an aarch64
+  # link never pulls in an x86_64 definition (a machine mismatch that would
+  # corrupt the merged object). The default target stays x86_64.
+  def test_archive_is_compiled_for_the_requested_target
+    x86 = member_machine(Runtime.archive_bytes)
+    assert_equal 62, x86, "the default archive member is an x86_64 object"
+
+    aarch64 = member_machine(Runtime.archive_bytes(target: "aarch64"))
+    assert_equal 183, aarch64, "the aarch64 archive member is an aarch64 object"
+
+    assert_same Runtime.archive_bytes(target: "aarch64"), Runtime.archive_bytes(target: "aarch64"),
+                "the per-target archive bytes must be memoized"
+  end
+
   # --- laziness: extracted only when referenced -----------------------------
 
   def test_guard_symbol_is_absent_when_not_referenced
@@ -124,6 +138,12 @@ class TestCompatRuntime < Minitest::Test
 
   def in_tmpdir(&block)
     Dir.mktmpdir("rubycc-compat-runtime", &block)
+  end
+
+  # The ELF e_machine of the archive's guard-defining member.
+  def member_machine(archive_bytes)
+    member = ArReader.read(archive_bytes).member_defining(GUARD_SYMBOL)
+    Reader.read(member.data).machine
   end
 
   # Compiles `source` into a .so with the rubycc driver in-process and returns

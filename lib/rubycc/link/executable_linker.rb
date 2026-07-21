@@ -199,9 +199,6 @@ module Rubycc
         nil
       end
 
-      # An executable is emitted for x86_64 and, since this step, aarch64.
-      def supported_machines = [EM_X86_64, EM_AARCH64]
-
       # --- SharedLinker hook overrides ---------------------------------------
 
       # An executable prepends the synthesized crt so _start (and its references

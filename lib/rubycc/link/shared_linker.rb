@@ -3,7 +3,8 @@
 module Rubycc
   module Link
     # The final-link core that turns an ordered set of relocatable inputs into a
-    # loadable ELF64 shared object (ET_DYN, a `.so`) for Linux x86_64. It is the
+    # loadable ELF64 shared object (ET_DYN, a `.so`) for Linux x86_64 or aarch64.
+    # It is the
     # counterpart of the `ld -r` static core: where PartialLinker merges inputs
     # into another ET_REL and only *retargets* relocations, this stage assigns
     # load-time virtual addresses, *applies* the relocations by patching bytes,
@@ -236,27 +237,28 @@ module Rubycc
       def load_base = 0
 
       # --- target machine ----------------------------------------------------
-      # The final-link core is written for x86_64 and reused for aarch64 by the
-      # executable writer; the shared-object writer only supports x86_64 (a `.so`
-      # binds through a lazy-resolver PLT and R_AARCH64_RELATIVE rebasing that are
-      # out of this step's scope). Each target-dependent decision — the machine
-      # id, the segment page size, the relocation scan/apply, the PLT stub bytes
-      # and the dynamic relocation type numbers — branches on this flag; the whole
-      # section/symbol/table layer above it is machine-independent.
+      # The final-link core is written for both x86_64 and aarch64: a shared
+      # object and the executable writer share it. Each target-dependent decision
+      # — the machine id, the segment page size, the relocation scan/apply, the
+      # PLT stub bytes and the dynamic relocation type numbers — branches on this
+      # flag; the whole section/symbol/table layer above it is machine-independent.
+      # An aarch64 `.so` binds through R_AARCH64_RELATIVE rebasing of its internal
+      # absolute addresses (internal GOT slots and ABS64 initializers) and through
+      # the same eager (BIND_NOW) per-function PLT the x86_64 `.so` uses, so no
+      # lazy-resolver PLT0 header is needed.
 
       def aarch64? = @em == EM_AARCH64
       def e_machine_id = aarch64? ? EM_AARCH64 : EM_X86_64
       def seg_align = aarch64? ? AARCH64_MAX_PAGE : PAGE
 
-      # The set of machines this writer accepts. A plain shared object is x86_64
-      # only; ExecutableLinker widens it to aarch64.
-      def supported_machines = [EM_X86_64]
+      # The set of machines this writer accepts: x86_64 and aarch64, for both the
+      # shared object and the executable subclass.
+      def supported_machines = [EM_X86_64, EM_AARCH64]
 
       def check_machine!
         return if supported_machines.include?(@em)
 
-        raise LinkError, "linking for machine #{@em} is not supported by this linker " \
-                         "(aarch64 shared objects are not yet implemented)"
+        raise LinkError, "linking for machine #{@em} is not supported by this linker"
       end
 
       # The dynamic relocation type numbers, chosen per target. x86_64 keeps its
