@@ -627,12 +627,48 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <netinet/tcp.h> (Step 90, M5 H2): the TCP-level socket-option names, used
+  # with setsockopt at level IPPROTO_TCP. Arch-neutral (common layer). Only the
+  # option macros are checked -- the header carries no struct rubycc reproduces.
+  TCP = HeaderAbiHarness::Spec.new(
+    header: "netinet/tcp.h",
+    defines: ["_GNU_SOURCE"],
+    ints: %w[TCP_NODELAY TCP_MAXSEG TCP_CORK TCP_KEEPIDLE TCP_KEEPINTVL
+             TCP_KEEPCNT TCP_INFO TCP_QUICKACK TCP_USER_TIMEOUT TCP_FASTOPEN],
+    snippets: [<<~C.chomp]
+      static int abi_tcp(void) { return TCP_NODELAY + TCP_KEEPIDLE; }
+    C
+  )
+
+  # <sys/un.h> (Step 90, M5 H2): struct sockaddr_un, the AF_UNIX address. Its
+  # 110-byte layout (a 108-byte sun_path) is arch-neutral (common layer).
+  SOCKADDR_UN = HeaderAbiHarness::Spec.new(
+    header: "sys/un.h",
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[struct\ sockaddr_un],
+    offsets: [["struct sockaddr_un", "sun_family"], ["struct sockaddr_un", "sun_path"]],
+    snippets: [<<~C.chomp]
+      static unsigned long abi_un(void) {
+        struct sockaddr_un a; a.sun_family = 1; a.sun_path[0] = '/';
+        return sizeof a.sun_path + a.sun_family;
+      }
+    C
+  )
+
   def test_arpa_inet_abi_matches_gcc
     assert_abi_matches(ARPA_INET)
   end
 
   def test_netinet_in_abi_matches_gcc
     assert_abi_matches(NETINET_IN)
+  end
+
+  def test_tcp_abi_matches_gcc
+    assert_abi_matches(TCP)
+  end
+
+  def test_un_abi_matches_gcc
+    assert_abi_matches(SOCKADDR_UN)
   end
 
   def test_errno_abi_matches_gcc
@@ -888,6 +924,14 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_netinet_in_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::NETINET_IN)
+  end
+
+  def test_tcp_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::TCP)
+  end
+
+  def test_un_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SOCKADDR_UN)
   end
 
   private
