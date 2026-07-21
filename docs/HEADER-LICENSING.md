@@ -74,7 +74,7 @@ musl の `COPYRIGHT`(https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT)より�
 
 ---
 
-## 3. 同梱ヘッダの由来台帳(49 本)
+## 3. 同梱ヘッダの由来台帳(51 本)
 
 各ヘッダ冒頭の provenance コメントを棚卸しした結果。分類は次の 4 種:
 
@@ -129,7 +129,7 @@ musl の宣言セット/形状を出発点にし、glibc の対象 arch(x86-64 /
 | `include/libc/glibc/aarch64/sys/types.h` | 全幅・符号を glibc aarch64 LP64 に固定。nlink_t/blksize_t=32bit で x86-64 と相違(実測) |
 | `include/libc/glibc/aarch64/time.h` | `time_t`=long、`struct tm` 拡張(x86-64 版とバイト一致) |
 
-### 3.3 clean-room(19 本)
+### 3.3 clean-room(21 本)
 
 musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI に対してゼロから記述。
 
@@ -154,6 +154,8 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 | `include/libc/signal.h` | **シグナル番号・SA_ フラグと sigset_t/siginfo_t/struct sigaction のレイアウト**(kernel UAPI + glibc ABI・実測 offsetof・§4)。signal/kill/sigaction 等は POSIX 宣言。両 arch 同一のため共通層 | なし(UAPI+glibc ABI 実測) |
 | `include/libc/sys/socket.h` | **AF_/SOCK_/SO_/MSG_ 値と sockaddr/sockaddr_storage/msghdr/iovec 等のレイアウト**(kernel UAPI + glibc ABI・実測 offsetof・§4)。socket/bind/connect 等は POSIX 宣言。両 arch 同一のため共通層 | なし(UAPI+glibc ABI 実測) |
 | `include/libc/netinet/in.h` | **IPPROTO_/INADDR_ 値と sockaddr_in/in6・in6_addr のレイアウト**(kernel UAPI linux/in.h+in6.h・実測 offsetof・§4)。arpa/inet.h/sys/socket.h と共有ガードで共存。両 arch 同一のため共通層 | なし(UAPI+glibc ABI 実測) |
+| `include/libc/netinet/tcp.h` | **TCP_ ソケットオプション名**(kernel UAPI linux/tcp.h・実測・§4)。両 arch 同一のため共通層 | なし(UAPI 由来) |
+| `include/libc/sys/un.h` | **struct sockaddr_un の 110 バイトレイアウト**(kernel UAPI linux/un.h・実測 offsetof・§4)。両 arch 同一のため共通層 | なし(UAPI 由来) |
 
 > `assert.h` と `features.h` は自己申告で clean-room だが、冒頭コメントに
 > 「musl's <…> was the shape reference」とある。**形状(どの宣言を並べるか)の参照**で
@@ -166,8 +168,8 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 |---|---|
 | freestanding | 8 |
 | musl-derived | 22 |
-| clean-room | 19 |
-| **合計** | **49** |
+| clean-room | 21 |
+| **合計** | **51** |
 
 > Step 82(M5 H1)で `include/libc/glibc/aarch64/` 層 11 本を追加(30→41)。うち 8 本は
 > x86-64 版と宣言・値がバイト一致(`cmp` 確認済み)で、由来分類も x86-64 版を継承する。

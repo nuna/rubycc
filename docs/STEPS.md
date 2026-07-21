@@ -3035,10 +3035,28 @@ Step 88 の sys/socket.h と対になる IPv4/IPv6 アドレス層。ネット�
 
 ---
 
+## Step 90 — 同梱 `<netinet/tcp.h>` + `<sys/un.h>`(M5 H2、ソケットヘッダ群の完成)
+
+sys/socket.h(88)・netinet/in.h(89)に続き、ソケットヘッダ群を完成させる小ヘッダ 2 本。
+どちらも極小で密接に関連するため 1 ステップにまとめた(Step 63 のバッチ追加と同じ扱い)。
+
+- **netinet/tcp.h**(共通層): TCP レベルの setsockopt オプション名(TCP_NODELAY=1〜TCP_FASTOPEN=23)。
+  両 arch 一致。struct tcp_info は gem が使わないため省略(オプション名のみ)。clean-room UAPI(linux/tcp.h)。
+- **sys/un.h**(共通層): AF_UNIX アドレス `struct sockaddr_un`(実測 110B・align 2、
+  sun_family@0/sun_path[108]@2)。両 arch 一致。sa_family_t は sys/socket.h/netinet/in.h と同じ
+  `_RUBYCC_SA_FAMILY_T` ガードで共存。clean-room UAPI(linux/un.h)。
+- どちらも実測値どおり。メインセッションで直接実装(極小のため)。
+- 検証: tcp + un の 4 ケース(各 x86-64 + aarch64)green、test_header_abi.rb 全体 58 runs green、
+  hermetic で tcp/un + sys/socket.h 併用 exit 0、既存 examples に参照なし。
+- これで sys/socket.h + netinet/in.h + netinet/tcp.h + sys/un.h + arpa/inet.h のソケットヘッダ群が
+  一通り揃い、TCP/UDP/UNIX ソケットを張る gem 拡張のコンパイルに必要な面が出そろった。
+
+---
+
 ## 現在のテスト規模
 
-Step 89 完了時点: **2,395 runs / 6,371 assertions / 0 failures / 47 skips**
-(Step 88 の 2,393 から +2 = netinet/in の ABI ケース x86-64 + aarch64。
+Step 90 完了時点: **2,399 runs / 6,383 assertions / 0 failures / 47 skips**
+(Step 89 の 2,395 から +4 = netinet/tcp と sys/un の ABI ケース各 x86-64 + aarch64。
 aarch64 側はクロス gcc + qemu 未導入のホストではスキップされる)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
