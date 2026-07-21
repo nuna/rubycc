@@ -484,6 +484,54 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <signal.h> (Step 87, M5 H2): the signalling interface. Its ABI is
+  # arch-neutral -- every signal number, SA_ flag value and the sigset_t /
+  # siginfo_t / struct sigaction layouts are identical on x86-64 and aarch64
+  # (both use glibc's generic sigaction with the trailing sa_restorer and the
+  # 128-byte sigset_t / siginfo_t) -- so the header lives in the common layer and
+  # this Spec is re-run in the aarch64 class's neutral-layer section below. The
+  # struct sigaction and siginfo_t offset checks lean on the header's member
+  # macros (sa_handler -> __sigaction_handler.sa_handler, si_pid ->
+  # _sifields.__sigchld.si_pid, ...), so a one-byte drift in the union layout is
+  # caught against the gcc oracle. `defines: ["_GNU_SOURCE"]` is needed because
+  # rubycc's bundled header exposes the SA_ extensions, SIGRTMIN/SIGRTMAX and the
+  # full signal-number set unconditionally, while the host glibc gates them
+  # behind __USE_XOPEN_EXTENDED / __USE_MISC / __USE_GNU. The sigaction / signal /
+  # sigemptyset / sigaddset / kill / raise calls resolve from the static libc and
+  # pull in no loader, so the snippet exercises them by real call.
+  SIGNAL = HeaderAbiHarness::Spec.new(
+    header: "signal.h",
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[sig_atomic_t sigset_t struct\ sigaction siginfo_t],
+    ints: %w[SIGHUP SIGINT SIGQUIT SIGILL SIGTRAP SIGABRT SIGBUS SIGFPE SIGKILL
+             SIGUSR1 SIGSEGV SIGUSR2 SIGPIPE SIGALRM SIGTERM SIGSTKFLT SIGCHLD
+             SIGCONT SIGSTOP SIGTSTP SIGTTIN SIGTTOU SIGURG SIGXCPU SIGXFSZ
+             SIGVTALRM SIGPROF SIGWINCH SIGIO SIGPWR SIGSYS
+             SIGRTMIN SIGRTMAX NSIG
+             SIG_BLOCK SIG_UNBLOCK SIG_SETMASK
+             SA_NOCLDSTOP SA_NOCLDWAIT SA_SIGINFO SA_ONSTACK SA_RESTART
+             SA_NODEFER SA_RESETHAND],
+    offsets: [["struct sigaction", "sa_handler"], ["struct sigaction", "sa_mask"],
+              ["struct sigaction", "sa_flags"], ["struct sigaction", "sa_restorer"],
+              ["siginfo_t", "si_signo"], ["siginfo_t", "si_errno"],
+              ["siginfo_t", "si_code"], ["siginfo_t", "si_pid"],
+              ["siginfo_t", "si_uid"], ["siginfo_t", "si_status"],
+              ["siginfo_t", "si_addr"], ["siginfo_t", "si_band"],
+              ["siginfo_t", "si_fd"]],
+    snippets: [<<~C.chomp]
+      static void abi_sig_handler(int s) { (void)s; }
+      static int abi_signal(void) {
+        struct sigaction sa;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_handler = abi_sig_handler;
+        sa.sa_flags = SA_RESTART;
+        sigaction(SIGINT, &sa, (struct sigaction *)0);
+        signal(SIGTERM, SIG_IGN);
+        return kill(0, 0) + raise(0) + sigaddset(&sa.sa_mask, SIGUSR1);
+      }
+    C
+  )
+
   # <arpa/inet.h> (Step 64): brought forward for msgpack, which includes it for
   # the endian macros and the ntoh*/hton* conversions. The bundled header
   # collapses glibc's socket + UAPI fan-out to the flat surface the gem actually
@@ -532,6 +580,10 @@ class TestHeaderAbi < Minitest::Test
 
   def test_mman_abi_matches_gcc
     assert_abi_matches(MMAN)
+  end
+
+  def test_signal_abi_matches_gcc
+    assert_abi_matches(SIGNAL)
   end
 
   def test_stdio_abi_matches_gcc
@@ -743,6 +795,10 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_mman_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::MMAN)
+  end
+
+  def test_signal_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SIGNAL)
   end
 
   private
