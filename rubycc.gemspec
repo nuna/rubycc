@@ -20,7 +20,7 @@ Gem::Specification.new do |spec|
   spec.metadata["rubygems_mfa_required"] = "true"
 
   spec.files = Dir.glob("lib/**/*.rb") + Dir.glob("include/**/*.h") + Dir.glob("exe/*") +
-               Dir.glob("data/*") + ["LICENSE.txt", "README.md"]
+               Dir.glob("data/*") + ["LICENSE.txt", "NOTICE", "README.md"]
   spec.bindir = "exe"
   spec.executables = ["rubycc", "rubycc-doctor"]
   spec.require_paths = ["lib"]

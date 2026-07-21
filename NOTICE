@@ -11,12 +11,20 @@ declarations, and then modified so their type widths, structure layouts and
 macro values match the glibc x86-64 ABI (measured from the reference platform,
 not copied from glibc). Each derived header carries a one-line provenance note
 in its opening comment; headers whose entire mechanism is glibc/arch specific
-(for example the <ctype.h> classification table accessors) are written clean
-room against the published ABI rather than derived from either source.
+(for example the <ctype.h> classification table accessors) or whose values come
+from the Linux kernel UAPI (<errno.h>, <sys/stat.h>) are written clean room
+against the published ABI rather than derived from musl.
 
-No source was copied from glibc (which is LGPL); only observable ABI values
-(sizeof/_Alignof, offsetof, and macro values, printed by the reference
-compiler) were measured and reproduced.
+musl's COPYRIGHT grants permission for its public header files to omit the
+copyright and permission notices the MIT license would otherwise require, so
+retaining the musl notice below is not an obligation for the derived headers;
+rubycc keeps it as an acknowledgement of provenance. The full per-file
+provenance ledger and the licensing analysis are in docs/HEADER-LICENSING.md.
+
+No source was copied from glibc (which is LGPL) or from the Linux kernel UAPI
+headers (which are GPL); only observable ABI facts (sizeof/_Alignof, offsetof,
+struct layouts, and macro values, printed by the reference compiler) were
+measured and reproduced. ABI facts are not copyrightable expression.
 
 musl libc
 ---------

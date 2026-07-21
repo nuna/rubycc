@@ -1,9 +1,10 @@
 /* rubycc bundled <errno.h>: the error-number macros and the errno lvalue
-   (POSIX). (c)-group header brought forward for the distroless ruby.h build: its
-   values come from the Linux/asm-generic UAPI, reproduced here as measured
-   integer constants (glibc reaches them via __errno_location, which resolves
-   from the host libc at link time). Placed in the glibc/x86-64 layer because the
-   numeric values are kernel-ABI specific. */
+   (POSIX). Provenance: clean room against the Linux/asm-generic UAPI, not
+   derived from musl. The error numbers are the kernel ABI, reproduced here as
+   measured integer constants (an ABI fact, not copied text -- see
+   docs/HEADER-LICENSING.md); glibc reaches them via __errno_location, which
+   resolves from the host libc at link time. Placed in the glibc/x86-64 layer
+   because the numeric values are kernel-ABI specific. */
 
 #ifndef _RUBYCC_ERRNO_H
 #define _RUBYCC_ERRNO_H

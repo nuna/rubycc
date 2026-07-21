@@ -1,9 +1,11 @@
 /* rubycc bundled <sys/stat.h>: struct stat and the file-mode macros (POSIX).
-   (c)-group header brought forward for the distroless ruby.h build. struct stat
-   is pinned to the glibc x86-64 kernel ABI: the field order, the __pad0 slot
+   Provenance: clean room against the Linux x86-64 kernel ABI, not derived from
+   musl. struct stat is pinned to that ABI: the field order, the __pad0 slot
    before st_rdev, the nanosecond timespec fields and the trailing reserved
-   longs give the measured 144-byte layout. Placed in the glibc/x86-64 layer
-   because the layout and the S_IF* octal values are kernel-ABI specific. */
+   longs give the measured 144-byte layout. Both the layout and the S_IF* octal
+   values are ABI facts reproduced by measurement, not copied text (see
+   docs/HEADER-LICENSING.md). Placed in the glibc/x86-64 layer because they are
+   kernel-ABI specific. */
 
 #ifndef _RUBYCC_SYS_STAT_H
 #define _RUBYCC_SYS_STAT_H
