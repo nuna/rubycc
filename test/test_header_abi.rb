@@ -407,6 +407,31 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <poll.h> (Step 84, M5 H2): unlike fcntl.h, poll's ABI is arch-neutral --
+  # struct pollfd's layout and every POLLIN/POLLOUT/... value are identical on
+  # x86-64 and aarch64 -- so the header lives in the common layer and this Spec
+  # is re-run byte-for-byte in the aarch64 class's neutral-layer section below.
+  # `defines: ["_GNU_SOURCE"]` is needed for the same reason fcntl.h's Spec
+  # needs it: rubycc's bundled header exposes the XOPEN (POLLRDNORM family) and
+  # GNU (POLLREMOVE, POLLRDHUP) names unconditionally, while the host glibc
+  # gates them behind __USE_XOPEN / __USE_GNU.
+  POLL = HeaderAbiHarness::Spec.new(
+    header: "poll.h",
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[struct\ pollfd nfds_t],
+    ints: %w[POLLIN POLLPRI POLLOUT POLLERR POLLHUP POLLNVAL
+             POLLRDNORM POLLRDBAND POLLWRNORM POLLWRBAND POLLMSG
+             POLLREMOVE POLLRDHUP],
+    offsets: [["struct pollfd", "fd"], ["struct pollfd", "events"],
+              ["struct pollfd", "revents"]],
+    snippets: [<<~C.chomp]
+      static int abi_poll(struct pollfd *fds, nfds_t n) {
+        fds[0].events = POLLIN | POLLOUT;
+        return poll(fds, n, 100);
+      }
+    C
+  )
+
   # <arpa/inet.h> (Step 64): brought forward for msgpack, which includes it for
   # the endian macros and the ntoh*/hton* conversions. The bundled header
   # collapses glibc's socket + UAPI fan-out to the flat surface the gem actually
@@ -443,6 +468,10 @@ class TestHeaderAbi < Minitest::Test
 
   def test_fcntl_abi_matches_gcc
     assert_abi_matches(FCNTL)
+  end
+
+  def test_poll_abi_matches_gcc
+    assert_abi_matches(POLL)
   end
 
   def test_stdio_abi_matches_gcc
@@ -642,6 +671,10 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_stddef_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::STDDEF)
+  end
+
+  def test_poll_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::POLL)
   end
 
   private
