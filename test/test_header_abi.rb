@@ -595,8 +595,44 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <netinet/in.h> (Step 89, M5 H2): the IPv4/IPv6 address types, the
+  # sockaddr_in / sockaddr_in6 structs and the IPPROTO_/INADDR_ values. Its ABI
+  # is arch-neutral -- every struct layout (sockaddr_in, sockaddr_in6, in6_addr
+  # all included) and every macro value is identical on x86-64 and aarch64 --
+  # so the header lives in the common layer and this Spec is re-run in the
+  # aarch64 class's neutral-layer section below. It shares in_addr_t/in_port_t/
+  # struct in_addr/socklen_t with <arpa/inet.h> and sa_family_t with
+  # <sys/socket.h> through the same guard macros, so `also: ["sys/socket.h"]`
+  # pulls in AF_INET for the snippet without redefining anything.
+  NETINET_IN = HeaderAbiHarness::Spec.new(
+    header: "netinet/in.h",
+    also: ["sys/socket.h"],
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[in_addr_t in_port_t sa_family_t struct\ in_addr struct\ in6_addr
+              struct\ sockaddr_in struct\ sockaddr_in6],
+    ints: %w[IPPROTO_IP IPPROTO_ICMP IPPROTO_TCP IPPROTO_UDP IPPROTO_IPV6 IPPROTO_RAW
+             INADDR_ANY INADDR_LOOPBACK INADDR_BROADCAST INADDR_NONE
+             htons(0x1234) htonl(0x12345678)],
+    offsets: [["struct sockaddr_in", "sin_family"], ["struct sockaddr_in", "sin_port"],
+              ["struct sockaddr_in", "sin_addr"],
+              ["struct sockaddr_in6", "sin6_family"], ["struct sockaddr_in6", "sin6_port"],
+              ["struct sockaddr_in6", "sin6_flowinfo"], ["struct sockaddr_in6", "sin6_addr"],
+              ["struct sockaddr_in6", "sin6_scope_id"]],
+    snippets: [<<~C.chomp]
+      static int abi_netinet(struct sockaddr_in *a) {
+        struct in6_addr any = IN6ADDR_ANY_INIT;
+        a->sin_family = AF_INET; a->sin_port = htons(80); a->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        return (int)a->sin_addr.s_addr + any.s6_addr[15] + IPPROTO_TCP;
+      }
+    C
+  )
+
   def test_arpa_inet_abi_matches_gcc
     assert_abi_matches(ARPA_INET)
+  end
+
+  def test_netinet_in_abi_matches_gcc
+    assert_abi_matches(NETINET_IN)
   end
 
   def test_errno_abi_matches_gcc
@@ -848,6 +884,10 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_socket_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::SOCKET)
+  end
+
+  def test_netinet_in_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::NETINET_IN)
   end
 
   private
