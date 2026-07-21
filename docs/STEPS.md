@@ -2727,9 +2727,48 @@ A4 の最後の項目。呼び出し側は Step 75/76 で対応済み(AAPCS64 �
 
 ---
 
+## Step 79 — aarch64 実行ファイルの自作リンク(M4 A5 第一段)
+
+A2〜A4 の aarch64 実行検証はすべて**クロス gcc でリンク**していた。A5 でリンクも自前化する。
+このステップは実行ファイルリンカと crt に絞り、共有ライブラリ(gem install 用)は次段。
+
+- **成果: rubycc 自身のリンカだけで aarch64 実行ファイルを生成し qemu で実行できる**。
+  gcc/binutils 不要という目標に前進。
+- 機種依存/非依存の切り分けが設計の中心。ELF ヘッダ・セクション・シンボルテーブル・
+  .hash・.dynamic 構築・3 セグメントのページ整列レイアウトは**非依存でそのまま流用**。
+  機種依存は 8 点(e_machine・再配置型番号・再配置スキャン分類・再配置適用・PLT スタブ
+  命令列・動的再配置型・crt の _start 命令列・セグメント整列)。
+- **x86_64 のバイト一致を構造的に保証する方式**: `elf_writer.rb` の MachineDescription
+  思想に倣い、機種を e_machine で判定して機種依存メソッドの先頭で aarch64 分岐に振り、
+  **x86_64 の本体コードは一字一句そのまま残す**。リンク対象機種は入力 .o の e_machine
+  から判定する(ExecutableLinker は crt 生成が merge 前なので入力ヘッダを直読み、
+  SharedLinker は merge 後の reader.machine)。
+- crt(_start)は `__libc_start_main(main, argc, argv, init, fini, rtld_fini, stack_end)`
+  を x0-x6 に積む規約を実物の gcc バイナリの逆アセンブルで裏取りした。
+- PLT は per-function スタブ `adrp x16 / ldr x17,[x16,#lo12] / add x16 / br x17` の
+  16 バイト、.got.plt 先頭 3 スロット予約。動的再配置型は readelf -r で実測
+  (JUMP_SLOT=1026、GLOB_DAT=1025、RELATIVE=1027、ABS64=257)。セグメント整列は
+  aarch64 が 64KiB、x86_64 が 4KiB(ADRP のページ計算は常に 4KiB)。
+- 内部マージ機構(PartialLinker / RelocatableWriter)に e_machine 伝播を追加した。
+- **x86_64 は実行ファイル 3/3・共有オブジェクト 2/2 でバイト一致**(挙動変更ゼロ)。
+  メインセッションでも実行ファイル・.so の両方で独立に裏取りした。
+- **スコープ外は明示拒否**: aarch64 の共有ライブラリリンクは `LinkError`
+  「aarch64 shared objects are not yet implemented」で止める(黙って x86_64 の
+  ロジックを走らせない)。
+- 検証: 自作リンク経路を `aarch64_execution_helper` に追加(既存クロス gcc 経路は温存)。
+  17 ケース(戻り値・putchar/puts/printf・グローバル・argc・複数 TU・float・struct 値渡しの
+  実行差分 + ET_EXEC/NEEDED/JUMP_SLOT/PT_INTERP の構造検査 + .so 拒否のガード)。
+- **次段(A5 第二段)に残したもの**: 共有ライブラリリンカの aarch64 対応(.so 生成、
+  R_AARCH64_RELATIVE による内部再配置、遅延解決 PLT0)。これが **gem install に必要**。
+  非 PIC 実行ファイルは GOT 再配置を出さないため、GOT 経路(ADR_GOT_PAGE / GLOB_DAT)は
+  実装済みだが実行未到達。CompatRuntime が x86_64 コンパイル固定である潜在的穴も
+  次段で解消する。
+
+---
+
 ## 現在のテスト規模
 
-Step 78 完了時点: **2,339 runs / 6,199 assertions / 0 failures / 47 skips**
+Step 79 完了時点: **2,356 runs / 6,232 assertions / 0 failures / 47 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
