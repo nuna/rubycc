@@ -532,6 +532,47 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <sys/socket.h> (Step 88, M5 H2): the socket address structs and the core
+  # socket calls. Its ABI is arch-neutral -- every AF_/PF_/SOCK_/SOL_/SO_/MSG_/
+  # SHUT_ value and every struct layout (sockaddr, sockaddr_storage, msghdr,
+  # iovec, cmsghdr and linger all included) is identical on x86-64 and aarch64
+  # -- so the header lives in the common layer and this Spec is re-run in the
+  # aarch64 class's neutral-layer section below. `defines: ["_GNU_SOURCE"]` is
+  # needed because rubycc's bundled header exposes SOCK_CLOEXEC/SOCK_NONBLOCK,
+  # MSG_NOSIGNAL and SO_REUSEPORT unconditionally, while the host glibc gates
+  # them behind __USE_GNU / __USE_MISC. socket/bind/connect/send/recv/
+  # setsockopt resolve from the static libc and pull in no loader, so the
+  # snippet exercises them by real call against a loopback socket.
+  SOCKET = HeaderAbiHarness::Spec.new(
+    header: "sys/socket.h",
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[socklen_t sa_family_t struct\ sockaddr struct\ sockaddr_storage
+              struct\ msghdr struct\ iovec struct\ linger],
+    ints: %w[AF_UNSPEC AF_UNIX AF_INET AF_INET6 PF_INET
+             SOCK_STREAM SOCK_DGRAM SOCK_RAW SOCK_SEQPACKET SOCK_CLOEXEC SOCK_NONBLOCK
+             SOL_SOCKET
+             SO_REUSEADDR SO_TYPE SO_ERROR SO_BROADCAST SO_SNDBUF SO_RCVBUF
+             SO_KEEPALIVE SO_LINGER SO_REUSEPORT
+             MSG_OOB MSG_PEEK MSG_TRUNC MSG_DONTWAIT MSG_WAITALL MSG_NOSIGNAL
+             SHUT_RD SHUT_WR SHUT_RDWR],
+    offsets: [["struct sockaddr", "sa_family"], ["struct sockaddr", "sa_data"],
+              ["struct msghdr", "msg_name"], ["struct msghdr", "msg_namelen"],
+              ["struct msghdr", "msg_iov"], ["struct msghdr", "msg_iovlen"],
+              ["struct msghdr", "msg_control"], ["struct msghdr", "msg_controllen"],
+              ["struct msghdr", "msg_flags"],
+              ["struct iovec", "iov_base"], ["struct iovec", "iov_len"]],
+    snippets: [<<~C.chomp]
+      static int abi_socket(const struct sockaddr *sa, socklen_t len) {
+        int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        int one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+        if (connect(fd, sa, len) < 0) return -1;
+        char buf[4];
+        return (int)recv(fd, buf, sizeof buf, MSG_PEEK) + (int)send(fd, buf, 1, 0);
+      }
+    C
+  )
+
   # <arpa/inet.h> (Step 64): brought forward for msgpack, which includes it for
   # the endian macros and the ntoh*/hton* conversions. The bundled header
   # collapses glibc's socket + UAPI fan-out to the flat surface the gem actually
@@ -584,6 +625,10 @@ class TestHeaderAbi < Minitest::Test
 
   def test_signal_abi_matches_gcc
     assert_abi_matches(SIGNAL)
+  end
+
+  def test_socket_abi_matches_gcc
+    assert_abi_matches(SOCKET)
   end
 
   def test_stdio_abi_matches_gcc
@@ -799,6 +844,10 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_signal_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::SIGNAL)
+  end
+
+  def test_socket_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SOCKET)
   end
 
   private
