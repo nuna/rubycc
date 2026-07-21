@@ -2992,10 +2992,32 @@ H2 のヘッダ追加を継続。実測で未同梱だった gem 拡張向けヘ
 
 ---
 
+## Step 88 — 同梱 `<sys/socket.h>` の追加(M5 H2)
+
+H2 のヘッダ追加を継続。ネットワーク系 gem(puma 等)が使うソケット API。
+
+- **sys/socket.h は共通層**(AF_*/SOCK_*/SO_*/MSG_* 値と全 struct レイアウトが両 arch 完全一致)。
+  `include/libc/sys/socket.h` の 1 本。
+- struct を実測サイズ/オフセットで再現: `struct msghdr`(56B、msg_name@0/namelen@8/iov@16/
+  iovlen@24/control@32/controllen@40/flags@48)、`sockaddr`(16B)、`sockaddr_storage`(128B・
+  __ss_align で align 8)、`iovec`(16B、_RUBYCC_STRUCT_IOVEC ガード)、`cmsghdr`(16B)、`linger`(8B)。
+  ハーネスが全 offsetof/sizeof をクロス gcc と突き合わせて保証。
+- provenance は clean-room UAPI/glibc(linux/socket.h・asm-generic/socket.h の実測再現)。
+  socket/bind/connect/send/recv 等 17 の POSIX プロトタイプはホスト libc から解決。
+- 型ガードは既存共有名に一致(size_t/ssize_t/socklen_t は既存ヘッダと共有、sa_family_t を新設)。
+- POLL/DLFCN/MMAN/SIGNAL と同じく `defines: ["_GNU_SOURCE"]`(SOCK_CLOEXEC/NONBLOCK・MSG_NOSIGNAL・
+  SO_REUSEPORT は glibc が __USE_GNU/__USE_MISC でゲート)。
+- 検証: socket の 2 ケース(x86-64 + aarch64)green、test_header_abi.rb 全体 52 runs green、
+  hermetic で sys/socket.h 解決(exit 0)、既存 examples に参照なし。
+- **フォローアップ**: 実ネットワーク gem はさらに `netinet/in.h`(sockaddr_in/in6・htons 等)・
+  `netinet/tcp.h`・`sys/un.h` を必要とする(ソケットヘッダ群として後続で追加)。
+
+---
+
 ## 現在のテスト規模
 
-Step 87 完了時点: **2,391 runs / 6,359 assertions / 0 failures / 47 skips**
-(Step 86 の 2,389 から +2 = signal の ABI ケース x86-64 + aarch64。
+Step 88 完了時点: **2,393 runs / 6,365 assertions / 0 failures / 47 skips**
+(Step 87 の 2,391 から +2 = socket の ABI ケース x86-64 + aarch64。
 aarch64 側はクロス gcc + qemu 未導入のホストではスキップされる)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
