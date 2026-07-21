@@ -432,6 +432,31 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <dlfcn.h> (Step 85, M5 H2): the dynamic-loading interface. Its ABI is
+  # arch-neutral -- every RTLD_* value is identical on x86-64 and aarch64 -- so
+  # the header is in the common layer and this Spec is re-run in the aarch64
+  # class's neutral-layer section. `defines: ["_GNU_SOURCE"]` is needed because
+  # rubycc's bundled header exposes the glibc extensions (RTLD_NOLOAD,
+  # RTLD_DEEPBIND, RTLD_NODELETE, RTLD_NEXT, RTLD_DEFAULT) unconditionally, while
+  # the host glibc gates them behind __USE_GNU. RTLD_NEXT/RTLD_DEFAULT are
+  # pointers, so they are exercised through the snippet rather than the int
+  # checks. The dl* calls sit under sizeof (unevaluated, like <math.h>'s), so the
+  # probe proves the declarations are usable without emitting a link reference --
+  # dlopen in a statically linked aarch64 probe would otherwise pull the loader in.
+  DLFCN = HeaderAbiHarness::Spec.new(
+    header: "dlfcn.h",
+    defines: ["_GNU_SOURCE"],
+    ints: %w[RTLD_LAZY RTLD_NOW RTLD_GLOBAL RTLD_LOCAL
+             RTLD_NOLOAD RTLD_DEEPBIND RTLD_NODELETE],
+    snippets: [<<~C.chomp]
+      static unsigned long abi_dlfcn(const char *name, const char *sym) {
+        return sizeof(dlopen(name, RTLD_LAZY | RTLD_GLOBAL))
+             + sizeof(dlsym((void *)0, sym)) + sizeof(dlclose((void *)0))
+             + sizeof(dlerror()) + (RTLD_NEXT != RTLD_DEFAULT);
+      }
+    C
+  )
+
   # <arpa/inet.h> (Step 64): brought forward for msgpack, which includes it for
   # the endian macros and the ntoh*/hton* conversions. The bundled header
   # collapses glibc's socket + UAPI fan-out to the flat surface the gem actually
@@ -472,6 +497,10 @@ class TestHeaderAbi < Minitest::Test
 
   def test_poll_abi_matches_gcc
     assert_abi_matches(POLL)
+  end
+
+  def test_dlfcn_abi_matches_gcc
+    assert_abi_matches(DLFCN)
   end
 
   def test_stdio_abi_matches_gcc
@@ -675,6 +704,10 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_poll_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::POLL)
+  end
+
+  def test_dlfcn_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::DLFCN)
   end
 
   private
