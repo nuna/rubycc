@@ -2933,10 +2933,29 @@ Step 83 の fcntl.h に続く H2 のヘッダ追加。実測で未同梱だっ�
 
 ---
 
+## Step 85 — 同梱 `<dlfcn.h>` の追加(M5 H2)
+
+H2 のヘッダ追加を継続。実測で未同梱だった gem 拡張向けヘッダ(動的ロード)。
+
+- **dlfcn.h は共通層**(RTLD_* 値が両 arch 完全一致)。`include/libc/dlfcn.h` の 1 本。
+- provenance は clean-room だが **kernel UAPI ではなく glibc の動的リンク ABI**(bits/dlfcn.h)。
+  RTLD_LAZY=0x1/NOW=0x2/GLOBAL=0x100/LOCAL=0/NOLOAD=0x4/DEEPBIND=0x8/NODELETE=0x1000、
+  RTLD_NEXT=(void*)-1/RTLD_DEFAULT=(void*)0。dlopen/dlsym/dlclose/dlerror は POSIX 宣言で実体は
+  リンク時にホスト libc から解決(dlfcn は syscall インタフェースではない)。
+- POLL Spec の `defines: ["_GNU_SOURCE"]` を踏襲(RTLD_NOLOAD/DEEPBIND/NODELETE/NEXT/DEFAULT は
+  glibc が `__USE_GNU` でゲート)。RTLD_NEXT/DEFAULT はポインタなので snippet 側で使用検査。
+  **snippet は dl* 呼び出しを `sizeof(...)` 下に置く**(未評価=リンク参照を生まない。math.h と
+  同流儀)ことで、静的リンクの aarch64 プローブが dlopen でローダを引き込むのを回避。
+- サブエージェントがセッション上限に達したため、本ステップはメインセッションで直接実装。
+- 検証: dlfcn の 2 ケース(x86-64 + aarch64)green、test_header_abi.rb 全体 46 runs green、
+  hermetic で dlfcn.h 解決(exit 0)、既存 examples に dlfcn.h 参照なし。
+
+---
+
 ## 現在のテスト規模
 
-Step 84 完了時点: **2,385 runs / 6,341 assertions / 0 failures / 47 skips**
-(Step 83 の 2,383 から +2 = poll の ABI ケース x86-64 + aarch64。
+Step 85 完了時点: **2,387 runs / 6,347 assertions / 0 failures / 47 skips**
+(Step 84 の 2,385 から +2 = dlfcn の ABI ケース x86-64 + aarch64。
 aarch64 側はクロス gcc + qemu 未導入のホストではスキップされる)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
