@@ -2970,10 +2970,32 @@ H2 のヘッダ追加を継続。実測で未同梱だった gem 拡張向けヘ
 
 ---
 
+## Step 87 — 同梱 `<signal.h>` の追加(M5 H2)
+
+H2 のヘッダ追加を継続。実測で未同梱だった gem 拡張向けヘッダのうち最もレイアウトが重いもの。
+
+- **signal.h は共通層**(シグナル番号・SA_* フラグ・sigset_t/siginfo_t/struct sigaction の
+  レイアウトが両 arch 完全一致)。`include/libc/signal.h` の 1 本。
+- **siginfo_t(128B)と struct sigaction(152B)の union レイアウトを実測オフセットで再現**。
+  クロス gcc + qemu で全 offsetof を実測し(si_pid@16/si_uid@20/si_status@24・si_addr@16・
+  si_value@24・si_band@16/si_fd@24・sa_handler@0/sa_mask@8/sa_flags@136/sa_restorer@144)、
+  glibc の `_sifields`/`__sigaction_handler` union をアクセサマクロ(`#define si_pid ...`・
+  `#define sa_handler ...`)込みで再現。ハーネスが全 offsetof をクロス gcc と突き合わせて保証。
+- SIGRTMIN/SIGRTMAX は glibc では**定数でなく関数呼び出し**(`__libc_current_sigrtmin/max()`。
+  ローダが下位 RT シグナルを予約するため実行時決定)なので、extern 宣言 + 呼び出しマクロで実装。
+  ハーネスは実行時にホスト/qemu 上で呼んで 34/64 を比較。
+- レイアウト依存が重く union の 1 バイトずれが即失敗になるため heavy-implementer(Opus)に委譲。
+- POLL/DLFCN/MMAN と同じく `defines: ["_GNU_SOURCE"]`。sigaction/kill 等は静的 libc に常在するため
+  snippet は実呼び出しで可。
+- 検証: signal の 2 ケース(x86-64 + aarch64)green、test_header_abi.rb 全体 50 runs green、
+  hermetic で signal.h 解決(exit 0)、既存 examples に参照なし。
+
+---
+
 ## 現在のテスト規模
 
-Step 86 完了時点: **2,389 runs / 6,353 assertions / 0 failures / 47 skips**
-(Step 85 の 2,387 から +2 = mman の ABI ケース x86-64 + aarch64。
+Step 87 完了時点: **2,391 runs / 6,359 assertions / 0 failures / 47 skips**
+(Step 86 の 2,389 から +2 = signal の ABI ケース x86-64 + aarch64。
 aarch64 側はクロス gcc + qemu 未導入のホストではスキップされる)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
