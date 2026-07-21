@@ -42,19 +42,31 @@ module HeaderAbiHarness
   #              "declaration exists / is usable" check (a function prototype the
   #              header must provide, a macro that must expand to usable code);
   #              its presence is proven by the probe compiling at all.
+  #   defines  : feature-test macro names to #define ahead of every #include
+  #              (even <stdio.h>), as bare names ("_GNU_SOURCE"). Needed when the
+  #              header under test exposes a flat, always-on surface (as rubycc's
+  #              bundled headers do -- see sys/stat.h's unconditional st_atim) but
+  #              the host glibc gates the same names behind __USE_GNU and friends;
+  #              defining the feature-test macro before the first system header
+  #              (which is what fixes <features.h>'s __USE_* state) makes the
+  #              oracle expose its full surface too, so the comparison is
+  #              apples-to-apples. Unset for a Spec, this emits nothing, so every
+  #              existing Spec's probe text is byte-identical to before.
   Spec = Struct.new(:header, :also, :sizes, :ints, :floats, :offsets, :snippets,
-                    keyword_init: true)
+                    :defines, keyword_init: true)
 
   # The paired outcome of running one Spec both ways: each side's process exit
   # status and captured standard output. A passing case has both statuses 0 and
   # byte-identical output.
   Result = Struct.new(:gcc_status, :gcc_out, :rubycc_status, :rubycc_out)
 
-  # Builds the probe program for `spec`: it pulls in <stdio.h> (for printf),
-  # <stddef.h> (for offsetof), the header under test and any `also` headers, then
-  # emits every check as one labeled printf line inside main, with the snippets
-  # placed at file scope ahead of it. The label text is part of the compared
-  # output, so a check is self-identifying when a difference is reported.
+  # Builds the probe program for `spec`: any `defines` come first (ahead of even
+  # <stdio.h>, so they are in effect for <features.h>'s __USE_* resolution), then
+  # <stdio.h> (for printf), <stddef.h> (for offsetof), the header under test and
+  # any `also` headers, then every check as one labeled printf line inside main,
+  # with the snippets placed at file scope ahead of it. The label text is part of
+  # the compared output, so a check is self-identifying when a difference is
+  # reported.
   def abi_probe_source(spec)
     lines = []
     Array(spec.sizes).each do |type|
@@ -71,12 +83,14 @@ module HeaderAbiHarness
       lines << %(  printf("offsetof(#{type}, #{member}) = %zu\\n", offsetof(#{type}, #{member}));)
     end
 
+    defines_block = Array(spec.defines).map { |name| "#define #{name}" }.join("\n")
     includes = ["stdio.h", "stddef.h", spec.header, *Array(spec.also)].uniq
     header_block = includes.map { |name| "#include <#{name}>" }.join("\n")
+    preamble = defines_block.empty? ? header_block : "#{defines_block}\n#{header_block}"
     snippets = Array(spec.snippets).join("\n")
 
     <<~C
-      #{header_block}
+      #{preamble}
       #{snippets}
       int main(void) {
       #{lines.join("\n")}

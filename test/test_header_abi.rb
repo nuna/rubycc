@@ -372,6 +372,41 @@ class TestHeaderAbi < Minitest::Test
     snippets: ["static int abi_stat(const char *p, struct stat *b) { return stat(p, b); }"]
   )
 
+  # <fcntl.h> (Step 83, M5 H2): an arch layer header like sys/stat.h -- the
+  # O_DIRECT/O_DIRECTORY/O_NOFOLLOW bit assignments swap between x86-64 and
+  # aarch64's kernel uapi/asm/fcntl.h, so the three are asserted here even
+  # though they read the same value on this (x86-64) host as the arch-neutral
+  # flags do; the aarch64 case below is what actually exercises the swap.
+  # rubycc's bundled header exposes O_LARGEFILE/O_NOATIME/O_PATH/O_DIRECT/
+  # O_TMPFILE unconditionally (no feature-test gating, matching sys/stat.h's
+  # unconditional st_atim), but the host glibc gates those same names behind
+  # __USE_GNU; `defines: ["_GNU_SOURCE"]` makes the oracle expose its full
+  # surface too, so the comparison stays apples-to-apples.
+  FCNTL = HeaderAbiHarness::Spec.new(
+    header: "fcntl.h",
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[struct\ flock off_t mode_t],
+    ints: %w[O_RDONLY O_WRONLY O_RDWR O_ACCMODE
+             O_CREAT O_EXCL O_NOCTTY O_TRUNC O_APPEND O_NONBLOCK O_NDELAY
+             O_DSYNC O_ASYNC O_SYNC O_RSYNC O_CLOEXEC O_LARGEFILE O_NOATIME
+             O_PATH O_DIRECT O_DIRECTORY O_NOFOLLOW O_TMPFILE
+             F_DUPFD F_GETFD F_SETFD F_GETFL F_SETFL F_GETLK F_SETLK F_SETLKW
+             F_SETOWN F_GETOWN F_DUPFD_CLOEXEC FD_CLOEXEC
+             F_RDLCK F_WRLCK F_UNLCK
+             AT_FDCWD AT_SYMLINK_NOFOLLOW AT_REMOVEDIR AT_SYMLINK_FOLLOW
+             SEEK_SET SEEK_CUR SEEK_END],
+    offsets: [["struct flock", "l_type"], ["struct flock", "l_whence"],
+              ["struct flock", "l_start"], ["struct flock", "l_len"],
+              ["struct flock", "l_pid"]],
+    snippets: [<<~C.chomp]
+      static int abi_fcntl(const char *p, struct flock *lk) {
+        int fd = open(p, O_RDONLY | O_CLOEXEC);
+        lk->l_type = F_RDLCK;
+        return fcntl(fd, F_GETFD) + openat(AT_FDCWD, p, O_RDONLY) + creat(p, 0644);
+      }
+    C
+  )
+
   # <arpa/inet.h> (Step 64): brought forward for msgpack, which includes it for
   # the endian macros and the ntoh*/hton* conversions. The bundled header
   # collapses glibc's socket + UAPI fan-out to the flat surface the gem actually
@@ -404,6 +439,10 @@ class TestHeaderAbi < Minitest::Test
 
   def test_sys_stat_abi_matches_gcc
     assert_abi_matches(SYS_STAT)
+  end
+
+  def test_fcntl_abi_matches_gcc
+    assert_abi_matches(FCNTL)
   end
 
   def test_stdio_abi_matches_gcc
@@ -531,11 +570,12 @@ end
 # target's real aarch64 glibc headers. Byte-identical stdout proves the bundled
 # aarch64 layer reproduces the target ABI.
 #
-# The four arch-specific cases are the ones that would diverge from x86-64 if the
+# The five arch-specific cases are the ones that would diverge from x86-64 if the
 # layer were wrong: struct stat's 128-byte aarch64 layout (SYS_STAT), the 32-bit
 # nlink_t/blksize_t (SYS_TYPES, and inside SYS_STAT), the unsigned WCHAR_MIN/MAX
-# (STDINT) and the unsigned plain-char range (LIMITS, via __CHAR_UNSIGNED__). The
-# remaining cases exercise the neutral layers (the common libc declarations and
+# (STDINT), the unsigned plain-char range (LIMITS, via __CHAR_UNSIGNED__), and the
+# swapped O_DIRECT/O_DIRECTORY/O_NOFOLLOW bits (FCNTL). The remaining cases
+# exercise the neutral layers (the common libc declarations and
 # the arch headers that are byte-identical across the two ABIs), confirming they
 # stay in agreement across the target switch. The whole class skips on a host
 # without the cross toolchain (aarch64-linux-gnu-gcc + qemu-aarch64).
@@ -564,6 +604,10 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_limits_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::LIMITS)
+  end
+
+  def test_fcntl_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::FCNTL)
   end
 
   # --- neutral layer: re-checked to confirm byte-identity across the switch --
