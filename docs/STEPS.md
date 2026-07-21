@@ -2877,11 +2877,49 @@ ABI ハーネス」を aarch64 に拡張し、探索パスを target で切替�
 
 ---
 
+## Step 83 — 同梱 `<fcntl.h>` の追加(M5 H2 の第一陣)
+
+M5 H2(libc ヘッダ第一陣)の最初のヘッダ追加。B7(Step 63-64)の先行バッチ以降で
+初めて同梱 libc の面を広げるステップ。
+
+- **範囲は推測でなく実測で確定**(H2 の方針)。ホスト ruby.h(rbenv 3.4.5)を rubycc の
+  hermetic モード(`RUBYCC_HERMETIC_HEADERS=1`、ホスト libc パスを外す)で `-E` した結果、
+  **ruby.h の Linux/glibc #include 閉包は既存の同梱セットだけで完全解決**していた
+  (1,146 行の rb_ API が展開、exit 0。negative control として未同梱の regex.h/wchar.h は
+  正しく「No such file」で失敗)。つまり不足は ruby.h 側ではなく **gem 拡張の .c コードや
+  mkmf conftest が直接 include するヘッダ**にある: 実測で未同梱だったのは
+  signal.h / fcntl.h / poll.h / pthread.h / sys/socket.h / sys/mman.h / dlfcn.h。
+  このうち ROADMAP が「実測での中心」に挙げる fcntl.h を本ステップの対象とした。
+- **fcntl.h は arch 層ヘッダ**とクロス gcc 実測で判明。x86-64 と aarch64 で
+  **O_DIRECT / O_DIRECTORY / O_NOFOLLOW の 3 ビット割当が入れ替わる**(O_TMPFILE は
+  O_DIRECTORY 由来で自動追従)。他(O_RDONLY〜O_CLOEXEC・O_LARGEFILE/NOATIME/PATH・
+  全 F_* コマンド・FD_CLOEXEC・F_RDLCK/WRLCK/UNLCK・全 AT_*・SEEK_*・struct flock=32B)は
+  両 arch で完全一致。よって `include/libc/glibc/{x86_64,aarch64}/fcntl.h` の 2 本を置き、
+  差分は当該 3 マクロ + provenance の一文のみ。provenance は errno.h/sys/stat.h と同じ
+  clean-room UAPI 由来(asm-generic/fcntl.h + arch 別 uapi/asm/fcntl.h の ABI 事実の実測再現)。
+- **ABI ハーネスに `defines:` フィールドを新設**(隠れた前提の露見)。rubycc の同梱ヘッダは
+  feature-test マクロで gating せず**フラットな面を無条件露出**する設計(sys/stat.h が
+  st_atim を無条件露出しているのと同じ)。一方ホスト glibc は O_DIRECT/O_LARGEFILE/
+  O_NOATIME/O_PATH/O_TMPFILE を `__USE_GNU` で隠すため、`_GNU_SOURCE` 未定義のオラクルでは
+  これらが undeclared になり比較できなかった。プローブの**全 #include より前**(features.h の
+  `__USE_*` 解決前)に `#define` を差し込む `defines:` を Spec に追加し、FCNTL は
+  `defines: ["_GNU_SOURCE"]` を指定してオラクル側にもフル surface を露出させ apples-to-apples に。
+  未指定 Spec はプローブ文字列がバイト同一(既存 40 ケース無改変)。今後 poll.h/sys/socket.h/
+  GNU string 拡張等でも再利用できる汎用機構。
+- **実バグを 1 件発見・修正**: ヘッダ冒頭コメント中に `O_*/F_*` と書くと `*/` がコメント
+  終端と解釈され gcc・rubycc 双方でコメントが途中終了する。実装者が `gcc -c` で確認し
+  `O_*, F_* and AT_*` に修正。ABI ハーネス規律(目視でなく実行で検証)が機能した例。
+- **検証**: fcntl の 2 ケース(x86-64 + aarch64)が green で O_DIRECT/DIRECTORY/NOFOLLOW の
+  arch 差異をオラクル比較で保証。test_header_abi.rb 全体 42 ケース green(既存 40 無改変)。
+  hermetic で fcntl.h が解決(exit 0)。既存 examples に fcntl.h 参照はなく x86-64 挙動不変。
+
+---
+
 ## 現在のテスト規模
 
-Step 82 完了時点: **2,381 runs / 6,329 assertions / 0 failures / 47 skips**
-(Step 81 の 2,369 から +12 = 新規 `TestHeaderAbiAarch64` の aarch64 クロス ABI 12 ケース。
-クロス gcc + qemu 未導入のホストではこの 12 ケースはスキップされる)
+Step 83 完了時点: **2,383 runs / 6,335 assertions / 0 failures / 47 skips**
+(Step 82 の 2,381 から +2 = fcntl の ABI ケース x86-64 + aarch64。
+aarch64 側はクロス gcc + qemu 未導入のホストではスキップされる)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト

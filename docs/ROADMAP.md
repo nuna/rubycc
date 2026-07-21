@@ -512,7 +512,16 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   コンパイル・実行して突き合わせる自動ハーネス。以降のヘッダ追加はすべて
   このハーネスのケース追加とセットで行う(ヘッダの正しさを目視に頼らない)。
 
-### H2 — libc ヘッダ第一陣
+### H2 — libc ヘッダ第一陣【進行中: Step 83〜】
+- **範囲の実測(Step 83)**: ホスト ruby.h(rbenv 3.4.5)を hermetic `-E` した結果、
+  **ruby.h の Linux/glibc #include 閉包は既存の同梱セットだけで完全解決**していた
+  (未同梱ヘッダを含めば「No such file」で落ちる negative control 済み)。よって H2 の
+  不足は ruby.h 側でなく **gem 拡張の .c / mkmf conftest が直接 include するヘッダ**にある。
+  実測で未同梱だったのは `signal.h` `fcntl.h` `poll.h` `pthread.h` `sys/socket.h`
+  `sys/mman.h` `dlfcn.h`(以降のステップはこの実測リストと、H3 のコーパス集計で駆動する)。
+- **追加済み**: `fcntl.h`(Step 83、arch 層。O_DIRECT/DIRECTORY/NOFOLLOW が arch 差)。
+  ABI ハーネスに `defines:`(_GNU_SOURCE 等をヘッダ include 前に注入。glibc の `__USE_GNU`
+  ゲート面を rubycc のフラット面と apples-to-apples 比較するため)を追加 — poll.h 等でも再利用。
 - 対象範囲: ruby.h 一式と主要 gem(json / msgpack / bigdecimal / date / racc /
   redcarpet / puma)が #include する範囲(stdio / stdlib / string / errno / ctype /
   math / time / signal / sys/types / sys/stat / fcntl / unistd あたりが実測での中心)。
