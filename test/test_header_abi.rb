@@ -522,3 +522,96 @@ class TestHeaderAbi < Minitest::Test
     system(name, "--version", out: File::NULL, err: File::NULL) ? true : false
   end
 end
+
+# Step 82 (M5 H1): the aarch64 side of the header ABI harness. Every Spec above
+# is declared once and here re-run against the cross ABI -- rubycc compiles the
+# probe for the aarch64 target (so its bundled glibc/aarch64 header layer is on
+# the search path), the object is linked statically with the cross gcc and run
+# under qemu, and the oracle is the cross gcc building the same probe against the
+# target's real aarch64 glibc headers. Byte-identical stdout proves the bundled
+# aarch64 layer reproduces the target ABI.
+#
+# The four arch-specific cases are the ones that would diverge from x86-64 if the
+# layer were wrong: struct stat's 128-byte aarch64 layout (SYS_STAT), the 32-bit
+# nlink_t/blksize_t (SYS_TYPES, and inside SYS_STAT), the unsigned WCHAR_MIN/MAX
+# (STDINT) and the unsigned plain-char range (LIMITS, via __CHAR_UNSIGNED__). The
+# remaining cases exercise the neutral layers (the common libc declarations and
+# the arch headers that are byte-identical across the two ABIs), confirming they
+# stay in agreement across the target switch. The whole class skips on a host
+# without the cross toolchain (aarch64-linux-gnu-gcc + qemu-aarch64).
+class TestHeaderAbiAarch64 < Minitest::Test
+  include ExecutionHelper
+  include AArch64ExecutionHelper
+  include HeaderAbiHarness
+
+  def setup
+    skip_unless_aarch64_toolchain
+  end
+
+  # --- arch-specific layer: the ABI that differs from x86-64 -----------------
+
+  def test_sys_stat_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SYS_STAT)
+  end
+
+  def test_sys_types_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SYS_TYPES)
+  end
+
+  def test_stdint_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::STDINT)
+  end
+
+  def test_limits_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::LIMITS)
+  end
+
+  # --- neutral layer: re-checked to confirm byte-identity across the switch --
+
+  def test_time_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::TIME)
+  end
+
+  def test_errno_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::ERRNO)
+  end
+
+  def test_endian_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::ENDIAN)
+  end
+
+  def test_ctype_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::CTYPE)
+  end
+
+  def test_inttypes_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::INTTYPES)
+  end
+
+  def test_sys_time_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SYS_TIME)
+  end
+
+  def test_sys_select_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SYS_SELECT)
+  end
+
+  def test_stddef_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::STDDEF)
+  end
+
+  private
+
+  # Runs a Spec through the aarch64 harness and asserts a clean run on both
+  # toolchains and byte-identical output. The cross gcc is the oracle; rubycc's
+  # aarch64 build must reproduce it exactly.
+  def assert_abi_matches_aarch64(spec)
+    result = run_abi_case_aarch64(spec)
+    assert_equal 0, result.gcc_status,
+                 "cross-gcc probe for <#{spec.header}> exited #{result.gcc_status}"
+    assert_equal 0, result.rubycc_status,
+                 "rubycc aarch64 probe for <#{spec.header}> exited #{result.rubycc_status}"
+    assert_equal result.gcc_out, result.rubycc_out,
+                 "<#{spec.header}>: rubycc aarch64 ABI output differs from cross gcc"
+  end
+end

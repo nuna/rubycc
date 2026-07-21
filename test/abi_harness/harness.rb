@@ -103,4 +103,29 @@ module HeaderAbiHarness
       Result.new(gcc_status, gcc_out, rubycc_status, rubycc_out)
     end
   end
+
+  # The aarch64 counterpart of #run_abi_case, machine-parameterized so the same
+  # declarative Spec is verified against the cross ABI. The probe source is
+  # identical (the check text is architecture-independent); only the toolchains
+  # differ. The rubycc side compiles for the aarch64 target -- so its bundled
+  # glibc/aarch64 header layer is on the search path -- links the object
+  # statically with the cross gcc and runs it under qemu; the oracle side builds
+  # and runs the same source with the cross gcc against the target's real headers.
+  # Both stdouts are handed back for the byte comparison, exactly as the host
+  # path does. Requires AArch64ExecutionHelper (compile_with_rubycc_aarch64,
+  # compile_with_cross_gcc, link_and_run_aarch64) and the host ExecutionHelper's
+  # in_tmpdir to be mixed in alongside this module.
+  def run_abi_case_aarch64(spec)
+    source = abi_probe_source(spec)
+    name = spec.header.gsub(/[^A-Za-z0-9]+/, "_")
+    in_tmpdir do |dir|
+      rubycc_obj = compile_with_rubycc_aarch64(source, File.join(dir, "#{name}_rubycc.o"))
+      rubycc_status, rubycc_out = link_and_run_aarch64(rubycc_obj)
+
+      gcc_obj = compile_with_cross_gcc(source, File.join(dir, "#{name}_gcc.o"))
+      gcc_status, gcc_out = link_and_run_aarch64(gcc_obj)
+
+      Result.new(gcc_status, gcc_out, rubycc_status, rubycc_out)
+    end
+  end
 end

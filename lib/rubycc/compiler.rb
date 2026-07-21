@@ -26,17 +26,22 @@ module Rubycc
     # dispatches on. `unnamed_bitfields_align` is a third: the ABIs disagree on
     # whether an unnamed bit-field's type raises its aggregate's alignment, so
     # sizeof and _Alignof of such a struct are target-dependent (see
-    # StructType#define). Apart from those three every entry shares the
-    # orchestration logic below unchanged.
+    # StructType#define). `libc_arch` is a fourth: it names the bundled
+    # libc-and-arch header layer the preprocessor puts on its default search path,
+    # so a cross compile reads the target's ABI headers (struct stat, nlink_t,
+    # WCHAR_* and kin) rather than the host's. Apart from those four every entry
+    # shares the orchestration logic below unchanged.
     TARGETS = {
       "x86_64" => { backend: Backend::X86_64, machine: ObjFile::ELFWriter::X86_64,
                     char_signed: true,
                     arch_macros: Preprocess::Preprocessor::X86_64_ARCH_MACROS,
+                    libc_arch: "x86_64",
                     unnamed_bitfields_align: false,
                     convention: IR::CallConvention::SYSTEM_V_AMD64 },
       "aarch64" => { backend: Backend::AArch64, machine: ObjFile::ELFWriter::AARCH64,
                      char_signed: false,
                      arch_macros: Preprocess::Preprocessor::AARCH64_ARCH_MACROS,
+                     libc_arch: "aarch64",
                      unnamed_bitfields_align: true,
                      convention: IR::CallConvention::AAPCS64 }
     }.freeze
@@ -55,7 +60,8 @@ module Rubycc
       # literal's elements with it).
       plain_char = Type.plain_char(entry[:char_signed])
       tokens = Preprocess::Preprocessor.new(char_unsigned: plain_char.unsigned?,
-                                            arch_macros: entry[:arch_macros])
+                                            arch_macros: entry[:arch_macros],
+                                            libc_arch: entry[:libc_arch])
                                        .run(source, filename: filename,
                                             include_paths: include_paths, defines: defines,
                                             system_includes: system_includes)

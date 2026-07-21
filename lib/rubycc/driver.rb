@@ -403,7 +403,8 @@ module Rubycc
     def preprocessor_for_target
       entry = Compiler::TARGETS.fetch(target) { Compiler::TARGETS.fetch("x86_64") }
       Preprocess::Preprocessor.new(char_unsigned: !entry[:char_signed],
-                                   arch_macros: entry[:arch_macros])
+                                   arch_macros: entry[:arch_macros],
+                                   libc_arch: entry[:libc_arch])
     end
 
     def render_preprocessed(tokens)

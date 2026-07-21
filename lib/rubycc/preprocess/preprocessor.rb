@@ -35,13 +35,22 @@ module Rubycc
       # hosted translation unit compiles on a host that lacks the system libc's
       # development headers (the distroless target). They live in two layers under
       # include/libc/: a common declaration layer (BUNDLED_LIBC_INCLUDE_DIR) and a
-      # target-specific layer (BUNDLED_LIBC_ARCH_INCLUDE_DIR) that pins the type
-      # widths, struct layouts and macro values to one concrete libc-and-arch ABI.
-      # Only the glibc/x86-64 layer exists today; musl and aarch64 are future work.
-      # The arch layer is searched before the common layer so a same-named header
-      # in it (an ABI-specific override) wins over the shared declaration.
+      # target-specific layer that pins the type widths, struct layouts and macro
+      # values to one concrete libc-and-arch ABI. Two such layers ship today,
+      # glibc/x86-64 and glibc/aarch64; which one is on the search path is chosen
+      # per instance by the `libc_arch` keyword (see #initialize), so a cross
+      # compile reads the target's ABI rather than the host's. This constant names
+      # the x86-64 default's directory -- kept so the default path and the tests
+      # that pin its order can refer to it -- while #default_system_include_paths
+      # substitutes the instance's own arch directory (@libc_arch_include_dir). The
+      # arch layer is searched before the common layer so a same-named header in it
+      # (an ABI-specific override) wins over the shared declaration.
       BUNDLED_LIBC_ARCH_INCLUDE_DIR = File.expand_path("../../../include/libc/glibc/x86_64", __dir__).freeze
       BUNDLED_LIBC_INCLUDE_DIR = File.expand_path("../../../include/libc", __dir__).freeze
+
+      # The bundled libc-and-arch layers that ship under include/libc/glibc/;
+      # `libc_arch` (see #initialize) must name one of them.
+      LIBC_ARCHS = %w[x86_64 aarch64].freeze
 
       # The libc system header directories on this x86-64 Linux host, in the order
       # gcc reports them for angled includes. Only the C library's own directories
@@ -59,6 +68,10 @@ module Rubycc
       # default (they are only dropped in the distroless mode, where they are
       # absent anyway); the whole default path is appended after the user's
       # -I/-isystem directories, and suppressed entirely by -nostdinc.
+      #
+      # This is the x86-64 baseline: #default_system_include_paths builds the same
+      # list per instance, substituting the instance's own arch layer for the arch
+      # slot, so a cross compile's path is this shape with a different arch layer.
       DEFAULT_SYSTEM_INCLUDE_PATHS = [
         BUNDLED_INCLUDE_DIR,
         BUNDLED_LIBC_ARCH_INCLUDE_DIR,
@@ -74,7 +87,10 @@ module Rubycc
       # -nostdinc explicitly. It is the same set the distroless ruby.h build uses,
       # so if a translation unit reaches for a declaration only the host's real
       # headers carry, it fails here the way it would on a headerless image
-      # instead of silently borrowing it from /usr/include.
+      # instead of silently borrowing it from /usr/include. Like
+      # DEFAULT_SYSTEM_INCLUDE_PATHS this is the x86-64 baseline;
+      # #default_system_include_paths builds the per-instance equivalent with the
+      # instance's own arch layer.
       HERMETIC_SYSTEM_INCLUDE_PATHS = [
         BUNDLED_INCLUDE_DIR,
         BUNDLED_LIBC_ARCH_INCLUDE_DIR,
@@ -254,7 +270,21 @@ module Rubycc
       # pick CHAR_MIN/CHAR_MAX.
       # `arch_macros` names the target's CPU-identifying macros (see
       # X86_64_ARCH_MACROS); it defaults to x86-64's, the default target.
-      def initialize(char_unsigned: false, arch_macros: X86_64_ARCH_MACROS)
+      # `libc_arch` selects which bundled libc-and-arch header layer sits on the
+      # default search path ("x86_64" or "aarch64", see LIBC_ARCHS); it defaults to
+      # x86-64 so an unconfigured host compile is byte-for-byte unchanged, and a
+      # cross compile passes the target's own so its ABI headers (struct stat's
+      # 128-byte aarch64 layout, the narrower nlink_t/blksize_t, the unsigned
+      # WCHAR_MIN/MAX and kin) are read instead of the host's.
+      def initialize(char_unsigned: false, arch_macros: X86_64_ARCH_MACROS, libc_arch: "x86_64")
+        unless LIBC_ARCHS.include?(libc_arch)
+          raise ArgumentError, "unsupported libc arch: #{libc_arch.inspect} (expected one of #{LIBC_ARCHS.join(", ")})"
+        end
+
+        # The bundled libc arch layer this instance searches (see
+        # BUNDLED_LIBC_ARCH_INCLUDE_DIR). For the x86-64 default it equals that
+        # constant, so the default search path is identical to before.
+        @libc_arch_include_dir = File.expand_path("../../../include/libc/glibc/#{libc_arch}", __dir__)
         # name (String) => Macro.
         @macros = {}
         (arch_macros + PREDEFINED_PLATFORM_MACROS).each { |name| @macros[name] = predefined_target_macro }
@@ -307,12 +337,19 @@ module Rubycc
 
       # The system search path appended after the caller's -I/-isystem set: the
       # full default (bundled headers ahead of the host libc directories), or the
-      # hermetic bundled-only set when RUBYCC_HERMETIC_HEADERS selects it. Read
-      # from the environment per call rather than cached so a process can flip the
-      # mode between translation units (the mkmf conftest sequence does not, but a
-      # test driving several compiles in-process may).
+      # hermetic bundled-only set when RUBYCC_HERMETIC_HEADERS selects it. The arch
+      # slot is this instance's @libc_arch_include_dir rather than the fixed
+      # constant, so a cross compile searches the target's ABI layer; for the
+      # x86-64 default the result equals DEFAULT_SYSTEM_INCLUDE_PATHS /
+      # HERMETIC_SYSTEM_INCLUDE_PATHS exactly. The environment is read per call
+      # rather than cached so a process can flip the mode between translation units
+      # (the mkmf conftest sequence does not, but a test driving several compiles
+      # in-process may).
       def default_system_include_paths
-        hermetic_headers? ? HERMETIC_SYSTEM_INCLUDE_PATHS : DEFAULT_SYSTEM_INCLUDE_PATHS
+        bundled = [BUNDLED_INCLUDE_DIR, @libc_arch_include_dir, BUNDLED_LIBC_INCLUDE_DIR]
+        return bundled if hermetic_headers?
+
+        [*bundled, *LIBC_SYSTEM_INCLUDE_PATHS]
       end
 
       def hermetic_headers?
