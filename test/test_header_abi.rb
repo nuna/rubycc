@@ -457,6 +457,33 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <sys/mman.h> (Step 86, M5 H2): the memory-mapping interface. Its ABI is
+  # arch-neutral -- every PROT_/MAP_/MS_/MADV_ value is identical on x86-64 and
+  # aarch64 (both use the asm-generic assignments) -- so the header is in the
+  # common layer and this Spec is re-run in the aarch64 class's neutral-layer
+  # section. `defines: ["_GNU_SOURCE"]` is needed because rubycc's bundled header
+  # exposes the Linux MAP_* extensions, MAP_ANON and the MADV_* advice values
+  # unconditionally, while the host glibc gates them behind __USE_MISC/__USE_GNU.
+  MMAN = HeaderAbiHarness::Spec.new(
+    header: "sys/mman.h",
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[size_t off_t],
+    ints: %w[PROT_NONE PROT_READ PROT_WRITE PROT_EXEC
+             MAP_SHARED MAP_PRIVATE MAP_FIXED MAP_ANONYMOUS MAP_ANON
+             MAP_GROWSDOWN MAP_LOCKED MAP_NORESERVE MAP_POPULATE MAP_STACK
+             MS_ASYNC MS_INVALIDATE MS_SYNC
+             MADV_NORMAL MADV_RANDOM MADV_SEQUENTIAL MADV_WILLNEED MADV_DONTNEED MADV_FREE],
+    snippets: [<<~C.chomp]
+      static int abi_mman(void *p, size_t n) {
+        void *m = mmap(p, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (m == MAP_FAILED) return -1;
+        madvise(m, n, MADV_DONTNEED);
+        mprotect(m, n, PROT_READ);
+        return munmap(m, n);
+      }
+    C
+  )
+
   # <arpa/inet.h> (Step 64): brought forward for msgpack, which includes it for
   # the endian macros and the ntoh*/hton* conversions. The bundled header
   # collapses glibc's socket + UAPI fan-out to the flat surface the gem actually
@@ -501,6 +528,10 @@ class TestHeaderAbi < Minitest::Test
 
   def test_dlfcn_abi_matches_gcc
     assert_abi_matches(DLFCN)
+  end
+
+  def test_mman_abi_matches_gcc
+    assert_abi_matches(MMAN)
   end
 
   def test_stdio_abi_matches_gcc
@@ -708,6 +739,10 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_dlfcn_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::DLFCN)
+  end
+
+  def test_mman_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::MMAN)
   end
 
   private
