@@ -58,6 +58,7 @@ module Rubycc
       EV_CURRENT  = 1
       ET_DYN      = 3
       EM_X86_64   = 62
+      EM_AARCH64  = 183
       EHDR_SIZE   = 64
       PHDR_SIZE   = 56
       SHDR_SIZE   = 64
@@ -111,6 +112,40 @@ module Rubycc
       R_X86_64_GLOB_DAT      = 6
       R_X86_64_JUMP_SLOT     = 7
       GOT_RELOC_TYPES = [R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_REX_GOTPCRELX].freeze
+
+      # aarch64 relocation types this stage applies. AArch64 forms an address in
+      # two instructions, so an address reference arrives as a *pair* of static
+      # relocations the reader hands over separately: ADR_PREL_PG_HI21 patches an
+      # `adrp`'s 21-bit page immediate and ADD_ABS_LO12_NC the following `add`'s
+      # 12-bit within-page offset; ADR_GOT_PAGE / LD64_GOT_LO12_NC are the same
+      # split addressing a symbol's GOT slot (the second an `ldr`'s scaled
+      # immediate). CALL26 is a `bl`'s 26-bit branch word-displacement. ABS64 is
+      # the absolute 64-bit pointer slot, aarch64's spelling of R_X86_64_64. Of
+      # the *dynamic* relocations, R_AARCH64_RELATIVE rebases an absolute address
+      # (a PIC image; a non-PIE executable writes it directly), GLOB_DAT fills an
+      # external data GOT slot, and JUMP_SLOT fills a .got.plt slot. The numbers
+      # are the ELF-for-the-Arm-64-bit-Architecture values, confirmed against real
+      # aarch64-linux-gnu tool output.
+      R_AARCH64_ABS64            = 257
+      R_AARCH64_ADR_PREL_PG_HI21 = 275
+      R_AARCH64_ADD_ABS_LO12_NC  = 277
+      R_AARCH64_CALL26           = 283
+      R_AARCH64_ADR_GOT_PAGE     = 311
+      R_AARCH64_LD64_GOT_LO12_NC = 312
+      R_AARCH64_GLOB_DAT         = 1025
+      R_AARCH64_JUMP_SLOT        = 1026
+      R_AARCH64_RELATIVE         = 1027
+      AARCH64_GOT_RELOC_TYPES = [R_AARCH64_ADR_GOT_PAGE, R_AARCH64_LD64_GOT_LO12_NC].freeze
+      AARCH64_SUPPORTED_RELOC_TYPES = [
+        R_AARCH64_ABS64, R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_ADD_ABS_LO12_NC,
+        R_AARCH64_CALL26, *AARCH64_GOT_RELOC_TYPES
+      ].freeze
+
+      # The maximum page size used to align load segments and stamp p_align: 4 KiB
+      # on x86_64, 64 KiB on aarch64 (matching the target toolchain default, so
+      # the image loads on a 64 KiB-page kernel as well as a 4 KiB one). ADRP page
+      # arithmetic is always 4 KiB regardless.
+      AARCH64_MAX_PAGE = 0x10000
 
       # Dynamic array tags emitted into .dynamic.
       DT_NULL      = 0
@@ -171,6 +206,8 @@ module Rubycc
 
       def link
         @reader = ELFReader.read(PartialLinker.link(link_inputs))
+        @em = @reader.machine
+        check_machine!
         after_merge
         plan_dynamic_symbols
         scan_relocations
@@ -197,6 +234,37 @@ module Rubycc
       def link_inputs = @inputs
       def after_merge; end
       def load_base = 0
+
+      # --- target machine ----------------------------------------------------
+      # The final-link core is written for x86_64 and reused for aarch64 by the
+      # executable writer; the shared-object writer only supports x86_64 (a `.so`
+      # binds through a lazy-resolver PLT and R_AARCH64_RELATIVE rebasing that are
+      # out of this step's scope). Each target-dependent decision — the machine
+      # id, the segment page size, the relocation scan/apply, the PLT stub bytes
+      # and the dynamic relocation type numbers — branches on this flag; the whole
+      # section/symbol/table layer above it is machine-independent.
+
+      def aarch64? = @em == EM_AARCH64
+      def e_machine_id = aarch64? ? EM_AARCH64 : EM_X86_64
+      def seg_align = aarch64? ? AARCH64_MAX_PAGE : PAGE
+
+      # The set of machines this writer accepts. A plain shared object is x86_64
+      # only; ExecutableLinker widens it to aarch64.
+      def supported_machines = [EM_X86_64]
+
+      def check_machine!
+        return if supported_machines.include?(@em)
+
+        raise LinkError, "linking for machine #{@em} is not supported by this linker " \
+                         "(aarch64 shared objects are not yet implemented)"
+      end
+
+      # The dynamic relocation type numbers, chosen per target. x86_64 keeps its
+      # own constants so its output stays byte-for-byte identical.
+      def reloc_relative  = aarch64? ? R_AARCH64_RELATIVE  : R_X86_64_RELATIVE
+      def reloc_glob_dat  = aarch64? ? R_AARCH64_GLOB_DAT  : R_X86_64_GLOB_DAT
+      def reloc_jump_slot = aarch64? ? R_AARCH64_JUMP_SLOT : R_X86_64_JUMP_SLOT
+      def reloc_abs64     = aarch64? ? R_AARCH64_ABS64     : R_X86_64_64
       def rebase_internal? = true
       def leading_sections = []
       def e_type = ET_DYN
@@ -252,6 +320,8 @@ module Rubycc
       end
 
       def scan_relocation(reloc)
+        return scan_relocation_aarch64(reloc) if aarch64?
+
         type = reloc.type
         unless supported_relocation?(type)
           raise LinkError, "unsupported relocation type #{reloc.type_name || type} in a shared object"
@@ -279,6 +349,36 @@ module Rubycc
       def supported_relocation?(type)
         [R_X86_64_64, R_X86_64_PC32, R_X86_64_PLT32, R_X86_64_32, R_X86_64_32S,
          *GOT_RELOC_TYPES].include?(type)
+      end
+
+      # The aarch64 sizing pass, the counterpart of #scan_relocation: it registers
+      # the same import/GOT/PLT/absolute-64 sets from aarch64's relocation
+      # vocabulary. A CALL26 to an external symbol needs a .plt stub; the GOT pair
+      # needs a data GOT slot; an ABS64 is an absolute-64 initializer (internal
+      # rebased by RELATIVE in a PIC image, external bound symbolically). An
+      # adrp/add pair against an external symbol would be a text relocation a
+      # dynamic image cannot satisfy, diagnosed like x86_64's external PC32.
+      def scan_relocation_aarch64(reloc)
+        type = reloc.type
+        unless AARCH64_SUPPORTED_RELOC_TYPES.include?(type)
+          raise LinkError, "unsupported relocation type #{reloc.type_name || type} in an aarch64 link"
+        end
+
+        sym = reloc.symbol
+        external = external_import?(sym)
+        if external && [R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_ADD_ABS_LO12_NC].include?(type)
+          raise LinkError, "unsupported text relocation against external symbol " \
+                           "'#{sym.name}' (build the reference through the GOT)"
+        end
+        register_import(sym) if external
+
+        if AARCH64_GOT_RELOC_TYPES.include?(type)
+          register_got(sym)
+        elsif type == R_AARCH64_CALL26
+          register_plt(sym) if external
+        elsif type == R_AARCH64_ABS64
+          external ? (@data64_dyn_count += 1) : (@data64_count += 1)
+        end
       end
 
       # An imported reference: an undefined named symbol (a section symbol always
@@ -389,9 +489,9 @@ module Rubycc
 
         cursor = EHDR_SIZE + phnum * PHDR_SIZE
         cursor, @rx = lay(rx, cursor)
-        cursor = align(cursor, PAGE)
+        cursor = align(cursor, seg_align)
         cursor, @ro = lay(ro, cursor)
-        cursor = align(cursor, PAGE)
+        cursor = align(cursor, seg_align)
         rw_start = cursor
         cursor, rw_placed = lay(rw_files, cursor)
         @file_end = cursor
@@ -554,6 +654,8 @@ module Rubycc
       end
 
       def apply_relocation(reloc, base, buf)
+        return apply_relocation_aarch64(reloc, base, buf) if aarch64?
+
         sym = reloc.symbol
         a = reloc.addend
         p = base + reloc.offset
@@ -581,6 +683,89 @@ module Rubycc
             @rela_data << [p, value] if rebase_internal?
           end
         end
+      end
+
+      # The aarch64 apply, the counterpart of #apply_relocation. Where x86_64
+      # patches a plain 32/64-bit displacement, aarch64 patches an immediate
+      # bit-field packed inside a fixed 32-bit instruction word, and its address
+      # references span two instructions the reader delivered as two relocations:
+      # a CALL26 patches a `bl` (routed through the .plt for an external target),
+      # ADR_PREL_PG_HI21 the page distance of an `adrp`, ADD_ABS_LO12_NC the
+      # within-page offset of the `add`, and the GOT pair the same split against a
+      # GOT slot. ABS64 is the absolute-64 pointer slot: written with its final
+      # value in a non-PIE executable (no RELATIVE) or bound symbolically when it
+      # names an import.
+      def apply_relocation_aarch64(reloc, base, buf)
+        sym = reloc.symbol
+        a = reloc.addend
+        p = base + reloc.offset
+        external = external_import?(sym)
+        case reloc.type
+        when R_AARCH64_CALL26
+          target = external ? plt_stub_addr(sym) : symbol_address(sym)
+          patch_call26(buf, reloc.offset, target + a - p)
+        when R_AARCH64_ADR_PREL_PG_HI21
+          patch_adrp(buf, reloc.offset, page(symbol_address(sym) + a) - page(p))
+        when R_AARCH64_ADD_ABS_LO12_NC
+          patch_add_lo12(buf, reloc.offset, (symbol_address(sym) + a) & 0xFFF)
+        when R_AARCH64_ADR_GOT_PAGE
+          patch_adrp(buf, reloc.offset, page(got_slot_addr(sym)) - page(p))
+        when R_AARCH64_LD64_GOT_LO12_NC
+          patch_ld64_lo12(buf, reloc.offset, got_slot_addr(sym) & 0xFFF)
+        when R_AARCH64_ABS64
+          if external
+            patch64(buf, reloc.offset, 0)
+            @rela_data_sym << [p, import_dynindex(sym), a]
+          else
+            value = symbol_address(sym) + a
+            patch64(buf, reloc.offset, value)
+            @rela_data << [p, value] if rebase_internal?
+          end
+        end
+      end
+
+      def got_slot_addr(sym) = got_addr + @got_index[got_key(sym)] * 8
+
+      # The 4 KiB page a virtual address sits in — the unit `adrp` operates on,
+      # independent of the (larger) load-segment alignment.
+      def page(addr) = addr & ~0xFFF
+
+      def read_insn(buf, offset) = buf[offset, 4].unpack1("L<")
+      def write_insn(buf, offset, word) = (buf[offset, 4] = [word & 0xFFFFFFFF].pack("L<"))
+
+      # Patches a `bl`/`b`'s 26-bit signed word offset (ARM DDI 0487, the
+      # unconditional-branch-immediate form): the byte displacement is a multiple
+      # of four, so imm26 = disp >> 2 occupies bits [25:0].
+      def patch_call26(buf, offset, disp)
+        imm = (disp >> 2) & 0x03FFFFFF
+        write_insn(buf, offset, (read_insn(buf, offset) & ~0x03FFFFFF) | imm)
+      end
+
+      # Patches an `adrp`'s 21-bit signed page immediate. The page distance is a
+      # multiple of 4 KiB, so imm21 = page_delta >> 12 splits into immlo (bits
+      # [1:0], encoded at instruction bits [30:29]) and immhi (bits [20:2],
+      # encoded at bits [23:5]).
+      def patch_adrp(buf, offset, page_delta)
+        imm = (page_delta >> 12) & 0x1FFFFF
+        immlo = imm & 0x3
+        immhi = (imm >> 2) & 0x7FFFF
+        word = read_insn(buf, offset) & ~((0x3 << 29) | (0x7FFFF << 5))
+        write_insn(buf, offset, word | (immlo << 29) | (immhi << 5))
+      end
+
+      # Patches an `add` (immediate) 12-bit unsigned field at bits [21:10] with the
+      # symbol's within-page byte offset.
+      def patch_add_lo12(buf, offset, value)
+        imm = value & 0xFFF
+        write_insn(buf, offset, (read_insn(buf, offset) & ~(0xFFF << 10)) | (imm << 10))
+      end
+
+      # Patches a 64-bit `ldr`'s 12-bit unsigned-offset field at bits [21:10]. The
+      # field is the byte offset scaled by the access size (8), so the GOT slot's
+      # 8-byte-aligned low offset encodes exactly as value >> 3.
+      def patch_ld64_lo12(buf, offset, value)
+        imm = (value >> 3) & 0xFFF
+        write_insn(buf, offset, (read_insn(buf, offset) & ~(0xFFF << 10)) | (imm << 10))
       end
 
       # Fills the data GOT: an internal slot holds its symbol's link-time address
@@ -612,6 +797,8 @@ module Rubycc
       # first call jumps straight there. The .got.plt reserves three leading slots
       # ([0] = &_DYNAMIC, [1]/[2] zero) before the per-function slots.
       def build_plt
+        return build_plt_aarch64 if aarch64?
+
         @plt_bytes = +"".b
         @gotplt_bytes = +[@vaddr[".dynamic"], 0, 0].pack("Q<Q<Q<")
         @rela_plt = []
@@ -624,6 +811,56 @@ module Rubycc
           @gotplt_bytes << [0].pack("Q<")
           @rela_plt << [slot, import_dynindex(sym)]
         end
+      end
+
+      # The aarch64 .plt, the counterpart of #build_plt. Each 16-byte stub loads
+      # its function's resolved address from the .got.plt slot and branches there;
+      # under BIND_NOW the loader has already stored the JUMP_SLOT target, so the
+      # first call reaches the callee directly. The four-instruction sequence
+      # (ARM DDI 0487 encodings) is: `adrp x16, page(slot)`; `ldr x17, [x16,
+      # #lo12]`; `add x16, x16, #lo12`; `br x17`. The .got.plt reserves three
+      # leading slots ([0] = &_DYNAMIC, [1]/[2] zero) before the per-function ones.
+      def build_plt_aarch64
+        @plt_bytes = +"".b
+        @gotplt_bytes = +[@vaddr[".dynamic"], 0, 0].pack("Q<Q<Q<")
+        @rela_plt = []
+        @plt_order.each_with_index do |sym, i|
+          stub = plt_stub_addr(sym)
+          slot = gotplt_slot_addr(i)
+          @plt_bytes << aarch64_plt_stub(stub, slot)
+          @gotplt_bytes << [0].pack("Q<")
+          @rela_plt << [slot, import_dynindex(sym)]
+        end
+      end
+
+      # The four instruction words of one aarch64 .plt stub reaching `slot` from
+      # its own address `stub` (see #build_plt_aarch64).
+      def aarch64_plt_stub(stub, slot)
+        lo12 = slot & 0xFFF
+        adrp = aarch64_adrp(16, page(slot) - page(stub))
+        ldr  = aarch64_ldr64(17, 16, lo12)
+        add  = aarch64_add(16, 16, lo12)
+        br   = 0xD61F0000 | (17 << 5)
+        [adrp, ldr, add, br].pack("L<4")
+      end
+
+      # `adrp Xd, #page_delta`: base opcode 0x90000000 with the 21-bit page
+      # immediate split into immlo (bits [30:29]) and immhi (bits [23:5]).
+      def aarch64_adrp(rd, page_delta)
+        imm = (page_delta >> 12) & 0x1FFFFF
+        0x90000000 | ((imm & 0x3) << 29) | (((imm >> 2) & 0x7FFFF) << 5) | rd
+      end
+
+      # `ldr Xt, [Xn, #byteoff]` (64-bit unsigned offset): base 0xF9400000 with the
+      # scaled (byteoff / 8) 12-bit immediate at bits [21:10].
+      def aarch64_ldr64(rt, rn, byteoff)
+        0xF9400000 | (((byteoff >> 3) & 0xFFF) << 10) | (rn << 5) | rt
+      end
+
+      # `add Xd, Xn, #imm12`: base 0x91000000 with the 12-bit immediate at bits
+      # [21:10].
+      def aarch64_add(rd, rn, imm12)
+        0x91000000 | ((imm12 & 0xFFF) << 10) | (rn << 5) | rd
       end
 
       def got_addr = @vaddr[".got"]
@@ -743,13 +980,13 @@ module Rubycc
       def rela_dyn_bytes
         buf = +"".b
         (@rela_relative_got + @rela_data).each do |offset, addend|
-          buf << rela_entry(offset, R_X86_64_RELATIVE, 0, addend)
+          buf << rela_entry(offset, reloc_relative, 0, addend)
         end
         @rela_glob_dat.each do |offset, dynindex|
-          buf << rela_entry(offset, R_X86_64_GLOB_DAT, dynindex, 0)
+          buf << rela_entry(offset, reloc_glob_dat, dynindex, 0)
         end
         @rela_data_sym.each do |offset, dynindex, addend|
-          buf << rela_entry(offset, R_X86_64_64, dynindex, addend)
+          buf << rela_entry(offset, reloc_abs64, dynindex, addend)
         end
         buf
       end
@@ -758,7 +995,7 @@ module Rubycc
       # imported symbol; the loader stores the resolved address into the slot.
       def rela_plt_bytes
         buf = +"".b
-        @rela_plt.each { |offset, dynindex| buf << rela_entry(offset, R_X86_64_JUMP_SLOT, dynindex, 0) }
+        @rela_plt.each { |offset, dynindex| buf << rela_entry(offset, reloc_jump_slot, dynindex, 0) }
         buf
       end
 
@@ -882,10 +1119,10 @@ module Rubycc
         ro = segment_extent(@ro, base: @ro.first.vaddr)
         dynamic = named(".dynamic")
         [
-          phdr(PT_LOAD, PF_R | PF_X, 0, 0, rx[:filesz], rx[:filesz], PAGE),
-          phdr(PT_LOAD, PF_R, ro[:offset], ro[:offset], ro[:filesz], ro[:filesz], PAGE),
+          phdr(PT_LOAD, PF_R | PF_X, 0, 0, rx[:filesz], rx[:filesz], seg_align),
+          phdr(PT_LOAD, PF_R, ro[:offset], ro[:offset], ro[:filesz], ro[:filesz], seg_align),
           phdr(PT_LOAD, PF_R | PF_W, @rw_start, @rw_start,
-               @file_end - @rw_start, @mem_end - @rw_start, PAGE),
+               @file_end - @rw_start, @mem_end - @rw_start, seg_align),
           phdr(PT_DYNAMIC, PF_R | PF_W, dynamic.offset, dynamic.vaddr, dynamic.size, dynamic.size, 8),
           phdr(PT_GNU_STACK, PF_R | PF_W, 0, 0, 0, 0, 0x10)
         ].join
@@ -911,7 +1148,7 @@ module Rubycc
                    0, 0, 0, 0, 0, 0, 0, 0, 0].pack("C16")
         e_ident +
           [e_type].pack("S<") +           # ET_DYN for a .so, ET_EXEC for an executable
-          [EM_X86_64].pack("S<") +
+          [e_machine_id].pack("S<") +
           [EV_CURRENT].pack("L<") +
           [e_entry].pack("Q<") +          # 0 for a shared object, _start's vaddr for an executable
           [EHDR_SIZE].pack("Q<") +        # e_phoff (program headers follow the header)

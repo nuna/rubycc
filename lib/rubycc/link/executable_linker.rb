@@ -54,6 +54,12 @@ module Rubycc
       GLIBC_INTERP = "/lib64/ld-linux-x86-64.so.2"
       MUSL_INTERP  = "/lib/ld-musl-x86_64.so.1"
 
+      # The aarch64 dynamic loader path. When cross-linking on an x86_64 host the
+      # target loader is not present locally, so — unlike the x86_64 case — the
+      # path is used as the canonical on-target location without a host existence
+      # check (the emulator/target resolves it through its own sysroot).
+      AARCH64_INTERP = "/lib/ld-linux-aarch64.so.1"
+
       # The usual filesystem locations of the C library, consulted (in order) to
       # add libc as a default dependency. Only the SONAME the chosen file carries
       # affects the output, so which path matches does not disturb determinism.
@@ -63,6 +69,14 @@ module Rubycc
         "/usr/lib/x86_64-linux-gnu/libc.so.6",
         "/usr/lib/libc.so.6",
         "/lib/libc.so.6"
+      ].freeze
+
+      # The aarch64 C library locations, including the cross-toolchain sysroot the
+      # linker reads the dependency's exports (and SONAME) from when cross-linking.
+      AARCH64_LIBC_PATHS = [
+        "/lib/aarch64-linux-gnu/libc.so.6",
+        "/usr/lib/aarch64-linux-gnu/libc.so.6",
+        "/usr/aarch64-linux-gnu/lib/libc.so.6"
       ].freeze
 
       # The synthesized _start, assembled from the System V x86-64 process-startup
@@ -95,6 +109,37 @@ module Rubycc
       MAIN_IMM_OFFSET       = 21
       LIBC_START_REL_OFFSET = 26
 
+      # The synthesized aarch64 _start, assembled from the AArch64 process-startup
+      # ABI (ARM DDI 0487 encodings; not copied from any crt). The loader enters
+      # with argc/argv/envp on the stack and x0 = rtld_fini, and this marshals the
+      # classic __libc_start_main(main, argc, argv, init, fini, rtld_fini,
+      # stack_end) call in x0-x6: x5 saves rtld_fini before x0 is reloaded with
+      # main's address, x1 = argc = [sp], x2 = argv = sp + 8, x6 = stack_end = sp,
+      # x3/x4 = init/fini = 0. main's address is formed by an adrp/add pair (a
+      # non-PIE image, so the page/lo12 relocations resolve to a fixed address) and
+      # the call reaches __libc_start_main through the .plt (CALL26). sp is 16-byte
+      # aligned at entry and nothing is pushed, so no realignment is needed.
+      AARCH64_START_CODE = [
+        0xAA0003E5, # mov  x5, x0            ; x5 = rtld_fini (saved before x0 is reused)
+        0xD280001D, # mov  x29, #0           ; outermost frame pointer
+        0xD280001E, # mov  x30, #0           ; outermost link register
+        0xF94003E1, # ldr  x1, [sp]          ; x1 = argc
+        0x910023E2, # add  x2, sp, #8        ; x2 = argv
+        0x910003E6, # mov  x6, sp            ; x6 = stack_end
+        0x90000000, # adrp x0, main          ; x0 = page(main)   (ADR_PREL_PG_HI21)
+        0x91000000, # add  x0, x0, :lo12:main; x0 = &main         (ADD_ABS_LO12_NC)
+        0xD2800003, # mov  x3, #0            ; init = NULL
+        0xD2800004, # mov  x4, #0            ; fini = NULL
+        0x94000000, # bl   __libc_start_main ; through the .plt   (CALL26)
+        0xD4200000  # brk  #0                ; __libc_start_main does not return
+      ].pack("L<*").freeze
+
+      # Byte offsets of the three operands the linker patches in the aarch64 crt:
+      # the adrp and add forming main's address, and the bl to __libc_start_main.
+      AARCH64_MAIN_ADRP_OFFSET  = 24 # 0x18
+      AARCH64_MAIN_ADD_OFFSET   = 28 # 0x1c
+      AARCH64_LIBC_START_OFFSET = 40 # 0x28
+
       class << self
         # Links `inputs` (paths or raw ET_REL/ar bytes, as PartialLinker accepts)
         # into an executable, returned as an ASCII-8BIT String. `needed` lists
@@ -113,11 +158,49 @@ module Rubycc
 
       def initialize(inputs, needed: [], interpreter: nil, libc: :auto)
         super(inputs, needed: needed)
+        # The crt and the interpreter/libc defaults are chosen before the merge,
+        # so the target machine is read straight off the first input object rather
+        # than from the (not-yet-built) merged reader.
+        @em = detect_machine
         @interpreter = choose_interpreter(interpreter)
         add_default_libc(libc)
       end
 
       private
+
+      # The ELF e_machine of the first relocatable input object, defaulting to
+      # x86_64 when no object header is readable (e.g. only archives, which an
+      # executable link always has a compiled object ahead of). Used to pick the
+      # crt and the interpreter/libc defaults up front; the post-merge reader's
+      # machine agrees with it.
+      def detect_machine
+        @inputs.each do |raw|
+          header = input_elf_header(raw)
+          next unless header
+
+          return header.byteslice(18, 2).unpack1("S<")
+        end
+        EM_X86_64
+      end
+
+      # The leading bytes of an input if it is an ELF object (not an ar archive),
+      # or nil. A String input may be raw object bytes or a filesystem path.
+      def input_elf_header(raw)
+        bytes =
+          if raw.is_a?(String) && raw.b.start_with?("\x7FELF".b)
+            raw.b
+          elsif raw.is_a?(String) && raw.b.start_with?("!<arch>\n".b)
+            nil
+          else
+            File.binread(raw.to_s, 20)
+          end
+        bytes if bytes && bytes.bytesize >= 20 && bytes.b.start_with?("\x7FELF".b)
+      rescue SystemCallError
+        nil
+      end
+
+      # An executable is emitted for x86_64 and, since this step, aarch64.
+      def supported_machines = [EM_X86_64, EM_AARCH64]
 
       # --- SharedLinker hook overrides ---------------------------------------
 
@@ -205,10 +288,10 @@ module Rubycc
         interp = named(".interp")
         dynamic = named(".dynamic")
         [
-          phdr(PT_LOAD, PF_R | PF_X, 0, load_base, rx_filesz, rx_filesz, PAGE),
-          phdr(PT_LOAD, PF_R, ro[:offset], @ro.first.vaddr, ro[:filesz], ro[:filesz], PAGE),
+          phdr(PT_LOAD, PF_R | PF_X, 0, load_base, rx_filesz, rx_filesz, seg_align),
+          phdr(PT_LOAD, PF_R, ro[:offset], @ro.first.vaddr, ro[:filesz], ro[:filesz], seg_align),
           phdr(PT_LOAD, PF_R | PF_W, @rw_start, @rw.first.vaddr,
-               @file_end - @rw_start, @mem_end - @rw_start, PAGE),
+               @file_end - @rw_start, @mem_end - @rw_start, seg_align),
           phdr(PT_INTERP, PF_R, interp.offset, interp.vaddr, interp.size, interp.size, 1),
           phdr(PT_DYNAMIC, PF_R | PF_W, dynamic.offset, dynamic.vaddr, dynamic.size, dynamic.size, 8),
           phdr(PT_GNU_STACK, PF_R | PF_W, 0, 0, 0, 0, 0x10)
@@ -223,6 +306,10 @@ module Rubycc
       # import bound against libc), plus the two relocations that fill _start's
       # operands.
       def build_crt
+        aarch64? ? build_crt_aarch64 : build_crt_x86_64
+      end
+
+      def build_crt_x86_64
         writer = RelocatableWriter.new
         text = writer.add_section(name: ".text", type: SHT_PROGBITS,
                                   flags: SHF_ALLOC | SHF_EXECINSTR, addralign: 16,
@@ -238,6 +325,29 @@ module Rubycc
         writer.to_binary
       end
 
+      # The aarch64 crt: the same one-section ET_REL shape as the x86_64 crt, but
+      # carrying AARCH64_START_CODE and its three aarch64 relocations — the
+      # adrp/add pair forming main's address (page + within-page) and the CALL26
+      # to the imported __libc_start_main. Emitted with EM_AARCH64 so the merged
+      # object the final link reads back reports the right machine.
+      def build_crt_aarch64
+        writer = RelocatableWriter.new(machine: EM_AARCH64)
+        text = writer.add_section(name: ".text", type: SHT_PROGBITS,
+                                  flags: SHF_ALLOC | SHF_EXECINSTR, addralign: 16,
+                                  data: AARCH64_START_CODE)
+        writer.add_symbol(name: "_start", bind: :global, type: :func,
+                          section: text, value: 0, size: AARCH64_START_CODE.bytesize)
+        main = writer.add_symbol(name: "main", bind: :global, type: :notype)
+        libc_start = writer.add_symbol(name: "__libc_start_main", bind: :global, type: :notype)
+        writer.add_relocation(target: text, offset: AARCH64_MAIN_ADRP_OFFSET, symbol: main,
+                              type: R_AARCH64_ADR_PREL_PG_HI21, addend: 0)
+        writer.add_relocation(target: text, offset: AARCH64_MAIN_ADD_OFFSET, symbol: main,
+                              type: R_AARCH64_ADD_ABS_LO12_NC, addend: 0)
+        writer.add_relocation(target: text, offset: AARCH64_LIBC_START_OFFSET, symbol: libc_start,
+                              type: R_AARCH64_CALL26, addend: 0)
+        writer.to_binary
+      end
+
       # --- interpreter and libc ----------------------------------------------
 
       # The .interp contents: the NUL-terminated loader path.
@@ -250,6 +360,9 @@ module Rubycc
       # a silent guess, since the resulting executable would not run.
       def choose_interpreter(explicit)
         return explicit if explicit
+        # aarch64 is cross-linked from an x86_64 host, so the target loader is not
+        # present locally; use its canonical on-target path unconditionally.
+        return AARCH64_INTERP if aarch64?
         return GLIBC_INTERP if File.exist?(GLIBC_INTERP)
         return MUSL_INTERP if File.exist?(MUSL_INTERP)
 
@@ -274,7 +387,11 @@ module Rubycc
       end
 
       def default_libc
-        DEFAULT_LIBC_PATHS.find { |p| File.exist?(p) }
+        libc_paths.find { |p| File.exist?(p) }
+      end
+
+      def libc_paths
+        aarch64? ? AARCH64_LIBC_PATHS : DEFAULT_LIBC_PATHS
       end
     end
   end

@@ -188,7 +188,13 @@ module Rubycc
 
         def initialize(included)
           @objects = included # [{reader:, label:}]
-          @writer = RelocatableWriter.new
+          # The merged object keeps the inputs' architecture: the merge is
+          # machine-independent (section concatenation and numeric-type relocation
+          # retargeting), but the output header must carry the right e_machine so
+          # the final linker that reads it back can pick the target's relocation
+          # and crt logic. Empty inputs default to x86_64 through RelocatableWriter.
+          machine = included.first&.dig(:reader)&.machine
+          @writer = machine ? RelocatableWriter.new(machine: machine) : RelocatableWriter.new
         end
 
         def run

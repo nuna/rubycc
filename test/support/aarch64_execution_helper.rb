@@ -23,6 +23,15 @@ module AArch64ExecutionHelper
   CROSS_GCC = "aarch64-linux-gnu-gcc"
   CROSS_OBJDUMP = "aarch64-linux-gnu-objdump"
 
+  # The cross toolchain's sysroot, holding the aarch64 dynamic loader and libc.
+  # A dynamically-linked executable rubycc's own linker produces names the
+  # on-target loader path (/lib/ld-linux-aarch64.so.1); qemu resolves that (and
+  # the shared libraries) beneath this prefix, so the self-linked binary runs
+  # without the target's real root filesystem.
+  SYSROOT = "/usr/aarch64-linux-gnu"
+  SYSROOT_INTERP = "#{SYSROOT}/lib/ld-linux-aarch64.so.1"
+  SYSROOT_LIBC = "#{SYSROOT}/lib/libc.so.6"
+
   # True when every tool the aarch64 execution tests need is on PATH. The probe
   # runs once per process (each tool is exec'd to see whether it exists at all)
   # and the answer is memoized, since every test in the file asks.
@@ -39,12 +48,29 @@ module AArch64ExecutionHelper
     false
   end
 
+  # True when, in addition to the toolchain, the sysroot supplies the aarch64
+  # dynamic loader and libc a rubycc-self-linked (dynamically-linked) executable
+  # needs to run under qemu. Memoized alongside #available?.
+  def self.self_link_available?
+    return @self_link_available if defined?(@self_link_available)
+
+    @self_link_available = available? && File.exist?(SYSROOT_INTERP) && File.exist?(SYSROOT_LIBC)
+  end
+
   # Skips the calling test unless the cross toolchain is installed.
   def skip_unless_aarch64_toolchain
     return if AArch64ExecutionHelper.available?
 
     skip "aarch64 execution toolchain (#{AArch64ExecutionHelper::QEMU}, " \
          "#{AArch64ExecutionHelper::CROSS_GCC}) is not installed"
+  end
+
+  # Skips the calling test unless the sysroot loader/libc are also present, so
+  # the rubycc-self-linked dynamic executable can run under qemu.
+  def skip_unless_aarch64_self_link
+    return if AArch64ExecutionHelper.self_link_available?
+
+    skip "aarch64 self-link sysroot (#{AArch64ExecutionHelper::SYSROOT_INTERP}) is not available"
   end
 
   # Compiles `c_source` to an aarch64 relocatable object with rubycc. `pic`
@@ -92,6 +118,51 @@ module AArch64ExecutionHelper
 
     stdout, run_status = Open3.capture2(AArch64ExecutionHelper::QEMU, exe_path)
     [run_status.exitstatus, stdout]
+  end
+
+  # Links `object_path` into an executable with rubycc's OWN linker (no cross
+  # gcc) and runs it under qemu, returning [exit_status, stdout]. The linker
+  # discovers the aarch64 loader/libc through its sysroot defaults; qemu resolves
+  # the named on-target loader path beneath QEMU_LD_PREFIX. This is the A5
+  # acceptance path: rubycc compiles and links the whole executable itself.
+  def link_and_run_aarch64_rubycc(object_path)
+    dir = File.dirname(object_path)
+    exe_path = File.join(dir, "#{File.basename(object_path, ".*")}.rubycc.out")
+
+    Rubycc::Link::ExecutableLinker.link_to([object_path], exe_path)
+    File.chmod(0o755, exe_path)
+
+    stdout, run_status = Open3.capture2(
+      { "QEMU_LD_PREFIX" => AArch64ExecutionHelper::SYSROOT },
+      AArch64ExecutionHelper::QEMU, exe_path
+    )
+    [run_status.exitstatus, stdout]
+  end
+
+  # Compiles `c_source` for aarch64 with rubycc, links it with rubycc's own
+  # linker, and runs the result under qemu; returns [exit_status, stdout].
+  def run_aarch64_self_linked(c_source)
+    in_tmpdir do |dir|
+      object_path = File.join(dir, "test.o")
+      compile_with_rubycc_aarch64(c_source, object_path)
+      link_and_run_aarch64_rubycc(object_path)
+    end
+  end
+
+  # The A5 differential assertion: a source rubycc compiles AND links itself must
+  # agree, on exit status and standard output, with the cross gcc's reference
+  # build of the same source. The reference side keeps the existing static
+  # gcc-link path (its result is the language oracle, independent of link mode);
+  # only the rubycc side exercises the new self-linker.
+  def assert_aarch64_self_link_matches_gcc(c_source)
+    skip_unless_aarch64_self_link
+
+    rubycc_status, rubycc_stdout = run_aarch64_self_linked(c_source)
+    gcc_status, gcc_stdout = run_aarch64(c_source, compiler: :gcc)
+
+    assert_equal gcc_status, rubycc_status,
+                 "exit status mismatch: gcc #{gcc_status}, rubycc self-link #{rubycc_status}"
+    assert_equal gcc_stdout, rubycc_stdout, "stdout mismatch (rubycc self-link vs gcc)"
   end
 
   # Builds `c_source` for aarch64 with the requested compiler, runs it under

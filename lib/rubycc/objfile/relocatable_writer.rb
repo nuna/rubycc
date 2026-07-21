@@ -35,6 +35,7 @@ module Rubycc
       EV_CURRENT  = 1
       ET_REL      = 1
       EM_X86_64   = 62
+      EM_AARCH64  = 183
 
       SHN_UNDEF = 0
       SHN_ABS   = 0xFFF1
@@ -79,7 +80,13 @@ module Rubycc
       # Symbol handle; `type` is the numeric x86_64 relocation type.
       Relocation = Struct.new(:target, :offset, :symbol, :type, :addend, keyword_init: true)
 
-      def initialize
+      # `machine` is the ELF e_machine value stamped into the output header. It
+      # defaults to x86_64 so an existing caller is unaffected; the partial-link
+      # merge passes the inputs' own machine through so a merged aarch64 object
+      # keeps its EM_AARCH64 identity (the final linker reads it back to pick the
+      # target's relocation and crt logic).
+      def initialize(machine: EM_X86_64)
+        @machine = machine
         @sections = []
         # The reserved null symbol is index 0 by the ELF ABI; expose it so a
         # caller can re-point a "no symbol" relocation at it.
@@ -325,7 +332,7 @@ module Rubycc
                    0, 0, 0, 0, 0, 0, 0, 0, 0].pack("C16")
         e_ident +
           [ET_REL].pack("S<") +
-          [EM_X86_64].pack("S<") +
+          [@machine].pack("S<") +
           [EV_CURRENT].pack("L<") +
           [0].pack("Q<") +            # e_entry
           [0].pack("Q<") +            # e_phoff
