@@ -2830,10 +2830,58 @@ M4 完了後・M5(互換ヘッダの大量拡充)着手前の必須ゲート(ユ
 
 ---
 
+## Step 82 — aarch64 ABI 層ヘッダとヘッダ ABI ハーネスの machine 並列化(M5 H1)
+
+M5 の最初の実装ステップ。第二バックエンド(aarch64)を実 gem まで通すには、同梱 libc
+ヘッダも aarch64 の ABI を映さねばならない。x86-64 で規約化した「ABI 層ヘッダ + 実測駆動
+ABI ハーネス」を aarch64 に拡張し、探索パスを target で切替可能にした。
+
+- **差分は着手前にメインセッションで実測して確定**(過去に調査フェーズで委譲が繰り返し
+  中断したため)。ホスト gcc(x86-64)とクロス gcc(aarch64-linux-gnu-gcc -static + qemu)で
+  全 arch 層 Spec の型幅・マクロ値・offsetof を突き合わせた結果、**aarch64 が x86-64 と
+  異なるのは正確に 4 点のみ**と判明: `nlink_t`(unsigned long→unsigned int)・`blksize_t`
+  (long→int)・`WCHAR_MIN/MAX`(符号付き→unsigned)・`struct stat`(144→128 バイト・並び替え)。
+  `CHAR_MIN/MAX` は既に `__CHAR_UNSIGNED__` 機構(Step 73)で吸収済み。fast 型・PRI/SCN 書式・
+  struct tm/timespec/timeval・fd_set・endian・errno 番号・ctype マスク等はすべて両 arch で
+  バイト一致(→ aarch64 層へは検証コピー)。この実測表を委譲プロンプトに埋め込み、
+  エージェント側で再調査させずに機械的実装に徹させた。
+- **`include/libc/glibc/aarch64/` を新設(全 11 本)**。探索解決のため全ヘッダを配置する
+  必要がある(x86-64 層は arch 層専用で共通層に降りていないため)。8 本は x86-64 版と
+  宣言・値がバイト一致(errno.h のみ provenance 1 語差)、3 本のみ実 ABI 差分を持つ:
+  `sys/types.h`(nlink_t/blksize_t を 32bit)・`sys/stat.h`(aarch64 実測 128B レイアウト。
+  st_mode が st_nlink の前・`__pad1`/`__pad2`/`__glibc_reserved[2]` で 128B に整合)・
+  `stdint.h`(WCHAR_MIN=0/WCHAR_MAX=UINT32_MAX)。
+- **設計判断: フル並列ツリー(全 11 本コピー)を採用**。共通層への引き下げ(DRY)より
+  優先したのは x86-64 のバイト同一性不変条件。x86-64 層を 1 バイトも触らないため
+  バイト同一性が自明に保たれる。8 本の重複は ABI 凍結ファイルで churn が事実上ゼロであり、
+  将来 DRY 化するなら「バイト一致」が保証済みなので容易。
+- **探索パスの target 切替**: `Preprocessor#initialize` に `libc_arch:`(既定 "x86_64")を
+  追加し `@libc_arch_include_dir` を保持。`default_system_include_paths` を凍結定数返しから
+  インスタンス変数からの再構築に変更(arch スロットのみ差し替え)。既定 x86-64 では旧
+  `DEFAULT_SYSTEM_INCLUDE_PATHS` と要素完全一致 → 生成物バイト同一。`compiler.rb`/`driver.rb`
+  は TARGETS の新 `libc_arch` キーを受け渡すのみ。
+- **wchar_t typedef の符号性は既知限定事項として据え置き**(long double 幅と同じ扱い)。
+  freestanding `stddef.h` と共有ガード `_RUBYCC_WCHAR_T` を使うため、stdint.h だけ符号を
+  変えると include 順で不整合になる。テスト対象でありヘッダ分岐に効く `WCHAR_MIN/MAX`
+  マクロ値のみ aarch64 ABI に合わせ、その旨を stdint.h コメントに明記。
+- **ABI ハーネスの machine 並列化**: `run_abi_case`(x86-64)は無改変で、`run_abi_case_aarch64`
+  を追加(rubycc -target aarch64 で .o 生成 → クロス gcc -static リンク → qemu 実行、オラクルは
+  クロス gcc -static + qemu、stdout をバイト比較)。既存 `aarch64_execution_helper.rb` の
+  ヘルパを再利用。`TestHeaderAbiAarch64`(12 ケース)は arch 依存 4(SYS_STAT/SYS_TYPES/
+  STDINT/LIMITS)+ 中立 8 を回し、クロスツール不在ならクラスごとスキップ。Spec 定数は
+  `TestHeaderAbi::` から共有参照(検査内容は arch 非依存・期待値は実行時にオラクルが算出)。
+- **バイト同一性の独立検証**: `include/libc/glibc/x86_64/` は無変更(git status は
+  `?? aarch64/` のみ)。既定 x86-64 探索パスが旧定数と `==` で一致。examples を既定
+  x86-64 でコンパイルした .o の sha256 が実装前後で完全一致。x86-64 側 ABI テスト
+  (TestHeaderAbi 28 ケース)は無改変 green。
+
+---
+
 ## 現在のテスト規模
 
-Step 81 完了時点: **2,369 runs / 6,293 assertions / 0 failures / 47 skips**
-(H0 はライセンス整理のため実行コードの変更なし。テスト規模は Step 80 から不変)
+Step 82 完了時点: **2,381 runs / 6,329 assertions / 0 failures / 47 skips**
+(Step 81 の 2,369 から +12 = 新規 `TestHeaderAbiAarch64` の aarch64 クロス ABI 12 ケース。
+クロス gcc + qemu 未導入のホストではこの 12 ケースはスキップされる)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト

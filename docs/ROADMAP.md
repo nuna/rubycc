@@ -486,7 +486,16 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
 - 疑義が残る項目は「クリーンルームで書き直す」判断を含めて解消し、H2 以降の
   ヘッダ追加手順(由来の記録・NOTICE 更新)をワークフロー化する。
 
-### H1 — 互換ヘッダ基盤(設計確定。M3 B7 の前に確定させる)
+### H1 — 互換ヘッダ基盤(設計確定。M3 B7 の前に確定させる)【基盤確定: x86-64 側 Step 62-64、aarch64 側 Step 82】
+- **aarch64 ABI 層(Step 82)**: `include/libc/glibc/aarch64/` 全 11 本を追加。8 本は
+  x86-64 版と宣言・値がバイト一致(`cmp` 確認済み)、実 ABI 差分を持つのは 3 本のみ —
+  `sys/types.h`(nlink_t/blksize_t=32bit)・`sys/stat.h`(struct stat 実測 128 バイト・
+  並び替え)・`stdint.h`(WCHAR_MIN/MAX が unsigned)。差分はクロス gcc で実測。探索パスは
+  `Preprocessor#initialize(libc_arch:)` で切替(既定 x86-64 は従来とバイト同一、
+  TARGETS の `libc_arch` から供給)。**ABI ハーネスを machine-parameterize**:
+  `run_abi_case_aarch64`(rubycc -target aarch64 → クロス gcc -static → qemu、オラクルは
+  クロス gcc)+ `TestHeaderAbiAarch64`(12 ケース green)。これで H2 受け入れの
+  「glibc × 2 arch」軸のうち **glibc×{x86-64,aarch64}** が実証済み。残: musl 層は H2 以降。
 - **由来の方針決定**(DESIGN R8): 第一候補は musl(MIT)からの派生 + NOTICE への
   ライセンス表記。派生の定義を決めておく — 宣言・型定義・マクロ値は musl を出発点に、
   glibc ターゲットでは**型幅・構造体レイアウト・マクロ値を glibc ABI に一致させる改変**を

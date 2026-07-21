@@ -74,13 +74,13 @@ musl の `COPYRIGHT`(https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT)より�
 
 ---
 
-## 3. 同梱ヘッダの由来台帳(30 本)
+## 3. 同梱ヘッダの由来台帳(41 本)
 
 各ヘッダ冒頭の provenance コメントを棚卸しした結果。分類は次の 4 種:
 
 - **freestanding** — ISO C §7 が規定する自立ヘッダ。コンパイラが提供すべきもので、
   libc(musl/glibc)由来ではない。
-- **musl-derived** — musl の宣言セット/形状を出発点にし、glibc x86-64 ABI に合わせて改変。
+- **musl-derived** — musl の宣言セット/形状を出発点にし、glibc の対象 arch(x86-64 / aarch64)ABI に合わせて改変。
 - **clean-room** — 公開 ABI / ISO C 標準 / カーネル UAPI に対してゼロから記述。musl 由来ではない
   (一部は musl を「形状の参照」にしたが、テキストの派生はしていない)。
 
@@ -101,8 +101,8 @@ libc 由来ではない。musl・glibc いずれの派生でもない。
 
 ### 3.2 musl-derived(15 本)
 
-musl の宣言セット/形状を出発点にし、glibc x86-64 ABI に追従。冒頭コメントに
-「Derived from musl's <…>」と明記。
+musl の宣言セット/形状を出発点にし、glibc の対象 arch(x86-64 / aarch64)ABI に追従。
+冒頭コメントに「Derived from musl's <…>」と明記。
 
 | ファイル | glibc ABI 追従の内容 |
 |---|---|
@@ -121,8 +121,15 @@ musl の宣言セット/形状を出発点にし、glibc x86-64 ABI に追従。
 | `include/libc/glibc/x86_64/sys/time.h` | `struct timeval` メンバを glibc x86-64 に固定(実測) |
 | `include/libc/glibc/x86_64/sys/types.h` | 全幅・符号を glibc x86-64 LP64 に固定(実測) |
 | `include/libc/glibc/x86_64/time.h` | `time_t`=long、`struct tm` の tm_gmtoff/tm_zone 拡張(実測) |
+| `include/libc/glibc/aarch64/endian.h` | little-endian aarch64 に固定(x86-64 版とバイト一致) |
+| `include/libc/glibc/aarch64/inttypes.h` | LP64 の "l" 形(x86-64 版とバイト一致) |
+| `include/libc/glibc/aarch64/stdint.h` | 幅を glibc aarch64 LP64 に固定。WCHAR_MIN/MAX は unsigned(0/UINT32_MAX)で x86-64 と相違(実測) |
+| `include/libc/glibc/aarch64/sys/select.h` | `fd_set` を glibc aarch64 に固定(x86-64 版とバイト一致) |
+| `include/libc/glibc/aarch64/sys/time.h` | `struct timeval` を glibc aarch64 に固定(x86-64 版とバイト一致) |
+| `include/libc/glibc/aarch64/sys/types.h` | 全幅・符号を glibc aarch64 LP64 に固定。nlink_t/blksize_t=32bit で x86-64 と相違(実測) |
+| `include/libc/glibc/aarch64/time.h` | `time_t`=long、`struct tm` 拡張(x86-64 版とバイト一致) |
 
-### 3.3 clean-room(7 本)
+### 3.3 clean-room(11 本)
 
 musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI に対してゼロから記述。
 
@@ -135,6 +142,10 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 | `include/libc/glibc/x86_64/limits.h` | ISO 規定値 + long/char 幅を glibc x86-64 LP64 に固定。char 符号性は `__CHAR_UNSIGNED__` で分岐(Step 73) | なし(musl 非参照) |
 | `include/libc/glibc/x86_64/errno.h` | **Linux/asm-generic UAPI の errno 値**を実測整数定数として再現(§4) | なし(UAPI 由来) |
 | `include/libc/glibc/x86_64/sys/stat.h` | **Linux x86-64 kernel ABI の struct stat レイアウト**(実測 144 バイト)と S_IF* 値(§4) | なし(UAPI 由来) |
+| `include/libc/glibc/aarch64/ctype.h` | x86-64 版と同一機構(バイト一致) | なし |
+| `include/libc/glibc/aarch64/limits.h` | ISO 値 + glibc aarch64 LP64 幅。char 符号性は `__CHAR_UNSIGNED__` で分岐(x86-64 版とバイト一致) | なし(musl 非参照) |
+| `include/libc/glibc/aarch64/errno.h` | Linux/asm-generic UAPI の errno 値(aarch64 も x86-64 と同一値・§4) | なし(UAPI 由来) |
+| `include/libc/glibc/aarch64/sys/stat.h` | **Linux aarch64 kernel ABI の struct stat レイアウト**(実測 128 バイト・並び替え・nlink_t/blksize_t=32bit)と S_IF* 値(§4) | なし(UAPI 由来) |
 
 > `assert.h` と `features.h` は自己申告で clean-room だが、冒頭コメントに
 > 「musl's <…> was the shape reference」とある。**形状(どの宣言を並べるか)の参照**で
@@ -146,9 +157,16 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 | 分類 | 本数 |
 |---|---|
 | freestanding | 8 |
-| musl-derived | 15 |
-| clean-room | 7 |
-| **合計** | **30** |
+| musl-derived | 22 |
+| clean-room | 11 |
+| **合計** | **41** |
+
+> Step 82(M5 H1)で `include/libc/glibc/aarch64/` 層 11 本を追加(30→41)。うち 8 本は
+> x86-64 版と宣言・値がバイト一致(`cmp` 確認済み)で、由来分類も x86-64 版を継承する。
+> 実 ABI 差分を持つのは 3 本のみ: `sys/types.h`(nlink_t/blksize_t が 32bit)・
+> `sys/stat.h`(struct stat が実測 128 バイトの aarch64 レイアウト)・`stdint.h`
+> (WCHAR_MIN/MAX が unsigned)。いずれも glibc/UAPI ソースのコピーではなく、クロス gcc
+> で実測した ABI 事実(§4)の再現。
 
 ---
 
