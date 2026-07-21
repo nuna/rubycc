@@ -655,6 +655,60 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <pthread.h> (Step 91, M5 H2): the POSIX threads types and the core pthreads
+  # calls. Unlike the socket/signal headers, pthread's ABI is arch dependent --
+  # the opaque objects are wider on aarch64 (pthread_mutex_t 40->48,
+  # pthread_attr_t 56->64, pthread_mutexattr_t / pthread_condattr_t 4->8) -- so
+  # the header lives in the arch layer alongside fcntl.h and sys/stat.h, and the
+  # aarch64 case below is in that class's arch-specific section rather than its
+  # neutral one. The `sizes` list is the load-bearing check: every opaque type's
+  # sizeof and _Alignof must match the (cross-)gcc oracle, which is exactly what
+  # proves the measured arch-dependent __size[N] counts are right. `defines:
+  # ["_GNU_SOURCE"]` matches the fcntl.h Spec's reason -- rubycc's bundled header
+  # exposes its whole surface unconditionally while the host glibc gates parts of
+  # pthread.h behind __USE_* feature-test macros. Every pthread_* call sits under
+  # sizeof (unevaluated, like <dlfcn.h>'s dl* calls), so the probe proves the
+  # declarations are usable without emitting a link reference -- a real pthread
+  # reference in the statically linked aarch64 probe would otherwise pull the
+  # pthread implementation in. The three PTHREAD_*_INITIALIZER macros and
+  # PTHREAD_ONCE_INIT are exercised as file-scope static initializers.
+  PTHREAD = HeaderAbiHarness::Spec.new(
+    header: "pthread.h",
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[pthread_t pthread_mutex_t pthread_cond_t pthread_rwlock_t
+              pthread_attr_t pthread_mutexattr_t pthread_condattr_t
+              pthread_rwlockattr_t pthread_once_t pthread_key_t pthread_spinlock_t],
+    ints: %w[PTHREAD_MUTEX_NORMAL PTHREAD_MUTEX_RECURSIVE PTHREAD_MUTEX_ERRORCHECK
+             PTHREAD_MUTEX_DEFAULT PTHREAD_CREATE_JOINABLE PTHREAD_CREATE_DETACHED
+             PTHREAD_PROCESS_PRIVATE PTHREAD_PROCESS_SHARED PTHREAD_ONCE_INIT],
+    snippets: [<<~C.chomp]
+      static pthread_mutex_t  abi_m  = PTHREAD_MUTEX_INITIALIZER;
+      static pthread_cond_t   abi_c  = PTHREAD_COND_INITIALIZER;
+      static pthread_rwlock_t abi_rw = PTHREAD_RWLOCK_INITIALIZER;
+      static pthread_once_t   abi_o  = PTHREAD_ONCE_INIT;
+      static void  abi_once_init(void) { }
+      static void *abi_thread_start(void *p) { return p; }
+      static unsigned long abi_pthread(pthread_t *t, pthread_attr_t *at,
+                                       pthread_mutexattr_t *ma, pthread_key_t *k) {
+        return sizeof(pthread_create(t, at, abi_thread_start, (void *)0))
+             + sizeof(pthread_join(*t, (void **)0)) + sizeof(pthread_detach(*t))
+             + sizeof(pthread_equal(*t, pthread_self())) + sizeof(pthread_self())
+             + sizeof(pthread_mutex_init(&abi_m, ma)) + sizeof(pthread_mutex_lock(&abi_m))
+             + sizeof(pthread_mutex_trylock(&abi_m)) + sizeof(pthread_mutex_unlock(&abi_m))
+             + sizeof(pthread_mutex_destroy(&abi_m))
+             + sizeof(pthread_cond_init(&abi_c, (const pthread_condattr_t *)0))
+             + sizeof(pthread_cond_wait(&abi_c, &abi_m)) + sizeof(pthread_cond_signal(&abi_c))
+             + sizeof(pthread_cond_broadcast(&abi_c)) + sizeof(pthread_cond_destroy(&abi_c))
+             + sizeof(pthread_once(&abi_o, abi_once_init)) + sizeof(abi_rw)
+             + sizeof(pthread_key_create(k, (void (*)(void *))0)) + sizeof(pthread_key_delete(*k))
+             + sizeof(pthread_getspecific(*k)) + sizeof(pthread_setspecific(*k, (void *)0))
+             + sizeof(pthread_attr_init(at)) + sizeof(pthread_attr_destroy(at))
+             + sizeof(pthread_mutexattr_init(ma)) + sizeof(pthread_mutexattr_destroy(ma))
+             + sizeof(pthread_mutexattr_settype(ma, PTHREAD_MUTEX_RECURSIVE));
+      }
+    C
+  )
+
   def test_arpa_inet_abi_matches_gcc
     assert_abi_matches(ARPA_INET)
   end
@@ -669,6 +723,10 @@ class TestHeaderAbi < Minitest::Test
 
   def test_un_abi_matches_gcc
     assert_abi_matches(SOCKADDR_UN)
+  end
+
+  def test_pthread_abi_matches_gcc
+    assert_abi_matches(PTHREAD)
   end
 
   def test_errno_abi_matches_gcc
@@ -828,11 +886,13 @@ end
 # target's real aarch64 glibc headers. Byte-identical stdout proves the bundled
 # aarch64 layer reproduces the target ABI.
 #
-# The five arch-specific cases are the ones that would diverge from x86-64 if the
+# The six arch-specific cases are the ones that would diverge from x86-64 if the
 # layer were wrong: struct stat's 128-byte aarch64 layout (SYS_STAT), the 32-bit
 # nlink_t/blksize_t (SYS_TYPES, and inside SYS_STAT), the unsigned WCHAR_MIN/MAX
-# (STDINT), the unsigned plain-char range (LIMITS, via __CHAR_UNSIGNED__), and the
-# swapped O_DIRECT/O_DIRECTORY/O_NOFOLLOW bits (FCNTL). The remaining cases
+# (STDINT), the unsigned plain-char range (LIMITS, via __CHAR_UNSIGNED__), the
+# swapped O_DIRECT/O_DIRECTORY/O_NOFOLLOW bits (FCNTL), and the wider pthreads
+# opaque types (PTHREAD: pthread_mutex_t 40->48, pthread_attr_t 56->64,
+# pthread_mutexattr_t / pthread_condattr_t 4->8). The remaining cases
 # exercise the neutral layers (the common libc declarations and
 # the arch headers that are byte-identical across the two ABIs), confirming they
 # stay in agreement across the target switch. The whole class skips on a host
@@ -866,6 +926,10 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_fcntl_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::FCNTL)
+  end
+
+  def test_pthread_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::PTHREAD)
   end
 
   # --- neutral layer: re-checked to confirm byte-identity across the switch --
