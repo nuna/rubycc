@@ -523,11 +523,11 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   `poll.h`(Step 84、共通層)、`dlfcn.h`(Step 85、共通層。glibc 動的リンク ABI)、
   `sys/mman.h`(Step 86、共通層。PROT_/MAP_/MS_/MADV_)、`signal.h`(Step 87、共通層。
   siginfo_t/struct sigaction の union を実測 offsetof で再現)、`sys/socket.h`(Step 88、共通層。
-  sockaddr/msghdr 等を実測 offsetof で再現)。ABI ハーネスに `defines:`(_GNU_SOURCE 等をヘッダ
-  include 前に注入。glibc の `__USE_XOPEN`/`__USE_MISC`/`__USE_GNU` ゲート面を rubycc のフラット面と
-  apples-to-apples 比較するため)を追加 — 以降の GNU 拡張ヘッダで再利用。
-  残: `pthread.h`(opaque 型 + 多数の関数)、ネットワーク gem 用のソケットヘッダ群
-  (`netinet/in.h`・`netinet/tcp.h`・`sys/un.h`。sys/socket.h と対で必要)。
+  sockaddr/msghdr 等を実測 offsetof で再現)、`netinet/in.h`(Step 89、共通層。sockaddr_in/in6・
+  IPPROTO_/INADDR_。arpa/inet.h と共有ガードで共存)。ABI ハーネスに `defines:`(_GNU_SOURCE 等を
+  ヘッダ include 前に注入。glibc の `__USE_XOPEN`/`__USE_MISC`/`__USE_GNU` ゲート面を rubycc の
+  フラット面と apples-to-apples 比較するため)を追加 — 以降の GNU 拡張ヘッダで再利用。
+  残: `pthread.h`(opaque 型 + 多数の関数)、残りのソケットヘッダ(`netinet/tcp.h`・`sys/un.h`)。
 - 対象範囲: ruby.h 一式と主要 gem(json / msgpack / bigdecimal / date / racc /
   redcarpet / puma)が #include する範囲(stdio / stdlib / string / errno / ctype /
   math / time / signal / sys/types / sys/stat / fcntl / unistd あたりが実測での中心)。

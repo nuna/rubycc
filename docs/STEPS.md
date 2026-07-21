@@ -3014,10 +3014,31 @@ H2 のヘッダ追加を継続。ネットワーク系 gem(puma 等)が使うソ
 
 ---
 
+## Step 89 — 同梱 `<netinet/in.h>` の追加(M5 H2)
+
+Step 88 の sys/socket.h と対になる IPv4/IPv6 アドレス層。ネットワーク gem のソケットヘッダ群の一部。
+
+- **netinet/in.h は共通層**(struct レイアウト・IPPROTO_*/INADDR_* 値が両 arch 完全一致)。
+  `include/libc/netinet/in.h`。
+- struct を実測オフセットで再現: `sockaddr_in`(16B: sin_family@0/sin_port@2/sin_addr@4/sin_zero@8)、
+  `sockaddr_in6`(28B: family@0/port@2/flowinfo@4/addr@8/scope_id@24)、`in6_addr`(16B・union で
+  align 4・s6_addr マクロ)。IPPROTO_IP=0/ICMP=1/TCP=6/UDP=17/IPV6=41/RAW=255、INADDR_ANY=0/
+  LOOPBACK=0x7f000001/BROADCAST=NONE=0xffffffff、IN6ADDR_ANY/LOOPBACK_INIT。
+- **既存 arpa/inet.h(Step 64)と共存**: in_addr_t/in_port_t/struct in_addr/socklen_t を同じ共有ガード
+  (`_RUBYCC_IN_ADDR_T` 等)、sa_family_t を sys/socket.h と同じ `_RUBYCC_SA_FAMILY_T` で定義。
+  htons/htonl 系は arpa/inet.h と同一シグネチャで再宣言(合法)。両方 include しても二重定義なし
+  (hermetic で netinet/in.h + arpa/inet.h + sys/socket.h 併用 exit 0 を確認)。
+- provenance は clean-room UAPI/glibc(linux/in.h・linux/in6.h の実測再現)。
+- Spec は `also: ["sys/socket.h"]` で AF_INET を取得(既存の `also` フィールドを利用)。
+- 検証: netinet の 2 ケース(x86-64 + aarch64)green、test_header_abi.rb 全体 54 runs green
+  (arpa/inet.h の既存テストも無傷)、hermetic 解決、既存 examples に参照なし。
+
+---
+
 ## 現在のテスト規模
 
-Step 88 完了時点: **2,393 runs / 6,365 assertions / 0 failures / 47 skips**
-(Step 87 の 2,391 から +2 = socket の ABI ケース x86-64 + aarch64。
+Step 89 完了時点: **2,395 runs / 6,371 assertions / 0 failures / 47 skips**
+(Step 88 の 2,393 から +2 = netinet/in の ABI ケース x86-64 + aarch64。
 aarch64 側はクロス gcc + qemu 未導入のホストではスキップされる)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
