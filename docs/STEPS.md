@@ -2915,10 +2915,28 @@ M5 H2(libc ヘッダ第一陣)の最初のヘッダ追加。B7(Step 63-64)の先
 
 ---
 
+## Step 84 — 同梱 `<poll.h>` の追加(M5 H2)
+
+Step 83 の fcntl.h に続く H2 のヘッダ追加。実測で未同梱だった gem 拡張向けヘッダの一つ。
+
+- **poll.h は共通層**とクロス gcc 実測で確定。struct pollfd(8B: int fd@0/short events@4/
+  short revents@6)も全 POLL* 値も **x86-64/aarch64 で完全一致**(fcntl.h の O_DIRECT 系のような
+  arch 差がない)。よって arch 層ではなく `include/libc/poll.h` の 1 本(stdio.h と同じ共通層)。
+- provenance は clean-room UAPI 由来(asm-generic/poll.h の POLL* 値の実測再現、struct pollfd は
+  POSIX 宣言)。errno.h/fcntl.h と同じ扱い。
+- Step 83 で新設した ABI ハーネスの `defines:` 機構を早速再利用: rubycc は POLLRDNORM 系
+  (XOPEN)・POLLREMOVE/POLLRDHUP(GNU)を無条件露出するが glibc は `__USE_XOPEN`/`__USE_GNU` で
+  ゲートするため、POLL Spec に `defines: ["_GNU_SOURCE"]` を指定してオラクルにもフル surface を露出。
+- 共通層ゆえ `TestHeaderAbiAarch64` では neutral layer 区分に配置(arch 依存ケース件数は不変)。
+- 検証: poll の 2 ケース(x86-64 + aarch64)green、test_header_abi.rb 全体 44 runs green、
+  hermetic で poll.h 解決(exit 0)、既存 examples に poll.h 参照なし。
+
+---
+
 ## 現在のテスト規模
 
-Step 83 完了時点: **2,383 runs / 6,335 assertions / 0 failures / 47 skips**
-(Step 82 の 2,381 から +2 = fcntl の ABI ケース x86-64 + aarch64。
+Step 84 完了時点: **2,385 runs / 6,341 assertions / 0 failures / 47 skips**
+(Step 83 の 2,383 から +2 = poll の ABI ケース x86-64 + aarch64。
 aarch64 側はクロス gcc + qemu 未導入のホストではスキップされる)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
