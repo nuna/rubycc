@@ -520,12 +520,11 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   実測で未同梱だったのは `signal.h` `fcntl.h` `poll.h` `pthread.h` `sys/socket.h`
   `sys/mman.h` `dlfcn.h`(以降のステップはこの実測リストと、H3 のコーパス集計で駆動する)。
 - **追加済み**: `fcntl.h`(Step 83、arch 層。O_DIRECT/DIRECTORY/NOFOLLOW が arch 差)、
-  `poll.h`(Step 84、共通層。両 arch 同一)、`dlfcn.h`(Step 85、共通層。glibc 動的リンク ABI)。
-  ABI ハーネスに `defines:`(_GNU_SOURCE 等をヘッダ include 前に注入。glibc の
-  `__USE_XOPEN`/`__USE_GNU` ゲート面を rubycc のフラット面と apples-to-apples 比較するため)を
-  追加 — 以降の GNU 拡張ヘッダで再利用。
-  残: `signal.h`(共通層・実測済、siginfo_t/sigaction で要設計)、`sys/mman.h`(共通層・実測済)、
-  `pthread.h`、`sys/socket.h`。
+  `poll.h`(Step 84、共通層)、`dlfcn.h`(Step 85、共通層。glibc 動的リンク ABI)、
+  `sys/mman.h`(Step 86、共通層。PROT_/MAP_/MS_/MADV_)。ABI ハーネスに `defines:`(_GNU_SOURCE 等を
+  ヘッダ include 前に注入。glibc の `__USE_XOPEN`/`__USE_MISC`/`__USE_GNU` ゲート面を rubycc の
+  フラット面と apples-to-apples 比較するため)を追加 — 以降の GNU 拡張ヘッダで再利用。
+  残: `signal.h`(共通層・実測済、siginfo_t/sigaction で要設計)、`pthread.h`、`sys/socket.h`。
 - 対象範囲: ruby.h 一式と主要 gem(json / msgpack / bigdecimal / date / racc /
   redcarpet / puma)が #include する範囲(stdio / stdlib / string / errno / ctype /
   math / time / signal / sys/types / sys/stat / fcntl / unistd あたりが実測での中心)。

@@ -2952,10 +2952,28 @@ H2 のヘッダ追加を継続。実測で未同梱だった gem 拡張向けヘ
 
 ---
 
+## Step 86 — 同梱 `<sys/mman.h>` の追加(M5 H2)
+
+H2 のヘッダ追加を継続。実測で未同梱だった gem 拡張向けヘッダ(メモリマッピング)。
+
+- **sys/mman.h は共通層**(PROT_/MAP_/MS_/MADV_ 値が両 arch 完全一致。x86-64/aarch64 とも
+  asm-generic の割当を使う)。`include/libc/sys/mman.h` の 1 本。
+- provenance は clean-room UAPI 由来(asm-generic/mman-common.h + mman.h のフラグ値・MAP_FAILED の
+  実測再現)。mmap/munmap/mprotect/msync/madvise/mlock/munlock は POSIX 宣言。errno.h/fcntl.h と同扱い。
+- size_t/off_t は共有ガード(`_RUBYCC_SIZE_T`/`_RUBYCC_OFF_T`)で定義。プローブが必ず include する
+  stddef.h も同じ `_RUBYCC_SIZE_T` を使うため二重定義にならない。
+- POLL/DLFCN と同じく `defines: ["_GNU_SOURCE"]`(MAP_* 拡張・MAP_ANON・MADV_* は glibc が
+  `__USE_MISC`/`__USE_GNU` でゲート)。mmap 系は静的 libc に常在しローダを引き込まないため
+  snippet は実呼び出しで可(dlfcn の sizeof 回避は不要)。
+- 検証: mman の 2 ケース(x86-64 + aarch64)green、test_header_abi.rb 全体 48 runs green、
+  hermetic で sys/mman.h 解決(exit 0)、既存 examples に参照なし。
+
+---
+
 ## 現在のテスト規模
 
-Step 85 完了時点: **2,387 runs / 6,347 assertions / 0 failures / 47 skips**
-(Step 84 の 2,385 から +2 = dlfcn の ABI ケース x86-64 + aarch64。
+Step 86 完了時点: **2,389 runs / 6,353 assertions / 0 failures / 47 skips**
+(Step 85 の 2,387 から +2 = mman の ABI ケース x86-64 + aarch64。
 aarch64 側はクロス gcc + qemu 未導入のホストではスキップされる)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
