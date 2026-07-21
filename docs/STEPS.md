@@ -2766,9 +2766,45 @@ A2〜A4 の aarch64 実行検証はすべて**クロス gcc でリンク**して
 
 ---
 
+## Step 80 — aarch64 共有ライブラリの自作リンク(M4 A5 第二段)
+
+前段(Step 79)で aarch64 実行ファイルを自前化した。残る .so 生成は **Ruby C 拡張
+(gem install の成果物)に必須**。
+
+- **成果: rubycc 自身のリンカで aarch64 の .so を生成し、qemu 上で dlopen・関数呼び出し
+  できる**。これは C 拡張そのものの形。
+- 調査で判明したのは、**SharedLinker が前段で既にほぼ完全に機種パラメータ化されていた**
+  こと。実行ファイルリンカ(SharedLinker のサブクラス)を aarch64 対応させた際に、
+  機種依存の判断がすべて `aarch64?` 分岐に整理されていた。ブロックしていたのは
+  `supported_machines = [EM_X86_64]` の明示拒否だけで、両機種に広げるのが実変更の核心。
+  x86_64 の本体ロジックには一切触れていない。
+- 共有ライブラリ固有の要素(内部絶対アドレスの `R_AARCH64_RELATIVE` リベース)は
+  `reloc_relative` が aarch64 で RELATIVE を返すため既存経路がそのまま機能する。
+- **PLT は既存 x86_64 .so と同じく BIND_NOW + per-function スタブのみ**(PLT0 の遅延解決
+  トランポリンは不要)。ローダが load 時に全 JUMP_SLOT を解決するため 4 命令スタブが
+  直接 callee へ跳ぶ。遅延バインドを前提とするツールには差異になり得るが、通常の
+  dlopen/依存ロードでは影響しない。
+- **CompatRuntime の機種不整合を修正**(前段が指摘した潜在穴)。`archive_bytes` を
+  target 別メモ化にし、aarch64 リンク時は aarch64 でコンパイルする。msgpack が要求する
+  `rb_gc_guarded_ptr_val` を参照する .so で機種一致を確認。既定は x86_64 なので既存は不変。
+- 検証はホストに aarch64 Ruby が無いため、構造検証(自作 ELFReader)+ qemu 上での
+  実ロード・呼び出し(消費側の実行ファイルをクロス gcc でビルドし rubycc 製 .so を
+  dlopen)の二層。自己完結・cross-unit(GOT 経由)・外部インポート(JUMP_SLOT/GLOB_DAT)を
+  すべて実行差分で確認した。
+- **x86_64 の .so は 3 ケースでバイト一致、CompatRuntime の x86_64 アーカイブも一致**。
+  メインセッションでも rubycc 製 .so を qemu 上で dlopen(triple/add が正しく返る)し、
+  x86_64 .so のバイト一致も独立に裏取りした。
+- **gem install の見込み**: 共有ライブラリ生成の中核(PIC・動的再配置・PLT/GOT・
+  動的セクション)は実ロード・実呼び出しまで検証済み。ただし `gem install msgpack` を
+  aarch64 で完走させるには **qemu 上で動く aarch64 版 Ruby(mkmf/rake が動く環境)が必要**で、
+  当環境には無いため gem install 全体のスモークは未検証(ホスト環境の制約。M4 受け入れの
+  コンテナマトリクス整備時に対応)。
+
+---
+
 ## 現在のテスト規模
 
-Step 79 完了時点: **2,356 runs / 6,232 assertions / 0 failures / 47 skips**
+Step 80 完了時点: **2,369 runs / 6,293 assertions / 0 failures / 47 skips**
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
