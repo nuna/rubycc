@@ -529,7 +529,9 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   注入。glibc の `__USE_XOPEN`/`__USE_MISC`/`__USE_GNU` ゲート面を rubycc のフラット面と
   apples-to-apples 比較するため)を追加 — 以降の GNU 拡張ヘッダで再利用。
   **ソケットヘッダ群(sys/socket・netinet/in・netinet/tcp・sys/un・arpa/inet)は一通り完成**。
-  残: `pthread.h`(opaque 型 + 多数の関数)。以降は H3 のコーパス集計で追加ヘッダをデータ駆動で決める。
+  `pthread.h`(Step 91、arch 層。opaque 型を実測サイズの不透明 blob で再現。mutex_t 40/48 等が arch 差)も追加。
+  **これで hermetic census で判明した未同梱ヘッダ(signal/fcntl/poll/pthread/sys-socket/sys-mman/dlfcn)は
+  すべて充足**。以降のヘッダ追加は H3 のコーパス集計でデータ駆動に切り替える(推測での追加を止める)。
 - 対象範囲: ruby.h 一式と主要 gem(json / msgpack / bigdecimal / date / racc /
   redcarpet / puma)が #include する範囲(stdio / stdlib / string / errno / ctype /
   math / time / signal / sys/types / sys/stat / fcntl / unistd あたりが実測での中心)。

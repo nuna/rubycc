@@ -3053,10 +3053,31 @@ sys/socket.h(88)・netinet/in.h(89)に続き、ソケットヘッダ群を完成
 
 ---
 
+## Step 91 — 同梱 `<pthread.h>` の追加(M5 H2、census ギャップの最後)
+
+hermetic census で判明した未同梱ヘッダ(signal/fcntl/poll/pthread/sys-socket/sys-mman/dlfcn)の最後の 1 本。
+
+- **pthread.h は arch 層**(fcntl.h/sys-stat.h と同じ)。opaque 型のサイズが x86-64/aarch64 で異なる:
+  `pthread_mutex_t` 40/48、`pthread_attr_t` 56/64、`pthread_mutexattr_t` 4/8、`pthread_condattr_t` 4/8。
+  他(pthread_cond_t 48・rwlock_t 56・スカラ型・enum・初期化子・プロトタイプ)は両 arch 同一。
+  `include/libc/glibc/{x86_64,aarch64}/pthread.h` の 2 本、差分は当該 4 型の `__size[N]` + provenance のみ。
+- **opaque 型はサイズ/アライメントのみ実測再現**: `typedef union { char __size[N]; long/int __align; } T;`。
+  glibc の内部フィールド構造は再現しない(「ABI に効く最小限だけ正確に、それ以外は不透明に」。
+  sys/stat.h の予約スロットと同じ思想)。provenance は clean-room だが **glibc ABI 実測であって
+  kernel UAPI ではない**旨を明記。pthread_* 関数は POSIX 宣言でホスト libc(glibc は libc に統合)から解決。
+- snippet は初期化子(file-scope static)+ 全プロトタイプを **sizeof 下**に置く(dlfcn.h と同様、
+  未評価=リンク参照を生まず静的 aarch64 プローブに pthread 実体を引き込まない)。
+- 検証: pthread の 2 ケース(x86-64 + aarch64)green(opaque サイズがクロス gcc と一致)、
+  test_header_abi.rb 全体 60 runs green、hermetic 解決(exit 0)、既存 examples に参照なし。
+- **これで census 由来の未同梱ヘッダは全て埋まった**。以降のヘッダ追加は ROADMAP H3
+  (コーパスの #include 集計)でデータ駆動に切り替える。
+
+---
+
 ## 現在のテスト規模
 
-Step 90 完了時点: **2,399 runs / 6,383 assertions / 0 failures / 47 skips**
-(Step 89 の 2,395 から +4 = netinet/tcp と sys/un の ABI ケース各 x86-64 + aarch64。
+Step 91 完了時点: **2,401 runs / 6,389 assertions / 0 failures / 47 skips**
+(Step 90 の 2,399 から +2 = pthread の ABI ケース x86-64 + aarch64。
 aarch64 側はクロス gcc + qemu 未導入のホストではスキップされる)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
