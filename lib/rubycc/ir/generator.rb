@@ -193,8 +193,12 @@ module Rubycc
         end
         # A global needs a known storage width and boundary, so an incomplete
         # struct/enum (a tag never defined) cannot be laid out in .bss/.data —
-        # and an `extern` reference likewise needs a concrete type to bind here.
-        require_complete(type, decl.token)
+        # and an `extern` reference to one likewise needs a concrete type to bind
+        # here. The one exception is an `extern` unbounded array
+        # ("extern T a[];", 6.7.6.2/6.9.2): it reserves no storage, the defining
+        # unit supplies its bound, and its element type alone lets a use decay or
+        # subscript it, so it binds with its incomplete type intact.
+        require_complete(type, decl.token) unless extern_incomplete_array?(decl.storage, type)
 
         if decl.storage == :extern
           declare_extern_global(decl, type)
@@ -1493,7 +1497,10 @@ module Rubycc
       # to that external symbol (an undefined one if nothing defines it here).
       # M1 lets this binding outlive the block, a deliberate simplification.
       def gen_block_extern_decl(decl)
-        require_complete(decl.type, decl.token)
+        # An unbounded array ("extern T a[];") is admitted with its incomplete
+        # type intact, as at file scope; every other incomplete type still needs
+        # a concrete one to bind here.
+        require_complete(decl.type, decl.token) unless extern_incomplete_array?(decl.storage, decl.type)
         existing = @global_bindings[decl.name]
         if existing && existing.type != decl.type
           error_at(decl.token, "conflicting types for '#{decl.name}'")
@@ -4440,6 +4447,16 @@ module Rubycc
         return unless incomplete_type?(type)
 
         error_at(token, "invalid use of incomplete type '#{type}'")
+      end
+
+      # An `extern` reference to an unbounded array ("extern T a[];", 6.7.6.2 /
+      # 6.9.2): a declaration, not a definition, so it reserves no storage and
+      # the defining unit supplies the missing bound. The element type alone
+      # lets a subscript or a decay work, so — unlike every other incomplete
+      # type, which still needs a concrete one to bind — this one is admitted
+      # without a completeness check.
+      def extern_incomplete_array?(storage, type)
+        storage == :extern && type.array? && type.incomplete?
       end
 
       # Whether `type` is an incomplete object type: an undefined struct/union, an

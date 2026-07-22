@@ -513,7 +513,12 @@ module Rubycc
           else
             initializer_node = init
           end
-        elsif type.array? && type.length.nil?
+        elsif type.array? && type.length.nil? && spec_info.storage != :extern
+          # An `extern T a[];` is a reference to an array defined elsewhere, an
+          # incomplete type the defining unit completes (6.7.6.2p1, 6.9.2); it is
+          # kept as-is. A non-extern `T a[];` is a tentative definition whose
+          # bound the standard completes to [1] — a completion M1 does not
+          # perform — so it stays a diagnostic here.
           error_at(name_tok, "array size missing in '#{name_tok.value}'")
         end
         declare_ordinary_name(name_tok.value)
@@ -1473,7 +1478,12 @@ module Rubycc
           if InitializerResolver.structural?(type, initializer)
             type = InitializerResolver.resolve(type, initializer).type
           end
-        elsif type.array? && type.length.nil?
+        elsif type.array? && type.length.nil? && spec_info.storage != :extern
+          # A block-scope `extern T a[];` references a file-scope array defined
+          # elsewhere, an incomplete type that unit completes (6.7.6.2p1, 6.9.2),
+          # so it is kept as-is. A non-extern `int a[];` in a block has no
+          # initializer to complete it and no tentative-definition rule at block
+          # scope, so it stays a diagnostic (gcc rejects it likewise).
           error_at(name_tok, "array size missing in '#{name_tok.value}'")
         end
         declare_ordinary_name(name_tok.value)
