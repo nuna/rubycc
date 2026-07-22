@@ -94,11 +94,27 @@
 | ~~aarch64 ターゲットでも `__x86_64__`/`__amd64__` を定義~~ | **解消(Step 74)**: CPU 識別マクロを共通部(`PREDEFINED_PLATFORM_MACROS`)と per-target(`X86_64_ARCH_MACROS`/`AARCH64_ARCH_MACROS`)に分割し `TARGETS` から供給。target を無視していた `-E` 経路も是正 | ~~A4/A5~~ **完了** |
 | ~~`struct { float a, b; }` の値渡しが aarch64 で silent miscompile~~ | **解消(Step 77)**: 集約分類を `IR::CallConvention` の 2 実装に分け、`AbiPiece` にオフセットと幅を持たせて HFA を s0/s1 に配置。IR レベルの分岐と実行結果の両方で確認 | ~~A4~~ **完了** |
 | スタック引数の 16 バイト整列が未対応 | IR の `:mem` スロットが 8 バイト単位固定のため、`__int128` を含む集約がスタックに溢れる場合の整列が ABI どおりにならない。**x86_64 側にも元からある同じ穴**(Step 77 で判明、新規の退行ではない)。レジスタ側の偶数番規則は実装済み | 実害が出た時点 |
-| 同梱 `stddef.h` の `wchar_t` が `int` 固定 | aarch64 gcc の `wchar_t` は `unsigned int`(`__WCHAR_MAX__` = `0xffffffffU`)。ワイド文字リテラルは意図的な診断で拒否しているため観測可能な誤りには至っていない | ワイド文字を扱う時点(A4 以降) |
+| 同梱 `stddef.h`/`stdint.h` の `wchar_t` typedef が `int` 固定 | aarch64 gcc の `wchar_t` は `unsigned int`(`__WCHAR_MAX__` = `0xffffffffU`)。Step 82 で aarch64 の `stdint.h` は `WCHAR_MIN`/`WCHAR_MAX` マクロだけ unsigned に合わせたが、`wchar_t` typedef 自体は freestanding `stddef.h` と共有ガード `_RUBYCC_WCHAR_T` を使うため `int` のまま(符号を変えると include 順で不整合)。ワイド文字リテラルは意図的な診断で拒否しており、ABI ハーネスも符号性は検査しないため観測可能な誤りには至っていない。予定: H4(ワイド文字を扱う gem がコーパスで顕在化した時点)。stddef.h を per-target 化するか、freestanding 層に符号を持ち込む設計判断を伴う | ワイド文字を扱う時点(H4 / A4 以降) |
 | ~~float リテラルの binary32 丸め~~ | **解消(Step 69)**: `pack("e")` が FLT_MAX 超を +inf へ飽和させていた。double のビット界から 23 ビットへ最近接・偶数丸めで縮約する変換に置き換え、ABI ハーネスの FLT_MAX 検査を通常の assert へ復帰 | ~~早期~~ **完了** |
 | long double = double 扱いによる max_align_t 相違 | rubycc は long double を 8 バイト double として扱う(DESIGN 3.3 の既知制限)ため max_align_t が 16/8(glibc は 32/16)。x87 80bit 対応まで ABI ハーネスの該当検査は非 assert | x87 80bit 対応時(将来) |
 | DoS フェイルセーフの上限値 | パーサ再帰深さ 500・#if 式 500・マクロ展開 100 万トークン等(Step 32)は実行環境のスタックサイズ(本環境 ~330 括弧段)前提。極端に浅いスタックの環境では再評価が必要。詳細は docs/security-dos-review.md | コーパス(R10)実測で再調整 |
 | -fPIC で定義済みエクスポートグローバルを PC32 参照 | Step 33 は TU 内定義グローバルを PC32(interpose 非対応の -Bsymbolic 相当)。rubycc の SharedLinker は S+A−P で正しく解決するが、GNU ld は preemptible シンボルへの PC32 を共有オブジェクト規則違反として拒否(gcc -shared 相互リンク不可)。実行は正しい | 真の interpose 対応(エクスポート定義グローバルも GOT 経由)を M2 終盤か PIC 改善で。実 gem がグローバル変数をエクスポートするか R10 コーパスで判定 |
+
+### 3.1 開いた負債の後続 STEP への割り当て(明示スケジュール)
+
+上表の「実害が出た時点 / コーパスで判定」系の負債は、いずれも M5 のコーパス相(H3/H4)を
+受け皿とする。放置(どのマイルストーンにも紐付かない)を防ぐため、開いた各負債の解消予定を
+以下に明示する。原則は R11/DESIGN 4.2 の「先回り実装しない — 実 gem で実害が出た項目を優先」。
+
+| 負債 | 解消予定 | 根拠 |
+|---|---|---|
+| 不完全型 struct の param/return、内側スコープ `struct S;` 再宣言、ブロックスコープ関数宣言、指し先 const 書き込み検出、compound literal / VLA / _Generic / ワイド文字列 / #pragma push_macro / K&R `int ()`、enum unsigned 底型 | **H4**(言語機能不足 → M1 流儀の追補ステップ) | H3 の #include/ビルド集計と gem テストで顕在化した順に H4 で追補。コーパスに現れないものは v1.0 の「既知の制限」として README 記載(H6) |
+| 128 ビット整数の演算残り(除算・シフト・ビット演算・値渡し/返し) | **H4**(同上。ABI に関わる部分は ABI バグ扱いで優先) | 実 gem が `__int128` を使う頻度は低い。使う gem がコーパスにあれば H4 で優先実装 |
+| `char *` と `signed char *` の非互換化 | **H4**(`Type.character?` の 1 箇所緩和で対応。修正済みの手当が確定済み) | Step 73 の副作用。コーパスの実 C 拡張が診断エラーで落ちたら即緩和 |
+| スタック引数の 16 バイト整列(x86_64/aarch64 共通)、-fPIC の PC32 参照 | **H4**(ABI バグ → 最優先修正 + ABI ファジングに再発防止ケース追加) | ABI 不一致は SEGV 直結の最重要リスク(DESIGN 7 章)。ファジング(下記)で網羅的に炙り出す |
+| `wchar_t` typedef 符号性、long double = double による max_align_t 相違 | **feature-gated**(ワイド文字対応時 / x87 80bit 対応時) | いずれも該当機能を意図的に未対応(診断で拒否 / DESIGN 3.3 既知制限)としているため、当該機能に着手するまで観測不能。H4 でワイド文字/long double を使う gem が有意に落ちるなら前倒しを判断 |
+| DoS フェイルセーフ上限値の再調整 | **H4**(コーパス R10 実測で再調整) | docs/security-dos-review.md 記載。極浅スタック環境の実測が入手できた時点 |
+| ABI ファジングハーネス(Step 25/62)の機種パラメタ化、aarch64 全スイート + gem install 実走、musl/distroless コンテナ検証、sqlite3/pg コーパス | **H3**(QEMU の Docker マトリクス整備と併せて) | §8 M4 受け入れ・H3 参照。現環境に Docker/aarch64 Ruby が無いため、CI マトリクス整備が前提。ネットワーク/コンテナ依存はこの相に閉じる |
 
 ## 4. M1 実行計画 — **完了**
 
@@ -555,6 +571,9 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   問わない。ベースラインの確定が目的)。
 
 ### H4 — コーパス駆動の穴埋め反復(合格率 90% まで)
+- **§3.1 の「開いた負債の後続 STEP 割り当て」で H4 に割り当てた項目は、ここで解消する**
+  (言語機能不足・char*/signed char*・128 ビット整数残り・スタック 16 バイト整列・-fPIC PC32・
+  DoS 上限再調整)。コーパスに現れないものは v1.0 の「既知の制限」として H6 で README 記載。
 - H3 の分類レポートに従って修正を反復する運用フェーズ:
   - ヘッダ不足 → H2 の体系に追加(ABI ハーネスのケースとセット)
   - 言語機能不足 → M1 と同じ流儀の追補ステップ(通し番号でコミット)
