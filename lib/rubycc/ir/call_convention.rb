@@ -32,15 +32,20 @@ module Rubycc
     #                   passes the copy's *address* instead, and a result of
     #                   this shape is written through the convention's dedicated
     #                   indirect result register (AAPCS64's x8).
-    # `even_gp` marks an aggregate whose first integer register must be an
-    # even-numbered one (AAPCS64 rounds NGRN up for a composite of 16-byte
-    # alignment, so it lands in an aligned x-register pair).
-    AggregatePlan = Data.define(:mode, :pieces, :even_gp)
+    # `align16` marks an aggregate of 16-byte alignment (one built around an
+    # __int128, or declared _Alignas(16)). Both conventions round its *stack*
+    # offset up to a 16-byte boundary when it spills; AAPCS64 additionally rounds
+    # NGRN up so its first integer register is even-numbered, landing it in an
+    # aligned x-register pair (System V has no such register rule — a 16-byte
+    # argument takes two consecutive registers of either parity).
+    AggregatePlan = Data.define(:mode, :pieces, :align16)
 
     # One argument as the placement pass sees it: the candidate kind of each of
-    # its ABI slots, and the register alignment its aggregate demands. Placement
-    # only ever needs to count and align, never to know a C type.
-    ArgumentRequest = Data.define(:kinds, :even_gp)
+    # its ABI slots, whether its aggregate is 16-byte aligned, and how many
+    # stack eightbytes it occupies should it spill (ceil(size/8), so the placer
+    # can track the stack offset a 16-byte-aligned aggregate must be padded up
+    # to). Placement only ever needs to count and align, never to know a C type.
+    ArgumentRequest = Data.define(:kinds, :align16, :mem_eightbytes)
 
     # The part of a target's calling convention the IR generator has to know
     # about, so that where every argument lands is decided once — where the
@@ -146,8 +151,13 @@ module Rubycc
       # reason the classification cannot be shared.)
       def aggregate_plan(type)
         size = type.size
+        # A 16-byte-aligned aggregate (one holding an __int128, or _Alignas(16))
+        # is placed on a 16-byte-aligned stack slot when it spills, so its plan
+        # carries the alignment for the placer to pad NSAA up to — even for a
+        # MEMORY-class aggregate, whose stack slot the psABI aligns the same way.
+        align16 = type.alignment >= 16
         if size > 16 || unaligned_field?(type, 0)
-          return AggregatePlan.new(mode: :memory, pieces: CallConvention.memory_pieces(size), even_gp: false)
+          return AggregatePlan.new(mode: :memory, pieces: CallConvention.memory_pieces(size), align16: align16)
         end
 
         eightbytes = Array.new((size + 7) / 8, nil)
@@ -157,7 +167,7 @@ module Rubycc
         pieces = eightbytes.each_with_index.map do |cls, i|
           AbiPiece.new(offset: 8 * i, size: 8, kind: cls == :integer ? :gp : :sse8)
         end
-        AggregatePlan.new(mode: :registers, pieces: pieces, even_gp: false)
+        AggregatePlan.new(mode: :registers, pieces: pieces, align16: align16)
       end
 
       def placer
@@ -252,18 +262,38 @@ module Rubycc
           @convention = convention
           @next_gp = 0
           @next_sse = 0
+          @nsaa = 0        # next stacked argument, counted in eightbytes
+          @pad_stack = 0
         end
+
+        # System V has no even-register-pair rule — a 16-byte argument takes two
+        # *consecutive* integer registers of either parity — so #place never
+        # reserves a padding register.
+        def pad_gp
+          0
+        end
+
+        # One stack eightbyte the most recent #place reserved to 16-align a
+        # spilled 16-byte-aligned argument (the psABI aligns a stacked argument to
+        # its natural alignment, so an __int128 that overflowed the registers onto
+        # an odd stack offset starts a slot later). Zero otherwise.
+        attr_reader :pad_stack
 
         # :registers when the argument takes the registers its request asks for,
         # :stack when it passes in the overflow area. A request that is already
         # all-:mem (a MEMORY-classified aggregate) never wanted a register.
         def place(request)
-          return :stack if request.kinds.all?(:mem)
-
+          @pad_stack = 0
           need_gp = request.kinds.count(:gp)
           need_sse = request.kinds.count { |kind| kind == :sse4 || kind == :sse8 }
-          return :stack unless @next_gp + need_gp <= @convention.gp_registers &&
-                               @next_sse + need_sse <= @convention.fp_registers
+          spills = request.kinds.all?(:mem) ||
+                   !(@next_gp + need_gp <= @convention.gp_registers &&
+                     @next_sse + need_sse <= @convention.fp_registers)
+          if spills
+            @pad_stack = 1 if request.align16 && @nsaa.odd?
+            @nsaa += @pad_stack + request.mem_eightbytes
+            return :stack
+          end
 
           @next_gp += need_gp
           @next_sse += need_sse
@@ -303,7 +333,7 @@ module Rubycc
       #    integer registers, whatever its members are (a packed struct
       #    included: AAPCS64 has no unaligned-field escape to memory). One whose
       #    alignment is 16 must start at an even-numbered register, which is
-      #    what `even_gp` asks the placer for.
+      #    what `align16` asks the placer for.
       #  * anything larger travels by reference: the caller copies it and passes
       #    the copy's address.
       def aggregate_plan(type)
@@ -311,15 +341,15 @@ module Rubycc
         if base && count <= MAX_HFA_MEMBERS && type.size == base * count
           kind = base == 8 ? :sse8 : :sse4
           pieces = Array.new(count) { |i| AbiPiece.new(offset: base * i, size: base, kind: kind) }
-          return AggregatePlan.new(mode: :registers, pieces: pieces, even_gp: false)
+          return AggregatePlan.new(mode: :registers, pieces: pieces, align16: false)
         end
 
         if type.size <= MAX_REGISTER_AGGREGATE
           pieces = Array.new((type.size + 7) / 8) { |i| AbiPiece.new(offset: 8 * i, size: 8, kind: :gp) }
-          return AggregatePlan.new(mode: :registers, pieces: pieces, even_gp: type.alignment >= 16)
+          return AggregatePlan.new(mode: :registers, pieces: pieces, align16: type.alignment >= 16)
         end
 
-        AggregatePlan.new(mode: :by_reference, pieces: [], even_gp: false)
+        AggregatePlan.new(mode: :by_reference, pieces: [], align16: false)
       end
 
       def placer
@@ -389,14 +419,30 @@ module Rubycc
           @convention = convention
           @ngrn = 0
           @nsrn = 0
+          @nsaa = 0        # next stacked argument, counted in eightbytes (NSAA/8)
+          @pad_gp = 0
+          @pad_stack = 0
         end
 
+        # The alignment padding the most recent #place inserted *before* the
+        # argument it placed: one integer register (`pad_gp`) when a 16-byte
+        # aligned aggregate rounded NGRN up over an odd register so it lands in
+        # an aligned x-register pair (6.4.2 stage C.4), or one stack eightbyte
+        # (`pad_stack`) when such an aggregate spilled onto an odd stack offset
+        # and had to start at a 16-byte boundary (stage C.13's NSAA alignment).
+        # At most one is ever nonzero. The generator reads them to emit a matching
+        # pad slot, so the backend's sequential register/stack handout skips the
+        # same place the standard reserves.
+        attr_reader :pad_gp, :pad_stack
+
         def place(request)
+          @pad_gp = 0
+          @pad_stack = 0
           need_fp = request.kinds.count { |kind| kind == :sse4 || kind == :sse8 }
-          return place_fp(need_fp) if need_fp.positive?
+          return place_fp(need_fp, request.mem_eightbytes) if need_fp.positive?
 
           need_gp = request.kinds.count(:gp)
-          return place_gp(need_gp, request.even_gp) if need_gp.positive?
+          return place_gp(need_gp, request.align16, request.mem_eightbytes) if need_gp.positive?
 
           # An :indirect_result pointer rides a register of its own (x8), which
           # is not part of either file's budget.
@@ -405,23 +451,27 @@ module Rubycc
 
         private
 
-        def place_fp(count)
+        def place_fp(count, mem_eightbytes)
           if @nsrn + count <= @convention.fp_registers
             @nsrn += count
             :registers
           else
             @nsrn = @convention.fp_registers
+            @nsaa += mem_eightbytes
             :stack
           end
         end
 
-        def place_gp(count, even)
-          first = even && @ngrn.odd? ? @ngrn + 1 : @ngrn
+        def place_gp(count, align16, mem_eightbytes)
+          first = align16 && @ngrn.odd? ? @ngrn + 1 : @ngrn
           if first + count <= @convention.gp_registers
+            @pad_gp = first - @ngrn
             @ngrn = first + count
             :registers
           else
             @ngrn = @convention.gp_registers
+            @pad_stack = 1 if align16 && @nsaa.odd?
+            @nsaa += @pad_stack + mem_eightbytes
             :stack
           end
         end

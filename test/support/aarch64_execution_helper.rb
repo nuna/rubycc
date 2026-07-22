@@ -205,6 +205,38 @@ module AArch64ExecutionHelper
     assert_equal gcc_stdout, rubycc_stdout, "stdout mismatch"
   end
 
+  # Compiles each [c_source, compiler] pair to its own aarch64 object (rubycc or
+  # the cross gcc), links them all statically with the cross gcc, and runs the
+  # result under qemu; returns [exit_status, stdout]. Mixing compilers across
+  # translation units is what proves the calling convention: a pure register or
+  # stack *placement* bug is invisible when one compiler builds both sides (they
+  # agree with each other), and only shows when a rubycc caller must meet a gcc
+  # callee, or the reverse.
+  def link_units_and_run_aarch64(units)
+    in_tmpdir do |dir|
+      object_paths = units.each_with_index.map do |(c_source, compiler), index|
+        object_path = File.join(dir, "unit#{index}.o")
+        case compiler
+        when :rubycc then compile_with_rubycc_aarch64(c_source, object_path)
+        when :gcc then compile_with_cross_gcc(c_source, object_path)
+        else raise ArgumentError, "unknown compiler: #{compiler.inspect}"
+        end
+        object_path
+      end
+
+      exe_path = File.join(dir, "exe")
+      stdout_and_stderr, status = Open3.capture2e(AArch64ExecutionHelper::CROSS_GCC, "-static",
+                                                  "-o", exe_path, *object_paths)
+      unless status.success?
+        raise "#{AArch64ExecutionHelper::CROSS_GCC} failed to link object files " \
+              "(exit #{status.exitstatus}):\n#{stdout_and_stderr}"
+      end
+
+      stdout, run_status = Open3.capture2(AArch64ExecutionHelper::QEMU, exe_path)
+      [run_status.exitstatus, stdout]
+    end
+  end
+
   # Disassembles `object_path` with the cross objdump and returns the listing.
   def disassemble_aarch64(object_path)
     stdout, stderr, status = Open3.capture3(AArch64ExecutionHelper::CROSS_OBJDUMP, "-d", object_path)

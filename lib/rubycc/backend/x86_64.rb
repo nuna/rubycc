@@ -221,6 +221,11 @@ module Rubycc
             emit_bytes(modrm_rbp_disp(EAX, 16 + 8 * next_stack))
             store_reg(EAX, i)
             next_stack += 1
+          when :pad_stack
+            # A 16-alignment pad occupies one incoming stack eightbyte with no
+            # bound parameter, so its slot is left unwritten and only the counter
+            # advances (see the caller's matching gap in #emit_call_args).
+            next_stack += 1
           else
             raise "unknown parameter kind #{kind.inspect}"
           end
@@ -491,8 +496,12 @@ module Rubycc
         pad = stack_args.size.odd? ? 8 : 0
         emit_sub_rsp(pad) if pad.positive?
         stack_args.reverse_each do |vreg|
-          load_reg(EAX, vreg)               # rax = argument value (whole eightbyte)
-          emit(0x50)                        # push rax
+          if vreg == :pad_stack
+            emit_sub_rsp(8)                 # reserve a 16-alignment gap, no value stored
+          else
+            load_reg(EAX, vreg)             # rax = argument value (whole eightbyte)
+            emit(0x50)                      # push rax
+          end
         end
         gp_args.each { |reg, vreg| load_reg(reg, vreg) }
         sse_args.each { |xmm, vreg, width| load_xmm(xmm, vreg, width) }
@@ -528,6 +537,11 @@ module Rubycc
             next_sse += 1
           when :mem
             stack_args << vreg
+          when :pad_stack
+            # A 16-alignment pad is a stack eightbyte carrying no value; it holds
+            # its place in the stacked-argument order so the aggregate behind it
+            # lands on a 16-byte boundary (see the gap in #emit_call_args).
+            stack_args << :pad_stack
           else
             raise "unknown call argument kind #{kind.inspect}"
           end
@@ -811,7 +825,9 @@ module Rubycc
       def emit_va_start(ap_vreg, _named)
         gp_named = @param_kinds.count(:gp)
         sse_named = @param_kinds.count(:sse4) + @param_kinds.count(:sse8)
-        stack_named = @param_kinds.count(:mem)
+        # A 16-alignment pad consumes a stacked slot like a spilled named
+        # parameter, so the variable part begins past it too.
+        stack_named = @param_kinds.count(:mem) + @param_kinds.count(:pad_stack)
 
         load_reg(EAX, ap_vreg)              # rax = &__va_list_tag
         emit(0xC7, 0x40, 0x00)              # mov dword [rax+0], imm32

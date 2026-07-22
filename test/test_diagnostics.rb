@@ -1452,15 +1452,9 @@ class TestDiagnostics < Minitest::Test
     assert_match(/'&' on 128-bit integers is not supported yet/, error.description)
   end
 
-  def test_int128_by_value_parameter_is_rejected
-    error = assert_raises(Rubycc::CompileError) { compile("void f(__int128 a) { }") }
-    assert_match(/passing a 128-bit integer by value is not supported yet/, error.description)
-  end
-
-  def test_int128_by_value_return_is_rejected
-    error = assert_raises(Rubycc::CompileError) { compile("__int128 f(void) { __int128 a; return a; }") }
-    assert_match(/returning a 128-bit integer by value is not supported yet/, error.description)
-  end
+  # Passing and returning a 128-bit integer by value is supported (Step 94): it
+  # travels as a 16-byte, two-INTEGER-eightbyte aggregate, verified by the
+  # execution-oracle tests in test/test_int128_abi.rb rather than diagnosed here.
 
   def test_int128_variadic_argument_is_rejected
     source = "int printf(const char *fmt, ...); void f(void) { __int128 a = 1; printf(\"%d\", a); }"

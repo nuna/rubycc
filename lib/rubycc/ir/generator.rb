@@ -26,6 +26,14 @@ module Rubycc
       # variable; reads and "&" are unaffected.
       Local = Data.define(:type, :storage, :global, :const)
 
+      # The two alignment-pad ABI pieces (see AAPCS64::Placer#pad_gp/#pad_stack).
+      # A pad reserves one integer register (:pad) or one stack eightbyte
+      # (:pad_stack) ahead of a 16-byte-aligned aggregate so it starts on an
+      # aligned boundary; it moves no data, so its offset and size go unread —
+      # only its kind, which steers the backend's counter over it.
+      PAD_GP_PIECE = AbiPiece.new(offset: 0, size: 8, kind: :pad)
+      PAD_STACK_PIECE = AbiPiece.new(offset: 0, size: 8, kind: :pad_stack)
+
       # The merged state of a file-scope object's tentative/real definitions
       # (6.9.2), one per name in @object_records. `type` and `linkage` are the
       # agreed type and linkage of the run, `initialized` records whether any
@@ -730,18 +738,13 @@ module Rubycc
         if return_type.struct? && !return_type.complete?
           error_at(token, "return type is an incomplete type")
         end
-        # Passing or returning a 128-bit integer by value would use two System V
-        # registers (a psABI detail out of this phase's scope), so it is diagnosed
-        # here — the one place both a prototype and a definition pass through.
-        if wide128?(return_type)
-          error_at(token, "returning a 128-bit integer by value is not supported yet")
-        end
+        # A 128-bit integer passed or returned by value travels as a 16-byte,
+        # two-INTEGER-eightbyte aggregate, exactly like a small struct of the same
+        # shape (see #setup_parameters and #lower_struct_argument), so it needs no
+        # diagnostic here; only an incomplete struct still does.
         param_types.each do |param_type|
           if param_type.struct? && !param_type.complete?
             error_at(token, "parameter has incomplete type")
-          end
-          if wide128?(param_type)
-            error_at(token, "passing a 128-bit integer by value is not supported yet")
           end
         end
         existing = @signatures[name]
@@ -875,17 +878,25 @@ module Rubycc
         # argument under System V, the x8 register under AAPCS64.
         # @struct_return_ptr holds its slot for #gen_return, and
         # @struct_return_plan steers the return.
-        @struct_return_plan = return_type.struct? ? @convention.aggregate_plan(return_type) : nil
+        @struct_return_plan = aggregate_by_value?(return_type) ? @convention.aggregate_plan(return_type) : nil
         @struct_return_ptr = nil
         hidden_return = hidden_result?(@struct_return_plan)
 
         # One plan per by-value parameter (nil for a scalar), then the placement
         # of every ABI entity in slot order: the hidden return pointer (if any)
         # first, then the parameters left to right.
-        plans = func.params.map { |param| param.type.struct? ? @convention.aggregate_plan(param.type) : nil }
+        plans = func.params.map { |param| aggregate_by_value?(param.type) ? @convention.aggregate_plan(param.type) : nil }
         placer = @convention.placer
-        placer.place(ArgumentRequest.new(kinds: [@convention.hidden_result_kind], even_gp: false)) if hidden_return
-        placements = func.params.each_with_index.map { |param, i| placer.place(abi_request(param.type, plans[i])) }
+        if hidden_return
+          placer.place(ArgumentRequest.new(kinds: [@convention.hidden_result_kind], align16: false, mem_eightbytes: 1))
+        end
+        # Each placement is captured with the alignment pad the placer inserted
+        # just before it (see AAPCS64::Placer#pad_gp/#pad_stack), so #placed_pieces
+        # can prepend a matching pad slot to the parameter's pieces.
+        placements = func.params.each_with_index.map do |param, i|
+          status = placer.place(abi_request(param.type, plans[i]))
+          [status, placer.pad_gp, placer.pad_stack]
+        end
 
         # The pieces each entity is taken apart into, now that placement is
         # known, and one slot vreg per piece. The vregs are allocated first
@@ -893,7 +904,10 @@ module Rubycc
         # backend spills into.
         piece_lists = []
         piece_lists << [AbiPiece.new(offset: 0, size: 8, kind: @convention.hidden_result_kind)] if hidden_return
-        func.params.each_with_index { |param, i| piece_lists << placed_pieces(param.type, plans[i], placements[i]) }
+        func.params.each_with_index do |param, i|
+          status, pad_gp, pad_stack = placements[i]
+          piece_lists << placed_pieces(param.type, plans[i], status, pad_gp, pad_stack)
+        end
 
         slot_vregs = piece_lists.map { |pieces| pieces.map { new_vreg } }
         @param_count = slot_vregs.sum(&:size)
@@ -908,7 +922,7 @@ module Rubycc
           vregs = slot_vregs[index]
           pieces = piece_lists[index]
           index += 1
-          if param.type.struct?
+          if aggregate_by_value?(param.type)
             bind_struct_parameter(param, vregs, pieces, plans[i].mode == :by_reference)
           else
             @scopes.last[param.name] =
@@ -945,10 +959,15 @@ module Rubycc
       # value travels as an ordinary pointer to a copy, which is all the
       # register files see of it).
       def abi_request(type, plan)
-        return ArgumentRequest.new(kinds: [argument_kind(type)], even_gp: false) if plan.nil?
-        return ArgumentRequest.new(kinds: [:gp], even_gp: false) if plan.mode == :by_reference
+        eightbytes = (type.size + 7) / 8
+        # A scalar is never 16-byte aligned in this subset (the widest is an
+        # 8-byte double or long), and a by-reference aggregate travels as a plain
+        # 8-byte pointer, so only a register/memory aggregate carries alignment —
+        # from its plan, where the convention worked it out.
+        return ArgumentRequest.new(kinds: [argument_kind(type)], align16: false, mem_eightbytes: eightbytes) if plan.nil?
+        return ArgumentRequest.new(kinds: [:gp], align16: false, mem_eightbytes: 1) if plan.mode == :by_reference
 
-        ArgumentRequest.new(kinds: plan.pieces.map(&:kind), even_gp: plan.even_gp)
+        ArgumentRequest.new(kinds: plan.pieces.map(&:kind), align16: plan.align16, mem_eightbytes: eightbytes)
       end
 
       # The pieces an argument of `type` is actually taken apart into, now that
@@ -958,17 +977,27 @@ module Rubycc
       # aarch64 HFA that runs out of vector registers is packed into the stack
       # area, not spread one member per slot). A by-reference aggregate is one
       # pointer either way, and a scalar one slot carrying its own value.
-      def placed_pieces(type, plan, placement)
-        kind = placement == :stack ? :mem : nil
-        if plan.nil?
-          [AbiPiece.new(offset: 0, size: type.size, kind: kind || argument_kind(type))]
-        elsif plan.mode == :by_reference
-          [AbiPiece.new(offset: 0, size: 8, kind: kind || :gp)]
-        elsif placement == :stack
-          CallConvention.memory_pieces(type.size)
-        else
-          plan.pieces
-        end
+      def placed_pieces(type, plan, placement, pad_gp = 0, pad_stack = 0)
+        data =
+          if plan.nil?
+            kind = placement == :stack ? :mem : argument_kind(type)
+            [AbiPiece.new(offset: 0, size: type.size, kind: kind)]
+          elsif plan.mode == :by_reference
+            [AbiPiece.new(offset: 0, size: 8, kind: placement == :stack ? :mem : :gp)]
+          elsif placement == :stack
+            CallConvention.memory_pieces(type.size)
+          else
+            plan.pieces
+          end
+        # A convention that aligns a 16-byte aggregate reports the pad it reserved
+        # ahead of it (at most one, register or stack). The pad is a piece of its
+        # own so the flattened kind sequence carries it: the backend advances the
+        # matching counter over it without moving data, and the aggregate's own
+        # pieces then land where the standard places them.
+        return [PAD_GP_PIECE] + data if pad_gp.positive?
+        return [PAD_STACK_PIECE] + data if pad_stack.positive?
+
+        data
       end
 
       # Reassembles a struct parameter from its incoming ABI slots into a fresh
@@ -991,6 +1020,8 @@ module Rubycc
           emit(:memcpy, a: base, b: slot_vregs.first, size: type.size)
         else
           pieces.each_with_index do |piece, i|
+            next if pad_piece?(piece.kind) # a pad slot holds no data; its vreg is unused
+
             emit(:store, a: piece_address(base, piece.offset), b: slot_vregs[i], size: piece.size)
           end
         end
@@ -1370,6 +1401,7 @@ module Rubycc
         error_at(node.token, "return without a value") unless node.expr
 
         return gen_struct_return(node) if @current_return_type.struct?
+        return gen_int128_return(node) if wide128?(@current_return_type)
 
         value, value_type = gen_value(node.expr)
         unless compatible_assignment?(@current_return_type, node.expr, value_type)
@@ -1407,6 +1439,24 @@ module Rubycc
           emit(:memcpy, a: base, b: src, size: size)
           emit(:ret, a: base, size: @struct_return_plan.pieces)
         end
+      end
+
+      # "return expr;" from a 128-bit-integer-returning function. The value is
+      # converted to the return type (yielding the address of a 16-byte object
+      # whose low eightbyte is at +0 and high at +8) and handed back in the two
+      # integer result registers the convention assigns it — rax:rdx under System V,
+      # x0:x1 under AAPCS64. A 16-byte two-INTEGER aggregate is never a hidden-pointer
+      # result, so this is always a register return: @struct_return_plan.pieces ride
+      # on :ret for the backend to load from the object into those registers, and no
+      # scratch copy is needed since the object is exactly 16 bytes (a whole-eightbyte
+      # load of either half stays in bounds).
+      def gen_int128_return(node)
+        value, value_type = gen_value(node.expr)
+        unless compatible_assignment?(@current_return_type, node.expr, value_type)
+          error_at(node.token, "incompatible return type")
+        end
+        addr = convert_for_assignment(value, value_type, @current_return_type, token: node.token)
+        emit(:ret, a: addr, size: @struct_return_plan.pieces)
       end
 
       def gen_variable_decl(decl)
@@ -3282,7 +3332,7 @@ module Rubycc
       # pointer's kind is the convention's — an ordinary leading integer argument
       # under System V, x8's own :indirect_result under AAPCS64.
       def struct_return_plumbing(return_type)
-        return { mode: :normal, hidden: nil, ret: nil, buf_addr: nil } unless return_type.struct?
+        return { mode: :normal, hidden: nil, ret: nil, buf_addr: nil } unless aggregate_by_value?(return_type)
 
         plan = @convention.aggregate_plan(return_type)
         buf = new_object(return_type.size)
@@ -3377,7 +3427,7 @@ module Rubycc
         placer = @convention.placer
         args = []
         if hidden
-          placer.place(ArgumentRequest.new(kinds: [hidden.last], even_gp: false))
+          placer.place(ArgumentRequest.new(kinds: [hidden.last], align16: false, mem_eightbytes: 1))
           args << hidden
         end
         node.args.each_with_index do |arg, i|
@@ -3404,6 +3454,14 @@ module Rubycc
           error_at(node.token, "incompatible type for argument #{index + 1}#{suffix}")
         end
         return lower_struct_argument(vreg, param_type, placer) if param_type.struct?
+        # A 128-bit integer argument travels as a 16-byte aggregate too, but unlike
+        # a struct (which requires type identity) it may be a converted narrower
+        # value, so it is first converted to the parameter type — yielding the
+        # address of a 16-byte object — and then taken apart on the same path.
+        if wide128?(param_type)
+          converted = convert_for_assignment(vreg, arg_type, param_type, token: node.token)
+          return lower_struct_argument(converted, param_type, placer)
+        end
 
         converted = convert_for_assignment(vreg, arg_type, param_type, token: node.token)
         [place_scalar_argument(converted, argument_kind(param_type), placer)]
@@ -3413,7 +3471,7 @@ module Rubycc
       # `kind` lands and returns the [vreg, kind] pair the call carries: the
       # candidate itself when it got its register, :mem when it spilled.
       def place_scalar_argument(vreg, kind, placer)
-        placement = placer.place(ArgumentRequest.new(kinds: [kind], even_gp: false))
+        placement = placer.place(ArgumentRequest.new(kinds: [kind], align16: false, mem_eightbytes: 1))
         [vreg, placement == :stack ? :mem : kind]
       end
 
@@ -3437,10 +3495,20 @@ module Rubycc
         emit(:memcpy, a: base, b: addr, size: size)
 
         placement = placer.place(abi_request(struct_type, plan))
-        pieces = placed_pieces(struct_type, plan, placement)
-        return [[base, pieces.first.kind]] if plan.mode == :by_reference
+        # A by-reference aggregate travels as one pointer to the caller's copy:
+        # in an integer register, or on the stack (:mem) when those run out. It
+        # is larger than 16 bytes, so it is never 16-byte-aligned in the pad
+        # sense and needs no pad slot.
+        return [[base, placement == :stack ? :mem : :gp]] if plan.mode == :by_reference
 
+        # A pad slot (from the placer's alignment reservation) carries no value:
+        # it enters the argument list so the backend's sequential register/stack
+        # handout skips the reserved place, but emits no load. Every other piece
+        # is read from its own offset at its own width.
+        pieces = placed_pieces(struct_type, plan, placement, placer.pad_gp, placer.pad_stack)
         pieces.map do |piece|
+          next [nil, piece.kind] if pad_piece?(piece.kind)
+
           value = new_vreg
           emit(:load, dst: value, a: piece_address(base, piece.offset), size: piece.size)
           [value, piece.kind]
@@ -3934,6 +4002,25 @@ module Rubycc
       # value model rather than the single-slot scalar machinery.
       def wide128?(type)
         type.integer? && type.size == 16
+      end
+
+      # Whether `type` is passed and returned by value the way a small struct is:
+      # taken apart into ABI pieces its convention places, and carried by the
+      # address of a 16-byte-or-smaller stack object rather than in a single vreg.
+      # A struct and a 128-bit integer alike travel this way (the latter as a
+      # 16-byte, two-INTEGER-eightbyte aggregate), so every ABI site that classifies
+      # a by-value parameter or result routes both through the same aggregate path.
+      def aggregate_by_value?(type)
+        type.struct? || wide128?(type)
+      end
+
+      # Whether an ABI piece is an alignment pad — a slot that consumes an
+      # integer register (:pad) or a stack eightbyte (:pad_stack) so a 16-byte
+      # aligned aggregate begins on an aligned boundary, but carries no data.
+      # The reassembly and disassembly of an aggregate skip it, while the
+      # backend's sequential placement still advances its counter over it.
+      def pad_piece?(kind)
+        kind == :pad || kind == :pad_stack
       end
 
       # Reserves a fresh 16-byte stack object for a 128-bit temporary and returns

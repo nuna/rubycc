@@ -357,9 +357,11 @@ module Rubycc
       #   [A+24] __gr_offs = -(8 - named_gp) * 8   (negative, climbs to zero)
       #   [A+28] __vr_offs = -(8 - named_fp) * 16
       def emit_va_start(ap_vreg)
-        named_gp = @param_kinds.count(:gp)
+        # An alignment pad consumes a register/stack slot as much as a real
+        # named argument does, so it counts toward where the variable part begins.
+        named_gp = @param_kinds.count(:gp) + @param_kinds.count(:pad)
         named_fp = @param_kinds.count(:sse4) + @param_kinds.count(:sse8)
-        named_stack = @param_kinds.count(:mem)
+        named_stack = @param_kinds.count(:mem) + @param_kinds.count(:pad_stack)
         gr_offs = -(ARG_REGISTERS.size - named_gp) * 8
         vr_offs = -(FP_ARG_REGISTERS.size - named_fp) * 16
 
@@ -420,6 +422,14 @@ module Rubycc
           when :mem
             load_at(A, incoming_stack_offset(next_stack))
             store_reg(A, i)
+            next_stack += 1
+          when :pad
+            # An even-pair alignment pad consumes one integer register but binds
+            # no parameter, so its slot is left unwritten and only the counter moves.
+            next_gp += 1
+          when :pad_stack
+            # A stack alignment pad likewise consumes one incoming stack eightbyte
+            # with no bound parameter.
             next_stack += 1
           when :sse4, :sse8
             raise "parameter #{kind} overruns the vector registers" if next_fp >= FP_ARG_REGISTERS.size
@@ -746,6 +756,9 @@ module Rubycc
       def place_arguments(args)
         next_stack = 0
         args.each do |vreg, kind|
+          # :pad_stack reserves one stack eightbyte to 16-align the aggregate
+          # behind it; it carries no value, so it only advances the counter.
+          next_stack += 1 if kind == :pad_stack
           next unless kind == :mem
 
           load_reg(A, vreg)
@@ -762,7 +775,10 @@ module Rubycc
 
             load_reg(ARG_REGISTERS[next_gp], vreg)
             next_gp += 1
-          when :mem then next
+          when :pad
+            # An even-pair alignment pad reserves one integer register, unloaded.
+            next_gp += 1
+          when :mem, :pad_stack then next
           when :sse4, :sse8
             raise "call argument #{kind} overruns the vector registers" if next_fp >= FP_ARG_REGISTERS.size
 
