@@ -1,0 +1,153 @@
+# frozen_string_literal: true
+
+require "minitest/autorun"
+require "fileutils"
+require "tmpdir"
+
+require_relative "corpus/gems"
+require_relative "corpus/census"
+
+# Step 92 (M5 H3): hermetic checks for the corpus include-census tooling. This
+# test NEVER touches the network: `gem fetch` lives in the orchestration layer of
+# census.rb and is not exercised here. Only the pure, network-free helpers and the
+# committed artifacts (gems.rb, include-census.md) are verified.
+class TestCorpusCensus < Minitest::Test
+  CORPUS_DIR = File.expand_path("corpus", __dir__)
+  CENSUS = Corpus::Census
+
+  # ---- committed artifacts ----
+
+  def test_gems_list_is_well_formed
+    list = Corpus::Gems::LIST
+    assert_kind_of Array, list
+    refute_empty list, "corpus gem list is empty"
+
+    list.each do |entry|
+      assert_kind_of Hash, entry
+      assert entry.key?(:name), "gem entry missing :name: #{entry.inspect}"
+      assert_kind_of String, entry[:name]
+      refute_empty entry[:name], "gem entry has blank :name: #{entry.inspect}"
+      # :version is optional (nil = latest); when present it must be a String.
+      assert_kind_of String, entry[:version] if entry.key?(:version) && !entry[:version].nil?
+    end
+
+    names = list.map { |e| e[:name] }
+    assert_equal names, names.uniq, "duplicate gem names in corpus list"
+  end
+
+  def test_snapshot_report_is_present_and_non_empty
+    report = File.join(CORPUS_DIR, "include-census.md")
+    assert File.file?(report), "missing committed snapshot #{report} (run `rake corpus:census`)"
+    assert_operator File.size(report), :>, 0, "snapshot #{report} is empty"
+    body = File.read(report)
+    assert_includes body, "Do not hand-edit", "snapshot is missing its generated-file banner"
+  end
+
+  # ---- angle-include extraction ----
+
+  def test_extract_angle_includes_takes_angle_only
+    src = <<~C
+      #include <stdio.h>
+      #include <sys/socket.h>
+      #include "local.h"
+      # include <ruby.h>
+      #include<stdlib.h>
+      int x; // #include <not_a_real.h>
+    C
+    got = CENSUS.extract_angle_includes(src)
+    # Quoted includes are excluded; angle ones (even oddly spaced) are kept in order.
+    assert_equal ["stdio.h", "sys/socket.h", "ruby.h", "stdlib.h"], got
+  end
+
+  # ---- bundled header set from an include/ tree ----
+
+  def test_normalize_bundled_spelling
+    assert_equal "float.h", CENSUS.normalize_bundled_spelling("float.h")
+    assert_equal "assert.h", CENSUS.normalize_bundled_spelling("libc/assert.h")
+    assert_equal "sys/socket.h", CENSUS.normalize_bundled_spelling("libc/sys/socket.h")
+    assert_equal "sys/stat.h", CENSUS.normalize_bundled_spelling("libc/glibc/x86_64/sys/stat.h")
+    assert_equal "ctype.h", CENSUS.normalize_bundled_spelling("libc/glibc/aarch64/ctype.h")
+  end
+
+  def test_bundled_headers_from_synthetic_tree
+    Dir.mktmpdir do |root|
+      make_header(root, "stdbool.h")               # freestanding
+      make_header(root, "libc/assert.h")           # plain libc
+      make_header(root, "libc/sys/socket.h")       # libc subdir
+      make_header(root, "libc/glibc/x86_64/sys/stat.h")  # arch layer
+      make_header(root, "libc/glibc/aarch64/sys/stat.h") # same spelling, other arch
+
+      bundled = CENSUS.bundled_headers(root)
+      assert_includes bundled, "stdbool.h"
+      assert_includes bundled, "assert.h"
+      assert_includes bundled, "sys/socket.h"
+      assert_includes bundled, "sys/stat.h"
+      # Both arch copies collapse to a single normalized spelling.
+      assert_equal 4, bundled.size, "expected exactly 4 distinct spellings, got #{bundled.to_a.sort.inspect}"
+    end
+  end
+
+  def test_bundled_headers_matches_real_include_tree
+    include_root = File.expand_path("../include", __dir__)
+    bundled = CENSUS.bundled_headers(include_root)
+    # Sanity anchors across all three layers.
+    assert_includes bundled, "stdbool.h",   "freestanding stdbool.h should be bundled"
+    assert_includes bundled, "sys/socket.h", "libc sys/socket.h should be bundled"
+    assert_includes bundled, "sys/stat.h",   "arch-layer sys/stat.h should normalize into bundled set"
+    assert_includes bundled, "stdint.h",     "arch-layer stdint.h should normalize into bundled set"
+  end
+
+  # ---- bundled / gap classification ----
+
+  def test_classify_include
+    bundled = Set.new(%w[stdio.h sys/socket.h])
+    assert_equal :bundled, CENSUS.classify_include("stdio.h", bundled)
+    assert_equal :bundled, CENSUS.classify_include("sys/socket.h", bundled)
+    assert_equal :gap, CENSUS.classify_include("cpuid.h", bundled)
+    assert_equal :gap, CENSUS.classify_include("arm_neon.h", bundled)
+  end
+
+  def test_ruby_or_self_detection
+    own = Set.new(%w[parser.h generator.h])
+    assert CENSUS.ruby_or_self?("ruby.h", own)
+    assert CENSUS.ruby_or_self?("ruby/encoding.h", own)
+    assert CENSUS.ruby_or_self?("rubycc/foo.h", own)
+    assert CENSUS.ruby_or_self?("parser.h", own), "extension's own header should be treated as self"
+    refute CENSUS.ruby_or_self?("stdio.h", own)
+    refute CENSUS.ruby_or_self?("cpuid.h", own)
+  end
+
+  # ---- R10 machine gate helpers ----
+
+  def test_cpp_source_detection
+    assert CENSUS.cpp_source?("ext/foo/bar.cpp")
+    assert CENSUS.cpp_source?("ext/foo/bar.cc")
+    assert CENSUS.cpp_source?("ext/foo/bar.hpp")
+    refute CENSUS.cpp_source?("ext/foo/bar.c")
+    refute CENSUS.cpp_source?("ext/foo/bar.h")
+  end
+
+  def test_configure_dependency_detection
+    assert CENSUS.configure_dependency?("require 'mini_portile2'\nMiniPortile.new(...)")
+    assert CENSUS.configure_dependency?('system("./configure --prefix=/opt/foo")')
+    assert CENSUS.configure_dependency?("`sh configure`")
+    refute CENSUS.configure_dependency?("create_makefile('json/ext/parser')")
+    refute CENSUS.configure_dependency?("have_header('ruby.h')\nhave_func('rb_str_new')")
+  end
+
+  def test_gate_hint_annotations
+    assert_match(/SIMD/, CENSUS.gate_hint("cpuid.h"))
+    assert_match(/SIMD/, CENSUS.gate_hint("arm_neon.h"))
+    assert_match(/Windows/, CENSUS.gate_hint("intrin.h"))
+    assert_match(/C\+\+/, CENSUS.gate_hint("cstdbool"))
+    assert_equal "", CENSUS.gate_hint("sys/random.h"), "unknown header should carry no gate hint"
+  end
+
+  private
+
+  def make_header(root, rel)
+    path = File.join(root, rel)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, "/* #{rel} */\n")
+  end
+end
