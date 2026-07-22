@@ -3128,10 +3128,51 @@ H2 の census 由来ヘッダギャップを埋めた後、ROADMAP どおり**�
 
 ---
 
+## Step 94 — `__int128` の値渡し・値返し(M5 H4、bigdecimal ブロッカーの解消 + 16 バイト整列 ABI)
+
+Step 93 で bigdecimal のブロッカーとして顕在化した「128 ビット整数の値渡し未対応」を解消。
+rubycc は既に `__int128` を **16 バイトのメモリオブジェクト**(小構造体と同じ表現、Step 28 の
+`new_int128_temp`)で持つため、値渡し/返しは **16 バイト 2-INTEGER eightbyte 集約**として
+既存の構造体 ABI 経路に載せるのが素直な設計。`#aggregate_by_value?`(`struct? || wide128?`)を
+導入し、`setup_parameters`・`struct_return_plumbing`・引数ロワリングの分類地点を全てこれに置換。
+generator.rb の「128-bit by value は未対応」診断 2 件を撤去。
+
+- **ABI 実測(measure-first)**: x86_64 System V は 2 連続 GP レジスタ(偶奇不問、rdi:rsi 等、
+  返りは rax:rdx)。AAPCS64 は **16 バイト整列集約の偶数レジスタペア規則**(奇数個の整数レジスタの後は
+  x2:x3 等の偶数ペアに載り、間の 1 本をパディング)。**スタック溢れ時の 16 バイト境界整列は両規約共通**
+  (奇数 eightbyte 境界なら 1 スロット詰めて 16 バイト境界へ)。gcc のアセンブリ(`push`/`sub rsp` 列)で
+  x86_64 のスタック pad も確認。
+- **設計上の要点 — pad スロット機構**: 偶数ペア/16 バイト境界整列は placer が決めるが、従来
+  バックエンドは kind 列を順送りで配るだけでパディングを尊重していなかった(**AAPCS64 偶数ペアは
+  even_gp フラグが placer にあったのにバックエンド未配線=潜在バグ**。16 バイト整列集約の struct も
+  同根)。これを **pad をひとつの ABI ピースとして表現**して橋渡し:placer が `pad_gp`(レジスタ 1 本、
+  AAPCS64 のみ)/`pad_stack`(スタック 1 eightbyte、両規約)を報告 → `placed_pieces` が
+  `:pad`/`:pad_stack` ピースを集約の先頭に前置 → フラット化した kind 列がそれを運び、バックエンドは
+  pad 上でカウンタだけ進めてデータは動かさない。集約の再構成/分解(`bind_struct_parameter`・
+  `lower_struct_argument`)は pad をスキップ。`va_start` の `named_gp`/`named_stack` も pad を計上。
+- **命名の是正**: `even_gp` は AAPCS64 のレジスタ規則しか表さず、スタック整列は両規約共通なので
+  実体は「16 バイト整列集約」。`align16` に改称し、両規約の `aggregate_plan` が `type.alignment >= 16`
+  から設定。placer に NSAA(スタックオフセット)追跡を追加し、`ArgumentRequest#mem_eightbytes`
+  (溢れ時の eightbyte 数)で正確に前進。
+- **副次的解消**: この 1 変更で(1)128 ビット値渡し/返し、(2)スタック引数 16 バイト整列負債
+  (x86_64/aarch64 共通、§3)、(3)AAPCS64 偶数レジスタペアのバックエンド未配線、が同時に解消。
+- **検証(SEGV 直結のため必須)**: 新規 `test/test_int128_abi.rb`。**クロス TU 実行オラクル**:
+  単一コンパイラビルドでは placement バグが自己整合で隠れる(rubycc 同士は互いに一致してしまう)ため、
+  caller と callee を別翻訳単位にして rubycc↔gcc を混在させ、x86_64(host gcc)と
+  aarch64(cross gcc + qemu)双方で全組合せが all-gcc と一致することを確認。ケースは
+  レジスタ偶数ペア(1 本/3 本の long の後)・スタック境界整列(8 本=整列済/9 本=要 pad)・
+  2 連続 int128・値返しを網羅。値は union で 2 分割し 128 ビット演算(未実装)に依存しない。
+  aarch64 のクロス TU 検証のため support ヘルパに `link_units_and_run_aarch64` を追加。
+- **未対応のまま**: 128 ビット整数の除算・シフト・ビット演算・可変長引数渡し(§3 の H4)。
+  bigdecimal は値渡しを突破した先でこれらに到達する可能性があり、以降の H4 反復で対応。
+
+---
+
 ## 現在のテスト規模
 
-Step 93 完了時点: **2,416 runs / 6,490 assertions / 0 failures / 47 skips**
-(Step 92 の 2,412 から +4 = 新規 test_extern_incomplete_array.rb の gcc 差分 2 TU 実行 + 否定ケース)
+Step 94 完了時点: **2,416 runs / 6,496 assertions / 0 failures / 47 skips**
+(Step 93 の 2,416 runs から差引ゼロ = 新規 test_int128_abi.rb の 2 ケース〈x86_64・aarch64 のクロス TU〉
+追加と、実装済みとなった 128 ビット値渡し/返しの拒否診断テスト 2 件の撤去が相殺。assertions は +6)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト

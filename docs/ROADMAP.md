@@ -86,14 +86,14 @@
 | ~~`__builtin_offsetof` / 定数文脈 offsetof~~ | **解消(Step 42)**: `__builtin_offsetof(type-name, member-designator)` を実装(ネスト `.name`・添字 `[expr]`・匿名メンバ対応、ビットフィールドは診断)。ConstantEvaluator が畳むため static 初期化子・配列サイズ・case ラベルの定数文脈で使え、同梱 stddef.h の offsetof も __builtin_offsetof 展開に変更 | ~~早期(Step 42 予定)~~ **完了** |
 | ~~ビットフィールドのアクセス~~ | **解消(Step 48、d1da0bf)**: 読み・書き・複合代入・++/-- を格納単位の load → shift/mask → read-modify-write store で実装(符号付きは符号拡張、代入式の値は切り詰め後の読み直し)。& は 6.5.3.2p1 の診断。00218 は enum 符号性(00170 と同根)で残置 | ~~M2~~ **完了** |
 | マクロ再展開の hide-set 交差 | `CAT(A,B)(x)` の CAT2 経由再展開が gcc と相違(c-testsuite 00201 で実証)。修正方針記録済み: 置換 paint を「呼び出し名の suppress ∩ 閉じ括弧の suppress + 自名」へ | M2 |
-| 128 ビット整数の演算残り | 乗算・加減算・比較・変換のみ実装(Step 28)。除算・シフト・ビット演算・値渡し/返し・可変長渡しは診断エラー。**Step 93 で corpus 実害を確認**: bigdecimal が `bits.h` で `__int128` の値渡しを使い「passing a 128-bit integer by value is not supported yet」で落ちる(§3.1 の H4 割り当て、bigdecimal フルビルドのブロッカー) | **corpus 実害確認済み(bigdecimal、Step 93)→ H4** |
+| 128 ビット整数の演算残り | 乗算・加減算・比較・変換に加え、**値渡し/返しを Step 94 で実装**(16 バイト 2-INTEGER 集約として既存の構造体 ABI 経路で扱う。両ターゲットのクロス TU 実行オラクルで検証)。残りは除算・シフト・ビット演算・可変長渡しが診断エラー。**Step 93 で corpus 実害を確認**: bigdecimal が `bits.h` で `__int128` の値渡しを使い落ちていた → Step 94 で解消 | **値渡し/返し解消(Step 94)。残りの演算は H4** |
 | enum の unsigned 底型 | 全 enum を int へ写像(gcc は全非負 enum を unsigned int に)。c-testsuite 00170 のポインタ符号不一致で顕在 | 実害が出た時点 |
 | compound literal / VLA / _Generic / ワイド文字列 / #pragma push_macro / K&R `int ()` 型 | 各々診断エラー(c-testsuite スキップ表に理由記録) | 実害が出た時点 |
 | ~~素の `char` の符号性がターゲット依存~~ | **解消(Step 73)**: 文字型を 4 実体に分離し(素の char の符号あり/なし + ターゲット非依存の signed/unsigned char)、`Compiler::TARGETS` の `char_signed` からプリプロセッサ・パーサ・IR ジェネレータの 3 段へ配る。同梱 limits.h も `__CHAR_UNSIGNED__` で分岐 | ~~A3~~ **完了** |
 | `char *` と `signed char *` の非互換化(受理範囲の縮小) | Step 73 の副作用。C 標準どおりだが gcc は警告どまりのため、実 gem のコードが診断エラーで落ちる可能性がある。現状は全テスト(実 C 拡張ビルド込み)が green。問題が出たら `Type.character?` で 1 バイト文字型間のポインタ互換を緩める(1 箇所で書ける) | M5 コーパスで実害が出た時点 |
 | ~~aarch64 ターゲットでも `__x86_64__`/`__amd64__` を定義~~ | **解消(Step 74)**: CPU 識別マクロを共通部(`PREDEFINED_PLATFORM_MACROS`)と per-target(`X86_64_ARCH_MACROS`/`AARCH64_ARCH_MACROS`)に分割し `TARGETS` から供給。target を無視していた `-E` 経路も是正 | ~~A4/A5~~ **完了** |
 | ~~`struct { float a, b; }` の値渡しが aarch64 で silent miscompile~~ | **解消(Step 77)**: 集約分類を `IR::CallConvention` の 2 実装に分け、`AbiPiece` にオフセットと幅を持たせて HFA を s0/s1 に配置。IR レベルの分岐と実行結果の両方で確認 | ~~A4~~ **完了** |
-| スタック引数の 16 バイト整列が未対応 | IR の `:mem` スロットが 8 バイト単位固定のため、`__int128` を含む集約がスタックに溢れる場合の整列が ABI どおりにならない。**x86_64 側にも元からある同じ穴**(Step 77 で判明、新規の退行ではない)。レジスタ側の偶数番規則は実装済み | 実害が出た時点 |
+| ~~スタック引数の 16 バイト整列が未対応~~ | **解消(Step 94)**: 16 バイト整列の集約(`__int128` 等)がスタックに溢れる場合、両規約とも NSAA を奇数境界で 1 eightbyte パディングして 16 バイト境界に載せる `:pad_stack` スロット機構を実装。AAPCS64 のレジスタ偶数ペア規則(`:pad`)も同時にバックエンドへ配線。x86_64・aarch64 双方のクロス TU 実行オラクルで確認 | ~~実害が出た時点~~ **完了(Step 94)** |
 | 同梱 `stddef.h`/`stdint.h` の `wchar_t` typedef が `int` 固定 | aarch64 gcc の `wchar_t` は `unsigned int`(`__WCHAR_MAX__` = `0xffffffffU`)。Step 82 で aarch64 の `stdint.h` は `WCHAR_MIN`/`WCHAR_MAX` マクロだけ unsigned に合わせたが、`wchar_t` typedef 自体は freestanding `stddef.h` と共有ガード `_RUBYCC_WCHAR_T` を使うため `int` のまま(符号を変えると include 順で不整合)。ワイド文字リテラルは意図的な診断で拒否しており、ABI ハーネスも符号性は検査しないため観測可能な誤りには至っていない。予定: H4(ワイド文字を扱う gem がコーパスで顕在化した時点)。stddef.h を per-target 化するか、freestanding 層に符号を持ち込む設計判断を伴う | ワイド文字を扱う時点(H4 / A4 以降) |
 | ~~float リテラルの binary32 丸め~~ | **解消(Step 69)**: `pack("e")` が FLT_MAX 超を +inf へ飽和させていた。double のビット界から 23 ビットへ最近接・偶数丸めで縮約する変換に置き換え、ABI ハーネスの FLT_MAX 検査を通常の assert へ復帰 | ~~早期~~ **完了** |
 | long double = double 扱いによる max_align_t 相違 | rubycc は long double を 8 バイト double として扱う(DESIGN 3.3 の既知制限)ため max_align_t が 16/8(glibc は 32/16)。x87 80bit 対応まで ABI ハーネスの該当検査は非 assert | x87 80bit 対応時(将来) |
@@ -109,9 +109,9 @@
 | 負債 | 解消予定 | 根拠 |
 |---|---|---|
 | 不完全型 struct の param/return、内側スコープ `struct S;` 再宣言、ブロックスコープ関数宣言、指し先 const 書き込み検出、compound literal / VLA / _Generic / ワイド文字列 / #pragma push_macro / K&R `int ()`、enum unsigned 底型 | **H4**(言語機能不足 → M1 流儀の追補ステップ) | H3 の #include/ビルド集計と gem テストで顕在化した順に H4 で追補。コーパスに現れないものは v1.0 の「既知の制限」として README 記載(H6) |
-| 128 ビット整数の演算残り(除算・シフト・ビット演算・値渡し/返し) | **H4**(同上。ABI に関わる部分は ABI バグ扱いで優先) | 実 gem が `__int128` を使う頻度は低い。使う gem がコーパスにあれば H4 で優先実装 |
+| 128 ビット整数の演算残り(除算・シフト・ビット演算) | **H4**(値渡し/返しは ABI バグ扱いで Step 94 に前倒し済み・解消)。残りの演算は必要になった時点 | 実 gem が `__int128` を使う頻度は低い。値渡しは bigdecimal で実害が出たため Step 94 で解消。演算は使う gem がコーパスにあれば H4 で実装 |
 | `char *` と `signed char *` の非互換化 | **H4**(`Type.character?` の 1 箇所緩和で対応。修正済みの手当が確定済み) | Step 73 の副作用。コーパスの実 C 拡張が診断エラーで落ちたら即緩和 |
-| スタック引数の 16 バイト整列(x86_64/aarch64 共通)、-fPIC の PC32 参照 | **H4**(ABI バグ → 最優先修正 + ABI ファジングに再発防止ケース追加) | ABI 不一致は SEGV 直結の最重要リスク(DESIGN 7 章)。ファジング(下記)で網羅的に炙り出す |
+| ~~スタック引数の 16 バイト整列(x86_64/aarch64 共通)~~ **解消(Step 94)**、-fPIC の PC32 参照 | 16 バイト整列は Step 94 で解消(`:pad_stack` 機構 + クロス TU 実行オラクル)。-fPIC PC32 は **H4**(ABI バグ → 最優先修正 + ABI ファジングに再発防止ケース追加) | ABI 不一致は SEGV 直結の最重要リスク(DESIGN 7 章)。ファジング(下記)で網羅的に炙り出す |
 | `wchar_t` typedef 符号性、long double = double による max_align_t 相違 | **feature-gated**(ワイド文字対応時 / x87 80bit 対応時) | いずれも該当機能を意図的に未対応(診断で拒否 / DESIGN 3.3 既知制限)としているため、当該機能に着手するまで観測不能。H4 でワイド文字/long double を使う gem が有意に落ちるなら前倒しを判断 |
 | DoS フェイルセーフ上限値の再調整 | **H4**(コーパス R10 実測で再調整) | docs/security-dos-review.md 記載。極浅スタック環境の実測が入手できた時点 |
 | ABI ファジングハーネス(Step 25/62)の機種パラメタ化、aarch64 全スイート + gem install 実走、musl/distroless コンテナ検証、sqlite3/pg コーパス | **H3**(QEMU の Docker マトリクス整備と併せて) | §8 M4 受け入れ・H3 参照。現環境に Docker/aarch64 Ruby が無いため、CI マトリクス整備が前提。ネットワーク/コンテナ依存はこの相に閉じる |
@@ -581,11 +581,14 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
 - **進行中(Step 93〜)**: この環境では Docker マトリクスは無いが、ホスト(glibc x86_64)で
   `RUBYCC=1 gem install <corpus gem>`(既存の mkmf_shim 機構)を直接回すことで H4 の反復は実行可能。
   bigdecimal のビルドを回し、(1)`extern T name[];` の拒否バグを Step 93 で修正 → 突破、
-  (2)次に `__int128` の値渡し未対応(§3 の 128 ビット負債)に到達。以降、コーパス各 gem の
+  (2)次に `__int128` の値渡し未対応(§3 の 128 ビット負債)に到達 → **Step 94 で解消**
+  (16 バイト集約 ABI 経路 + 16 バイト整列 pad 機構。ついでにスタック 16 バイト整列負債と
+  AAPCS64 偶数レジスタペアのバックエンド未配線も同時に解消)。以降、コーパス各 gem の
   ビルドを回して落ちた箇所を順に H4 で潰す。
 - **§3.1 の「開いた負債の後続 STEP 割り当て」で H4 に割り当てた項目は、ここで解消する**
-  (言語機能不足・char*/signed char*・128 ビット整数残り・スタック 16 バイト整列・-fPIC PC32・
-  DoS 上限再調整)。コーパスに現れないものは v1.0 の「既知の制限」として H6 で README 記載。
+  (言語機能不足・char*/signed char*・128 ビット整数の演算残り・-fPIC PC32・DoS 上限再調整。
+  ~~スタック 16 バイト整列・128 ビット値渡し~~ は Step 94 で解消済み)。コーパスに現れない
+  ものは v1.0 の「既知の制限」として H6 で README 記載。
 - H3 の分類レポートに従って修正を反復する運用フェーズ:
   - ヘッダ不足 → H2 の体系に追加(ABI ハーネスのケースとセット)
   - 言語機能不足 → M1 と同じ流儀の追補ステップ(通し番号でコミット)
