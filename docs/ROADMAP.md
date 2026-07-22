@@ -86,7 +86,7 @@
 | ~~`__builtin_offsetof` / 定数文脈 offsetof~~ | **解消(Step 42)**: `__builtin_offsetof(type-name, member-designator)` を実装(ネスト `.name`・添字 `[expr]`・匿名メンバ対応、ビットフィールドは診断)。ConstantEvaluator が畳むため static 初期化子・配列サイズ・case ラベルの定数文脈で使え、同梱 stddef.h の offsetof も __builtin_offsetof 展開に変更 | ~~早期(Step 42 予定)~~ **完了** |
 | ~~ビットフィールドのアクセス~~ | **解消(Step 48、d1da0bf)**: 読み・書き・複合代入・++/-- を格納単位の load → shift/mask → read-modify-write store で実装(符号付きは符号拡張、代入式の値は切り詰め後の読み直し)。& は 6.5.3.2p1 の診断。00218 は enum 符号性(00170 と同根)で残置 | ~~M2~~ **完了** |
 | マクロ再展開の hide-set 交差 | `CAT(A,B)(x)` の CAT2 経由再展開が gcc と相違(c-testsuite 00201 で実証)。修正方針記録済み: 置換 paint を「呼び出し名の suppress ∩ 閉じ括弧の suppress + 自名」へ | M2 |
-| 128 ビット整数の演算残り | 乗算・加減算・比較・変換のみ実装(Step 28)。除算・シフト・ビット演算・値渡し/返し・可変長渡しは診断エラー | 実害が出た時点 |
+| 128 ビット整数の演算残り | 乗算・加減算・比較・変換のみ実装(Step 28)。除算・シフト・ビット演算・値渡し/返し・可変長渡しは診断エラー。**Step 93 で corpus 実害を確認**: bigdecimal が `bits.h` で `__int128` の値渡しを使い「passing a 128-bit integer by value is not supported yet」で落ちる(§3.1 の H4 割り当て、bigdecimal フルビルドのブロッカー) | **corpus 実害確認済み(bigdecimal、Step 93)→ H4** |
 | enum の unsigned 底型 | 全 enum を int へ写像(gcc は全非負 enum を unsigned int に)。c-testsuite 00170 のポインタ符号不一致で顕在 | 実害が出た時点 |
 | compound literal / VLA / _Generic / ワイド文字列 / #pragma push_macro / K&R `int ()` 型 | 各々診断エラー(c-testsuite スキップ表に理由記録) | 実害が出た時点 |
 | ~~素の `char` の符号性がターゲット依存~~ | **解消(Step 73)**: 文字型を 4 実体に分離し(素の char の符号あり/なし + ターゲット非依存の signed/unsigned char)、`Compiler::TARGETS` の `char_signed` からプリプロセッサ・パーサ・IR ジェネレータの 3 段へ配る。同梱 limits.h も `__CHAR_UNSIGNED__` で分岐 | ~~A3~~ **完了** |
@@ -577,7 +577,12 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
 - **受け入れ**: コーパス全 gem の初回実測レポートが出ること(この時点の合格率は
   問わない。ベースラインの確定が目的)。
 
-### H4 — コーパス駆動の穴埋め反復(合格率 90% まで)
+### H4 — コーパス駆動の穴埋め反復(合格率 90% まで)【進行中: Step 93〜】
+- **進行中(Step 93〜)**: この環境では Docker マトリクスは無いが、ホスト(glibc x86_64)で
+  `RUBYCC=1 gem install <corpus gem>`(既存の mkmf_shim 機構)を直接回すことで H4 の反復は実行可能。
+  bigdecimal のビルドを回し、(1)`extern T name[];` の拒否バグを Step 93 で修正 → 突破、
+  (2)次に `__int128` の値渡し未対応(§3 の 128 ビット負債)に到達。以降、コーパス各 gem の
+  ビルドを回して落ちた箇所を順に H4 で潰す。
 - **§3.1 の「開いた負債の後続 STEP 割り当て」で H4 に割り当てた項目は、ここで解消する**
   (言語機能不足・char*/signed char*・128 ビット整数残り・スタック 16 バイト整列・-fPIC PC32・
   DoS 上限再調整)。コーパスに現れないものは v1.0 の「既知の制限」として H6 で README 記載。

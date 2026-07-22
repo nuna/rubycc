@@ -3100,11 +3100,38 @@ H2 の census 由来ヘッダギャップを埋めた後、ROADMAP どおり**�
 
 ---
 
+## Step 93 — `extern T name[];`(不完全配列の外部宣言)を受理(M5 H4、コーパス駆動の最初の修正)
+
+**H4 ループが設計どおり機能した最初の例**。Step 92 の census で選んだ bigdecimal を実際に rubycc で
+ビルド(`RUBYCC=1 gem install bigdecimal`、既存の mkmf_shim 機構)した結果、具体的な言語バグを検出:
+`ruby/util.h` の `RUBY_EXTERN const signed char ruby_digit36_to_number_table[];` で
+`array size missing` エラー。
+
+- **バグ**: `extern T name[];`(サイズ省略=不完全配列型の外部宣言)を rubycc が誤って拒否。
+  正当な C(C11 6.7.6.2p1/6.9.2:extern は定義でない宣言なので不完全型として合法。gcc は受理)。
+- **切り分け**: サイズ付き extern 配列 + 添字は既に通る(生成器の `declare_extern_global` は extern 配列を
+  扱える)ので、欠陥はパーサ 2 箇所(file/block scope の `array size missing` チェック)+ 生成器 1 箇所
+  (`require_complete` が extern 不完全配列も拒否)に閉じていた。
+- **修正**: `extern` かつ不完全**配列**のときのみ許可。parser は `spec_info.storage != :extern` を条件に追加、
+  generator は `extern_incomplete_array?` ヘルパで `require_complete` をスキップし不完全配列型のまま
+  `declare_extern_global` に渡す(記憶域なし、要素型のみで decay/添字が成立)。**スコープを厳密に限定**:
+  file-scope 暫定定義配列(`T a[];`、[1] 完成は未実装)・block-scope 非 extern 不完全配列・extern の不完全
+  struct/enum は**従来どおり診断エラー**(gcc と一致 or 意図的な既知制限)。
+- **検証**: 2 TU gcc 差分の実行オラクル(定義 TU + extern 使用 TU をリンク・実行、gcc と exit/stdout 一致。
+  gcc 定義 × rubycc 使用の混在リンクも一致)+ 否定テスト(block-scope 非 extern・不完全配列への sizeof が
+  CompileError)。新規 `test/test_extern_incomplete_array.rb`(4 runs)+ 広範な回帰(parser 296・
+  diagnostics 216・c-suite 221 等)無改変 green。
+- **H4 の実データ**: この修正で bigdecimal は当該エラーを突破し、次は `bits.h` の
+  「128 ビット整数の値渡し未対応」(§3 の既知負債)に到達。**bigdecimal が `__int128` の値渡しを使うことが
+  実測で確認**され、当該負債の corpus 実害が顕在化した(§3 に記録)。bigdecimal のフルビルドは 128 ビット
+  値渡しの実装(より大きな ABI 作業)を要するため後続 H4 ステップ。
+
+---
+
 ## 現在のテスト規模
 
-Step 92 完了時点: **2,412 runs / 6,481 assertions / 0 failures / 47 skips**
-(Step 91 の 2,401 から +11 = 新規 test_corpus_census.rb の hermetic ケース。
-コーパス集計 `rake corpus:census` は独立タスクで `rake test` には含まれない=ネット不要)
+Step 93 完了時点: **2,416 runs / 6,490 assertions / 0 failures / 47 skips**
+(Step 92 の 2,412 から +4 = 新規 test_extern_incomplete_array.rb の gcc 差分 2 TU 実行 + 否定ケース)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
