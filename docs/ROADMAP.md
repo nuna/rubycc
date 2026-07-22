@@ -558,11 +558,18 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
 - **受け入れ**: H1 の ABI 一致ハーネスが対象ヘッダ全域で green(glibc/musl × 2 arch)。
   B7 の先行版ヘッダをこの体系に統合し、M3 の受け入れが維持されること。
 
-### H3 — コーパス CI 基盤
+### H3 — コーパス CI 基盤【進行中: Step 92〜】
+- **#include 集計ツール(Step 92)完了**: `test/corpus/`(gems.rb 選定リスト・census.rb・
+  `rake corpus:census`・スナップショット include-census.md・hermetic テスト)。実 gem の C 拡張
+  #include を集計し同梱ヘッダとの差分をデータ駆動で可視化。オンデマンド dev タスクで `rake test` は
+  ネット不要のまま。初回ベースライン(json/msgpack/bigdecimal/date/racc/redcarpet)では機械的に
+  追加必須なヘッダは無し(ギャップ候補 7 本は全て SIMD/Windows/C++/have_header ゲート下)。
+  **残(この環境では不可)**: Docker マトリクスでの gem install/テスト実走(下記)。ネットワーク gem
+  (puma/pg 等)や sqlite3/pg をコーパスに追加する際は census を再実行してスナップショットを更新する。
 - 対象 gem の選定を自動化: rubygems.org ダウンロード上位から R10 基準
   (C++ 不使用・実体 asm 不使用・configure 非依存)を機械判定(拡張子・extconf.rb の
   mini_portile / configure 呼び出し検出)でフィルタし、**選定リスト自体をリポジトリに
-  コミット**する(再現性のため。手動除外には理由を併記)。
+  コミット**する(再現性のため。手動除外には理由を併記)。census.rb が C++/configure 検出を実装済み。
 - マトリクス実行: glibc/musl × x86_64/aarch64 の Docker で各 gem を
   `gem install` → gem 自身のテストスイート実行。結果を機械可読(JSON)で集計し、
   **失敗を 4 分類**(ヘッダ不足 / 言語機能不足 / ABI バグ / rmake・conftest 非互換)する

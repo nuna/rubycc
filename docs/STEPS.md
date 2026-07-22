@@ -3074,11 +3074,37 @@ hermetic census で判明した未同梱ヘッダ(signal/fcntl/poll/pthread/sys-
 
 ---
 
+## Step 92 — コーパス #include 集計ツール(M5 H3 の第一要)
+
+H2 の census 由来ヘッダギャップを埋めた後、ROADMAP どおり**ヘッダ追加をデータ駆動に切り替える**
+基盤。ユーザ承認方針: **オンデマンドの dev タスク + 結果をコミット、`rake test` はネット不要のまま不変**。
+
+- **設計**: `test/corpus/` に gems.rb(コミット済み選定リスト)・census.rb(集計)・README.md、
+  `rake corpus:census`(独立 namespace、`:test` に非組込)、生成物 include-census.md(コミット対象の
+  スナップショット)、test_corpus_census.rb(ネット非依存の hermetic テスト)。
+- **census.rb は 2 層分離**: 純粋関数層(angle-include 抽出・同梱ヘッダ集合算出・bundled/gap 分類・
+  R10 機械判定 = C++/configure 検出)は単体テスト対象。orchestration 層(`gem fetch`・tar 展開・
+  レポート生成)だけがネット/FS に触れる。R11 で stdlib(Gem::Package)+ 素の Ruby で自作。
+- **ネット隔離**: `rake test` のパターン `test/**/test_*.rb` は census.rb/gems.rb を拾わず、追加した
+  test_corpus_census.rb のみ実行(11 runs / 0.009 秒・ネット非依存)。ネット依存は census 更新時のみ。
+- **初回ベースライン(2026-07-22 実測)**: json/msgpack/bigdecimal/date/racc/redcarpet の 6 gem を全取得・
+  R10 除外ゼロ。同梱ヘッダが実コーパスで使われていること(arpa/inet↔msgpack、sys/time↔date 等)も
+  確認。ギャップ候補 7 本(arm_neon/cpuid/cstdbool/intrin/ieeefp/stdckdint/locale)は**全て SIMD/
+  Windows/C++/have_header/ビルド時マクロのゲート下**で、glibc×rubycc の mkmf_shim ではインクルード
+  されない見込み → **機械的に追加必須なヘッダは無し**。H2 の census 由来ギャップ充足が妥当だったこと、
+  および推測でヘッダを増やす必要がないことをデータで裏付けた。
+- **設計上の限界(記録)**: 生 grep はプラットフォーム/SIMD/C++ ゲート下のヘッダも拾う(過大計上)。
+  ゲートの真偽判定は H3 スコープ外(受け入れ=初回ベースライン確定)。真の要否は H4 で、対象 gem を
+  実際に rubycc + mkmf_shim でビルドした時に顕在化する。ネットワーク gem(puma/pg 等)は初期 6 gem に
+  含まないため socket/signal 系の使用は本ベースラインには現れない(コーパス拡張で被覆)。
+
+---
+
 ## 現在のテスト規模
 
-Step 91 完了時点: **2,401 runs / 6,389 assertions / 0 failures / 47 skips**
-(Step 90 の 2,399 から +2 = pthread の ABI ケース x86-64 + aarch64。
-aarch64 側はクロス gcc + qemu 未導入のホストではスキップされる)
+Step 92 完了時点: **2,412 runs / 6,481 assertions / 0 failures / 47 skips**
+(Step 91 の 2,401 から +11 = 新規 test_corpus_census.rb の hermetic ケース。
+コーパス集計 `rake corpus:census` は独立タスクで `rake test` には含まれない=ネット不要)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
