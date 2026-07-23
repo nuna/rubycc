@@ -3393,9 +3393,40 @@ date の次ブロッカー `char fmt[sizeof(timefmt) + sizeof(zone) + rb_strlen_
 
 ---
 
+## Step 101 — 静的初期化子の関数ポインタキャスト(M5 H4、date のブロッカー)
+
+date の次ブロッカー `static const struct tmx_funcs tmx_funcs = { (VALUE (*)(void *))m_real_year, ... }`
+(date_core.c:7159、関数ポインタの vtable 風 struct)を解消。関数名を別の関数ポインタ型へ
+キャストしたものを静的初期化子のアドレス定数として畳む。
+
+- **背景**: 静的ポインタ初期化子のうち、素の関数名 `f` / `&f` は既に
+  `function_address_constant`(シグネチャ一致検査つき)で対応済み。だが date は
+  `(VALUE (*)(void *))m_real_year` のように**関数名をキャストで別の関数ポインタ型に
+  再解釈**する。この形は `fold_address_constant` → `pointer_value(Cast)` →
+  `object_address(VariableRef)` に落ちるが、`object_address` はグローバル**変数**
+  (`@global_bindings`)しか知らず、関数(`@signatures`)を扱えなかった → 「unsupported initializer」。
+- **修正**:
+  - `object_address` の VariableRef 枝に関数指示子の対応を追加。グローバル変数が束縛しない名前でも
+    `@signatures` にあれば、その**関数シンボル自体**をアドレスとする AddressConstant
+    (base_kind :symbol、pointee = 関数型)を返す。**明示キャストは自由に型を再解釈できる**ので
+    シグネチャ検査はしない(素の名前の既存経路のみ検査を保つ)。
+  - `pointer_value` の減衰枝で、配列だけでなく**関数指示子**も減衰対象に。関数指示子は関数への
+    ポインタに減衰し(アドレスがそのままポインタ値)、pointee は関数型のまま返す。
+  - これで Cast 経路 `inner.with(pointee: node.type.target)` がキャスト先の関数ポインタ型に
+    正しく再解釈し、データ節へは関数シンボルへの :symbol 再配置が出る。
+- **検証**: gcc 差分実行オラクル(関数ポインタの struct とその配列を、実シグネチャと異なる
+  キャストで初期化し、再解釈したポインタ越しに呼ぶ)。素の名前・`&f`・キャスト配列も同時に確認。
+  address-constant globals の既存テストが緑のままであることも確認(object_address の他の呼び出しに影響なし)。
+- **date の次ブロッカー(Step 102 予定)**: `date_core.c` はフルコンパイル達成。
+  次は `date_parse.c` の `zonetab.h:32` の **`#line` プリプロセッサ指令**(6.10.4)が未対応。別ステップ。
+
+---
+
 ## 現在のテスト規模
 
-Step 100 完了時点: **2,427 runs / 6,519 assertions / 0 failures / 47 skips**
+Step 101 完了時点: **2,428 runs / 6,521 assertions / 0 failures / 47 skips**
+(Step 100 の 2,427 から +1 = 静的初期化子の関数ポインタキャストの実行オラクル)
+(以前) Step 100 完了時点: **2,427 runs / 6,519 assertions / 0 failures / 47 skips**
 (Step 99 の 2,425 から +2 = 配列境界の sizeof(式)畳み込みの実行オラクルとパーサ単体テスト)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
