@@ -3200,11 +3200,38 @@ Step 94 の直後に bigdecimal が到達した次のブロッカー(`bits.h` �
 
 ---
 
+## Step 96 — パラメータの `register` を受理(M5 H4)
+
+Step 95 の直後に bigdecimal が到達したブロッカー(`missing/dtoa.c:656` の
+`hi0bits(register ULong x)`)を解消。
+
+- **バグ**: C11 6.7.6.3p2 は「パラメータ宣言に現れてよい記憶域クラス指定子は `register` **だけ**」と
+  定めるが、rubycc はパラメータの specifier 解析を `allow_storage_class: false` で呼んでおり、
+  記憶域クラスを一律に拒否していた。`register` は K&R 由来の古いコードに広く残るため、
+  実コーパスでは早期に踏む。
+- **修正の勘所は「緩めすぎないこと」**: `allow_storage_class` を真にすると
+  typedef/static/extern/auto まで通ってしまう。そこで `allow_register:` を独立の
+  スイッチとして追加し、パラメータ宣言からのみ真で呼ぶ。通すのは `register` 1 語だけで、
+  他の 4 語はパラメータでも従来どおり診断エラー。`register` 自体は既存の扱い
+  (消費して無視、後段に何も残さない)のままなので、コード生成には一切影響しない。
+- **スコープの限定**: メンバ宣言(`struct s { register int x; }`)と型名
+  (`sizeof(register int)`)での `register` は `allow_register` が既定の偽なので
+  引き続き拒否。C 標準どおり。
+- **検証**: gcc 差分の実行オラクルで、`register` パラメータが通常のパラメータと同じく
+  読み書き・シフト/ビット演算・他関数への受け渡しに耐えることを確認(dtoa.c の hi0bits 形と、
+  本体中の `register` ローカルを含む)。否定テストは「パラメータでの register 以外」と
+  「パラメータ以外での register」の 2 方向に整理。
+- **次のブロッカー**: 同じ `missing/dtoa.c:1373` の静的初期化子
+  `9007199254740992.*9007199254740992.e-256`(dtoa の `tinytens[]` 表)—
+  **浮動小数点の定数式が静的初期化子で畳み込まれない**(`initializer element is not a constant`)。Step 97 へ。
+
+---
+
 ## 現在のテスト規模
 
-Step 95 完了時点: **2,417 runs / 6,496 assertions / 0 failures / 47 skips**
-(Step 94 の 2,416 から +1 = 128 ビットシフトの実行オラクル 2 件〈x86_64・aarch64〉追加と、
-実装済みとなったシフト拒否診断テスト 1 件の撤去)
+Step 96 完了時点: **2,419 runs / 6,512 assertions / 0 failures / 47 skips**
+(Step 95 の 2,417 から +2 = `register` パラメータの実行オラクル 1 件と、
+否定テストを 2 方向へ整理した分)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
