@@ -1903,10 +1903,16 @@ module Rubycc
 
       # Wraps `inner` in one declarator suffix, enforcing the constraints a
       # function or array derivation cannot satisfy (6.7.6.3): a function's
-      # return type may be neither a function nor an array, an array's element
-      # may not be a function, and (this subset) an array's element may not be
-      # another array. The suffix's own token (the "(" or "[") locates any
-      # diagnostic.
+      # return type may be neither a function nor an array, and an array's
+      # element may not be a function. A multidimensional array is an array whose
+      # element is itself an array ("int a[2][13]" is a 2-element array of
+      # "int[13]"); the suffixes are applied innermost-first (see
+      # #parse_direct_declarator's reverse_each), so the inner dimension is a
+      # complete array by the time the outer wraps it. Only that inner element
+      # array may not be incomplete -- "int a[2][]" has element type "int[]" of
+      # unknown stride (6.7.6.2p1) -- while the outermost dimension may still be
+      # "[]" (deduced from an initializer or adjusted away on a parameter). The
+      # suffix's own token (the "(" or "[") locates any diagnostic.
       def apply_declarator_suffix(suffix, inner)
         kind, data, tok, variadic = suffix
         if kind == :function
@@ -1915,7 +1921,7 @@ module Rubycc
           Type::FunctionType.new(inner, data.map(&:type), variadic)
         else
           error_at(tok, "array of functions is not allowed") if inner.function?
-          error_at(tok, "multidimensional arrays are not supported yet") if inner.array?
+          error_at(tok, "array has incomplete element type") if inner.array? && inner.incomplete?
           # A struct ending in a flexible array member has no fixed size, so it
           # cannot be an array element (6.7.2.1p18; its stride is unknown).
           if inner.struct? && inner.flexible_array_member?

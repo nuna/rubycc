@@ -789,6 +789,35 @@ class TestAArch64Execution < Minitest::Test
     C
   end
 
+  # Multidimensional arrays on aarch64 (Step 99): a 2D array parameter adjusts
+  # to int(*)[3] and each a[i][j] scales the row index by the row stride and the
+  # column index by the element width -- the address arithmetic the AAPCS64
+  # backend must get right. A static const 2D global with a nested-brace
+  # initializer and a pointer-to-array are exercised too, and the halves are
+  # emitted separately so the indexing is measured, not just a sum.
+  def test_multidimensional_arrays
+    assert_aarch64_matches_gcc(source(<<~C))
+      static const long tab[2][3] = { {10, 20, 30}, {40, 50, 60} };
+      static long sum2d(long a[][3], int rows) {
+        long s = 0;
+        for (int i = 0; i < rows; i = i + 1)
+          for (int j = 0; j < 3; j = j + 1) s = s + a[i][j];
+        return s;
+      }
+      int main(void) {
+        long m[2][3];
+        for (int i = 0; i < 2; i = i + 1)
+          for (int j = 0; j < 3; j = j + 1) m[i][j] = tab[i][j] + i;
+        long (*pm)[3] = m;
+        put_long(sum2d(m, 2));
+        put_long(pm[1][2]);
+        put_long(m[0][1]);
+        put_long((long)(sizeof(m) / sizeof(long)));
+        return 0;
+      }
+    C
+  end
+
   # --- disassembly sanity -------------------------------------------------
 
   # Every word the backend emits must decode to a real A64 instruction. objdump

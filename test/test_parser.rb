@@ -1149,11 +1149,15 @@ class TestParser < Minitest::Test
     assert_equal Type::Array.new(Type::Char, 16), decl.type
   end
 
-  def test_multidimensional_array_is_rejected
-    error = assert_raises(Rubycc::CompileError) do
-      parse("int main(void) { int a[3][4]; return 0; }")
-    end
-    assert_match(/multidimensional arrays are not supported yet/, error.description)
+  # A multidimensional array "int a[3][4]" is a 3-element array of "int[4]"
+  # (Step 99): the suffixes apply innermost-first, so the inner dimension nests
+  # inside the outer. Its layout and indexing are verified against gcc in the
+  # execution harness; here the parsed type shape is pinned.
+  def test_multidimensional_array_type_nests_innermost_first
+    program = parse("int main(void) { int a[3][4]; return 0; }")
+    decl = program.functions.first.body.first
+
+    assert_equal Type::Array.new(Type::Array.new(Type::Int, 4), 3), decl.type
   end
 
   def test_parses_array_initializer_list

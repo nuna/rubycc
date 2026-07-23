@@ -2959,6 +2959,37 @@ class TestExecutionHarness < Minitest::Test
                  "rubycc and gcc disagree on passing a char-signedness-mismatched pointer"
   end
 
+  # Multidimensional arrays (Step 99, driven by date's monthtab[2][13]): a
+  # static const 2D global and a 3D global with nested-brace initializers, a
+  # local 2D array, indexing a[i][j] (the row a[i] decays to a pointer), taking
+  # &a[i][j] and writing through it, a 2D array parameter adjusting to
+  # int(*)[3], passing a row as int*, a pointer-to-array int(*)[3], and sizeof
+  # of each whole array -- all compared against gcc.
+  MULTIDIM_ARRAY_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "static const int monthtab[2][13] = { " \
+    "  { 0,31,59,90,120,151,181,212,243,273,304,334,365 }, " \
+    "  { 0,31,60,91,121,152,182,213,244,274,305,335,366 } }; " \
+    "static int grid3[2][2][2] = { {{1,2},{3,4}}, {{5,6},{7,8}} }; " \
+    "static int sum2d(int a[][3], int rows) { " \
+    "  int s = 0; for (int i = 0; i < rows; i++) for (int j = 0; j < 3; j++) s += a[i][j]; return s; } " \
+    "static int rowsum(int *r, int n) { int s = 0; for (int k = 0; k < n; k++) s += r[k]; return s; } " \
+    "int main(void) { " \
+    "  int m[2][3] = { {1,2,3}, {4,5,6} }; " \
+    "  int *p = &m[1][2]; *p = 100; m[0][1] = 20; " \
+    "  int (*pa)[3] = m; " \
+    "  printf(\"%d %d %d %d %d %d %d %d\\n\", " \
+    "    sum2d(m, 2), rowsum(m[0], 3), pa[1][0] + (*pa)[2], " \
+    "    monthtab[1][2], grid3[1][0][1], " \
+    "    (int)sizeof(monthtab), (int)sizeof(m), (int)sizeof(grid3)); " \
+    "  return 0; }"
+
+  def test_multidimensional_arrays_match_gcc_stdout
+    assert_equal program_output(MULTIDIM_ARRAY_PROGRAM, compiler: :gcc),
+                 program_output(MULTIDIM_ARRAY_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on multidimensional array layout / indexing"
+  end
+
   private
 
   def run_source(source, compiler:)

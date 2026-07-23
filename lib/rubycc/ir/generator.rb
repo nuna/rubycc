@@ -2344,6 +2344,11 @@ module Rubycc
       def gen_subscript(node)
         addr, element_type = gen_element_address(node)
         return [addr, element_type] if element_type.struct? || wide128?(element_type)
+        # A subscript into a multidimensional array yields a row that is itself an
+        # array ("a[i]" of "int[2][3]" is "int[3]"): it does not load: it decays to
+        # a pointer to its first element, exactly as a bare array variable or an
+        # array struct member does, so a further "[j]" subscripts that pointer.
+        return [addr, Type::Pointer.new(element_type.element)] if element_type.array?
 
         dst = new_vreg
         emit_scalar_load(dst, addr, element_type)
@@ -4931,7 +4936,10 @@ module Rubycc
             Type::Pointer.new(function_type_of(sig))
           end
         when Front::AST::Subscript
-          subscript_element_type(static_type(node.target), node.token)
+          # The target decays before it is indexed, so a nested subscript whose
+          # target is itself an array row ("a[i]" of a multidimensional array)
+          # decays that row to a pointer before the outer "[j]" indexes it.
+          subscript_element_type(decay(static_type(node.target)), node.token)
         when Front::AST::MemberAccess
           member = static_member(node)
           decay(member.type)

@@ -412,10 +412,14 @@ class TestDiagnostics < Minitest::Test
     assert_match(/invalid operands to binary expression/, error.description)
   end
 
-  def test_multidimensional_array_is_rejected
-    source = "int main(void) { int a[3][4]; return 0; }"
+  # Multidimensional arrays are supported (Step 99); their layout and indexing
+  # are verified against gcc in test_execution_harness.rb. Only the inner
+  # dimension of a multidimensional array must be complete: "int a[2][]" has
+  # element type "int[]" of unknown stride, which stays rejected.
+  def test_incomplete_element_of_multidimensional_array_is_rejected
+    source = "int main(void) { int a[2][]; return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/multidimensional arrays are not supported yet/, error.description)
+    assert_match(/array has incomplete element type/, error.description)
   end
 
   def test_array_initialized_from_a_scalar_is_rejected
