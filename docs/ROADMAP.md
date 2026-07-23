@@ -587,10 +587,16 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   `x >> 64`(128 ビットシフト)に到達 → **Step 95 で解消**。これで `bigdecimal.c` は
   コンパイル通過、(4)`missing/dtoa.c:656` の `hi0bits(register ULong x)` —
   パラメータの `register`(C11 6.7.6.3 ではパラメータに限り合法)→ **Step 96 で解消**、
-  (5)次は同 `dtoa.c:1373` の静的初期化子 `9007199254740992.*9007199254740992.e-256`
-  (`tinytens[]` 表)— 浮動小数点の定数式が静的初期化子で畳み込まれず
-  `initializer element is not a constant` になる。Step 97 へ。
+  (5)同 `dtoa.c:1373` の静的初期化子 `9007199254740992.*9007199254740992.e-256`
+  (`tinytens[]` 表)— 浮動小数点の定数式が静的初期化子で畳み込まれない
+  → **Step 97 で解消**。**これで bigdecimal はフルビルド達成**。
   以降、コーパス各 gem のビルドを回して落ちた箇所を順に H4 で潰す。
+- **bigdecimal の受け入れ完了(Step 97 時点)**: `RUBYCC=1 gem install bigdecimal` が成功し
+  `lib/bigdecimal.so` を生成(rmake/rubycc 経由を gem_make.out と mkmf.log で確認)。
+  上流ソースのテストスイートを rubycc ビルドの `.so` に対して実走し
+  **265 tests / 8,267 assertions / 0 failures / 0 errors**(11 件は
+  `BIGDECIMAL_USE_VP_TEST_METHODS` 未設定による正常な omission)。
+  コーパス gem のテスト全合格は json に続き 2 例目。
 - **受け入れ基準はビルド成功では不十分**: 「ビルドが通る」ことと「正しく動く」ことは別。
   gem がフルビルドに達したら **gem 本体のテストスイートを実走**して合否を取る
   (これが H4 の「合格率」の実体)。現状 bigdecimal は (4) のため未到達。
