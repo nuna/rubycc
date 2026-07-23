@@ -551,7 +551,7 @@ module Rubycc
       # class or "inline" cannot appear (a member, a parameter, a type-name),
       # where const/volatile are still admitted ("int f(const int x)",
       # "sizeof(const int)"). Returns [base_type, DeclSpecInfo].
-      def parse_declaration_specifiers(allow_storage_class:)
+      def parse_declaration_specifiers(allow_storage_class:, allow_register: false)
         start_tok = peek
         specs = []       # collected integer/void keyword strings
         composite = nil  # a struct/enum/typedef-name Type (excludes `specs`)
@@ -563,7 +563,12 @@ module Rubycc
         loop do
           tok = peek
           if tok.type == :keyword && STORAGE_CLASS_KEYWORDS.include?(tok.value)
-            error_at(tok, "'#{tok.value}' is not allowed here") unless allow_storage_class
+            # A parameter declaration admits exactly one storage class, `register`
+            # (6.7.6.3p2), and no other — so `allow_register` opens that one
+            # keyword without letting typedef/static/extern/auto through.
+            unless allow_storage_class || (allow_register && tok.value == "register")
+              error_at(tok, "'#{tok.value}' is not allowed here")
+            end
             error_at(tok, "multiple storage classes in declaration specifiers") if storage_seen
             storage_seen = true
             # register/auto have no effect in this subset: they are consumed but
@@ -1361,8 +1366,10 @@ module Rubycc
       def parse_parameter_declaration
         type_tok = peek
         # A parameter's specifiers admit const/volatile but not a storage class
-        # or inline (allow_storage_class: false); only its const survives.
-        base_type, spec_info = parse_declaration_specifiers(allow_storage_class: false)
+        # or inline (allow_storage_class: false) — except `register`, the one
+        # storage class 6.7.6.3p2 permits on a parameter, which is consumed and
+        # ignored. Only its const survives.
+        base_type, spec_info = parse_declaration_specifiers(allow_storage_class: false, allow_register: true)
         # A parameter's array declarator adjusts to a pointer (6.7.6.3p7), so an
         # empty "[]" is admitted here just as it is for an external declaration's
         # incomplete array; #adjust_parameter_type resolves it below.

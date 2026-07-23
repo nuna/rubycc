@@ -1202,10 +1202,27 @@ class TestDiagnostics < Minitest::Test
     assert_match(/'static' is not allowed here/, error.description)
   end
 
-  def test_storage_class_on_a_parameter_is_rejected
-    source = "int f(register int x) { return 0; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/'register' is not allowed here/, error.description)
+  # 6.7.6.3p2: `register` is the one storage class a parameter may carry (see
+  # test_execution_harness.rb for its accepted, running form), so every *other*
+  # one is still a diagnostic there.
+  def test_non_register_storage_class_on_a_parameter_is_rejected
+    { "static" => "int f(static int x) { return 0; }",
+      "extern" => "int f(extern int x) { return 0; }",
+      "typedef" => "int f(typedef int x) { return 0; }",
+      "auto" => "int f(auto int x) { return 0; }" }.each do |keyword, source|
+      error = assert_raises(Rubycc::CompileError) { compile(source) }
+      assert_match(/'#{keyword}' is not allowed here/, error.description)
+    end
+  end
+
+  # `register` is only permitted on a parameter — it stays a diagnostic in the
+  # other places a storage class is refused.
+  def test_register_outside_a_parameter_is_still_rejected
+    { "member" => "struct s { register int x; }; int main(void) { return 0; }",
+      "type name" => "int main(void) { return sizeof(register int); }" }.each_value do |source|
+      error = assert_raises(Rubycc::CompileError) { compile(source) }
+      assert_match(/'register' is not allowed here/, error.description)
+    end
   end
 
   def test_storage_class_in_a_type_name_is_rejected

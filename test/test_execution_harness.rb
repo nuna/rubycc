@@ -2811,6 +2811,30 @@ class TestExecutionHarness < Minitest::Test
                  "rubycc and gcc disagree on 128-bit shift"
   end
 
+  # `register` on a parameter (Step 96) — the one storage class 6.7.6.3p2 admits
+  # there, and the shape bigdecimal's missing/dtoa.c uses
+  # ("hi0bits(register ULong x)"). It has no effect on the generated value, so
+  # the check is that the parameter still behaves like any other: read, written,
+  # address-free arithmetic, and passed on. `register` locals appear too, the
+  # form the same file uses inside its bodies.
+  REGISTER_PARAM_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "static unsigned hi0bits(register unsigned long x) { " \
+    "  register unsigned n = 0; " \
+    "  while (x && !(x & 0x8000000000000000UL)) { x = x << 1; n = n + 1; } " \
+    "  return n; } " \
+    "static long acc(register long a, register long b, long c) { a = a + b; return a * c; } " \
+    "int main(void) { " \
+    "  printf(\"%u %u %u\\n\", hi0bits(1UL), hi0bits(0x8000000000000000UL), hi0bits(0UL)); " \
+    "  printf(\"%ld %ld\\n\", acc(3, 4, 5), acc(-2, 7, 3)); " \
+    "  return 0; }"
+
+  def test_register_parameter_matches_gcc_stdout
+    assert_equal program_output(REGISTER_PARAM_PROGRAM, compiler: :gcc),
+                 program_output(REGISTER_PARAM_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on a `register` parameter"
+  end
+
   # A high-word-bearing product truncated back to unsigned long / unsigned int.
   INT128_TRUNCATE_PROGRAM =
     "int printf(const char *fmt, ...); " \
