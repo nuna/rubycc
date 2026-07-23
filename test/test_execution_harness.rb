@@ -2835,6 +2835,34 @@ class TestExecutionHarness < Minitest::Test
                  "rubycc and gcc disagree on a `register` parameter"
   end
 
+  # A floating constant *expression* in a static initializer (Step 97), the
+  # shape bigdecimal's missing/dtoa.c uses for its tinytens[] table
+  # ("9007199254740992.*9007199254740992.e-256"). Printed at %.17g so the exact
+  # double is compared, not a rounded rendering. The `intsem` row is the trap the
+  # folding must not fall into: with no floating operand the expression is an
+  # integer constant expression and keeps integer semantics, so 7/2 is 3.0 —
+  # folding it in floating point would wrongly give 3.5.
+  STATIC_FLOAT_FOLD_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "static const double tinytens[] = { 1e-16, 1e-32, 1e-64, 1e-128, " \
+    "    9007199254740992.*9007199254740992.e-256 }; " \
+    "static const double sums[] = { 1.5 + 2.25, 10.0 - 0.5, 3.0 * 1.5, 7.0 / 2.0, -2.5 * 4, 2 * 1.25 }; " \
+    "static const double intsem[] = { 7 / 2, 1 + 2, -9 / 4 }; " \
+    "static const float singles[] = { 1.5f * 2.0f, 7.0f / 2.0f }; " \
+    "double gd = 2.5 * 4; " \
+    "int main(void) { " \
+    "  for (int i = 0; i < 5; i++) printf(\"t%d=%.17g\\n\", i, tinytens[i]); " \
+    "  for (int i = 0; i < 6; i++) printf(\"s%d=%.17g\\n\", i, sums[i]); " \
+    "  for (int i = 0; i < 3; i++) printf(\"i%d=%.17g\\n\", i, intsem[i]); " \
+    "  for (int i = 0; i < 2; i++) printf(\"f%d=%.9g\\n\", i, (double)singles[i]); " \
+    "  printf(\"gd=%.17g\\n\", gd); return 0; }"
+
+  def test_static_float_constant_folding_matches_gcc_stdout
+    assert_equal program_output(STATIC_FLOAT_FOLD_PROGRAM, compiler: :gcc),
+                 program_output(STATIC_FLOAT_FOLD_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on folding a floating constant expression in a static initializer"
+  end
+
   # A high-word-bearing product truncated back to unsigned long / unsigned int.
   INT128_TRUNCATE_PROGRAM =
     "int printf(const char *fmt, ...); " \

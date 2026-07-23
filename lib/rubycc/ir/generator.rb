@@ -359,9 +359,10 @@ module Rubycc
       end
 
       # Folds a global's floating initializer to a Ruby Float: a floating literal
-      # is its value, a unary minus negates its operand, and an integer constant
-      # expression converts to its floating value (int -> float/double). Anything
-      # else is not a constant a floating global admits.
+      # is its value, a unary minus negates its operand, an arithmetic binary
+      # with a floating operand computes in floating point, and an integer
+      # constant expression converts to its floating value (int -> float/double).
+      # Anything else is not a constant a floating global admits.
       def fold_global_float(node)
         case node
         when Front::AST::FloatLit
@@ -370,17 +371,53 @@ module Rubycc
           error_at(node.token, "initializer element is not a constant") unless node.op == :neg
 
           -fold_global_float(node.operand)
+        when Front::AST::Binary
+          fold_global_float_binary(node)
         else
           Float(fold_global_constant(node))
         end
       end
 
-      # Whether `node` is a floating constant (a floating literal, possibly under
-      # a unary minus), so an integer global can tell a truncating float
-      # initializer from an integer constant expression.
+      # An arithmetic binary in a floating initializer, such as dtoa's
+      # "9007199254740992.*9007199254740992.e-256". When neither operand is
+      # floating the whole thing is an integer constant expression and must keep
+      # integer semantics before converting (7/2 is 3, not 3.5), so it is folded
+      # as one; otherwise both sides fold to Floats and the operation runs in
+      # floating point, as the usual arithmetic conversions require. Division by
+      # zero yields an IEEE infinity, the same value the running program computes.
+      def fold_global_float_binary(node)
+        return Float(fold_global_constant(node)) unless floating_constant?(node)
+
+        lhs = fold_global_float(node.lhs)
+        rhs = fold_global_float(node.rhs)
+        case node.op
+        when :add then lhs + rhs
+        when :sub then lhs - rhs
+        when :mul then lhs * rhs
+        when :div then lhs / rhs
+        else error_at(node.token, "initializer element is not a constant")
+        end
+      end
+
+      # The binary operators that fold in floating point. The others (%, the
+      # bitwise and shift operators) reject a floating operand outright, so an
+      # expression built from them is never a floating one.
+      FLOAT_FOLD_OPS = %i[add sub mul div].freeze
+
+      # Whether `node` is a floating constant *expression* — one C evaluates in
+      # floating point, so folding it as an integer expression would be wrong.
+      # A floating literal is one; a unary minus and the arithmetic binaries are
+      # ones when either operand is. This is what lets an integer global tell a
+      # truncating float initializer from an integer constant expression.
       def floating_constant?(node)
-        node.is_a?(Front::AST::FloatLit) ||
-          (node.is_a?(Front::AST::Unary) && node.op == :neg && floating_constant?(node.operand))
+        case node
+        when Front::AST::FloatLit then true
+        when Front::AST::Unary then node.op == :neg && floating_constant?(node.operand)
+        when Front::AST::Binary
+          FLOAT_FOLD_OPS.include?(node.op) &&
+            (floating_constant?(node.lhs) || floating_constant?(node.rhs))
+        else false
+        end
       end
 
       # Converts a Ruby Float (binary64) to its correctly-rounded IEEE754
