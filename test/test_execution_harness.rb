@@ -2990,6 +2990,29 @@ class TestExecutionHarness < Minitest::Test
                  "rubycc and gcc disagree on multidimensional array layout / indexing"
   end
 
+  # sizeof(<expression>) folded inside an array bound at parse time (Step 100,
+  # driven by date's "char fmt[sizeof(timefmt) + ...]"): sizeof of a named array
+  # object (undecayed, the whole array), of a string literal, and of a string
+  # literal's element -- the last two being ruby.h's rb_strlen_lit shape
+  # "sizeof(s) / sizeof(s[0]) - 1". Exercised in both a file-scope array bound
+  # (gtab) and local ones (fmt, two); every sizeof must match gcc's.
+  SIZEOF_ARRAY_BOUND_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "static const char tf[] = \"T%H:%M:%S\"; " \
+    "static const char zn[] = \"%:z\"; " \
+    "static int gtab[sizeof(tf)]; " \
+    "int main(void) { " \
+    "  char fmt[sizeof(tf) + sizeof(zn) + (sizeof(\".%N\") / sizeof(\".%N\"[0]) - 1) + 20]; " \
+    "  char two[sizeof(zn[0]) + sizeof(tf)]; " \
+    "  printf(\"%d %d %d\\n\", (int)sizeof(fmt), (int)sizeof(gtab), (int)sizeof(two)); " \
+    "  return 0; }"
+
+  def test_sizeof_in_array_bound_matches_gcc_stdout
+    assert_equal program_output(SIZEOF_ARRAY_BOUND_PROGRAM, compiler: :gcc),
+                 program_output(SIZEOF_ARRAY_BOUND_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on folding sizeof(expr) in an array bound"
+  end
+
   private
 
   def run_source(source, compiler:)

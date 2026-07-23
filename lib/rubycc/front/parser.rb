@@ -408,7 +408,7 @@ module Rubycc
           if function_params.nil?
             error_at(name_tok, "function definition through a typedef is not allowed")
           end
-          declare_ordinary_name(name_tok.value)
+          declare_ordinary_name(name_tok.value, type)
           return parse_function_definition(name_tok.value, type.return_type, function_params,
                                            type_tok, spec_info.storage, type.variadic)
         end
@@ -446,7 +446,7 @@ module Rubycc
       # function declarators (an object declarator rejects it downstream).
       def parse_external_declarator(name_tok, type, params, pointer_quals, spec_info, return_tok)
         if type.function?
-          declare_ordinary_name(name_tok.value)
+          declare_ordinary_name(name_tok.value, type)
           AST::FunctionDecl.new(name_tok.value, type.return_type,
                                 declarator_prototype_params(type, params, return_tok), return_tok,
                                 spec_info.storage, type.variadic)
@@ -521,7 +521,7 @@ module Rubycc
           # perform — so it stays a diagnostic here.
           error_at(name_tok, "array size missing in '#{name_tok.value}'")
         end
-        declare_ordinary_name(name_tok.value)
+        declare_ordinary_name(name_tok.value, type)
         AST::GlobalDecl.new(name_tok.value, type, initializer_value, initializer_node, name_tok, const, spec_info.storage)
       end
 
@@ -1311,7 +1311,7 @@ module Rubycc
         # parameter shadows an outer typedef of the same name inside the body.
         @tag_scopes.push({})
         @ordinary_scopes.push({})
-        params.each { |param| declare_ordinary_name(param.name) }
+        params.each { |param| declare_ordinary_name(param.name, param.type) }
         body = []
         body.concat(parse_block_item) until peek.punct?("}")
         @ordinary_scopes.pop
@@ -1493,7 +1493,7 @@ module Rubycc
           # scope, so it stays a diagnostic (gcc rejects it likewise).
           error_at(name_tok, "array size missing in '#{name_tok.value}'")
         end
-        declare_ordinary_name(name_tok.value)
+        declare_ordinary_name(name_tok.value, type)
         AST::VariableDecl.new(name_tok.value, type, initializer, name_tok, const, spec_info.storage)
       end
 
@@ -1863,7 +1863,8 @@ module Rubycc
           length = nil
         else
           expr = parse_conditional_expression
-          length = evaluate_constant_expression(expr, "array size must be an integer constant")
+          length = evaluate_constant_expression(expr, "array size must be an integer constant",
+                                                sizeof_expr: method(:fold_time_sizeof))
           expect_punct("]")
           error_at(expr.token, "array size must be positive") unless length.positive?
         end
@@ -2921,12 +2922,15 @@ module Rubycc
       # --- ordinary-identifier namespace ---------------------------------
 
       # Records a variable, parameter or function name in the current ordinary
-      # scope. The entry carries no payload; it exists only to shadow a typedef
-      # name or enum constant of the same name from an outer scope, so a
-      # redeclaration of an ordinary name (a genuine error the generator reports)
-      # is deliberately not diagnosed here.
-      def declare_ordinary_name(name)
-        @ordinary_scopes.last[name] = OrdinaryName.new(:ordinary, nil)
+      # scope. Its main job is to shadow a typedef name or enum constant of the
+      # same name from an outer scope, so a redeclaration of an ordinary name (a
+      # genuine error the generator reports) is deliberately not diagnosed here.
+      # The declared `type` is kept as the entry's payload so a constant
+      # expression folded during parsing can resolve "sizeof <variable>" (see
+      # #fold_time_sizeof), which the type-table-free ConstantEvaluator otherwise
+      # cannot; it is nil only for the synthetic entries that predate a type.
+      def declare_ordinary_name(name, type = nil)
+        @ordinary_scopes.last[name] = OrdinaryName.new(:ordinary, type)
       end
 
       # Binds a typedef name to its resolved type (and whether it names a
@@ -2993,12 +2997,65 @@ module Rubycc
       # with `message` at its own token; a division/remainder by zero that is
       # actually reached is reported at the operator's token, independent of
       # `message`, since it is a different failure than "not a constant".
-      def evaluate_constant_expression(node, message)
-        ConstantEvaluator.evaluate(node)
+      def evaluate_constant_expression(node, message, sizeof_expr: nil)
+        ConstantEvaluator.evaluate(node, sizeof_expr: sizeof_expr)
       rescue ConstantEvaluator::NotConstant => e
         error_at(e.token, message)
       rescue ConstantEvaluator::DivisionByZero => e
         error_at(e.token, "division by zero in constant expression")
+      end
+
+      # Resolves a "sizeof <expression>" operand to its byte size at parse time,
+      # for the ConstantEvaluator folding an array bound (see #parse_array_suffix)
+      # -- the one constant context reduced while parsing, where "sizeof x" would
+      # otherwise be a non-constant for want of a type table. The operand's type
+      # is inferred by #sizeof_operand_type over the forms a real array bound
+      # reaches (a named object, a string literal, a subscript, a dereference, a
+      # cast -- notably ruby.h's rb_strlen_lit, "(sizeof(s "") / sizeof(s ""[0]))
+      # - 1", which sizes both a string literal and its element). sizeof measures
+      # its immediate operand undecayed (6.5.3.4), so "sizeof arr" is the whole
+      # array. An operand whose type cannot be inferred, or one of
+      # incomplete/void/function type with no size, stays a NotConstant so the
+      # bound reports "not an integer constant" rather than a wrong value.
+      def fold_time_sizeof(node)
+        type = sizeof_operand_type(node.operand)
+        if type.nil? || type.void? || type.function? || (type.array? && type.incomplete?)
+          raise ConstantEvaluator::NotConstant, node.token
+        end
+
+        type.size
+      end
+
+      # The type a "sizeof" operand expression has, inferred without the
+      # generator's symbol table, or nil when a form outside this small set is
+      # met. A subscript and a dereference each decay their base (an array to a
+      # pointer to its element) and yield the pointed-to type; a cast is its named
+      # type; a named object's type is the one the ordinary scope recorded. Only
+      # what an array-bound constant expression realistically uses is covered.
+      def sizeof_operand_type(node)
+        case node
+        when AST::StringLit
+          Type::Array.new(Type::Char, node.value.bytesize + 1)
+        when AST::VariableRef
+          entry = lookup_ordinary(node.name)
+          entry && entry.kind == :ordinary ? entry.value : nil
+        when AST::Subscript
+          element_of(sizeof_operand_type(node.target))
+        when AST::Unary
+          node.op == :deref ? element_of(sizeof_operand_type(node.operand)) : nil
+        when AST::Cast
+          node.type
+        end
+      end
+
+      # The element type reached by subscripting or dereferencing a base of type
+      # `type`: an array decays to a pointer first, so both an array and a pointer
+      # yield their element/pointee. Anything else (or an unknown base) has none.
+      def element_of(type)
+        return nil if type.nil?
+        return type.element if type.array?
+
+        type.target if type.pointer?
       end
 
       # Whether the initializer subtree uses `sizeof <expression>` (as opposed to

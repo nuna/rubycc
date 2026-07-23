@@ -1149,6 +1149,19 @@ class TestParser < Minitest::Test
     assert_equal Type::Array.new(Type::Char, 16), decl.type
   end
 
+  # An array bound may contain sizeof(<expression>) (Step 100): the parser now
+  # records each object's type in its ordinary scope, so a later bound can size a
+  # named array (undecayed) and a string literal's element, exactly as ruby.h's
+  # rb_strlen_lit and date's fmt buffer do. Here "src" is char[6], so
+  # "dst[sizeof(src) - sizeof(src[0])]" is char[5].
+  def test_array_size_folds_sizeof_of_a_variable
+    program = parse("int main(void) { char src[] = \"hello\"; " \
+                    "char dst[sizeof(src) - sizeof(src[0])]; return 0; }")
+    dst = program.functions.first.body[1]
+
+    assert_equal Type::Array.new(Type::Char, 5), dst.type
+  end
+
   # A multidimensional array "int a[3][4]" is a 3-element array of "int[4]"
   # (Step 99): the suffixes apply innermost-first, so the inner dimension nests
   # inside the outer. Its layout and indexing are verified against gcc in the
