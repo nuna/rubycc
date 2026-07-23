@@ -3321,11 +3321,52 @@ C 拡張の動作を確認した 2 例目**(1 例目は json: 606 tests / 3,433 
 
 ---
 
+## Step 99 — 多次元配列(M5 H4、date のブロッカー、racc テスト全合格)
+
+コーパス最後の date 3.5.1 を `RUBYCC=1 gem install` に掛け、最初のブロッカー
+`static const int monthtab[2][13]`(date_core.c:697)= **多次元配列**を実装。
+配列の要素が別の配列である型(`int a[2][13]` = `int[13]` の 2 要素配列)を全面的に対応。
+
+- **型モデルは既に対応済み**: `Type::Array(element:, length:)` の element は元から任意の型を
+  取れ、`size`(element.size × length)・`alignment`・`incomplete?` は再帰的に正しい。
+  多次元は「要素が配列の配列」を組み立てるだけ。
+- **パーサ**: `apply_declarator_suffix` の「配列の要素は配列不可」ガードを撤去。宣言子接尾辞は
+  内側から適用される(`parse_direct_declarator` の `reverse_each`)ため、`int a[2][13]` は
+  内側 `[13]` が完全配列になってから外側 `[2]` が包む。**内側次元だけは不完全不可**
+  (`int a[2][]` は要素型 `int[]` のストライド不明 = エラー)、最外次元は `[]` 可
+  (初期化子から推論、またはパラメータで調整)。ガードを
+  `error if inner.array? && inner.incomplete?` に置換。
+- **添字と減衰**: `a[i]`(多次元の行)は配列でありロードせず、その先頭要素へのポインタに
+  減衰する — `gen_subscript` に array 分岐を追加し、`Type::Pointer.new(element.element)` を返す
+  (配列変数・配列メンバの減衰と同型)。`static_type` の Subscript 枝も、入れ子添字のために
+  対象を `decay` してから `subscript_element_type` に渡すよう修正。
+- **既存機構が自然に効いた箇所**(追加コードなしで gcc 一致を確認):入れ子ブレース初期化子、
+  最外次元の初期化子からの推論(`int a[][3] = {...}`)、2 次元配列パラメータの
+  `int(*)[3]` への調整、行を `int*` として渡す、配列へのポインタ `int(*)[3]`、
+  `&a[i][j]` とその書き込み、各配列の `sizeof`、3 次元配列。
+- **検証**: gcc 差分実行オラクル(静的 const 2D グローバル + 3D グローバル + ローカル 2D +
+  2D パラメータ + 行渡し + 配列ポインタ + アドレス取得書き込み + 各 sizeof)を x86_64 に、
+  同種を aarch64 実行オラクルにも追加。負のケース(`int a[2][]` 拒否、型の入れ子形状)も固定。
+
+### racc の受け入れ完了(テスト全合格 5 例目)+ date の次ブロッカー
+
+- **racc 1.8.1 はコンパイラ無改修で通過**: `RUBYCC=1 gem install racc` で cparse.so を rubycc が
+  ビルド(gem_make.out の CC が rubycc、`Racc_Runtime_Type = c` で C ランタイム稼働を確認)。
+  上流 v1.8.1 の test/unit スイートを実走 → **71 tests / 319 assertions / 0 failures / 0 errors**
+  (生成ファイル `lib/racc/parser-text.rb` は rmake ビルド生成物から補完)。テスト全合格 5 例目。
+- これで **コーパス 6 gem 中 5 gem がテスト全合格**(json / bigdecimal / redcarpet / msgpack / racc)。
+- **date の次ブロッカー(Step 100 予定)**: 多次元配列突破後、`date_core.c:8735` の
+  `char fmt[sizeof(timefmt) + sizeof(zone) + ...]` = **配列境界の定数式に含まれる
+  `sizeof(式)`** に到達。パーサは配列境界を構文解析時に畳むが、`sizeof(変数)` は変数の型が要る
+  一方でパーサの通常名スコープは型を保持しない(typedef 名のみ型を持つ)ため未解決。別ステップ。
+
+---
+
 ## 現在のテスト規模
 
-Step 98 完了時点: **2,423 runs / 6,517 assertions / 0 failures / 47 skips**
-(Step 97 の 2,420 から +3 = 関数ポインタ配列の実行オラクル x86_64/aarch64、符号性ポインタの実行オラクル。
-header-abi は STRING/CTYPE の既存ケースへの追記で runs 数は不変)
+Step 99 完了時点: **2,425 runs / 6,518 assertions / 0 failures / 47 skips**
+(Step 98 の 2,423 から +2 = 多次元配列の実行オラクル x86_64/aarch64。
+診断・パーサの旧「多次元は非対応」拒否テスト各 1 件は正のテストへ書き換え)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト

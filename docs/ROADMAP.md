@@ -608,10 +608,17 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   がそのままフルビルド、上流 v1.8.3 の MRI spec(Rakefile の `spec/{,cruby/}*_spec.rb`)を実走 →
   **468 examples 中、失敗は JRuby 専用 `spec/jruby/` の 13 件のみ = MRI 対象は全パス、pending 1**。
   テスト全合格 4 例目(既存機能のみで到達)。
+- **racc 1.8.1 はコンパイラ無改修で通過(Step 99 時点で確認)**: `RUBYCC=1 gem install racc` で
+  cparse.so を rubycc がビルド(`Racc_Runtime_Type = c` で C ランタイム稼働を確認)、上流 v1.8.1 の
+  test/unit スイートを実走 → **71 tests / 319 assertions / 0 failures / 0 errors**(生成物
+  `lib/racc/parser-text.rb` は rmake ビルド生成物から補完)。テスト全合格 5 例目。
+- **date 3.5.1 は Step 99 で最初のブロッカー(多次元配列 `monthtab[2][13]`)を解消**し、
+  次のブロッカー = 配列境界の定数式に含まれる `sizeof(式)`(`char fmt[sizeof(timefmt)+...]`)に到達。
+  これは Step 100 で対応予定(パーサは境界を構文解析時に畳むが、`sizeof(変数)` は型情報が要る)。
 - **受け入れ基準はビルド成功では不十分**: 「ビルドが通る」ことと「正しく動く」ことは別。
   gem がフルビルドに達したら **gem 本体のテストスイートを実走**して合否を取る
-  (これが H4 の「合格率」の実体)。現時点でテスト全合格は json / bigdecimal / redcarpet / msgpack の 4 例。
-  残るコーパス gem: date / racc。
+  (これが H4 の「合格率」の実体)。現時点でテスト全合格は json / bigdecimal / redcarpet /
+  msgpack / racc の **5 例**(コーパス 6 gem 中 5)。残るコーパス gem: date(ビルド継続中)。
 - **実測した運用上の制約**: コーパス 6 gem(json/msgpack/bigdecimal/date/racc/redcarpet)は
   **いずれも `.gem` パッケージにテストを同梱していない**(`gem spec files` で test/ spec/ が 0 件)。
   したがって「gem のテストスイートを走らせる」には `gem install` では不十分で、
