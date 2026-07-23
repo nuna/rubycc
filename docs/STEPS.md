@@ -3274,10 +3274,58 @@ C 拡張の動作を確認した 2 例目**(1 例目は json: 606 tests / 3,433 
 
 ---
 
+## Step 98 — redcarpet を通す4修正(M5 H4、**redcarpet フルビルド + テスト全合格**)
+
+コーパス次点の redcarpet 3.6.1 を `RUBYCC=1 gem install` に掛け、順に現れた4つの
+ブロッカー(ヘッダ2件・コンパイラ挙動2件)を解消。**redcarpet は rubycc でフルビルドが
+通り、上流テストスイート(test/unit)にも全合格した**(下記)。いずれも既存の負債表・
+コーパス census が予告していた項目で、実 gem のビルドが実物の証拠を与えた。
+
+- **① `<string.h>` が `<strings.h>` を引き込む**(autolink.c の `strncasecmp`)。
+  glibc の `<string.h>` は `__USE_MISC`(既定の GNU 環境)下で `<strings.h>` を include
+  するため、`<string.h>` だけで `strcasecmp`/`strncasecmp` が見える。同梱ヘッダは
+  feature-test マクロで glibc 拡張を出し分けない方針(`strdup`/`mempcpy` 等も無条件)なので、
+  末尾で無条件に `#include <strings.h>` する。重複する `memchr` の宣言は同一で互換な再宣言。
+- **② `<ctype.h>` に `isascii`/`toascii`**(html.c の `isascii`)。glibc は
+  `__USE_MISC || __USE_XOPEN` 下でこれらを宣言する。両者は locale 分類表を使わない純粋な
+  ビット判定(`(c) & ~0x7f`、`(c) & 0x7f`)なので、`isalpha` 系のような ABI 値の機微は無く、
+  インライン値が glibc の out-of-line 値と厳密一致する。x86_64/aarch64 双方の同梱に追加。
+- **③ 関数ポインタ配列の推論サイズ `[]`**(html_smartypants.c の `smartypants_cb_ptrs`)。
+  `static int (*fp[])(int) = { ... };` のように括弧付き宣言子の内側に空 `[]` を書く形で、
+  `parse_declarator_core` が括弧内の宣言子へ再帰する際 `allow_incomplete_array: false` を
+  ハードコードしていたため拒否していた。括弧は単なるグルーピングで、その配列はオブジェクト
+  自身の配列だから初期化子から寸法を推論できる(素の `int fp[] = {...}` と同じ、6.7.6.3)。
+  `allow_incomplete_array` を再帰へ伝播。初期化子なしのローカル(`int (*fp[])(void);`)は
+  従来どおりフラグが false なので `array size missing` を維持。
+- **④ ポインタ指し先の符号性差の受理**(strncmp に `uint8_t*` を渡す)。gcc の
+  `-Wpointer-sign`(警告どまりで受理)相当。同サイズ・逆符号の整数指し先は同じ寸法・整列の
+  オブジェクトを指すため再解釈は無害。加えて 1 バイト文字型3種(`char`/`signed char`/
+  `unsigned char`)は相互に互換とし、**Step 73 が開いた `char*`/`signed char*` 非互換化の
+  負債(§3)も併せて解消**。同サイズでも文字族以外の別型(この型モデルでは該当が稀)や
+  異サイズ(`int*`/`char*`・`int*`/`long*`)は従来どおり硬いエラーで、gcc の warn-and-accept
+  より厳格を維持。`convert_for_assignment` はポインタ間で no-op なので受理側の追加のみ。
+- **検証**: ①② は header-abi ハーネス(gcc+システムヘッダ vs rubycc+同梱ヘッダのバイト一致)で
+  `strcasecmp`/`strncasecmp`/`isascii`/`toascii` を追加。③④ は gcc 差分の実行オラクル
+  (関数ポインタ配列の dispatch と sizeof、符号性ミスマッチのバイト比較・カウント)を
+  x86_64 に、③ は aarch64 実行オラクルにも追加。
+
+### redcarpet フルビルドと gem テストスイート全合格(H4 の受け入れ達成 3 例目)
+
+`RUBYCC=1 gem install redcarpet` が成功(rmake が MAKE、gem_make.out の CC が rubycc)。
+上流ソース v3.6.1 の test/unit スイートを rubycc ビルドの `.so` に対して実走 →
+**136 tests / 206 assertions / 0 failures / 0 errors / 0 skips**。あわせて次点の
+**msgpack 1.8.3 はコンパイラ無改修でフルビルド + MRI spec 全合格**(468 examples 中、
+失敗は JRuby 専用 `spec/jruby/` の 13 件のみ = MRI 対象は全パス、pending 1)を確認。
+
+これで gem 本体テストまで通した C 拡張は **json / bigdecimal / redcarpet / msgpack の 4 例**。
+
+---
+
 ## 現在のテスト規模
 
-Step 97 完了時点: **2,420 runs / 6,513 assertions / 0 failures / 47 skips**
-(Step 96 の 2,419 から +1 = 静的初期化子の浮動定数式の実行オラクル)
+Step 98 完了時点: **2,423 runs / 6,517 assertions / 0 failures / 47 skips**
+(Step 97 の 2,420 から +3 = 関数ポインタ配列の実行オラクル x86_64/aarch64、符号性ポインタの実行オラクル。
+header-abi は STRING/CTYPE の既存ケースへの追記で runs 数は不変)
 (`rake test`)。内訳: 字句・パーサ・型・ELF(ライタ + リーダ + 汎用ライタ)・
 ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実行ファイル)・
 ドライバ・PIC・DoS 耐性・診断・CLI・プリプロセッサのユニットテスト + 実行テスト
