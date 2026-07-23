@@ -769,6 +769,26 @@ class TestAArch64Execution < Minitest::Test
     C
   end
 
+  # A deduced-size array of function pointers dispatched by index (Step 98): the
+  # "[]" bound is inferred from the initializer even though it sits inside the
+  # parenthesized declarator "int (*ops[])(int)", and each ops[i](10) is an
+  # indirect call over the AAPCS64 path. The results are split per element so the
+  # dispatch itself is measured, not just the total.
+  def test_function_pointer_array_dispatch
+    assert_aarch64_matches_gcc(source(<<~C))
+      static int add1(int x) { return x + 1; }
+      static int dbl(int x) { return x * 2; }
+      static int neg(int x) { return -x; }
+      static int (*ops[])(int) = { 0, add1, dbl, neg };
+      int main(void) {
+        int i;
+        for (i = 1; i < 4; i = i + 1) put_long(ops[i](10));
+        put_long((long)(sizeof(ops) / sizeof(ops[0])));
+        return 0;
+      }
+    C
+  end
+
   # --- disassembly sanity -------------------------------------------------
 
   # Every word the backend emits must decode to a real A64 instruction. objdump

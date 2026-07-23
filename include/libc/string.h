@@ -60,4 +60,12 @@ char  *strchrnul(const char *__s, int __c);
 char  *strcasestr(const char *__haystack, const char *__needle);
 char  *strsignal(int __sig);
 
+/* glibc's <string.h> pulls in <strings.h> under __USE_MISC (the default GNU
+   environment), so a translation unit that includes only <string.h> still sees
+   strcasecmp/strncasecmp. Real-world sources (e.g. redcarpet's autolink.c) rely
+   on that, so mirror it here. Our headers don't gate glibc extensions behind
+   feature-test macros, so include it unconditionally. The lone overlapping
+   prototype (memchr) is an identical, compatible redeclaration. */
+#include <strings.h>
+
 #endif /* _RUBYCC_STRING_H */

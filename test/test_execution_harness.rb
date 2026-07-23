@@ -2906,6 +2906,59 @@ class TestExecutionHarness < Minitest::Test
                  program_output(INT128_STRUCT_BYVALUE_PROGRAM, compiler: :rubycc)
   end
 
+  # An array of function pointers whose bound is deduced from its initializer,
+  # written with the "[]" buried inside the parenthesized declarator
+  # "int (*ops[])(int)" (Step 98, driven by redcarpet's smartypants_cb_ptrs).
+  # The dispatch through ops[i] and the sizeof both depend on the length being
+  # inferred as gcc infers it.
+  FUNCTION_POINTER_ARRAY_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "static int add1(int x) { return x + 1; } " \
+    "static int dbl(int x) { return x * 2; } " \
+    "static int neg(int x) { return -x; } " \
+    "static int (*ops[])(int) = { 0, add1, dbl, neg }; " \
+    "int main(void) { " \
+    "  int total = 0; " \
+    "  for (int i = 1; i < 4; i++) total += ops[i](10); " \
+    "  printf(\"%d %d\\n\", total, (int)(sizeof(ops) / sizeof(ops[0]))); " \
+    "  return 0; }"
+
+  def test_function_pointer_array_matches_gcc_stdout
+    assert_equal program_output(FUNCTION_POINTER_ARRAY_PROGRAM, compiler: :gcc),
+                 program_output(FUNCTION_POINTER_ARRAY_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on a deduced-size array of function pointers"
+  end
+
+  # Passing a pointer whose pointee differs only in signedness (unsigned char* /
+  # uint8_t* where char* is wanted, and the reverse) -- gcc's -Wpointer-sign
+  # case, which rubycc accepts (Step 98, driven by redcarpet passing a uint8_t*
+  # to strncmp). The signed char* argument to firstchar covers the same-
+  # signedness char family case (char <-> signed char). The run confirms the
+  # reinterpretation is a no-op: the bytes are compared and counted identically
+  # to gcc.
+  POINTER_SIGN_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "unsigned long strlen(const char *s); " \
+    "int strncmp(const char *a, const char *b, unsigned long n); " \
+    "typedef unsigned char u8; " \
+    "static int firstbyte(const u8 *p) { return (int)p[0]; } " \
+    "static int firstchar(const char *p) { return (int)p[0]; } " \
+    "int main(void) { " \
+    "  u8 a[] = \"hello\"; char b[] = \"help\"; signed char s[] = \"Z\"; " \
+    "  unsigned long n = strlen(a); " \
+    "  int c = strncmp(a, b, 3); " \
+    "  int d = strncmp(a, b, 4); " \
+    "  int e = firstbyte(b); " \
+    "  int f = firstchar(s); " \
+    "  printf(\"%lu %d %d %d %d\\n\", n, c, d < 0 ? -1 : (d > 0 ? 1 : 0), e, f); " \
+    "  return 0; }"
+
+  def test_pointer_sign_mismatch_matches_gcc_stdout
+    assert_equal program_output(POINTER_SIGN_PROGRAM, compiler: :gcc),
+                 program_output(POINTER_SIGN_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on passing a char-signedness-mismatched pointer"
+  end
+
   private
 
   def run_source(source, compiler:)

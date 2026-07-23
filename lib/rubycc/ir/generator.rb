@@ -3968,9 +3968,30 @@ module Rubycc
         # Any scalar converts to _Bool (the "!= 0" rule), pointers included.
         return true if expected.bool? && actual.pointer?
         return true if expected.pointer? && actual.pointer? &&
-                        (expected == actual || expected.target.void? || actual.target.void?)
+                        (expected == actual || expected.target.void? || actual.target.void? ||
+                         pointer_sign_compatible?(expected.target, actual.target))
 
         expected == actual
+      end
+
+      # gcc accepts a pointer assignment/argument whose pointees are integers of
+      # the same size that differ only in signedness (a -Wpointer-sign warning,
+      # not an error) -- the pervasive real-C pattern of carrying bytes in an
+      # unsigned char / uint8_t buffer and handing it to the char* str*/mem* API
+      # (e.g. redcarpet's html_smartypants.c passes a uint8_t* to strncmp). Two
+      # such pointees address objects of identical size and alignment, so the
+      # reinterpretation is benign; accept it here (this subset has no warning
+      # channel, so nothing is emitted). The three 1-byte character types are
+      # also mutually compatible, including plain char vs signed char which share
+      # a signedness -- this is the char*/signed char* debt Step 73 opened
+      # (docs/ROADMAP.md), which the character family carries no representation
+      # difference to justify. A different-size pointee mismatch (e.g. int* vs
+      # char*, int* vs long*) stays a hard error, stricter than gcc's
+      # warn-and-accept.
+      def pointer_sign_compatible?(one, other)
+        return false unless one.integer? && other.integer? && one.size == other.size
+
+        one.signed? != other.signed? || (Type.character?(one) && Type.character?(other))
       end
 
       # Whether `value_node` (whose rvalue type is `actual`) may initialize, be

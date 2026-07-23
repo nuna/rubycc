@@ -1723,7 +1723,8 @@ module Rubycc
       # surfaces the suffix that makes it a function ("int (*g(int a))(int b)"
       # reports "int a", g's own parameters, not "int b").
       def parse_direct_declarator(name_mode:, allow_incomplete_array:)
-        name_tok, core_build, inner_params = parse_declarator_core(name_mode: name_mode)
+        name_tok, core_build, inner_params =
+          parse_declarator_core(name_mode: name_mode, allow_incomplete_array: allow_incomplete_array)
 
         suffixes = []
         loop do
@@ -1758,11 +1759,17 @@ module Rubycc
       # function_params when the core is "( declarator )", or the sentinel :none
       # when the core is an identifier or empty (so #parse_direct_declarator
       # knows whether to forward a buried name's suffix or read its own).
-      def parse_declarator_core(name_mode:)
+      #
+      # `allow_incomplete_array` is forwarded into a parenthesized inner
+      # declarator: the parentheses are only grouping, so the array buried in
+      # "int (*fp[])(void) = { ... }" is the object's own array and its "[]" is
+      # deducible from the initializer exactly as a bare "int fp[] = { ... }"
+      # would be. Dropping the flag here rejected such declarators (6.7.6.3).
+      def parse_declarator_core(name_mode:, allow_incomplete_array:)
         if peek.punct?("(") && paren_starts_declarator?
           advance # "("
           name_tok, build, inner_params =
-            parse_declarator_builder(name_mode: name_mode, allow_incomplete_array: false)
+            parse_declarator_builder(name_mode: name_mode, allow_incomplete_array: allow_incomplete_array)
           expect_punct(")")
           [name_tok, build, inner_params]
         elsif peek.type == :ident && name_mode != :forbidden

@@ -128,14 +128,20 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
-  # <string.h>: the mem*/str* prototypes are present and usable.
+  # <string.h>: the mem*/str* prototypes are present and usable. The
+  # strcasecmp/strncasecmp calls are the regression guard for <string.h>
+  # pulling in <strings.h> the way glibc does under __USE_MISC: with only
+  # <string.h> included they must still resolve (Step 98, driven by redcarpet's
+  # autolink.c), so this snippet failing to compile under rubycc would flag the
+  # pull-in being dropped.
   STRING = HeaderAbiHarness::Spec.new(
     header: "string.h",
     sizes: %w[size_t],
     snippets: [<<~C.chomp]
       static int abi_string(char *d, const char *s) {
         memcpy(d, s, strlen(s) + 1);
-        return strcmp(d, s) + (memchr(s, 'a', 4) != (void *)0);
+        return strcmp(d, s) + (memchr(s, 'a', 4) != (void *)0)
+             + strcasecmp(d, s) + strncasecmp(d, s, 3);
       }
     C
   )
@@ -159,6 +165,10 @@ class TestHeaderAbi < Minitest::Test
     ints: ["isalpha('a')", "isdigit('5')", "isspace(' ')", "isupper('A')",
            "islower('a')", "isxdigit('f')", "isalnum('z')", "ispunct('!')",
            "toupper('a')", "tolower('A')",
+           # isascii/toascii (Step 98, driven by redcarpet's html.c): pure bit
+           # tests with no locale table, so the value must match glibc exactly.
+           "isascii('a')", "isascii(200)", "isascii(0)", "isascii(127)",
+           "toascii(0x1FF)", "toascii('A')",
            "_ISupper", "_ISlower", "_ISalpha", "_ISdigit", "_ISspace",
            "_ISblank", "_IScntrl", "_ISpunct", "_ISalnum"]
   )

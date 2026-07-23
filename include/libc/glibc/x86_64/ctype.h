@@ -53,6 +53,8 @@ extern int isxdigit(int __c);
 extern int isblank(int __c);
 extern int tolower(int __c);
 extern int toupper(int __c);
+extern int isascii(int __c);
+extern int toascii(int __c);
 
 #define __isctype(c, type) ((*__ctype_b_loc())[(int)(c)] & (unsigned short int)(type))
 
@@ -71,5 +73,13 @@ extern int toupper(int __c);
 
 #define tolower(c) ((int) (*__ctype_tolower_loc())[(int)(c)])
 #define toupper(c) ((int) (*__ctype_toupper_loc())[(int)(c)])
+
+/* isascii/toascii: glibc declares these under __USE_MISC || __USE_XOPEN and
+   defines them as pure bit tests (no locale classification table), so the
+   inline value matches glibc's out-of-line result exactly -- no ABI subtlety
+   like the isalpha() family above. Real sources (e.g. redcarpet's html.c) call
+   isascii() with only <ctype.h> included. */
+#define isascii(c) (((c) & ~0x7f) == 0)
+#define toascii(c) ((c) & 0x7f)
 
 #endif /* _RUBYCC_CTYPE_H */
