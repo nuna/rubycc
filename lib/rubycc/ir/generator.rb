@@ -2770,7 +2770,7 @@ module Rubycc
         if comparison_op?(op)
           gen_comparison(op, lhs, lhs_type, rhs, rhs_type, token)
         elsif SHIFT_OPS.include?(op)
-          gen_shift(op, lhs, lhs_type, rhs, result_type, token)
+          gen_shift(op, lhs, lhs_type, rhs, rhs_type, result_type, token)
         elsif lhs_type.pointer? && rhs_type.pointer?
           gen_pointer_difference(lhs, rhs, lhs_type)
         elsif lhs_type.pointer?
@@ -2837,12 +2837,12 @@ module Rubycc
       # logical :shl; ">>" is the arithmetic :sar for a signed left operand and
       # the logical :shr for an unsigned one. The count rides in b (its low byte,
       # read from cl by the backend); a size-8 left operand shifts 64-bit.
-      def gen_shift(op, lhs, lhs_type, rhs, result_type, token)
-        # A 128-bit shift would need a multi-word shift-with-count lowering this
-        # phase does not emit, so it is diagnosed (the count operand is untouched).
+      def gen_shift(op, lhs, lhs_type, rhs, rhs_type, result_type, token)
+        # A 128-bit shift is synthesized from 64-bit half shifts across the word
+        # boundary (the left operand's value is its object's address).
         if wide128?(result_type)
-          spelling = op == :shl ? "<<" : ">>"
-          error_at(token, "'#{spelling}' on 128-bit integers is not supported yet")
+          value = convert(lhs, from: lhs_type, to: result_type, token: token)
+          return [gen_int128_shift(op, value, rhs, rhs_type, result_type.signed?), result_type]
         end
         value = convert(lhs, from: lhs_type, to: result_type)
         opcode = if op == :shl
@@ -4127,10 +4127,11 @@ module Rubycc
       end
 
       # The spelling of a binary operator for the "not supported yet" diagnostics
-      # a 128-bit operand raises on an unimplemented operation.
+      # a 128-bit operand raises on an unimplemented operation. Shifts are handled
+      # by #gen_int128_shift, not here, so they carry no entry.
       INT128_OP_SPELLINGS = {
         add: "+", sub: "-", mul: "*", div: "/", mod: "%",
-        and: "&", or: "|", xor: "^", shl: "<<", shr: ">>"
+        and: "&", or: "|", xor: "^"
       }.freeze
 
       # Dispatches a 128-bit binary arithmetic operation on two 128-bit operand
@@ -4222,6 +4223,89 @@ module Rubycc
         store_int128_half(base, 0, lo)
         store_int128_half(base, 8, hi)
         base
+      end
+
+      # A 128-bit shift, built from 64-bit shifts of the two halves the way a
+      # double-word shift crosses the word boundary. The count `c` is split into
+      # three ranges so no 64-bit half is ever shifted by 64 or more (which the
+      # hardware would take modulo 64, giving the wrong bits):
+      #   * c == 0        — the value passes through unchanged;
+      #   * 1 <= c <= 63  — each half shifts by c, and the `bm = 64 - c` bits that
+      #                     leave one half carry into the other;
+      #   * 64 <= c <= 127 — one half is emptied (or sign-filled) and the other,
+      #                     shifted by `c - 64`, alone supplies the result.
+      # `signed` selects an arithmetic high-half right shift so a signed `>>`
+      # propagates the sign; `<<` ignores it. Returns the result temp's address.
+      def gen_int128_shift(op, value_addr, count_vreg, count_type, signed)
+        lo = load_int128_half(value_addr, 0)
+        hi = load_int128_half(value_addr, 8)
+        # The count as a full 64-bit value, so the range test and the 64-count
+        # arithmetic see its whole magnitude, not just the low byte a shift reads.
+        count = convert(count_vreg, from: count_type, to: Type::ULong)
+        hi_shift = op == :shl ? :shl : (signed ? :sar : :shr)
+
+        result = new_int128_temp
+        below64 = new_label
+        zero = new_label
+        done = new_label
+
+        emit(:jump_if_zero, a: count, b: zero)                       # c == 0
+        emit(:jump_if_zero, a: int128_cmp64(:uge, count, int128_word(64)), b: below64) # c < 64
+
+        # 64 <= c <= 127: only one half survives, shifted by c - 64.
+        far = int128_op64(:sub, count, int128_word(64))
+        if op == :shl
+          store_int128_shift_result(result, int128_word(0), int128_op64(:shl, lo, far))
+        else
+          store_int128_shift_result(result, int128_op64(hi_shift, hi, far), int128_high_fill(hi, signed))
+        end
+        emit(:jump, a: done)
+
+        # 1 <= c <= 63: the bits crossing the word boundary carry into the far half.
+        emit(:label, a: below64)
+        carry_shift = int128_op64(:sub, int128_word(64), count)
+        if op == :shl
+          store_int128_shift_result(
+            result, int128_op64(:shl, lo, count),
+            int128_op64(:or, int128_op64(:shl, hi, count), int128_op64(:shr, lo, carry_shift))
+          )
+        else
+          store_int128_shift_result(
+            result,
+            int128_op64(:or, int128_op64(:shr, lo, count), int128_op64(:shl, hi, carry_shift)),
+            int128_op64(hi_shift, hi, count)
+          )
+        end
+        emit(:jump, a: done)
+
+        emit(:label, a: zero) # c == 0: the value is unchanged.
+        store_int128_shift_result(result, lo, hi)
+
+        emit(:label, a: done)
+        result
+      end
+
+      # Writes a shift's computed low and high 64-bit halves into its result temp.
+      def store_int128_shift_result(base, lo, hi)
+        store_int128_half(base, 0, lo)
+        store_int128_half(base, 8, hi)
+      end
+
+      # A fresh 64-bit constant vreg (a shift's word width and count arithmetic).
+      def int128_word(value)
+        dst = new_vreg
+        emit(:const, dst: dst, a: value, size: 8)
+        dst
+      end
+
+      # A 64-bit binary `op` of a and b into a fresh vreg (a building block for the
+      # double-word shift): the half shifts (:shl/:shr/:sar), the count-offset
+      # arithmetic (:sub) and the 64-bit :or that merges the carried-across bits —
+      # the merge must be size 8, unlike the 0/1 #int128_bool_or a comparison uses.
+      def int128_op64(op, a, b)
+        dst = new_vreg
+        emit(op, dst: dst, a: a, b: b, size: 8)
+        dst
       end
 
       # A 128-bit comparison, yielding an int 0/1, lowered branchlessly from 64-bit

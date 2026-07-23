@@ -743,6 +743,32 @@ class TestAArch64Execution < Minitest::Test
     C
   end
 
+  # 128-bit shift (Step 95) on aarch64: the double-word lowering runs on the
+  # backend's 64-bit shifts (lsl/lsr/asr), the 64-bit or that merges the carried
+  # bits, and the count branches. Each result's halves are split through a union
+  # rather than another shift, so only the shift under test is measured, and the
+  # counts span below/at/above the 64-bit word boundary for `<<`, logical `>>`
+  # and arithmetic `>>` of a negative value.
+  def test_int128_shift
+    assert_aarch64_matches_gcc(source(<<~C))
+      typedef union { __int128 s; unsigned __int128 u; unsigned long h[2]; } S;
+      void show(unsigned __int128 v) { S s; s.u = v; put_long((long)s.h[0]); put_long((long)s.h[1]); }
+      int main(void) {
+        S in; in.h[0] = 0x0123456789abcdefUL; in.h[1] = 0xfedcba9876543210UL;
+        unsigned __int128 u = in.u;
+        S si; si.h[0] = 0xffffffffffffffffUL; si.h[1] = 0x8000000000000000UL;
+        __int128 sn = si.s;
+        int n1 = 1, n65 = 65;
+        show(u >> n1); show(u << n1); show(u >> 64); show(u << 64);
+        show(u >> n65); show(u << n65); show(u >> 32);
+        show((unsigned __int128)(sn >> n1));
+        show((unsigned __int128)(sn >> 64));
+        show((unsigned __int128)(sn >> n65));
+        return 0;
+      }
+    C
+  end
+
   # --- disassembly sanity -------------------------------------------------
 
   # Every word the backend emits must decode to a real A64 instruction. objdump

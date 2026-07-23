@@ -2785,6 +2785,32 @@ class TestExecutionHarness < Minitest::Test
                  program_output(INT128_SIGNED_CONVERT_PROGRAM, compiler: :rubycc)
   end
 
+  # 128-bit shift (Step 95), the last compile blocker for bigdecimal (bits.h's
+  # nlz_int128 does `x >> 64`). Each shift is printed as its two 8-byte halves so
+  # the whole 128-bit result is compared, over counts spanning the three ranges
+  # the double-word lowering splits on — 0, below 64, exactly 64, above 64 and
+  # 127 — for `<<`, logical `>>` (unsigned) and arithmetic `>>` (a negative
+  # signed value), and both a variable count and the constant `>> 64`/`<< 64`.
+  INT128_SHIFT_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "typedef union { __int128 s; unsigned __int128 u; unsigned long h[2]; } S; " \
+    "static void show(unsigned __int128 v) { S s; s.u = v; printf(\"%lu:%lu \", s.h[0], s.h[1]); } " \
+    "int main(void) { " \
+    "  S in; in.h[0] = 0x0123456789abcdefUL; in.h[1] = 0xfedcba9876543210UL; " \
+    "  unsigned __int128 u = in.u; __int128 sn = in.s; " \
+    "  int counts[7]; counts[0]=0; counts[1]=1; counts[2]=63; counts[3]=64; counts[4]=65; counts[5]=96; counts[6]=127; " \
+    "  for (int i = 0; i < 7; i++) { int n = counts[i]; " \
+    "    show(u >> n); show(u << n); show((unsigned __int128)(sn >> n)); show((unsigned __int128)(sn << n)); } " \
+    "  show(u >> 64); show(u << 64); show(u >> 32); show(u << 100); " \
+    "  show((unsigned __int128)(sn >> 64)); show((unsigned __int128)(sn >> 100)); " \
+    "  printf(\"\\n\"); return 0; }"
+
+  def test_int128_shift_matches_gcc_stdout
+    assert_equal program_output(INT128_SHIFT_PROGRAM, compiler: :gcc),
+                 program_output(INT128_SHIFT_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on 128-bit shift"
+  end
+
   # A high-word-bearing product truncated back to unsigned long / unsigned int.
   INT128_TRUNCATE_PROGRAM =
     "int printf(const char *fmt, ...); " \

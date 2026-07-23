@@ -1440,11 +1440,10 @@ class TestDiagnostics < Minitest::Test
     assert_match(%r{'/' on 128-bit integers is not supported yet}, error.description)
   end
 
-  def test_int128_shift_is_rejected
-    source = "unsigned long g(void) { unsigned __int128 a = 10, c; c = a << 3; return (unsigned long)c; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/'<<' on 128-bit integers is not supported yet/, error.description)
-  end
+  # Shifting a 128-bit integer is supported (Step 95): it is synthesized from
+  # 64-bit half shifts across the word boundary, verified against gcc by the
+  # execution-oracle tests in test_execution_harness.rb / test_aarch64_execution.rb
+  # rather than diagnosed here.
 
   def test_int128_bitwise_and_is_rejected
     source = "unsigned long g(void) { unsigned __int128 a = 10, b = 3, c; c = a & b; return (unsigned long)c; }"
