@@ -612,9 +612,10 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   cparse.so を rubycc がビルド(`Racc_Runtime_Type = c` で C ランタイム稼働を確認)、上流 v1.8.1 の
   test/unit スイートを実走 → **71 tests / 319 assertions / 0 failures / 0 errors**(生成物
   `lib/racc/parser-text.rb` は rmake ビルド生成物から補完)。テスト全合格 5 例目。
-- **date 3.5.1 は Step 99 で最初のブロッカー(多次元配列 `monthtab[2][13]`)を解消**し、
-  次のブロッカー = 配列境界の定数式に含まれる `sizeof(式)`(`char fmt[sizeof(timefmt)+...]`)に到達。
-  これは Step 100 で対応予定(パーサは境界を構文解析時に畳むが、`sizeof(変数)` は型情報が要る)。
+- **date 3.5.1 のビルドを継続中**(ブロッカーを順に解消):Step 99 で多次元配列
+  (`monthtab[2][13]`)、Step 100 で配列境界の `sizeof(式)`(`char fmt[sizeof(timefmt)+...]`、
+  パーサの通常名スコープに変数型を持たせて構文解析時に畳む)を解消。次は Step 101 予定 =
+  静的初期化子の関数ポインタキャスト `(VALUE (*)(void *))m_real_year`(date_core.c:7159)。
 - **受け入れ基準はビルド成功では不十分**: 「ビルドが通る」ことと「正しく動く」ことは別。
   gem がフルビルドに達したら **gem 本体のテストスイートを実走**して合否を取る
   (これが H4 の「合格率」の実体)。現時点でテスト全合格は json / bigdecimal / redcarpet /
