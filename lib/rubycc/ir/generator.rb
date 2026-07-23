@@ -594,27 +594,46 @@ module Rubycc
           pointer_arithmetic(node)
         else
           decayed = object_address(node)
-          raise NotAddressConstant unless decayed.pointee.array?
-
-          decayed.with(offset: decayed.offset, pointee: decayed.pointee.element)
+          # An array lvalue decays to a pointer to its first element; a function
+          # designator decays to a pointer to the function (its address is already
+          # the pointer value, so the pointee stays the function type). Nothing
+          # else is a pointer value on its own.
+          if decayed.pointee.array?
+            decayed.with(offset: decayed.offset, pointee: decayed.pointee.element)
+          elsif decayed.pointee.function?
+            decayed
+          else
+            raise NotAddressConstant
+          end
         end
       end
 
       # Folds an lvalue expression to the AddressConstant of the object it
       # designates, its `pointee` the object's own type. A file-scope variable is
-      # its symbol; a subscript adds index times element size; a member access
-      # adds the member's offset (through StructType#member, so an anonymous
-      # member is traversed transparently); "*p" is the address p holds. Anything
-      # else — a local, an unknown name, a run-time value — is not an address
-      # constant.
+      # its symbol; a file-scope function is its own symbol with its function type
+      # as the pointee (a function designator, whose address is the function, so a
+      # cast of it in a static initializer — "(T(*)(void*))f" — folds); a
+      # subscript adds index times element size; a member access adds the member's
+      # offset (through StructType#member, so an anonymous member is traversed
+      # transparently); "*p" is the address p holds. Anything else — a local, an
+      # unknown name, a run-time value — is not an address constant.
       def object_address(node)
         case node
         when Front::AST::VariableRef
           binding = @global_bindings[node.name]
-          raise NotAddressConstant unless binding&.global
+          if binding&.global
+            return AddressConstant.new(base_kind: :symbol, symbol: binding.storage,
+                                       string_id: nil, offset: 0, pointee: binding.type)
+          end
 
-          AddressConstant.new(base_kind: :symbol, symbol: binding.storage,
-                              string_id: nil, offset: 0, pointee: binding.type)
+          # A name a file-scope variable does not bind may still name a function;
+          # its address is the function symbol itself (no signature check — an
+          # explicit cast around it is free to reinterpret the pointer type).
+          sig = @signatures[node.name]
+          raise NotAddressConstant unless sig
+
+          AddressConstant.new(base_kind: :symbol, symbol: node.name,
+                              string_id: nil, offset: 0, pointee: function_type_of(sig))
         when Front::AST::Subscript
           subscript_address(node)
         when Front::AST::MemberAccess

@@ -3013,6 +3013,33 @@ class TestExecutionHarness < Minitest::Test
                  "rubycc and gcc disagree on folding sizeof(expr) in an array bound"
   end
 
+  # A static initializer that casts a function designator to a differently-typed
+  # function pointer (Step 101, driven by date's tmx_funcs vtable
+  # "(VALUE (*)(void *))m_real_year"): the address constant is the function's own
+  # symbol, and the explicit cast reinterprets the pointer type with no signature
+  # check. Covered in a struct of function pointers and an array of them; calling
+  # through the reinterpreted pointers must behave as gcc's does.
+  STATIC_FUNCTION_POINTER_CAST_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "typedef long VALUE; " \
+    "static VALUE f_year(int *x) { return 2026 + *x; } " \
+    "static int f_mon(int *x) { return 7 + *x; } " \
+    "static int f_id(int x) { return x; } " \
+    "struct funcs { VALUE (*year)(void *); int (*mon)(void *); }; " \
+    "static const struct funcs F = { (VALUE (*)(void *))f_year, (int (*)(void *))f_mon }; " \
+    "static int (*idtab[])(int) = { (int (*)(int))f_id, f_id }; " \
+    "int main(void) { " \
+    "  int d = 3; " \
+    "  VALUE (*yp)(void *) = F.year; " \
+    "  printf(\"%ld %d %d\\n\", yp(&d), F.mon(&d), idtab[0](40) + idtab[1](2)); " \
+    "  return 0; }"
+
+  def test_static_function_pointer_cast_matches_gcc_stdout
+    assert_equal program_output(STATIC_FUNCTION_POINTER_CAST_PROGRAM, compiler: :gcc),
+                 program_output(STATIC_FUNCTION_POINTER_CAST_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on a function-pointer cast in a static initializer"
+  end
+
   private
 
   def run_source(source, compiler:)
