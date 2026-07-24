@@ -323,6 +323,12 @@ module Rubycc
         # The whole-run macro-expansion budget (see EXPANSION_TOKEN_LIMIT), reset
         # here so every translation unit starts with a full allowance.
         @expansion_tokens = 0
+        # The presumed-line state a #line directive sets (6.10.4): a delta added
+        # to a token's physical line for __LINE__, and a presumed file name for
+        # __FILE__ (nil = the token's own file). It is per-file, saved and
+        # restored across #include (see #process_include).
+        @presumed_line_delta = 0
+        @presumed_file = nil
         apply_command_line_definitions(defines)
         pp_tokens = Scanner.new(source, filename: filename).scan
         output = []
@@ -467,6 +473,7 @@ module Rubycc
         when "include_next" then handle_include_next(hash, body, output, filename)
         when "define"       then handle_define(name, body)
         when "undef"        then handle_undef(name, body)
+        when "line"         then handle_line(name, body)
         when "error"        then handle_error(hash, body)
         when "pragma"       then handle_pragma(body, filename)
         else
@@ -833,6 +840,13 @@ module Rubycc
         raise_at(hash, "#include nested too deeply") if @include_depth >= INCLUDE_DEPTH_LIMIT
 
         @include_depth += 1
+        # A #line presumption is per-file (6.10.4): the includee starts with its
+        # own natural line/file numbering, and the includer's presumption resumes
+        # when the include returns.
+        saved_delta = @presumed_line_delta
+        saved_file = @presumed_file
+        @presumed_line_delta = 0
+        @presumed_file = nil
         begin
           source = read_source(path, name, hash)
           # The includee's tokens carry its own filename and line numbers (N3), so
@@ -840,6 +854,8 @@ module Rubycc
           tokens = Scanner.new(source, filename: path).scan
           process_lines(tokens, path, output)
         ensure
+          @presumed_line_delta = saved_delta
+          @presumed_file = saved_file
           @include_depth -= 1
         end
       end
@@ -1085,6 +1101,54 @@ module Rubycc
         raise_at(hash, message.empty? ? "#error" : message)
       end
 
+      # --- #line -----------------------------------------------------------------
+
+      # Acts on a "#line" directive (6.10.4). Its arguments are macro-expanded
+      # first (6.10.4p5), then read as a digit sequence and an optional string:
+      # the *next* source line is presumed to be that line number, and the
+      # presumed file name is changed when a string is given (kept otherwise).
+      # Both feed __LINE__ / __FILE__ (see #expand_builtin) and diagnostic
+      # wording; the physical tokens keep their real positions, only the
+      # presumption changes. A file that generates code with #line markers (e.g.
+      # gperf's zonetab.h "#line 1 \"zonetab.list\"") relies on this being
+      # accepted rather than a hard error.
+      def handle_line(directive, body)
+        raise_at(directive, "#line directive requires a positive integer argument") if body.empty?
+
+        expanded = []
+        expand_tokens(body, expanded)
+
+        number = expanded[0]
+        unless number&.type == :pp_number && number.text.match?(/\A[0-9]+\z/)
+          raise_at(number || directive, "#line directive requires a positive integer argument")
+        end
+        line_no = number.text.to_i
+
+        presumed_file = @presumed_file
+        rest = expanded[1..]
+        unless rest.empty?
+          file = rest[0]
+          unless file.type == :string && file.text.start_with?('"')
+            raise_at(file, "invalid filename in #line directive")
+          end
+          raise_at(rest[1], "extra tokens at end of #line directive") if rest.length > 1
+          presumed_file = decode_line_filename(file.text)
+        end
+
+        # The next physical line (the directive's line + 1) is presumed to be
+        # `line_no`, so a token on physical line P presents as
+        # line_no + (P - (directive.line + 1)) = P + (line_no - directive.line - 1).
+        @presumed_line_delta = line_no - directive.line - 1
+        @presumed_file = presumed_file
+      end
+
+      # The raw name a #line filename string literal denotes: its surrounding
+      # quotes removed and its \" and \\ escapes resolved, so __FILE__ (which
+      # re-escapes a raw value) reproduces the original name.
+      def decode_line_filename(spelling)
+        spelling[1..-2].gsub(/\\(["\\])/, '\1')
+      end
+
       # --- #pragma ---------------------------------------------------------------
 
       # Acts on a "#pragma" (6.10.6). "#pragma once" records the current file so a
@@ -1197,8 +1261,11 @@ module Rubycc
       def expand_builtin(tok)
         token =
           case tok.text
-          when "__FILE__"         then string_token(tok, tok.filename)
-          when "__LINE__"         then number_token(tok, tok.line.to_s)
+          # __FILE__/__LINE__ honor any #line presumption in force (6.10.4): the
+          # presumed file overrides the token's own, and the presumed-line delta
+          # shifts its physical line. Both are the identity until a #line runs.
+          when "__FILE__"         then string_token(tok, @presumed_file || tok.filename)
+          when "__LINE__"         then number_token(tok, (tok.line + @presumed_line_delta).to_s)
           when "__STDC__"         then number_token(tok, "1")
           when "__STDC_VERSION__" then number_token(tok, "201112L")
           when "__RUBYCC__"       then number_token(tok, "1")

@@ -619,6 +619,46 @@ class TestPreprocessor < Minitest::Test
     end
   end
 
+  # A #line directive (6.10.4) presumes the *next* line's number and, when a
+  # string is given, the file name; both feed __LINE__/__FILE__.
+  def test_line_directive_sets_the_presumed_line_and_file
+    # #line on line 1 -> line 2 (the __LINE__ use) is presumed 100.
+    tokens = pp("#line 100 \"virtual.c\"\nint a = __LINE__;\nchar *f = __FILE__;\n",
+                filename: "real.c").reject(&:eof?)
+    assert_equal 100, tokens.find { |t| t.type == :num }.value
+    assert_equal "virtual.c".b, tokens.find { |t| t.type == :string }.value
+  end
+
+  def test_line_directive_without_a_filename_keeps_the_name
+    tokens = pp("#line 50\nint a = __LINE__;\nchar *f = __FILE__;\n",
+                filename: "keep.c").reject(&:eof?)
+    assert_equal 50, tokens.find { |t| t.type == :num }.value
+    assert_equal "keep.c".b, tokens.find { |t| t.type == :string }.value
+  end
+
+  def test_line_directive_macro_expands_its_arguments
+    tokens = pp("#define LN 7\n#define FN \"g.y\"\n#line LN FN\nint a = __LINE__;\nchar *f = __FILE__;\n")
+                .reject(&:eof?)
+    assert_equal 7, tokens.find { |t| t.type == :num }.value
+    assert_equal "g.y".b, tokens.find { |t| t.type == :string }.value
+  end
+
+  def test_line_directive_does_not_leak_out_of_an_include
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "z.h"), "#line 1 \"virt.list\"\nint m = __LINE__;\n")
+      main = File.join(dir, "main.c")
+      # The header's #line is per-file: after the include the main file resumes
+      # its own numbering, so "after" sees the includer's physical line 2.
+      tokens = pp("#include \"z.h\"\nint after = __LINE__;\n", filename: main).reject(&:eof?)
+      assert_equal [1, 2], tokens.select { |t| t.type == :num }.map(&:value)
+    end
+  end
+
+  def test_line_directive_rejects_a_non_numeric_argument
+    error = assert_raises(Rubycc::CompileError) { pp("#line foo\n") }
+    assert_match(/#line directive requires a positive integer argument/, error.description)
+  end
+
   def test_stdc_conformance_macros
     tokens = pp("int a = __STDC__; long b = __STDC_VERSION__; int c = __RUBYCC__;").reject(&:eof?)
     nums = tokens.select { |t| t.type == :num }.map(&:value)

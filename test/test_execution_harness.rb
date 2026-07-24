@@ -3040,6 +3040,29 @@ class TestExecutionHarness < Minitest::Test
                  "rubycc and gcc disagree on a function-pointer cast in a static initializer"
   end
 
+  # The #line directive (Step 102, driven by date's gperf-generated zonetab.h):
+  # it presumes the next line's number and, given a string, the file name, both
+  # feeding __LINE__/__FILE__. Setting a virtual file name makes __FILE__
+  # deterministic across compilers (otherwise it is the temp path), so the two
+  # outputs are comparable. A bare "#line 5" keeps the presumed name.
+  PREPROCESSOR_LINE_PROGRAM =
+    "int printf(const char *fmt, ...);\n" \
+    "#line 100 \"virtual.c\"\n" \
+    "int a = __LINE__;\n" \
+    "int b = __LINE__;\n" \
+    "#line 5\n" \
+    "int c = __LINE__;\n" \
+    "int main(void) {\n" \
+    "  printf(\"%d %d %d %s\\n\", a, b, c, __FILE__);\n" \
+    "  return 0;\n" \
+    "}\n"
+
+  def test_line_directive_matches_gcc_stdout
+    assert_equal program_output(PREPROCESSOR_LINE_PROGRAM, compiler: :gcc),
+                 program_output(PREPROCESSOR_LINE_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on #line's effect on __LINE__/__FILE__"
+  end
+
   private
 
   def run_source(source, compiler:)
