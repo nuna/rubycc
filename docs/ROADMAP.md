@@ -612,17 +612,17 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   cparse.so を rubycc がビルド(`Racc_Runtime_Type = c` で C ランタイム稼働を確認)、上流 v1.8.1 の
   test/unit スイートを実走 → **71 tests / 319 assertions / 0 failures / 0 errors**(生成物
   `lib/racc/parser-text.rb` は rmake ビルド生成物から補完)。テスト全合格 5 例目。
-- **date 3.5.1 のビルドを継続中**(ブロッカーを順に解消):Step 99 で多次元配列
-  (`monthtab[2][13]`)、Step 100 で配列境界の `sizeof(式)`(`char fmt[sizeof(timefmt)+...]`、
-  パーサの通常名スコープに変数型を持たせて構文解析時に畳む)、Step 101 で静的初期化子の
-  関数ポインタキャスト `(VALUE (*)(void *))m_real_year`(date_core.c:7159)を解消。
-  **これで `date_core.c` はフルコンパイル達成**。Step 102 で `date_parse.c` の include する
-  gperf 生成 `zonetab.h:32` の `#line` プリプロセッサ指令(6.10.4)を実装。Step 103 で
-  `zonetab.h:814` の手書き offsetof イディオム
-  `(int)(size_t)&((struct stringpool_t *)0)->member` を静的初期化子で畳む対応
-  (ConstantEvaluator の pointer_int フック + null 基点アドレスの absolute オフセット化)。
-  次は Step 104 予定 = `date_strftime.c:214` の `strlcpy` 暗黙宣言(同梱 `<string.h>` に
-  `strlcpy`/`strlcat` を追加)。
+- **date 3.5.1 フルビルド + テスト全合格達成(Step 99〜104、H4 の受け入れ 6 例目)**:
+  ブロッカーを順に解消 — Step 99 多次元配列(`monthtab[2][13]`)、Step 100 配列境界の `sizeof(式)`、
+  Step 101 静的初期化子の関数ポインタキャスト(→ `date_core.c` 完走)、Step 102 `#line` 指令
+  (gperf 生成 `zonetab.h`)、Step 103 手書き offsetof イディオム `(int)(size_t)&((T*)0)->m`、
+  Step 104 `strlcpy`/`strlcat` 宣言(`date_strftime.c`)。上流 v3.5.1 の test/unit を実走 →
+  **143 tests / 162,593 assertions / 0 failures / 0 errors**。
+- **★ M5 コーパス 6 gem すべてがフルビルド + gem 本体テスト全合格に到達**:
+  json(606)/ bigdecimal(265)/ redcarpet(136)/ msgpack(468 examples, MRI 全パス)/
+  racc(71)/ date(143)。「ビルドが通る」ではなく「gem 本体のテストが通る」水準での達成。
+  コンパイラ改修を要したのは bigdecimal(93〜97)・redcarpet(98)・date(99〜104)、
+  msgpack・racc は無改修で通過。**H4 の当初目標「コーパス 90%」を、選定 6 gem では 100% で満たした**。
 - **受け入れ基準はビルド成功では不十分**: 「ビルドが通る」ことと「正しく動く」ことは別。
   gem がフルビルドに達したら **gem 本体のテストスイートを実走**して合否を取る
   (これが H4 の「合格率」の実体)。現時点でテスト全合格は json / bigdecimal / redcarpet /

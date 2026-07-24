@@ -3474,9 +3474,52 @@ null ポインタ基点のメンバアドレスを整数オフセット定数へ
 
 ---
 
+## Step 104 — `<string.h>` に `strlcpy`/`strlcat`(M5 H4、**date フルビルド + テスト全合格**)
+
+date の最後のブロッカー `date_strftime.c:214` の `strlcpy` 暗黙宣言を解消。同梱 `<string.h>` に
+BSD の size 制限コピー `strlcpy`/`strlcat`(glibc 2.38+、ホスト libc が提供)の宣言を追加。
+`strdup`/`mempcpy`/`strlcpy` 等の glibc 拡張を無条件に出す既存方針に沿う。
+
+- **修正**: `size_t strlcpy(char *restrict, const char *restrict, size_t);` と `strlcat` を追加。
+- **検証**: header-abi ハーネスの STRING snippet に `strlcpy`/`strlcat` 呼び出しを追加
+  (gcc+システムヘッダ vs rubycc+同梱ヘッダの両方でコンパイル)。実 gem のフルビルドが最終検証。
+
+### date フルビルドと gem テストスイート全合格(H4 の受け入れ達成 6 例目、**コーパス完走**)
+
+Step 99〜104 の 6 ステップで date のブロッカーを順に潰した結果:
+
+| Step | ブロッカー | 内容 |
+|---|---|---|
+| 99  | `date_core.c:697` | 多次元配列 `monthtab[2][13]` |
+| 100 | `date_core.c:8735` | 配列境界の `sizeof(式)` |
+| 101 | `date_core.c:7159` | 静的初期化子の関数ポインタキャスト |
+| 102 | `zonetab.h:32` | `#line` プリプロセッサ指令 |
+| 103 | `zonetab.h:814` | 手書き offsetof イディオム |
+| 104 | `date_strftime.c:214` | `strlcpy` の宣言 |
+
+`RUBYCC=1 gem install date` が成功(rmake が MAKE、gem_make.out の CC が rubycc、`lib/date_core.so` を生成)。
+上流ソース v3.5.1 の test/unit スイート(ruby-core の test/lib/helper.rb + test-unit-ruby-core を
+load path に補完)を rubycc ビルドの `.so` に対して実走 →
+**143 tests / 162,593 assertions / 0 failures / 0 errors / 0 skips**。
+
+**これで M5 コーパス 6 gem すべてがフルビルド + gem 本体テスト全合格に到達**:
+
+| gem | テスト結果 | 要した実装 |
+|---|---|---|
+| json 2.21.1 | 606 tests / 3,433 assertions / 0 failures | 既存(M2 まで) |
+| bigdecimal 4.1.2 | 265 tests / 8,267 assertions / 0 failures | Step 93〜97 |
+| redcarpet 3.6.1 | 136 tests / 206 assertions / 0 failures | Step 98 |
+| msgpack 1.8.3 | 468 examples(MRI 全パス、JRuby 専用13除く)| 無改修 |
+| racc 1.8.1 | 71 tests / 319 assertions / 0 failures | 無改修 |
+| date 3.5.1 | 143 tests / 162,593 assertions / 0 failures | Step 99〜104 |
+
+---
+
 ## 現在のテスト規模
 
-Step 103 完了時点: **2,435 runs / 6,533 assertions / 0 failures / 47 skips**
+Step 104 完了時点: **2,435 runs / 6,533 assertions / 0 failures / 47 skips**
+(Step 103 と同数 = strlcpy は header-abi の既存 STRING snippet への追記のため新規テストメソッドは増えない)
+(以前) Step 103 完了時点: **2,435 runs / 6,533 assertions / 0 failures / 47 skips**
 (Step 102 の 2,434 から +1 = 手書き offsetof イディオムの実行オラクル)
 (以前) Step 102 完了時点: **2,434 runs / 6,532 assertions / 0 failures / 47 skips**
 (Step 101 の 2,428 から +6 = `#line` のプリプロセッサ単体テスト5件 + 実行オラクル1件)
