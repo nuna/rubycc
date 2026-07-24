@@ -3445,9 +3445,40 @@ date の `date_parse.c` が include する gperf 生成ヘッダ `zonetab.h` の
 
 ---
 
+## Step 103 — 静的初期化子の手書き offsetof イディオム(M5 H4、date のブロッカー)
+
+date の `date_parse.c` が include する gperf 生成 `zonetab.h:814` の
+`(int)(size_t)&((struct stringpool_t *)0)->stringpool_str2`(手書き offsetof)を解消。
+null ポインタ基点のメンバアドレスを整数オフセット定数へ畳む。
+
+- **背景**: この式は `&((T*)0)->member`(メンバアドレス)を `(size_t)` で整数化し `(int)` する。
+  ジェネレータのアドレス定数畳み込み(`pointer_value`/`member_address`)は
+  `&((T*)0)->member` を **絶対アドレス定数**(base=null=0 + メンバオフセット = base_kind :absolute、
+  offset = メンバオフセット)に畳める。だが整数初期化子を畳む `ConstantEvaluator` は
+  `&`/`->` を扱えず、ポインタ→整数キャストの被演算子で NotConstant になっていた。
+- **修正**:
+  - `ConstantEvaluator` に `pointer_int` リゾルバのフック追加(既存の `sizeof_expr` と同型)。
+    整数へのキャストの被演算子が整数定数として畳めないとき、リゾルバに委ねる。
+  - ジェネレータが `address_int_resolver` を供給:被演算子を `pointer_value` で畳み、
+    **base_kind が :absolute のときだけ** その offset(= オフセット値)を返す。シンボル相対
+    (`(int)&global`)はリンク時再配置で定数でないため NotConstant(gcc も拒否)。
+  - スカラー整数グローバルも対応: パーサは整数スカラー初期化子を構文解析時に畳むため、
+    `references_address_of?` を追加し、アドレス取得を含む初期化子は(sizeof(式)同様)
+    ジェネレータへ畳みを委譲する。構造体配列(date の形)は元から構造化初期化子として
+    ジェネレータの `fold_global_constant` に届くので、フック追加だけで通る。
+- **検証**: gcc 差分実行オラクル(構造体配列と スカラーの両方で `&((S*)0)->m` の各オフセットが
+  gcc と一致)。シンボル相対 `(int)&global` が両者で拒否されることも確認。
+- **date の次ブロッカー(Step 104 予定)**: `date_parse.c` までコンパイル済み、`date_strftime.c:214`
+  の **`strlcpy` の暗黙宣言**。同梱 `<string.h>` に `strlcpy`/`strlcat`(BSD、glibc 2.38+、
+  ホスト libc は提供)の宣言を追加すればよい。別ステップ。
+
+---
+
 ## 現在のテスト規模
 
-Step 102 完了時点: **2,434 runs / 6,532 assertions / 0 failures / 47 skips**
+Step 103 完了時点: **2,435 runs / 6,533 assertions / 0 failures / 47 skips**
+(Step 102 の 2,434 から +1 = 手書き offsetof イディオムの実行オラクル)
+(以前) Step 102 完了時点: **2,434 runs / 6,532 assertions / 0 failures / 47 skips**
 (Step 101 の 2,428 から +6 = `#line` のプリプロセッサ単体テスト5件 + 実行オラクル1件)
 (以前) Step 101 完了時点: **2,428 runs / 6,521 assertions / 0 failures / 47 skips**
 (Step 100 の 2,427 から +1 = 静的初期化子の関数ポインタキャストの実行オラクル)
