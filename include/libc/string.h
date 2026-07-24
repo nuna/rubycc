@@ -55,6 +55,9 @@ void  *memmem(const void *__haystack, size_t __haystacklen, const void *__needle
 void  *memrchr(const void *__s, int __c, size_t __n);
 char  *stpcpy(char *__restrict __dest, const char *__restrict __src);
 char  *stpncpy(char *__restrict __dest, const char *__restrict __src, size_t __n);
+/* BSD size-bounded copies, in glibc since 2.38; used by date's strftime. */
+size_t strlcpy(char *__restrict __dest, const char *__restrict __src, size_t __size);
+size_t strlcat(char *__restrict __dest, const char *__restrict __src, size_t __size);
 char  *strsep(char **__restrict __stringp, const char *__restrict __delim);
 char  *strchrnul(const char *__s, int __c);
 char  *strcasestr(const char *__haystack, const char *__needle);

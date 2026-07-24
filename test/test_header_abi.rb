@@ -133,7 +133,8 @@ class TestHeaderAbi < Minitest::Test
   # pulling in <strings.h> the way glibc does under __USE_MISC: with only
   # <string.h> included they must still resolve (Step 98, driven by redcarpet's
   # autolink.c), so this snippet failing to compile under rubycc would flag the
-  # pull-in being dropped.
+  # pull-in being dropped. strlcpy/strlcat guard their prototypes (Step 104,
+  # driven by date's strftime).
   STRING = HeaderAbiHarness::Spec.new(
     header: "string.h",
     sizes: %w[size_t],
@@ -141,7 +142,8 @@ class TestHeaderAbi < Minitest::Test
       static int abi_string(char *d, const char *s) {
         memcpy(d, s, strlen(s) + 1);
         return strcmp(d, s) + (memchr(s, 'a', 4) != (void *)0)
-             + strcasecmp(d, s) + strncasecmp(d, s, 3);
+             + strcasecmp(d, s) + strncasecmp(d, s, 3)
+             + (int)strlcpy(d, s, 8) + (int)strlcat(d, s, 16);
       }
     C
   )
