@@ -501,14 +501,15 @@ module Rubycc
           if InitializerResolver.structural?(type, init)
             type = InitializerResolver.resolve(type, init).type
             initializer_node = init
-          elsif type.integer? && !references_sizeof_expr?(init)
+          elsif type.integer? && !references_sizeof_expr?(init) && !references_address_of?(init)
             # An integer scalar initializer is folded to a value here, where the
             # constant evaluator carries no type table. A `sizeof <expression>`
-            # operand needs the operand's type, which only the generator can
-            # infer, so an initializer that uses one is deferred as a raw node
-            # for the generator to fold instead (it reaches the same
-            # "unsupported initializer" diagnostic there when genuinely not a
-            # constant).
+            # operand needs the operand's type, and an address-of (the
+            # "(size_t)&((T*)0)->m" offsetof idiom) needs the generator's
+            # address-constant machinery, so an initializer that uses either is
+            # deferred as a raw node for the generator to fold instead (it reaches
+            # the same "unsupported initializer" diagnostic there when genuinely
+            # not a constant).
             initializer_value = evaluate_constant_expression(init, "unsupported initializer for global variable")
           else
             initializer_node = init
@@ -3072,6 +3073,23 @@ module Rubycc
         node.deconstruct_keys(nil).each_value do |field|
           values = field.is_a?(Array) ? field : [field]
           return true if values.any? { |value| references_sizeof_expr?(value) }
+        end
+        false
+      end
+
+      # Whether the initializer subtree takes an address ("&x") anywhere. Such an
+      # expression reduces only through the generator's address-constant
+      # machinery (the "(size_t)&((T*)0)->m" offsetof idiom folds to a member's
+      # byte offset), not the parser's type-table-free evaluator, so its presence
+      # defers folding of an integer initializer to the generator — mirroring
+      # #references_sizeof_expr?. The walk descends only through AST nodes.
+      def references_address_of?(node)
+        return true if node.is_a?(AST::Unary) && node.op == :addr
+        return false unless ast_node?(node)
+
+        node.deconstruct_keys(nil).each_value do |field|
+          values = field.is_a?(Array) ? field : [field]
+          return true if values.any? { |value| references_address_of?(value) }
         end
         false
       end

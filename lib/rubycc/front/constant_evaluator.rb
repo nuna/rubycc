@@ -86,8 +86,8 @@ module Rubycc
         ge: ->(a, b) { a >= b ? 1 : 0 }
       }.freeze
 
-      def self.evaluate(node, sizeof_expr: nil)
-        new(sizeof_expr: sizeof_expr).evaluate(node)
+      def self.evaluate(node, sizeof_expr: nil, pointer_int: nil)
+        new(sizeof_expr: sizeof_expr, pointer_int: pointer_int).evaluate(node)
       end
 
       # `sizeof_expr`, when supplied, resolves a `sizeof <expression>` operand
@@ -98,8 +98,15 @@ module Rubycc
       # can fold "sizeof x". Without one, `sizeof <expression>` stays a
       # non-constant, as it is in a context with no type information (an array
       # bound folded during parsing).
-      def initialize(sizeof_expr: nil)
+      # `pointer_int`, when supplied, folds a pointer→integer cast whose operand
+      # is an address constant of a load-time-known absolute value — the
+      # "(size_t)&((T*)0)->member" offsetof idiom, whose value is the member's
+      # byte offset. The address-constant machinery lives in the IR generator, so
+      # a caller that has it (a static initializer) passes a resolver rather than
+      # duplicating it here; without one such a cast stays a non-constant.
+      def initialize(sizeof_expr: nil, pointer_int: nil)
         @sizeof_expr = sizeof_expr
+        @pointer_int = pointer_int
       end
 
       def evaluate(node)
@@ -198,7 +205,21 @@ module Rubycc
         float_value = float_constant_value(node.operand)
         return wrap_to_type(float_value.truncate, node.type) unless float_value.nil?
 
-        wrap_to_type(evaluate(node.operand), node.type)
+        wrap_to_type(evaluate_integer_or_address(node.operand), node.type)
+      end
+
+      # The integer value of a cast-to-integer operand: an integer constant
+      # expression normally, but a pointer→integer cast has a pointer operand the
+      # evaluator cannot fold on its own (the "(size_t)&((T*)0)->m" offsetof
+      # idiom). When such an operand is not an integer constant and a @pointer_int
+      # resolver is supplied, it is offered there; the resolver returns the
+      # pointer's absolute integer value or re-raises NotConstant.
+      def evaluate_integer_or_address(operand)
+        evaluate(operand)
+      rescue NotConstant
+        raise unless @pointer_int
+
+        @pointer_int.call(operand)
       end
 
       # The Float a floating-point constant operand denotes, or nil when

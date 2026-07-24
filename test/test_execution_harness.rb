@@ -3063,6 +3063,30 @@ class TestExecutionHarness < Minitest::Test
                  "rubycc and gcc disagree on #line's effect on __LINE__/__FILE__"
   end
 
+  # The manual offsetof idiom "(int)(size_t)&((T*)0)->member" in a static
+  # initializer (Step 103, driven by date's gperf-generated zonetab.h): a
+  # pointer→integer cast of a null-based member address folds to the member's
+  # byte offset. Covered both as the elements of a static array (date's shape)
+  # and as a scalar global; every offset must equal gcc's for this layout.
+  MANUAL_OFFSETOF_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "struct S { int a; char b; long c; short d; }; " \
+    "static const int offs[] = { " \
+    "  (int)(unsigned long)&((struct S *)0)->a, " \
+    "  (int)(unsigned long)&((struct S *)0)->b, " \
+    "  (int)(unsigned long)&((struct S *)0)->c, " \
+    "  (int)(unsigned long)&((struct S *)0)->d }; " \
+    "static const long off_c = (long)(unsigned long)&((struct S *)0)->c; " \
+    "int main(void) { " \
+    "  printf(\"%d %d %d %d %ld\\n\", offs[0], offs[1], offs[2], offs[3], off_c); " \
+    "  return 0; }"
+
+  def test_manual_offsetof_idiom_matches_gcc_stdout
+    assert_equal program_output(MANUAL_OFFSETOF_PROGRAM, compiler: :gcc),
+                 program_output(MANUAL_OFFSETOF_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on the &((T*)0)->m offsetof idiom in a static initializer"
+  end
+
   private
 
   def run_source(source, compiler:)

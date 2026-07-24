@@ -728,11 +728,35 @@ module Rubycc
       # rule (6.6) a global requires; a non-constant element (a call, a variable)
       # or a division by zero is diagnosed at its own token.
       def fold_global_constant(node)
-        Front::ConstantEvaluator.evaluate(node, sizeof_expr: sizeof_expr_resolver)
+        Front::ConstantEvaluator.evaluate(node, sizeof_expr: sizeof_expr_resolver,
+                                                pointer_int: address_int_resolver)
       rescue Front::ConstantEvaluator::NotConstant => e
         error_at(e.token, "initializer element is not a constant")
       rescue Front::ConstantEvaluator::DivisionByZero => e
         error_at(e.token, "division by zero in constant expression")
+      end
+
+      # A resolver the constant evaluator calls to fold a pointer→integer cast
+      # whose pointer operand is an address constant of a load-time-known absolute
+      # value — the "(size_t)&((T*)0)->member" offsetof idiom that gperf output
+      # (date's zonetab.h) writes for a member's byte offset. Only a base-less
+      # :absolute address is a compile-time integer; a symbol-relative one is a
+      # link-time relocation, not a constant, so it (and any non-address operand)
+      # re-raises NotConstant for the evaluator to report at the operand's token.
+      def address_int_resolver
+        lambda do |node|
+          addr =
+            begin
+              pointer_value(node)
+            rescue NotAddressConstant
+              raise Front::ConstantEvaluator::NotConstant, node.token
+            end
+          unless addr.base_kind == :absolute
+            raise Front::ConstantEvaluator::NotConstant, node.token
+          end
+
+          addr.offset
+        end
       end
 
       # A resolver the constant evaluator calls to fold a "sizeof <expression>"
