@@ -3422,9 +3422,34 @@ date の次ブロッカー `static const struct tmx_funcs tmx_funcs = { (VALUE (
 
 ---
 
+## Step 102 — `#line` プリプロセッサ指令(M5 H4、date のブロッカー)
+
+date の `date_parse.c` が include する gperf 生成ヘッダ `zonetab.h` の `#line 1 "zonetab.list"`
+(zonetab.h:32)を解消。`#line`(C11 6.10.4)を実装。従来は未認識ディレクティブとして診断エラーだった。
+
+- **仕様**: `#line` の引数をまずマクロ展開し(6.10.4p5)、「桁列 + 任意の文字列リテラル」として読む。
+  **次の行**の推定行番号をその値に、文字列があれば推定ファイル名を設定する(無ければ維持)。
+  物理トークンの位置は動かさず、推定だけが変わる。
+- **`__LINE__`/`__FILE__` への反映**: 推定行差分 `@presumed_line_delta`(物理行に加算)と推定ファイル名
+  `@presumed_file`(トークン自身のファイル名を上書き)を持ち、`expand_builtin` で `__LINE__`/`__FILE__` に
+  適用。#line が走るまでは恒等(従来どおり物理値)。
+- **#include をまたぐ扱い**: 推定はファイル単位(6.10.4)。`process_include` で推定状態を保存し、
+  includee は素の行/ファイル番号で開始、include から戻ると includer の推定が復帰する。
+- **検証**: プリプロセッサ単体テスト5件(行/ファイル設定、ファイル名省略時の維持、引数のマクロ展開、
+  #include をまたいで漏れないこと、非数値引数の拒否)+ gcc 差分実行オラクル(`#line N "virtual.c"` で
+  __FILE__ を決定的にし、__LINE__/__FILE__ が gcc と一致)。C11-COVERAGE.md の 6.10.4 を実装済みに更新。
+- **date の次ブロッカー(Step 103 予定)**: `date_core.c` はフルコンパイル済み、`date_parse.c` の
+  `zonetab.h:814` の **手書き offsetof イディオム** `(int)(size_t)&((struct stringpool_t *)0)->member`
+  が静的初期化子で「initializer element is not a constant」。null ポインタ基点のメンバアドレスを
+  整数オフセット定数へ畳む対応が必要。別ステップ。
+
+---
+
 ## 現在のテスト規模
 
-Step 101 完了時点: **2,428 runs / 6,521 assertions / 0 failures / 47 skips**
+Step 102 完了時点: **2,434 runs / 6,532 assertions / 0 failures / 47 skips**
+(Step 101 の 2,428 から +6 = `#line` のプリプロセッサ単体テスト5件 + 実行オラクル1件)
+(以前) Step 101 完了時点: **2,428 runs / 6,521 assertions / 0 failures / 47 skips**
 (Step 100 の 2,427 から +1 = 静的初期化子の関数ポインタキャストの実行オラクル)
 (以前) Step 100 完了時点: **2,427 runs / 6,519 assertions / 0 failures / 47 skips**
 (Step 99 の 2,425 から +2 = 配列境界の sizeof(式)畳み込みの実行オラクルとパーサ単体テスト)

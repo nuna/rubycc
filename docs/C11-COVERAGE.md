@@ -39,7 +39,7 @@ gem install 成功 + テスト合格」を到達目標(DESIGN R10)とし、C11 �
 
 | 条番号 | 見出し | 状態 | 備考 |
 |---|---|---|---|
-| 5.1.1.2 | Translation phases | 実装済み | フェーズ 1〜4(行継続・コメント除去・pp トークン化・#include/マクロ展開・条件コンパイル)は Step 26/27、フェーズ 5〜7(隣接文字列リテラル連結を含む)は Step 28 の TokenConverter、フェーズ 8(コンパイル・リンク)は Driver(Step 38)が担う。フェーズ 9(リンク)相当は自前リンカ(Step 34〜37)。#line(6.10.4)によるフェーズ間の行番号制御のみ非対応 |
+| 5.1.1.2 | Translation phases | 実装済み | フェーズ 1〜4(行継続・コメント除去・pp トークン化・#include/マクロ展開・条件コンパイル)は Step 26/27、フェーズ 5〜7(隣接文字列リテラル連結を含む)は Step 28 の TokenConverter、フェーズ 8(コンパイル・リンク)は Driver(Step 38)が担う。フェーズ 9(リンク)相当は自前リンカ(Step 34〜37)。#line(6.10.4)によるフェーズ間の行番号制御は Step 102 で対応 |
 | 5.1.2.2.1 | Program startup(`main` / argc,argv) | 実装済み | 実行ファイルは自前 crt(_start)経由で `__libc_start_main` を呼び、`int main(void)` / `int main(int argc, char *argv[])` の両形式で argc/argv が実測どおり渡ることを検証済み(Step 37) |
 | 5.2.4.2 | Numerical limits(`<limits.h>` / `<float.h>` の値) | 部分実装 | 同梱 limits.h/float.h の値は ABI 一致ハーネス(Step 62)で gcc + 実ヘッダと突き合わせ済みだが、2 件の既知バグ・制限が残る: (1) float リテラルの binary32 丸めに誤りがあり `FLT_MAX` の 10 進綴りが `+inf` になる(ROADMAP §3 の負債、該当ハーネス検査は非 assert)、(2) `long double` を 8 バイト `double` として扱う簡略化(DESIGN §3.3)により `max_align_t` が glibc 実測値と相違 |
 
@@ -169,7 +169,7 @@ gem install 成功 + テスト合格」を到達目標(DESIGN R10)とし、C11 �
 | 6.10.1 | Conditional inclusion | 実装済み | `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif`(Step 26)。`defined` 演算子は展開後の定義済みマクロ認識まで含めて完全対応(Step 49)。`__has_include`/`__has_attribute`/`__has_builtin` は演算子として同じ段で畳み込む拡張(詳細は GCC-EXTENSIONS.md) |
 | 6.10.2 | Source file inclusion | 部分実装 | `"file"` / `<file>` の 2 形式(Step 26)、`#include_next`(Step 28)。**マクロ展開結果をヘッダ名にする第 3 形式は非対応** |
 | 6.10.3 | Macro replacement | 実装済み | オブジェクト/関数マクロ、`#`/`##`、`__VA_ARGS__`、GNU 名前付き可変長引数とカンマ削除(Step 26, 27, 43)。既知の逸脱: hide-set 交差なしの青染めのため、病的な自己参照入れ子(`CAT(A,B)(x)` 越しの再展開)が gcc と発散しうる(c-testsuite 00201) |
-| 6.10.4 | Line control | 非対応(診断) | `#line` は未認識ディレクティブとして診断エラー(c-testsuite 00152。将来的に受理のみ実装する計画がある) |
+| 6.10.4 | Line control | 実装済み | `#line`(Step 102)。引数をマクロ展開後に「桁列 + 任意の文字列」として読み、次行の推定行番号と推定ファイル名を設定して `__LINE__`/`__FILE__` に反映。推定は #include をまたいで保存・復元(ファイル単位)。gperf 生成の `zonetab.h`(date)が使う |
 | 6.10.5 | Error directive | 実装済み | `#error`(Step 26) |
 | 6.10.6 | Pragma directive | 部分実装 | `#pragma once` は意味論込みで実装(Step 27)。それ以外の `#pragma`(`push_macro`/`pop_macro` を含む)は受理して無視(c-testsuite 00206) |
 | 6.10.7 | Null directive | 実装済み | 空ディレクティブは自然に無視される |

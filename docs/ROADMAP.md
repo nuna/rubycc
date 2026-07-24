@@ -616,8 +616,10 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   (`monthtab[2][13]`)、Step 100 で配列境界の `sizeof(式)`(`char fmt[sizeof(timefmt)+...]`、
   パーサの通常名スコープに変数型を持たせて構文解析時に畳む)、Step 101 で静的初期化子の
   関数ポインタキャスト `(VALUE (*)(void *))m_real_year`(date_core.c:7159)を解消。
-  **これで `date_core.c` はフルコンパイル達成**。次は Step 102 予定 = `date_parse.c` の
-  `zonetab.h:32` の `#line` プリプロセッサ指令(6.10.4)。
+  **これで `date_core.c` はフルコンパイル達成**。Step 102 で `date_parse.c` の include する
+  gperf 生成 `zonetab.h:32` の `#line` プリプロセッサ指令(6.10.4)を実装。次は Step 103 予定 =
+  `zonetab.h:814` の手書き offsetof イディオム
+  `(int)(size_t)&((struct stringpool_t *)0)->member` を静的初期化子で畳む対応。
 - **受け入れ基準はビルド成功では不十分**: 「ビルドが通る」ことと「正しく動く」ことは別。
   gem がフルビルドに達したら **gem 本体のテストスイートを実走**して合否を取る
   (これが H4 の「合格率」の実体)。現時点でテスト全合格は json / bigdecimal / redcarpet /
