@@ -3850,11 +3850,51 @@ Step 114 で到達した sqlite3 の次のブロッカー
   改善した診断がそのまま `undeclared variable '_SC_PAGESIZE'` と出し、
   原因が一読で分かる形になった。
 
+## Step 116 — `<unistd.h>` の `_SC_*` 定数(**sqlite3 amalgamation のコンパイル成功**)
+
+Step 115 で到達した `sqlite3.c:42862` の `sysconf(_SC_PAGESIZE)` を解消。同梱
+`<unistd.h>` は `sysconf` を宣言しながら引数の `_SC_*` を 1 つも持たなかった。
+
+- **値はホスト libc の ABI**: `sysconf()` は実行時 libc の関数なので、`__name` は
+  ホストの番号付け(glibc の `<bits/confname.h>` の enum)と一致していなければ
+  ならず、rubycc が決めてよい値ではない。glibc ではマクロではなく enum のため
+  `gcc -E -dM` には現れず、**実行時に printf して実測**した値を使用
+  (`_SC_ARG_MAX`=0 … `_SC_PAGESIZE`=30 … `_SC_AVPHYS_PAGES`=86 の 11 個。
+  `_SC_PAGE_SIZE` は `_SC_PAGESIZE` の別名)。
+- **機械検証**: 11 定数すべてを header-abi ハーネスの `ints:` に登録した。
+  この仕組みは gcc+システムヘッダと rubycc+同梱ヘッダで**定数値の一致**を
+  比較するので、値の取り違えは必ずテストが落とす。snippet にも
+  `sysconf(_SC_PAGESIZE)` の実呼び出しを追加。
+- 実使用の裏付け: sqlite3 が `_SC_PAGESIZE`、コーパス gem が別名の
+  `_SC_PAGE_SIZE` を使用(実測 grep)。残りは sysconf の中核セット。
+
+### sqlite3 amalgamation のコンパイル成功(ROADMAP H5 の参考値、N1/N6)
+
+**261,463 行の単一 TU が rubycc で通った**(3.49.2 amalgamation):
+
+| | rubycc | gcc -O0 |
+|---|---:|---:|
+| wall | **8.12 秒** | 4.21 秒 |
+| 最大 RSS | **467 MB** | 277 MB |
+| 出力 | sqlite3.o 5,117,472 バイト | — |
+
+- N1 の「巨大な単一 TU は『動くが遅い』を許容し上限を設けない」に対し、
+  gcc -O0 の **1.93 倍の時間**で完走。行/秒に直すと約 32,000 行/秒
+  (前処理前の物理行ベース。ヘッダ展開が少ない amalgamation は
+  コーパス gem より有利に出る)。
+- N6 の「1 TU あたり 1GB 以内」に対し 467MB で収まった。
+- ここに至るまでに要したのは Step 114(メンバ sizeof)・115(pread/pwrite)・
+  116(`_SC_*`)の 3 件のみで、いずれも**言語機能の欠落 1 件 + ヘッダ不足 2 件**。
+  25 万行級の実コードでも未対応の C 構文にはほぼ当たらないことが確認できた。
+
 ---
 
 ## 現在のテスト規模
 
-Step 115 完了時点: **2,472 runs / 6,594 assertions / 0 failures / 47 skips**
+Step 116 完了時点: **2,472 runs / 6,594 assertions / 0 failures / 47 skips**
+(Step 115 と同数 = _SC_* は header-abi の既存 UNISTD Spec への追記のため
+テストメソッドは増えない。定数値 11 個の照合が既存ケース内で増える)
+(以前) Step 115 完了時点: **2,472 runs / 6,594 assertions / 0 failures / 47 skips**
 (Step 114 から +3 = 静的初期化子の未宣言識別子診断 2 件 + ローカルアドレスの退行防止 1 件。
 pread/pwrite は header-abi の既存 UNISTD snippet への追記のためテスト数は増えない)
 (以前) Step 114 完了時点: **2,469 runs / 6,585 assertions / 0 failures / 47 skips**

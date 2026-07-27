@@ -324,11 +324,15 @@ class TestHeaderAbi < Minitest::Test
     header: "unistd.h",
     sizes: %w[ssize_t off_t pid_t uid_t gid_t],
     ints: %w[STDIN_FILENO STDOUT_FILENO STDERR_FILENO F_OK R_OK W_OK X_OK
-             SEEK_SET SEEK_CUR SEEK_END],
+             SEEK_SET SEEK_CUR SEEK_END
+             _SC_ARG_MAX _SC_CHILD_MAX _SC_CLK_TCK _SC_NGROUPS_MAX
+             _SC_OPEN_MAX _SC_PAGESIZE _SC_PAGE_SIZE _SC_NPROCESSORS_CONF
+             _SC_NPROCESSORS_ONLN _SC_PHYS_PAGES _SC_AVPHYS_PAGES],
     snippets: [<<~C.chomp]
       static long abi_unistd(int fd, void *buf, unsigned long n) {
         return read(fd, buf, n) + write(fd, buf, n) + pread(fd, buf, n, 0)
-             + pwrite(fd, buf, n, 0) + close(fd) + getpid();
+             + pwrite(fd, buf, n, 0) + close(fd) + getpid()
+             + sysconf(_SC_PAGESIZE);
       }
     C
   )

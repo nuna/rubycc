@@ -107,6 +107,20 @@ int     execvp(const char *__file, char *const __argv[]);
 int     execve(const char *__path, char *const __argv[], char *const __envp[]);
 int     execl(const char *__path, const char *__arg, ...);
 int     execlp(const char *__file, const char *__arg, ...);
+/* sysconf() is answered by the host's runtime libc, so its __name argument
+   must match the host's own numbering (glibc's <bits/confname.h> enum), not
+   a value rubycc invents. _SC_PAGE_SIZE is just an alias of _SC_PAGESIZE. */
+#define _SC_ARG_MAX          0
+#define _SC_CHILD_MAX        1
+#define _SC_CLK_TCK          2
+#define _SC_NGROUPS_MAX      3
+#define _SC_OPEN_MAX         4
+#define _SC_PAGESIZE         30
+#define _SC_PAGE_SIZE        _SC_PAGESIZE
+#define _SC_NPROCESSORS_CONF 83
+#define _SC_NPROCESSORS_ONLN 84
+#define _SC_PHYS_PAGES       85
+#define _SC_AVPHYS_PAGES     86
 long    sysconf(int __name);
 void    _exit(int __status) __attribute__((__noreturn__));
 void   *sbrk(intptr_t __delta);
