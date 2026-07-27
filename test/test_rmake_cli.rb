@@ -110,6 +110,18 @@ class TestRmakeCli < Minitest::Test
     end
   end
 
+  def test_default_jobs_is_processor_count
+    cli = CLI.new(dir: Dir.pwd, out: StringIO.new, err: StringIO.new)
+    options = cli.send(:parse_argv, ["all"])
+    assert_equal cli.send(:processor_count), options[:jobs]
+  end
+
+  def test_dash_j1_forces_serial_jobs
+    cli = CLI.new(dir: Dir.pwd, out: StringIO.new, err: StringIO.new)
+    options = cli.send(:parse_argv, ["-j1", "all"])
+    assert_equal 1, options[:jobs]
+  end
+
   # --- command-line variable overrides --------------------------------------
 
   def test_command_line_variable_overrides_makefile_assignment

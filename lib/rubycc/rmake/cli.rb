@@ -67,7 +67,14 @@ module Rubycc
       def parse_argv(argv)
         overrides = {}
         targets = []
-        jobs = 1
+        # Default to all cores: rmake is invoked by `gem install` as a plain
+        # `make`, so a serial default would leave multi-file extensions
+        # building one recipe at a time (H5). The scheduler's dependency DAG
+        # is unaffected, and each step's output is buffered and flushed whole
+        # (like `-O`), so parallel output never interleaves and the built
+        # artifacts match a serial run; an explicit `-j1` still gets the old
+        # serial behaviour.
+        jobs = processor_count
         file = nil
 
         i = 0

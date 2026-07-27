@@ -3767,11 +3767,35 @@ modrm_rbp_disp 全 11 箇所の用途)で仕様を確定し、implementer に移
   プロセス起動込みでこの値なので、gcc 本体のコンパイル速度はさらに上 —
   倍率は rubycc に不利側の保守的な参考値である。
 
+## Step 113 — rmake の並列ビルド既定化(M5 H5、実インストールの体感直結)
+
+Step 111 後のプロファイル再採取で、TU 内の残ボトルネックが StringScanner
+プリミティブ(ユニークヘッダ初回スキャンの本質コスト、自己時間 24%)に収斂し
+1 件 2〜4% 級の小粒だけになったため、ROADMAP の H5 残項目「rmake -j の既定化」
+(マルチコアの実利用)へ転換。implementer に移譲して実装。
+
+- **変更は CLI の既定値 1 行**: `parse_argv` の `jobs = 1` →
+  `jobs = processor_count`(既存の bare `-j` と同じ Etc.nprocessors、失敗時 1)。
+  gem install は rmake を素の `make` として呼ぶため、これだけで実インストールが
+  全コアを使う。`-j1` が従来の直列。`-j N` 系の解析・Executor / Makefile#run の
+  ライブラリ既定(jobs: 1)は不変。
+- **並列でも成果物・出力が直列と同一である根拠**(B3 で実装済みの性質):
+  スケジューラは依存 DAG を守り、各ステップの出力はバッファして丸ごと flush
+  (make -O 相当)。今回はその既定を変えただけで、並列実行系のテスト
+  (test_rmake_tools の jobs: 2 系)は既存のまま通用する。
+- **実測(staged msgpack ext、11 TU、clean ビルド、6 コア機)**:
+  `-j1` 9.23 秒 → 既定 **2.46 秒(3.76 倍、CPU 431%)**。msgpack.so 生成・
+  exit 0 を両者で確認。単一 TU の行/秒(N1 の代表値)には影響しないが、
+  実インストールの compile フェーズは TU 数分だけ短縮される。
+- テスト: CLI 既定 = processor_count / `-j1` = 1 のユニット 2 件を追加。
+
 ---
 
 ## 現在のテスト規模
 
-Step 110 完了時点: **2,462 runs / 6,576 assertions / 0 failures / 47 skips**
+Step 113 完了時点: **2,464 runs / 6,578 assertions / 0 failures / 47 skips**
+(Step 110 から +2 = rmake CLI の jobs 既定のユニットテスト。Step 111・112 はテスト増なし)
+(以前) Step 110 完了時点: **2,462 runs / 6,576 assertions / 0 failures / 47 skips**
 (Step 109 と同数 = 純内部最適化のためテスト増なし。挙動不変は -E 出力 A/B で担保)
 (以前) Step 109 完了時点: **2,462 runs / 6,576 assertions / 0 failures / 47 skips**
 (Step 108 から +5 = multiple-include optimization の意味論テスト)
