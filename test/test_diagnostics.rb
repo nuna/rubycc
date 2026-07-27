@@ -1334,6 +1334,33 @@ class TestDiagnostics < Minitest::Test
     assert_match(/initializer element is not a constant/, error.description)
   end
 
+  def test_undeclared_identifier_in_aggregate_static_initializer_is_rejected
+    source = <<~C
+      typedef void (*fp)(void);
+      struct e { const char *n; fp p; };
+      static struct e t[] = { { "x", (fp)undeclared_thing } };
+      int main(void) { return 0; }
+    C
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/undeclared variable 'undeclared_thing'/, error.description)
+  end
+
+  def test_undeclared_identifier_in_scalar_static_initializer_is_rejected
+    source = <<~C
+      typedef void (*fp)(void);
+      static fp g = (fp)undeclared_thing;
+      int main(void) { return 0; }
+    C
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/undeclared variable 'undeclared_thing'/, error.description)
+  end
+
+  def test_address_of_a_local_in_a_block_scope_static_initializer_is_still_unsupported
+    source = "int main(void) { int a = 1; static int *p = &a; return *p + a - 1; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/unsupported initializer for global variable/, error.description)
+  end
+
   def test_extern_declaration_conflicting_with_the_definition_is_rejected
     source = "extern int g; long g; int main(void) { return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }

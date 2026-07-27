@@ -630,10 +630,23 @@ module Rubycc
           # its address is the function symbol itself (no signature check — an
           # explicit cast around it is free to reinterpret the pointer type).
           sig = @signatures[node.name]
-          raise NotAddressConstant unless sig
+          if sig
+            return AddressConstant.new(base_kind: :symbol, symbol: node.name,
+                                       string_id: nil, offset: 0, pointee: function_type_of(sig))
+          end
 
-          AddressConstant.new(base_kind: :symbol, symbol: node.name,
-                              string_id: nil, offset: 0, pointee: function_type_of(sig))
+          # Neither a file-scope object nor a function: if some scope binds the
+          # name at all (e.g. a local, whose address is never a compile-time
+          # constant), the diagnostic stays "unsupported initializer" via
+          # NotAddressConstant, unwound to the general failure below. Otherwise
+          # the name is not declared anywhere, which is always an error in C99+
+          # regardless of context, and this fold is the final judge of the
+          # initializer — nothing upstream will re-check the name — so report it
+          # directly instead of letting it surface as the vaguer "unsupported
+          # initializer" message.
+          error_at(node.token, "undeclared variable '#{node.name}'") unless lookup_variable(node.name)
+
+          raise NotAddressConstant
         when Front::AST::Subscript
           subscript_address(node)
         when Front::AST::MemberAccess

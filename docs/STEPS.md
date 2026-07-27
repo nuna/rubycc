@@ -3817,11 +3817,47 @@ Step 107(`_Static_assert`)で導入した parse 時 sizeof 解決に**メンバ�
   次のブロッカーは `sqlite3.c:39063`(→ Step 115 で切り分け)。
   参考: 同ファイルの gcc -O0 は 4.21 秒 / 277MB。
 
+## Step 115 — `<unistd.h>` の `pread`/`pwrite` と未宣言識別子の診断改善(M5 H5)
+
+Step 114 で到達した sqlite3 の次のブロッカー
+`sqlite3.c:39063: { "pread", (sqlite3_syscall_ptr)pread, 0 }` の切り分け結果、
+**IR のギャップではなくヘッダの宣言漏れ**だった。同じ形の
+`close`/`access`/`read`/`ftruncate`/`fcntl` は 39024〜39061 行を通過しており、
+`pread` の行で初めて落ちる — 同梱 `<unistd.h>` に `pread`/`pwrite` が無いためで、
+`#include <unistd.h>` して `pread(...)` を呼ぶと
+「implicit declaration of function 'pread'」になることを実測で確認した。
+
+- **修正 1(ヘッダ)**: `<unistd.h>` の `read`/`write` の直後に POSIX の位置指定 I/O
+  `ssize_t pread(int, void *, size_t, off_t)` と `pwrite` を追加(`off_t` は
+  同ファイル 24 行で既に定義、`lseek`/`ftruncate` と同じ型)。header-abi ハーネスの
+  UNISTD snippet に両者の呼び出しを追加し、gcc+システムヘッダ /
+  rubycc+同梱ヘッダの双方でコンパイル・実行されるようにした。
+- **修正 2(診断、N3)**: 未宣言識別子が**静的初期化子の中**にあると、スカラー・
+  集約とも「unsupported initializer for global variable」になり原因が読めなかった
+  (同じ名前をローカル式で使えば正しく「undeclared variable 'X'」が出る)。
+  **この誤誘導のせいで、今回ヘッダ不足を IR のギャップと誤読しかけた**のが修正の動機。
+  `object_address` の VariableRef 分岐で、`@global_bindings` にも `@signatures` にも
+  無い場合に `lookup_variable`(ローカルスコープも見る既存 API)を引き、
+  **どのスコープにも束縛が無いときだけ** `undeclared variable 'X'` を報告する。
+  「宣言はあるが定数式でない」(`static int *p = &local;`)は従来メッセージのまま
+  = 退行防止テストで固定。未宣言識別子は C99 以降どの文脈でも常にエラーであり、
+  この畳み込みが初期化子の最終判断の場なので投機的に握り潰す必要がない。
+- テスト: 診断 3 件(集約・スカラーの未宣言報告 + ローカルアドレスの退行防止)、
+  header-abi の UNISTD snippet 拡張。
+- **sqlite3 の到達点**: 39063 を通過し、次は `sqlite3.c:42862` の
+  `sysconf(_SC_PAGESIZE)` — 同梱 `<unistd.h>` は `sysconf` を宣言しているが
+  `_SC_*` 定数を持たない、という**同種のヘッダ不足**(→ 次ステップ)。
+  改善した診断がそのまま `undeclared variable '_SC_PAGESIZE'` と出し、
+  原因が一読で分かる形になった。
+
 ---
 
 ## 現在のテスト規模
 
-Step 114 完了時点: **2,469 runs / 6,585 assertions / 0 failures / 47 skips**
+Step 115 完了時点: **2,472 runs / 6,594 assertions / 0 failures / 47 skips**
+(Step 114 から +3 = 静的初期化子の未宣言識別子診断 2 件 + ローカルアドレスの退行防止 1 件。
+pread/pwrite は header-abi の既存 UNISTD snippet への追記のためテスト数は増えない)
+(以前) Step 114 完了時点: **2,469 runs / 6,585 assertions / 0 failures / 47 skips**
 (Step 113 から +5 = メンバ sizeof のパーサ単体 1・診断 3・実行オラクル 1)
 (以前) Step 113 完了時点: **2,464 runs / 6,578 assertions / 0 failures / 47 skips**
 (Step 110 から +2 = rmake CLI の jobs 既定のユニットテスト。Step 111・112 はテスト増なし)

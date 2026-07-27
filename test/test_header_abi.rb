@@ -327,7 +327,8 @@ class TestHeaderAbi < Minitest::Test
              SEEK_SET SEEK_CUR SEEK_END],
     snippets: [<<~C.chomp]
       static long abi_unistd(int fd, void *buf, unsigned long n) {
-        return read(fd, buf, n) + write(fd, buf, n) + close(fd) + getpid();
+        return read(fd, buf, n) + write(fd, buf, n) + pread(fd, buf, n, 0)
+             + pwrite(fd, buf, n, 0) + close(fd) + getpid();
       }
     C
   )

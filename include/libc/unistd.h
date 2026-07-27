@@ -63,6 +63,9 @@ int     access(const char *__name, int __type);
 int     close(int __fd);
 ssize_t read(int __fd, void *__buf, size_t __nbytes);
 ssize_t write(int __fd, const void *__buf, size_t __n);
+/* Positioned I/O at __offset, without moving the file's own offset. */
+ssize_t pread(int __fd, void *__buf, size_t __nbytes, off_t __offset);
+ssize_t pwrite(int __fd, const void *__buf, size_t __n, off_t __offset);
 off_t   lseek(int __fd, off_t __offset, int __whence);
 int     pipe(int __pipedes[2]);
 int     dup(int __fd);
