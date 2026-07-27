@@ -3588,11 +3588,35 @@ H5 着手時のプロファイル(`Scanner#scan` が前処理の 9 割 ≒ コ�
   (`results/throughput-20260727-223351.md`)。
 - strscan は default gem(Ruby 同梱)で、R2(外部ツールチェーン非依存)を破らない。
 
+## Step 107 — `_Static_assert` の `sizeof <式>` 畳み込み(M5 H5 の副産物)
+
+Step 105 のハーネス整備中に顕在化した言語ギャップ: gcc で extconf した bigdecimal は
+`HAVE_RUBY_ATOMIC_H` が付き、missing.c → `<ruby/atomic.h>` の
+`RBIMPL_STATIC_ASSERT(sizeof_voidp, sizeof *ptr == sizeof(size_t))` が
+「static assertion expression is not an integer constant」で停止した。
+配列境界用に Step 100 で導入済みの parse 時 sizeof 解決(`fold_time_sizeof`)を
+`parse_static_assert` の `evaluate_constant_expression` にも渡す 1 行で解消。
+
+- サイズ関係の表明は _Static_assert の主用途で、宣言済みオブジェクト・仮引数の
+  デリファレンス・文字列リテラルが Step 100 の解決器の守備範囲そのまま。
+  解決できない名前は従来どおり「not an integer constant」で停まる。
+- **atomic.h 自体は引き続きコンパイル不能**(ruby の config.h が焼き込む
+  `HAVE_GCC_ATOMIC_BUILTINS` により `__atomic_fetch_add` 等の GCC 組み込みへ
+  到達する。組み込み未実装 = M6 GCC 擬態の領域)。よって実インストール
+  (`RUBYCC=1`)では conftest が同ヘッダを無効判定し続け、コーパスの挙動は不変。
+  本修正は表明そのものの畳み込み能力を C11 6.7.10 として正しくするもの。
+- テスト: 診断 4 件(式 sizeof の成立 2 形態・sizeof 込み失敗時のメッセージ・
+  未宣言名の拒否)+ gcc 差分実行オラクル 1 件(配列全体 / 文字列リテラル /
+  仮引数デリファレンスを 1 プログラムで)。
+
 ---
 
 ## 現在のテスト規模
 
-Step 104 完了時点: **2,435 runs / 6,533 assertions / 0 failures / 47 skips**
+Step 107 完了時点: **2,456 runs / 6,570 assertions / 0 failures / 47 skips**
+(Step 104 の 2,435 から +21 = Step 106 のスキャナ単体回帰 16 件 + Step 107 の
+診断 4 件・実行オラクル 1 件。Step 105 はベンチ基盤のみでテスト増なし)
+(以前) Step 104 完了時点: **2,435 runs / 6,533 assertions / 0 failures / 47 skips**
 (Step 103 と同数 = strlcpy は header-abi の既存 STRING snippet への追記のため新規テストメソッドは増えない)
 (以前) Step 103 完了時点: **2,435 runs / 6,533 assertions / 0 failures / 47 skips**
 (Step 102 の 2,434 から +1 = 手書き offsetof イディオムの実行オラクル)

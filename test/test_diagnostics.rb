@@ -1259,6 +1259,32 @@ class TestDiagnostics < Minitest::Test
     assert_match(/static assertion expression is not an integer constant/, error.description)
   end
 
+  # sizeof over an expression folds at parse time (Step 107, the array-bound
+  # resolver reused), so a size-relation assertion over a declared object works
+  # while one over a name outside the resolver's reach still reports cleanly.
+  def test_static_assert_folds_sizeof_of_an_expression
+    source = "int main(void) { long v = 0; _Static_assert(sizeof v == 8, \"long is 8\"); return 0; }"
+    assert_kind_of String, compile(source)
+  end
+
+  def test_static_assert_folds_sizeof_of_a_dereferenced_parameter
+    source = "int f(void *volatile *ptr) { _Static_assert(sizeof *ptr == sizeof(unsigned long), \"voidp\"); return 0; }" \
+             " int main(void) { return 0; }"
+    assert_kind_of String, compile(source)
+  end
+
+  def test_static_assert_sizeof_failure_still_reports_the_message
+    source = "int main(void) { char c = 0; _Static_assert(sizeof c == 2, \"char is 2?\"); return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/static assertion failed: "char is 2\?"/, error.description)
+  end
+
+  def test_static_assert_sizeof_of_an_unknown_name_is_rejected
+    source = "int main(void) { _Static_assert(sizeof undeclared == 8, \"nope\"); return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/static assertion expression is not an integer constant/, error.description)
+  end
+
   def test_alignof_of_a_function_type_is_rejected
     source = "int main(void) { return _Alignof(int (int)); }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }

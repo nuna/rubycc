@@ -3087,6 +3087,31 @@ class TestExecutionHarness < Minitest::Test
                  "rubycc and gcc disagree on the &((T*)0)->m offsetof idiom in a static initializer"
   end
 
+  # _Static_assert over "sizeof <expression>" (Step 107, surfaced by ruby.h's
+  # RBIMPL_STATIC_ASSERT(…, sizeof *ptr == sizeof(size_t)) when the compile-
+  # throughput benchmark staged bigdecimal with gcc-derived defines): the
+  # parse-time sizeof resolver that already folds array bounds serves the
+  # assertion too — a declared object, a dereferenced parameter, and a string
+  # literal all size at parse time, so these guarded programs compile and run.
+  STATIC_ASSERT_SIZEOF_EXPR_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "static long counters[4]; " \
+    "_Static_assert(sizeof counters == 4 * sizeof(long), \"whole array\"); " \
+    "_Static_assert(sizeof \"abc\" == 4, \"string literal with NUL\"); " \
+    "int width(void *volatile *slot) { " \
+    "  _Static_assert(sizeof *slot == sizeof(unsigned long), \"pointer slot\"); " \
+    "  return (int)sizeof *slot; } " \
+    "int main(void) { " \
+    "  void *volatile cell = 0; " \
+    "  printf(\"%d %d\\n\", width(&cell), (int)sizeof counters); " \
+    "  return 0; }"
+
+  def test_static_assert_over_sizeof_expression_matches_gcc_stdout
+    assert_equal program_output(STATIC_ASSERT_SIZEOF_EXPR_PROGRAM, compiler: :gcc),
+                 program_output(STATIC_ASSERT_SIZEOF_EXPR_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on _Static_assert over sizeof <expression>"
+  end
+
   private
 
   def run_source(source, compiler:)

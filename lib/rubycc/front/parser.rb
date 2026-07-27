@@ -1529,14 +1529,19 @@ module Rubycc
 
       # A file- or block-scope "_Static_assert ( constant-expression ,
       # string-literal ) ;" (6.7.10). The expression is folded like any other
-      # constant-expression; a zero value fails the assertion, quoting the
-      # message the way gcc does. It declares nothing, so — like a bare tag
-      # declaration or a typedef — it returns an empty run of declarations.
+      # constant-expression, with the same parse-time "sizeof <expression>"
+      # resolution an array bound gets (#fold_time_sizeof) — asserting a size
+      # relation over an expression is the idiom's main use (ruby.h's
+      # RBIMPL_STATIC_ASSERT(…, sizeof *ptr == sizeof(size_t))). A zero value
+      # fails the assertion, quoting the message the way gcc does. It declares
+      # nothing, so — like a bare tag declaration or a typedef — it returns an
+      # empty run of declarations.
       def parse_static_assert
         keyword_tok = advance # "_Static_assert"
         expect_punct("(")
         expr = parse_conditional_expression
-        value = evaluate_constant_expression(expr, "static assertion expression is not an integer constant")
+        value = evaluate_constant_expression(expr, "static assertion expression is not an integer constant",
+                                                   sizeof_expr: method(:fold_time_sizeof))
         expect_punct(",")
         message_tok = peek
         error_at(message_tok, "expected string literal in '_Static_assert'") unless message_tok.type == :string

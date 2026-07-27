@@ -142,7 +142,7 @@ gem install 成功 + テスト合格」を到達目標(DESIGN R10)とし、C11 �
 | 6.7.7 | Type names | 実装済み | `sizeof(型名)`(Step 8)、キャスト式の型名(Step 14)。parse_type_name として共有 |
 | 6.7.8 | Type definitions | 部分実装 | `typedef`(Step 18)。**同一型への再 typedef も一律拒否**(C11 6.7p3 は同一型なら許容するが M1 単純化として拒否) |
 | 6.7.9 | Initialization | 実装済み | 定数式評価器と一体の初期化子リゾルバ(Step 20)。brace 省略・指示付き初期化子・`[]` 長さ推論・文字列初期化に対応。文字列初期化は NUL 込みで収まる長さを要求(`char s[2]="ab"` の NUL 落ちは C では合法だが診断) |
-| 6.7.10 | Static assertions | 実装済み | `_Static_assert`(Step 22) |
+| 6.7.10 | Static assertions | 実装済み | `_Static_assert`(Step 22)。`sizeof <式>` の畳み込みは Step 107 |
 
 ### 6.8 Statements and blocks
 
