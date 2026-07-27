@@ -3692,11 +3692,41 @@ process_directive 呼び出しが 36,052 回**あることを特定。ガード�
   呼び出し回数の割に走査自体は軽かった — 次の一手はプロファイル分解の続き
   (collect_line・expand_tokens の中間配列削減、ROADMAP の残り候補)。
 
+## Step 110 — include 解決のメモ化 + membership の O(1) 化(M5 H5、stackprof 駆動)
+
+stackprof(開発時依存として導入、ROADMAP の明記どおり)による自己時間分析で、
+ウォームな 1 コンパイル中の `File.file?` 3.6%(#include のパス解決が毎回探索パスを
+総当たり)と `Array#include?` 2.1%(全識別子が通るキーワード判定・定数 membership の
+線形探索)を特定して除去。**本ステップから実装は役割表どおり implementer(Sonnet)へ
+移譲**し、メインは仕様確定・レビュー・検証統合を担当(ユーザ指示による運用是正)。
+
+- **include 解決のメモ化**: `resolve_include` の成功結果を quote は
+  `[includer のディレクトリ, name]`、angle は `name` をキーに `@resolve_cache` へ。
+  キャッシュは `preprocess` ごとにリセット(@include_paths 依存のため)。ヒット時の
+  `record_include_origin` 再呼び出しは不要(初回解決で同値記録済み)。raise 経路は
+  キャッシュしない。`resolve_include_next` は origin 依存・低頻度のため対象外。
+- **membership の O(1) 化**: `LexemeReader::KEYWORD_SET`(全識別子が通る
+  `keyword?`/`keyword_spelling`)と、プリプロセッサの CONDITIONAL_DIRECTIVES /
+  BUILTIN_MACROS / KNOWN_BUILTINS / KNOWN_ATTRIBUTES を membership 専用の凍結
+  Hash に変更(`.include?` → `.key?`)。トークン毎に異なる小配列
+  (`macro.params` / `tok.suppress`)は対象外のまま。
+- **計測の教訓 — ペア計測の導入**: 単発の before/after 比較では本マシン
+  (モバイル Ryzen)の ±10% ドリフトに改善が埋もれた(4.0.6+YJIT で
+  12,716 → 12,605「横ばい」、3.4.5 で 6,416 → 5,942「悪化」に見えた)。
+  同一セッションで HEAD → 作業ツリーを連続実行するペア計測(BENCH_RUNS=7)で
+  判定し直し: **HEAD 12,028 → 変更後 12,855 行/秒(+6.9%、目標 20,000 の
+  64.3%)**(4.0.6+YJIT、`results/throughput-20260727-234810.md`。3.4.5 の
+  runs=3 参考値は `-234348.md`)。以後の性能ステップの採否判定はペア計測を標準とする。
+- **検証**: `rubycc -E` 出力の対 HEAD A/B を staged 実 gem 36 ファイルで実施し
+  完全一致(挙動不変)。テスト増なし(純内部最適化)。
+
 ---
 
 ## 現在のテスト規模
 
-Step 109 完了時点: **2,462 runs / 6,576 assertions / 0 failures / 47 skips**
+Step 110 完了時点: **2,462 runs / 6,576 assertions / 0 failures / 47 skips**
+(Step 109 と同数 = 純内部最適化のためテスト増なし。挙動不変は -E 出力 A/B で担保)
+(以前) Step 109 完了時点: **2,462 runs / 6,576 assertions / 0 failures / 47 skips**
 (Step 108 から +5 = multiple-include optimization の意味論テスト)
 (以前) Step 108 完了時点: **2,457 runs / 6,571 assertions / 0 failures / 47 skips**
 (Step 107 から +1 = 再 #include のマクロ文脈再評価のリグレッションテスト)

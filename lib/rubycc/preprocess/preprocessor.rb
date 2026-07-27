@@ -146,7 +146,8 @@ module Rubycc
       # The directives that steer a conditional group (6.10.1). They are acted on
       # whether or not the enclosing group is active, so nesting stays balanced
       # inside a skipped region; every other directive is inert while skipping.
-      CONDITIONAL_DIRECTIVES = %w[if ifdef ifndef elif else endif].freeze
+      # Kept as a Hash (used only for membership) so the check is O(1).
+      CONDITIONAL_DIRECTIVES = %w[if ifdef ifndef elif else endif].to_h { |name| [name, true] }.freeze
 
       # One nesting level of a conditional. `active` is whether this frame's
       # current group is being emitted (its condition held and the frame itself
@@ -179,7 +180,8 @@ module Rubycc
       # from the use site, so its value cannot be a fixed replacement list stored
       # at definition time. __GNUC__ is deliberately absent (DESIGN R7), so a
       # header cannot select a gcc-specific path. None may be redefined or undefined.
-      BUILTIN_MACROS = %w[__FILE__ __LINE__ __STDC__ __STDC_VERSION__ __RUBYCC__].freeze
+      # Kept as a Hash (used only for membership) so the check is O(1).
+      BUILTIN_MACROS = %w[__FILE__ __LINE__ __STDC__ __STDC_VERSION__ __RUBYCC__].to_h { |name| [name, true] }.freeze
 
       # The identifiers __has_builtin (6.10.1) answers true for: exactly the
       # builtins rubycc's front end actually recognizes — the varargs intrinsics,
@@ -188,12 +190,13 @@ module Rubycc
       # unreachable hint and memcpy. Every other builtin query is false, so a
       # header that guards a fallback behind __has_builtin (e.g. json's bswap
       # path) takes the fallback for one rubycc does not provide. Kept in sync
-      # with the parser's builtin keywords.
+      # with the parser's builtin keywords. Kept as a Hash (used only for
+      # membership) so the check is O(1).
       KNOWN_BUILTINS = %w[__builtin_va_start __builtin_va_arg __builtin_va_end __builtin_va_copy
                           __builtin_expect __builtin_alloca __builtin_offsetof
                           __builtin_constant_p __builtin_choose_expr
                           __builtin_ctz __builtin_ctzll __builtin_clz __builtin_clzll
-                          __builtin_unreachable __builtin_memcpy].freeze
+                          __builtin_unreachable __builtin_memcpy].to_h { |name| [name, true] }.freeze
 
       # The platform macros gcc keeps predefined even under strict ISO C
       # (-std=c11): only the reserved forms (a leading underscore followed by
@@ -340,6 +343,10 @@ module Rubycc
       # -nostdinc passes it false to search only the caller's directories.
       def preprocess(source, filename:, include_paths: [], defines: [], system_includes: true)
         @include_paths = include_paths + (system_includes ? default_system_include_paths : [])
+        # #resolve_include's cache keys a resolved path off @include_paths (and,
+        # for quote includes, the includer's directory), so it must start empty
+        # every run rather than survive across calls with a different search path.
+        @resolve_cache = {}
         # The whole-run macro-expansion budget (see EXPANSION_TOKEN_LIMIT), reset
         # here so every translation unit starts with a full allowance.
         @expansion_tokens = 0
@@ -478,7 +485,7 @@ module Rubycc
 
         name = args[0]
         body = args[1..]
-        if name.type == :identifier && CONDITIONAL_DIRECTIVES.include?(name.text)
+        if name.type == :identifier && CONDITIONAL_DIRECTIVES.key?(name.text)
           dispatch_conditional(name, body, stack)
           return next_index
         end
@@ -599,7 +606,7 @@ module Rubycc
       # value is computed at the use site, or a __has_* query operator (gcc
       # extension both directives share, see query_operator_name?).
       def defined_macro_name?(name)
-        @macros.key?(name) || BUILTIN_MACROS.include?(name) || query_operator_name?(name)
+        @macros.key?(name) || BUILTIN_MACROS.key?(name) || query_operator_name?(name)
       end
 
       # Evaluates a #if/#elif controlling constant-expression (6.10.1) to a
@@ -703,7 +710,8 @@ module Rubycc
       # The GNU attributes rubycc gives real semantics (Step 28): the layout
       # attributes the parser honors on a struct/union. Every other attribute is
       # accepted and discarded, so __has_attribute answers true only for these.
-      KNOWN_ATTRIBUTES = %w[aligned packed].freeze
+      # Kept as a Hash (used only for membership) so the check is O(1).
+      KNOWN_ATTRIBUTES = %w[aligned packed].to_h { |name| [name, true] }.freeze
 
       # __has_attribute ( X ): true for the attributes rubycc actually acts on
       # (aligned and packed, in either the plain or the "__name__" spelling),
@@ -711,7 +719,7 @@ module Rubycc
       # parser normalizes an attribute token.
       def fold_has_attribute(operator, body, index)
         name, index = read_paren_identifier(operator, body, index, "__has_attribute")
-        [KNOWN_ATTRIBUTES.include?(normalize_attribute_name(name)), index]
+        [KNOWN_ATTRIBUTES.key?(normalize_attribute_name(name)), index]
       end
 
       # Collapses a "__name__" attribute spelling to "name" (a single leading and
@@ -727,7 +735,7 @@ module Rubycc
 
       def fold_has_builtin(operator, body, index)
         name, index = read_paren_identifier(operator, body, index, "__has_builtin")
-        [KNOWN_BUILTINS.include?(name), index]
+        [KNOWN_BUILTINS.key?(name), index]
       end
 
       # The index of the ")" that closes the "(" at `index`; the operand between
@@ -998,16 +1006,33 @@ module Rubycc
       # angled include only along the search path (6.10.2p2-3). A match found
       # along the search path records which directory it came from, so a later
       # #include_next from this same file knows where to resume.
+      #
+      # The same header name is resolved over and over within one translation
+      # unit (each use site re-#includes it, guarded headers included, before
+      # Step 109's scan cache short-circuits their body), so successful lookups
+      # are memoized in @resolve_cache. A quote include's cache key carries the
+      # includer's directory since the "beside" candidate is includer-relative;
+      # an angle include's key is just the name, since it never consults the
+      # includer. A cache hit skips #record_include_origin: the first resolution
+      # already recorded whatever origin this same path implies.
       def resolve_include(kind, name, includer, hash)
+        key = kind == :quote ? [File.dirname(includer), name] : name
+        cached = @resolve_cache[key]
+        return cached if cached
+
         if kind == :quote
           beside = File.join(File.dirname(includer), name)
-          return beside if File.file?(beside)
+          if File.file?(beside)
+            @resolve_cache[key] = beside
+            return beside
+          end
         end
 
         index, path = search_include_paths(name, 0)
         raise_at(hash, "#{name}: No such file or directory") unless path
 
         record_include_origin(path, index)
+        @resolve_cache[key] = path
         path
       end
 
@@ -1168,7 +1193,7 @@ module Rubycc
       def reject_reserved_name(name, verb)
         if name.text == "defined"
           raise_at(name, "\"defined\" cannot be used as a macro name")
-        elsif BUILTIN_MACROS.include?(name.text)
+        elsif BUILTIN_MACROS.key?(name.text)
           verb = verb == "define" ? "define" : "undefine"
           raise_at(name, "cannot #{verb} builtin macro \"#{name.text}\"")
         end
@@ -1324,7 +1349,7 @@ module Rubycc
       # redefined (rejected at #define), so the user table never hides one; and
       # each expands to a non-identifier, so it can neither recurse nor need paint.
       def expandable_builtin?(tok)
-        tok.type == :identifier && BUILTIN_MACROS.include?(tok.text)
+        tok.type == :identifier && BUILTIN_MACROS.key?(tok.text)
       end
 
       # Whether `tok` is the "_Pragma" operator (6.10.9). It is handled during

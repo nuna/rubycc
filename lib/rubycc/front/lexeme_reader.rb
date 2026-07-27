@@ -44,6 +44,10 @@ module Rubycc
                     __asm__
                     __attribute__ __extension__].freeze
 
+      # Membership lookup for every identifier the lexer produces, so it must
+      # be O(1); KEYWORDS.include? showed up as a linear scan in profiling.
+      KEYWORD_SET = KEYWORDS.to_h { |word| [word, true] }.freeze
+
       # gcc's reserved "__x"/"__x__" alternate spellings for a handful of
       # keywords (6.10.8.4's rationale: a header built with strict-ISO options
       # such as -ansi still needs the keyword's meaning without colliding with
@@ -93,7 +97,7 @@ module Rubycc
 
       # Whether `name` (an identifier's spelling) is a reserved keyword.
       def self.keyword?(name)
-        KEYWORDS.include?(name)
+        KEYWORD_SET.key?(name)
       end
 
       # The keyword token `name` denotes: itself when it already is one of
@@ -101,7 +105,7 @@ module Rubycc
       # is one of gcc's reserved "__x"/"__x__" spellings. nil when `name` names
       # neither, so the caller lexes it as an ordinary identifier.
       def self.keyword_spelling(name)
-        return name if KEYWORDS.include?(name)
+        return name if KEYWORD_SET.key?(name)
 
         KEYWORD_ALIASES[name]
       end
