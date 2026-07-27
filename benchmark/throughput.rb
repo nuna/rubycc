@@ -30,6 +30,15 @@
 # report records whether it was active, because N1's acceptance (20,000
 # lines/sec median) is defined with YJIT on.
 #
+# Each file is also compiled once with `gcc -O0` (same include paths / -D set
+# / -fPIC as the rubycc compile) to give the N1 target an external reference
+# point, using the same "preprocessed lines" denominator as rubycc so the two
+# columns' ratio is directly comparable. This gcc figure is a wall-clock
+# process invocation (fork+exec `gcc` once per sample), whereas the rubycc
+# figure above is measured in-process after a warm JIT/require -- the two are
+# NOT apples-to-apples in absolute terms, only the ratio is informative. See
+# BENCH_GCC below to skip it.
+#
 # Deliberately NOT part of `rake test`: it fetches gems from rubygems.org and
 # takes minutes. Run via `rake bench:throughput`.
 #
@@ -37,12 +46,14 @@
 #   ruby benchmark/throughput.rb            # 3 timed compiles per file
 #   BENCH_RUNS=5 ruby benchmark/throughput.rb
 #   BENCH_YJIT=0 ruby benchmark/throughput.rb
+#   BENCH_GCC=0 ruby benchmark/throughput.rb        # skip the gcc -O0 reference
 #   BENCH_WORK=/path ruby benchmark/throughput.rb   # gem staging dir
 
 require "fileutils"
 require "json"
 require "open3"
 require "rbconfig"
+require "tmpdir"
 
 ROOT = File.expand_path("..", __dir__)
 BENCH_DIR = __dir__
@@ -93,6 +104,23 @@ def cpu_model
   line ? line.split(":", 2).last.strip : "unknown"
 rescue StandardError
   "unknown"
+end
+
+def gcc_available?
+  ENV["PATH"].to_s.split(File::PATH_SEPARATOR).any? { |dir| File.executable?(File.join(dir, "gcc")) }
+end
+
+def gcc_version_line
+  out, status = Open3.capture2e("gcc", "--version")
+  status.success? ? out.lines.first.strip : "unknown"
+rescue StandardError
+  "unknown"
+end
+
+def gcc_disabled_reason
+  return "disabled (BENCH_GCC=0)" if ENV["BENCH_GCC"] == "0"
+
+  "unavailable (gcc not found on PATH)"
 end
 
 # --- staging ---------------------------------------------------------------
@@ -201,16 +229,60 @@ def time_full_compile(source, path, defines, include_paths)
   monotime - t0
 end
 
-def measure_file(path, defines, include_paths)
+def measure_file(path, defines, include_paths, gcc_enabled)
   source = File.read(path)
   breakdown = stage_breakdown(source, path, defines, include_paths)
   time_full_compile(source, path, defines, include_paths) # warmup, discarded
   samples = RUNS.times.map { time_full_compile(source, path, defines, include_paths) }
   sorted = samples.sort
   median = sorted.length.odd? ? sorted[sorted.length / 2] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2.0
-  breakdown.merge(median: median, min: sorted.first,
-                  spread: (sorted.last - sorted.first) / median,
-                  lines_per_sec: breakdown[:lines] / median)
+  result = breakdown.merge(median: median, min: sorted.first,
+                           spread: (sorted.last - sorted.first) / median,
+                           lines_per_sec: breakdown[:lines] / median)
+  result.merge(measure_gcc_file(path, defines, include_paths, breakdown[:lines], gcc_enabled))
+end
+
+# gcc -O0 argv for one source: same include paths / -D set / -fPIC as the
+# rubycc compile above, so both sides compile the identical translation unit.
+def gcc_argv(src, obj, defines, include_paths)
+  ["gcc", "-O0", "-fPIC", "-c", src, "-o", obj,
+   *include_paths.map { |d| "-I#{d}" },
+   *defines.map { |(_type, val)| "-D#{val}" }]
+end
+
+# gcc -O0 reference: one warmup (discarded) + RUNS timed samples, median wall
+# time, same "preprocessed lines" denominator as the rubycc figure so the two
+# columns are directly comparable by ratio. Unlike time_full_compile above,
+# this times a full `gcc` process launch each sample (fork+exec, not
+# in-process), so the absolute times are NOT measuring the same thing as
+# rubycc's warm in-process compile -- only the resulting ratio is meaningful.
+# Returns { gcc_median:, gcc_lines_per_sec: } with nil values when gcc is
+# disabled/unavailable or the compile fails (compile failure is warned, not
+# fatal, so one broken workload doesn't abort the whole benchmark).
+def measure_gcc_file(path, defines, include_paths, lines, gcc_enabled)
+  return { gcc_median: nil, gcc_lines_per_sec: nil } unless gcc_enabled
+
+  Dir.mktmpdir("rubycc_bench_gcc") do |dir|
+    obj = File.join(dir, "#{File.basename(path, '.c')}.o")
+    argv = gcc_argv(path, obj, defines, include_paths)
+
+    warmup_out, warmup_status = Open3.capture2e(*argv)
+    unless warmup_status.success?
+      warn "    gcc -O0 FAILED for #{path} (exit #{warmup_status.exitstatus}), reporting '-' for this row"
+      warn warmup_out
+      return { gcc_median: nil, gcc_lines_per_sec: nil }
+    end
+
+    samples = RUNS.times.map do
+      t0 = monotime
+      Open3.capture2e(*argv)
+      monotime - t0
+    end
+    sorted = samples.sort
+    n = sorted.length
+    median = n.odd? ? sorted[n / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    { gcc_median: median, gcc_lines_per_sec: lines / median }
+  end
 end
 
 # --- report ----------------------------------------------------------------
@@ -221,31 +293,44 @@ def markdown_report(rows, env)
   lines << ""
   env.each { |k, v| lines << "- **#{k}**: #{v}" }
   lines << ""
-  lines << "| gem | file | 前処理後行数 | preprocess | tokenize | parse | IR | full median | 行/秒 |"
-  lines << "|---|---|---:|---:|---:|---:|---:|---:|---:|"
+  lines << "| gem | file | 前処理後行数 | preprocess | tokenize | parse | IR | full median | 行/秒 | gcc-O0 行/秒 | rubycc/gcc |"
+  lines << "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
   rows.each do |r|
-    lines << format("| %s | %s | %d | %.3fs | %.3fs | %.3fs | %.3fs | %.3fs%s | %d |",
+    gcc_col = r[:gcc_lines_per_sec] ? r[:gcc_lines_per_sec].round.to_s : "-"
+    ratio_col = r[:gcc_lines_per_sec] ? format("%.2fx", r[:lines_per_sec] / r[:gcc_lines_per_sec]) : "-"
+    lines << format("| %s | %s | %d | %.3fs | %.3fs | %.3fs | %.3fs | %.3fs%s | %d | %s | %s |",
                     r[:gem], r[:file], r[:lines], r[:preprocess], r[:tokenize],
-                    r[:parse], r[:ir], r[:median], r[:spread] > 0.2 ? "*" : "", r[:lines_per_sec])
+                    r[:parse], r[:ir], r[:median], r[:spread] > 0.2 ? "*" : "", r[:lines_per_sec],
+                    gcc_col, ratio_col)
   end
   lines << ""
   per_sec = rows.map { |r| r[:lines_per_sec] }.sort
   median = per_sec.length.odd? ? per_sec[per_sec.length / 2] : (per_sec[per_sec.length / 2 - 1] + per_sec[per_sec.length / 2]) / 2.0
   lines << format("**代表値(ファイル別 行/秒 の中央値): %d 行/秒** — 目標 %d 行/秒の %.1f%%",
                   median, TARGET_LINES_PER_SEC, median / TARGET_LINES_PER_SEC * 100)
+  gcc_values = rows.map { |r| r[:gcc_lines_per_sec] }.compact.sort
+  unless gcc_values.empty?
+    n = gcc_values.length
+    gcc_median = n.odd? ? gcc_values[n / 2] : (gcc_values[n / 2 - 1] + gcc_values[n / 2]) / 2.0
+    lines << format("**gcc -O0 代表値(ファイル別 行/秒 の中央値): %d 行/秒** — rubycc は %.2f 倍",
+                    gcc_median, median / gcc_median)
+  end
   lines << ""
   lines << "`*` = spread ((max-min)/median) > 20%。stage 内訳は 1 回計測の参考値。"
+  lines << "gcc-O0 はプロセス起動込みの wall time、rubycc はインプロセス(ウォーム)計測であり、両者は非対称な条件下の参考値。"
   lines.join("\n") + "\n"
 end
 
 def main
   yjit = enable_yjit
+  gcc_enabled = ENV["BENCH_GCC"] != "0" && gcc_available?
   env = {
     "date" => Time.now.strftime("%Y-%m-%d %H:%M:%S %z"),
     "cpu" => cpu_model,
     "ruby" => RUBY_DESCRIPTION,
     "yjit" => yjit,
-    "runs" => "#{RUNS} (+1 warmup, in-process)",
+    "gcc" => gcc_enabled ? gcc_version_line : gcc_disabled_reason,
+    "runs" => "#{RUNS} (+1 warmup, in-process for rubycc / per-process for gcc)",
     "workloads" => WORKLOADS.map { |w| "#{w[:gem]}-#{w[:version]}/#{w[:ext]}" }.join(", ")
   }
   rows = []
@@ -254,7 +339,7 @@ def main
     staged[:sources].each do |path|
       file = File.basename(path)
       puts "==> #{spec[:gem]}: #{file}"
-      r = measure_file(path, staged[:defines], staged[:include_paths])
+      r = measure_file(path, staged[:defines], staged[:include_paths], gcc_enabled)
       rows << r.merge(gem: spec[:gem], file: file)
       printf("    %d lines, full median %.3fs -> %d lines/sec (pp %.3fs / parse %.3fs / ir %.3fs)\n",
              r[:lines], r[:median], r[:lines_per_sec], r[:preprocess], r[:parse], r[:ir])

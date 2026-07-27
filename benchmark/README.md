@@ -13,7 +13,13 @@
   ウォームアップ 1 回 + `BENCH_RUNS`(既定 3)回フルコンパイルし、中央値から
   行/秒を出す。ステージ内訳(preprocess / tokenize / parse / IR)は 1 回計測の
   参考値。「前処理後行数」= phase-4 出力にトークンを 1 つ以上産んだ一意な
-  (ファイル, 物理行) 対の数。結果は `results/throughput-<stamp>.{md,json}`。
+  (ファイル, 物理行) 対の数。各ファイルは同じ include パス・`-D` 集合・
+  `-fPIC` で `gcc -O0` でも 1 回コンパイルし(同じ「前処理後行数」を分母に
+  使うので rubycc との比率がそのまま読める)、N1 の 20,000 行/秒目標に外部
+  基準を与える。`gcc` はプロセス起動込みの wall time、rubycc はインプロセス
+  (ウォーム)計測なので両者は非対称条件であり、比率のみが参考値。gcc が
+  `PATH` に無い、または `BENCH_GCC=0` の場合はスキップされる。結果は
+  `results/throughput-<stamp>.{md,json}`。
 
 ## rubycc vs gcc 実行速度ベンチマーク(run.rb)
 
