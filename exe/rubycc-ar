@@ -16,6 +16,20 @@ def usage_error(message)
   exit 1
 end
 
+# An archive's member name is meant to be a bare basename; the archive format
+# itself is untrusted input (a hand-crafted archive can name a member
+# anything), so a name carrying a path — an absolute path, a "/" separator, or
+# "." / ".." — is rejected outright rather than silently rewritten to
+# something safe, which would let a zip-slip-style write outside the current
+# directory succeed under a different name and erase the evidence of the
+# attempt.
+def safe_member_name?(name)
+  return false if name.empty? || name.start_with?("/") || name.include?("/")
+  return false if name == "." || name == ".."
+
+  true
+end
+
 if ARGV.include?("--version") || ARGV.include?("-v")
   puts "#{PROG} #{Rubycc::VERSION}"
   exit 0
@@ -78,6 +92,8 @@ begin
     wanted = members.empty? ? nil : members.map { |p| File.basename(p) }
     Reader.read_file(archive).members.reject(&:special?).each do |m|
       next if wanted && !wanted.include?(m.name)
+
+      fail_with("refusing to extract member with unsafe name '#{m.name}'") unless safe_member_name?(m.name)
 
       File.binwrite(m.name, m.data)
     end

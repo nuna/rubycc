@@ -339,6 +339,38 @@ class TestArArchive < Minitest::Test
     end
   end
 
+  # A member name that carries a path (a "../" segment or an absolute path) is a
+  # zip-slip-style attack: `x` must refuse to write it rather than silently
+  # escape the extraction directory (Step 118). ArWriter itself does not police
+  # member names, so a hostile archive is built with the ordinary writer.
+  def test_cli_x_rejects_a_member_name_with_a_path_traversal
+    Dir.mktmpdir("rubycc-ar-cli") do |dir|
+      ext = File.join(dir, "ext")
+      Dir.mkdir(ext)
+      File.binwrite(File.join(ext, "evil.a"),
+                    Writer.new.add_member("../evil.txt", "pwned".b).to_binary)
+
+      _out, err, status = run_cli("x", "evil.a", chdir: ext)
+
+      refute_equal 0, status.exitstatus
+      assert_match(/unsafe name/, err)
+      refute File.exist?(File.join(dir, "evil.txt")), "traversal must not escape the extraction directory"
+    end
+  end
+
+  def test_cli_x_rejects_a_member_name_that_is_an_absolute_path
+    Dir.mktmpdir("rubycc-ar-cli") do |dir|
+      archive = File.join(dir, "evil2.a")
+      File.binwrite(archive, Writer.new.add_member("/tmp/rubycc_ar_absolute_evil.txt", "pwned".b).to_binary)
+
+      _out, err, status = run_cli("x", "evil2.a", chdir: dir)
+
+      refute_equal 0, status.exitstatus
+      assert_match(/unsafe name/, err)
+      refute File.exist?("/tmp/rubycc_ar_absolute_evil.txt")
+    end
+  end
+
   def test_cli_no_arguments_is_a_usage_error
     _out, err, status = run_cli
     assert_equal 1, status.exitstatus

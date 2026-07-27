@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "set"
 require_relative "compile_error"
 require_relative "preprocess/preprocessor"
 require_relative "front/parser"
@@ -129,7 +130,10 @@ module Rubycc
       writer.set_bss(bss_size, align: bss_align) if bss_size.positive?
 
       text = +"".b
-      defined_names = []
+      # A defined function's name is only ever tested for membership below
+      # (never iterated in order), so a Set keeps that check O(1) instead of
+      # the O(n) linear scan an Array would need per relocation.
+      defined_names = Set.new
       relocations = []
       ir_program.functions.each do |ir_func|
         result = backend.compile(ir_func)
@@ -156,8 +160,9 @@ module Rubycc
 
       # A function-pointer global that names a function defined elsewhere leaves
       # an undefined symbol for the linker; one that names a local function or
-      # another global is already in the symbol table.
-      known_names = defined_names + ir_program.globals.map(&:name)
+      # another global is already in the symbol table. Like `defined_names`,
+      # this is only ever queried for membership, so it stays a Set.
+      known_names = defined_names | ir_program.globals.map(&:name)
       data_symbol_refs.each do |symbol|
         writer.add_undefined_symbol(symbol) unless known_names.include?(symbol)
       end

@@ -1999,6 +1999,16 @@ module Rubycc
         end
       end
 
+      # A control-flow statement's body, parsed one nesting level deeper. The
+      # body of an unbraced `if`/`while`/`do`/`for`/label recurses straight
+      # back into #parse_statement, which would otherwise let a chain like
+      # "if(1)if(1)..." recurse without ever passing through the block guard
+      # and exhaust the Ruby stack (a SystemStackError the driver cannot
+      # report as a diagnostic).
+      def parse_nested_statement(token)
+        with_nesting_guard(token, "statement") { parse_statement }
+      end
+
       # "return;" (a void return, `expr` nil) or "return expression;"; whether
       # a void function may omit the value (and a non-void one may not) is the
       # generator's job.
@@ -2017,11 +2027,11 @@ module Rubycc
         expect_punct("(")
         condition = parse_expression
         expect_punct(")")
-        then_stmt = parse_statement
+        then_stmt = parse_nested_statement(if_tok)
         else_stmt = nil
         if peek.keyword?("else")
-          advance
-          else_stmt = parse_statement
+          else_tok = advance
+          else_stmt = parse_nested_statement(else_tok)
         end
         AST::If.new(condition, then_stmt, else_stmt, if_tok)
       end
@@ -2031,13 +2041,13 @@ module Rubycc
         expect_punct("(")
         condition = parse_expression
         expect_punct(")")
-        body = parse_statement
+        body = parse_nested_statement(while_tok)
         AST::While.new(condition, body, while_tok)
       end
 
       def parse_do_while_statement
         do_tok = advance # "do"
-        body = parse_statement
+        body = parse_nested_statement(do_tok)
         expect_keyword("while")
         expect_punct("(")
         condition = parse_expression
@@ -2058,7 +2068,7 @@ module Rubycc
         expect_punct(";")
         step = peek.punct?(")") ? nil : parse_expression
         expect_punct(")")
-        body = parse_statement
+        body = parse_nested_statement(for_tok)
         @ordinary_scopes.pop
         @tag_scopes.pop
         AST::For.new(init, condition, step, body, for_tok)
@@ -2190,7 +2200,7 @@ module Rubycc
         expect_punct("(")
         control = parse_expression
         expect_punct(")")
-        body = parse_statement
+        body = parse_nested_statement(switch_tok)
         AST::Switch.new(control, body, switch_tok)
       end
 
@@ -2206,7 +2216,7 @@ module Rubycc
         expr = parse_conditional_expression
         value = evaluate_constant_expression(expr, "case label does not reduce to an integer constant")
         expect_punct(":")
-        body = parse_statement
+        body = parse_nested_statement(case_tok)
         AST::Case.new(value, body, case_tok)
       end
 
@@ -2215,7 +2225,7 @@ module Rubycc
       def parse_default_statement
         default_tok = advance # "default"
         expect_punct(":")
-        body = parse_statement
+        body = parse_nested_statement(default_tok)
         AST::Default.new(body, default_tok)
       end
 
@@ -2225,7 +2235,7 @@ module Rubycc
       def parse_labeled_statement
         name_tok = advance # identifier
         advance # ":"
-        body = parse_statement
+        body = parse_nested_statement(name_tok)
         AST::Label.new(name_tok.value, body, name_tok)
       end
 

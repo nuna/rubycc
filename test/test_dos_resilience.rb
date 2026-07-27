@@ -75,6 +75,34 @@ class TestDosResilience < Minitest::Test
     assert_match(/nested too deeply/, error.description)
   end
 
+  # An unbraced control-flow body ("if(1)if(1)...;" with no "{") recurses
+  # straight back into #parse_statement rather than through any of the guarded
+  # entry points above, so it needs its own coverage (Step 118): without a
+  # guard on that path the chain would overflow the Ruby stack with a bare
+  # SystemStackError rather than fail with a CompileError.
+  def test_deeply_nested_unbraced_if_chain_is_rejected
+    source = "int main(void) { #{"if(1)" * DEEP}return 1; }"
+    error = assert_raises(CompileError) { compile(source) }
+    assert_match(/nested too deeply/, error.description)
+  end
+
+  def test_deeply_nested_unbraced_while_chain_is_rejected
+    source = "int main(void) { #{"while(1)" * DEEP}return 1; }"
+    error = assert_raises(CompileError) { compile(source) }
+    assert_match(/nested too deeply/, error.description)
+  end
+
+  def test_deeply_nested_unbraced_for_chain_is_rejected
+    source = "int main(void) { #{"for(;;)" * DEEP}return 1; }"
+    error = assert_raises(CompileError) { compile(source) }
+    assert_match(/nested too deeply/, error.description)
+  end
+
+  def test_unbraced_if_chain_within_the_limit_still_compiles
+    source = "int main(void) { #{"if(1)" * 100}return 1; }"
+    refute_empty compile(source)
+  end
+
   def test_deeply_nested_statement_expressions_are_rejected
     source = "int main(void) { return #{"({" * DEEP}1;#{"})" * DEEP}; }"
     error = assert_raises(CompileError) { compile(source) }

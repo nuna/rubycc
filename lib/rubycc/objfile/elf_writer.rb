@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "set"
+
 module Rubycc
   module ObjFile
     # Writes a minimal ELF64 relocatable object (ET_REL) for Linux x86_64.
@@ -243,7 +245,14 @@ module Rubycc
         @file_symbol = nil
         @func_symbols = []
         @object_symbols = []
+        # Kept as an Array (in first-added order) because that order feeds the
+        # symbol table's layout, and the layout must be deterministic (DESIGN
+        # N4: identical input -> identical binary). @undefined_symbol_set
+        # mirrors its contents purely for O(1) membership checks, so a large
+        # translation unit's undefined-symbol lookups stay linear overall
+        # instead of quadratic.
         @undefined_symbols = []
+        @undefined_symbol_set = Set.new
         @relocations = []
         @data_relocations = []
       end
@@ -311,7 +320,10 @@ module Rubycc
       # Registers an external symbol (a call target defined elsewhere). Repeated
       # names collapse to a single symbol so several call sites share one entry.
       def add_undefined_symbol(name)
-        @undefined_symbols << name unless @undefined_symbols.include?(name)
+        unless @undefined_symbol_set.include?(name)
+          @undefined_symbols << name
+          @undefined_symbol_set << name
+        end
         self
       end
 
