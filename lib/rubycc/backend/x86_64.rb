@@ -218,7 +218,7 @@ module Rubycc
             next_sse += 1
           when :mem
             emit(0x48, 0x8B)                # mov rax, [rbp + disp]
-            emit_bytes(modrm_rbp_disp(EAX, 16 + 8 * next_stack))
+            emit_modrm_rbp_disp(EAX, 16 + 8 * next_stack)
             store_reg(EAX, i)
             next_stack += 1
           when :pad_stack
@@ -242,7 +242,7 @@ module Rubycc
         ARG_REGISTERS.each_with_index do |reg, i|
           emit(0x48 | (reg >= 8 ? 0x04 : 0)) # REX.W (+ REX.R for r8/r9)
           emit(0x89)                          # mov [rbp + disp], r64
-          emit_bytes(modrm_rbp_disp(reg & 7, @reg_save_area_offset + 8 * i))
+          emit_modrm_rbp_disp(reg & 7, @reg_save_area_offset + 8 * i)
         end
       end
 
@@ -257,7 +257,7 @@ module Rubycc
       def emit_save_xmm_registers
         8.times do |i|
           emit(0xF2, 0x0F, 0x11)              # movsd [rbp + disp], xmm_i
-          emit_bytes(modrm_rbp_disp(i, @reg_save_area_offset + 48 + 16 * i))
+          emit_modrm_rbp_disp(i, @reg_save_area_offset + 48 + 16 * i)
         end
       end
 
@@ -659,7 +659,7 @@ module Rubycc
       # slot, which a 64-bit store then parks in the destination slot.
       def emit_addr_of(dst, slot_vreg)
         emit(0x48, 0x8D)                # REX.W lea rax, [rbp+disp]
-        emit_bytes(modrm_rbp_disp(EAX, slot_disp(slot_vreg)))
+        emit_modrm_rbp_disp(EAX, slot_disp(slot_vreg))
         store_reg(EAX, dst)
       end
 
@@ -668,7 +668,7 @@ module Rubycc
       # destination slot, giving the decayed pointer value.
       def emit_object_addr(dst, object_id)
         emit(0x48, 0x8D)                # REX.W lea rax, [rbp+disp]
-        emit_bytes(modrm_rbp_disp(EAX, @object_offsets[object_id]))
+        emit_modrm_rbp_disp(EAX, @object_offsets[object_id])
         store_reg(EAX, dst)
       end
 
@@ -836,11 +836,11 @@ module Rubycc
         emit_bytes([48 + 16 * sse_named].pack("l<"))
         # overflow_arg_area
         emit(0x4C, 0x8D)                    # REX.WR lea r10, [rbp + disp]
-        emit_bytes(modrm_rbp_disp(R10 & 7, 16 + 8 * stack_named))
+        emit_modrm_rbp_disp(R10 & 7, 16 + 8 * stack_named)
         emit(0x4C, 0x89, 0x50, 0x08)        # mov [rax+8], r10
         # reg_save_area
         emit(0x4C, 0x8D)                    # REX.WR lea r10, [rbp + disp]
-        emit_bytes(modrm_rbp_disp(R10 & 7, @reg_save_area_offset))
+        emit_modrm_rbp_disp(R10 & 7, @reg_save_area_offset)
         emit(0x4C, 0x89, 0x50, 0x10)        # mov [rax+16], r10
       end
 
@@ -1001,7 +1001,7 @@ module Rubycc
       def load_xmm(xmm, vreg, size)
         emit(size == 8 ? 0xF2 : 0xF3)
         emit(0x0F, 0x10)
-        emit_bytes(modrm_rbp_disp(xmm, slot_disp(vreg)))
+        emit_modrm_rbp_disp(xmm, slot_disp(vreg))
       end
 
       # movss/movsd [rbp + disp], xmm: stores an xmm register into a slot, the
@@ -1009,7 +1009,7 @@ module Rubycc
       def store_xmm(xmm, vreg, size)
         emit(size == 8 ? 0xF2 : 0xF3)
         emit(0x0F, 0x11)
-        emit_bytes(modrm_rbp_disp(xmm, slot_disp(vreg)))
+        emit_modrm_rbp_disp(xmm, slot_disp(vreg))
       end
 
       # Emits "jmp rel32" with a zero placeholder and records a fixup so the
@@ -1068,7 +1068,7 @@ module Rubycc
         load_reg(EAX, a)
         load_reg(ECX, b)
         emit(0x48) if size == 8
-        emit(*opcode_bytes)
+        opcode_bytes.each { |byte| emit(byte) }
         store_reg(EAX, dst)
       end
 
@@ -1127,31 +1127,33 @@ module Rubycc
       def load_reg(reg, vreg)
         emit(0x48 | (reg >= 8 ? 0x04 : 0)) # REX.W (+ REX.R for r8/r9)
         emit(0x8B)
-        emit_bytes(modrm_rbp_disp(reg & 7, slot_disp(vreg)))
+        emit_modrm_rbp_disp(reg & 7, slot_disp(vreg))
       end
 
       # mov [rbp + disp], r64. See load_reg for the 64-bit and REX rationale.
       def store_reg(reg, vreg)
         emit(0x48 | (reg >= 8 ? 0x04 : 0)) # REX.W (+ REX.R for r8/r9)
         emit(0x89)
-        emit_bytes(modrm_rbp_disp(reg & 7, slot_disp(vreg)))
+        emit_modrm_rbp_disp(reg & 7, slot_disp(vreg))
       end
 
       def slot_disp(vreg)
         -8 * (vreg + 1)
       end
 
-      # Builds the ModR/M byte (+ displacement bytes) for a memory operand of
+      # Emits the ModR/M byte (+ displacement bytes) for a memory operand of
       # the form [rbp + disp] with the given reg field. Uses an 8-bit
-      # displacement form when it fits, otherwise 32-bit.
-      def modrm_rbp_disp(reg, disp)
+      # displacement form when it fits, otherwise 32-bit. Emits directly to
+      # @code instead of building and concatenating pack() strings, since
+      # this runs on the instruction-encoding hot path.
+      def emit_modrm_rbp_disp(reg, disp)
         rbp_rm = 0x05
         if disp >= -128 && disp <= 127
-          modrm = 0x40 | (reg << 3) | rbp_rm  # mod=01 (disp8)
-          [modrm].pack("C") + [disp].pack("c")
+          emit(0x40 | (reg << 3) | rbp_rm)  # mod=01 (disp8)
+          emit(disp & 0xFF)
         else
-          modrm = 0x80 | (reg << 3) | rbp_rm  # mod=10 (disp32)
-          [modrm].pack("C") + [disp].pack("l<")
+          emit(0x80 | (reg << 3) | rbp_rm)  # mod=10 (disp32)
+          emit((disp >> 0) & 0xFF, (disp >> 8) & 0xFF, (disp >> 16) & 0xFF, (disp >> 24) & 0xFF)
         end
       end
 
@@ -1167,12 +1169,21 @@ module Rubycc
         (value + 15) & ~15
       end
 
-      def emit(*bytes)
-        bytes.each { |byte| @code << byte }
+      # Fixed-arity on purpose: this is the instruction-encoding hot path, and
+      # a splat would allocate a new Array on every call. Four bytes covers
+      # the longest fixed-count call site in this file.
+      def emit(byte1, byte2 = nil, byte3 = nil, byte4 = nil)
+        @code << byte1
+        @code << byte2 if byte2
+        @code << byte3 if byte3
+        @code << byte4 if byte4
       end
 
+      # Callers always pass the result of Array#pack (or a concatenation of
+      # such results), which is already ASCII-8BIT, so no re-encoding copy
+      # is needed here.
       def emit_bytes(string)
-        @code << string.b
+        @code << string
       end
     end
   end

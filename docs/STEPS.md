@@ -3720,6 +3720,30 @@ stackprof(開発時依存として導入、ROADMAP の明記どおり)による�
 - **検証**: `rubycc -E` 出力の対 HEAD A/B を staged 実 gem 36 ファイルで実施し
   完全一致(挙動不変)。テスト増なし(純内部最適化)。
 
+## Step 111 — x86_64 emit 経路の割り当て排除(M5 H5、GC 圧 18% への第一手)
+
+Step 110 後の objspace 割り当てプロファイル(1 コンパイル = 約 128 万オブジェクト)で、
+バックエンドの命令エンコードが上位サイトに複数入ることを特定(emit の splat Array が
+呼び出しごと、`modrm_rbp_disp` の pack×2+連結で String 3 個/回 ≒ 7.8 万、
+`emit_bytes` の `.b` 再エンコードコピー 2.5 万)。code-explore による全数調査
+(emit 全 120 呼び出しの引数個数分布、emit_bytes 全 25 箇所の引数型、
+modrm_rbp_disp 全 11 箇所の用途)で仕様を確定し、implementer に移譲して実装。
+
+- `emit(*bytes)` → 固定 4 引数(調査済みの最長呼び出し)でsplat の Array 生成を
+  排除。唯一の splat 呼び出し(算術命令テーブル)は each で置換。
+- `modrm_rbp_disp`(文字列を組み立てて返す)→ `emit_modrm_rbp_disp`(@code へ
+  直接追記)。disp8 は `& 0xFF`、disp32 はシフト+マスクの 4 バイトで、
+  `pack("c")`/`pack("l<")` とバイト同一(負値は Ruby の無限精度 2 の補数で一致)。
+- `emit_bytes` の `.b` を除去(全呼び出しの引数が Array#pack の結果 =
+  ASCII-8BIT 保証、という契約をコメントに明文化)。
+- aarch64 は emit_word(4 バイト固定)のみで同種のパターンが無いことを調査で
+  確認済み — x86_64 固有の作業。
+- **検証**: バイト列同一性は golden・gcc 差分・決定的ビルドを含む全スイートで
+  確認(2,462 runs / 0 failures、増減なし)。**ペア計測**(HEAD → 変更後、
+  BENCH_RUNS=7、gcc 参照無効で条件統一): **13,235 → 13,854 行/秒(+4.7%、
+  目標 20,000 の 69.3%)**(`results/throughput-20260728-001523.md`。HEAD 側
+  results は worktree ごと破棄のため数値のみ本記録に残す)。
+
 ---
 
 ## 現在のテスト規模
