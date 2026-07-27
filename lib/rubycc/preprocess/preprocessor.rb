@@ -300,6 +300,15 @@ module Rubycc
         # includer never do), which is exactly what #include_next needs to tell
         # "resume the search past here" from "there is no here" (GNU extension).
         @include_origin = {}
+        # Resolved include path (the exact spelling #include resolves to) =>
+        # that file's scanned pp-token array. Scanning (phases 2-3) is a pure
+        # function of the file's bytes — no macro state reaches it — and both
+        # PPToken and the directive walk are non-mutating (painting copies), so
+        # one scan per header serves every re-#include verbatim. This is where
+        # a real unit burns most of its time otherwise: ruby.h's include graph
+        # re-includes the same headers hundreds of times, and each guard-skipped
+        # body still had to be re-scanned to find its #endif (Step 108).
+        @scan_cache = {}
       end
 
       def run(source, filename:, include_paths: [], defines: [], system_includes: true)
@@ -848,10 +857,14 @@ module Rubycc
         @presumed_line_delta = 0
         @presumed_file = nil
         begin
-          source = read_source(path, name, hash)
           # The includee's tokens carry its own filename and line numbers (N3), so
           # a diagnostic raised inside it points at the header, not the includer.
-          tokens = Scanner.new(source, filename: path).scan
+          # A header's scan is cached under its resolved spelling: the token
+          # array is reused read-only across re-#includes (see @scan_cache),
+          # while the directive walk below still runs each time so conditional
+          # inclusion sees the current macro state.
+          tokens = @scan_cache[path] ||=
+            Scanner.new(read_source(path, name, hash), filename: path).scan
           process_lines(tokens, path, output)
         ensure
           @presumed_line_delta = saved_delta

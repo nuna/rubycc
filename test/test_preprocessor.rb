@@ -619,6 +619,25 @@ class TestPreprocessor < Minitest::Test
     end
   end
 
+  # A header re-#included under a changed macro state must be re-expanded and
+  # re-evaluated each time: only its *scan* may be shared (Step 108's cache),
+  # never its expansion or its conditional-inclusion outcome.
+  def test_reincluding_a_header_sees_the_current_macro_state
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "twice.h"), "int slot_(X) = COUNT;\n#ifdef EXTRA\nint extra_(X);\n#endif\n")
+      source = "#define X one\n#define COUNT 1\n" \
+               "#include \"twice.h\"\n" \
+               "#undef X\n#undef COUNT\n#define X two\n#define COUNT 2\n#define EXTRA\n" \
+               "#include \"twice.h\"\n"
+      main = File.join(dir, "main.c")
+      tokens = pp(source, filename: main).reject(&:eof?)
+      assert_equal ["int", "slot_", "(", "one", ")", "=", 1, ";",
+                    "int", "slot_", "(", "two", ")", "=", 2, ";",
+                    "int", "extra_", "(", "two", ")", ";"],
+                   tokens.map(&:value)
+    end
+  end
+
   # A #line directive (6.10.4) presumes the *next* line's number and, when a
   # string is given, the file name; both feed __LINE__/__FILE__.
   def test_line_directive_sets_the_presumed_line_and_file
