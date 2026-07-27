@@ -658,8 +658,10 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   mkmf shim 経由の extconf でステージし、インプロセス・ウォーム状態の
   フルコンパイル中央値から「前処理後行数/秒」を計測、YJIT 状態込みで
   `benchmark/results/throughput-*.{md,json}` に継続記録する。
-  ホスト Ruby が YJIT 非対応のため「YJIT 有効時」の受け入れ計測は未達成のまま
-  (レポートに `unavailable` として記録)。sqlite3 amalgamation(25 万行)は
+  ~~ホスト Ruby が YJIT 非対応のため「YJIT 有効時」の受け入れ計測は未達成~~
+  **Ruby 4.0.6(YJIT 対応)導入により本来の条件で計測可能になった(2026-07-27)**:
+  4.0.6+YJIT で代表値 11,984 行/秒(目標の 59.9%、STEPS Step 108 の表参照)。
+  sqlite3 amalgamation(25 万行)は
   参考値として実測を記録(「動くが遅い」を許容: N1)— 未実施。
 - 定石の最適化を計測駆動で適用: ~~字句解析の strscan 化~~ **完了(Step 106):
   プロファイルで Scanner#scan が全体の 8 割と特定した上で書き換え、代表値
