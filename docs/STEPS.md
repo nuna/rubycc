@@ -3515,6 +3515,45 @@ load path に補完)を rubycc ビルドの `.so` に対して実走 →
 
 ---
 
+## Step 105 — コンパイルスループット計測基盤(M5 H5 の第一要)
+
+H5(N1: 20,000 行/秒)の入口として、ROADMAP の「まず測定を整備」を実装。
+`rake bench:throughput`(benchmark/throughput.rb)が実 gem の C ソースに対する
+コンパイラ自身の速度を「前処理後行数/秒」で計測し、
+`benchmark/results/throughput-<stamp>.{md,json}` に環境情報付きで継続記録する。
+
+- **ワークロード**: json 2.21.1(parser/generator)・msgpack 1.8.3(11 ファイル)・
+  bigdecimal 4.1.2(bigdecimal.c/missing.c)= 16 ファイル。バージョン固定で
+  経時比較可能。ステージングは WORK/tp-*(run.rb の実行速度ベンチと共有しない)。
+- **extconf は mkmf shim 経由**(`-rrubycc/mkmf_shim`)で実行し、`RUBYCC=1 gem install`
+  と同一の conftest 判定で -D セットを得る。**gcc で extconf すると rubycc の
+  conftest では無効になる機能マクロが有効化され、実インストールではコンパイル
+  しないソースを測ってしまう**ことを bigdecimal で実測: gcc extconf は
+  `HAVE_RUBY_ATOMIC_H` を定義し、missing.c が `<ruby/atomic.h>` に突入して
+  `RBIMPL_STATIC_ASSERT(…, sizeof *ptr == sizeof(size_t))` で停止する
+  (rubycc の conftest では同ヘッダは `__atomic_*` 組み込み未実装により正しく
+  無効判定される)。この副産物として `_Static_assert` の sizeof(式)未畳み込みが
+  言語ギャップとして顕在化(→ Step 107)。
+- **計測方式**: インプロセス・ウォーム(ウォームアップ 1 回 + `BENCH_RUNS`(既定 3)回の
+  フルコンパイル(ソース → ELF オブジェクト)中央値)。Ruby 起動コストを含めない
+  ことで N1 の趣旨(コンパイラ自身の速度)に合わせる。ステージ内訳
+  (preprocess / tokenize / parse / IR)は 1 回計測の参考値として併記し、回帰時に
+  再プロファイルなしで当たりを付けられるようにする。ABI 依存パラメータは
+  `Compiler::TARGETS` の x86_64 エントリから取得し、Compiler 本体とドリフトしない。
+- **「前処理後行数」の定義**: phase-4 出力にトークンを 1 つ以上産んだ一意な
+  (ファイル, 物理行) 対の数(≒ `rubycc -E` が出す行)。phase-4 のトークン列に
+  :newline は残らないため、素朴な改行トークン数は使えない。
+- **YJIT**: 起動時に `RubyVM::YJIT.enable` を試み、結果(enabled / unavailable)を
+  レポートに記録。本ホストの Ruby 3.4.5 は YJIT 非対応ビルドのため、N1 の受け入れ
+  条件「YJIT 有効で」の実測は本環境では不可能なことが判明(unavailable と記録)。
+- **初回ベースライン(2026-07-27、旧文字カーソル Scanner)**:
+  **代表値 847 行/秒(ファイル別中央値)= 目標の 4.2%**。全 16 ファイルで
+  preprocess がフルコンパイル時間の 9 割超(例: json parser.c 6.44s 中 6.34s)。
+  H5 着手時のプロファイル(Scanner#scan が前処理の 9 割 ≒ 全体の 8 割)と整合する
+  支配構造をベンチとしても固定化(`results/throughput-20260727-223054.md`)。
+
+---
+
 ## 現在のテスト規模
 
 Step 104 完了時点: **2,435 runs / 6,533 assertions / 0 failures / 47 skips**

@@ -653,9 +653,14 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
 - **受け入れ**: コーパス 90% が「install 成功 + gem テスト合格」(R10)。
 
 ### H5 — 性能(N1: 20,000 行/秒)
-- まず**測定を整備**: 実 gem ソース(前処理後行数ベース)のベンチを rake タスク化し、
-  YJIT 有無・主要 gem 別の数値を継続記録する。sqlite3 amalgamation(25 万行)は
-  参考値として実測を記録(「動くが遅い」を許容: N1)。
+- ~~まず**測定を整備**~~ **完了(Step 105)**: `rake bench:throughput`
+  (benchmark/throughput.rb)が json/msgpack/bigdecimal の実 gem ソースを
+  mkmf shim 経由の extconf でステージし、インプロセス・ウォーム状態の
+  フルコンパイル中央値から「前処理後行数/秒」を計測、YJIT 状態込みで
+  `benchmark/results/throughput-*.{md,json}` に継続記録する。
+  ホスト Ruby が YJIT 非対応のため「YJIT 有効時」の受け入れ計測は未達成のまま
+  (レポートに `unavailable` として記録)。sqlite3 amalgamation(25 万行)は
+  参考値として実測を記録(「動くが遅い」を許容: N1)— 未実施。
 - 定石の最適化を計測駆動で適用: 字句解析の strscan 化、プリプロセッサのトークン列
   キャッシュ(同一ヘッダの再 #include)、文字列連結・中間配列の削減、rmake -j の既定化。
   **推測で最適化しない — プロファイル(stackprof 等は開発時依存として可)が先**。

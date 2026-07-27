@@ -1,4 +1,21 @@
-# rubycc vs gcc 実行速度ベンチマーク
+# rubycc ベンチマーク
+
+2 種類のベンチマークを収める:
+
+- **実行速度**(`run.rb`、下記)— rubycc が生成したコードの速度を gcc と比較(要件 N2)。
+- **コンパイルスループット**(`throughput.rb`)— コンパイラ自身の速度を
+  「前処理後行数/秒」で計測(要件 N1: YJIT 有効で 20,000 行/秒)。
+  `rake bench:throughput` で実行。実 gem(json / msgpack / bigdecimal)を
+  ステージし、**mkmf shim 経由で extconf を実行**(`RUBYCC=1 gem install` と同じ
+  conftest 判定で -D セットを得る — gcc で extconf すると rubycc の conftest では
+  無効になるヘッダ(例: bigdecimal の `HAVE_RUBY_ATOMIC_H`)が有効化され、実
+  インストールではコンパイルしないソースを測ってしまう)。各 .c をインプロセスで
+  ウォームアップ 1 回 + `BENCH_RUNS`(既定 3)回フルコンパイルし、中央値から
+  行/秒を出す。ステージ内訳(preprocess / tokenize / parse / IR)は 1 回計測の
+  参考値。「前処理後行数」= phase-4 出力にトークンを 1 つ以上産んだ一意な
+  (ファイル, 物理行) 対の数。結果は `results/throughput-<stamp>.{md,json}`。
+
+## rubycc vs gcc 実行速度ベンチマーク(run.rb)
 
 **rubycc** が生成したネイティブコードの実行速度を、同じプログラムを
 **gcc -O2** / **gcc -O0** でビルドしたものと比較する。rubycc は最適化を行わない

@@ -10,6 +10,17 @@ end
 
 task default: :test
 
+# M5 H5 (Step 105): compile-throughput benchmark (requirement N1, preprocessed
+# lines/sec on real gem sources). On-demand dev task; NOT part of `rake test`
+# (fetches gems from rubygems.org, takes minutes). Reports land in
+# benchmark/results/throughput-*.{md,json}.
+namespace :bench do
+  desc "Measure compile throughput (lines/sec) on real gem C sources (network required; not part of `rake test`)"
+  task :throughput do
+    ruby "benchmark/throughput.rb"
+  end
+end
+
 # M5 H3 (Step 92): corpus C-extension #include census. On-demand dev task; NOT
 # part of `rake test` (which stays network-free). It fetches the gems listed in
 # test/corpus/gems.rb and regenerates the committed snapshot
