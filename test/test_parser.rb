@@ -1162,6 +1162,18 @@ class TestParser < Minitest::Test
     assert_equal Type::Array.new(Type::Char, 5), dst.type
   end
 
+  # An array bound may size a struct member reached through "." or "->" (Step
+  # 114, surfaced by sqlite3's "char dbFileVers[sizeof(pPager->dbFileVers)]"):
+  # #sizeof_operand_type resolves the base's struct type and looks the member
+  # up in it, decaying a pointer base first for "->". Here "p->v" is char[16].
+  def test_array_size_folds_sizeof_of_a_member_access
+    program = parse("struct P { char v[16]; }; " \
+                    "void f(struct P *p) { char c[sizeof(p->v)]; }")
+    decl = program.functions.first.body.first
+
+    assert_equal Type::Array.new(Type::Char, 16), decl.type
+  end
+
   # A multidimensional array "int a[3][4]" is a 3-element array of "int[4]"
   # (Step 99): the suffixes apply innermost-first, so the inner dimension nests
   # inside the outer. Its layout and indexing are verified against gcc in the

@@ -3036,8 +3036,11 @@ module Rubycc
       # generator's symbol table, or nil when a form outside this small set is
       # met. A subscript and a dereference each decay their base (an array to a
       # pointer to its element) and yield the pointed-to type; a cast is its named
-      # type; a named object's type is the one the ordinary scope recorded. Only
-      # what an array-bound constant expression realistically uses is covered.
+      # type; a named object's type is the one the ordinary scope recorded; a
+      # member access ("." or "->") resolves against its base's struct/union type
+      # -- sqlite3's "char dbFileVers[sizeof(pPager->dbFileVers)]" is exactly this
+      # shape, an array bound sized from a pointer parameter's member. Only what
+      # an array-bound constant expression realistically uses is covered.
       def sizeof_operand_type(node)
         case node
         when AST::StringLit
@@ -3051,6 +3054,10 @@ module Rubycc
           node.op == :deref ? element_of(sizeof_operand_type(node.operand)) : nil
         when AST::Cast
           node.type
+        when AST::MemberAccess
+          base = sizeof_operand_type(node.base)
+          base = element_of(base) if node.arrow
+          member_sizeof_type(base, node.member)
         end
       end
 
@@ -3062,6 +3069,23 @@ module Rubycc
         return type.element if type.array?
 
         type.target if type.pointer?
+      end
+
+      # The type of member `name` in a struct/union `type`, for #sizeof_operand_type
+      # resolving "sizeof base.member"/"sizeof base->member" -- nil when `type`
+      # is not a completed struct/union, the member does not exist, or it is a
+      # bit-field, since a bit-field has no size to take (6.5.3.4p1) and so must
+      # stay a NotConstant rather than fold to a wrong value. #struct? alone
+      # tells a struct/union base apart from every other type (it answers true
+      # for both, see Type::StructType), so a plain `sizeof x.m` with `x` of a
+      # non-aggregate type -- syntactically parseable, only later rejected by
+      # the generator -- stops here rather than reaching #union?, which only
+      # Type::StructType implements.
+      def member_sizeof_type(type, name)
+        return nil if type.nil? || !type.struct?
+
+        member = type.member(name)
+        member && member.bit_width.nil? ? member.type : nil
       end
 
       # Whether the initializer subtree uses `sizeof <expression>` (as opposed to

@@ -3789,11 +3789,41 @@ Step 111 後のプロファイル再採取で、TU 内の残ボトルネック�
   実インストールの compile フェーズは TU 数分だけ短縮される。
 - テスト: CLI 既定 = processor_count / `-j1` = 1 のユニット 2 件を追加。
 
+## Step 114 — メンバアクセスの parse 時 sizeof 解決(M5 H5、sqlite3 参考計測の副産物)
+
+ROADMAP H5 の「sqlite3 amalgamation(25 万行)の参考値実測」を実施したところ、
+261,463 行の単一 TU が `sqlite3.c:62710` の
+`char dbFileVers[sizeof(pPager->dbFileVers)];` で
+「array size must be an integer constant」で停止。Step 100(配列境界)・
+Step 107(`_Static_assert`)で導入した parse 時 sizeof 解決に**メンバアクセスの
+形が無かった**ためで、同じ解決器に 1 分岐足して解消した(implementer に移譲)。
+
+- `sizeof_operand_type` に `AST::MemberAccess` 分岐を追加。`->` なら base を
+  `element_of` で先に剥がして(`p->m` ≡ `(*p).m`)、`member_sizeof_type` で
+  メンバ型を引く。
+- `member_sizeof_type` は**完成済み struct/union の実在メンバのみ**返し、
+  ビットフィールドは nil(sizeof 不可、6.5.3.4p1)。不完全型は
+  `StructType#member` が nil を返すため自然に安全。
+- **移譲仕様の誤りをエージェントが検出**: 当初仕様の `type.struct? || type.union?`
+  は `union?` が `Type::StructType` にしか無いため、非集約型に対して
+  NoMethodError で落ちる。`struct?` は struct/union 双方に true を返す設計
+  (type.rb のコメント)なので `!type.struct?` 単独が正しく、そのように修正された。
+  レビューで実装を確認して採用。
+- テスト: パーサ単体 1 件(`char c[sizeof(p->v)]` が `char[16]`)、診断 3 件
+  (`.`/`->` 経由の `_Static_assert` 受理、未知メンバの拒否)、gcc 差分の実行
+  オラクル 1 件(sqlite3 の形を模した `char dbFileVers[sizeof(pPager->dbFileVers)]`)。
+- **sqlite3 の到達点**: この修正で 62710 行を通過し、**261k 行のパースが完走**して
+  IR 生成段階まで到達(6.0 秒 / 最大 RSS 438MB。N6 の 1GB/TU 目安内)。
+  次のブロッカーは `sqlite3.c:39063`(→ Step 115 で切り分け)。
+  参考: 同ファイルの gcc -O0 は 4.21 秒 / 277MB。
+
 ---
 
 ## 現在のテスト規模
 
-Step 113 完了時点: **2,464 runs / 6,578 assertions / 0 failures / 47 skips**
+Step 114 完了時点: **2,469 runs / 6,585 assertions / 0 failures / 47 skips**
+(Step 113 から +5 = メンバ sizeof のパーサ単体 1・診断 3・実行オラクル 1)
+(以前) Step 113 完了時点: **2,464 runs / 6,578 assertions / 0 failures / 47 skips**
 (Step 110 から +2 = rmake CLI の jobs 既定のユニットテスト。Step 111・112 はテスト増なし)
 (以前) Step 110 完了時点: **2,462 runs / 6,576 assertions / 0 failures / 47 skips**
 (Step 109 と同数 = 純内部最適化のためテスト増なし。挙動不変は -E 出力 A/B で担保)

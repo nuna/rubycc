@@ -3112,6 +3112,30 @@ class TestExecutionHarness < Minitest::Test
                  "rubycc and gcc disagree on _Static_assert over sizeof <expression>"
   end
 
+  # sizeof over a member access folds an array bound too (Step 114), the gap
+  # left by Step 107 that sqlite3's amalgamation hits at
+  # "char dbFileVers[sizeof(pPager->dbFileVers)]" -- a fixed-size buffer sized
+  # from a struct member reached through a pointer parameter. Mirrored here
+  # with both a "->" and a "." access of the same member.
+  MEMBER_SIZEOF_ARRAY_BOUND_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "struct Pager { int flags; char dbFileVers[16]; }; " \
+    "int probe(struct Pager *pPager) { " \
+    "  char dbFileVers[sizeof(pPager->dbFileVers)]; " \
+    "  dbFileVers[0] = 7; " \
+    "  return (int)(sizeof dbFileVers + sizeof pPager->dbFileVers) + dbFileVers[0]; } " \
+    "int main(void) { " \
+    "  struct Pager pg; " \
+    "  pg.flags = 0; " \
+    "  printf(\"%d %d\\n\", probe(&pg), (int)sizeof pg.dbFileVers); " \
+    "  return 0; }"
+
+  def test_member_sizeof_array_bound_matches_gcc_stdout
+    assert_equal program_output(MEMBER_SIZEOF_ARRAY_BOUND_PROGRAM, compiler: :gcc),
+                 program_output(MEMBER_SIZEOF_ARRAY_BOUND_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on an array bound sized from sizeof(base.member)"
+  end
+
   private
 
   def run_source(source, compiler:)

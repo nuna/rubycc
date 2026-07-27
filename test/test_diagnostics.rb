@@ -1273,6 +1273,31 @@ class TestDiagnostics < Minitest::Test
     assert_kind_of String, compile(source)
   end
 
+  # sizeof over a member access (Step 114, sqlite3's
+  # "char dbFileVers[sizeof(pPager->dbFileVers)]") resolves through the same
+  # array-bound sizeof resolver, both for a plain object and through a pointer
+  # parameter; an unknown member still reports the usual diagnostic instead of
+  # crashing or folding a wrong value.
+  def test_static_assert_folds_sizeof_of_a_member_access
+    source = "struct S { long arr[4]; }; " \
+             "int main(void) { struct S s; _Static_assert(sizeof s.arr == 32, \"arr is 32\"); return 0; }"
+    assert_kind_of String, compile(source)
+  end
+
+  def test_static_assert_folds_sizeof_of_a_member_access_through_a_pointer
+    source = "struct S { long arr[4]; }; " \
+             "int f(struct S *p) { _Static_assert(sizeof p->arr == 32, \"arr is 32\"); return 0; } " \
+             "int main(void) { return 0; }"
+    assert_kind_of String, compile(source)
+  end
+
+  def test_static_assert_sizeof_of_an_unknown_member_is_rejected
+    source = "struct S { long arr[4]; }; " \
+             "int main(void) { struct S s; _Static_assert(sizeof s.nope == 8, \"nope\"); return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/static assertion expression is not an integer constant/, error.description)
+  end
+
   def test_static_assert_sizeof_failure_still_reports_the_message
     source = "int main(void) { char c = 0; _Static_assert(sizeof c == 2, \"char is 2?\"); return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
