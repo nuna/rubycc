@@ -3663,11 +3663,42 @@ rbenv に Ruby 4.0.6(YJIT 対応ビルド)が導入されたため、N1 の受�
   `throughput-20260727-225913.md`(off)。N1 完達には YJIT 有効でさらに
   約 1.7 倍が必要 — 前処理の残り(directive 走査・マクロ展開)が次の対象。
 
+## Step 109 — multiple-include optimization(M5 H5、ガード付きヘッダの再走査スキップ)
+
+Step 108 後の再プロファイル分解で、前処理の残り時間の内訳が
+「scan(ユニークファイル分)0.19s + directive 走査 ~0.2s」で、**1 TU に
+process_directive 呼び出しが 36,052 回**あることを特定。ガード付きヘッダの
+再 #include は本文が全て条件スキップされるのに、行単位の走査だけは毎回
+支払っていた。gcc と同じ multiple-include optimization を実装。
+
+- **修正**: `#detect_include_guard` がファイル全体の有意な内容が
+  `#ifndef G … #endif`(または `#if !defined(G)` / `#if !defined G`)で
+  包まれているかをトークン配列の純粋解析で 1 回判定し、`@guard_cache` に
+  記録。再 #include 時にガードマクロが**現在**定義されていればファイル走査を
+  丸ごとスキップ(`#undef` 後は再処理される — 判定はライブなマクロ表)。
+- **不適格条件が正しさの要**: ガード深さ 1 の `#else`/`#elif`(ガード定義時に
+  *別の内容*を出すので、スキップすると出力が変わる)、`#endif` 後の有意
+  トークン(スキップで失われる)。C23 の `#elifdef`/`#elifndef` の綴りも
+  防御的に不適格(本コンパイラは未処理だが、ガード解析が仮定してはならない)。
+- **検証**: HEAD との `rubycc -E` 出力 A/B を staged 実 gem 36 ファイルで
+  実施し完全一致。意味論テスト 5 件を追加(2 回 include で 1 回だけ出る/
+  `#if !defined` 形/`#undef` 後の再取り込み/#else 付きはスキップ不可/
+  `#endif` 後の残余で不適格)。
+- **効果**: process_directive 呼び出し 36,052 → 7,527(-79%)。代表値
+  3.4.5 で 5,865 → 6,416 行/秒(+9.4%、目標の 32.1%)、4.0.6+YJIT で
+  11,984 → **12,716 行/秒(+6.1%、目標の 63.6%)**
+  (`results/throughput-20260727-231209.md` / `-231104.md`)。
+  時間の主残余は scan(ユニーク分)と活性領域のマクロ展開・トークン収集で、
+  呼び出し回数の割に走査自体は軽かった — 次の一手はプロファイル分解の続き
+  (collect_line・expand_tokens の中間配列削減、ROADMAP の残り候補)。
+
 ---
 
 ## 現在のテスト規模
 
-Step 108 完了時点: **2,457 runs / 6,571 assertions / 0 failures / 47 skips**
+Step 109 完了時点: **2,462 runs / 6,576 assertions / 0 failures / 47 skips**
+(Step 108 から +5 = multiple-include optimization の意味論テスト)
+(以前) Step 108 完了時点: **2,457 runs / 6,571 assertions / 0 failures / 47 skips**
 (Step 107 から +1 = 再 #include のマクロ文脈再評価のリグレッションテスト)
 (以前) Step 107 完了時点: **2,456 runs / 6,570 assertions / 0 failures / 47 skips**
 (Step 104 の 2,435 から +21 = Step 106 のスキャナ単体回帰 16 件 + Step 107 の

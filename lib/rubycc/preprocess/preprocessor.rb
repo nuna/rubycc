@@ -309,6 +309,17 @@ module Rubycc
         # re-includes the same headers hundreds of times, and each guard-skipped
         # body still had to be re-scanned to find its #endif (Step 108).
         @scan_cache = {}
+        # Resolved include path => the file's include-guard macro name, or nil
+        # when its shape rules the optimization out (gcc's multiple-include
+        # optimization, Step 109). A header whose entire significant content is
+        # wrapped in one "#ifndef G ... #endif" (or "#if !defined(G)") behaves,
+        # when G is defined, exactly like an empty file: the walk would activate
+        # nothing and change no state. So a re-#include whose recorded guard is
+        # currently defined skips the directive walk outright. Detection is a
+        # pure function of the scanned tokens (see #detect_include_guard); the
+        # skip consults the live macro table, so an #undef of the guard makes
+        # the next #include process the file again.
+        @guard_cache = {}
       end
 
       def run(source, filename:, include_paths: [], defines: [], system_includes: true)
@@ -846,6 +857,11 @@ module Rubycc
         # later #include resolving to the same file is silently skipped (6.10.6).
         return if @pragma_once.key?(File.expand_path(path))
 
+        # A guarded header whose guard macro is currently defined would emit
+        # nothing and change nothing — skip its walk entirely (see @guard_cache).
+        guard = @guard_cache[path]
+        return if guard && @macros.key?(guard)
+
         raise_at(hash, "#include nested too deeply") if @include_depth >= INCLUDE_DEPTH_LIMIT
 
         @include_depth += 1
@@ -866,11 +882,90 @@ module Rubycc
           tokens = @scan_cache[path] ||=
             Scanner.new(read_source(path, name, hash), filename: path).scan
           process_lines(tokens, path, output)
+          # Analyze the guard shape once per file, after a successful walk.
+          @guard_cache[path] = detect_include_guard(tokens) unless @guard_cache.key?(path)
         ensure
           @presumed_line_delta = saved_delta
           @presumed_file = saved_file
           @include_depth -= 1
         end
+      end
+
+      # Decides whether a scanned file has the classic include-guard shape: its
+      # first significant line opens "#ifndef G" (or "#if !defined(G)" /
+      # "#if !defined G") and the matching "#endif" is the last significant
+      # thing in the file. Returns G's name, or nil for any other shape. Two
+      # disqualifiers matter for correctness, not just fit: an #else/#elif on
+      # the guard level would make the file emit *different* content when the
+      # guard is defined (so skipping would be wrong), and tokens after the
+      # closing #endif would be lost by a skip. The C23 #elifdef/#elifndef
+      # spellings are rejected the same way, defensively — this compiler does
+      # not process them, but a guard analysis must not assume that. Purely
+      # syntactic over the token array: like the scan itself, the answer never
+      # depends on macro state, so it is computed once per file.
+      def detect_include_guard(tokens)
+        index = 0
+        index += 1 while tokens[index]&.newline?
+        return nil unless tokens[index]&.punct?("#")
+
+        args, index = collect_line(tokens, index + 1)
+        name = guard_macro_name(args)
+        return nil if name.nil?
+
+        depth = 1
+        at_line_start = true
+        while index < tokens.length
+          tok = tokens[index]
+          break if tok.eof?
+
+          if tok.newline?
+            at_line_start = true
+            index += 1
+          elsif at_line_start && tok.punct?("#")
+            args, index = collect_line(tokens, index + 1)
+            directive = args[0]
+            next unless directive&.type == :identifier
+
+            case directive.text
+            when "if", "ifdef", "ifndef"
+              depth += 1
+            when "elif", "else", "elifdef", "elifndef"
+              return nil if depth == 1
+            when "endif"
+              depth -= 1
+              if depth.zero?
+                index += 1 while tokens[index]&.newline?
+                return tokens[index].nil? || tokens[index].eof? ? name : nil
+              end
+            end
+          else
+            at_line_start = false
+            index += 1
+          end
+        end
+        # Ran out before the guard closed: malformed (or truncated) file; the
+        # directive walk owns the diagnostic, this is simply not a guard.
+        nil
+      end
+
+      # The macro a candidate guard line tests, or nil when the line is not one
+      # of the two recognized spellings.
+      def guard_macro_name(args)
+        directive = args[0]
+        return nil unless directive&.type == :identifier
+
+        if directive.text == "ifndef"
+          return args[1].text if args.length == 2 && args[1].type == :identifier
+        elsif directive.text == "if"
+          rest = args[1..]
+          bang = rest[0]&.punct?("!") && rest[1]&.type == :identifier && rest[1].text == "defined"
+          return nil unless bang
+          return rest[2].text if rest.length == 3 && rest[2].type == :identifier
+          if rest.length == 5 && rest[2].punct?("(") && rest[3].type == :identifier && rest[4].punct?(")")
+            return rest[3].text
+          end
+        end
+        nil
       end
 
       # Reconstructs the header name from the raw tokens of an #include line. The

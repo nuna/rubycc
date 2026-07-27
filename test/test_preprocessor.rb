@@ -619,6 +619,54 @@ class TestPreprocessor < Minitest::Test
     end
   end
 
+  # The multiple-include optimization (Step 109): a header fully wrapped in
+  # "#ifndef G ... #endif" is skipped outright when G is defined — and, more
+  # importantly, anything NOT of exactly that shape must keep being processed,
+  # or a skip would drop real output.
+  def test_guarded_header_included_twice_emits_once
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "g.h"), "#ifndef G_H\n#define G_H\nint guarded;\n#endif\n")
+      tokens = pp("#include \"g.h\"\n#include \"g.h\"\n", filename: File.join(dir, "main.c")).reject(&:eof?)
+      assert_equal ["int", "guarded", ";"], tokens.map(&:value)
+    end
+  end
+
+  def test_if_not_defined_guard_form_is_honored
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "g.h"), "#if !defined(G_H)\n#define G_H\nint bang_guarded;\n#endif\n")
+      tokens = pp("#include \"g.h\"\n#include \"g.h\"\n", filename: File.join(dir, "main.c")).reject(&:eof?)
+      assert_equal ["int", "bang_guarded", ";"], tokens.map(&:value)
+    end
+  end
+
+  def test_undefining_the_guard_reincludes_the_header
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "g.h"), "#ifndef G_H\n#define G_H\nint body;\n#endif\n")
+      source = "#include \"g.h\"\n#undef G_H\n#include \"g.h\"\n"
+      tokens = pp(source, filename: File.join(dir, "main.c")).reject(&:eof?)
+      assert_equal ["int", "body", ";", "int", "body", ";"], tokens.map(&:value)
+    end
+  end
+
+  def test_a_guard_with_an_else_branch_is_not_skipped
+    Dir.mktmpdir do |dir|
+      # When G is defined the #else branch must be emitted; a naive skip
+      # would emit nothing.
+      File.write(File.join(dir, "g.h"), "#ifndef G\nint yes;\n#else\nint no;\n#endif\n")
+      source = "#include \"g.h\"\n#define G\n#include \"g.h\"\n"
+      tokens = pp(source, filename: File.join(dir, "main.c")).reject(&:eof?)
+      assert_equal ["int", "yes", ";", "int", "no", ";"], tokens.map(&:value)
+    end
+  end
+
+  def test_tokens_after_the_closing_endif_disqualify_the_guard
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "g.h"), "#ifndef G_H\n#define G_H\nint once_;\n#endif\nint tail;\n")
+      tokens = pp("#include \"g.h\"\n#include \"g.h\"\n", filename: File.join(dir, "main.c")).reject(&:eof?)
+      assert_equal ["int", "once_", ";", "int", "tail", ";", "int", "tail", ";"], tokens.map(&:value)
+    end
+  end
+
   # A header re-#included under a changed macro state must be re-expanded and
   # re-evaluated each time: only its *scan* may be shared (Step 108's cache),
   # never its expansion or its conditional-inclusion outcome.
