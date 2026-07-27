@@ -3897,7 +3897,10 @@ Step 115 で到達した `sqlite3.c:42862` の `sysconf(_SC_PAGESIZE)` を解消
 
 ## 現在のテスト規模
 
-Step 118 完了時点: **2,478 runs / 6,691 assertions / 0 failures / 47 skips**
+Step 120 完了時点: **2,487 runs / 6,775 assertions / 0 failures / 47 skips**
+(Step 118 から +9 = rmake の展開予算 5・Scanner の桁計算 2・PartialLinker 2。
+Step 119 はコーパス定義の追加のみでテスト増なし)
+(以前) Step 118 完了時点: **2,478 runs / 6,691 assertions / 0 failures / 47 skips**
 (Step 116 から +6 = 波括弧なし制御構造の入れ子拒否 3 + 上限内の退行防止 1 + ar の
 パストラバーサル拒否 2。Step 117 はコーパス定義の追加のみでテスト増なし)
 (以前) Step 116 完了時点: **2,472 runs / 6,594 assertions / 0 failures / 47 skips**

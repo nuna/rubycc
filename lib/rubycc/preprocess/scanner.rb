@@ -77,8 +77,11 @@ module Rubycc
         @ascii_only = @spliced.ascii_only?
         @line = 1
         # Byte offset in @spliced where the current physical line starts; a
-        # column is the distance from here (plus one).
-        @line_start = 0
+        # column is the distance from here (plus one). @column_pos/@column_chars
+        # are the incremental cursor #column_at advances (see there); they are
+        # only meaningful for non-ASCII source, and reset_line_start resets all
+        # three together so they can never drift apart.
+        reset_line_start(0)
         # Index into @splice_points of the first point not yet replayed.
         @next_splice = 0
       end
@@ -101,7 +104,7 @@ module Rubycc
           if ss.skip(NEWLINE_RE)
             tokens << make_token(:newline, "\n", @line, column_at(start), space_before)
             @line += 1
-            @line_start = ss.pos
+            reset_line_start(ss.pos)
           else
             tokens << scan_token(ss, @line, column_at(start), space_before)
           end
@@ -147,19 +150,45 @@ module Rubycc
         points = @splice_points
         while @next_splice < points.length && points[@next_splice] <= pos
           @line += 1
-          @line_start = points[@next_splice]
+          reset_line_start(points[@next_splice])
           @next_splice += 1
         end
       end
 
+      # Moves the current physical line's start to byte offset `pos`. Every
+      # assignment to @line_start goes through here so the column cursor is
+      # rebased at the same time — a missed reset would not crash, it would
+      # silently report wrong columns (N3).
+      def reset_line_start(pos)
+        @line_start = pos
+        @column_pos = pos
+        @column_chars = 0
+      end
+
       # The 1-based column of byte offset `pos`, counted in characters from the
       # current physical line's start. Byte arithmetic serves ASCII source
-      # directly; non-ASCII source pays for one slice per token to count
-      # multibyte characters as single columns, as the streaming lexer does.
+      # directly; non-ASCII source has to count characters, and must count them
+      # *incrementally*: measuring the whole @line_start..pos span per token
+      # costs O(line length) each time, so a single long line of L tokens costs
+      # O(L^2) — and one non-ASCII byte anywhere in the file (a comment in
+      # Japanese, a UTF-8 BOM) is enough to switch @ascii_only off for all of
+      # it. Tokens are located left to right, so keeping the last (byte offset,
+      # column) pair as a cursor and counting only the span since then makes a
+      # line cost O(line length) in total. Should a caller ever ask for an
+      # offset behind the cursor, the count restarts from the line start, so the
+      # answer stays right even if that monotonicity is lost.
       def column_at(pos)
         return pos - @line_start + 1 if @ascii_only
 
-        @spliced.byteslice(@line_start, pos - @line_start).length + 1
+        if pos < @column_pos
+          @column_pos = @line_start
+          @column_chars = 0
+        end
+        if pos > @column_pos
+          @column_chars += @spliced.byteslice(@column_pos, pos - @column_pos).length
+          @column_pos = pos
+        end
+        @column_chars + 1
       end
 
       # Skips horizontal whitespace and comments (translation phase 3). Newlines
@@ -195,7 +224,7 @@ module Rubycc
           sync(at)
           tokens << make_token(:newline, "\n", @line, column_at(at))
           @line += 1
-          @line_start = at + 1
+          reset_line_start(at + 1)
           from = idx + 1
         end
       end

@@ -112,6 +112,9 @@ module Rubycc
         @included = []
         @defined = Set.new    # global/weak names already defined by an included object
         @undefined = Set.new  # names referenced but not yet defined
+        # When non-nil, #include_object appends every name it newly adds to
+        # @undefined here; the archive walk uses it to widen its candidate set.
+        @new_undefined = nil
 
         @inputs.each do |input|
           case input.kind
@@ -134,8 +137,9 @@ module Rubycc
           if sym.defined?
             @defined << sym.name
             @undefined.delete(sym.name)
-          elsif sym.undefined?
-            @undefined << sym.name unless @defined.include?(sym.name)
+          elsif sym.undefined? && !@defined.include?(sym.name)
+            @new_undefined << sym.name if @new_undefined && !@undefined.include?(sym.name)
+            @undefined << sym.name
           end
         end
       end
@@ -146,21 +150,113 @@ module Rubycc
       # members from this SAME archive. Members are scanned in archive order for a
       # deterministic result. Once this call returns the archive is done — a later
       # input cannot reach back into it (single-pass semantics).
+      #
+      # The naive form of that fixpoint rescans EVERY member after each pull, so
+      # an archive whose members are ordered against their dependency direction
+      # takes one member per pass: O(M^2) member visits, which a hostile archive
+      # controls outright by choosing the member order. Instead an exporter index
+      # (symbol name -> the members defining it) narrows each pass to the members
+      # that could possibly match: a member can only be pulled through a name
+      # that is in @undefined, and every such name either was there when the
+      # archive was reached or was added by a member pulled from it, so seeding
+      # the candidate set from the former and widening it on the latter yields a
+      # SUPERSET of the pullable members — nothing is ever missed.
+      #
+      # The pull ORDER must not change, and that is the delicate part: it fixes
+      # the order of the merged sections and of the output symbol table, so N4
+      # (identical inputs produce byte-identical output) rests on it. Two rules
+      # preserve it exactly. Candidates are visited in ascending member index, so
+      # a pass sees them in archive order; and a candidate that appears mid-pass
+      # is spliced into the remaining queue when it sits after the current
+      # position, because the all-members scan would have reached it later in the
+      # same pass. Members that are not candidates are exactly the ones the
+      # all-members scan visits and rejects, so skipping them changes nothing.
       def pull_from_archive(input)
-        archive = input.reader
+        members = input.reader.members
+        exporters = exporter_index(members)
         taken = Set.new
-        loop do
-          pulled = false
-          archive.members.each do |member|
-            next if member.special? || taken.include?(member)
-            next unless member_exports(member).any? { |name| @undefined.include?(name) }
+        candidates = Set.new
+        @undefined.each { |name| widen(candidates, exporters[name], taken, members) }
 
-            include_object(ELFReader.read(member.data), "#{input.label}(#{member.name})")
-            taken << member
-            pulled = true
-          end
+        loop do
+          pulled = pull_pass(input, members, exporters, taken, candidates)
           break unless pulled
         end
+      end
+
+      # One archive-order pass over the current candidates. Returns whether any
+      # member was pulled, which is the fixpoint's termination test.
+      def pull_pass(input, members, exporters, taken, candidates)
+        pulled = false
+        queue = candidates.to_a.sort
+        qi = 0
+        while qi < queue.length
+          index = queue[qi]
+          qi += 1
+          member = members[index]
+          next if member.special? || taken.include?(member)
+          next unless member_exports(member).any? { |name| @undefined.include?(name) }
+
+          @new_undefined = []
+          include_object(ELFReader.read(member.data), "#{input.label}(#{member.name})")
+          added = @new_undefined
+          @new_undefined = nil
+          taken << member
+          candidates.delete(index)
+          pulled = true
+          added.each do |name|
+            widen(candidates, exporters[name], taken, members) do |cand|
+              # Still ahead of us: the all-members scan would reach it in this
+              # very pass, so the queue has to as well.
+              insert_pending(queue, qi, cand) if cand > index
+            end
+          end
+        end
+        pulled
+      end
+
+      # Adds the members exporting one name to the candidate set, yielding each
+      # index that was not a candidate already (so a caller mid-pass can queue
+      # it). Members already pulled are never re-added.
+      def widen(candidates, indexes, taken, members)
+        return if indexes.nil?
+
+        indexes.each do |index|
+          next if candidates.include?(index) || taken.include?(members[index])
+
+          candidates << index
+          yield index if block_given?
+        end
+      end
+
+      # Splices `value` into the not-yet-visited tail queue[from..], which is
+      # sorted ascending, keeping it sorted.
+      def insert_pending(queue, from, value)
+        lo = from
+        hi = queue.length
+        while lo < hi
+          mid = (lo + hi) / 2
+          if queue[mid] < value
+            lo = mid + 1
+          else
+            hi = mid
+          end
+        end
+        queue.insert(lo, value)
+      end
+
+      # symbol name => ascending array of the indexes of the members exporting
+      # it. Built once per archive off the same memoized #member_exports the
+      # selection uses, so it costs one parse per member — the same parse the
+      # first fixpoint pass would have done anyway.
+      def exporter_index(members)
+        index = {}
+        members.each_with_index do |member, i|
+          next if member.special?
+
+          member_exports(member).each { |name| (index[name] ||= []) << i }
+        end
+        index
       end
 
       # The defined global/weak symbol names a member exports, memoized per

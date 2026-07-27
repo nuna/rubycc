@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "test_helper"
+require "rubycc/rmake/rmake"
 
 # Step 32: proves the toolchain fails safe on hostile input (a C source, a
 # preprocessing directive, or an ELF/ar object crafted to exhaust CPU, memory
@@ -14,6 +15,13 @@ require_relative "test_helper"
 # Alongside the rejections, each section re-checks that an input which is deep
 # but still within the limits (and every ordinary program) keeps compiling, so
 # the guards cannot be blamed for a false positive on legitimate code.
+#
+# Step 120 adds the three algorithmic-complexity cases, where nothing is
+# rejected and nothing crashes — the input is perfectly legal, it just used to
+# cost quadratic or exponential work. Those are pinned by a wall-clock bound,
+# chosen with a wide margin over the fixed implementation (and far under what
+# the old one needed) so the assertion means "still not quadratic" rather than
+# "this machine is fast".
 class TestDosResilience < Minitest::Test
   Compiler = Rubycc::Compiler
   Preprocessor = Rubycc::Preprocess::Preprocessor
@@ -196,6 +204,178 @@ class TestDosResilience < Minitest::Test
   def test_ordinary_macros_still_expand
     source = "#define ADD(a, b) ((a) + (b))\n#define TWO ADD(1, 1)\nint x = TWO;\n"
     refute_empty preprocess(source)
+  end
+
+  # --- rmake variable expansion budget (rmake/expander.rb) ---------------------
+
+  Rmake = Rubycc::Rmake
+  ExpansionError = Rmake::ExpansionError
+
+  # A doubling chain `A0 = <leaf>` / `Ai = $(Ai-1)$(Ai-1)`: only `levels` deep,
+  # so the 200-level depth cap never sees it, yet 2^levels wide. `op` picks the
+  # assignment flavour — `=` defers the blow-up to the first reference, `:=`
+  # detonates during the parse itself.
+  def doubling_makefile(levels, op: "=", leaf: "x")
+    lines = ["A0 #{op} #{leaf}"]
+    (1..levels).each { |i| lines << "A#{i} #{op} $(A#{i - 1})$(A#{i - 1})" }
+    "#{lines.join("\n")}\n"
+  end
+
+  # The text budget: a doubling chain over a kilobyte-sized leaf outruns the
+  # character cap long before the reference cap — few dereferences, terabytes of
+  # text — so this is the case only MAX_EXPANSION_OUTPUT can see.
+  def test_exponentially_expanding_make_variable_is_rejected
+    makefile = Rmake::Makefile.parse(doubling_makefile(30, leaf: "x" * 8192))
+    started = Time.now
+    error = assert_raises(ExpansionError) { makefile.variable_value("A30") }
+    assert_match(/produced more than \d+ characters/, error.message)
+    assert_operator Time.now - started, :<, 5, "runaway variable expansion was not cut off promptly"
+  end
+
+  # The reference budget: the same chain over an EMPTY leaf produces no text at
+  # all, so only the count of dereferences can see the 2^30 calls. The cut-off
+  # has to be *fast*, not merely finite — one budget is spent per top-level
+  # expansion, so a Makefile full of `:=` assignments pays this cost once each.
+  # Reaching the 100_000-reference cap measures well under a second, so the
+  # bound below leaves an order of magnitude of slack and still fails outright
+  # if the budget stops bounding the work.
+  def test_exponentially_expanding_make_variable_with_empty_leaf_is_rejected
+    makefile = Rmake::Makefile.parse(doubling_makefile(30, leaf: ""))
+    started = Time.now
+    error = assert_raises(ExpansionError) { makefile.variable_value("A30") }
+    assert_match(/resolved more than \d+ references/, error.message)
+    assert_operator Time.now - started, :<, 5, "runaway variable expansion was not cut off promptly"
+  end
+
+  # A `:=` assignment expands as it is parsed, so this one never even reaches a
+  # target: the parser itself has to stop.
+  def test_exponentially_expanding_simple_assignment_is_rejected_at_parse_time
+    started = Time.now
+    assert_raises(ExpansionError) { Rmake::Makefile.parse(doubling_makefile(30, op: ":=")) }
+    assert_operator Time.now - started, :<, 15, "runaway variable expansion was not cut off promptly"
+  end
+
+  # A cycle is still caught by the depth cap, which the work budgets do not
+  # replace.
+  def test_cyclic_make_variables_are_still_rejected
+    makefile = Rmake::Makefile.parse("A = $(B)\nB = $(A)\n")
+    error = assert_raises(ExpansionError) { makefile.variable_value("A") }
+    assert_match(/levels/, error.message)
+  end
+
+  # Ordinary nesting — a chain of references, a substitution reference, and a
+  # doubling chain that stays small — expands exactly as before.
+  def test_nested_make_variables_within_the_budget_still_expand
+    makefile = Rmake::Makefile.parse(doubling_makefile(10))
+    assert_equal "x" * 1024, makefile.variable_value("A10")
+
+    chained = Rmake::Makefile.parse(<<~MAKE)
+      prefix = /usr
+      includedir = $(prefix)/include
+      hdrdir = $(includedir)/ruby
+      srcs = a.c b.c
+      objs = $(srcs:.c=.o)
+    MAKE
+    assert_equal "/usr/include/ruby", chained.variable_value("hdrdir")
+    assert_equal "a.o b.o", chained.variable_value("objs")
+  end
+
+  # --- scanner column counting (preprocess/scanner.rb) -------------------------
+
+  Scanner = Rubycc::Preprocess::Scanner
+
+  # A single non-ASCII character anywhere in the file switches the scanner off
+  # its byte-arithmetic column fast path for the WHOLE file; every column then
+  # has to be counted in characters. Counting each one from the line start makes
+  # one long line cost O(tokens x line length), so a file that is 1 MB on a
+  # single line took over ten seconds for want of an incremental cursor.
+  def test_long_line_in_a_non_ascii_file_scans_in_linear_time
+    source = +"// あ\n"
+    30_000.times { source << ("a" * 40) << " + " }
+    source << "1;\n"
+
+    started = Time.now
+    tokens = Scanner.new(source, filename: "dos.c").scan
+    elapsed = Time.now - started
+
+    assert_equal 60_005, tokens.size
+    assert_operator elapsed, :<, 5, "column counting is not linear in line length"
+  end
+
+  # ...and the columns it reports are the physical ones (N3): every token's
+  # [line, column] must index that token's own spelling in the source line.
+  # Multibyte characters count as one column each, before and after a block
+  # comment, a spliced line and a multibyte string literal.
+  def test_columns_stay_correct_in_a_non_ascii_file
+    source = "// あ\nint éx = 1; /* あ\n */ int y; \\\nint z;\nchar *s = \"ああ\"; int w;\n"
+    lines = source.split("\n", -1)
+    tokens = Scanner.new(source, filename: "dos.c").scan
+                    .reject { |t| t.type == :eof || t.type == :newline }
+
+    refute_empty tokens
+    tokens.each do |t|
+      assert_equal t.text, lines[t.line - 1][t.column - 1, t.text.length],
+                   "token #{t.text.inspect} is not at #{t.line}:#{t.column}"
+    end
+  end
+
+  # --- archive extraction (link/partial_linker.rb) -----------------------------
+
+  Linker = Rubycc::Link::PartialLinker
+  RelWriter = Rubycc::ObjFile::RelocatableWriter
+
+  SHT_PROGBITS  = 1
+  SHF_ALLOC     = 0x2
+  SHF_EXECINSTR = 0x4
+
+  # A one-instruction object defining `defs` and referencing `refs`.
+  def tiny_object(defs, refs)
+    w = RelWriter.new
+    text = w.add_section(name: ".text", type: SHT_PROGBITS, flags: SHF_ALLOC | SHF_EXECINSTR,
+                         addralign: 1, data: "\xC3".b)
+    refs.each { |name| w.add_symbol(name: name, bind: :global, type: :notype) }
+    defs.each { |name| w.add_symbol(name: name, bind: :global, type: :func, section: text, size: 1) }
+    w.to_binary
+  end
+
+  # An archive whose members form a chain — member i defines s<i> and needs
+  # s<i-1> — laid out so each member's dependency sits BEFORE it. An archive is
+  # scanned in member order, so a fixpoint that rescans every member after each
+  # pull resolves exactly one member per pass: O(members^2), with the member
+  # order (and therefore the cost) chosen by whoever built the archive.
+  CHAIN_MEMBERS = 3000
+
+  def test_reverse_ordered_archive_chain_links_in_linear_time
+    w = Rubycc::ObjFile::ArWriter.new
+    CHAIN_MEMBERS.times do |i|
+      w.add_member("m#{i}.o", tiny_object(["s#{i}"], i.zero? ? [] : ["s#{i - 1}"]))
+    end
+    archive = w.to_binary
+    main = tiny_object(["main"], ["s#{CHAIN_MEMBERS - 1}"])
+
+    started = Time.now
+    merged = Reader.read(Linker.link([main, archive]))
+    elapsed = Time.now - started
+
+    # The whole chain is pulled — the speed-up must not cost coverage.
+    defined_names = merged.symbols.select { |s| s.bind == :global && s.defined? }.map(&:name)
+    assert_equal CHAIN_MEMBERS + 1, defined_names.size
+    assert_includes defined_names, "s0"
+    assert_includes defined_names, "s#{CHAIN_MEMBERS - 1}"
+    assert_operator elapsed, :<, 5, "archive extraction is not linear in member count"
+  end
+
+  # The pull order is what fixes the merged section and symbol order, so N4
+  # (identical inputs, byte-identical output) depends on it staying stable.
+  def test_archive_extraction_stays_deterministic
+    w = Rubycc::ObjFile::ArWriter.new
+    10.times do |i|
+      w.add_member("m#{i}.o", tiny_object(["s#{i}"], i.zero? ? [] : ["s#{i - 1}"]))
+    end
+    archive = w.to_binary
+    main = tiny_object(["main"], ["s9"])
+
+    assert_equal Linker.link([main, archive]), Linker.link([main, archive])
   end
 
   # --- ELF / ar count sanity checks (objfile/*) --------------------------------

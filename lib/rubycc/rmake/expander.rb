@@ -26,6 +26,39 @@ module Rubycc
       # under a dozen deep, so the limit is generous.
       MAX_EXPANSION_DEPTH = 200
 
+      # DoS fail-safe, part two: the depth cap above only counts how deep the
+      # call stack goes, so it says nothing about *fan-out*. A chain like
+      # `A1 = $(A0)$(A0)` / `A2 = $(A1)$(A1)` / ... stays only n levels deep
+      # while doing 2^n work, so a 30-line Makefile can wedge the parser (`:=`
+      # assignments expand at parse time, before any target is built). The two
+      # budgets below bound the total work of one top-level expansion, in the
+      # same spirit as the preprocessor's EXPANSION_TOKEN_LIMIT.
+      #
+      # Both are needed, because each misses the explosion the other catches:
+      #
+      # * MAX_EXPANSION_REFERENCES counts variable dereferences. It is the only
+      #   one that sees a fan-out whose leaves expand to nothing (`A0 =` empty
+      #   still costs 2^n dereferences while producing zero characters), and it
+      #   is also what catches a cycle that grows the call count rather than the
+      #   text.
+      # * MAX_EXPANSION_OUTPUT counts characters produced. It is the only one
+      #   that sees a blow-up driven by text size rather than reference count
+      #   (`BIG = <megabytes>` referenced a handful of times per level exhausts
+      #   memory long before the reference count is reached).
+      #
+      # Both limits are orders of magnitude above what the mkmf corpus needs:
+      # measured over the rmake test suite (test/fixtures/mkmf included), the
+      # heaviest single expansion resolves 32 references and yields ~4 KB.
+      #
+      # The reference cap is deliberately kept small rather than merely "safe":
+      # a budget is spent per top-level call, so the time it takes to reach the
+      # cap is itself the attacker's resource — a Makefile with many `:=`
+      # assignments multiplies it by the number of assignments. 100_000 still
+      # leaves ~3000x headroom over the measured 32 while tripping in well under
+      # a second.
+      MAX_EXPANSION_REFERENCES = 100_000
+      MAX_EXPANSION_OUTPUT = 4_194_304 # 4 MiB of characters
+
       # Base characters of the automatic variables rmake recognises. Each may be
       # written bare ($@) or parenthesised ($(@)), and the parenthesised form may
       # carry a D/F modifier ($(@D) = directory part, $(@F) = file part).
@@ -34,12 +67,21 @@ module Rubycc
       # variables:: Hash{String => Variable}
       def initialize(variables)
         @variables = variables
+        @references = 0
+        @output_chars = 0
       end
 
       # Expand +text+. +autos+ is a Hash{String => String} keyed by automatic
       # variable base character (e.g. {"@" => "foo.o", "<" => "foo.c"}); pass nil
       # outside a recipe, where automatic variables expand to "".
       def expand(text, autos = nil, depth = 0)
+        # depth 0 is the entry point from outside, so one external call gets one
+        # budget; the recursive calls below all pass depth + 1 and therefore
+        # share it.
+        if depth.zero?
+          @references = 0
+          @output_chars = 0
+        end
         guard_depth(depth)
         out = +""
         i = 0
@@ -48,9 +90,13 @@ module Rubycc
           c = text[i]
           if c == "$"
             consumed, value = expand_reference(text, i, autos, depth)
+            @output_chars += value.length
+            guard_output
             out << value
             i += consumed
           else
+            @output_chars += 1
+            guard_output
             out << c
             i += 1
           end
@@ -66,6 +112,22 @@ module Rubycc
         raise ExpansionError,
               "variable expansion exceeded #{MAX_EXPANSION_DEPTH} levels " \
               "(likely a reference cycle between recursive variables)"
+      end
+
+      def guard_references
+        return if @references <= MAX_EXPANSION_REFERENCES
+
+        raise ExpansionError,
+              "variable expansion resolved more than #{MAX_EXPANSION_REFERENCES} references " \
+              "(likely a reference cycle or an exponentially expanding variable chain)"
+      end
+
+      def guard_output
+        return if @output_chars <= MAX_EXPANSION_OUTPUT
+
+        raise ExpansionError,
+              "variable expansion produced more than #{MAX_EXPANSION_OUTPUT} characters " \
+              "(likely a reference cycle or an exponentially expanding variable chain)"
       end
 
       # Parse one reference starting at the `$` at +i+. Returns [chars_consumed,
@@ -124,8 +186,13 @@ module Rubycc
         resolve_name(name, autos, depth)
       end
 
-      # Resolve a fully-expanded variable/automatic name to its value.
+      # Resolve a fully-expanded variable/automatic name to its value. This is
+      # the one place every dereference passes through — the `$x` branch of
+      # #expand_reference and both branches of #expand_parenthesised call it —
+      # so the reference budget is charged here and nowhere else.
       def resolve_name(name, autos, depth)
+        @references += 1
+        guard_references
         auto = automatic_value(name, autos)
         return auto unless auto.nil?
 
