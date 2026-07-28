@@ -12,11 +12,13 @@ Gem::Specification.new do |spec|
                  "without gcc/binutils"
   spec.description = "Pure Ruby C toolchain for building Ruby native extensions " \
                       "without gcc/binutils"
-  spec.homepage = "https://github.com/itacchi/rubycc"
+  spec.homepage = "https://github.com/nuna/rubycc"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.3"
 
   spec.metadata["homepage_uri"] = spec.homepage
+  # rubygems.org の gem ページに "Source Code" リンクを表示するための標準メタデータ
+  spec.metadata["source_code_uri"] = spec.homepage
   spec.metadata["rubygems_mfa_required"] = "true"
 
   spec.files = Dir.glob("lib/**/*.rb") + Dir.glob("include/**/*.h") + Dir.glob("exe/*") +
