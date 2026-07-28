@@ -3962,11 +3962,114 @@ Step 121 のセンサスが挙げたギャップのうち POSIX 系 7 本を追�
   (`struct dirent` は全メンバ、`struct rusage` は先頭数メンバのオフセットを照合)。
   由来台帳(§3.3 / §3.4)を clean-room 26 → 33 本、合計 56 → 63 本に更新。
 
+## Step 124 — 残りの libc ギャップ 5 本の同梱(M5 H2、センサス駆動の完了)
+
+Step 121 のセンサスが挙げた残りの gap 候補のうち、同梱すべき libc ヘッダ 5 本
+(`sys/ioctl.h` / `termios.h` / `sys/param.h` / `sys/fcntl.h`(x86-64・aarch64 の
+2 本))を追加。同梱ヘッダは 63 → 68 本。`sys/endian.h` は追加せず(理由は後述)、
+`regex.h` / `stdatomic.h` / `stdckdint.h` の 3 本は今回のスコープ外(未着手)。
+
+| ヘッダ | 使用 gem | 実測サイズ・値 |
+|---|---|---|
+| `termios.h` | io-console | `struct termios` 60(`NCCS`=32 を含む) |
+| `sys/ioctl.h` | io-console | `struct winsize` 8、`TIOCGWINSZ`=0x5413、`TIOCSWINSZ`=0x5414 |
+| `sys/param.h` | digest | 実質は薄い互換シム。`MIN`/`MAX`/`howmany`/`roundup` の 4 マクロのみ |
+| `sys/fcntl.h`(x86-64・aarch64) | stringio | `#include <fcntl.h>` のみの 1 行シム |
+
+- **`struct termios`/`struct winsize` は共通層**: `NCCS`(32)を含む `struct termios`
+  の全メンバオフセットと `struct winsize` の全メンバオフセット、`TIOCGWINSZ`/
+  `TIOCSWINSZ` の値を x86_64(ホスト gcc)と aarch64(クロス gcc + qemu)で実測し
+  **完全一致**したため共通層に配置(glibc の termios レイアウトは alpha/mips/
+  powerpc/sparc の一部を除く mainline アーキ共通の「generic」形状で、x86-64/
+  aarch64 はどちらもこの形状を使う)。
+- **io-console の corpus サンプルが実際に到達する経路にスコープを絞った**:
+  `console.c` は `HAVE_TERMIOS_H` の分岐(Linux は必ずこちら)で
+  `tcgetattr`/`tcsetattr`/`TCSANOW` を使い、`termio.h`/`sgtty.h` フォールバック
+  (`TCGETA`/`TIOCGETP` 等)は分岐ごと到達しない。`ioctl` も `TIOCGWINSZ`/
+  `TIOCSWINSZ` の 2 リクエストしか発行しない(`grep ioctl(` で確認)。
+  `tcflush`/`tcdrain`/`tcsendbreak`/`cfgetispeed`/`cfsetispeed`/`cfgetospeed`/
+  `cfsetospeed` は実際には呼ばれていないが、`pwd.h`/`grp.h` が確立した前例
+  (実際に呼ばれない reentrant 版 API も POSIX の完備性として宣言する)にならい
+  同じ 4 関数対を宣言。`tcflow`/`tcgetsid`/`cfsetspeed` と
+  `NLDLY`/`CRDLY`/`TABDLY`/`BSDLY`/`VTDLY`/`FFDLY`(行送り遅延ビット、印字出力の
+  タイミング用で raw モード切替に無関係)は対象外。
+- **`sys/param.h` は実測で「薄いシム」であることを確認してから絞った**: ホストの
+  `sys/param.h`(x86-64: `/usr/include/x86_64-linux-gnu/sys/param.h`、
+  aarch64: `/usr/aarch64-linux-gnu/include/sys/param.h`)を読むと、ファイル冒頭の
+  コメント自身が "Compatibility header for old-style Unix parameters and
+  limits" と自称しており、`sys/types.h`/`limits.h`/`endian.h`/`signal.h` を
+  引き込んで `MAXPATHLEN` 等の BSD 名エイリアスと `setbit`/`isset` 等のビット
+  マップ操作、`MIN`/`MAX`/`howmany`/`roundup` を定義しているだけだった。
+  digest のコーパスサンプルはこれらのどれも参照していない(`grep` で確認、ゼロ
+  件)ため、"sys/param.h" という互換シムが伝統的に持つと期待される最小の 4
+  マクロだけを追加し、BSD 名エイリアスと bitmap マクロ、glibc ソースの再取り込み
+  は行わなかった(「広げすぎない」というユーザ指示どおり)。**4 マクロの値は
+  rubycc 自身の式で再現**(`roundup` は glibc の 2 の冪最適化分岐を持たない
+  常に同じ結果を返す単純な式にした。値としての ABI 事実は同一だが、glibc の
+  `__builtin_constant_p` 分岐というテキストは写経していない)。
+  さらに実測で判明したのは、**digest gem がこのヘッダに実行時に到達すること
+  自体がない**という事実: `sha1.c` の `#include <sys/param.h>` は
+  `#if defined(_KERNEL) || defined(_STANDALONE)` の内側にあり、
+  ユーザ空間の Ruby 拡張ビルドではどちらのマクロも定義されないため、この
+  `#include` は常に unreachable な dead code である(extconf.rb 側にもこれらを
+  定義する経路は存在しない)。
+- **`sys/fcntl.h` は既存 `fcntl.h` の配置に合わせてアーキ層へ複製**: ホストの
+  `sys/fcntl.h`(x86-64・aarch64 とも)は `#include <fcntl.h>` のみの 1 行だった
+  ため、その 1 行をそのまま再現。内容はアーキ間でバイト一致だが、`fcntl.h`
+  自身が O_DIRECT/O_DIRECTORY/O_NOFOLLOW のアーキ差ゆえに `glibc/x86_64/` と
+  `glibc/aarch64/` の 2 層に分かれているため、ディレクトリ構造の対称性を保つ
+  ため同じ 2 か所(`glibc/x86_64/sys/fcntl.h` / `glibc/aarch64/sys/fcntl.h`)に
+  複製した(`endian.h`/`ctype.h` がバイト一致でもアーキ層に複製されている
+  Step 82 の前例と同じ扱い)。プリプロセッサの `#include <...>` は常に検索パス
+  先頭から解決するため、この配置でも内側の `#include <fcntl.h>` は正しく
+  同じアーキの `fcntl.h` を見つける。
+- **`sys/endian.h` は追加せず**: 2 つの独立した根拠がある。(1) ホスト glibc に
+  この名前のヘッダは**実在しない** — `dpkg -L libc6-dev libc6-dev-arm64-cross`
+  で確認したところ、x86-64・aarch64 いずれの開発パッケージにも
+  `sys/endian.h` は含まれない(BSD 系 libc 固有のヘッダで、glibc は
+  `<endian.h>` のみを提供する)。(2) 仮に存在したとしても、digest の
+  `rmd160.c` にある `#include <sys/endian.h>` は
+  `#ifdef HAVE_SYS_ENDIAN_H_` の内側にあり、このマクロを定義する
+  `have_header("sys/endian.h")` 呼び出しは `digest_conf.rb`/各 extconf.rb の
+  どこにも存在しない(実測で確認)。したがって glibc ホストではこの
+  `#include` は原理的に到達しえない dead code であり、センサスの
+  gap 一覧の verdict(「review」)を「gated(BSD 専用・到達不能、追加不要)」
+  へ訂正する材料になる。
+- **スコープ外 3 本(未着手)の調査結果**:
+  - `regex.h`(oj): `regex_t` を `struct _rxclass` に値で埋め込んでいる
+    (`rxclass.c` の `regex_t rx;`)ため、ポインタ越しの不透明型では済まず全
+    メンバの再現が要る。ホストで実測した `sizeof(regex_t)` は 64 バイトで、
+    内部は `re_pattern_buffer`(バッファポインタ・fastmap・翻訳テーブル・
+    glibc 内部の `re_dfa_t*` 等)という実装依存の状態を多数抱える。今回の
+    バッチに見合う再現コストではないため見送り。
+  - `stdatomic.h`(google-protobuf): C11 の `_Atomic` 型指定子はコンパイラの
+    言語機能であり、ヘッダを足すだけでは意味がない。実測で確認: rubycc に
+    `_Atomic int x = 0;` を通すと
+    `error: expected ';'`(パーサが `_Atomic` を型指定子として認識しない)。
+  - `stdckdint.h`(bigdecimal): C23 の `ckd_add`/`ckd_sub`/`ckd_mul` は通常
+    `__builtin_add_overflow` 等のコンパイラ組み込みへ展開するマクロだが、
+    rubycc はこの組み込みを実装していない。実測で確認:
+    `ckd_add(&r, 1, 2)` を通すと
+    `error: implicit declaration of function 'ckd_add'`(組み込みが無いため
+    ヘッダを足しても展開先が存在しない)。
+  - 3 本とも、rubycc 側の言語機能拡張(`_Atomic`・`__builtin_*_overflow`・
+    POSIX regex 実行系)が先に必要であり、ヘッダ追加だけでは前進しないという
+    構造が共通する。README の既知の制限・ROADMAP への反映は今後の課題として
+    残す。
+- 検証: TERMIOS / IOCTL / SYS_PARAM / SYS_FCNTL の 4 Spec を ABI ハーネスに追加。
+  TERMIOS/IOCTL/SYS_PARAM は共通層のため x86_64 側 Spec を aarch64 クラスの
+  「neutral 層」節で再実行、SYS_FCNTL は `fcntl.h` と同じ理由でアーキ固有節に
+  x86_64・aarch64 それぞれ個別の期待値で登録(FCNTL の隣)。
+  由来台帳(§3.3 / §3.4)を clean-room 33 → 38 本、合計 63 → 68 本に更新。
+
 ---
 
 ## 現在のテスト規模
 
-Step 123 完了時点: **2,505 runs / 6,829 assertions / 0 failures / 47 skips**
+Step 124 完了時点: **2,513 runs / 6,853 assertions / 0 failures / 47 skips**
+(Step 123 から +8 = TERMIOS/IOCTL/SYS_PARAM/SYS_FCNTL の 4 Spec を x86_64・aarch64
+の両クラスに追加)
+(以前) Step 123 完了時点: **2,505 runs / 6,829 assertions / 0 failures / 47 skips**
 (Step 122 から +14 = POSIX ヘッダ 7 本の ABI ケースを x86_64・aarch64 の両クラスに追加)
 (以前) Step 122 完了時点: **2,491 runs / 6,787 assertions / 0 failures / 47 skips**
 (Step 120 から +4 = setjmp / locale の ABI ケースを x86_64・aarch64 の両クラスに追加。

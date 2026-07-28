@@ -961,6 +961,109 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <termios.h> (Step 124, M5 H2): pared to the surface io-console's corpus
+  # sample reaches on the HAVE_TERMIOS_H path, per the header's own provenance
+  # note. struct termios's layout (60 bytes; tcflag_t/speed_t are `unsigned
+  # int`, cc_t is `unsigned char` on either LP64 target) is arch-neutral, so
+  # the header lives in the common layer and this Spec is re-run in the
+  # aarch64 class's neutral-layer section below. tcgetattr/tcsetattr/
+  # tcflush/tcdrain/tcsendbreak/cfgetispeed/cfsetispeed/cfgetospeed/
+  # cfsetospeed resolve from the host libc at link time. No `defines` is
+  # needed: every name here (including XCASE, a Linux/glibc extension) is
+  # already visible under gcc's default mode (implied _DEFAULT_SOURCE), which
+  # is what compile_with_gcc uses (no -std flag), so the oracle's surface
+  # already matches rubycc's flat one without a feature-test macro.
+  TERMIOS = HeaderAbiHarness::Spec.new(
+    header: "termios.h",
+    sizes: %w[struct\ termios speed_t tcflag_t cc_t],
+    ints: %w[NCCS
+             VINTR VQUIT VERASE VKILL VEOF VTIME VMIN VSWTC VSTART VSTOP VSUSP
+             VEOL VREPRINT VDISCARD VWERASE VLNEXT VEOL2
+             IGNBRK BRKINT IGNPAR PARMRK INPCK ISTRIP INLCR IGNCR ICRNL IXON
+             IXANY IXOFF IMAXBEL IUTF8
+             OPOST ONLCR OCRNL ONOCR ONLRET OFILL OFDEL
+             CSIZE CS5 CS6 CS7 CS8 CSTOPB CREAD PARENB PARODD HUPCL CLOCAL
+             ISIG ICANON ECHO ECHOE ECHOK ECHONL NOFLSH TOSTOP IEXTEN XCASE
+             B0 B50 B75 B110 B134 B150 B200 B300 B600 B1200 B1800 B2400 B4800
+             B9600 B19200 B38400
+             TCSANOW TCSADRAIN TCSAFLUSH TCIFLUSH TCOFLUSH TCIOFLUSH],
+    offsets: [["struct termios", "c_iflag"], ["struct termios", "c_oflag"],
+              ["struct termios", "c_cflag"], ["struct termios", "c_lflag"],
+              ["struct termios", "c_line"], ["struct termios", "c_cc"],
+              ["struct termios", "c_ispeed"], ["struct termios", "c_ospeed"]],
+    snippets: [<<~C.chomp]
+      static int abi_termios(int fd, struct termios *t) {
+        int rc = tcgetattr(fd, t);
+        t->c_cc[VMIN] = 1;
+        t->c_cc[VTIME] = 0;
+        t->c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN | XCASE);
+        rc += tcsetattr(fd, TCSANOW, t);
+        rc += tcflush(fd, TCIFLUSH);
+        rc += tcdrain(fd);
+        rc += tcsendbreak(fd, 0);
+        speed_t is = cfgetispeed(t);
+        speed_t os = cfgetospeed(t);
+        rc += cfsetispeed(t, is) + cfsetospeed(t, os);
+        return rc;
+      }
+    C
+  )
+
+  # <sys/ioctl.h> (Step 124, M5 H2): pared to the surface io-console's corpus
+  # sample reaches -- ioctl(2) itself and the TIOCGWINSZ/TIOCSWINSZ terminal
+  # window size requests against struct winsize -- per the header's own
+  # provenance note. struct winsize's layout (8 bytes, all `unsigned short`
+  # members) and both request numbers are arch-neutral, so the header lives
+  # in the common layer and this Spec is re-run in the aarch64 class's
+  # neutral-layer section below. ioctl resolves from the host libc at link
+  # time.
+  IOCTL = HeaderAbiHarness::Spec.new(
+    header: "sys/ioctl.h",
+    sizes: %w[struct\ winsize],
+    ints: %w[TIOCGWINSZ TIOCSWINSZ],
+    offsets: [["struct winsize", "ws_row"], ["struct winsize", "ws_col"],
+              ["struct winsize", "ws_xpixel"], ["struct winsize", "ws_ypixel"]],
+    snippets: [<<~C.chomp]
+      static int abi_ioctl(int fd, struct winsize *ws) {
+        return ioctl(fd, TIOCGWINSZ, ws) + ioctl(fd, TIOCSWINSZ, ws);
+      }
+    C
+  )
+
+  # <sys/param.h> (Step 124, M5 H2): the traditional MIN/MAX/howmany/roundup
+  # macros only, per the header's own provenance note (digest's corpus
+  # sample never reaches this header at all in a userspace build -- its one
+  # `#include <sys/param.h>` is gated behind `defined(_KERNEL) ||
+  # defined(_STANDALONE)`). A pure macro-value check: these are rubycc's own
+  # formulas re-deriving the same well-known results glibc's shim macros
+  # produce, not copied text, so gcc and rubycc must agree on every sample
+  # value regardless of which arch runs the check -- arch-neutral, common
+  # layer, re-run in the aarch64 class's neutral-layer section below.
+  SYS_PARAM = HeaderAbiHarness::Spec.new(
+    header: "sys/param.h",
+    ints: ["MIN(3, 5)", "MIN(5, 3)", "MAX(3, 5)", "MAX(5, 3)",
+           "howmany(10, 3)", "howmany(9, 3)", "roundup(10, 8)", "roundup(16, 8)"]
+  )
+
+  # <sys/fcntl.h> (Step 124, M5 H2): the traditional compatibility alias for
+  # <fcntl.h>, per the header's own provenance note. Its O_DIRECT/
+  # O_DIRECTORY/O_NOFOLLOW values swap between x86-64 and aarch64 (they are
+  # <fcntl.h>'s own values, reached through the alias), so this Spec lives
+  # in the arch-specific section below (paralleling FCNTL) rather than being
+  # re-run byte-for-byte in the neutral-layer section.
+  SYS_FCNTL = HeaderAbiHarness::Spec.new(
+    header: "sys/fcntl.h",
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[struct\ flock],
+    ints: %w[O_RDONLY O_CREAT O_DIRECT O_DIRECTORY O_NOFOLLOW],
+    snippets: [<<~C.chomp]
+      static int abi_sys_fcntl(const char *p) {
+        int fd = open(p, O_RDONLY | O_CREAT, 0644);
+        return fcntl(fd, F_GETFD);
+      }
+    C
+  )
+
   def test_pwd_abi_matches_gcc
     assert_abi_matches(PWD)
   end
@@ -987,6 +1090,22 @@ class TestHeaderAbi < Minitest::Test
 
   def test_sched_abi_matches_gcc
     assert_abi_matches(SCHED)
+  end
+
+  def test_termios_abi_matches_gcc
+    assert_abi_matches(TERMIOS)
+  end
+
+  def test_ioctl_abi_matches_gcc
+    assert_abi_matches(IOCTL)
+  end
+
+  def test_sys_param_abi_matches_gcc
+    assert_abi_matches(SYS_PARAM)
+  end
+
+  def test_sys_fcntl_abi_matches_gcc
+    assert_abi_matches(SYS_FCNTL)
   end
 
   def test_arpa_inet_abi_matches_gcc
@@ -1174,13 +1293,14 @@ end
 # target's real aarch64 glibc headers. Byte-identical stdout proves the bundled
 # aarch64 layer reproduces the target ABI.
 #
-# The seven arch-specific cases are the ones that would diverge from x86-64 if
+# The eight arch-specific cases are the ones that would diverge from x86-64 if
 # the layer were wrong: struct stat's 128-byte aarch64 layout (SYS_STAT), the
 # 32-bit nlink_t/blksize_t (SYS_TYPES, and inside SYS_STAT), the unsigned
 # WCHAR_MIN/MAX (STDINT), the unsigned plain-char range (LIMITS, via
-# __CHAR_UNSIGNED__), the swapped O_DIRECT/O_DIRECTORY/O_NOFOLLOW bits (FCNTL),
-# the wider pthreads opaque types (PTHREAD: pthread_mutex_t 40->48,
-# pthread_attr_t 56->64, pthread_mutexattr_t / pthread_condattr_t 4->8), and the
+# __CHAR_UNSIGNED__), the swapped O_DIRECT/O_DIRECTORY/O_NOFOLLOW bits (FCNTL
+# and, reached through its compatibility alias, SYS_FCNTL), the wider pthreads
+# opaque types (PTHREAD: pthread_mutex_t 40->48, pthread_attr_t 56->64,
+# pthread_mutexattr_t / pthread_condattr_t 4->8), and the
 # wider jmp_buf/sigjmp_buf (SETJMP: 200->312, a bigger saved register set). The
 # remaining cases exercise the neutral layers (the common libc declarations and
 # the arch headers that are byte-identical across the two ABIs), confirming they
@@ -1215,6 +1335,10 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_fcntl_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::FCNTL)
+  end
+
+  def test_sys_fcntl_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SYS_FCNTL)
   end
 
   def test_pthread_abi_matches_cross_gcc
@@ -1321,6 +1445,18 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_sched_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::SCHED)
+  end
+
+  def test_termios_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::TERMIOS)
+  end
+
+  def test_ioctl_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::IOCTL)
+  end
+
+  def test_sys_param_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SYS_PARAM)
   end
 
   private

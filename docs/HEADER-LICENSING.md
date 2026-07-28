@@ -168,6 +168,11 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 | `include/libc/sys/resource.h` | **POSIX/kernel UAPI の struct rlimit・struct rusage と RLIMIT_*/RUSAGE_* 値**。struct timeval は sys/time.h と同じ `__timeval_defined` ガードを共有。全メンバのサイズ・オフセットを実測し両アーキ一致(rlim_t/struct timeval のメンバは LP64 で幅差なし)のため共通層。getrlimit/setrlimit/getrusage は POSIX 宣言(Step 123) | なし(UAPI 由来) |
 | `include/libc/dirent.h` | **glibc/Linux ABI の struct dirent**(d_reclen/d_type が d_name の前に来る並びは glibc/Linux 固有で POSIX 非規定・実測が唯一の根拠)。DIR は glibc 自身も公開ヘッダで定義を与えない不完全型 `struct __dirstream` のまま(値そのものを持たず常にポインタ経由のため実体不要)。struct dirent は実測 280 バイトで両アーキ一致のため共通層。opendir/readdir/closedir/rewinddir/readdir_r/fdopendir/dirfd は POSIX 宣言(Step 123) | なし(glibc/UAPI 実測) |
 | `include/libc/sched.h` | **glibc の cpu_set_t の実測サイズ/アライメント**(128/8。内部の `__bits` 配列は不再現の不透明 blob・§4、setjmp.h/pthread.h と同じ扱い)と CPU_SETSIZE。両アーキ一致のため共通層。センサスが挙げた etc/google-protobuf の実使用範囲(sched_yield/sched_getcpu)にスコープを絞り、CPU_SET 等のアフィニティ操作マクロ群は対象外(Step 123) | なし(glibc ABI 実測) |
+| `include/libc/termios.h` | **glibc/Linux ABI の struct termios**(NCCS=32 の `c_cc` 配列を含め実測 60 バイト、全メンバのオフセット・両アーキ一致のため共通層)と主要フラグ定数・V* 添字・B* ボーレート値(実測)。io-console の corpus サンプルが実際に到達する HAVE_TERMIOS_H 経路にスコープを絞り、tcgetattr/tcsetattr/tcflush/tcdrain/tcsendbreak/cfgetispeed/cfsetispeed/cfgetospeed/cfsetospeed は POSIX 宣言(Step 124) | なし(glibc/UAPI 実測) |
+| `include/libc/sys/ioctl.h` | **struct winsize のレイアウト**(実測 8 バイト・全オフセット両アーキ一致)と TIOCGWINSZ/TIOCSWINSZ の値(kernel UAPI・実測)。io-console の corpus サンプルが実際に発行する ioctl リクエストにスコープを絞り、ioctl は POSIX 非規定の glibc/Linux 宣言(Step 124) | なし(glibc/UAPI 実測) |
+| `include/libc/sys/param.h` | **glibc の互換シムとしての実体を実測で確認**した上で、MIN/MAX/howmany/roundup の 4 マクロのみを rubycc 自身の式で再現(値は同一だが glibc のテキストは写経せず)。digest の corpus サンプルはこのヘッダに実際には到達しない(`#include <sys/param.h>` が `_KERNEL`/`_STANDALONE` ゲート内で常に unreachable)ことも実測で確認(Step 124) | なし(glibc ABI 実測) |
+| `include/libc/glibc/x86_64/fcntl.h` の隣に置く `sys/fcntl.h`(x86-64) | **glibc の `sys/fcntl.h` が `#include <fcntl.h>` のみの 1 行シム**であることをホストヘッダで実測確認し、同じ 1 行を再現。fcntl.h 自身と同じ理由(O_DIRECT 系のアーキ差)で fcntl.h の隣に配置(Step 124) | なし(glibc ABI 実測) |
+| `include/libc/glibc/aarch64/fcntl.h` の隣に置く `sys/fcntl.h`(aarch64) | 同上。x86-64 版とバイト一致(Step 124) | なし(glibc ABI 実測) |
 
 > `assert.h` と `features.h` は自己申告で clean-room だが、冒頭コメントに
 > 「musl's <…> was the shape reference」とある。**形状(どの宣言を並べるか)の参照**で
@@ -180,8 +185,8 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 |---|---|
 | freestanding | 8 |
 | musl-derived | 22 |
-| clean-room | 33 |
-| **合計** | **63** |
+| clean-room | 38 |
+| **合計** | **68** |
 
 > Step 82(M5 H1)で `include/libc/glibc/aarch64/` 層 11 本を追加(30→41)。うち 8 本は
 > x86-64 版と宣言・値がバイト一致(`cmp` 確認済み)で、由来分類も x86-64 版を継承する。
@@ -198,6 +203,27 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 > 共通層(`include/libc/`)に配置した。DIR と cpu_set_t は内部状態を触らせない型
 > なので、setjmp.h/pthread.h と同じ方針(実測サイズ/アラインの不透明ブロブ、または
 > glibc 自身も定義を与えない不完全型のまま)にした。
+
+> Step 124(M5 H2)でコーパスセンサスの残り gap から `termios.h`・`sys/ioctl.h`・
+> `sys/param.h`・`sys/fcntl.h`(x86-64・aarch64 の 2 本)の計 5 本を追加
+> (63→68、clean-room 33→38)。struct termios(NCCS を含む)と struct winsize は
+> 呼び出し側がメンバへ直接触れる構造体なので、サイズ・全メンバのオフセットを
+> x86-64・クロス gcc(aarch64)の両方で実測し、byte で一致したため共通層に配置した
+> (TIOCGWINSZ/TIOCSWINSZ の値も同様に両アーキ一致を実測)。sys/param.h は
+> 実測の結果、glibc 自身が「古い Unix パラメータの互換ヘッダ」と自称する薄いシムで
+> あることを確認し、MIN/MAX/howmany/roundup の 4 マクロのみを rubycc 自身の式
+> (値は同一・テキストは非コピー)で再現、BSD 名エイリアスやビットマップ操作マクロ
+> 群は対象外とした。sys/fcntl.h は `#include <fcntl.h>` のみの 1 行シムであることを
+> 実測確認し、fcntl.h 自身が O_DIRECT 系のアーキ差ゆえに glibc/x86_64・glibc/aarch64
+> の 2 層に分かれている構成に合わせて同じ 2 か所に置いた(内容はバイト一致)。
+> `sys/endian.h` はセンサスの gap 候補だが、ホスト glibc(x86-64・aarch64 いずれの
+> `libc6-dev` パッケージにも)に実在しないことを `dpkg -L` で確認したため追加していない
+> (digest の rmd160.c 内の `#include <sys/endian.h>` も `HAVE_SYS_ENDIAN_H_` という、
+> どの extconf.rb からも定義されないマクロの下にあり、実行時に到達しない点も実測で
+> 確認した)。`regex.h`(oj、`regex_t` を値で埋め込むため実測 64 バイトの内部構造の
+> 再現コストが見合わない)・`stdatomic.h`・`stdckdint.h`(いずれも rubycc が
+> `_Atomic` 型指定子・`__builtin_add_overflow` を実装しておらず、実測で
+> コンパイルエラーになることを確認した)の 3 本は今回のスコープ外(未着手)。
 
 ---
 
