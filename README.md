@@ -46,7 +46,7 @@ needed for the headers.
 
 ## Requirements
 
-- **Ruby 3.3 or newer.** Development happens on 3.4 and 4.0; see *Known limitations*.
+- **Ruby 3.3 or newer.** The suite is run on 3.3, 3.4 and 4.0; see *Known limitations*.
 - **Ruby's own headers** (`ruby.h` and friends) and `rbconfig`. Official ruby images have
   them; on a distro Ruby you need the `-dev`/`-devel` package.
 - **Shared libraries you link against** must be present as binaries (`libc.so`, `libz.so`,
@@ -95,8 +95,10 @@ Measured, not guessed — each item links to the record that establishes it.
 - **Out of scope**: gems needing a C++ compiler (grpc), or that run `configure` through
   mini_portile (nokogiri's vendored build; `--use-system-libraries` is fine), or that ship
   assembly (ffi).
-- **Ruby 3.3 is the declared floor; verification against it is in progress.** The suite
-  runs on 3.4 and 4.0 today, and no CI matrix covers multiple versions yet.
+- **No CI matrix yet.** The suite is run by hand on Ruby 3.3, 3.4 and 4.0; nothing
+  re-checks them on every change. Running it on 3.3 is what caught a silent
+  float-constant miscompilation (a `String#to_f` bug in Ruby 3.3, worked around in
+  the lexer), so the floor is genuinely exercised — just not continuously.
 
 ## No gem-side changes required
 

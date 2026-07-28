@@ -369,8 +369,10 @@ module Rubycc
         start = @pos
         text = +""
         text << advance while digit?(current)
+        saw_fraction_digit = true
         if current == "."
           text << advance
+          saw_fraction_digit = digit?(current)
           text << advance while digit?(current)
         end
         if current == "e" || current == "E"
@@ -385,7 +387,18 @@ module Rubycc
         if !current.nil? && current.match?(/[A-Za-z0-9_.]/)
           raise LexError.new("invalid suffix on floating constant", @pos)
         end
-        Result.new(:float, text.to_f, nil, suffix)
+        # C allows a floating constant with a "." followed by no fraction
+        # digits before the exponent (6.4.4.2), e.g. "1.e5". Ruby's
+        # String#to_f up to 3.3.x (fixed in 3.4) drops the exponent for
+        # exactly this shape and silently returns the wrong value (e.g.
+        # "1.e5".to_f == 1.0 instead of 100000.0). Since "N." and "N.0" are
+        # the same number, pad the fraction with a "0" before conversion so
+        # to_f sees the shape it parses correctly on every supported Ruby.
+        # This only affects the string handed to to_f, not the token's
+        # spelling (Result carries no spelling field; `text` here is purely
+        # a conversion buffer).
+        to_f_text = saw_fraction_digit ? text : text.sub(".", ".0")
+        Result.new(:float, to_f_text.to_f, nil, suffix)
       end
 
       # Consumes a floating constant's f/F or l/L suffix, returning it normalized

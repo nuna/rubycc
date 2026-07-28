@@ -490,6 +490,67 @@ class TestLexer < Minitest::Test
     assert_in_delta 0.015, tok.value, 1e-12
   end
 
+  # Regression tests for a Ruby 3.3.x-only String#to_f bug (fixed in 3.4):
+  # a floating constant whose "." is followed directly by an exponent, with
+  # no fraction digits in between (valid per C11 6.4.4.2, e.g. "1.e5"),
+  # made String#to_f silently drop the exponent on Ruby <= 3.3
+  # ("1.e5".to_f == 1.0 instead of 100000.0). These pass on Ruby 3.4+
+  # regardless of the fix; they exist to guard the 3.3 lower bound we
+  # support.
+
+  def test_dot_then_exponent_with_no_fraction_digits
+    tok = lex("1.e5;").first
+    assert_equal :float, tok.type
+    assert_in_delta 100_000.0, tok.value, 1e-9
+  end
+
+  def test_dot_then_signed_exponent_with_no_fraction_digits
+    tok = lex("1.e-5;").first
+    assert_equal :float, tok.type
+    assert_in_delta 1.0e-05, tok.value, 1e-12
+  end
+
+  def test_dot_then_uppercase_exponent_with_no_fraction_digits
+    tok = lex("123.E10;").first
+    assert_equal :float, tok.type
+    assert_in_delta 1_230_000_000_000.0, tok.value, 1.0
+  end
+
+  def test_dot_then_exponent_with_no_fraction_digits_extreme_magnitude
+    tok = lex("9007199254740992.e-256;").first
+    assert_equal :float, tok.type
+    assert_in_delta 9.007199254740992e-241, tok.value, 9.007199254740992e-241 * 1e-12
+  end
+
+  # Shapes that already had fraction digits (or no "." at all) were never
+  # affected by the Ruby 3.3.x String#to_f bug above; kept here as
+  # regression guards so a future change to the normalization does not
+  # break them.
+
+  def test_dot_with_fraction_digit_then_exponent_still_correct
+    tok = lex("1.0e5;").first
+    assert_equal :float, tok.type
+    assert_in_delta 100_000.0, tok.value, 1e-9
+  end
+
+  def test_leading_dot_then_exponent_still_correct
+    tok = lex(".5e3;").first
+    assert_equal :float, tok.type
+    assert_in_delta 500.0, tok.value, 1e-9
+  end
+
+  def test_no_dot_exponent_still_correct
+    tok = lex("1e10;").first
+    assert_equal :float, tok.type
+    assert_in_delta 1.0e10, tok.value, 1.0
+  end
+
+  def test_dot_with_fraction_digit_then_signed_exponent_still_correct
+    tok = lex("1.5e-256;").first
+    assert_equal :float, tok.type
+    assert_in_delta 1.5e-256, tok.value, 1.5e-256 * 1e-12
+  end
+
   def test_float_suffix_marks_single_precision
     tok = lex("1.5f;").first
     assert_equal :float, tok.type
