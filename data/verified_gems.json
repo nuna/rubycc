@@ -10,7 +10,35 @@
     "versions": ["1.8.3"],
     "verified_at": "2026-07-17",
     "environment": "glibc x86_64 / ruby 3.4.5",
-    "evidence": "Built with rubycc (12 translation units via rmake, jobs:4); gem's own RSpec suite passed 455 examples / 0 failures (Step 54). B6 in-process rmake build re-confirmed (Step 61), hermetic distroless-headers gem install succeeded (Step 64).",
+    "evidence": "Built with rubycc (12 translation units via rmake, jobs:4); gem's own RSpec suite passed 455 examples / 0 failures (Step 54). B6 in-process rmake build re-confirmed (Step 61), hermetic distroless-headers gem install succeeded (Step 64). Re-confirmed in H4 (Step 98) with no compiler changes: all MRI-applicable examples among the upstream 468 examples passed, with the 13 JRuby-only examples excluded as not applicable.",
     "notes": "No known issues on glibc x86_64. musl and aarch64 not yet verified."
+  },
+  "bigdecimal": {
+    "versions": ["4.1.2"],
+    "verified_at": "2026-07-24",
+    "environment": "glibc x86_64 / ruby 3.4.5",
+    "evidence": "RUBYCC=1 gem install bigdecimal succeeded (lib/bigdecimal.so built through rmake); the gem's own test suite passed 265 tests / 8,267 assertions / 0 failures / 0 errors (Steps 93-97).",
+    "notes": "11 tests are omitted because BIGDECIMAL_USE_VP_TEST_METHODS is not set; this is an expected, normal omission and not a failure. musl and aarch64 not yet verified."
+  },
+  "redcarpet": {
+    "versions": ["3.6.1"],
+    "verified_at": "2026-07-24",
+    "environment": "glibc x86_64 / ruby 3.4.5",
+    "evidence": "RUBYCC=1 gem install redcarpet succeeded; the gem's own test/unit suite passed 136 tests / 206 assertions / 0 failures / 0 errors / 0 skips (Step 98).",
+    "notes": "extconf.rb is a pure C-extension build with no configure-time probes. musl and aarch64 not yet verified."
+  },
+  "racc": {
+    "versions": ["1.8.1"],
+    "verified_at": "2026-07-24",
+    "environment": "glibc x86_64 / ruby 3.4.5",
+    "evidence": "RUBYCC=1 gem install racc built ext/racc/cparse (cparse.so); the gem's own test/unit suite passed 71 tests / 319 assertions / 0 failures / 0 errors (Step 99).",
+    "notes": "This was not a fully hands-off gem install: the generated file lib/racc/parser-text.rb had to be manually supplied from the rmake build's generated output. musl and aarch64 not yet verified."
+  },
+  "date": {
+    "versions": ["3.5.1"],
+    "verified_at": "2026-07-24",
+    "environment": "glibc x86_64 / ruby 3.4.5",
+    "evidence": "RUBYCC=1 gem install date succeeded (lib/date_core.so built); the gem's own test/unit suite passed 143 tests / 162,593 assertions / 0 failures / 0 errors / 0 skips (Steps 99-104).",
+    "notes": "musl and aarch64 not yet verified."
   }
 }

@@ -46,9 +46,13 @@ class TestDoctor < Minitest::Test
 
   def test_verified_gems_json_holds_only_confirmed_gems
     raw = JSON.parse(File.read(DATA))
-    assert_equal %w[json msgpack], raw.keys.sort
+    assert_equal %w[bigdecimal date json msgpack racc redcarpet], raw.keys.sort
     assert_includes raw["json"]["versions"], "2.21.1"
     assert_includes raw["msgpack"]["versions"], "1.8.3"
+    assert_includes raw["bigdecimal"]["versions"], "4.1.2"
+    assert_includes raw["date"]["versions"], "3.5.1"
+    assert_includes raw["racc"]["versions"], "1.8.1"
+    assert_includes raw["redcarpet"]["versions"], "3.6.1"
   end
 
   # --- gemspec packaging ----------------------------------------------------
@@ -204,11 +208,25 @@ class TestDoctor < Minitest::Test
       File.write("#{gemfile}.lock", lock_text)
       out = StringIO.new
       err = StringIO.new
-      db = verified || Doctor::VerifiedGems.load
+      # Leave `verified` nil unless a caller injects one directly: CLI.run
+      # falls back to `--data` (when given via argv_extra) or the shipped
+      # database on its own, so forcing a load here would shadow `--data`.
       code = Doctor::CLI.run(["--gemfile", gemfile, *argv_extra],
                              out: out, err: err,
-                             verified: db, builder: FakeBuilder.new(builder_map))
+                             verified: verified, builder: FakeBuilder.new(builder_map))
       [code, out.string, err.string]
+    end
+  end
+
+  # Writes a test-only verified_gems.json with exactly the given entries and
+  # yields its path. Tests that need to control which gems doctor treats as
+  # verified use this instead of the shipped data/verified_gems.json, so they
+  # don't break every time the shipped database gains a newly verified gem.
+  def with_temp_verified_db(entries)
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "verified_gems.json")
+      File.write(path, JSON.generate(entries))
+      yield path
     end
   end
 
@@ -223,17 +241,36 @@ class TestDoctor < Minitest::Test
   end
 
   def test_flow_failure_yields_exit_1_and_needs_attention
+    # Use a test-only verified DB (via --data) rather than the shipped
+    # data/verified_gems.json: this test checks what happens to a gem that is
+    # NOT verified (it gets built on the spot, or fails). Pinning that
+    # behaviour to the shipped database would make the test start failing
+    # every time the corpus grows and a gem it names becomes verified. Only
+    # json/msgpack (already resolved verified elsewhere in the flow) are
+    # listed here; racc is deliberately left out so it takes the build path.
+    db_entries = {
+      "json" => {
+        "versions" => ["2.21.1"], "verified_at" => "2026-07-17",
+        "environment" => "x", "evidence" => "y", "notes" => ""
+      },
+      "msgpack" => {
+        "versions" => ["1.8.3"], "verified_at" => "2026-07-17",
+        "environment" => "x", "evidence" => "y", "notes" => ""
+      }
+    }
     map = {
       "rake"     => R.new(status: :no_ext),
       "racc"     => R.new(status: :built, sos: ["racc.so"], require_ok: true),
       "nokogiri" => R.new(status: :failed, stage: :compile, reason: "boom")
     }
-    code, out, = run_cli(LOCK, map)
-    assert_equal 1, code
-    assert_includes out, "✘"
-    assert_includes out, "compile: boom"
-    assert_includes out, "NEEDS ATTENTION"
-    assert_includes out, "built on the spot"
+    with_temp_verified_db(db_entries) do |db_path|
+      code, out, = run_cli(LOCK, map, argv_extra: ["--data", db_path])
+      assert_equal 1, code
+      assert_includes out, "✘"
+      assert_includes out, "compile: boom"
+      assert_includes out, "NEEDS ATTENTION"
+      assert_includes out, "built on the spot"
+    end
   end
 
   def test_flow_all_handled_yields_exit_0_and_adoptable
@@ -305,8 +342,10 @@ class TestDoctor < Minitest::Test
   def test_e2e_on_the_spot_build
     skip "set RMAKE_ACCEPTANCE=1 for the doctor end-to-end" unless ENV["RMAKE_ACCEPTANCE"] == "1"
 
-    # racc has a small C extension (ext/racc/cparse) and is not in the verified DB,
-    # so it exercises the real fetch -> extconf -> rmake -> require path.
+    # racc has a small C extension (ext/racc/cparse). We pass an empty
+    # test-only verified DB via --data so this test exercises the real fetch
+    # -> extconf -> rmake -> require path regardless of whether racc happens
+    # to be verified in the shipped data/verified_gems.json.
     lock = <<~LOCK
       GEM
         remote: https://rubygems.org/
@@ -322,10 +361,13 @@ class TestDoctor < Minitest::Test
     Dir.mktmpdir do |dir|
       gemfile = File.join(dir, "Gemfile")
       File.write("#{gemfile}.lock", lock)
-      out = StringIO.new
-      code = Doctor::CLI.run(["--gemfile", gemfile, "--timeout", "300"], out: out, err: StringIO.new)
-      assert_equal 0, code, "racc should build on the spot:\n#{out.string}"
-      assert_includes out.string, "built on the spot"
+      with_temp_verified_db({}) do |db_path|
+        out = StringIO.new
+        code = Doctor::CLI.run(["--gemfile", gemfile, "--timeout", "300", "--data", db_path],
+                                out: out, err: StringIO.new)
+        assert_equal 0, code, "racc should build on the spot:\n#{out.string}"
+        assert_includes out.string, "built on the spot"
+      end
     end
   end
 end
