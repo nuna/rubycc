@@ -18,8 +18,8 @@ module Rubycc
     # the .pc text is malformed, or an unknown option/no module was given —
     # the same pass/fail contract mkmf's xsystem(... "--exists" ...) and
     # get[...] calls rely on.
-    def self.run(argv, stdout: $stdout, stderr: $stderr, resolver: Resolver.new)
-      Cli.new(argv, stdout: stdout, stderr: stderr, resolver: resolver).run
+    def self.run(argv, stdout: $stdout, stderr: $stderr, resolver: Resolver.new, filter: SystemPathFilter.new)
+      Cli.new(argv, stdout: stdout, stderr: stderr, resolver: resolver, filter: filter).run
     end
 
     # Parses argv into requested options + module names and renders exactly
@@ -27,11 +27,12 @@ module Rubycc
     # mkmf's pkg_config() invokes $PKGCONFIG with all of a single call's
     # `--#{option}` flags at once and reads back one combined line of output.
     class Cli
-      def initialize(argv, stdout:, stderr:, resolver:)
+      def initialize(argv, stdout:, stderr:, resolver:, filter:)
         @argv = argv
         @out = stdout
         @err = stderr
         @resolver = resolver
+        @filter = filter
         @options = []
         @modules = []
       end
@@ -92,12 +93,21 @@ module Rubycc
 
       # Multiple module arguments are concatenated in the order given — the
       # "複数モジュール" case mkmf's pkg_config() call shape allows for.
+      #
+      # The system-path filter is applied here, once, rather than inside
+      # Resolver or per rendered option: Resolver's token lists are what the
+      # Requires chain says (the parser-level tests assert exactly that), while
+      # every option that renders those tokens — --cflags, --cflags-only-I,
+      # --cflags-only-other, --libs, --libs-only-l — has to agree on which of
+      # them are suppressed. --cflags-only-other and --libs-only-l are
+      # unaffected in practice, since they keep only tokens the filter never
+      # touches.
       def all_cflags
-        @modules.flat_map { |name| @resolver.cflags_tokens(name) }
+        @filter.cflags(@modules.flat_map { |name| @resolver.cflags_tokens(name) })
       end
 
       def all_libs
-        @modules.flat_map { |name| @resolver.libs_tokens(name) }
+        @filter.libs(@modules.flat_map { |name| @resolver.libs_tokens(name) })
       end
     end
   end

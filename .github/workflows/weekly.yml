@@ -1,12 +1,12 @@
-# Tier B: the nightly jobs that are too slow or too network-hungry to run on
+# Tier B: the weekly jobs that are too slow or too network-hungry to run on
 # every push. None of them is part of `rake test`. See docs/CI.md.
-name: nightly
+name: weekly
 
 # Quoted so YAML parsers cannot read the key as the boolean `on`.
 "on":
   schedule:
-    # 18:00 UTC = 03:00 JST.
-    - cron: "0 18 * * *"
+    # Every Sunday 18:00 UTC = Monday 03:00 JST.
+    - cron: "0 18 * * 0"
   workflow_dispatch:
 
 permissions:
@@ -41,7 +41,7 @@ jobs:
 
       - uses: ruby/setup-ruby@v1
         with:
-          # A single version: the nightly jobs check behaviour, not version
+          # A single version: the weekly jobs check behaviour, not version
           # coverage (that is Tier A's matrix).
           ruby-version: "4.0"
           bundler-cache: false
@@ -69,7 +69,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nightly-census
+          name: weekly-census
           path: |
             test/corpus/include-census.md
             tmp/ci/*.log
@@ -129,7 +129,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nightly-acceptance-logs
+          name: weekly-acceptance-logs
           path: tmp/ci/*.log
           if-no-files-found: warn
 
@@ -184,8 +184,78 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nightly-throughput
+          name: weekly-throughput
           path: |
             benchmark/results/
             tmp/ci/*.log
+          if-no-files-found: warn
+
+  # The intermediate version 3.4 is checked weekly rather than on every push,
+  # to save runner minutes. The two ends (3.3 and 4.0) are checked on every
+  # push by test.yml, so a version-specific break is caught within the week
+  # unless it is 3.4-specific.
+  ruby-3-4:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchains the differential tests compare against
+        # Same set as Tier A; see the comment in the census job.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            binutils \
+            pkg-config \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            qemu-user
+
+      - name: Verify the toolchain is complete
+        # Fail here rather than later: a missing tool turns hundreds of tests
+        # into skips, and a skip is silently green. Failing at install time
+        # names the problem directly. tools/ci_check_skips.rb is the second net.
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcc --version
+          aarch64-linux-gnu-gcc --version
+          aarch64-linux-gnu-objdump --version
+          qemu-aarch64 --version
+          readelf --version
+          ar --version
+          nm --version
+          pkg-config --version
+          make --version
+          for f in /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1 \
+                   /usr/aarch64-linux-gnu/lib/libc.so.6; do
+            ls -l "$f"
+          done
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: false
+
+      - name: bundle install
+        run: bundle install --jobs 4 --retry 3
+
+      - name: Run the test suite
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p tmp/ci
+          bundle exec rake test TESTOPTS="--verbose" 2>&1 | tee tmp/ci/test-ruby3.4.log
+
+      - name: Guard against runaway skips
+        run: ruby tools/ci_check_skips.rb tmp/ci/test-ruby3.4.log
+
+      - name: Upload the test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-test-log-ruby3.4
+          path: tmp/ci/*.log
           if-no-files-found: warn

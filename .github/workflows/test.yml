@@ -10,6 +10,19 @@ name: test
 "on":
   push:
     branches: [master]
+    # Skip Tier A for changes that cannot affect test outcomes, to save
+    # runner minutes. NOT a broad '**.md' pattern: test/corpus/include-census.md
+    # is verified by test/test_corpus_census.rb, so a change to it must still
+    # run the suite. pull_request intentionally has no paths-ignore -- PRs
+    # always run the full suite.
+    paths-ignore:
+      - 'docs/**'
+      - 'references/**'
+      - 'README.md'
+      - 'CLAUDE.md'
+      - 'LICENSE.txt'
+      - 'NOTICE'
+      - 'benchmark/results/**'
   pull_request:
   workflow_dispatch:
   # release.yml reuses this workflow, so it must be callable.
@@ -31,8 +44,11 @@ jobs:
       # break (Step 133 was one) is easiest to read off the full matrix.
       fail-fast: false
       matrix:
-        # Lower bound is the gemspec's required_ruby_version (">= 3.3").
-        ruby: ["3.3", "3.4", "4.0"]
+        # Only the two ends: the lower bound (gemspec's required_ruby_version,
+        # ">= 3.3") and the latest (4.0) are checked on every push, to save
+        # runner minutes. The intermediate 3.4 is checked weekly instead, in
+        # weekly.yml's ruby-3-4 job.
+        ruby: ["3.3", "4.0"]
 
     steps:
       - uses: actions/checkout@v4

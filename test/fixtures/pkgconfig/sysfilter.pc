@@ -1,0 +1,10 @@
+prefix=/usr
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: sysfilter
+Description: synthetic fixture for the system include/library path filter
+Version: 1.0
+Libs: -L${libdir} -L/opt/foo/lib -lfoo
+Cflags: -I${includedir} -I/usr/include/ -I/opt/foo/include -DFOO=1
