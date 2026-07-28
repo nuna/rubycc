@@ -98,6 +98,32 @@ Measured, not guessed — each item links to the record that establishes it.
 - **Ruby 3.2 is declared but not exercised.** The suite runs on 3.4 and 4.0; no CI matrix
   covers older versions yet.
 
+## No gem-side changes required
+
+Compatibility is rubycc's job, not the gem's. A gem must build **unmodified**: rubycc never
+asks for source changes, `extconf.rb` or gemspec edits, install-time patches, or
+rubycc-specific code such as `#ifdef __RUBYCC__`. If a gem does not build, that is a rubycc
+bug.
+
+Two things are *not* considered gem-side changes: turning rubycc on (`RUBYCC=1`), and
+choosing an install option the gem itself offers — for example
+`gem install nokogiri -- --use-system-libraries`, which is a supported flag of that gem,
+not a rubycc workaround.
+
+## Versioning
+
+Semantic versioning, with one project-specific rule:
+
+- **A regression in the corpus pass rate is a breaking change.** The corpus
+  (`test/corpus/gems.rb`, 25 gems) is the contract. If a release stops building a gem that
+  the previous release built, that is major-version territory, not a patch — regardless of
+  how small the code change was.
+- **Minor** releases add language or header coverage, new targets, or new gems that build.
+- **Patch** releases fix bugs and improve performance without changing what builds.
+- The generated code's *speed* is not part of the compatibility contract, but throughput
+  and runtime performance are tracked (`rake bench:throughput`, `benchmark/run.rb`) and
+  regressions are treated as bugs.
+
 The full picture is in [docs/C11-COVERAGE.md](docs/C11-COVERAGE.md) (clause-by-clause C11
 conformance) and [docs/ROADMAP.md](docs/ROADMAP.md) §3 (known debts).
 
