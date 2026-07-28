@@ -60,18 +60,31 @@ static 版だけを入れると `available?` が false になり、**aarch64 実
 | 条件 | 既定値 | 意味 |
 |---|---|---|
 | `failures > 0` / `errors > 0` | — | rake の終了コードで既に落ちているはずの二重防御 |
-| `skips > CI_MAX_SKIPS` | 60 | 外部ツールが欠けた、または skip 条件が広がった |
-| `runs < CI_MIN_RUNS` | 2400 | スイートが途中で切れた / テストファイルがロードされなかった |
+| `skips > CI_MAX_SKIPS` | 55 | 外部ツールが欠けた、または skip 条件が広がった |
+| `runs < CI_MIN_RUNS` | 2500 | スイートが途中で切れた / テストファイルがロードされなかった |
 
 同時に **skip 理由ごとのヒストグラム**(件数降順)を出す。理由に含まれる絶対パスは
 `<path>`、数字は `<n>` に正規化してから集計するので、一時ディレクトリ名で分類が
 無限に増えることはない。数値が動いたときに「どのツールが消えたか」がログの先頭で
 分かる。
 
-**運用**: 既定値の 60 / 2400 はローカル実測(2,531 runs / 47 skips)に対する
-緩めの初期値である。**最初の green run で CI 実測値が出たら、その値に合わせて
-締めること**(成功時もサマリを出力するのはこのため)。緩いままだと、
-「半分が skip になった」程度の劣化を検出できない。
+**運用**: 最初の green run(Step 135)で CI 実測値が出た結果、CI は
+**2,547 runs / 52 skips**、ローカルは **2,547 runs / 47 skips** だった。
+runs は一致しているのに skips が 5 件ずれているのは、内訳が異なる 2 つの効果が
+たまたま相殺しているためで、単一の原因ではない。
+
+- **−1**: CI には本物の `pkg-config` が入っているため、
+  `test_matches_real_pkg_config_for_zlib` が skip ではなく実行される
+  (ローカルは pkg-config 不在のため常に skip)。
+- **+6**: `test_rmake_golden.rb` の `make -n` 突き合わせ 6 件が CI では skip
+  される。フィクスチャの Makefile が**開発機の Ruby ヘッダの絶対パス**を
+  埋め込んでおり、その絶対パスが CI ランナー上には存在しないため。これは
+  CI 側だけでは解消できない構造的な差である。
+
+現在の閾値 55 / 2500 は、この実測値(52 skips / 2,547 runs)に小さな余裕を
+足したもの。テストを増やすと runs は増える一方なので、`CI_MIN_RUNS` が
+テスト追加だけで誤検知することはない。テストの増減があった場合はこの基準値も
+追随して更新すること。
 
 ## 週次ベンチが合否判定をしない理由
 
@@ -166,6 +179,26 @@ CI の初回実行(Step 135)がこれを実際に検出し、`Gemfile` の devel
 `gem "fiddle"` を追加して解決した。開発機の Ruby だけで回していては
 気付けない類の非互換であり、マトリクスを回す価値を裏付ける実例である
 (Step 133 の `String#to_f` の一件と同種)。
+
+## CI が検出した 2 件目の実バグ: pkg-config のシステムパスフィルタ
+
+`test_matches_real_pkg_config_for_zlib`(`test/test_pkgconf.rb`)は本物の
+`pkg-config` と rubycc の出力を突き合わせる比較テストとして Step 59 から
+存在していたが、**この開発機には pkg-config が入っておらず、常に skip
+されていた**。つまり比較テスト自体は存在していたのに、一度も実際に
+比較が走ったことがなかった。
+
+CI(pkg-config あり)で初めてこのテストが実行され、`--libs zlib` の
+multiarch libdir(`-L/usr/lib/x86_64-linux-gnu`)が本物の pkg-config の
+出力には現れないことが分かった。Debian/Ubuntu の pkg-config は multiarch
+の libdir もシステムライブラリパスとして扱い、`-L` を出力から落とすためで、
+Step 136 で入れた `SystemPathFilter` の既定値(`/usr/lib`, `/usr/lib64` の
+み)がこれを含んでいなかった。
+
+この不一致は推測では直さず、CI の実測データが出るまで待ってから
+`SystemPathFilter::DEFAULT_LIBRARY_DIRECTORIES` に multiarch のディレクトリを
+追加する形で修正した(`/usr/local/lib` は本物の pkg-config がシステム
+ディレクトリとして扱わないため、意図的に含めていない)。
 
 ## ローカルでの再現
 

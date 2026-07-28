@@ -201,12 +201,29 @@ class TestPkgconf < Minitest::Test
     assert_equal "-I/usr/include", kept.chomp
   end
 
-  def test_cli_libs_zlib_has_dash_l_and_dash_capital_l
+  # Corrected by the CI comparison against the real pkg-config: zlib.pc's
+  # libdir here is the multiarch directory /usr/lib/x86_64-linux-gnu, which
+  # the real pkg-config on Debian/Ubuntu treats as a system library directory
+  # and drops from --libs. This test used to assert the opposite (that
+  # -L/usr/lib/x86_64-linux-gnu survived) before that measurement was
+  # available; see test_cli_libs_zlib_output_matches_measured_real_pkg_config
+  # below for the exact expected output.
+  def test_cli_libs_zlib_has_dash_l_zlib_but_not_the_multiarch_dash_capital_l
     out, _err, status = run_cli("--libs", "zlib")
     assert status.success?
     tokens = out.chomp.split
     assert_includes tokens, "-lz"
-    assert_includes tokens, "-L/usr/lib/x86_64-linux-gnu"
+    refute_includes tokens, "-L/usr/lib/x86_64-linux-gnu"
+  end
+
+  # Fixed to the exact value the CI comparison against the real pkg-config
+  # measured for this fixture (both `-L` tokens name the same multiarch
+  # libdir, which is now filtered as a system directory), so this stands in
+  # for that comparison on developer machines that lack a pkg-config binary.
+  def test_cli_libs_zlib_output_matches_measured_real_pkg_config
+    out, _err, status = run_cli("--libs", "zlib")
+    assert status.success?
+    assert_equal "-lz", out.chomp
   end
 
   def test_cli_libs_only_l_zlib
@@ -374,6 +391,22 @@ class TestPkgconf < Minitest::Test
   def test_filter_defaults_cover_usr_include_and_usr_lib_and_usr_lib64
     assert_equal [], filter.cflags(["-I/usr/include"])
     assert_equal [], filter.libs(["-L/usr/lib", "-L/usr/lib64"])
+  end
+
+  # CI measured the real pkg-config against this environment's zlib.pc
+  # (libdir=/usr/lib/x86_64-linux-gnu) and found it drops that -L too, so the
+  # multiarch directories are system directories by default alongside plain
+  # /usr/lib and /lib.
+  def test_filter_defaults_cover_the_multiarch_library_directories
+    assert_equal [], filter.libs(["-L/usr/lib/x86_64-linux-gnu"])
+    assert_equal [], filter.libs(["-L/lib/x86_64-linux-gnu"])
+  end
+
+  # /usr/local/lib is deliberately not a default system directory: the real
+  # pkg-config does not filter it out, unlike Rubycc::Link::LibraryResolver's
+  # own default search directories which do include it.
+  def test_filter_does_not_treat_usr_local_lib_as_a_system_directory
+    assert_equal ["-L/usr/local/lib"], filter.libs(["-L/usr/local/lib"])
   end
 
   def test_filter_normalizes_trailing_and_repeated_separators

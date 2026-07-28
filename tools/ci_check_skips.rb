@@ -17,10 +17,22 @@
 # what you actually want when the numbers move -- it names the missing tool
 # instead of leaving you to diff two 3,000-line logs.
 #
-# Thresholds: CI_MAX_SKIPS / CI_MIN_RUNS below are deliberately loose starting
-# values. Tighten them to the measured numbers of the first green run on CI
-# (the summary is printed on success for exactly this purpose), so that the
-# guard bites on a real regression rather than only on a catastrophic one.
+# Thresholds: CI_MAX_SKIPS / CI_MIN_RUNS below are tightened to the numbers
+# the first green run on CI actually measured: 2,547 runs / 52 skips on CI,
+# versus 2,547 runs / 47 skips on a developer machine. The 5-skip gap between
+# the two splits into two independent effects, not one:
+#   -1  CI has a real `pkg-config` binary installed, so
+#       test_matches_real_pkg_config_for_zlib runs instead of skipping.
+#   +6  test_rmake_golden.rb's `make -n` comparison skips on CI: its fixture
+#       Makefile embeds this development machine's absolute Ruby header path,
+#       which does not exist on the CI runner. That is a structural
+#       difference the CI environment cannot resolve by itself.
+# The thresholds below are that measurement plus a small margin (skips 52 ->
+# 55, runs 2,547 -> 2,500) rather than the measurement itself, so that adding
+# tests over time does not immediately trip CI_MIN_RUNS (more tests only ever
+# raise the run count) while still catching a real regression rather than
+# only a catastrophic one. Re-tighten these whenever the suite's size changes
+# meaningfully.
 #
 # Usage:
 #   ruby tools/ci_check_skips.rb <logfile>
@@ -28,8 +40,8 @@
 # The log is expected to be the output of `rake test TESTOPTS="--verbose"`.
 # Standard library only; no gems, so it runs before/without bundler if needed.
 
-DEFAULT_MAX_SKIPS = 60
-DEFAULT_MIN_RUNS = 2400
+DEFAULT_MAX_SKIPS = 55
+DEFAULT_MIN_RUNS = 2500
 
 # The Minitest summary line, e.g.
 #   2531 runs, 9204 assertions, 0 failures, 0 errors, 47 skips

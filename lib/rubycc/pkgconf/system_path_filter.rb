@@ -18,7 +18,34 @@ module Rubycc
     class SystemPathFilter
       # What counts as a system directory when nothing overrides it.
       DEFAULT_INCLUDE_DIRECTORIES = ["/usr/include"].freeze
-      DEFAULT_LIBRARY_DIRECTORIES = ["/usr/lib", "/usr/lib64"].freeze
+
+      # The multiarch entries (/usr/lib/x86_64-linux-gnu, /lib/x86_64-linux-gnu)
+      # are here because CI measured the real pkg-config against this
+      # environment's zlib.pc (libdir=${prefix}/lib/x86_64-linux-gnu) and found
+      # it drops the `-L` for that directory too, not just plain /usr/lib: on
+      # Debian/Ubuntu the multiarch libdir *is* a system libdir as far as
+      # pkg-config is concerned.
+      #
+      # The list is deliberately kept in step with the other hardcoded
+      # "default search directory" lists in this codebase --
+      # Link::LibraryResolver::DEFAULT_SYSTEM_DIRS and
+      # SearchPath::DEFAULT_DIRECTORIES both already special-case this same
+      # multiarch path -- on the theory that a directory this shim's own
+      # linker searches by default is never worth emitting a `-L` for; that is
+      # the whole point of this filter.
+      #
+      # /usr/local/lib is deliberately *not* included here even though
+      # LibraryResolver::DEFAULT_SYSTEM_DIRS lists it: the real pkg-config
+      # does not treat /usr/local/lib as a system directory, and adding it
+      # would make this shim diverge from the measured behaviour instead of
+      # matching it.
+      DEFAULT_LIBRARY_DIRECTORIES = [
+        "/usr/lib/x86_64-linux-gnu",
+        "/lib/x86_64-linux-gnu",
+        "/usr/lib",
+        "/lib",
+        "/usr/lib64"
+      ].freeze
 
       # +env+ is an argument (defaulting to the process environment) for the
       # same reason SearchPath.directories takes one: it keeps the lookup

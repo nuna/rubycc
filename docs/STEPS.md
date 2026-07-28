@@ -4285,9 +4285,93 @@ Step 127 のチェックリストが N5 を「CI 未整備」と正直に判定�
 
 ---
 
+## Step 137 — `--libs` の実測合致と、CI 閾値の較正(M5 H6)
+
+Step 136 で**意図的に保留した** `--libs` の不一致を、**CI の実測が出てから**直した。
+
+- **実測(CI ログ)**: `--modversion` と `--cflags` は一致。残るのは `--libs` のみ。
+
+  | | 出力 |
+  |---|---|
+  | 本物の pkg-config | `-lz` |
+  | rubycc | `-L/usr/lib/x86_64-linux-gnu -L/usr/lib/x86_64-linux-gnu -lz` |
+
+- **2 つあった候補要因のうち、どちらが真因かが確定した**。Debian/Ubuntu の pkg-config は
+  **multiarch の libdir(`/usr/lib/x86_64-linux-gnu`)もシステムライブラリパスとして扱い**、
+  `-L` を落とす。Step 136 で入れたフィルタの既定値にこれが無かったのが原因。
+  **重複除去は不要だった** — 2 つの `-L` は同一ディレクトリなので、フィルタが効けば
+  両方消えて `-lz` になる。`resolver.rb` が「トークンを書かれたまま保つ」のは Step 59 の
+  意図的な設計判断なので、実測の裏付けなしにそれを覆さずに済んだ。
+- **推測で直していたら片方は外していた**。Step 136 で「実測を待つ」と決めた判断が、
+  結果として正しかった事例。ABI 事実を「測る、写さない」で扱ってきた流儀と同じ。
+- 既定値は `["/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/lib", "/lib",
+  "/usr/lib64"]` にした。意味づけは「**rubycc 自身のリンカが既定で探索するディレクトリ**」
+  で、`link/library_resolver.rb` の `DEFAULT_SYSTEM_DIRS` と
+  `pkgconf/search_path.rb` の `DEFAULT_DIRECTORIES` にも同じ multiarch パスを
+  ハードコードしている前例がある。そこに `-L` を出す意味がないから落とす、が理屈。
+  **`/usr/local/lib` は意図的に含めない** — リンカは探索するが、本物の pkg-config は
+  システムディレクトリ扱いしないため、落とすと実物と食い違う。
+  `DEFAULT_INCLUDE_DIRECTORIES` は `--cflags` が実測で一致しているので触っていない。
+- **CI 閾値を実測値に較正**した。`tools/ci_check_skips.rb` の既定を
+  `CI_MAX_SKIPS` 60 → **55**、`CI_MIN_RUNS` 2400 → **2500** に締めた。
+  Step 135 でスクリプト冒頭に書いた「最初の green run の実測値に合わせて締めること」の
+  実行にあたる。緩いままだと「半分が skip になった」程度の劣化を検出できない。
+- テスト: `--libs zlib` の出力が `-lz` のみになることを**実測値そのままで固定**した
+  (CI の比較テストのローカル代替になる)。multiarch 2 種が落ちること、
+  `/usr/local/lib` は落ちないことも固定。既存テスト 1 件は
+  `-L/usr/lib/x86_64-linux-gnu` が出ることを期待していたので実測に合わせて訂正した。
+
+---
+
+## Step 138 — 検証済み gem データベースの更新(M5 H6)
+
+`data/verified_gems.json` は `rubycc-doctor` が参照する DB で、**ここに載ると doctor は
+ネットワークにもビルドにも触れずに `verified` と判定**し、ユーザに「手元で再検証する
+必要はない」と伝える。したがって**実際に行われたことだけ**を書く必要がある。
+
+- **調査の結論**: コーパス 25 gem のうち、**gem 本体のテストスイート実走・合格まで
+  到達しているのは 6 gem のみ**。既存の json / msgpack に加えて、
+  **bigdecimal 4.1.2・redcarpet 3.6.1・racc 1.8.1・date 3.5.1** の 4 件を追加した。
+- **残り 19 gem は追加していない**。digest 以降の default gem 群と popular gem 群は
+  **センサス(`#include` 集計)の対象になっただけ**で、ビルドもテストもしていない
+  (Step 117 / 119 / 121 の記録が「コーパス定義の追加のみ」「テスト増なし」と
+  明示している)。「ヘッダが揃っている」ことと「ビルドが通る」ことは別の主張である。
+- **sqlite3 / nokogiri / grpc は R10 で対象外**と判断済みなので、当然追加しない。
+  sqlite3 は amalgamation の単独コンパイル実績(Step 114〜116)があるが、
+  それは extconf/mkmf/rmake の経路を一切通していないので gem のビルド成功ではない。
+- **racc には限定条件を notes に明記した**: 生成ファイル `lib/racc/parser-text.rb` を
+  rmake のビルド生成物から手動補完しており、**完全に無介入の `gem install` ではない**。
+  この種の但し書きを省くと DB が実態より強い保証に見える。
+- **環境はすべて glibc x86_64 / ruby 3.4.5**。musl と aarch64 での gem 検証は
+  一度も行われていないので、その旨を各 notes に残した。
+
+### 副作用として見つかった、テストの構造的な弱点
+
+racc を DB に追加したら `test_doctor.rb` の 2 件が壊れた。どちらも racc を
+**「検証済み DB に載っていない C 拡張 gem」の例**として使い、その場でビルドされる
+経路を検証していたため。
+
+- **gem 名を差し替える対症療法は採らなかった**。この DB は今後も増えるので、
+  別の gem に差し替えても同じ壊れ方を繰り返す。テストが検証したいのは
+  「DB に無い gem はその場でビルドされる」という**振る舞い**であって、
+  「特定の gem が DB に無いこと」ではない。
+- **テスト側が DB を制御する**形に変えた。`rubycc-doctor` には元々 `--data PATH` が
+  あるので、テスト専用の一時 DB を渡すようにした。これで出荷 DB が何を持っていても
+  テストの前提は崩れない。
+- この過程で**潜在バグも 1 件見つかった**: テストヘルパ `run_cli` が `verified:` を
+  常に先読みして渡していたため、**`--data` を渡しても無視されていた**。
+  テストから `--data` を検証する手段が実質存在しなかったことになる。
+  `lib/` は変更せず、ヘルパ側を CLI のフォールバックに委ねる形に直した。
+
+---
+
 ## 現在のテスト規模
 
-Step 136 完了時点: **2,547 runs / 6,929 assertions / 0 failures / 47 skips**
+Step 138 完了時点: **2,550 runs / 6,998 assertions / 0 failures / 47 skips**
+(Step 136 から +3 = pkgconf の multiarch フィルタのテスト。
+CI 上では 52 skips = pkg-config があるため −1、rmake golden の `make -n` が
+フィクスチャの絶対パス依存で走らないため +6)
+(以前) Step 136 完了時点: **2,547 runs / 6,929 assertions / 0 failures / 47 skips**
 (Step 133 から +16 = pkgconf のシステムパスフィルタのユニットテスト。
 CI 上では 52 skips になる = 上記の内訳を参照)
 (以前) Step 133 完了時点: **2,531 runs / 6,883 assertions / 0 failures / 47 skips**
