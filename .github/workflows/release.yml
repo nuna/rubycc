@@ -1,0 +1,107 @@
+# Tier C: what runs when a version tag is pushed. It re-runs Tier A and then
+# builds the gem twice to prove the artifact is reproducible. It does NOT
+# publish anything. See docs/CI.md.
+name: release
+
+# Quoted so YAML parsers cannot read the key as the boolean `on`.
+"on":
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Reuse Tier A rather than restate it: a release must clear exactly the same
+  # bar as an ordinary push, across the whole supported Ruby matrix.
+  test:
+    uses: ./.github/workflows/test.yml
+
+  package:
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The reproducible-build step reads the commit timestamp out of git.
+          fetch-depth: 0
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          # Build on the lowest supported version (rubycc.gemspec:
+          # required_ruby_version >= 3.3) so nothing newer can leak into the
+          # packaged artifact.
+          ruby-version: "3.3"
+          bundler-cache: false
+
+      - name: bundle install
+        run: bundle install --jobs 4 --retry 3
+
+      - name: Check that the tag matches Rubycc::VERSION
+        # Only meaningful for a tag push; workflow_dispatch has no tag to compare.
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(ruby -Ilib -rrubycc/version -e 'print Rubycc::VERSION')"
+          tag="${GITHUB_REF_NAME#v}"
+          echo "Rubycc::VERSION=${version}  tag=${GITHUB_REF_NAME} (-> ${tag})"
+          if [ "${version}" != "${tag}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match Rubycc::VERSION ${version}; update lib/rubycc/version.rb or retag"
+            exit 1
+          fi
+
+      - name: Build the gem twice and require byte-identical output
+        # The packaged counterpart of requirement N4 (deterministic build):
+        # the same input must yield the same bytes.
+        #
+        # SOURCE_DATE_EPOCH is pinned to the commit time because RubyGems uses
+        # it for the mtime of every entry inside the .gem (and for the built-at
+        # timestamp). Without it each build stamps "now", so two builds of an
+        # identical tree differ byte-wise and the check would measure the clock
+        # instead of the sources.
+        #
+        # The two builds run from separate working directories, so a build that
+        # depended on its own path would also be caught.
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          export SOURCE_DATE_EPOCH
+          echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
+
+          for dir in "$RUNNER_TEMP/build-a" "$RUNNER_TEMP/build-b"; do
+            mkdir -p "$dir"
+            cp -a . "$dir"
+            (cd "$dir" && gem build rubycc.gemspec --output "$dir/rubycc.gem")
+          done
+
+          if ! cmp "$RUNNER_TEMP/build-a/rubycc.gem" "$RUNNER_TEMP/build-b/rubycc.gem"; then
+            echo "::error::two builds of the same tree produced different bytes; the gem build is not reproducible"
+            exit 1
+          fi
+          echo "gem build is byte-identical across two builds"
+
+          mkdir -p tmp/ci
+          version="$(ruby -Ilib -rrubycc/version -e 'print Rubycc::VERSION')"
+          cp "$RUNNER_TEMP/build-a/rubycc.gem" "tmp/ci/rubycc-${version}.gem"
+          ls -l "tmp/ci/rubycc-${version}.gem"
+          # Sanity-check what actually got packaged (spec.files is a glob list).
+          gem specification "tmp/ci/rubycc-${version}.gem" files
+
+      - name: Upload the gem
+        uses: actions/upload-artifact@v4
+        with:
+          name: rubycc-gem
+          path: tmp/ci/*.gem
+          if-no-files-found: error
+
+      # Publishing is deliberately manual: pushing to rubygems.org is an
+      # irreversible act tied to an account, and this repository holds no
+      # credentials for it. To automate it later, either configure rubygems.org
+      # trusted publishing (OIDC, no long-lived secret; needs `permissions:
+      # id-token: write` on this job) or add a RUBYGEMS_API_KEY secret, and add
+      # a `gem push` step here guarded by `if: github.ref_type == 'tag'`.
+      # Do not add `gem push` without one of those decisions being made first.

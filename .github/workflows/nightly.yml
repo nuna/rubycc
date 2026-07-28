@@ -1,0 +1,191 @@
+# Tier B: the nightly jobs that are too slow or too network-hungry to run on
+# every push. None of them is part of `rake test`. See docs/CI.md.
+name: nightly
+
+# Quoted so YAML parsers cannot read the key as the boolean `on`.
+"on":
+  schedule:
+    # 18:00 UTC = 03:00 JST.
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Regenerates the committed corpus #include census and fails when it moved.
+  # The gem versions are pinned in test/corpus/gems.rb, so a diff cannot come
+  # from upstream drift: it means rubycc's own header coverage changed, which is
+  # information worth committing.
+  census:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchains the differential tests compare against
+        # Same set as Tier A (.github/workflows/test.yml); qemu-user rather than
+        # qemu-user-static because the tests look for a command named
+        # `qemu-aarch64`. GitHub Actions does not support YAML anchors, so the
+        # list is repeated in each job.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            binutils \
+            pkg-config \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            qemu-user
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          # A single version: the nightly jobs check behaviour, not version
+          # coverage (that is Tier A's matrix).
+          ruby-version: "4.0"
+          bundler-cache: false
+
+      - name: bundle install
+        run: bundle install --jobs 4 --retry 3
+
+      - name: Regenerate the census
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p tmp/ci
+          bundle exec rake corpus:census 2>&1 | tee tmp/ci/census.log
+
+      - name: Fail when the committed snapshot is out of date
+        shell: bash
+        run: |
+          if ! git diff --exit-code -- test/corpus/include-census.md; then
+            echo "::error::test/corpus/include-census.md changed; review the diff above and commit the regenerated snapshot"
+            exit 1
+          fi
+          echo "census snapshot unchanged"
+
+      - name: Upload the regenerated census
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-census
+          path: |
+            test/corpus/include-census.md
+            tmp/ci/*.log
+          if-no-files-found: warn
+
+  # The opt-in acceptance work: the networked tests behind RMAKE_ACCEPTANCE=1
+  # plus the M2 acceptance tool (build json/msgpack with rubycc and run their own
+  # test suites).
+  acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchains the differential tests compare against
+        # Same set as Tier A; see the comment in the census job.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            binutils \
+            pkg-config \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            qemu-user
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: false
+
+      - name: bundle install
+        run: bundle install --jobs 4 --retry 3
+
+      - name: Run the suite with the networked acceptance tests enabled
+        shell: bash
+        env:
+          RMAKE_ACCEPTANCE: "1"
+        run: |
+          set -o pipefail
+          mkdir -p tmp/ci
+          bundle exec rake test TESTOPTS="--verbose" 2>&1 | tee tmp/ci/acceptance-suite.log
+        # No tools/ci_check_skips.rb here on purpose: enabling the acceptance
+        # tests changes the run's shape (different runs/skips counts), so the
+        # Tier A thresholds do not apply. Failures still fail the job through
+        # rake's exit status; the log is kept for inspection.
+
+      - name: Run the M2 acceptance tool
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p tmp/ci
+          ruby tools/m2_acceptance.rb "$RUNNER_TEMP/m2" 2>&1 | tee tmp/ci/m2-acceptance.log
+
+      - name: Upload the acceptance logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-acceptance-logs
+          path: tmp/ci/*.log
+          if-no-files-found: warn
+
+  # Throughput (requirement N1) as a trend line only.
+  throughput:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchains the differential tests compare against
+        # Same set as Tier A; see the comment in the census job.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            binutils \
+            pkg-config \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            qemu-user
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: false
+
+      - name: bundle install
+        run: bundle install --jobs 4 --retry 3
+
+      - name: Measure compile throughput
+        # Deliberately no pass/fail threshold on the numbers. Hosted runners are
+        # shared and their throughput drifts far more than the differences these
+        # measurements are meant to detect; docs/THROUGHPUT.md records that a
+        # performance verdict is only meaningful from a paired HEAD -> change
+        # measurement on one machine in one session. This job exists to keep the
+        # harness itself exercised and to leave a trend artifact.
+        shell: bash
+        env:
+          BENCH_RUNS: "7"
+          BENCH_WORK: ${{ runner.temp }}/bench
+        run: |
+          set -o pipefail
+          mkdir -p tmp/ci
+          bundle exec rake bench:throughput 2>&1 | tee tmp/ci/throughput.log
+
+      - name: Upload the throughput results
+        # Artifact only -- the results are never committed. Numbers from a
+        # hosted runner would pollute the measurement record in
+        # benchmark/results/, which docs/THROUGHPUT.md reads as same-machine data.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-throughput
+          path: |
+            benchmark/results/
+            tmp/ci/*.log
+          if-no-files-found: warn

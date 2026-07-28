@@ -717,6 +717,18 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   **バージョニング方針は策定・README に記載済み(Step 130)**: セマンティック
   バージョニング + 「コーパス合格率の回帰は破壊的変更」という固有ルール。
   **rubygems.org への公開は未実施**(公開はアカウント保有者の操作)。
+- ~~CI(GitHub Actions)を構築し、サポート Ruby 全バージョンでの継続検証を自動化する。~~
+  **完了(Step 135)**: 3 層構成で新設([`CI.md`](CI.md))。**Tier A**(`test.yml`、
+  push / PR)は Ruby 3.3 / 3.4 / 4.0 のマトリクスで全スイートを実行。差分テストの
+  相手となる gcc・binutils・aarch64 クロス・qemu-user を apt で導入し、欠けたら
+  その場で失敗させる(`qemu-user-static` では実行テストが全 skip になるため
+  `qemu-user` を使う)。さらに `tools/ci_check_skips.rb` が skip 数・runs 数の逸脱を
+  検出する — skip は失敗と違って静かに緑になるため。**Tier B**(`nightly.yml`)は
+  corpus census の差分検出・ネットワーク受け入れ(`RMAKE_ACCEPTANCE=1` と
+  `tools/m2_acceptance.rb`)・スループット計測(合否判定はしない: ペア計測でしか
+  判定できないため)。**Tier C**(`release.yml`、タグ push)は Tier A の再利用に加えて
+  タグと `Rubycc::VERSION` の整合確認と、`SOURCE_DATE_EPOCH` を固定した gem の
+  2 回ビルドによるバイト一致検証(N4 の配布物版)。`gem push` は意図的に自動化しない。
 - **受け入れ = v1.0 リリース = M5 完了**。
 
 ## 9. マイルストーン横断のリスク(DESIGN 7 章の運用)

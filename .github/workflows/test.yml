@@ -1,0 +1,108 @@
+# Tier A: the full Minitest suite on every push and pull request.
+#
+# The suite is largely differential -- it compares rubycc's output against the
+# system gcc, the aarch64 cross toolchain and qemu -- so the runner needs a real
+# toolchain installed before the tests mean anything. See docs/CI.md.
+name: test
+
+# Quoted so YAML parsers cannot read the key as the boolean `on` (YAML 1.1
+# treats bare on/off/yes/no as booleans).
+"on":
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+  # release.yml reuses this workflow, so it must be callable.
+  workflow_call:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      # Do not cancel the other Ruby versions when one fails: a version-specific
+      # break (Step 133 was one) is easiest to read off the full matrix.
+      fail-fast: false
+      matrix:
+        # Lower bound is the gemspec's required_ruby_version (">= 3.3").
+        ruby: ["3.3", "3.4", "4.0"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchains the differential tests compare against
+        # qemu-user, NOT qemu-user-static: the aarch64 execution tests look for
+        # a command literally named `qemu-aarch64` (test/support/aarch64_execution_helper.rb),
+        # whereas qemu-user-static installs it as `qemu-aarch64-static`. With the
+        # static package alone every aarch64 execution test would skip.
+        # libc6-dev-arm64-cross supplies /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1
+        # and libc.so.6, which the self-linked aarch64 binaries need at run time.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            binutils \
+            pkg-config \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            qemu-user
+
+      - name: Verify the toolchain is complete
+        # Fail here rather than later: a missing tool turns hundreds of tests
+        # into skips, and a skip is silently green. Failing at install time
+        # names the problem directly. tools/ci_check_skips.rb is the second net.
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcc --version
+          aarch64-linux-gnu-gcc --version
+          aarch64-linux-gnu-objdump --version
+          qemu-aarch64 --version
+          readelf --version
+          ar --version
+          nm --version
+          pkg-config --version
+          make --version
+          for f in /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1 \
+                   /usr/aarch64-linux-gnu/lib/libc.so.6; do
+            ls -l "$f"
+          done
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          # bundler-cache is deliberately off: Gemfile.lock is gitignored, so
+          # there is no committed lockfile to key the cache on. The dev
+          # dependencies are just rake and minitest; installing them is cheap.
+          bundler-cache: false
+
+      - name: bundle install
+        run: bundle install --jobs 4 --retry 3
+
+      - name: Run the test suite
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p tmp/ci
+          bundle exec rake test TESTOPTS="--verbose" 2>&1 | tee "tmp/ci/test-ruby${{ matrix.ruby }}.log"
+
+      - name: Guard against runaway skips
+        run: ruby tools/ci_check_skips.rb "tmp/ci/test-ruby${{ matrix.ruby }}.log"
+
+      - name: Upload the test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # Artifact names must be unique across the whole run (upload-artifact
+          # v4 rejects duplicates), hence the matrix value in the name.
+          name: test-log-ruby${{ matrix.ruby }}
+          path: tmp/ci/*.log
+          if-no-files-found: warn
