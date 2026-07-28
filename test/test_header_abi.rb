@@ -726,6 +726,66 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <setjmp.h> (Step 122, M5 H2): the non-local jump facility. Like pthread.h,
+  # jmp_buf/sigjmp_buf are arch dependent -- glibc's saved register set is wider
+  # on aarch64 -- so the header lives in the arch layer alongside pthread.h and
+  # the aarch64 case below is in that class's arch-specific section. The `sizes`
+  # check is load-bearing here too: jmp_buf/sigjmp_buf's sizeof and _Alignof must
+  # match the (cross-)gcc oracle, proving the measured __size[N] counts are
+  # right. setjmp/longjmp/_setjmp/_longjmp/sigsetjmp/siglongjmp are exercised
+  # only inside unused static functions (the "declaration exists / is usable"
+  # snippet pattern iso646.h's Spec already uses) rather than actually called
+  # from main, since running longjmp would divert control flow away from the
+  # probe entirely -- the point here is that the calls type-check against gcc,
+  # not that the jump executes.
+  SETJMP = HeaderAbiHarness::Spec.new(
+    header: "setjmp.h",
+    sizes: %w[jmp_buf sigjmp_buf],
+    snippets: [<<~C.chomp]
+      static int abi_setjmp(jmp_buf env) {
+        int r = setjmp(env);
+        if (r) longjmp(env, r + 1);
+        return r;
+      }
+      static int abi_sigsetjmp(sigjmp_buf env) {
+        int r = sigsetjmp(env, 1);
+        if (r) siglongjmp(env, r + 1);
+        return r;
+      }
+      static int abi_bsd_setjmp(jmp_buf env) {
+        int r = _setjmp(env);
+        if (r) _longjmp(env, r + 1);
+        return r;
+      }
+    C
+  )
+
+  # <locale.h> (Step 122, M5 H2): struct lconv and the LC_* category numbers.
+  # Unlike pthread.h/setjmp.h, struct lconv's layout is arch-neutral -- every
+  # member is a pointer or char, and both x86-64 and aarch64 are LP64, so the
+  # measured size and every member offset agree exactly across the two arches --
+  # so the header lives in the common layer and this Spec is re-run in the
+  # aarch64 class's neutral-layer section below. The LC_* values are glibc
+  # runtime ABI (setlocale resolves from the host libc, so the numbers must
+  # match the host's own enumeration), the same reasoning unistd.h's _SC_*
+  # checks rest on.
+  LOCALE = HeaderAbiHarness::Spec.new(
+    header: "locale.h",
+    sizes: %w[struct\ lconv],
+    ints: %w[LC_ALL LC_COLLATE LC_CTYPE LC_MONETARY LC_NUMERIC LC_TIME LC_MESSAGES
+             LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT LC_IDENTIFICATION],
+    offsets: [["struct lconv", "decimal_point"], ["struct lconv", "thousands_sep"],
+              ["struct lconv", "grouping"], ["struct lconv", "int_frac_digits"],
+              ["struct lconv", "frac_digits"]],
+    snippets: [<<~C.chomp]
+      static int abi_locale(void) {
+        setlocale(LC_ALL, "C");
+        struct lconv *lc = localeconv();
+        return lc->frac_digits + lc->int_frac_digits;
+      }
+    C
+  )
+
   def test_arpa_inet_abi_matches_gcc
     assert_abi_matches(ARPA_INET)
   end
@@ -744,6 +804,14 @@ class TestHeaderAbi < Minitest::Test
 
   def test_pthread_abi_matches_gcc
     assert_abi_matches(PTHREAD)
+  end
+
+  def test_setjmp_abi_matches_gcc
+    assert_abi_matches(SETJMP)
+  end
+
+  def test_locale_abi_matches_gcc
+    assert_abi_matches(LOCALE)
   end
 
   def test_errno_abi_matches_gcc
@@ -903,14 +971,15 @@ end
 # target's real aarch64 glibc headers. Byte-identical stdout proves the bundled
 # aarch64 layer reproduces the target ABI.
 #
-# The six arch-specific cases are the ones that would diverge from x86-64 if the
-# layer were wrong: struct stat's 128-byte aarch64 layout (SYS_STAT), the 32-bit
-# nlink_t/blksize_t (SYS_TYPES, and inside SYS_STAT), the unsigned WCHAR_MIN/MAX
-# (STDINT), the unsigned plain-char range (LIMITS, via __CHAR_UNSIGNED__), the
-# swapped O_DIRECT/O_DIRECTORY/O_NOFOLLOW bits (FCNTL), and the wider pthreads
-# opaque types (PTHREAD: pthread_mutex_t 40->48, pthread_attr_t 56->64,
-# pthread_mutexattr_t / pthread_condattr_t 4->8). The remaining cases
-# exercise the neutral layers (the common libc declarations and
+# The seven arch-specific cases are the ones that would diverge from x86-64 if
+# the layer were wrong: struct stat's 128-byte aarch64 layout (SYS_STAT), the
+# 32-bit nlink_t/blksize_t (SYS_TYPES, and inside SYS_STAT), the unsigned
+# WCHAR_MIN/MAX (STDINT), the unsigned plain-char range (LIMITS, via
+# __CHAR_UNSIGNED__), the swapped O_DIRECT/O_DIRECTORY/O_NOFOLLOW bits (FCNTL),
+# the wider pthreads opaque types (PTHREAD: pthread_mutex_t 40->48,
+# pthread_attr_t 56->64, pthread_mutexattr_t / pthread_condattr_t 4->8), and the
+# wider jmp_buf/sigjmp_buf (SETJMP: 200->312, a bigger saved register set). The
+# remaining cases exercise the neutral layers (the common libc declarations and
 # the arch headers that are byte-identical across the two ABIs), confirming they
 # stay in agreement across the target switch. The whole class skips on a host
 # without the cross toolchain (aarch64-linux-gnu-gcc + qemu-aarch64).
@@ -947,6 +1016,10 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_pthread_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::PTHREAD)
+  end
+
+  def test_setjmp_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SETJMP)
   end
 
   # --- neutral layer: re-checked to confirm byte-identity across the switch --
@@ -1013,6 +1086,10 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_un_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::SOCKADDR_UN)
+  end
+
+  def test_locale_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::LOCALE)
   end
 
   private

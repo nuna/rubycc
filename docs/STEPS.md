@@ -3893,11 +3893,49 @@ Step 115 で到達した `sqlite3.c:42862` の `sysconf(_SC_PAGESIZE)` を解消
   116(`_SC_*`)の 3 件のみで、いずれも**言語機能の欠落 1 件 + ヘッダ不足 2 件**。
   25 万行級の実コードでも未対応の C 構文にはほぼ当たらないことが確認できた。
 
+## Step 122 — 同梱 `<setjmp.h>` と `<locale.h>`(M5 H2、センサス駆動のヘッダ拡充)
+
+Step 121 のコーパスセンサスが「同梱すべき libc ギャップ」として実測で挙げた
+**C 標準ヘッダ 2 件**を追加(`setjmp.h` は google-protobuf、`locale.h` は
+bigdecimal が使用)。同梱ヘッダは 53 → 56 本。
+
+- **`<setjmp.h>`(アーキ層に 2 本)**: `jmp_buf`/`sigjmp_buf` はサイズが
+  アーキ依存(**実測** x86_64 = 200/8、aarch64 = 312/8。クロス gcc + qemu で計測)
+  のため `pthread.h` の前例に倣いアーキ層へ。glibc の内部フィールド
+  (`__jmpbuf`/`__mask_was_saved`/`__saved_mask`)は**複製せず**、実測した
+  サイズ・アラインメントだけを不透明ブロブとして再現。
+- **`sigsetjmp` は関数ではなくマクロだった**: 素の関数宣言ではリンクに失敗する。
+  `nm -D libc.so.6` で確認したところ glibc が export しているのは `__sigsetjmp`
+  のみで、glibc 自身のヘッダも `sigsetjmp` をマクロとして展開している。
+  ソースの複製ではなく**相互運用上の公開契約**なので、同じ形
+  (`__sigsetjmp` を宣言 + マクロ定義)で再現した。
+- **`<locale.h>`(共通層)**: `struct lconv` は全メンバが呼び出し側から直接
+  使われるため不透明ブロブにできない。メンバ名・型・順序は **C11 7.11.1.1 が
+  「以下のメンバを示した順で」と規定する公開契約**であり glibc の実装詳細では
+  ないので再現可。サイズ(96)と全メンバのオフセットを両アーキで実測し
+  **完全一致**したため(全メンバがポインタと char で LP64 では差が出ない)、
+  アーキ非依存の共通層に配置した。`LC_*` の値は `setlocale` がホスト libc の
+  関数である以上ホストの番号と一致必須なので実測(Step 116 の `_SC_*` と同じ理由)。
+- **rubycc 固有の注記**: 最適化を行わず全値をスタックにスピルするため、
+  `setjmp`/`longjmp` 間で変更された非 volatile 自動変数が不定になるという
+  C11 7.13.2.1 の規定に対して**保守的側に倒れている**(実際には値が保持される)。
+  依存すべきでない旨をヘッダのコメントに明記。
+- `locale_t`/`newlocale`/`uselocale` 等の glibc 拡張は、実コードがセンサスに
+  現れていないためスコープ外(その旨をヘッダに 1 行記録)。
+- 検証: ABI ハーネスに SETJMP / LOCALE の Spec を追加し、x86_64 と aarch64 の
+  両クラスに登録。gcc + システムヘッダと rubycc + 同梱ヘッダで型サイズ・
+  `LC_*` の値・`struct lconv` の代表メンバのオフセットが一致することを機械検証する。
+- 由来台帳(docs/HEADER-LICENSING.md §3.3 / §3.4)を更新(clean-room 23 → 26 本、
+  合計 53 → 56 本)。§6 のワークフローが定める必須手順に従った。
+
 ---
 
 ## 現在のテスト規模
 
-Step 120 完了時点: **2,487 runs / 6,775 assertions / 0 failures / 47 skips**
+Step 122 完了時点: **2,491 runs / 6,787 assertions / 0 failures / 47 skips**
+(Step 120 から +4 = setjmp / locale の ABI ケースを x86_64・aarch64 の両クラスに追加。
+Step 121 は census スナップショットの更新のみでテスト増なし)
+(以前) Step 120 完了時点: **2,487 runs / 6,775 assertions / 0 failures / 47 skips**
 (Step 118 から +9 = rmake の展開予算 5・Scanner の桁計算 2・PartialLinker 2。
 Step 119 はコーパス定義の追加のみでテスト増なし)
 (以前) Step 118 完了時点: **2,478 runs / 6,691 assertions / 0 failures / 47 skips**

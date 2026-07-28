@@ -74,7 +74,7 @@ musl の `COPYRIGHT`(https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT)より�
 
 ---
 
-## 3. 同梱ヘッダの由来台帳(53 本)
+## 3. 同梱ヘッダの由来台帳(56 本)
 
 各ヘッダ冒頭の provenance コメントを棚卸しした結果。分類は次の 4 種:
 
@@ -129,7 +129,7 @@ musl の宣言セット/形状を出発点にし、glibc の対象 arch(x86-64 /
 | `include/libc/glibc/aarch64/sys/types.h` | 全幅・符号を glibc aarch64 LP64 に固定。nlink_t/blksize_t=32bit で x86-64 と相違(実測) |
 | `include/libc/glibc/aarch64/time.h` | `time_t`=long、`struct tm` 拡張(x86-64 版とバイト一致) |
 
-### 3.3 clean-room(23 本)
+### 3.3 clean-room(26 本)
 
 musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI に対してゼロから記述。
 
@@ -143,6 +143,9 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 | `include/libc/glibc/x86_64/errno.h` | **Linux/asm-generic UAPI の errno 値**を実測整数定数として再現(§4) | なし(UAPI 由来) |
 | `include/libc/glibc/x86_64/sys/stat.h` | **Linux x86-64 kernel ABI の struct stat レイアウト**(実測 144 バイト)と S_IF* 値(§4) | なし(UAPI 由来) |
 | `include/libc/glibc/aarch64/ctype.h` | x86-64 版と同一機構(バイト一致) | なし |
+| `include/libc/locale.h` | ISO C11 7.11 の公開インタフェース(struct lconv のメンバ名・型・順序は7.11.1.1 が規定)。`LC_*` 値と struct lconv のサイズ/全オフセットは**実測**(両アーキ一致)。setlocale/localeconv は POSIX/ISO C 宣言(Step 122) | なし |
+| `include/libc/glibc/x86_64/setjmp.h` | **jmp_buf/sigjmp_buf のサイズ/アライメント**(glibc ABI・実測 200/8。内部フィールドは不再現の不透明 blob・§4)。`sigsetjmp` は glibc に実シンボルが無く `__sigsetjmp` へのマクロという相互運用上の事実を実測(`nm -D`)して再現(Step 122) | なし(glibc ABI 実測) |
+| `include/libc/glibc/aarch64/setjmp.h` | 同上。jmp_buf/sigjmp_buf は実測 312/8(クロス gcc + qemu で計測。arch 依存ゆえ 2 本)(Step 122) | なし(glibc ABI 実測) |
 | `include/libc/glibc/aarch64/limits.h` | ISO 値 + glibc aarch64 LP64 幅。char 符号性は `__CHAR_UNSIGNED__` で分岐(x86-64 版とバイト一致) | なし(musl 非参照) |
 | `include/libc/glibc/aarch64/errno.h` | Linux/asm-generic UAPI の errno 値(aarch64 も x86-64 と同一値・§4) | なし(UAPI 由来) |
 | `include/libc/glibc/aarch64/sys/stat.h` | **Linux aarch64 kernel ABI の struct stat レイアウト**(実測 128 バイト・並び替え・nlink_t/blksize_t=32bit)と S_IF* 値(§4) | なし(UAPI 由来) |
@@ -170,8 +173,8 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 |---|---|
 | freestanding | 8 |
 | musl-derived | 22 |
-| clean-room | 23 |
-| **合計** | **53** |
+| clean-room | 26 |
+| **合計** | **56** |
 
 > Step 82(M5 H1)で `include/libc/glibc/aarch64/` 層 11 本を追加(30→41)。うち 8 本は
 > x86-64 版と宣言・値がバイト一致(`cmp` 確認済み)で、由来分類も x86-64 版を継承する。
