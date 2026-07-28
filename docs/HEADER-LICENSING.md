@@ -13,7 +13,7 @@ glibc ABI への追従・カーネル UAPI の扱いについてライセンス�
 
 ## 1. 結論(要約)
 
-1. **rubycc 全体は MIT**(`LICENSE.txt`、Copyright (c) 2026 itacchi)。同梱する libc 互換
+1. **rubycc 全体は MIT**(`LICENSE.txt`、Copyright (c) 2026 DATE Ken)。同梱する libc 互換
    ヘッダの一部は musl libc(MIT)を出発点にした派生を含むが、**musl と rubycc は
    どちらも MIT なのでライセンスの衝突はない**。
 2. musl は公開ヘッダ(`include/*`・`arch/*/bits/*`)について、MIT が本来要求する

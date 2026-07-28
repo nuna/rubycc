@@ -5,7 +5,7 @@ require_relative "lib/rubycc/version"
 Gem::Specification.new do |spec|
   spec.name = "rubycc"
   spec.version = Rubycc::VERSION
-  spec.authors = ["itacchi"]
+  spec.authors = ["DATE Ken"]
   spec.email = ["itacchi@gmail.com"]
 
   spec.summary = "Pure Ruby C toolchain for building Ruby native extensions " \
