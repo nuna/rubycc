@@ -134,11 +134,17 @@ class TestGemInstall < Minitest::Test
 
   # --- packaging ------------------------------------------------------------
 
-  def test_gemspec_ships_plugin_and_rmake
+  def test_gemspec_ships_plugin_and_all_executables
     require "rubygems"
     spec = Dir.chdir(REPO_ROOT) { Gem::Specification.load(File.join(REPO_ROOT, "rubycc.gemspec")) }
     assert_includes spec.files, "lib/rubygems_plugin.rb", "the plugin must be packaged"
     assert_includes spec.files, "exe/rmake", "exe/rmake must be packaged"
+
+    # Every exe/* file must also get a bin stub: rmake/rubycc-ar/rubycc-pkgconf are
+    # not only build-internal tools, they are user-facing (manual builds, debugging)
+    # and README lists all five as bundled commands.
+    assert_equal %w[rmake rubycc rubycc-ar rubycc-doctor rubycc-pkgconf], spec.executables.sort,
+                 "all exe/* files must be declared as executables so bin stubs are generated"
   end
 
   # --- networked end-to-end acceptance (opt-in) -----------------------------

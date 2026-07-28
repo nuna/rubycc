@@ -22,6 +22,10 @@ Gem::Specification.new do |spec|
   spec.files = Dir.glob("lib/**/*.rb") + Dir.glob("include/**/*.h") + Dir.glob("exe/*") +
                Dir.glob("data/*") + ["LICENSE.txt", "NOTICE", "README.md"]
   spec.bindir = "exe"
-  spec.executables = ["rubycc", "rubycc-doctor"]
+  # `gem install` builds work without bin stubs (the plugin points MAKE/PKG_CONFIG at
+  # gem-internal absolute paths), but rmake/rubycc-ar/rubycc-pkgconf are also tools
+  # users reach for directly when building by hand or investigating, and README
+  # documents all five as bundled commands, so all five get bin stubs.
+  spec.executables = ["rmake", "rubycc", "rubycc-ar", "rubycc-doctor", "rubycc-pkgconf"]
   spec.require_paths = ["lib"]
 end
