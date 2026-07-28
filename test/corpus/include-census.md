@@ -4,9 +4,9 @@
 `rake corpus:census` (see `test/corpus/README.md`). Re-run that task to update
 it, then commit the result. The task requires network access; `rake test` does not.
 
-- Generated: 2026-07-27T23:30:40Z
+- Generated: 2026-07-28T12:30:28Z
 - Ruby: ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]
-- Bundled header set: 40 angle spellings computed from `include/`
+- Bundled header set: 53 angle spellings computed from `include/`
   (freestanding `include/*.h` + `include/libc/**`, arch layer normalized).
 
 Angle-bracket (`#include <...>`) includes only; quoted local includes are ignored.
@@ -63,17 +63,17 @@ candidates with a note; the census does not evaluate the gate.
 | `cpuid.h` | gap | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
 | `cstdbool` | gap | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `ctype.h` | bundled | x |  | x | x |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  |  |
-| `dirent.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |
+| `dirent.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |
 | `emmintrin.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
 | `errno.h` | bundled |  |  | x | x |  |  |  |  | x |  |  |  |  | x |  |  |  |  |  |  |  | x | x | x |
 | `fcntl.h` | bundled |  |  |  |  |  |  |  |  |  | x | x | x |  |  |  |  | x |  |  |  |  |  | x | x |
 | `float.h` | bundled |  |  | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |
-| `grp.h` | gap |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `grp.h` | bundled |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `ieeefp.h` | gap |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `intrin.h` | gap | x |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  | x |
 | `inttypes.h` | bundled |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |
 | `limits.h` | bundled |  | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |
-| `locale.h` | gap |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `locale.h` | bundled |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `machine/endian.h` | gap |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `math.h` | bundled | x |  | x | x |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  | x |
 | `nmmintrin.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
@@ -102,12 +102,12 @@ candidates with a note; the census does not evaluate the gate.
 | `openssl/x509v3.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
 | `poll.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
 | `pthread.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
-| `pwd.h` | gap |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `pwd.h` | bundled |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `regex.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
 | `sanitizer/hwasan_interface.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |
 | `sanitizer/msan_interface.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |
-| `sched.h` | gap |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |
-| `setjmp.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |
+| `sched.h` | bundled |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |
+| `setjmp.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |
 | `sgtty.h` | gap |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `shlobj.h` | gap |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `stdarg.h` | bundled |  |  |  |  |  | x |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  | x |  | x |
@@ -122,18 +122,18 @@ candidates with a note; the census does not evaluate the gate.
 | `strings.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
 | `sys/cdefs.h` | bundled |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `sys/endian.h` | gap |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `sys/fcntl.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |
-| `sys/ioctl.h` | gap |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `sys/param.h` | gap |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `sys/resource.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
+| `sys/fcntl.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |
+| `sys/ioctl.h` | bundled |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `sys/param.h` | bundled |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `sys/resource.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
 | `sys/stat.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |
 | `sys/systm.h` | gap |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `sys/time.h` | bundled |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `sys/types.h` | bundled |  |  |  |  |  |  | x |  | x |  |  |  |  |  |  |  |  |  |  |  | x |  | x | x |
-| `sys/uio.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
-| `sys/utsname.h` | gap |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `sys/uio.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
+| `sys/utsname.h` | bundled |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `termio.h` | gap |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `termios.h` | gap |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `termios.h` | bundled |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `time.h` | bundled |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  | x |
 | `unistd.h` | bundled |  |  |  |  |  |  |  |  | x |  | x | x |  |  |  |  |  |  |  |  |  |  | x | x |
 | `valgrind/memcheck.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |
@@ -151,12 +151,9 @@ candidates with a note; the census does not evaluate the gate.
 | `conio.h` | io-console | — | review |
 | `cpuid.h` | json, oj | SIMD/CPU-feature gate (arch/feature-conditional) | gated (likely not required) |
 | `cstdbool` | json | C++-only (C++ standard header) | gated (likely not required) |
-| `dirent.h` | bootsnap | — | review |
 | `emmintrin.h` | oj | SIMD/CPU-feature gate (arch/feature-conditional) | gated (likely not required) |
-| `grp.h` | etc | — | review |
 | `ieeefp.h` | bigdecimal | — | review |
 | `intrin.h` | bigdecimal, google-protobuf, json, oj | Windows-only gate | gated (likely not required) |
-| `locale.h` | bigdecimal | — | review |
 | `machine/endian.h` | digest | — | review |
 | `nmmintrin.h` | oj | SIMD/CPU-feature gate (arch/feature-conditional) | gated (likely not required) |
 | `openssl/asn1.h` | openssl | — | review |
@@ -182,26 +179,16 @@ candidates with a note; the census does not evaluate the gate.
 | `openssl/ts.h` | openssl | — | review |
 | `openssl/x509.h` | puma | — | review |
 | `openssl/x509v3.h` | openssl | — | review |
-| `pwd.h` | etc | — | review |
 | `regex.h` | oj | — | review |
 | `sanitizer/hwasan_interface.h` | google-protobuf | — | review |
 | `sanitizer/msan_interface.h` | google-protobuf | — | review |
-| `sched.h` | etc, google-protobuf | — | review |
-| `setjmp.h` | google-protobuf | — | review |
 | `sgtty.h` | io-console | — | review |
 | `shlobj.h` | etc | — | review |
 | `stdatomic.h` | google-protobuf | — | review |
 | `stdckdint.h` | bigdecimal | — | review |
 | `sys/endian.h` | digest | — | review |
-| `sys/fcntl.h` | stringio | — | review |
-| `sys/ioctl.h` | io-console | — | review |
-| `sys/param.h` | digest | — | review |
-| `sys/resource.h` | oj | — | review |
 | `sys/systm.h` | digest | — | review |
-| `sys/uio.h` | oj | — | review |
-| `sys/utsname.h` | etc | — | review |
 | `termio.h` | io-console | — | review |
-| `termios.h` | io-console | — | review |
 | `valgrind/memcheck.h` | zlib | — | review |
 | `winioctl.h` | io-console | — | review |
 | `yaml.h` | psych | — | review |

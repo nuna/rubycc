@@ -4062,6 +4062,32 @@ Step 121 のセンサスが挙げた残りの gap 候補のうち、同梱すべ
   x86_64・aarch64 それぞれ個別の期待値で登録(FCNTL の隣)。
   由来台帳(§3.3 / §3.4)を clean-room 33 → 38 本、合計 63 → 68 本に更新。
 
+## Step 125 — ヘッダ拡充後のセンサス再実行(M5 H2、**libc ギャップの解消を確認**)
+
+Step 122〜124 のヘッダ追加を受けてセンサスを再実行し、実効を実測で確認した。
+
+- **同梱ヘッダ: 40 → 53 綴り**(angle spelling 基準。由来台帳の 68 本はファイル数で、
+  アーキ層のペアを 2 本と数えるため一致しない)。
+- **gap candidates: 60 → 47 件**。Step 122〜124 で追加した 13 綴り
+  (`setjmp.h` / `locale.h` / `pwd.h` / `grp.h` / `sys/utsname.h` / `sys/uio.h` /
+  `sys/resource.h` / `dirent.h` / `sched.h` / `termios.h` / `sys/ioctl.h` /
+  `sys/param.h` / `sys/fcntl.h`)が**すべて gap 一覧から消えた**。
+- **残る 47 件に「同梱すべき libc ヘッダ」はもう無い**。内訳は:
+  - **到達しないプラットフォームゲート内**: SIMD(`arm_neon.h` / `cpuid.h` /
+    `emmintrin.h` / `nmmintrin.h`)、Windows(`intrin.h` / `conio.h` /
+    `winioctl.h` / `shlobj.h`)、macOS(`CommonCrypto/CommonDigest.h`)、
+    BSD(`sys/endian.h` / `machine/endian.h` / `sys/systm.h`)、Solaris(`ieeefp.h`)、
+    旧 SysV 端末(`termio.h` / `sgtty.h`)、C++ 専用(`cstdbool`)
+  - **ホストが提供するシステムライブラリ**: `openssl/*.h`(20 件、openssl と puma)、
+    `yaml.h`(psych)、`zlib.h`(zlib)、`sanitizer/*.h`、`valgrind/memcheck.h`。
+    R10 が「システムライブラリ利用時」を想定内としており同梱対象ではない
+  - **言語機能の実装が先に必要な 3 件**: `stdatomic.h`(`_Atomic` 未対応)、
+    `stdckdint.h`(`__builtin_add_overflow` 相当が無い)、`regex.h`
+    (oj が `regex_t` を値で埋め込むため不透明ブロブ不可)。**ヘッダだけ足しても
+    無意味**であることを Step 124 で実測確認済み
+- つまり **H2(ヘッダ体系)はコーパス実測ベースで飽和**した。以降のヘッダ追加は
+  新しいコーパス gem を入れたときに再びセンサスが示す、という運用に移る。
+
 ---
 
 ## 現在のテスト規模
