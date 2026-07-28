@@ -3928,11 +3928,47 @@ bigdecimal が使用)。同梱ヘッダは 53 → 56 本。
 - 由来台帳(docs/HEADER-LICENSING.md §3.3 / §3.4)を更新(clean-room 23 → 26 本、
   合計 53 → 56 本)。§6 のワークフローが定める必須手順に従った。
 
+## Step 123 — POSIX ヘッダ 7 本の同梱(M5 H2、センサス駆動の続き)
+
+Step 121 のセンサスが挙げたギャップのうち POSIX 系 7 本を追加。同梱ヘッダは 56 → 63 本。
+
+| ヘッダ | 使用 gem | 実測サイズ |
+|---|---|---|
+| `pwd.h` | etc | `struct passwd` 48 |
+| `grp.h` | etc | `struct group` 32 |
+| `sys/utsname.h` | etc | `struct utsname` 390 |
+| `sys/uio.h` | oj | `struct iovec` 16 |
+| `sys/resource.h` | oj | `struct rlimit` 16 / `struct rusage` 144 |
+| `dirent.h` | bootsnap | `struct dirent` 280 |
+| `sched.h` | etc, google-protobuf | `cpu_set_t` 128 |
+
+- **7 本すべて共通層に配置**: 構造体サイズ・全メンバオフセット・定数値を
+  x86_64(ホスト gcc)と aarch64(クロス gcc + qemu)で実測し**完全一致**したため。
+  アーキ差があった `setjmp.h`(Step 122)とは対照的。
+- **`struct utsname` が 390 バイトになる理由**: POSIX が規定する 5 フィールド
+  (65 バイト × 5 = 325)だけでは sizeof が合わず、Linux が持つ 6 番目の
+  `domainname` を含めて初めて一致する。**実測が唯一の根拠**である好例。
+- **構造体の扱いは Step 122 で確立した原則どおり**: 呼び出し側がメンバを直接
+  読む構造体(passwd / group / utsname / iovec / rlimit / rusage / dirent)は
+  POSIX/kernel ABI の公開契約として再現し、サイズと全オフセットを実測で確認。
+  一方 `cpu_set_t` は `pthread_mutex_t`/`jmp_buf` と同じく実測サイズ・アラインの
+  不透明ブロブ。`DIR` は glibc 自身が公開ヘッダで実体を与えない不完全型なので
+  `typedef struct __dirstream DIR;` のまま(常にポインタ経由でしか使われない)。
+- `sched.h` はセンサスが示す実使用範囲(`sched_yield` / `sched_getcpu` /
+  `cpu_set_t` / `CPU_SETSIZE`)に絞り、`CPU_SET` 等のアフィニティ操作マクロは対象外。
+- `sys/utsname.h` / `sys/resource.h` / `sched.h` は glibc がフラットに公開する面を
+  再現するため ABI ケースに `_GNU_SOURCE` を付与(fcntl.h / pthread.h の前例と同じ)。
+- 検証: 7 Spec を ABI ハーネスに追加し x86_64・aarch64 の両クラスに登録
+  (`struct dirent` は全メンバ、`struct rusage` は先頭数メンバのオフセットを照合)。
+  由来台帳(§3.3 / §3.4)を clean-room 26 → 33 本、合計 56 → 63 本に更新。
+
 ---
 
 ## 現在のテスト規模
 
-Step 122 完了時点: **2,491 runs / 6,787 assertions / 0 failures / 47 skips**
+Step 123 完了時点: **2,505 runs / 6,829 assertions / 0 failures / 47 skips**
+(Step 122 から +14 = POSIX ヘッダ 7 本の ABI ケースを x86_64・aarch64 の両クラスに追加)
+(以前) Step 122 完了時点: **2,491 runs / 6,787 assertions / 0 failures / 47 skips**
 (Step 120 から +4 = setjmp / locale の ABI ケースを x86_64・aarch64 の両クラスに追加。
 Step 121 は census スナップショットの更新のみでテスト増なし)
 (以前) Step 120 完了時点: **2,487 runs / 6,775 assertions / 0 failures / 47 skips**

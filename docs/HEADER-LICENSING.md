@@ -161,6 +161,13 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 | `include/libc/sys/un.h` | **struct sockaddr_un の 110 バイトレイアウト**(kernel UAPI linux/un.h・実測 offsetof・§4)。両 arch 同一のため共通層 | なし(UAPI 由来) |
 | `include/libc/glibc/x86_64/pthread.h` | **pthreads opaque 型のサイズ/アライメント**(glibc ABI・実測。内部フィールドは不再現の不透明 blob・§4)。pthread_* は POSIX 宣言 | なし(glibc ABI 実測) |
 | `include/libc/glibc/aarch64/pthread.h` | 同上。mutex_t/attr_t/mutexattr_t/condattr_t が x86-64 より広い(実測。arch 依存ゆえ 2 本) | なし(glibc ABI 実測) |
+| `include/libc/pwd.h` | **POSIX の struct passwd**(メンバ名・型・順序は公開契約)。サイズ/全オフセットを実測し両アーキ一致(uid_t/gid_t は LP64 で幅差なし)のため共通層。getpwnam/getpwuid/getpwent/setpwent/endpwent/getpwnam_r/getpwuid_r は POSIX 宣言(Step 123) | なし |
+| `include/libc/grp.h` | **POSIX の struct group**。サイズ/全オフセットを実測し両アーキ一致のため共通層。getgrnam/getgrgid/getgrent/setgrent/endgrent/getgrnam_r/getgrgid_r は POSIX 宣言(Step 123) | なし |
+| `include/libc/sys/utsname.h` | **Linux kernel ABI の struct utsname**(uname(2) が返す 6 個の 65 バイト char 配列。6 個目の domainname は kernel が追加した NIS ドメイン名で、glibc は `__USE_GNU` の有無でこの名前を出し分けるだけの同一フィールド)。実測 390 バイト・全オフセット一致(両アーキ)のため共通層。uname は POSIX 宣言(Step 123) | なし(kernel ABI 実測) |
+| `include/libc/sys/uio.h` | **POSIX/kernel UAPI の struct iovec**。sys/socket.h と同じ `_RUBYCC_STRUCT_IOVEC` ガードを共有。実測 16 バイトで両アーキ一致のため共通層。readv/writev は POSIX 宣言(Step 123) | なし(UAPI 由来) |
+| `include/libc/sys/resource.h` | **POSIX/kernel UAPI の struct rlimit・struct rusage と RLIMIT_*/RUSAGE_* 値**。struct timeval は sys/time.h と同じ `__timeval_defined` ガードを共有。全メンバのサイズ・オフセットを実測し両アーキ一致(rlim_t/struct timeval のメンバは LP64 で幅差なし)のため共通層。getrlimit/setrlimit/getrusage は POSIX 宣言(Step 123) | なし(UAPI 由来) |
+| `include/libc/dirent.h` | **glibc/Linux ABI の struct dirent**(d_reclen/d_type が d_name の前に来る並びは glibc/Linux 固有で POSIX 非規定・実測が唯一の根拠)。DIR は glibc 自身も公開ヘッダで定義を与えない不完全型 `struct __dirstream` のまま(値そのものを持たず常にポインタ経由のため実体不要)。struct dirent は実測 280 バイトで両アーキ一致のため共通層。opendir/readdir/closedir/rewinddir/readdir_r/fdopendir/dirfd は POSIX 宣言(Step 123) | なし(glibc/UAPI 実測) |
+| `include/libc/sched.h` | **glibc の cpu_set_t の実測サイズ/アライメント**(128/8。内部の `__bits` 配列は不再現の不透明 blob・§4、setjmp.h/pthread.h と同じ扱い)と CPU_SETSIZE。両アーキ一致のため共通層。センサスが挙げた etc/google-protobuf の実使用範囲(sched_yield/sched_getcpu)にスコープを絞り、CPU_SET 等のアフィニティ操作マクロ群は対象外(Step 123) | なし(glibc ABI 実測) |
 
 > `assert.h` と `features.h` は自己申告で clean-room だが、冒頭コメントに
 > 「musl's <…> was the shape reference」とある。**形状(どの宣言を並べるか)の参照**で
@@ -173,8 +180,8 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 |---|---|
 | freestanding | 8 |
 | musl-derived | 22 |
-| clean-room | 26 |
-| **合計** | **56** |
+| clean-room | 33 |
+| **合計** | **63** |
 
 > Step 82(M5 H1)で `include/libc/glibc/aarch64/` 層 11 本を追加(30→41)。うち 8 本は
 > x86-64 版と宣言・値がバイト一致(`cmp` 確認済み)で、由来分類も x86-64 版を継承する。
@@ -182,6 +189,15 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 > `sys/stat.h`(struct stat が実測 128 バイトの aarch64 レイアウト)・`stdint.h`
 > (WCHAR_MIN/MAX が unsigned)。いずれも glibc/UAPI ソースのコピーではなく、クロス gcc
 > で実測した ABI 事実(§4)の再現。
+
+> Step 123(M5 H2)でコーパスセンサスの gap 一覧から `pwd.h`・`grp.h`・
+> `sys/utsname.h`・`sys/uio.h`・`sys/resource.h`・`dirent.h`・`sched.h` の 7 本を追加
+> (56→63、clean-room 26→33)。7 本すべて、呼び出し側がメンバへ直接触れる構造体
+> (struct passwd/group/utsname/iovec/rlimit/rusage/dirent)はサイズ・全メンバの
+> オフセットを x86-64・クロス gcc(aarch64)の両方で実測し、byte で一致したため
+> 共通層(`include/libc/`)に配置した。DIR と cpu_set_t は内部状態を触らせない型
+> なので、setjmp.h/pthread.h と同じ方針(実測サイズ/アラインの不透明ブロブ、または
+> glibc 自身も定義を与えない不完全型のまま)にした。
 
 ---
 

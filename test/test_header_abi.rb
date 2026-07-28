@@ -786,6 +786,209 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <pwd.h> (Step 123, M5 H2): the user database interface. struct passwd's
+  # layout is arch-neutral -- every member is a pointer or uid_t/gid_t, and
+  # both x86-64 and aarch64 are LP64, so the measured size and every member
+  # offset agree exactly across the two arches -- so the header lives in the
+  # common layer and this Spec is re-run in the aarch64 class's neutral-layer
+  # section below. getpwnam/getpwuid/getpwent/setpwent/endpwent/getpwnam_r/
+  # getpwuid_r resolve from the static libc at link time (a real call, unlike
+  # dlfcn.h/pthread.h's sizeof-wrapped calls, since these are ordinary libc.a
+  # symbols with no extra runtime library beyond the NSS modules the linker
+  # warns -- harmlessly, since the harness only ever compiles and links these
+  # functions but never calls them from main -- about needing at runtime).
+  PWD = HeaderAbiHarness::Spec.new(
+    header: "pwd.h",
+    sizes: %w[struct\ passwd],
+    offsets: [["struct passwd", "pw_name"], ["struct passwd", "pw_passwd"],
+              ["struct passwd", "pw_uid"], ["struct passwd", "pw_gid"],
+              ["struct passwd", "pw_gecos"], ["struct passwd", "pw_dir"],
+              ["struct passwd", "pw_shell"]],
+    snippets: [<<~C.chomp]
+      static int abi_pwd(uid_t uid, const char *name, struct passwd *rb,
+                          char *buf, size_t n, struct passwd **res) {
+        struct passwd *p = getpwuid(uid);
+        struct passwd *q = getpwnam(name);
+        setpwent();
+        struct passwd *r = getpwent();
+        endpwent();
+        return (p != (void *)0) + (q != (void *)0) + (r != (void *)0)
+             + getpwnam_r(name, rb, buf, n, res) + getpwuid_r(uid, rb, buf, n, res);
+      }
+    C
+  )
+
+  # <grp.h> (Step 123, M5 H2): the group database interface. struct group's
+  # layout is arch-neutral -- every member is a pointer or gid_t -- so the
+  # header lives in the common layer and this Spec is re-run in the aarch64
+  # class's neutral-layer section below. getgrnam/getgrgid/getgrent/setgrent/
+  # endgrent/getgrnam_r/getgrgid_r resolve from the static libc the same way
+  # pwd.h's do.
+  GRP = HeaderAbiHarness::Spec.new(
+    header: "grp.h",
+    sizes: %w[struct\ group],
+    offsets: [["struct group", "gr_name"], ["struct group", "gr_passwd"],
+              ["struct group", "gr_gid"], ["struct group", "gr_mem"]],
+    snippets: [<<~C.chomp]
+      static int abi_grp(gid_t gid, const char *name, struct group *rb,
+                          char *buf, size_t n, struct group **res) {
+        struct group *p = getgrgid(gid);
+        struct group *q = getgrnam(name);
+        setgrent();
+        struct group *r = getgrent();
+        endgrent();
+        return (p != (void *)0) + (q != (void *)0) + (r != (void *)0)
+             + getgrnam_r(name, rb, buf, n, res) + getgrgid_r(gid, rb, buf, n, res);
+      }
+    C
+  )
+
+  # <sys/utsname.h> (Step 123, M5 H2): system identification. struct utsname's
+  # layout (six 65-byte char arrays) is arch-neutral -- a plain char-array
+  # struct has no arch-dependent field widths -- so the header lives in the
+  # common layer and this Spec is re-run in the aarch64 class's neutral-layer
+  # section below. uname resolves from the host libc at link time. `defines:
+  # ["_GNU_SOURCE"]` is needed because rubycc's bundled header exposes the
+  # sixth field unconditionally as `domainname`, while the host glibc only uses
+  # that spelling (rather than `__domainname`) under __USE_GNU.
+  UTSNAME = HeaderAbiHarness::Spec.new(
+    header: "sys/utsname.h",
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[struct\ utsname],
+    offsets: [["struct utsname", "sysname"], ["struct utsname", "nodename"],
+              ["struct utsname", "release"], ["struct utsname", "version"],
+              ["struct utsname", "machine"], ["struct utsname", "domainname"]],
+    snippets: [<<~C.chomp]
+      static int abi_utsname(struct utsname *u) { return uname(u); }
+    C
+  )
+
+  # <sys/uio.h> (Step 123, M5 H2): scatter/gather I/O. struct iovec's layout
+  # (a pointer and a size_t) is arch-neutral -- so the header lives in the
+  # common layer and this Spec is re-run in the aarch64 class's neutral-layer
+  # section below. readv/writev resolve from the host libc at link time.
+  UIO = HeaderAbiHarness::Spec.new(
+    header: "sys/uio.h",
+    sizes: %w[struct\ iovec],
+    offsets: [["struct iovec", "iov_base"], ["struct iovec", "iov_len"]],
+    snippets: [<<~C.chomp]
+      static long abi_uio(int fd, const struct iovec *iov, int n) {
+        return readv(fd, iov, n) + writev(fd, iov, n);
+      }
+    C
+  )
+
+  # <sys/resource.h> (Step 123, M5 H2): resource limits and usage. struct
+  # rlimit (two rlim_t) and struct rusage (two struct timeval plus 14 longs)
+  # are both arch-neutral -- rlim_t and struct timeval's members are all
+  # 8-byte on either LP64 target -- so the header lives in the common layer
+  # and this Spec is re-run in the aarch64 class's neutral-layer section
+  # below. getrlimit/setrlimit/getrusage resolve from the host libc at link
+  # time. `defines: ["_GNU_SOURCE"]` is needed because rubycc's bundled header
+  # exposes RUSAGE_THREAD unconditionally, while the host glibc gates it behind
+  # __USE_GNU.
+  RESOURCE = HeaderAbiHarness::Spec.new(
+    header: "sys/resource.h",
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[struct\ rlimit struct\ rusage rlim_t],
+    ints: %w[RLIMIT_CPU RLIMIT_FSIZE RLIMIT_DATA RLIMIT_STACK RLIMIT_CORE RLIMIT_RSS
+             RLIMIT_NPROC RLIMIT_NOFILE RLIMIT_MEMLOCK RLIMIT_AS RLIMIT_LOCKS
+             RLIMIT_SIGPENDING RLIMIT_MSGQUEUE RLIMIT_NICE RLIMIT_RTPRIO RLIMIT_RTTIME
+             RLIMIT_NLIMITS RUSAGE_SELF RUSAGE_CHILDREN RUSAGE_THREAD],
+    offsets: [["struct rlimit", "rlim_cur"], ["struct rlimit", "rlim_max"],
+              ["struct rusage", "ru_utime"], ["struct rusage", "ru_stime"],
+              ["struct rusage", "ru_maxrss"], ["struct rusage", "ru_ixrss"],
+              ["struct rusage", "ru_idrss"], ["struct rusage", "ru_isrss"],
+              ["struct rusage", "ru_minflt"], ["struct rusage", "ru_majflt"],
+              ["struct rusage", "ru_nswap"], ["struct rusage", "ru_inblock"],
+              ["struct rusage", "ru_oublock"], ["struct rusage", "ru_msgsnd"],
+              ["struct rusage", "ru_msgrcv"], ["struct rusage", "ru_nsignals"],
+              ["struct rusage", "ru_nvcsw"], ["struct rusage", "ru_nivcsw"]],
+    snippets: [<<~C.chomp]
+      static int abi_resource(struct rlimit *rl, struct rusage *ru) {
+        return getrlimit(RLIMIT_NOFILE, rl) + setrlimit(RLIMIT_NOFILE, rl)
+             + getrusage(RUSAGE_SELF, ru);
+      }
+    C
+  )
+
+  # <dirent.h> (Step 123, M5 H2): directory streams. struct dirent's glibc/
+  # Linux layout (ino_t, off_t, d_reclen, d_type ahead of d_name) is arch-
+  # neutral -- ino_t/off_t are both 8-byte on either LP64 target -- so the
+  # header lives in the common layer and this Spec is re-run in the aarch64
+  # class's neutral-layer section below. DIR is left an incomplete type (the
+  # same public spelling glibc itself uses), so it is only ever probed through
+  # a `DIR *`. opendir/readdir/closedir/rewinddir/readdir_r/fdopendir/dirfd
+  # resolve from the host libc at link time.
+  DIRENT = HeaderAbiHarness::Spec.new(
+    header: "dirent.h",
+    sizes: %w[struct\ dirent],
+    ints: %w[DT_UNKNOWN DT_FIFO DT_CHR DT_DIR DT_BLK DT_REG DT_LNK DT_SOCK DT_WHT],
+    offsets: [["struct dirent", "d_ino"], ["struct dirent", "d_off"],
+              ["struct dirent", "d_reclen"], ["struct dirent", "d_type"],
+              ["struct dirent", "d_name"]],
+    snippets: [<<~C.chomp]
+      static int abi_dirent(const char *path, int fd, struct dirent *entry,
+                             struct dirent **result) {
+        DIR *d1 = opendir(path);
+        DIR *d2 = fdopendir(fd);
+        struct dirent *e = readdir(d1);
+        int rc = readdir_r(d1, entry, result);
+        rewinddir(d1);
+        int fdn = dirfd(d1);
+        return (d1 != (void *)0) + (d2 != (void *)0) + (e != (void *)0)
+             + rc + fdn + closedir(d1) + closedir(d2);
+      }
+    C
+  )
+
+  # <sched.h> (Step 123, M5 H2): pared to the surface etc/google-protobuf's
+  # corpus samples reach (sched_yield, sched_getcpu, cpu_set_t's existence),
+  # per the header's own provenance note. cpu_set_t's measured size/alignment
+  # (128, 8-byte aligned) is arch-neutral -- so the header lives in the common
+  # layer and this Spec is re-run in the aarch64 class's neutral-layer section
+  # below. sched_yield/sched_getcpu resolve from the host libc at link time.
+  # `defines: ["_GNU_SOURCE"]` is needed because the host glibc gates
+  # cpu_set_t/CPU_SETSIZE/sched_getcpu behind __USE_GNU, while rubycc's
+  # bundled header exposes them unconditionally.
+  SCHED = HeaderAbiHarness::Spec.new(
+    header: "sched.h",
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[cpu_set_t],
+    ints: %w[CPU_SETSIZE],
+    snippets: [<<~C.chomp]
+      static int abi_sched(void) { return sched_yield() + sched_getcpu(); }
+    C
+  )
+
+  def test_pwd_abi_matches_gcc
+    assert_abi_matches(PWD)
+  end
+
+  def test_grp_abi_matches_gcc
+    assert_abi_matches(GRP)
+  end
+
+  def test_utsname_abi_matches_gcc
+    assert_abi_matches(UTSNAME)
+  end
+
+  def test_uio_abi_matches_gcc
+    assert_abi_matches(UIO)
+  end
+
+  def test_resource_abi_matches_gcc
+    assert_abi_matches(RESOURCE)
+  end
+
+  def test_dirent_abi_matches_gcc
+    assert_abi_matches(DIRENT)
+  end
+
+  def test_sched_abi_matches_gcc
+    assert_abi_matches(SCHED)
+  end
+
   def test_arpa_inet_abi_matches_gcc
     assert_abi_matches(ARPA_INET)
   end
@@ -1090,6 +1293,34 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_locale_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::LOCALE)
+  end
+
+  def test_pwd_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::PWD)
+  end
+
+  def test_grp_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::GRP)
+  end
+
+  def test_utsname_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::UTSNAME)
+  end
+
+  def test_uio_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::UIO)
+  end
+
+  def test_resource_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::RESOURCE)
+  end
+
+  def test_dirent_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::DIRENT)
+  end
+
+  def test_sched_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SCHED)
   end
 
   private
