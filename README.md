@@ -46,7 +46,7 @@ needed for the headers.
 
 ## Requirements
 
-- **Ruby 3.2 or newer.** Development happens on 3.4 and 4.0; see *Known limitations*.
+- **Ruby 3.3 or newer.** Development happens on 3.4 and 4.0; see *Known limitations*.
 - **Ruby's own headers** (`ruby.h` and friends) and `rbconfig`. Official ruby images have
   them; on a distro Ruby you need the `-dev`/`-devel` package.
 - **Shared libraries you link against** must be present as binaries (`libc.so`, `libz.so`,
@@ -95,8 +95,8 @@ Measured, not guessed — each item links to the record that establishes it.
 - **Out of scope**: gems needing a C++ compiler (grpc), or that run `configure` through
   mini_portile (nokogiri's vendored build; `--use-system-libraries` is fine), or that ship
   assembly (ffi).
-- **Ruby 3.2 is declared but not exercised.** The suite runs on 3.4 and 4.0; no CI matrix
-  covers older versions yet.
+- **Ruby 3.3 is the declared floor; verification against it is in progress.** The suite
+  runs on 3.4 and 4.0 today, and no CI matrix covers multiple versions yet.
 
 ## No gem-side changes required
 
