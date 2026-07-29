@@ -749,6 +749,23 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   **完了(Step 145)**: `.claude/skills/corpus-expansion/SKILL.md`。道具の使い方ではなく
   **道具の間をつなぐ判断**(Gap candidate の仕分け、(d) レベルの証拠の水準、
   sanity 式の選び方、横断規約)を持つ。事実は既存文書を指すだけにして二重管理を避ける。
+- **stackprof / nkf の検証で見つかったギャップ(Step 146 で実測・最小再現あり)**。
+  どちらもホスト gcc では上流スイートが完走する(stackprof 31 runs / 143 assertions、
+  nkf 8 tests / 46 assertions)ので、原因は全て rubycc 側。
+  レシピは `tools/verify_gem_tests.rb` に入っており、修正のたびに再検証できる:
+
+  | # | ギャップ | 影響 | 優先 |
+  |---|---|---|---|
+  | 1 | **`sigset_t` の typedef 衝突** — `include/libc/signal.h` はガード `_RUBYCC_SIGSET_T` で無名 struct を、`include/libc/glibc/{x86_64,aarch64}/sys/select.h` はガード `__sigset_t_defined` で `__sigset_t` + エイリアスを定義しており、ガードが噛み合わず型も別物。**両方の include 順で再現** | `ruby/defines.h` が `<sys/select.h>` を引くため、**ruby.h と `<signal.h>` を併用する任意の gem** に当たる | **最優先** |
+  | 2 | **`sizeof(式)` が整数定数式に畳めない文脈がある** — enumerator(`enum {len = sizeof(str) - 1};`)・ビットフィールド幅・case ラベル・配列デシグネータ。リゾルバ `Parser#fold_time_sizeof` は既にあり `_Static_assert` と配列長では渡されているのに、これらの文脈で `sizeof_expr:` が未指定 | nkf。C 標準では全て ICE が要求される文脈 | **高**(修正は限定的) |
+  | 3 | `pthread_kill` / `pthread_atfork` が `include/libc/glibc/*/pthread.h` に未宣言 | stackprof | 中(R8 手続き) |
+  | 4 | `_POSIX_MONOTONIC_CLOCK` が同梱ヘッダのどこにも無い。未定義だと stackprof が**上流の死にコードである `#else` 側**を通り、そこに本物の構文エラーがある | stackprof。POSIX オプションマクロなので他にも波及しうる | 中(値は実測で) |
+  | 5 | **不完全配列型の補完が `conflicting types`** — `extern int tbl[]; int tbl[3] = {1,2,3};` が通らない(C11 6.2.7p3 の合成型) | nkf。ファイルスコープの仮定義 `int tbl[];` も別途落ちる | 中 |
+  | 6 | **`__dso_handle` を供給できない** — `pthread_atfork` は共有 libc に無く `libc_nonshared.a` の `pthread_atfork.oS` でしか得られず、そのメンバが `__dso_handle` を参照して `unsupported text relocation against external symbol` になる。gcc では crtstuff(`crtbegin_S.o`)が供給しており rubycc に相当物が無い | stackprof。リンカの構造的な穴 | 低(最難・要設計) |
+
+  1〜5 を潰した状態(scratch でのハンドパッチ)では**両 gem とも上流スイートが完走する**
+  ことを実測済み(ただし `__dso_handle` はスタブで代用しており、この結果は検証ではない)。
+  **aarch64 と musl では未実測**。
 - **受け入れ = v1.0 リリース = M5 完了**。
 
 ## 9. マイルストーン横断のリスク(DESIGN 7 章の運用)

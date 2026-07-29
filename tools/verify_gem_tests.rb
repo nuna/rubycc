@@ -243,6 +243,71 @@ RECIPES = {
       # the injected-.so check can tell those two apart.
       expr: "injected_so_loaded?"
     }
+  },
+
+  # The two recipes below do not pass yet: both gems fail at the compile/link
+  # stage, on rubycc gaps measured in Step 146 and listed in docs/ROADMAP.md's
+  # H6 section (a sigset_t typedef collision, sizeof(expr) not folding as an
+  # integer constant expression in an enumerator, two missing pthread
+  # declarations, _POSIX_MONOTONIC_CLOCK, __dso_handle, and incomplete-array
+  # completion). They are kept rather than deleted because they are the
+  # re-verification harness for those fixes: `--all` reporting FAIL for exactly
+  # these two is the standing to-do list, and a recipe added only after a fix
+  # would have to be written and debugged at the worst possible moment.
+  # Both suites pass when built with the host gcc (stackprof 31 runs / 143
+  # assertions, nkf 8 tests / 46 assertions), so the recipes themselves are
+  # right; what is missing is on rubycc's side.
+  "stackprof" => {
+    version: "0.2.28",
+    tarball: "https://github.com/tmm1/stackprof/archive/refs/tags/v0.2.28.tar.gz",
+    # extconf.rb calls create_makefile('stackprof/stackprof'), so the built object
+    # lands one directory down from lib/, both in the installed gem and in the
+    # upstream tree the suite loads from.
+    sos: { "lib/stackprof/stackprof.so" => "lib/stackprof/stackprof.so" },
+    # The suite is minitest (the gemspec's only test-side development dependency).
+    # minitest is a *bundled* gem, so it lives in the interpreter's gem dir and is
+    # unreachable from the scratch GEM_HOME -- measured: requiring
+    # minitest/autorun with GEM_PATH pointed at the scratch home raises LoadError.
+    test_deps: %w[minitest],
+    runner: :test_unit,
+    load_paths: %w[lib test],
+    # Same FileList the Rakefile's Rake::TestTask uses. test/test_truffleruby.rb is
+    # kept rather than excluded: its whole body is inside `if RUBY_ENGINE ==
+    # 'truffleruby'`, so on MRI it defines no test and contributes nothing.
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      requires: %w[stackprof],
+      # lib/stackprof.rb requires "stackprof/truffleruby" only under TruffleRuby
+      # and "stackprof/stackprof" unconditionally otherwise, so on MRI there is no
+      # pure-Ruby fallback and no "which implementation won" constant to read --
+      # the injected-.so check is the available proof. (StackProf::VERSION is
+      # defined in the .rb file, not the extension, so it proves nothing.)
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "nkf" => {
+    version: "0.3.0",
+    tarball: "https://github.com/ruby/nkf/archive/refs/tags/v0.3.0.tar.gz",
+    sos: { "lib/nkf.so" => "lib/nkf.so" },
+    # test/nkf/test_nkf.rb requires "core_assertions", which lives in
+    # test-unit-ruby-core (the same pair the gem's own Gemfile lists).
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    load_paths: %w[lib test],
+    # The Rakefile's FileList. test_sig/ is a separate rbs-only task and is not
+    # part of `rake test`, so the glob deliberately does not reach it.
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      requires: %w[nkf],
+      # nkf ships with the interpreter (a bundled gem in Ruby 3.4), so the danger
+      # is testing that copy instead of the rubycc-built one; lib/nkf.rb's only
+      # alternative branch is the JRuby .jar, which cannot be reached here, so
+      # there is no C-vs-Ruby switch to observe and the injected-.so check is the
+      # proof that separates the two copies.
+      expr: "injected_so_loaded?"
+    }
   }
 }.freeze
 

@@ -299,8 +299,11 @@ module Corpus
         name: "stackprof",
         version: "0.2.28",
         note: "153,037,422 downloads. Single ext dir (ext/stackprof); a " \
-              "single C file, extconf.rb 16 lines with no probes — one of " \
-              "the smallest C extensions in this corpus."
+              "single C file — one of the smallest C extensions in this " \
+              "corpus. extconf.rb is 16 lines but does carry four have_func " \
+              "probes (rb_postponed_job_preregister and friends), measured " \
+              "in Step 146; an earlier note here said \"no probes\", which " \
+              "was wrong."
       },
       {
         name: "unicorn",

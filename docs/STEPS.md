@@ -4744,9 +4744,75 @@ R11 の移譲プロンプトへの明記、テスト実行の test-runner への
 
 ---
 
+## Step 146 — stackprof / nkf の検証試行と、そこで見つかった 6 つのギャップ(M5 H6)
+
+Step 144 の道具でコーパス中最小級の 2 gem を検証しようとした。**どちらも FAIL**。
+`data/verified_gems.json` には**何も書いていない**。だがこのステップの成果は
+その否定的結果そのもので、**最小再現の付いた 6 つの実在するギャップ**が出た。
+一覧と優先度は docs/ROADMAP.md の H6 節。
+
+### 「rubycc が悪いのか環境が悪いのか」を先に切り分けた
+
+stackprof は `setitimer` / `SIGPROF` / `rb_profile_frames` に依存しており、
+WSL2 のこの環境でシグナル周りが動かない可能性が先に疑われた。**ホスト gcc で
+同じ上流ツリーをビルドして同じスイートを走らせる**対照を取り、
+stackprof は 31 runs / 143 assertions / 0 failures、nkf は 8 tests / 46 assertions /
+0 failures で完走した。**環境要因は否定され、原因は全て rubycc 側**と確定した。
+この対照が無ければ「WSL2 では検証できない」で終わっていた。
+
+### 最も価値が高いのは、一番地味な 1 番
+
+`sigset_t` の typedef 衝突は**この 2 gem に固有の問題ではない**。
+`include/libc/signal.h` はガード `_RUBYCC_SIGSET_T` で無名 struct を、
+`include/libc/glibc/{x86_64,aarch64}/sys/select.h` はガード `__sigset_t_defined` で
+`__sigset_t` + エイリアスを定義しており、**ガードが噛み合わないうえ型そのものが別物**。
+`ruby/defines.h` が `<sys/select.h>` を引くので、**ruby.h と `<signal.h>` を併用する
+任意の gem** が踏む。両方の include 順で再現する(select→signal は signal.h:47 で、
+signal→select は select.h:38 で落ちる)。
+
+同梱ヘッダを 77 本まで増やしても、**ヘッダ同士の整合はセンサスでは測れない**。
+センサスは「その名前のヘッダがあるか」しか見ないので、
+2 本が同じ型を別々に定義している状態を検出できない。実際の gem をビルドして初めて出る。
+
+### 2 番は既にある機構が繋がっていないだけ
+
+nkf が落ちる `enum {len = sizeof(str) - 1};` は、リゾルバ `Parser#fold_time_sizeof` が
+**既に存在していて `_Static_assert` と配列長では渡されているのに**、
+enumerator・ビットフィールド幅・case ラベル・配列デシグネータで `sizeof_expr:` が
+未指定なだけ。「機能が無い」のではなく「配線が抜けている」型のギャップで、
+最小再現(`enum { a = sizeof(int) };` は通るが `enum { len = sizeof(str) };` は通らない)が
+それを端的に示している。
+
+### ハンドパッチ実験は「残りが無いこと」の確認に使い、記録には使わない
+
+1〜5 を scratch 内のコピーだけで塞ぐと**両 gem とも上流スイートが完走する**。
+これは「このギャップ群の裏にさらにブロッカーが控えていないか」を先に知るための
+偵察であって、**検証ではない**。特に `__dso_handle` はスタブ(`void *__dso_handle = 0;`)で
+代用しており glibc の意味論(DSO 自身のハンドル)と違う — テストが `__cxa_atexit`
+経路を踏んでいないだけの可能性がある(未実測)。したがってこの結果は
+`verified_gems.json` に**書いていないし、書いてはならない**。
+
+### レシピを残す判断
+
+両 gem のレシピは `tools/verify_gem_tests.rb` に**入れたまま**にした。
+`--all` がこの 2 件だけ FAIL を出し続ける状態が、そのまま**生きた TODO リスト**になる。
+修正後にレシピを書き起こすことにすると、いちばん切り分けが要る場面で
+「レシピが悪いのか修正が足りないのか」が混ざる。
+
+### 副産物: コーパスの note の誤り
+
+`test/corpus/gems.rb` の stackprof の note が「extconf.rb 16 lines **with no probes**」と
+書いていたが、実物は `have_func('rb_postponed_job_preregister')` ほか 4 つの probe を持ち
+mkmf.log も生成する。Step 139 でメタデータだけ見て書いた記述で、実際にビルドして初めて
+食い違いが出た。是正済み。
+
+---
+
 ## 現在のテスト規模
 
-Step 145 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
+Step 146 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
+(Step 145 と同数 = レシピ追加と文書のみ。ギャップの修正は次ステップ以降)
+(以前) Step 145 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
 (Step 144 と同数 = スキルとドキュメントのみ)
 (以前) Step 144 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
 (Step 143 と同数 = 追加したのは開発用ツールで、`rake test` の対象外)
