@@ -736,6 +736,15 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   **完了(Step 143)**: `tools/scan_popular_gems.rb`。R10 の判定は `census.rb` に委譲し
   再実装しない。R10 が原理的に見ない**アセンブラ要否**はスキャナ側で 2 系統
   (`.S`/`.s` 走査 + `$objs` の未対応エントリ)検査し、`[1b]` に分類する。
+- ~~`data/verified_gems.json` を手編集ではなく実走結果から生成/拡張する
+  (data/README.md が当初から述べていた意図)。~~ **完了(Step 144)**:
+  `tools/verify_gem_tests.rb`。`RUBYCC=1 gem install` → rubycc が使われた痕跡の確認 →
+  上流タグの取得と `.so` 差し込み → gem 自身のテスト実走 → `--update` で DB へ。
+  **`sanity` 式が必須**(C 拡張がロードされていなくてもスイートは合格しうるため。
+  racc の `cparse.so` を壊しても 71 tests / 0 failures で通ることを実測)。
+  既存 6 件を全て再現して自身を検証済み(racc の assertions のみ 319 → 320 で
+  差異あり・原因未特定)。**残: 新規 gem の検証と追加**(stackprof・nkf が最小級で
+  着手しやすい)。
 - **受け入れ = v1.0 リリース = M5 完了**。
 
 ## 9. マイルストーン横断のリスク(DESIGN 7 章の運用)

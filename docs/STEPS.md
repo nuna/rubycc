@@ -4605,9 +4605,115 @@ gem ツリー内に無いものを報告する。任意の gem の extconf を�
 
 ---
 
+## Step 144 — gem 本体テストの実走ツールと verified_gems.json の生成経路(M5 H6)
+
+`data/README.md` は当初から「長期的には手編集ではなくコーパスの結果から生成/拡張したい」と
+書いていたが、実態は Step 54 以来ずっと手編集だった。それを `tools/verify_gem_tests.rb` に
+した。scratch GEM_HOME への `RUBYCC=1 gem install` → rubycc が使われた痕跡の確認 →
+上流タグ tarball の取得 → ビルド済み `.so` の差し込み → gem 自身のテストスイート実走 →
+サマリ行の実測パース → `--update` で DB へ、という一本道。
+
+### 中心にあるのは sanity チェック(合格するテストが嘘をつく)
+
+このツールで一番重要なのは、テストを走らせる仕組みではなく **走らせる前のゲート**である。
+C 拡張がロードされず純 Ruby のフォールバックや処理系同梱の別コピーが使われた状態でも、
+**テストスイートは合格する**。その状態で記録を書けば「rubycc で検証済み」という
+虚偽が DB に入る。
+
+これは仮説ではなく**実測で確かめた**: racc の `cparse.so` を壊した状態でスイートを走らせると
+**71 tests / 320 assertions / 0 failures / 100% passed** になる。純 Ruby ランタイムに
+落ちているだけで、rubycc は 1 バイトも関与していない。同じ状態で sanity は
+`the injected extension was not loaded: .../cparse.so` で落ちる。
+
+そこで `sanity` 式を**レシピの必須フィールド**にし、無いレシピは実行を拒否する。
+検査は 2 段構え:
+
+1. **全 gem 共通**: 差し込んだ `.so` の realpath が子プロセスの `$LOADED_FEATURES` にあるか
+   (= 別のコピーではなく *この* ビルドが読まれたか)
+2. **gem 固有**: 純 Ruby フォールバックが勝っていないか。
+   json は `JSON.parser.to_s == "JSON::Ext::Parser"`(`lib/json/ext.rb` が
+   TruffleRuby 向けに純 Ruby generator を持つ)、racc は
+   `Racc::Parser::Racc_Runtime_Type == "c"`(`lib/racc/parser.rb` が
+   `require 'racc/cparse'` を `rescue LoadError` して勝者をこの定数に記録する)
+
+msgpack / redcarpet / bigdecimal / date には「C か否か」の観測点が無い(MRI では
+フォールバックが存在しない)。この 4 つは 1 のみ。ただし **date は default gem、
+bigdecimal は同梱 gem** で「別のコピーが読まれる」危険は実在するので、1 が空振りの
+チェックにはなっていない。
+
+### rubycc が使われた証明
+
+install が成功しただけでは不足で、gcc に落ちていた可能性が残る。RubyGems が残す痕跡
+2 つを**両方**必須にした: `gem_make.out` の `$(MAKE)` が rubycc の `exe/rmake` であること、
+生成された Makefile の `CC` が `exe/rubycc` であること。
+**`mkmf.log` は必須にできなかった** — redcarpet と racc は extconf に probe が無く
+mkmf.log を書かない(実測)。あれば追加証拠として報告するに留めている。
+
+### 上書きしてはならない 2 つの欄
+
+- **`notes`** は既存を保持する。機械が観測できない但し書き(racc の
+  「`lib/racc/parser-text.rb` を手で供給した」)が入っており、再実行では復元できない。
+  新規エントリで `--notes` 省略時は既定値を入れたうえで「notes は人間の責務」と警告する。
+  例外は skip / pending / omission の件数で、これは実測なのでツールが事実文を追記する
+  (既存の散文が同じ件数に言及していれば重複させない = bigdecimal の 11 omissions)。
+- **`evidence`** は**追記**する(初版レビューで上書き実装だったのを是正)。この欄は
+  確認したステップの履歴を溜める場所で、json は Step 54・61・64、msgpack は Step 138 の
+  H4 の 1 文を持つ。今日の実走が証明するのは今日測った事実だけで、過去の確認が
+  無かったことにはならない。上書きすれば再実行で復元できない部分が黙って消える。
+
+### 書式を守るために独自エミッタを書いた
+
+`JSON.pretty_generate` は `["2.21.1"]` を 3 行に展開するため、1 gem 更新するだけで
+**既存 6 件すべてが差分**になり、レビューで意図した変更が埋もれる。インデント 2 ・
+`versions` はインライン配列という既存の書式で出す小さなエミッタを持たせた。
+実測で、redcarpet 1 件の更新の diff は `verified_at` と `evidence` の 2 行だけになる。
+
+### 自分自身の検証 = 既存 6 件の再現
+
+このツールの信用は「既存の記録を再現できるか」で立つ。**6 件すべてを実走**した:
+
+| gem | 実測 | 既存記録 |
+|---|---|---|
+| redcarpet 3.6.1 | 136 tests / 206 assertions / 0 failures | 一致 |
+| json 2.21.1 | 606 tests / 3,433 assertions / 0 failures | 一致 |
+| msgpack 1.8.3 | 455 examples / 0 failures / 1 pending | 一致 |
+| bigdecimal 4.1.2 | 265 tests / 8,267 assertions / 11 omissions | 一致 |
+| date 3.5.1 | 143 tests / 162,593 assertions / 0 failures | 一致 |
+| racc 1.8.1 | 71 tests / **320** assertions / 0 failures | tests は一致、**assertions が +1**(記録は 319) |
+
+**racc の +1 は原因が特定できていない**。潰した仮説: 実行ごとのゆらぎ(2 回とも 320)、
+test-unit-ruby-core のバージョン差、`-rhelper` の有無、`--enable-frozen-string-literal`、
+load path を installed gem 側にする — いずれも 320。ファイル別内訳
+(12+28+1+4+238+25+12)も 320 で内部整合している。Step 99 の記録側が別条件だったのか
+転記の誤りなのかは**不明のまま**。判定に関わる数(71 tests / 0 failures / 0 errors)は
+一致しているので DB はこのステップでは書き換えず、次に racc を `--update` したときに
+両方の測定が日付付きで evidence に並ぶのに任せる。
+
+### 実測で分かったこと
+
+- **json に `JSON_DISABLE_SIMD=1` は不要だった**。`tools/m2_acceptance.rb` はホスト gcc で
+  extconf を走らせるためフラグが要ったが、`RUBYCC=1 gem install` 経路では
+  conftest 自体が rubycc を通るので **SIMD probe が自然に偽化する**(DB の既存 notes が
+  Step 60 で述べていたとおり)。経路が違えば必要な配慮も違う、という実例。
+- **date の `test-unit-ruby-core` load path 追加は、実測では無くても通った**。scratch
+  GEM_HOME に入っていれば RubyGems の require フォールバックが解決する。レシピには
+  その依存を断つ保険として残してある。
+- サマリ行が読めなかった場合を `:unparsable` として**合格とも不合格とも断定しない**
+  第 3 の状態にした。終了コードだけを信じて合格にするのが最も危ない。
+  逆に、サマリが 0 failures なのに子プロセスが非ゼロ終了した場合は**不合格**にする
+  (フレームワークの外で何かが壊れており、その実行は検証を勝ち取っていない)。
+
+`test/test_doctor.rb` の許可リストは**自動編集しない**。DB のキー集合と食い違ったら
+貼り付け用の `assert_equal %w[...]` 行を表示して警告するだけに留めている
+(gem の追加を意識的な編集に留めるための意図的なゲート)。
+
+---
+
 ## 現在のテスト規模
 
-Step 143 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
+Step 144 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
+(Step 143 と同数 = 追加したのは開発用ツールで、`rake test` の対象外)
+(以前) Step 143 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
 (Step 142 と同数 = 追加したのは開発用ツールで、`rake test` の対象外)
 (以前) Step 142 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
 (Step 140 から +8 = TIMERFD / INOTIFY / STATFS / SYSCALL の ABI ハーネスを両アーキで)
