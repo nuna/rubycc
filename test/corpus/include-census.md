@@ -4,9 +4,9 @@
 `rake corpus:census` (see `test/corpus/README.md`). Re-run that task to update
 it, then commit the result. The task requires network access; `rake test` does not.
 
-- Generated: 2026-07-29T13:59:55Z
+- Generated: 2026-07-29T14:43:02Z
 - Ruby: ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]
-- Bundled header set: 53 angle spellings computed from `include/`
+- Bundled header set: 56 angle spellings computed from `include/`
   (freestanding `include/*.h` + `include/libc/**`, arch layer normalized).
 
 Angle-bracket (`#include <...>`) includes only; quoted local includes are ignored.
@@ -90,7 +90,7 @@ candidates with a note; the census does not evaluate the gate.
 | `intrin.h` | gap | x |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  | x | x |  |  |  |  |  |  |  |  |  |
 | `inttypes.h` | bundled |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  | x |  |  |  |  |  |  |  |  |  |
 | `io.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  | x |
-| `langinfo.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
+| `langinfo.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
 | `libc/dosio.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
 | `limits.h` | bundled |  | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  | x |  |  |  | x |  | x |  | x |  |
 | `linux/aio_abi.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
@@ -152,7 +152,7 @@ candidates with a note; the census does not evaluate the gate.
 | `strings.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
 | `sys/cdefs.h` | bundled |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `sys/endian.h` | gap |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `sys/epoll.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  | x |  |  |  |
+| `sys/epoll.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  | x |  |  |  |
 | `sys/event.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
 | `sys/fcntl.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `sys/inotify.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
@@ -172,7 +172,7 @@ candidates with a note; the census does not evaluate the gate.
 | `sys/uio.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
 | `sys/utime.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
 | `sys/utsname.h` | bundled |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `sys/wait.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `sys/wait.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
 | `termio.h` | gap |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `termios.h` | bundled |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `time.h` | bundled |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  | x | x |  | x |  |  | x | x |  |  |  |
@@ -204,7 +204,6 @@ candidates with a note; the census does not evaluate the gate.
 | `ieeefp.h` | bigdecimal | — | review |
 | `intrin.h` | bigdecimal, google-protobuf, json, nio4r, oj | Windows-only gate | gated (likely not required) |
 | `io.h` | nio4r, nkf | Windows-only gate | gated (likely not required) |
-| `langinfo.h` | nkf | — | review |
 | `libc/dosio.h` | nkf | — | review |
 | `linux/aio_abi.h` | nio4r | — | review |
 | `linux/fs.h` | nio4r | — | review |
@@ -248,7 +247,6 @@ candidates with a note; the census does not evaluate the gate.
 | `stdatomic.h` | google-protobuf, nio4r | — | review |
 | `stdckdint.h` | bigdecimal | — | review |
 | `sys/endian.h` | digest | — | review |
-| `sys/epoll.h` | nio4r, unicorn | — | review |
 | `sys/event.h` | nio4r | — | review |
 | `sys/inotify.h` | nio4r | — | review |
 | `sys/statfs.h` | nio4r | — | review |
@@ -256,7 +254,6 @@ candidates with a note; the census does not evaluate the gate.
 | `sys/systm.h` | digest | — | review |
 | `sys/timerfd.h` | nio4r | — | review |
 | `sys/utime.h` | nkf | — | review |
-| `sys/wait.h` | nio4r | — | review |
 | `termio.h` | io-console | — | review |
 | `utime.h` | nkf | — | review |
 | `valgrind/memcheck.h` | zlib | — | review |
