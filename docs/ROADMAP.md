@@ -756,7 +756,7 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
 
   | # | ギャップ | 影響 | 優先 |
   |---|---|---|---|
-  | 1 | **`sigset_t` の typedef 衝突** — `include/libc/signal.h` はガード `_RUBYCC_SIGSET_T` で無名 struct を、`include/libc/glibc/{x86_64,aarch64}/sys/select.h` はガード `__sigset_t_defined` で `__sigset_t` + エイリアスを定義しており、ガードが噛み合わず型も別物。**両方の include 順で再現** | `ruby/defines.h` が `<sys/select.h>` を引くため、**ruby.h と `<signal.h>` を併用する任意の gem** に当たる | **最優先** |
+  | 1 | ~~**`sigset_t` の typedef 衝突**~~ **解消(Step 147)**: `signal.h` 側をガード `__sigset_t_defined` + `__sigset_t` エイリアスに揃え、`sys/select.h` と文字どおり同一にした。ABI ハーネスに**両方の include 順**のケースを x86_64・aarch64 の 4 件追加 | ~~`ruby.h` と `<signal.h>` を併用する任意の gem~~ | ~~最優先~~ **完了** |
   | 2 | **`sizeof(式)` が整数定数式に畳めない文脈がある** — enumerator(`enum {len = sizeof(str) - 1};`)・ビットフィールド幅・case ラベル・配列デシグネータ。リゾルバ `Parser#fold_time_sizeof` は既にあり `_Static_assert` と配列長では渡されているのに、これらの文脈で `sizeof_expr:` が未指定 | nkf。C 標準では全て ICE が要求される文脈 | **高**(修正は限定的) |
   | 3 | `pthread_kill` / `pthread_atfork` が `include/libc/glibc/*/pthread.h` に未宣言 | stackprof | 中(R8 手続き) |
   | 4 | `_POSIX_MONOTONIC_CLOCK` が同梱ヘッダのどこにも無い。未定義だと stackprof が**上流の死にコードである `#else` 側**を通り、そこに本物の構文エラーがある | stackprof。POSIX オプションマクロなので他にも波及しうる | 中(値は実測で) |

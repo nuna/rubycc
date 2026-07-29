@@ -318,6 +318,44 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <sys/select.h> then <signal.h>: both headers define sigset_t, each behind
+  # its own typedef guard prior to this fix, so whichever header lost the race
+  # to define it first would still see the other header's guard as unset and
+  # redefine the type -- a conflict a Spec checking only one header at a time
+  # could never surface. This pins the sys/select.h-first include order and
+  # exercises fd_set and sigset_t together in one function, proving both
+  # headers' declarations are live simultaneously.
+  SIGSET_SELECT_FIRST = HeaderAbiHarness::Spec.new(
+    header: "sys/select.h",
+    also: ["signal.h"],
+    sizes: %w[sigset_t __sigset_t],
+    snippets: [<<~C.chomp]
+      static int abi_sigset_select_first(int fd) {
+        fd_set f; FD_ZERO(&f); FD_SET(fd, &f);
+        sigset_t s; sigemptyset(&s); sigaddset(&s, SIGINT);
+        return FD_ISSET(fd, &f) + sigismember(&s, SIGINT);
+      }
+    C
+  )
+
+  # <signal.h> then <sys/select.h>: the same conflict as SIGSET_SELECT_FIRST
+  # above but with the include order reversed, so the fix is proven regardless
+  # of which header a gem happens to pull in first (ruby.h's defines.h reaches
+  # <sys/select.h>; a gem's own source can #include <signal.h> before or after
+  # that).
+  SIGSET_SIGNAL_FIRST = HeaderAbiHarness::Spec.new(
+    header: "signal.h",
+    also: ["sys/select.h"],
+    sizes: %w[sigset_t __sigset_t],
+    snippets: [<<~C.chomp]
+      static int abi_sigset_signal_first(int fd) {
+        sigset_t s; sigemptyset(&s); sigaddset(&s, SIGINT);
+        fd_set f; FD_ZERO(&f); FD_SET(fd, &f);
+        return sigismember(&s, SIGINT) + FD_ISSET(fd, &f);
+      }
+    C
+  )
+
   # <unistd.h>: the standard file-descriptor and access-mode constants, the few
   # ABI-typed names' widths, and that the core system-call declarations exist.
   UNISTD = HeaderAbiHarness::Spec.new(
@@ -1581,6 +1619,14 @@ class TestHeaderAbi < Minitest::Test
     assert_abi_matches(SYS_SELECT)
   end
 
+  def test_sigset_select_first_abi_matches_gcc
+    assert_abi_matches(SIGSET_SELECT_FIRST)
+  end
+
+  def test_sigset_signal_first_abi_matches_gcc
+    assert_abi_matches(SIGSET_SIGNAL_FIRST)
+  end
+
   def test_unistd_abi_matches_gcc
     assert_abi_matches(UNISTD)
   end
@@ -1742,6 +1788,14 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_sys_select_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::SYS_SELECT)
+  end
+
+  def test_sigset_select_first_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SIGSET_SELECT_FIRST)
+  end
+
+  def test_sigset_signal_first_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SIGSET_SIGNAL_FIRST)
   end
 
   def test_stddef_abi_matches_cross_gcc

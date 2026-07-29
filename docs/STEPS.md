@@ -4808,9 +4808,62 @@ mkmf.log も生成する。Step 139 でメタデータだけ見て書いた記�
 
 ---
 
+## Step 147 — `sigset_t` の typedef 衝突の解消(M5 H6)
+
+Step 146 のギャップ表の 1 番。`include/libc/signal.h` と
+`include/libc/glibc/{x86_64,aarch64}/sys/select.h` が**同じ `sigset_t` を別々のガード名・
+別々の型で定義していた**。`signal.h` 側を `sys/select.h` と**文字どおり同一**
+(ガード `__sigset_t_defined`、`__sigset_t` + エイリアス)に揃えた。
+`sys/select.h` は既にこの形だったので無変更。
+
+レイアウトは元から実質同一(LP64 で `1024/(8*sizeof(unsigned long))` = 16、128 バイト)で、
+**壊れていたのはガード名と綴りだけ**だった。ABI の値は 1 つも動いていないので
+由来台帳(§3.3)と集計は変更なし。
+
+### 同種の欠陥が他に無いことを機械的に確かめた
+
+1 本直して終わりにすると、同じ形の地雷が残っているかどうかが分からない。
+同梱ヘッダ全体を走査して「**同じ型名が 2 つ以上の異なるガードの下で定義されている箇所**」を
+洗い出した。実ケースは **`sigset_t` ただ 1 件**。ほかに 2 件挙がったが
+(`sa_family_t` @ `sys/un.h`、`size_t` @ `alloca.h` / `strings.h`)、いずれも
+**ファイル全体のガードを内側のブロックのガードと二重に数えた誤検出**で、
+実物は内側で `_RUBYCC_SA_FAMILY_T` / `_RUBYCC_SIZE_T` に正しく統一されていた。
+
+### センサスでは絶対に見つからない種類の欠陥
+
+これはヘッダの**有無**ではなく**相互の整合**の問題なので、
+`rake corpus:census` は原理的に検出できない(「その名前のヘッダがあるか」しか見ない)。
+ABI ハーネスも、従来は 1 Spec = 1 ヘッダで、`sys/select.h` 単独・`signal.h` 単独では
+どちらも正常に通ってしまう。**2 本を同時に include して初めて出る**。
+
+そこで `Spec` の `also:`(追加 include)を使い、**両方の include 順**を別々のケースにした:
+
+- `SIGSET_SELECT_FIRST` — `sys/select.h` → `signal.h`
+- `SIGSET_SIGNAL_FIRST` — `signal.h` → `sys/select.h`
+
+順序を 2 つとも押さえるのは、修正前が**順序ごとに違う行で落ちていた**からである
+(select→signal は `signal.h:47`、signal→select は `sys/select.h:38`)。
+片方だけでは片方向のガード漏れを見逃す。
+どちらの Spec も `sizes: %w[sigset_t __sigset_t]` を検査するので、
+**レイアウトの一致だけでなく綴りが glibc と一致していること**も同時に確かめている。
+snippet では `fd_set` と `sigset_t` を同じ関数の中で使い、両ヘッダの宣言が
+同時に生きていることを証明している。
+
+### 修正前後の対照を取った
+
+「テストが通る」だけでは、そのテストが元の欠陥を捉えているかは分からない。
+`git stash` で `signal.h` だけ修正前に戻して 2 本の再現 C をコンパイルし、
+**修正前は両方とも `redefinition of typedef 'sigset_t'` で落ち、修正後は両方通る**ことを
+実測した。2,564 → **2,568 runs**(新規 4 メソッド)/ 0 failures / 47 skips で、
+新規 4 件が skip されず実際に走っていることも確認済み。
+
+---
+
 ## 現在のテスト規模
 
-Step 146 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
+Step 147 完了時点: **2,568 runs / 7,118 assertions / 0 failures / 47 skips**
+(Step 146 から +4 = sigset_t の include 順 2 通り × x86_64・aarch64)
+(以前) Step 146 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
 (Step 145 と同数 = レシピ追加と文書のみ。ギャップの修正は次ステップ以降)
 (以前) Step 145 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
 (Step 144 と同数 = スキルとドキュメントのみ)
