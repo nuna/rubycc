@@ -207,6 +207,130 @@ module Corpus
               "scope. rubycc already compiles the sqlite3 amalgamation " \
               "(261,463 lines) standalone (docs/STEPS.md, Step 116), making " \
               "this gem a promising corpus candidate."
+      },
+
+      # Selected 2026-07-29. Download counts were fetched the same day from
+      # rubygems.org's API (`https://rubygems.org/api/v1/gems/<name>.json`,
+      # the `downloads` field). Unlike the popular-gems group above (Step
+      # 119), this is not an exhaustive scan of a specific rank range of
+      # https://rubygems.org/releases/popular — it is a candidate list of
+      # gems already known to ship a C extension, filtered down by download
+      # count. So this group cannot claim "every gem in ranks X..Y was
+      # checked", only "every candidate gem with at least this many
+      # downloads was checked".
+      #
+      # As with the group above, judgment was made by inspecting the
+      # downloaded `.gem` directly, never the remote gemspec — `gem
+      # specification --remote <name> extensions` always returns empty (see
+      # the comment above this group). All 11 gems added below were
+      # confirmed to declare exactly one `extensions` entry and to contain
+      # zero C++ sources (`.cc`/`.cpp`/`.cxx`).
+      #
+      # Cutoff: download count >= 100,000,000.
+      #
+      # Manual exclusion: ffi 1.17.4 (1,058,902,013 downloads, the most of
+      # any candidate considered here) is not added. Its ext/ffi_c/libffi
+      # bundles 48 `.S` assembly files and requires an assembler to build;
+      # rubycc has no assembler. The README's known limitations already
+      # list ffi as out of scope for this reason.
+      #
+      # Manual exclusion: bcrypt 3.1.22 (403,015,687 downloads) is not
+      # added. Its C sources alone look like they would build fine, but
+      # ext/mri/extconf.rb explicitly lists `x86.o` in `$objs`, which is
+      # produced from the bundled `x86.S` — so an assembler is required
+      # here too, just less visibly than in ffi's case since it only shows
+      # up by reading extconf.rb rather than the C sources themselves.
+      {
+        name: "nio4r",
+        version: "2.7.5",
+        note: "669,001,382 downloads. Single ext dir (ext/nio4r); extconf.rb " \
+              "only calls dir_config. C 13 files / H 5 files. The I/O " \
+              "selector behind Rails' ActionCable and puma."
+      },
+      {
+        name: "byebug",
+        version: "13.0.0",
+        note: "470,544,259 downloads. Single ext dir (ext/byebug); extconf.rb " \
+              "is 12 lines and only calls dir_config. C 5 files / H 1 file."
+      },
+      {
+        name: "pg",
+        version: "1.6.3",
+        note: "458,822,794 downloads. Single ext dir (ext/); C 22 files / H 3 " \
+              "files. Important note: extconf.rb references mini_portile2 " \
+              "and `./configure`, but only inside the `--with-cross-build` " \
+              "path (extconf.rb:26, `if gem_platform = " \
+              "with_config(\"cross-build\")`), which is only taken when " \
+              "building pre-built cross-platform binary gems. A normal " \
+              "source install locates the system libpq via pg_config / " \
+              "pkg-config instead. DESIGN R10 names pg as in scope. " \
+              "Because census.rb's mechanical check only looks for a " \
+              "mini_portile reference anywhere in extconf.rb, it may judge " \
+              "pg as excluded even though the mini_portile path is unused " \
+              "on a normal build."
+      },
+      {
+        name: "mysql2",
+        version: "0.5.7",
+        note: "238,399,342 downloads. Single ext dir (ext/mysql2); C 5 files " \
+              "/ H 8 files. Depends on the system libmysqlclient / " \
+              "libmariadb headers via have_library, the same " \
+              "system-library-dependent-but-in-scope shape as openssl and " \
+              "zlib above."
+      },
+      {
+        name: "thin",
+        version: "2.0.1",
+        note: "207,539,292 downloads. Single ext dir (ext/thin_parser), a " \
+              "Ragel-generated parser: C 2 files / H 2 files. Note: thin's " \
+              "own extension is pure C, but its runtime dependency " \
+              "eventmachine is a C++ extension, so `gem install thin` " \
+              "additionally requires building eventmachine; the census " \
+              "here only looks at thin's own C sources."
+      },
+      {
+        name: "http_parser.rb",
+        version: "0.8.1",
+        note: "175,614,437 downloads. Single ext dir " \
+              "(ext/ruby_http_parser); C 8 files / H 3 files. extconf.rb " \
+              "only calls dir_config."
+      },
+      {
+        name: "stackprof",
+        version: "0.2.28",
+        note: "153,037,422 downloads. Single ext dir (ext/stackprof); a " \
+              "single C file, extconf.rb 16 lines with no probes — one of " \
+              "the smallest C extensions in this corpus."
+      },
+      {
+        name: "unicorn",
+        version: "6.1.0",
+        note: "118,284,401 downloads. Single ext dir (ext/unicorn_http); C 2 " \
+              "files / H 5 files, extconf.rb has no probes. Note: its " \
+              "dependencies kgio and raindrops are also C extensions, so " \
+              "`gem install unicorn` additionally requires building those."
+      },
+      {
+        name: "debug",
+        version: "1.11.1",
+        note: "116,172,789 downloads. Single ext dir (ext/debug); C 2 " \
+              "files, extconf.rb 27 lines with no probes. Ruby's standard " \
+              "debugger."
+      },
+      {
+        name: "yajl-ruby",
+        version: "1.4.3",
+        note: "107,509,632 downloads. Single ext dir (ext/yajl); C 9 files " \
+              "/ H 11 files, bundling the yajl C sources. extconf.rb 12 " \
+              "lines with no probes."
+      },
+      {
+        name: "nkf",
+        version: "0.3.0",
+        note: "105,204,704 downloads. Single ext dir (ext/nkf); C 3 files " \
+              "/ H 3 files. extconf.rb is only 3 lines. Was formerly a " \
+              "default gem, but is not in Ruby 4.0.6's default gem list, " \
+              "so it was not part of the default gem group in Step 117."
       }
     ].freeze
   end

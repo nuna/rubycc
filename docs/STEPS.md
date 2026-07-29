@@ -4365,9 +4365,71 @@ racc を DB に追加したら `test_doctor.rb` の 2 件が壊れた。どち�
 
 ---
 
+## Step 139 — 人気 C 拡張 gem 11 件をコーパスに追加(M5 H6)
+
+コーパスを **25 → 36 gem** に拡大した。選定は**ダウンロード数による客観的な足切り**
+(rubygems.org の API、2026-07-29 取得、**1 億件以上**)。
+
+- **判定は必ずダウンロードした `.gem` を直接検査**した。`gem specification --remote` の
+  `extensions` は常に空を返す(rubygems.org の quick index が空で配信する)という
+  Step 119 が記録した落とし穴を踏まないため。11 件すべて `extensions` は 1 件、
+  C++ ソースは 0 件であることを確認済み。
+- **選定方法の限界も明記した**: これは人気ランキングの特定順位帯を網羅走査したものでは
+  なく、C 拡張を持つと分かっている候補をダウンロード数で足切りしたもの。
+  「上位 N 位を全部見た」という主張はできない(Step 119 のグループとは選定方法が違う)。
+- 追加: nio4r 669M / byebug 470M / pg 459M / mysql2 238M / thin 208M /
+  http_parser.rb 176M / stackprof 153M / unicorn 118M / debug 116M /
+  yajl-ruby 108M / nkf 105M。
+
+### 除外した 2 件 — どちらも**アセンブラが必要**
+
+- **ffi 1.17.4**(10.6 億 DL、候補中最多): `ext/ffi_c/libffi` に **48 本の `.S`** を同梱。
+- **bcrypt 3.1.22**(4.0 億 DL): **C ソースだけ見ると通りそうに見える**が、
+  `ext/mri/extconf.rb` が `$objs` に **`x86.o` を明示列挙**しており、これは同梱の
+  `x86.S` から作られる。**extconf を読まないと分からない**類の除外理由で、
+  「C++ ファイルの有無」だけを見る機械判定では捕まらない。
+
+### センサスの結果と、機械判定の粗さ
+
+10/11 が `ok`。**pg だけが `excluded`** になった。理由は extconf 内の mini_portile2 参照。
+しかし実際には、その経路は **`--with-cross-build` 指定時(事前ビルド済みバイナリ gem を
+作るクロスビルド)だけ**であり(`extconf.rb:26` の条件)、通常のソースインストールは
+`pg_config` / pkg-config でシステムの libpq を探す。**DESIGN R10 は pg をスコープ内として
+名指ししている**。
+
+つまり **センサスの R10 機械判定は「mini_portile への参照があるか」しか見ておらず、
+「既定経路で使われるか」を区別できない**。sqlite3 が同じ理由で excluded になっているのも
+同型。これは判定の粗さとして記録しておく(判定を賢くするか、手動の上書きを設けるかは
+別途の設計判断)。
+
+### 新たに現れたギャップ候補
+
+新規 11 gem が持ち込んだ未同梱ヘッダのうち、**実際に Linux/glibc で必要になりうるもの**:
+
+| ヘッダ | 使う gem | 種別 |
+|---|---|---|
+| `sys/epoll.h` | nio4r, unicorn | Linux 固有・**実需** |
+| `sys/wait.h` | nio4r | **POSIX の基本ヘッダなのに未同梱** |
+| `sys/syscall.h` / `sys/timerfd.h` / `sys/inotify.h` / `sys/statfs.h` | nio4r | Linux 固有 |
+| `langinfo.h` | nkf | POSIX |
+| `linux/types.h` / `linux/fs.h` / `linux/aio_abi.h` | nio4r | カーネル UAPI |
+| `stdatomic.h` | nio4r, google-protobuf | **`_Atomic` 未対応で言語機能側がブロック**(既知の制限) |
+
+一方、**対応不要と分かるもの**も同時に切り分けられた: mysql2 の `mysql.h` 系は
+ホストのクライアントライブラリが供給する(openssl と同じ類型)。nio4r の
+`WinNT.h` / `AvailabilityMacros.h` / `port.h` / `mbarrier.h` / `sys/event.h`、
+nkf の `os2.h` / `sys/utime.h` はいずれも他プラットフォーム向けの分岐。
+
+**`sys/wait.h` が抜けていたのは収穫**。POSIX の基本ヘッダで、36 gem に広げるまで
+コーパスに現れなかった。「実測駆動でヘッダを足す」方針が、想定ではなく実需で
+穴を見つけている例。
+
+---
+
 ## 現在のテスト規模
 
 Step 138 完了時点: **2,550 runs / 6,998 assertions / 0 failures / 47 skips**
+(Step 139 はコーパス定義とセンサススナップショットの更新のみでテスト増減なし)
 (Step 136 から +3 = pkgconf の multiarch フィルタのテスト。
 CI 上では 52 skips = pkg-config があるため −1、rmake golden の `make -n` が
 フィクスチャの絶対パス依存で走らないため +6)
