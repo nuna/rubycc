@@ -74,7 +74,7 @@ musl の `COPYRIGHT`(https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT)より�
 
 ---
 
-## 3. 同梱ヘッダの由来台帳(72 本)
+## 3. 同梱ヘッダの由来台帳(77 本)
 
 各ヘッダ冒頭の provenance コメントを棚卸しした結果。分類は次の 4 種:
 
@@ -129,7 +129,7 @@ musl の宣言セット/形状を出発点にし、glibc の対象 arch(x86-64 /
 | `include/libc/glibc/aarch64/sys/types.h` | 全幅・符号を glibc aarch64 LP64 に固定。nlink_t/blksize_t=32bit で x86-64 と相違(実測) |
 | `include/libc/glibc/aarch64/time.h` | `time_t`=long、`struct tm` 拡張(x86-64 版とバイト一致) |
 
-### 3.3 clean-room(42 本)
+### 3.3 clean-room(47 本)
 
 musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI に対してゼロから記述。
 
@@ -177,6 +177,11 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 | `include/libc/glibc/x86_64/sys/epoll.h` | **Linux UAPI(linux/eventpoll.h)の `EPOLL_CTL_*`/イベントビット/`EPOLL_CLOEXEC` 値と `struct epoll_event` のレイアウト**(実測)。x86-64 では 32bit プロセスと配列ストライドを揃えるため構造体が **packed**(実測 12 バイト・_Alignof 1・data はオフセット 4)で、aarch64 の自然レイアウト(16/8/8)と食い違うため **arch 層に 2 本**置く(fcntl.h/pthread.h/setjmp.h/sys/stat.h と同じ扱い)。マクロ値はすべて両アーキ一致。epoll_create/epoll_create1/epoll_ctl/epoll_wait は Linux/glibc 宣言(Step 135) | なし(UAPI 実測) |
 | `include/libc/glibc/aarch64/sys/epoll.h` | 同上。`struct epoll_event` は packed ではなく実測 16 バイト・_Alignof 8・data はオフセット 8。マクロ値は x86-64 版と一致(Step 135) | なし(UAPI 実測) |
 | `include/libc/langinfo.h` | **glibc の `nl_item` 番号**(実測)。番号は平坦な連番ではなく `(カテゴリ << 16)` と インデックスのビット合成で、その合成規則自体も `_NL_ITEM`/`_NL_ITEM_CATEGORY`/`_NL_ITEM_INDEX` を rubycc 自身の式で書き直したうえで全 (カテゴリ, インデックス) 組についてオラクルと一致することを実測確認した。`nl_langinfo` はホスト libc が答えるため番号はホストの列挙と一致する必要がある(locale.h の `LC_*`・unistd.h の `_SC_*` と同じ論法)。全値が両アーキ一致のため共通層。`nl_langinfo` は POSIX 宣言(Step 135) | なし(glibc ABI 実測) |
+| `include/libc/sys/timerfd.h` | **Linux UAPI(linux/timerfd.h)の `TFD_*` 値**(実測)。`TFD_CLOEXEC`(0x80000)/`TFD_NONBLOCK`(0x800)は open(2) フラグとビットを共有するため、fcntl.h がアーキ層に分かれている前例に照らして両アーキで実測したが一致。`struct itimerspec` は複製せず `#include <time.h>` で得る(bundled time.h が struct timespec の隣で既に定義しており、複製はドリフト源になる。`sys/wait.h` → `signal.h` と同じ判断)。実測 32 バイト・it_interval@0・it_value@16 も両アーキ一致のため共通層。timerfd_create/settime/gettime は Linux/glibc 宣言(Step 141) | なし(UAPI 実測) |
+| `include/libc/sys/inotify.h` | **Linux UAPI(linux/inotify.h)の `IN_*` イベントビットと `struct inotify_event` のレイアウト**(実測)。可変長メンバ `name[]` を持つ型なので、サイズ・全オフセット・各メンバの幅と符号を両アーキで実測(16/4、wd@0 は符号付き int、mask/cookie/len@4/8/12 は符号なし 4 バイト、name@16)。sizeof が「ヘッダ部だけの 16 バイト」であることが `ofs += sizeof(struct inotify_event) + ev->len` というバッファ走査の正しさを支える。全値が両アーキ一致のため共通層。inotify_init/init1/add_watch/rm_watch は Linux/glibc 宣言(Step 141) | なし(UAPI 実測) |
+| `include/libc/sys/statfs.h` | **Linux statfs(2) の `struct statfs` レイアウト**(実測 120 バイト・_Alignof 8・全メンバ 8 バイト・パディングなし)。カーネルには 32bit カウンタ版と 64bit 版の 2 系統があり glibc はワード幅 typedef で書いているため sys/stat.h のようなアーキ差を予想したが、**実測では両 LP64 ターゲットとも同一**だったため共通層。符号は一様ではなく f_type/f_bsize/f_namelen/f_frsize/f_flags/f_spare が符号付き、f_blocks/f_bfree/f_bavail/f_files/f_ffree が符号なし(実測)。`__fsid_t` は実測 8 バイト・align 4(= int 2 本、8 バイト語ではない)。`fsid_t` は glibc では sys/types.h 側の別名だが rubycc には型分割層がないため同じガード内に置く。statfs/fstatfs は Linux/glibc 宣言(Step 141) | なし(UAPI/glibc ABI 実測) |
+| `include/libc/glibc/x86_64/sys/syscall.h` | **Linux x86-64 システムコール番号**(実測)。glibc の `sys/syscall.h` が `<asm/unistd.h>` を取り込んで `SYS_*` を `__NR_*` の別名として定義する 2 段構成であることも実測で確認し、その関係ごと再現。番号はアーキ別体系で、実測すると `SYS_read` 0 対 63・`SYS_openat` 257 対 56 のようにほぼ全項目が食い違うため **arch 層に 2 本**(io_uring の 3 本 425/426/427 だけが共通)。全数網羅ではなく、nio4r/libev が生 syscall で発行するもの(clock_gettime・eventfd2/signalfd4/inotify_init1/epoll_create1・linux-aio と io_uring)と代表的な中核呼び出しに限定し、**両アーキに存在する名前のみ**を対象とした(x86-64 専用の旧エントリ open/poll/select/pipe/dup2 等は asm-generic 表に存在しないため両側で対象外)。glibc 同様 `syscall()` の宣言は持たない(unistd.h の担当)(Step 141) | なし(kernel ABI 実測) |
+| `include/libc/glibc/aarch64/sys/syscall.h` | 同上。aarch64(asm-generic)の番号体系。x86-64 版と名前集合は完全に同じで、番号のみが異なる(クロス gcc + qemu で実測)(Step 141) | なし(kernel ABI 実測) |
 
 > `assert.h` と `features.h` は自己申告で clean-room だが、冒頭コメントに
 > 「musl's <…> was the shape reference」とある。**形状(どの宣言を並べるか)の参照**で
@@ -189,8 +194,8 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 |---|---|
 | freestanding | 8 |
 | musl-derived | 22 |
-| clean-room | 42 |
-| **合計** | **72** |
+| clean-room | 47 |
+| **合計** | **77** |
 
 > Step 82(M5 H1)で `include/libc/glibc/aarch64/` 層 11 本を追加(30→41)。うち 8 本は
 > x86-64 版と宣言・値がバイト一致(`cmp` 確認済み)で、由来分類も x86-64 版を継承する。
@@ -247,6 +252,45 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 > sys/resource.h との共有ガードか相互 include が要るが、センサスのどの hit も使わない)・
 > 廃れた `union wait` 系・epoll_pwait/epoll_pwait2(`sigset_t`/`struct timespec` が要る)・
 > `nl_langinfo_l`(`locale_t` は bundled locale.h が意図的に持たない拡張)。
+
+> Step 141(M5 H6)で、同じセンサスが挙げた残りの Linux 系ギャップから
+> `sys/timerfd.h`・`sys/inotify.h`・`sys/statfs.h`・`sys/syscall.h` の 4 スペリング
+> = ファイル 5 本を追加(72→77、clean-room 42→47)。census が集計する
+> 「Bundled header set」は 56→60 スペリング(`sys/syscall.h` は arch 層の 2 本が
+> 1 スペリングへ正規化される)。4 本とも nio4r(6.7 億 DL)が同梱する libev の
+> Linux バックエンドが参照する。**アーキ差の有無は 4 本すべて実測で判定した**:
+> `sys/timerfd.h`・`sys/inotify.h`・`sys/statfs.h` は sizeof/_Alignof/全オフセット/
+> 全マクロ値が x86-64 とクロス gcc(aarch64)で完全一致したため共通層、
+> `sys/syscall.h` は番号がほぼ全項目で食い違うため arch 層 2 本。
+>
+> - `sys/statfs.h` は**予想が外れた例**。カーネルに 32bit カウンタ版と 64bit 版の
+>   2 系統がありメンバ型がワード幅 typedef で書かれているため sys/stat.h と同様の
+>   アーキ差を予想したが、実測では両 LP64 ターゲットとも 120 バイト・全メンバ 8 バイト・
+>   パディングなしで一致した。一方**符号は一様ではなく**、f_type/f_bsize/f_namelen/
+>   f_frsize/f_flags/f_spare が符号付き、5 つのカウンタが符号なしだった(libev が
+>   f_type を 0x9123683e のような大きな magic と比較できるのは、この欄が符号付き
+>   64bit 語だからで、32bit なら成立しない)。
+> - `sys/inotify.h` の `struct inotify_event` は可変長メンバ `name[]` を持つため、
+>   サイズ(16、ヘッダ部のみ)・全オフセット・各メンバの幅と符号を両アーキで実測した。
+>   なお C は可変長メンバを持つ構造体の配列を禁じており(6.7.2.1)、gcc は拡張として
+>   許すが rubycc は拒否する(rubycc 側が規格に忠実)。したがって ABI ハーネスでは
+>   `sys/epoll.h` のような `sizeof(struct X[n])` ストライド検証は行わず、実際に意味の
+>   ある実行時ストライド `sizeof(struct inotify_event) + ev->len` を probe で走らせている。
+> - `sys/timerfd.h` の `struct itimerspec` は複製せず `#include <time.h>` で解決した
+>   (`sys/wait.h` → `signal.h` の `siginfo_t`、`string.h` → `strings.h` と同じ前例)。
+> - `sys/syscall.h` は**全数網羅していない**。glibc 版はカーネルヘッダから生成された
+>   数百項目だが、rubycc 版は (a) nio4r/libev が生 syscall で発行するもの
+>   (clock_gettime、eventfd2/signalfd4/inotify_init1/epoll_create1、linux-aio 5 本、
+>   io_uring 3 本)と (b) 表の広い範囲を検証できる代表的な中核呼び出しに限定した
+>   56 項目で、`sched.h` が CPU_SET 群を対象外にしたのと同じスコープ判断。
+>   さらに**両アーキに存在する名前のみ**を採用しており、x86-64 専用の旧エントリ
+>   (open/poll/select/pipe/dup2 等。asm-generic 表に対応項目がない)は両側で対象外。
+>   これにより 2 本の arch 層ファイルは「番号だけが違い名前集合は同一」になり、
+>   ABI ハーネスの Spec を 1 つで両アーキに使える。glibc 同様 `syscall()` の宣言は
+>   持たない(unistd.h の担当)ことも実測で確認した。スコープ外としたもの:
+>   timerfd_settime64/gettime64・struct statfs64/statfs64/fstatfs64(実測で両 LP64
+>   ターゲットとも平の名前と同一レイアウトのため不要)・`ST_*`(実測で
+>   `<sys/statfs.h>` は定義せず、`<sys/statvfs.h>` の担当)。
 
 ---
 

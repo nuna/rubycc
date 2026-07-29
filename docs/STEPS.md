@@ -4478,9 +4478,73 @@ x86_64・aarch64 の両方で不一致 0 件**を確認した。`WCOREDUMP` が�
 
 ---
 
+## Step 142 — nio4r が要求する Linux 系ヘッダ 4 本の追加(M5 H6)
+
+Step 140 に続く 2 巡目。**同梱 72 → 77 本、angle スペリング 56 → 60**。
+対象は `sys/timerfd.h` / `sys/inotify.h` / `sys/statfs.h` / `sys/syscall.h`
+(いずれも nio4r = 6.7 億 DL の libev が Linux バックエンドで参照する)。
+
+### 実測が予想を 3 つ覆した
+
+1. **`sys/statfs.h` にアーキ差は無かった**。着手時は「メンバの型がアーキで違う可能性が
+   高い」と見込んでいた(カーネルに 32bit/64bit の 2 系統があり、`sys/stat.h` は実際に
+   分かれている)。実測は **両アーキとも 120 バイト / _Alignof 8 / 全メンバ 8 バイト /
+   パディングなしで完全一致**、共通層 1 本になった。
+   代わりに**符号が一様でない**ことが見つかった: `f_type`・`f_bsize`・`f_namelen`・
+   `f_frsize`・`f_flags`・`f_spare` は符号付き、カウンタ 5 本(`f_blocks`・`f_bfree`・
+   `f_bavail`・`f_files`・`f_ffree`)は符号なし。libev が `f_type` を `0x9123683e` のような
+   大きな magic と比較できるのは**この欄が符号付き 64bit 語だから**で、推測で書いていたら
+   気付けなかった。
+2. **`fsid_t` は `<sys/statfs.h>` 単独では見えない**(glibc では `<sys/types.h>` の担当)。
+   また `__fsid_t` は **8 バイト / _Alignof 4**(= int 2 本)で、`long` 1 本ではない。
+3. **`sizeof(struct inotify_event[3])` を rubycc が拒否した** —
+   `array type has a struct with a flexible array member as its element`。
+   調べると **C 6.7.2.1 が可変長メンバを持つ構造体の配列を禁じており、gcc が拡張として
+   許している**側で、**rubycc のほうが規格に忠実**だった。ハーネスをコンパイラ拡張に
+   依存させるわけにいかないのでこの検証は外し、代わりに実行時に意味のあるストライド
+   `sizeof(struct inotify_event) + ev->len` を実行オラクルで走らせている。
+
+`sys/syscall.h` が arch 層 2 本になるのは予想どおり(56 名中 **53 名が不一致**。
+`SYS_read` は 0 対 63、`SYS_openat` は 257 対 56。一致したのは io_uring の 3 本だけ)。
+
+### スコープを絞った判断
+
+`sys/syscall.h` は**全数網羅しない**。glibc 版はカーネルヘッダから生成された数百項目だが、
+実測で再現するとカーネルのリリースごとに再計測が必要な巨大面になり、消費者がいない
+(`sched.h` が CPU_SET 群を対象外にしたのと同じ判断)。入れたのは 56 名 —
+libev が生 syscall で発行するもの、今回のヘッダの裏にある呼び出し、および表の両端と
+中間に散らした代表的な中核。**x86_64 専用の旧エントリ**(`open`・`poll`・`select`・
+`fork` 等)は **aarch64 の asm-generic 表にそもそも存在しない**ため入れていない
+(実測で `SYS_open` が aarch64 でコンパイルエラーになることを確認)。
+副次効果として 2 本の arch ファイルは**番号だけが違い名前集合は同一**になり、
+ABI ハーネスの Spec 1 つで両アーキを検証できる。
+
+### 検証
+
+タイマを**実際に発火**させて 8 バイトの満了カウントを読み、inotify で実ファイルの
+`IN_CREATE` → `IN_MODIFY` → `IN_DELETE` を 96 バイト = 3 × (16 + len 16) で受け取り、
+`statfs("/")` を印字し、`syscall(SYS_statfs, ...)` を**生番号で発行**するプログラムを
+gcc と rubycc の両方でビルドし、**x86_64・aarch64(qemu)とも出力が byte 一致**した。
+`raw statfs rc=0` は、実測した生番号(x86_64 の 137 / aarch64 の 43)が実際にカーネルの
+statfs エントリに届いたことを意味する。
+
+### センサス再生成後に残ったギャップ
+
+4 本とも Gap candidates 表から消えた。残るのは性質別に:
+**他プラットフォーム分岐**(`WinNT.h`・`windows.h`・`os2.h`・`AvailabilityMacros.h`・
+`port.h`・`mbarrier.h`・`sys/event.h` 等)、**ホストライブラリが供給**(`mysql*`・
+`openssl/*`・`yaml.h`・`zlib.h`)、**SIMD ゲート**(`arm_neon.h`・`cpuid.h` 等)、
+**言語機能待ち**(`stdatomic.h` = `_Atomic`、`stdckdint.h` = `ckd_*`。どちらも README の
+既知の制限)、**カーネル UAPI**(`linux/types.h`・`linux/fs.h`・`linux/aio_abi.h`)。
+**Linux/POSIX の実需で残っているのは `utime.h`(nkf)と `regex.h`(oj、既知の制限)程度**。
+
+---
+
 ## 現在のテスト規模
 
-Step 140 完了時点: **2,556 runs / 7,082 assertions / 0 failures / 47 skips**
+Step 142 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
+(Step 140 から +8 = TIMERFD / INOTIFY / STATFS / SYSCALL の ABI ハーネスを両アーキで)
+(以前) Step 140 完了時点: **2,556 runs / 7,082 assertions / 0 failures / 47 skips**
 (Step 138 から +6 = WAIT / EPOLL / LANGINFO の ABI ハーネスを x86_64・aarch64 の両方で。
 Step 139 はコーパス定義とセンサススナップショットの更新のみでテスト増減なし)
 (以前) Step 138 完了時点: **2,550 runs / 6,998 assertions / 0 failures / 47 skips**

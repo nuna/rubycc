@@ -1201,8 +1201,208 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <sys/timerfd.h> (Step 141, M5 H6): the Linux timerfd(2) family, added from
+  # the corpus census gap list (nio4r, through libev's periodic-timer
+  # backend). The four TFD_* values are the whole macro surface; two of them
+  # share bits with the open(2) flags, which is the reason they are measured
+  # rather than assumed (fcntl.h is an arch-layer header precisely because
+  # some O_* names do differ between the targets, yet these two do not). The
+  # struct itimerspec size and offsets are checked here too, because the
+  # bundled header deliberately does not define that struct -- it reaches for
+  # <time.h> -- so these lines are also the regression guard for that
+  # include being dropped. Everything measured identical on x86-64 and
+  # aarch64, so the header is in the common layer and this Spec is re-run in
+  # the aarch64 class's neutral-layer section below.
+  # timerfd_create/timerfd_settime/timerfd_gettime resolve from the static
+  # libc at link time.
+  TIMERFD = HeaderAbiHarness::Spec.new(
+    header: "sys/timerfd.h",
+    sizes: ["struct itimerspec", "struct timespec", "clockid_t"],
+    ints: %w[TFD_CLOEXEC TFD_NONBLOCK TFD_TIMER_ABSTIME TFD_TIMER_CANCEL_ON_SET
+             CLOCK_REALTIME CLOCK_MONOTONIC],
+    offsets: [["struct itimerspec", "it_interval"], ["struct itimerspec", "it_value"]],
+    snippets: [<<~C.chomp]
+      static int abi_timerfd(void) {
+        struct itimerspec its;
+        its.it_interval.tv_sec = 0; its.it_interval.tv_nsec = 0;
+        its.it_value.tv_sec = 1; its.it_value.tv_nsec = 0;
+        int fd = timerfd_create(CLOCK_REALTIME, TFD_CLOEXEC | TFD_NONBLOCK);
+        int a = timerfd_settime(fd, TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET,
+                                &its, (struct itimerspec *)0);
+        int b = timerfd_gettime(fd, &its);
+        return fd + a + b;
+      }
+    C
+  )
+
+  # <sys/inotify.h> (Step 141, M5 H6): the Linux inotify(7) interface, added
+  # from the corpus census gap list (nio4r, through libev's ev_stat backend).
+  # struct inotify_event ends in a flexible array member, so its sizeof and
+  # every offset are the load-bearing checks: a wrong tail assumption would
+  # silently shift every event in a read buffer, since callers walk the
+  # buffer by `sizeof(struct inotify_event) + ev->len`. That expression is in
+  # the snippet for the same reason. The whole IN_ mask set is asserted (not
+  # sampled) because these are kernel-defined bits a caller ORs together, and
+  # IN_ALL_EVENTS / IN_CLOSE / IN_MOVE additionally pin rubycc's own
+  # composition of them. Everything measured identical on x86-64 and aarch64,
+  # so the header is in the common layer and this Spec is re-run in the
+  # aarch64 class's neutral-layer section below. `defines: ["_GNU_SOURCE"]`
+  # is needed because the host glibc gates inotify_init1 / IN_CLOEXEC /
+  # IN_NONBLOCK behind __USE_GNU while rubycc's bundled header exposes its
+  # whole surface unconditionally.
+  #
+  # The array-stride check the EPOLL Spec makes with
+  # `sizeof(struct epoll_event[4])` has no counterpart here on purpose: C
+  # forbids a struct with a flexible array member as an array element
+  # (6.7.2.1), gcc allows `struct inotify_event[3]` as an extension, and
+  # rubycc rejects it -- a divergence in rubycc's favour, and one the probe
+  # must not depend on. The stride that actually matters for this type is the
+  # runtime one, `sizeof(struct inotify_event) + ev->len`, which the snippet
+  # exercises instead.
+  INOTIFY = HeaderAbiHarness::Spec.new(
+    header: "sys/inotify.h",
+    defines: ["_GNU_SOURCE"],
+    sizes: ["struct inotify_event"],
+    ints: %w[IN_CLOEXEC IN_NONBLOCK
+             IN_ACCESS IN_MODIFY IN_ATTRIB IN_CLOSE_WRITE IN_CLOSE_NOWRITE
+             IN_OPEN IN_MOVED_FROM IN_MOVED_TO IN_CREATE IN_DELETE
+             IN_DELETE_SELF IN_MOVE_SELF
+             IN_CLOSE IN_MOVE IN_ALL_EVENTS
+             IN_UNMOUNT IN_Q_OVERFLOW IN_IGNORED
+             IN_ONLYDIR IN_DONT_FOLLOW IN_EXCL_UNLINK IN_MASK_CREATE
+             IN_MASK_ADD IN_ISDIR IN_ONESHOT],
+    offsets: [["struct inotify_event", "wd"], ["struct inotify_event", "mask"],
+              ["struct inotify_event", "cookie"], ["struct inotify_event", "len"],
+              ["struct inotify_event", "name"]],
+    snippets: [<<~C.chomp]
+      static int abi_inotify(const char *path, char *buf, int nbytes) {
+        int fd = inotify_init();
+        int fd1 = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
+        int wd = inotify_add_watch(fd1, path,
+                                   IN_ATTRIB | IN_MODIFY | IN_CREATE | IN_DELETE
+                                   | IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE_SELF
+                                   | IN_MOVE_SELF | IN_DONT_FOLLOW | IN_MASK_ADD);
+        int total = 0, ofs = 0;
+        while (ofs < nbytes) {
+          struct inotify_event *ev = (struct inotify_event *)(buf + ofs);
+          total += (int)(ev->mask & (IN_IGNORED | IN_UNMOUNT | IN_ISDIR)) + ev->wd
+                 + (int)ev->cookie;
+          ofs += (int)(sizeof(struct inotify_event) + ev->len);
+        }
+        return fd + wd + total + inotify_rm_watch(fd1, wd);
+      }
+    C
+  )
+
+  # <sys/statfs.h> (Step 141, M5 H6): the Linux statfs(2) interface, added
+  # from the corpus census gap list (nio4r, through libev's ev_stat backend
+  # deciding whether a filesystem is local). Every member's offset AND its
+  # size are asserted, because the interesting failure mode here is a member
+  # that is the right width on one target and not the other: the kernel has
+  # both a 32-bit-counter and a 64-bit-counter statfs layout, and glibc
+  # writes the members in terms of word-sized typedefs. Measured, both LP64
+  # targets land on the same all-64-bit 120-byte layout, so the header is in
+  # the common layer and this Spec is re-run in the aarch64 class's
+  # neutral-layer section below. The `sfs.f_type == 0x9123683eL` compare in
+  # the snippet is the shape libev uses and only behaves as intended on a
+  # signed 64-bit field, so it doubles as the signedness guard.
+  STATFS = HeaderAbiHarness::Spec.new(
+    header: "sys/statfs.h",
+    sizes: ["struct statfs", "__fsid_t"],
+    ints: ["sizeof(((struct statfs *)0)->f_type)",
+           "sizeof(((struct statfs *)0)->f_bsize)",
+           "sizeof(((struct statfs *)0)->f_blocks)",
+           "sizeof(((struct statfs *)0)->f_bfree)",
+           "sizeof(((struct statfs *)0)->f_bavail)",
+           "sizeof(((struct statfs *)0)->f_files)",
+           "sizeof(((struct statfs *)0)->f_ffree)",
+           "sizeof(((struct statfs *)0)->f_namelen)",
+           "sizeof(((struct statfs *)0)->f_frsize)",
+           "sizeof(((struct statfs *)0)->f_flags)",
+           "sizeof(((struct statfs *)0)->f_spare)",
+           "sizeof(((struct statfs *)0)->f_fsid)"],
+    offsets: [["struct statfs", "f_type"], ["struct statfs", "f_bsize"],
+              ["struct statfs", "f_blocks"], ["struct statfs", "f_bfree"],
+              ["struct statfs", "f_bavail"], ["struct statfs", "f_files"],
+              ["struct statfs", "f_ffree"], ["struct statfs", "f_fsid"],
+              ["struct statfs", "f_namelen"], ["struct statfs", "f_frsize"],
+              ["struct statfs", "f_flags"], ["struct statfs", "f_spare"]],
+    snippets: [<<~C.chomp]
+      static int abi_statfs(const char *path, int fd) {
+        struct statfs sfs;
+        int a = statfs(path, &sfs);
+        int b = fstatfs(fd, &sfs);
+        return a + b
+             + (sfs.f_type == 0x9123683eL)
+             + (int)(sfs.f_bsize + sfs.f_frsize + sfs.f_namelen + sfs.f_flags)
+             + (int)(sfs.f_blocks + sfs.f_bfree + sfs.f_bavail
+                     + sfs.f_files + sfs.f_ffree)
+             + sfs.f_fsid.__val[0];
+      }
+    C
+  )
+
+  # <sys/syscall.h> (Step 141, M5 H6): the SYS_ system-call numbers, added
+  # from the corpus census gap list (nio4r; libev issues clock_gettime, the
+  # eventfd/signalfd/inotify/epoll creation calls and the linux-aio and
+  # io_uring operations by raw number). This is an arch-layer header -- the
+  # x86-64 and aarch64 tables disagree on essentially every entry, so the
+  # aarch64 case below sits in that class's arch-specific section alongside
+  # FCNTL/PTHREAD/SETJMP/EPOLL rather than being re-run as a neutral check --
+  # and the numbers ARE the entire ABI surface, so every name the bundled
+  # header defines is asserted rather than sampled. Both spellings are
+  # checked: the __NR_ names and the SYS_ aliases the header derives from
+  # them, since third-party code writes either. `syscall(SYS_getpid)` in the
+  # snippet is the end-to-end check that a measured number actually reaches
+  # the kernel entry point it names; the prototype is declared locally
+  # because measurement confirms <sys/syscall.h> does not supply it (glibc
+  # keeps it in <unistd.h>, and so does rubycc's header note).
+  SYSCALL_NUMBERS = %w[read write close lseek openat readlinkat faccessat
+                       ioctl fcntl pipe2 dup3 statfs fstatfs
+                       mmap mprotect munmap
+                       clone exit exit_group getpid gettid kill tgkill
+                       rt_sigaction rt_sigprocmask futex sched_yield getcpu
+                       membarrier getrandom
+                       nanosleep clock_gettime clock_nanosleep
+                       epoll_create1 epoll_ctl epoll_pwait ppoll pselect6
+                       eventfd2 signalfd4
+                       inotify_init1 inotify_add_watch inotify_rm_watch
+                       timerfd_create timerfd_settime timerfd_gettime
+                       io_setup io_destroy io_getevents io_submit io_cancel
+                       io_uring_setup io_uring_enter io_uring_register
+                       socket setsockopt].freeze
+
+  SYSCALL = HeaderAbiHarness::Spec.new(
+    header: "sys/syscall.h",
+    defines: ["_GNU_SOURCE"],
+    ints: SYSCALL_NUMBERS.map { |name| "SYS_#{name}" } +
+          SYSCALL_NUMBERS.map { |name| "__NR_#{name}" },
+    snippets: [<<~C.chomp]
+      extern long syscall(long __number, ...);
+      static long abi_syscall(void) {
+        return syscall(SYS_getpid) + syscall(SYS_sched_yield);
+      }
+    C
+  )
+
   def test_wait_abi_matches_gcc
     assert_abi_matches(WAIT)
+  end
+
+  def test_timerfd_abi_matches_gcc
+    assert_abi_matches(TIMERFD)
+  end
+
+  def test_inotify_abi_matches_gcc
+    assert_abi_matches(INOTIFY)
+  end
+
+  def test_statfs_abi_matches_gcc
+    assert_abi_matches(STATFS)
+  end
+
+  def test_syscall_abi_matches_gcc
+    assert_abi_matches(SYSCALL)
   end
 
   def test_epoll_abi_matches_gcc
@@ -1505,6 +1705,15 @@ class TestHeaderAbiAarch64 < Minitest::Test
     assert_abi_matches_aarch64(TestHeaderAbi::EPOLL)
   end
 
+  # The system-call numbers are per-architecture: aarch64 uses the modern
+  # asm-generic table while x86-64 keeps its own historical one, and the two
+  # disagree on all but three of the names the bundled header defines (only
+  # the io_uring trio, allocated from the shared modern range, matches). So
+  # this is an arch-specific case, not a neutral re-check.
+  def test_syscall_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SYSCALL)
+  end
+
   # --- neutral layer: re-checked to confirm byte-identity across the switch --
 
   def test_time_abi_matches_cross_gcc
@@ -1621,6 +1830,18 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_langinfo_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::LANGINFO)
+  end
+
+  def test_timerfd_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::TIMERFD)
+  end
+
+  def test_inotify_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::INOTIFY)
+  end
+
+  def test_statfs_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::STATFS)
   end
 
   private
