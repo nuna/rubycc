@@ -4426,10 +4426,64 @@ nkf の `os2.h` / `sys/utime.h` はいずれも他プラットフォーム向け
 
 ---
 
+## Step 140 — センサスが見つけた 3 ヘッダの追加(M5 H6)
+
+Step 139 のセンサスが実需と判定したギャップを埋めた。**同梱ヘッダ 68 → 72 本、
+angle スペリング 53 → 56**。
+
+- **`sys/wait.h`**(nio4r): POSIX の基本ヘッダなのに未同梱だった。
+- **`sys/epoll.h`**(nio4r・unicorn): Linux 固有だが、この 2 gem は 6.7 億 / 1.2 億 DL。
+- **`langinfo.h`**(nkf、1.1 億 DL): POSIX。
+
+### 実測が設計を 1 つ覆した: epoll は共通層に置けない
+
+着手時の想定は「x86_64 で `__attribute__((packed))` が要る」だったが、**実測すると
+aarch64 では packed を付けると壊れる**:
+
+| | sizeof | _Alignof | events | data |
+|---|---:|---:|---:|---:|
+| x86_64 | 12 | 1 | 0 | 4 |
+| aarch64 | 16 | 8 | 0 | 8 |
+
+よって `fcntl.h` / `pthread.h` / `setjmp.h` と同じく **arch 層に 2 本**置く構成にした。
+aarch64 の ABI ケースも「中立層の再確認」ではなく**arch 固有セクション**に置いてある。
+**この差は qemu 上の実行オラクルでも再現**し、それぞれの gcc と byte 一致した。
+
+### `WIFSIGNALED` を写経せずに導出し、全域で照合した
+
+R8 は ABI 事実を「測る、写さない」と定めている。ステータス符号化のマクロは
+観測(下位 7bit = 終了シグナル、bit7 = コアダンプ、bit8..15 = 終了コード、
+低位バイト `0x7f` = stopped、`0xffff` = continued)から式を書き起こした。
+`WIFSIGNALED` は glibc の `signed char` トリックとは**式の形が違う**
+(`WTERMSIG` を 2 回展開すると引数が 2 回評価されるため、1 回評価を保つ形にした)。
+
+**その代わり全 2^32 個の int ステータス値 × 8 マクロを glibc オラクルと照合し、
+x86_64・aarch64 の両方で不一致 0 件**を確認した。`WCOREDUMP` が真偽値ではなく
+`0x80` を返す非ブール性まで含めて厳密一致している。式を変えるなら、
+等価であることを主張ではなく**実測**で示す、という R8 の趣旨の実行例。
+
+### 副次的に見つかったこと
+
+- **`rubycc -E` はブロックコメント内の `*/` による早期終了を検出できない**。
+  コメントに `EPOLL_CTL_*/...` と書いたら `*/` がコメントを閉じ、後続のアポストロフィが
+  `multi-character character constant` になった。**`-E` は通ってしまい**(TokenConverter を
+  走らせないため)、ABI ハーネスで初めて露見した。C の仕様どおりの挙動で gcc も同じなので
+  rubycc のバグではないが、**`-E` が通ることは「正しい」の証明にならない**という実例。
+- `docs/HEADER-LICENSING.md` の §3 / §3.2 / §3.3 の見出し本数が**元から §3.4 の集計と
+  ずれていた**(56 / 15 / 26 対 68)。台帳更新のついでに表の行数と一致するよう是正した。
+- `waitid` の `siginfo_t` は複製せず `#include <signal.h>` にした(約 40 行の union を
+  複製するとドリフト源になる。`string.h` → `strings.h` の前例と同じ)。
+- `P_PIDFD` はヘッダには定義したが ABI ハーネスでは検証しない。比較的新しい追加で、
+  検証するとホストの glibc バージョンに依存してしまうため。
+
+---
+
 ## 現在のテスト規模
 
-Step 138 完了時点: **2,550 runs / 6,998 assertions / 0 failures / 47 skips**
-(Step 139 はコーパス定義とセンサススナップショットの更新のみでテスト増減なし)
+Step 140 完了時点: **2,556 runs / 7,082 assertions / 0 failures / 47 skips**
+(Step 138 から +6 = WAIT / EPOLL / LANGINFO の ABI ハーネスを x86_64・aarch64 の両方で。
+Step 139 はコーパス定義とセンサススナップショットの更新のみでテスト増減なし)
+(以前) Step 138 完了時点: **2,550 runs / 6,998 assertions / 0 failures / 47 skips**
 (Step 136 から +3 = pkgconf の multiarch フィルタのテスト。
 CI 上では 52 skips = pkg-config があるため −1、rmake golden の `make -n` が
 フィクスチャの絶対パス依存で走らないため +6)

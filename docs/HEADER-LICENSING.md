@@ -74,7 +74,7 @@ musl の `COPYRIGHT`(https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT)より�
 
 ---
 
-## 3. 同梱ヘッダの由来台帳(56 本)
+## 3. 同梱ヘッダの由来台帳(72 本)
 
 各ヘッダ冒頭の provenance コメントを棚卸しした結果。分類は次の 4 種:
 
@@ -99,7 +99,7 @@ libc 由来ではない。musl・glibc いずれの派生でもない。
 | `include/stdnoreturn.h` | ISO C 7.23 |
 | `include/x86intrin.h` | 意図的な空スタブ(CRuby の config.h 対策) |
 
-### 3.2 musl-derived(15 本)
+### 3.2 musl-derived(22 本)
 
 musl の宣言セット/形状を出発点にし、glibc の対象 arch(x86-64 / aarch64)ABI に追従。
 冒頭コメントに「Derived from musl's <…>」と明記。
@@ -129,7 +129,7 @@ musl の宣言セット/形状を出発点にし、glibc の対象 arch(x86-64 /
 | `include/libc/glibc/aarch64/sys/types.h` | 全幅・符号を glibc aarch64 LP64 に固定。nlink_t/blksize_t=32bit で x86-64 と相違(実測) |
 | `include/libc/glibc/aarch64/time.h` | `time_t`=long、`struct tm` 拡張(x86-64 版とバイト一致) |
 
-### 3.3 clean-room(26 本)
+### 3.3 clean-room(42 本)
 
 musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI に対してゼロから記述。
 
@@ -173,6 +173,10 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 | `include/libc/sys/param.h` | **glibc の互換シムとしての実体を実測で確認**した上で、MIN/MAX/howmany/roundup の 4 マクロのみを rubycc 自身の式で再現(値は同一だが glibc のテキストは写経せず)。digest の corpus サンプルはこのヘッダに実際には到達しない(`#include <sys/param.h>` が `_KERNEL`/`_STANDALONE` ゲート内で常に unreachable)ことも実測で確認(Step 124) | なし(glibc ABI 実測) |
 | `include/libc/glibc/x86_64/fcntl.h` の隣に置く `sys/fcntl.h`(x86-64) | **glibc の `sys/fcntl.h` が `#include <fcntl.h>` のみの 1 行シム**であることをホストヘッダで実測確認し、同じ 1 行を再現。fcntl.h 自身と同じ理由(O_DIRECT 系のアーキ差)で fcntl.h の隣に配置(Step 124) | なし(glibc ABI 実測) |
 | `include/libc/glibc/aarch64/fcntl.h` の隣に置く `sys/fcntl.h`(aarch64) | 同上。x86-64 版とバイト一致(Step 124) | なし(glibc ABI 実測) |
+| `include/libc/sys/wait.h` | **waitpid/waitid のオプション定数・`idtype_t` の列挙値・SIGCHLD の `CLD_*` si_code**(実測、両アーキ一致)と、**wait ステータスの符号化**。`WIFEXITED`/`WEXITSTATUS`/`WIFSIGNALED`/`WTERMSIG`/`WIFSTOPPED`/`WSTOPSIG`/`WIFCONTINUED`/`WCOREDUMP` は glibc のマクロ本体を写経せず、観測した符号化(下位 7 bit=終了シグナル、bit 7=コアダンプ、bit 8〜15=終了コード、0xffff=continued)から rubycc 自身の式として書き直し、**全 2^32 個の int ステータス値**について glibc オラクルの戻り値と厳密一致(非ブールの `WCOREDUMP` が返す 0x80 も含む)することを x86-64・aarch64 の両方で実測確認した。`siginfo_t` は `waitid` の第 3 引数のため `#include <signal.h>` で得る(glibc が同じ位置で bits/types/siginfo_t.h を読むのに対応)。両アーキ一致のため共通層。wait/waitpid/waitid は POSIX 宣言(Step 135) | なし(kernel ABI 実測) |
+| `include/libc/glibc/x86_64/sys/epoll.h` | **Linux UAPI(linux/eventpoll.h)の `EPOLL_CTL_*`/イベントビット/`EPOLL_CLOEXEC` 値と `struct epoll_event` のレイアウト**(実測)。x86-64 では 32bit プロセスと配列ストライドを揃えるため構造体が **packed**(実測 12 バイト・_Alignof 1・data はオフセット 4)で、aarch64 の自然レイアウト(16/8/8)と食い違うため **arch 層に 2 本**置く(fcntl.h/pthread.h/setjmp.h/sys/stat.h と同じ扱い)。マクロ値はすべて両アーキ一致。epoll_create/epoll_create1/epoll_ctl/epoll_wait は Linux/glibc 宣言(Step 135) | なし(UAPI 実測) |
+| `include/libc/glibc/aarch64/sys/epoll.h` | 同上。`struct epoll_event` は packed ではなく実測 16 バイト・_Alignof 8・data はオフセット 8。マクロ値は x86-64 版と一致(Step 135) | なし(UAPI 実測) |
+| `include/libc/langinfo.h` | **glibc の `nl_item` 番号**(実測)。番号は平坦な連番ではなく `(カテゴリ << 16)` と インデックスのビット合成で、その合成規則自体も `_NL_ITEM`/`_NL_ITEM_CATEGORY`/`_NL_ITEM_INDEX` を rubycc 自身の式で書き直したうえで全 (カテゴリ, インデックス) 組についてオラクルと一致することを実測確認した。`nl_langinfo` はホスト libc が答えるため番号はホストの列挙と一致する必要がある(locale.h の `LC_*`・unistd.h の `_SC_*` と同じ論法)。全値が両アーキ一致のため共通層。`nl_langinfo` は POSIX 宣言(Step 135) | なし(glibc ABI 実測) |
 
 > `assert.h` と `features.h` は自己申告で clean-room だが、冒頭コメントに
 > 「musl's <…> was the shape reference」とある。**形状(どの宣言を並べるか)の参照**で
@@ -185,8 +189,8 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 |---|---|
 | freestanding | 8 |
 | musl-derived | 22 |
-| clean-room | 38 |
-| **合計** | **68** |
+| clean-room | 42 |
+| **合計** | **72** |
 
 > Step 82(M5 H1)で `include/libc/glibc/aarch64/` 層 11 本を追加(30→41)。うち 8 本は
 > x86-64 版と宣言・値がバイト一致(`cmp` 確認済み)で、由来分類も x86-64 版を継承する。
@@ -224,6 +228,25 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 > 再現コストが見合わない)・`stdatomic.h`・`stdckdint.h`(いずれも rubycc が
 > `_Atomic` 型指定子・`__builtin_add_overflow` を実装しておらず、実測で
 > コンパイルエラーになることを確認した)の 3 本は今回のスコープ外(未着手)。
+
+> Step 135(M5 H2)で、コーパスセンサス(36 gem、Step 139)が挙げた実需ギャップから
+> `sys/wait.h`(nio4r)・`sys/epoll.h`(nio4r・unicorn)・`langinfo.h`(nkf)の 3 スペリング
+> = ファイル 4 本を追加(68→72、clean-room 38→42)。census が集計する
+> 「Bundled header set」は 53→56 スペリング(`sys/epoll.h` は arch 層の 2 本が 1 スペリングへ
+> 正規化される)。`sys/wait.h` と `langinfo.h` は全値・全マクロ結果が x86-64・
+> クロス gcc(aarch64)の両方で一致したため共通層に置いた。`sys/epoll.h` だけは
+> `struct epoll_event` が x86-64 で **packed**(実測 12/1、data オフセット 4。32bit プロセスと
+> 配列ストライドを揃えるためのカーネル側の意図的な指定)、aarch64 で自然レイアウト
+> (実測 16/8、data オフセット 8)と食い違うため、fcntl.h/pthread.h/setjmp.h/sys/stat.h と
+> 同じく arch 層に 2 本置いた。wait ステータスのマクロ群は glibc のマクロ本体を写経せず、
+> 観測した符号化から rubycc 自身の式へ書き直したうえで、**全 2^32 個の int ステータス値**に
+> ついて 8 マクロすべての戻り値が glibc オラクルと厳密一致することを両アーキで実測確認して
+> いる(§4.2 の「マクロが展開する数値」を、単一の値ではなく写像として実測した形)。同様に
+> `langinfo.h` の `nl_item` 合成規則も、全 (カテゴリ, インデックス) 組でオラクルと一致することを
+> 実測確認した。スコープ外としたもの: wait3/wait4(`struct rusage *` を取るため
+> sys/resource.h との共有ガードか相互 include が要るが、センサスのどの hit も使わない)・
+> 廃れた `union wait` 系・epoll_pwait/epoll_pwait2(`sigset_t`/`struct timespec` が要る)・
+> `nl_langinfo_l`(`locale_t` は bundled locale.h が意図的に持たない拡張)。
 
 ---
 

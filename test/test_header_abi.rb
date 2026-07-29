@@ -1064,6 +1064,155 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <sys/wait.h> (Step 135, M5 H2): waiting for process state changes, added
+  # from the corpus census gap list (nio4r). Two things are checked here. The
+  # option flags, the idtype_t enumerators and the SIGCHLD si_code values are
+  # ordinary measured constants. The status-decoding macros are the
+  # interesting part: rubycc re-derived the wait-status encoding rather than
+  # copying glibc's macro bodies, so the `ints` list below exercises all eight
+  # macros over a spread of statuses that hits every branch of that encoding
+  # -- normal exit (0x2a00), a plain signal (0x0009), a signal with the core
+  # flag (0x0089), the stopped marker (0x137f), continued (0xffff) and the
+  # all-zero case -- and compares the exact value, not just truthiness (which
+  # is what pins WCOREDUMP to the 0x80 flag bit rather than 1). Everything
+  # here measured identical on x86-64 and aarch64, so the header is in the
+  # common layer and this Spec is re-run in the aarch64 class's neutral-layer
+  # section below. `defines: ["_GNU_SOURCE"]` is needed because rubycc's
+  # bundled header exposes WCOREDUMP, the waitid option set and the __WALL
+  # family unconditionally while the host glibc gates them behind
+  # __USE_MISC / __USE_XOPEN_EXTENDED. wait/waitpid/waitid resolve from the
+  # static libc at link time.
+  WAIT = HeaderAbiHarness::Spec.new(
+    header: "sys/wait.h",
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[idtype_t pid_t id_t],
+    ints: %w[WNOHANG WUNTRACED WCONTINUED WEXITED WSTOPPED WNOWAIT
+             __WNOTHREAD __WALL __WCLONE
+             P_ALL P_PID P_PGID
+             CLD_EXITED CLD_KILLED CLD_DUMPED CLD_TRAPPED CLD_STOPPED CLD_CONTINUED] +
+          ["WIFEXITED(0x0000)", "WEXITSTATUS(0x0000)", "WIFSIGNALED(0x0000)",
+           "WTERMSIG(0x0000)", "WIFSTOPPED(0x0000)", "WIFCONTINUED(0x0000)",
+           "WCOREDUMP(0x0000)",
+           "WIFEXITED(0x2a00)", "WEXITSTATUS(0x2a00)", "WIFSIGNALED(0x2a00)",
+           "WIFEXITED(0x0009)", "WIFSIGNALED(0x0009)", "WTERMSIG(0x0009)",
+           "WCOREDUMP(0x0009)",
+           "WIFSIGNALED(0x0089)", "WTERMSIG(0x0089)", "WCOREDUMP(0x0089)",
+           "WIFEXITED(0x137f)", "WIFSIGNALED(0x137f)", "WIFSTOPPED(0x137f)",
+           "WSTOPSIG(0x137f)",
+           "WIFSTOPPED(0x007f)", "WSTOPSIG(0x007f)",
+           "WIFCONTINUED(0xffff)", "WIFSTOPPED(0xffff)", "WIFSIGNALED(0xffff)",
+           "WCOREDUMP(0xffff)", "WEXITSTATUS(0xff00)"],
+    snippets: [<<~C.chomp]
+      static int abi_wait(pid_t pid, int *st, siginfo_t *info) {
+        pid_t a = wait(st);
+        pid_t b = waitpid(pid, st, WNOHANG | WUNTRACED | WCONTINUED);
+        int c = waitid(P_ALL, 0, info, WEXITED | WSTOPPED | WNOWAIT);
+        return (int)a + (int)b + c
+             + WIFEXITED(*st) + WEXITSTATUS(*st) + WIFSIGNALED(*st)
+             + WTERMSIG(*st) + WIFSTOPPED(*st) + WSTOPSIG(*st)
+             + WIFCONTINUED(*st) + WCOREDUMP(*st)
+             + (info->si_code == CLD_EXITED);
+      }
+    C
+  )
+
+  # <sys/epoll.h> (Step 135, M5 H2): the Linux epoll(7) interface, added from
+  # the corpus census gap list (nio4r, unicorn). Unlike poll.h, this one is an
+  # arch-layer header: struct epoll_event is packed to 12 bytes on x86-64 (so
+  # 32- and 64-bit processes see the same array stride) but takes its natural
+  # 16-byte layout on aarch64, so the aarch64 case below sits in that class's
+  # arch-specific section alongside FCNTL/PTHREAD/SETJMP rather than being
+  # re-run as a neutral-layer check. The sizeof/_Alignof and the two offsets
+  # are the load-bearing checks: they are exactly what proves the packed
+  # attribute is present on one target and absent on the other. Every macro
+  # value measured identical on both. `defines: ["_GNU_SOURCE"]` is needed
+  # because the host glibc gates epoll_create1/EPOLL_CLOEXEC and the
+  # EPOLLEXCLUSIVE/EPOLLWAKEUP extensions behind __USE_GNU, while rubycc's
+  # bundled header exposes its whole surface unconditionally.
+  # epoll_create/epoll_create1/epoll_ctl/epoll_wait resolve from the static
+  # libc at link time.
+  EPOLL = HeaderAbiHarness::Spec.new(
+    header: "sys/epoll.h",
+    defines: ["_GNU_SOURCE"],
+    sizes: ["struct epoll_event", "union epoll_data", "epoll_data_t"],
+    ints: %w[EPOLL_CTL_ADD EPOLL_CTL_DEL EPOLL_CTL_MOD EPOLL_CLOEXEC
+             EPOLLIN EPOLLPRI EPOLLOUT EPOLLERR EPOLLHUP
+             EPOLLRDNORM EPOLLRDBAND EPOLLWRNORM EPOLLWRBAND EPOLLMSG
+             EPOLLRDHUP EPOLLEXCLUSIVE EPOLLWAKEUP EPOLLONESHOT EPOLLET] +
+          ["sizeof(struct epoll_event[4])"],
+    offsets: [["struct epoll_event", "events"], ["struct epoll_event", "data"],
+              ["union epoll_data", "ptr"], ["union epoll_data", "fd"],
+              ["union epoll_data", "u32"], ["union epoll_data", "u64"]],
+    snippets: [<<~C.chomp]
+      static int abi_epoll(int fd, struct epoll_event *out, int n) {
+        int ep = epoll_create(1);
+        int ep1 = epoll_create1(EPOLL_CLOEXEC);
+        struct epoll_event ev;
+        ev.events = EPOLLIN | EPOLLOUT | EPOLLET | EPOLLRDHUP;
+        ev.data.fd = fd;
+        epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev);
+        epoll_ctl(ep, EPOLL_CTL_MOD, fd, &ev);
+        epoll_ctl(ep, EPOLL_CTL_DEL, fd, (struct epoll_event *)0);
+        return ep + ep1 + epoll_wait(ep, out, n, 0) + (int)ev.data.u32;
+      }
+    C
+  )
+
+  # <langinfo.h> (Step 135, M5 H2): locale-dependent string lookup, added from
+  # the corpus census gap list (nkf). nl_langinfo is answered by the host
+  # libc, so every nl_item number has to match the host's own enumeration --
+  # the same reasoning behind locale.h's LC_* and unistd.h's _SC_* checks --
+  # and the numbering is a packed (category << 16 | index) composition rather
+  # than a flat sequence, so the whole item set is asserted rather than a
+  # sample. The three _NL_ITEM helpers are checked through sample expansions
+  # so rubycc's own re-derivation of that composition is pinned against the
+  # oracle's. Everything measured identical on x86-64 and aarch64, so the
+  # header is in the common layer and this Spec is re-run in the aarch64
+  # class's neutral-layer section below. `defines: ["_GNU_SOURCE"]` is needed
+  # because the host glibc gates DECIMAL_POINT/THOUSANDS_SEP/YESSTR/NOSTR
+  # behind __USE_GNU while rubycc's bundled header exposes them
+  # unconditionally.
+  LANGINFO = HeaderAbiHarness::Spec.new(
+    header: "langinfo.h",
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[nl_item],
+    ints: %w[CODESET
+             RADIXCHAR THOUSEP DECIMAL_POINT THOUSANDS_SEP
+             ABDAY_1 ABDAY_2 ABDAY_3 ABDAY_4 ABDAY_5 ABDAY_6 ABDAY_7
+             DAY_1 DAY_2 DAY_3 DAY_4 DAY_5 DAY_6 DAY_7
+             ABMON_1 ABMON_2 ABMON_3 ABMON_4 ABMON_5 ABMON_6
+             ABMON_7 ABMON_8 ABMON_9 ABMON_10 ABMON_11 ABMON_12
+             MON_1 MON_2 MON_3 MON_4 MON_5 MON_6
+             MON_7 MON_8 MON_9 MON_10 MON_11 MON_12
+             AM_STR PM_STR D_T_FMT D_FMT T_FMT T_FMT_AMPM
+             ERA ERA_D_FMT ALT_DIGITS ERA_D_T_FMT ERA_T_FMT
+             CRNCYSTR YESEXPR NOEXPR YESSTR NOSTR] +
+          ["_NL_ITEM(2, 40)", "_NL_ITEM(5, 1)", "_NL_ITEM(0, 14)",
+           "_NL_ITEM_CATEGORY(D_T_FMT)", "_NL_ITEM_INDEX(D_T_FMT)",
+           "_NL_ITEM_CATEGORY(CODESET)", "_NL_ITEM_INDEX(CODESET)",
+           "_NL_ITEM_CATEGORY(NOEXPR)", "_NL_ITEM_INDEX(NOEXPR)"],
+    snippets: [<<~C.chomp]
+      static int abi_langinfo(void) {
+        return (nl_langinfo(CODESET) != (char *)0)
+             + (nl_langinfo(D_T_FMT) != (char *)0)
+             + (nl_langinfo(RADIXCHAR) != (char *)0)
+             + (nl_langinfo(YESEXPR) != (char *)0);
+      }
+    C
+  )
+
+  def test_wait_abi_matches_gcc
+    assert_abi_matches(WAIT)
+  end
+
+  def test_epoll_abi_matches_gcc
+    assert_abi_matches(EPOLL)
+  end
+
+  def test_langinfo_abi_matches_gcc
+    assert_abi_matches(LANGINFO)
+  end
+
   def test_pwd_abi_matches_gcc
     assert_abi_matches(PWD)
   end
@@ -1349,6 +1498,13 @@ class TestHeaderAbiAarch64 < Minitest::Test
     assert_abi_matches_aarch64(TestHeaderAbi::SETJMP)
   end
 
+  # struct epoll_event is packed to 12 bytes (1-byte aligned, data at offset
+  # 4) on x86-64 but takes its natural 16-byte layout (8-byte aligned, data at
+  # offset 8) here, so this is an arch-specific case, not a neutral re-check.
+  def test_epoll_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::EPOLL)
+  end
+
   # --- neutral layer: re-checked to confirm byte-identity across the switch --
 
   def test_time_abi_matches_cross_gcc
@@ -1457,6 +1613,14 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_sys_param_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::SYS_PARAM)
+  end
+
+  def test_wait_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::WAIT)
+  end
+
+  def test_langinfo_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::LANGINFO)
   end
 
   private
