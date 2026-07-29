@@ -719,16 +719,23 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   **rubygems.org への公開は未実施**(公開はアカウント保有者の操作)。
 - ~~CI(GitHub Actions)を構築し、サポート Ruby 全バージョンでの継続検証を自動化する。~~
   **完了(Step 135)**: 3 層構成で新設([`CI.md`](CI.md))。**Tier A**(`test.yml`、
-  push / PR)は Ruby 3.3 / 3.4 / 4.0 のマトリクスで全スイートを実行。差分テストの
+  push / PR)は Ruby 3.3 / 4.0 のマトリクスで全スイートを実行。差分テストの
   相手となる gcc・binutils・aarch64 クロス・qemu-user を apt で導入し、欠けたら
   その場で失敗させる(`qemu-user-static` では実行テストが全 skip になるため
   `qemu-user` を使う)。さらに `tools/ci_check_skips.rb` が skip 数・runs 数の逸脱を
-  検出する — skip は失敗と違って静かに緑になるため。**Tier B**(`nightly.yml`)は
-  corpus census の差分検出・ネットワーク受け入れ(`RMAKE_ACCEPTANCE=1` と
+  検出する — skip は失敗と違って静かに緑になるため。**Tier B**(`weekly.yml`、
+  週 1)は corpus census の差分検出・ネットワーク受け入れ(`RMAKE_ACCEPTANCE=1` と
   `tools/m2_acceptance.rb`)・スループット計測(合否判定はしない: ペア計測でしか
-  判定できないため)。**Tier C**(`release.yml`、タグ push)は Tier A の再利用に加えて
-  タグと `Rubycc::VERSION` の整合確認と、`SOURCE_DATE_EPOCH` を固定した gem の
-  2 回ビルドによるバイト一致検証(N4 の配布物版)。`gem push` は意図的に自動化しない。
+  判定できないため)・**Ruby 3.4 の全スイート**。**Tier C**(`release.yml`、タグ push)は
+  Tier A の再利用に加えてタグと `Rubycc::VERSION` の整合確認と、`SOURCE_DATE_EPOCH` を
+  固定した gem の 2 回ビルドによるバイト一致検証(N4 の配布物版)。
+  `gem push` は意図的に自動化しない。Private リポジトリのまま GitHub Free の
+  2,000 分/月に収めるため、3.4 を毎 push から週 1 に落とし、頻度と範囲を削っている
+  (トレードオフ = 3.4 固有の破壊を最大 1 週間遅れで検知。CI.md に記録)。
+- ~~コーパス拡張の手順(人気ランキング → C 拡張の有無 → R10 判定)を道具にする。~~
+  **完了(Step 143)**: `tools/scan_popular_gems.rb`。R10 の判定は `census.rb` に委譲し
+  再実装しない。R10 が原理的に見ない**アセンブラ要否**はスキャナ側で 2 系統
+  (`.S`/`.s` 走査 + `$objs` の未対応エントリ)検査し、`[1b]` に分類する。
 - **受け入れ = v1.0 リリース = M5 完了**。
 
 ## 9. マイルストーン横断のリスク(DESIGN 7 章の運用)
