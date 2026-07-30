@@ -70,6 +70,34 @@ class TestDeterministicBuild < Minitest::Test
     assert_bytes_equal a, b, "aarch64 compile of identical input must be byte-identical"
   end
 
+  # A unit whose constructors and destructors spread over several priorities.
+  # The array sections are grouped out of a Hash keyed by (kind, priority), and
+  # a section's *name* is what fixes the run order, so a nondeterministic
+  # grouping would reorder both the section table and the initializers.
+  CONSTRUCTOR_UNIT = <<~C
+    int puts(const char *s);
+    __attribute__((constructor(500))) static void c500(void) { puts("500"); }
+    __attribute__((constructor))      static void cdef(void) { puts("def"); }
+    __attribute__((constructor(101))) static void c101(void) { puts("101"); }
+    __attribute__((constructor))      static void cdef2(void) { puts("def2"); }
+    __attribute__((destructor(101)))  static void d101(void) { puts("d101"); }
+    __attribute__((destructor))       void ddef(void) { puts("ddef"); }
+  C
+
+  def test_compile_with_constructors_is_byte_identical
+    %w[x86_64 aarch64].each do |target|
+      a = Rubycc::Compiler.new.compile(CONSTRUCTOR_UNIT, filename: "c.c", target: target)
+      b = Rubycc::Compiler.new.compile(CONSTRUCTOR_UNIT, filename: "c.c", target: target)
+      assert_bytes_equal a, b, "#{target} compile of a unit with constructors must be byte-identical"
+    end
+  end
+
+  def test_link_with_constructors_is_byte_identical
+    obj = Rubycc::Compiler.new.compile(CONSTRUCTOR_UNIT, filename: "c.c")
+    assert_bytes_equal SharedLinker.link([obj]), SharedLinker.link([obj]),
+                       "a shared object with initializer arrays must be byte-identical"
+  end
+
   # --- (2) compilation, across two separate Ruby processes ---------------
 
   # Catches anything that would depend on this process's hash seed, PID or

@@ -343,13 +343,29 @@ module Rubycc
       end
     end
 
+    # One entry this translation unit contributes to an initializer/finalizer
+    # array. `symbol` names a function *defined here* that the runtime is to
+    # call: `kind` is :init for a constructor (the loader calls it before main,
+    # or at dlopen) or :fini for a destructor (at exit, or at dlclose), and
+    # `priority` is its run-order number, the compiler's
+    # ELFWriter::DEFAULT_ARRAY_PRIORITY standing for the unnumbered form. The
+    # compiler turns each entry into an 8-byte slot in the matching
+    # SHT_INIT_ARRAY / SHT_FINI_ARRAY section plus an absolute 64-bit relocation
+    # against `symbol`.
+    ArrayEntry = Data.define(:kind, :priority, :symbol)
+
     # A whole translation unit lowered to IR: its `functions` (an array of
     # Function), the shared read-only string pool `strings` (an array of
     # ASCII-8BIT byte strings, without their NUL terminators, indexed by the id
-    # a :string_addr instruction carries) and its `globals` (an array of Global
-    # in source order). Identical string contents are pooled once, so the
-    # compiler can lay them out in .rodata in this order and resolve each
-    # :string_addr to an offset.
-    Program = Data.define(:functions, :strings, :globals)
+    # a :string_addr instruction carries), its `globals` (an array of Global
+    # in source order) and its `array_entries` (an array of ArrayEntry, empty for
+    # a unit with no constructor/destructor). Identical string contents are
+    # pooled once, so the compiler can lay them out in .rodata in this order and
+    # resolve each :string_addr to an offset.
+    Program = Data.define(:functions, :strings, :globals, :array_entries) do
+      def initialize(functions:, strings:, globals:, array_entries: [])
+        super
+      end
+    end
   end
 end

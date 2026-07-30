@@ -845,6 +845,133 @@ class TestSharedObject < Minitest::Test
                  "identical inputs must yield byte-identical output"
   end
 
+  # --- constructors compiled from C (Step 155) -----------------------------
+  #
+  # Every case above feeds the linker hand-built array objects, because the
+  # front end could not emit them. These start from C instead: rubycc compiles
+  # `__attribute__((constructor))`, rubycc links the result, and the loader runs
+  # what comes out — compile, link and load on one line.
+  RUBYCC_CONSTRUCTORS = <<~C
+    char trace[16];
+    int marked;
+    static void rec(char c) { trace[marked] = c; marked = marked + 1; }
+    __attribute__((constructor(101))) static void first(void)  { rec('1'); }
+    __attribute__((constructor(500))) static void third(void)  { rec('3'); }
+    __attribute__((constructor))      static void last(void)   { rec('L'); }
+    __attribute__((constructor(200))) static void second(void) { rec('2'); }
+    char *trace_of(void) { return trace; }
+  C
+
+  def test_compiled_constructors_form_one_contiguous_run
+    r = Reader.read(build_so([RUBYCC_CONSTRUCTORS]))
+    run = r.sections.select { |s| s.type == SHT_INIT_ARRAY }
+    assert_equal %w[.init_array.00101 .init_array.00200 .init_array.00500 .init_array],
+                 run.map(&:name), "a priority is its own section, ordered ascending"
+    run.each_cons(2) do |a, b|
+      assert_equal a.addr + a.size, b.addr, "#{a.name} must run straight into #{b.name}"
+    end
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+    assert_equal run.first.addr, by_tag[DT_INIT_ARRAY]
+    assert_equal 4 * 8, by_tag[DT_INIT_ARRAYSZ], "all four constructors in one range"
+  end
+
+  # A `static` constructor's slot names a file-local symbol, which a shared
+  # object rebases at load time like any other internal absolute address.
+  def test_compiled_constructor_slots_rebase_through_relative
+    r = Reader.read(build_so([RUBYCC_CONSTRUCTORS]))
+    rela = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    slots = r.sections.select { |s| s.type == SHT_INIT_ARRAY }
+             .flat_map { |s| (0...(s.size / 8)).map { |i| s.addr + i * 8 } }
+    by_offset = rela.relocations.to_h { |rel| [rel.offset, rel] }
+    text = r.section(".text")
+    slots.each do |slot|
+      reloc = by_offset[slot]
+      refute_nil reloc, "slot at #{format('%#x', slot)} must carry a dynamic relocation"
+      assert_equal R_X86_64_RELATIVE, reloc.type
+      assert_operator reloc.addend, :>=, text.addr, "the addend is a constructor's address"
+      assert_operator reloc.addend, :<, text.addr + text.size
+    end
+  end
+
+  # The acceptance for the shared-object half: dlopen must call what rubycc
+  # compiled, in the order the priorities asked for.
+  def test_dlopen_runs_compiled_constructors_in_priority_order
+    with_so([RUBYCC_CONSTRUCTORS], needed: [libc_path].compact, soname: "libctors.so") do |so|
+      lib = Fiddle.dlopen(so)
+      assert_equal "123L", call(lib, "trace_of", [], Fiddle::TYPE_VOIDP).call.to_s,
+                   "priorities 101, 200, 500, then the unnumbered constructor"
+    ensure
+      lib&.close
+    end
+  end
+
+  # ... and gcc, given the same source, must produce the same order. This is the
+  # same program GCC_CONSTRUCTORS below feeds through gcc's compiler, so the two
+  # tests together pin both halves of the toolchain against it.
+  def test_compiled_constructor_order_matches_gcc
+    skip "gcc unavailable" unless tool?("gcc")
+
+    order = ->(so) do
+      lib = Fiddle.dlopen(so)
+      call(lib, "trace_of", [], Fiddle::TYPE_VOIDP).call.to_s
+    ensure
+      lib&.close
+    end
+
+    in_tmpdir do |dir|
+      src = File.join(dir, "ctors.c")
+      File.write(src, RUBYCC_CONSTRUCTORS)
+      theirs = File.join(dir, "theirs.so")
+      out, status = Open3.capture2e("gcc", "-shared", "-fPIC", "-o", theirs, src)
+      skip "gcc -shared failed:\n#{out}" unless status.success?
+
+      ours = File.join(dir, "ours.so")
+      Linker.link_to(objects_for([RUBYCC_CONSTRUCTORS], dir), ours,
+                     needed: [libc_path].compact, soname: "libours.so")
+      assert_equal order.call(theirs), order.call(ours),
+                   "rubycc's own compile-and-link must match gcc's for the same source"
+    end
+  end
+
+  # A destructor compiled from C, checked where it actually runs: at dlclose.
+  # The finalizer cannot report through the object's own memory (unmapped moments
+  # later), so it leaves a file behind and a child interpreter looks for it on
+  # both sides of the dlclose.
+  def test_dlclose_runs_a_compiled_destructor
+    skip "libc unavailable" unless libc_path
+
+    in_tmpdir do |dir|
+      marker = File.join(dir, "compiled-fini.marker")
+      source = <<~C
+        void *fopen(const char *path, const char *mode);
+        int fputs(const char *s, void *stream);
+        int fclose(void *stream);
+        int inited;
+        __attribute__((constructor)) static void note_init(void) { inited = 1; }
+        __attribute__((destructor)) static void note_fini(void) {
+          void *f = fopen("#{marker}", "w");
+          if (f) { fputs("fini", f); fclose(f); }
+        }
+        int was_inited(void) { return inited; }
+      C
+      so = File.join(dir, "libfini.so")
+      Linker.link_to(objects_for([source], dir), so, needed: [libc_path], soname: "libfini.so")
+
+      probe = <<~RUBY
+        require "fiddle"
+        lib = Fiddle.dlopen(ARGV[0])
+        inited = Fiddle::Function.new(lib["was_inited"], [], Fiddle::TYPE_INT).call
+        before = File.exist?(ARGV[1])
+        lib.close
+        print [inited, before, File.exist?(ARGV[1])].join(",")
+      RUBY
+      out, status = Open3.capture2e(RbConfig.ruby, "-e", probe, so, marker)
+      assert status.success?, "the finalizer probe failed:\n#{out}"
+      assert_equal "1,false,true", out,
+                   "the compiled constructor ran at dlopen and the destructor at dlclose"
+    end
+  end
+
   # The real compiler's shape, which the hand-built objects above do not cover:
   # gcc points an array slot at a *section* symbol (`.text + 0x1a`) rather than
   # at a named function, and spells a priority as `.init_array.NNNNN`. Linking

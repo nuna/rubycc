@@ -401,10 +401,27 @@ module Rubycc
       # va_* in Phase B; a body that ignores it compiles and runs already).
       FunctionDef = Data.define(:name, :return_type, :params, :body, :token, :storage, :variadic)
 
+      # What a function's `__attribute__((constructor))` /
+      # `__attribute__((destructor))` asked for. Each field is nil when that
+      # attribute never appeared, or the priority it carried — the run-order
+      # number, with the parser's DEFAULT_INIT_PRIORITY standing for the
+      # unnumbered spelling. A function may be both, as
+      # "__attribute__((constructor,destructor))" is.
+      InitAttributes = Data.define(:constructor, :destructor)
+
       # Whole translation unit. `functions` is an array of FunctionDef,
       # FunctionDecl (prototype) and GlobalDecl (file-scope variable) nodes in
-      # source order.
-      Program = Data.define(:functions)
+      # source order. `init_attributes` maps a function name to the
+      # InitAttributes its declarations carried; it is a property of the unit
+      # rather than of any one node because the attribute may be written on a
+      # prototype that precedes or follows the definition (see
+      # Parser#register_init_attributes). Names never defined here appear in it
+      # too and are dropped by the generator.
+      Program = Data.define(:functions, :init_attributes) do
+        def initialize(functions:, init_attributes: {})
+          super
+        end
+      end
     end
   end
 end

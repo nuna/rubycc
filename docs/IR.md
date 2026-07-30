@@ -38,9 +38,10 @@
 
 ```
 IR::Program
-├── functions : [IR::Function]   関数定義(ソース順)
-├── strings   : [String]         読み取り専用文字列プール(:string_addr の id で索引)
-└── globals   : [IR::Global]     ファイルスコープ変数(ソース順)
+├── functions     : [IR::Function]   関数定義(ソース順)
+├── strings       : [String]         読み取り専用文字列プール(:string_addr の id で索引)
+├── globals       : [IR::Global]     ファイルスコープ変数(ソース順)
+└── array_entries : [IR::ArrayEntry] 初期化子/終了子配列のエントリ(既定 [])
 ```
 
 ### IR::Function
@@ -72,6 +73,25 @@ IR::Program
     計算アドレス)。絶対 64 bit(R_X86_64_64、addend = `addend`)で解決。
   - `kind: :string` — 文字列リテラル。`string_id` が文字列プールを指し、
     コンパイラが .rodata オフセット + `addend` へ解決。
+
+### IR::ArrayEntry
+
+- `ArrayEntry(kind, priority, symbol)` — `__attribute__((constructor))` /
+  `((destructor))` が付いた**この翻訳単位で定義された**関数 1 つの登録。
+  `kind: :init` は .init_array(ローダが main 前 / dlopen で呼ぶ)、
+  `kind: :fini` は .fini_array(exit / dlclose で呼ぶ)。
+- `priority` は実行順の番号(整数)。既定値 65535
+  (`ObjFile::ELFWriter::DEFAULT_ARRAY_PRIORITY`)は番号なしを意味し、
+  番号付きより後に走る。**この既定値は gcc の実測値**で、
+  `constructor(65535)` と番号なしの `constructor` は gcc でも同一の
+  無印セクションになる。
+- コンパイラは 1 エントリを 8 バイトスロット + そのシンボルへの
+  絶対 64 bit 再配置(x86_64: R_X86_64_64 / aarch64: R_AARCH64_ABS64)に落とし、
+  優先度ごとに別セクション(`.init_array.NNNNN`、5 桁ゼロ詰め)へ置く。
+  セクション**名**が実行順を決めるため、この綴りはリンカ側の
+  `SharedLinker#array_priority` と一致していなければならない。
+- 宣言だけで定義がない名前はエントリにならない(スロットは関数を
+  **定義する**オブジェクトのもの。gcc も同様に何も出さない)。
 
 ## 3. 値表現規約(スロット規約)
 

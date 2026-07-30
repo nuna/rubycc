@@ -774,8 +774,12 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   (Step 152 参照)。**init/fini array の整備は 3 段階**:
   ~~(1) リンカ側のパイプライン~~ **完了(Step 154)**: `SHT_INIT_ARRAY` /
   `SHT_FINI_ARRAY` の配置・優先度順・動的タグ 4 本。マージとリロケーションは既存機構で
-  足りていた。**(2) フロントエンドの `__attribute__((constructor))` /
-  `((destructor))`**(未着手)、**(3) `__cxa_finalize(__dso_handle)` の合成**(未着手)。
+  足りていた。~~(2) フロントエンドの `__attribute__((constructor))` / `((destructor))`~~
+  **完了(Step 155)**: 名前引きの表で解決(gcc は定義より後の宣言にも書けるため)。
+  優先度は 5 桁ゼロ詰め、`constructor(65535)` は無印セクション(実測)。
+  gcc が警告で済ませる 3 ケースは診断にした(警告チャネルが無い処理系では
+  「警告して続行」は「黙殺」と同義のため)。**(3) `__cxa_finalize(__dso_handle)` の
+  合成**(未着手)。
 - **既知の負債(Step 149 で観測)**: `test/corpus/gems.rb` の 4 エントリ
   (bigdecimal・date・racc・redcarpet)が `version: nil` = 最新追従になっており、
   上流が新版を出すたびに `rake corpus:census` のスナップショットが動く。

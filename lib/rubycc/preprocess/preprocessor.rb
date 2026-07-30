@@ -707,16 +707,18 @@ module Rubycc
         [include_exists?(kind, name, operator.filename), close + 1]
       end
 
-      # The GNU attributes rubycc gives real semantics (Step 28): the layout
-      # attributes the parser honors on a struct/union. Every other attribute is
-      # accepted and discarded, so __has_attribute answers true only for these.
-      # Kept as a Hash (used only for membership) so the check is O(1).
-      KNOWN_ATTRIBUTES = %w[aligned packed].to_h { |name| [name, true] }.freeze
+      # The GNU attributes rubycc gives real semantics: the layout attributes the
+      # parser honors on a struct/union (Step 28), and the constructor/destructor
+      # attributes that register a function in .init_array / .fini_array (Step
+      # 155). Every other attribute is accepted and discarded, so __has_attribute
+      # answers true only for these. Kept as a Hash (used only for membership) so
+      # the check is O(1).
+      KNOWN_ATTRIBUTES = %w[aligned packed constructor destructor].to_h { |name| [name, true] }.freeze
 
       # __has_attribute ( X ): true for the attributes rubycc actually acts on
-      # (aligned and packed, in either the plain or the "__name__" spelling),
-      # false for every other name. The name is normalized the same way the
-      # parser normalizes an attribute token.
+      # (in either the plain or the "__name__" spelling), false for every other
+      # name. The name is normalized the same way the parser normalizes an
+      # attribute token.
       def fold_has_attribute(operator, body, index)
         name, index = read_paren_identifier(operator, body, index, "__has_attribute")
         [KNOWN_ATTRIBUTES.key?(normalize_attribute_name(name)), index]

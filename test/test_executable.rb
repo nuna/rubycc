@@ -264,6 +264,122 @@ class TestExecutable < Minitest::Test
     end
   end
 
+  # --- constructors compiled from C (Step 155) -----------------------------
+  #
+  # The cases above hand-build the array objects, because the front end could
+  # not emit them. These start from C: a `__attribute__((constructor))` compiled
+  # by rubycc, linked by rubycc, run for real — the whole line from the
+  # attribute to the call the loader makes.
+  #
+  # The order is the point. gcc's rule, measured in Step 154 and reproduced by
+  # the linker, is: the priority-numbered constructors first in ascending order,
+  # then the unnumbered ones in source order. Destructors run in the mirror
+  # order (the runtime walks .fini_array backwards), which is why the finalizer
+  # output below is reversed relative to the initializer output.
+  CONSTRUCTOR_SOURCE = <<~C
+    int puts(const char *s);
+    __attribute__((constructor(200))) static void ctor_second(void) { puts("c200"); }
+    __attribute__((constructor))      static void ctor_plain(void)  { puts("cplain"); }
+    __attribute__((constructor(101))) static void ctor_first(void)  { puts("c101"); }
+    __attribute__((destructor(101)))  static void dtor_first(void)  { puts("d101"); }
+    __attribute__((destructor))       static void dtor_plain(void)  { puts("dplain"); }
+    int main(void) { puts("main"); return 0; }
+  C
+
+  # The exact order the constructors and destructors must appear in, verified
+  # against gcc by #test_constructor_program_matches_gcc below.
+  CONSTRUCTOR_EXPECTED = "c101\nc200\ncplain\nmain\ndplain\nd101\n"
+
+  def test_compiled_constructors_reach_the_array_tags
+    skip_unless_linkable
+
+    r = Reader.read(build_exe([CONSTRUCTOR_SOURCE]))
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+
+    # A priority is spelled as its own section, so the run spans several of them
+    # ("*.00101", "*.00200", then the unnumbered one); the dynamic tag addresses
+    # the whole contiguous run, which is the first section of it.
+    init_run = r.sections.select { |s| s.type == SHT_INIT_ARRAY }
+    fini_run = r.sections.select { |s| s.type == SHT_FINI_ARRAY }
+    assert_equal %w[.init_array.00101 .init_array.00200 .init_array], init_run.map(&:name)
+    assert_equal %w[.fini_array.00101 .fini_array], fini_run.map(&:name)
+    init_run.each { |s| assert_equal SHF_ALLOC | SHF_WRITE, s.flags, "#{s.name} is writable" }
+
+    assert_equal init_run.first.addr, by_tag[DT_INIT_ARRAY]
+    assert_equal 3 * 8, by_tag[DT_INIT_ARRAYSZ], "all three constructors are in one run"
+    assert_equal fini_run.first.addr, by_tag[DT_FINI_ARRAY]
+    assert_equal 2 * 8, by_tag[DT_FINI_ARRAYSZ]
+
+    # A non-PIE image writes each slot's final address outright, so every slot
+    # must already point into .text rather than waiting on a relocation.
+    text = r.section(".text")
+    (init_run + fini_run).flat_map { |s| s.data.unpack("Q<*") }.each_with_index do |slot, i|
+      assert_operator slot, :>=, text.addr, "slot #{i} holds a final address"
+      assert_operator slot, :<, text.addr + text.size, "slot #{i} points into .text"
+    end
+  end
+
+  # The acceptance: compiled by rubycc, linked by rubycc, run for real.
+  def test_running_compiled_constructors_in_priority_order
+    skip_unless_runnable
+
+    with_exe([CONSTRUCTOR_SOURCE]) do |exe|
+      out, status = Open3.capture2(exe)
+      assert_equal 0, status.exitstatus
+      assert_equal CONSTRUCTOR_EXPECTED, out,
+                   "numbered constructors ascend, the unnumbered one runs last, " \
+                   "and the destructors mirror that at exit"
+    end
+  end
+
+  # And the same program built entirely by gcc must print exactly the same
+  # thing — the oracle for the ordering rule the sections encode.
+  def test_constructor_program_matches_gcc
+    skip_unless_runnable
+    skip "gcc unavailable" unless tool?("gcc")
+
+    in_tmpdir do |dir|
+      ours = File.join(dir, "ours")
+      Linker.link_to(objects_for([CONSTRUCTOR_SOURCE], dir), ours)
+      File.chmod(0o755, ours)
+
+      csrc = File.join(dir, "ctors.c")
+      File.write(csrc, CONSTRUCTOR_SOURCE)
+      theirs = File.join(dir, "theirs")
+      out, status = Open3.capture2e("gcc", "-no-pie", "-o", theirs, csrc)
+      skip "gcc failed:\n#{out}" unless status.success?
+
+      our_out, our_status = Open3.capture2(ours)
+      gcc_out, gcc_status = Open3.capture2(theirs)
+      assert_equal gcc_out, our_out, "the constructor order must match gcc's"
+      assert_equal gcc_status.exitstatus, our_status.exitstatus
+      assert_equal CONSTRUCTOR_EXPECTED, gcc_out, "and gcc must agree with the recorded order"
+    end
+  end
+
+  # A constructor spread over two translation units: the priority ordering is a
+  # property of the whole link, not of one object, so the numbered constructor
+  # from the second unit must still sort ahead of the first unit's unnumbered one.
+  def test_constructors_order_across_translation_units
+    skip_unless_runnable
+
+    first = <<~C
+      int puts(const char *s);
+      __attribute__((constructor)) static void a(void) { puts("a-plain"); }
+      int main(void) { puts("main"); return 0; }
+    C
+    second = <<~C
+      int puts(const char *s);
+      __attribute__((constructor(101))) static void b(void) { puts("b-101"); }
+    C
+    with_exe([first, second]) do |exe|
+      out, status = Open3.capture2(exe)
+      assert_equal 0, status.exitstatus
+      assert_equal "b-101\na-plain\nmain\n", out,
+                   "a numbered constructor sorts ahead of an unnumbered one from another object"
+    end
+  end
+
   def test_executable_without_arrays_gains_no_tag
     skip_unless_linkable
 

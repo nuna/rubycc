@@ -109,6 +109,38 @@ class TestAArch64SelfLink < Minitest::Test
     end
   end
 
+  # --- constructors / destructors (Step 155) ------------------------------
+
+  # The whole aarch64 line: rubycc compiles `__attribute__((constructor))` into
+  # SHT_INIT_ARRAY slots filled by R_AARCH64_ABS64, rubycc links them into a run
+  # the loader finds through DT_INIT_ARRAY, and qemu runs it. The cross gcc build
+  # of the same source is the oracle for the resulting order — the section names
+  # encode it, so a wrong spelling would show up here as a wrong order rather
+  # than as a link failure.
+  CONSTRUCTORS = <<~C
+    int puts(const char *s);
+    __attribute__((constructor(200))) static void ctor_second(void) { puts("c200"); }
+    __attribute__((constructor))      static void ctor_plain(void)  { puts("cplain"); }
+    __attribute__((constructor(101))) static void ctor_first(void)  { puts("c101"); }
+    __attribute__((destructor))       static void dtor_plain(void)  { puts("dplain"); }
+    int main(void) { puts("main"); return 0; }
+  C
+
+  def test_constructors_run_in_priority_order
+    assert_aarch64_self_link_matches_gcc(CONSTRUCTORS)
+  end
+
+  # ... and the order is asserted outright, not only against gcc, so the test
+  # still says something on a host without the cross compiler.
+  def test_constructor_output_is_the_recorded_order
+    skip_unless_aarch64_self_link
+
+    _status, stdout = run_aarch64_self_linked(CONSTRUCTORS)
+    assert_equal "c101\nc200\ncplain\nmain\ndplain\n", stdout,
+                 "numbered constructors ascend, the unnumbered one runs last, " \
+                 "and the destructor runs at exit"
+  end
+
   # --- multiple translation units ----------------------------------------
 
   # Two objects rubycc compiles separately, self-linked together: the caller's

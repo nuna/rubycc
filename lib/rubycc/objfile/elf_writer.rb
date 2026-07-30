@@ -67,6 +67,13 @@ module Rubycc
       SHT_STRTAB   = 3
       SHT_RELA     = 4
       SHT_NOBITS   = 8
+      # The two array section types the runtime walks: SHT_INIT_ARRAY holds
+      # pointers to the constructors it calls at startup/dlopen, SHT_FINI_ARRAY
+      # the destructors it calls at exit/dlclose. Distinct types (rather than
+      # PROGBITS with a magic name) because the linker groups them by type and
+      # advertises each run through DT_INIT_ARRAY / DT_FINI_ARRAY.
+      SHT_INIT_ARRAY = 14
+      SHT_FINI_ARRAY = 15
 
       # Section header flags
       SHF_WRITE     = 0x1
@@ -226,6 +233,32 @@ module Rubycc
         text_padding: AARCH64_NOP
       )
 
+      # --- initializer / finalizer arrays ------------------------------------
+      # An array section is a flat vector of 8-byte function pointers, each slot
+      # filled in by an absolute 64-bit relocation against the function it names.
+      # Its shape is fixed by the ABI and by what the linker's array pass demands
+      # (SharedLinker#split_array_sections): writable and allocatable, entsize 8,
+      # 8-byte aligned.
+      ARRAY_ENTSIZE = 8
+      ARRAY_ALIGN   = 8
+
+      ARRAY_SECTION_BASE = { init: ".init_array", fini: ".fini_array" }.freeze
+      ARRAY_SECTION_TYPE = { init: SHT_INIT_ARRAY, fini: SHT_FINI_ARRAY }.freeze
+      # Constructors before destructors, so grouping the entries is deterministic
+      # whatever order the caller registered them in.
+      ARRAY_KIND_ORDER = %i[init fini].freeze
+
+      # How a priority is spelled. A run-order number below the default goes into
+      # its own section named "<base>.NNNNN", which is how the *linker* learns the
+      # order (a priority is nowhere in the section's contents). Both numbers were
+      # measured off gcc's own objects rather than assumed: priority 101 emits
+      # `.init_array.00101`, so the field is zero-padded to five digits, and
+      # priority 65535 emits the plain, unnumbered `.init_array`, so 65535 is the
+      # default. The five digits are exactly what the linker's array_priority
+      # regexp (`\.\d+`) reads back.
+      DEFAULT_ARRAY_PRIORITY = 65535
+      ARRAY_PRIORITY_DIGITS  = 5
+
       SYM_ENTSIZE = 24
       RELA_ENTSIZE = 24
       SHDR_ENTSIZE = 64
@@ -255,6 +288,10 @@ module Rubycc
         @undefined_symbol_set = Set.new
         @relocations = []
         @data_relocations = []
+        # Constructor/destructor registrations, in registration order (which is
+        # the order their slots are laid out within a section, and so the order
+        # the runtime calls them in).
+        @array_entries = []
       end
 
       def add_text_section(bytes)
@@ -395,8 +432,26 @@ module Rubycc
         self
       end
 
+      # Registers `symbol` — a function this object defines — as a constructor
+      # (`kind` :init) or a destructor (`kind` :fini). It becomes one 8-byte slot
+      # in the matching array section, filled by an absolute 64-bit relocation
+      # against that symbol. `priority` selects the section: the default goes to
+      # the plain ".init_array"/".fini_array", a lower number to its own
+      # ".init_array.NNNNN". The symbol may be file-local (a `static`
+      # constructor, which is the common case), since an absolute relocation
+      # against a local symbol resolves within the object just as well.
+      def add_array_entry(kind:, symbol:, priority: DEFAULT_ARRAY_PRIORITY)
+        raise ArgumentError, "unknown array kind: #{kind.inspect}" unless ARRAY_SECTION_BASE.key?(kind)
+
+        @array_entries << { kind: kind, priority: priority, symbol: symbol }
+        self
+      end
+
       # Assembles and returns the ELF object as an ASCII-8BIT String.
       def to_binary
+        # Fixed first: the section name list, the layout and the .rela payloads
+        # all read it, and they must agree on one grouping.
+        @array_sections = build_array_sections
         @symbols = build_symbol_list
         @section_names = build_section_names
         symbol_indices = index_symbols_by_name(@symbols)
@@ -406,12 +461,42 @@ module Rubycc
         symtab = build_symtab(@symbols, sym_name_offsets)
         rela = relocations? ? build_rela(symbol_indices, rodata_sym_index) : nil
         rela_data = data_relocations? ? build_rela_data(symbol_indices, rodata_sym_index) : nil
+        rela_arrays = @array_sections.to_h do |group|
+          [group[:name], build_rela_array(group[:entries], symbol_indices, rodata_sym_index)]
+        end
 
-        sections = section_layout(symtab: symtab, strtab: strtab, rela: rela, rela_data: rela_data)
+        sections = section_layout(symtab: symtab, strtab: strtab, rela: rela, rela_data: rela_data,
+                                  rela_arrays: rela_arrays)
         assemble(sections)
       end
 
       private
+
+      # The array sections to emit, one per (kind, priority) the registrations
+      # used, each as { name:, kind:, entries: }. Ordered constructors first, then
+      # destructors, ascending priority within each kind — the same order the
+      # linker lays the run in, so reading the object's section list already shows
+      # the run order. Entries keep registration (source) order within a section.
+      # Empty when nothing was registered, which is what keeps a translation unit
+      # without constructors byte-identical to before.
+      def build_array_sections
+        @array_entries
+          .group_by { |entry| [entry[:kind], entry[:priority]] }
+          .sort_by { |(kind, priority), _| [ARRAY_KIND_ORDER.index(kind), priority] }
+          .map do |(kind, priority), entries|
+            { name: array_section_name(kind, priority), kind: kind, entries: entries }
+          end
+      end
+
+      # The section name a (kind, priority) pair is spelled with. See
+      # DEFAULT_ARRAY_PRIORITY / ARRAY_PRIORITY_DIGITS for where the two numbers
+      # in this format come from.
+      def array_section_name(kind, priority)
+        base = ARRAY_SECTION_BASE.fetch(kind)
+        return base if priority == DEFAULT_ARRAY_PRIORITY
+
+        "#{base}.#{format("%0#{ARRAY_PRIORITY_DIGITS}d", priority)}"
+      end
 
       def relocations?
         !@relocations.empty?
@@ -441,8 +526,10 @@ module Rubycc
         names << ".rodata" if rodata?
         names << ".data" if data?
         names << ".bss" if bss?
+        @array_sections.each { |group| names << group[:name] }
         names << ".rela.text" if relocations?
         names << ".rela.data" if data_relocations?
+        @array_sections.each { |group| names << ".rela#{group[:name]}" }
         names.concat([".note.GNU-stack", ".symtab", ".strtab", ".shstrtab"])
       end
 
@@ -568,6 +655,19 @@ module Rubycc
         buf
       end
 
+      # Builds one array section's .rela payload: every slot is an absolute
+      # 64-bit pointer to its function, so each reuses the machine description's
+      # :symbol kind — R_X86_64_64 on x86_64, R_AARCH64_ABS64 on aarch64 — with a
+      # zero addend, at the slot's byte offset within the section.
+      def build_rela_array(entries, symbol_indices, rodata_sym_index)
+        buf = +"".b
+        entries.each_with_index do |entry, slot|
+          reloc = { kind: :symbol, offset: slot * ARRAY_ENTSIZE, symbol: entry[:symbol], addend: 0 }
+          append_machine_reloc(buf, reloc, symbol_indices, rodata_sym_index)
+        end
+        buf
+      end
+
       # Emits the Elf64_Rela entries for one machine-independent relocation
       # record, looking its kind up in the injected machine description. A kind
       # maps to one descriptor per ELF entry the target needs — one on x86_64,
@@ -596,7 +696,7 @@ module Rubycc
       # Ordered section descriptors, matching @section_names. sh_link/sh_info
       # are held as section references (:symtab, :strtab, :text) and resolved
       # once every section index is fixed.
-      def section_layout(symtab:, strtab:, rela:, rela_data:)
+      def section_layout(symtab:, strtab:, rela:, rela_data:, rela_arrays:)
         sections = {}
         sections[nil] = { type: SHT_NULL, flags: 0, data: nil,
                           link: 0, info: 0, addralign: 0, entsize: 0 }
@@ -625,6 +725,19 @@ module Rubycc
           sections[".rela.data"] = { type: SHT_RELA, flags: SHF_INFO_LINK,
                                      data: rela_data, link: :symtab, info: :data,
                                      addralign: 8, entsize: RELA_ENTSIZE }
+        end
+        # Each array section is a run of empty pointer slots (the relocations
+        # supply every byte), paired with its own .rela table. Both are named by
+        # literal string, since a priority-numbered name has no symbolic form.
+        @array_sections.each do |group|
+          name = group[:name]
+          sections[name] = { type: ARRAY_SECTION_TYPE.fetch(group[:kind]),
+                             flags: SHF_ALLOC | SHF_WRITE,
+                             data: "\0".b * (group[:entries].size * ARRAY_ENTSIZE),
+                             link: 0, info: 0, addralign: ARRAY_ALIGN, entsize: ARRAY_ENTSIZE }
+          sections[".rela#{name}"] = { type: SHT_RELA, flags: SHF_INFO_LINK,
+                                       data: rela_arrays.fetch(name), link: :symtab, info: name,
+                                       addralign: 8, entsize: RELA_ENTSIZE }
         end
         sections[".note.GNU-stack"] = { type: SHT_PROGBITS, flags: 0, data: "".b,
                                         link: 0, info: 0, addralign: 1, entsize: 0 }
@@ -740,10 +853,11 @@ module Rubycc
         section[:data] ? section[:data].bytesize : 0
       end
 
-      # A section's sh_link/sh_info is either a literal integer or a symbolic
-      # section reference (:symtab, :strtab, :text) resolved to an index.
+      # A section's sh_link/sh_info is either a literal integer or a section
+      # reference resolved to an index — a symbolic one (:symtab, :strtab, :text)
+      # or, for a priority-numbered array section, its literal name.
       def resolve_ref(value)
-        value.is_a?(Symbol) ? section_index(value) : value
+        value.is_a?(Integer) ? value : section_index(value)
       end
 
       def shdr(name:, type:, flags:, addr:, offset:, size:, link:, info:,

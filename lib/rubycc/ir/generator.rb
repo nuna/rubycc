@@ -166,10 +166,32 @@ module Rubycc
             ir_functions << gen_function(decl, linkage)
           end
         end
-        Program.new(ir_functions, @strings, @globals)
+        Program.new(ir_functions, @strings, @globals, array_entries(program, ir_functions))
       end
 
       private
+
+      # The .init_array / .fini_array entries this translation unit contributes.
+      # The parser collected the constructor/destructor attributes by function
+      # name (a prototype and the definition may each carry them, in either
+      # order), so they are matched here against the functions actually *defined*
+      # here: an attribute on a name this unit only declares registers nothing,
+      # because the array slot belongs to the object that defines the function —
+      # gcc emits nothing for such a declaration either. A unit with no such
+      # attribute yields an empty list and so changes nothing downstream.
+      #
+      # Emitted constructors first, then destructors, each in definition order,
+      # so the object's layout is a function of the source alone (N4).
+      def array_entries(program, ir_functions)
+        entries = []
+        { constructor: :init, destructor: :fini }.each do |attribute, kind|
+          ir_functions.each do |func|
+            priority = program.init_attributes[func.name]&.public_send(attribute)
+            entries << ArrayEntry.new(kind: kind, priority: priority, symbol: func.name) if priority
+          end
+        end
+        entries
+      end
 
       # Records a file-scope variable. A name already taken by a function is a
       # redefinition. The storage class then steers the outcome:

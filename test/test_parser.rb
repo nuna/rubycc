@@ -2521,6 +2521,190 @@ class TestParser < Minitest::Test
     assert_match(/aligned.*not an integer constant/, error.message)
   end
 
+  # --- constructor / destructor attributes (Step 155) ------------------------
+  #
+  # These are the one attribute family whose absence cannot be noticed at
+  # compile time: a dropped constructor leaves a program that links and runs but
+  # never initializes itself. The tests therefore cover every position the
+  # attribute may be written in (each measured against gcc first), the priority
+  # window, and — just as importantly — that every position rubycc does *not*
+  # act on is a diagnostic rather than a silent drop.
+  #
+  # The parser records them per function name in AST::Program#init_attributes,
+  # because a prototype may carry the attribute before or after the definition,
+  # so no single node can own it. DEFAULT is what an unnumbered spelling folds
+  # to (gcc's own default: `constructor(65535)` and a bare `constructor` produce
+  # the identical section).
+  DEFAULT_INIT_PRIORITY = Rubycc::Front::Parser::DEFAULT_INIT_PRIORITY
+
+  def init_attributes(source)
+    parse(source).init_attributes
+  end
+
+  def test_constructor_before_the_declaration_specifiers
+    attrs = init_attributes("__attribute__((constructor)) static void f(void) {}")
+    assert_equal DEFAULT_INIT_PRIORITY, attrs["f"].constructor
+    assert_nil attrs["f"].destructor
+  end
+
+  def test_constructor_between_the_declaration_specifiers
+    attrs = init_attributes("static void __attribute__((constructor)) f(void) {}")
+    assert_equal DEFAULT_INIT_PRIORITY, attrs["f"].constructor
+  end
+
+  # gcc rejects this position on a *definition* ("attributes should be specified
+  # before the declarator in a function definition"); rubycc accepts it as a
+  # deliberate superset — the intent is unambiguous and dropping it is the one
+  # outcome that must not happen.
+  def test_constructor_after_the_declarator_of_a_definition
+    attrs = init_attributes("static void f(void) __attribute__((constructor)) {}")
+    assert_equal DEFAULT_INIT_PRIORITY, attrs["f"].constructor
+  end
+
+  def test_constructor_on_a_prototype_preceding_the_definition
+    attrs = init_attributes("static void f(void) __attribute__((constructor));\n" \
+                            "static void f(void) {}")
+    assert_equal DEFAULT_INIT_PRIORITY, attrs["f"].constructor
+  end
+
+  # gcc accepts this order too, which is why the table is resolved after the
+  # whole unit is parsed rather than attached to the definition node.
+  def test_constructor_on_a_prototype_following_the_definition
+    attrs = init_attributes("static void f(void) {}\n" \
+                            "__attribute__((constructor)) static void f(void);")
+    assert_equal DEFAULT_INIT_PRIORITY, attrs["f"].constructor
+  end
+
+  def test_destructor_is_recorded_separately
+    attrs = init_attributes("__attribute__((destructor)) void f(void) {}")
+    assert_nil attrs["f"].constructor
+    assert_equal DEFAULT_INIT_PRIORITY, attrs["f"].destructor
+  end
+
+  def test_one_function_may_be_both_constructor_and_destructor
+    attrs = init_attributes("__attribute__((constructor,destructor)) void f(void) {}")
+    assert_equal DEFAULT_INIT_PRIORITY, attrs["f"].constructor
+    assert_equal DEFAULT_INIT_PRIORITY, attrs["f"].destructor
+  end
+
+  def test_underscored_spellings_normalize
+    attrs = init_attributes("__attribute__((__constructor__(101))) void f(void) {}\n" \
+                            "__attribute__((__destructor__)) void g(void) {}")
+    assert_equal 101, attrs["f"].constructor
+    assert_equal DEFAULT_INIT_PRIORITY, attrs["g"].destructor
+  end
+
+  def test_priority_is_read_from_the_argument
+    attrs = init_attributes("__attribute__((constructor(101))) void f(void) {}\n" \
+                            "__attribute__((destructor(200))) void g(void) {}")
+    assert_equal 101, attrs["f"].constructor
+    assert_equal 200, attrs["g"].destructor
+  end
+
+  # A constant-expression, not just a literal — the same folding "aligned" gets.
+  def test_priority_may_be_a_constant_expression
+    attrs = init_attributes("__attribute__((constructor(100 + 1))) void f(void) {}")
+    assert_equal 101, attrs["f"].constructor
+  end
+
+  # Measured against gcc: the window is 0..65535 inclusive, and 65535 is gcc's
+  # own default, so writing it explicitly is the unnumbered spelling.
+  def test_priority_window_endpoints_are_accepted
+    attrs = init_attributes("__attribute__((constructor(0))) void a(void) {}\n" \
+                            "__attribute__((constructor(65535))) void b(void) {}")
+    assert_equal 0, attrs["a"].constructor
+    assert_equal DEFAULT_INIT_PRIORITY, attrs["b"].constructor
+  end
+
+  def test_priority_above_the_window_is_a_diagnostic
+    error = assert_raises(Rubycc::CompileError) do
+      parse("__attribute__((constructor(65536))) void f(void) {}")
+    end
+    assert_match(/constructor priorities must be integers from 0 to 65535/, error.message)
+  end
+
+  def test_negative_priority_is_a_diagnostic
+    error = assert_raises(Rubycc::CompileError) do
+      parse("__attribute__((destructor(-1))) void f(void) {}")
+    end
+    assert_match(/destructor priorities must be integers from 0 to 65535/, error.message)
+  end
+
+  def test_non_constant_priority_is_a_diagnostic
+    error = assert_raises(Rubycc::CompileError) do
+      parse("int n; __attribute__((constructor(n))) void f(void) {}")
+    end
+    assert_match(/constructor.*not an integer constant/, error.message)
+  end
+
+  # gcc silently keeps the first of two conflicting priorities, which runs the
+  # initializers in an order the source did not ask for; rubycc says so.
+  def test_conflicting_priorities_are_a_diagnostic
+    error = assert_raises(Rubycc::CompileError) do
+      parse("void f(void) __attribute__((constructor(101)));\n" \
+            "__attribute__((constructor(200))) void f(void) {}")
+    end
+    assert_match(/conflicting 'constructor' priorities for 'f'/, error.message)
+  end
+
+  def test_repeating_the_same_priority_is_accepted
+    attrs = init_attributes("void f(void) __attribute__((constructor(101)));\n" \
+                            "__attribute__((constructor(101))) void f(void) {}")
+    assert_equal 101, attrs["f"].constructor
+  end
+
+  # A name only declared here registers nothing: the array slot belongs to the
+  # object that *defines* the function, and gcc emits nothing for it either. The
+  # attribute is still recorded; the generator drops it against the definitions.
+  def test_a_declaration_without_a_definition_records_but_defines_nothing
+    program = parse("__attribute__((constructor)) void f(void);")
+    assert_equal DEFAULT_INIT_PRIORITY, program.init_attributes["f"].constructor
+    assert_empty program.functions.grep(AST::FunctionDef)
+  end
+
+  def test_a_unit_without_the_attributes_has_an_empty_table
+    assert_empty init_attributes("int main(void) { return 0; }")
+  end
+
+  # --- positions that must diagnose rather than drop -------------------------
+  #
+  # Every context that is not a file-scope function declaration refuses these
+  # attributes: there is nothing to register, and gcc's answer (a warning) is
+  # not available to a compiler with no warning channel.
+
+  def test_constructor_on_a_file_scope_object_is_a_diagnostic
+    error = assert_raises(Rubycc::CompileError) { parse("__attribute__((constructor)) int g = 3;") }
+    assert_match(/'constructor' attribute is only accepted on a file-scope function/, error.message)
+  end
+
+  def test_constructor_on_a_block_scope_declaration_is_a_diagnostic
+    error = assert_raises(Rubycc::CompileError) do
+      parse("int main(void) { __attribute__((constructor)) int x = 0; return x; }")
+    end
+    assert_match(/only accepted on a file-scope function/, error.message)
+  end
+
+  def test_constructor_on_a_struct_specifier_is_a_diagnostic
+    error = assert_raises(Rubycc::CompileError) do
+      parse("struct __attribute__((constructor)) S { int a; }; struct S g;")
+    end
+    assert_match(/only accepted on a file-scope function/, error.message)
+  end
+
+  def test_constructor_on_a_parameter_is_a_diagnostic
+    error = assert_raises(Rubycc::CompileError) do
+      parse("void f(__attribute__((constructor)) int x) { (void)x; }")
+    end
+    assert_match(/only accepted on a file-scope function/, error.message)
+  end
+
+  def test_constructor_on_a_typedef_is_a_diagnostic
+    error = assert_raises(Rubycc::CompileError) do
+      parse("__attribute__((constructor)) typedef void fn(void);")
+    end
+    assert_match(/only accepted on a file-scope function/, error.message)
+  end
+
   def test_extension_prefix_on_a_declaration_is_accepted
     decl = parse_decl("__extension__ int z = 3;")
     assert_equal "z", decl.name

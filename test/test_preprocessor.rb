@@ -881,6 +881,17 @@ class TestPreprocessor < Minitest::Test
     assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value)
   end
 
+  # Step 155 gave these two real semantics, so the query has to say so: a header
+  # that guards its `__attribute__((constructor))` on __has_attribute would
+  # otherwise take the fallback path and never register its initializer.
+  def test_has_attribute_is_true_for_the_init_attributes
+    ["constructor", "destructor", "__constructor__"].each do |name|
+      source = "#if __has_attribute(#{name})\nint yes;\n#else\nint no;\n#endif"
+      assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value),
+                   "__has_attribute(#{name}) must be true"
+    end
+  end
+
   def test_has_attribute_is_false_for_an_unknown_attribute
     source = "#if __has_attribute(noreturn)\nint yes;\n#else\nint no;\n#endif"
     assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
