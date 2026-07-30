@@ -5544,9 +5544,38 @@ Step 157 で立てた見立てのとおりの位置に進んだ。
 
 ---
 
+## Step 159 — 「Pure Ruby」を「Almost Pure Ruby」に(M5 H6)
+
+プロジェクトが「Pure Ruby」と謳っている文面を「Almost Pure Ruby」に改めた(ユーザ指示)。
+
+### 変えたもの
+
+gemspec の `summary` / `description`、README の見出し行、DESIGN のタイトル・1 章の
+位置づけ・**R2**・R5、THROUGHPUT の N1 評価、security-dos-review の前提、
+および `Rubycc::Compiler` を「Pure Ruby toolchain」と呼んでいたテスト側のコメント 2 箇所。
+
+**R2 は要件そのもの**なので、ラベルだけを改め、実質(「Ruby 標準添付ライブラリ以外に
+依存しない」)は 1 字も変えていない。要件の検証可能性を落とさないため。
+
+### 変えなかったもの(と、その理由)
+
+一括置換にしなかったのは、**同じ語が別のことを指している箇所がある**から:
+
+- `benchmark/README.md` の「ハーネス(Pure Ruby)」— ベンチマークスクリプト
+  `run.rb` 自体の説明であって、プロジェクトの主張ではない
+- `docs/DESIGN.md` の「同機能の Pure Ruby 実装よりは十分速い」(N2)—
+  **比較対象である他の実装**を指しており、rubycc の主張ではない
+- `tools/verify_gem_tests.rb` と `lib/rubycc/pkgconf` の "pure-Ruby" —
+  前者は**検証対象 gem のフォールバック**、後者は `.pc` パーサという
+  個別コンポーネントの事実記述
+
+---
+
 ## 現在のテスト規模
 
-Step 158 完了時点: **2,688 runs / 7,650 assertions / 0 failures / 47 skips**
+Step 159 完了時点: **2,688 runs / 7,650 assertions / 0 failures / 47 skips**
+(Step 158 と同数 = 文面の変更のみ)
+(以前) Step 158 完了時点: **2,688 runs / 7,650 assertions / 0 failures / 47 skips**
 (Step 157 から +9 = POSIX バックスラッシュの 3 規則・行継続・mkmf 実パターン再現)
 (以前) Step 157 完了時点: **2,679 runs / 7,639 assertions / 0 failures / 47 skips**
 (Step 156 と同数の runs = DB のスキーマ検査が 2 gem 分増えたのみ)
