@@ -719,16 +719,66 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   **rubygems.org への公開は未実施**(公開はアカウント保有者の操作)。
 - ~~CI(GitHub Actions)を構築し、サポート Ruby 全バージョンでの継続検証を自動化する。~~
   **完了(Step 135)**: 3 層構成で新設([`CI.md`](CI.md))。**Tier A**(`test.yml`、
-  push / PR)は Ruby 3.3 / 3.4 / 4.0 のマトリクスで全スイートを実行。差分テストの
+  push / PR)は Ruby 3.3 / 4.0 のマトリクスで全スイートを実行。差分テストの
   相手となる gcc・binutils・aarch64 クロス・qemu-user を apt で導入し、欠けたら
   その場で失敗させる(`qemu-user-static` では実行テストが全 skip になるため
   `qemu-user` を使う)。さらに `tools/ci_check_skips.rb` が skip 数・runs 数の逸脱を
-  検出する — skip は失敗と違って静かに緑になるため。**Tier B**(`nightly.yml`)は
-  corpus census の差分検出・ネットワーク受け入れ(`RMAKE_ACCEPTANCE=1` と
+  検出する — skip は失敗と違って静かに緑になるため。**Tier B**(`weekly.yml`、
+  週 1)は corpus census の差分検出・ネットワーク受け入れ(`RMAKE_ACCEPTANCE=1` と
   `tools/m2_acceptance.rb`)・スループット計測(合否判定はしない: ペア計測でしか
-  判定できないため)。**Tier C**(`release.yml`、タグ push)は Tier A の再利用に加えて
-  タグと `Rubycc::VERSION` の整合確認と、`SOURCE_DATE_EPOCH` を固定した gem の
-  2 回ビルドによるバイト一致検証(N4 の配布物版)。`gem push` は意図的に自動化しない。
+  判定できないため)・**Ruby 3.4 の全スイート**。**Tier C**(`release.yml`、タグ push)は
+  Tier A の再利用に加えてタグと `Rubycc::VERSION` の整合確認と、`SOURCE_DATE_EPOCH` を
+  固定した gem の 2 回ビルドによるバイト一致検証(N4 の配布物版)。
+  `gem push` は意図的に自動化しない。Private リポジトリのまま GitHub Free の
+  2,000 分/月に収めるため、3.4 を毎 push から週 1 に落とし、頻度と範囲を削っている
+  (トレードオフ = 3.4 固有の破壊を最大 1 週間遅れで検知。CI.md に記録)。
+- ~~コーパス拡張の手順(人気ランキング → C 拡張の有無 → R10 判定)を道具にする。~~
+  **完了(Step 143)**: `tools/scan_popular_gems.rb`。R10 の判定は `census.rb` に委譲し
+  再実装しない。R10 が原理的に見ない**アセンブラ要否**はスキャナ側で 2 系統
+  (`.S`/`.s` 走査 + `$objs` の未対応エントリ)検査し、`[1b]` に分類する。
+- ~~`data/verified_gems.json` を手編集ではなく実走結果から生成/拡張する
+  (data/README.md が当初から述べていた意図)。~~ **完了(Step 144)**:
+  `tools/verify_gem_tests.rb`。`RUBYCC=1 gem install` → rubycc が使われた痕跡の確認 →
+  上流タグの取得と `.so` 差し込み → gem 自身のテスト実走 → `--update` で DB へ。
+  **`sanity` 式が必須**(C 拡張がロードされていなくてもスイートは合格しうるため。
+  racc の `cparse.so` を壊しても 71 tests / 0 failures で通ることを実測)。
+  既存 6 件を全て再現して自身を検証済み(racc の assertions のみ 319 → 320 で
+  差異あり・原因未特定)。**Step 151 で nkf 0.3.0 を追加(6 → 7 件)** —
+  この経路で初めて新規に検証・記録された gem。**残: stackprof**(ギャップ 6 番の
+  `__dso_handle` が残っているため未達)。
+- ~~コーパス拡張と検証済み gem 追加の一連の手順をスキル化する。~~
+  **完了(Step 145)**: `.claude/skills/corpus-expansion/SKILL.md`。道具の使い方ではなく
+  **道具の間をつなぐ判断**(Gap candidate の仕分け、(d) レベルの証拠の水準、
+  sanity 式の選び方、横断規約)を持つ。事実は既存文書を指すだけにして二重管理を避ける。
+- **stackprof / nkf の検証で見つかったギャップ(Step 146 で実測・最小再現あり)**。
+  どちらもホスト gcc では上流スイートが完走する(stackprof 31 runs / 143 assertions、
+  nkf 8 tests / 46 assertions)ので、原因は全て rubycc 側。
+  レシピは `tools/verify_gem_tests.rb` に入っており、修正のたびに再検証できる:
+
+  | # | ギャップ | 影響 | 優先 |
+  |---|---|---|---|
+  | 1 | ~~**`sigset_t` の typedef 衝突**~~ **解消(Step 147)**: `signal.h` 側をガード `__sigset_t_defined` + `__sigset_t` エイリアスに揃え、`sys/select.h` と文字どおり同一にした。ABI ハーネスに**両方の include 順**のケースを x86_64・aarch64 の 4 件追加 | ~~`ruby.h` と `<signal.h>` を併用する任意の gem~~ | ~~最優先~~ **完了** |
+  | 2 | ~~**`sizeof(式)` が整数定数式に畳めない文脈がある**~~ **解消(Step 148)**: enumerator・ビットフィールド幅・case ラベル・配列デシグネータ・`aligned` 属性・`__builtin_choose_expr` の 6 箇所に `sizeof_expr: method(:fold_time_sizeof)` を配線。グローバル初期化子(`parser.rb:513`)は意図的に据え置き(`references_sizeof_expr?` ガードでジェネレータ側に回す既存の設計判断) | ~~nkf~~ | ~~高~~ **完了** |
+  | 3 | ~~`pthread_kill` / `pthread_atfork` が未宣言~~ **解消(Step 149)**: 両アーキの `pthread.h` に宣言を追加(シグネチャは実測)。`pthread_atfork` は**これでリンクが通るようになるわけではない**(6 番) | ~~stackprof~~ | ~~中~~ **完了** |
+  | 4 | ~~`_POSIX_MONOTONIC_CLOCK` が無い~~ **解消(Step 149)**: `include/libc/unistd.h` に追加。**実測値は 0**(= 対応するが `sysconf` での実行時確認が要る、という glibc と同じ意味)で、両アーキ一致のため共通層。他の `_POSIX_*` は網羅しない | ~~stackprof~~ | ~~中~~ **完了** |
+  | 5 | ~~**不完全配列型の補完が `conflicting types`**~~ **解消(Step 150)**: `Type.composite`(C11 6.2.7p3)を新設し、ファイルスコープの `extern` 参照・仮定義/実定義・ブロックスコープの `extern` の 3 経路を 1 つの規則に集約。多次元も対応。**これで nkf が PASS**(Step 151 で記録) | ~~nkf~~ | ~~中~~ **完了** |
+  | 6 | **`__dso_handle` を供給できない** — `pthread_atfork` は共有 libc に無く `libc_nonshared.a` の `pthread_atfork.oS` でしか得られず、そのメンバが `__dso_handle` を参照して `unsupported text relocation against external symbol` になる。gcc では crtstuff(`crtbegin_S.o`)が供給しており rubycc に相当物が無い | stackprof。リンカの構造的な穴 | 低(最難・要設計) |
+
+  1〜5 を潰した状態(scratch でのハンドパッチ)では**両 gem とも上流スイートが完走する**
+  ことを実測済み(ただし `__dso_handle` はスタブで代用しており、この結果は検証ではない)。
+  **aarch64 と musl では未実測**。
+
+  **Step 149 時点の stackprof の到達位置**: 3・4 の解消でコンパイルは通るようになり、
+  失敗は `.so` のリンク段階(6 番の `__dso_handle`)に移った。5 番は nkf 固有なので
+  stackprof には現れない。
+- **既知の負債(Step 149 で観測)**: `test/corpus/gems.rb` の 4 エントリ
+  (bigdecimal・date・racc・redcarpet)が `version: nil` = 最新追従になっており、
+  上流が新版を出すたびに `rake corpus:census` のスナップショットが動く。
+  この 4 つは `data/verified_gems.json` では**厳密なバージョンを固定している**ので、
+  センサスが記述するバージョンと検証済みバージョンが食い違いうる。
+  また Tier B(`weekly.yml`)の census ジョブは差分で失敗する設計なので、
+  gem のリリースだけで週次 CI が赤くなる。固定するとスナップショットが動くため
+  別ステップの作業。
 - **受け入れ = v1.0 リリース = M5 完了**。
 
 ## 9. マイルストーン横断のリスク(DESIGN 7 章の運用)

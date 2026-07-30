@@ -318,8 +318,48 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <sys/select.h> then <signal.h>: both headers define sigset_t, each behind
+  # its own typedef guard prior to this fix, so whichever header lost the race
+  # to define it first would still see the other header's guard as unset and
+  # redefine the type -- a conflict a Spec checking only one header at a time
+  # could never surface. This pins the sys/select.h-first include order and
+  # exercises fd_set and sigset_t together in one function, proving both
+  # headers' declarations are live simultaneously.
+  SIGSET_SELECT_FIRST = HeaderAbiHarness::Spec.new(
+    header: "sys/select.h",
+    also: ["signal.h"],
+    sizes: %w[sigset_t __sigset_t],
+    snippets: [<<~C.chomp]
+      static int abi_sigset_select_first(int fd) {
+        fd_set f; FD_ZERO(&f); FD_SET(fd, &f);
+        sigset_t s; sigemptyset(&s); sigaddset(&s, SIGINT);
+        return FD_ISSET(fd, &f) + sigismember(&s, SIGINT);
+      }
+    C
+  )
+
+  # <signal.h> then <sys/select.h>: the same conflict as SIGSET_SELECT_FIRST
+  # above but with the include order reversed, so the fix is proven regardless
+  # of which header a gem happens to pull in first (ruby.h's defines.h reaches
+  # <sys/select.h>; a gem's own source can #include <signal.h> before or after
+  # that).
+  SIGSET_SIGNAL_FIRST = HeaderAbiHarness::Spec.new(
+    header: "signal.h",
+    also: ["sys/select.h"],
+    sizes: %w[sigset_t __sigset_t],
+    snippets: [<<~C.chomp]
+      static int abi_sigset_signal_first(int fd) {
+        sigset_t s; sigemptyset(&s); sigaddset(&s, SIGINT);
+        fd_set f; FD_ZERO(&f); FD_SET(fd, &f);
+        return sigismember(&s, SIGINT) + FD_ISSET(fd, &f);
+      }
+    C
+  )
+
   # <unistd.h>: the standard file-descriptor and access-mode constants, the few
   # ABI-typed names' widths, and that the core system-call declarations exist.
+  # _POSIX_MONOTONIC_CLOCK (Step 146 gap 4) is a measured POSIX option macro,
+  # not a declaration, so it only needs the `ints` check below.
   UNISTD = HeaderAbiHarness::Spec.new(
     header: "unistd.h",
     sizes: %w[ssize_t off_t pid_t uid_t gid_t],
@@ -327,7 +367,8 @@ class TestHeaderAbi < Minitest::Test
              SEEK_SET SEEK_CUR SEEK_END
              _SC_ARG_MAX _SC_CHILD_MAX _SC_CLK_TCK _SC_NGROUPS_MAX
              _SC_OPEN_MAX _SC_PAGESIZE _SC_PAGE_SIZE _SC_NPROCESSORS_CONF
-             _SC_NPROCESSORS_ONLN _SC_PHYS_PAGES _SC_AVPHYS_PAGES],
+             _SC_NPROCESSORS_ONLN _SC_PHYS_PAGES _SC_AVPHYS_PAGES
+             _POSIX_MONOTONIC_CLOCK],
     snippets: [<<~C.chomp]
       static long abi_unistd(int fd, void *buf, unsigned long n) {
         return read(fd, buf, n) + write(fd, buf, n) + pread(fd, buf, n, 0)
@@ -689,6 +730,11 @@ class TestHeaderAbi < Minitest::Test
   # reference in the statically linked aarch64 probe would otherwise pull the
   # pthread implementation in. The three PTHREAD_*_INITIALIZER macros and
   # PTHREAD_ONCE_INIT are exercised as file-scope static initializers.
+  # pthread_kill and pthread_atfork (Step 146 gap 3) sit under the same
+  # sizeof-unevaluated umbrella as every other call above -- pthread_atfork
+  # in particular must never be linked for real here, since glibc supplies it
+  # only from libc_nonshared.a via a member that references __dso_handle
+  # (Step 146 gap 6, unresolved).
   PTHREAD = HeaderAbiHarness::Spec.new(
     header: "pthread.h",
     defines: ["_GNU_SOURCE"],
@@ -705,11 +751,13 @@ class TestHeaderAbi < Minitest::Test
       static pthread_once_t   abi_o  = PTHREAD_ONCE_INIT;
       static void  abi_once_init(void) { }
       static void *abi_thread_start(void *p) { return p; }
+      static void  abi_atfork_hook(void) { }
       static unsigned long abi_pthread(pthread_t *t, pthread_attr_t *at,
                                        pthread_mutexattr_t *ma, pthread_key_t *k) {
         return sizeof(pthread_create(t, at, abi_thread_start, (void *)0))
              + sizeof(pthread_join(*t, (void **)0)) + sizeof(pthread_detach(*t))
              + sizeof(pthread_equal(*t, pthread_self())) + sizeof(pthread_self())
+             + sizeof(pthread_kill(*t, 0))
              + sizeof(pthread_mutex_init(&abi_m, ma)) + sizeof(pthread_mutex_lock(&abi_m))
              + sizeof(pthread_mutex_trylock(&abi_m)) + sizeof(pthread_mutex_unlock(&abi_m))
              + sizeof(pthread_mutex_destroy(&abi_m))
@@ -721,7 +769,8 @@ class TestHeaderAbi < Minitest::Test
              + sizeof(pthread_getspecific(*k)) + sizeof(pthread_setspecific(*k, (void *)0))
              + sizeof(pthread_attr_init(at)) + sizeof(pthread_attr_destroy(at))
              + sizeof(pthread_mutexattr_init(ma)) + sizeof(pthread_mutexattr_destroy(ma))
-             + sizeof(pthread_mutexattr_settype(ma, PTHREAD_MUTEX_RECURSIVE));
+             + sizeof(pthread_mutexattr_settype(ma, PTHREAD_MUTEX_RECURSIVE))
+             + sizeof(pthread_atfork(abi_atfork_hook, abi_atfork_hook, abi_atfork_hook));
       }
     C
   )
@@ -1581,6 +1630,14 @@ class TestHeaderAbi < Minitest::Test
     assert_abi_matches(SYS_SELECT)
   end
 
+  def test_sigset_select_first_abi_matches_gcc
+    assert_abi_matches(SIGSET_SELECT_FIRST)
+  end
+
+  def test_sigset_signal_first_abi_matches_gcc
+    assert_abi_matches(SIGSET_SIGNAL_FIRST)
+  end
+
   def test_unistd_abi_matches_gcc
     assert_abi_matches(UNISTD)
   end
@@ -1742,6 +1799,14 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_sys_select_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::SYS_SELECT)
+  end
+
+  def test_sigset_select_first_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SIGSET_SELECT_FIRST)
+  end
+
+  def test_sigset_signal_first_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::SIGSET_SIGNAL_FIRST)
   end
 
   def test_stddef_abi_matches_cross_gcc

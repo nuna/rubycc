@@ -26,3 +26,10 @@
 - ステップ完了時に docs/STEPS.md へ設計記録を追記し、docs/ROADMAP.md の計画を消し込む
 - 実装をエージェントに移譲するときは R11(既存 OSS 類似実装の禁止)をプロンプトに明記し、
   レビュー観点に含める
+
+# スキル
+
+- `corpus-expansion` — コーパス拡張(人気 gem のスキャン → `test/corpus/gems.rb` 追加 →
+  `rake corpus:census` → ヘッダギャップ充填)と検証済み gem 追加(gem 本体テストの実走 →
+  `data/verified_gems.json` 更新)の一連のワークフロー。
+  定義は `.claude/skills/corpus-expansion/SKILL.md`

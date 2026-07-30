@@ -53,6 +53,17 @@ typedef long intptr_t;
 #define W_OK 2
 #define R_OK 4
 
+/* POSIX option macro: the monotonic clock option is supported, but its
+   value (0, not a positive constant) means support must still be confirmed
+   at runtime via sysconf(_SC_MONOTONIC_CLOCK), matching the host glibc
+   (measured). Needed for stackprof: it branches on
+   `#ifdef _POSIX_MONOTONIC_CLOCK`, and the #else arm it would otherwise take
+   is upstream dead code containing a real syntax error, so a toolchain that
+   never defines this macro cannot build stackprof at all. Scope: only this
+   one _POSIX_* macro is added here, not the full POSIX options set (same
+   scoping judgment as sys/syscall.h's non-exhaustive number list). */
+#define _POSIX_MONOTONIC_CLOCK 0
+
 #ifndef SEEK_SET
 #define SEEK_SET 0
 #define SEEK_CUR 1

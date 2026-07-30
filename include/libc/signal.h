@@ -13,7 +13,11 @@
    Common layer: every signal number, SA_ flag and struct layout (sigset_t,
    siginfo_t and struct sigaction all included) is identical on x86-64 and
    aarch64 -- both use glibc's generic sigaction with the trailing sa_restorer
-   and the 128-byte sigset_t / siginfo_t. */
+   and the 128-byte sigset_t / siginfo_t. sigset_t's typedef guard and
+   spelling (__sigset_t_defined / __sigset_t) are shared literally with
+   <sys/select.h>, so a program that pulls in both headers -- directly or via
+   ruby.h's <sys/select.h> include -- does not hit a conflicting redefinition,
+   regardless of which header is included first. */
 
 #ifndef _RUBYCC_SIGNAL_H
 #define _RUBYCC_SIGNAL_H
@@ -39,12 +43,14 @@ typedef void (*__sighandler_t)(int);
 #define SIG_IGN ((__sighandler_t) 1)
 #define SIG_ERR ((__sighandler_t) -1)
 
-/* The signal set: 128 bytes, 8-byte aligned (measured, both arches). */
-#ifndef _RUBYCC_SIGSET_T
-#define _RUBYCC_SIGSET_T
-typedef struct {
-  unsigned long __val[16];
-} sigset_t;
+/* The signal set: 128 bytes, 8-byte aligned (measured, both arches). The
+   typedef guard and spelling (__sigset_t_defined / __sigset_t) are shared
+   literally with <sys/select.h>, so the two headers do not redefine sigset_t
+   regardless of which one is included first. */
+#ifndef __sigset_t_defined
+#define __sigset_t_defined 1
+typedef struct { unsigned long __val[1024 / (8 * sizeof(unsigned long))]; } __sigset_t;
+typedef __sigset_t sigset_t;
 #endif
 
 /* The value delivered with a queued signal (POSIX real-time signals). */

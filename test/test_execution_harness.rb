@@ -3136,6 +3136,41 @@ class TestExecutionHarness < Minitest::Test
                  "rubycc and gcc disagree on an array bound sized from sizeof(base.member)"
   end
 
+  # #fold_time_sizeof (the parse-time "sizeof <expression>" resolver an array
+  # bound and a _Static_assert already reach) is wired into every other
+  # integer-constant-expression context too (Step 148): an enumerator value, a
+  # bit-field width, a case label, and an array designator. The enumerator here
+  # is nkf.c's own idiom for a compile-time string length,
+  # "len = sizeof(str) - 1"; the other three are exercised in the same program
+  # so one gcc-diffed run covers all four wiring gaps at once.
+  SIZEOF_EXPR_CONSTANT_CONTEXTS_PROGRAM =
+    "int printf(const char *fmt, ...); " \
+    "const char str[] = \"abc\"; " \
+    "enum { len = sizeof(str) - 1 }; " \
+    "static int probe; " \
+    "struct S { unsigned f : sizeof(probe); }; " \
+    "int classify(int n) { " \
+    "  int arr[3]; " \
+    "  switch (n) { " \
+    "    case sizeof(arr) / sizeof(arr[0]): return 100; " \
+    "    default: return -1; " \
+    "  } " \
+    "} " \
+    "int main(void) { " \
+    "  char s[] = \"ab\"; " \
+    "  int a[10] = {[sizeof(s) - 1] = 9}; " \
+    "  struct S t; " \
+    "  t.f = 5; " \
+    "  printf(\"%d %d %d %d\\n\", len, classify(3), a[2], t.f); " \
+    "  return 0; }"
+
+  def test_sizeof_expression_constant_contexts_match_gcc_stdout
+    assert_equal program_output(SIZEOF_EXPR_CONSTANT_CONTEXTS_PROGRAM, compiler: :gcc),
+                 program_output(SIZEOF_EXPR_CONSTANT_CONTEXTS_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on sizeof <expression> folded in an enumerator, " \
+                 "bit-field width, case label, or array designator"
+  end
+
   private
 
   def run_source(source, compiler:)

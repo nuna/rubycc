@@ -4540,9 +4540,561 @@ statfs エントリに届いたことを意味する。
 
 ---
 
+## Step 143 — 人気 gem スキャナの整備とアセンブラ検出(M5 H6)
+
+Step 119・139 のコーパス拡張は「人気ランキングを辿って `.gem` を落として中を見る」を
+毎回手作業でやっており、手順が残っていなかった。それを `tools/scan_popular_gems.rb`
+として道具にした。日本語の使い方は [`test/corpus/README.md`](../test/corpus/README.md)。
+
+### R10 ゲートは再実装せず census.rb に委譲した
+
+スキャナが独自に「C++ があるか」「configure 依存か」を判定すると、`rake corpus:census`
+と**別々に劣化する 2 つの判定**ができてしまう。そこで `Corpus::Census` の
+`fetch_gem` / `unpack_gem` / `ext_cpp_files` / `read_extconf` / `configure_dependency?` /
+`ext_source_files` を呼ぶだけにし、`test/corpus/census.rb` は 1 行も触っていない。
+スキャナが「候補」と言った gem は、コーパスに入れた後のセンサスでも同じ判定になる。
+
+### 実走で見つけた設計の穴 — R10 通過 ≠ ビルド可能
+
+初回の試走で **bcrypt が「追加候補」として報告された**。Step 139 では人手で除外して
+いた gem である。原因は R10 のゲートが構造的にアセンブリを見ないこと:
+R10 は「純 C 拡張か」の判定であって「rubycc がビルドできるか」ではなく、
+**アセンブラバックエンドが無いのは rubycc 固有の制約**だから、R10 の関心事の外にある。
+委譲した以上、この検査はスキャナ側の責務になる。
+
+検査は 2 本立てで、**片方だけでは漏れる**ことを実測で確認した:
+
+| gem | `.S`/`.s` ファイル走査 | `$objs` の未対応エントリ |
+|---|---|---|
+| ffi 1.17.4 | 48 本(`ext/ffi_c/libffi` 配下)で検出 | `$objs` に一切現れず **検出できない** |
+| bcrypt 3.1.22 | `ext/mri/x86.S` で検出 | `x86.o` に `x86.c` が無く検出 |
+
+ffi は「同梱しているが `$objs` に出ない」側、`$objs` チェックは「生成される・名前の違う
+アセンブリ」側を押さえる。着手前は「bcrypt は `$objs` でしか見えない」と見込んでいたが、
+**実測では bcrypt は両方に引っかかった**(`.S` が `ext/` 直下にある)。想定と違ったので
+コード側のコメントも実測に合わせて書き直した。
+
+`extconf.rb` は**実行せずテキストとして読む**。`$objs = %w(...)` / 配列リテラル /
+`<<` `+=` `.concat` の追加代入を静的に拾い、各 `<base>.o` に対応する `<base>.c` が
+gem ツリー内に無いものを報告する。任意の gem の extconf を実行するのは、この用途
+(候補の絞り込み)に対して代償が釣り合わない。
+
+検出された gem は `[1]`(追加候補)ではなく **`[1b]`(要確認: アセンブラが必要)** に
+分類する。除外(`[2]`)にしないのは、R10 としては通っているという事実を歪めないため。
+
+### ランキング取得元と、黙って嘘をつかないための自己検証
+
+`https://rubygems.org/releases/popular` は **100 gem(10 ページ)でハードキャップ**され、
+11 ページ目以降は**ページ 1 を黙って返す**。これを踏まなければランク 101〜200 を
+スキャンしたつもりで 1〜10 を再検査するだけになる。そこでページが自己申告する
+ランク範囲(`data-testid="entries-info"`)を毎回照合し、要求と食い違えば止める。
+ランク 100 超は bestgems.org(全期間 DL 数、20 gem/ページ)にフォールバックする
+(`SCAN_SOURCE=auto` が既定)。HTML のパースが 0 件になった場合も**空リストを返さず
+例外にする**: 「人気 gem に C 拡張は無い」という結論が静かに出るほうが有害だから。
+
+### 実測で分かった運用上の性質
+
+- **ffi は現在 rubygems.org の人気 100 位に入っていない**(走査で確認)。ランキングは
+  日次で動くので「ランク N に gem X がいる」形の再現手順は経年劣化する。検証は
+  ランク指定ではなく gem 名指定(`inspect_gem` の直接呼び出し)で行った。
+- bestgems.org は検証時点でサイト障害(Cloudflare 522)。外部ランキングは単一障害点に
+  なるため、`auto` のフォールバックは片方が落ちても 100 位以内なら動く構成になっている。
+- ランク 1〜20 の走査結果: C 拡張持ちは 2 件だけ(nokogiri = configure 依存で `[2]`、
+  json = コーパス内で `[3]`)。**上位ほど純 Ruby gem が多い**ため、コーパス拡張の
+  実入りはむしろランク 100 以降にある。
+
+---
+
+## Step 144 — gem 本体テストの実走ツールと verified_gems.json の生成経路(M5 H6)
+
+`data/README.md` は当初から「長期的には手編集ではなくコーパスの結果から生成/拡張したい」と
+書いていたが、実態は Step 54 以来ずっと手編集だった。それを `tools/verify_gem_tests.rb` に
+した。scratch GEM_HOME への `RUBYCC=1 gem install` → rubycc が使われた痕跡の確認 →
+上流タグ tarball の取得 → ビルド済み `.so` の差し込み → gem 自身のテストスイート実走 →
+サマリ行の実測パース → `--update` で DB へ、という一本道。
+
+### 中心にあるのは sanity チェック(合格するテストが嘘をつく)
+
+このツールで一番重要なのは、テストを走らせる仕組みではなく **走らせる前のゲート**である。
+C 拡張がロードされず純 Ruby のフォールバックや処理系同梱の別コピーが使われた状態でも、
+**テストスイートは合格する**。その状態で記録を書けば「rubycc で検証済み」という
+虚偽が DB に入る。
+
+これは仮説ではなく**実測で確かめた**: racc の `cparse.so` を壊した状態でスイートを走らせると
+**71 tests / 320 assertions / 0 failures / 100% passed** になる。純 Ruby ランタイムに
+落ちているだけで、rubycc は 1 バイトも関与していない。同じ状態で sanity は
+`the injected extension was not loaded: .../cparse.so` で落ちる。
+
+そこで `sanity` 式を**レシピの必須フィールド**にし、無いレシピは実行を拒否する。
+検査は 2 段構え:
+
+1. **全 gem 共通**: 差し込んだ `.so` の realpath が子プロセスの `$LOADED_FEATURES` にあるか
+   (= 別のコピーではなく *この* ビルドが読まれたか)
+2. **gem 固有**: 純 Ruby フォールバックが勝っていないか。
+   json は `JSON.parser.to_s == "JSON::Ext::Parser"`(`lib/json/ext.rb` が
+   TruffleRuby 向けに純 Ruby generator を持つ)、racc は
+   `Racc::Parser::Racc_Runtime_Type == "c"`(`lib/racc/parser.rb` が
+   `require 'racc/cparse'` を `rescue LoadError` して勝者をこの定数に記録する)
+
+msgpack / redcarpet / bigdecimal / date には「C か否か」の観測点が無い(MRI では
+フォールバックが存在しない)。この 4 つは 1 のみ。ただし **date は default gem、
+bigdecimal は同梱 gem** で「別のコピーが読まれる」危険は実在するので、1 が空振りの
+チェックにはなっていない。
+
+### rubycc が使われた証明
+
+install が成功しただけでは不足で、gcc に落ちていた可能性が残る。RubyGems が残す痕跡
+2 つを**両方**必須にした: `gem_make.out` の `$(MAKE)` が rubycc の `exe/rmake` であること、
+生成された Makefile の `CC` が `exe/rubycc` であること。
+**`mkmf.log` は必須にできなかった** — redcarpet と racc は extconf に probe が無く
+mkmf.log を書かない(実測)。あれば追加証拠として報告するに留めている。
+
+### 上書きしてはならない 2 つの欄
+
+- **`notes`** は既存を保持する。機械が観測できない但し書き(racc の
+  「`lib/racc/parser-text.rb` を手で供給した」)が入っており、再実行では復元できない。
+  新規エントリで `--notes` 省略時は既定値を入れたうえで「notes は人間の責務」と警告する。
+  例外は skip / pending / omission の件数で、これは実測なのでツールが事実文を追記する
+  (既存の散文が同じ件数に言及していれば重複させない = bigdecimal の 11 omissions)。
+- **`evidence`** は**追記**する(初版レビューで上書き実装だったのを是正)。この欄は
+  確認したステップの履歴を溜める場所で、json は Step 54・61・64、msgpack は Step 138 の
+  H4 の 1 文を持つ。今日の実走が証明するのは今日測った事実だけで、過去の確認が
+  無かったことにはならない。上書きすれば再実行で復元できない部分が黙って消える。
+
+### 書式を守るために独自エミッタを書いた
+
+`JSON.pretty_generate` は `["2.21.1"]` を 3 行に展開するため、1 gem 更新するだけで
+**既存 6 件すべてが差分**になり、レビューで意図した変更が埋もれる。インデント 2 ・
+`versions` はインライン配列という既存の書式で出す小さなエミッタを持たせた。
+実測で、redcarpet 1 件の更新の diff は `verified_at` と `evidence` の 2 行だけになる。
+
+### 自分自身の検証 = 既存 6 件の再現
+
+このツールの信用は「既存の記録を再現できるか」で立つ。**6 件すべてを実走**した:
+
+| gem | 実測 | 既存記録 |
+|---|---|---|
+| redcarpet 3.6.1 | 136 tests / 206 assertions / 0 failures | 一致 |
+| json 2.21.1 | 606 tests / 3,433 assertions / 0 failures | 一致 |
+| msgpack 1.8.3 | 455 examples / 0 failures / 1 pending | 一致 |
+| bigdecimal 4.1.2 | 265 tests / 8,267 assertions / 11 omissions | 一致 |
+| date 3.5.1 | 143 tests / 162,593 assertions / 0 failures | 一致 |
+| racc 1.8.1 | 71 tests / **320** assertions / 0 failures | tests は一致、**assertions が +1**(記録は 319) |
+
+**racc の +1 は原因が特定できていない**。潰した仮説: 実行ごとのゆらぎ(2 回とも 320)、
+test-unit-ruby-core のバージョン差、`-rhelper` の有無、`--enable-frozen-string-literal`、
+load path を installed gem 側にする — いずれも 320。ファイル別内訳
+(12+28+1+4+238+25+12)も 320 で内部整合している。Step 99 の記録側が別条件だったのか
+転記の誤りなのかは**不明のまま**。判定に関わる数(71 tests / 0 failures / 0 errors)は
+一致しているので DB はこのステップでは書き換えず、次に racc を `--update` したときに
+両方の測定が日付付きで evidence に並ぶのに任せる。
+
+### 実測で分かったこと
+
+- **json に `JSON_DISABLE_SIMD=1` は不要だった**。`tools/m2_acceptance.rb` はホスト gcc で
+  extconf を走らせるためフラグが要ったが、`RUBYCC=1 gem install` 経路では
+  conftest 自体が rubycc を通るので **SIMD probe が自然に偽化する**(DB の既存 notes が
+  Step 60 で述べていたとおり)。経路が違えば必要な配慮も違う、という実例。
+- **date の `test-unit-ruby-core` load path 追加は、実測では無くても通った**。scratch
+  GEM_HOME に入っていれば RubyGems の require フォールバックが解決する。レシピには
+  その依存を断つ保険として残してある。
+- サマリ行が読めなかった場合を `:unparsable` として**合格とも不合格とも断定しない**
+  第 3 の状態にした。終了コードだけを信じて合格にするのが最も危ない。
+  逆に、サマリが 0 failures なのに子プロセスが非ゼロ終了した場合は**不合格**にする
+  (フレームワークの外で何かが壊れており、その実行は検証を勝ち取っていない)。
+
+`test/test_doctor.rb` の許可リストは**自動編集しない**。DB のキー集合と食い違ったら
+貼り付け用の `assert_equal %w[...]` 行を表示して警告するだけに留めている
+(gem の追加を意識的な編集に留めるための意図的なゲート)。
+
+---
+
+## Step 145 — コーパス拡張ワークフローのスキル化(M5 H6)
+
+Step 143(スキャナ)と Step 144(テスト実走・DB 更新)で道具は揃ったが、**道具の間を
+つなぐ判断**が会話の中にしか無かった。`[1b]` に落ちた gem をどう扱うか、Gap candidate の
+どれを埋めてどれを埋めないか、`verified_gems.json` に書いてよい証拠の水準は何か —
+これらは道具の usage には書けない。`.claude/skills/corpus-expansion/SKILL.md` に集約した。
+
+### 何を書き、何を書かなかったか
+
+書いたのは**判断の基準**であって手順の反復ではない:
+
+- **Gap candidate の仕分け表** — 「Linux/POSIX の実需だけ埋める」。他プラットフォーム分岐・
+  ホストライブラリ供給・SIMD ゲート・言語機能待ち・カーネル UAPI は埋めない。
+  この分類は Step 140・142 のセンサス再生成で実際に手を動かして固まったもの
+- **(d) レベルの証拠しか DB に書かない** — 「ビルドできた」「`gem install` が成功した」は
+  不十分で、gem 自身のテストスイート合格だけが根拠になる
+- **sanity 式の選び方** — 純 Ruby フォールバックの観測点があるか、無ければ
+  `$LOADED_FEATURES` を見る。`require` の成功は証拠にならない
+- **測ってから書く** — epoll / statfs / `__fsid_t` で予想が 3 回覆った事実を根拠として
+  明記。あわせて「`rubycc -E` が通ることは正しさの証明にならない」も
+
+書かなかったのは、道具の man page 的な説明(それは `test/corpus/README.md` と
+`data/README.md` の担当)と、R8 の全文(`docs/HEADER-LICENSING.md` §6 が正典で、
+スキルは「§6 をプロンプトに要約して渡せ」と指すだけ)。**同じ内容を 2 箇所に書けば
+必ず片方が腐る**ので、スキルは判断だけを持ち、事実は既存文書を指す。
+
+### 横断規約を毎回書かなくてよくする
+
+R11 の移譲プロンプトへの明記、テスト実行の test-runner への委譲、日本語出力、
+1 ステップ 1 コミット、STEPS.md / ROADMAP.md の更新 —
+これらは CLAUDE.md と役割表にあるが、**このワークフローの各段階でどれが効くか**は
+毎回思い出す必要があった。スキル冒頭の「全フェーズ共通の規約」にまとめてある。
+
+---
+
+## Step 146 — stackprof / nkf の検証試行と、そこで見つかった 6 つのギャップ(M5 H6)
+
+Step 144 の道具でコーパス中最小級の 2 gem を検証しようとした。**どちらも FAIL**。
+`data/verified_gems.json` には**何も書いていない**。だがこのステップの成果は
+その否定的結果そのもので、**最小再現の付いた 6 つの実在するギャップ**が出た。
+一覧と優先度は docs/ROADMAP.md の H6 節。
+
+### 「rubycc が悪いのか環境が悪いのか」を先に切り分けた
+
+stackprof は `setitimer` / `SIGPROF` / `rb_profile_frames` に依存しており、
+WSL2 のこの環境でシグナル周りが動かない可能性が先に疑われた。**ホスト gcc で
+同じ上流ツリーをビルドして同じスイートを走らせる**対照を取り、
+stackprof は 31 runs / 143 assertions / 0 failures、nkf は 8 tests / 46 assertions /
+0 failures で完走した。**環境要因は否定され、原因は全て rubycc 側**と確定した。
+この対照が無ければ「WSL2 では検証できない」で終わっていた。
+
+### 最も価値が高いのは、一番地味な 1 番
+
+`sigset_t` の typedef 衝突は**この 2 gem に固有の問題ではない**。
+`include/libc/signal.h` はガード `_RUBYCC_SIGSET_T` で無名 struct を、
+`include/libc/glibc/{x86_64,aarch64}/sys/select.h` はガード `__sigset_t_defined` で
+`__sigset_t` + エイリアスを定義しており、**ガードが噛み合わないうえ型そのものが別物**。
+`ruby/defines.h` が `<sys/select.h>` を引くので、**ruby.h と `<signal.h>` を併用する
+任意の gem** が踏む。両方の include 順で再現する(select→signal は signal.h:47 で、
+signal→select は select.h:38 で落ちる)。
+
+同梱ヘッダを 77 本まで増やしても、**ヘッダ同士の整合はセンサスでは測れない**。
+センサスは「その名前のヘッダがあるか」しか見ないので、
+2 本が同じ型を別々に定義している状態を検出できない。実際の gem をビルドして初めて出る。
+
+### 2 番は既にある機構が繋がっていないだけ
+
+nkf が落ちる `enum {len = sizeof(str) - 1};` は、リゾルバ `Parser#fold_time_sizeof` が
+**既に存在していて `_Static_assert` と配列長では渡されているのに**、
+enumerator・ビットフィールド幅・case ラベル・配列デシグネータで `sizeof_expr:` が
+未指定なだけ。「機能が無い」のではなく「配線が抜けている」型のギャップで、
+最小再現(`enum { a = sizeof(int) };` は通るが `enum { len = sizeof(str) };` は通らない)が
+それを端的に示している。
+
+### ハンドパッチ実験は「残りが無いこと」の確認に使い、記録には使わない
+
+1〜5 を scratch 内のコピーだけで塞ぐと**両 gem とも上流スイートが完走する**。
+これは「このギャップ群の裏にさらにブロッカーが控えていないか」を先に知るための
+偵察であって、**検証ではない**。特に `__dso_handle` はスタブ(`void *__dso_handle = 0;`)で
+代用しており glibc の意味論(DSO 自身のハンドル)と違う — テストが `__cxa_atexit`
+経路を踏んでいないだけの可能性がある(未実測)。したがってこの結果は
+`verified_gems.json` に**書いていないし、書いてはならない**。
+
+### レシピを残す判断
+
+両 gem のレシピは `tools/verify_gem_tests.rb` に**入れたまま**にした。
+`--all` がこの 2 件だけ FAIL を出し続ける状態が、そのまま**生きた TODO リスト**になる。
+修正後にレシピを書き起こすことにすると、いちばん切り分けが要る場面で
+「レシピが悪いのか修正が足りないのか」が混ざる。
+
+### 副産物: コーパスの note の誤り
+
+`test/corpus/gems.rb` の stackprof の note が「extconf.rb 16 lines **with no probes**」と
+書いていたが、実物は `have_func('rb_postponed_job_preregister')` ほか 4 つの probe を持ち
+mkmf.log も生成する。Step 139 でメタデータだけ見て書いた記述で、実際にビルドして初めて
+食い違いが出た。是正済み。
+
+---
+
+## Step 147 — `sigset_t` の typedef 衝突の解消(M5 H6)
+
+Step 146 のギャップ表の 1 番。`include/libc/signal.h` と
+`include/libc/glibc/{x86_64,aarch64}/sys/select.h` が**同じ `sigset_t` を別々のガード名・
+別々の型で定義していた**。`signal.h` 側を `sys/select.h` と**文字どおり同一**
+(ガード `__sigset_t_defined`、`__sigset_t` + エイリアス)に揃えた。
+`sys/select.h` は既にこの形だったので無変更。
+
+レイアウトは元から実質同一(LP64 で `1024/(8*sizeof(unsigned long))` = 16、128 バイト)で、
+**壊れていたのはガード名と綴りだけ**だった。ABI の値は 1 つも動いていないので
+由来台帳(§3.3)と集計は変更なし。
+
+### 同種の欠陥が他に無いことを機械的に確かめた
+
+1 本直して終わりにすると、同じ形の地雷が残っているかどうかが分からない。
+同梱ヘッダ全体を走査して「**同じ型名が 2 つ以上の異なるガードの下で定義されている箇所**」を
+洗い出した。実ケースは **`sigset_t` ただ 1 件**。ほかに 2 件挙がったが
+(`sa_family_t` @ `sys/un.h`、`size_t` @ `alloca.h` / `strings.h`)、いずれも
+**ファイル全体のガードを内側のブロックのガードと二重に数えた誤検出**で、
+実物は内側で `_RUBYCC_SA_FAMILY_T` / `_RUBYCC_SIZE_T` に正しく統一されていた。
+
+### センサスでは絶対に見つからない種類の欠陥
+
+これはヘッダの**有無**ではなく**相互の整合**の問題なので、
+`rake corpus:census` は原理的に検出できない(「その名前のヘッダがあるか」しか見ない)。
+ABI ハーネスも、従来は 1 Spec = 1 ヘッダで、`sys/select.h` 単独・`signal.h` 単独では
+どちらも正常に通ってしまう。**2 本を同時に include して初めて出る**。
+
+そこで `Spec` の `also:`(追加 include)を使い、**両方の include 順**を別々のケースにした:
+
+- `SIGSET_SELECT_FIRST` — `sys/select.h` → `signal.h`
+- `SIGSET_SIGNAL_FIRST` — `signal.h` → `sys/select.h`
+
+順序を 2 つとも押さえるのは、修正前が**順序ごとに違う行で落ちていた**からである
+(select→signal は `signal.h:47`、signal→select は `sys/select.h:38`)。
+片方だけでは片方向のガード漏れを見逃す。
+どちらの Spec も `sizes: %w[sigset_t __sigset_t]` を検査するので、
+**レイアウトの一致だけでなく綴りが glibc と一致していること**も同時に確かめている。
+snippet では `fd_set` と `sigset_t` を同じ関数の中で使い、両ヘッダの宣言が
+同時に生きていることを証明している。
+
+### 修正前後の対照を取った
+
+「テストが通る」だけでは、そのテストが元の欠陥を捉えているかは分からない。
+`git stash` で `signal.h` だけ修正前に戻して 2 本の再現 C をコンパイルし、
+**修正前は両方とも `redefinition of typedef 'sigset_t'` で落ち、修正後は両方通る**ことを
+実測した。2,564 → **2,568 runs**(新規 4 メソッド)/ 0 failures / 47 skips で、
+新規 4 件が skip されず実際に走っていることも確認済み。
+
+---
+
+## Step 148 — `sizeof <式>` を全ての整数定数式文脈で畳む(M5 H6)
+
+Step 146 のギャップ表の 2 番。`enum { a = sizeof(int) };`(型オペランド)は通るのに
+`enum { len = sizeof(str) - 1 };`(**式オペランド**)は落ちていた。
+同じ症状がビットフィールド幅・case ラベル・配列デシグネータでも出た。
+
+### 機能の欠落ではなく配線漏れだった
+
+リゾルバ `Parser#fold_time_sizeof` は**既に存在していた**。
+`ConstantEvaluator` は型テーブルを持たないので `sizeof <式>` を単独では畳めず、
+パーサが `sizeof_expr:` キーワードでリゾルバを渡す設計になっている。
+ところが渡していたのは `_Static_assert`(Step 113 で追加)と配列長の **2 箇所だけ**で、
+ほかの整数定数式文脈は素の `ConstantEvaluator` を呼んでいた。
+
+配線したのは 6 箇所。いずれも C 標準が整数定数式または定数式を要求する:
+
+| 文脈 | 根拠 |
+|---|---|
+| enumerator の値 | C 6.7.2.2p2 |
+| ビットフィールド幅 | C 6.7.2.1p4 |
+| 配列デシグネータ | C 6.7.9p6 |
+| case ラベル | C 6.8.4.2p3 |
+| `aligned` 属性の引数 | GNU 拡張(配列長と同じ扱い) |
+| `__builtin_choose_expr` の第 1 引数 | 定数式 |
+
+### 意図的に据え置いた 1 箇所
+
+**グローバル変数の初期化子(`parser.rb:513`)は変更していない。**
+その直前に `!references_sizeof_expr?(init)` というガードがあり、
+`sizeof <式>` を含む初期化子は**ジェネレータ側へ回されている**。
+ジェネレータは完全なシンボルテーブルを持つので、パーサ時解決より強い
+(`(size_t)&((T*)0)->m` の offsetof イディオムも同じ経路に乗る)。
+「同じものだから同じように直す」で手を入れると既存の設計判断を壊す側の変更になる。
+**同じ症状に見えても、より良い解決経路が既にあるなら触らない**。
+
+### テストが欠陥を捉えていることを確かめた
+
+「テストが通る」だけでは、そのテストが元の欠陥を捉えているかは分からない。
+`git stash` でパーサの変更だけ退避して追加した 4 件のパーサ単体テストを走らせ、
+**4 件とも修正前の欠陥どおりのメッセージで失敗する**ことを確認した
+(`enumerator value is not an integer constant` ほか)。Step 147 と同じ作法。
+
+実行オラクルは 4 文脈を 1 プログラムにまとめて gcc 差分で検証している。
+enumerator には nkf 実物のイディオム `len = sizeof(str) - 1` をそのまま入れた。
+
+退行防止も入れた: `sizeof(未宣言名)` は `sizeof_operand_type` が nil を返して
+`NotConstant` になり、**従来どおり診断が出る**(黙って誤った値にならない)。
+これは想定どおりだった。
+
+---
+
+## Step 149 — pthread 宣言 2 本と `_POSIX_MONOTONIC_CLOCK`(M5 H6)
+
+Step 146 のギャップ表の 3 番と 4 番。どちらも既存ヘッダへの追加で、
+**新規ファイルは無いので由来台帳(§3.3)と集計(§3.4)・NOTICE は変更不要**
+(不要であることを確認したうえで手を付けていない)。
+
+### `_POSIX_MONOTONIC_CLOCK` の実測値は 0 だった
+
+「対応しているなら正の値」と読みたくなるが、**実測は `0`**(x86_64・aarch64 とも一致)。
+POSIX のオプションマクロの流儀で、0 は「この実装は対応するが、
+実際に使えるかは `sysconf(_SC_MONOTONIC_CLOCK)` で実行時に確認せよ」を意味する。
+**推測で正の値を書いていたら glibc と食い違っていた**。
+
+stackprof がこれを必要とするのは `#ifdef` で分岐しているためで、
+値そのものは使っていない。**未定義だと上流の死にコードである `#else` 側を通り、
+そこに本物の構文エラー(セミコロン欠落・未定義変数)がある** —
+つまりこのマクロを定義しない処理系では stackprof はそもそもビルドできない。
+
+`_POSIX_*` を**網羅しない**判断は `sys/syscall.h` と同じ
+(消費者のいない巨大な実測面はリリースごとの再計測を招く)。
+そのうえで**コーパスが実際に参照している `_POSIX_*` を走査**した:
+`_POSIX_TIMERS`(nio4r/libev)は `#if !(_POSIX_TIMERS > 0)` の形で
+**未定義でも 0 扱いで安全にフォールバック**するので死にコードにならない。
+`_POSIX_C_SOURCE` / `_POSIX_VERSION` は呼び出し側が定義する feature-test マクロで
+libc ヘッダが供給するものではない。`_CS_POSIX_V7_*` は `confstr()` 用の別名前空間。
+**「未定義だと壊れる」実需は `_POSIX_MONOTONIC_CLOCK` だけ**だった。
+
+### `pthread_kill` は glibc では `<signal.h>` 側にいる
+
+実測で分かったこと: ホスト glibc は `pthread_kill` を `<pthread.h>` 単独では宣言せず、
+`<signal.h>` 経由でのみ公開する。rubycc の同梱ヘッダは**フラットな面を出す方針**
+(`sys/stat.h` の `st_atim` を無条件に出しているのと同じ)なので `pthread.h` に置いた。
+ABI ハーネスの `PTHREAD` Spec は既に `defines: ["_GNU_SOURCE"]` を持っており、
+オラクル側でも同じ面が見えるので比較は成立する。
+
+シグネチャは**関数ポインタ代入 + `-Werror=incompatible-pointer-types`** で測った
+(型が食い違えばエラーになる仕掛け)。両アーキで一致。
+
+### `pthread_atfork` は宣言してもリンクは通らない
+
+これは承知のうえで入れた。glibc では共有 libc に無く `libc_nonshared.a` からのみ
+供給され、そのメンバが `__dso_handle` を参照するため、rubycc のリンカが
+`unsupported text relocation against external symbol '__dso_handle'` で落ちる
+(ギャップ 6 番)。**この追加の効果は「コンパイルエラーがリンクエラーに変わる」
+= 誤りの所在が正しくなること**であり、stackprof が動くようになるわけではない。
+ヘッダのコメントとハーネスのコメントの両方にその旨を書いた
+(ハーネス側は「ここで本当にリンクさせてはならない」という既存の
+`sizeof(...)` 非評価の作法の理由と併せて)。
+
+実測で確認したとおり、stackprof の失敗は**コンパイル段階からリンク段階へ移った**。
+5 番(不完全配列型)は nkf 固有なので stackprof には現れない。
+
+### テスト数が増えないケースの追加
+
+`PTHREAD` / `UNISTD` の**既存 Spec を拡張**したので、新しいテストメソッドは無く
+runs も assertions も変わらない(`assert_abi_matches` が 1 ケース = 1 assertion)。
+検査項目は増えているが、それは runs には現れない。**「テストが増えていないから
+検証していない」ではない**ことを記録しておく。
+
+---
+
+## Step 150 — 合成型(C11 6.2.7p3)による不完全配列型の補完(M5 H6)
+
+Step 146 のギャップ表の 5 番。`extern int tbl[]; int tbl[3] = {1,2,3};` が
+`conflicting types` で落ちていた。原因は宣言のマージが**厳密な型等価**で
+判定していたことで、`Array(int, nil)` と `Array(int, 3)` は等しくない。
+C11 6.2.7p3 は「一方が既知サイズの配列型、他方がサイズ未指定なら、
+**合成型は既知サイズのほう**」と定めている。
+
+### 規則を 1 箇所に置いた
+
+`Type.composite(first, second)`(`lib/rubycc/type.rb`)を新設し、
+非互換なら nil を返す形にした。型どうしの関係だけで決まる純粋な型システムの操作で
+IR 生成の文脈に依存しないため、既に型同一性と `Type.character?` を持つ type.rb が
+馴染む場所になる。generator 側は `composite_declaration_type` 1 つを介して呼ぶだけで、
+**同じ条件式が 4 箇所にコピーされる形を避けた**。
+
+配列以外は「同一なら合成可、そうでなければ非互換」で、これは修正前の等価比較と
+**意味が一致する**(振る舞いの保存が読み取りやすい)。要素型へ再帰するので
+多次元(`extern int m[][4];` 対 `int m[2][4]`)が自然に通り、
+内側の次元は必ず既知なので食い違えば従来どおりエラーになる。
+
+### 4 つの比較箇所のうち 1 つには適用しなかった
+
+`declare_function` の比較は関数の戻り値型と仮引数型が対象で、
+**配列型はここに到達しない** — C は配列の返却を禁じ、パーサが配列仮引数を
+ポインタへ調整する(`parser.rb` の `adjust_parameter_type`)。
+6.2.7p3 の残りの規則(プロトタイプ有無の合成)はこのサブセットが未モデル化なので、
+等価比較のまま残した。**理由をコードのコメントに書いた**:
+「同じ形の比較だから同じように直す」は、ここでは誤りになる。
+
+### 宣言順を両方確かめた理由
+
+不完全型が完全型を**上書きしてしまう**と、以降の `sizeof(tbl)` や添字計算が壊れる。
+そこで両方の順(`extern` が先 / 定義が先)を実測し、**バインディングに残るのは
+常に完全なほう**であることを確かめた。実行オラクルに `sizeof` を印字させているのは
+まさにこのため — 型が壊れていれば値が変わる。
+
+### 実測で分かった、残る gcc との差
+
+`extern int tbl[3]; int tbl[] = {1,2};` は **gcc は受理して `sizeof` を 12 にする**
+(先の宣言の境界が合成型として勝ち、初期化子は部分初期化になる)。
+rubycc は `conflicting types` のまま。rubycc ではパーサと `InitializerResolver` が
+初期化子から長さ 2 を確定させた後に generator が見るため、
+「両方とも長さ既知で食い違い」に見える。対応するには「宣言された長さが初期化子由来か」を
+AST に持たせ、合成型に対して初期化子を再解決する必要がある。
+**nkf が使うのは逆順**(不完全 → 初期化子推論の定義)なので、今回は未対応とした。
+
+スコープ外として据え置いたもの: ファイルスコープの仮定義 `int tbl[];`
+(`extern` なし・初期化子なし)は C 6.9.2p2 で要素数 1 に補完されるが、
+`array size missing` のまま(nkf は必要としない)。
+
+### 結果
+
+**nkf 0.3.0 が PASS した** — sanity ok、8 tests / 46 assertions / 0 failures。
+Step 146 で立てた 6 つのギャップのうち 1〜5 が閉じ、nkf は完全に通った。
+記録は Step 151。
+
+---
+
+## Step 151 — nkf 0.3.0 を検証済みに記録(M5 H6)
+
+`data/verified_gems.json` が **6 → 7 件**。Step 144 で作った経路で
+**初めて新規に追加された gem**で、ここまでの一連の作業(143 スキャナ →
+144 実走ツール → 145 スキル → 146 ギャップ特定 → 147〜150 修正)が
+初めて 1 本の線としてつながった。
+
+### 経路そのものが検証された
+
+これまでの 6 件は Step 54〜104 で人手で確認したものを後から DB に書き写したもので、
+Step 144 のツールは**既存記録の再現**でしか自身を証明できていなかった。
+今回は逆で、**ツールが「PASS」と言ったから記録した**。
+手編集は 1 文字もしていない(`--update --step 151` のみ)。
+差分は nkf のエントリ 8 行だけで、既存 6 件の行は 1 行も動いていない —
+Step 144 で独自エミッタを書いた狙いがそのまま効いている。
+
+### notes に機械が書けないことを書いた
+
+ツールが自動生成するのは `evidence` / `environment` / `verified_at` だけで、
+`notes` は人間の責務(Step 144 の設計)。今回書いたのは 3 点:
+
+1. **nkf は Ruby にバンドル gem として同梱されている**ので、この検証が
+   処理系同梱のコピーではなく**差し込んだ rubycc ビルドの `.so`** に対するもので
+   あること(sanity が `$LOADED_FEATURES` で確認している)。
+   これを書かないと、読んだ人は「本当に rubycc のビルドを試したのか」を
+   記録から判断できない
+2. **Step 150 の合成型(C11 6.2.7p3)が必要だった**こと。
+   `nkf-utf8/utf8tbl.c` が `extern const unsigned short euc_to_utf8_1byte[];` の
+   前方宣言と、初期化子で境界が決まる定義の組み合わせを使っている。
+   **どのコンパイラ機能に依存した合格なのか**は再現条件そのもの
+3. **musl と aarch64 は未検証**(既定 notes の趣旨を残した)
+
+いずれも実測結果からは導けない。ツールが notes を上書きしない設計にしてあるので、
+次に nkf を `--update` してもこの 3 点は残る。
+
+### 許可リストは手で更新した
+
+`test/test_doctor.rb` の `assert_equal %w[...]` にツールは触らない(意図的なゲート)。
+貼り付け用の行を表示するだけで、実際の編集は人間が行う。
+「gem が増えたら DB もテストも自動で追随する」構成にすると、
+**誤って増えたときにも自動で追随してしまう**。
+
+---
+
 ## 現在のテスト規模
 
-Step 142 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
+Step 151 完了時点: **2,585 runs / 7,171 assertions / 0 failures / 47 skips**
+(Step 150 と同数の runs = 既存テストへの assertion 追加のみ)
+(以前) Step 150 完了時点: **2,585 runs / 7,155 assertions / 0 failures / 47 skips**
+(Step 149 から +11 = 実行オラクル・診断・ブロックスコープ 7 件と `Type.composite` の単体 4 件)
+(以前) Step 149 完了時点: **2,574 runs / 7,128 assertions / 0 failures / 47 skips**
+(Step 148 と同数 = 既存 Spec の検査項目を増やしたためテストメソッドは増えない)
+(以前) Step 148 完了時点: **2,574 runs / 7,128 assertions / 0 failures / 47 skips**
+(Step 147 から +6 = パーサ単体 4・診断 1・実行オラクル 1)
+(以前) Step 147 完了時点: **2,568 runs / 7,118 assertions / 0 failures / 47 skips**
+(Step 146 から +4 = sigset_t の include 順 2 通り × x86_64・aarch64)
+(以前) Step 146 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
+(Step 145 と同数 = レシピ追加と文書のみ。ギャップの修正は次ステップ以降)
+(以前) Step 145 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
+(Step 144 と同数 = スキルとドキュメントのみ)
+(以前) Step 144 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
+(Step 143 と同数 = 追加したのは開発用ツールで、`rake test` の対象外)
+(以前) Step 143 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
+(Step 142 と同数 = 追加したのは開発用ツールで、`rake test` の対象外)
+(以前) Step 142 完了時点: **2,564 runs / 7,106 assertions / 0 failures / 47 skips**
 (Step 140 から +8 = TIMERFD / INOTIFY / STATFS / SYSCALL の ABI ハーネスを両アーキで)
 (以前) Step 140 完了時点: **2,556 runs / 7,082 assertions / 0 failures / 47 skips**
 (Step 138 から +6 = WAIT / EPOLL / LANGINFO の ABI ハーネスを x86_64・aarch64 の両方で。

@@ -67,6 +67,7 @@ int  pthread_join(pthread_t __thread, void **__retval);
 int  pthread_detach(pthread_t __thread);
 pthread_t pthread_self(void);
 int  pthread_equal(pthread_t __t1, pthread_t __t2);
+int  pthread_kill(pthread_t __thread, int __sig);
 void pthread_exit(void *__retval);
 int  pthread_mutex_init(pthread_mutex_t *__mutex, const pthread_mutexattr_t *__attr);
 int  pthread_mutex_destroy(pthread_mutex_t *__mutex);
@@ -88,5 +89,13 @@ int  pthread_attr_destroy(pthread_attr_t *__attr);
 int  pthread_mutexattr_init(pthread_mutexattr_t *__attr);
 int  pthread_mutexattr_destroy(pthread_mutexattr_t *__attr);
 int  pthread_mutexattr_settype(pthread_mutexattr_t *__attr, int __type);
+
+/* Process-fork hook registration (a process-wide call, unlike the
+   thread-manipulation calls above). Declaring this turns stackprof's
+   build failure from a compile-time "implicit declaration" error into a
+   link-time one: glibc supplies pthread_atfork only from libc_nonshared.a,
+   whose member references __dso_handle, which rubycc's linker cannot yet
+   resolve (Step 146 gap 6, a separate, unfixed problem). */
+int  pthread_atfork(void (*__prepare)(void), void (*__parent)(void), void (*__child)(void));
 
 #endif /* _RUBYCC_PTHREAD_H */

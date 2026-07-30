@@ -215,17 +215,47 @@ module Rubycc
         end
       end
 
-      # An `extern` reference declaration: it binds the name (once) with no
-      # storage, agreeing in type with any binding already present. A real
-      # definition, before or after, supplies the object; if none does, a use of
-      # the name becomes an undefined symbol for the linker.
+      # An `extern` reference declaration: it binds the name with no storage,
+      # agreeing in type with any binding already present. A real definition,
+      # before or after, supplies the object; if none does, a use of the name
+      # becomes an undefined symbol for the linker.
       def declare_extern_global(decl, type)
-        existing = @global_bindings[decl.name]
-        if existing && existing.type != type
-          error_at(decl.token, "conflicting types for '#{decl.name}'")
+        bind_extern_reference(decl.name, type, decl.const, decl.token)
+      end
+
+      # Binds `name` as a reference to an object defined elsewhere (a file-scope
+      # or a block-scope `extern` declaration — both name the same object, so both
+      # merge the same way). A first declaration creates the binding; a later one
+      # merges into it under the composite type, so an unbounded "extern T a[];"
+      # arriving after a bounded declaration of the same name leaves the known
+      # bound in place, and one arriving before it is completed by the bound the
+      # later declaration supplies. Nothing else about an existing binding
+      # changes: its symbol and its constness stay as the first declaration left
+      # them.
+      def bind_extern_reference(name, type, const, token)
+        existing = @global_bindings[name]
+        unless existing
+          @global_bindings[name] = Local.new(type: type, storage: name, global: true, const: const)
+          return
         end
-        @global_bindings[decl.name] ||=
-          Local.new(type: type, storage: decl.name, global: true, const: decl.const)
+
+        composite = composite_declaration_type(existing.type, type, name, token)
+        return if composite == existing.type
+
+        @global_bindings[name] =
+          Local.new(type: composite, storage: existing.storage, global: true, const: existing.const)
+      end
+
+      # The composite type (6.2.7p3) of a redeclaration's `type` and the type
+      # already bound to `name`, or the "conflicting types" diagnostic when the
+      # two are incompatible. Every file-scope declaration merge decides type
+      # agreement here, so the array rule Type.composite implements — a known
+      # bound wins over an unspecified one — applies uniformly to an `extern`
+      # reference, a tentative or real definition, and a block-scope `extern`.
+      def composite_declaration_type(existing_type, type, name, token)
+        composite = Type.composite(existing_type, type)
+        error_at(token, "conflicting types for '#{name}'") if composite.nil?
+        composite
       end
 
       # Merges one non-extern (tentative or real) file-scope definition into the
@@ -237,8 +267,15 @@ module Rubycc
       def merge_object_definition(decl, type, init, has_init)
         linkage = decl.storage == :static ? :internal : :external
         existing = @global_bindings[decl.name]
-        if existing && existing.type != type
-          error_at(decl.token, "conflicting types for '#{decl.name}'")
+        if existing
+          # The object is laid out and bound with the composite type, so an
+          # earlier unbounded "extern T a[];" reference cannot erase the bound
+          # this definition supplies. A definition's own type is always complete
+          # here (#declare_global's require_complete admits an incomplete array
+          # only for an `extern` reference), so the composite is that very type
+          # whenever the two agree; taking it rather than either side keeps the
+          # rule in one place.
+          type = composite_declaration_type(existing.type, type, decl.name, decl.token)
         end
 
         record = @object_records[decl.name]
@@ -821,6 +858,12 @@ module Rubycc
       # Records or updates a function's signature, enforcing that repeated
       # declarations agree on their return type and parameter types (which
       # also covers arity) and that a body is defined at most once.
+      #
+      # Agreement here is plain type equality, not the composite type an object's
+      # declarations merge under (see #composite_declaration_type): no array type
+      # can reach this comparison — C forbids returning one and the parser adjusts
+      # a parameter of array type to a pointer — so the composite rule for an
+      # unspecified array bound has nothing to act on.
       def declare_function(name, return_type, param_types, variadic:, defined:, token:)
         error_at(token, "redefinition of '#{name}'") if @global_bindings.key?(name)
         # A struct passed or returned by value must have a known layout for its
@@ -1644,12 +1687,10 @@ module Rubycc
         # type intact, as at file scope; every other incomplete type still needs
         # a concrete one to bind here.
         require_complete(decl.type, decl.token) unless extern_incomplete_array?(decl.storage, decl.type)
-        existing = @global_bindings[decl.name]
-        if existing && existing.type != decl.type
-          error_at(decl.token, "conflicting types for '#{decl.name}'")
-        end
-        @global_bindings[decl.name] ||=
-          Local.new(type: decl.type, storage: decl.name, global: true, const: decl.const)
+        # Merged through the very path a file-scope `extern` reference takes, so a
+        # block-scope "extern T a[];" neither conflicts with nor unbounds a bound
+        # already in place.
+        bind_extern_reference(decl.name, decl.type, decl.const, decl.token)
       end
 
       # A scalar local. A brace-wrapped initializer ("int x = {5};", 6.7.9p11) is

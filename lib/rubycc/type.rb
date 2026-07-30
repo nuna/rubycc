@@ -1170,6 +1170,41 @@ module Rubycc
       signed ? Char : UnsignedChar
     end
 
+    # The *composite type* of two declarations of the same object (6.2.7p3), or
+    # nil when the two types are not compatible — the signal a declaration merge
+    # turns into its "conflicting types" diagnostic.
+    #
+    # One case of that paragraph matters in this subset: when one declaration is
+    # an array type of known size and the other an array type of unspecified
+    # size, the composite type is the array type of *known* size. So
+    #
+    #     extern int tbl[];  int tbl[3] = {1, 2, 3};
+    #
+    # declares one object of type "int [3]" in either order, and a later
+    # sizeof/subscript measures the completed type rather than the unbounded
+    # reference. Two known but different sizes are incompatible, and so are
+    # incompatible element types. The recursion into the element type carries the
+    # same rule through a multidimensional array ("extern int m[][4];" against
+    # "int m[2][4]"), whose inner dimensions are always known and so must agree.
+    #
+    # Every other pair of types composes exactly when the two are identical,
+    # which is what the equality comparison at each declaration-merge site meant
+    # before this rule existed. The paragraph's remaining cases — a function type
+    # declared with a parameter type list against one declared without, and a
+    # pointer to either of the above — do not arise here: this subset merges
+    # function signatures by equality (it models no unprototyped declaration),
+    # and a parameter of array type is adjusted to a pointer by the parser.
+    def self.composite(first, second)
+      return first if first == second
+      return nil unless first.array? && second.array?
+
+      element = composite(first.element, second.element)
+      return nil if element.nil?
+      return nil if first.length && second.length && first.length != second.length
+
+      Array.new(element, first.length || second.length)
+    end
+
     # True for the character types (6.2.5p15): either plain `char` and the two
     # explicitly signed ones. This is what "an array of character type", the
     # form a string literal may initialize, means; `_Bool` is one byte wide too

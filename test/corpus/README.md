@@ -67,3 +67,72 @@ Fetch failures skip that gem (with the reason recorded) without stopping the run
   gates are collected too. The census does **not** evaluate those gates; it labels gap
   candidates with a "likely gate" note so a reviewer can judge whether a bundled header
   is actually required. H3's acceptance is a first baseline, not a pass rate.
+
+## 人気 gem スキャン (`tools/scan_popular_gems.rb`)
+
+`gems.rb` のコーパス選定(Step 119)は当初、人気ランキング上位の gem を手作業で
+たどって C 拡張の有無・R10 適合を確認したもので、手順が残っていなかった。
+`tools/scan_popular_gems.rb` はその手順を機械化し、繰り返し実行できるようにした
+ツールで、rubygems.org / bestgems.org の人気ランキングから C 拡張を持つ gem を
+洗い出し、`census.rb` の R10 ゲートに通して次に `gems.rb` へ追加すべき候補を
+リストアップする。
+
+```sh
+tools/scan_popular_gems.rb [first_page] [last_page]   # デフォルト 11 20
+```
+
+1 ページ = 10 ランク(rubygems.org 側のページングに合わせている)。例えば
+`tools/scan_popular_gems.rb 1 10` はランク 1〜100 を走査する。
+
+環境変数:
+
+- `SCAN_WORK` — ダウンロードした `.gem` / API レスポンスのキャッシュ先(既定値は tmpdir 配下)。
+- `SCAN_SOURCE` — `auto`(既定)/ `rubygems` / `bestgems`。ランキングの取得元を選ぶ。
+- `SCAN_VERBOSE` — `1` を設定すると、C 拡張を持たない gem も `[0]` として一覧表示する。
+
+### ランキングソース
+
+- `rubygems` — `https://rubygems.org/releases/popular` の人気ランキング。1 ページ 10 gem。
+  **サイト側が 100 gem(10 ページ)でハードキャップ**されており、それを超えるページは
+  ページ1の内容を黙って再送してくる。このツールは各ページが自己申告するランク範囲を
+  検証するので、キャップを超えた要求は無言の誤検出にならずエラーで止まる。
+- `bestgems` — `https://bestgems.org/total` の全期間ダウンロード数ランキング。1 ページ 20 gem。
+  rubygems.org のキャップを超えるランクを見たいときに使う。
+- `auto`(既定)は要求されたランク範囲が 100 を超えない限り `rubygems` を使い、
+  超える場合は自動的に `bestgems` にフォールバックする。
+
+### 罠: `gem specification --remote` は使えない
+
+`gem specification --remote <name> extensions` は常に空を返す(nokogiri のような
+明らかに拡張を持つ gem でも同じ)。rubygems.org のクイックインデックスが
+`extensions` / `files` を空で返すため。判定に使えるのは実際にダウンロードした
+`.gem` の中身の gemspec だけであり、このツールは必ずそちらを読む。
+
+### 出力の読み方
+
+- `[1]` — R10 ゲートを通過し、まだ `gems.rb` に入っていない候補(追加検討対象)。
+- `[1b]` — R10 ゲートは通過するが、アセンブラを必要とする gem(下記参照)。
+- `[2]` — C 拡張はあるが R10 ゲートで除外された gem(理由付き)。
+- `[3]` — すでに `gems.rb` に入っている gem(現在のゲート判定を再確認できる)。
+- `[E]` — fetch / unpack / gemspec 読み取りでエラーになった gem。
+
+R10 の判定そのもの(C++ ソースの有無・configure/mini_portile 依存)は
+`census.rb` が所有しており、このツールはそれを呼び出すだけで再実装はしていない。
+
+### R10 通過 ≠ rubycc でビルド可能
+
+R10 は「純 C 拡張であること」だけを機械的に判定するゲートであり、
+アセンブラの要否は関知しない。rubycc にはアセンブラバックエンドが無いため、
+R10 を通っても実際にはビルドできない gem がある。`[1b]` はそれを検出するための
+別グループで、次の 2 種類のチェックを **両方** 行う(片方だけでは検出漏れが出るため):
+
+- `ext/` 配下(および gemspec の `extensions` が指す ext/ 外のディレクトリ)を
+  再帰的に走査し、`.S` / `.s` ファイルの有無を見る。ffi はこのチェックだけが
+  検出できるケースで、`ext/ffi_c/libffi` 配下に 48 本のアセンブリソースを
+  同梱しているが `$objs` には一切現れない。
+- `extconf.rb` の `$objs` に列挙されたオブジェクトファイルのうち、対応する
+  `.c` が gem ツリーのどこにも無いものを見る。bcrypt が該当し、`$objs` に
+  `x86.o` を挙げているが `x86.c` は無く、同梱の `ext/mri/x86.S` から
+  ビルドされる(実測では bcrypt は両方のチェックに引っかかる)。生成される
+  アセンブリや名前の異なるアセンブリはファイル走査で拾えないため、
+  このチェックを省くことはできない。
