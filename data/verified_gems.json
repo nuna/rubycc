@@ -40,5 +40,12 @@
     "environment": "glibc x86_64 / ruby 3.4.5",
     "evidence": "RUBYCC=1 gem install date succeeded (lib/date_core.so built); the gem's own test/unit suite passed 143 tests / 162,593 assertions / 0 failures / 0 errors / 0 skips (Steps 99-104).",
     "notes": "musl and aarch64 not yet verified."
+  },
+  "nkf": {
+    "versions": ["0.3.0"],
+    "verified_at": "2026-07-30",
+    "environment": "glibc x86_64 / ruby 3.4.5",
+    "evidence": "RUBYCC=1 gem install nkf succeeded (nkf.so built through rmake); the gem's own test/unit suite passed 8 tests / 46 assertions / 0 failures / 0 errors (Step 151).",
+    "notes": "nkf ships bundled with the interpreter, so this run is against the .so injected from the rubycc build (the sanity check confirms it via $LOADED_FEATURES). Building it required the incomplete-array-type composition from C11 6.2.7p3 (Step 150): nkf-utf8/utf8tbl.c combines an `extern const unsigned short euc_to_utf8_1byte[];` forward declaration with a bounds-fixing initializer. musl and aarch64 not yet verified."
   }
 }
