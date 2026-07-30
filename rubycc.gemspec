@@ -8,9 +8,9 @@ Gem::Specification.new do |spec|
   spec.authors = ["DATE Ken"]
   spec.email = ["itacchi@gmail.com"]
 
-  spec.summary = "Pure Ruby C toolchain for building Ruby native extensions " \
+  spec.summary = "Almost Pure Ruby C toolchain for building Ruby native extensions " \
                  "without gcc/binutils"
-  spec.description = "Pure Ruby C toolchain for building Ruby native extensions " \
+  spec.description = "Almost Pure Ruby C toolchain for building Ruby native extensions " \
                       "without gcc/binutils"
   spec.homepage = "https://github.com/nuna/rubycc"
   spec.license = "MIT"

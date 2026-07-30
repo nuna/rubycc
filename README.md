@@ -1,6 +1,6 @@
 # rubycc
 
-**Pure Ruby C toolchain** — build Ruby native extensions without gcc, binutils, or a shell.
+**Almost Pure Ruby C toolchain** — build Ruby native extensions without gcc, binutils, or a shell.
 
 rubycc is a C compiler, linker, archiver and `make` written entirely in Ruby. It compiles
 C to ELF64 machine code directly (no assembly text, no external assembler) and links

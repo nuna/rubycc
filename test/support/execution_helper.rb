@@ -9,7 +9,7 @@ require "open3"
 #
 # `compiler: :gcc` exercises a reference path (using the system gcc) that
 # exists purely to validate the harness itself. `compiler: :rubycc` drives the
-# Pure Ruby toolchain (Rubycc::Compiler).
+# Almost Pure Ruby toolchain (Rubycc::Compiler).
 module ExecutionHelper
   def in_tmpdir
     Dir.mktmpdir("rubycc-test") do |dir|
