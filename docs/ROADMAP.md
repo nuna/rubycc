@@ -754,7 +754,7 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
 
   | # | ギャップ | 影響 | 優先 |
   |---|---|---|---|
-  | A | **rmake がシェルのバックスラッシュ除去をしない** — mkmf が書く `-DSYSCONFDIR=\"/.../etc\"` の `\` が残って `unexpected character` になる。`lib/rubycc/rmake/executor.rb` の `tokenize` に POSIX の「引用符外の `\` は次の 1 文字をエスケープ」が未実装。**最小再現の対照表でコンパイラの無罪が確定している**(GNU make + rubycc は OK) | mkmf が文字列マクロを渡す任意の gem | **高**(修正は限定的) |
+  | A | ~~**rmake がシェルのバックスラッシュ除去をしない**~~ **解消(Step 158)**: POSIX の 3 規則(引用符外・二重引用符内・単一引用符内)を `/bin/sh` への実測で確定させて実装。旧記述: — mkmf が書く `-DSYSCONFDIR=\"/.../etc\"` の `\` が残って `unexpected character` になる。`lib/rubycc/rmake/executor.rb` の `tokenize` に POSIX の「引用符外の `\` は次の 1 文字をエスケープ」が未実装。**最小再現の対照表でコンパイラの無罪が確定していた**(GNU make + rubycc は OK) | ~~mkmf が文字列マクロを渡す任意の gem~~ | ~~高~~ **完了** |
   | B | **`__atomic_*` ビルトインが無い** — `ruby.h` が `HAVE_RUBY_ATOMIC_H` を定義し ruby の config.h が `HAVE_GCC_ATOMIC_BUILTINS` を定義するのでその分岐に入る。フォールバック連鎖の末尾は `#error Unsupported platform` で逃げ道が無い。`ruby/atomic.h` が使う形は 9 種 | **ruby.h を引く任意の gem に波及しうる**。要調査 | **高**(影響範囲が広い) |
   | C | **`confstr` / `fpathconf` / `getlogin` が同梱 `unistd.h` に無い** — mkmf の `have_func` は自前で宣言するので**プローブは通ってしまい**、`HAVE_CONFSTR` 等が定義されて本体で暗黙宣言エラーになる。**「プローブが通ったのにビルドが落ちる」系統的な穴** | etc。同型の穴は他にもありうる | 中(R8 手続き) |
   | D | **`_CS_*` / `_PC_*` / 残りの `_SC_*` が無い** — `ext/etc/constdefs.h` が gcc 下で 179 定数、rubycc 下で 11 定数。test_etc.rb は `if defined?` で守られているので**失敗ではなく「テストが定義されない」形**で静かに縮む(18 → 16、予測) | etc の検証を gcc 対照と同数にするために必要 | 中(値は実測で) |
