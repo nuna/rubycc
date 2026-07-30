@@ -36,6 +36,7 @@ class TestExecutable < Minitest::Test
 
   R_X86_64_RELATIVE  = 8
   R_X86_64_JUMP_SLOT = 7
+  R_X86_64_GLOB_DAT  = 6
   R_X86_64_64        = 1
   DT_NEEDED = 1
 
@@ -187,7 +188,64 @@ class TestExecutable < Minitest::Test
     assert_nil r.dynamic_symbol("__dso_handle"), "__dso_handle must not enter .dynsym"
 
     dyn = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
-    assert_nil dyn, "the fixed load address needs no base relocation"
+    refute_includes dyn.relocations.map(&:type), R_X86_64_RELATIVE,
+                    "the fixed load address needs no base relocation"
+  end
+
+  # An executable takes the same supplier member, so it takes the finalizer with
+  # it: a priority-0 .fini_array slot calling __cxa_finalize(__dso_handle). The
+  # loader (not the crt) walks DT_FINI_ARRAY at exit, so it runs there too. The
+  # non-PIE difference is the usual one — the slot holds its final address and
+  # needs no RELATIVE.
+  def test_executable_dso_handle_carries_the_finalizer_slot
+    skip_unless_linkable
+
+    r = Reader.read(build_exe([DSO_HANDLE_USER]))
+    slot = r.section(".fini_array.00000")
+    refute_nil slot, "the supplier member contributes its finalizer here too"
+    assert_equal SHT_FINI_ARRAY, slot.type
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+    assert_equal slot.addr, by_tag[DT_FINI_ARRAY]
+    assert_equal 8, by_tag[DT_FINI_ARRAYSZ]
+
+    text = r.section(".text")
+    target = slot.data.unpack1("Q<")
+    assert_operator target, :>=, text.addr, "the slot holds a final address, not zero"
+    assert_operator target, :<, text.addr + text.size, "which points into .text"
+
+    # __cxa_finalize is imported weakly and bound the measured way: a GOT slot
+    # for the NULL test and a .plt stub for the call.
+    sym = r.dynamic_symbol("__cxa_finalize")
+    assert_equal :weak, sym.bind
+    assert sym.undefined?
+    dyn = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    assert_equal ["__cxa_finalize"],
+                 dyn.relocations.select { |x| x.type == R_X86_64_GLOB_DAT }.map { |x| x.symbol.name }
+    plt = r.relocation_sections.find { |rs| rs.section.name == ".rela.plt" }
+    assert_includes plt.relocations.map { |x| x.symbol.name }, "__cxa_finalize"
+  end
+
+  # A program that registers a handler under its own handle. At exit glibc walks
+  # the exit list first (running the handler) and only then runs DT_FINI_ARRAY,
+  # so the synthesized finalizer finds nothing left: the handler must appear
+  # exactly once, which is what proves the finalizer did not re-run it.
+  CXA_ATEXIT_USER = <<~C
+    int __cxa_atexit(void (*f)(void *), void *arg, void *dso);
+    extern void *__dso_handle;
+    int puts(const char *s);
+    static void bye(void *arg) { puts("bye"); }
+    int main(void) { __cxa_atexit(bye, 0, __dso_handle); puts("main"); return 0; }
+  C
+
+  def test_running_executes_a_handler_registered_under_the_handle_exactly_once
+    skip_unless_runnable
+
+    with_exe([CXA_ATEXIT_USER]) do |exe|
+      out, status = Open3.capture2(exe)
+      assert_equal 0, status.exitstatus
+      assert_equal "main\nbye\n", out,
+                   "the registered handler runs once at exit, not again from the finalizer"
+    end
   end
 
   def test_running_reads_the_handle_as_its_own_address

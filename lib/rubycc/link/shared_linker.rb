@@ -201,6 +201,94 @@ module Rubycc
       DSO_HANDLE_SYMBOL = "__dso_handle"
       DSO_HANDLE_MEMBER = "__dso_handle.o"
 
+      # The other half of that member (see #add_dso_finalizer): the C runtime
+      # entry point that drops the handlers registered under a handle, the local
+      # symbol naming the synthesized routine that calls it, and the
+      # priority-numbered finalizer-array section the routine is reached through.
+      # Priority 0 is inside the range the ABI reserves for the implementation,
+      # which is exactly what this is, and it puts the slot at the *front* of the
+      # array — the runtime walks .fini_array backwards, so front means last.
+      # (A translation unit that spends the reserved priority itself, with
+      # `__attribute__((destructor(0)))`, lands in the same section and, being
+      # ahead of the supplier in link order, ends up running *after* this slot
+      # rather than before it. gcc warns about that priority range for exactly
+      # this kind of reason; rubycc has no warning channel, so the ordering there
+      # is simply implementation-defined.)
+      CXA_FINALIZE_SYMBOL    = "__cxa_finalize"
+      DSO_FINALIZER_SYMBOL   = "__rubycc_dso_finalize"
+      DSO_FINI_ARRAY_SECTION = ".fini_array.00000"
+
+      # The synthesized finalizer for x86_64, assembled from the System V AMD64
+      # instruction encodings (not copied from any crt implementation — R11) to
+      # the shape measured by disassembling a `gcc -shared -fPIC` output: test
+      # __cxa_finalize's GOT slot for NULL, and only then load the *value* of
+      # __dso_handle into the first argument register and call through the .plt.
+      #
+      # Both details are the measurement, not a preference. __cxa_finalize is
+      # referenced as a WEAK undefined symbol, so a C library that does not
+      # supply it leaves the slot zero and the call must not happen; the test
+      # reads the GOT slot itself rather than the .plt stub, because the stub
+      # would be an address whether or not the symbol resolved. And the argument
+      # is `mov` (the word's contents), not `lea` (its address): the two agree
+      # for the word this linker synthesizes, but `mov` is what the C
+      # `__cxa_finalize(__dso_handle)` — passing a `void *` variable — means, and
+      # an input that defines its own __dso_handle would tell them apart.
+      #
+      # Three operands the linker fills in: the GOT slot's PC-relative offset
+      # (R_X86_64_GOTPCREL, addend -5 because a one-byte immediate follows the
+      # displacement), the PC-relative reference to the internal __dso_handle
+      # (R_X86_64_PC32, addend -4) and the call to the import (R_X86_64_PLT32,
+      # addend -4). rsp is 8 mod 16 on entry, so one push realigns it for the
+      # call; rbp is merely the register pushed, not a frame.
+      #
+      # What gcc has and this does not is the `completed` guard that makes the
+      # routine run at most once. gcc needs it because its routine is reachable
+      # from both .fini_array and the legacy _fini/DT_FINI path; this linker
+      # emits neither _fini nor DT_FINI, so .fini_array is the only way in and
+      # the guard would never fire.
+      DSO_FINALIZE_CODE = [
+        0x55,                                # push %rbp        ; realign rsp to 16 for the call
+        0x48, 0x83, 0x3D, 0, 0, 0, 0, 0x00,  # cmpq $0, __cxa_finalize@GOTPCREL(%rip)
+        0x74, 0x0C,                          # je   +12         ; unresolved: nothing to finalize
+        0x48, 0x8B, 0x3D, 0, 0, 0, 0,        # mov  __dso_handle(%rip), %rdi
+        0xE8, 0, 0, 0, 0,                    # call __cxa_finalize   ; through the .plt
+        0x5D,                                # pop  %rbp
+        0xC3                                 # ret
+      ].pack("C*").freeze
+
+      # Byte offsets of the three operands patched in the x86_64 finalizer: the
+      # cmp's disp32, the mov's disp32 and the call's rel32.
+      DSO_FINALIZE_GOT_OFFSET    = 4
+      DSO_FINALIZE_HANDLE_OFFSET = 14
+      DSO_FINALIZE_CALL_OFFSET   = 19
+
+      # The aarch64 finalizer: the same measured shape in AArch64 encodings (ARM
+      # DDI 0487). The GOT slot is loaded into a register and tested with `cbz`
+      # (aarch64 has no memory-operand compare), then the handle's address is
+      # formed by the usual adrp/add pair and its *contents* loaded into x0
+      # before the .plt call. x29/x30 are saved because the routine calls; the
+      # stp/ldp pair also keeps sp 16-byte aligned.
+      AARCH64_DSO_FINALIZE_CODE = [
+        0xA9BF7BFD, # stp  x29, x30, [sp, #-16]!
+        0x90000000, # adrp x0, :got:__cxa_finalize          (ADR_GOT_PAGE)
+        0xF9400000, # ldr  x0, [x0, #:got_lo12:...]         (LD64_GOT_LO12_NC)
+        0xB40000A0, # cbz  x0, +0x14                        ; unresolved: nothing to finalize
+        0x90000001, # adrp x1, __dso_handle                 (ADR_PREL_PG_HI21)
+        0x91000021, # add  x1, x1, #:lo12:__dso_handle      (ADD_ABS_LO12_NC)
+        0xF9400020, # ldr  x0, [x1]                         ; the handle's value, not its address
+        0x94000000, # bl   __cxa_finalize                   (CALL26, through the .plt)
+        0xA8C17BFD, # ldp  x29, x30, [sp], #16
+        0xD65F03C0  # ret
+      ].pack("L<*").freeze
+
+      # Byte offsets of the five operands patched in the aarch64 finalizer: the
+      # GOT adrp/ldr pair, the __dso_handle adrp/add pair, and the bl.
+      AARCH64_DSO_FINALIZE_GOT_ADRP_OFFSET    = 4
+      AARCH64_DSO_FINALIZE_GOT_LO12_OFFSET    = 8
+      AARCH64_DSO_FINALIZE_HANDLE_ADRP_OFFSET = 16
+      AARCH64_DSO_FINALIZE_HANDLE_ADD_OFFSET  = 20
+      AARCH64_DSO_FINALIZE_CALL_OFFSET        = 28
+
       class << self
         # Links `inputs` (an ordered array; each element a filesystem path, or the
         # raw bytes of an ET_REL object or an ar archive — the same shapes
@@ -233,10 +321,11 @@ module Rubycc
           writer.to_binary
         end
 
-        # The __dso_handle supplier as a one-section ET_REL object: an 8-byte
-        # .data word, a hidden global OBJECT symbol naming it, and an absolute-64
+        # The __dso_handle supplier as a small ET_REL object: an 8-byte .data
+        # word, a hidden global OBJECT symbol naming it, and an absolute-64
         # relocation of the word against that same symbol — so the word ends up
-        # holding its own address.
+        # holding its own address — plus the finalizer that hands the word back
+        # to the C runtime when the object is unloaded (#add_dso_finalizer).
         #
         # Why this shape, measured from a `gcc -shared -fPIC` output rather than
         # copied from any crt implementation (R11): __dso_handle is the opaque
@@ -261,15 +350,13 @@ module Rubycc
         # a shared object, where #rebase_internal? holds — rebased at load time by
         # one RELATIVE entry, which is precisely the measured gcc output.
         #
-        # What this deliberately does NOT supply is the other half of gcc's crt
-        # file: the .fini_array entry that calls __cxa_finalize(__dso_handle) when
-        # the object is unloaded, which is what makes glibc drop the handlers
-        # registered under this handle. Registration works without it (measured:
-        # calling __cxa_finalize(&__dso_handle) by hand on a rubycc `.so` does
-        # unregister its atfork handlers, so the handle value is right), but an
-        # object dlclosed while it still has handlers registered leaves them
-        # pointing into the unmapped image. Synthesizing a finalizer needs an
-        # init/fini-array pipeline this linker does not have yet.
+        # The word and its finalizer travel together in one member because they
+        # answer one question between them — "which object is this, and when is
+        # it gone" — and because the condition for needing them is the same: a
+        # link that never mentions __dso_handle never extracts the member and so
+        # gains neither. That is the same pairing gcc's crt file has, reached
+        # without a second lazily-extracted member or any linker-side special
+        # case.
         def build_dso_handle_object(machine)
           aarch64 = machine == EM_AARCH64
           writer = ObjFile::RelocatableWriter.new(machine: machine)
@@ -280,7 +367,71 @@ module Rubycc
                                      visibility: :hidden, section: data, value: 0, size: 8)
           writer.add_relocation(target: data, offset: 0, symbol: handle,
                                 type: aarch64 ? R_AARCH64_ABS64 : R_X86_64_64, addend: 0)
+          add_dso_finalizer(writer, handle, aarch64)
           writer.to_binary
+        end
+
+        # Adds the finalizer half to the supplier object: the routine itself in
+        # .text (see DSO_FINALIZE_CODE for its shape and why it is that shape),
+        # the operand relocations, and the one-slot .fini_array.00000 section
+        # pointing at it.
+        #
+        # This is what makes glibc drop the handlers an object registered under
+        # its handle — __cxa_atexit / __register_atfork record the handle as the
+        # owner, and __cxa_finalize(handle) is the call that runs and unregisters
+        # them. Without it a dlclosed object leaves its handlers pointing into
+        # the unmapped image (measured before this existed: calling
+        # __cxa_finalize by hand cleared them, so only the automatic call was
+        # missing).
+        #
+        # The routine is a *local* symbol: it is reached only from this object's
+        # own array slot, so it never needs to be visible to another object or to
+        # the loader, and a local definition cannot collide with an input's.
+        # __cxa_finalize is referenced WEAK so that a C library without it leaves
+        # the reference unresolved instead of failing the link — the NULL test in
+        # the code is the other half of that decision.
+        def add_dso_finalizer(writer, handle, aarch64)
+          code = aarch64 ? AARCH64_DSO_FINALIZE_CODE : DSO_FINALIZE_CODE
+          text = writer.add_section(name: ".text", type: SHT_PROGBITS,
+                                    flags: SHF_ALLOC | SHF_EXECINSTR, addralign: 16,
+                                    data: code)
+          routine = writer.add_symbol(name: DSO_FINALIZER_SYMBOL, bind: :local, type: :func,
+                                      section: text, value: 0, size: code.bytesize)
+          # The argument is the object's own definition of __dso_handle (the
+          # `handle` symbol the caller passes in), so that reference is internal
+          # and resolves without a text relocation even in a shared object; only
+          # the callee is an import.
+          cxa = writer.add_symbol(name: CXA_FINALIZE_SYMBOL, bind: :weak, type: :func)
+          if aarch64
+            add_dso_finalizer_relocations_aarch64(writer, text, handle, cxa)
+          else
+            add_dso_finalizer_relocations_x86_64(writer, text, handle, cxa)
+          end
+
+          slot = writer.add_section(name: DSO_FINI_ARRAY_SECTION, type: SHT_FINI_ARRAY,
+                                    flags: SHF_ALLOC | SHF_WRITE, addralign: 8, entsize: 8,
+                                    data: "\0".b * 8)
+          writer.add_relocation(target: slot, offset: 0, symbol: routine,
+                                type: aarch64 ? R_AARCH64_ABS64 : R_X86_64_64, addend: 0)
+        end
+
+        def add_dso_finalizer_relocations_x86_64(writer, text, handle, cxa)
+          writer.add_relocation(target: text, offset: DSO_FINALIZE_GOT_OFFSET, symbol: cxa,
+                                type: R_X86_64_GOTPCREL, addend: -5)
+          writer.add_relocation(target: text, offset: DSO_FINALIZE_HANDLE_OFFSET, symbol: handle,
+                                type: R_X86_64_PC32, addend: -4)
+          writer.add_relocation(target: text, offset: DSO_FINALIZE_CALL_OFFSET, symbol: cxa,
+                                type: R_X86_64_PLT32, addend: -4)
+        end
+
+        def add_dso_finalizer_relocations_aarch64(writer, text, handle, cxa)
+          [[AARCH64_DSO_FINALIZE_GOT_ADRP_OFFSET, cxa, R_AARCH64_ADR_GOT_PAGE],
+           [AARCH64_DSO_FINALIZE_GOT_LO12_OFFSET, cxa, R_AARCH64_LD64_GOT_LO12_NC],
+           [AARCH64_DSO_FINALIZE_HANDLE_ADRP_OFFSET, handle, R_AARCH64_ADR_PREL_PG_HI21],
+           [AARCH64_DSO_FINALIZE_HANDLE_ADD_OFFSET, handle, R_AARCH64_ADD_ABS_LO12_NC],
+           [AARCH64_DSO_FINALIZE_CALL_OFFSET, cxa, R_AARCH64_CALL26]].each do |offset, sym, type|
+            writer.add_relocation(target: text, offset: offset, symbol: sym, type: type, addend: 0)
+          end
         end
       end
 

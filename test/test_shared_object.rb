@@ -65,6 +65,14 @@ class TestSharedObject < Minitest::Test
   DT_FINI_ARRAYSZ = 28
   R_X86_64_64     = 1
 
+  # The relocation types the synthesized finalizer's three operands carry: the
+  # PC-relative reference to __cxa_finalize's GOT slot (the NULL test), the
+  # PC-relative reference to the internal __dso_handle, and the call routed
+  # through the .plt.
+  R_X86_64_PC32     = 2
+  R_X86_64_PLT32    = 4
+  R_X86_64_GOTPCREL = 9
+
   # A translation unit that imports from libc: an external function call
   # (strlen, puts -> R_X86_64_PLT32, resolved through a .plt stub and a
   # JUMP_SLOT) and an external data reference (environ -> R_X86_64_GOTPCREL,
@@ -520,12 +528,16 @@ class TestSharedObject < Minitest::Test
 
   # The definition must stay invisible to the dynamic linker: it is not an
   # export, so no other object in the runtime scope can interpose it and hand
-  # this object a foreign identity.
+  # this object a foreign identity. Nor is the routine that consumes it — a
+  # local symbol reached only from this object's own array slot.
   def test_synthesized_dso_handle_is_not_exported
     r = Reader.read(build_so([DSO_HANDLE_USER]))
     assert_nil r.dynamic_symbol("__dso_handle"), "__dso_handle must not enter .dynsym"
+    assert_nil r.dynamic_symbol("__rubycc_dso_finalize"),
+               "the synthesized finalizer must not enter .dynsym either"
     assert_equal %w[handle_address handle_value],
-                 r.dynamic_symbols.reject { |s| s.name.to_s.empty? }.map(&:name).sort
+                 defined_exports(r).to_a.sort,
+                 "only the input's own functions are exported"
   end
 
   def test_synthesized_dso_handle_output_is_deterministic
@@ -564,11 +576,7 @@ class TestSharedObject < Minitest::Test
   # binding that keeps it out of .dynsym while still resolving another object's
   # undefined reference during the merge (a local symbol could not).
   def test_dso_handle_supplier_member_shape
-    archive = Rubycc::ObjFile::ArReader.read(Linker.dso_handle_archive(EM_X86_64_MACHINE))
-    member = archive.member_defining("__dso_handle")
-    refute_nil member, "the archive must export __dso_handle so the merge can pull it in lazily"
-
-    r = Reader.read(member.data)
+    r = Reader.read(dso_handle_member.data)
     sym = r.symbol("__dso_handle")
     assert_equal :object, sym.type
     assert_equal :hidden, sym.visibility, "hidden keeps the definition out of .dynsym"
@@ -576,10 +584,10 @@ class TestSharedObject < Minitest::Test
     assert_equal 0, sym.value
     assert_equal 8, sym.size
 
-    relocs = r.relocation_sections.flat_map(&:relocations)
+    relocs = r.relocation_sections.find { |rs| rs.target.name == ".data" }.relocations
     assert_equal 1, relocs.size
     assert_equal 0, relocs.first.offset
-    assert_equal 1, relocs.first.type, "R_X86_64_64: the word points at itself"
+    assert_equal R_X86_64_64, relocs.first.type, "R_X86_64_64: the word points at itself"
     assert_equal "__dso_handle", relocs.first.symbol.name
     assert_equal 0, relocs.first.addend
   end
@@ -632,6 +640,250 @@ class TestSharedObject < Minitest::Test
       assert_equal "3", out,
                    "the prepare and parent handlers registered by the .so must have run"
     end
+  end
+
+  # --- the finalizer half of the __dso_handle member -----------------------
+  #
+  # The handle alone only tells the C runtime *who* registered a handler; the
+  # object still has to say *when* it is going away. That is the finalizer the
+  # supplier member now carries: a .fini_array slot pointing at a routine that
+  # calls __cxa_finalize(__dso_handle), which is what makes glibc run and
+  # unregister everything registered under this handle before the image is
+  # unmapped. The shape is measured from a `gcc -shared -fPIC` output (its
+  # __do_global_dtors_aux), not copied from any crt source.
+
+  # A unit that registers an exit handler the way glibc's own atexit does —
+  # __cxa_atexit(function, argument, owning DSO) — so only __cxa_finalize on
+  # this handle can run it. A destructor is registered alongside so the *order*
+  # of the two is observable. Neither can report through the object's own
+  # memory (unmapped moments later), so both append to a file.
+  def handler_source(marker)
+    <<~C
+      int __cxa_atexit(void (*f)(void *), void *arg, void *dso);
+      extern void *__dso_handle;
+      void *fopen(const char *path, const char *mode);
+      int fputs(const char *s, void *stream);
+      int fclose(void *stream);
+      static void note(const char *s) {
+        void *f = fopen("#{marker}", "a");
+        if (f) { fputs(s, f); fclose(f); }
+      }
+      static void on_finalize(void *arg) { note("C"); }
+      __attribute__((destructor)) static void on_destroy(void) { note("D"); }
+      int arm(void) { return __cxa_atexit(on_finalize, 0, __dso_handle); }
+    C
+  end
+
+  # The supplier member's second half: the routine in .text, the local symbol
+  # naming it, the priority-0 array section, and the five relocations that bind
+  # the routine's operands. Priority 0 is the implementation-reserved range, and
+  # it is what puts the slot at the front of the array.
+  def test_dso_handle_supplier_member_carries_the_finalizer
+    r = Reader.read(dso_handle_member.data)
+
+    text = r.section(".text")
+    refute_nil text, "the finalizer's code travels in the same member as the word"
+    sym = r.symbol("__rubycc_dso_finalize")
+    assert_equal :local, sym.bind, "nothing outside this object may reach the routine"
+    assert_equal :func, sym.type
+    assert_equal ".text", sym.section.name
+    assert_equal text.size, sym.size
+
+    slot = r.section(".fini_array.00000")
+    refute_nil slot, "the routine is reached through a priority-numbered array section"
+    assert_equal SHT_FINI_ARRAY, slot.type
+    assert_equal SHF_ALLOC | SHF_WRITE, slot.flags
+    assert_equal 8, slot.entsize
+    assert_equal 8, slot.size, "exactly one slot"
+
+    text_relocs = r.relocation_sections.find { |rs| rs.target.name == ".text" }.relocations
+    assert_equal [[4, R_X86_64_GOTPCREL, "__cxa_finalize", -5],
+                  [14, R_X86_64_PC32, "__dso_handle", -4],
+                  [19, R_X86_64_PLT32, "__cxa_finalize", -4]],
+                 text_relocs.map { |x| [x.offset, x.type, x.symbol.name, x.addend] },
+                 "the GOT test, the handle load and the call, in code order"
+
+    slot_relocs = r.relocation_sections.find { |rs| rs.target.name == ".fini_array.00000" }.relocations
+    assert_equal [[0, R_X86_64_64, "__rubycc_dso_finalize", 0]],
+                 slot_relocs.map { |x| [x.offset, x.type, x.symbol.name, x.addend] }
+
+    assert_equal :weak, r.symbol("__cxa_finalize").bind,
+                 "a C library without __cxa_finalize must not fail the link"
+    assert r.symbol("__cxa_finalize").undefined?
+  end
+
+  # In the linked object: one extra finalizer slot, addressed by DT_FINI_ARRAY,
+  # rebased like any other internal absolute initializer.
+  def test_synthesized_finalizer_slot_is_in_the_fini_array
+    r = Reader.read(build_so([DSO_HANDLE_USER], needed: [libc_path].compact))
+
+    slot = r.section(".fini_array.00000")
+    refute_nil slot, "the supplier member contributes one finalizer slot"
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+    assert_equal slot.addr, by_tag[DT_FINI_ARRAY], "DT_FINI_ARRAY points at the run's start"
+    assert_equal 8, by_tag[DT_FINI_ARRAYSZ]
+
+    rela = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    reloc = rela.relocations.find { |x| x.offset == slot.addr }
+    refute_nil reloc, "the slot is an internal absolute initializer"
+    assert_equal R_X86_64_RELATIVE, reloc.type
+    text = r.section(".text")
+    assert_operator reloc.addend, :>=, text.addr, "the addend is the routine's address"
+    assert_operator reloc.addend, :<, text.addr + text.size
+  end
+
+  # The runtime walks .fini_array backwards, so the front of the array runs
+  # last: the object's own destructors must finish before the handle is
+  # surrendered. The priority-0 section is what puts the synthesized slot there.
+  def test_synthesized_finalizer_slot_leads_the_array
+    r = Reader.read(build_so([DSO_HANDLE_USER], needed: [libc_path].compact,
+                             inputs: [array_object(".fini_array", "handle_value")]))
+    run = r.sections.select { |s| s.type == SHT_FINI_ARRAY }
+    assert_equal %w[.fini_array.00000 .fini_array], run.map(&:name),
+                 "priority 0 sorts ahead of the unnumbered input section"
+    assert_equal run.first.addr + run.first.size, run.last.addr, "and runs straight into it"
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+    assert_equal run.first.addr, by_tag[DT_FINI_ARRAY]
+    assert_equal 16, by_tag[DT_FINI_ARRAYSZ], "both slots are in one range"
+  end
+
+  # __cxa_finalize is referenced twice and in two different ways, which is the
+  # measured gcc shape: a GOT slot (GLOB_DAT) the NULL test reads directly, and
+  # a .plt stub (JUMP_SLOT) the call goes through. WEAK is what lets a C library
+  # that lacks the symbol leave the reference unresolved instead of failing.
+  def test_cxa_finalize_is_a_weak_undefined_import_bound_through_got_and_plt
+    r = Reader.read(build_so([DSO_HANDLE_USER], needed: [libc_path].compact))
+
+    sym = r.dynamic_symbol("__cxa_finalize")
+    refute_nil sym, "the finalizer's callee is a dynamic import"
+    assert_equal :weak, sym.bind
+    assert_equal SHN_UNDEF, sym.shndx
+
+    dyn = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    glob = dyn.relocations.select { |x| x.type == R_X86_64_GLOB_DAT }
+    assert_equal ["__cxa_finalize"], glob.map { |x| x.symbol.name },
+                 "the NULL test reads a GOT slot the loader fills with a GLOB_DAT"
+
+    plt = r.relocation_sections.find { |rs| rs.section.name == ".rela.plt" }
+    refute_nil plt
+    assert_equal ["__cxa_finalize"], plt.relocations.map { |x| x.symbol.name }
+    assert_equal R_X86_64_JUMP_SLOT, plt.relocations.first.type
+  end
+
+  # Decodes the emitted routine byte by byte and re-derives each of its three
+  # operand addresses, which pins both the instruction encodings and what they
+  # point at. The NULL test cannot be triggered on a glibc host (it always has
+  # __cxa_finalize), so this is where its presence is asserted.
+  def test_synthesized_finalizer_tests_the_got_slot_before_calling
+    r = Reader.read(build_so([DSO_HANDLE_USER], needed: [libc_path].compact))
+    text = r.section(".text")
+    slot = r.section(".fini_array.00000")
+    rela = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    routine = rela.relocations.find { |x| x.offset == slot.addr }.addend
+    code = text.data[routine - text.addr, 25]
+
+    assert_equal "\x55".b, code[0], "push %rbp realigns the stack for the call"
+    assert_equal "\x48\x83\x3d".b, code[1, 3], "cmpq $0, disp32(%rip)"
+    assert_equal 0, code[8].ord, "compared against zero"
+    got_slot = rela.relocations.find { |x| x.type == R_X86_64_GLOB_DAT }.offset
+    assert_equal got_slot, routine + 9 + code[4, 4].unpack1("l<"),
+                 "the test reads __cxa_finalize's GOT slot, not its .plt stub"
+
+    assert_equal "\x74\x0c".b, code[9, 2], "je over the call when the slot is NULL"
+    assert_equal routine + 23, routine + 11 + 0x0c, "the branch lands on the epilogue"
+
+    assert_equal "\x48\x8b\x3d".b, code[11, 3], "mov disp32(%rip), %rdi"
+    assert_equal r.section(".data").addr, routine + 18 + code[14, 4].unpack1("l<"),
+                 "the argument is the handle word's contents, not its address"
+
+    assert_equal "\xe8".b, code[18], "call rel32"
+    assert_equal r.section(".plt").addr, routine + 23 + code[19, 4].unpack1("l<"),
+                 "the call goes through the .plt stub"
+    assert_equal "\x5d\xc3".b, code[23, 2], "pop %rbp; ret"
+  end
+
+  # The acceptance: a handler registered under this object's handle must be run
+  # and unregistered by the dlclose itself, with nothing done by hand. Step 152
+  # could only show that calling __cxa_finalize manually cleared the
+  # registration; the point here is that nobody calls it.
+  #
+  # The probe runs in a child interpreter: the file the handler leaves behind is
+  # the only channel out of an image that is unmapped moments later, and the
+  # checks on both sides of the dlclose pin the handler to the dlclose rather
+  # than to the child's exit.
+  def test_dlclose_runs_a_handler_registered_under_the_handle
+    skip "libc unavailable" unless libc_path
+
+    in_tmpdir do |dir|
+      marker = File.join(dir, "trace.txt")
+      so = File.join(dir, "libhandler.so")
+      Linker.link_to(objects_for([handler_source(marker)], dir), so,
+                     needed: [libc_path], soname: "libhandler.so")
+
+      probe = <<~RUBY
+        require "fiddle"
+        lib = Fiddle.dlopen(ARGV[0])
+        armed = Fiddle::Function.new(lib["arm"], [], Fiddle::TYPE_INT).call
+        before = File.exist?(ARGV[1]) ? File.read(ARGV[1]) : ""
+        lib.close
+        after = File.exist?(ARGV[1]) ? File.read(ARGV[1]) : ""
+        print [armed, before, after].join(",")
+      RUBY
+      out, status = Open3.capture2e(RbConfig.ruby, "-e", probe, so, marker)
+      assert status.success?, "the finalizer probe failed:\n#{out}"
+      assert_equal "0,,DC", out,
+                   "__cxa_atexit accepted the registration, nothing ran before the dlclose, " \
+                   "and the dlclose ran the destructor then the registered handler"
+    end
+  end
+
+  # The other half of that result, stated on its own: the synthesized finalizer
+  # is the *last* thing to run. Surrendering the handle first would unregister a
+  # handler the object's own destructors might still be about to use.
+  def test_synthesized_finalizer_runs_after_the_objects_own_destructors
+    skip "libc unavailable" unless libc_path
+
+    in_tmpdir do |dir|
+      marker = File.join(dir, "order.txt")
+      so = File.join(dir, "liborder.so")
+      Linker.link_to(objects_for([handler_source(marker)], dir), so,
+                     needed: [libc_path], soname: "liborder.so")
+
+      probe = <<~RUBY
+        require "fiddle"
+        lib = Fiddle.dlopen(ARGV[0])
+        Fiddle::Function.new(lib["arm"], [], Fiddle::TYPE_INT).call
+        lib.close
+        print File.read(ARGV[1])
+      RUBY
+      out, status = Open3.capture2e(RbConfig.ruby, "-e", probe, so, marker)
+      assert status.success?, "the ordering probe failed:\n#{out}"
+      assert_equal "DC", out, "the destructor runs first, the handle is surrendered last"
+    end
+  end
+
+  # The invariant the whole supplier rests on: a link that never mentions
+  # __dso_handle extracts no member, so it gains neither the word nor the
+  # finalizer — no array section, no import, no .plt, not one byte.
+  def test_a_link_without_dso_handle_gains_no_finalizer
+    r = Reader.read(build_so([SELF_CONTAINED]))
+    assert_nil r.section(".fini_array.00000")
+    assert_nil r.section(".text.__rubycc_dso_finalize")
+    assert_nil r.dynamic_symbol("__cxa_finalize")
+    assert_nil r.section(".plt"), "no external call was introduced"
+    assert_nil r.section(".got"), "no GOT slot was introduced"
+    tags = r.dynamic_entries.map(&:tag)
+    refute_includes tags, DT_FINI_ARRAY
+    refute_includes tags, DT_FINI_ARRAYSZ
+  end
+
+  # An input that defines __dso_handle itself keeps the member unextracted, so
+  # it opts out of the finalizer too — the object owns its handle and whatever
+  # it does with it.
+  def test_input_definition_of_dso_handle_also_suppresses_the_finalizer
+    r = Reader.read(build_so([DSO_HANDLE_USER, DSO_HANDLE_OWN]))
+    assert_nil r.section(".fini_array.00000")
+    assert_nil r.dynamic_symbol("__cxa_finalize")
   end
 
   # --- external-tool validation ------------------------------------------
@@ -1109,6 +1361,15 @@ class TestSharedObject < Minitest::Test
 
   def call(lib, name, args, ret)
     Fiddle::Function.new(lib[name], args, ret)
+  end
+
+  # The one archive member that supplies __dso_handle (and, with it, the
+  # finalizer that surrenders the handle), as the merge finds it.
+  def dso_handle_member
+    archive = Rubycc::ObjFile::ArReader.read(Linker.dso_handle_archive(EM_X86_64_MACHINE))
+    member = archive.member_defining("__dso_handle")
+    refute_nil member, "the archive must export __dso_handle so the merge can pull it in lazily"
+    member
   end
 
   # A relocatable object holding nothing but one initializer-array slot pointing
