@@ -668,6 +668,42 @@ class TestType < Minitest::Test
     assert_equal type, Type::Int
   end
 
+  # The composite type of two identical types is that type; of two unrelated
+  # types there is none (nil, the caller's "conflicting types" signal).
+  def test_composite_of_identical_and_unrelated_types
+    assert_equal Type::Int, Type.composite(Type::Int, Type::Int)
+    assert_nil Type.composite(Type::Int, Type::Long)
+    assert_nil Type.composite(Type::Array.new(Type::Int, 3), Type::Int)
+  end
+
+  # 6.2.7p3: a known array bound and an unspecified one compose to the known
+  # one, in either order, so "extern int tbl[];" and "int tbl[3]" describe one
+  # object of type "int [3]".
+  def test_composite_array_takes_the_known_bound
+    unbounded = Type::Array.new(Type::Int, nil)
+    bounded = Type::Array.new(Type::Int, 3)
+    assert_equal bounded, Type.composite(unbounded, bounded)
+    assert_equal bounded, Type.composite(bounded, unbounded)
+    assert_equal unbounded, Type.composite(unbounded, unbounded)
+  end
+
+  # Two known but different bounds are incompatible, and so are incompatible
+  # element types even when one bound is unspecified.
+  def test_composite_array_rejects_a_mismatch
+    assert_nil Type.composite(Type::Array.new(Type::Int, 2), Type::Array.new(Type::Int, 3))
+    assert_nil Type.composite(Type::Array.new(Type::Int, nil), Type::Array.new(Type::Long, 3))
+  end
+
+  # A multidimensional array composes through its element type: the outer bound
+  # may be unspecified, the inner one must agree.
+  def test_composite_array_recurses_into_the_element_type
+    row = Type::Array.new(Type::Int, 4)
+    assert_equal Type::Array.new(row, 2),
+                 Type.composite(Type::Array.new(row, nil), Type::Array.new(row, 2))
+    assert_nil Type.composite(Type::Array.new(row, nil),
+                              Type::Array.new(Type::Array.new(Type::Int, 8), 2))
+  end
+
   # A completed enum is not equal to a still-incomplete one, nor to a
   # non-`int` integer type (an enum's underlying type here is `int`, not long).
   def test_completed_enum_equality_is_narrow

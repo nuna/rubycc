@@ -760,7 +760,7 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   | 2 | ~~**`sizeof(式)` が整数定数式に畳めない文脈がある**~~ **解消(Step 148)**: enumerator・ビットフィールド幅・case ラベル・配列デシグネータ・`aligned` 属性・`__builtin_choose_expr` の 6 箇所に `sizeof_expr: method(:fold_time_sizeof)` を配線。グローバル初期化子(`parser.rb:513`)は意図的に据え置き(`references_sizeof_expr?` ガードでジェネレータ側に回す既存の設計判断) | ~~nkf~~ | ~~高~~ **完了** |
   | 3 | ~~`pthread_kill` / `pthread_atfork` が未宣言~~ **解消(Step 149)**: 両アーキの `pthread.h` に宣言を追加(シグネチャは実測)。`pthread_atfork` は**これでリンクが通るようになるわけではない**(6 番) | ~~stackprof~~ | ~~中~~ **完了** |
   | 4 | ~~`_POSIX_MONOTONIC_CLOCK` が無い~~ **解消(Step 149)**: `include/libc/unistd.h` に追加。**実測値は 0**(= 対応するが `sysconf` での実行時確認が要る、という glibc と同じ意味)で、両アーキ一致のため共通層。他の `_POSIX_*` は網羅しない | ~~stackprof~~ | ~~中~~ **完了** |
-  | 5 | **不完全配列型の補完が `conflicting types`** — `extern int tbl[]; int tbl[3] = {1,2,3};` が通らない(C11 6.2.7p3 の合成型) | nkf。ファイルスコープの仮定義 `int tbl[];` も別途落ちる | 中 |
+  | 5 | ~~**不完全配列型の補完が `conflicting types`**~~ **解消(Step 150)**: `Type.composite`(C11 6.2.7p3)を新設し、ファイルスコープの `extern` 参照・仮定義/実定義・ブロックスコープの `extern` の 3 経路を 1 つの規則に集約。多次元も対応。**これで nkf が PASS**(Step 151 で記録) | ~~nkf~~ | ~~中~~ **完了** |
   | 6 | **`__dso_handle` を供給できない** — `pthread_atfork` は共有 libc に無く `libc_nonshared.a` の `pthread_atfork.oS` でしか得られず、そのメンバが `__dso_handle` を参照して `unsupported text relocation against external symbol` になる。gcc では crtstuff(`crtbegin_S.o`)が供給しており rubycc に相当物が無い | stackprof。リンカの構造的な穴 | 低(最難・要設計) |
 
   1〜5 を潰した状態(scratch でのハンドパッチ)では**両 gem とも上流スイートが完走する**
