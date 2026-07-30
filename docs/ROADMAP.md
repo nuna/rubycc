@@ -762,15 +762,16 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   | 3 | ~~`pthread_kill` / `pthread_atfork` が未宣言~~ **解消(Step 149)**: 両アーキの `pthread.h` に宣言を追加(シグネチャは実測)。`pthread_atfork` は**これでリンクが通るようになるわけではない**(6 番) | ~~stackprof~~ | ~~中~~ **完了** |
   | 4 | ~~`_POSIX_MONOTONIC_CLOCK` が無い~~ **解消(Step 149)**: `include/libc/unistd.h` に追加。**実測値は 0**(= 対応するが `sysconf` での実行時確認が要る、という glibc と同じ意味)で、両アーキ一致のため共通層。他の `_POSIX_*` は網羅しない | ~~stackprof~~ | ~~中~~ **完了** |
   | 5 | ~~**不完全配列型の補完が `conflicting types`**~~ **解消(Step 150)**: `Type.composite`(C11 6.2.7p3)を新設し、ファイルスコープの `extern` 参照・仮定義/実定義・ブロックスコープの `extern` の 3 経路を 1 つの規則に集約。多次元も対応。**これで nkf が PASS**(Step 151 で記録) | ~~nkf~~ | ~~中~~ **完了** |
-  | 6 | **`__dso_handle` を供給できない** — `pthread_atfork` は共有 libc に無く `libc_nonshared.a` の `pthread_atfork.oS` でしか得られず、そのメンバが `__dso_handle` を参照して `unsupported text relocation against external symbol` になる。gcc では crtstuff(`crtbegin_S.o`)が供給しており rubycc に相当物が無い | stackprof。リンカの構造的な穴 | 低(最難・要設計) |
+  | 6 | ~~**`__dso_handle` を供給できない**~~ **解消(Step 152)**: 供給元を**1 メンバのアーカイブ**として全リンクの末尾に足し、`ar` の遅延メンバ抽出をそのまま「未定義のときだけ供給」の条件に使う。語は自己参照の ABS64 で表現し、既存の適用エンジンが共有オブジェクトでは RELATIVE を出す。**これで stackprof が PASS**(Step 153 で記録) | ~~stackprof~~ | ~~低~~ **完了** |
 
   1〜5 を潰した状態(scratch でのハンドパッチ)では**両 gem とも上流スイートが完走する**
   ことを実測済み(ただし `__dso_handle` はスタブで代用しており、この結果は検証ではない)。
   **aarch64 と musl では未実測**。
 
-  **Step 149 時点の stackprof の到達位置**: 3・4 の解消でコンパイルは通るようになり、
-  失敗は `.so` のリンク段階(6 番の `__dso_handle`)に移った。5 番は nkf 固有なので
-  stackprof には現れない。
+  **6 ギャップは Step 147〜152 で全て解消**。nkf 0.3.0(Step 151)と
+  stackprof 0.2.28(Step 153)がどちらも検証済みになった。
+  残る既知の限界は `__cxa_finalize` を呼ぶ `.fini_array` エントリを合成しないこと
+  (Step 152 参照。init/fini array のパイプラインが未整備)。
 - **既知の負債(Step 149 で観測)**: `test/corpus/gems.rb` の 4 エントリ
   (bigdecimal・date・racc・redcarpet)が `version: nil` = 最新追従になっており、
   上流が新版を出すたびに `rake corpus:census` のスナップショットが動く。

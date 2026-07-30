@@ -452,6 +452,176 @@ class TestSharedObject < Minitest::Test
     end
   end
 
+  # --- __dso_handle synthesis --------------------------------------------
+
+  # A unit that only *references* __dso_handle, the way glibc's
+  # libc_nonshared.a members do: nothing in the link defines it, so the linker
+  # has to supply it. Both spellings are exercised — the value of the word and
+  # its address — because the whole contract is that the two are equal.
+  DSO_HANDLE_USER = <<~C
+    extern void *__dso_handle;
+    void *handle_value(void) { return __dso_handle; }
+    void *handle_address(void) { return &__dso_handle; }
+  C
+
+  # A unit supplying its own __dso_handle, plus one referencing it: the link
+  # must keep the input's definition and synthesize nothing.
+  DSO_HANDLE_OWN = <<~C
+    void *__dso_handle = 0;
+  C
+
+  # pthread_atfork, the case that exposed the gap: glibc keeps it out of the
+  # shared libc and supplies it only from libc_nonshared.a, whose member
+  # registers the handlers with __dso_handle as the owning-object cookie.
+  ATFORK = <<~C
+    int pthread_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(void));
+    static int seen;
+    static void on_prepare(void) { seen |= 1; }
+    static void on_parent(void) { seen |= 2; }
+    static void on_child(void) { seen |= 4; }
+    int register_hooks(void) { return pthread_atfork(on_prepare, on_parent, on_child); }
+    int seen_bits(void) { return seen; }
+  C
+
+  # The supplied word is an 8-byte .data object holding its own load-time
+  # address, rebased by exactly one R_X86_64_RELATIVE whose offset and addend
+  # are both that address — the shape measured from `gcc -shared -fPIC` output.
+  def test_dso_handle_is_synthesized_when_no_input_defines_it
+    r = Reader.read(build_so([DSO_HANDLE_USER]))
+
+    data = r.section(".data")
+    refute_nil data, "the synthesized word lives in .data"
+    assert_equal 8, data.size, "one 8-byte handle word and nothing else"
+    assert_equal data.addr, data.data.unpack1("Q<"),
+                 "the word must hold its own address (a unique per-DSO cookie)"
+
+    rela = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    refute_nil rela, "the self-reference is rebased at load time"
+    self_rebase = rela.relocations.select { |x| x.offset == data.addr }
+    assert_equal 1, self_rebase.size, "exactly one dynamic relocation covers the word"
+    assert_equal R_X86_64_RELATIVE, self_rebase.first.type
+    assert_equal data.addr, self_rebase.first.addend,
+                 "the RELATIVE addend must be the word's own address"
+    assert_equal STN_UNDEF, self_rebase.first.symbol.index,
+                 "a RELATIVE relocation carries no symbol"
+  end
+
+  # The definition must stay invisible to the dynamic linker: it is not an
+  # export, so no other object in the runtime scope can interpose it and hand
+  # this object a foreign identity.
+  def test_synthesized_dso_handle_is_not_exported
+    r = Reader.read(build_so([DSO_HANDLE_USER]))
+    assert_nil r.dynamic_symbol("__dso_handle"), "__dso_handle must not enter .dynsym"
+    assert_equal %w[handle_address handle_value],
+                 r.dynamic_symbols.reject { |s| s.name.to_s.empty? }.map(&:name).sort
+  end
+
+  def test_synthesized_dso_handle_output_is_deterministic
+    assert_equal build_so([DSO_HANDLE_USER]), build_so([DSO_HANDLE_USER]),
+                 "identical inputs must yield byte-identical shared objects"
+  end
+
+  # The supplier is an archive member, so a link that never mentions the symbol
+  # must come out exactly as it did before it existed: no .data word, no
+  # relocation.
+  def test_dso_handle_is_not_synthesized_when_unreferenced
+    r = Reader.read(build_so([SELF_CONTAINED]))
+    assert_equal 4, r.section(".data").size, "only the input's own `counter` is in .data"
+    assert_nil r.section(".rela.dyn"), "a self-contained object needs no dynamic relocation"
+    assert_nil r.dynamic_symbol("__dso_handle")
+  end
+
+  # An input that defines __dso_handle itself keeps its definition: the member
+  # is never extracted, so there is no multiple definition and no second word.
+  def test_input_definition_of_dso_handle_is_kept
+    r = Reader.read(build_so([DSO_HANDLE_USER, DSO_HANDLE_OWN]))
+
+    data = r.section(".data")
+    assert_equal 8, data.size, "only the input's own definition is in .data"
+    assert_equal 0, data.data.unpack1("Q<"), "the input's initializer is untouched"
+    refute_nil r.dynamic_symbol("__dso_handle"),
+               "the input's own definition is an ordinary default-visibility export"
+
+    rela = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    assert_empty rela.relocations.select { |x| x.offset == data.addr },
+                 "no synthesized self-rebase is added on top of the input's definition"
+  end
+
+  # The supplier object itself: one hidden global OBJECT symbol over an 8-byte
+  # .data word, self-referenced through an absolute-64 relocation. Hidden is the
+  # binding that keeps it out of .dynsym while still resolving another object's
+  # undefined reference during the merge (a local symbol could not).
+  def test_dso_handle_supplier_member_shape
+    archive = Rubycc::ObjFile::ArReader.read(Linker.dso_handle_archive(EM_X86_64_MACHINE))
+    member = archive.member_defining("__dso_handle")
+    refute_nil member, "the archive must export __dso_handle so the merge can pull it in lazily"
+
+    r = Reader.read(member.data)
+    sym = r.symbol("__dso_handle")
+    assert_equal :object, sym.type
+    assert_equal :hidden, sym.visibility, "hidden keeps the definition out of .dynsym"
+    assert_equal ".data", sym.section.name
+    assert_equal 0, sym.value
+    assert_equal 8, sym.size
+
+    relocs = r.relocation_sections.flat_map(&:relocations)
+    assert_equal 1, relocs.size
+    assert_equal 0, relocs.first.offset
+    assert_equal 1, relocs.first.type, "R_X86_64_64: the word points at itself"
+    assert_equal "__dso_handle", relocs.first.symbol.name
+    assert_equal 0, relocs.first.addend
+  end
+
+  # The run-time contract, checked by loading the object: the value read out of
+  # __dso_handle is its own address, and it is not zero (zero would name the
+  # main program).
+  def test_dlopen_sees_a_handle_pointing_at_itself
+    with_so([DSO_HANDLE_USER]) do |so|
+      lib = Fiddle.dlopen(so)
+      value = call(lib, "handle_value", [], Fiddle::TYPE_VOIDP).call
+      address = call(lib, "handle_address", [], Fiddle::TYPE_VOIDP).call
+      refute_equal 0, address.to_i, "the handle must be a real address"
+      assert_equal address.to_i, value.to_i,
+                   "the loaded word must hold its own run-time address"
+    ensure
+      lib&.close
+    end
+  end
+
+  # End to end on the case that exposed the gap: pthread_atfork comes from
+  # libc_nonshared.a, whose member references __dso_handle; the object must link,
+  # dlopen, register its handlers with glibc and see them run across a real fork.
+  #
+  # The probe runs in a child interpreter rather than here: registering fork
+  # handlers changes the *process* for as long as the object stays loaded, and
+  # every later test that shells out forks, so the effect must not leak into the
+  # rest of the suite. The child keeps the object loaded (`disable_close`) for
+  # the same reason a real program would — glibc drops the registration only
+  # when the object finalizes.
+  def test_pthread_atfork_from_libc_nonshared_links_and_runs
+    skip "libc unavailable" unless libc_path
+    skip "libc_nonshared.a unavailable" unless libc_nonshared_path
+
+    probe = <<~RUBY
+      require "fiddle"
+      lib = Fiddle.dlopen(ARGV[0])
+      lib.disable_close
+      register = Fiddle::Function.new(lib["register_hooks"], [], Fiddle::TYPE_INT)
+      seen = Fiddle::Function.new(lib["seen_bits"], [], Fiddle::TYPE_INT)
+      abort "pthread_atfork refused the registration" unless register.call.zero?
+      abort "a handler ran before any fork" unless seen.call.zero?
+      Process.wait(fork { exit!(0) })
+      print seen.call
+    RUBY
+
+    with_so([ATFORK], needed: [libc_path], inputs: [libc_nonshared_path]) do |so|
+      out, status = Open3.capture2e(RbConfig.ruby, "-e", probe, so)
+      assert status.success?, "the atfork probe failed:\n#{out}"
+      assert_equal "3", out,
+                   "the prepare and parent handlers registered by the .so must have run"
+    end
+  end
+
   # --- external-tool validation ------------------------------------------
 
   def test_readelf_accepts_the_shared_object
@@ -513,14 +683,19 @@ class TestSharedObject < Minitest::Test
 
   private
 
-  def build_so(sources, needed: [], soname: nil)
-    in_tmpdir { |dir| Linker.link(objects_for(sources, dir), needed: needed, soname: soname) }
+  # Links `sources` (compiled here) into a shared object. `inputs` appends
+  # further link inputs — an archive path, say — after the compiled objects, in
+  # the position a driver would place a library.
+  def build_so(sources, needed: [], soname: nil, inputs: [])
+    in_tmpdir do |dir|
+      Linker.link(objects_for(sources, dir) + inputs, needed: needed, soname: soname)
+    end
   end
 
-  def with_so(sources, needed: [], soname: nil)
+  def with_so(sources, needed: [], soname: nil, inputs: [])
     in_tmpdir do |dir|
       so = File.join(dir, "libtest.so")
-      Linker.link_to(objects_for(sources, dir), so, needed: needed, soname: soname)
+      Linker.link_to(objects_for(sources, dir) + inputs, so, needed: needed, soname: soname)
       yield so
     end
   end
@@ -532,6 +707,18 @@ class TestSharedObject < Minitest::Test
 
     @libc_path = ["/lib/x86_64-linux-gnu/libc.so.6", "/lib64/libc.so.6", "/usr/lib/libc.so.6"]
                  .find { |p| File.exist?(p) } || libc_from_ldconfig
+  end
+
+  # glibc's libc_nonshared.a, the static half of the C library the linker script
+  # names alongside libc.so.6; nil when the host has no such file (the
+  # pthread_atfork case skips). It is what supplies pthread_atfork — and what
+  # references __dso_handle.
+  def libc_nonshared_path
+    return @libc_nonshared_path if defined?(@libc_nonshared_path)
+
+    @libc_nonshared_path = ["/usr/lib/x86_64-linux-gnu/libc_nonshared.a",
+                            "/usr/lib64/libc_nonshared.a",
+                            "/usr/lib/libc_nonshared.a"].find { |p| File.exist?(p) }
   end
 
   def libc_from_ldconfig

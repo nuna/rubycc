@@ -165,6 +165,68 @@ class TestAArch64SharedObject < Minitest::Test
                  "identical inputs must yield byte-identical shared objects"
   end
 
+  # --- __dso_handle synthesis --------------------------------------------
+
+  # A unit that only references __dso_handle (as glibc's libc_nonshared.a
+  # members do), so the linker has to supply the word itself. On aarch64 the
+  # reference is a two-instruction pair — adrp/add for the address, or the GOT
+  # pair under -fPIC — and every form must resolve internally rather than turn
+  # into a text relocation against an import.
+  DSO_HANDLE_USER = <<~C
+    extern void *__dso_handle;
+    void *handle_value(void) { return __dso_handle; }
+    void *handle_address(void) { return &__dso_handle; }
+  C
+
+  # The aarch64 counterpart of TestSharedObject's x86_64 case: the same 8-byte
+  # self-referencing .data word, rebased by one R_AARCH64_RELATIVE (the aarch64
+  # spelling of the base relocation), and kept out of .dynsym.
+  def test_dso_handle_is_synthesized_when_no_input_defines_it
+    r = Reader.read(build_so([DSO_HANDLE_USER]))
+
+    data = r.section(".data")
+    refute_nil data, "the synthesized word lives in .data"
+    assert_equal 8, data.size, "one 8-byte handle word and nothing else"
+    assert_equal data.addr, data.data.unpack1("Q<"),
+                 "the word must hold its own address (a unique per-DSO cookie)"
+
+    rela = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    refute_nil rela, "the self-reference is rebased at load time"
+    self_rebase = rela.relocations.select { |x| x.offset == data.addr }
+    assert_equal 1, self_rebase.size, "exactly one dynamic relocation covers the word"
+    assert_equal R_AARCH64_RELATIVE, self_rebase.first.type
+    assert_equal data.addr, self_rebase.first.addend,
+                 "the RELATIVE addend must be the word's own address"
+
+    assert_nil r.dynamic_symbol("__dso_handle"), "__dso_handle must not enter .dynsym"
+  end
+
+  def test_dso_handle_is_not_synthesized_when_unreferenced
+    r = Reader.read(build_so([SELF_CONTAINED]))
+    assert_equal 4, r.section(".data").size, "only the input's own `counter` is in .data"
+    assert_nil r.section(".rela.dyn"), "a self-contained object needs no dynamic relocation"
+  end
+
+  # The execution oracle: the on-target loader rebases the word, and the object's
+  # own code — an adrp/add or GOT pair against a now-internal symbol — reads back
+  # exactly the word's own run-time address.
+  def test_dso_handle_points_at_itself_under_qemu
+    skip_unless_aarch64_self_link
+
+    consumer = <<~C
+      #include <stdio.h>
+      void *handle_value(void); void *handle_address(void);
+      int main(void) {
+        printf("%d\\n", handle_address() != 0);
+        printf("%d\\n", handle_value() == handle_address());
+        return 0;
+      }
+    C
+    status, stdout = build_and_run_consumer([DSO_HANDLE_USER], "libdso.so", consumer)
+    assert_equal 0, status
+    assert_equal "1\n1\n", stdout
+  end
+
   # --- external imports (structure; needs the sysroot libc) --------------
 
   def test_external_function_gets_a_jump_slot_and_data_gets_a_glob_dat

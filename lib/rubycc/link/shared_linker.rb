@@ -182,6 +182,11 @@ module Rubycc
       PLT_ENTSIZE   = 16
       GOTPLT_RESERVED = 3
 
+      # The C runtime's per-object identity word (see #build_dso_handle_object)
+      # and the archive member it is delivered in.
+      DSO_HANDLE_SYMBOL = "__dso_handle"
+      DSO_HANDLE_MEMBER = "__dso_handle.o"
+
       class << self
         # Links `inputs` (an ordered array; each element a filesystem path, or the
         # raw bytes of an ET_REL object or an ar archive — the same shapes
@@ -197,12 +202,85 @@ module Rubycc
         def link_to(inputs, path, needed: [], soname: nil)
           File.binwrite(path, link(inputs, needed: needed, soname: soname))
         end
+
+        # The one-member archive supplying __dso_handle for `machine` (an ELF
+        # e_machine value), memoized per machine: the bytes are deterministic (N4)
+        # and every link appends the same archive.
+        def dso_handle_archive(machine)
+          @dso_handle_archives ||= {}
+          @dso_handle_archives[machine] ||= build_dso_handle_archive(machine)
+        end
+
+        private
+
+        def build_dso_handle_archive(machine)
+          writer = ObjFile::ArWriter.new
+          writer.add_member(DSO_HANDLE_MEMBER, build_dso_handle_object(machine))
+          writer.to_binary
+        end
+
+        # The __dso_handle supplier as a one-section ET_REL object: an 8-byte
+        # .data word, a hidden global OBJECT symbol naming it, and an absolute-64
+        # relocation of the word against that same symbol — so the word ends up
+        # holding its own address.
+        #
+        # Why this shape, measured from a `gcc -shared -fPIC` output rather than
+        # copied from any crt implementation (R11): __dso_handle is the opaque
+        # per-DSO cookie passed to __cxa_atexit / __register_atfork to say which
+        # object registered a handler, so it must be an address unique to this
+        # object (zero would claim to be the main program and would make
+        # __cxa_finalize at dlclose skip — or wrongly run — the handlers). gcc's
+        # `.so` shows exactly that: an 8-byte .data word at the section start
+        # holding its own link-time address, carrying one R_X86_64_RELATIVE whose
+        # offset and addend are both that address, and reachable only internally
+        # — the symbol never enters .dynsym, so no other object can interpose it.
+        # Hidden visibility is what produces that: it is the binding the
+        # referencing member itself uses (glibc's libc_nonshared.a members name
+        # __dso_handle as a GLOBAL HIDDEN undefined), it keeps the definition out
+        # of .dynsym (#plan_dynamic_symbols exports only default/protected
+        # visibility), and unlike a local symbol it can still resolve another
+        # object's undefined reference during the merge.
+        #
+        # The self-reference is expressed as an ordinary absolute-64 relocation,
+        # so the existing apply engine produces the rest for free: an internal
+        # R_X86_64_64 / R_AARCH64_ABS64 is patched with the final address and — in
+        # a shared object, where #rebase_internal? holds — rebased at load time by
+        # one RELATIVE entry, which is precisely the measured gcc output.
+        #
+        # What this deliberately does NOT supply is the other half of gcc's crt
+        # file: the .fini_array entry that calls __cxa_finalize(__dso_handle) when
+        # the object is unloaded, which is what makes glibc drop the handlers
+        # registered under this handle. Registration works without it (measured:
+        # calling __cxa_finalize(&__dso_handle) by hand on a rubycc `.so` does
+        # unregister its atfork handlers, so the handle value is right), but an
+        # object dlclosed while it still has handlers registered leaves them
+        # pointing into the unmapped image. Synthesizing a finalizer needs an
+        # init/fini-array pipeline this linker does not have yet.
+        def build_dso_handle_object(machine)
+          aarch64 = machine == EM_AARCH64
+          writer = ObjFile::RelocatableWriter.new(machine: machine)
+          data = writer.add_section(name: ".data", type: SHT_PROGBITS,
+                                    flags: SHF_ALLOC | SHF_WRITE, addralign: 8,
+                                    data: "\0".b * 8)
+          handle = writer.add_symbol(name: DSO_HANDLE_SYMBOL, bind: :global, type: :object,
+                                     visibility: :hidden, section: data, value: 0, size: 8)
+          writer.add_relocation(target: data, offset: 0, symbol: handle,
+                                type: aarch64 ? R_AARCH64_ABS64 : R_X86_64_64, addend: 0)
+          writer.to_binary
+        end
       end
 
       def initialize(inputs, needed: [], soname: nil)
         @inputs = inputs
         @needed = needed
         @soname = soname
+        # The target machine is settled before the merge — the synthesized inputs
+        # (the __dso_handle supplier here, the crt in the executable subclass) and
+        # that subclass's interpreter/libc defaults all need it — so it is read
+        # off the first input object's header rather than from the (not-yet-built)
+        # merged reader. #link replaces it with the merged reader's machine, which
+        # agrees with it.
+        @em = detect_machine
       end
 
       def link
@@ -223,8 +301,9 @@ module Rubycc
       # --- subclass hooks ----------------------------------------------------
       # The final-link core is shared with the executable writer (ExecutableLinker),
       # which differs from a shared object only in a handful of decisions expressed
-      # through these hooks. A shared object links its inputs as given (an
-      # executable prepends a synthesized crt), needs no post-merge validation,
+      # through these hooks. A shared object links the given inputs and the
+      # __dso_handle supplier below (an executable prepends a synthesized crt on
+      # top of them), needs no post-merge validation,
       # loads at virtual address 0 so p_vaddr == p_offset (an executable loads at a
       # fixed non-PIE base), rebases every internal absolute address at load time
       # through R_X86_64_RELATIVE (an executable, mapped at a fixed address, writes
@@ -232,7 +311,18 @@ module Rubycc
       # ahead of .text (an executable places .interp), and is an entry-less ET_DYN
       # (an executable is an ET_EXEC entered at _start). Each default keeps the
       # shared-object behavior byte-for-byte.
-      def link_inputs = @inputs
+
+      # Every link ends with the __dso_handle supplier archive. It is an archive,
+      # not an object, so the merge's lazy member extraction is the condition:
+      # the member joins only when something ahead of it still leaves
+      # __dso_handle undefined (glibc's libc_nonshared.a members reference it,
+      # and libc supplies it from a crt file rubycc has no counterpart of), and
+      # never when the link already has a definition of its own — an input that
+      # defines __dso_handle keeps it, exactly as with the compiler-support
+      # runtime the driver appends the same way. A link that does not mention the
+      # symbol gets no .data word and no relocation, so existing output is
+      # unchanged byte for byte.
+      def link_inputs = @inputs + [SharedLinker.dso_handle_archive(@em)]
       def after_merge; end
       def load_base = 0
 
@@ -259,6 +349,36 @@ module Rubycc
         return if supported_machines.include?(@em)
 
         raise LinkError, "linking for machine #{@em} is not supported by this linker"
+      end
+
+      # The ELF e_machine of the first relocatable input object, defaulting to
+      # x86_64 when no object header is readable (e.g. only archives, which a
+      # link always has a compiled object ahead of). Used to pick the synthesized
+      # inputs up front; the post-merge reader's machine agrees with it.
+      def detect_machine
+        @inputs.each do |raw|
+          header = input_elf_header(raw)
+          next unless header
+
+          return header.byteslice(18, 2).unpack1("S<")
+        end
+        EM_X86_64
+      end
+
+      # The leading bytes of an input if it is an ELF object (not an ar archive),
+      # or nil. A String input may be raw object bytes or a filesystem path.
+      def input_elf_header(raw)
+        bytes =
+          if raw.is_a?(String) && raw.b.start_with?("\x7FELF".b)
+            raw.b
+          elsif raw.is_a?(String) && raw.b.start_with?("!<arch>\n".b)
+            nil
+          else
+            File.binread(raw.to_s, 20)
+          end
+        bytes if bytes && bytes.bytesize >= 20 && bytes.b.start_with?("\x7FELF".b)
+      rescue SystemCallError
+        nil
       end
 
       # The dynamic relocation type numbers, chosen per target. x86_64 keeps its
