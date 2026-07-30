@@ -771,7 +771,11 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   **6 ギャップは Step 147〜152 で全て解消**。nkf 0.3.0(Step 151)と
   stackprof 0.2.28(Step 153)がどちらも検証済みになった。
   残る既知の限界は `__cxa_finalize` を呼ぶ `.fini_array` エントリを合成しないこと
-  (Step 152 参照。init/fini array のパイプラインが未整備)。
+  (Step 152 参照)。**init/fini array の整備は 3 段階**:
+  ~~(1) リンカ側のパイプライン~~ **完了(Step 154)**: `SHT_INIT_ARRAY` /
+  `SHT_FINI_ARRAY` の配置・優先度順・動的タグ 4 本。マージとリロケーションは既存機構で
+  足りていた。**(2) フロントエンドの `__attribute__((constructor))` /
+  `((destructor))`**(未着手)、**(3) `__cxa_finalize(__dso_handle)` の合成**(未着手)。
 - **既知の負債(Step 149 で観測)**: `test/corpus/gems.rb` の 4 エントリ
   (bigdecimal・date・racc・redcarpet)が `version: nil` = 最新追従になっており、
   上流が新版を出すたびに `rake corpus:census` のスナップショットが動く。

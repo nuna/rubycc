@@ -36,7 +36,19 @@ class TestExecutable < Minitest::Test
 
   R_X86_64_RELATIVE  = 8
   R_X86_64_JUMP_SLOT = 7
+  R_X86_64_64        = 1
   DT_NEEDED = 1
+
+  # The initializer/finalizer array section types, their flags, and the four
+  # dynamic tags addressing them (sizes in bytes).
+  SHT_INIT_ARRAY  = 14
+  SHT_FINI_ARRAY  = 15
+  SHF_WRITE       = 0x1
+  SHF_ALLOC       = 0x2
+  DT_INIT_ARRAY   = 25
+  DT_FINI_ARRAY   = 26
+  DT_INIT_ARRAYSZ = 27
+  DT_FINI_ARRAYSZ = 28
 
   RETURN_42 = "int main(void){ return 42; }"
 
@@ -198,6 +210,66 @@ class TestExecutable < Minitest::Test
       out, status = Open3.capture2(exe)
       assert_equal 0, status.exitstatus
       assert_equal "3\n", out, "the prepare and parent handlers must have run"
+    end
+  end
+
+  # --- .init_array / .fini_array -----------------------------------------
+
+  # An executable carries the same four array tags a shared object does — the
+  # loader, not the crt, walks them (this _start passes init/fini as NULL to
+  # __libc_start_main and the constructor still runs). The one difference is the
+  # non-PIE image's slots: mapped at a fixed address, each holds its function's
+  # final address outright and needs no RELATIVE.
+  ARRAY_USER = <<~C
+    int puts(const char *s);
+    static int ran;
+    void note_start(void) { ran = 1; }
+    void note_end(void) { puts("fini"); }
+    int main(void) { puts(ran ? "init" : "MISSING"); return ran ? 0 : 1; }
+  C
+
+  def test_executable_emits_the_array_tags_without_a_relative
+    skip_unless_linkable
+
+    r = Reader.read(build_exe([ARRAY_USER], inputs: [array_object(".init_array", "note_start"),
+                                                     array_object(".fini_array", "note_end")]))
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+    init = r.section(".init_array")
+    assert_equal init.addr, by_tag[DT_INIT_ARRAY]
+    assert_equal 8, by_tag[DT_INIT_ARRAYSZ]
+    assert_equal r.section(".fini_array").addr, by_tag[DT_FINI_ARRAY]
+    assert_equal 8, by_tag[DT_FINI_ARRAYSZ]
+
+    # The executable keeps no symbol table, so the slot is checked by range: a
+    # non-PIE image writes the final address, which must land inside .text.
+    text = r.section(".text")
+    slot = init.data.unpack1("Q<")
+    assert_operator slot, :>=, text.addr, "the slot holds a final address, not zero"
+    assert_operator slot, :<, text.addr + text.size, "which points into .text"
+    dyn = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    assert_nil dyn, "the fixed load address needs no base relocation"
+  end
+
+  # The acceptance: the constructor must actually run before main and the
+  # destructor after it.
+  def test_running_executes_the_initializer_before_main_and_the_finalizer_after
+    skip_unless_runnable
+
+    with_exe([ARRAY_USER], inputs: [array_object(".init_array", "note_start"),
+                                    array_object(".fini_array", "note_end")]) do |exe|
+      out, status = Open3.capture2(exe)
+      assert_equal 0, status.exitstatus, "the initializer must have run before main"
+      assert_equal "init\nfini\n", out,
+                   "the initializer runs before main and the finalizer at exit"
+    end
+  end
+
+  def test_executable_without_arrays_gains_no_tag
+    skip_unless_linkable
+
+    tags = Reader.read(build_exe([USES_PUTS])).dynamic_entries.map(&:tag)
+    [DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_FINI_ARRAY, DT_FINI_ARRAYSZ].each do |tag|
+      refute_includes tags, tag, "an array tag must not appear without an array section"
     end
   end
 
@@ -412,6 +484,19 @@ class TestExecutable < Minitest::Test
       File.binwrite(path, Rubycc::Compiler.new.compile(src, filename: "u#{i}.c"))
       path
     end
+  end
+
+  # A relocatable object holding one initializer-array slot pointing at `func`,
+  # as a compiler emits one; built directly because rubycc's front end cannot yet
+  # emit these sections. See TestSharedObject#array_object.
+  def array_object(section, func)
+    type = section.start_with?(".init_array") ? SHT_INIT_ARRAY : SHT_FINI_ARRAY
+    w = Rubycc::ObjFile::RelocatableWriter.new
+    slot = w.add_section(name: section, type: type, flags: SHF_ALLOC | SHF_WRITE,
+                         addralign: 8, entsize: 8, data: "\0" * 8)
+    sym = w.add_symbol(name: func, bind: :global, type: :notype)
+    w.add_relocation(target: slot, offset: 0, symbol: sym, type: R_X86_64_64, addend: 0)
+    w.to_binary
   end
 
   # The host must supply a dynamic loader and a libc for the writer to link at

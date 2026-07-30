@@ -53,6 +53,18 @@ class TestSharedObject < Minitest::Test
   DF_1_NOW    = 0x1
   SHN_UNDEF   = 0
 
+  # The initializer/finalizer array section types, their section flags, and the
+  # four dynamic tags the loader reaches them through (the sizes are in bytes).
+  SHT_INIT_ARRAY  = 14
+  SHT_FINI_ARRAY  = 15
+  SHF_WRITE       = 0x1
+  SHF_ALLOC       = 0x2
+  DT_INIT_ARRAY   = 25
+  DT_FINI_ARRAY   = 26
+  DT_INIT_ARRAYSZ = 27
+  DT_FINI_ARRAYSZ = 28
+  R_X86_64_64     = 1
+
   # A translation unit that imports from libc: an external function call
   # (strlen, puts -> R_X86_64_PLT32, resolved through a .plt stub and a
   # JUMP_SLOT) and an external data reference (environ -> R_X86_64_GOTPCREL,
@@ -657,6 +669,233 @@ class TestSharedObject < Minitest::Test
     char *greeting(void) { return "hello"; }
   C
 
+  # --- .init_array / .fini_array -----------------------------------------
+
+  # The unit the array slots point into: each marker appends its own letter to a
+  # buffer an exported function hands back, so the order the runtime called them
+  # in is directly observable after dlopen.
+  MARKERS = <<~C
+    char trace[16];
+    int marked;
+    void mark_a(void) { trace[marked] = 'A'; marked = marked + 1; }
+    void mark_b(void) { trace[marked] = 'B'; marked = marked + 1; }
+    void mark_c(void) { trace[marked] = 'C'; marked = marked + 1; }
+    char *trace_of(void) { return trace; }
+    int marked_count(void) { return marked; }
+  C
+
+  def test_init_and_fini_array_sections_keep_their_type_and_shape
+    r = Reader.read(build_so([MARKERS], inputs: [array_object(".init_array", "mark_a"),
+                                                 array_object(".fini_array", "mark_b")]))
+    { ".init_array" => SHT_INIT_ARRAY, ".fini_array" => SHT_FINI_ARRAY }.each do |name, type|
+      sec = r.section(name)
+      refute_nil sec, "#{name} must survive the link"
+      assert_equal type, sec.type, "#{name} keeps its array section type"
+      assert_equal SHF_ALLOC | SHF_WRITE, sec.flags, "#{name} is allocated and writable"
+      assert_equal 8, sec.entsize, "#{name} holds 8-byte function pointers"
+      assert_equal 8, sec.addralign, "#{name} is pointer-aligned"
+      assert_equal 8, sec.size, "one slot was contributed"
+    end
+  end
+
+  # The loader reaches the arrays only through these four tags; the sizes are
+  # byte counts, not element counts.
+  def test_init_and_fini_array_dynamic_tags
+    r = Reader.read(build_so([MARKERS], inputs: [array_object(".init_array", "mark_a"),
+                                                 array_object(".init_array", "mark_b"),
+                                                 array_object(".fini_array", "mark_c")]))
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+    assert_equal r.section(".init_array").addr, by_tag[DT_INIT_ARRAY]
+    assert_equal 16, by_tag[DT_INIT_ARRAYSZ], "two slots is sixteen bytes, not two"
+    assert_equal r.section(".fini_array").addr, by_tag[DT_FINI_ARRAY]
+    assert_equal 8, by_tag[DT_FINI_ARRAYSZ]
+  end
+
+  # Each slot holds an internal absolute address, so a shared object rebases it
+  # at load time exactly like any other absolute-64 initializer: one RELATIVE per
+  # slot whose addend is the target function's address.
+  def test_every_array_slot_gets_a_relative_whose_addend_is_the_function
+    r = Reader.read(build_so([MARKERS], inputs: [array_object(".init_array", "mark_a"),
+                                                 array_object(".fini_array", "mark_b")]))
+    rela = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    by_offset = rela.relocations.to_h { |rel| [rel.offset, rel] }
+
+    { ".init_array" => "mark_a", ".fini_array" => "mark_b" }.each do |name, func|
+      slot = r.section(name).addr
+      reloc = by_offset[slot]
+      refute_nil reloc, "#{name}'s slot must carry a dynamic relocation"
+      assert_equal R_X86_64_RELATIVE, reloc.type, "an internal initializer rebases through RELATIVE"
+      assert_equal r.dynamic_symbol(func).value, reloc.addend,
+                   "the addend must be #{func}'s address"
+    end
+  end
+
+  # The whole point: dlopen must actually call the initializers, in input order.
+  def test_dlopen_runs_the_initializers_in_input_order
+    with_so([MARKERS], inputs: [array_object(".init_array", "mark_a"),
+                                array_object(".init_array", "mark_b"),
+                                array_object(".init_array", "mark_c")]) do |so|
+      lib = Fiddle.dlopen(so)
+      assert_equal 3, call(lib, "marked_count", [], Fiddle::TYPE_INT).call,
+                   "every initializer must have run before dlopen returned"
+      assert_equal "ABC", call(lib, "trace_of", [], Fiddle::TYPE_VOIDP).call.to_s,
+                   "the initializers run in the order their objects were linked"
+    ensure
+      lib&.close
+    end
+  end
+
+  # The finalizer side needs a real dlclose, and a finalizer cannot report
+  # through the object's own memory (it is unmapped moments later), so it leaves
+  # a file behind. The probe runs in a child interpreter and checks for that file
+  # both before and after the dlclose, which pins the finalizer to the dlclose
+  # itself rather than to the child's exit.
+  def test_dlclose_runs_the_finalizers
+    skip "libc unavailable" unless libc_path
+
+    in_tmpdir do |dir|
+      marker = File.join(dir, "fini.marker")
+      source = <<~C
+        void *fopen(const char *path, const char *mode);
+        int fputs(const char *s, void *stream);
+        int fclose(void *stream);
+        int inited;
+        void note_init(void) { inited = 1; }
+        void note_fini(void) {
+          void *f = fopen("#{marker}", "w");
+          if (f) { fputs("fini", f); fclose(f); }
+        }
+        int was_inited(void) { return inited; }
+      C
+      so = File.join(dir, "libfini.so")
+      Linker.link_to(objects_for([source], dir) +
+                     [array_object(".init_array", "note_init"),
+                      array_object(".fini_array", "note_fini")],
+                     so, needed: [libc_path], soname: "libfini.so")
+
+      probe = <<~RUBY
+        require "fiddle"
+        lib = Fiddle.dlopen(ARGV[0])
+        inited = Fiddle::Function.new(lib["was_inited"], [], Fiddle::TYPE_INT).call
+        before = File.exist?(ARGV[1])
+        lib.close
+        print [inited, before, File.exist?(ARGV[1])].join(",")
+      RUBY
+      out, status = Open3.capture2e(RbConfig.ruby, "-e", probe, so, marker)
+      assert status.success?, "the finalizer probe failed:\n#{out}"
+      assert_equal "1,false,true", out,
+                   "the initializer ran at dlopen and the finalizer at dlclose"
+    end
+  end
+
+  # A priority (gcc's `.init_array.NNNNN`) orders the numbered sections ahead of
+  # the unnumbered ones, by ascending priority and across inputs. Measured
+  # against gcc: linking the same four markers with gcc -shared and reading the
+  # array back yields this same order.
+  def test_priority_numbered_array_sections_run_before_and_in_numeric_order
+    with_so([MARKERS], inputs: [array_object(".init_array", "mark_a"),
+                                array_object(".init_array.00500", "mark_b"),
+                                array_object(".init_array.00101", "mark_c")]) do |so|
+      lib = Fiddle.dlopen(so)
+      assert_equal "CBA", call(lib, "trace_of", [], Fiddle::TYPE_VOIDP).call.to_s,
+                   "priority 101, then 500, then the unnumbered section"
+    ensure
+      lib&.close
+    end
+  end
+
+  # The array is addressed as one range, so its sections must be laid adjacently
+  # with no hole a loader would read as a null function pointer.
+  def test_priority_sections_are_laid_as_one_contiguous_run
+    r = Reader.read(build_so([MARKERS], inputs: [array_object(".init_array", "mark_a"),
+                                                 array_object(".init_array.00101", "mark_b")]))
+    numbered = r.section(".init_array.00101")
+    plain    = r.section(".init_array")
+    assert_equal plain.addr, numbered.addr + numbered.size,
+                 "the numbered section runs straight into the unnumbered one"
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+    assert_equal numbered.addr, by_tag[DT_INIT_ARRAY], "DT_INIT_ARRAY points at the run's start"
+    assert_equal 16, by_tag[DT_INIT_ARRAYSZ], "and spans both sections"
+  end
+
+  # A name this linker has not been shown would otherwise be placed by guesswork,
+  # silently running the initializers in the wrong order.
+  def test_unrecognized_array_section_name_is_refused
+    err = assert_raises(Rubycc::Link::LinkError) do
+      build_so([MARKERS], inputs: [array_object(".init_array.late", "mark_a")])
+    end
+    assert_match(/unsupported initializer array section/, err.message)
+  end
+
+  # The invariant guarding every existing link: an input without an array must
+  # produce exactly the bytes it produced before, tags included.
+  def test_a_link_without_arrays_gains_no_tag
+    r = Reader.read(build_so([SELF_CONTAINED]))
+    tags = r.dynamic_entries.map(&:tag)
+    [DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_FINI_ARRAY, DT_FINI_ARRAYSZ].each do |tag|
+      refute_includes tags, tag, "an array tag must not appear without an array section"
+    end
+    assert_nil r.section(".init_array")
+    assert_nil r.section(".fini_array")
+  end
+
+  def test_array_link_is_deterministic
+    inputs = [array_object(".init_array", "mark_a"), array_object(".fini_array", "mark_b")]
+    assert_equal build_so([MARKERS], inputs: inputs), build_so([MARKERS], inputs: inputs),
+                 "identical inputs must yield byte-identical output"
+  end
+
+  # The real compiler's shape, which the hand-built objects above do not cover:
+  # gcc points an array slot at a *section* symbol (`.text + 0x1a`) rather than
+  # at a named function, and spells a priority as `.init_array.NNNNN`. Linking
+  # gcc's own object proves both forms are handled, and gcc's own `.so` from the
+  # same source is the oracle for the resulting order.
+  GCC_CONSTRUCTORS = <<~C
+    char trace[16];
+    int marked;
+    static void rec(char c) { trace[marked++] = c; }
+    __attribute__((constructor(101))) static void first(void)  { rec('1'); }
+    __attribute__((constructor(500))) static void third(void)  { rec('3'); }
+    __attribute__((constructor))      static void last(void)   { rec('L'); }
+    __attribute__((constructor(200))) static void second(void) { rec('2'); }
+    char *trace_of(void) { return trace; }
+  C
+
+  def test_links_gcc_constructors_and_matches_gcc_ordering
+    skip "gcc unavailable" unless tool?("gcc")
+
+    in_tmpdir do |dir|
+      src = File.join(dir, "ctors.c")
+      File.write(src, GCC_CONSTRUCTORS)
+      object = File.join(dir, "ctors.o")
+      out, status = Open3.capture2e("gcc", "-c", "-fPIC", "-o", object, src)
+      skip "gcc -c failed:\n#{out}" unless status.success?
+
+      ours = File.join(dir, "ours.so")
+      Linker.link_to([object], ours, needed: [libc_path].compact, soname: "libours.so")
+
+      # Structure: one contiguous array covering all four slots.
+      r = Reader.read_file(ours)
+      by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+      assert_equal 4 * 8, by_tag[DT_INIT_ARRAYSZ], "all four constructors are in the array"
+
+      order = ->(so) do
+        lib = Fiddle.dlopen(so)
+        call(lib, "trace_of", [], Fiddle::TYPE_VOIDP).call.to_s
+      ensure
+        lib&.close
+      end
+      assert_equal "123L", order.call(ours),
+                   "priorities 101, 200, 500, then the unnumbered constructor"
+
+      theirs = File.join(dir, "theirs.so")
+      out, status = Open3.capture2e("gcc", "-shared", "-o", theirs, object)
+      skip "gcc -shared failed:\n#{out}" unless status.success?
+      assert_equal order.call(theirs), order.call(ours),
+                   "our initializer order must match gcc's for the same object"
+    end
+  end
+
   def test_matches_gcc_shared_object_exports_and_behavior
     skip "gcc unavailable" unless tool?("gcc")
 
@@ -743,6 +982,22 @@ class TestSharedObject < Minitest::Test
 
   def call(lib, name, args, ret)
     Fiddle::Function.new(lib[name], args, ret)
+  end
+
+  # A relocatable object holding nothing but one initializer-array slot pointing
+  # at `func`, built the way a compiler emits one: an SHT_INIT_ARRAY /
+  # SHT_FINI_ARRAY section of a single 8-byte zero slot, plus an absolute-64
+  # relocation against the (here undefined, resolved by the merge) function. The
+  # object is built directly rather than compiled because rubycc's front end
+  # cannot yet emit these sections.
+  def array_object(section, func)
+    type = section.start_with?(".init_array") ? SHT_INIT_ARRAY : SHT_FINI_ARRAY
+    w = Rubycc::ObjFile::RelocatableWriter.new
+    slot = w.add_section(name: section, type: type, flags: SHF_ALLOC | SHF_WRITE,
+                         addralign: 8, entsize: 8, data: "\0" * 8)
+    sym = w.add_symbol(name: func, bind: :global, type: :notype)
+    w.add_relocation(target: slot, offset: 0, symbol: sym, type: R_X86_64_64, addend: 0)
+    w.to_binary
   end
 
   # The set of names a shared object defines and exports through .dynsym.

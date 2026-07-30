@@ -32,7 +32,20 @@ class TestAArch64SharedObject < Minitest::Test
   R_AARCH64_RELATIVE  = 1027
   R_AARCH64_GLOB_DAT  = 1025
   R_AARCH64_JUMP_SLOT = 1026
+  R_AARCH64_ABS64     = 257
   STN_UNDEF = 0
+
+  # The initializer/finalizer array section types, their flags, and the dynamic
+  # tags addressing them (sizes in bytes) — target-independent, as is the whole
+  # section/table layer above the relocation apply.
+  SHT_INIT_ARRAY  = 14
+  SHT_FINI_ARRAY  = 15
+  SHF_WRITE       = 0x1
+  SHF_ALLOC       = 0x2
+  DT_INIT_ARRAY   = 25
+  DT_FINI_ARRAY   = 26
+  DT_INIT_ARRAYSZ = 27
+  DT_FINI_ARRAYSZ = 28
 
   DT_NEEDED   = 1
   DT_PLTGOT   = 3
@@ -227,6 +240,63 @@ class TestAArch64SharedObject < Minitest::Test
     assert_equal "1\n1\n", stdout
   end
 
+  # --- .init_array / .fini_array -----------------------------------------
+
+  # The aarch64 markers: each initializer appends its letter to a buffer the
+  # consumer reads back after the on-target loader has run the array.
+  MARKERS = <<~C
+    char trace[16];
+    int marked;
+    void mark_a(void) { trace[marked] = 'A'; marked = marked + 1; }
+    void mark_b(void) { trace[marked] = 'B'; marked = marked + 1; }
+    char *trace_of(void) { return trace; }
+  C
+
+  # The slots are ABS64 initializers, so a PIC image rebases each with an
+  # R_AARCH64_RELATIVE whose addend is the target function — aarch64's spelling
+  # of the x86_64 case, through the same machine-independent array placement.
+  def test_array_sections_and_tags_on_aarch64
+    r = Reader.read(build_so([MARKERS], inputs: [array_object(".init_array", "mark_a"),
+                                                 array_object(".fini_array", "mark_b")]))
+    init = r.section(".init_array")
+    fini = r.section(".fini_array")
+    assert_equal SHT_INIT_ARRAY, init.type
+    assert_equal SHT_FINI_ARRAY, fini.type
+    assert_equal 8, init.entsize
+    assert_equal 8, init.addralign
+
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+    assert_equal init.addr, by_tag[DT_INIT_ARRAY]
+    assert_equal 8, by_tag[DT_INIT_ARRAYSZ]
+    assert_equal fini.addr, by_tag[DT_FINI_ARRAY]
+    assert_equal 8, by_tag[DT_FINI_ARRAYSZ]
+
+    rela = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    slot = rela.relocations.find { |x| x.offset == init.addr }
+    refute_nil slot, "the init slot must be rebased at load time"
+    assert_equal R_AARCH64_RELATIVE, slot.type
+    assert_equal r.dynamic_symbol("mark_a").value, slot.addend,
+                 "the RELATIVE addend must be mark_a's address"
+  end
+
+  # The execution oracle: the real aarch64 loader under qemu must call the
+  # initializers, in input order, before the consumer's main runs.
+  def test_initializers_run_in_input_order_under_qemu
+    skip_unless_aarch64_self_link
+
+    consumer = <<~C
+      #include <stdio.h>
+      char *trace_of(void);
+      int main(void) { printf("%s\\n", trace_of()); return 0; }
+    C
+    status, stdout = build_and_run_consumer(
+      [MARKERS], "libinit.so", consumer,
+      inputs: [array_object(".init_array", "mark_a"), array_object(".init_array", "mark_b")]
+    )
+    assert_equal 0, status
+    assert_equal "AB\n", stdout, "both initializers ran, in the order they were linked"
+  end
+
   # --- external imports (structure; needs the sysroot libc) --------------
 
   def test_external_function_gets_a_jump_slot_and_data_gets_a_glob_dat
@@ -374,17 +444,30 @@ class TestAArch64SharedObject < Minitest::Test
 
   # Compiles each source for aarch64 under -fPIC, links them into a .so with
   # rubycc, and returns the .so bytes.
-  def build_so(sources, needed: [], soname: nil)
+  def build_so(sources, needed: [], soname: nil, inputs: [])
     in_tmpdir do |dir|
-      Linker.link(objects_for(sources, dir), needed: needed, soname: soname)
+      Linker.link(objects_for(sources, dir) + inputs, needed: needed, soname: soname)
     end
+  end
+
+  # The aarch64 counterpart of TestSharedObject#array_object: one array slot
+  # bound to `func` by an ABS64, in an EM_AARCH64 object so the merge and the
+  # final link keep the target's identity.
+  def array_object(section, func)
+    type = section.start_with?(".init_array") ? SHT_INIT_ARRAY : SHT_FINI_ARRAY
+    w = Rubycc::ObjFile::RelocatableWriter.new(machine: EM_AARCH64)
+    slot = w.add_section(name: section, type: type, flags: SHF_ALLOC | SHF_WRITE,
+                         addralign: 8, entsize: 8, data: "\0" * 8)
+    sym = w.add_symbol(name: func, bind: :global, type: :notype)
+    w.add_relocation(target: slot, offset: 0, symbol: sym, type: R_AARCH64_ABS64, addend: 0)
+    w.to_binary
   end
 
   # Compiles the sources, links them into a named .so with rubycc, builds a
   # consumer executable against it with the cross gcc and runs it under qemu.
-  def build_and_run_consumer(sources, so_name, consumer_source, needed: [])
+  def build_and_run_consumer(sources, so_name, consumer_source, needed: [], inputs: [])
     in_tmpdir do |dir|
-      objects = objects_for(sources, dir)
+      objects = objects_for(sources, dir) + inputs
       so = File.join(dir, so_name)
       link_shared_aarch64_rubycc(objects, so, soname: so_name, needed: needed)
       run_against_aarch64_so(consumer_source, so)

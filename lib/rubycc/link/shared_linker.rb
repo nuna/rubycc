@@ -74,6 +74,13 @@ module Rubycc
       SHT_DYNAMIC  = 6
       SHT_NOBITS   = 8
       SHT_DYNSYM   = 11
+      # The initializer/finalizer pointer arrays. Each is an array of function
+      # pointers (entsize 8, the target pointer width) the runtime loader calls
+      # after mapping the object (init, in order) and before unmapping it (fini,
+      # in reverse order); they are ordinary SHF_ALLOC|SHF_WRITE data reached
+      # through DT_INIT_ARRAY / DT_FINI_ARRAY rather than through a symbol.
+      SHT_INIT_ARRAY = 14
+      SHT_FINI_ARRAY = 15
 
       SHF_WRITE     = 0x1
       SHF_ALLOC     = 0x2
@@ -164,6 +171,13 @@ module Rubycc
       DT_SONAME    = 14
       DT_PLTREL    = 20
       DT_JMPREL    = 23
+      # The initializer/finalizer array pointers and their sizes *in bytes*
+      # (not element counts), the loader's entry points into .init_array /
+      # .fini_array.
+      DT_INIT_ARRAY   = 25
+      DT_FINI_ARRAY   = 26
+      DT_INIT_ARRAYSZ = 27
+      DT_FINI_ARRAYSZ = 28
       DT_FLAGS     = 30
       DT_RELACOUNT = 0x6FFFFFF9
       DT_FLAGS_1   = 0x6FFFFFFB
@@ -606,7 +620,9 @@ module Rubycc
       def place_sections
         rx = leading_sections + input_sections { |s| executable?(s) } + plt_sections
         ro = dynamic_ro_sections + input_sections { |s| !executable?(s) && !writable?(s) }
-        rw_files = input_sections { |s| writable?(s) && s.type != SHT_NOBITS } + writable_dynamic_sections
+        rw_input = input_sections { |s| writable?(s) && s.type != SHT_NOBITS }
+        plain, arrays = split_array_sections(rw_input)
+        rw_files = plain + arrays + writable_dynamic_sections
         bss = input_sections { |s| writable?(s) && s.type == SHT_NOBITS }
 
         cursor = EHDR_SIZE + phnum * PHDR_SIZE
@@ -616,6 +632,7 @@ module Rubycc
         cursor = align(cursor, seg_align)
         rw_start = cursor
         cursor, rw_placed = lay(rw_files, cursor)
+        check_array_runs_contiguous
         @file_end = cursor
         cursor, bss_placed = lay(bss, cursor)
         @rw = rw_placed + bss_placed
@@ -636,6 +653,104 @@ module Rubycc
         @reader.sections.select { |s| allocatable?(s) && yield(s) }.map do |s|
           Placed.new(name: s.name, type: s.type, flags: s.flags, addralign: [s.addralign, 1].max,
                      entsize: s.entsize, size: s.size, data: s.type == SHT_NOBITS ? nil : s.data.b)
+        end
+      end
+
+      # --- initializer / finalizer arrays ------------------------------------
+      # .init_array / .fini_array are ordinary writable allocatable data, so the
+      # merge concatenates them by name and the apply engine patches their
+      # pointer slots like any other absolute-64 initializer (RELATIVE-rebased
+      # in a shared object, written final in a non-PIE executable). Only two
+      # things are specific to them: the loader reaches them through DT_*_ARRAY
+      # rather than a symbol, so each must be one contiguous run, and the run's
+      # *order* is the order the initializers run in.
+      #
+      # gcc spells a priority (`__attribute__((constructor(101)))`) as a separate
+      # `.init_array.00101` input section. Observed by linking such objects with
+      # gcc and reading back the resulting array (readelf -x) and the runtime
+      # order: the priority-numbered sections come first, sorted by ascending
+      # priority number across all inputs, and the unnumbered `.init_array`
+      # sections follow in input order. .fini_array is laid out by the same rule
+      # (the runtime walks it backwards, which mirrors the constructor order).
+      #
+      # Splits the writable input sections into the ordinary ones (kept in merged
+      # order) and the initializer/finalizer array run, which is appended after
+      # them so it ends up adjacent to the synthesized dynamic sections. A link
+      # with no array section leaves the first list exactly as it was, so its
+      # layout — and its output bytes — are unchanged.
+      def split_array_sections(sections)
+        reject_unwritable_array_sections!
+        plain = sections.reject { |s| array_section?(s) }
+        @init_array_run = order_array_run(sections.select { |s| s.type == SHT_INIT_ARRAY })
+        @fini_array_run = order_array_run(sections.select { |s| s.type == SHT_FINI_ARRAY })
+        [plain, @init_array_run + @fini_array_run]
+      end
+
+      def array_section?(section)
+        section.type == SHT_INIT_ARRAY || section.type == SHT_FINI_ARRAY
+      end
+
+      # Orders one array run by the rule above. The sort key pairs the priority
+      # with the section's position in the merged order, so equal priorities keep
+      # input order and the result is deterministic (N4) whatever Ruby's sort
+      # does. An unnumbered section sorts after every numbered one.
+      def order_array_run(sections)
+        sections.each_with_index.sort_by { |sec, i| [array_priority(sec), i] }.map(&:first)
+      end
+
+      # The priority encoded in an array section's name: `.init_array.00101` has
+      # priority 101, plain `.init_array` has none (Float::INFINITY, sorting
+      # last). Any other suffix is a form this linker has not been shown, and
+      # guessing its position would silently run the initializers in the wrong
+      # order, so it is refused instead.
+      def array_priority(section)
+        base = section.type == SHT_INIT_ARRAY ? ".init_array" : ".fini_array"
+        name = section.name.to_s
+        return Float::INFINITY if name == base
+        return ::Regexp.last_match(1).to_i if name =~ /\A#{::Regexp.escape(base)}\.(\d+)\z/
+
+        raise LinkError, "unsupported initializer array section '#{name}': " \
+                         "only '#{base}' and a priority-numbered '#{base}.NNNNN' are understood"
+      end
+
+      # DT_INIT_ARRAY / DT_FINI_ARRAY address one array, so its sections must have
+      # been laid without a gap between them. They all carry alignment 8 and a
+      # size that is a whole number of 8-byte pointers, so the placement above is
+      # contiguous; this refuses the case rather than emitting a range with a
+      # zero (null-pointer) hole the loader would call.
+      def check_array_runs_contiguous
+        [@init_array_run, @fini_array_run].each do |run|
+          run.each_cons(2) do |a, b|
+            next if a.vaddr + a.size == b.vaddr
+
+            raise LinkError, "initializer array sections '#{a.name}' and '#{b.name}' " \
+                             "were not laid contiguously"
+          end
+        end
+      end
+
+      def init_array_addr = @init_array_run.first&.vaddr
+      def fini_array_addr = @fini_array_run.first&.vaddr
+      def init_array_size = @init_array_run.sum(&:size)
+      def fini_array_size = @fini_array_run.sum(&:size)
+
+      # Whether the link has a non-empty array. Read off the run assembled above,
+      # which #place_sections fills in before it sizes .dynamic, so the tag count
+      # and the tag values can never disagree. An absent — or present but empty —
+      # array emits no tag at all, keeping the dynamic array of a link without
+      # initializers byte-for-byte as before.
+      def init_array? = init_array_size.positive?
+      def fini_array? = fini_array_size.positive?
+
+      # An array section the ABI marks SHF_ALLOC without SHF_WRITE would be laid
+      # into the read-only segment, dropping out of the run and taking its
+      # initializers with it silently. Nothing this linker accepts emits that
+      # shape (gcc marks both arrays WA), so it is refused rather than ignored.
+      def reject_unwritable_array_sections!
+        @reader.sections.each do |sec|
+          next unless allocatable?(sec) && array_section?(sec) && !writable?(sec)
+
+          raise LinkError, "initializer array section '#{sec.name}' is not writable"
         end
       end
 
@@ -749,6 +864,7 @@ module Rubycc
       def dynamic_size = dynamic_entry_count * DYN_ENTSIZE
       def dynamic_entry_count
         @used_deps.size + (@soname ? 1 : 0) + 5 +
+          (init_array? ? 2 : 0) + (fini_array? ? 2 : 0) +
           (rela_dyn? ? 4 : 0) + (plt? ? 4 : 0) + (bind_now? ? 2 : 0) + 1
       end
 
@@ -1126,6 +1242,7 @@ module Rubycc
       end
 
       # The .dynamic array: the DT_NEEDED dependencies and DT_SONAME first, then
+      # the initializer/finalizer arrays (only when non-empty), then
       # pointers/sizes for the hash and symbol/string tables, the .rela.dyn table
       # (with DT_RELACOUNT), the .plt relocation table (DT_PLTGOT/PLTRELSZ/
       # PLTREL/JMPREL), the BIND_NOW flags, and the DT_NULL terminator.
@@ -1133,6 +1250,10 @@ module Rubycc
         entries = []
         @used_deps.each { |dep| entries << [DT_NEEDED, dynstr_offset(dep.name)] }
         entries << [DT_SONAME, dynstr_offset(@soname)] if @soname
+        # The initializer/finalizer arrays, sized in bytes, in gcc's position:
+        # after the dependency names and ahead of the table pointers.
+        entries += [[DT_INIT_ARRAY, init_array_addr], [DT_INIT_ARRAYSZ, init_array_size]] if init_array?
+        entries += [[DT_FINI_ARRAY, fini_array_addr], [DT_FINI_ARRAYSZ, fini_array_size]] if fini_array?
         entries += [
           [DT_HASH, @vaddr[".hash"]],
           [DT_STRTAB, @vaddr[".dynstr"]],
