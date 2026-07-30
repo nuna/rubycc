@@ -567,6 +567,16 @@ class TestParser < Minitest::Test
     assert_equal 1, case_stmt.value
   end
 
+  # A case label may also fold "sizeof <expression>" (Step 148), wired to the
+  # same parse-time resolver an array bound and an enumerator use.
+  def test_case_label_folds_a_sizeof_expression
+    program = parse("int arr[3]; int main(void) { switch (x) { " \
+                    "case sizeof(arr) / sizeof(arr[0]): return 1; } }")
+    case_stmt = program.functions.last.body.first.body.items.first
+
+    assert_equal 3, case_stmt.value
+  end
+
   def test_case_label_truncates_division_toward_zero
     program = parse("int main(void) { switch (x) { case -7 / 2: return 1; } }")
     case_stmt = program.functions.first.body.first.body.items.first
@@ -1229,6 +1239,19 @@ class TestParser < Minitest::Test
     assert_equal "y", items[1].designators[1].name
   end
 
+  # An array designator's index may fold "sizeof <expression>" (Step 148), the
+  # same parse-time resolution an array bound and an enumerator use. "s" is
+  # char[3] ('a', 'b', NUL), so "sizeof(s) - 1" designates index 2.
+  def test_array_designator_folds_a_sizeof_expression
+    program = parse("int main(void) { char s[] = \"ab\"; " \
+                    "int a[10] = {[sizeof(s) - 1] = 9}; return 0; }")
+    decl = program.functions.last.body[1]
+    designator = decl.initializer.items.first.designators.first
+
+    assert_kind_of AST::ArrayDesignator, designator
+    assert_equal 2, designator.index
+  end
+
   def test_parses_the_zero_initializer_idiom
     decl = parse("struct p { int x; int y; }; " \
                  "int main(void) { struct p a = {0}; return 0; }").functions.last.body.first
@@ -1783,6 +1806,17 @@ class TestParser < Minitest::Test
     assert_nil decl.type.tag
   end
 
+  # A bit-field's ": width" may fold "sizeof <expression>" (Step 148), the same
+  # parse-time resolver an array bound and an enumerator use. "probe" is int
+  # (size 4), so "sizeof(probe)" is 4, well within the 32-bit "unsigned" host.
+  def test_bitfield_width_folds_a_sizeof_expression
+    program = parse("static int probe; struct S { unsigned f : sizeof(probe); }; " \
+                    "int main(void) { struct S s; return 0; }")
+    type = program.functions.last.body.first.type
+
+    assert_equal 4, type.member("f").bit_width
+  end
+
   # --- unions and anonymous members --------------------------------------
 
   def test_parses_union_variable_declaration_type
@@ -2133,6 +2167,20 @@ class TestParser < Minitest::Test
     expr = program.functions.last.body.first.expr
     assert_kind_of AST::IntLit, expr
     assert_equal 16, expr.value
+  end
+
+  # An enumerator value may size "sizeof <expression>", not only a type-name
+  # (Step 148): the parse-time sizeof resolver #fold_time_sizeof already used
+  # for array bounds is now wired into the enumerator-value evaluator too. This
+  # is nkf's own idiom for a compile-time string length: "len" here is exactly
+  # the pattern nkf.c uses to size a table from a string literal, one shorter
+  # than the array's element count for the terminating NUL.
+  def test_enumerator_value_folds_a_sizeof_expression
+    program = parse("const char str[] = \"abc\"; enum { len = sizeof(str) - 1 }; " \
+                    "int main(void) { return len; }")
+    expr = program.functions.last.body.first.expr
+    assert_kind_of AST::IntLit, expr
+    assert_equal 3, expr.value
   end
 
   def test_trailing_comma_in_enumerator_list_is_allowed

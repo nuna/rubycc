@@ -1019,6 +1019,16 @@ class TestDiagnostics < Minitest::Test
     assert_match(/enumerator value is not an integer constant/, error.description)
   end
 
+  # An enumerator's "sizeof <expression>" is now resolved at parse time (Step
+  # 148), but #fold_time_sizeof only covers the small set of operand shapes a
+  # real constant expression uses; an undeclared name is outside that set, so
+  # this must still fail loudly rather than silently fold to a wrong value.
+  def test_enumerator_sizeof_of_an_unknown_name_is_rejected
+    source = "enum { A = sizeof(undeclared) - 1 }; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/enumerator value is not an integer constant/, error.description)
+  end
+
   def test_case_label_calling_a_function_is_rejected
     source = "int f(void); int main(void) { switch (0) { case f(): return 1; } return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }

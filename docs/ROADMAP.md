@@ -757,7 +757,7 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   | # | ギャップ | 影響 | 優先 |
   |---|---|---|---|
   | 1 | ~~**`sigset_t` の typedef 衝突**~~ **解消(Step 147)**: `signal.h` 側をガード `__sigset_t_defined` + `__sigset_t` エイリアスに揃え、`sys/select.h` と文字どおり同一にした。ABI ハーネスに**両方の include 順**のケースを x86_64・aarch64 の 4 件追加 | ~~`ruby.h` と `<signal.h>` を併用する任意の gem~~ | ~~最優先~~ **完了** |
-  | 2 | **`sizeof(式)` が整数定数式に畳めない文脈がある** — enumerator(`enum {len = sizeof(str) - 1};`)・ビットフィールド幅・case ラベル・配列デシグネータ。リゾルバ `Parser#fold_time_sizeof` は既にあり `_Static_assert` と配列長では渡されているのに、これらの文脈で `sizeof_expr:` が未指定 | nkf。C 標準では全て ICE が要求される文脈 | **高**(修正は限定的) |
+  | 2 | ~~**`sizeof(式)` が整数定数式に畳めない文脈がある**~~ **解消(Step 148)**: enumerator・ビットフィールド幅・case ラベル・配列デシグネータ・`aligned` 属性・`__builtin_choose_expr` の 6 箇所に `sizeof_expr: method(:fold_time_sizeof)` を配線。グローバル初期化子(`parser.rb:513`)は意図的に据え置き(`references_sizeof_expr?` ガードでジェネレータ側に回す既存の設計判断) | ~~nkf~~ | ~~高~~ **完了** |
   | 3 | `pthread_kill` / `pthread_atfork` が `include/libc/glibc/*/pthread.h` に未宣言 | stackprof | 中(R8 手続き) |
   | 4 | `_POSIX_MONOTONIC_CLOCK` が同梱ヘッダのどこにも無い。未定義だと stackprof が**上流の死にコードである `#else` 側**を通り、そこに本物の構文エラーがある | stackprof。POSIX オプションマクロなので他にも波及しうる | 中(値は実測で) |
   | 5 | **不完全配列型の補完が `conflicting types`** — `extern int tbl[]; int tbl[3] = {1,2,3};` が通らない(C11 6.2.7p3 の合成型) | nkf。ファイルスコープの仮定義 `int tbl[];` も別途落ちる | 中 |

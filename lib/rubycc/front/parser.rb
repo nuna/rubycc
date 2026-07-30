@@ -816,7 +816,8 @@ module Rubycc
         advance # "("
         expr = parse_conditional_expression
         expect_punct(")")
-        value = evaluate_constant_expression(expr, "'aligned' attribute argument is not an integer constant")
+        value = evaluate_constant_expression(expr, "'aligned' attribute argument is not an integer constant",
+                                                    sizeof_expr: method(:fold_time_sizeof))
         unless value.positive? && (value & (value - 1)).zero?
           error_at(expr.token, "requested alignment '#{value}' is not a positive power of 2")
         end
@@ -982,7 +983,8 @@ module Rubycc
           if peek.punct?("=")
             advance # "="
             expr = parse_conditional_expression
-            value = evaluate_constant_expression(expr, "enumerator value is not an integer constant")
+            value = evaluate_constant_expression(expr, "enumerator value is not an integer constant",
+                                                       sizeof_expr: method(:fold_time_sizeof))
           end
           declare_enum_constant(name_tok, value)
           next_value = value + 1
@@ -1231,7 +1233,8 @@ module Rubycc
           error_at(anchor, "bit-field has non-integral type '#{type}'")
         end
         expr = parse_conditional_expression
-        width = evaluate_constant_expression(expr, "bit-field width is not an integer constant")
+        width = evaluate_constant_expression(expr, "bit-field width is not an integer constant",
+                                                    sizeof_expr: method(:fold_time_sizeof))
         error_at(expr.token, "negative width in bit-field") if width.negative?
         error_at(expr.token, "width of bit-field exceeds its type") if width > type.size * 8
         width
@@ -1596,7 +1599,8 @@ module Rubycc
           if peek.punct?("[")
             bracket_tok = advance # "["
             expr = parse_conditional_expression
-            index = evaluate_constant_expression(expr, "array designator is not an integer constant")
+            index = evaluate_constant_expression(expr, "array designator is not an integer constant",
+                                                        sizeof_expr: method(:fold_time_sizeof))
             expect_punct("]")
             designators << AST::ArrayDesignator.new(index, bracket_tok)
           elsif peek.punct?(".")
@@ -2214,7 +2218,8 @@ module Rubycc
       def parse_case_statement
         case_tok = advance # "case"
         expr = parse_conditional_expression
-        value = evaluate_constant_expression(expr, "case label does not reduce to an integer constant")
+        value = evaluate_constant_expression(expr, "case label does not reduce to an integer constant",
+                                                    sizeof_expr: method(:fold_time_sizeof))
         expect_punct(":")
         body = parse_nested_statement(case_tok)
         AST::Case.new(value, body, case_tok)
@@ -2709,7 +2714,8 @@ module Rubycc
         when_false = parse_assignment_expression
         expect_punct(")")
         selector = evaluate_constant_expression(
-          condition, "first argument to '__builtin_choose_expr' is not a constant expression"
+          condition, "first argument to '__builtin_choose_expr' is not a constant expression",
+          sizeof_expr: method(:fold_time_sizeof)
         )
         selector.zero? ? when_false : when_true
       end
@@ -3021,18 +3027,21 @@ module Rubycc
         error_at(e.token, "division by zero in constant expression")
       end
 
-      # Resolves a "sizeof <expression>" operand to its byte size at parse time,
-      # for the ConstantEvaluator folding an array bound (see #parse_array_suffix)
-      # -- the one constant context reduced while parsing, where "sizeof x" would
-      # otherwise be a non-constant for want of a type table. The operand's type
-      # is inferred by #sizeof_operand_type over the forms a real array bound
-      # reaches (a named object, a string literal, a subscript, a dereference, a
-      # cast -- notably ruby.h's rb_strlen_lit, "(sizeof(s "") / sizeof(s ""[0]))
-      # - 1", which sizes both a string literal and its element). sizeof measures
-      # its immediate operand undecayed (6.5.3.4), so "sizeof arr" is the whole
-      # array. An operand whose type cannot be inferred, or one of
-      # incomplete/void/function type with no size, stays a NotConstant so the
-      # bound reports "not an integer constant" rather than a wrong value.
+      # Resolves a "sizeof <expression>" operand to its byte size at parse time.
+      # This is passed as ConstantEvaluator's `sizeof_expr:` in every constant
+      # (or integer-constant) expression context the parser folds on the spot --
+      # an array bound, an enumerator, a bit-field width, a case label, an array
+      # designator, an "aligned" attribute argument, and the like -- since none
+      # of them carries a type table the way "sizeof x" would otherwise need.
+      # The operand's type is inferred by #sizeof_operand_type over the forms a
+      # real constant expression's "sizeof <expr>" reaches (a named object, a
+      # string literal, a subscript, a dereference, a cast -- notably ruby.h's
+      # rb_strlen_lit, "(sizeof(s "") / sizeof(s ""[0])) - 1", which sizes both a
+      # string literal and its element). sizeof measures its immediate operand
+      # undecayed (6.5.3.4), so "sizeof arr" is the whole array. An operand whose
+      # type cannot be inferred, or one of incomplete/void/function type with no
+      # size, stays a NotConstant so the surrounding context reports "not an
+      # integer constant" rather than a wrong value.
       def fold_time_sizeof(node)
         type = sizeof_operand_type(node.operand)
         if type.nil? || type.void? || type.function? || (type.array? && type.incomplete?)
