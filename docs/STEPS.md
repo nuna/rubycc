@@ -5155,9 +5155,44 @@ Step 146 で立てた 6 つのギャップが**全て閉じた**。記録は Ste
 
 ---
 
+## Step 153 — stackprof 0.2.28 を検証済みに記録(M5 H6)
+
+`data/verified_gems.json` が **7 → 8 件**。実測 31 tests / 184 assertions /
+0 failures / 0 errors。差分は stackprof のエントリ 8 行だけで、既存 7 件の行は
+1 行も動いていない。
+
+### notes に「合格の再現条件」と「保証していないこと」を書いた
+
+この gem の合格は**コンパイラ側の 2 つの修正に依存している**ので、それを書かないと
+記録が再現条件を語らないことになる:
+
+- **Step 152 の `__dso_handle` 合成** — stackprof が `pthread_atfork` を呼び、
+  それは glibc の共有 libc に無く `libc_nonshared.a` からのみ供給され、
+  そのメンバが `__dso_handle` を参照するため
+- **Step 149 の `_POSIX_MONOTONIC_CLOCK`** — 未定義だと上流の死にコードである
+  `#else` 側を通り、そこに構文エラーがあるため
+
+加えて、**合格が保証していないこと**も書いた: `.fini_array` から
+`__cxa_finalize(__dso_handle)` を呼ぶ仕掛けが rubycc にまだ無いので、
+この `.so` を `dlclose` した場合の atfork ハンドラの後始末は保証されない。
+**テストスイートは `dlclose` しないので合格判定には影響しない** — だからこそ
+「合格した」という事実だけを残すと、読んだ人はこの穴を知らないまま使うことになる。
+
+### Step 146 からの一巡が閉じた
+
+Step 146 で「両方 FAIL」という否定的結果から 6 つのギャップを立て、
+147〜152 で全て潰し、151 と 153 で 2 gem を記録した。
+**FAIL の切り分けに 1 ステップ使ったことが、以降 6 ステップの設計図になった。**
+先にホスト gcc で対照を取って環境要因を否定していなければ、
+「WSL2 では検証できない」で終わっていた。
+
+---
+
 ## 現在のテスト規模
 
-Step 152 完了時点: **2,599 runs / 7,225 assertions / 0 failures / 47 skips**
+Step 153 完了時点: **2,599 runs / 7,241 assertions / 0 failures / 47 skips**
+(Step 152 と同数の runs = DB のスキーマ検査が 1 gem 分増えたのみ)
+(以前) Step 152 完了時点: **2,599 runs / 7,225 assertions / 0 failures / 47 skips**
 (Step 151 から +14 = `__dso_handle` の合成・非合成・入力優先・形状・dlopen 実行・
 fork 実走、aarch64 3 件、実行ファイル 3 件)
 (以前) Step 151 完了時点: **2,585 runs / 7,171 assertions / 0 failures / 47 skips**

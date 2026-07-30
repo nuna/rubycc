@@ -47,5 +47,12 @@
     "environment": "glibc x86_64 / ruby 3.4.5",
     "evidence": "RUBYCC=1 gem install nkf succeeded (nkf.so built through rmake); the gem's own test/unit suite passed 8 tests / 46 assertions / 0 failures / 0 errors (Step 151).",
     "notes": "nkf ships bundled with the interpreter, so this run is against the .so injected from the rubycc build (the sanity check confirms it via $LOADED_FEATURES). Building it required the incomplete-array-type composition from C11 6.2.7p3 (Step 150): nkf-utf8/utf8tbl.c combines an `extern const unsigned short euc_to_utf8_1byte[];` forward declaration with a bounds-fixing initializer. musl and aarch64 not yet verified."
+  },
+  "stackprof": {
+    "versions": ["0.2.28"],
+    "verified_at": "2026-07-31",
+    "environment": "glibc x86_64 / ruby 3.4.5",
+    "evidence": "RUBYCC=1 gem install stackprof succeeded (stackprof.so built through rmake); the gem's own test/unit suite passed 31 tests / 184 assertions / 0 failures / 0 errors (Step 153).",
+    "notes": "Building this required the __dso_handle synthesis from Step 152: stackprof calls pthread_atfork, which glibc's shared libc does not provide (it ships only in libc_nonshared.a), and the archive member that supplies it references __dso_handle. It also required the _POSIX_MONOTONIC_CLOCK definition from Step 149; without it stackprof falls into the upstream's dead #else branch, which has a syntax error. rubycc has no mechanism yet (Step 152) to call __cxa_finalize(__dso_handle) from .fini_array, so cleanup of the atfork handlers registered by this .so is not guaranteed if it is ever dlclose'd; the test suite never dlclose's it, so this does not affect the PASS verdict, but it is recorded here. musl and aarch64 not yet verified."
   }
 }
