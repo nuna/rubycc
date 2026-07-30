@@ -4910,9 +4910,72 @@ enumerator には nkf 実物のイディオム `len = sizeof(str) - 1` をその
 
 ---
 
+## Step 149 — pthread 宣言 2 本と `_POSIX_MONOTONIC_CLOCK`(M5 H6)
+
+Step 146 のギャップ表の 3 番と 4 番。どちらも既存ヘッダへの追加で、
+**新規ファイルは無いので由来台帳(§3.3)と集計(§3.4)・NOTICE は変更不要**
+(不要であることを確認したうえで手を付けていない)。
+
+### `_POSIX_MONOTONIC_CLOCK` の実測値は 0 だった
+
+「対応しているなら正の値」と読みたくなるが、**実測は `0`**(x86_64・aarch64 とも一致)。
+POSIX のオプションマクロの流儀で、0 は「この実装は対応するが、
+実際に使えるかは `sysconf(_SC_MONOTONIC_CLOCK)` で実行時に確認せよ」を意味する。
+**推測で正の値を書いていたら glibc と食い違っていた**。
+
+stackprof がこれを必要とするのは `#ifdef` で分岐しているためで、
+値そのものは使っていない。**未定義だと上流の死にコードである `#else` 側を通り、
+そこに本物の構文エラー(セミコロン欠落・未定義変数)がある** —
+つまりこのマクロを定義しない処理系では stackprof はそもそもビルドできない。
+
+`_POSIX_*` を**網羅しない**判断は `sys/syscall.h` と同じ
+(消費者のいない巨大な実測面はリリースごとの再計測を招く)。
+そのうえで**コーパスが実際に参照している `_POSIX_*` を走査**した:
+`_POSIX_TIMERS`(nio4r/libev)は `#if !(_POSIX_TIMERS > 0)` の形で
+**未定義でも 0 扱いで安全にフォールバック**するので死にコードにならない。
+`_POSIX_C_SOURCE` / `_POSIX_VERSION` は呼び出し側が定義する feature-test マクロで
+libc ヘッダが供給するものではない。`_CS_POSIX_V7_*` は `confstr()` 用の別名前空間。
+**「未定義だと壊れる」実需は `_POSIX_MONOTONIC_CLOCK` だけ**だった。
+
+### `pthread_kill` は glibc では `<signal.h>` 側にいる
+
+実測で分かったこと: ホスト glibc は `pthread_kill` を `<pthread.h>` 単独では宣言せず、
+`<signal.h>` 経由でのみ公開する。rubycc の同梱ヘッダは**フラットな面を出す方針**
+(`sys/stat.h` の `st_atim` を無条件に出しているのと同じ)なので `pthread.h` に置いた。
+ABI ハーネスの `PTHREAD` Spec は既に `defines: ["_GNU_SOURCE"]` を持っており、
+オラクル側でも同じ面が見えるので比較は成立する。
+
+シグネチャは**関数ポインタ代入 + `-Werror=incompatible-pointer-types`** で測った
+(型が食い違えばエラーになる仕掛け)。両アーキで一致。
+
+### `pthread_atfork` は宣言してもリンクは通らない
+
+これは承知のうえで入れた。glibc では共有 libc に無く `libc_nonshared.a` からのみ
+供給され、そのメンバが `__dso_handle` を参照するため、rubycc のリンカが
+`unsupported text relocation against external symbol '__dso_handle'` で落ちる
+(ギャップ 6 番)。**この追加の効果は「コンパイルエラーがリンクエラーに変わる」
+= 誤りの所在が正しくなること**であり、stackprof が動くようになるわけではない。
+ヘッダのコメントとハーネスのコメントの両方にその旨を書いた
+(ハーネス側は「ここで本当にリンクさせてはならない」という既存の
+`sizeof(...)` 非評価の作法の理由と併せて)。
+
+実測で確認したとおり、stackprof の失敗は**コンパイル段階からリンク段階へ移った**。
+5 番(不完全配列型)は nkf 固有なので stackprof には現れない。
+
+### テスト数が増えないケースの追加
+
+`PTHREAD` / `UNISTD` の**既存 Spec を拡張**したので、新しいテストメソッドは無く
+runs も assertions も変わらない(`assert_abi_matches` が 1 ケース = 1 assertion)。
+検査項目は増えているが、それは runs には現れない。**「テストが増えていないから
+検証していない」ではない**ことを記録しておく。
+
+---
+
 ## 現在のテスト規模
 
-Step 148 完了時点: **2,574 runs / 7,128 assertions / 0 failures / 47 skips**
+Step 149 完了時点: **2,574 runs / 7,128 assertions / 0 failures / 47 skips**
+(Step 148 と同数 = 既存 Spec の検査項目を増やしたためテストメソッドは増えない)
+(以前) Step 148 完了時点: **2,574 runs / 7,128 assertions / 0 failures / 47 skips**
 (Step 147 から +6 = パーサ単体 4・診断 1・実行オラクル 1)
 (以前) Step 147 完了時点: **2,568 runs / 7,118 assertions / 0 failures / 47 skips**
 (Step 146 から +4 = sigset_t の include 順 2 通り × x86_64・aarch64)

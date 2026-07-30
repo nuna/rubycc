@@ -758,14 +758,26 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   |---|---|---|---|
   | 1 | ~~**`sigset_t` の typedef 衝突**~~ **解消(Step 147)**: `signal.h` 側をガード `__sigset_t_defined` + `__sigset_t` エイリアスに揃え、`sys/select.h` と文字どおり同一にした。ABI ハーネスに**両方の include 順**のケースを x86_64・aarch64 の 4 件追加 | ~~`ruby.h` と `<signal.h>` を併用する任意の gem~~ | ~~最優先~~ **完了** |
   | 2 | ~~**`sizeof(式)` が整数定数式に畳めない文脈がある**~~ **解消(Step 148)**: enumerator・ビットフィールド幅・case ラベル・配列デシグネータ・`aligned` 属性・`__builtin_choose_expr` の 6 箇所に `sizeof_expr: method(:fold_time_sizeof)` を配線。グローバル初期化子(`parser.rb:513`)は意図的に据え置き(`references_sizeof_expr?` ガードでジェネレータ側に回す既存の設計判断) | ~~nkf~~ | ~~高~~ **完了** |
-  | 3 | `pthread_kill` / `pthread_atfork` が `include/libc/glibc/*/pthread.h` に未宣言 | stackprof | 中(R8 手続き) |
-  | 4 | `_POSIX_MONOTONIC_CLOCK` が同梱ヘッダのどこにも無い。未定義だと stackprof が**上流の死にコードである `#else` 側**を通り、そこに本物の構文エラーがある | stackprof。POSIX オプションマクロなので他にも波及しうる | 中(値は実測で) |
+  | 3 | ~~`pthread_kill` / `pthread_atfork` が未宣言~~ **解消(Step 149)**: 両アーキの `pthread.h` に宣言を追加(シグネチャは実測)。`pthread_atfork` は**これでリンクが通るようになるわけではない**(6 番) | ~~stackprof~~ | ~~中~~ **完了** |
+  | 4 | ~~`_POSIX_MONOTONIC_CLOCK` が無い~~ **解消(Step 149)**: `include/libc/unistd.h` に追加。**実測値は 0**(= 対応するが `sysconf` での実行時確認が要る、という glibc と同じ意味)で、両アーキ一致のため共通層。他の `_POSIX_*` は網羅しない | ~~stackprof~~ | ~~中~~ **完了** |
   | 5 | **不完全配列型の補完が `conflicting types`** — `extern int tbl[]; int tbl[3] = {1,2,3};` が通らない(C11 6.2.7p3 の合成型) | nkf。ファイルスコープの仮定義 `int tbl[];` も別途落ちる | 中 |
   | 6 | **`__dso_handle` を供給できない** — `pthread_atfork` は共有 libc に無く `libc_nonshared.a` の `pthread_atfork.oS` でしか得られず、そのメンバが `__dso_handle` を参照して `unsupported text relocation against external symbol` になる。gcc では crtstuff(`crtbegin_S.o`)が供給しており rubycc に相当物が無い | stackprof。リンカの構造的な穴 | 低(最難・要設計) |
 
   1〜5 を潰した状態(scratch でのハンドパッチ)では**両 gem とも上流スイートが完走する**
   ことを実測済み(ただし `__dso_handle` はスタブで代用しており、この結果は検証ではない)。
   **aarch64 と musl では未実測**。
+
+  **Step 149 時点の stackprof の到達位置**: 3・4 の解消でコンパイルは通るようになり、
+  失敗は `.so` のリンク段階(6 番の `__dso_handle`)に移った。5 番は nkf 固有なので
+  stackprof には現れない。
+- **既知の負債(Step 149 で観測)**: `test/corpus/gems.rb` の 4 エントリ
+  (bigdecimal・date・racc・redcarpet)が `version: nil` = 最新追従になっており、
+  上流が新版を出すたびに `rake corpus:census` のスナップショットが動く。
+  この 4 つは `data/verified_gems.json` では**厳密なバージョンを固定している**ので、
+  センサスが記述するバージョンと検証済みバージョンが食い違いうる。
+  また Tier B(`weekly.yml`)の census ジョブは差分で失敗する設計なので、
+  gem のリリースだけで週次 CI が赤くなる。固定するとスナップショットが動くため
+  別ステップの作業。
 - **受け入れ = v1.0 リリース = M5 完了**。
 
 ## 9. マイルストーン横断のリスク(DESIGN 7 章の運用)
