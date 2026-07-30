@@ -5408,9 +5408,100 @@ Step 154 の優先度機構では直せない。新しい配置ロジックを�
 
 ---
 
+## Step 157 — コーパス未検証 gem の検証(strscan / stringio / etc / fcntl)(M5 H6)
+
+センサス対象 36 件に対し検証済みは 8 件。**未検証 28 件のうち 26 件は R10 ゲートを
+通過している**(除外は sqlite3 と pg だけ)ので、着手先には困らない。
+最も形が揃っている `ruby/*` の default gem から 4 件に当たった。
+`data/verified_gems.json` は **8 → 10 件**。
+
+### 結果は 4 者 4 様だった
+
+| gem | 結果 | 内容 |
+|---|---|---|
+| **strscan 3.1.6** | **PASS** | 150 tests / 1,049 assertions |
+| **stringio 3.2.0** | **PASS** | 103 tests / 626 assertions |
+| **fcntl 1.3.0** | **検証不能** | 上流にテストスイートが存在しない |
+| **etc 1.4.6** | **FAIL** | rubycc 側のギャップ 3 つ(下記) |
+
+### fcntl — (d) レベルの証拠が原理的に得られない
+
+`ruby/fcntl` は **v1.3.0 にも master にも `test/` が無く**、Rakefile に test タスクも
+無く、CI の "Run test" は `bundle exec rake compile` だけ(実測)。
+`verified_gems.json` が要求する「gem 自身のテストスイート合格」は原理的に得られないので、
+**レシピを書かず記録もしない**。ビルド自体は通る((b) レベル)が、それは記録の根拠にならない。
+
+副産物として実測: rubycc ビルドの `Fcntl` は **24 定数、gcc ビルドは 26 定数**。
+欠けるのは `F_GETPIPE_SZ` / `F_SETPIPE_SZ` で、同梱 `fcntl.h` に無いため。
+**共通 24 定数の値はすべて一致**。
+
+### etc — gcc 対照で rubycc 側の非を確定させ、ギャップを 3 つ立てた
+
+同一の上流ツリーをホスト gcc でビルドして同じスイートを走らせると
+**18 tests / 561 assertions / 0 failures**(omission 2 件は上流自身のもの)。
+Step 146 と同じ作法で、**レシピは正しく非は rubycc 側**と確定した。
+
+1. **rmake がシェルのバックスラッシュ除去をしない**。mkmf は
+   `-DSYSCONFDIR=\"/.../etc\"` を Makefile に書く(`/bin/sh` が `\` を落とす前提)。
+   rmake はシェルを介さず自前で分割するので `\` が残り、
+   `unexpected character "\"` になる。**最小再現の対照表がコンパイラの無罪を示している**:
+
+   | 組み合わせ | 結果 |
+   |---|---|
+   | GNU make + gcc | OK |
+   | **GNU make + rubycc** | **OK** ← コンパイラは無罪 |
+   | rmake + gcc | FAIL |
+   | rmake + rubycc | FAIL |
+
+   同一 argv での対照も取れており、`\` 付き argv では gcc も
+   `stray '\' in program` で落ちる = **gcc と挙動は完全に一致**。差は rmake だけ。
+   該当は `lib/rubycc/rmake/executor.rb` の `tokenize` で、POSIX の
+   「引用符外の `\` は次の 1 文字をエスケープ」が未実装
+
+2. **`__atomic_*` ビルトインが無い**。`ruby.h` が `HAVE_RUBY_ATOMIC_H` を定義するため
+   `ruby/atomic.h` が取り込まれ、ruby の config.h が `HAVE_GCC_ATOMIC_BUILTINS` を
+   定義しているのでその分岐に入る。**フォールバック連鎖の末尾は
+   `#error Unsupported platform` で逃げ道が無い**
+
+3. **`confstr` / `fpathconf` / `getlogin` の宣言が無い**。これが一番たちが悪い:
+   **mkmf の `have_func` は自前で関数を宣言するのでプローブは通ってしまい**、
+   `HAVE_CONFSTR` 等が定義され、**本体のコンパイルで暗黙宣言エラーになる**。
+   「プローブが通ったのにビルドが落ちる」という形は他の gem でも起きうる系統的な穴
+
+3 つを手で回避すると etc.c は最後までコンパイルできた。**ただしそれでも
+スイートは静かに縮む**: `ext/etc/constdefs.h` は gcc のヘッダ下で **179 定数**を
+定義するが rubycc の同梱ヘッダ下では **11 個**(`_SC_*` のみ)。
+`test_etc.rb` は `if defined?(Etc::CS_PATH)` で守られているので、
+**失敗ではなく「テストが定義されない」形**で 18 → 16 tests になる(予測。
+コンパイルが通らないため未実走)。**skip が静かに緑になるのと同じ構図**が
+gem 側のスイートでも起きる。
+
+### sanity が空振りでないことを実測した
+
+「処理系同梱の別コピーが読まれる」危険が実在することを stringio で確かめた:
+
+| 条件 | ロードされた `.so` | sanity |
+|---|---|---|
+| ツールと同じ | 注入した `stringio-3.2.0/lib/stringio.so` | **ok** |
+| `-Ilib` を外す | **処理系同梱の 3.1.2** | **FAIL** |
+
+さらに、**`-Ilib` を外した状態でスイートは 100% passed になる**ことも実測した。
+sanity が無ければそのまま「検証済み」として記録される状態で、
+Step 144 でこのゲートを必須にした判断が 2 度目の裏付けを得た。
+
+### ついでに直した古い記述
+
+`tools/verify_gem_tests.rb` の stackprof / nkf のレシピの上にあった
+「この 2 件はまだ通らない」というコメントが Step 151・153 以降**事実と食い違っていた**ので、
+実態に直した。**生きた TODO リストとして残したコメントは、閉じたら直さないと嘘になる。**
+
+---
+
 ## 現在のテスト規模
 
-Step 156 完了時点: **2,679 runs / 7,607 assertions / 0 failures / 47 skips**
+Step 157 完了時点: **2,679 runs / 7,639 assertions / 0 failures / 47 skips**
+(Step 156 と同数の runs = DB のスキーマ検査が 2 gem 分増えたのみ)
+(以前) Step 156 完了時点: **2,679 runs / 7,607 assertions / 0 failures / 47 skips**
 (Step 155 から +14 = メンバの形・スロット位置・WEAK/GOT/PLT・命令列の復号・
 `dlclose` 実走・順序・不変性 2 件、実行ファイル 2 件、aarch64 3 件)
 (以前) Step 155 完了時点: **2,665 runs / 7,509 assertions / 0 failures / 47 skips**

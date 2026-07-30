@@ -743,9 +743,22 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   **`sanity` 式が必須**(C 拡張がロードされていなくてもスイートは合格しうるため。
   racc の `cparse.so` を壊しても 71 tests / 0 failures で通ることを実測)。
   既存 6 件を全て再現して自身を検証済み(racc の assertions のみ 319 → 320 で
-  差異あり・原因未特定)。**Step 151 で nkf 0.3.0 を追加(6 → 7 件)** —
-  この経路で初めて新規に検証・記録された gem。**残: stackprof**(ギャップ 6 番の
-  `__dso_handle` が残っているため未達)。
+  差異あり・原因未特定)。**Step 151 で nkf 0.3.0、Step 153 で stackprof 0.2.28、
+  Step 157 で strscan 3.1.6 と stringio 3.2.0 を追加(6 → 10 件)。**
+- **コーパス未検証 gem(Step 157 で棚卸し)**: センサス対象 36 件に対し検証済み 10 件。
+  **未検証 26 件のうち 24 件は R10 ゲートを通過**している(除外は sqlite3 と pg のみ)ので
+  着手先には困らない。形が揃っていて着手しやすいのは `ruby/*` の default gem 群
+  (`io-wait` `io-nonblock` `io-console` `erb` `zlib` `digest` `psych` 等)。
+  **fcntl は上流にテストスイートが無く (d) レベルの証拠が原理的に得られない**ため対象外。
+- **Step 157 の etc 検証が露出したギャップ(gcc 対照で rubycc 側の非を確定済み)**:
+
+  | # | ギャップ | 影響 | 優先 |
+  |---|---|---|---|
+  | A | **rmake がシェルのバックスラッシュ除去をしない** — mkmf が書く `-DSYSCONFDIR=\"/.../etc\"` の `\` が残って `unexpected character` になる。`lib/rubycc/rmake/executor.rb` の `tokenize` に POSIX の「引用符外の `\` は次の 1 文字をエスケープ」が未実装。**最小再現の対照表でコンパイラの無罪が確定している**(GNU make + rubycc は OK) | mkmf が文字列マクロを渡す任意の gem | **高**(修正は限定的) |
+  | B | **`__atomic_*` ビルトインが無い** — `ruby.h` が `HAVE_RUBY_ATOMIC_H` を定義し ruby の config.h が `HAVE_GCC_ATOMIC_BUILTINS` を定義するのでその分岐に入る。フォールバック連鎖の末尾は `#error Unsupported platform` で逃げ道が無い。`ruby/atomic.h` が使う形は 9 種 | **ruby.h を引く任意の gem に波及しうる**。要調査 | **高**(影響範囲が広い) |
+  | C | **`confstr` / `fpathconf` / `getlogin` が同梱 `unistd.h` に無い** — mkmf の `have_func` は自前で宣言するので**プローブは通ってしまい**、`HAVE_CONFSTR` 等が定義されて本体で暗黙宣言エラーになる。**「プローブが通ったのにビルドが落ちる」系統的な穴** | etc。同型の穴は他にもありうる | 中(R8 手続き) |
+  | D | **`_CS_*` / `_PC_*` / 残りの `_SC_*` が無い** — `ext/etc/constdefs.h` が gcc 下で 179 定数、rubycc 下で 11 定数。test_etc.rb は `if defined?` で守られているので**失敗ではなく「テストが定義されない」形**で静かに縮む(18 → 16、予測) | etc の検証を gcc 対照と同数にするために必要 | 中(値は実測で) |
+  | E | `F_GETPIPE_SZ` / `F_SETPIPE_SZ` が同梱 `fcntl.h` に無い(`Fcntl` 定数が 24 対 26。**共通 24 個の値は一致**) | fcntl | 低 |
 - ~~コーパス拡張と検証済み gem 追加の一連の手順をスキル化する。~~
   **完了(Step 145)**: `.claude/skills/corpus-expansion/SKILL.md`。道具の使い方ではなく
   **道具の間をつなぐ判断**(Gap candidate の仕分け、(d) レベルの証拠の水準、
