@@ -157,55 +157,29 @@ module Rubycc
       end
 
       def initialize(inputs, needed: [], interpreter: nil, libc: :auto)
+        # SharedLinker#initialize settles the target machine off the first input
+        # object before the merge; the crt and the interpreter/libc defaults
+        # chosen here all read it.
         super(inputs, needed: needed)
-        # The crt and the interpreter/libc defaults are chosen before the merge,
-        # so the target machine is read straight off the first input object rather
-        # than from the (not-yet-built) merged reader.
-        @em = detect_machine
         @interpreter = choose_interpreter(interpreter)
         add_default_libc(libc)
       end
 
       private
 
-      # The ELF e_machine of the first relocatable input object, defaulting to
-      # x86_64 when no object header is readable (e.g. only archives, which an
-      # executable link always has a compiled object ahead of). Used to pick the
-      # crt and the interpreter/libc defaults up front; the post-merge reader's
-      # machine agrees with it.
-      def detect_machine
-        @inputs.each do |raw|
-          header = input_elf_header(raw)
-          next unless header
-
-          return header.byteslice(18, 2).unpack1("S<")
-        end
-        EM_X86_64
-      end
-
-      # The leading bytes of an input if it is an ELF object (not an ar archive),
-      # or nil. A String input may be raw object bytes or a filesystem path.
-      def input_elf_header(raw)
-        bytes =
-          if raw.is_a?(String) && raw.b.start_with?("\x7FELF".b)
-            raw.b
-          elsif raw.is_a?(String) && raw.b.start_with?("!<arch>\n".b)
-            nil
-          else
-            File.binread(raw.to_s, 20)
-          end
-        bytes if bytes && bytes.bytesize >= 20 && bytes.b.start_with?("\x7FELF".b)
-      rescue SystemCallError
-        nil
-      end
-
       # --- SharedLinker hook overrides ---------------------------------------
 
       # An executable prepends the synthesized crt so _start (and its references
       # to main and __libc_start_main) take part in the merge and the shared
-      # relocation pipeline handles them like any other input's relocations.
+      # relocation pipeline handles them like any other input's relocations. The
+      # tail keeps the shared linker's __dso_handle supplier: glibc's
+      # libc_nonshared.a members reference that symbol in an executable link too,
+      # and here it is a hard "undefined reference" rather than a leftover
+      # import, so the same lazily-extracted definition is what completes them.
+      # Its word holds its own address as in a shared object — an executable is
+      # never dlclosed, so the identity only has to be unique.
       def link_inputs
-        [build_crt] + @inputs
+        [build_crt] + super
       end
 
       # After the merge, require a defined main (a conftest without one cannot be

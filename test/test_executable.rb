@@ -129,6 +129,78 @@ class TestExecutable < Minitest::Test
     assert_nil dyn, "an internal data pointer needs no dynamic relocation in a non-PIE executable"
   end
 
+  # --- __dso_handle synthesis --------------------------------------------
+
+  # An executable link pulls glibc's libc_nonshared.a members in too, and they
+  # reference __dso_handle; nothing else defines it, so the linker supplies the
+  # same word here as in a shared object. A non-PIE image is mapped at its exact
+  # link-time address, so the word holds its final address outright and carries
+  # no RELATIVE — the one difference from the `.so` case.
+  DSO_HANDLE_USER = <<~C
+    extern void *__dso_handle;
+    int main(void) { return __dso_handle == &__dso_handle ? 0 : 1; }
+  C
+
+  # pthread_atfork, the case that exposed the gap: glibc supplies it only from
+  # libc_nonshared.a, whose member registers the handlers under __dso_handle.
+  ATFORK = <<~C
+    int pthread_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(void));
+    int printf(const char *, ...);
+    int fork(void);
+    int wait(int *status);
+    void _exit(int status);
+    static int seen;
+    static void on_prepare(void) { seen |= 1; }
+    static void on_parent(void) { seen |= 2; }
+    static void on_child(void) { seen |= 4; }
+    int main(void) {
+      int status;
+      if (pthread_atfork(on_prepare, on_parent, on_child) != 0) return 1;
+      if (fork() == 0) _exit(seen);
+      wait(&status);
+      printf("%d\\n", seen);
+      return 0;
+    }
+  C
+
+  def test_dso_handle_is_synthesized_without_a_relative
+    skip_unless_linkable
+
+    r = Reader.read(build_exe([DSO_HANDLE_USER]))
+    data = r.section(".data")
+    refute_nil data, "the synthesized word lives in .data"
+    assert_equal 8, data.size, "one 8-byte handle word and nothing else"
+    assert_equal data.addr, data.data.unpack1("Q<"),
+                 "a non-PIE image writes the word's final address directly"
+    assert_nil r.dynamic_symbol("__dso_handle"), "__dso_handle must not enter .dynsym"
+
+    dyn = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    assert_nil dyn, "the fixed load address needs no base relocation"
+  end
+
+  def test_running_reads_the_handle_as_its_own_address
+    skip_unless_runnable
+
+    with_exe([DSO_HANDLE_USER]) do |exe|
+      _out, status = Open3.capture2(exe)
+      assert_equal 0, status.exitstatus, "__dso_handle must read back as its own address"
+    end
+  end
+
+  # End to end on the case that exposed the gap: pthread_atfork comes from
+  # libc_nonshared.a, whose member references __dso_handle; the program must
+  # link, run, and see its handlers run across a real fork.
+  def test_pthread_atfork_from_libc_nonshared_links_and_runs
+    skip_unless_runnable
+    skip "libc_nonshared.a unavailable" unless libc_nonshared_path
+
+    with_exe([ATFORK], inputs: [libc_nonshared_path]) do |exe|
+      out, status = Open3.capture2(exe)
+      assert_equal 0, status.exitstatus
+      assert_equal "3\n", out, "the prepare and parent handlers must have run"
+    end
+  end
+
   # --- program headers ----------------------------------------------------
 
   def test_load_segments_and_interp
@@ -307,17 +379,31 @@ class TestExecutable < Minitest::Test
 
   private
 
-  def build_exe(sources)
-    in_tmpdir { |dir| Linker.link(objects_for(sources, dir)) }
+  # Links `sources` (compiled here) into an executable. `inputs` appends further
+  # link inputs — an archive path, say — after the compiled objects, in the
+  # position a driver would place a library.
+  def build_exe(sources, inputs: [])
+    in_tmpdir { |dir| Linker.link(objects_for(sources, dir) + inputs) }
   end
 
-  def with_exe(sources)
+  def with_exe(sources, inputs: [])
     in_tmpdir do |dir|
       exe = File.join(dir, "a.out")
-      Linker.link_to(objects_for(sources, dir), exe)
+      Linker.link_to(objects_for(sources, dir) + inputs, exe)
       File.chmod(0o755, exe)
       yield exe
     end
+  end
+
+  # glibc's libc_nonshared.a, the static half of the C library the linker script
+  # names alongside libc.so.6; nil when the host has no such file. It is what
+  # supplies pthread_atfork — and what references __dso_handle.
+  def libc_nonshared_path
+    return @libc_nonshared_path if defined?(@libc_nonshared_path)
+
+    @libc_nonshared_path = ["/usr/lib/x86_64-linux-gnu/libc_nonshared.a",
+                            "/usr/lib64/libc_nonshared.a",
+                            "/usr/lib/libc_nonshared.a"].find { |p| File.exist?(p) }
   end
 
   def objects_for(sources, dir)
