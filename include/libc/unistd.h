@@ -133,6 +133,34 @@ int     execlp(const char *__file, const char *__arg, ...);
 #define _SC_PHYS_PAGES       85
 #define _SC_AVPHYS_PAGES     86
 long    sysconf(int __name);
+
+/* confstr()/fpathconf()/pathconf() are likewise answered by the host's
+   runtime libc, so their __name arguments must match the host's own
+   <bits/confname.h> numbering, the same reasoning _SC_ rests on above
+   (measured with gcc on the reference platform; x86-64 and aarch64 agree to
+   the value, checked with a cross gcc + qemu run). Step 157 gap D: etc's
+   ext/etc/mkconstants.rb conditionally exposes about 50 _CS_ and _PC_ names
+   in total, and all of them exist on the host glibc, but the corpus has
+   exactly one consumer (etc) and its own test suite exercises only
+   Etc::CS_PATH and Etc::PC_PIPE_BUF (guarded by "if defined?", so the rest
+   silently vanishing costs coverage, not a failure). Following the same
+   non-exhaustive judgment as sys/syscall.h's number list and
+   _POSIX_MONOTONIC_CLOCK above, only those two are added -- the POSIX_V6/V7
+   build-environment names (CFLAGS/LDFLAGS/LIBS variants),
+   CS_GNU_LIBC_VERSION, CS_GNU_LIBPTHREAD_VERSION, and the rest of the SUSv4
+   _PC_ set have no consumer in the corpus and would just be an unconsumed
+   measurement surface to re-check every release. */
+#define _CS_PATH     0
+#define _PC_PIPE_BUF 5
+size_t  confstr(int __name, char *__buf, size_t __len);
+long    fpathconf(int __fd, int __name);
+/* pathconf() has no direct corpus consumer either (etc's io_pathconf() only
+   ever calls fpathconf()), but it is fpathconf()'s standard POSIX pair over
+   the same _PC_* names, its prototype carries no per-name numeric surface of
+   its own to re-measure, and this header's declaration layer is the general
+   POSIX surface (like execl/alarm/pause above) rather than a per-consumer
+   scoped one -- so it is kept alongside fpathconf() rather than left out. */
+long    pathconf(const char *__path, int __name);
 void    _exit(int __status) __attribute__((__noreturn__));
 void   *sbrk(intptr_t __delta);
 int     brk(void *__addr);

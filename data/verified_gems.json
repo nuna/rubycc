@@ -18,7 +18,7 @@
     "verified_at": "2026-07-24",
     "environment": "glibc x86_64 / ruby 3.4.5",
     "evidence": "RUBYCC=1 gem install bigdecimal succeeded (lib/bigdecimal.so built through rmake); the gem's own test suite passed 265 tests / 8,267 assertions / 0 failures / 0 errors (Steps 93-97).",
-    "notes": "11 tests are omitted because BIGDECIMAL_USE_VP_TEST_METHODS is not set; this is an expected, normal omission and not a failure. musl and aarch64 not yet verified."
+    "notes": "11 tests are omitted because BIGDECIMAL_USE_VP_TEST_METHODS is not set; this is an expected, normal omission and not a failure. Measured in Step 160: this build takes the gem's own non-atomic fallback, because extconf's have_header(\"ruby/atomic.h\") is a try_compile and that header does not compile under rubycc yet (it reaches __atomic_* builtins rubycc has no support for), so HAVE_RUBY_ATOMIC_H is never defined. The gcc build of the same version compiles the atomic path instead. RUBY_ATOMIC_SIZE_INC is only reached under BIGDECIMAL_DEBUG, so the difference is not exercised by the suite. musl and aarch64 not yet verified."
   },
   "redcarpet": {
     "versions": ["3.6.1"],

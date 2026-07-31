@@ -5571,9 +5571,95 @@ gemspec の `summary` / `description`、README の見出し行、DESIGN のタ�
 
 ---
 
+## Step 160 — ギャップ B の見立ての訂正と、C・D の解消(M5 H6)
+
+Step 157 の etc 検証が立てた 3 つのギャップのうち **C と D を閉じ、B の理解を訂正**した。
+
+### 立てた仮説が実測で否定された
+
+着手前、証拠が食い違っていた。**`ruby/atomic.h` がコンパイルされる理由が見当たらない**:
+`etc.c` は `#ifdef HAVE_RUBY_ATOMIC_H` の中でしか include せず、生成された Makefile の
+CPPFLAGS に `-DHAVE_RUBY_ATOMIC_H` は無く、extconf は probe しておらず、
+Ruby の同梱ヘッダで `ruby/atomic.h` を textual に include しているものも無い。
+そこから「**rubycc のプリプロセッサの欠陥ではないか**」という仮説を立てた —
+もしそうなら他の gem にも静かに波及している重大な問題になる。
+
+**実測は仮説を否定した**。実際の CPPFLAGS で `etc.c` を rubycc と gcc の両方で前処理して
+比較すると、`__atomic_*` の出現は **14 個で完全一致**(gcc 側の 3 件の差は glibc の
+pthread 内部ヘッダ由来で、同梱ヘッダに無いだけ)。取り込みの差はゼロで、
+**`#ifdef` の評価にも `#include` 探索にも欠陥は無い**。
+
+真相は単純だった: **`ruby.h:12` が `HAVE_RUBY_ATOMIC_H 1` を無条件に定義している**。
+「この Ruby にはこれらのヘッダが同梱されている」を宣言するベタ書きのブロックで、
+Makefile にも config.h にも無いという観測は正しかったが、
+**そこから「だから偽であるべき」と結論したのが誤り**だった。
+
+### bigdecimal が通って etc が落ちる理由
+
+同じ `ruby/atomic.h` を使うのに結果が違うのは、**マクロの出所が非対称**だから:
+
+| | etc 1.4.6 | bigdecimal 4.1.2 |
+|---|---|---|
+| 取り込み元 | `etc.c` が `ruby.h` を include | `missing.c` が `ruby/ruby.h` を include |
+| `HAVE_RUBY_ATOMIC_H` | **`ruby.h:12` から常に真** | `ruby/ruby.h` は定義しない。`extconf.rb` の `have_header` だけ |
+| rubycc 下の probe | **無い(逃げ道なし)** | `mkmf.rb` の `alias try_header try_compile` により**コンパイルが走り、まさにこのエラーで失敗** |
+| 結果 | 取り込んでコンパイル失敗 | 取り込まれず、**非アトミックのフォールバック**でビルド成功 |
+
+つまり **bigdecimal の PASS は「probe が rubycc 下で自然に偽になったおかげ」**で、
+gcc ビルドとは**別のコードがビルドされている**。これは実測しなければ分からず、
+記録にも現れない差なので、**`verified_gems.json` の bigdecimal の notes に書き加えた**。
+`RUBY_ATOMIC_SIZE_INC` は `BIGDECIMAL_DEBUG` 内でしか使われないのでスイートは影響を受けないが、
+**「合格した」という事実だけを残すと、読んだ人はこの差を知らないまま使う**。
+
+`stackprof` / `nio4r` も同型で、どちらも非アトミックのフォールバックに守られている。
+**`__sync_*` を実装しても逃げ道にはならない**ことも確認した:
+`ruby/config.h` が `HAVE_GCC_ATOMIC_BUILTINS 1` を持つので `#elif` 連鎖は
+`__atomic_*` の枝で止まり、`__sync_*` の枝には到達しない。
+
+### ギャップ C — プローブが通ってビルドが落ちる
+
+`confstr` / `fpathconf` の宣言が同梱 `unistd.h` に無い。
+**mkmf の `have_func` は自前で関数を宣言する try_link なのでプローブは成功**し、
+`-DHAVE_CONFSTR` が立ち、**本体のコンパイルで初めて暗黙宣言エラーになる**。
+Step 142 で記録した「`-E` が通ることは正しさの証明にならない」と同じ系統で、
+**プローブの成功も正しさの証明にならない**。
+
+`pathconf` も対で入れた。コーパスに直接の消費者はいないが、
+`unistd.h` は元から `execl` / `alarm` / `pause` のように特定 gem の実需に絞らない
+一般 POSIX 宣言層として扱われており、かつ**数値サーフェスを持たない単一プロトタイプ**で
+再計測コストが無いため。
+
+### ギャップ D — 網羅せず 2 つだけ
+
+`ext/etc/mkconstants.rb` が公開する `_CS_*` 26 個 / `_PC_*` 20 個を全て実測し、
+**46 個すべてが両アーキに実在し値も完全一致**することを確認したうえで、
+**入れたのは `_CS_PATH` と `_PC_PIPE_BUF` の 2 つだけ**。
+`test_etc.rb` が `if defined?` で守りつつ実際にアサートしているのがこの 2 つだけだから。
+`sys/syscall.h` / `_POSIX_*` と同じ「消費者のいない列挙は入れない」線引き。
+
+### 副産物: ハーネスの穴を 1 つ塞いだ
+
+`UNISTD` Spec に **aarch64 側のテストメソッドが無かった**(R8 は両アーキ必須)。
+判断ではなく見落としで、`_SC_*` / `_CS_*` / `_PC_*` の値と宣言が両アーキ一致という主張は
+まさに**クロス検査が担保すべきもの**だったので追加した。2,688 → 2,689 runs。
+
+### etc の到達位置
+
+C・D は消え、**残るはギャップ B の `__atomic_*` だけ**。
+必要集合も実測で確定した: **メモリオーダは `__ATOMIC_SEQ_CST` のみ**(14 箇所すべて)、
+**型幅は 4 と 8 の 2 種類だけ**、形は 9 つ。
+`__atomic_compare_exchange_n` は**失敗時に `*expected` へ旧値を書き戻す副作用が
+load-bearing**(戻り値は捨てられ直後に `*expected` を返す)で、ここを省くと
+`RUBY_ATOMIC_CAS` が壊れる。
+
+---
+
 ## 現在のテスト規模
 
-Step 159 完了時点: **2,688 runs / 7,650 assertions / 0 failures / 47 skips**
+Step 160 完了時点: **2,689 runs / 7,653 assertions / 0 failures / 47 skips**
+(Step 159 から +1 = UNISTD の aarch64 ケース。`_CS_*` / `_PC_*` と 3 宣言は
+既存 Spec の検査項目として増えているが runs には現れない)
+(以前) Step 159 完了時点: **2,688 runs / 7,650 assertions / 0 failures / 47 skips**
 (Step 158 と同数 = 文面の変更のみ)
 (以前) Step 158 完了時点: **2,688 runs / 7,650 assertions / 0 failures / 47 skips**
 (Step 157 から +9 = POSIX バックスラッシュの 3 規則・行継続・mkmf 実パターン再現)

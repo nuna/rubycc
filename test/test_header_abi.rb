@@ -359,7 +359,10 @@ class TestHeaderAbi < Minitest::Test
   # <unistd.h>: the standard file-descriptor and access-mode constants, the few
   # ABI-typed names' widths, and that the core system-call declarations exist.
   # _POSIX_MONOTONIC_CLOCK (Step 146 gap 4) is a measured POSIX option macro,
-  # not a declaration, so it only needs the `ints` check below.
+  # not a declaration, so it only needs the `ints` check below. _CS_PATH and
+  # _PC_PIPE_BUF (Step 157 gap D) are the same kind of host-numbered macro as
+  # the _SC_* set, and confstr/fpathconf/pathconf (Step 157 gap C) are proven
+  # usable the same way sysconf already is, through the snippet call below.
   UNISTD = HeaderAbiHarness::Spec.new(
     header: "unistd.h",
     sizes: %w[ssize_t off_t pid_t uid_t gid_t],
@@ -368,12 +371,14 @@ class TestHeaderAbi < Minitest::Test
              _SC_ARG_MAX _SC_CHILD_MAX _SC_CLK_TCK _SC_NGROUPS_MAX
              _SC_OPEN_MAX _SC_PAGESIZE _SC_PAGE_SIZE _SC_NPROCESSORS_CONF
              _SC_NPROCESSORS_ONLN _SC_PHYS_PAGES _SC_AVPHYS_PAGES
-             _POSIX_MONOTONIC_CLOCK],
+             _POSIX_MONOTONIC_CLOCK _CS_PATH _PC_PIPE_BUF],
     snippets: [<<~C.chomp]
-      static long abi_unistd(int fd, void *buf, unsigned long n) {
+      static long abi_unistd(int fd, const char *path, void *buf, unsigned long n) {
         return read(fd, buf, n) + write(fd, buf, n) + pread(fd, buf, n, 0)
              + pwrite(fd, buf, n, 0) + close(fd) + getpid()
-             + sysconf(_SC_PAGESIZE);
+             + sysconf(_SC_PAGESIZE)
+             + (long)confstr(_CS_PATH, (char *)buf, n)
+             + fpathconf(fd, _PC_PIPE_BUF) + pathconf(path, _PC_PIPE_BUF);
       }
     C
   )
@@ -1799,6 +1804,14 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_sys_select_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::SYS_SELECT)
+  end
+
+  # <unistd.h> had no aarch64 case until Step 160, an oversight rather than a
+  # decision: its surface (the _SC_* / _CS_* / _PC_* values and the declarations)
+  # is measured as identical on both arches, which is exactly the claim a
+  # cross-checked case is supposed to keep honest.
+  def test_unistd_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::UNISTD)
   end
 
   def test_sigset_select_first_abi_matches_cross_gcc
