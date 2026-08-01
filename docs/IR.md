@@ -250,6 +250,27 @@ Instruction(op, dst:, a:, b:, size:)
 |---|---|---|
 | :bit_scan | dst ← scan(a)。b = 方向、size = 4/8 | 整数 a の 0 ビット数を数える(__builtin_ctz/clz とその ll 形)。b = `:forward` は末尾 0 の個数(ctz)で `bsf` に、`:reverse` は先頭 0 の個数(clz)で `bsr` の後 (size*8−1) との `xor`(= (幅−1) − 最上位セットビット位置)に降ろす。size 8 は REX.W 付き。オペランド 0 は未定義(gcc 準拠)なのでゼロ処理は出さない。結果は int |
 
+### アトミック操作
+
+gcc の `__atomic_*` 組み込み(ジェネレータが扱う 9 形)の降ろし先。**IR はメモリオーダを
+一切運ばない** — ジェネレータがソースの指定したオーダによらず全てを最強の順序
+(seq_cst)で降ろすため。オーダの強化は常に意味論的に妥当(制約を増やすだけ)なので、
+`__ATOMIC_RELAXED` を seq_cst として実装するのは正しく、診断にするより堅牢である
+(同じ理由で `__atomic_compare_exchange_n` の `weak` も無視して常に strong)。
+`size` は 4 か 8 のみ — それ以外の幅はジェネレータが診断するので、バックエンドに
+狭い/広いケースは無い。
+
+| 命令 | 形 | 意味 |
+|---|---|---|
+| :atomic_load | dst ← atomic *a。size = 4/8 | ポインタ a から `size` バイトを逐次一貫に読む。`:load` と別命令なのは 2 ターゲットで形が違うから — x86-64 は整列した素の `mov` が既に seq_cst ロード、aarch64 は acquire 形(`ldar`)が要る |
+| :atomic_store | *a ← b。size = 4/8 | ポインタ a へ b の `size` バイトを逐次一貫に書く。x86-64 は `xchg`(暗黙の lock が seq_cst ストアに必要な後続バリアを兼ねる)、aarch64 は `stlr` |
+| :atomic_rmw | dst ← rmw(a, b)。b = [値 vreg, kind]、size = 4/8 | ポインタ a を通したアトミックな read-modify-write。kind は `:exchange` / `:fetch_add` / `:fetch_sub` / `:add_fetch` / `:sub_fetch` / `:or_fetch`。dst には対応する組み込みの戻り値(`:exchange` と `:fetch_*` は**読んだ値**、`:*_fetch` は**書いた値**)。x86-64 は `xchg` / `lock xadd`(`:fetch_sub` は `neg` してから、`:*_fetch` はオペランドを退避して加え直す)で、`:or_fetch` だけ `lock cmpxchg` リトライループ。aarch64 は全 kind が LDAXR/STLXR リトライループ 1 本 |
+| :atomic_cas | dst ← cas(a, b)。b = [expected ポインタ vreg, desired vreg]、size = 4/8 | `__atomic_compare_exchange_n`。*a が \*expected と等しければ *a ← desired で dst = 1、等しくなければ *a は不変で dst = 0 かつ**実際に読めた値を expected 経由で書き戻す**(`<ruby/atomic.h>` の RUBY_ATOMIC_CAS はこの副作用から答えを取り出すので必須)。書き戻しは失敗経路のみ(分岐でガード)— expected が a に別名で重なった場合に、交換したばかりの値を古い値で潰さないため。dst は _Bool(0/1)で nil にならない |
+
+`:atomic_rmw` と `:atomic_cas` のリトライループ・分岐は **1 つの IR 命令の内側で閉じる**ので、
+ラベル機構(`:label` / `@fixups`)は使わず、発行済みバイト数から変位を直接計算する
+(aarch64 の `#emit_memcpy_loop` と同じやり方)。
+
 ## 6. バックエンドとの契約(参考)
 
 IR 自体の仕様ではないが、IR を書く側・読む側が共有する前提。

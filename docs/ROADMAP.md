@@ -755,10 +755,14 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   | # | ギャップ | 影響 | 優先 |
   |---|---|---|---|
   | A | ~~**rmake がシェルのバックスラッシュ除去をしない**~~ **解消(Step 158)**: POSIX の 3 規則(引用符外・二重引用符内・単一引用符内)を `/bin/sh` への実測で確定させて実装。旧記述: — mkmf が書く `-DSYSCONFDIR=\"/.../etc\"` の `\` が残って `unexpected character` になる。`lib/rubycc/rmake/executor.rb` の `tokenize` に POSIX の「引用符外の `\` は次の 1 文字をエスケープ」が未実装。**最小再現の対照表でコンパイラの無罪が確定していた**(GNU make + rubycc は OK) | ~~mkmf が文字列マクロを渡す任意の gem~~ | ~~高~~ **完了** |
-  | B | **`__atomic_*` ビルトインが無い**(**Step 160 で見立てを訂正**: プリプロセッサの欠陥ではないことを実測で確認 = rubycc `-E` は gcc `-E` と完全一致。真因は `ruby.h:12` が `HAVE_RUBY_ATOMIC_H` を**無条件に定義**していること。`__sync_*` の実装は逃げ道にならない = `ruby/config.h` の `HAVE_GCC_ATOMIC_BUILTINS` により `#elif` 連鎖が `__atomic_*` の枝で止まる。**必要集合は実測済み: メモリオーダは `__ATOMIC_SEQ_CST` のみ・型幅は 4 と 8 のみ・9 形**。`__atomic_compare_exchange_n` は失敗時の `*expected` 書き戻しが load-bearing) — `ruby.h` が `HAVE_RUBY_ATOMIC_H` を定義し ruby の config.h が `HAVE_GCC_ATOMIC_BUILTINS` を定義するのでその分岐に入る。フォールバック連鎖の末尾は `#error Unsupported platform` で逃げ道が無い。`ruby/atomic.h` が使う形は 9 種 | **ruby.h を引く任意の gem に波及しうる**。要調査 | **高**(影響範囲が広い) |
+  | B | ~~**`__atomic_*` ビルトインが無い**~~ **解消(Step 161)**: 実測した必要集合ちょうど(9 形・幅 4 と 8)を実装。**メモリオーダは受理して捨て、常に seq_cst で降ろす**(強化は常に意味論的に妥当なので、`__ATOMIC_RELAXED` を診断するより正しい。`weak` も同理由で常に strong)。IR はオーダを一切運ばない。x86-64 は `lock xadd` 由来 + `or_fetch` のみ `lock cmpxchg` ループ、aarch64 は armv8-a ベースラインの LDAXR/STLXR ループ 1 本を 6 kind で共有(**LSE も libgcc outline atomics も使わない**)。幅 1/2/16 は診断。**これで etc 1.4.6 が PASS**(Step 158 + 160 + 161 の 3 つが揃って初めて通る)。副作用として **bigdecimal のビルド経路が変わった**(`have_header` が通るようになり非アトミックのフォールバックから本物の CAS へ)。旧見立ての訂正は Step 160 に記録 | ~~**ruby.h を引く任意の gem**~~ | ~~**高**~~ **完了** |
   | C | ~~**`confstr` / `fpathconf` が同梱 `unistd.h` に無い**~~ **解消(Step 160)**: `confstr` / `fpathconf` / `pathconf` を宣言(シグネチャは両アーキで実測)。`getlogin` は既に宣言済みだった。旧記述: — mkmf の `have_func` は自前で宣言するので**プローブは通ってしまい**、`HAVE_CONFSTR` 等が定義されて本体で暗黙宣言エラーになる。**「プローブが通ったのにビルドが落ちる」系統的な穴** | ~~etc~~ | ~~中~~ **完了** |
   | D | ~~**`_CS_*` / `_PC_*` が無い**~~ **解消(Step 160)**: 46 個すべてが両アーキに実在し値も一致することを実測したうえで、`test_etc.rb` が実際にアサートする `_CS_PATH` と `_PC_PIPE_BUF` の 2 つだけを追加(消費者のいない列挙は入れない線引き)。旧記述: — `ext/etc/constdefs.h` が gcc 下で 179 定数、rubycc 下で 11 定数。test_etc.rb は `if defined?` で守られているので**失敗ではなく「テストが定義されない」形**で静かに縮む(18 → 16、予測) | ~~etc~~ | ~~中~~ **完了** |
   | E | `F_GETPIPE_SZ` / `F_SETPIPE_SZ` が同梱 `fcntl.h` に無い(`Fcntl` 定数が 24 対 26。**共通 24 個の値は一致**) | fcntl | 低 |
+
+  **A〜D は Step 158〜161 で全て解消**し、etc 1.4.6 が PASS するようになった。
+  残る E は fcntl 専用だが、**fcntl は上流にテストスイートが無く (d) レベルの証拠が
+  原理的に得られない**ため、埋めても検証済み gem は増えない(優先度が低い理由)。
 - ~~コーパス拡張と検証済み gem 追加の一連の手順をスキル化する。~~
   **完了(Step 145)**: `.claude/skills/corpus-expansion/SKILL.md`。道具の使い方ではなく
   **道具の間をつなぐ判断**(Gap candidate の仕分け、(d) レベルの証拠の水準、

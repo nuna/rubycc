@@ -98,8 +98,10 @@ module Rubycc
     # function pointer, floating-point arithmetic, comparison, conversion,
     # argument passing and return, whole-object copies, aggregates passed and
     # returned by value, and variadic function definitions (a register-save-area
-    # prologue and the AAPCS64 :va_start seed __builtin_va_arg walks). Features
-    # the generator can still hand it that belong to the rest of A4 (alloca, the
+    # prologue and the AAPCS64 :va_start seed __builtin_va_arg walks). The atomic
+    # ops are covered too, built from the armv8-a baseline load-acquire /
+    # store-release exclusive pair (see the atomics section below). Features the
+    # generator can still hand it that belong to the rest of A4 (alloca, the
     # bit-scan builtins, a 128-bit multiply) are refused with an explicit "not
     # yet supported" error rather than miscompiled.
     class AArch64
@@ -152,6 +154,19 @@ module Rubycc
       B = 10
       C = 11
       ADDR = 12
+
+      # Three further scratch registers, used only by the atomic sequences (see
+      # #emit_atomic_cas), which are the one place a single IR instruction has
+      # more values in flight than A/B/C hold: a compare-exchange juggles the
+      # object address, the expected pointer, the expected value, the desired
+      # value, the value actually read and the store-exclusive status at once.
+      # x13..x15 are caller-saved temporaries like x9..x12 and are clear of
+      # ADDR, so an address composed for a distant slot never collides with one
+      # of them. (x16/x17 are deliberately skipped: the linker may insert a
+      # veneer that clobbers them at any call site.)
+      D = 13
+      E = 14
+      F = 15
 
       # The floating counterparts of A/B, holding the operands of one floating
       # instruction. v16..v31 are caller-saved like x9..x15 (v8..v15 are the
@@ -498,6 +513,10 @@ module Rubycc
         when :func_addr then emit_symbol_address(inst.dst, kind: :func, symbol: inst.a)
         when :got_addr then emit_got_address(inst.dst, inst.a)
         when :memcpy then emit_memcpy(inst.a, inst.b, inst.size)
+        when :atomic_load then emit_atomic_load(inst.dst, inst.a, inst.size)
+        when :atomic_store then emit_atomic_store(inst.a, inst.b, inst.size)
+        when :atomic_rmw then emit_atomic_rmw(inst.dst, inst.a, inst.b[0], inst.b[1], inst.size)
+        when :atomic_cas then emit_atomic_cas(inst.dst, inst.a, inst.b[0], inst.b[1], inst.size)
         when :va_start then emit_va_start(inst.a)
         when :alloca then unsupported("alloca")
         when :bit_scan then unsupported("bit-scan builtins")
@@ -582,9 +601,7 @@ module Rubycc
       def emit_comparison(dst, a, b, condition, size)
         load_reg(A, a)
         load_reg(B, b)
-        w = width(size)
-        subs_base = w == 64 ? 0xEB000000 : 0x6B000000
-        emit_word(subs_base | (B << 16) | (A << 5) | XZR) # cmp A, B (subs xzr, A, B)
+        emit_word(SUBS_SHIFTED[width(size)] | (B << 16) | (A << 5) | XZR) # cmp A, B (subs xzr, A, B)
         emit_cset(A, condition)
         store_reg(A, dst)
       end
@@ -894,6 +911,147 @@ module Rubycc
       def emit_memcpy_step(offset, width)
         emit_piece_access(ADDR, B, offset, width, load: true, fp: false)
         emit_piece_access(ADDR, A, offset, width, load: false, fp: false)
+      end
+
+      # --- atomics -----------------------------------------------------------
+      #
+      # Every atomic op lowers at sequential consistency, the strongest order
+      # (the IR carries no weaker one — see IR::Generator#gen_builtin_atomic for
+      # why strengthening is always sound), and `size` is only ever 4 or 8, the
+      # generator having diagnosed every other width. The 8-byte forms differ
+      # from the 4-byte ones only in the encoding's size field (bit 30), which is
+      # what the ACQUIRE_/RELEASE_ tables below carry.
+      #
+      # Everything is built from the armv8-a *baseline* — the load-acquire /
+      # store-release exclusive pair and a retry loop — and nothing else. The
+      # single-instruction LSE atomics (`casal`, `ldadd`, `swp`) would be shorter
+      # but need armv8.1-a, and gcc's alternative of calling into libgcc's
+      # outline atomics (`__aarch64_ldadd4_acq_rel` and kin) would put rubycc's
+      # output at the mercy of a runtime library it otherwise never links. The
+      # baseline sequence runs on every AArch64 part.
+      #
+      # The retry loops branch backwards to a target inside the same IR
+      # instruction, so they need no label fixup: the distance is already known
+      # when the branch is emitted, exactly as in #emit_memcpy_loop.
+
+      # The opcode tables these sequences draw on (LDAR/STLR, LDAXR/STLXR,
+      # CBNZ_W, ATOMIC_RMW_OPCODES) sit with the rest of the machine encodings at
+      # the foot of the class, since the read-modify-write table is built from
+      # the same shifted-register forms the ordinary binary ops use.
+
+      # :atomic_load — a sequentially consistent read (LDAR).
+      def emit_atomic_load(dst, ptr, size)
+        load_reg(A, ptr)
+        emit_word(LDAR.fetch(size) | (A << 5) | A)
+        store_reg(A, dst)
+      end
+
+      # :atomic_store — a sequentially consistent write (STLR).
+      def emit_atomic_store(ptr, value, size)
+        load_reg(A, ptr)
+        load_reg(B, value)
+        emit_word(STLR.fetch(size) | (A << 5) | B)
+      end
+
+      # :atomic_rmw — every read-modify-write kind as one exclusive retry loop:
+      #
+      #   retry:
+      #     ldaxr  C, [A]        ; C = the value read
+      #     <op>   D, C, B       ; D = the value to store  (absent for :exchange,
+      #                          ;      which stores the operand B unchanged)
+      #     stlxr  wE, D, [A]
+      #     cbnz   wE, retry
+      #
+      # The result is C for :exchange and the :fetch_* forms (the value read) and
+      # D for the :*_fetch ones (the value stored). Unlike x86-64 — where an
+      # exchange-add hands back the old value and the new one is recovered by
+      # re-adding the operand — nothing is derived after the fact here: the loop
+      # computes both values in registers already, so each form simply names the
+      # one it wants. That is also why :or_fetch needs no special case on this
+      # target: a loop is the only shape available, and every kind uses it.
+      def emit_atomic_rmw(dst, ptr, value, kind, size)
+        combine = ATOMIC_RMW_OPCODES.fetch(kind)
+        load_reg(A, ptr)   # A = the atomic object's address
+        load_reg(B, value) # B = the operand
+        start = @code.bytesize
+        emit_word(LDAXR.fetch(size) | (A << 5) | C) # C = the value read
+        if combine
+          emit_word(combine[width(size)] | (B << 16) | (C << 5) | D) # D = C <op> B
+          stored = D
+        else
+          stored = B # :exchange stores the operand as it stands
+        end
+        emit_word(STLXR.fetch(size) | (E << 16) | (A << 5) | stored)
+        emit_atomic_retry(start, E)
+        store_reg(ATOMIC_RMW_NEW_VALUE_KINDS.include?(kind) ? stored : C, dst)
+      end
+
+      # :atomic_cas — __atomic_compare_exchange_n:
+      #
+      #     ldr    D, [B]          ; D = *expected
+      #   retry:
+      #     ldaxr  E, [A]          ; E = the value actually there
+      #     cmp    E, D
+      #     b.ne   done            ; a mismatch abandons the monitor and the loop
+      #     stlxr  wF, C, [A]
+      #     cbnz   wF, retry
+      #   done:
+      #     cset   wA, eq          ; the _Bool result
+      #     b.eq   skip
+      #     str    E, [B]          ; the failing path reports the value it saw
+      #   skip:
+      #
+      # The flags `cmp` left are still live at `done` on both paths — neither
+      # STLXR nor CBNZ writes them — which is what lets one `cset` answer for the
+      # loop however it was left. The write-back through `expected` is guarded by
+      # the branch rather than done unconditionally so an `expected` that aliases
+      # the atomic object does not overwrite the value just exchanged into it.
+      # It is also the side effect <ruby/atomic.h>'s RUBY_ATOMIC_CAS reads its
+      # answer out of, so it is not optional.
+      def emit_atomic_cas(dst, ptr, expected, desired, size)
+        load_reg(A, ptr)      # A = the atomic object's address
+        load_reg(B, expected) # B = &expected
+        load_reg(C, desired)  # C = the value to store
+        emit_word(INT_LDST.fetch(size)[:load] | (B << 5) | D) # D = *expected
+        start = @code.bytesize
+        emit_word(LDAXR.fetch(size) | (A << 5) | E)
+        emit_word(SUBS_SHIFTED[width(size)] | (D << 16) | (E << 5) | XZR) # cmp E, D
+        mismatch = emit_atomic_forward_branch(:ne)
+        emit_word(STLXR.fetch(size) | (F << 16) | (A << 5) | C)
+        emit_atomic_retry(start, F)
+        patch_atomic_forward_branch(mismatch)
+        emit_cset(A, CONDITIONS.fetch(:eq))
+        matched = emit_atomic_forward_branch(:eq)
+        emit_word(INT_LDST.fetch(size)[:store] | (B << 5) | E) # *expected = what we saw
+        patch_atomic_forward_branch(matched)
+        store_reg(A, dst)
+      end
+
+      # Closes a retry loop: `cbnz w{status}, start`, taken while the
+      # store-exclusive keeps reporting failure. The target is behind the branch
+      # and its distance is already known, so no fixup is recorded.
+      def emit_atomic_retry(start, status)
+        words = (start - @code.bytesize) / 4
+        emit_word(CBNZ_W | ((words & 0x7FFFF) << 5) | status)
+      end
+
+      # Emits a `b.<condition>` whose target is a little further along in this
+      # same instruction's code, leaving the 19-bit offset zero, and returns the
+      # site so #patch_atomic_forward_branch can fill it in once the target is
+      # reached. The IR's own label machinery is not used because neither end of
+      # the branch is an IR label — both are interior to one instruction.
+      def emit_atomic_forward_branch(condition)
+        site = @code.bytesize
+        emit_word(0x54000000 | CONDITIONS.fetch(condition))
+        site
+      end
+
+      # Resolves a branch #emit_atomic_forward_branch left open, its target being
+      # the current position.
+      def patch_atomic_forward_branch(site)
+        words = (@code.bytesize - site) / 4
+        word = @code[site, 4].unpack1("L<") | ((words & 0x7FFFF) << 5)
+        @code[site, 4] = [word].pack("L<")
       end
 
       # --- register / slot access -------------------------------------------
@@ -1246,6 +1404,45 @@ module Rubycc
       LSLV = { 32 => 0x1AC02000, 64 => 0x9AC02000 }.freeze
       LSRV = { 32 => 0x1AC02400, 64 => 0x9AC02400 }.freeze
       ASRV = { 32 => 0x1AC02800, 64 => 0x9AC02800 }.freeze
+
+      # The flag-setting subtract, in the same shifted-register family. With the
+      # zero register as its destination it is the `cmp` both a comparison and an
+      # atomic compare-exchange leave their answer in.
+      SUBS_SHIFTED = { 32 => 0x6B000000, 64 => 0xEB000000 }.freeze
+
+      # Load-acquire (LDAR) / store-release (STLR), keyed by access width. A
+      # seq_cst load is a plain LDAR and a seq_cst store a plain STLR: AArch64's
+      # acquire/release instructions are *sequentially consistent* with respect
+      # to one another (armv8 gives LDAR/STLR the RCsc property, unlike C++'s
+      # weaker RCpc acquire/release), so neither needs an extra barrier.
+      LDAR = { 4 => 0x88DFFC00, 8 => 0xC8DFFC00 }.freeze
+      STLR = { 4 => 0x889FFC00, 8 => 0xC89FFC00 }.freeze
+
+      # The exclusive pair every read-modify-write sequence is built from: LDAXR
+      # takes the exclusive monitor and STLXR releases it, writing 0 into its
+      # status register when the store went through and 1 when the monitor had
+      # been lost. The status register is a W register at either access width.
+      LDAXR = { 4 => 0x885FFC00, 8 => 0xC85FFC00 }.freeze
+      STLXR = { 4 => 0x8800FC00, 8 => 0xC800FC00 }.freeze
+
+      # cbnz w{Rt}, <offset> — the retry branch that closes each of those loops,
+      # taken while the store-exclusive keeps reporting failure. The 19-bit
+      # signed word offset is OR-ed in at bit 5.
+      CBNZ_W = 0x35000000
+
+      # The instruction each :atomic_rmw kind combines the value read with,
+      # keyed the same way the shifted-register tables above are. :exchange has
+      # none — it stores its operand unchanged.
+      ATOMIC_RMW_OPCODES = {
+        exchange: nil,
+        fetch_add: ADD_SHIFTED, add_fetch: ADD_SHIFTED,
+        fetch_sub: SUB_SHIFTED, sub_fetch: SUB_SHIFTED,
+        or_fetch: ORR_SHIFTED
+      }.freeze
+
+      # The :atomic_rmw kinds whose value is the one *stored* rather than the one
+      # read — gcc's "__atomic_<op>_fetch" half of each pair.
+      ATOMIC_RMW_NEW_VALUE_KINDS = %i[add_fetch sub_fetch or_fetch].freeze
 
       # Base opcodes for the floating instructions, keyed by the IR operand size
       # (4 float / 8 double), which is the type field the encoding carries. The

@@ -367,6 +367,21 @@ module Rubycc
       # `token` is the builtin keyword.
       BuiltinBitScan = Data.define(:operand, :direction, :width, :token)
 
+      # One of gcc's __atomic_* builtins (the nine forms rubycc lowers). `kind`
+      # names the operation — :load, :store, :exchange, :compare_exchange,
+      # :fetch_add, :fetch_sub, :add_fetch, :sub_fetch or :or_fetch — and `args`
+      # holds the argument expressions exactly as written, including the trailing
+      # memory-order argument(s) and __atomic_compare_exchange_n's `weak` flag.
+      # The parser checks only the argument *count* here; the operand types (and
+      # the 4-or-8-byte width restriction) are the generator's to diagnose, since
+      # they need the resolved types. `token` is the builtin keyword.
+      #
+      # The memory-order arguments are carried through but never inspected: every
+      # operation is lowered at the strongest order (see
+      # IR::Generator#gen_builtin_atomic), which is why they need no constant
+      # folding here.
+      BuiltinAtomic = Data.define(:kind, :args, :token)
+
       # "__builtin_unreachable ()": marks a point control never reaches, typed
       # void. rubycc performs no optimization, so it lowers to no code at all —
       # its only role is to let constructs like CRuby's UNREACHABLE_RETURN

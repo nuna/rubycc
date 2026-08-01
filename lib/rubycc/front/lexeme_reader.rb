@@ -41,6 +41,10 @@ module Rubycc
                     __builtin_constant_p __builtin_choose_expr
                     __builtin_ctz __builtin_ctzll __builtin_clz __builtin_clzll
                     __builtin_unreachable __builtin_memcpy
+                    __atomic_load_n __atomic_store_n __atomic_exchange_n
+                    __atomic_compare_exchange_n
+                    __atomic_fetch_add __atomic_fetch_sub
+                    __atomic_add_fetch __atomic_sub_fetch __atomic_or_fetch
                     __asm__
                     __attribute__ __extension__].freeze
 

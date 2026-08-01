@@ -92,6 +92,46 @@ class TestDeterministicBuild < Minitest::Test
     end
   end
 
+  # A unit whose atomic builtins reach every lowering shape at both widths. The
+  # sequences these produce are the only ones a backend builds with interior
+  # branches whose displacements it computes itself (a retry loop's backward
+  # branch, a compare-exchange's forward one), so a byte-identical rebuild also
+  # says those displacements come out of the emitted byte count rather than
+  # anything ambient.
+  ATOMIC_UNIT = <<~C
+    typedef unsigned long size_t;
+    unsigned int counter;
+    size_t total;
+    unsigned int churn(unsigned int by) {
+      unsigned int expected = __atomic_load_n(&counter, __ATOMIC_SEQ_CST);
+      __atomic_store_n(&counter, by, __ATOMIC_SEQ_CST);
+      __atomic_fetch_add(&counter, by, __ATOMIC_SEQ_CST);
+      __atomic_fetch_sub(&counter, by, __ATOMIC_ACQUIRE);
+      __atomic_add_fetch(&counter, by, __ATOMIC_RELAXED);
+      __atomic_sub_fetch(&counter, by, __ATOMIC_RELEASE);
+      __atomic_or_fetch(&counter, by, __ATOMIC_SEQ_CST);
+      __atomic_compare_exchange_n(&counter, &expected, by, 0,
+                                  __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+      return __atomic_exchange_n(&counter, expected, __ATOMIC_SEQ_CST);
+    }
+    size_t accumulate(size_t by) {
+      size_t expected = __atomic_load_n(&total, __ATOMIC_SEQ_CST);
+      __atomic_store_n(&total, by, __ATOMIC_SEQ_CST);
+      __atomic_or_fetch(&total, by, __ATOMIC_SEQ_CST);
+      __atomic_compare_exchange_n(&total, &expected, by, 1,
+                                  __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+      return __atomic_add_fetch(&total, by, __ATOMIC_SEQ_CST);
+    }
+  C
+
+  def test_compile_with_atomics_is_byte_identical
+    %w[x86_64 aarch64].each do |target|
+      a = Rubycc::Compiler.new.compile(ATOMIC_UNIT, filename: "a.c", target: target)
+      b = Rubycc::Compiler.new.compile(ATOMIC_UNIT, filename: "a.c", target: target)
+      assert_bytes_equal a, b, "#{target} compile of a unit with atomics must be byte-identical"
+    end
+  end
+
   def test_link_with_constructors_is_byte_identical
     obj = Rubycc::Compiler.new.compile(CONSTRUCTOR_UNIT, filename: "c.c")
     assert_bytes_equal SharedLinker.link([obj]), SharedLinker.link([obj]),

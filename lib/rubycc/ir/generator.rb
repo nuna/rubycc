@@ -1921,6 +1921,8 @@ module Rubycc
           gen_builtin_constant_p(node)
         when Front::AST::BuiltinBitScan
           gen_builtin_bit_scan(node)
+        when Front::AST::BuiltinAtomic
+          gen_builtin_atomic(node)
         when Front::AST::BuiltinUnreachable
           gen_builtin_unreachable(node)
         else
@@ -2256,6 +2258,167 @@ module Rubycc
         dst = new_vreg
         emit(:bit_scan, dst: dst, a: value, b: node.direction, size: node.width)
         [dst, Type::Int]
+      end
+
+      # The object widths the __atomic_* builtins lower for. Only these two are
+      # needed by any consumer here (<ruby/atomic.h> operates on `unsigned int`,
+      # `size_t` and `VALUE`), and each maps to one machine instruction pair on
+      # both targets. A 1-, 2- or 16-byte object is diagnosed rather than lowered:
+      # emitting a plainly non-atomic sequence for it would be worse than
+      # refusing, since the caller cannot tell that its atomicity was dropped.
+      ATOMIC_WIDTHS = [4, 8].freeze
+
+      # One of gcc's __atomic_* builtins. rubycc implements the nine forms
+      # <ruby/atomic.h> uses (Front::Parser::ATOMIC_BUILTINS); every one lowers
+      # to a single IR op that the backends turn into a genuinely atomic machine
+      # sequence.
+      #
+      # *Every operation is lowered at sequential consistency*, whatever memory
+      # order the call passed. That is deliberate and it is sound: a memory order
+      # only ever *constrains* the reorderings an implementation may perform, so
+      # supplying a stronger order than requested keeps every guarantee the
+      # caller asked for and merely adds guarantees it did not. Lowering
+      # __ATOMIC_RELAXED as seq_cst is therefore correct, whereas diagnosing it
+      # would reject valid programs; and rubycc emits -O0-shaped code anyway, so
+      # the ordering it gives up costs nothing measurable. The order arguments are
+      # still *evaluated* (they are ordinary arguments and may have side effects),
+      # then discarded — they are never even required to be constant.
+      #
+      # __atomic_compare_exchange_n's `weak` argument is ignored for the same
+      # reason: a strong compare-exchange is a weak one that never fails
+      # spuriously, so answering every request with the strong form satisfies the
+      # weak contract too.
+      def gen_builtin_atomic(node)
+        name = node.token.value
+        ptr, value_type = gen_atomic_object_pointer(node.args[0], name)
+        case node.kind
+        when :load then gen_atomic_load(node, ptr, value_type, name)
+        when :store then gen_atomic_store(node, ptr, value_type, name)
+        when :compare_exchange then gen_atomic_compare_exchange(node, ptr, value_type, name)
+        else gen_atomic_rmw(node, ptr, value_type, name)
+        end
+      end
+
+      # Evaluates the leading pointer argument every __atomic_* builtin takes and
+      # returns [vreg, object type]. The object must be an integer or a pointer
+      # of one of ATOMIC_WIDTHS: a floating, aggregate or void target has no
+      # atomic form here, and a width outside that pair has no instruction to
+      # lower to. Any top-level qualifier on the target ("volatile rb_atomic_t *",
+      # which is how <ruby/atomic.h> spells every one of these) is already gone —
+      # this subset folds qualifiers away at parse time — so the pointee type
+      # arrives unqualified and is the builtin's result type as written.
+      def gen_atomic_object_pointer(expr, name)
+        vreg, type = gen_value(expr)
+        error_at(expr.token, "first argument to '#{name}' is not a pointer") unless type.pointer?
+
+        target = type.target
+        unless target.integer? || target.pointer?
+          error_at(expr.token, "'#{name}' does not support atomic operations on '#{target}'")
+        end
+        unless ATOMIC_WIDTHS.include?(target.size)
+          error_at(expr.token,
+                   "'#{name}' supports atomic objects of #{ATOMIC_WIDTHS.join(" or ")} bytes only, " \
+                   "but '#{target}' has width #{target.size}")
+        end
+        [vreg, target]
+      end
+
+      # "__atomic_load_n(ptr, order)": reads the object atomically. The result
+      # has the object's own type.
+      def gen_atomic_load(node, ptr, value_type, name)
+        gen_atomic_flag_argument(node.args[1], name, "memory order")
+        dst = new_vreg
+        emit(:atomic_load, dst: dst, a: ptr, size: value_type.size)
+        [dst, value_type]
+      end
+
+      # "__atomic_store_n(ptr, value, order)": writes the object atomically. Like
+      # gcc's, the whole expression is void.
+      def gen_atomic_store(node, ptr, value_type, name)
+        value = gen_atomic_operand(node.args[1], value_type, name)
+        gen_atomic_flag_argument(node.args[2], name, "memory order")
+        emit(:atomic_store, a: ptr, b: value, size: value_type.size)
+        [nil, Type::Void]
+      end
+
+      # The read-modify-write family: __atomic_exchange_n and the four
+      # fetch/modify pairs, all spelled "(ptr, value, order)". The IR carries the
+      # kind, and the result type is the object's — the value read for
+      # :exchange/:fetch_*, the value stored for :add_fetch/:sub_fetch/:or_fetch.
+      #
+      # A pointer-typed object takes its operand unscaled: gcc's atomic builtins
+      # add plain bytes rather than applying C's pointer arithmetic (measured —
+      # "__atomic_fetch_add(&p, 1, ...)" on an "int *" advances p by one byte),
+      # so the operand is converted to the object's type and used as it stands.
+      def gen_atomic_rmw(node, ptr, value_type, name)
+        value = gen_atomic_operand(node.args[1], value_type, name)
+        gen_atomic_flag_argument(node.args[2], name, "memory order")
+        dst = new_vreg
+        emit(:atomic_rmw, dst: dst, a: ptr, b: [value, node.kind], size: value_type.size)
+        [dst, value_type]
+      end
+
+      # "__atomic_compare_exchange_n(ptr, expected, desired, weak, success_order,
+      # failure_order)": if *ptr equals *expected it becomes `desired` and the
+      # expression is true; otherwise *ptr is left alone, the value actually read
+      # is stored back through `expected`, and the expression is false.
+      #
+      # That write-back is load-bearing rather than incidental: <ruby/atomic.h>'s
+      # RUBY_ATOMIC_CAS discards the boolean result entirely and returns
+      # *expected, so a lowering that skipped it would silently turn every failed
+      # CAS into a claim that the old value was whatever the caller guessed.
+      #
+      # The result is _Bool, as gcc's is.
+      def gen_atomic_compare_exchange(node, ptr, value_type, name)
+        expected = gen_atomic_expected_pointer(node.args[1], value_type, name)
+        desired = gen_atomic_operand(node.args[2], value_type, name)
+        gen_atomic_flag_argument(node.args[3], name, "'weak' flag")
+        gen_atomic_flag_argument(node.args[4], name, "memory order")
+        gen_atomic_flag_argument(node.args[5], name, "memory order")
+        dst = new_vreg
+        emit(:atomic_cas, dst: dst, a: ptr, b: [expected, desired], size: value_type.size)
+        [dst, Type::Bool]
+      end
+
+      # The "expected" argument of a compare-exchange: a pointer to an object of
+      # the same width as the atomic one, which the failing path writes the value
+      # actually read into. The width is what matters (the write-back is a raw
+      # `size`-byte store), so a same-width but differently-spelled type — a
+      # "long *" against an "unsigned long *" object — is accepted as it is by
+      # gcc, while a mismatched width is refused rather than truncating or
+      # scribbling past the object.
+      def gen_atomic_expected_pointer(expr, value_type, name)
+        vreg, type = gen_value(expr)
+        unless type.pointer? && (type.target.integer? || type.target.pointer?) &&
+               type.target.size == value_type.size
+          error_at(expr.token,
+                   "the 'expected' argument to '#{name}' must be a pointer to a " \
+                   "#{value_type.size}-byte object")
+        end
+        vreg
+      end
+
+      # A value operand (the one stored, added, or exchanged in): evaluated and
+      # converted to the atomic object's own type, exactly as an assignment to
+      # that object would convert it.
+      def gen_atomic_operand(expr, value_type, name)
+        vreg, type = gen_value(expr)
+        unless type.integer? || type.pointer?
+          error_at(expr.token, "argument to '#{name}' is not of integer or pointer type")
+        end
+        convert(vreg, from: type, to: value_type, token: expr.token)
+      end
+
+      # A memory-order or `weak` argument: evaluated for its side effects (it is
+      # an ordinary function argument) and then thrown away, because every
+      # operation is lowered at the strongest order and as a strong
+      # compare-exchange. It must still be an integer, so a plainly wrong call is
+      # caught rather than silently accepted.
+      def gen_atomic_flag_argument(expr, name, role)
+        _vreg, type = gen_value(expr)
+        return if type.integer?
+
+        error_at(expr.token, "the #{role} argument to '#{name}' is not of integer type")
       end
 
       # "__builtin_unreachable()": an optimization hint that control never reaches
@@ -5088,6 +5251,8 @@ module Rubycc
           Type::Int
         when Front::AST::BuiltinUnreachable
           Type::Void
+        when Front::AST::BuiltinAtomic
+          static_atomic_type(node)
         when Front::AST::BuiltinAlloca
           # "__builtin_alloca(n)" yields a "void *" (see #gen_builtin_alloca), the
           # type CRuby's RB_ALLOCV macro relies on when it picks between the
@@ -5099,6 +5264,26 @@ module Rubycc
           static_statement_expr_type(node)
         else
           raise "unsupported expression: #{node.class}"
+        end
+      end
+
+      # The type of an __atomic_* builtin without emitting code, mirroring
+      # #gen_builtin_atomic: a store is void, a compare-exchange is _Bool, and
+      # every other form takes the type of the object its first argument points
+      # at. Only the pointer shape is checked here — the full operand validation
+      # belongs to the lowering, which is where a real call goes.
+      def static_atomic_type(node)
+        case node.kind
+        when :store then Type::Void
+        when :compare_exchange then Type::Bool
+        else
+          type = decay(static_type(node.args.first))
+          unless type.pointer?
+            error_at(node.args.first.token,
+                     "first argument to '#{node.token.value}' is not a pointer")
+          end
+
+          type.target
         end
       end
 

@@ -39,6 +39,7 @@ rubycc はその関数を互換ランタイムとして供給するだけで済�
 | `__builtin_constant_p` | 意味論まで正確に対応 | ConstantEvaluator で引数を評価してみて、成功なら 1・非定数(NotConstant/DivisionByZero)なら 0 を返す「試し畳み」。引数自体は評価しない | gcc の `__builtin_constant_p` の真偽と比較。ruby.h の `INT2FIX` 経路(`__builtin_choose_expr` と組み合わせ)が実 gem ビルドで通ることを確認 | Step 44 |
 | `__builtin_choose_expr(const, a, b)` | 意味論まで正確に対応 | 第 1 引数を既存の定数評価で畳み、選ばれた側の AST ノードをそのまま返す(専用 AST を作らない)。選ばれない側は構文チェックのみで評価もコード生成もされない | 定数文脈(static 初期化子)でも実行時文脈でも選択結果が gcc と一致することを確認 | Step 44 |
 | `__builtin_ctz`/`__builtin_ctzll`/`__builtin_clz`/`__builtin_clzll` | 意味論まで正確に対応 | 新 IR 命令 `:bit_scan`(a=対象, b=`:forward`/`:reverse`, size=4/8)を追加し、backend で `bsf`(0F BC)/`bsr`(0F BD)+ 補正演算に降ろす。定数畳み込みも同値対応 | gcc の演算結果とビット単位で一致することを実行テストで確認。オペランド 0 は両者とも UB につき未定義のまま(ゼロ処理コードを追加しない) | Step 44 |
+| `__atomic_*` ビルトイン 9 形(`load_n`/`store_n`/`exchange_n`/`compare_exchange_n`/`fetch_add`/`fetch_sub`/`add_fetch`/`sub_fetch`/`or_fetch`)+ `__ATOMIC_*` メモリオーダマクロ 6 種 | 意味論まで正確に対応(対応範囲内) | 新 IR 命令 4 つ(`:atomic_load` / `:atomic_store` / `:atomic_rmw` / `:atomic_cas`)。x86-64 は `mov` / `xchg` / `lock xadd` / `lock cmpxchg`(`or_fetch` のみ cmpxchg リトライループ)、aarch64 は `ldar` / `stlr` と armv8-a ベースラインの LDAXR/STLXR リトライループ(**LSE も libgcc の outline atomics も使わない**)。**メモリオーダは受理するが検査せず、常に最強(seq_cst)で降ろす** — オーダの強化は制約を増やすだけで常に意味論的に妥当であり、`__ATOMIC_RELAXED` を seq_cst として実装するのは正しい(`compare_exchange_n` の `weak` も同じ理由で常に strong)。**型幅は 4 と 8 のみ**で、1/2/16 バイトは診断(黙って非アトミックな列を出すより落とす)。`compare_exchange_n` の失敗時の `*expected` 書き戻しは必須の副作用として実装 | gcc 差分の実行テストで 9 形全ての戻り値と副作用が一致することを確認(成功/失敗両経路と `expected` が対象に別名で重なる場合を含む)。逆アセンブルで x86-64 の `lock` 前置と aarch64 の LDAXR/STLXR ループを検査。aarch64 は qemu で実走。`<ruby/atomic.h>` を単体で include する翻訳単位のコンパイルを回帰テスト化 | Step 161 |
 | `__builtin_unreachable()` | 受理するが実体は何もしない | rubycc は最適化を行わないため、void 値を返すだけのコードで意味論上安全(到達すればそのまま実行が続く。gcc は UB として最適化に使うが、rubycc は使わないため無害) | CRuby `assert.h` の `UNREACHABLE_RETURN` マクロ(`return (__builtin_unreachable(), val)` のコンマ式)が既存の void 対応で通ることを確認 | Step 44 |
 | `__builtin_memcpy` | 意味論まで正確に対応 | パース時に `Call("memcpy", …)` へ書き換え、組み込みプロトタイプを seed(未宣言でも可)。実体は libc の `memcpy` に UND 解決される | gcc ビルドとのリンク・実行結果比較 | Step 44 |
 | `<x86intrin.h>`(空スタブ) | 受理するが実体は何もしない | ヘッダを空で提供する。実 intrinsic の使用箇所は全て `__AVX2__`/`__LZCNT__` 等の別ガードで守られており、rubycc はそれらのマクロを定義しないため到達しない(実測確認) | CRuby config.h が焼き込む `HAVE_X86INTRIN_H` ガード付きの `#include <x86intrin.h>` が実 gem ビルドで通ることを確認 | Step 44 |
@@ -74,6 +75,9 @@ rubycc はその関数を互換ランタイムとして供給するだけで済�
 - `typeof` / `__typeof__`
 - `__attribute__((__mode__(...)))` 等、aligned/packed 以外で意味を持たせている属性
 - 実体のあるインラインアセンブリ(オペランド・クロバーを実際に処理する asm 文)
+- `__atomic_thread_fence` / `__atomic_test_and_set` / `__atomic_*` の非 `_n` 総称形 /
+  `__sync_*` 系 / C11 の `_Atomic` と `<stdatomic.h>` — コーパスに消費者がおらず、
+  実装した 9 形と同じく `__has_builtin` も正直に 0 を返す(Step 161)
 
 ---
 

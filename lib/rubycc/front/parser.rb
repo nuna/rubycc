@@ -200,6 +200,29 @@ module Rubycc
       # wherever a pointer or array-parameter qualifier may appear.
       RESTRICT_SPELLINGS = %w[restrict __restrict __restrict__].freeze
 
+      # The gcc __atomic_* builtins this subset lowers, mapping each keyword to
+      # its [AST::BuiltinAtomic kind, argument count]. The set is exactly the
+      # nine forms <ruby/atomic.h> reaches for, which is the whole of what any
+      # consumer here needs; the fence, test-and-set, the generic (non-"_n")
+      # address-taking forms and the __sync_* family are deliberately absent, so
+      # a program using one of those gets an "undeclared identifier" rather than
+      # a silently wrong lowering.
+      #
+      # The counts include the trailing memory-order argument(s) gcc's signatures
+      # take — one for every form but __atomic_compare_exchange_n, which takes a
+      # `weak` flag and *two* orders (success and failure).
+      ATOMIC_BUILTINS = {
+        "__atomic_load_n" => [:load, 2],
+        "__atomic_store_n" => [:store, 3],
+        "__atomic_exchange_n" => [:exchange, 3],
+        "__atomic_compare_exchange_n" => [:compare_exchange, 6],
+        "__atomic_fetch_add" => [:fetch_add, 3],
+        "__atomic_fetch_sub" => [:fetch_sub, 3],
+        "__atomic_add_fetch" => [:add_fetch, 3],
+        "__atomic_sub_fetch" => [:sub_fetch, 3],
+        "__atomic_or_fetch" => [:or_fetch, 3]
+      }.freeze
+
       # The hard ceiling on how deeply the recursive descent will nest before it
       # rejects an input rather than recurse further. A hostile source (tens of
       # thousands of nested parentheses, unary operators, braces, ...) would
@@ -2671,6 +2694,8 @@ module Rubycc
             parse_builtin_unreachable
           elsif peek.keyword?("__builtin_memcpy")
             parse_builtin_memcpy
+          elsif peek.type == :keyword && ATOMIC_BUILTINS.key?(peek.value)
+            parse_builtin_atomic
           elsif peek.punct?("+")
             advance # unary + is a no-op; fold it away
             parse_cast_expression
@@ -2889,6 +2914,23 @@ module Rubycc
         operand = parse_assignment_expression
         expect_punct(")")
         AST::BuiltinBitScan.new(operand, direction, width, keyword_tok)
+      end
+
+      # "__atomic_xxx ( ... )": one of the nine gcc atomic builtins rubycc
+      # lowers. The keyword decides the kind and the exact argument count, both
+      # of which ATOMIC_BUILTINS records; everything else (operand types, the
+      # 4-or-8-byte width restriction) needs resolved types and is the
+      # generator's to diagnose.
+      def parse_builtin_atomic
+        keyword_tok = advance # the "__atomic_..." keyword
+        kind, arity = ATOMIC_BUILTINS.fetch(keyword_tok.value)
+        expect_punct("(")
+        args = parse_argument_expression_list
+        expect_punct(")")
+        unless args.size == arity
+          error_at(keyword_tok, "'#{keyword_tok.value}' expects #{arity} arguments, have #{args.size}")
+        end
+        AST::BuiltinAtomic.new(kind, args, keyword_tok)
       end
 
       # "__builtin_unreachable ()": no operands. Lowers to no code (rubycc does
