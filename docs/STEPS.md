@@ -5773,9 +5773,78 @@ aarch64 の CAS を `-O0 -march=armv8-a -mno-outline-atomics` の gcc と突き�
 
 ---
 
+## Step 162 — etc 1.4.6 を記録し、bigdecimal を再記録する(M5 H6)
+
+Step 158・160・161 で閉じたギャップの成果を `data/verified_gems.json` に落とすステップ。
+**6 → 11 件**になった。
+
+### etc 1.4.6 — 3 ステップが揃って初めて通る
+
+18 tests / 449 assertions / 0 failures / 0 errors / 2 omissions で PASS。
+このエントリは **Step 158(rmake の POSIX バックスラッシュ除去)・Step 160
+(`confstr` / `fpathconf` / `pathconf` の宣言)・Step 161(`__atomic_*`)の
+3 つ全てを必要とする**。どれか 1 つでも欠けるとビルドが落ちるので、
+notes にその依存関係をそのまま書いた。**機械が観測できない但し書き**の典型で、
+「18 tests 通った」だけを残すと、読んだ人はこれが 3 ステップ分の成果であることを知らない。
+
+もう 1 つ notes に書いたのは **`_CS_*` / `_PC_*` の網羅が部分的**であること。
+同梱 `unistd.h` は 46 個のうち `_CS_PATH` と `_PC_PIPE_BUF` の 2 つしか定義しないので、
+`ext/etc/constdefs.h` は gcc 下の 179 定数に対し 11 定数で生成される。
+`test_etc.rb` は `if defined?` で守っているため、これは**失敗ではなく
+「テストが定義されない」形で静かに縮む**。合格件数だけを見ていると気付けない差なので、
+記録に残さなければならない(Step 160 の線引きの帰結でもある)。
+
+### bigdecimal — 合格件数は同じだが、同じビルドではない
+
+265 tests / 8,267 assertions / 0 failures / 0 errors / 11 omissions で、
+**数値は Steps 93-97 のときと 1 つも変わらない**。それでも再記録したのは、
+**ビルドされたコードが変わった**から。
+
+Step 160 で実測したとおり、それまでは extconf の `have_header("ruby/atomic.h")`
+(mkmf が `try_header` を `try_compile` に alias しているので実際にコンパイルが走る)が
+rubycc 下で失敗し、`HAVE_RUBY_ATOMIC_H` が定義されず、gem 自身の**非アトミックの
+フォールバック**がビルドされていた。Step 161 でビルトインが降りるようになったので
+**プローブが通り、いまは gcc と同じアトミック経路が入る**
+(実測: `bigdecimal.so` に `lock xadd` / `lock cmpxchg` が 12 箇所。以前は 0)。
+
+**Step 160 で書いた notes は事実でなくなったので手で書き換えた。**
+`data/README.md` が定めるとおり `notes` はこのファイルで唯一人間が手で書き換えてよい欄で、
+ツールが上書きしないのは「機械が人間の但し書きを消さない」ためであって、
+**人間が古くなった但し書きを直すのは正しい操作**である(stackprof の `dlclose` の
+記述を Step 156 で直したのと同じ)。
+
+ここで残る教訓は**合格件数は変更を検出しない**ということ。スイートは
+`RUBY_ATOMIC_SIZE_INC` を `BIGDECIMAL_DEBUG` の下でしか踏まないので、
+2 つのビルドを区別しない。**「PASS のままだった」は「何も変わらなかった」ではない。**
+
+### `evidence` は追記、許可リストは手で
+
+bigdecimal の `evidence` には Steps 93-97 の 1 文が残ったまま Step 162 の 1 文が足された。
+`evidence` はそのエントリを確認した全ステップの履歴を溜める欄なので、
+上書きすると再実行では復元できない部分が黙って消える。
+
+`test/test_doctor.rb` の許可リストは**ツールが貼り付け用の行を表示するだけで
+自動編集しない**設計なので、`etc` の追加を手で書いた。gem の追加を意識的な編集に
+留めるための意図的なゲートで、今回もそのとおりに働いた。
+
+### 付随: c-testsuite がレポジトリを散らかしていた
+
+`test/external/c-testsuite/single-exec/00187.c` は stdio の検査で
+`fopen("fred.txt", "w")` を**相対パス**で書くため、実行時の作業ディレクトリだった
+レポジトリのルートに `fred.txt` が落ちて残っていた。
+`link_and_run_with_libm` は実行ファイルを既に tmpdir に作っているので、
+`Open3.capture2e` に `chdir: dir` を渡すだけで発生源が消える。
+**`.gitignore` で隠すのではなく散らかす側を直した**(利用者は `test_c_suite.rb` のみで、
+cwd 相対でレポジトリ内のファイルを読むテストは無いことを確認済み)。
+
+---
+
 ## 現在のテスト規模
 
-Step 161 完了時点: **2,712 runs / 7,752 assertions / 0 failures / 47 skips**
+Step 162 完了時点: **2,712 runs / 7,766 assertions / 0 failures / 47 skips**
+(runs は Step 161 と同数 = DB のスキーマ検査が etc の 1 件分増えたのみで、
+新しいテストメソッドは足していない)
+(以前) Step 161 完了時点: **2,712 runs / 7,752 assertions / 0 failures / 47 skips**
 (Step 160 から +23 = `__atomic_*` の gcc 差分実行・逆アセンブル検査・診断 21 件、
 決定的ビルド 1 件、`ruby/atomic.h` 単体コンパイル 1 件)
 (以前) Step 160 完了時点: **2,689 runs / 7,653 assertions / 0 failures / 47 skips**

@@ -46,7 +46,7 @@ class TestDoctor < Minitest::Test
 
   def test_verified_gems_json_holds_only_confirmed_gems
     raw = JSON.parse(File.read(DATA))
-    assert_equal %w[bigdecimal date json msgpack nkf racc redcarpet stackprof stringio strscan], raw.keys.sort
+    assert_equal %w[bigdecimal date etc json msgpack nkf racc redcarpet stackprof stringio strscan], raw.keys.sort
     assert_includes raw["json"]["versions"], "2.21.1"
     assert_includes raw["msgpack"]["versions"], "1.8.3"
     assert_includes raw["bigdecimal"]["versions"], "4.1.2"

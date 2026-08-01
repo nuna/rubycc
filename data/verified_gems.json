@@ -15,10 +15,10 @@
   },
   "bigdecimal": {
     "versions": ["4.1.2"],
-    "verified_at": "2026-07-24",
+    "verified_at": "2026-08-01",
     "environment": "glibc x86_64 / ruby 3.4.5",
-    "evidence": "RUBYCC=1 gem install bigdecimal succeeded (lib/bigdecimal.so built through rmake); the gem's own test suite passed 265 tests / 8,267 assertions / 0 failures / 0 errors (Steps 93-97).",
-    "notes": "11 tests are omitted because BIGDECIMAL_USE_VP_TEST_METHODS is not set; this is an expected, normal omission and not a failure. Measured in Step 160: this build takes the gem's own non-atomic fallback, because extconf's have_header(\"ruby/atomic.h\") is a try_compile and that header does not compile under rubycc yet (it reaches __atomic_* builtins rubycc has no support for), so HAVE_RUBY_ATOMIC_H is never defined. The gcc build of the same version compiles the atomic path instead. RUBY_ATOMIC_SIZE_INC is only reached under BIGDECIMAL_DEBUG, so the difference is not exercised by the suite. musl and aarch64 not yet verified."
+    "evidence": "RUBYCC=1 gem install bigdecimal succeeded (lib/bigdecimal.so built through rmake); the gem's own test suite passed 265 tests / 8,267 assertions / 0 failures / 0 errors (Steps 93-97). Re-verified with tools/verify_gem_tests.rb (Step 162): the gem's own test/unit suite passed 265 tests / 8,267 assertions / 0 failures / 0 errors.",
+    "notes": "11 tests are omitted because BIGDECIMAL_USE_VP_TEST_METHODS is not set; this is an expected, normal omission and not a failure. What this build compiles changed in Step 161, so the earlier runs of this suite and this one are not the same build. Until then, extconf's have_header(\"ruby/atomic.h\") — which mkmf aliases to try_compile, so it really does compile the header — failed under rubycc because that header reaches the __atomic_* builtins, HAVE_RUBY_ATOMIC_H was therefore never defined, and the gem's own non-atomic fallback was compiled where the gcc build compiled the atomic path (measured in Step 160). Step 161 lowers those builtins, the probe now succeeds, and this build takes the same atomic path gcc does: lock xadd / lock cmpxchg appear 12 times in the built bigdecimal.so, where the Step 160 build had none. The suite does not distinguish the two, because RUBY_ATOMIC_SIZE_INC is only reached under BIGDECIMAL_DEBUG. musl and aarch64 not yet verified."
   },
   "redcarpet": {
     "versions": ["3.6.1"],
@@ -68,5 +68,12 @@
     "environment": "glibc x86_64 / ruby 3.4.5",
     "evidence": "RUBYCC=1 gem install stringio succeeded (stringio.so built through rmake); the gem's own test/unit suite passed 103 tests / 626 assertions / 0 failures / 0 errors (Step 157).",
     "notes": "stringio is a default gem shipped with the interpreter, so this run is against the .so injected from the rubycc build: the sanity check confirms through $LOADED_FEATURES that the injected copy, not the interpreter's own stringio.so (3.1.2 on this interpreter), is what the suite loaded. No test was excluded and the build needed no extra flag; test/ruby/ut_eof.rb is outside the test_*.rb glob because test_stringio.rb pulls it in with require_relative, exactly as the upstream Rakefile leaves it. musl and aarch64 not yet verified."
+  },
+  "etc": {
+    "versions": ["1.4.6"],
+    "verified_at": "2026-08-01",
+    "environment": "glibc x86_64 / ruby 3.4.5",
+    "evidence": "RUBYCC=1 gem install etc succeeded (etc.so built through rmake); the gem's own test/unit suite passed 18 tests / 449 assertions / 0 failures / 0 errors (Step 162).",
+    "notes": "This entry needs three Step-158-to-161 changes at once: rmake's POSIX backslash removal (Step 158), the confstr/fpathconf/pathconf declarations added to the bundled unistd.h (Step 160), and the __atomic_* builtins (Step 161) that ruby.h reaches unconditionally. The bundled unistd.h defines only _CS_PATH and _PC_PIPE_BUF of the 46 _CS_*/_PC_* constants ext/etc/mkconstants.rb publishes, so ext/etc/constdefs.h comes out with 11 constants where the gcc build gets 179; test_etc.rb guards test_confstr and test_pathconf with 'if defined?', so the shortfall shows up as tests that are never defined rather than as failures. musl and aarch64 not yet verified. The run reported 2 omissions (not failures)."
   }
 }
