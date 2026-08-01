@@ -210,6 +210,14 @@ module Rubycc
         end
       end
 
+      # A `__attribute__((constructor))` / `((destructor))` function becomes a
+      # slot in this object's .init_array / .fini_array pointing at its own text
+      # symbol. Registered after the text loop, so every function symbol the
+      # slots resolve against is already in the symbol table.
+      ir_program.array_entries.each do |entry|
+        writer.add_array_entry(kind: entry.kind, priority: entry.priority, symbol: entry.symbol)
+      end
+
       writer.set_rodata(rodata) unless rodata.empty?
       writer.add_text_section(text)
       writer.to_binary

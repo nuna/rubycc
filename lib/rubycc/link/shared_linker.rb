@@ -74,6 +74,13 @@ module Rubycc
       SHT_DYNAMIC  = 6
       SHT_NOBITS   = 8
       SHT_DYNSYM   = 11
+      # The initializer/finalizer pointer arrays. Each is an array of function
+      # pointers (entsize 8, the target pointer width) the runtime loader calls
+      # after mapping the object (init, in order) and before unmapping it (fini,
+      # in reverse order); they are ordinary SHF_ALLOC|SHF_WRITE data reached
+      # through DT_INIT_ARRAY / DT_FINI_ARRAY rather than through a symbol.
+      SHT_INIT_ARRAY = 14
+      SHT_FINI_ARRAY = 15
 
       SHF_WRITE     = 0x1
       SHF_ALLOC     = 0x2
@@ -164,6 +171,13 @@ module Rubycc
       DT_SONAME    = 14
       DT_PLTREL    = 20
       DT_JMPREL    = 23
+      # The initializer/finalizer array pointers and their sizes *in bytes*
+      # (not element counts), the loader's entry points into .init_array /
+      # .fini_array.
+      DT_INIT_ARRAY   = 25
+      DT_FINI_ARRAY   = 26
+      DT_INIT_ARRAYSZ = 27
+      DT_FINI_ARRAYSZ = 28
       DT_FLAGS     = 30
       DT_RELACOUNT = 0x6FFFFFF9
       DT_FLAGS_1   = 0x6FFFFFFB
@@ -186,6 +200,94 @@ module Rubycc
       # and the archive member it is delivered in.
       DSO_HANDLE_SYMBOL = "__dso_handle"
       DSO_HANDLE_MEMBER = "__dso_handle.o"
+
+      # The other half of that member (see #add_dso_finalizer): the C runtime
+      # entry point that drops the handlers registered under a handle, the local
+      # symbol naming the synthesized routine that calls it, and the
+      # priority-numbered finalizer-array section the routine is reached through.
+      # Priority 0 is inside the range the ABI reserves for the implementation,
+      # which is exactly what this is, and it puts the slot at the *front* of the
+      # array — the runtime walks .fini_array backwards, so front means last.
+      # (A translation unit that spends the reserved priority itself, with
+      # `__attribute__((destructor(0)))`, lands in the same section and, being
+      # ahead of the supplier in link order, ends up running *after* this slot
+      # rather than before it. gcc warns about that priority range for exactly
+      # this kind of reason; rubycc has no warning channel, so the ordering there
+      # is simply implementation-defined.)
+      CXA_FINALIZE_SYMBOL    = "__cxa_finalize"
+      DSO_FINALIZER_SYMBOL   = "__rubycc_dso_finalize"
+      DSO_FINI_ARRAY_SECTION = ".fini_array.00000"
+
+      # The synthesized finalizer for x86_64, assembled from the System V AMD64
+      # instruction encodings (not copied from any crt implementation — R11) to
+      # the shape measured by disassembling a `gcc -shared -fPIC` output: test
+      # __cxa_finalize's GOT slot for NULL, and only then load the *value* of
+      # __dso_handle into the first argument register and call through the .plt.
+      #
+      # Both details are the measurement, not a preference. __cxa_finalize is
+      # referenced as a WEAK undefined symbol, so a C library that does not
+      # supply it leaves the slot zero and the call must not happen; the test
+      # reads the GOT slot itself rather than the .plt stub, because the stub
+      # would be an address whether or not the symbol resolved. And the argument
+      # is `mov` (the word's contents), not `lea` (its address): the two agree
+      # for the word this linker synthesizes, but `mov` is what the C
+      # `__cxa_finalize(__dso_handle)` — passing a `void *` variable — means, and
+      # an input that defines its own __dso_handle would tell them apart.
+      #
+      # Three operands the linker fills in: the GOT slot's PC-relative offset
+      # (R_X86_64_GOTPCREL, addend -5 because a one-byte immediate follows the
+      # displacement), the PC-relative reference to the internal __dso_handle
+      # (R_X86_64_PC32, addend -4) and the call to the import (R_X86_64_PLT32,
+      # addend -4). rsp is 8 mod 16 on entry, so one push realigns it for the
+      # call; rbp is merely the register pushed, not a frame.
+      #
+      # What gcc has and this does not is the `completed` guard that makes the
+      # routine run at most once. gcc needs it because its routine is reachable
+      # from both .fini_array and the legacy _fini/DT_FINI path; this linker
+      # emits neither _fini nor DT_FINI, so .fini_array is the only way in and
+      # the guard would never fire.
+      DSO_FINALIZE_CODE = [
+        0x55,                                # push %rbp        ; realign rsp to 16 for the call
+        0x48, 0x83, 0x3D, 0, 0, 0, 0, 0x00,  # cmpq $0, __cxa_finalize@GOTPCREL(%rip)
+        0x74, 0x0C,                          # je   +12         ; unresolved: nothing to finalize
+        0x48, 0x8B, 0x3D, 0, 0, 0, 0,        # mov  __dso_handle(%rip), %rdi
+        0xE8, 0, 0, 0, 0,                    # call __cxa_finalize   ; through the .plt
+        0x5D,                                # pop  %rbp
+        0xC3                                 # ret
+      ].pack("C*").freeze
+
+      # Byte offsets of the three operands patched in the x86_64 finalizer: the
+      # cmp's disp32, the mov's disp32 and the call's rel32.
+      DSO_FINALIZE_GOT_OFFSET    = 4
+      DSO_FINALIZE_HANDLE_OFFSET = 14
+      DSO_FINALIZE_CALL_OFFSET   = 19
+
+      # The aarch64 finalizer: the same measured shape in AArch64 encodings (ARM
+      # DDI 0487). The GOT slot is loaded into a register and tested with `cbz`
+      # (aarch64 has no memory-operand compare), then the handle's address is
+      # formed by the usual adrp/add pair and its *contents* loaded into x0
+      # before the .plt call. x29/x30 are saved because the routine calls; the
+      # stp/ldp pair also keeps sp 16-byte aligned.
+      AARCH64_DSO_FINALIZE_CODE = [
+        0xA9BF7BFD, # stp  x29, x30, [sp, #-16]!
+        0x90000000, # adrp x0, :got:__cxa_finalize          (ADR_GOT_PAGE)
+        0xF9400000, # ldr  x0, [x0, #:got_lo12:...]         (LD64_GOT_LO12_NC)
+        0xB40000A0, # cbz  x0, +0x14                        ; unresolved: nothing to finalize
+        0x90000001, # adrp x1, __dso_handle                 (ADR_PREL_PG_HI21)
+        0x91000021, # add  x1, x1, #:lo12:__dso_handle      (ADD_ABS_LO12_NC)
+        0xF9400020, # ldr  x0, [x1]                         ; the handle's value, not its address
+        0x94000000, # bl   __cxa_finalize                   (CALL26, through the .plt)
+        0xA8C17BFD, # ldp  x29, x30, [sp], #16
+        0xD65F03C0  # ret
+      ].pack("L<*").freeze
+
+      # Byte offsets of the five operands patched in the aarch64 finalizer: the
+      # GOT adrp/ldr pair, the __dso_handle adrp/add pair, and the bl.
+      AARCH64_DSO_FINALIZE_GOT_ADRP_OFFSET    = 4
+      AARCH64_DSO_FINALIZE_GOT_LO12_OFFSET    = 8
+      AARCH64_DSO_FINALIZE_HANDLE_ADRP_OFFSET = 16
+      AARCH64_DSO_FINALIZE_HANDLE_ADD_OFFSET  = 20
+      AARCH64_DSO_FINALIZE_CALL_OFFSET        = 28
 
       class << self
         # Links `inputs` (an ordered array; each element a filesystem path, or the
@@ -219,10 +321,11 @@ module Rubycc
           writer.to_binary
         end
 
-        # The __dso_handle supplier as a one-section ET_REL object: an 8-byte
-        # .data word, a hidden global OBJECT symbol naming it, and an absolute-64
+        # The __dso_handle supplier as a small ET_REL object: an 8-byte .data
+        # word, a hidden global OBJECT symbol naming it, and an absolute-64
         # relocation of the word against that same symbol — so the word ends up
-        # holding its own address.
+        # holding its own address — plus the finalizer that hands the word back
+        # to the C runtime when the object is unloaded (#add_dso_finalizer).
         #
         # Why this shape, measured from a `gcc -shared -fPIC` output rather than
         # copied from any crt implementation (R11): __dso_handle is the opaque
@@ -247,15 +350,13 @@ module Rubycc
         # a shared object, where #rebase_internal? holds — rebased at load time by
         # one RELATIVE entry, which is precisely the measured gcc output.
         #
-        # What this deliberately does NOT supply is the other half of gcc's crt
-        # file: the .fini_array entry that calls __cxa_finalize(__dso_handle) when
-        # the object is unloaded, which is what makes glibc drop the handlers
-        # registered under this handle. Registration works without it (measured:
-        # calling __cxa_finalize(&__dso_handle) by hand on a rubycc `.so` does
-        # unregister its atfork handlers, so the handle value is right), but an
-        # object dlclosed while it still has handlers registered leaves them
-        # pointing into the unmapped image. Synthesizing a finalizer needs an
-        # init/fini-array pipeline this linker does not have yet.
+        # The word and its finalizer travel together in one member because they
+        # answer one question between them — "which object is this, and when is
+        # it gone" — and because the condition for needing them is the same: a
+        # link that never mentions __dso_handle never extracts the member and so
+        # gains neither. That is the same pairing gcc's crt file has, reached
+        # without a second lazily-extracted member or any linker-side special
+        # case.
         def build_dso_handle_object(machine)
           aarch64 = machine == EM_AARCH64
           writer = ObjFile::RelocatableWriter.new(machine: machine)
@@ -266,7 +367,71 @@ module Rubycc
                                      visibility: :hidden, section: data, value: 0, size: 8)
           writer.add_relocation(target: data, offset: 0, symbol: handle,
                                 type: aarch64 ? R_AARCH64_ABS64 : R_X86_64_64, addend: 0)
+          add_dso_finalizer(writer, handle, aarch64)
           writer.to_binary
+        end
+
+        # Adds the finalizer half to the supplier object: the routine itself in
+        # .text (see DSO_FINALIZE_CODE for its shape and why it is that shape),
+        # the operand relocations, and the one-slot .fini_array.00000 section
+        # pointing at it.
+        #
+        # This is what makes glibc drop the handlers an object registered under
+        # its handle — __cxa_atexit / __register_atfork record the handle as the
+        # owner, and __cxa_finalize(handle) is the call that runs and unregisters
+        # them. Without it a dlclosed object leaves its handlers pointing into
+        # the unmapped image (measured before this existed: calling
+        # __cxa_finalize by hand cleared them, so only the automatic call was
+        # missing).
+        #
+        # The routine is a *local* symbol: it is reached only from this object's
+        # own array slot, so it never needs to be visible to another object or to
+        # the loader, and a local definition cannot collide with an input's.
+        # __cxa_finalize is referenced WEAK so that a C library without it leaves
+        # the reference unresolved instead of failing the link — the NULL test in
+        # the code is the other half of that decision.
+        def add_dso_finalizer(writer, handle, aarch64)
+          code = aarch64 ? AARCH64_DSO_FINALIZE_CODE : DSO_FINALIZE_CODE
+          text = writer.add_section(name: ".text", type: SHT_PROGBITS,
+                                    flags: SHF_ALLOC | SHF_EXECINSTR, addralign: 16,
+                                    data: code)
+          routine = writer.add_symbol(name: DSO_FINALIZER_SYMBOL, bind: :local, type: :func,
+                                      section: text, value: 0, size: code.bytesize)
+          # The argument is the object's own definition of __dso_handle (the
+          # `handle` symbol the caller passes in), so that reference is internal
+          # and resolves without a text relocation even in a shared object; only
+          # the callee is an import.
+          cxa = writer.add_symbol(name: CXA_FINALIZE_SYMBOL, bind: :weak, type: :func)
+          if aarch64
+            add_dso_finalizer_relocations_aarch64(writer, text, handle, cxa)
+          else
+            add_dso_finalizer_relocations_x86_64(writer, text, handle, cxa)
+          end
+
+          slot = writer.add_section(name: DSO_FINI_ARRAY_SECTION, type: SHT_FINI_ARRAY,
+                                    flags: SHF_ALLOC | SHF_WRITE, addralign: 8, entsize: 8,
+                                    data: "\0".b * 8)
+          writer.add_relocation(target: slot, offset: 0, symbol: routine,
+                                type: aarch64 ? R_AARCH64_ABS64 : R_X86_64_64, addend: 0)
+        end
+
+        def add_dso_finalizer_relocations_x86_64(writer, text, handle, cxa)
+          writer.add_relocation(target: text, offset: DSO_FINALIZE_GOT_OFFSET, symbol: cxa,
+                                type: R_X86_64_GOTPCREL, addend: -5)
+          writer.add_relocation(target: text, offset: DSO_FINALIZE_HANDLE_OFFSET, symbol: handle,
+                                type: R_X86_64_PC32, addend: -4)
+          writer.add_relocation(target: text, offset: DSO_FINALIZE_CALL_OFFSET, symbol: cxa,
+                                type: R_X86_64_PLT32, addend: -4)
+        end
+
+        def add_dso_finalizer_relocations_aarch64(writer, text, handle, cxa)
+          [[AARCH64_DSO_FINALIZE_GOT_ADRP_OFFSET, cxa, R_AARCH64_ADR_GOT_PAGE],
+           [AARCH64_DSO_FINALIZE_GOT_LO12_OFFSET, cxa, R_AARCH64_LD64_GOT_LO12_NC],
+           [AARCH64_DSO_FINALIZE_HANDLE_ADRP_OFFSET, handle, R_AARCH64_ADR_PREL_PG_HI21],
+           [AARCH64_DSO_FINALIZE_HANDLE_ADD_OFFSET, handle, R_AARCH64_ADD_ABS_LO12_NC],
+           [AARCH64_DSO_FINALIZE_CALL_OFFSET, cxa, R_AARCH64_CALL26]].each do |offset, sym, type|
+            writer.add_relocation(target: text, offset: offset, symbol: sym, type: type, addend: 0)
+          end
         end
       end
 
@@ -606,7 +771,9 @@ module Rubycc
       def place_sections
         rx = leading_sections + input_sections { |s| executable?(s) } + plt_sections
         ro = dynamic_ro_sections + input_sections { |s| !executable?(s) && !writable?(s) }
-        rw_files = input_sections { |s| writable?(s) && s.type != SHT_NOBITS } + writable_dynamic_sections
+        rw_input = input_sections { |s| writable?(s) && s.type != SHT_NOBITS }
+        plain, arrays = split_array_sections(rw_input)
+        rw_files = plain + arrays + writable_dynamic_sections
         bss = input_sections { |s| writable?(s) && s.type == SHT_NOBITS }
 
         cursor = EHDR_SIZE + phnum * PHDR_SIZE
@@ -616,6 +783,7 @@ module Rubycc
         cursor = align(cursor, seg_align)
         rw_start = cursor
         cursor, rw_placed = lay(rw_files, cursor)
+        check_array_runs_contiguous
         @file_end = cursor
         cursor, bss_placed = lay(bss, cursor)
         @rw = rw_placed + bss_placed
@@ -636,6 +804,104 @@ module Rubycc
         @reader.sections.select { |s| allocatable?(s) && yield(s) }.map do |s|
           Placed.new(name: s.name, type: s.type, flags: s.flags, addralign: [s.addralign, 1].max,
                      entsize: s.entsize, size: s.size, data: s.type == SHT_NOBITS ? nil : s.data.b)
+        end
+      end
+
+      # --- initializer / finalizer arrays ------------------------------------
+      # .init_array / .fini_array are ordinary writable allocatable data, so the
+      # merge concatenates them by name and the apply engine patches their
+      # pointer slots like any other absolute-64 initializer (RELATIVE-rebased
+      # in a shared object, written final in a non-PIE executable). Only two
+      # things are specific to them: the loader reaches them through DT_*_ARRAY
+      # rather than a symbol, so each must be one contiguous run, and the run's
+      # *order* is the order the initializers run in.
+      #
+      # gcc spells a priority (`__attribute__((constructor(101)))`) as a separate
+      # `.init_array.00101` input section. Observed by linking such objects with
+      # gcc and reading back the resulting array (readelf -x) and the runtime
+      # order: the priority-numbered sections come first, sorted by ascending
+      # priority number across all inputs, and the unnumbered `.init_array`
+      # sections follow in input order. .fini_array is laid out by the same rule
+      # (the runtime walks it backwards, which mirrors the constructor order).
+      #
+      # Splits the writable input sections into the ordinary ones (kept in merged
+      # order) and the initializer/finalizer array run, which is appended after
+      # them so it ends up adjacent to the synthesized dynamic sections. A link
+      # with no array section leaves the first list exactly as it was, so its
+      # layout — and its output bytes — are unchanged.
+      def split_array_sections(sections)
+        reject_unwritable_array_sections!
+        plain = sections.reject { |s| array_section?(s) }
+        @init_array_run = order_array_run(sections.select { |s| s.type == SHT_INIT_ARRAY })
+        @fini_array_run = order_array_run(sections.select { |s| s.type == SHT_FINI_ARRAY })
+        [plain, @init_array_run + @fini_array_run]
+      end
+
+      def array_section?(section)
+        section.type == SHT_INIT_ARRAY || section.type == SHT_FINI_ARRAY
+      end
+
+      # Orders one array run by the rule above. The sort key pairs the priority
+      # with the section's position in the merged order, so equal priorities keep
+      # input order and the result is deterministic (N4) whatever Ruby's sort
+      # does. An unnumbered section sorts after every numbered one.
+      def order_array_run(sections)
+        sections.each_with_index.sort_by { |sec, i| [array_priority(sec), i] }.map(&:first)
+      end
+
+      # The priority encoded in an array section's name: `.init_array.00101` has
+      # priority 101, plain `.init_array` has none (Float::INFINITY, sorting
+      # last). Any other suffix is a form this linker has not been shown, and
+      # guessing its position would silently run the initializers in the wrong
+      # order, so it is refused instead.
+      def array_priority(section)
+        base = section.type == SHT_INIT_ARRAY ? ".init_array" : ".fini_array"
+        name = section.name.to_s
+        return Float::INFINITY if name == base
+        return ::Regexp.last_match(1).to_i if name =~ /\A#{::Regexp.escape(base)}\.(\d+)\z/
+
+        raise LinkError, "unsupported initializer array section '#{name}': " \
+                         "only '#{base}' and a priority-numbered '#{base}.NNNNN' are understood"
+      end
+
+      # DT_INIT_ARRAY / DT_FINI_ARRAY address one array, so its sections must have
+      # been laid without a gap between them. They all carry alignment 8 and a
+      # size that is a whole number of 8-byte pointers, so the placement above is
+      # contiguous; this refuses the case rather than emitting a range with a
+      # zero (null-pointer) hole the loader would call.
+      def check_array_runs_contiguous
+        [@init_array_run, @fini_array_run].each do |run|
+          run.each_cons(2) do |a, b|
+            next if a.vaddr + a.size == b.vaddr
+
+            raise LinkError, "initializer array sections '#{a.name}' and '#{b.name}' " \
+                             "were not laid contiguously"
+          end
+        end
+      end
+
+      def init_array_addr = @init_array_run.first&.vaddr
+      def fini_array_addr = @fini_array_run.first&.vaddr
+      def init_array_size = @init_array_run.sum(&:size)
+      def fini_array_size = @fini_array_run.sum(&:size)
+
+      # Whether the link has a non-empty array. Read off the run assembled above,
+      # which #place_sections fills in before it sizes .dynamic, so the tag count
+      # and the tag values can never disagree. An absent — or present but empty —
+      # array emits no tag at all, keeping the dynamic array of a link without
+      # initializers byte-for-byte as before.
+      def init_array? = init_array_size.positive?
+      def fini_array? = fini_array_size.positive?
+
+      # An array section the ABI marks SHF_ALLOC without SHF_WRITE would be laid
+      # into the read-only segment, dropping out of the run and taking its
+      # initializers with it silently. Nothing this linker accepts emits that
+      # shape (gcc marks both arrays WA), so it is refused rather than ignored.
+      def reject_unwritable_array_sections!
+        @reader.sections.each do |sec|
+          next unless allocatable?(sec) && array_section?(sec) && !writable?(sec)
+
+          raise LinkError, "initializer array section '#{sec.name}' is not writable"
         end
       end
 
@@ -749,6 +1015,7 @@ module Rubycc
       def dynamic_size = dynamic_entry_count * DYN_ENTSIZE
       def dynamic_entry_count
         @used_deps.size + (@soname ? 1 : 0) + 5 +
+          (init_array? ? 2 : 0) + (fini_array? ? 2 : 0) +
           (rela_dyn? ? 4 : 0) + (plt? ? 4 : 0) + (bind_now? ? 2 : 0) + 1
       end
 
@@ -1126,6 +1393,7 @@ module Rubycc
       end
 
       # The .dynamic array: the DT_NEEDED dependencies and DT_SONAME first, then
+      # the initializer/finalizer arrays (only when non-empty), then
       # pointers/sizes for the hash and symbol/string tables, the .rela.dyn table
       # (with DT_RELACOUNT), the .plt relocation table (DT_PLTGOT/PLTRELSZ/
       # PLTREL/JMPREL), the BIND_NOW flags, and the DT_NULL terminator.
@@ -1133,6 +1401,10 @@ module Rubycc
         entries = []
         @used_deps.each { |dep| entries << [DT_NEEDED, dynstr_offset(dep.name)] }
         entries << [DT_SONAME, dynstr_offset(@soname)] if @soname
+        # The initializer/finalizer arrays, sized in bytes, in gcc's position:
+        # after the dependency names and ahead of the table pointers.
+        entries += [[DT_INIT_ARRAY, init_array_addr], [DT_INIT_ARRAYSZ, init_array_size]] if init_array?
+        entries += [[DT_FINI_ARRAY, fini_array_addr], [DT_FINI_ARRAYSZ, fini_array_size]] if fini_array?
         entries += [
           [DT_HASH, @vaddr[".hash"]],
           [DT_STRTAB, @vaddr[".dynstr"]],

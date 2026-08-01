@@ -187,16 +187,21 @@ module Rubycc
       # builtins rubycc's front end actually recognizes — the varargs intrinsics,
       # the branch-prediction hint, the stack allocator, offsetof, the
       # constant/choose folds, the count-leading/trailing-zero scans, the
-      # unreachable hint and memcpy. Every other builtin query is false, so a
-      # header that guards a fallback behind __has_builtin (e.g. json's bswap
-      # path) takes the fallback for one rubycc does not provide. Kept in sync
-      # with the parser's builtin keywords. Kept as a Hash (used only for
-      # membership) so the check is O(1).
+      # unreachable hint, memcpy and the nine __atomic_* forms. Every other
+      # builtin query is false, so a header that guards a fallback behind
+      # __has_builtin (e.g. json's bswap path) takes the fallback for one rubycc
+      # does not provide. Kept in sync with the parser's builtin keywords. Kept
+      # as a Hash (used only for membership) so the check is O(1).
       KNOWN_BUILTINS = %w[__builtin_va_start __builtin_va_arg __builtin_va_end __builtin_va_copy
                           __builtin_expect __builtin_alloca __builtin_offsetof
                           __builtin_constant_p __builtin_choose_expr
                           __builtin_ctz __builtin_ctzll __builtin_clz __builtin_clzll
-                          __builtin_unreachable __builtin_memcpy].to_h { |name| [name, true] }.freeze
+                          __builtin_unreachable __builtin_memcpy
+                          __atomic_load_n __atomic_store_n __atomic_exchange_n
+                          __atomic_compare_exchange_n
+                          __atomic_fetch_add __atomic_fetch_sub
+                          __atomic_add_fetch __atomic_sub_fetch
+                          __atomic_or_fetch].to_h { |name| [name, true] }.freeze
 
       # The platform macros gcc keeps predefined even under strict ISO C
       # (-std=c11): only the reserved forms (a leading underscore followed by
@@ -222,8 +227,12 @@ module Rubycc
       X86_64_ARCH_MACROS = %w[__x86_64__ __amd64__].freeze
       AARCH64_ARCH_MACROS = %w[__aarch64__ __AARCH64EL__].freeze
 
-      # The numeric limit/size macros gcc predefines describing the target's
-      # fundamental types. glibc's headers reach for these directly when __GNUC__
+      # The numeric macros gcc predefines: the limit/size ones describing the
+      # target's fundamental types, and the memory-order enumerators the
+      # __atomic_* builtins take as an argument (grouped here because they are
+      # the same kind of thing — a fixed integer replacement text a translation
+      # unit may #undef, not a use-site-computed BUILTIN_MACROS entry).
+      # glibc's headers reach for these directly when __GNUC__
       # is absent (e.g. limits.h's __LONG_MAX__ via ruby's special_consts.h), so
       # they must carry gcc's exact spellings — value base (hex vs decimal) and
       # integer suffix — for a gcc-differential #if to agree. The right-hand sides
@@ -262,7 +271,21 @@ module Rubycc
         "__SIZEOF_FLOAT__" => "4",
         "__SIZEOF_DOUBLE__" => "8",
         "__SIZEOF_WCHAR_T__" => "4",
-        "__SIZEOF_WINT_T__" => "4"
+        "__SIZEOF_WINT_T__" => "4",
+        # The memory-order arguments the __atomic_* builtins take (C11 7.17.3's
+        # memory_order enumerators, which gcc predefines under these spellings).
+        # The values are the verbatim ones `gcc -dM -E </dev/null` prints on this
+        # target, so a header comparing them (or building one out of another)
+        # agrees with a gcc build. rubycc implements every atomic operation at
+        # the strongest order regardless of which of these is passed — see
+        # IR::Generator#gen_builtin_atomic — but the constants must still carry
+        # gcc's values, because a caller may compute with them.
+        "__ATOMIC_RELAXED" => "0",
+        "__ATOMIC_CONSUME" => "1",
+        "__ATOMIC_ACQUIRE" => "2",
+        "__ATOMIC_RELEASE" => "3",
+        "__ATOMIC_ACQ_REL" => "4",
+        "__ATOMIC_SEQ_CST" => "5"
       }.freeze
 
       # `char_unsigned` says whether plain `char` is unsigned on the target being
@@ -707,16 +730,18 @@ module Rubycc
         [include_exists?(kind, name, operator.filename), close + 1]
       end
 
-      # The GNU attributes rubycc gives real semantics (Step 28): the layout
-      # attributes the parser honors on a struct/union. Every other attribute is
-      # accepted and discarded, so __has_attribute answers true only for these.
-      # Kept as a Hash (used only for membership) so the check is O(1).
-      KNOWN_ATTRIBUTES = %w[aligned packed].to_h { |name| [name, true] }.freeze
+      # The GNU attributes rubycc gives real semantics: the layout attributes the
+      # parser honors on a struct/union (Step 28), and the constructor/destructor
+      # attributes that register a function in .init_array / .fini_array (Step
+      # 155). Every other attribute is accepted and discarded, so __has_attribute
+      # answers true only for these. Kept as a Hash (used only for membership) so
+      # the check is O(1).
+      KNOWN_ATTRIBUTES = %w[aligned packed constructor destructor].to_h { |name| [name, true] }.freeze
 
       # __has_attribute ( X ): true for the attributes rubycc actually acts on
-      # (aligned and packed, in either the plain or the "__name__" spelling),
-      # false for every other name. The name is normalized the same way the
-      # parser normalizes an attribute token.
+      # (in either the plain or the "__name__" spelling), false for every other
+      # name. The name is normalized the same way the parser normalizes an
+      # attribute token.
       def fold_has_attribute(operator, body, index)
         name, index = read_paren_identifier(operator, body, index, "__has_attribute")
         [KNOWN_ATTRIBUTES.key?(normalize_attribute_name(name)), index]

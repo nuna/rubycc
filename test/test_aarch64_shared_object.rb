@@ -32,7 +32,20 @@ class TestAArch64SharedObject < Minitest::Test
   R_AARCH64_RELATIVE  = 1027
   R_AARCH64_GLOB_DAT  = 1025
   R_AARCH64_JUMP_SLOT = 1026
+  R_AARCH64_ABS64     = 257
   STN_UNDEF = 0
+
+  # The initializer/finalizer array section types, their flags, and the dynamic
+  # tags addressing them (sizes in bytes) — target-independent, as is the whole
+  # section/table layer above the relocation apply.
+  SHT_INIT_ARRAY  = 14
+  SHT_FINI_ARRAY  = 15
+  SHF_WRITE       = 0x1
+  SHF_ALLOC       = 0x2
+  DT_INIT_ARRAY   = 25
+  DT_FINI_ARRAY   = 26
+  DT_INIT_ARRAYSZ = 27
+  DT_FINI_ARRAYSZ = 28
 
   DT_NEEDED   = 1
   DT_PLTGOT   = 3
@@ -227,6 +240,174 @@ class TestAArch64SharedObject < Minitest::Test
     assert_equal "1\n1\n", stdout
   end
 
+  # --- the finalizer half of the __dso_handle member -----------------------
+  #
+  # The aarch64 counterpart of TestSharedObject's coverage: the supplier member
+  # also carries a priority-0 .fini_array slot calling __cxa_finalize with the
+  # handle's value, so a dlclosed object surrenders the handlers it registered.
+  # The measured shape is the same; only the encodings differ — aarch64 has no
+  # memory-operand compare, so the GOT slot is loaded and tested with `cbz`.
+
+  # Registers an exit handler under this object's handle (the way glibc's atexit
+  # does), plus a destructor, so both the fact that the handler runs at dlclose
+  # and the order of the two are observable. Both report through stdout, which
+  # is safe: they run while the image is still mapped.
+  CXA_ATEXIT_USER = <<~C
+    int __cxa_atexit(void (*f)(void *), void *arg, void *dso);
+    extern void *__dso_handle;
+    int puts(const char *s);
+    static void on_finalize(void *arg) { puts("C"); }
+    __attribute__((destructor)) static void on_destroy(void) { puts("D"); }
+    int arm(void) { return __cxa_atexit(on_finalize, 0, __dso_handle); }
+  C
+
+  def test_synthesized_finalizer_slot_and_weak_import_on_aarch64
+    skip "aarch64 sysroot libc unavailable" unless libc_available?
+
+    r = Reader.read(build_so([DSO_HANDLE_USER], needed: [SYSROOT_LIBC]))
+
+    slot = r.section(".fini_array.00000")
+    refute_nil slot, "the supplier member contributes one finalizer slot"
+    assert_equal SHT_FINI_ARRAY, slot.type
+    assert_equal 8, slot.size
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+    assert_equal slot.addr, by_tag[DT_FINI_ARRAY]
+    assert_equal 8, by_tag[DT_FINI_ARRAYSZ]
+
+    rela = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    reloc = rela.relocations.find { |x| x.offset == slot.addr }
+    refute_nil reloc, "a PIC image rebases the slot at load time"
+    assert_equal R_AARCH64_RELATIVE, reloc.type
+    text = r.section(".text")
+    assert_operator reloc.addend, :>=, text.addr, "the addend is the routine's address"
+    assert_operator reloc.addend, :<, text.addr + text.size
+
+    sym = r.dynamic_symbol("__cxa_finalize")
+    assert_equal :weak, sym.bind, "a C library without __cxa_finalize must not fail the link"
+    assert sym.undefined?
+    assert_equal ["__cxa_finalize"],
+                 rela.relocations.select { |x| x.type == R_AARCH64_GLOB_DAT }.map { |x| x.symbol.name },
+                 "the NULL test reads a GOT slot bound by a GLOB_DAT"
+    plt = r.relocation_sections.find { |rs| rs.section.name == ".rela.plt" }
+    assert_includes plt.relocations.map { |x| x.symbol.name }, "__cxa_finalize",
+                    "the call goes through a .plt stub bound by a JUMP_SLOT"
+  end
+
+  # Decodes the ten emitted instruction words and re-derives what each operand
+  # points at. The NULL test cannot be triggered on a host whose libc always has
+  # __cxa_finalize, so this is where the `cbz` is asserted to exist.
+  def test_synthesized_finalizer_encoding_on_aarch64
+    skip "aarch64 sysroot libc unavailable" unless libc_available?
+
+    r = Reader.read(build_so([DSO_HANDLE_USER], needed: [SYSROOT_LIBC]))
+    text = r.section(".text")
+    slot = r.section(".fini_array.00000")
+    rela = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    routine = rela.relocations.find { |x| x.offset == slot.addr }.addend
+    words = text.data[routine - text.addr, 40].unpack("L<10")
+
+    assert_equal 0xA9BF7BFD, words[0], "stp x29, x30, [sp, #-16]!"
+    got_slot = rela.relocations.find { |x| x.type == R_AARCH64_GLOB_DAT }.offset
+    got_addr = ((routine + 4) & ~0xFFF) + adrp_page_delta(words[1]) + (((words[2] >> 10) & 0xFFF) << 3)
+    assert_equal got_slot, got_addr, "the adrp/ldr pair reaches __cxa_finalize's GOT slot"
+    assert_equal 0xB40000A0, words[3], "cbz x0 over the call when the slot is NULL"
+
+    handle = ((routine + 16) & ~0xFFF) + adrp_page_delta(words[4]) + ((words[5] >> 10) & 0xFFF)
+    assert_equal r.section(".data").addr, handle, "the adrp/add pair reaches the handle word"
+    assert_equal 0xF9400020, words[6], "ldr x0, [x1]: the word's contents, not its address"
+
+    disp = (words[7] & 0x03FFFFFF) << 2
+    assert_equal r.section(".plt").addr, routine + 28 + disp, "the bl reaches the .plt stub"
+    assert_equal 0xA8C17BFD, words[8], "ldp x29, x30, [sp], #16"
+    assert_equal 0xD65F03C0, words[9], "ret"
+  end
+
+  # The execution oracle: the real aarch64 loader under qemu must run the
+  # object's destructor and then the registered handler, both at the dlclose and
+  # neither before it.
+  def test_dlclose_runs_the_registered_handler_under_qemu
+    skip_unless_aarch64_self_link
+
+    consumer = <<~C
+      #include <stdio.h>
+      #include <dlfcn.h>
+      int main(int argc, char **argv) {
+        void *h = dlopen(argv[1], RTLD_NOW);
+        int (*arm)(void);
+        if (!h) { printf("dlopen failed: %s\\n", dlerror()); return 1; }
+        arm = (int (*)(void)) dlsym(h, "arm");
+        if (!arm) { printf("dlsym failed\\n"); return 1; }
+        printf("armed=%d\\n", arm());
+        printf("before\\n");
+        dlclose(h);
+        printf("after\\n");
+        return 0;
+      }
+    C
+    status, stdout = run_dlopen_consumer([CXA_ATEXIT_USER], "libhandler.so", consumer)
+    assert_equal 0, status
+    assert_equal "armed=0\nbefore\nD\nC\nafter\n", stdout,
+                 "nothing ran before the dlclose; the dlclose ran the destructor " \
+                 "and then the handler registered under the handle"
+  end
+
+  # --- .init_array / .fini_array -----------------------------------------
+
+  # The aarch64 markers: each initializer appends its letter to a buffer the
+  # consumer reads back after the on-target loader has run the array.
+  MARKERS = <<~C
+    char trace[16];
+    int marked;
+    void mark_a(void) { trace[marked] = 'A'; marked = marked + 1; }
+    void mark_b(void) { trace[marked] = 'B'; marked = marked + 1; }
+    char *trace_of(void) { return trace; }
+  C
+
+  # The slots are ABS64 initializers, so a PIC image rebases each with an
+  # R_AARCH64_RELATIVE whose addend is the target function — aarch64's spelling
+  # of the x86_64 case, through the same machine-independent array placement.
+  def test_array_sections_and_tags_on_aarch64
+    r = Reader.read(build_so([MARKERS], inputs: [array_object(".init_array", "mark_a"),
+                                                 array_object(".fini_array", "mark_b")]))
+    init = r.section(".init_array")
+    fini = r.section(".fini_array")
+    assert_equal SHT_INIT_ARRAY, init.type
+    assert_equal SHT_FINI_ARRAY, fini.type
+    assert_equal 8, init.entsize
+    assert_equal 8, init.addralign
+
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+    assert_equal init.addr, by_tag[DT_INIT_ARRAY]
+    assert_equal 8, by_tag[DT_INIT_ARRAYSZ]
+    assert_equal fini.addr, by_tag[DT_FINI_ARRAY]
+    assert_equal 8, by_tag[DT_FINI_ARRAYSZ]
+
+    rela = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    slot = rela.relocations.find { |x| x.offset == init.addr }
+    refute_nil slot, "the init slot must be rebased at load time"
+    assert_equal R_AARCH64_RELATIVE, slot.type
+    assert_equal r.dynamic_symbol("mark_a").value, slot.addend,
+                 "the RELATIVE addend must be mark_a's address"
+  end
+
+  # The execution oracle: the real aarch64 loader under qemu must call the
+  # initializers, in input order, before the consumer's main runs.
+  def test_initializers_run_in_input_order_under_qemu
+    skip_unless_aarch64_self_link
+
+    consumer = <<~C
+      #include <stdio.h>
+      char *trace_of(void);
+      int main(void) { printf("%s\\n", trace_of()); return 0; }
+    C
+    status, stdout = build_and_run_consumer(
+      [MARKERS], "libinit.so", consumer,
+      inputs: [array_object(".init_array", "mark_a"), array_object(".init_array", "mark_b")]
+    )
+    assert_equal 0, status
+    assert_equal "AB\n", stdout, "both initializers ran, in the order they were linked"
+  end
+
   # --- external imports (structure; needs the sysroot libc) --------------
 
   def test_external_function_gets_a_jump_slot_and_data_gets_a_glob_dat
@@ -374,17 +555,30 @@ class TestAArch64SharedObject < Minitest::Test
 
   # Compiles each source for aarch64 under -fPIC, links them into a .so with
   # rubycc, and returns the .so bytes.
-  def build_so(sources, needed: [], soname: nil)
+  def build_so(sources, needed: [], soname: nil, inputs: [])
     in_tmpdir do |dir|
-      Linker.link(objects_for(sources, dir), needed: needed, soname: soname)
+      Linker.link(objects_for(sources, dir) + inputs, needed: needed, soname: soname)
     end
+  end
+
+  # The aarch64 counterpart of TestSharedObject#array_object: one array slot
+  # bound to `func` by an ABS64, in an EM_AARCH64 object so the merge and the
+  # final link keep the target's identity.
+  def array_object(section, func)
+    type = section.start_with?(".init_array") ? SHT_INIT_ARRAY : SHT_FINI_ARRAY
+    w = Rubycc::ObjFile::RelocatableWriter.new(machine: EM_AARCH64)
+    slot = w.add_section(name: section, type: type, flags: SHF_ALLOC | SHF_WRITE,
+                         addralign: 8, entsize: 8, data: "\0" * 8)
+    sym = w.add_symbol(name: func, bind: :global, type: :notype)
+    w.add_relocation(target: slot, offset: 0, symbol: sym, type: R_AARCH64_ABS64, addend: 0)
+    w.to_binary
   end
 
   # Compiles the sources, links them into a named .so with rubycc, builds a
   # consumer executable against it with the cross gcc and runs it under qemu.
-  def build_and_run_consumer(sources, so_name, consumer_source, needed: [])
+  def build_and_run_consumer(sources, so_name, consumer_source, needed: [], inputs: [])
     in_tmpdir do |dir|
-      objects = objects_for(sources, dir)
+      objects = objects_for(sources, dir) + inputs
       so = File.join(dir, so_name)
       link_shared_aarch64_rubycc(objects, so, soname: so_name, needed: needed)
       run_against_aarch64_so(consumer_source, so)
@@ -396,6 +590,32 @@ class TestAArch64SharedObject < Minitest::Test
       path = File.join(dir, "u#{i}.o")
       compile_with_rubycc_aarch64(src, path, pic: true)
       path
+    end
+  end
+
+  # The dlopen counterpart of #build_and_run_consumer: the consumer is NOT
+  # linked against the `.so` (it receives the path as argv[1] and loads it
+  # itself), which is the only way to observe a real dlclose — the point of the
+  # synthesized finalizer. Returns [exit_status, stdout].
+  def run_dlopen_consumer(sources, so_name, consumer_source, needed: [SYSROOT_LIBC])
+    in_tmpdir do |dir|
+      so = File.join(dir, so_name)
+      link_shared_aarch64_rubycc(objects_for(sources, dir), so, soname: so_name, needed: needed)
+
+      consumer_c = File.join(dir, "consumer.c")
+      File.write(consumer_c, consumer_source)
+      exe = File.join(dir, "consumer")
+      out, status = Open3.capture2e(
+        AArch64ExecutionHelper::CROSS_GCC, consumer_c, "-o", exe, "-ldl",
+        "-Wl,--dynamic-linker=#{AArch64ExecutionHelper::TARGET_INTERP}"
+      )
+      raise "#{AArch64ExecutionHelper::CROSS_GCC} failed to link the consumer:\n#{out}" unless status.success?
+
+      stdout, run_status = Open3.capture2(
+        { "QEMU_LD_PREFIX" => AArch64ExecutionHelper::SYSROOT },
+        AArch64ExecutionHelper::QEMU, exe, so
+      )
+      [run_status.exitstatus, stdout]
     end
   end
 

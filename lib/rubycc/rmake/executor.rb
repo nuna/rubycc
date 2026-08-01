@@ -131,12 +131,27 @@ module Rubycc
 
       # --- lexing ----------------------------------------------------------
 
+      # Characters after which a backslash inside double quotes keeps its
+      # special meaning (POSIX quote removal, XCU 2.2 / 2.2.3): only these five
+      # make the backslash consume — and remove itself along with — the next
+      # character; before a newline both vanish (line continuation). Before any
+      # other character the backslash inside double quotes is left in the word
+      # verbatim: `"a\b"` stays `a\b`, while `"a\"b"` becomes `a"b`. Verified
+      # against /bin/sh (dash).
+      DQUOTE_BACKSLASH_SPECIAL = ["$", "`", '"', "\\", "\n"].freeze
+
       # Split a recipe line into tokens: :word (quote-stripped), the connectors
-      # :and/:or/:semi and :redirect markers. Single and double quotes protect
-      # whitespace and metacharacters (the corpus needs only simple quoting, so
-      # `$`/backslash inside double quotes are treated literally — expansion has
-      # already happened in the planner). Genuinely unhandled shell syntax
-      # (pipe, background, substitution, subshell) stops the run.
+      # :and/:or/:semi and :redirect markers. Single quotes protect everything
+      # verbatim — backslash has no special meaning inside them. Double quotes
+      # strip a backslash only before `$`/`` ` ``/`"`/`\`/newline
+      # (DQUOTE_BACKSLASH_SPECIAL); elsewhere the backslash stays in the word.
+      # Outside any quote, a backslash preserves the literal value of the
+      # following character and disappears itself, except before a newline
+      # where both vanish (line continuation) — this is POSIX quote removal,
+      # verified against /bin/sh. mkmf relies on the outside-quotes rule: it
+      # writes `-DSYSCONFDIR=\"...\"` expecting the shell to unescape the
+      # backslash-quotes into a literal `"` in the word. Genuinely unhandled
+      # shell syntax (pipe, background, substitution, subshell) stops the run.
       def tokenize(target, text)
         tokens = []
         word = nil
@@ -145,11 +160,27 @@ module Rubycc
         while i < n
           c = text[i]
           case c
-          when "'", '"'
+          when "'"
             close = text.index(c, i + 1)
             unsupported!("unterminated quote", target, text) if close.nil?
             word = (word || +"") + text[(i + 1)...close]
             i = close + 1
+          when '"'
+            segment, i = scan_double_quoted(target, text, i)
+            word = (word || +"") + segment
+          when "\\"
+            nxt = text[i + 1]
+            if nxt.nil?
+              # A lone trailing backslash with nothing to escape is kept
+              # literally (verified against /bin/sh).
+              word = (word || +"") + c
+              i += 1
+            elsif nxt == "\n"
+              i += 2 # line continuation: backslash and newline both vanish
+            else
+              word = (word || +"") + nxt
+              i += 2
+            end
           when " ", "\t"
             tokens << [:word, word] if word
             word = nil
@@ -201,6 +232,32 @@ module Rubycc
         end
         tokens << [:word, word] if word
         tokens
+      end
+
+      # Scan a double-quoted segment starting at +i+ (text[i] == '"'). Applies
+      # the backslash-removal rule that is special to double quotes (see
+      # DQUOTE_BACKSLASH_SPECIAL) and returns [content, index_after_closing_quote].
+      def scan_double_quoted(target, text, i)
+        n = text.length
+        j = i + 1
+        buf = +""
+        loop do
+          unsupported!("unterminated quote", target, text) if j >= n
+
+          c = text[j]
+          if c == '"'
+            j += 1
+            break
+          elsif c == "\\" && j + 1 < n && DQUOTE_BACKSLASH_SPECIAL.include?(text[j + 1])
+            nxt = text[j + 1]
+            buf << nxt unless nxt == "\n" # backslash-newline vanishes entirely
+            j += 2
+          else
+            buf << c
+            j += 1
+          end
+        end
+        [buf, j]
       end
 
       # --- parsing ---------------------------------------------------------

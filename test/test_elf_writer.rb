@@ -561,6 +561,152 @@ class TestElfWriter < Minitest::Test
     end
   end
 
+  # --- .init_array / .fini_array (Step 155) ---------------------------------
+  #
+  # A `__attribute__((constructor))` function becomes one 8-byte slot in an
+  # array section plus an absolute 64-bit relocation naming it. The section's
+  # shape is not free: the linker groups these by *type*, sizes the run in
+  # 8-byte slots and reads the run order off the section's *name*, so the type,
+  # flags, entsize, alignment and the priority spelling are all part of the
+  # contract (see SharedLinker#split_array_sections).
+
+  SHT_INIT_ARRAY = 14
+  SHT_FINI_ARRAY = 15
+  SHF_WRITE = 0x1
+  SHF_ALLOC = 0x2
+
+  CONSTRUCTORS = <<~C
+    __attribute__((constructor)) static void plain(void) {}
+    __attribute__((constructor(101))) static void early(void) {}
+    __attribute__((destructor)) void at_exit(void) {}
+  C
+
+  def compile_constructors(source = CONSTRUCTORS, target: "x86_64")
+    Rubycc::Compiler.new.compile(source, filename: "foo.c", target: target)
+  end
+
+  def test_init_and_fini_array_sections_have_the_shape_the_linker_requires
+    bin = compile_constructors
+    { ".init_array" => SHT_INIT_ARRAY, ".init_array.00101" => SHT_INIT_ARRAY,
+      ".fini_array" => SHT_FINI_ARRAY }.each do |name, type|
+      sec = find_section(bin, name)
+      refute_nil sec, "#{name} must be emitted"
+      assert_equal type, sec[:type], "#{name} carries the array section type"
+      assert_equal SHF_ALLOC | SHF_WRITE, sec[:flags], "#{name} is allocated and writable"
+      assert_equal 8, sec[:entsize], "#{name} holds 8-byte function pointers"
+      assert_equal 8, sec[:size], "one constructor is one slot"
+    end
+  end
+
+  def test_array_section_slots_start_out_zero
+    sec = find_section(compile_constructors, ".init_array")
+    assert_equal "\0" * 8, compile_constructors[sec[:offset], 8],
+                 "every byte of a slot comes from its relocation"
+  end
+
+  # The zero-padded width was measured off gcc's own object: priority 101 emits
+  # `.init_array.00101`, five digits. It has to match the linker's array_priority
+  # regexp exactly, or the link raises LinkError instead of ordering the run.
+  def test_priority_is_spelled_as_a_five_digit_zero_padded_suffix
+    bin = compile_constructors(<<~C)
+      __attribute__((constructor(0))) static void a(void) {}
+      __attribute__((constructor(101))) static void b(void) {}
+      __attribute__((destructor(65534))) static void c(void) {}
+    C
+    %w[.init_array.00000 .init_array.00101 .fini_array.65534].each do |name|
+      refute_nil find_section(bin, name), "#{name} must be emitted"
+    end
+  end
+
+  # gcc's own default: `constructor(65535)` and a bare `constructor` produce the
+  # identical plain section, so the two spellings must coincide here too.
+  def test_the_default_priority_is_the_unnumbered_section
+    bin = compile_constructors("__attribute__((constructor(65535))) static void a(void) {}")
+    refute_nil find_section(bin, ".init_array")
+    assert_nil find_section(bin, ".init_array.65535")
+  end
+
+  # A `static` constructor is the common case (it is exactly what gcc's own
+  # examples emit), so the slot must resolve against a file-local symbol.
+  def test_slot_relocation_is_absolute_64_against_the_function_symbol
+    bin = compile_constructors
+    { ".init_array" => "plain", ".init_array.00101" => "early",
+      ".fini_array" => "at_exit" }.each do |section, func|
+      rela = find_section(bin, ".rela#{section}")
+      refute_nil rela, ".rela#{section} must be emitted"
+      assert_equal 4, rela[:type]                              # SHT_RELA
+      assert_equal section_index(bin, ".symtab"), rela[:link]
+      assert_equal section_index(bin, section), rela[:info]
+      assert_equal 1, rela[:size] / 24
+
+      r_offset = bin[rela[:offset], 8].unpack1("Q<")
+      r_info = bin[rela[:offset] + 8, 8].unpack1("Q<")
+      r_addend = bin[rela[:offset] + 16, 8].unpack1("q<")
+      assert_equal 0, r_offset, "the single slot sits at the start of #{section}"
+      assert_equal 1, r_info & 0xFFFFFFFF, "R_X86_64_64 fills a pointer slot"
+      assert_equal 0, r_addend
+      assert_equal func, symbol_name(bin, r_info >> 32)
+    end
+  end
+
+  def test_local_constructor_symbol_stays_local
+    bin = compile_constructors
+    assert_equal 0, symbol_info(bin, "plain") >> 4, "a static constructor is STB_LOCAL"
+    assert_equal 1, symbol_info(bin, "at_exit") >> 4, "a non-static destructor is STB_GLOBAL"
+  end
+
+  # Several constructors at one priority share a section, laid out in source
+  # order — the order the runtime then calls them in.
+  def test_constructors_of_equal_priority_share_a_section_in_source_order
+    bin = compile_constructors(<<~C)
+      __attribute__((constructor)) static void first(void) {}
+      __attribute__((constructor)) static void second(void) {}
+    C
+    sec = find_section(bin, ".init_array")
+    assert_equal 16, sec[:size], "two slots is sixteen bytes"
+    rela = find_section(bin, ".rela.init_array")
+    names = (0...2).map do |i|
+      r_offset = bin[rela[:offset] + i * 24, 8].unpack1("Q<")
+      [r_offset, symbol_name(bin, bin[rela[:offset] + i * 24 + 8, 8].unpack1("Q<") >> 32)]
+    end
+    assert_equal [[0, "first"], [8, "second"]], names
+  end
+
+  # aarch64 spells the same absolute pointer slot R_AARCH64_ABS64; everything
+  # else about the section is machine-independent.
+  def test_aarch64_slot_relocation_is_abs64
+    bin = compile_constructors(target: "aarch64")
+    sec = find_section(bin, ".init_array")
+    assert_equal SHT_INIT_ARRAY, sec[:type]
+    rela = find_section(bin, ".rela.init_array")
+    r_info = bin[rela[:offset] + 8, 8].unpack1("Q<")
+    assert_equal 257, r_info & 0xFFFFFFFF, "R_AARCH64_ABS64"
+    assert_equal "plain", symbol_name(bin, r_info >> 32)
+  end
+
+  # The invariant guarding every existing object: a translation unit with no
+  # constructor must emit exactly the sections it emitted before.
+  def test_a_unit_without_constructors_gains_no_section
+    bin = compile_constructors("int main(void) { return 0; }")
+    [".init_array", ".fini_array", ".rela.init_array", ".rela.fini_array"].each do |name|
+      assert_nil find_section(bin, name), "#{name} must not appear without a constructor"
+    end
+  end
+
+  def test_readelf_reports_the_array_sections_and_relocations
+    with_object_file(compile_constructors) do |path|
+      stdout, status = Open3.capture2("readelf", "-SW", path)
+      assert status.success?, "readelf failed to read sections"
+      assert_match(/\.init_array\.00101\s+INIT_ARRAY/, stdout)
+      assert_match(/\.fini_array\s+FINI_ARRAY/, stdout)
+
+      stdout, status = Open3.capture2("readelf", "-rW", path)
+      assert status.success?, "readelf failed to read relocations"
+      assert_match(/\.rela\.init_array\.00101/, stdout)
+      assert_match(/R_X86_64_64\s+\h+\s+early \+ 0/, stdout)
+    end
+  end
+
   private
 
   def with_object_file(bin)

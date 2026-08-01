@@ -220,6 +220,46 @@ module Rubycc
     #                               operand is undefined (as in gcc), so no zero
     #                               case is emitted. The result is an int
     #
+    # The four atomic ops below lower gcc's __atomic_* builtins. Every one is
+    # sequentially consistent — the IR carries no memory order at all, because
+    # the generator lowers every order the source asked for at the strongest one
+    # (strengthening an order is always sound; see #gen_builtin_atomic). `size`
+    # is the access width and is only ever 4 or 8: the generator diagnoses every
+    # other width, so no backend needs a narrower or wider case.
+    #
+    #   :atomic_load dst <- atomic *a   dst gets `size` bytes read atomically
+    #                               through pointer a, with sequentially
+    #                               consistent ordering. Distinct from :load
+    #                               because the two targets differ: on x86-64 an
+    #                               aligned mov already is a seq_cst load, while
+    #                               aarch64 needs the acquire form (ldar)
+    #   :atomic_store *a <- b       `size` bytes of b are written atomically
+    #                               through pointer a, sequentially consistently.
+    #                               x86-64 uses `xchg` (whose implicit lock
+    #                               supplies the trailing fence a seq_cst store
+    #                               needs), aarch64 `stlr`
+    #   :atomic_rmw dst <- rmw(a, b)  an atomic read-modify-write through pointer
+    #                               a. b is a [value_vreg, kind] pair; `kind` is
+    #                               :exchange, :fetch_add, :fetch_sub,
+    #                               :add_fetch, :sub_fetch or :or_fetch. dst gets
+    #                               the value the corresponding builtin returns —
+    #                               the value read for :exchange and the
+    #                               :fetch_* forms, the value stored for the
+    #                               :*_fetch ones — and may be nil when the
+    #                               result is discarded
+    #   :atomic_cas dst <- cas(a, b)  an atomic compare-and-exchange through
+    #                               pointer a, for __atomic_compare_exchange_n.
+    #                               b is an [expected_ptr_vreg, desired_vreg]
+    #                               pair. If *a equals *expected_ptr, *a becomes
+    #                               desired and dst gets 1; otherwise *a is
+    #                               untouched, the value actually read is stored
+    #                               back through expected_ptr — a side effect
+    #                               callers depend on — and dst gets 0. The
+    #                               write-back happens only on the failing path,
+    #                               so a caller whose expected_ptr aliases a sees
+    #                               the exchanged value rather than a stale one.
+    #                               dst is a _Bool (0/1) and is never nil
+    #
     # `dst`, `a`, `b` are virtual register numbers (Integers) unless noted;
     # unused fields are nil. `size` is an operand width in bytes. On :load /
     # :uload / :store it is the memory access width (1 char, 2 short, 4 int,
@@ -343,13 +383,29 @@ module Rubycc
       end
     end
 
+    # One entry this translation unit contributes to an initializer/finalizer
+    # array. `symbol` names a function *defined here* that the runtime is to
+    # call: `kind` is :init for a constructor (the loader calls it before main,
+    # or at dlopen) or :fini for a destructor (at exit, or at dlclose), and
+    # `priority` is its run-order number, the compiler's
+    # ELFWriter::DEFAULT_ARRAY_PRIORITY standing for the unnumbered form. The
+    # compiler turns each entry into an 8-byte slot in the matching
+    # SHT_INIT_ARRAY / SHT_FINI_ARRAY section plus an absolute 64-bit relocation
+    # against `symbol`.
+    ArrayEntry = Data.define(:kind, :priority, :symbol)
+
     # A whole translation unit lowered to IR: its `functions` (an array of
     # Function), the shared read-only string pool `strings` (an array of
     # ASCII-8BIT byte strings, without their NUL terminators, indexed by the id
-    # a :string_addr instruction carries) and its `globals` (an array of Global
-    # in source order). Identical string contents are pooled once, so the
-    # compiler can lay them out in .rodata in this order and resolve each
-    # :string_addr to an offset.
-    Program = Data.define(:functions, :strings, :globals)
+    # a :string_addr instruction carries), its `globals` (an array of Global
+    # in source order) and its `array_entries` (an array of ArrayEntry, empty for
+    # a unit with no constructor/destructor). Identical string contents are
+    # pooled once, so the compiler can lay them out in .rodata in this order and
+    # resolve each :string_addr to an offset.
+    Program = Data.define(:functions, :strings, :globals, :array_entries) do
+      def initialize(functions:, strings:, globals:, array_entries: [])
+        super
+      end
+    end
   end
 end

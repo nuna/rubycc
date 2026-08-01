@@ -9,7 +9,7 @@ require "open3"
 #
 # `compiler: :gcc` exercises a reference path (using the system gcc) that
 # exists purely to validate the harness itself. `compiler: :rubycc` drives the
-# Pure Ruby toolchain (Rubycc::Compiler).
+# Almost Pure Ruby toolchain (Rubycc::Compiler).
 module ExecutionHelper
   def in_tmpdir
     Dir.mktmpdir("rubycc-test") do |dir|
@@ -81,7 +81,11 @@ module ExecutionHelper
       raise "gcc failed to link object file (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
     end
 
-    Open3.capture2e(exe_path)
+    # Run with the executable's own scratch directory as the working directory,
+    # not the test process's. Some c-testsuite cases exercise stdio by writing a
+    # file through a *relative* path (00187.c does an fopen("fred.txt", "w")),
+    # which would otherwise land in the repository root and stay there.
+    Open3.capture2e(exe_path, chdir: dir)
   end
 
   # Links `object_path` into an executable and returns the linker's combined

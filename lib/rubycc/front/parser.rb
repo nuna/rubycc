@@ -170,6 +170,28 @@ module Rubycc
       # preprocessor's __has_attribute answer (see Preprocessor#fold_has_attribute).
       LAYOUT_ATTRIBUTES = %w[aligned packed].freeze
 
+      # The GNU attribute names that register a function with the runtime rather
+      # than describe it: `constructor` puts it in the object's .init_array (the
+      # loader calls it before main / at dlopen) and `destructor` in .fini_array
+      # (at exit / dlclose). Mapped to the array kind the later stages use.
+      # Kept in sync with the preprocessor's __has_attribute answer.
+      INIT_ATTRIBUTES = { "constructor" => :constructor, "destructor" => :destructor }.freeze
+
+      # The priority window these attributes accept, measured by handing
+      # `__attribute__((constructor(N)))` to gcc and reading back what it emitted:
+      # 0..65535 inclusive is taken (0..100 only with a -Wprio-ctor-dtor warning,
+      # that range being reserved for the implementation), and anything outside is
+      # the hard error "constructor priorities must be integers from 0 to 65535
+      # inclusive". The same measurement showed 65535 is gcc's *default*:
+      # `constructor(65535)` emits the plain, unnumbered `.init_array`, exactly as
+      # a bare `constructor` does, so an absent priority is represented as 65535
+      # here and the two spellings coincide downstream just as they do in gcc.
+      # ObjFile::ELFWriter::DEFAULT_ARRAY_PRIORITY is the same number on the
+      # other side of the IR, where it decides the section's name.
+      MIN_INIT_PRIORITY     = 0
+      MAX_INIT_PRIORITY     = 65535
+      DEFAULT_INIT_PRIORITY = 65535
+
       # The spellings of the "restrict" type qualifier this subset recognizes.
       # ISO "restrict" is not a keyword here (it never gains semantics — a
       # restricted pointer is treated like any other), and glibc prototypes use
@@ -177,6 +199,29 @@ module Rubycc
       # all three arrive as ordinary identifiers and are accepted and discarded
       # wherever a pointer or array-parameter qualifier may appear.
       RESTRICT_SPELLINGS = %w[restrict __restrict __restrict__].freeze
+
+      # The gcc __atomic_* builtins this subset lowers, mapping each keyword to
+      # its [AST::BuiltinAtomic kind, argument count]. The set is exactly the
+      # nine forms <ruby/atomic.h> reaches for, which is the whole of what any
+      # consumer here needs; the fence, test-and-set, the generic (non-"_n")
+      # address-taking forms and the __sync_* family are deliberately absent, so
+      # a program using one of those gets an "undeclared identifier" rather than
+      # a silently wrong lowering.
+      #
+      # The counts include the trailing memory-order argument(s) gcc's signatures
+      # take — one for every form but __atomic_compare_exchange_n, which takes a
+      # `weak` flag and *two* orders (success and failure).
+      ATOMIC_BUILTINS = {
+        "__atomic_load_n" => [:load, 2],
+        "__atomic_store_n" => [:store, 3],
+        "__atomic_exchange_n" => [:exchange, 3],
+        "__atomic_compare_exchange_n" => [:compare_exchange, 6],
+        "__atomic_fetch_add" => [:fetch_add, 3],
+        "__atomic_fetch_sub" => [:fetch_sub, 3],
+        "__atomic_add_fetch" => [:add_fetch, 3],
+        "__atomic_sub_fetch" => [:sub_fetch, 3],
+        "__atomic_or_fetch" => [:or_fetch, 3]
+      }.freeze
 
       # The hard ceiling on how deeply the recursive descent will nest before it
       # rejects an input rather than recurse further. A hostile source (tens of
@@ -225,8 +270,18 @@ module Rubycc
       # whether the declaration is const-qualified (const seen among the
       # specifiers, or folded in from a const typedef name); `inline_p` is
       # whether "inline" appeared (a function specifier, accepted on functions
-      # and rejected on objects). volatile and register/auto leave no trace here.
-      DeclSpecInfo = Data.define(:storage, :const, :inline_p)
+      # and rejected on objects). `attributes` holds the GNU attributes written
+      # among the specifiers (position a), which apply to every declarator of the
+      # declaration; only the init attributes are read back from it, and only
+      # where they are admitted at all (see #parse_declaration_specifiers).
+      # volatile and register/auto leave no trace here.
+      DeclSpecInfo = Data.define(:storage, :const, :inline_p, :attributes)
+
+      # One parsed GNU attribute: its normalized `name`, the folded `argument`
+      # (an integer for "aligned" and for the init attributes' priority, nil for
+      # every other attribute, whose arguments are skipped) and the `token` that
+      # spelled it, so a diagnostic about the attribute can be located.
+      Attribute = Data.define(:name, :argument, :token)
 
       # A tag scope entry for an enum tag. C keeps struct, union and enum tags in
       # one shared namespace, so enum tags live in @tag_scopes alongside the
@@ -299,6 +354,12 @@ module Rubycc
         # declaration with no dedicated keyword and a program may still shadow the
         # name.
         @ordinary_scopes = [{ "__builtin_va_list" => OrdinaryName.new(:typedef, [@builtin_va_list, false]) }]
+        # The constructor/destructor registrations the unit asked for, keyed by
+        # function name (see #register_init_attributes). Filled as declarations
+        # are read and handed to AST::Program whole, because the attribute may be
+        # written on a prototype that precedes *or* follows the definition, so no
+        # single declaration node can be the one that carries it.
+        @init_attributes = {}
       end
 
       # Parses the whole translation unit into an AST::Program. An external
@@ -311,7 +372,7 @@ module Rubycc
           node = parse_external_declaration
           node.is_a?(Array) ? declarations.concat(node) : declarations << node
         end
-        AST::Program.new(declarations)
+        AST::Program.new(declarations, @init_attributes)
       end
 
       private
@@ -369,28 +430,51 @@ module Rubycc
         return parse_static_assert if peek.keyword?("_Static_assert")
 
         type_tok = peek
-        base_type, spec_info = parse_declaration_specifiers(allow_storage_class: true)
+        # A file-scope declaration is the one place a constructor/destructor
+        # attribute means something, so it is the one place the specifier run
+        # admits it; everywhere else it is refused rather than dropped.
+        base_type, spec_info = parse_declaration_specifiers(allow_storage_class: true,
+                                                            allow_init_attributes: true)
 
         # "struct point { ... };" (or "struct node;", or a tag-only "enum E { ...
         # };") with no declarator only declares or defines the tag, which the
         # specifier parse already registered; it contributes no object and no
         # code, so it flattens away to an empty run of declarations. A stray
-        # "typedef int;" with no declarator flattens away the same way.
+        # "typedef int;" with no declarator flattens away the same way. A
+        # declaration with no declarator declares no function either, so an init
+        # attribute the specifier run admitted has nothing to register.
         if peek.punct?(";")
+          reject_init_attributes(spec_info.attributes)
           advance
           return []
         end
 
         # A typedef declaration binds each declarator's name as a type; it
         # yields no object and no code (see #parse_typedef_declaration).
-        return parse_typedef_declaration(base_type, spec_info) if spec_info.storage == :typedef
+        if spec_info.storage == :typedef
+          # A typedef binds a name, not a function, so an init attribute among
+          # its specifiers has nothing to register; the specifier run admitted it
+          # only because a file-scope *function* declaration may start the same
+          # way, so it is refused here rather than dropped.
+          reject_init_attributes(spec_info.attributes)
+          return parse_typedef_declaration(base_type, spec_info)
+        end
 
         name_tok, type, function_params, pointer_quals =
           parse_declarator(base_type, allow_incomplete_array: true)
         # A GNU attribute may trail the declarator (position d):
         # "int f(void) __attribute__((noreturn));". Accepted and discarded, on a
-        # function prototype/definition or a variable alike.
-        parse_attribute_specifiers
+        # function prototype/definition or a variable alike — except an init
+        # attribute, which is claimed below. The specifier-position attributes
+        # belong to every declarator of this declaration, so they join it here.
+        #
+        # gcc rejects the *definition* form ("void f(void)
+        # __attribute__((constructor)) { }") with "attributes should be specified
+        # before the declarator in a function definition"; this parser accepts it,
+        # a deliberate superset — refusing a form whose intent is unambiguous
+        # would buy nothing, while dropping it silently is the failure this whole
+        # position-by-position handling exists to avoid.
+        attributes = spec_info.attributes + parse_attribute_specifiers(init_attributes: :allow)
 
         # A function definition is the one external declaration whose declarator
         # is followed by a compound statement (6.9.1); the declarator must be a
@@ -409,12 +493,13 @@ module Rubycc
             error_at(name_tok, "function definition through a typedef is not allowed")
           end
           declare_ordinary_name(name_tok.value, type)
+          register_init_attributes(name_tok.value, attributes)
           return parse_function_definition(name_tok.value, type.return_type, function_params,
                                            type_tok, spec_info.storage, type.variadic)
         end
 
         parse_external_declaration_list(base_type, name_tok, type, function_params,
-                                        pointer_quals, spec_info, type_tok)
+                                        pointer_quals, spec_info, type_tok, attributes)
       end
 
       # The declaration-list form of an external declaration: a comma-separated
@@ -424,14 +509,17 @@ module Rubycc
       # declaration may mix the two ("int f(int a), g(int a), a;"). The run ends
       # at ";".
       def parse_external_declaration_list(base_type, first_name_tok, first_type, first_params,
-                                          first_pointer_quals, spec_info, return_tok)
+                                          first_pointer_quals, spec_info, return_tok, first_attributes)
         decls = [parse_external_declarator(first_name_tok, first_type, first_params,
-                                           first_pointer_quals, spec_info, return_tok)]
+                                           first_pointer_quals, spec_info, return_tok, first_attributes)]
         while peek.punct?(",")
           advance
           name_tok, type, params, pointer_quals = parse_declarator(base_type, allow_incomplete_array: true)
-          parse_attribute_specifiers # position d: a trailing attribute on this declarator
-          decls << parse_external_declarator(name_tok, type, params, pointer_quals, spec_info, return_tok)
+          # position d: a trailing attribute on this declarator, joined by the
+          # specifier-position ones the whole declaration shares.
+          attributes = spec_info.attributes + parse_attribute_specifiers(init_attributes: :allow)
+          decls << parse_external_declarator(name_tok, type, params, pointer_quals, spec_info,
+                                             return_tok, attributes)
         end
         expect_punct(";")
         decls
@@ -444,13 +532,21 @@ module Rubycc
       # #parse_global_declarator, which reads any "=" initializer). `spec_info`
       # carries the shared storage class and an "inline" flag, legal only on the
       # function declarators (an object declarator rejects it downstream).
-      def parse_external_declarator(name_tok, type, params, pointer_quals, spec_info, return_tok)
+      def parse_external_declarator(name_tok, type, params, pointer_quals, spec_info, return_tok,
+                                    attributes)
         if type.function?
           declare_ordinary_name(name_tok.value, type)
+          register_init_attributes(name_tok.value, attributes)
           AST::FunctionDecl.new(name_tok.value, type.return_type,
                                 declarator_prototype_params(type, params, return_tok), return_tok,
                                 spec_info.storage, type.variadic)
         else
+          # An init attribute on an object has nothing to register — there is no
+          # function to call — so it is refused here. gcc only warns ("attribute
+          # ignored"), but a warning this compiler has no channel for would be a
+          # silent drop, and a dropped initializer is invisible until the program
+          # misbehaves at run time.
+          reject_init_attributes(attributes)
           parse_global_declarator(type, name_tok, pointer_quals, spec_info)
         end
       end
@@ -551,11 +647,16 @@ module Rubycc
       # diagnostic; `allow_storage_class` is false in the contexts a storage
       # class or "inline" cannot appear (a member, a parameter, a type-name),
       # where const/volatile are still admitted ("int f(const int x)",
-      # "sizeof(const int)"). Returns [base_type, DeclSpecInfo].
-      def parse_declaration_specifiers(allow_storage_class:, allow_register: false)
+      # "sizeof(const int)"). `allow_init_attributes` opens the
+      # constructor/destructor attributes, which only a file-scope declaration
+      # can act on; every other context refuses them rather than dropping them.
+      # Returns [base_type, DeclSpecInfo].
+      def parse_declaration_specifiers(allow_storage_class:, allow_register: false,
+                                       allow_init_attributes: false)
         start_tok = peek
         specs = []       # collected integer/void keyword strings
         composite = nil  # a struct/enum/typedef-name Type (excludes `specs`)
+        attributes = []  # GNU attributes written among the specifiers (position a)
         storage = nil    # recorded storage class: :typedef / :static / :extern
         storage_seen = false # any storage-class specifier (for the 6.7.1 check)
         const_p = false
@@ -598,8 +699,11 @@ module Rubycc
             # A GNU attribute may open the specifier run or sit between
             # specifiers (position a): "__attribute__((const)) int f(...)",
             # "int __attribute__((unused)) x;". None affects an object's type, so
-            # the collected attributes are discarded.
-            parse_attribute_specifiers
+            # the collected attributes are only kept for the caller's sake (the
+            # init attributes, where this context admits them at all).
+            attributes.concat(
+              parse_attribute_specifiers(init_attributes: allow_init_attributes ? :allow : :reject)
+            )
           elsif composite.nil? && specs.empty? && tok.type == :ident && typedef_name?(tok.value)
             composite, typedef_const = lookup_ordinary(tok.value).value
             advance
@@ -610,7 +714,8 @@ module Rubycc
 
         # A "const" typedef name ("typedef const int ci; ci x;") contributes its
         # const to the declaration, OR-ed with any const written here directly.
-        spec_info = DeclSpecInfo.new(storage: storage, const: const_p || typedef_const, inline_p: inline_p)
+        spec_info = DeclSpecInfo.new(storage: storage, const: const_p || typedef_const,
+                                     inline_p: inline_p, attributes: attributes)
         if composite
           [composite, spec_info]
         else
@@ -755,12 +860,18 @@ module Rubycc
 
       # Consumes a run of GNU __attribute__ specifiers (each
       # "__attribute__ ( ( attribute-list ) )", ISO C23's attribute-specifier
-      # sequence spelled the GNU way), returning the collected [name, argument]
-      # pairs for the caller to interpret. A caller that gives attributes no
-      # meaning (every position but a struct/union specifier) simply discards
-      # the result. `__attribute__` is a keyword here, so it never collides with
-      # an ordinary identifier. Nothing is consumed when no attribute is present.
-      def parse_attribute_specifiers
+      # sequence spelled the GNU way), returning the collected Attributes for the
+      # caller to interpret. A caller that gives attributes no meaning (most
+      # positions) simply discards the result. `__attribute__` is a keyword here,
+      # so it never collides with an ordinary identifier. Nothing is consumed
+      # when no attribute is present.
+      #
+      # `init_attributes` guards the one attribute family whose absence cannot be
+      # noticed: a discarded constructor/destructor leaves a program that links
+      # and runs but never initializes itself. It defaults to :reject, so a
+      # position not explicitly taught to claim them diagnoses instead of
+      # dropping; only the file-scope declaration positions pass :allow.
+      def parse_attribute_specifiers(init_attributes: :reject)
         attributes = []
         while peek.keyword?("__attribute__")
           advance # "__attribute__"
@@ -770,7 +881,50 @@ module Rubycc
           expect_punct(")")
           expect_punct(")")
         end
+        reject_init_attributes(attributes) unless init_attributes == :allow
         attributes
+      end
+
+      # Refuses a constructor/destructor attribute written where this parser
+      # cannot act on it (a struct/union specifier, a member, a parameter, a
+      # type-name, a typedef name, a block-scope declaration, a file-scope
+      # object). Any of those would otherwise be dropped without a trace.
+      def reject_init_attributes(attributes)
+        attributes.each do |attr|
+          next unless INIT_ATTRIBUTES.key?(attr.name)
+
+          error_at(attr.token,
+                   "'#{attr.name}' attribute is only accepted on a file-scope function declaration")
+        end
+      end
+
+      # Records the .init_array / .fini_array registration `attributes` ask for
+      # under the function's name. Both a prototype and the definition may carry
+      # them, in either order — gcc accepts "static void f(void)
+      # __attribute__((constructor)); static void f(void) { }" and the reverse —
+      # so the table is keyed by name and matched against the definitions once
+      # the whole unit is parsed (see AST::Program#init_attributes). A name that
+      # is only declared here registers nothing, since the array slot belongs to
+      # the object that defines the function; gcc emits nothing for it either.
+      #
+      # Repeating an attribute is fine as long as it asks for the same priority.
+      # gcc silently keeps the first of two conflicting ones; that quietly runs
+      # the initializers in an order the source did not ask for, so it is a
+      # diagnostic here instead.
+      def register_init_attributes(name, attributes)
+        attributes.each do |attr|
+          kind = INIT_ATTRIBUTES[attr.name]
+          next unless kind
+
+          priority = attr.argument || DEFAULT_INIT_PRIORITY
+          record = @init_attributes[name] ||= AST::InitAttributes.new(constructor: nil, destructor: nil)
+          previous = record.public_send(kind)
+          if previous && previous != priority
+            error_at(attr.token, "conflicting '#{attr.name}' priorities for '#{name}' " \
+                                 "(#{previous} and #{priority})")
+          end
+          @init_attributes[name] = record.with(kind => priority)
+        end
       end
 
       # attribute-list: a comma-separated sequence of attributes, possibly empty
@@ -791,7 +945,7 @@ module Rubycc
       # optionally followed by a parenthesized argument clause. Its name is
       # normalized (see #normalize_attribute_name) and paired with the folded
       # argument value #parse_attribute_arguments returns (meaningful only for
-      # "aligned"; nil otherwise).
+      # "aligned" and the init attributes; nil otherwise).
       def parse_attribute(attributes)
         name_tok = peek
         unless name_tok.type == :ident || name_tok.type == :keyword
@@ -800,28 +954,56 @@ module Rubycc
         advance
         name = normalize_attribute_name(name_tok.value)
         argument = peek.punct?("(") ? parse_attribute_arguments(name) : nil
-        attributes << [name, argument]
+        attributes << Attribute.new(name: name, argument: argument, token: name_tok)
       end
 
-      # An attribute's parenthesized argument clause. "aligned(N)" carries a
-      # single integer constant-expression that must be folded and range-checked
-      # here, so it is parsed for real; every other attribute's arguments (bare
-      # identifiers, string literals, comma-separated integers such as
-      # "format(printf, 1, 2)") are accepted and discarded, so its balanced
-      # parentheses are skipped verbatim. Returns the folded aligned value, or
-      # nil for any other attribute.
+      # An attribute's parenthesized argument clause. "aligned(N)" and
+      # "constructor(N)" / "destructor(N)" each carry a single integer
+      # constant-expression that must be folded and range-checked here, so they
+      # are parsed for real; every other attribute's arguments (bare identifiers,
+      # string literals, comma-separated integers such as "format(printf, 1, 2)")
+      # are accepted and discarded, so its balanced parentheses are skipped
+      # verbatim. Returns the folded value, or nil for any other attribute.
       def parse_attribute_arguments(name)
-        return skip_balanced_parentheses && nil unless name == "aligned"
+        return parse_aligned_argument if name == "aligned"
+        return parse_init_priority_argument(name) if INIT_ATTRIBUTES.key?(name)
 
-        advance # "("
-        expr = parse_conditional_expression
-        expect_punct(")")
+        skip_balanced_parentheses && nil
+      end
+
+      def parse_aligned_argument
+        expr = parse_parenthesized_constant
         value = evaluate_constant_expression(expr, "'aligned' attribute argument is not an integer constant",
                                                     sizeof_expr: method(:fold_time_sizeof))
         unless value.positive? && (value & (value - 1)).zero?
           error_at(expr.token, "requested alignment '#{value}' is not a positive power of 2")
         end
         value
+      end
+
+      # The run-order number of a constructor/destructor. The window and its
+      # wording follow gcc's measured behavior (see MAX_INIT_PRIORITY); the
+      # 0..100 range gcc reserves for the implementation is accepted here, since
+      # gcc only warns about it and this compiler has no warning channel.
+      def parse_init_priority_argument(name)
+        expr = parse_parenthesized_constant
+        value = evaluate_constant_expression(expr, "'#{name}' attribute argument is not an integer constant",
+                                                    sizeof_expr: method(:fold_time_sizeof))
+        unless value.between?(MIN_INIT_PRIORITY, MAX_INIT_PRIORITY)
+          error_at(expr.token, "#{name} priorities must be integers from " \
+                               "#{MIN_INIT_PRIORITY} to #{MAX_INIT_PRIORITY} inclusive")
+        end
+        value
+      end
+
+      # "( constant-expression )" — an attribute argument clause holding exactly
+      # one expression, returned unfolded for the caller to evaluate under its
+      # own diagnostic.
+      def parse_parenthesized_constant
+        advance # "("
+        expr = parse_conditional_expression
+        expect_punct(")")
+        expr
       end
 
       # Skips a balanced-parenthesis token run (an attribute argument clause we
@@ -863,10 +1045,10 @@ module Rubycc
       def resolve_layout_attributes(attributes)
         aligned = nil
         packed = false
-        attributes.each do |name, argument|
-          case name
+        attributes.each do |attr|
+          case attr.name
           when "aligned"
-            value = argument || BIGGEST_ALIGNMENT
+            value = attr.argument || BIGGEST_ALIGNMENT
             aligned = value if aligned.nil? || value > aligned
           when "packed"
             packed = true
@@ -2512,6 +2694,8 @@ module Rubycc
             parse_builtin_unreachable
           elsif peek.keyword?("__builtin_memcpy")
             parse_builtin_memcpy
+          elsif peek.type == :keyword && ATOMIC_BUILTINS.key?(peek.value)
+            parse_builtin_atomic
           elsif peek.punct?("+")
             advance # unary + is a no-op; fold it away
             parse_cast_expression
@@ -2730,6 +2914,23 @@ module Rubycc
         operand = parse_assignment_expression
         expect_punct(")")
         AST::BuiltinBitScan.new(operand, direction, width, keyword_tok)
+      end
+
+      # "__atomic_xxx ( ... )": one of the nine gcc atomic builtins rubycc
+      # lowers. The keyword decides the kind and the exact argument count, both
+      # of which ATOMIC_BUILTINS records; everything else (operand types, the
+      # 4-or-8-byte width restriction) needs resolved types and is the
+      # generator's to diagnose.
+      def parse_builtin_atomic
+        keyword_tok = advance # the "__atomic_..." keyword
+        kind, arity = ATOMIC_BUILTINS.fetch(keyword_tok.value)
+        expect_punct("(")
+        args = parse_argument_expression_list
+        expect_punct(")")
+        unless args.size == arity
+          error_at(keyword_tok, "'#{keyword_tok.value}' expects #{arity} arguments, have #{args.size}")
+        end
+        AST::BuiltinAtomic.new(kind, args, keyword_tok)
       end
 
       # "__builtin_unreachable ()": no operands. Lowers to no code (rubycc does

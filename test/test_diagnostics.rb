@@ -1575,4 +1575,34 @@ class TestDiagnostics < Minitest::Test
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/conversion between '__int128' and a floating type is not supported yet/, error.description)
   end
+
+  # --- constructor / destructor attributes (Step 155) ------------------------
+  #
+  # A constructor rubycc drops is invisible: the program links, runs, and simply
+  # never initializes itself. Every position the compiler cannot act on must
+  # therefore reach a located diagnostic through the whole pipeline, not just
+  # the parser in isolation, and the caret must sit on the attribute itself.
+
+  def test_constructor_on_an_object_is_located_at_the_attribute
+    source = "__attribute__((constructor)) int g = 3;"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_equal 1, error.line
+    assert_equal 16, error.column # under "constructor"
+    assert_match(/'constructor' attribute is only accepted on a file-scope function/,
+                 error.description)
+  end
+
+  def test_destructor_in_a_block_scope_declaration_is_rejected
+    source = "int main(void) { __attribute__((destructor)) int x = 0; return x; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/'destructor' attribute is only accepted on a file-scope function/,
+                 error.description)
+  end
+
+  def test_constructor_priority_outside_the_window_is_rejected
+    source = "__attribute__((constructor(70000))) void f(void) {}"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/constructor priorities must be integers from 0 to 65535 inclusive/,
+                 error.description)
+  end
 end

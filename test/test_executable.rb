@@ -36,7 +36,20 @@ class TestExecutable < Minitest::Test
 
   R_X86_64_RELATIVE  = 8
   R_X86_64_JUMP_SLOT = 7
+  R_X86_64_GLOB_DAT  = 6
+  R_X86_64_64        = 1
   DT_NEEDED = 1
+
+  # The initializer/finalizer array section types, their flags, and the four
+  # dynamic tags addressing them (sizes in bytes).
+  SHT_INIT_ARRAY  = 14
+  SHT_FINI_ARRAY  = 15
+  SHF_WRITE       = 0x1
+  SHF_ALLOC       = 0x2
+  DT_INIT_ARRAY   = 25
+  DT_FINI_ARRAY   = 26
+  DT_INIT_ARRAYSZ = 27
+  DT_FINI_ARRAYSZ = 28
 
   RETURN_42 = "int main(void){ return 42; }"
 
@@ -175,7 +188,64 @@ class TestExecutable < Minitest::Test
     assert_nil r.dynamic_symbol("__dso_handle"), "__dso_handle must not enter .dynsym"
 
     dyn = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
-    assert_nil dyn, "the fixed load address needs no base relocation"
+    refute_includes dyn.relocations.map(&:type), R_X86_64_RELATIVE,
+                    "the fixed load address needs no base relocation"
+  end
+
+  # An executable takes the same supplier member, so it takes the finalizer with
+  # it: a priority-0 .fini_array slot calling __cxa_finalize(__dso_handle). The
+  # loader (not the crt) walks DT_FINI_ARRAY at exit, so it runs there too. The
+  # non-PIE difference is the usual one — the slot holds its final address and
+  # needs no RELATIVE.
+  def test_executable_dso_handle_carries_the_finalizer_slot
+    skip_unless_linkable
+
+    r = Reader.read(build_exe([DSO_HANDLE_USER]))
+    slot = r.section(".fini_array.00000")
+    refute_nil slot, "the supplier member contributes its finalizer here too"
+    assert_equal SHT_FINI_ARRAY, slot.type
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+    assert_equal slot.addr, by_tag[DT_FINI_ARRAY]
+    assert_equal 8, by_tag[DT_FINI_ARRAYSZ]
+
+    text = r.section(".text")
+    target = slot.data.unpack1("Q<")
+    assert_operator target, :>=, text.addr, "the slot holds a final address, not zero"
+    assert_operator target, :<, text.addr + text.size, "which points into .text"
+
+    # __cxa_finalize is imported weakly and bound the measured way: a GOT slot
+    # for the NULL test and a .plt stub for the call.
+    sym = r.dynamic_symbol("__cxa_finalize")
+    assert_equal :weak, sym.bind
+    assert sym.undefined?
+    dyn = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    assert_equal ["__cxa_finalize"],
+                 dyn.relocations.select { |x| x.type == R_X86_64_GLOB_DAT }.map { |x| x.symbol.name }
+    plt = r.relocation_sections.find { |rs| rs.section.name == ".rela.plt" }
+    assert_includes plt.relocations.map { |x| x.symbol.name }, "__cxa_finalize"
+  end
+
+  # A program that registers a handler under its own handle. At exit glibc walks
+  # the exit list first (running the handler) and only then runs DT_FINI_ARRAY,
+  # so the synthesized finalizer finds nothing left: the handler must appear
+  # exactly once, which is what proves the finalizer did not re-run it.
+  CXA_ATEXIT_USER = <<~C
+    int __cxa_atexit(void (*f)(void *), void *arg, void *dso);
+    extern void *__dso_handle;
+    int puts(const char *s);
+    static void bye(void *arg) { puts("bye"); }
+    int main(void) { __cxa_atexit(bye, 0, __dso_handle); puts("main"); return 0; }
+  C
+
+  def test_running_executes_a_handler_registered_under_the_handle_exactly_once
+    skip_unless_runnable
+
+    with_exe([CXA_ATEXIT_USER]) do |exe|
+      out, status = Open3.capture2(exe)
+      assert_equal 0, status.exitstatus
+      assert_equal "main\nbye\n", out,
+                   "the registered handler runs once at exit, not again from the finalizer"
+    end
   end
 
   def test_running_reads_the_handle_as_its_own_address
@@ -198,6 +268,182 @@ class TestExecutable < Minitest::Test
       out, status = Open3.capture2(exe)
       assert_equal 0, status.exitstatus
       assert_equal "3\n", out, "the prepare and parent handlers must have run"
+    end
+  end
+
+  # --- .init_array / .fini_array -----------------------------------------
+
+  # An executable carries the same four array tags a shared object does — the
+  # loader, not the crt, walks them (this _start passes init/fini as NULL to
+  # __libc_start_main and the constructor still runs). The one difference is the
+  # non-PIE image's slots: mapped at a fixed address, each holds its function's
+  # final address outright and needs no RELATIVE.
+  ARRAY_USER = <<~C
+    int puts(const char *s);
+    static int ran;
+    void note_start(void) { ran = 1; }
+    void note_end(void) { puts("fini"); }
+    int main(void) { puts(ran ? "init" : "MISSING"); return ran ? 0 : 1; }
+  C
+
+  def test_executable_emits_the_array_tags_without_a_relative
+    skip_unless_linkable
+
+    r = Reader.read(build_exe([ARRAY_USER], inputs: [array_object(".init_array", "note_start"),
+                                                     array_object(".fini_array", "note_end")]))
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+    init = r.section(".init_array")
+    assert_equal init.addr, by_tag[DT_INIT_ARRAY]
+    assert_equal 8, by_tag[DT_INIT_ARRAYSZ]
+    assert_equal r.section(".fini_array").addr, by_tag[DT_FINI_ARRAY]
+    assert_equal 8, by_tag[DT_FINI_ARRAYSZ]
+
+    # The executable keeps no symbol table, so the slot is checked by range: a
+    # non-PIE image writes the final address, which must land inside .text.
+    text = r.section(".text")
+    slot = init.data.unpack1("Q<")
+    assert_operator slot, :>=, text.addr, "the slot holds a final address, not zero"
+    assert_operator slot, :<, text.addr + text.size, "which points into .text"
+    dyn = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
+    assert_nil dyn, "the fixed load address needs no base relocation"
+  end
+
+  # The acceptance: the constructor must actually run before main and the
+  # destructor after it.
+  def test_running_executes_the_initializer_before_main_and_the_finalizer_after
+    skip_unless_runnable
+
+    with_exe([ARRAY_USER], inputs: [array_object(".init_array", "note_start"),
+                                    array_object(".fini_array", "note_end")]) do |exe|
+      out, status = Open3.capture2(exe)
+      assert_equal 0, status.exitstatus, "the initializer must have run before main"
+      assert_equal "init\nfini\n", out,
+                   "the initializer runs before main and the finalizer at exit"
+    end
+  end
+
+  # --- constructors compiled from C (Step 155) -----------------------------
+  #
+  # The cases above hand-build the array objects, because the front end could
+  # not emit them. These start from C: a `__attribute__((constructor))` compiled
+  # by rubycc, linked by rubycc, run for real — the whole line from the
+  # attribute to the call the loader makes.
+  #
+  # The order is the point. gcc's rule, measured in Step 154 and reproduced by
+  # the linker, is: the priority-numbered constructors first in ascending order,
+  # then the unnumbered ones in source order. Destructors run in the mirror
+  # order (the runtime walks .fini_array backwards), which is why the finalizer
+  # output below is reversed relative to the initializer output.
+  CONSTRUCTOR_SOURCE = <<~C
+    int puts(const char *s);
+    __attribute__((constructor(200))) static void ctor_second(void) { puts("c200"); }
+    __attribute__((constructor))      static void ctor_plain(void)  { puts("cplain"); }
+    __attribute__((constructor(101))) static void ctor_first(void)  { puts("c101"); }
+    __attribute__((destructor(101)))  static void dtor_first(void)  { puts("d101"); }
+    __attribute__((destructor))       static void dtor_plain(void)  { puts("dplain"); }
+    int main(void) { puts("main"); return 0; }
+  C
+
+  # The exact order the constructors and destructors must appear in, verified
+  # against gcc by #test_constructor_program_matches_gcc below.
+  CONSTRUCTOR_EXPECTED = "c101\nc200\ncplain\nmain\ndplain\nd101\n"
+
+  def test_compiled_constructors_reach_the_array_tags
+    skip_unless_linkable
+
+    r = Reader.read(build_exe([CONSTRUCTOR_SOURCE]))
+    by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }
+
+    # A priority is spelled as its own section, so the run spans several of them
+    # ("*.00101", "*.00200", then the unnumbered one); the dynamic tag addresses
+    # the whole contiguous run, which is the first section of it.
+    init_run = r.sections.select { |s| s.type == SHT_INIT_ARRAY }
+    fini_run = r.sections.select { |s| s.type == SHT_FINI_ARRAY }
+    assert_equal %w[.init_array.00101 .init_array.00200 .init_array], init_run.map(&:name)
+    assert_equal %w[.fini_array.00101 .fini_array], fini_run.map(&:name)
+    init_run.each { |s| assert_equal SHF_ALLOC | SHF_WRITE, s.flags, "#{s.name} is writable" }
+
+    assert_equal init_run.first.addr, by_tag[DT_INIT_ARRAY]
+    assert_equal 3 * 8, by_tag[DT_INIT_ARRAYSZ], "all three constructors are in one run"
+    assert_equal fini_run.first.addr, by_tag[DT_FINI_ARRAY]
+    assert_equal 2 * 8, by_tag[DT_FINI_ARRAYSZ]
+
+    # A non-PIE image writes each slot's final address outright, so every slot
+    # must already point into .text rather than waiting on a relocation.
+    text = r.section(".text")
+    (init_run + fini_run).flat_map { |s| s.data.unpack("Q<*") }.each_with_index do |slot, i|
+      assert_operator slot, :>=, text.addr, "slot #{i} holds a final address"
+      assert_operator slot, :<, text.addr + text.size, "slot #{i} points into .text"
+    end
+  end
+
+  # The acceptance: compiled by rubycc, linked by rubycc, run for real.
+  def test_running_compiled_constructors_in_priority_order
+    skip_unless_runnable
+
+    with_exe([CONSTRUCTOR_SOURCE]) do |exe|
+      out, status = Open3.capture2(exe)
+      assert_equal 0, status.exitstatus
+      assert_equal CONSTRUCTOR_EXPECTED, out,
+                   "numbered constructors ascend, the unnumbered one runs last, " \
+                   "and the destructors mirror that at exit"
+    end
+  end
+
+  # And the same program built entirely by gcc must print exactly the same
+  # thing — the oracle for the ordering rule the sections encode.
+  def test_constructor_program_matches_gcc
+    skip_unless_runnable
+    skip "gcc unavailable" unless tool?("gcc")
+
+    in_tmpdir do |dir|
+      ours = File.join(dir, "ours")
+      Linker.link_to(objects_for([CONSTRUCTOR_SOURCE], dir), ours)
+      File.chmod(0o755, ours)
+
+      csrc = File.join(dir, "ctors.c")
+      File.write(csrc, CONSTRUCTOR_SOURCE)
+      theirs = File.join(dir, "theirs")
+      out, status = Open3.capture2e("gcc", "-no-pie", "-o", theirs, csrc)
+      skip "gcc failed:\n#{out}" unless status.success?
+
+      our_out, our_status = Open3.capture2(ours)
+      gcc_out, gcc_status = Open3.capture2(theirs)
+      assert_equal gcc_out, our_out, "the constructor order must match gcc's"
+      assert_equal gcc_status.exitstatus, our_status.exitstatus
+      assert_equal CONSTRUCTOR_EXPECTED, gcc_out, "and gcc must agree with the recorded order"
+    end
+  end
+
+  # A constructor spread over two translation units: the priority ordering is a
+  # property of the whole link, not of one object, so the numbered constructor
+  # from the second unit must still sort ahead of the first unit's unnumbered one.
+  def test_constructors_order_across_translation_units
+    skip_unless_runnable
+
+    first = <<~C
+      int puts(const char *s);
+      __attribute__((constructor)) static void a(void) { puts("a-plain"); }
+      int main(void) { puts("main"); return 0; }
+    C
+    second = <<~C
+      int puts(const char *s);
+      __attribute__((constructor(101))) static void b(void) { puts("b-101"); }
+    C
+    with_exe([first, second]) do |exe|
+      out, status = Open3.capture2(exe)
+      assert_equal 0, status.exitstatus
+      assert_equal "b-101\na-plain\nmain\n", out,
+                   "a numbered constructor sorts ahead of an unnumbered one from another object"
+    end
+  end
+
+  def test_executable_without_arrays_gains_no_tag
+    skip_unless_linkable
+
+    tags = Reader.read(build_exe([USES_PUTS])).dynamic_entries.map(&:tag)
+    [DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_FINI_ARRAY, DT_FINI_ARRAYSZ].each do |tag|
+      refute_includes tags, tag, "an array tag must not appear without an array section"
     end
   end
 
@@ -412,6 +658,19 @@ class TestExecutable < Minitest::Test
       File.binwrite(path, Rubycc::Compiler.new.compile(src, filename: "u#{i}.c"))
       path
     end
+  end
+
+  # A relocatable object holding one initializer-array slot pointing at `func`,
+  # as a compiler emits one; built directly because rubycc's front end cannot yet
+  # emit these sections. See TestSharedObject#array_object.
+  def array_object(section, func)
+    type = section.start_with?(".init_array") ? SHT_INIT_ARRAY : SHT_FINI_ARRAY
+    w = Rubycc::ObjFile::RelocatableWriter.new
+    slot = w.add_section(name: section, type: type, flags: SHF_ALLOC | SHF_WRITE,
+                         addralign: 8, entsize: 8, data: "\0" * 8)
+    sym = w.add_symbol(name: func, bind: :global, type: :notype)
+    w.add_relocation(target: slot, offset: 0, symbol: sym, type: R_X86_64_64, addend: 0)
+    w.to_binary
   end
 
   # The host must supply a dynamic loader and a libc for the writer to link at

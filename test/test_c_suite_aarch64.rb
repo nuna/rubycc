@@ -125,7 +125,10 @@ class TestCSuiteAArch64 < Minitest::Test
             "(exit #{status.exitstatus}):\n#{stdout_and_stderr}"
     end
 
-    output, run_status = Open3.capture2e(AArch64ExecutionHelper::QEMU, exe_path)
+    # As in TestCSuite's host-side twin, qemu runs with the executable's own
+    # scratch directory as its working directory: 00187.c writes a file through
+    # a relative path, which would otherwise land in the repository root.
+    output, run_status = Open3.capture2e(AArch64ExecutionHelper::QEMU, exe_path, chdir: dir)
     [run_status.exitstatus, output]
   end
 end

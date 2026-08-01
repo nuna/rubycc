@@ -245,18 +245,11 @@ RECIPES = {
     }
   },
 
-  # The two recipes below do not pass yet: both gems fail at the compile/link
-  # stage, on rubycc gaps measured in Step 146 and listed in docs/ROADMAP.md's
-  # H6 section (a sigset_t typedef collision, sizeof(expr) not folding as an
-  # integer constant expression in an enumerator, two missing pthread
-  # declarations, _POSIX_MONOTONIC_CLOCK, __dso_handle, and incomplete-array
-  # completion). They are kept rather than deleted because they are the
-  # re-verification harness for those fixes: `--all` reporting FAIL for exactly
-  # these two is the standing to-do list, and a recipe added only after a fix
-  # would have to be written and debugged at the worst possible moment.
-  # Both suites pass when built with the host gcc (stackprof 31 runs / 143
-  # assertions, nkf 8 tests / 46 assertions), so the recipes themselves are
-  # right; what is missing is on rubycc's side.
+  # The two recipes below were written in Step 146 while both gems still failed
+  # to compile, and were kept as the re-verification harness for the six rubycc
+  # gaps that run measured. Both now pass: nkf once incomplete-array composition
+  # landed (Step 150, recorded Step 151) and stackprof once _POSIX_MONOTONIC_CLOCK
+  # and __dso_handle did (Steps 149/152, recorded Step 153).
   "stackprof" => {
     version: "0.2.28",
     tarball: "https://github.com/tmm1/stackprof/archive/refs/tags/v0.2.28.tar.gz",
@@ -308,8 +301,117 @@ RECIPES = {
       # proof that separates the two copies.
       expr: "injected_so_loaded?"
     }
+  },
+
+  # The three recipes below are default gems: `require "strscan"` resolves to the
+  # interpreter's own strscan.so unless the injected one comes first on the load
+  # path. Measured on this interpreter (ruby 3.4.5): none of the three is loaded
+  # at startup, and each resolves to a separate .so under
+  # <rubylibdir>/x86_64-linux/, so the injected-.so check really does separate the
+  # two copies rather than being a formality.
+  "strscan" => {
+    version: "3.1.6",
+    tarball: "https://github.com/ruby/strscan/archive/refs/tags/v3.1.6.tar.gz",
+    sos: { "lib/strscan.so" => "lib/strscan.so" },
+    # test/lib/helper.rb requires "core_assertions" (test-unit-ruby-core), the
+    # same pair the gem's Gemfile lists.
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # lib is needed twice over: for the injected strscan.so and for
+    # lib/strscan/strscan.rb, which Init_strscan pulls in with
+    # rb_require("strscan/strscan") and which defines StringScanner#scan_integer.
+    load_paths: %w[lib test/lib],
+    require_flags: %w[helper],
+    # run-test.rb (what the Rakefile's test task runs) requires test/lib/helper
+    # and then globs test/strscan/**/*test_*.rb; both are expressed above.
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      requires: %w[strscan],
+      # lib/strscan/strscan.rb only adds a method to the class the extension
+      # defines, and the alternative implementation (ext/jruby) cannot be reached
+      # on MRI, so there is no C-vs-Ruby switch to read: the injected-.so check is
+      # the proof, and here it is doing the default-gem work described above.
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "stringio" => {
+    version: "3.2.0",
+    tarball: "https://github.com/ruby/stringio/archive/refs/tags/v3.2.0.tar.gz",
+    sos: { "lib/stringio.so" => "lib/stringio.so" },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # The Rakefile's Rake::TestTask: libs = the built extension's dir + test/lib,
+    # ruby_opts -rhelper, test_files FileList["test/**/test_*.rb"].
+    load_paths: %w[lib test/lib],
+    require_flags: %w[helper],
+    # test/ruby/ut_eof.rb is deliberately not matched: test_stringio.rb pulls it
+    # in with require_relative, exactly as the Rakefile's FileList leaves it.
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      requires: %w[stringio],
+      # The only non-C implementation is lib/java/stringio.rb, selected by the
+      # gemspec's `java` platform and unreachable on MRI, so nothing in the loaded
+      # code says "C or Ruby"; the injected-.so check is the available proof.
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  # etc does not pass yet, and is kept for the same reason stackprof and nkf were
+  # (it is the harness that will confirm the fixes). Three rubycc gaps were
+  # measured in Step 157, each found by removing the one before it:
+  #   1. rmake's recipe tokenizer does not do POSIX backslash removal, so mkmf's
+  #      `-DSYSCONFDIR=\"...\"` reaches the compiler with its backslashes intact.
+  #      GNU make + rubycc builds the same Makefile, and rmake + gcc fails the
+  #      same way, so the gap is in Rubycc::Rmake::Executor#tokenize, not in the
+  #      compiler or the gem.
+  #   2. ruby.h defines HAVE_RUBY_ATOMIC_H, so etc.c includes ruby/atomic.h,
+  #      whose HAVE_GCC_ATOMIC_BUILTINS branch needs __atomic_load_n / store_n /
+  #      exchange_n / compare_exchange_n / fetch_add / fetch_sub / add_fetch /
+  #      sub_fetch / or_fetch. rubycc implements none of them, and the header's
+  #      fallback chain ends in `#error Unsupported platform`.
+  #   3. the bundled unistd.h declares neither confstr, fpathconf nor getlogin,
+  #      which mkmf's have_func probes cannot notice (they declare the function
+  #      themselves), so HAVE_CONFSTR and friends get defined anyway.
+  # With those three worked around by hand the translation unit compiles, but the
+  # suite would still be quietly smaller than the gcc control's 18 tests: the
+  # bundled unistd.h carries 11 of the 179 constants ext/etc/constdefs.h defines
+  # under gcc, and test_etc.rb defines test_confstr / test_pathconf only
+  # `if defined?(Etc::CS_PATH)` / `Etc::PC_PIPE_BUF`.
+  "etc" => {
+    version: "1.4.6",
+    tarball: "https://github.com/ruby/etc/archive/refs/tags/v1.4.6.tar.gz",
+    sos: { "lib/etc.so" => "lib/etc.so" },
+    # test/etc/test_etc.rb calls assert_ractor, which comes from core_assertions
+    # in test-unit-ruby-core.
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    load_paths: %w[lib test/lib],
+    require_flags: %w[helper],
+    test_glob: "test/**/test_*.rb",
+    # ext/etc/constdefs.h is generated by ext/etc/mkconstants.rb, but extconf.rb
+    # generates it itself when absent, so unlike racc's parser-text.rb there is
+    # nothing to copy into the upstream tree: the suite only needs the .so.
+    sanity: {
+      requires: %w[etc],
+      # etc has no Ruby implementation at all (the gem is the extension), so there
+      # is no fallback to detect -- only the wrong *copy* to rule out, which is
+      # what the injected-.so check does.
+      expr: "injected_so_loaded?"
+    }
   }
 }.freeze
+
+# fcntl (a corpus gem, and a default gem like the three above) has no recipe on
+# purpose: ruby/fcntl ships no tests. Measured at tag v1.3.0 and on master --
+# there is no test/ directory, the Rakefile defines no test task, and the CI
+# workflow's "Run test" step is `bundle exec rake compile`. This tool can only
+# produce the (d)-level evidence data/verified_gems.json accepts ("the gem's own
+# suite passed"), so fcntl cannot be recorded from here no matter how well it
+# builds; a recipe pointed at someone else's tests would not be that evidence.
 
 # --- CLI --------------------------------------------------------------------
 

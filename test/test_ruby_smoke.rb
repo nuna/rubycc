@@ -77,6 +77,25 @@ class TestRubySmoke < Minitest::Test
     }
   C
 
+  # <ruby/atomic.h> on its own. ruby.h includes it unconditionally (its
+  # HAVE_RUBY_ATOMIC_H is baked into the config.h CRuby ships), and CRuby's
+  # config.h equally bakes in HAVE_GCC_ATOMIC_BUILTINS, so the header's #elif
+  # chain always lands on the __atomic_* branch — there is no fallback to reach,
+  # its tail being "#error Unsupported platform". Compiling this file is
+  # therefore the direct reproduction of the gap the atomic builtins closed, and
+  # the reason every gem whose sources reach ruby.h depends on them. The body
+  # uses the two macros with the widest reach (an increment of an rb_atomic_t and
+  # a compare-and-swap), so the header's inline functions are actually lowered
+  # rather than merely parsed.
+  ATOMIC_SOURCE = <<~C
+    #include <ruby/atomic.h>
+    static rb_atomic_t counter;
+    unsigned int probe(void) {
+      RUBY_ATOMIC_INC(counter);
+      return RUBY_ATOMIC_CAS(counter, 1, 2);
+    }
+  C
+
   def setup
     # Non-Linux or dev-header-less environments (no CRuby headers installed, or
     # no libc headers under /usr/include) cannot exercise this path; skip with a
@@ -99,6 +118,11 @@ class TestRubySmoke < Minitest::Test
     refute_empty object, "expected a non-empty relocatable object for the richer extension"
   end
 
+  def test_compiles_a_translation_unit_that_only_includes_ruby_atomic_h
+    object = compile_extension(ATOMIC_SOURCE, "atomic.c")
+    refute_empty object, "expected a non-empty object from #include <ruby/atomic.h>"
+  end
+
   # The distroless criterion (Step 63): <ruby.h> compiles to an object using only
   # the bundled headers and the CRuby dirs, with the host /usr/include suppressed
   # entirely (-nostdinc, i.e. system_includes: false, and no /usr/include on the
@@ -107,7 +131,8 @@ class TestRubySmoke < Minitest::Test
   # transitively reaches are provided as measured minimal stubs brought forward
   # from the next step.
   def test_ruby_h_compiles_against_bundled_headers_only_no_host_libc
-    [["smoke.c", SMOKE_SOURCE], ["smoke2.c", RICHER_SOURCE]].each do |filename, source|
+    [["smoke.c", SMOKE_SOURCE], ["smoke2.c", RICHER_SOURCE],
+     ["atomic.c", ATOMIC_SOURCE]].each do |filename, source|
       object = Dir.mktmpdir("rubycc-distroless") do |dir|
         obj = Rubycc::Compiler.new.compile(
           source, filename: filename,

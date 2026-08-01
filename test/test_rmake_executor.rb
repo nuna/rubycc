@@ -5,6 +5,7 @@ require "rubycc/rmake/rmake"
 require "tmpdir"
 require "fileutils"
 require "stringio"
+require "open3"
 
 # Step 57 (M3 / ROADMAP §6 B2): unit tests for the shell-less recipe runner —
 # rmake's Executor, which interprets an execution Plan without /bin/sh (DESIGN
@@ -70,6 +71,105 @@ class TestRmakeExecutor < Minitest::Test
       run_recipes(dir, ['touch a"b"c'], target: "t")
       assert_equal ["abc"], Dir.children(dir)
     end
+  end
+
+  # --- backslash quote removal (Step 157 gap A) -----------------------------
+  #
+  # POSIX quote removal (XCU 2.2 / 2.2.3), each rule checked against /bin/sh
+  # (dash) before being encoded here:
+  #   1. Outside any quote a backslash preserves the literal value of the next
+  #      character and disappears itself (`\`+newline is a line continuation:
+  #      both vanish).
+  #   2. Inside double quotes a backslash is special only before
+  #      `$`/`` ` ``/`"`/`\`/newline; before any other character it stays in
+  #      the word (counter-intuitive: `"a\b"` -> `a\b`, not `ab`).
+  #   3. Inside single quotes a backslash is entirely literal.
+  # mkmf's `-DSYSCONFDIR=\"...\"` relies on rule 1: /bin/sh unescapes the
+  # backslash-quotes into a literal `"` inside one word.
+
+  def test_backslash_outside_quotes_escapes_a_quote_character
+    with_dir do |dir|
+      run_recipes(dir, ['touch a\"b'])
+      assert_equal ['a"b'], Dir.children(dir)
+    end
+  end
+
+  def test_backslash_outside_quotes_escapes_a_space_so_the_word_stays_one
+    with_dir do |dir|
+      run_recipes(dir, ['touch a\ b'])
+      assert_equal ["a b"], Dir.children(dir)
+    end
+  end
+
+  def test_backslash_outside_quotes_escapes_a_backslash
+    with_dir do |dir|
+      run_recipes(dir, ["touch a\\\\b"])
+      assert_equal ["a\\b"], Dir.children(dir)
+    end
+  end
+
+  def test_backslash_in_double_quotes_keeps_a_quote_special
+    with_dir do |dir|
+      run_recipes(dir, ['touch "a\"b"'])
+      assert_equal ['a"b'], Dir.children(dir)
+    end
+  end
+
+  def test_backslash_in_double_quotes_keeps_a_dollar_special
+    with_dir do |dir|
+      run_recipes(dir, ['touch "a\$b"'])
+      assert_equal ["a$b"], Dir.children(dir)
+    end
+  end
+
+  def test_backslash_in_double_quotes_stays_before_an_ordinary_character
+    with_dir do |dir|
+      # The counter-intuitive rule: unlike outside quotes, a backslash before
+      # an ordinary character inside double quotes is NOT special, so it
+      # stays in the word. Verified against /bin/sh: `"a\bb"` -> `a\bb`.
+      run_recipes(dir, ['touch "a\bb"'])
+      assert_equal ["a\\bb"], Dir.children(dir)
+    end
+  end
+
+  def test_backslash_in_single_quotes_is_literal
+    with_dir do |dir|
+      run_recipes(dir, ["touch 'a\\b'"])
+      assert_equal ["a\\b"], Dir.children(dir)
+    end
+  end
+
+  def test_tokenize_backslash_newline_is_a_line_continuation
+    # Exercises tokenize directly: a shell-level backslash-newline vanishes
+    # entirely. In real recipes this text never reaches tokenize with an
+    # embedded newline, because Makefile recipe continuations (a trailing `\`
+    # at the end of a physical line) are already folded into one logical line
+    # by Parser#logical_lines before the Executor ever sees the text — that is
+    # make's own continuation, distinct from this shell-level rule, and it
+    # runs first. This test isolates the shell-level rule at the tokenizer.
+    executor = Executor.new(dir: Dir.pwd, out: StringIO.new)
+    tokens = executor.send(:tokenize, "t", "echo a\\\nb")
+    assert_equal [[:word, "echo"], [:word, "ab"]], tokens
+  end
+
+  def test_mkmf_sysconfdir_define_matches_bin_sh_word_splitting
+    # The exact shape mkmf writes for etc.c: `$(CC) -DSYSCONFDIR=\"...\" -c
+    # etc.c -o etc.o`, after $(CC) has already been expanded to a bare
+    # program name by the planner.
+    recipe = 'gcc -DSYSCONFDIR=\"/tmp/x\" -c etc.c -o etc.o'
+    executor = Executor.new(dir: Dir.pwd, out: StringIO.new)
+    words = executor.send(:tokenize, "t", recipe).select { |t| t[0] == :word }.map { |t| t[1] }
+    assert_equal ["gcc", '-DSYSCONFDIR="/tmp/x"', "-c", "etc.c", "-o", "etc.o"], words
+
+    skip "/bin/sh is not available" unless File.executable?("/bin/sh")
+
+    # Cross-check against /bin/sh itself: swap `gcc` for `printf '%s\n'` so the
+    # same trailing arguments are split by the real shell without executing a
+    # compiler, then compare word-for-word against tokenize's own split.
+    sh_recipe = recipe.sub(/\Agcc/, %q(printf '%s\n'))
+    out, _err, status = Open3.capture3("/bin/sh", "-c", sh_recipe)
+    assert status.success?
+    assert_equal words.drop(1), out.lines.map(&:chomp)
   end
 
   # --- connectors: && / || / ; ----------------------------------------------

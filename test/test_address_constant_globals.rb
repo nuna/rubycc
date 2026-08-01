@@ -17,7 +17,7 @@ require "tmpdir"
 # The runtime cases compile with rubycc and, as an oracle, link and run with the
 # system gcc (proving the emitted addend is right against a real linker). Two
 # further cases drive rubycc's own ExecutableLinker and SharedLinker so the
-# addend is exercised end to end through the Pure Ruby toolchain too.
+# addend is exercised end to end through the Almost Pure Ruby toolchain too.
 class TestAddressConstantGlobals < Minitest::Test
   include ExecutionHelper
 
