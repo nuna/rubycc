@@ -792,64 +792,24 @@ tarball は `https://github.com/ruby/<name>/archive/refs/tags/v<version>.tar.gz`
 **M5 のコーパスが本当に通るかを決める形**で、R10 が名指しで想定している類型でもある。
 1〜4 が順調なら、そこで得た足場を 5〜7 に投入する。
 
-- **Step 157 の etc 検証が露出したギャップ(gcc 対照で rubycc 側の非を確定済み)**:
-
-  | # | ギャップ | 影響 | 優先 |
-  |---|---|---|---|
-  | A | ~~**rmake がシェルのバックスラッシュ除去をしない**~~ **解消(Step 158)**: POSIX の 3 規則(引用符外・二重引用符内・単一引用符内)を `/bin/sh` への実測で確定させて実装。旧記述: — mkmf が書く `-DSYSCONFDIR=\"/.../etc\"` の `\` が残って `unexpected character` になる。`lib/rubycc/rmake/executor.rb` の `tokenize` に POSIX の「引用符外の `\` は次の 1 文字をエスケープ」が未実装。**最小再現の対照表でコンパイラの無罪が確定していた**(GNU make + rubycc は OK) | ~~mkmf が文字列マクロを渡す任意の gem~~ | ~~高~~ **完了** |
-  | B | ~~**`__atomic_*` ビルトインが無い**~~ **解消(Step 161)**: 実測した必要集合ちょうど(9 形・幅 4 と 8)を実装。**メモリオーダは受理して捨て、常に seq_cst で降ろす**(強化は常に意味論的に妥当なので、`__ATOMIC_RELAXED` を診断するより正しい。`weak` も同理由で常に strong)。IR はオーダを一切運ばない。x86-64 は `lock xadd` 由来 + `or_fetch` のみ `lock cmpxchg` ループ、aarch64 は armv8-a ベースラインの LDAXR/STLXR ループ 1 本を 6 kind で共有(**LSE も libgcc outline atomics も使わない**)。幅 1/2/16 は診断。**これで etc 1.4.6 が PASS**(Step 158 + 160 + 161 の 3 つが揃って初めて通る)。副作用として **bigdecimal のビルド経路が変わった**(`have_header` が通るようになり非アトミックのフォールバックから本物の CAS へ)。旧見立ての訂正は Step 160 に記録 | ~~**ruby.h を引く任意の gem**~~ | ~~**高**~~ **完了** |
-  | C | ~~**`confstr` / `fpathconf` が同梱 `unistd.h` に無い**~~ **解消(Step 160)**: `confstr` / `fpathconf` / `pathconf` を宣言(シグネチャは両アーキで実測)。`getlogin` は既に宣言済みだった。旧記述: — mkmf の `have_func` は自前で宣言するので**プローブは通ってしまい**、`HAVE_CONFSTR` 等が定義されて本体で暗黙宣言エラーになる。**「プローブが通ったのにビルドが落ちる」系統的な穴** | ~~etc~~ | ~~中~~ **完了** |
-  | D | ~~**`_CS_*` / `_PC_*` が無い**~~ **解消(Step 160)**: 46 個すべてが両アーキに実在し値も一致することを実測したうえで、`test_etc.rb` が実際にアサートする `_CS_PATH` と `_PC_PIPE_BUF` の 2 つだけを追加(消費者のいない列挙は入れない線引き)。旧記述: — `ext/etc/constdefs.h` が gcc 下で 179 定数、rubycc 下で 11 定数。test_etc.rb は `if defined?` で守られているので**失敗ではなく「テストが定義されない」形**で静かに縮む(18 → 16、予測) | ~~etc~~ | ~~中~~ **完了** |
-  | E | `F_GETPIPE_SZ` / `F_SETPIPE_SZ` が同梱 `fcntl.h` に無い(`Fcntl` 定数が 24 対 26。**共通 24 個の値は一致**) | fcntl | 低 |
-
-  **A〜D は Step 158〜161 で全て解消**し、etc 1.4.6 が PASS するようになった。
-  残る E は fcntl 専用だが、**fcntl は上流にテストスイートが無く (d) レベルの証拠が
-  原理的に得られない**ため、埋めても検証済み gem は増えない(優先度が低い理由)。
+- **検証が露出したギャップは `docs/GAPS.md` に分離した**(未解消のものだけを置く方針)。
+  Step 146(stackprof / nkf)の 6 件は Steps 147〜152 で、
+  Step 157(etc)の A〜D は Steps 158〜161 で全て解消し、
+  **残るは E(fcntl の `F_GETPIPE_SZ` / `F_SETPIPE_SZ`)のみ**。
+  各ギャップの経緯と設計判断は STEPS.md の該当ステップにある。
 - ~~コーパス拡張と検証済み gem 追加の一連の手順をスキル化する。~~
   **完了(Step 145)**: `.claude/skills/corpus-expansion/SKILL.md`。道具の使い方ではなく
   **道具の間をつなぐ判断**(Gap candidate の仕分け、(d) レベルの証拠の水準、
   sanity 式の選び方、横断規約)を持つ。事実は既存文書を指すだけにして二重管理を避ける。
-- **stackprof / nkf の検証で見つかったギャップ(Step 146 で実測・最小再現あり)**。
-  どちらもホスト gcc では上流スイートが完走する(stackprof 31 runs / 143 assertions、
-  nkf 8 tests / 46 assertions)ので、原因は全て rubycc 側。
-  レシピは `tools/verify_gem_tests.rb` に入っており、修正のたびに再検証できる:
-
-  | # | ギャップ | 影響 | 優先 |
-  |---|---|---|---|
-  | 1 | ~~**`sigset_t` の typedef 衝突**~~ **解消(Step 147)**: `signal.h` 側をガード `__sigset_t_defined` + `__sigset_t` エイリアスに揃え、`sys/select.h` と文字どおり同一にした。ABI ハーネスに**両方の include 順**のケースを x86_64・aarch64 の 4 件追加 | ~~`ruby.h` と `<signal.h>` を併用する任意の gem~~ | ~~最優先~~ **完了** |
-  | 2 | ~~**`sizeof(式)` が整数定数式に畳めない文脈がある**~~ **解消(Step 148)**: enumerator・ビットフィールド幅・case ラベル・配列デシグネータ・`aligned` 属性・`__builtin_choose_expr` の 6 箇所に `sizeof_expr: method(:fold_time_sizeof)` を配線。グローバル初期化子(`parser.rb:513`)は意図的に据え置き(`references_sizeof_expr?` ガードでジェネレータ側に回す既存の設計判断) | ~~nkf~~ | ~~高~~ **完了** |
-  | 3 | ~~`pthread_kill` / `pthread_atfork` が未宣言~~ **解消(Step 149)**: 両アーキの `pthread.h` に宣言を追加(シグネチャは実測)。`pthread_atfork` は**これでリンクが通るようになるわけではない**(6 番) | ~~stackprof~~ | ~~中~~ **完了** |
-  | 4 | ~~`_POSIX_MONOTONIC_CLOCK` が無い~~ **解消(Step 149)**: `include/libc/unistd.h` に追加。**実測値は 0**(= 対応するが `sysconf` での実行時確認が要る、という glibc と同じ意味)で、両アーキ一致のため共通層。他の `_POSIX_*` は網羅しない | ~~stackprof~~ | ~~中~~ **完了** |
-  | 5 | ~~**不完全配列型の補完が `conflicting types`**~~ **解消(Step 150)**: `Type.composite`(C11 6.2.7p3)を新設し、ファイルスコープの `extern` 参照・仮定義/実定義・ブロックスコープの `extern` の 3 経路を 1 つの規則に集約。多次元も対応。**これで nkf が PASS**(Step 151 で記録) | ~~nkf~~ | ~~中~~ **完了** |
-  | 6 | ~~**`__dso_handle` を供給できない**~~ **解消(Step 152)**: 供給元を**1 メンバのアーカイブ**として全リンクの末尾に足し、`ar` の遅延メンバ抽出をそのまま「未定義のときだけ供給」の条件に使う。語は自己参照の ABS64 で表現し、既存の適用エンジンが共有オブジェクトでは RELATIVE を出す。**これで stackprof が PASS**(Step 153 で記録) | ~~stackprof~~ | ~~低~~ **完了** |
-
-  1〜5 を潰した状態(scratch でのハンドパッチ)では**両 gem とも上流スイートが完走する**
-  ことを実測済み(ただし `__dso_handle` はスタブで代用しており、この結果は検証ではない)。
-  **aarch64 と musl では未実測**。
-
-  **6 ギャップは Step 147〜152 で全て解消**。nkf 0.3.0(Step 151)と
-  stackprof 0.2.28(Step 153)がどちらも検証済みになった。
-  Step 152 で残していた「`__cxa_finalize` を呼ぶ `.fini_array` エントリを合成しない」
+- Step 152 で残していた「`__cxa_finalize` を呼ぶ `.fini_array` エントリを合成しない」
   という限界は Step 156 で解消した。**init/fini array の整備は 3 段階**:
-  ~~(1) リンカ側のパイプライン~~ **完了(Step 154)**: `SHT_INIT_ARRAY` /
-  `SHT_FINI_ARRAY` の配置・優先度順・動的タグ 4 本。マージとリロケーションは既存機構で
-  足りていた。~~(2) フロントエンドの `__attribute__((constructor))` / `((destructor))`~~
-  **完了(Step 155)**: 名前引きの表で解決(gcc は定義より後の宣言にも書けるため)。
-  優先度は 5 桁ゼロ詰め、`constructor(65535)` は無印セクション(実測)。
-  gcc が警告で済ませる 3 ケースは診断にした(警告チャネルが無い処理系では
-  「警告して続行」は「黙殺」と同義のため)。~~(3) `__cxa_finalize(__dso_handle)` の
-  合成~~ **完了(Step 156)**: NULL 検査付きの終了子を手組みの機械語で合成し、
-  Step 154 の優先度機構(`.fini_array.00000`)で配列の先頭 = 実行順の最後に置く。
-  リンカ側は 1 行も足さずに済んだ(WEAK 未定義 + GOT + PLT は既存機構で通った)。
-  **これで Step 152 の「供給しなかった半分」が埋まった。**
-- **既知の負債(Step 149 で観測)**: `test/corpus/gems.rb` の 4 エントリ
-  (bigdecimal・date・racc・redcarpet)が `version: nil` = 最新追従になっており、
-  上流が新版を出すたびに `rake corpus:census` のスナップショットが動く。
-  この 4 つは `data/verified_gems.json` では**厳密なバージョンを固定している**ので、
-  センサスが記述するバージョンと検証済みバージョンが食い違いうる。
-  また Tier B(`weekly.yml`)の census ジョブは差分で失敗する設計なので、
-  gem のリリースだけで週次 CI が赤くなる。固定するとスナップショットが動くため
-  別ステップの作業。
+  ~~(1) リンカ側のパイプライン~~ **完了(Step 154)**、
+  ~~(2) フロントエンドの `__attribute__((constructor))` / `((destructor))`~~
+  **完了(Step 155)**、~~(3) `__cxa_finalize(__dso_handle)` の合成~~ **完了(Step 156)**。
+  **これで Step 152 の「供給しなかった半分」が埋まった**(設計判断は STEPS.md)。
+- **未解消の負債と未測定事項も `docs/GAPS.md` に集約した**
+  (`test/corpus/gems.rb` の `version: nil` 4 件、racc の assertions 差異、
+  musl / aarch64 / distroless の未測定)。
 - **受け入れ = v1.0 リリース = M5 完了**。
 
 ## 9. マイルストーン横断のリスク(DESIGN 7 章の運用)
