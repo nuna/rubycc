@@ -750,6 +750,48 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   着手先には困らない。形が揃っていて着手しやすいのは `ruby/*` の default gem 群
   (`io-wait` `io-nonblock` `io-console` `erb` `zlib` `digest` `psych` 等)。
   **fcntl は上流にテストスイートが無く (d) レベルの証拠が原理的に得られない**ため対象外。
+
+### 次の作業計画 — default gem 群の検証(Steps 163〜169 予定)
+
+**1 gem = 1 ステップ**。手順は `.claude/skills/corpus-expansion/SKILL.md` のフェーズ 2
+そのままで、レシピの雛形は `tools/verify_gem_tests.rb` の **`RECIPES["etc"]` が最も近い**
+(default gem・単一 `.so`・test-unit・`test/**/test_*.rb`)。
+バージョンは `test/corpus/gems.rb` が Ruby 4.0.6 同梱版に固定済みなのでそれに従う。
+tarball は `https://github.com/ruby/<name>/archive/refs/tags/v<version>.tar.gz`。
+
+**着手順は「安い順・リスクの低い順」**。前半で足場を固め、後半の重い 3 件が
+露出させるギャップに時間を残す:
+
+| 順 | gem | version | 想定される難所 |
+|---|---|---|---|
+| 1 | `io-nonblock` | 0.3.2 | 単一ファイル ext。**最も安い**ので、default gem の差し込み手順の足場固めに使う |
+| 2 | `io-wait` | 0.4.0 | 単一ファイル ext。1 と同型 |
+| 3 | `erb` | 6.0.1.1 | `ext/erb/escape` のみ。**スイートの大半は純 Ruby の ERB を叩く**ので、sanity 式が特に重要(C 拡張を通らなくても合格しうる) |
+| 4 | `io-console` | 0.8.2 | **tty を要求するテストが多い**。非 tty 環境では omission/skip に落ちるので、(d) レベルの証拠として十分かを個別に判断し、足りなければ pty 経由の実走を検討する |
+| 5 | `digest` | 3.2.1 | **コーパス初の多 ext gem**(`ext/digest` + bubblebabble/md5/rmd160/sha1/sha2 の 6 extconf)。`sos` が 6 エントリになり、**mkmf shim と rmake の入れ子 ext 対応**が試される |
+| 6 | `zlib` | 3.2.3 | **ホストの `zlib.h` / `-lz`** に依存。R10 が想定するシステムライブラリ gem の第 1 号 |
+| 7 | `psych` | 5.3.1 | **ホストの libyaml** に依存。7 件で最重量 |
+
+**横断の決まりごと(いずれも既に代償を払って学んだこと)**:
+
+- **default gem は処理系が自分の同梱版を持っている**。`sanity` 式だけでなく
+  **`load_paths` に `lib` を入れて差し込んだ `.so` が勝つことを保証**する
+  (Step 157 の実測: stringio は `-Ilib` 無しだと処理系同梱の 3.1.2 がロードされて
+  100% パスする)。ツールの sanity ゲートは `$LOADED_FEATURES` で差し込み先の実パスを
+  検査するので、ここを省いてはいけない。
+- **失敗したら、まずホスト gcc の対照を取る**。Step 146 の教訓で、これをやらないと
+  「WSL2 では検証できない」で終わる。対照を取れば rubycc 側の非が確定し、
+  ギャップが最小再現つきで手に入る。**ギャップの修正は別ステップ**に切る。
+- **合格件数だけを記録しない**。probe の成否で gcc とは別の経路がビルドされうる
+  (Step 160 の bigdecimal、Step 161 での反転)。ビルドされた `.so` が
+  gcc ビルドと同じ経路かを疑い、違えば `notes` に書く。
+- `--update` は PASS を確認してから。`test/test_doctor.rb` の許可リストは**手で**更新する。
+
+**この 7 件のうち 5・6・7 は「検証済み gem を増やす」以上の意味がある**:
+多 ext(digest)とシステムライブラリ依存(zlib・psych)は
+**M5 のコーパスが本当に通るかを決める形**で、R10 が名指しで想定している類型でもある。
+1〜4 が順調なら、そこで得た足場を 5〜7 に投入する。
+
 - **Step 157 の etc 検証が露出したギャップ(gcc 対照で rubycc 側の非を確定済み)**:
 
   | # | ギャップ | 影響 | 優先 |
