@@ -114,7 +114,7 @@
 | ~~スタック引数の 16 バイト整列(x86_64/aarch64 共通)~~ **解消(Step 94)**、-fPIC の PC32 参照 | 16 バイト整列は Step 94 で解消(`:pad_stack` 機構 + クロス TU 実行オラクル)。-fPIC PC32 は **H4**(ABI バグ → 最優先修正 + ABI ファジングに再発防止ケース追加) | ABI 不一致は SEGV 直結の最重要リスク(DESIGN 7 章)。ファジング(下記)で網羅的に炙り出す |
 | `wchar_t` typedef 符号性、long double = double による max_align_t 相違 | **feature-gated**(ワイド文字対応時 / x87 80bit 対応時) | いずれも該当機能を意図的に未対応(診断で拒否 / DESIGN 3.3 既知制限)としているため、当該機能に着手するまで観測不能。H4 でワイド文字/long double を使う gem が有意に落ちるなら前倒しを判断 |
 | DoS フェイルセーフ上限値の再調整 | **H4**(コーパス R10 実測で再調整) | docs/security-dos-review.md 記載。極浅スタック環境の実測が入手できた時点 |
-| ABI ファジングハーネス(Step 25/62)の機種パラメタ化、aarch64 全スイート + gem install 実走、musl/distroless コンテナ検証、sqlite3/pg コーパス | **H3**(QEMU の Docker マトリクス整備と併せて) | §8 M4 受け入れ・H3 参照。現環境に Docker/aarch64 Ruby が無いため、CI マトリクス整備が前提。ネットワーク/コンテナ依存はこの相に閉じる |
+| ABI ファジングハーネス(Step 25/62)の機種パラメタ化、aarch64 全スイート + gem install 実走、musl/distroless コンテナ検証、sqlite3/pg コーパス | ~~**H3**(QEMU の Docker マトリクス整備と併せて)~~ → **H6 の Steps 170〜172 に再割り当て**(§8 の「環境が無くて測れていないことの解消」)。**H3 に割り当てたまま実施されず H6 まで来た**ので、期限を持たせ直した。musl → distroless → aarch64 の順に分けて片付ける | §8 M4 受け入れ参照。現環境に Docker/aarch64 Ruby が無いため、CI マトリクス整備が前提。ネットワーク/コンテナ依存はこの相に閉じる |
 
 ## 4. M1 実行計画 — **完了**
 
@@ -791,6 +791,29 @@ tarball は `https://github.com/ruby/<name>/archive/refs/tags/v<version>.tar.gz`
 多 ext(digest)とシステムライブラリ依存(zlib・psych)は
 **M5 のコーパスが本当に通るかを決める形**で、R10 が名指しで想定している類型でもある。
 1〜4 が順調なら、そこで得た足場を 5〜7 に投入する。
+
+### 環境が無くて測れていないことの解消(Steps 170〜172 予定)
+
+`docs/GAPS.md` §3 の 3 件。**§3.1 の負債表は H3 に割り当てていたが実施されないまま
+H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker マトリクス整備」として
+一括りにされていたが、**必要なものが違うので分けて順に片付ける**。
+
+| 順 | 対象 | 実行環境 | 主眼 |
+|---|---|---|---|
+| 1 | **musl(x86_64)** | GitHub Actions の `container: alpine`。**qemu 不要**なので 3 件で最も安い | M5 が掲げた「glibc/musl 互換ヘッダ」の**未検証の半分**。同梱ヘッダの musl 差が初めて実測できる |
+| 2 | **真の distroless 姿勢** | 1 で組んだジョブを再利用し、cc / make / sh / libc 開発ヘッダを取り除いた image を作る | Step 64 は `RUBYCC_HERMETIC_HEADERS` で**姿勢を模擬**しただけ。**本当に無い環境**で `RUBYCC=1 gem install` が通ることを示す |
+| 3 | **aarch64 での実走** | qemu + arm64 コンテナ(`docker/setup-qemu-action`) | M4 受け入れの最後の 1 項目。qemu 上の全スイートは**遅すぎるので回さない** — `gem install` の受け入れと `verify_gem_tests.rb` を 1〜2 gem に絞る |
+
+**置き場は Tier B(`weekly.yml`)**。3 件とも遅いので Tier A(`test.yml`)は速いまま保つ。
+
+**着手前に決める必要があること(未決)**: `data/verified_gems.json` の `environment` は
+**文字列 1 本**で、musl で通っても書く場所が無い。スキーマを増やす(環境ごとの配列)か、
+エントリを分けるかは 1 の中で決める。**現行の「musl and aarch64 not yet verified」という
+notes を消せるかどうかがこの判断に懸かっている**ので、後回しにできない。
+
+**局所的な代替は採らない**: qemu-user + aarch64 rootfs をローカルに置けば Docker 無しでも
+3 は動かせるが、**手元でしか再現しない検証は CI で腐る**。1 と 2 が CI の足場を作るので、
+3 はその上に乗せる(この順にした理由でもある)。
 
 - **検証が露出したギャップは `docs/GAPS.md` に分離した**(未解消のものだけを置く方針)。
   Step 146(stackprof / nkf)の 6 件は Steps 147〜152 で、
