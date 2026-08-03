@@ -5927,9 +5927,53 @@ gem 自身のテストスイートは **2 tests / 8 assertions / 0 failures / 0 
 
 ---
 
+## Step 164 — io-nonblock 0.3.2 を記録する(M5 H6)
+
+Step 163 の修正で通るようになったので `--update` で記録した。検証済み gem は **12 件**。
+
+### 入れ子スキーマの初実走
+
+`data/verified_gems.json` を「1 gem = 1 エントリ、環境ごとの記録がその内側」という
+入れ子に拡張した直後の**最初の新規記録**でもある。ツールは `(new entry)` を選び、
+`verifications` 1 本 + 空の `notes` を出力した。既定 notes は空文字で、
+**「musl では未検証」といった但し書きはもう書かない**
+(未検証はその環境の記録が無いことで既に表現されている)。
+
+### 合格件数だけでは何も言えないので、経路を突き合わせた
+
+このスイートは **2 tests / 8 assertions** しかない。上流がこのタグで持っているのが
+それだけであって除外はしていないが、**件数の少なさは経路の正しさを何も保証しない**。
+Step 160 の bigdecimal(probe が失敗して gcc とは別のフォールバックがビルドされていたのに
+合格件数は同じだった)を踏まえ、extconf の probe 3 件をホスト gcc 対照と突き合わせた:
+
+| probe | rubycc | host gcc |
+|---|---|---|
+| `rb_io_descriptor()` in `ruby/io.h` | yes | yes |
+| `O_NONBLOCK` in `fcntl.h` | yes | yes |
+| `F_GETFL` in `fcntl.h` | yes | yes |
+
+3 件とも一致するので `HAVE_RB_IO_DESCRIPTOR` は両方で定義され、
+`io_descriptor_fallback` は**両方で消える**。同じ経路がビルドされている。
+
+### スイートが「何もロードしなくても合格しうる」形をしている
+
+`test/io/nonblock/test_flush.rb` は自分の `require 'io/nonblock'` を
+`rescue LoadError` で包み、さらにクラス全体を `if IO.method_defined?(:nonblock)` で
+守っている。つまり**拡張が 1 バイトもロードされなくても、エラーではなく
+「テストが 0 件」として静かに合格する**。これは Step 144 で `sanity` を必須にした
+理由そのものの、別の現れ方である(racc は純 Ruby フォールバックに落ちて合格し、
+こちらはテストが定義されずに合格する)。レシピは `io/nonblock` をその rescue の外で
+require するので、その状態は PASS として記録されない。
+
+---
+
 ## 現在のテスト規模
 
-Step 163 完了時点: **2,717 runs / 7,919 assertions / 0 failures / 47 skips**
+Step 164 完了時点: **2,717 runs / 7,941 assertions / 0 failures / 47 skips**
+(runs は Step 163 と同数 = DB のスキーマ検査が io-nonblock の 1 件分増え、
+バージョン固定の検査を io-nonblock と etc の 2 件足しただけで、
+新しいテストメソッドは足していない)
+(以前) Step 163 完了時点: **2,717 runs / 7,919 assertions / 0 failures / 47 skips**
 (Step 162 から +5 = PT_LOAD の不変条件 4 件(x86_64・aarch64 各 2)と、
 `verified_gems.json` のスキーマを入れ子にしたときに足した
 `matching_verifications` の 1 件)

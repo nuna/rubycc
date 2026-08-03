@@ -744,9 +744,10 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   racc の `cparse.so` を壊しても 71 tests / 0 failures で通ることを実測)。
   既存 6 件を全て再現して自身を検証済み(racc の assertions のみ 319 → 320 で
   差異あり・原因未特定)。**Step 151 で nkf 0.3.0、Step 153 で stackprof 0.2.28、
-  Step 157 で strscan 3.1.6 と stringio 3.2.0、Step 162 で etc 1.4.6 を追加(6 → 11 件)。**
-- **コーパス未検証 gem(Step 157 で棚卸し、Step 162 で更新)**: センサス対象 36 件に対し
-  検証済み 11 件。**未検証 25 件のうち 23 件は R10 ゲートを通過**している(除外は sqlite3 と pg のみ)ので
+  Step 157 で strscan 3.1.6 と stringio 3.2.0、Step 162 で etc 1.4.6、
+  Step 164 で io-nonblock 0.3.2 を追加(6 → 12 件)。**
+- **コーパス未検証 gem(Step 157 で棚卸し、Step 164 で更新)**: センサス対象 36 件に対し
+  検証済み 12 件。**未検証 24 件のうち 22 件は R10 ゲートを通過**している(除外は sqlite3 と pg のみ)ので
   着手先には困らない。形が揃っていて着手しやすいのは `ruby/*` の default gem 群
   (`io-wait` `io-nonblock` `io-console` `erb` `zlib` `digest` `psych` 等)。
   **fcntl は上流にテストスイートが無く (d) レベルの証拠が原理的に得られない**ため対象外。
@@ -770,7 +771,7 @@ tarball は `https://github.com/ruby/<name>/archive/refs/tags/v<version>.tar.gz`
 
 | 順 | gem | version | 想定される難所 |
 |---|---|---|---|
-| 1 | `io-nonblock` | 0.3.2 | 単一ファイル ext。**最も安い**ので、default gem の差し込み手順の足場固めに使う |
+| ~~1~~ | ~~`io-nonblock`~~ | ~~0.3.2~~ | **完了(Step 164)**。想定していた「最も安い足場固め」にはならず、**11 gem ぶん潜んでいたリンカのバグ(Step 163)を引いた**。probe の結果はホスト gcc 対照と 3 件とも一致し、同じ経路がビルドされている |
 | 2 | `io-wait` | 0.4.0 | 単一ファイル ext。1 と同型 |
 | 3 | `erb` | 6.0.1.1 | `ext/erb/escape` のみ。**スイートの大半は純 Ruby の ERB を叩く**ので、sanity 式が特に重要(C 拡張を通らなくても合格しうる) |
 | 4 | `io-console` | 0.8.2 | **tty を要求するテストが多い**。非 tty 環境では omission/skip に落ちるので、(d) レベルの証拠として十分かを個別に判断し、足りなければ pty 経由の実走を検討する |

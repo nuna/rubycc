@@ -119,5 +119,16 @@
       }
     ],
     "notes": "This entry needs three Step-158-to-161 changes at once: rmake's POSIX backslash removal (Step 158), the confstr/fpathconf/pathconf declarations added to the bundled unistd.h (Step 160), and the __atomic_* builtins (Step 161) that ruby.h reaches unconditionally. The bundled unistd.h defines only _CS_PATH and _PC_PIPE_BUF of the 46 _CS_*/_PC_* constants ext/etc/mkconstants.rb publishes, so ext/etc/constdefs.h comes out with 11 constants where the gcc build gets 179; test_etc.rb guards test_confstr and test_pathconf with 'if defined?', so the shortfall shows up as tests that are never defined rather than as failures. The run reported 2 omissions (not failures)."
+  },
+  "io-nonblock": {
+    "verifications": [
+      {
+        "versions": ["0.3.2"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-04",
+        "evidence": "RUBYCC=1 gem install io-nonblock succeeded (nonblock.so built through rmake); the gem's own test/unit suite passed 2 tests / 8 assertions / 0 failures / 0 errors (Step 164)."
+      }
+    ],
+    "notes": "io/nonblock ships with the interpreter, so this run is against the .so injected from the rubycc build; the sanity check confirms through $LOADED_FEATURES that the injected copy, not the interpreter's own, is what the suite loaded. Two tests is the whole of what upstream ships at this tag -- nothing was excluded. test/io/nonblock/test_flush.rb wraps its own require in a rescue LoadError and guards the entire class with `if IO.method_defined?(:nonblock)`, so a suite that loaded nothing at all would report zero failures rather than an error; the recipe requires io/nonblock outside that rescue so that state cannot be recorded as a pass. This build takes the same path gcc's does: all three extconf probes (rb_io_descriptor, O_NONBLOCK, F_GETFL) come out yes under rubycc exactly as under the host gcc control, so HAVE_RB_IO_DESCRIPTOR is defined and the io_descriptor_fallback branch is compiled out on both sides. Building it needed the Step 163 linker fix: before that the r-x load segment did not cover the tail of .plt, and requiring the .so segfaulted on the first call through rb_ext_ractor_safe@plt."
   }
 }
