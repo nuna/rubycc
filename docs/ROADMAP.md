@@ -818,7 +818,7 @@ H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker 
 
 | 順 | 対象 | 実行環境 | 主眼 |
 |---|---|---|---|
-| 1 | **musl(x86_64)** | ~~GitHub Actions の `container: alpine`~~ → **ホストでチェックアウトして自分で `docker run ruby:4.0-alpine`**(ジョブコンテナにはランナーが glibc リンクの node を差し込むため `container:` は使えない)。**qemu 不要**なので 3 件で最も安い | M5 が掲げた「glibc/musl 互換ヘッダ」の**未検証の半分**。同梱ヘッダの musl 差が初めて実測できる。**足場は Step 174 で投入済み**(`weekly.yml` の `musl` ジョブ)。**実測値の記録は初回実行の後** |
+| 1 | **musl(x86_64)** | ~~GitHub Actions の `container: alpine`~~ → **ホストでチェックアウトして自分で `docker run ruby:4.0-alpine`**(ジョブコンテナにはランナーが glibc リンクの node を差し込むため `container:` は使えない)。**qemu 不要**なので 3 件で最も安い | M5 が掲げた「glibc/musl 互換ヘッダ」の**未検証の半分**。同梱ヘッダの musl 差が初めて実測できる。**足場は Step 174**、**初回実行は Step 175**。結果は**緑ではなかった** — 2,743 runs / 21 failures / 18 errors。**掲げた主張が musl 側で実際に外れていた**ことが分かり、GAPS の G(同梱ヘッダが glibc の ABI を焼き込んでいる)・H(`stdckdint.h` 欠落)・I(ABI ハーネスが glibc 固有)に分離した。**musl の検証済み記録は 1 件も足していない**(通っていないため) |
 | 2 | **真の distroless 姿勢** | 1 で組んだジョブを再利用し、cc / make / sh / libc 開発ヘッダを取り除いた image を作る | Step 64 は `RUBYCC_HERMETIC_HEADERS` で**姿勢を模擬**しただけ。**本当に無い環境**で `RUBYCC=1 gem install` が通ることを示す |
 | 3 | **aarch64 での実走** | qemu + arm64 コンテナ(`docker/setup-qemu-action`) | M4 受け入れの最後の 1 項目。qemu 上の全スイートは**遅すぎるので回さない** — `gem install` の受け入れと `verify_gem_tests.rb` を 1〜2 gem に絞る |
 

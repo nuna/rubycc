@@ -48,6 +48,14 @@ bundle install --jobs 4 --retry 3
   echo "gcc target: $(gcc -dumpmachine)"
 } | tee tmp/ci/musl-arch.log
 
+# Both phases below are expected to fail while musl is still being brought up,
+# and the run's value is the evidence they leave behind, so errexit is off from
+# here on: an aborted script would skip phase 2 and throw away half the answer.
+# Each phase's status is captured explicitly instead. (The first run of this
+# job, Step 175, is exactly how this was found: `set -e` killed the subshell
+# after rake failed, before the status file was written, and phase 2 never ran.)
+set +e
+
 # --- phase 1: rubycc's own suite ------------------------------------------
 #
 # Alpine's /bin/sh is busybox ash, which has no dependable `set -o pipefail`,
@@ -58,7 +66,7 @@ bundle install --jobs 4 --retry 3
   bundle exec rake test TESTOPTS="--verbose" 2>&1
   echo "$?" >tmp/ci/rake-status
 } | tee tmp/ci/test-musl.log
-suite_status=$(cat tmp/ci/rake-status)
+suite_status=$(cat tmp/ci/rake-status 2>/dev/null || echo "no-status")
 
 # --- phase 2: gem install on musl -----------------------------------------
 #
@@ -87,7 +95,7 @@ fi
   ruby tools/verify_gem_tests.rb "$@" io-wait stringio json 2>&1
   echo "$?" >tmp/ci/verify-status
 } | tee tmp/ci/verify-gems-musl.log
-verify_status=$(cat tmp/ci/verify-status)
+verify_status=$(cat tmp/ci/verify-status 2>/dev/null || echo "no-status")
 
 echo "suite exit: ${suite_status}, gem verification exit: ${verify_status}"
 [ "${suite_status}" = "0" ] && [ "${verify_status}" = "0" ]

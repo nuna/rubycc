@@ -6513,6 +6513,101 @@ Step 160 以降ずっと同じことをしている — 差が出たときに、
 
 ---
 
+## Step 175 — musl の初回実測(M5 H6)
+
+Step 174 で入れたジョブを初めて走らせた。**通らなかった。それがこのステップの成果である。**
+`data/verified_gems.json` に musl の記録は 1 件も足さない — 通っていないからである。
+
+### 実測値
+
+```
+ruby arch:  x86_64-linux-musl
+gcc target: x86_64-alpine-linux-musl
+```
+
+| | runs | assertions | failures | errors | skips |
+|---|---|---|---|---|---|
+| glibc(Step 173) | 2,743 | 8,121 | 0 | 0 | 45 |
+| **musl(初回)** | **2,743** | **6,968** | **21** | **18** | **550** |
+
+**runs が同数**なのは同じテストが集まっている証拠。skips の +505 は
+Alpine に aarch64 のクロスツールチェインが無いためで、これは設計どおり(Step 174)。
+
+### 39 件の内訳 — 3 分の 1 は rubycc の欠陥ではない
+
+| 種別 | 件数 | 中身 |
+|---|---|---|
+| **gcc 対照の方がコンパイルできなかった** | **13** | ABI ハーネスのケース自体が glibc 固有 |
+| rubycc 側の差 | 26 | 下記 |
+
+13 件は**参照実装が先に落ちている**ので rubycc の合否を判定できていない。実例:
+
+- `features`: ケースが `__GLIBC__` / `__GLIBC_MINOR__` / `__GLIBC_PREREQ` を印字する。
+  musl にこれらは無い。**このケースは musl では原理的に走らない。**
+- `termios`: musl の `struct termios` のメンバは `__c_ispeed` / `__c_ospeed` で、
+  ケースが名指しする `c_ispeed` / `c_ospeed` ではない。
+- `pthread`: musl は `pthread_kill` を `<pthread.h>` で宣言しない。
+
+**これらは「rubycc が musl で壊れている」ではなく「ハーネスが glibc で書かれている」**。
+ただし**裏に rubycc の欠陥が隠れていないことの証明にはならない** — 対照が取れていない以上、
+判定は保留である。ハーネスの機種・libc パラメタ化は別ステップになる。
+
+### 残り 26 件 — 同梱ヘッダが glibc の ABI を焼き込んでいる
+
+一番直接的なのが `<stdint.h>`:
+
+```
+-sizeof(int_fast16_t) = 4   ← gcc(musl)
++sizeof(int_fast16_t) = 8   ← rubycc
+```
+
+musl は `int_fast16_t` / `int_fast32_t` を 32 ビット型に、glibc は `long` にしている。
+rubycc の同梱ヘッダは **glibc 側の値を焼き込んでいた**。
+M5 が掲げた「glibc/musl 互換ヘッダ」の、**測っていなかった半分が実際に外れていた**。
+
+`TestRubySmoke` の 5 件はいずれも同じ原因で、**同梱ヘッダに `stdckdint.h`(C23)が無い**。
+ruby 4.0 の `ruby/internal/stdckdint.h` が musl 環境では `#include <stdckdint.h>` の枝を通る。
+**ruby 4.0 + glibc では Tier A が緑**(`ad602f4`)なので、これは Ruby バージョンの差ではなく
+musl 側の要因である — 交絡は推測ではなく実測で潰した。
+
+### 初回実行で先に壊れたのは自分の足場だった
+
+phase 2(gem install)は**走らなかった**。`set -e` が、パイプライン内のサブシェルを
+rake の失敗直後に落とし、**終了ステータスを書き出す `echo` に到達しなかった**ためである。
+その後 `cat tmp/ci/rake-status` が失敗し、スクリプトごと終わった。
+
+`sh -n` は通っていた。**構文は正しく、意味が間違っていた**という、
+ローカルで取れる検証の限界そのものの形で出た。
+両フェーズとも「失敗するのが当たり前」の段階なので、errexit は 2 フェーズの手前で切り、
+各フェーズの状態は明示的に拾う形に直した。
+
+---
+
+## Step 176 — コーパスの `version: nil` 4 件を固定する(M5 H6)
+
+`docs/GAPS.md` §2 の負債。`test/corpus/gems.rb` の bigdecimal / date / racc / redcarpet が
+`version: nil` = 最新追従のままだった。
+
+固定先は `data/verified_gems.json` が保証しているバージョン
+(4.1.2 / 3.5.1 / 1.8.1 / 3.6.1)。**これは committed スナップショットで
+`latest` が既に解決していた値と同じ**なので、requested 列が変わるだけで
+resolved 列は動かない。理由は 2 つ:
+
+- **census ジョブは差分で落ちる**。`latest` のままだと、**上流がリリースしただけで赤くなる** —
+  そのジョブが唯一検出したいこと(rubycc のヘッダ網羅性が変わった)ではない理由で。
+- コーパスが記述するバージョンと、検証 DB が保証するバージョンが食い違いうる。
+
+### 再生成で分かった副産物 — スナップショットが既に古かった
+
+`rake corpus:census` をかけたところ、固定による差分(requested 列と fetched 日付)の他に
+**stackprof の note が変わった**。`gems.rb` の note は Step 146 で
+「probe は無い」→「実際には `rb_postponed_job_preregister` 等 have_func が 4 件ある」に
+直されていたのに、**スナップショットの方が再生成されず古いままだった**。
+週次の census ジョブはこれを差分として検出する設計なので、
+**このステップまで気付かれずに来たのは、そのジョブの結果が見られていなかった**ということになる。
+
+---
+
 ## 現在のテスト規模
 
 Step 173 完了時点: **2,743 runs / 8,121 assertions / 0 failures / 0 errors / 45 skips**
