@@ -13,7 +13,10 @@
 #
 # Each entry:
 #   :name    — rubygems.org gem name (fetched with `gem fetch --platform=ruby`)
-#   :version — pinned version string, or nil to fetch the latest release
+#   :version — pinned version string, or nil to fetch the latest release. Every
+#              committed entry is pinned as of Step 176; nil stays supported
+#              because it is convenient while adding a gem, but leaving it in
+#              the committed list makes the census job fail on upstream drift.
 #   :note    — why this gem is in the corpus
 module Corpus
   module Gems
@@ -32,24 +35,33 @@ module Corpus
         version: "1.8.3", # Pinned to match the mkmf corpus.
         note: "Pure C packer/unpacker; single ext dir."
       },
+      # These four were the last `version: nil` entries. They are pinned to the
+      # versions data/verified_gems.json vouches for (Step 176), which are also
+      # what `latest` already resolved to in the committed snapshot, so pinning
+      # them changes the requested column and nothing else. Two reasons:
+      # the census job fails on any diff, and with `latest` an upstream release
+      # turns it red for a reason that is not rubycc's header coverage changing
+      # (the only thing that job exists to catch); and a corpus that describes a
+      # different version from the one the verification database vouches for
+      # makes the two records disagree about what was measured.
       {
         name: "bigdecimal",
-        version: nil,
+        version: "4.1.2",
         note: "Pure C arbitrary-precision decimal; default gem, widely depended on."
       },
       {
         name: "date",
-        version: nil,
+        version: "3.5.1",
         note: "Pure C date/time core (ext/date); default gem."
       },
       {
         name: "racc",
-        version: nil,
+        version: "1.8.1",
         note: "Pure C parser runtime (ext/racc/cparse); extconf.rb runs no probes."
       },
       {
         name: "redcarpet",
-        version: nil,
+        version: "3.6.1",
         note: "Pure C Markdown renderer; extconf.rb runs no probes."
       },
 

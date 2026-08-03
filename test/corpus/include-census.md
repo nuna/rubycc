@@ -4,7 +4,7 @@
 `rake corpus:census` (see `test/corpus/README.md`). Re-run that task to update
 it, then commit the result. The task requires network access; `rake test` does not.
 
-- Generated: 2026-07-29T15:12:31Z
+- Generated: 2026-08-03T22:35:16Z
 - Ruby: ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]
 - Bundled header set: 60 angle spellings computed from `include/`
   (freestanding `include/*.h` + `include/libc/**`, arch layer normalized).
@@ -19,42 +19,42 @@ candidates with a note; the census does not evaluate the gate.
 
 | gem | requested | resolved | fetched | status | ext .c/.h | note |
 |-----|-----------|----------|---------|--------|-----------|------|
-| json | 2.21.1 | 2.21.1 | 2026-07-29 | ok | 3/5 | Pure C parser/generator. SIMD paths are gated (JSON_DISABLE_SIMD); census counts gated headers as gap candidates without judging the gate. |
-| msgpack | 1.8.3 | 1.8.3 | 2026-07-29 | ok | 12/15 | Pure C packer/unpacker; single ext dir. |
-| bigdecimal | latest | 4.1.2 | 2026-07-29 | ok | 3/7 | Pure C arbitrary-precision decimal; default gem, widely depended on. |
-| date | latest | 3.5.1 | 2026-07-29 | ok | 4/2 | Pure C date/time core (ext/date); default gem. |
-| racc | latest | 1.8.1 | 2026-07-29 | ok | 1/0 | Pure C parser runtime (ext/racc/cparse); extconf.rb runs no probes. |
-| redcarpet | latest | 3.6.1 | 2026-07-29 | ok | 10/8 | Pure C Markdown renderer; extconf.rb runs no probes. |
-| digest | 3.2.1 | 3.2.1 | 2026-07-29 | ok | 10/9 | Six extconf.rb in one gem (ext/digest plus bubblebabble, md5, rmd160, sha1, sha2); first multi-ext gem in this corpus. |
-| erb | 6.0.1.1 | 6.0.1.1 | 2026-07-29 | ok | 1/0 | Single ext dir (ext/erb/escape). |
-| etc | 1.4.6 | 1.4.6 | 2026-07-29 | ok | 1/1 | Single ext dir (ext/etc). |
-| fcntl | 1.3.0 | 1.3.0 | 2026-07-29 | ok | 1/0 | Small single-file ext (ext/fcntl). |
-| io-console | 0.8.2 | 0.8.2 | 2026-07-29 | ok | 1/0 | Single ext dir (ext/io/console). |
-| io-nonblock | 0.3.2 | 0.3.2 | 2026-07-29 | ok | 1/0 | Small single-file ext (ext/io/nonblock). |
-| io-wait | 0.4.0 | 0.4.0 | 2026-07-29 | ok | 1/0 | Small single-file ext (ext/io/wait). |
-| openssl | 4.0.2 | 4.0.2 | 2026-07-29 | ok | 33/21 | Depends on the system OpenSSL headers; DESIGN R10 names openssl as an expected-in-scope system-library gem. |
-| prism | 1.8.1 | 1.8.1 | 2026-07-29 | ok | 3/1 | Ruby's own parser; a large extension including generated C sources. |
-| psych | 5.3.1 | 5.3.1 | 2026-07-29 | ok | 5/5 | Depends on the system libyaml; DESIGN R10 names psych as an expected-in-scope system-library gem. |
-| stringio | 3.2.0 | 3.2.0 | 2026-07-29 | ok | 1/0 | Single ext dir (ext/stringio). |
-| strscan | 3.1.6 | 3.1.6 | 2026-07-29 | ok | 1/0 | Single ext dir (ext/strscan). |
-| zlib | 3.2.3 | 3.2.3 | 2026-07-29 | ok | 1/0 | Depends on the system zlib headers; DESIGN R10 expects gems built against a system library (e.g. sqlite3) to be in scope. |
-| websocket-driver | 0.8.2 | 0.8.2 | 2026-07-29 | ok | 1/0 | Single ext dir (ext/websocket-driver); extconf.rb only calls dir_config, no external library dependency, no C++. |
-| puma | 8.0.2 | 8.0.2 | 2026-07-29 | ok | 3/1 | Single ext dir (ext/puma_http11). OpenSSL is an optional dependency: extconf.rb only probes for it unless PUMA_DISABLE_SSL is set, and the build continues without SSL if it is not found. No C++, no mini_portile. DESIGN §3.1 names puma among the expected-in-scope gems. |
-| google-protobuf | 4.35.1 | 4.35.1 | 2026-07-29 | ok | 11/10 | ext/google/protobuf_c bundles ruby-upb.c (upb, a C implementation despite the gem's C++-sounding name) and utf8_range.c; the gem contains no .cc files. No mini_portile dependency. |
-| bootsnap | 1.24.6 | 1.24.6 | 2026-07-29 | ok | 1/0 | Single ext dir (ext/bootsnap); no external library dependency, no C++. |
-| oj | 3.17.4 | 3.17.4 | 2026-07-29 | ok | 41/25 | Single ext dir (ext/oj); no external library dependency, no C++. |
-| sqlite3 | 2.9.5 | 2.9.5 | 2026-07-29 | excluded | — | Single ext dir (ext/sqlite3). By default builds the bundled sqlite3 amalgamation itself via mini_portile2; `--enable-system-libraries` switches to the system libsqlite3 instead. No C++ either way (the amalgamation is .c) and no configure is run. DESIGN §3.1 names "sqlite3 (when using the system library)" as expected in scope. rubycc already compiles the sqlite3 amalgamation (261,463 lines) standalone (docs/STEPS.md, Step 116), making this gem a promising corpus candidate. |
-| nio4r | 2.7.5 | 2.7.5 | 2026-07-29 | ok | 13/5 | 669,001,382 downloads. Single ext dir (ext/nio4r); extconf.rb only calls dir_config. C 13 files / H 5 files. The I/O selector behind Rails' ActionCable and puma. |
-| byebug | 13.0.0 | 13.0.0 | 2026-07-29 | ok | 5/1 | 470,544,259 downloads. Single ext dir (ext/byebug); extconf.rb is 12 lines and only calls dir_config. C 5 files / H 1 file. |
-| pg | 1.6.3 | 1.6.3 | 2026-07-29 | excluded | — | 458,822,794 downloads. Single ext dir (ext/); C 22 files / H 3 files. Important note: extconf.rb references mini_portile2 and `./configure`, but only inside the `--with-cross-build` path (extconf.rb:26, `if gem_platform = with_config("cross-build")`), which is only taken when building pre-built cross-platform binary gems. A normal source install locates the system libpq via pg_config / pkg-config instead. DESIGN R10 names pg as in scope. Because census.rb's mechanical check only looks for a mini_portile reference anywhere in extconf.rb, it may judge pg as excluded even though the mini_portile path is unused on a normal build. |
-| mysql2 | 0.5.7 | 0.5.7 | 2026-07-29 | ok | 5/8 | 238,399,342 downloads. Single ext dir (ext/mysql2); C 5 files / H 8 files. Depends on the system libmysqlclient / libmariadb headers via have_library, the same system-library-dependent-but-in-scope shape as openssl and zlib above. |
-| thin | 2.0.1 | 2.0.1 | 2026-07-29 | ok | 2/2 | 207,539,292 downloads. Single ext dir (ext/thin_parser), a Ragel-generated parser: C 2 files / H 2 files. Note: thin's own extension is pure C, but its runtime dependency eventmachine is a C++ extension, so `gem install thin` additionally requires building eventmachine; the census here only looks at thin's own C sources. |
-| http_parser.rb | 0.8.1 | 0.8.1 | 2026-07-29 | ok | 8/3 | 175,614,437 downloads. Single ext dir (ext/ruby_http_parser); C 8 files / H 3 files. extconf.rb only calls dir_config. |
-| stackprof | 0.2.28 | 0.2.28 | 2026-07-29 | ok | 1/0 | 153,037,422 downloads. Single ext dir (ext/stackprof); a single C file, extconf.rb 16 lines with no probes — one of the smallest C extensions in this corpus. |
-| unicorn | 6.1.0 | 6.1.0 | 2026-07-29 | ok | 2/5 | 118,284,401 downloads. Single ext dir (ext/unicorn_http); C 2 files / H 5 files, extconf.rb has no probes. Note: its dependencies kgio and raindrops are also C extensions, so `gem install unicorn` additionally requires building those. |
-| debug | 1.11.1 | 1.11.1 | 2026-07-29 | ok | 2/0 | 116,172,789 downloads. Single ext dir (ext/debug); C 2 files, extconf.rb 27 lines with no probes. Ruby's standard debugger. |
-| yajl-ruby | 1.4.3 | 1.4.3 | 2026-07-29 | ok | 9/11 | 107,509,632 downloads. Single ext dir (ext/yajl); C 9 files / H 11 files, bundling the yajl C sources. extconf.rb 12 lines with no probes. |
-| nkf | 0.3.0 | 0.3.0 | 2026-07-29 | ok | 3/3 | 105,204,704 downloads. Single ext dir (ext/nkf); C 3 files / H 3 files. extconf.rb is only 3 lines. Was formerly a default gem, but is not in Ruby 4.0.6's default gem list, so it was not part of the default gem group in Step 117. |
+| json | 2.21.1 | 2.21.1 | 2026-08-03 | ok | 3/5 | Pure C parser/generator. SIMD paths are gated (JSON_DISABLE_SIMD); census counts gated headers as gap candidates without judging the gate. |
+| msgpack | 1.8.3 | 1.8.3 | 2026-08-03 | ok | 12/15 | Pure C packer/unpacker; single ext dir. |
+| bigdecimal | 4.1.2 | 4.1.2 | 2026-08-03 | ok | 3/7 | Pure C arbitrary-precision decimal; default gem, widely depended on. |
+| date | 3.5.1 | 3.5.1 | 2026-08-03 | ok | 4/2 | Pure C date/time core (ext/date); default gem. |
+| racc | 1.8.1 | 1.8.1 | 2026-08-03 | ok | 1/0 | Pure C parser runtime (ext/racc/cparse); extconf.rb runs no probes. |
+| redcarpet | 3.6.1 | 3.6.1 | 2026-08-03 | ok | 10/8 | Pure C Markdown renderer; extconf.rb runs no probes. |
+| digest | 3.2.1 | 3.2.1 | 2026-08-03 | ok | 10/9 | Six extconf.rb in one gem (ext/digest plus bubblebabble, md5, rmd160, sha1, sha2); first multi-ext gem in this corpus. |
+| erb | 6.0.1.1 | 6.0.1.1 | 2026-08-03 | ok | 1/0 | Single ext dir (ext/erb/escape). |
+| etc | 1.4.6 | 1.4.6 | 2026-08-03 | ok | 1/1 | Single ext dir (ext/etc). |
+| fcntl | 1.3.0 | 1.3.0 | 2026-08-03 | ok | 1/0 | Small single-file ext (ext/fcntl). |
+| io-console | 0.8.2 | 0.8.2 | 2026-08-03 | ok | 1/0 | Single ext dir (ext/io/console). |
+| io-nonblock | 0.3.2 | 0.3.2 | 2026-08-03 | ok | 1/0 | Small single-file ext (ext/io/nonblock). |
+| io-wait | 0.4.0 | 0.4.0 | 2026-08-03 | ok | 1/0 | Small single-file ext (ext/io/wait). |
+| openssl | 4.0.2 | 4.0.2 | 2026-08-03 | ok | 33/21 | Depends on the system OpenSSL headers; DESIGN R10 names openssl as an expected-in-scope system-library gem. |
+| prism | 1.8.1 | 1.8.1 | 2026-08-03 | ok | 3/1 | Ruby's own parser; a large extension including generated C sources. |
+| psych | 5.3.1 | 5.3.1 | 2026-08-03 | ok | 5/5 | Depends on the system libyaml; DESIGN R10 names psych as an expected-in-scope system-library gem. |
+| stringio | 3.2.0 | 3.2.0 | 2026-08-03 | ok | 1/0 | Single ext dir (ext/stringio). |
+| strscan | 3.1.6 | 3.1.6 | 2026-08-03 | ok | 1/0 | Single ext dir (ext/strscan). |
+| zlib | 3.2.3 | 3.2.3 | 2026-08-03 | ok | 1/0 | Depends on the system zlib headers; DESIGN R10 expects gems built against a system library (e.g. sqlite3) to be in scope. |
+| websocket-driver | 0.8.2 | 0.8.2 | 2026-08-03 | ok | 1/0 | Single ext dir (ext/websocket-driver); extconf.rb only calls dir_config, no external library dependency, no C++. |
+| puma | 8.0.2 | 8.0.2 | 2026-08-03 | ok | 3/1 | Single ext dir (ext/puma_http11). OpenSSL is an optional dependency: extconf.rb only probes for it unless PUMA_DISABLE_SSL is set, and the build continues without SSL if it is not found. No C++, no mini_portile. DESIGN §3.1 names puma among the expected-in-scope gems. |
+| google-protobuf | 4.35.1 | 4.35.1 | 2026-08-03 | ok | 11/10 | ext/google/protobuf_c bundles ruby-upb.c (upb, a C implementation despite the gem's C++-sounding name) and utf8_range.c; the gem contains no .cc files. No mini_portile dependency. |
+| bootsnap | 1.24.6 | 1.24.6 | 2026-08-03 | ok | 1/0 | Single ext dir (ext/bootsnap); no external library dependency, no C++. |
+| oj | 3.17.4 | 3.17.4 | 2026-08-03 | ok | 41/25 | Single ext dir (ext/oj); no external library dependency, no C++. |
+| sqlite3 | 2.9.5 | 2.9.5 | 2026-08-03 | excluded | — | Single ext dir (ext/sqlite3). By default builds the bundled sqlite3 amalgamation itself via mini_portile2; `--enable-system-libraries` switches to the system libsqlite3 instead. No C++ either way (the amalgamation is .c) and no configure is run. DESIGN §3.1 names "sqlite3 (when using the system library)" as expected in scope. rubycc already compiles the sqlite3 amalgamation (261,463 lines) standalone (docs/STEPS.md, Step 116), making this gem a promising corpus candidate. |
+| nio4r | 2.7.5 | 2.7.5 | 2026-08-03 | ok | 13/5 | 669,001,382 downloads. Single ext dir (ext/nio4r); extconf.rb only calls dir_config. C 13 files / H 5 files. The I/O selector behind Rails' ActionCable and puma. |
+| byebug | 13.0.0 | 13.0.0 | 2026-08-03 | ok | 5/1 | 470,544,259 downloads. Single ext dir (ext/byebug); extconf.rb is 12 lines and only calls dir_config. C 5 files / H 1 file. |
+| pg | 1.6.3 | 1.6.3 | 2026-08-03 | excluded | — | 458,822,794 downloads. Single ext dir (ext/); C 22 files / H 3 files. Important note: extconf.rb references mini_portile2 and `./configure`, but only inside the `--with-cross-build` path (extconf.rb:26, `if gem_platform = with_config("cross-build")`), which is only taken when building pre-built cross-platform binary gems. A normal source install locates the system libpq via pg_config / pkg-config instead. DESIGN R10 names pg as in scope. Because census.rb's mechanical check only looks for a mini_portile reference anywhere in extconf.rb, it may judge pg as excluded even though the mini_portile path is unused on a normal build. |
+| mysql2 | 0.5.7 | 0.5.7 | 2026-08-03 | ok | 5/8 | 238,399,342 downloads. Single ext dir (ext/mysql2); C 5 files / H 8 files. Depends on the system libmysqlclient / libmariadb headers via have_library, the same system-library-dependent-but-in-scope shape as openssl and zlib above. |
+| thin | 2.0.1 | 2.0.1 | 2026-08-03 | ok | 2/2 | 207,539,292 downloads. Single ext dir (ext/thin_parser), a Ragel-generated parser: C 2 files / H 2 files. Note: thin's own extension is pure C, but its runtime dependency eventmachine is a C++ extension, so `gem install thin` additionally requires building eventmachine; the census here only looks at thin's own C sources. |
+| http_parser.rb | 0.8.1 | 0.8.1 | 2026-08-03 | ok | 8/3 | 175,614,437 downloads. Single ext dir (ext/ruby_http_parser); C 8 files / H 3 files. extconf.rb only calls dir_config. |
+| stackprof | 0.2.28 | 0.2.28 | 2026-08-03 | ok | 1/0 | 153,037,422 downloads. Single ext dir (ext/stackprof); a single C file — one of the smallest C extensions in this corpus. extconf.rb is 16 lines but does carry four have_func probes (rb_postponed_job_preregister and friends), measured in Step 146; an earlier note here said "no probes", which was wrong. |
+| unicorn | 6.1.0 | 6.1.0 | 2026-08-03 | ok | 2/5 | 118,284,401 downloads. Single ext dir (ext/unicorn_http); C 2 files / H 5 files, extconf.rb has no probes. Note: its dependencies kgio and raindrops are also C extensions, so `gem install unicorn` additionally requires building those. |
+| debug | 1.11.1 | 1.11.1 | 2026-08-03 | ok | 2/0 | 116,172,789 downloads. Single ext dir (ext/debug); C 2 files, extconf.rb 27 lines with no probes. Ruby's standard debugger. |
+| yajl-ruby | 1.4.3 | 1.4.3 | 2026-08-03 | ok | 9/11 | 107,509,632 downloads. Single ext dir (ext/yajl); C 9 files / H 11 files, bundling the yajl C sources. extconf.rb 12 lines with no probes. |
+| nkf | 0.3.0 | 0.3.0 | 2026-08-03 | ok | 3/3 | 105,204,704 downloads. Single ext dir (ext/nkf); C 3 files / H 3 files. extconf.rb is only 3 lines. Was formerly a default gem, but is not in Ruby 4.0.6's default gem list, so it was not part of the default gem group in Step 117. |
 
 ## Excluded / skipped
 

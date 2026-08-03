@@ -6610,7 +6610,11 @@ resolved 列は動かない。理由は 2 つ:
 
 ## 現在のテスト規模
 
-Step 173 完了時点: **2,743 runs / 8,121 assertions / 0 failures / 0 errors / 45 skips**
+Step 176 完了時点: **2,743 runs / 8,125 assertions / 0 failures / 0 errors / 45 skips**
+(Step 173 から +4 assertions = コーパスの 4 件が `latest` ではなく固定バージョンに
+なったぶん `test_corpus_census.rb` の検査が増えた。Steps 174・175 は CI 設定と
+ドキュメントだけなのでローカルのテスト規模は動かない)
+(以前) Step 173 完了時点: **2,743 runs / 8,121 assertions / 0 failures / 0 errors / 45 skips**
 (Step 172 から +11 runs = rmake の `MAKE` マクロのテスト
 5 件(Makefile/Parser レベル)+ 6 件(CLI レベル))
 (以前) Step 172 完了時点: **2,732 runs / 8,104 assertions / 0 failures / 0 errors / 45 skips**
