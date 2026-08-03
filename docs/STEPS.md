@@ -6064,9 +6064,82 @@ gem 名の一覧が 14 件で `%w[]` の中まで 120 桁を超えた。Step 165
 
 ---
 
+## Step 167 — 同梱ヘッダの `cfmakeraw` / `ttyname_r` 欠落(M5 H6)
+
+7 件計画の 4 番、io-console 0.8.2 に着手して最初に出たギャップ。
+`ext/io/console/console.c` のコンパイルが
+`error: implicit declaration of function 'cfmakeraw'` で落ちる。
+
+### Step 160 のギャップ C とまったく同型
+
+`extconf.rb` の `have_func("cfmakeraw", "termios.h")` は **yes** を返す。
+mkmf の `have_func` は**自分で関数を宣言する try_link** なので、ヘッダに宣言が
+無くてもプローブは通り、`-DHAVE_CFMAKERAW` が立ち、**本体のコンパイルで初めて
+暗黙宣言エラーになる**。Step 160 の `confstr` / `fpathconf` と同じ構図である。
+
+ホスト gcc の対照はビルドに成功し、**probe 13 件の結果も rubycc と完全一致**した
+(`rb_syserr_fail_str` / `rb_interned_str_cstr` / `rb_io_path` / `rb_io_descriptor` /
+`rb_io_get_write_io` / `rb_io_closed_p` / `rb_io_open_descriptor` /
+`rb_ractor_local_storage_value_newkey` / `termios.h` / `cfmakeraw` / `sys/ioctl.h` /
+`HAVE_RUBY_FIBER_SCHEDULER_H` / `ttyname_r`、すべて yes)。
+**probe の一致が「同じものがビルドされる」を意味しない**ことの、これ以上ないほど
+はっきりした実例で、非は同梱ヘッダの宣言漏れに確定した。
+
+### センサスは `#include` を見るが、呼ばれる関数は見ない
+
+`termios.h` の provenance には「io-console の corpus サンプルが実際に到達する
+`HAVE_TERMIOS_H` 経路にスコープを絞り」と書いてある(Step 124)。**この絞り込み自体は
+正しい**が、`rake corpus:census` が観測するのは **`#include` の到達**であって、
+到達したヘッダの**どの関数が呼ばれるか**ではない。`cfmakeraw` は新しいヘッダを
+連れてこないので、センサスの網には最初から掛からない。
+
+同じ理由で `unistd.h` に `ttyname_r` も無かった(`ttyname` はあった)。
+console.c が使う termios/unistd 系のシンボルを数え直して、
+**足りないのはこの 2 つだけ**であることを先に確かめてから足した
+(`ioctl` / `struct winsize` / `TIOCGWINSZ` / `TIOCSWINSZ` / `TCSANOW` / `TC*FLUSH`
+は既にある。`TCGETA` / `TCSETAF` / `TIOCGETP` / `TIOCSETP` は Linux で選ばれない
+`termio.h` / `sgtty.h` 経路のもので、provenance が既に対象外と明記している)。
+
+**「ヘッダが到達するか」で絞ったスコープは、実ビルドでしか検証できない。**
+これはセンサスの欠陥ではなく、センサスに測れることの限界である。
+
+### R8 の扱い
+
+どちらも**数値サーフェスを持たない単一プロトタイプ**なので、新しい ABI ケースは
+作らず、既存の `TERMIOS` / `UNISTD` Spec の snippet から呼ぶ形に足した
+(Step 160 が `confstr` / `fpathconf` / `pathconf` でやったのと同じ)。
+両 Spec とも共通層なので x86_64・aarch64 の両方から同じ Spec が再利用される。
+シグネチャは glibc のヘッダテキストを写さず、**実ヘッダを include した上で自分の
+宣言を並べ、矛盾する宣言としてエラーにならないことをホスト gcc で確認**して決めた。
+ファイル数は変わらないので由来台帳の集計は据え置き、`termios.h` の行にだけ
+`cfmakeraw` の追加と経緯を書き足した。
+
+### これで io-console はまだ通らない
+
+この修正でコンパイルは console.c の先へ進み、**次のギャップに当たった**:
+`console.c` が `ruby/ractor.h` を取り込み、そこに
+
+```c
+static inline bool rb_ractor_shareable_p(VALUE obj)
+{
+    bool rb_ractor_shareable_p_continue(VALUE obj);   /* ブロックスコープの関数宣言 */
+    ...
+}
+```
+
+がある。rubycc はこれを `generator.rb` で明示的に拒否している
+(「block-scope function declarations are not supported」)。**Step 168 で解消する。**
+既存の検証済み gem はどれも `ruby/ractor.h` を取り込んでいなかったので、
+このギャップは io-console で初めて露出した。
+
+---
+
 ## 現在のテスト規模
 
-Step 166 完了時点: **2,717 runs / 7,979 assertions / 0 failures / 47 skips**
+Step 167 完了時点: **2,717 runs / 7,979 assertions / 0 failures / 47 skips**
+(Step 166 と同数 = 追加した 2 宣言は既存 Spec の snippet 内の呼び出しとして
+検査されるので、テストメソッドも assertion も増えない)
+(以前) Step 166 完了時点: **2,717 runs / 7,979 assertions / 0 failures / 47 skips**
 (runs は Step 165 と同数 = DB のスキーマ検査が erb の 1 件分増えただけ)
 (以前) Step 165 完了時点: **2,717 runs / 7,961 assertions / 0 failures / 47 skips**
 (runs は Step 164 と同数 = DB のスキーマ検査が io-wait の 1 件分増え、

@@ -27,7 +27,14 @@
    the termio.h/sgtty.h fallback paths (BSD/pre-POSIX ioctl-based terminal
    control that HAVE_TERMIOS_H skips on Linux), and the NLDLY/CRDLY/TABDLY/
    BSDLY/VTDLY/FFDLY output-delay bits (line-printer timing, not used to
-   build raw mode). */
+   build raw mode). cfmakeraw was missing from that Step 124 pass: the corpus
+   census that drove it only looks at which headers a #include reaches, not
+   which functions the reached header's caller actually calls, so a function
+   io-console calls without pulling in any new header slipped past it.
+   Building io-console for real (Step 167) surfaced the gap -- mkmf's
+   have_func probe for it passed regardless (it declares the function itself
+   before linking), so -DHAVE_CFMAKERAW was set and the implicit-declaration
+   error only showed up compiling the body -- and cfmakeraw was added then. */
 
 #ifndef _RUBYCC_TERMIOS_H
 #define _RUBYCC_TERMIOS_H
@@ -162,5 +169,11 @@ speed_t cfgetispeed(const struct termios *__termios_p);
 speed_t cfgetospeed(const struct termios *__termios_p);
 int cfsetispeed(struct termios *__termios_p, speed_t __speed);
 int cfsetospeed(struct termios *__termios_p, speed_t __speed);
+
+/* cfmakeraw is a BSD/GNU extension, not POSIX (POSIX only standardizes the
+   getattr/setattr/cfset*speed calls above); glibc and the BSDs all provide it
+   as the conventional shortcut that sets the termios flags/c_cc for raw mode
+   in one call, which is exactly what io-console uses it for. */
+void cfmakeraw(struct termios *__termios_p);
 
 #endif /* _RUBYCC_TERMIOS_H */

@@ -90,6 +90,9 @@ int     ftruncate(int __fd, off_t __length);
 int     truncate(const char *__file, off_t __length);
 int     isatty(int __fd);
 char   *ttyname(int __fd);
+/* ttyname's POSIX reentrant pair: the caller supplies the buffer instead of
+   getting back a pointer into static storage. */
+int     ttyname_r(int __fd, char *__buf, size_t __buflen);
 int     link(const char *__from, const char *__to);
 int     symlink(const char *__from, const char *__to);
 ssize_t readlink(const char *__restrict __path, char *__restrict __buf, size_t __len);

@@ -495,6 +495,28 @@ RECIPES = {
       # is the conjunct that earns its place here.
       expr: "injected_so_loaded? && ERB::Escape.instance_method(:html_escape).source_location.nil?"
     }
+  },
+
+  "io-console" => {
+    version: "0.8.2",
+    tarball: "https://github.com/ruby/io-console/archive/refs/tags/v0.8.2.tar.gz",
+    sos: { "lib/io/console.so" => "lib/io/console.so" },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # The Rakefile's Rake::TestTask *replaces* libs with the built extension's
+    # dir and then appends test/lib; ruby_opts -rhelper. Its --ignore-name is
+    # guarded by RUBY_ENGINE == "jruby", so it does not apply here.
+    load_paths: %w[lib test/lib],
+    require_flags: %w[helper],
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      requires: %w[io/console],
+      # io/console ships with the interpreter, and the gem also carries a pure
+      # Ruby FFI implementation under lib/ffi/ for JRuby. Neither is what this
+      # run is supposed to exercise; the injected-.so check rules out both.
+      expr: "injected_so_loaded?"
+    }
   }
 }.freeze
 
