@@ -27,6 +27,11 @@ jobs:
   # from upstream drift: it means rubycc's own header coverage changed, which is
   # information worth committing.
   census:
+    # A dispatch that sets verify_step is a musl *recording* run (docs/CI.md):
+    # only the musl job has anything to do, and the free-tier minute budget
+    # is tight enough that dragging the other four along would cost more than
+    # the run itself. Everything else is unchanged for the weekly schedule.
+    if: inputs.verify_step == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -88,6 +93,11 @@ jobs:
   # plus the M2 acceptance tool (build json/msgpack with rubycc and run their own
   # test suites).
   acceptance:
+    # A dispatch that sets verify_step is a musl *recording* run (docs/CI.md):
+    # only the musl job has anything to do, and the free-tier minute budget
+    # is tight enough that dragging the other four along would cost more than
+    # the run itself. Everything else is unchanged for the weekly schedule.
+    if: inputs.verify_step == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -144,6 +154,11 @@ jobs:
 
   # Throughput (requirement N1) as a trend line only.
   throughput:
+    # A dispatch that sets verify_step is a musl *recording* run (docs/CI.md):
+    # only the musl job has anything to do, and the free-tier minute budget
+    # is tight enough that dragging the other four along would cost more than
+    # the run itself. Everything else is unchanged for the weekly schedule.
+    if: inputs.verify_step == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -249,6 +264,11 @@ jobs:
   # push by test.yml, so a version-specific break is caught within the week
   # unless it is 3.4-specific.
   ruby-3-4:
+    # A dispatch that sets verify_step is a musl *recording* run (docs/CI.md):
+    # only the musl job has anything to do, and the free-tier minute budget
+    # is tight enough that dragging the other four along would cost more than
+    # the run itself. Everything else is unchanged for the weekly schedule.
+    if: inputs.verify_step == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:

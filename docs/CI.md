@@ -132,6 +132,13 @@ GitHub Actions のジョブコンテナには、ランナーが**自前の glibc
 | 週次スケジュール | 空 | **読み取り専用**。「この 3 gem は musl でまだビルドでき、テストが通るか」という回帰の問い |
 | 手動 dispatch | ステップ番号 | `--update` で `data/verified_gems.json` を書き、`weekly-musl` アーティファクトとして上げる。**そのファイルをそのままコミットする**ので、DB を書くのは変わらずツールだけ |
 
+**記録用の dispatch では musl 以外の 4 ジョブが走らない**(各ジョブの
+`if: inputs.verify_step == ''`)。記録したいときに他の 4 本を引き連れると
+1 回あたり 255 分かかり、**記録そのものより随伴のほうが高くつく**ためである。
+`schedule` イベントでは `inputs` が null で、GitHub の式評価では
+`null == ''` が真になるので、**週次実行は従来どおり 5 ジョブ全部**が走る。
+記録用 dispatch のコストは musl ジョブの約 90 分だけ。
+
 ## 週次ベンチが合否判定をしない理由
 
 `throughput` ジョブは `BENCH_RUNS=7 rake bench:throughput` を回して結果を
