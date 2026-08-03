@@ -463,6 +463,38 @@ RECIPES = {
       # outcome is the interpreter's own copy winning the require.
       expr: "injected_so_loaded?"
     }
+  },
+
+  "erb" => {
+    version: "6.0.1.1",
+    tarball: "https://github.com/ruby/erb/archive/refs/tags/v6.0.1.1.tar.gz",
+    sos: { "lib/erb/escape.so" => "lib/erb/escape.so" },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # The Rakefile's Rake::TestTask appends 'test/lib' to the default libs
+    # (["lib"]) and passes ruby_opts -rhelper.
+    load_paths: %w[lib test/lib],
+    require_flags: %w[helper],
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      # Plain 'erb', not 'erb/escape': lib/erb/util.rb is where the fallback
+      # lives, and requiring the extension directly would step around the very
+      # branch this check exists to observe.
+      requires: %w[erb],
+      # lib/erb/util.rb wraps `require 'erb/escape'` in a rescue LoadError and
+      # defines a pure-Ruby ERB::Escape#html_escape over CGI.escapeHTML when it
+      # fails, so this looked like the blindest of the fallback gems. Measured
+      # instead (Step 166): corrupting the injected escape.so leaves 47 of 48
+      # tests passing, and the one that fails is upstream's own
+      # test_html_escape_extension, which asserts html_escape has no
+      # source_location. So erb's suite *does* catch its own fallback -- the
+      # second conjunct below only restates a test the suite already runs.
+      # What upstream cannot see is the wrong *copy*: the interpreter ships
+      # erb/escape.so too, and against that one all 48 pass. injected_so_loaded?
+      # is the conjunct that earns its place here.
+      expr: "injected_so_loaded? && ERB::Escape.instance_method(:html_escape).source_location.nil?"
+    }
   }
 }.freeze
 
@@ -1249,6 +1281,21 @@ DOCTOR_TEST = File.join(RUBYCC_ROOT, "test/test_doctor.rb")
 # stop finding the gate exactly when the gate started mattering most.
 ALLOWLIST_RE = /assert_equal %w\[([^\]]*)\],\s*raw\.keys\.sort/
 
+# The paste-ready assertion, wrapped inside %w[] so no line passes 120 columns.
+# The continuation indent lines the names up under the first one, which is what
+# the test file itself does.
+def allowlist_lines(names, limit: 120)
+  head = "    assert_equal %w["
+  cont = " " * head.length
+  lines = [head.dup]
+  names.each do |name|
+    lines << cont.dup if lines.last.length + 1 + name.length > limit && lines.last != head
+    lines.last << (lines.last.end_with?("[", " ") ? "" : " ") << name
+  end
+  lines.last << "],"
+  lines << "                 raw.keys.sort"
+end
+
 def check_doctor_allowlist(db)
   return unless File.file?(DOCTOR_TEST)
 
@@ -1267,10 +1314,10 @@ def check_doctor_allowlist(db)
   puts "  the database now holds #{actual.inspect}."
   puts "  Update test_verified_gems_json_holds_only_confirmed_gems by hand with:"
   puts
-  # Printed wrapped because the one-line form passed 120 columns at 12 gems and
-  # this is meant to be pasted as-is.
-  puts "    assert_equal %w[#{actual.join(' ')}],"
-  puts "                 raw.keys.sort"
+  # Printed wrapped, because this is meant to be pasted as-is and the one-line
+  # form outgrew the file's 120-column habit at 12 gems -- first the trailing
+  # `raw.keys.sort`, then (at 14) the word list itself.
+  puts allowlist_lines(actual)
   puts
   puts "  (this tool never edits the test: the allow-list is an intentional gate.)"
 end

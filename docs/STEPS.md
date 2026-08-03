@@ -6018,9 +6018,57 @@ autorunner が読む。`runner_args` が空のときは `--` も付けない。
 
 ---
 
+## Step 166 — erb 6.0.1.1 を記録する(M5 H6)
+
+7 件計画の 3 番。gem 自身の test/unit スイートが
+**48 tests / 143 assertions / 0 failures / 0 errors** で PASS。検証済み gem は **14 件**。
+コンパイラ側の変更は不要だった。
+
+### ROADMAP の見立ては半分外れた — この gem のスイートは自分のフォールバックを見ている
+
+計画表には「**スイートの大半は純 Ruby の ERB を叩く**ので sanity 式が特に重要
+(C 拡張を通らなくても合格しうる)」と書いていた。前半は正しい — C なのは
+`ext/erb/escape` だけで、`lib/erb/util.rb` は `require 'erb/escape'` を
+`rescue LoadError` で包み、`CGI.escapeHTML` を使う純 Ruby の
+`ERB::Escape#html_escape` を裏に持っている。
+
+**後半は実測で外れた**。差し込んだ `escape.so` を壊してスイートを走らせると、
+**48 件中 47 件が通り、落ちるのは 1 件だけ** — しかもそれは上流自身の
+`test_html_escape_extension` で、`ERB::Util.method(:html_escape).source_location`
+が nil であること、つまり **C で定義されていること**を主張している。
+racc(`cparse.so` を壊しても 71 tests / 0 failures で 100% passed)とは違い、
+**erb のスイートは自分のフォールバックを検出する**。
+
+ただし**検出できないものがある**: 上流のこのテストは「C 実装かどうか」しか見ないので、
+**処理系同梱の `erb/escape.so` がロードされていても 48 件全部通る**。
+sanity 式に `injected_so_loaded?` を残す理由はここにあり、併記した
+`source_location.nil?` の側は**上流が既に走らせているテストの言い直し**でしかない。
+両方残したのは上流がそのテストを落とした場合の保険だが、
+**どちらが効いているかを取り違えないよう**レシピのコメントに実測を書いた。
+
+「フォールバックがある gem は sanity 式が要る」は正しいが、
+**その式のどの項が効くかは gem ごとに違い、測らないと分からない**。
+
+### probe は 1 件、gcc と一致
+
+`have_func("rb_ext_ractor_safe", "ruby.h")` が唯一の probe で、rubycc・gcc とも
+`yes`。`HAVE_RB_EXT_RACTOR_SAFE` は両方で定義され、`Init_escape` は両方で
+`rb_ext_ractor_safe(true)` を呼ぶ。
+
+### 許可リストの印字を折り返し対応にした
+
+gem 名の一覧が 14 件で `%w[]` の中まで 120 桁を超えた。Step 165 で `raw.keys.sort` を
+折ったばかりだったが、今度は語のリスト自身が溢れる。ツールが印字する貼り付け用の行を
+`allowlist_lines` で折り返すようにし、**印字した形とテストファイルの実際の形が
+一致する**ようにした(一致していないと、貼り付けた人が毎回手直しする羽目になる)。
+
+---
+
 ## 現在のテスト規模
 
-Step 165 完了時点: **2,717 runs / 7,961 assertions / 0 failures / 47 skips**
+Step 166 完了時点: **2,717 runs / 7,979 assertions / 0 failures / 47 skips**
+(runs は Step 165 と同数 = DB のスキーマ検査が erb の 1 件分増えただけ)
+(以前) Step 165 完了時点: **2,717 runs / 7,961 assertions / 0 failures / 47 skips**
 (runs は Step 164 と同数 = DB のスキーマ検査が io-wait の 1 件分増え、
 バージョン固定の検査を 1 件足しただけ)
 (以前) Step 164 完了時点: **2,717 runs / 7,941 assertions / 0 failures / 47 skips**
