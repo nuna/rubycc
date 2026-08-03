@@ -34,20 +34,27 @@ module Rubycc
       # variable overrides a makefile variable. They are stored as simple
       # (already-expanded) variables so a `:=` assignment referencing one during
       # the parse sees the command-line value.
-      def initialize(overrides: {})
+      #
+      # +defaults+ are POSIX's built-in variables (currently just `MAKE`): unlike
+      # +overrides+ they are ordinary variables once seeded, so a Makefile
+      # assignment to the same name replaces them exactly as it would replace any
+      # other pre-existing value. They are seeded first so an override (or a
+      # Makefile assignment) to the same name still wins.
+      def initialize(overrides: {}, defaults: {})
         @variables = {}
         @rules = []
         @order = 0
         @current_rule = nil
         @expander = Expander.new(@variables)
         @overrides = overrides || {}
+        (defaults || {}).each { |name, value| @variables[name] = Variable.new(:simple, value.to_s) }
         @overrides.each { |name, value| @variables[name] = Variable.new(:simple, value.to_s) }
       end
 
       attr_reader :variables, :rules
 
-      def self.parse(text, overrides: {})
-        new(overrides: overrides).tap { |p| p.run(text) }
+      def self.parse(text, overrides: {}, defaults: {})
+        new(overrides: overrides, defaults: defaults).tap { |p| p.run(text) }
       end
 
       def run(text)

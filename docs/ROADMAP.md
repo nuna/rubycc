@@ -766,10 +766,10 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
 | 167 | 4 番が露出させた**同梱ヘッダの宣言漏れ** — `cfmakeraw` / `ttyname_r` |
 | 168 | 4 番が露出させた**ブロックスコープ関数宣言**の未対応(`ruby/ractor.h`) |
 | 169〜172 | io-console / digest / zlib / psych の記録(いずれもコンパイラ側の変更不要) |
+| 173 | 7 番が露出させた **rmake の `MAKE` マクロ未定義**(POSIX 要求)— 再帰 make の規則が黙って no-op になっていた |
 
 **7 件計画は Step 172 で完了**(検証済み gem 6 → 18 件)。露出したギャップは
-コンパイラ側 3 件(Steps 163・167・168。いずれもその場で修正)と、
-rmake の `MAKE` マクロ未定義 1 件(GAPS F。別ステップ)。
+コンパイラ側 3 件(Steps 163・167・168)と rmake 1 件(Step 173)で、いずれも修正済み。
 
 **1 gem = 1 ステップ**。手順は `.claude/skills/corpus-expansion/SKILL.md` のフェーズ 2
 そのままで、レシピの雛形は `tools/verify_gem_tests.rb` の **`RECIPES["etc"]` が最も近い**

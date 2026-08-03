@@ -145,6 +145,115 @@ class TestRmakeCli < Minitest::Test
     end
   end
 
+  # --- built-in MAKE variable -------------------------------------------------
+
+  # POSIX requires make to define `MAKE` built in: recipes that recursively
+  # invoke `$(MAKE)` (e.g. psych's bundled-libyaml `cd .. && $(MAKE)` rule)
+  # would otherwise expand to the empty string and silently collapse into a
+  # no-op instead of a recursive build.
+  def with_env_make(value)
+    had = ENV.key?("MAKE")
+    prev = ENV["MAKE"]
+    if value.nil?
+      ENV.delete("MAKE")
+    else
+      ENV["MAKE"] = value
+    end
+    yield
+  ensure
+    if had
+      ENV["MAKE"] = prev
+    else
+      ENV.delete("MAKE")
+    end
+  end
+
+  def test_make_variable_defaults_to_this_process_absolute_path
+    with_env_make(nil) do
+      with_dir do |dir|
+        File.write(path(dir, "Makefile"), "show:\n\techo make=[$(MAKE)] > out.txt\n")
+        code, _out, err = run_cli(["show"], dir)
+
+        assert_equal 0, code, err
+        assert_equal "make=[#{File.expand_path($PROGRAM_NAME)}]", File.read(path(dir, "out.txt")).strip
+      end
+    end
+  end
+
+  # RubyGems' rubygems_plugin sets `ENV["MAKE"]` to rmake before driving the
+  # build, and that value (not this process's own path) must be what `$(MAKE)`
+  # expands to, so any further recursive invocation stays rmake too.
+  def test_make_variable_honours_env_make_when_set
+    with_env_make("/env/rmake") do
+      with_dir do |dir|
+        File.write(path(dir, "Makefile"), "show:\n\techo make=[$(MAKE)] > out.txt\n")
+        code, _out, err = run_cli(["show"], dir)
+
+        assert_equal 0, code, err
+        assert_equal "make=[/env/rmake]", File.read(path(dir, "out.txt")).strip
+      end
+    end
+  end
+
+  # An empty `ENV["MAKE"]` (unset in effect) falls back to this process's own
+  # path rather than being treated as a defined-but-blank override.
+  def test_make_variable_falls_back_when_env_make_is_empty
+    with_env_make("") do
+      with_dir do |dir|
+        File.write(path(dir, "Makefile"), "show:\n\techo make=[$(MAKE)] > out.txt\n")
+        code, _out, err = run_cli(["show"], dir)
+
+        assert_equal 0, code, err
+        assert_equal "make=[#{File.expand_path($PROGRAM_NAME)}]", File.read(path(dir, "out.txt")).strip
+      end
+    end
+  end
+
+  # A Makefile's own `MAKE = ...` assignment beats the built-in default (make's
+  # ordinary precedence rule — the built-in is not protected like an override).
+  def test_makefile_assignment_wins_over_make_default
+    with_env_make(nil) do
+      with_dir do |dir|
+        File.write(path(dir, "Makefile"), "MAKE = /makefile/make\nshow:\n\techo make=[$(MAKE)] > out.txt\n")
+        code, _out, err = run_cli(["show"], dir)
+
+        assert_equal 0, code, err
+        assert_equal "make=[/makefile/make]", File.read(path(dir, "out.txt")).strip
+      end
+    end
+  end
+
+  # A command-line `MAKE=other` beats both the built-in default and a
+  # Makefile's own assignment.
+  def test_command_line_override_wins_over_make_default_and_makefile_assignment
+    with_env_make(nil) do
+      with_dir do |dir|
+        File.write(path(dir, "Makefile"), "MAKE = /makefile/make\nshow:\n\techo make=[$(MAKE)] > out.txt\n")
+        code, _out, err = run_cli(["MAKE=/cli/make", "show"], dir)
+
+        assert_equal 0, code, err
+        assert_equal "make=[/cli/make]", File.read(path(dir, "out.txt")).strip
+      end
+    end
+  end
+
+  # The recursive-make idiom `cd sub && $(MAKE)` must keep its command word:
+  # without a built-in default this collapses to a silent no-op (the bug this
+  # feature fixes). The line is `echo`d rather than actually run — checking
+  # the expanded text is enough, no recursive rmake process needs to start.
+  def test_recursive_make_recipe_line_keeps_command_word
+    with_env_make("/env/rmake") do
+      with_dir do |dir|
+        FileUtils.mkdir_p(path(dir, "sub"))
+        File.write(path(dir, "Makefile"), %(show:\n\tcd sub && echo "$(MAKE) -C sub" > out.txt\n))
+        code, _out, err = run_cli(["show"], dir)
+
+        assert_equal 0, code, err
+        assert_equal "/env/rmake -C sub", File.read(path(dir, "sub", "out.txt")).strip
+      end
+    end
+  end
+
   # --- target selection -----------------------------------------------------
 
   def test_absent_target_builds_default_goal

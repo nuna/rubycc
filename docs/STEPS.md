@@ -6375,9 +6375,82 @@ POSIX は `MAKE` を組み込みで定義することを要求している。
 
 ---
 
+## Step 173 — rmake に組み込みマクロ `MAKE` を実装する(M5 H6)
+
+Step 172(psych)が露出させたギャップ F の修正。横断ルール
+「ギャップの修正は別ステップに切る」に従って独立したステップにした。
+
+### 症状 — **失敗ではなく無音**
+
+psych のビルド中に `cd libyaml &&  clean` という出力が出た。
+生成 Makefile の該当行は `	-cd libyaml && $(MAKE) clean` で、
+**`$(MAKE)` が空に展開されていた**。POSIX は `MAKE` を組み込みで定義することを
+要求しているが、rmake は定義していなかった。最小再現:
+
+| | `$(MAKE)` | `$(CC)` |
+|---|---|---|
+| rmake(修正前) | `[]` | `[]` |
+| GNU make | `[make]` | `[cc]` |
+
+この欠陥の質が悪いのは、**エラーにならない**ところである。
+`cd sub && $(MAKE)` は `cd sub &&` に潰れる。同梱ライブラリを再帰 make で
+ビルドする gem では、ビルドが走ったように見えて**何も作られない**。
+psych で表に出たのは行頭 `-` でエラー無視の `clean` 側だったこと、
+このビルドがホストの libyaml を使ったことの 2 つの偶然によるもので、
+**同じ Makefile の同梱 libyaml をビルドする側の規則を踏んでいたら無音で壊れていた**。
+
+### 値は「`make`」ではなく「rmake 自身の絶対パス」
+
+ここが唯一の設計判断。GNU make に倣えば `make` だが、
+**rubycc の前提はホストに make も gcc も無いこと**なので、それでは契約が壊れる
+(再帰ビルドだけがホストの GNU make + gcc に流れる)。したがって値は
+
+1. `ENV["MAKE"]` が非空ならその値(RubyGems の rubygems_plugin が
+   rmake を指す値を設定して起動するので、それを再帰先へ伝播させる)
+2. なければ `File.expand_path($PROGRAM_NAME)`
+
+とし、**`make` へのフォールバックは置かない**。
+
+### 優先順位 — `overrides` とは扱いを変える必要があった
+
+`Parser` はコマンドライン `VAR=value` を `@overrides` に持ち、
+Makefile 側の代入を `return if @overrides.key?(name)` で無効化している。
+**組み込み既定値をこの経路に相乗りさせてはいけない** — make の規則では
+Makefile の `MAKE = foo` は既定値に勝つからである。そこで
+`defaults:` を別のキーワード引数として足し、**通常の変数として先に seed** した。
+結果の優先順位は コマンドライン > Makefile の代入 > 既定値。
+
+`CLI` が既定値の唯一の決定者で、`Parser` に `ENV` は読ませていない
+(テストから既定値を注入できるようにするため)。
+
+### `CC` は今回は入れない
+
+上の表のとおり `$(CC)` も空だが、**実測された失敗が無い**。
+mkmf は必ず `CC = ...` を書き出すし、rmake はどのみちコンパイラ語を
+rubycc の Driver に差し替えるので、既定値を足しても mkmf コーパス全体の
+挙動を変えるリスクの方が大きい。**推測でギャップを埋めない**方針に従って見送った。
+
+### 検証
+
+ユニットテスト 11 件のほか、実際に再帰起動が通ることを確認した:
+
+```
+$ rmake                       # all: cd sub && $(MAKE) hello
+cd sub && /home/nuna/projects/rubycc/exe/rmake hello
+recursed into sub
+```
+
+rmake はレシピをシェルに渡さず argv 配列で `Process.spawn` するので、
+`cd` は組み込みで `state.cwd` を動かし、そこへ rmake 自身が子プロセスとして起動される。
+
+---
+
 ## 現在のテスト規模
 
-Step 172 完了時点: **2,732 runs / 8,104 assertions / 0 failures / 0 errors / 45 skips**
+Step 173 完了時点: **2,743 runs / 8,121 assertions / 0 failures / 0 errors / 45 skips**
+(Step 172 から +11 runs = rmake の `MAKE` マクロのテスト
+5 件(Makefile/Parser レベル)+ 6 件(CLI レベル))
+(以前) Step 172 完了時点: **2,732 runs / 8,104 assertions / 0 failures / 0 errors / 45 skips**
 (runs は Step 171 と同数 = DB のスキーマ検査が psych の 1 件分増え、
 バージョン固定の検査を 1 件足しただけ)
 (以前) Step 171 完了時点: **2,732 runs / 8,084 assertions / 0 failures / 0 errors / 45 skips**
