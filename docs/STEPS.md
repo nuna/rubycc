@@ -6205,9 +6205,61 @@ C11 6.2.2p5: ブロックスコープで宣言された関数識別子は、記�
 
 ---
 
+## Step 169 — io-console 0.8.2 を記録する(M5 H6)
+
+7 件計画の 4 番。**1 件の gem に 2 つのコンパイラ側修正(Steps 167・168)が要った**、
+これまでで最も重い default gem。gem 自身の test/unit スイートが
+**28 tests / 109 assertions / 0 failures / 0 errors / 0 omissions** で PASS。
+検証済み gem は **15 件**。
+
+### 「tty を要求するテストが多い」という事前の懸念は、実測では問題にならなかった
+
+計画表には「**tty を要求するテストが多い**。非 tty 環境では omission/skip に落ちるので、
+(d) レベルの証拠として十分かを個別に判断し、足りなければ pty 経由の実走を検討する」と
+書いていた。実測は次のとおり:
+
+- **omission も skip も pend も 0 件**だった
+- `test_raw` / `test_noecho` / `test_getpass` / `test_intr` / `test_cursor_position` など、
+  **tty を要する主要なテストは `PTY.open` 経由で実際に走って通っている**。
+  `PTY.open` は制御端末を必要としないので、非 tty セッションでも成立する
+
+一方、ソース中の `def test_` は **37 個あるのに走ったのは 28 個**である。差の内訳を
+実測で詰めた:
+
+| 件数 | 理由 |
+|---|---|
+| 5 | `IO.console` が真であることを条件とする `class_eval` の中にあり、制御端末が無いと**定義そのものがされない**(`test_get_winsize_console` / `test_set_winsize_console` / `test_getch_timeout` / `test_pressed_valid` / `test_pressed_invalid`) |
+| 4 | 2 つの `class_eval` ブロックで同名が二重定義され、後の定義が勝つ(`test_close` / `test_console_kw` / `test_sync` / `test_ttyname`) |
+
+**ホスト gcc 対照も同じ 28 tests / 109 assertions で完全一致**するので、
+これは環境の性質であって rubycc の非ではない。「37 個あるはずが 28 個」という差は
+記録に残さないと後から欠陥に見えるので notes に書いた。
+
+### probe 13 件が全て gcc と一致していたのに、2 つのギャップが出た
+
+io-console の extconf は 13 件の probe を持ち、**その全てが rubycc と gcc で一致**した。
+それでもビルドは 2 度落ちた(Step 167 のヘッダ宣言漏れ、Step 168 のブロックスコープ
+関数宣言)。**probe の一致は「同じものがビルドされる」を意味しない**という Step 160 以来の
+教訓の、最も強い実例である — 一致していたのは probe の**結果**であって、
+その先のコンパイルではない。
+
+### 7 件計画の折り返し地点としての評価
+
+1〜4 番(io-nonblock・io-wait・erb・io-console)で **3 つのギャップ**が出た
+(リンカの LOAD セグメント、ヘッダの宣言漏れ 2 件、ブロックスコープ関数宣言)。
+「安い順・リスクの低い順」に並べたはずの前半でこれだけ出たので、
+**この計画の値打ちは検証済み gem の数ではなく、出てくるギャップの方にある**。
+残る 5〜7 番(digest の多 ext、zlib・psych のシステムライブラリ依存)は
+計画時点から「検証済み gem を増やす以上の意味がある」と見ていた 3 件である。
+
+---
+
 ## 現在のテスト規模
 
-Step 168 完了時点: **2,732 runs / 8,022 assertions / 0 failures / 45 skips**
+Step 169 完了時点: **2,732 runs / 8,044 assertions / 0 failures / 45 skips**
+(runs は Step 168 と同数 = DB のスキーマ検査が io-console の 1 件分増え、
+バージョン固定の検査を io-console と、Step 166 で入れ忘れていた erb の 2 件足しただけ)
+(以前) Step 168 完了時点: **2,732 runs / 8,022 assertions / 0 failures / 45 skips**
 (Step 167 から +15 runs = 新規テストファイル 13 件、`ruby/ractor.h` の smoke 1 件、
 examples/m5 の追加で aarch64 側 1 件。**skips −2 は c-testsuite 00078 が
 x86_64・aarch64 の両方で実際に通るようになったため**)

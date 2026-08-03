@@ -152,5 +152,16 @@
       }
     ],
     "notes": "erb ships with the interpreter, so this run is against the .so injected from the rubycc build; the sanity check confirms through $LOADED_FEATURES that the injected copy, not the interpreter's own erb/escape.so, is what the suite loaded. Only ext/erb/escape is C -- everything else in the gem is Ruby, and lib/erb/util.rb wraps `require 'erb/escape'` in a rescue LoadError with a pure-Ruby ERB::Escape#html_escape over CGI.escapeHTML behind it. Measured how visible that fallback is: corrupting the injected escape.so leaves 47 of the 48 tests passing, and the single failure is upstream's own test_html_escape_extension, which asserts html_escape has no source_location. So this suite does detect its own fallback; what it cannot detect is the wrong copy, since the interpreter's escape.so satisfies that assertion just as well. The one extconf probe, have_func(\"rb_ext_ractor_safe\", \"ruby.h\"), comes out yes under rubycc exactly as under the host gcc control, so HAVE_RB_EXT_RACTOR_SAFE is defined and Init_escape calls rb_ext_ractor_safe(true) on both sides. No test was excluded and the build needed no extra flag."
+  },
+  "io-console": {
+    "verifications": [
+      {
+        "versions": ["0.8.2"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-04",
+        "evidence": "RUBYCC=1 gem install io-console succeeded (console.so built through rmake); the gem's own test/unit suite passed 28 tests / 109 assertions / 0 failures / 0 errors (Step 169)."
+      }
+    ],
+    "notes": "io/console ships with the interpreter, and the gem also carries a pure-Ruby FFI implementation under lib/ffi/ for JRuby; the sanity check confirms through $LOADED_FEATURES that neither is what the suite loaded, but the .so injected from the rubycc build. This gem took two rubycc changes to build at all. Step 167: the bundled termios.h did not declare cfmakeraw and the bundled unistd.h did not declare ttyname_r, which mkmf's have_func probes cannot notice because they declare the function themselves -- the error only appears compiling the body. Step 168: console.c reaches ruby/ractor.h, which forward-declares rb_ractor_shareable_p_continue from inside a static inline function's body, and rubycc rejected block-scope function declarations outright. All 13 extconf probes come out yes under rubycc exactly as under the host gcc control. 28 of the 37 `def test_` in the source actually run, and this is a property of the environment, not of rubycc: five (test_get_winsize_console, test_set_winsize_console, test_getch_timeout, test_pressed_valid, test_pressed_invalid) sit inside a class_eval guarded by `IO.console`, so with no controlling terminal they are never defined, and four names are defined twice across two class_eval blocks so the later definition wins. The tty tests that go through PTY.open (test_raw, test_noecho, test_getpass, test_intr, test_cursor_position and the rest) do run and pass. A host gcc control built from the same upstream tree runs the same 28 tests / 109 assertions / 0 failures / 0 errors / 0 omissions, identical."
   }
 }
