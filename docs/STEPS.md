@@ -6254,9 +6254,52 @@ io-console の extconf は 13 件の probe を持ち、**その全てが rubycc 
 
 ---
 
+## Step 170 — digest 3.2.1 を記録する(M5 H6)
+
+7 件計画の 5 番、**コーパス初の多 ext gem**。`ext/digest` の下に extconf.rb が 6 つ
+(digest 本体 + bubblebabble / md5 / rmd160 / sha1 / sha2)あり、`.so` も 6 つ出る。
+gem 自身の test/unit スイートが
+**98 tests / 215 assertions / 0 failures / 0 errors / 0 omissions** で PASS。
+検証済み gem は **16 件**。
+
+### 「mkmf shim と rmake の入れ子 ext 対応が試される」— 何も要らなかった
+
+計画表はここを難所と見ていたが、**6 つの `.so` が 1 回の `gem install` で
+すべて rubycc + rmake からビルドされ、フラグも shim の変更も不要**だった。
+RubyGems は `spec.extensions` の各 extconf.rb を順に回すだけで、
+rubycc 側から見れば単一 ext の gem が 6 回来るのと変わらない。
+**難所と見ていたところが素通りだった**ので、そう記録する。
+
+### sanity は 6 つ全部を名指しする必要があった
+
+sanity ゲートは**差し込んだ `.so` が 1 つ残らず `$LOADED_FEATURES` に現れること**を
+要求する(`missing = injected - loaded_paths`)。`require "digest"` だけでは
+`digest.so` と `sha2.so` の 2 つしかロードされない — 残りは `Digest` の
+`const_missing` が**使われたときに初めて**取り込む遅延ロードだからである。
+そこでレシピの `requires` に 6 つ全部を並べた。
+**多 ext gem では sanity の書き方が単一 ext gem と変わる**ことが、この gem で分かった。
+
+### この gem の証拠は他より直接的
+
+digest のスイートは**既知の入力に対する既知の 16 進ダイジェスト**を突き合わせる。
+つまり **round 関数を誤コンパイルすれば、落ちるのではなく値が違う**形で出る。
+「クラッシュしなかった」ではなく「正しい値を出した」を確かめている点で、
+コーパスの他の gem より証拠として直接的である。
+
+### probe は 3 件、gcc と一致
+
+`CommonCrypto/CommonDigest.h` は no(macOS 専用)、`u_int8_t` と `sys/cdefs.h` は yes。
+rubycc・gcc とも同じで、**両者とも同梱のアルゴリズム実装をコンパイルしている**
+(プラットフォーム側の実装ではなく)。
+
+---
+
 ## 現在のテスト規模
 
-Step 169 完了時点: **2,732 runs / 8,044 assertions / 0 failures / 45 skips**
+Step 170 完了時点: **2,732 runs / 8,064 assertions / 0 failures / 45 skips**
+(runs は Step 169 と同数 = DB のスキーマ検査が digest の 1 件分増え、
+バージョン固定の検査を 1 件足しただけ)
+(以前) Step 169 完了時点: **2,732 runs / 8,044 assertions / 0 failures / 45 skips**
 (runs は Step 168 と同数 = DB のスキーマ検査が io-console の 1 件分増え、
 バージョン固定の検査を io-console と、Step 166 で入れ忘れていた erb の 2 件足しただけ)
 (以前) Step 168 完了時点: **2,732 runs / 8,022 assertions / 0 failures / 45 skips**

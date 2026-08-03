@@ -163,5 +163,16 @@
       }
     ],
     "notes": "io/console ships with the interpreter, and the gem also carries a pure-Ruby FFI implementation under lib/ffi/ for JRuby; the sanity check confirms through $LOADED_FEATURES that neither is what the suite loaded, but the .so injected from the rubycc build. This gem took two rubycc changes to build at all. Step 167: the bundled termios.h did not declare cfmakeraw and the bundled unistd.h did not declare ttyname_r, which mkmf's have_func probes cannot notice because they declare the function themselves -- the error only appears compiling the body. Step 168: console.c reaches ruby/ractor.h, which forward-declares rb_ractor_shareable_p_continue from inside a static inline function's body, and rubycc rejected block-scope function declarations outright. All 13 extconf probes come out yes under rubycc exactly as under the host gcc control. 28 of the 37 `def test_` in the source actually run, and this is a property of the environment, not of rubycc: five (test_get_winsize_console, test_set_winsize_console, test_getch_timeout, test_pressed_valid, test_pressed_invalid) sit inside a class_eval guarded by `IO.console`, so with no controlling terminal they are never defined, and four names are defined twice across two class_eval blocks so the later definition wins. The tty tests that go through PTY.open (test_raw, test_noecho, test_getpass, test_intr, test_cursor_position and the rest) do run and pass. A host gcc control built from the same upstream tree runs the same 28 tests / 109 assertions / 0 failures / 0 errors / 0 omissions, identical."
+  },
+  "digest": {
+    "verifications": [
+      {
+        "versions": ["3.2.1"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-04",
+        "evidence": "RUBYCC=1 gem install digest succeeded (digest.so + bubblebabble.so + md5.so + rmd160.so + sha1.so + sha2.so built through rmake); the gem's own test/unit suite passed 98 tests / 215 assertions / 0 failures / 0 errors (Step 170)."
+      }
+    ],
+    "notes": "The first corpus gem with more than one extension: six extconf.rb under ext/digest, six .so, all six built by rubycc through rmake in one gem install with no flag and no change to the mkmf shim. digest ships with the interpreter, so the run is against the injected copies; the sanity check requires all six by name, because requiring only \"digest\" loads two of them and leaves the other four unproven (Digest's const_missing pulls the algorithm extensions in lazily), and the gate demands every injected .so appear in $LOADED_FEATURES. What this suite proves is unusually direct for a corpus gem: it checks digests of known inputs against known hex outputs, so a miscompiled round function would show up as a wrong value rather than as a crash. The three extconf probes (CommonCrypto/CommonDigest.h no, u_int8_t yes, sys/cdefs.h yes) come out identical under rubycc and the host gcc control -- CommonCrypto is macOS-only, so both sides compile the bundled algorithm sources rather than the platform ones. The upstream tree keeps digest/loader.rb and digest/sha2/loader.rb under ext/digest/lib (gem install copies them into lib/), so that directory has to be on the load path as the Rakefile puts it there."
   }
 }

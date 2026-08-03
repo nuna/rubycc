@@ -517,6 +517,43 @@ RECIPES = {
       # run is supposed to exercise; the injected-.so check rules out both.
       expr: "injected_so_loaded?"
     }
+  },
+
+  "digest" => {
+    version: "3.2.1",
+    tarball: "https://github.com/ruby/digest/archive/refs/tags/v3.2.1.tar.gz",
+    # The first corpus gem with more than one extension: six extconf.rb under
+    # ext/digest, each producing its own .so. ext/digest/digest.c holds the
+    # framework the other five register their algorithms with.
+    sos: {
+      "lib/digest.so" => "lib/digest.so",
+      "lib/digest/bubblebabble.so" => "lib/digest/bubblebabble.so",
+      "lib/digest/md5.so" => "lib/digest/md5.so",
+      "lib/digest/rmd160.so" => "lib/digest/rmd160.so",
+      "lib/digest/sha1.so" => "lib/digest/sha1.so",
+      "lib/digest/sha2.so" => "lib/digest/sha2.so"
+    },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # The Rakefile's Rake::TestTask: libs << test, test/lib, lib and (on MRI)
+    # ext/digest/lib, which is where digest/loader.rb and digest/sha2/loader.rb
+    # live in the source tree -- `gem install` copies them into lib/, the
+    # upstream tarball does not. ruby_opts -rhelper.
+    load_paths: %w[test test/lib lib ext/digest/lib],
+    require_flags: %w[helper],
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      # The sanity gate demands that *every* injected .so end up in
+      # $LOADED_FEATURES, so all six are named here. Requiring only "digest"
+      # would load two of them and leave the other four unproven: the algorithm
+      # extensions are pulled in lazily by Digest's const_missing.
+      requires: %w[digest digest/bubblebabble digest/md5 digest/rmd160 digest/sha1 digest/sha2],
+      # digest ships with the interpreter and has no pure-Ruby implementation on
+      # MRI (ext/java is JRuby's), so the wrong *copy* is the failure to rule out
+      # -- and with six .so there are six chances to load the wrong one.
+      expr: "injected_so_loaded?"
+    }
   }
 }.freeze
 

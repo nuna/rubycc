@@ -746,9 +746,9 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   差異あり・原因未特定)。**Step 151 で nkf 0.3.0、Step 153 で stackprof 0.2.28、
   Step 157 で strscan 3.1.6 と stringio 3.2.0、Step 162 で etc 1.4.6、
   Step 164 で io-nonblock 0.3.2、Step 165 で io-wait 0.4.0、Step 166 で erb 6.0.1.1 を
-  Step 169 で io-console 0.8.2 を追加(6 → 15 件)。**
-- **コーパス未検証 gem(Step 157 で棚卸し、Step 169 で更新)**: センサス対象 36 件に対し
-  検証済み 15 件。**未検証 21 件のうち 19 件は R10 ゲートを通過**している(除外は sqlite3 と pg のみ)ので
+  Step 169 で io-console 0.8.2、Step 170 で digest 3.2.1 を追加(6 → 16 件)。**
+- **コーパス未検証 gem(Step 157 で棚卸し、Step 170 で更新)**: センサス対象 36 件に対し
+  検証済み 16 件。**未検証 20 件のうち 18 件は R10 ゲートを通過**している(除外は sqlite3 と pg のみ)ので
   着手先には困らない。形が揃っていて着手しやすいのは `ruby/*` の default gem 群
   (`io-wait` `io-nonblock` `io-console` `erb` `zlib` `digest` `psych` 等)。
   **fcntl は上流にテストスイートが無く (d) レベルの証拠が原理的に得られない**ため対象外。
@@ -783,7 +783,7 @@ tarball は `https://github.com/ruby/<name>/archive/refs/tags/v<version>.tar.gz`
 | ~~2~~ | ~~`io-wait`~~ | ~~0.4.0~~ | **完了(Step 165)**。コンパイラ側の変更は不要。extconf が probe を 1 つも持たないので経路の一致は構造的に保証され、gcc 対照とも 26 tests / 41 assertions / 1 omission で完全一致 |
 | ~~3~~ | ~~`erb`~~ | ~~6.0.1.1~~ | **完了(Step 166)**。この見立ては半分外れた — 差し込んだ `escape.so` を壊しても 48 件中 47 件が通るが、落ちる 1 件は**上流自身の** `test_html_escape_extension` で、erb のスイートは自分のフォールバックを検出する。検出できないのは処理系同梱の別コピーの方 |
 | ~~4~~ | ~~`io-console`~~ | ~~0.8.2~~ | **完了(Step 169)**。tty の懸念は外れた — omission も skip も 0 件で、tty を要するテストは `PTY.open` 経由で実際に走る。代わりに**コンパイラ側の修正が 2 つ**要った(Step 167 のヘッダ宣言漏れ、Step 168 のブロックスコープ関数宣言)。probe 13 件は全て gcc と一致していたのにこうなった |
-| 5 | `digest` | 3.2.1 | **コーパス初の多 ext gem**(`ext/digest` + bubblebabble/md5/rmd160/sha1/sha2 の 6 extconf)。`sos` が 6 エントリになり、**mkmf shim と rmake の入れ子 ext 対応**が試される |
+| ~~5~~ | ~~`digest`~~ | ~~3.2.1~~ | **完了(Step 170)**。難所と見ていた入れ子 ext は素通りで、6 つの `.so` が 1 回の `gem install` で全て rubycc + rmake からビルドされ、フラグも shim の変更も不要だった。代わりに分かったのは、**多 ext gem では sanity に `.so` を全部名指しする必要がある**こと(遅延ロードのため) |
 | 6 | `zlib` | 3.2.3 | **ホストの `zlib.h` / `-lz`** に依存。R10 が想定するシステムライブラリ gem の第 1 号 |
 | 7 | `psych` | 5.3.1 | **ホストの libyaml** に依存。7 件で最重量 |
 
