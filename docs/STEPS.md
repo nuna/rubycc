@@ -5841,9 +5841,815 @@ cwd 相対でレポジトリ内のファイルを読むテストは無いこと�
 
 ---
 
+## Step 163 — 共有ライブラリの r-x ロードセグメントが `.plt` を覆っていなかった(M5 H6)
+
+default gem 検証の 1 件目に io-nonblock 0.3.2 を選んだ(ROADMAP の 7 件表の 1 番。
+単一ファイル ext で最も安く、差し込み手順の足場固めに使う想定だった)。
+**足場固めのつもりの 1 件目が、11 gem を検証してきた間ずっと潜んでいたリンカのバグを引いた。**
+
+### 症状と切り分け
+
+ビルドは通り、mkmf の probe も全て gcc と同じ結果になった
+(`rb_io_descriptor` yes / `O_NONBLOCK` yes / `F_GETFL` yes)。
+にもかかわらず `require "io/nonblock"` が **[BUG] Segmentation fault** で落ちる。
+
+`Fiddle.dlopen` は成功し、`dlsym("Init_nonblock")` もアドレスを返した。
+つまり**壊れているのは動的リンクではなく、`Init_nonblock` を実行した瞬間**である。
+逆アセンブルすると最初の命令列が `call 0xa020 <rb_ext_ractor_safe@plt>` で、
+クラッシュ時の RIP がロードベース + `0xa020` と一致した。
+
+セクションとセグメントを突き合わせて原因が確定した:
+
+| | 範囲 |
+|---|---|
+| `.text` | `0x160`–`0x9b7b` |
+| `.plt` | `0x9b80`–`0xa040` |
+| r-x の PT_LOAD | offset 0 / vaddr 0 / **`p_filesz` = `0x9ee0`** |
+
+正しい `p_filesz` は `0xa040`。差の **`0x160` は `.text` のファイルオフセット**、すなわち
+ELF ヘッダ + プログラムヘッダテーブルの長さである。ローダは `p_filesz` をページ境界に
+切り上げてマップするので `0xa000` までは載り、**`0xa000`–`0xa040` にある PLT エントリだけが
+未マップページに落ちる**。`rb_ext_ractor_safe@plt` = `0xa020` がちょうどそこだった。
+
+**ホスト gcc で同じ gem をビルドした対照は正常にロードできた**ので、非は rubycc 側に確定
+(Step 146 で決めた「失敗したらまず gcc 対照を取る」の適用。今回は原因が自前の ELF 出力に
+閉じていたので対照は追認にとどまったが、環境のせいにしない担保としては要る)。
+
+### 原因
+
+`lib/rubycc/link/shared_linker.rb` の `build_phdrs` が r-x セグメントの長さを
+`segment_extent` から取っていた。このヘルパが返すのは
+
+```ruby
+{ offset: sections.first.offset, filesz: finish - sections.first.offset }
+```
+
+= **最初のセクションのオフセットを起点とした長さ**である。`ro` / `rw` セグメントは
+`p_offset` にも同じ起点を入れるので整合するが、**r-x だけはファイルオフセット 0 から
+マップする**(ELF ヘッダと phdr 自身を覆うため)。起点が違うのに同じ計算を使ったので、
+先頭 `0x160` バイトぶん一貫して過小になっていた。
+
+`lib/rubycc/link/executable_linker.rb` は**同じ箇所を最初から正しく**
+`rx_last.offset + rx_last.size` と絶対値で計算していた。実行ファイル側だけが正しく、
+共有ライブラリ側が取り残されていた形で、**両者が同じ不変条件を別々に書いていたことが
+食い違いを見えなくしていた**。
+
+### なぜ 11 gem を検証する間ずっと表面化しなかったか
+
+**過小分がページ切り上げに吸収される限り実害が出ない**からである。
+`align_up(過小な終端, 0x1000) >= 本当の終端` なら全バイトがマップされ、何事も起きない。
+表面化するのは、過小な終端と本当の終端が**ページ境界をまたぐとき**だけ
+(ここでは `0x9ee0` → `0xa000` < `0xa040`)。つまり**出力サイズ次第の宝くじ**であり、
+既存の検証済み 11 gem はたまたま当たらなかっただけである。
+「11 gem が通っている」ことは、この不変条件が守られている証拠には**なっていなかった**。
+
+### 回帰テストはサイズ非依存の不変条件で書いた
+
+**サイズ依存のテストを書かなかった**のは、このバグがサイズの偶然で表面化する以上、
+特定の `.so` を固定したテストは次の同種のバグを捕まえられないからである。書いたのは:
+
+> PT_LOAD に属する全 `SHF_ALLOC` セクションは、そのセグメントの
+> `[p_vaddr, p_vaddr + p_memsz)` に収まり、`SHT_NOBITS` でなければ
+> `[p_offset, p_offset + p_filesz)` にも収まる
+
+x86_64(`test/test_shared_object.rb`)と aarch64(`test/test_aarch64_shared_object.rb`)の
+両方に置いた。**修正前に落ちることを確認済み**で、そのときの落ち方が示唆的だった:
+テスト用の小さな `.so` では過小分が `.text` の開始位置にすら届かず、
+`.text at 0x160 must fall inside a PT_LOAD segment` = **どのセグメントにも属さない**
+という形で落ちる。実際の gem では末尾の `.plt` だけが溢れ、小さな `.so` では
+セグメントが `.text` の手前で終わる。**同じバグが規模によって別の顔で出る**ことの実例。
+
+### この修正で io-nonblock は通った
+
+再ビルドした `nonblock.so` の r-x は `FileSiz 0x00a040` になり `.plt` 末尾を覆う。
+gem 自身のテストスイートは **2 tests / 8 assertions / 0 failures / 0 errors** で PASS。
+記録は Step 164 に分けた(ROADMAP の横断ルール「ギャップの修正は別ステップに切る」)。
+
+---
+
+## Step 164 — io-nonblock 0.3.2 を記録する(M5 H6)
+
+Step 163 の修正で通るようになったので `--update` で記録した。検証済み gem は **12 件**。
+
+### 入れ子スキーマの初実走
+
+`data/verified_gems.json` を「1 gem = 1 エントリ、環境ごとの記録がその内側」という
+入れ子に拡張した直後の**最初の新規記録**でもある。ツールは `(new entry)` を選び、
+`verifications` 1 本 + 空の `notes` を出力した。既定 notes は空文字で、
+**「musl では未検証」といった但し書きはもう書かない**
+(未検証はその環境の記録が無いことで既に表現されている)。
+
+### 合格件数だけでは何も言えないので、経路を突き合わせた
+
+このスイートは **2 tests / 8 assertions** しかない。上流がこのタグで持っているのが
+それだけであって除外はしていないが、**件数の少なさは経路の正しさを何も保証しない**。
+Step 160 の bigdecimal(probe が失敗して gcc とは別のフォールバックがビルドされていたのに
+合格件数は同じだった)を踏まえ、extconf の probe 3 件をホスト gcc 対照と突き合わせた:
+
+| probe | rubycc | host gcc |
+|---|---|---|
+| `rb_io_descriptor()` in `ruby/io.h` | yes | yes |
+| `O_NONBLOCK` in `fcntl.h` | yes | yes |
+| `F_GETFL` in `fcntl.h` | yes | yes |
+
+3 件とも一致するので `HAVE_RB_IO_DESCRIPTOR` は両方で定義され、
+`io_descriptor_fallback` は**両方で消える**。同じ経路がビルドされている。
+
+### スイートが「何もロードしなくても合格しうる」形をしている
+
+`test/io/nonblock/test_flush.rb` は自分の `require 'io/nonblock'` を
+`rescue LoadError` で包み、さらにクラス全体を `if IO.method_defined?(:nonblock)` で
+守っている。つまり**拡張が 1 バイトもロードされなくても、エラーではなく
+「テストが 0 件」として静かに合格する**。これは Step 144 で `sanity` を必須にした
+理由そのものの、別の現れ方である(racc は純 Ruby フォールバックに落ちて合格し、
+こちらはテストが定義されずに合格する)。レシピは `io/nonblock` をその rescue の外で
+require するので、その状態は PASS として記録されない。
+
+---
+
+## Step 165 — io-wait 0.4.0 を記録する(M5 H6)
+
+7 件計画の 2 番。**リンカのバグを踏んだ 1 番と違い、コンパイラ側の変更は要らなかった。**
+gem 自身の test/unit スイートが **26 tests / 41 assertions / 0 failures / 0 errors /
+1 omission** で PASS。検証済み gem は **13 件**。
+
+### probe が無い gem なので、経路の一致は構造的に保証される
+
+`ext/io/wait/extconf.rb` は `require 'mkmf'` と `create_makefile("io/wait")` の
+実質 2 行しかない。**configure 時の分岐が 1 つも無い**ので、bigdecimal(Step 160)や
+io-nonblock(Step 164)で毎回突き合わせていた「rubycc と gcc で別の経路がビルドされて
+いないか」という疑いが、この gem では**構造的に立たない**。同じ翻訳単位を両者が
+コンパイルしている。
+
+それでも**ホスト gcc 対照は取った**。同じ上流ツリーの `.so` だけ差し替えてスイートを
+走らせ、**26 tests / 41 assertions / 0 failures / 0 errors / 1 omission と両者完全一致**。
+omission の 1 件は `test_tty_wait` で、`/dev/tty` が開けない
+(`Errno::ENXIO`、制御端末の無いセッション)という**環境の性質**であり、gcc 対照でも
+同じように omit される。「omission が 1 件ある」という事実だけを記録して
+理由を書かないと、後から読んだ人がここを rubycc の欠陥だと誤読しうるので notes に書いた。
+
+### ツールに `runner_args` を足した — `exclude` では代用できない
+
+io-wait の Rakefile は `Rake::TestTask#options` に
+`--ignore-name=/ungetc_in_text/` を渡している。上流自身が
+`test_after_ungetc_in_text_wait_readable` を走らせていないので、こちらも走らせては
+いけない(走らせて落ちれば、上流が意図的に外したものを rubycc の非として記録する)。
+
+既存の `exclude` は**ファイル単位**で test_glob から引くフィールドで、この 1 件は
+実際に走る他のテストと同じ `test_io_wait_uncommon.rb` に同居しているため、
+`exclude` を使うと**巻き添えで消える**。そこでスイートのランナー自身に渡す
+`runner_args` を新設した。
+
+**実装で 1 度踏んだ**: `ruby ... -e SCRIPT --ignore-name=...` と並べると、
+**ruby は `-e` の後ろも自分のオプションとして解釈し続ける**ため
+`invalid option --ignore-name=...` で子プロセスが死ぬ(判定は `unparsable`)。
+`--` で ruby のオプション解析を終わらせて初めて ARGV に届き、test-unit の
+autorunner が読む。`runner_args` が空のときは `--` も付けない。
+
+### 許可リストのゲートが 12 gem で静かに効かなくなっていた
+
+`test/test_doctor.rb` の許可リストは 12 gem 目(io-nonblock)で 120 桁を超えたので
+2 行に折ったが、`tools/verify_gem_tests.rb` の `ALLOWLIST_RE` が
+`\], raw\.keys\.sort` とリテラルの空白 1 個を要求していたため、
+**折った瞬間にゲートが見つからなくなり**「could not find the allow-list assertion」
+という警告に落ちていた。`\s*` に緩め、貼り付け用に印字する行も折った形にした。
+**gem が増えて初めて効かなくなるゲート**だったので、増やしている最中に気づけたのは
+運が良かった。
+
+---
+
+## Step 166 — erb 6.0.1.1 を記録する(M5 H6)
+
+7 件計画の 3 番。gem 自身の test/unit スイートが
+**48 tests / 143 assertions / 0 failures / 0 errors** で PASS。検証済み gem は **14 件**。
+コンパイラ側の変更は不要だった。
+
+### ROADMAP の見立ては半分外れた — この gem のスイートは自分のフォールバックを見ている
+
+計画表には「**スイートの大半は純 Ruby の ERB を叩く**ので sanity 式が特に重要
+(C 拡張を通らなくても合格しうる)」と書いていた。前半は正しい — C なのは
+`ext/erb/escape` だけで、`lib/erb/util.rb` は `require 'erb/escape'` を
+`rescue LoadError` で包み、`CGI.escapeHTML` を使う純 Ruby の
+`ERB::Escape#html_escape` を裏に持っている。
+
+**後半は実測で外れた**。差し込んだ `escape.so` を壊してスイートを走らせると、
+**48 件中 47 件が通り、落ちるのは 1 件だけ** — しかもそれは上流自身の
+`test_html_escape_extension` で、`ERB::Util.method(:html_escape).source_location`
+が nil であること、つまり **C で定義されていること**を主張している。
+racc(`cparse.so` を壊しても 71 tests / 0 failures で 100% passed)とは違い、
+**erb のスイートは自分のフォールバックを検出する**。
+
+ただし**検出できないものがある**: 上流のこのテストは「C 実装かどうか」しか見ないので、
+**処理系同梱の `erb/escape.so` がロードされていても 48 件全部通る**。
+sanity 式に `injected_so_loaded?` を残す理由はここにあり、併記した
+`source_location.nil?` の側は**上流が既に走らせているテストの言い直し**でしかない。
+両方残したのは上流がそのテストを落とした場合の保険だが、
+**どちらが効いているかを取り違えないよう**レシピのコメントに実測を書いた。
+
+「フォールバックがある gem は sanity 式が要る」は正しいが、
+**その式のどの項が効くかは gem ごとに違い、測らないと分からない**。
+
+### probe は 1 件、gcc と一致
+
+`have_func("rb_ext_ractor_safe", "ruby.h")` が唯一の probe で、rubycc・gcc とも
+`yes`。`HAVE_RB_EXT_RACTOR_SAFE` は両方で定義され、`Init_escape` は両方で
+`rb_ext_ractor_safe(true)` を呼ぶ。
+
+### 許可リストの印字を折り返し対応にした
+
+gem 名の一覧が 14 件で `%w[]` の中まで 120 桁を超えた。Step 165 で `raw.keys.sort` を
+折ったばかりだったが、今度は語のリスト自身が溢れる。ツールが印字する貼り付け用の行を
+`allowlist_lines` で折り返すようにし、**印字した形とテストファイルの実際の形が
+一致する**ようにした(一致していないと、貼り付けた人が毎回手直しする羽目になる)。
+
+---
+
+## Step 167 — 同梱ヘッダの `cfmakeraw` / `ttyname_r` 欠落(M5 H6)
+
+7 件計画の 4 番、io-console 0.8.2 に着手して最初に出たギャップ。
+`ext/io/console/console.c` のコンパイルが
+`error: implicit declaration of function 'cfmakeraw'` で落ちる。
+
+### Step 160 のギャップ C とまったく同型
+
+`extconf.rb` の `have_func("cfmakeraw", "termios.h")` は **yes** を返す。
+mkmf の `have_func` は**自分で関数を宣言する try_link** なので、ヘッダに宣言が
+無くてもプローブは通り、`-DHAVE_CFMAKERAW` が立ち、**本体のコンパイルで初めて
+暗黙宣言エラーになる**。Step 160 の `confstr` / `fpathconf` と同じ構図である。
+
+ホスト gcc の対照はビルドに成功し、**probe 13 件の結果も rubycc と完全一致**した
+(`rb_syserr_fail_str` / `rb_interned_str_cstr` / `rb_io_path` / `rb_io_descriptor` /
+`rb_io_get_write_io` / `rb_io_closed_p` / `rb_io_open_descriptor` /
+`rb_ractor_local_storage_value_newkey` / `termios.h` / `cfmakeraw` / `sys/ioctl.h` /
+`HAVE_RUBY_FIBER_SCHEDULER_H` / `ttyname_r`、すべて yes)。
+**probe の一致が「同じものがビルドされる」を意味しない**ことの、これ以上ないほど
+はっきりした実例で、非は同梱ヘッダの宣言漏れに確定した。
+
+### センサスは `#include` を見るが、呼ばれる関数は見ない
+
+`termios.h` の provenance には「io-console の corpus サンプルが実際に到達する
+`HAVE_TERMIOS_H` 経路にスコープを絞り」と書いてある(Step 124)。**この絞り込み自体は
+正しい**が、`rake corpus:census` が観測するのは **`#include` の到達**であって、
+到達したヘッダの**どの関数が呼ばれるか**ではない。`cfmakeraw` は新しいヘッダを
+連れてこないので、センサスの網には最初から掛からない。
+
+同じ理由で `unistd.h` に `ttyname_r` も無かった(`ttyname` はあった)。
+console.c が使う termios/unistd 系のシンボルを数え直して、
+**足りないのはこの 2 つだけ**であることを先に確かめてから足した
+(`ioctl` / `struct winsize` / `TIOCGWINSZ` / `TIOCSWINSZ` / `TCSANOW` / `TC*FLUSH`
+は既にある。`TCGETA` / `TCSETAF` / `TIOCGETP` / `TIOCSETP` は Linux で選ばれない
+`termio.h` / `sgtty.h` 経路のもので、provenance が既に対象外と明記している)。
+
+**「ヘッダが到達するか」で絞ったスコープは、実ビルドでしか検証できない。**
+これはセンサスの欠陥ではなく、センサスに測れることの限界である。
+
+### R8 の扱い
+
+どちらも**数値サーフェスを持たない単一プロトタイプ**なので、新しい ABI ケースは
+作らず、既存の `TERMIOS` / `UNISTD` Spec の snippet から呼ぶ形に足した
+(Step 160 が `confstr` / `fpathconf` / `pathconf` でやったのと同じ)。
+両 Spec とも共通層なので x86_64・aarch64 の両方から同じ Spec が再利用される。
+シグネチャは glibc のヘッダテキストを写さず、**実ヘッダを include した上で自分の
+宣言を並べ、矛盾する宣言としてエラーにならないことをホスト gcc で確認**して決めた。
+ファイル数は変わらないので由来台帳の集計は据え置き、`termios.h` の行にだけ
+`cfmakeraw` の追加と経緯を書き足した。
+
+### これで io-console はまだ通らない
+
+この修正でコンパイルは console.c の先へ進み、**次のギャップに当たった**:
+`console.c` が `ruby/ractor.h` を取り込み、そこに
+
+```c
+static inline bool rb_ractor_shareable_p(VALUE obj)
+{
+    bool rb_ractor_shareable_p_continue(VALUE obj);   /* ブロックスコープの関数宣言 */
+    ...
+}
+```
+
+がある。rubycc はこれを `generator.rb` で明示的に拒否している
+(「block-scope function declarations are not supported」)。**Step 168 で解消する。**
+既存の検証済み gem はどれも `ruby/ractor.h` を取り込んでいなかったので、
+このギャップは io-console で初めて露出した。
+
+---
+
+## Step 168 — ブロックスコープの関数宣言(M5 H6)
+
+Step 167 のヘッダ修正で先へ進んだ io-console が次に当てたギャップ。
+`console.c` が取り込む `ruby/ractor.h:248` に、
+**Ruby 本体の公開ヘッダが実際に使っている**この形がある:
+
+```c
+static inline bool
+rb_ractor_shareable_p(VALUE obj)
+{
+    bool rb_ractor_shareable_p_continue(VALUE obj);   /* ← */
+    ...
+}
+```
+
+rubycc は `generator.rb` でこれを明示的に拒否していた。
+ROADMAP §3 の負債表に「外部リンケージ未モデルで診断エラー / 実害が出た時点」と
+載っていた項目で、**c-testsuite 00078 の skip もこの理由で立っていた**。
+**H4 で「実害が出た時点」と先送りしたものに、H6 で実害が来た。**
+
+### 実装 — 新しい機構を作らず既存の署名テーブルへ合流させた
+
+C11 6.2.2p5: ブロックスコープで宣言された関数識別子は、記憶域クラス指定子が無いか
+`extern` なら**外部リンケージを持つ**。つまりファイルスコープで同名を宣言した場合と
+**同じ実体を指す**。したがって
+
+- **記憶域を消費しない**(ローカルスロットを割り当てない)
+- 呼び出しはファイルスコープのプロトタイプと同じ外部シンボル参照として解決される
+
+この 2 点は、既存の `declare_function` に流し込むだけで満たせた。IR 命令は増えていない。
+型が矛盾すれば `declare_function` の既存の「conflicting types」検査に自然に掛かる。
+
+**可視範囲は意図的にモデル化しなかった。** 本来この識別子はそのブロック内でしか
+見えないが、署名テーブルは翻訳単位全体で 1 つのままにした。理由は
+**外部リンケージだから**である — 同じ翻訳単位内の同名宣言は、ブロックの内外を問わず
+同一の実体を互換な型で指していなければならない(6.2.2p4 / 6.2.7p2)。
+緩めたことで余計に受理してしまうプログラムは、**そもそも単一の外部実体として
+成立していないプログラム**だけであり、ブロック単位の第 2 の署名テーブルを持つ手間に
+見合わない。この判断はコードのコメントに書いた。
+
+### 診断は 2 つ増やした
+
+- **`static` 付き**: 6.7.1p7 はブロックスコープの関数宣言に `extern` 以外の記憶域クラスを
+  許さない。制約違反なので診断する
+- **入れ子関数定義**: `int f(int) { ... }` をブロック内に書くのは GNU 拡張であり、
+  囲みフレームを捕まえるトランポリンが要る。**引き続き非対応**だが、
+  従来は素の `expected ';'` になっていたのを、パーサで
+  「nested function definitions are not supported」と名指しするようにした。
+  **宣言は通るのに定義は通らない**という区別を、利用者に分かる言葉で伝えるため
+
+`docs/GCC-EXTENSIONS.md` には入れ子関数定義の側だけを「未実装」として載せ、
+**標準 C のブロックスコープ関数宣言とは別物**であることを明記した(混同されやすい)。
+
+### `ruby/ractor.h` は単体でコンパイルできない
+
+`test/test_ruby_smoke.rb` には `ruby/atomic.h` を**単体で** include するケースがある
+(Step 161)。同じ形にしようとしたが、`ruby/ractor.h` は
+**ホスト gcc でも単体では通らない**ことが分かった
+(`RUBY_ALIGNAS(SIZEOF_VALUE)` で `expected identifier or '(' before numeric constant`、
+続いて `SIZE_MAX` 衝突)。このヘッダは `<ruby.h>` が先行することを前提にしている。
+そこで**実際の C 拡張が到達する順**(`ruby.h` → `ruby/ractor.h`)の 2 行にし、
+理由を実測値つきでテスト内に書いた。**「単体で通らない」ことも実測**である。
+
+### io-console が通った
+
+`tools/verify_gem_tests.rb io-console` が **28 tests / 109 assertions /
+0 failures / 0 errors / 0 omissions** で PASS。sanity も ok。
+記録は Step 169 に分ける。c-testsuite 00078 の skip も外れ、**skips が 47 → 45** になった。
+
+---
+
+## Step 169 — io-console 0.8.2 を記録する(M5 H6)
+
+7 件計画の 4 番。**1 件の gem に 2 つのコンパイラ側修正(Steps 167・168)が要った**、
+これまでで最も重い default gem。gem 自身の test/unit スイートが
+**28 tests / 109 assertions / 0 failures / 0 errors / 0 omissions** で PASS。
+検証済み gem は **15 件**。
+
+### 「tty を要求するテストが多い」という事前の懸念は、実測では問題にならなかった
+
+計画表には「**tty を要求するテストが多い**。非 tty 環境では omission/skip に落ちるので、
+(d) レベルの証拠として十分かを個別に判断し、足りなければ pty 経由の実走を検討する」と
+書いていた。実測は次のとおり:
+
+- **omission も skip も pend も 0 件**だった
+- `test_raw` / `test_noecho` / `test_getpass` / `test_intr` / `test_cursor_position` など、
+  **tty を要する主要なテストは `PTY.open` 経由で実際に走って通っている**。
+  `PTY.open` は制御端末を必要としないので、非 tty セッションでも成立する
+
+一方、ソース中の `def test_` は **37 個あるのに走ったのは 28 個**である。差の内訳を
+実測で詰めた:
+
+| 件数 | 理由 |
+|---|---|
+| 5 | `IO.console` が真であることを条件とする `class_eval` の中にあり、制御端末が無いと**定義そのものがされない**(`test_get_winsize_console` / `test_set_winsize_console` / `test_getch_timeout` / `test_pressed_valid` / `test_pressed_invalid`) |
+| 4 | 2 つの `class_eval` ブロックで同名が二重定義され、後の定義が勝つ(`test_close` / `test_console_kw` / `test_sync` / `test_ttyname`) |
+
+**ホスト gcc 対照も同じ 28 tests / 109 assertions で完全一致**するので、
+これは環境の性質であって rubycc の非ではない。「37 個あるはずが 28 個」という差は
+記録に残さないと後から欠陥に見えるので notes に書いた。
+
+### probe 13 件が全て gcc と一致していたのに、2 つのギャップが出た
+
+io-console の extconf は 13 件の probe を持ち、**その全てが rubycc と gcc で一致**した。
+それでもビルドは 2 度落ちた(Step 167 のヘッダ宣言漏れ、Step 168 のブロックスコープ
+関数宣言)。**probe の一致は「同じものがビルドされる」を意味しない**という Step 160 以来の
+教訓の、最も強い実例である — 一致していたのは probe の**結果**であって、
+その先のコンパイルではない。
+
+### 7 件計画の折り返し地点としての評価
+
+1〜4 番(io-nonblock・io-wait・erb・io-console)で **3 つのギャップ**が出た
+(リンカの LOAD セグメント、ヘッダの宣言漏れ 2 件、ブロックスコープ関数宣言)。
+「安い順・リスクの低い順」に並べたはずの前半でこれだけ出たので、
+**この計画の値打ちは検証済み gem の数ではなく、出てくるギャップの方にある**。
+残る 5〜7 番(digest の多 ext、zlib・psych のシステムライブラリ依存)は
+計画時点から「検証済み gem を増やす以上の意味がある」と見ていた 3 件である。
+
+---
+
+## Step 170 — digest 3.2.1 を記録する(M5 H6)
+
+7 件計画の 5 番、**コーパス初の多 ext gem**。`ext/digest` の下に extconf.rb が 6 つ
+(digest 本体 + bubblebabble / md5 / rmd160 / sha1 / sha2)あり、`.so` も 6 つ出る。
+gem 自身の test/unit スイートが
+**98 tests / 215 assertions / 0 failures / 0 errors / 0 omissions** で PASS。
+検証済み gem は **16 件**。
+
+### 「mkmf shim と rmake の入れ子 ext 対応が試される」— 何も要らなかった
+
+計画表はここを難所と見ていたが、**6 つの `.so` が 1 回の `gem install` で
+すべて rubycc + rmake からビルドされ、フラグも shim の変更も不要**だった。
+RubyGems は `spec.extensions` の各 extconf.rb を順に回すだけで、
+rubycc 側から見れば単一 ext の gem が 6 回来るのと変わらない。
+**難所と見ていたところが素通りだった**ので、そう記録する。
+
+### sanity は 6 つ全部を名指しする必要があった
+
+sanity ゲートは**差し込んだ `.so` が 1 つ残らず `$LOADED_FEATURES` に現れること**を
+要求する(`missing = injected - loaded_paths`)。`require "digest"` だけでは
+`digest.so` と `sha2.so` の 2 つしかロードされない — 残りは `Digest` の
+`const_missing` が**使われたときに初めて**取り込む遅延ロードだからである。
+そこでレシピの `requires` に 6 つ全部を並べた。
+**多 ext gem では sanity の書き方が単一 ext gem と変わる**ことが、この gem で分かった。
+
+### この gem の証拠は他より直接的
+
+digest のスイートは**既知の入力に対する既知の 16 進ダイジェスト**を突き合わせる。
+つまり **round 関数を誤コンパイルすれば、落ちるのではなく値が違う**形で出る。
+「クラッシュしなかった」ではなく「正しい値を出した」を確かめている点で、
+コーパスの他の gem より証拠として直接的である。
+
+### probe は 3 件、gcc と一致
+
+`CommonCrypto/CommonDigest.h` は no(macOS 専用)、`u_int8_t` と `sys/cdefs.h` は yes。
+rubycc・gcc とも同じで、**両者とも同梱のアルゴリズム実装をコンパイルしている**
+(プラットフォーム側の実装ではなく)。
+
+---
+
+## Step 171 — zlib 3.2.3 を記録する(M5 H6)
+
+7 件計画の 6 番、**コーパス初のホストシステムライブラリ依存 gem**。
+R10 が「システムライブラリに依存する gem」として想定していたケースの第 1 号で、
+ホストの `/usr/include/zlib.h` と `-lz` を実際に使う。gem 自身の test/unit スイートが
+**97 tests / 540 assertions / 0 failures / 0 errors** で PASS。
+検証済み gem は **17 件**。
+
+### probe が失敗しても**ビルドは止まらない** — だから Makefile を読んだ
+
+extconf.rb の `have_library('z', 'deflateReset(NULL)', 'zlib.h')` は try_link なので、
+成功は「rubycc がホストの `zlib.h` を見つけ、かつ `-lz` にリンクできた」を意味する。
+問題は**失敗したときで、ビルドは止まらず同梱 zlib のブランチに黙って切り替わる**
+(そのソースを gem は同梱していないので、そこから先で別の失敗をする)。
+つまり「ビルドが通った」だけでは**どちらの経路を通ったか分からない**。
+そこで生成された Makefile を読み、`-DHAVE_ZLIB_SIZE_T_FUNCS` が立っていること、
+`ZSRC` が空であることを確認した。Step 160 で払った
+「合格件数だけを見て経路を確かめない」の代償を繰り返さないための手順である。
+
+probe は 7 件すべて yes で、ホスト gcc 対照と一致した
+(`deflateReset` in `-lz`、`crc32_combine`、`adler32_combine`、`z_crc_t`、`z_size_t`、
+`crc32_z`、`adler32_z`)。
+
+### DT_NEEDED に `libm.so.6` が入らない — 意図した差
+
+ビルドされた `zlib.so` の DT_NEEDED には gcc 版と同じく `libz.so.1` が入る。
+一方 **gcc 版には `libm.so.6` も入るが、rubycc 版には入らない**。
+`LIBS` は両者とも `$(LIBRUBYARG_SHARED) -lz -lm -lpthread -lc` で同じであり、
+差が出るのは **rubycc のリンカが「未定義シンボルを実際に供給したライブラリ」だけを
+DT_NEEDED に記録する**ため。zlib.c は libm のシンボルを 1 つも参照していないので、
+`-lm` は与えられても記録されない。未定義シンボルは全て解決し、
+スイートはどちらでも通る。**バグではなく設計どおりの差**なので、そう記録する。
+
+---
+
+## Step 172 — psych 5.3.1 を記録する(M5 H6)
+
+7 件計画の 7 番、最後の 1 件で最重量。ホストの libyaml に依存する。
+gem 自身の test/unit スイートが
+**633 tests / 1,598 assertions / 0 failures / 0 errors / 0 omissions** で PASS。
+検証済み gem は **18 件**。これで **7 件計画は完了**。
+
+### rubycc の pkg-config シムが、対照と**違う経路**を選ばせた
+
+この gem の一番の発見はここである。extconf.rb はまず `pkg_config('yaml-0.1')` を試し、
+空振りしたときだけ `find_header('yaml.h')` + `find_library('yaml', 'yaml_get_version')`
+に落ちる。**このホストには pkg-config が 1 つも入っていない**ので、
+gcc 対照は `not found` でフォールバック側を通る。ところが rubycc 経由では
+
+```
+checking for pkg-config for yaml-0.1... [" ", "", "-lyaml"]
+```
+
+と出る — **rubycc 自身の `exe/rubycc-pkgconf` が答えた**ので、pkg_config の枝が走った。
+`RbConfig::CONFIG["PKG_CONFIG"]` は `""` だがキー自体は存在するため、シムが差し込まれる。
+
+最終的な `LIBS` は両者とも `$(LIBRUBYARG_SHARED)  -lyaml -lm -lpthread  -lc` で一致し、
+スイートも通る。**が、両者は同じ configure 経路を通っていない**。
+Step 160 で払った代償(合格件数の一致を「同じものがビルドされた」証拠と読んだ)を
+繰り返さないため、**合致した結果ではなく食い違った経路の方を記録する**。
+
+### 副産物 — rmake に `MAKE` マクロが無い(GAPS F)
+
+ビルド中に `cd libyaml &&  clean` という出力が出た。生成 Makefile の 287 行目は
+`	-cd libyaml && $(MAKE) clean` で、**`$(MAKE)` が空に展開されている**。
+最小再現を取ったところ:
+
+| | `$(MAKE)` | `$(CC)` |
+|---|---|---|
+| rmake | `[]` | `[]` |
+| GNU make | `[make]` | `[cc]` |
+
+POSIX は `MAKE` を組み込みで定義することを要求している。
+今回当たった規則は行頭 `-` でエラー無視、しかもこのビルドはホストの libyaml を使うので
+**psych の合否には影響していない**。だが同じ Makefile の 282 行目
+`cd libyaml && $(MAKE)` は**同梱 libyaml を実際にビルドする規則**で、
+そこでは `cd libyaml &&` に潰れて**黙って no-op になる**。
+横断の決まりごと「ギャップの修正は別ステップ」に従い、docs/GAPS.md の F として残した。
+
+---
+
+## Step 173 — rmake に組み込みマクロ `MAKE` を実装する(M5 H6)
+
+Step 172(psych)が露出させたギャップ F の修正。横断ルール
+「ギャップの修正は別ステップに切る」に従って独立したステップにした。
+
+### 症状 — **失敗ではなく無音**
+
+psych のビルド中に `cd libyaml &&  clean` という出力が出た。
+生成 Makefile の該当行は `	-cd libyaml && $(MAKE) clean` で、
+**`$(MAKE)` が空に展開されていた**。POSIX は `MAKE` を組み込みで定義することを
+要求しているが、rmake は定義していなかった。最小再現:
+
+| | `$(MAKE)` | `$(CC)` |
+|---|---|---|
+| rmake(修正前) | `[]` | `[]` |
+| GNU make | `[make]` | `[cc]` |
+
+この欠陥の質が悪いのは、**エラーにならない**ところである。
+`cd sub && $(MAKE)` は `cd sub &&` に潰れる。同梱ライブラリを再帰 make で
+ビルドする gem では、ビルドが走ったように見えて**何も作られない**。
+psych で表に出たのは行頭 `-` でエラー無視の `clean` 側だったこと、
+このビルドがホストの libyaml を使ったことの 2 つの偶然によるもので、
+**同じ Makefile の同梱 libyaml をビルドする側の規則を踏んでいたら無音で壊れていた**。
+
+### 値は「`make`」ではなく「rmake 自身の絶対パス」
+
+ここが唯一の設計判断。GNU make に倣えば `make` だが、
+**rubycc の前提はホストに make も gcc も無いこと**なので、それでは契約が壊れる
+(再帰ビルドだけがホストの GNU make + gcc に流れる)。したがって値は
+
+1. `ENV["MAKE"]` が非空ならその値(RubyGems の rubygems_plugin が
+   rmake を指す値を設定して起動するので、それを再帰先へ伝播させる)
+2. なければ `File.expand_path($PROGRAM_NAME)`
+
+とし、**`make` へのフォールバックは置かない**。
+
+### 優先順位 — `overrides` とは扱いを変える必要があった
+
+`Parser` はコマンドライン `VAR=value` を `@overrides` に持ち、
+Makefile 側の代入を `return if @overrides.key?(name)` で無効化している。
+**組み込み既定値をこの経路に相乗りさせてはいけない** — make の規則では
+Makefile の `MAKE = foo` は既定値に勝つからである。そこで
+`defaults:` を別のキーワード引数として足し、**通常の変数として先に seed** した。
+結果の優先順位は コマンドライン > Makefile の代入 > 既定値。
+
+`CLI` が既定値の唯一の決定者で、`Parser` に `ENV` は読ませていない
+(テストから既定値を注入できるようにするため)。
+
+### `CC` は今回は入れない
+
+上の表のとおり `$(CC)` も空だが、**実測された失敗が無い**。
+mkmf は必ず `CC = ...` を書き出すし、rmake はどのみちコンパイラ語を
+rubycc の Driver に差し替えるので、既定値を足しても mkmf コーパス全体の
+挙動を変えるリスクの方が大きい。**推測でギャップを埋めない**方針に従って見送った。
+
+### 検証
+
+ユニットテスト 11 件のほか、実際に再帰起動が通ることを確認した:
+
+```
+$ rmake                       # all: cd sub && $(MAKE) hello
+cd sub && /home/nuna/projects/rubycc/exe/rmake hello
+recursed into sub
+```
+
+rmake はレシピをシェルに渡さず argv 配列で `Process.spawn` するので、
+`cd` は組み込みで `state.cwd` を動かし、そこへ rmake 自身が子プロセスとして起動される。
+
+---
+
+## Step 174 — musl 検証ジョブを Tier B に足す(M5 H6)
+
+「環境が無くて測れていないこと」3 件(ROADMAP §8)の 1 件目。**musl(x86_64)**。
+このステップは**足場を作るところまで**で、実測値の記録は次のステップに分ける
+(このステップは走らせる仕組みを足しただけで、まだ 1 度も走っていない)。
+
+### なぜここが弱点なのか
+
+M5 は「glibc/musl 互換ヘッダ」を掲げているが、**その主張を支える計測は全て
+glibc 側で取られている** — ABI ハーネスも、コーパスも、
+`data/verified_gems.json` の全 18 エントリ(全て `glibc x86_64 / ruby 3.4.5`)もである。
+**掲げた主張の半分が一度も測られていない**。手元に Docker が無いので CI でしか測れず、
+§3.1 の負債表で H3 に割り当てられたまま H6 まで来ていた。
+
+### `container:` を使わない
+
+GitHub Actions のジョブコンテナには、ランナーが**自前の glibc リンクの node** を
+差し込む。Alpine イメージはそれを実行できないので、`container: ruby:4.0-alpine` に
+すると `uses:` を使うステップが軒並み動かなくなる。
+そこで**チェックアウトはホスト(glibc)側で済ませ、そのディレクトリを bind mount して
+自分で `docker run` する**構成にした。Actions 側は glibc のまま、
+**musl に置かれるのは rubycc だけ**になる。測りたいのはそこだけである。
+
+コンテナ内で走るのは `.github/scripts/musl-suite.sh`。インラインの `run:` に
+書かないのは、`docker run ... sh -c '...'` の入れ子クォートが読めなくなることと、
+**ファイルなら CI の外で `sh -n` にかけられる**からである(このステップで実際にかけた。
+それがローカルで取れる唯一の検証だった)。
+
+### Alpine の /bin/sh には `pipefail` が無い
+
+busybox ash では `set -o pipefail` が当てにできない。ログを `tee` で流しつつ
+終了状態も取りたいので、**パイプラインの中でステータスをファイルに書いて外で読む**形にした。
+90 分近く走るジョブなので、ログを最後まで溜め込む形(リダイレクト後に `cat`)は採らない
+— どこで止まったか見えないのは実運用で困る。
+
+### 週次は回帰、手動は記録
+
+`tools/verify_gem_tests.rb` は `--update` に `--step N` を要求する(番号が evidence に入る)。
+**週次のスケジュール実行には渡せる番号が無い**。ここは仕様の綻びに見えるが、
+分けて考えると 2 つの別の問いになっている:
+
+| 起動 | `verify_step` | phase 2 |
+|---|---|---|
+| 週次スケジュール | 空 | **読み取り専用** = 「この 3 gem は musl でまだビルドでき、テストが通るか」という**回帰**の問い |
+| 手動 dispatch | ステップ番号 | `--update` で DB を書き、アーティファクトとして上げる。**そのファイルをそのままコミットする**ので、DB を書くのはツールだけという規約は保たれる |
+
+記録用の dispatch では **musl 以外の 4 ジョブを走らせない**
+(各ジョブに `if: inputs.verify_step == ''` を付けた)。他の 4 本を引き連れると
+1 回 255 分になり、**記録そのものより随伴のほうが高くつく** — 無料枠 2,000 分/月
+という前提では無視できない差である。`schedule` イベントでは `inputs` が null で、
+GitHub の式評価は `null == ''` を真とするので、**週次は従来どおり 5 ジョブ全部**走る。
+
+### `ci_check_skips.rb` をこのジョブでは回さない
+
+**Alpine には aarch64-linux-musl のクロスツールチェインが無い**ので、
+aarch64 差分テストは設計上まるごと skip される。Tier A の閾値は
+**その skip だけで発火してしまい、musl について何も語らない**。
+acceptance ジョブが回さない理由(実行形状が変わる)とは別の理由なので、両方を注記した。
+
+### `zlib-dev` / `yaml-dev` を先に入れる
+
+検証する 3 gem(io-wait / stringio / json)はどちらも使わないが、入れてある。
+**パッケージが無いせいで落ちた probe を「musl の差」と読み違えないため**である。
+Step 160 以降ずっと同じことをしている — 差が出たときに、それが測りたかった差なのかを
+最初から切り分けられるようにしておく。
+
+---
+
+## Step 175 — musl の初回実測(M5 H6)
+
+Step 174 で入れたジョブを初めて走らせた。**通らなかった。それがこのステップの成果である。**
+`data/verified_gems.json` に musl の記録は 1 件も足さない — 通っていないからである。
+
+### 実測値
+
+```
+ruby arch:  x86_64-linux-musl
+gcc target: x86_64-alpine-linux-musl
+```
+
+| | runs | assertions | failures | errors | skips |
+|---|---|---|---|---|---|
+| glibc(Step 173) | 2,743 | 8,121 | 0 | 0 | 45 |
+| **musl(初回)** | **2,743** | **6,968** | **21** | **18** | **550** |
+
+**runs が同数**なのは同じテストが集まっている証拠。skips の +505 は
+Alpine に aarch64 のクロスツールチェインが無いためで、これは設計どおり(Step 174)。
+
+### 39 件の内訳 — 3 分の 1 は rubycc の欠陥ではない
+
+| 種別 | 件数 | 中身 |
+|---|---|---|
+| **gcc 対照の方がコンパイルできなかった** | **13** | ABI ハーネスのケース自体が glibc 固有 |
+| rubycc 側の差 | 26 | 下記 |
+
+13 件は**参照実装が先に落ちている**ので rubycc の合否を判定できていない。実例:
+
+- `features`: ケースが `__GLIBC__` / `__GLIBC_MINOR__` / `__GLIBC_PREREQ` を印字する。
+  musl にこれらは無い。**このケースは musl では原理的に走らない。**
+- `termios`: musl の `struct termios` のメンバは `__c_ispeed` / `__c_ospeed` で、
+  ケースが名指しする `c_ispeed` / `c_ospeed` ではない。
+- `pthread`: musl は `pthread_kill` を `<pthread.h>` で宣言しない。
+
+**これらは「rubycc が musl で壊れている」ではなく「ハーネスが glibc で書かれている」**。
+ただし**裏に rubycc の欠陥が隠れていないことの証明にはならない** — 対照が取れていない以上、
+判定は保留である。ハーネスの機種・libc パラメタ化は別ステップになる。
+
+### 残り 26 件 — 同梱ヘッダが glibc の ABI を焼き込んでいる
+
+一番直接的なのが `<stdint.h>`:
+
+```
+-sizeof(int_fast16_t) = 4   ← gcc(musl)
++sizeof(int_fast16_t) = 8   ← rubycc
+```
+
+musl は `int_fast16_t` / `int_fast32_t` を 32 ビット型に、glibc は `long` にしている。
+rubycc の同梱ヘッダは **glibc 側の値を焼き込んでいた**。
+M5 が掲げた「glibc/musl 互換ヘッダ」の、**測っていなかった半分が実際に外れていた**。
+
+`TestRubySmoke` の 5 件はいずれも同じ原因で、**同梱ヘッダに `stdckdint.h`(C23)が無い**。
+ruby 4.0 の `ruby/internal/stdckdint.h` が musl 環境では `#include <stdckdint.h>` の枝を通る。
+**ruby 4.0 + glibc では Tier A が緑**(`ad602f4`)なので、これは Ruby バージョンの差ではなく
+musl 側の要因である — 交絡は推測ではなく実測で潰した。
+
+### 初回実行で先に壊れたのは自分の足場だった
+
+phase 2(gem install)は**走らなかった**。`set -e` が、パイプライン内のサブシェルを
+rake の失敗直後に落とし、**終了ステータスを書き出す `echo` に到達しなかった**ためである。
+その後 `cat tmp/ci/rake-status` が失敗し、スクリプトごと終わった。
+
+`sh -n` は通っていた。**構文は正しく、意味が間違っていた**という、
+ローカルで取れる検証の限界そのものの形で出た。
+両フェーズとも「失敗するのが当たり前」の段階なので、errexit は 2 フェーズの手前で切り、
+各フェーズの状態は明示的に拾う形に直した。
+
+---
+
+## Step 176 — コーパスの `version: nil` 4 件を固定する(M5 H6)
+
+`docs/GAPS.md` §2 の負債。`test/corpus/gems.rb` の bigdecimal / date / racc / redcarpet が
+`version: nil` = 最新追従のままだった。
+
+固定先は `data/verified_gems.json` が保証しているバージョン
+(4.1.2 / 3.5.1 / 1.8.1 / 3.6.1)。**これは committed スナップショットで
+`latest` が既に解決していた値と同じ**なので、requested 列が変わるだけで
+resolved 列は動かない。理由は 2 つ:
+
+- **census ジョブは差分で落ちる**。`latest` のままだと、**上流がリリースしただけで赤くなる** —
+  そのジョブが唯一検出したいこと(rubycc のヘッダ網羅性が変わった)ではない理由で。
+- コーパスが記述するバージョンと、検証 DB が保証するバージョンが食い違いうる。
+
+### 再生成で分かった副産物 — スナップショットが既に古かった
+
+`rake corpus:census` をかけたところ、固定による差分(requested 列と fetched 日付)の他に
+**stackprof の note が変わった**。`gems.rb` の note は Step 146 で
+「probe は無い」→「実際には `rb_postponed_job_preregister` 等 have_func が 4 件ある」に
+直されていたのに、**スナップショットの方が再生成されず古いままだった**。
+週次の census ジョブはこれを差分として検出する設計なので、
+**このステップまで気付かれずに来たのは、そのジョブの結果が見られていなかった**ということになる。
+
+---
+
 ## 現在のテスト規模
 
-Step 162 完了時点: **2,712 runs / 7,766 assertions / 0 failures / 47 skips**
+Step 176 完了時点: **2,743 runs / 8,125 assertions / 0 failures / 0 errors / 45 skips**
+(Step 173 から +4 assertions = コーパスの 4 件が `latest` ではなく固定バージョンに
+なったぶん `test_corpus_census.rb` の検査が増えた。Steps 174・175 は CI 設定と
+ドキュメントだけなのでローカルのテスト規模は動かない)
+(以前) Step 173 完了時点: **2,743 runs / 8,121 assertions / 0 failures / 0 errors / 45 skips**
+(Step 172 から +11 runs = rmake の `MAKE` マクロのテスト
+5 件(Makefile/Parser レベル)+ 6 件(CLI レベル))
+(以前) Step 172 完了時点: **2,732 runs / 8,104 assertions / 0 failures / 0 errors / 45 skips**
+(runs は Step 171 と同数 = DB のスキーマ検査が psych の 1 件分増え、
+バージョン固定の検査を 1 件足しただけ)
+(以前) Step 171 完了時点: **2,732 runs / 8,084 assertions / 0 failures / 0 errors / 45 skips**
+(runs は Step 170 と同数 = DB のスキーマ検査が zlib の 1 件分増え、
+バージョン固定の検査を 1 件足しただけ)
+(以前) Step 170 完了時点: **2,732 runs / 8,064 assertions / 0 failures / 45 skips**
+(runs は Step 169 と同数 = DB のスキーマ検査が digest の 1 件分増え、
+バージョン固定の検査を 1 件足しただけ)
+(以前) Step 169 完了時点: **2,732 runs / 8,044 assertions / 0 failures / 45 skips**
+(runs は Step 168 と同数 = DB のスキーマ検査が io-console の 1 件分増え、
+バージョン固定の検査を io-console と、Step 166 で入れ忘れていた erb の 2 件足しただけ)
+(以前) Step 168 完了時点: **2,732 runs / 8,022 assertions / 0 failures / 45 skips**
+(Step 167 から +15 runs = 新規テストファイル 13 件、`ruby/ractor.h` の smoke 1 件、
+examples/m5 の追加で aarch64 側 1 件。**skips −2 は c-testsuite 00078 が
+x86_64・aarch64 の両方で実際に通るようになったため**)
+(以前) Step 167 完了時点: **2,717 runs / 7,979 assertions / 0 failures / 47 skips**
+(Step 166 と同数 = 追加した 2 宣言は既存 Spec の snippet 内の呼び出しとして
+検査されるので、テストメソッドも assertion も増えない)
+(以前) Step 166 完了時点: **2,717 runs / 7,979 assertions / 0 failures / 47 skips**
+(runs は Step 165 と同数 = DB のスキーマ検査が erb の 1 件分増えただけ)
+(以前) Step 165 完了時点: **2,717 runs / 7,961 assertions / 0 failures / 47 skips**
+(runs は Step 164 と同数 = DB のスキーマ検査が io-wait の 1 件分増え、
+バージョン固定の検査を 1 件足しただけ)
+(以前) Step 164 完了時点: **2,717 runs / 7,941 assertions / 0 failures / 47 skips**
+(runs は Step 163 と同数 = DB のスキーマ検査が io-nonblock の 1 件分増え、
+バージョン固定の検査を io-nonblock と etc の 2 件足しただけで、
+新しいテストメソッドは足していない)
+(以前) Step 163 完了時点: **2,717 runs / 7,919 assertions / 0 failures / 47 skips**
+(Step 162 から +5 = PT_LOAD の不変条件 4 件(x86_64・aarch64 各 2)と、
+`verified_gems.json` のスキーマを入れ子にしたときに足した
+`matching_verifications` の 1 件)
+(以前) Step 162 完了時点: **2,712 runs / 7,766 assertions / 0 failures / 47 skips**
 (runs は Step 161 と同数 = DB のスキーマ検査が etc の 1 件分増えたのみで、
 新しいテストメソッドは足していない)
 (以前) Step 161 完了時点: **2,712 runs / 7,752 assertions / 0 failures / 47 skips**

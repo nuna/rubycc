@@ -49,7 +49,8 @@ module Rubycc
           return 2
         end
 
-        mk = Makefile.parse(File.read(makefile_path), dir: @dir, overrides: options[:overrides])
+        mk = Makefile.parse(File.read(makefile_path), dir: @dir, overrides: options[:overrides],
+                             defaults: { "MAKE" => make_default })
         goals = options[:targets].empty? ? [nil] : options[:targets]
         # Tool substitution is always on: rmake is rubycc's build CLI, so the
         # compiler/linker words in every recipe are handed to rubycc's Driver.
@@ -117,6 +118,25 @@ module Rubycc
         Etc.nprocessors
       rescue StandardError
         1
+      end
+
+      # POSIX requires make to define `MAKE` built in, so `$(MAKE)` in a recipe
+      # (a recursive-make invocation, e.g. `cd sub && $(MAKE)`) expands to
+      # something runnable rather than the empty string a silently-undefined
+      # variable would give — which would collapse the recipe line to `cd sub &&`
+      # and turn a recursive build into a no-op. The value is an absolute path to
+      # this very program, so the recursive invocation is rmake again, never a
+      # bare "make" that would hand the recursive build to a host GNU make (or
+      # fail outright) instead of rubycc.
+      #
+      # `ENV["MAKE"]` is honoured first because RubyGems' rubygems_plugin sets it
+      # to rmake before invoking `$(MAKE)` at the top level, and that value must
+      # propagate unchanged into any recipe this run itself expands.
+      def make_default
+        env_make = ENV["MAKE"]
+        return env_make if env_make && !env_make.empty?
+
+        File.expand_path($PROGRAM_NAME)
       end
     end
   end

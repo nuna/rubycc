@@ -114,6 +114,44 @@ class TestRmake < Minitest::Test
     assert_equal "cli", mk.variable_value("V")
   end
 
+  # --- built-in MAKE variable -------------------------------------------------
+
+  # POSIX requires make to define `MAKE` built in. rmake's CLI seeds it via
+  # `defaults:`; unadorned, it is visible like any other variable.
+  def test_default_is_visible_when_no_makefile_assignment
+    mk = Makefile.parse("all:\n\techo hi\n", defaults: { "MAKE" => "/abs/rmake" })
+    assert_equal "/abs/rmake", mk.variable_value("MAKE")
+  end
+
+  # Unlike `overrides:`, a `defaults:` seed is an ordinary variable: a Makefile
+  # assignment to the same name replaces it (make's rule for `MAKE = foo`).
+  def test_makefile_assignment_wins_over_default
+    mk = Makefile.parse("MAKE = something\n", defaults: { "MAKE" => "/abs/rmake" })
+    assert_equal "something", mk.variable_value("MAKE")
+  end
+
+  # A command-line `MAKE=other` still beats both the built-in default and the
+  # Makefile's own assignment, matching the ordinary override precedence.
+  def test_command_line_override_wins_over_default_and_makefile_assignment
+    mk = Makefile.parse("MAKE = something\n", defaults: { "MAKE" => "/abs/rmake" },
+                                               overrides: { "MAKE" => "/cli/other" })
+    assert_equal "/cli/other", mk.variable_value("MAKE")
+  end
+
+  # Without the built-in default, `$(MAKE)` expands to empty and a recursive
+  # `cd sub && $(MAKE)` recipe line collapses to just `cd sub &&`, silently
+  # doing nothing. Seeding the default keeps the command word intact.
+  def test_recursive_make_invocation_keeps_command_word
+    plan = Makefile.parse("all:\n\tcd sub && $(MAKE) -C sub\n",
+                           defaults: { "MAKE" => "/abs/rmake" }).plan
+    assert_equal ["cd sub && /abs/rmake -C sub"], plan.command_lines
+  end
+
+  def test_recursive_make_invocation_collapses_without_default
+    plan = Makefile.parse("all:\n\tcd sub && $(MAKE) -C sub\n").plan
+    assert_equal ["cd sub &&  -C sub"], plan.command_lines
+  end
+
   # --- expansion ------------------------------------------------------------
 
   def test_nested_expansion

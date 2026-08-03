@@ -363,6 +363,10 @@ class TestHeaderAbi < Minitest::Test
   # _PC_PIPE_BUF (Step 157 gap D) are the same kind of host-numbered macro as
   # the _SC_* set, and confstr/fpathconf/pathconf (Step 157 gap C) are proven
   # usable the same way sysconf already is, through the snippet call below.
+  # ttyname_r (Step 167, M5 H6): io-console's other real-build gap alongside
+  # termios.h's cfmakeraw, added as ttyname's POSIX reentrant pair; it carries
+  # no numeric surface of its own, so it is likewise just called in the
+  # snippet to prove it is usable.
   UNISTD = HeaderAbiHarness::Spec.new(
     header: "unistd.h",
     sizes: %w[ssize_t off_t pid_t uid_t gid_t],
@@ -378,7 +382,8 @@ class TestHeaderAbi < Minitest::Test
              + pwrite(fd, buf, n, 0) + close(fd) + getpid()
              + sysconf(_SC_PAGESIZE)
              + (long)confstr(_CS_PATH, (char *)buf, n)
-             + fpathconf(fd, _PC_PIPE_BUF) + pathconf(path, _PC_PIPE_BUF);
+             + fpathconf(fd, _PC_PIPE_BUF) + pathconf(path, _PC_PIPE_BUF)
+             + ttyname_r(fd, (char *)buf, n);
       }
     C
   )
@@ -1026,7 +1031,12 @@ class TestHeaderAbi < Minitest::Test
   # needed: every name here (including XCASE, a Linux/glibc extension) is
   # already visible under gcc's default mode (implied _DEFAULT_SOURCE), which
   # is what compile_with_gcc uses (no -std flag), so the oracle's surface
-  # already matches rubycc's flat one without a feature-test macro.
+  # already matches rubycc's flat one without a feature-test macro. cfmakeraw
+  # (Step 167, M5 H6): a BSD/GNU extension with no numeric surface of its own,
+  # added to the header when building io-console for real exposed it as a gap
+  # the #include-only corpus census could not see; the snippet below calls it
+  # to prove the declaration is usable (same treatment as the rest of this
+  # Spec's calls).
   TERMIOS = HeaderAbiHarness::Spec.new(
     header: "termios.h",
     sizes: %w[struct\ termios speed_t tcflag_t cc_t],
@@ -1058,6 +1068,7 @@ class TestHeaderAbi < Minitest::Test
         speed_t is = cfgetispeed(t);
         speed_t os = cfgetospeed(t);
         rc += cfsetispeed(t, is) + cfsetospeed(t, os);
+        cfmakeraw(t);
         return rc;
       }
     C

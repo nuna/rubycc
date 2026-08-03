@@ -78,7 +78,7 @@
 | 不完全型 struct の param/return | 未呼び出しプロトタイプでも宣言時に診断エラー(分類にレイアウトが要るための簡略化) | 実害が出た時点 |
 | 可変長部への struct 渡し・va_arg(struct) | 診断エラーにして先送り | 実害が出た時点 |
 | 内側スコープの `struct S;` 再宣言 | C 6.7.2.3p7 に従わず外側タグを参照 | 実害が出た時点 |
-| ブロックスコープの関数宣言 | 外部リンケージ未モデルで診断エラー | 実害が出た時点 |
+| ~~ブロックスコープの関数宣言~~ | **解消(Step 168)**: 6.2.2p5 の外部リンケージとしてファイルスコープの宣言と同じ署名テーブルへ合流させ、ローカルスロットは取らない。`static` は 6.7.1p7 の制約違反として診断、入れ子関数定義(GNU 拡張)は引き続き拒否。io-console が `ruby/ractor.h` 経由で実害を出した。c-testsuite 00078 の skip も外れた | ~~実害が出た時点~~ **完了** |
 | ~~`&arr[i]` 等の計算アドレス定数~~ | **解消(Step 45、b4be1fe)**: 初期化子を「基点シンボル/文字列 + 定数変位 + pointee」へ畳む walker を追加し、キャスト・`&arr[i]`・`arr ± n`・`&rec.member` を R_X86_64_64 の addend に乗せる。json jeaiii-ltoa の「文字列リテラルを struct ポインタにキャストした桁テーブル」が通る | ~~実害が出た時点~~ **完了** |
 | 指し先 const の書き込み検出 | `const int *p` の `*p = x` を診断しない(型に修飾を載せない簡略化) | 実害が出た時点 |
 | ~~unsigned long ⇔ float/double 変換~~ | **解消(Step 51 定数側 1c65c47 + Step 52 実行時側 45b6606)**: 定数キャストは 6.3.1.4p1 で畳み込み、実行時は分岐 + 符号付き cvt + 補正(sticky ビット/2^63 しきい値)の IR 合成で lowering。float → unsigned int の既存オーバーフローも修正 | ~~実害が出た時点~~ **完了** |
@@ -108,13 +108,13 @@
 
 | 負債 | 解消予定 | 根拠 |
 |---|---|---|
-| 不完全型 struct の param/return、内側スコープ `struct S;` 再宣言、ブロックスコープ関数宣言、指し先 const 書き込み検出、compound literal / VLA / _Generic / ワイド文字列 / #pragma push_macro / K&R `int ()`、enum unsigned 底型 | **H4**(言語機能不足 → M1 流儀の追補ステップ) | H3 の #include/ビルド集計と gem テストで顕在化した順に H4 で追補。コーパスに現れないものは v1.0 の「既知の制限」として README 記載(H6) |
+| 不完全型 struct の param/return、内側スコープ `struct S;` 再宣言、~~ブロックスコープ関数宣言~~(**Step 168 で解消**)、指し先 const 書き込み検出、compound literal / VLA / _Generic / ワイド文字列 / #pragma push_macro / K&R `int ()`、enum unsigned 底型 | **H4**(言語機能不足 → M1 流儀の追補ステップ) | H3 の #include/ビルド集計と gem テストで顕在化した順に H4 で追補。コーパスに現れないものは v1.0 の「既知の制限」として README 記載(H6) |
 | 128 ビット整数の演算残り(除算・剰余・ビット演算) | **H4**(値渡し/返しは Step 94、シフトは Step 95 で解消済み)。残りの演算は必要になった時点 | 実 gem が `__int128` を使う頻度は低い。bigdecimal で実害が出た値渡し(Step 94)とシフト(Step 95)は解消。残りは使う gem がコーパスに現れれば H4 で実装 |
 | ~~`char *` と `signed char *` の非互換化~~ | **解消(Step 98)**: `pointer_sign_compatible?` で同サイズ逆符号 + 文字型3種の相互互換を受理。redcarpet の `uint8_t*` → `strncmp` で実害が出て緩和 | ~~Step 73 の副作用~~ **完了(Step 98)** |
 | ~~スタック引数の 16 バイト整列(x86_64/aarch64 共通)~~ **解消(Step 94)**、-fPIC の PC32 参照 | 16 バイト整列は Step 94 で解消(`:pad_stack` 機構 + クロス TU 実行オラクル)。-fPIC PC32 は **H4**(ABI バグ → 最優先修正 + ABI ファジングに再発防止ケース追加) | ABI 不一致は SEGV 直結の最重要リスク(DESIGN 7 章)。ファジング(下記)で網羅的に炙り出す |
 | `wchar_t` typedef 符号性、long double = double による max_align_t 相違 | **feature-gated**(ワイド文字対応時 / x87 80bit 対応時) | いずれも該当機能を意図的に未対応(診断で拒否 / DESIGN 3.3 既知制限)としているため、当該機能に着手するまで観測不能。H4 でワイド文字/long double を使う gem が有意に落ちるなら前倒しを判断 |
 | DoS フェイルセーフ上限値の再調整 | **H4**(コーパス R10 実測で再調整) | docs/security-dos-review.md 記載。極浅スタック環境の実測が入手できた時点 |
-| ABI ファジングハーネス(Step 25/62)の機種パラメタ化、aarch64 全スイート + gem install 実走、musl/distroless コンテナ検証、sqlite3/pg コーパス | ~~**H3**(QEMU の Docker マトリクス整備と併せて)~~ → **H6 の Steps 170〜172 に再割り当て**(§8 の「環境が無くて測れていないことの解消」)。**H3 に割り当てたまま実施されず H6 まで来た**ので、期限を持たせ直した。musl → distroless → aarch64 の順に分けて片付ける | §8 M4 受け入れ参照。現環境に Docker/aarch64 Ruby が無いため、CI マトリクス整備が前提。ネットワーク/コンテナ依存はこの相に閉じる |
+| ABI ファジングハーネス(Step 25/62)の機種パラメタ化、aarch64 全スイート + gem install 実走、musl/distroless コンテナ検証、sqlite3/pg コーパス | ~~**H3**(QEMU の Docker マトリクス整備と併せて)~~ → **H6 の default gem 検証(§8)の後ろに再割り当て**(§8 の「環境が無くて測れていないことの解消」)。**H3 に割り当てたまま実施されず H6 まで来た**ので、期限を持たせ直した。musl → distroless → aarch64 の順に分けて片付ける | §8 M4 受け入れ参照。現環境に Docker/aarch64 Ruby が無いため、CI マトリクス整備が前提。ネットワーク/コンテナ依存はこの相に閉じる |
 
 ## 4. M1 実行計画 — **完了**
 
@@ -744,14 +744,32 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   racc の `cparse.so` を壊しても 71 tests / 0 failures で通ることを実測)。
   既存 6 件を全て再現して自身を検証済み(racc の assertions のみ 319 → 320 で
   差異あり・原因未特定)。**Step 151 で nkf 0.3.0、Step 153 で stackprof 0.2.28、
-  Step 157 で strscan 3.1.6 と stringio 3.2.0、Step 162 で etc 1.4.6 を追加(6 → 11 件)。**
-- **コーパス未検証 gem(Step 157 で棚卸し、Step 162 で更新)**: センサス対象 36 件に対し
-  検証済み 11 件。**未検証 25 件のうち 23 件は R10 ゲートを通過**している(除外は sqlite3 と pg のみ)ので
-  着手先には困らない。形が揃っていて着手しやすいのは `ruby/*` の default gem 群
-  (`io-wait` `io-nonblock` `io-console` `erb` `zlib` `digest` `psych` 等)。
+  Step 157 で strscan 3.1.6 と stringio 3.2.0、Step 162 で etc 1.4.6、
+  Step 164 で io-nonblock 0.3.2、Step 165 で io-wait 0.4.0、Step 166 で erb 6.0.1.1、
+  Step 169 で io-console 0.8.2、Step 170 で digest 3.2.1、Step 171 で zlib 3.2.3、
+  Step 172 で psych 5.3.1 を追加(6 → 18 件)。**
+- **コーパス未検証 gem(Step 157 で棚卸し、Step 172 で更新)**: センサス対象 36 件に対し
+  検証済み 18 件。**未検証 18 件のうち 16 件は R10 ゲートを通過**している(除外は sqlite3 と pg のみ)。
+  `ruby/*` の default gem 群は 7 件計画で出し切ったので、次に着手するなら
+  サードパーティ gem 側になる。
   **fcntl は上流にテストスイートが無く (d) レベルの証拠が原理的に得られない**ため対象外。
 
-### 次の作業計画 — default gem 群の検証(Steps 163〜169 予定)
+### 次の作業計画 — default gem 群の検証(Steps 163〜、番号は連番ではない)
+
+**ギャップの修正を別ステップに切る**という横断ルールのため、7 件は連番にならない。
+前半 4 件(Steps 163〜169)で**ギャップが 3 つ**出た:
+
+| ステップ | 内容 |
+|---|---|
+| 163 | 1 番が露出させた**リンカのバグ** — 共有ライブラリの r-x ロードセグメントが `.plt` の末尾を覆っておらず、PLT エントリが未マップページに落ちて `require` が segfault。11 gem ぶん潜んでいた |
+| 164〜166 | io-nonblock / io-wait / erb の記録(2 番と 3 番はコンパイラ側の変更不要) |
+| 167 | 4 番が露出させた**同梱ヘッダの宣言漏れ** — `cfmakeraw` / `ttyname_r` |
+| 168 | 4 番が露出させた**ブロックスコープ関数宣言**の未対応(`ruby/ractor.h`) |
+| 169〜172 | io-console / digest / zlib / psych の記録(いずれもコンパイラ側の変更不要) |
+| 173 | 7 番が露出させた **rmake の `MAKE` マクロ未定義**(POSIX 要求)— 再帰 make の規則が黙って no-op になっていた |
+
+**7 件計画は Step 172 で完了**(検証済み gem 6 → 18 件)。露出したギャップは
+コンパイラ側 3 件(Steps 163・167・168)と rmake 1 件(Step 173)で、いずれも修正済み。
 
 **1 gem = 1 ステップ**。手順は `.claude/skills/corpus-expansion/SKILL.md` のフェーズ 2
 そのままで、レシピの雛形は `tools/verify_gem_tests.rb` の **`RECIPES["etc"]` が最も近い**
@@ -764,13 +782,13 @@ tarball は `https://github.com/ruby/<name>/archive/refs/tags/v<version>.tar.gz`
 
 | 順 | gem | version | 想定される難所 |
 |---|---|---|---|
-| 1 | `io-nonblock` | 0.3.2 | 単一ファイル ext。**最も安い**ので、default gem の差し込み手順の足場固めに使う |
-| 2 | `io-wait` | 0.4.0 | 単一ファイル ext。1 と同型 |
-| 3 | `erb` | 6.0.1.1 | `ext/erb/escape` のみ。**スイートの大半は純 Ruby の ERB を叩く**ので、sanity 式が特に重要(C 拡張を通らなくても合格しうる) |
-| 4 | `io-console` | 0.8.2 | **tty を要求するテストが多い**。非 tty 環境では omission/skip に落ちるので、(d) レベルの証拠として十分かを個別に判断し、足りなければ pty 経由の実走を検討する |
-| 5 | `digest` | 3.2.1 | **コーパス初の多 ext gem**(`ext/digest` + bubblebabble/md5/rmd160/sha1/sha2 の 6 extconf)。`sos` が 6 エントリになり、**mkmf shim と rmake の入れ子 ext 対応**が試される |
-| 6 | `zlib` | 3.2.3 | **ホストの `zlib.h` / `-lz`** に依存。R10 が想定するシステムライブラリ gem の第 1 号 |
-| 7 | `psych` | 5.3.1 | **ホストの libyaml** に依存。7 件で最重量 |
+| ~~1~~ | ~~`io-nonblock`~~ | ~~0.3.2~~ | **完了(Step 164)**。想定していた「最も安い足場固め」にはならず、**11 gem ぶん潜んでいたリンカのバグ(Step 163)を引いた**。probe の結果はホスト gcc 対照と 3 件とも一致し、同じ経路がビルドされている |
+| ~~2~~ | ~~`io-wait`~~ | ~~0.4.0~~ | **完了(Step 165)**。コンパイラ側の変更は不要。extconf が probe を 1 つも持たないので経路の一致は構造的に保証され、gcc 対照とも 26 tests / 41 assertions / 1 omission で完全一致 |
+| ~~3~~ | ~~`erb`~~ | ~~6.0.1.1~~ | **完了(Step 166)**。この見立ては半分外れた — 差し込んだ `escape.so` を壊しても 48 件中 47 件が通るが、落ちる 1 件は**上流自身の** `test_html_escape_extension` で、erb のスイートは自分のフォールバックを検出する。検出できないのは処理系同梱の別コピーの方 |
+| ~~4~~ | ~~`io-console`~~ | ~~0.8.2~~ | **完了(Step 169)**。tty の懸念は外れた — omission も skip も 0 件で、tty を要するテストは `PTY.open` 経由で実際に走る。代わりに**コンパイラ側の修正が 2 つ**要った(Step 167 のヘッダ宣言漏れ、Step 168 のブロックスコープ関数宣言)。probe 13 件は全て gcc と一致していたのにこうなった |
+| ~~5~~ | ~~`digest`~~ | ~~3.2.1~~ | **完了(Step 170)**。難所と見ていた入れ子 ext は素通りで、6 つの `.so` が 1 回の `gem install` で全て rubycc + rmake からビルドされ、フラグも shim の変更も不要だった。代わりに分かったのは、**多 ext gem では sanity に `.so` を全部名指しする必要がある**こと(遅延ロードのため) |
+| ~~6~~ | ~~`zlib`~~ | ~~3.2.3~~ | **完了(Step 171)**。R10 が想定していたホストライブラリ依存の第 1 号だが、コンパイラ側の変更は不要だった。分かったのは、**probe(`have_library`)が失敗してもビルドは止まらず同梱 zlib のブランチに黙って切り替わる**こと — 「通った」だけでは経路が確定しないので、生成 Makefile の `-DHAVE_ZLIB_SIZE_T_FUNCS` と空の `ZSRC` を読んで確認した。probe 7 件は gcc と一致 |
+| ~~7~~ | ~~`psych`~~ | ~~5.3.1~~ | **完了(Step 172)**。7 件計画はここで完了。重量の見立ては当たった(633 tests / 1,598 assertions)が、難所は libyaml ではなく**rubycc 自身の pkg-config シム**だった — このホストに pkg-config が無いため gcc 対照は `find_header` フォールバックを通るのに、rubycc 経由では `rubycc-pkgconf` が答えて `pkg_config` の枝が走る。`LIBS` は一致するが**経路は一致していない**。副産物として rmake の `MAKE` マクロ未定義(GAPS F)が露出 |
 
 **横断の決まりごと(いずれも既に代償を払って学んだこと)**:
 
@@ -792,7 +810,7 @@ tarball は `https://github.com/ruby/<name>/archive/refs/tags/v<version>.tar.gz`
 **M5 のコーパスが本当に通るかを決める形**で、R10 が名指しで想定している類型でもある。
 1〜4 が順調なら、そこで得た足場を 5〜7 に投入する。
 
-### 環境が無くて測れていないことの解消(Steps 170〜172 予定)
+### 環境が無くて測れていないことの解消(上の 7 件計画の後、3 ステップ)
 
 `docs/GAPS.md` §3 の 3 件。**§3.1 の負債表は H3 に割り当てていたが実施されないまま
 H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker マトリクス整備」として
@@ -800,7 +818,7 @@ H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker 
 
 | 順 | 対象 | 実行環境 | 主眼 |
 |---|---|---|---|
-| 1 | **musl(x86_64)** | GitHub Actions の `container: alpine`。**qemu 不要**なので 3 件で最も安い | M5 が掲げた「glibc/musl 互換ヘッダ」の**未検証の半分**。同梱ヘッダの musl 差が初めて実測できる |
+| 1 | **musl(x86_64)** | ~~GitHub Actions の `container: alpine`~~ → **ホストでチェックアウトして自分で `docker run ruby:4.0-alpine`**(ジョブコンテナにはランナーが glibc リンクの node を差し込むため `container:` は使えない)。**qemu 不要**なので 3 件で最も安い | M5 が掲げた「glibc/musl 互換ヘッダ」の**未検証の半分**。同梱ヘッダの musl 差が初めて実測できる。**足場は Step 174**、**初回実行は Step 175**。結果は**緑ではなかった** — 2,743 runs / 21 failures / 18 errors。**掲げた主張が musl 側で実際に外れていた**ことが分かり、GAPS の G(同梱ヘッダが glibc の ABI を焼き込んでいる)・H(`stdckdint.h` 欠落)・I(ABI ハーネスが glibc 固有)に分離した。**musl の検証済み記録は 1 件も足していない**(通っていないため) |
 | 2 | **真の distroless 姿勢** | 1 で組んだジョブを再利用し、cc / make / sh / libc 開発ヘッダを取り除いた image を作る | Step 64 は `RUBYCC_HERMETIC_HEADERS` で**姿勢を模擬**しただけ。**本当に無い環境**で `RUBYCC=1 gem install` が通ることを示す |
 | 3 | **aarch64 での実走** | qemu + arm64 コンテナ(`docker/setup-qemu-action`) | M4 受け入れの最後の 1 項目。qemu 上の全スイートは**遅すぎるので回さない** — `gem install` の受け入れと `verify_gem_tests.rb` を 1〜2 gem に絞る |
 

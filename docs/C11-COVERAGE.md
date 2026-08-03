@@ -52,7 +52,7 @@ gem install 成功 + テスト合格」を到達目標(DESIGN R10)とし、C11 �
 | 条番号 | 見出し | 状態 | 備考 |
 |---|---|---|---|
 | 6.2.1 | Scopes of identifiers | 実装済み | ブロック・関数・ファイル・関数プロトタイプスコープ。tag/ordinary の 2 系統スコープスタックで実装(Step 3, 4, 13, 18) |
-| 6.2.2 | Linkages of identifiers | 部分実装 | 外部・内部・無リンケージは Step 22(static の内部リンケージ、extern の束縛登録)で実装。既知の逸脱(ROADMAP §3): ブロックスコープの関数宣言は外部リンケージをモデル化せず一律診断エラー、ブロックスコープ extern の束縛はブロックを超えて残る |
+| 6.2.2 | Linkages of identifiers | 部分実装 | 外部・内部・無リンケージは Step 22(static の内部リンケージ、extern の束縛登録)で実装。ブロックスコープの関数宣言(6.2.2p5)は Step 168 で対応 — 記憶域を消費せず、ファイルスコープのプロトタイプと同じ署名テーブルへ合流する(`static` を伴う形は 6.7.1p7 の制約違反として診断)。既知の逸脱: ブロックスコープ関数宣言・ブロックスコープ extern の束縛は、外部リンケージが翻訳単位内で単一の実体を指すことを根拠にブロックを超えて残る |
 | 6.2.3 | Name spaces of identifiers | 実装済み | ラベル・タグ・メンバ・通常識別子の 4 名前空間(Step 13 タグ、Step 16 ラベル、Step 18 通常識別子、Step 19 メンバ) |
 | 6.2.4 | Storage durations of objects | 部分実装 | static/automatic は Step 3, 11, 22 で実装。allocated(malloc 等)は libc 任せ(通常の C 拡張同様)。VLA の自動記憶域はスコープ外(DESIGN §3.3) |
 | 6.2.5 | Types | 部分実装 | 基本型・派生型(ポインタ・配列・struct/union・関数・enum=int)は Step 2〜24 で網羅。**多次元配列(配列の配列)は非対応**(既知の負債、c-testsuite 00130/00151)。`_Atomic` 修飾型はスコープ外 |
@@ -127,7 +127,7 @@ gem install 成功 + テスト合格」を到達目標(DESIGN R10)とし、C11 �
 
 | 条番号 | 見出し | 状態 | 備考 |
 |---|---|---|---|
-| 6.7.1 | Storage-class specifiers | 部分実装 | `typedef`/`static`/`extern` は意味論込みで実装(Step 18, 22)。`register`/`auto` は構文のみ受理し意味・制約検査なし(`&` 禁止 6.7.1p6 は未検査)。`_Thread_local` はスコープ外(DESIGN §3.3) |
+| 6.7.1 | Storage-class specifiers | 部分実装 | `typedef`/`static`/`extern` は意味論込みで実装(Step 18, 22)。`register`/`auto` は構文のみ受理し意味・制約検査なし(`&` 禁止 6.7.1p6 は未検査)。ブロックスコープの関数宣言に `extern` 以外の記憶域指定子が付く形は 6.7.1p7 の制約違反として診断(Step 168)。`_Thread_local` はスコープ外(DESIGN §3.3) |
 | 6.7.2.1 | Struct or union specifiers(ビットフィールド・FAM 含む) | 実装済み | struct/union レイアウト(Step 13, 19)、ビットフィールドのレイアウト(Step 28)とアクセス(Step 48)、可変長配列メンバ(6.7.2.1p18、Step 46)。無名メンバ内のタグ付き無宣言子(`struct { struct Inner {...}; }` 形)は拒否(gcc は警告どまりだが M1 は簡略化しエラー、Step 19) |
 | 6.7.2.2 | Enumeration specifiers | 部分実装 | enum 型は専用型を持たず `Type::Int` に一元化(Step 18)。**enum の基底型を常に符号付きとして扱う**ため、gcc の「全非負 enum は unsigned int」規則との不一致が bit-field 読み出し・ポインタ符号比較で顕在化(c-testsuite 00170, 00218、ROADMAP §3 の既知の負債) |
 | 6.7.2.3 | Tags | 部分実装 | 前方宣言・自己参照・タグスコープ(Step 13)。内側スコープでの `struct S;` 再宣言は 6.7.2.3p7 に従わず外側タグを参照する既知の逸脱(ROADMAP §3) |

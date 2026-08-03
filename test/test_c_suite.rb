@@ -34,7 +34,6 @@ class TestCSuite < Minitest::Test
   # with a one-line reason. Kept here (not silently dropped from the vendored
   # tree) so `rake test` reports them as skips, not omissions.
   SKIP = {
-    "00078" => "block-scope function declarations (ROADMAP §3 deviation)",
     "00130" => "multidimensional arrays (known debt)",
     "00140" => "struct passed to variadic function (known debt)",
     "00149" => "block-scope compound literals now work (Step 53), but this case uses a file-scope compound literal ('struct S *s = &(struct S){1,2};'), whose static-storage-duration object is a deliberate diagnostic",

@@ -57,7 +57,9 @@ class TestDoctor < Minitest::Test
 
   def test_verified_gems_json_holds_only_confirmed_gems
     raw = JSON.parse(File.read(DATA))
-    assert_equal %w[bigdecimal date etc json msgpack nkf racc redcarpet stackprof stringio strscan], raw.keys.sort
+    assert_equal %w[bigdecimal date digest erb etc io-console io-nonblock io-wait json msgpack nkf psych racc redcarpet
+                    stackprof stringio strscan zlib],
+                 raw.keys.sort
 
     # `versions` lives inside each verification record, so the assertion is
     # "some environment verified this version", which is what doctor reports.
@@ -72,6 +74,16 @@ class TestDoctor < Minitest::Test
     assert_includes all_versions["stackprof"], "0.2.28"
     assert_includes all_versions["strscan"], "3.1.6"
     assert_includes all_versions["stringio"], "3.2.0"
+    # etc was recorded in Step 162 but never pinned here; the allow-list above
+    # only fixes *which* gems may appear, so a version pin is the separate check.
+    assert_includes all_versions["etc"], "1.4.6"
+    assert_includes all_versions["io-nonblock"], "0.3.2"
+    assert_includes all_versions["io-wait"], "0.4.0"
+    assert_includes all_versions["erb"], "6.0.1.1"
+    assert_includes all_versions["io-console"], "0.8.2"
+    assert_includes all_versions["digest"], "3.2.1"
+    assert_includes all_versions["zlib"], "3.2.3"
+    assert_includes all_versions["psych"], "5.3.1"
   end
 
   # --- gemspec packaging ----------------------------------------------------

@@ -1656,7 +1656,20 @@ module Rubycc
         name_tok, type, _params, pointer_quals = parse_declarator(base_type, allow_incomplete_array: true)
         parse_attribute_specifiers # position d: a trailing attribute on this local declarator
         reject_void_type(type, name_tok)
-        reject_object_specifiers(name_tok, spec_info)
+        # A body here would be a *nested function definition* — a GNU extension,
+        # not the block-scope function *declaration* 6.2.2p5 blesses (which ends
+        # at the ";" and only names an external function). It needs a trampoline
+        # to capture the enclosing frame, is out of scope for this compiler, and
+        # would otherwise surface as a bare "expected ';'" that says nothing about
+        # why. "inline" rides on a function declarator legitimately (6.7.4), so
+        # the object-only specifier check is skipped for one.
+        if type.function?
+          if peek.punct?("{")
+            error_at(name_tok, "nested function definitions are not supported")
+          end
+        else
+          reject_object_specifiers(name_tok, spec_info)
+        end
         const = declarator_object_const(type, spec_info.const, pointer_quals)
         initializer = nil
         if peek.punct?("=")

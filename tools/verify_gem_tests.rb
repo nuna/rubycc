@@ -105,6 +105,10 @@ CLEARED_ENV = {
 #   require_flags -r entries (the Rakefile's ruby_opts)
 #   test_glob     which files make up the suite
 #   exclude       globs subtracted from test_glob
+#   runner_args   arguments handed to the suite runner itself (the Rakefile's
+#                 Rake::TestTask#options / rspec flags), e.g. an --ignore-name
+#                 the gem's own task passes. Excluding such a test through
+#                 `exclude` instead would drop the whole file it lives in.
 #   sanity        { requires:, expr: } -- see check_sanity. MANDATORY.
 RECIPES = {
   "json" => {
@@ -359,9 +363,9 @@ RECIPES = {
     }
   },
 
-  # etc does not pass yet, and is kept for the same reason stackprof and nkf were
-  # (it is the harness that will confirm the fixes). Three rubycc gaps were
-  # measured in Step 157, each found by removing the one before it:
+  # etc passes as of Step 162. It is kept annotated because the three rubycc gaps
+  # it exposed are what Steps 158-161 fixed, and this recipe is the harness that
+  # confirmed them. Measured in Step 157, each found by removing the one before it:
   #   1. rmake's recipe tokenizer does not do POSIX backslash removal, so mkmf's
   #      `-DSYSCONFDIR=\"...\"` reaches the compiler with its backslashes intact.
   #      GNU make + rubycc builds the same Makefile, and rmake + gcc fails the
@@ -400,6 +404,207 @@ RECIPES = {
       # etc has no Ruby implementation at all (the gem is the extension), so there
       # is no fallback to detect -- only the wrong *copy* to rule out, which is
       # what the injected-.so check does.
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "io-nonblock" => {
+    version: "0.3.2",
+    tarball: "https://github.com/ruby/io-nonblock/archive/refs/tags/v0.3.2.tar.gz",
+    # create_makefile("io/nonblock"), so the installed gem puts the one extension
+    # under lib/io/. The upstream tarball ships no lib/ at all (the Rakefile
+    # builds into lib/<ruby version>/<platform>), so injecting here creates it.
+    sos: { "lib/io/nonblock.so" => "lib/io/nonblock.so" },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # The Rakefile's Rake::TestTask: libs = the built extension's dir + test/lib,
+    # ruby_opts -rhelper, test_files FileList["test/**/test_*.rb"].
+    load_paths: %w[lib test/lib],
+    require_flags: %w[helper],
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      # test_flush.rb wraps its own `require 'io/nonblock'` in a rescue LoadError
+      # and then guards the whole class with `if IO.method_defined?(:nonblock)`,
+      # so a suite that loaded nothing reports zero failures rather than an error.
+      # Requiring it here, outside that rescue, is what turns that into a failure.
+      requires: %w[io/nonblock],
+      # io/nonblock ships with the interpreter and has no Ruby implementation to
+      # fall back to, so the only wrong outcome to rule out is the interpreter's
+      # own copy winning the require -- exactly what the injected-.so check sees.
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "io-wait" => {
+    version: "0.4.0",
+    tarball: "https://github.com/ruby/io-wait/archive/refs/tags/v0.4.0.tar.gz",
+    # create_makefile("io/wait") with no probes at all -- extconf.rb is three
+    # lines, so there is no configure-time branch for rubycc and gcc to disagree
+    # about and the same translation unit is what both compile.
+    sos: { "lib/io/wait.so" => "lib/io/wait.so" },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # The Rakefile's Rake::TestTask: libs = the built extension's dir + test/lib,
+    # ruby_opts -rhelper, test_files FileList["test/**/test_*.rb"], and the
+    # --ignore-name below.
+    load_paths: %w[lib test/lib],
+    require_flags: %w[helper],
+    test_glob: "test/**/test_*.rb",
+    # Upstream's own task skips test_after_ungetc_in_text_wait_readable. It lives
+    # in test_io_wait_uncommon.rb next to tests that do run, so `exclude` (which
+    # drops whole files) would take those with it.
+    runner_args: ["--ignore-name=/ungetc_in_text/"],
+    sanity: {
+      requires: %w[io/wait],
+      # io/wait ships with the interpreter and has no pure-Ruby implementation on
+      # MRI (ext/java/lib/io/wait.rb is the JRuby platform's), so the only wrong
+      # outcome is the interpreter's own copy winning the require.
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "erb" => {
+    version: "6.0.1.1",
+    tarball: "https://github.com/ruby/erb/archive/refs/tags/v6.0.1.1.tar.gz",
+    sos: { "lib/erb/escape.so" => "lib/erb/escape.so" },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # The Rakefile's Rake::TestTask appends 'test/lib' to the default libs
+    # (["lib"]) and passes ruby_opts -rhelper.
+    load_paths: %w[lib test/lib],
+    require_flags: %w[helper],
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      # Plain 'erb', not 'erb/escape': lib/erb/util.rb is where the fallback
+      # lives, and requiring the extension directly would step around the very
+      # branch this check exists to observe.
+      requires: %w[erb],
+      # lib/erb/util.rb wraps `require 'erb/escape'` in a rescue LoadError and
+      # defines a pure-Ruby ERB::Escape#html_escape over CGI.escapeHTML when it
+      # fails, so this looked like the blindest of the fallback gems. Measured
+      # instead (Step 166): corrupting the injected escape.so leaves 47 of 48
+      # tests passing, and the one that fails is upstream's own
+      # test_html_escape_extension, which asserts html_escape has no
+      # source_location. So erb's suite *does* catch its own fallback -- the
+      # second conjunct below only restates a test the suite already runs.
+      # What upstream cannot see is the wrong *copy*: the interpreter ships
+      # erb/escape.so too, and against that one all 48 pass. injected_so_loaded?
+      # is the conjunct that earns its place here.
+      expr: "injected_so_loaded? && ERB::Escape.instance_method(:html_escape).source_location.nil?"
+    }
+  },
+
+  "io-console" => {
+    version: "0.8.2",
+    tarball: "https://github.com/ruby/io-console/archive/refs/tags/v0.8.2.tar.gz",
+    sos: { "lib/io/console.so" => "lib/io/console.so" },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # The Rakefile's Rake::TestTask *replaces* libs with the built extension's
+    # dir and then appends test/lib; ruby_opts -rhelper. Its --ignore-name is
+    # guarded by RUBY_ENGINE == "jruby", so it does not apply here.
+    load_paths: %w[lib test/lib],
+    require_flags: %w[helper],
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      requires: %w[io/console],
+      # io/console ships with the interpreter, and the gem also carries a pure
+      # Ruby FFI implementation under lib/ffi/ for JRuby. Neither is what this
+      # run is supposed to exercise; the injected-.so check rules out both.
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "digest" => {
+    version: "3.2.1",
+    tarball: "https://github.com/ruby/digest/archive/refs/tags/v3.2.1.tar.gz",
+    # The first corpus gem with more than one extension: six extconf.rb under
+    # ext/digest, each producing its own .so. ext/digest/digest.c holds the
+    # framework the other five register their algorithms with.
+    sos: {
+      "lib/digest.so" => "lib/digest.so",
+      "lib/digest/bubblebabble.so" => "lib/digest/bubblebabble.so",
+      "lib/digest/md5.so" => "lib/digest/md5.so",
+      "lib/digest/rmd160.so" => "lib/digest/rmd160.so",
+      "lib/digest/sha1.so" => "lib/digest/sha1.so",
+      "lib/digest/sha2.so" => "lib/digest/sha2.so"
+    },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # The Rakefile's Rake::TestTask: libs << test, test/lib, lib and (on MRI)
+    # ext/digest/lib, which is where digest/loader.rb and digest/sha2/loader.rb
+    # live in the source tree -- `gem install` copies them into lib/, the
+    # upstream tarball does not. ruby_opts -rhelper.
+    load_paths: %w[test test/lib lib ext/digest/lib],
+    require_flags: %w[helper],
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      # The sanity gate demands that *every* injected .so end up in
+      # $LOADED_FEATURES, so all six are named here. Requiring only "digest"
+      # would load two of them and leave the other four unproven: the algorithm
+      # extensions are pulled in lazily by Digest's const_missing.
+      requires: %w[digest digest/bubblebabble digest/md5 digest/rmd160 digest/sha1 digest/sha2],
+      # digest ships with the interpreter and has no pure-Ruby implementation on
+      # MRI (ext/java is JRuby's), so the wrong *copy* is the failure to rule out
+      # -- and with six .so there are six chances to load the wrong one.
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "zlib" => {
+    version: "3.2.3",
+    tarball: "https://github.com/ruby/zlib/archive/refs/tags/v3.2.3.tar.gz",
+    # The first corpus gem that links a *host* library. extconf.rb's
+    # have_library('z', 'deflateReset(NULL)', 'zlib.h') is a try_link, so it only
+    # succeeds if rubycc can both find the host's zlib.h and link against -lz;
+    # failing it does not fail the build, it silently switches to the bundled-zlib
+    # branch (which needs sources the gem does not ship), so what the probe chose
+    # has to be read out of the generated Makefile rather than assumed.
+    sos: { "lib/zlib.so" => "lib/zlib.so" },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # The Rakefile's Rake::TestTask appends test/lib to the default libs
+    # (["lib"], where the built extension lands) and passes ruby_opts -rhelper.
+    load_paths: %w[lib test/lib],
+    require_flags: %w[helper],
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      requires: %w[zlib],
+      # zlib ships with the interpreter and has no pure-Ruby fallback, so the
+      # only wrong outcome is the interpreter's own copy winning the require.
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "psych" => {
+    version: "5.3.1",
+    tarball: "https://github.com/ruby/psych/archive/refs/tags/v5.3.1.tar.gz",
+    # The second host-library gem, and the one that reaches rubycc's pkg-config
+    # shim: extconf.rb tries pkg_config('yaml-0.1') first and only falls back to
+    # find_header('yaml.h') + find_library('yaml', ...) when that comes up empty.
+    # Both fallbacks abort the build outright when they fail, so unlike zlib there
+    # is no silent second path to end up on -- but which of the two branches ran
+    # still has to be read out of the transcript.
+    sos: { "lib/psych.so" => "lib/psych.so" },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # The Rakefile's Rake::TestTask appends test/lib and test to the default libs
+    # (["lib"]) and passes ruby_opts -rhelper.
+    load_paths: %w[lib test/lib test],
+    require_flags: %w[helper],
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      requires: %w[psych],
+      # psych ships with the interpreter and has no pure-Ruby parser on MRI
+      # (ext/java is JRuby's SnakeYAML binding), so the wrong copy is what the
+      # injected-.so check has to rule out.
       expr: "injected_so_loaded?"
     }
   }
@@ -758,6 +963,12 @@ def run_suite(name, recipe, src_dir, extra_load_paths)
 
   flags = load_path_flags(recipe, extra_load_paths)
   requires = Array(recipe[:require_flags]).map { |f| "-r#{f}" }
+  runner_args = Array(recipe[:runner_args])
+  # ruby keeps parsing its own options past `-e SCRIPT`, so a bare --ignore-name
+  # would be rejected by the interpreter before the suite ever saw it; `--` ends
+  # that parsing and puts the rest in the child's ARGV, where test-unit's
+  # autorunner reads its options from. Only added when there is something to pass.
+  ruby_runner_args = runner_args.empty? ? [] : ["--", *runner_args]
 
   cmd =
     case recipe.fetch(:runner)
@@ -765,10 +976,10 @@ def run_suite(name, recipe, src_dir, extra_load_paths)
       rspec = File.join(gem_home, "bin", "rspec")
       abort "#{name}: rspec is not installed in #{gem_home}" unless File.executable?(rspec)
 
-      [rspec, *flags, "--no-color", *files]
+      [rspec, *flags, "--no-color", *runner_args, *files]
     when :test_unit, :ruby_files
       loader = files.map { |f| "require #{File.join(src_dir, f).dump}" }.join("\n")
-      [RbConfig.ruby, *flags, *requires, "-e", loader]
+      [RbConfig.ruby, *flags, *requires, "-e", loader, *ruby_runner_args]
     end
 
   step "running #{name}'s suite (#{files.size} files, runner #{recipe.fetch(:runner)})"
@@ -1177,7 +1388,25 @@ end
 # gate is deliberate -- adding a gem must be a conscious edit -- so the tool only
 # prints the replacement line and never edits the test.
 DOCTOR_TEST = File.join(RUBYCC_ROOT, "test/test_doctor.rb")
-ALLOWLIST_RE = /assert_equal %w\[([^\]]*)\], raw\.keys\.sort/
+# `\s*` rather than a literal space: the list outgrew one line at 12 gems and had
+# to be wrapped, and a regex that only matched the one-line form would silently
+# stop finding the gate exactly when the gate started mattering most.
+ALLOWLIST_RE = /assert_equal %w\[([^\]]*)\],\s*raw\.keys\.sort/
+
+# The paste-ready assertion, wrapped inside %w[] so no line passes 120 columns.
+# The continuation indent lines the names up under the first one, which is what
+# the test file itself does.
+def allowlist_lines(names, limit: 120)
+  head = "    assert_equal %w["
+  cont = " " * head.length
+  lines = [head.dup]
+  names.each do |name|
+    lines << cont.dup if lines.last.length + 1 + name.length > limit && lines.last != head
+    lines.last << (lines.last.end_with?("[", " ") ? "" : " ") << name
+  end
+  lines.last << "],"
+  lines << "                 raw.keys.sort"
+end
 
 def check_doctor_allowlist(db)
   return unless File.file?(DOCTOR_TEST)
@@ -1197,7 +1426,10 @@ def check_doctor_allowlist(db)
   puts "  the database now holds #{actual.inspect}."
   puts "  Update test_verified_gems_json_holds_only_confirmed_gems by hand with:"
   puts
-  puts "    assert_equal %w[#{actual.join(' ')}], raw.keys.sort"
+  # Printed wrapped, because this is meant to be pasted as-is and the one-line
+  # form outgrew the file's 120-column habit at 12 gems -- first the trailing
+  # `raw.keys.sort`, then (at 14) the word list itself.
+  puts allowlist_lines(actual)
   puts
   puts "  (this tool never edits the test: the allow-list is an intentional gate.)"
 end
