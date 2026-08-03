@@ -994,27 +994,42 @@ end
 
 # --- database update ---------------------------------------------------------
 
-KEY_ORDER = %w[versions verified_at environment evidence notes].freeze
+ENTRY_KEY_ORDER = %w[verifications notes].freeze
+VERIFICATION_KEY_ORDER = %w[versions environment verified_at evidence].freeze
 
 # data/verified_gems.json's exact house style: two-space indent, one key per
 # line, and `versions` as a single-line inline array. JSON.pretty_generate would
-# explode every array over three lines and rewrite all six existing entries, so
-# the file gets its own tiny emitter instead.
+# explode every array over three lines and rewrite every existing entry, so the
+# file gets its own tiny emitter instead. The nesting is fixed (entry ->
+# verifications -> record), so the indentation is hard-coded per level rather
+# than made generic.
 def emit_database(db)
   entries = db.map do |name, attrs|
-    fields = KEY_ORDER.map do |key|
-      value = attrs[key]
+    fields = ENTRY_KEY_ORDER.map do |key|
+      rendered = key == "verifications" ? emit_verifications(Array(attrs[key])) : JSON.generate(attrs[key])
+      "    #{JSON.generate(key)}: #{rendered}"
+    end
+    "  #{JSON.generate(name)}: {\n#{fields.join(",\n")}\n  }"
+  end
+  "{\n#{entries.join(",\n")}\n}\n"
+end
+
+# The `verifications` array of one entry, one record per brace block.
+def emit_verifications(records)
+  blocks = records.map do |record|
+    fields = VERIFICATION_KEY_ORDER.map do |key|
+      value = record[key]
       rendered =
         if key == "versions"
           "[#{Array(value).map { |v| JSON.generate(v) }.join(', ')}]"
         else
           JSON.generate(value)
         end
-      "    #{JSON.generate(key)}: #{rendered}"
+      "        #{JSON.generate(key)}: #{rendered}"
     end
-    "  #{JSON.generate(name)}: {\n#{fields.join(",\n")}\n  }"
+    "      {\n#{fields.join(",\n")}\n      }"
   end
-  "{\n#{entries.join(",\n")}\n}\n"
+  "[\n#{blocks.join(",\n")}\n    ]"
 end
 
 # "glibc x86_64 / ruby 3.4.5" -- the shape the existing entries use. The libc is
@@ -1044,10 +1059,12 @@ def evidence_counts(result)
   end
 end
 
-# An existing entry's evidence is *appended to*, never replaced. It accumulates
-# the history of every step that confirmed the gem (json's names Steps 54, 61 and
-# 64; msgpack's gained an H4 sentence in Step 138), and a run of this tool proves
-# what it measured today -- not that the earlier confirmations never happened.
+# An existing verification record's evidence is *appended to*, never replaced.
+# (A record for an environment that has none yet starts from scratch instead:
+# see update_database.) It accumulates the history of every step that confirmed
+# the gem in that environment (json's names Steps 54, 61 and 64; msgpack's gained
+# an H4 sentence in Step 138), and a run of this tool proves what it measured
+# today -- not that the earlier confirmations never happened.
 # Overwriting would silently destroy the part of the record no rerun can recover.
 def evidence_string(result, step_number, existing = nil)
   counts = evidence_counts(result)
@@ -1081,7 +1098,10 @@ end
 def update_notes(existing, summary, cli_notes, new_entry)
   notes = existing
   if new_entry
-    notes = cli_notes || "musl and aarch64 not yet verified."
+    # The default is empty rather than a "not yet verified on X" caveat: an
+    # environment with no verification record already says exactly that, and
+    # repeating it in prose only creates a second copy that goes stale.
+    notes = cli_notes || ""
     if cli_notes.nil?
       warn "NOTE: #{'-' * 60}"
       warn "NOTE: a new entry got the default notes. `notes` is the human's " \
@@ -1107,24 +1127,45 @@ def update_database(results, path, step_number, cli_notes)
   db = JSON.parse(File.read(path))
   today = Time.now.strftime("%Y-%m-%d")
 
+  environment = environment_string
+
   passes.each do |result|
     name = result[:name]
     existing = db[name]
     entry = existing ? existing.dup : {}
-    versions = Array(entry["versions"])
-    versions |= [result[:version]]
+    verifications = Array(entry["verifications"]).map(&:dup)
+    # A run only ever speaks for the environment it ran in, so it updates the
+    # record for that environment and leaves every other one untouched.
+    record = verifications.find { |v| v["environment"] == environment }
 
-    entry["versions"] = versions
-    entry["verified_at"] = today
-    entry["environment"] = environment_string
-    entry["evidence"] = evidence_string(result, step_number, existing && existing["evidence"].to_s)
+    if record
+      record["versions"] = Array(record["versions"]) | [result[:version]]
+      record["verified_at"] = today
+      # Appended, not replaced: see evidence_string.
+      record["evidence"] = evidence_string(result, step_number, record["evidence"].to_s)
+      how = "updated #{environment}"
+    else
+      # First time in this environment. The evidence starts fresh -- carrying
+      # over another environment's evidence would claim its measurements were
+      # made here, which they were not.
+      record = {
+        "versions" => [result[:version]],
+        "environment" => environment,
+        "verified_at" => today,
+        "evidence" => evidence_string(result, step_number, nil)
+      }
+      verifications << record
+      how = existing ? "new environment #{environment}" : "new entry"
+    end
+    entry["verifications"] = verifications
+
     if existing && cli_notes
       warn "#{name}: --notes ignored -- an existing entry keeps its notes " \
            "(they may hold caveats no measurement can rediscover)"
     end
     entry["notes"] = update_notes(entry["notes"].to_s, result.fetch(:summary), cli_notes, existing.nil?)
     db[name] = entry
-    puts "recorded #{name} #{result[:version]}#{existing ? ' (updated)' : ' (new entry)'}"
+    puts "recorded #{name} #{result[:version]} (#{how})"
   end
 
   File.write(path, emit_database(db))

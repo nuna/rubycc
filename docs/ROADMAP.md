@@ -114,7 +114,7 @@
 | ~~スタック引数の 16 バイト整列(x86_64/aarch64 共通)~~ **解消(Step 94)**、-fPIC の PC32 参照 | 16 バイト整列は Step 94 で解消(`:pad_stack` 機構 + クロス TU 実行オラクル)。-fPIC PC32 は **H4**(ABI バグ → 最優先修正 + ABI ファジングに再発防止ケース追加) | ABI 不一致は SEGV 直結の最重要リスク(DESIGN 7 章)。ファジング(下記)で網羅的に炙り出す |
 | `wchar_t` typedef 符号性、long double = double による max_align_t 相違 | **feature-gated**(ワイド文字対応時 / x87 80bit 対応時) | いずれも該当機能を意図的に未対応(診断で拒否 / DESIGN 3.3 既知制限)としているため、当該機能に着手するまで観測不能。H4 でワイド文字/long double を使う gem が有意に落ちるなら前倒しを判断 |
 | DoS フェイルセーフ上限値の再調整 | **H4**(コーパス R10 実測で再調整) | docs/security-dos-review.md 記載。極浅スタック環境の実測が入手できた時点 |
-| ABI ファジングハーネス(Step 25/62)の機種パラメタ化、aarch64 全スイート + gem install 実走、musl/distroless コンテナ検証、sqlite3/pg コーパス | **H3**(QEMU の Docker マトリクス整備と併せて) | §8 M4 受け入れ・H3 参照。現環境に Docker/aarch64 Ruby が無いため、CI マトリクス整備が前提。ネットワーク/コンテナ依存はこの相に閉じる |
+| ABI ファジングハーネス(Step 25/62)の機種パラメタ化、aarch64 全スイート + gem install 実走、musl/distroless コンテナ検証、sqlite3/pg コーパス | ~~**H3**(QEMU の Docker マトリクス整備と併せて)~~ → **H6 の Steps 170〜172 に再割り当て**(§8 の「環境が無くて測れていないことの解消」)。**H3 に割り当てたまま実施されず H6 まで来た**ので、期限を持たせ直した。musl → distroless → aarch64 の順に分けて片付ける | §8 M4 受け入れ参照。現環境に Docker/aarch64 Ruby が無いため、CI マトリクス整備が前提。ネットワーク/コンテナ依存はこの相に閉じる |
 
 ## 4. M1 実行計画 — **完了**
 
@@ -750,64 +750,93 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   着手先には困らない。形が揃っていて着手しやすいのは `ruby/*` の default gem 群
   (`io-wait` `io-nonblock` `io-console` `erb` `zlib` `digest` `psych` 等)。
   **fcntl は上流にテストスイートが無く (d) レベルの証拠が原理的に得られない**ため対象外。
-- **Step 157 の etc 検証が露出したギャップ(gcc 対照で rubycc 側の非を確定済み)**:
 
-  | # | ギャップ | 影響 | 優先 |
-  |---|---|---|---|
-  | A | ~~**rmake がシェルのバックスラッシュ除去をしない**~~ **解消(Step 158)**: POSIX の 3 規則(引用符外・二重引用符内・単一引用符内)を `/bin/sh` への実測で確定させて実装。旧記述: — mkmf が書く `-DSYSCONFDIR=\"/.../etc\"` の `\` が残って `unexpected character` になる。`lib/rubycc/rmake/executor.rb` の `tokenize` に POSIX の「引用符外の `\` は次の 1 文字をエスケープ」が未実装。**最小再現の対照表でコンパイラの無罪が確定していた**(GNU make + rubycc は OK) | ~~mkmf が文字列マクロを渡す任意の gem~~ | ~~高~~ **完了** |
-  | B | ~~**`__atomic_*` ビルトインが無い**~~ **解消(Step 161)**: 実測した必要集合ちょうど(9 形・幅 4 と 8)を実装。**メモリオーダは受理して捨て、常に seq_cst で降ろす**(強化は常に意味論的に妥当なので、`__ATOMIC_RELAXED` を診断するより正しい。`weak` も同理由で常に strong)。IR はオーダを一切運ばない。x86-64 は `lock xadd` 由来 + `or_fetch` のみ `lock cmpxchg` ループ、aarch64 は armv8-a ベースラインの LDAXR/STLXR ループ 1 本を 6 kind で共有(**LSE も libgcc outline atomics も使わない**)。幅 1/2/16 は診断。**これで etc 1.4.6 が PASS**(Step 158 + 160 + 161 の 3 つが揃って初めて通る)。副作用として **bigdecimal のビルド経路が変わった**(`have_header` が通るようになり非アトミックのフォールバックから本物の CAS へ)。旧見立ての訂正は Step 160 に記録 | ~~**ruby.h を引く任意の gem**~~ | ~~**高**~~ **完了** |
-  | C | ~~**`confstr` / `fpathconf` が同梱 `unistd.h` に無い**~~ **解消(Step 160)**: `confstr` / `fpathconf` / `pathconf` を宣言(シグネチャは両アーキで実測)。`getlogin` は既に宣言済みだった。旧記述: — mkmf の `have_func` は自前で宣言するので**プローブは通ってしまい**、`HAVE_CONFSTR` 等が定義されて本体で暗黙宣言エラーになる。**「プローブが通ったのにビルドが落ちる」系統的な穴** | ~~etc~~ | ~~中~~ **完了** |
-  | D | ~~**`_CS_*` / `_PC_*` が無い**~~ **解消(Step 160)**: 46 個すべてが両アーキに実在し値も一致することを実測したうえで、`test_etc.rb` が実際にアサートする `_CS_PATH` と `_PC_PIPE_BUF` の 2 つだけを追加(消費者のいない列挙は入れない線引き)。旧記述: — `ext/etc/constdefs.h` が gcc 下で 179 定数、rubycc 下で 11 定数。test_etc.rb は `if defined?` で守られているので**失敗ではなく「テストが定義されない」形**で静かに縮む(18 → 16、予測) | ~~etc~~ | ~~中~~ **完了** |
-  | E | `F_GETPIPE_SZ` / `F_SETPIPE_SZ` が同梱 `fcntl.h` に無い(`Fcntl` 定数が 24 対 26。**共通 24 個の値は一致**) | fcntl | 低 |
+### 次の作業計画 — default gem 群の検証(Steps 163〜169 予定)
 
-  **A〜D は Step 158〜161 で全て解消**し、etc 1.4.6 が PASS するようになった。
-  残る E は fcntl 専用だが、**fcntl は上流にテストスイートが無く (d) レベルの証拠が
-  原理的に得られない**ため、埋めても検証済み gem は増えない(優先度が低い理由)。
+**1 gem = 1 ステップ**。手順は `.claude/skills/corpus-expansion/SKILL.md` のフェーズ 2
+そのままで、レシピの雛形は `tools/verify_gem_tests.rb` の **`RECIPES["etc"]` が最も近い**
+(default gem・単一 `.so`・test-unit・`test/**/test_*.rb`)。
+バージョンは `test/corpus/gems.rb` が Ruby 4.0.6 同梱版に固定済みなのでそれに従う。
+tarball は `https://github.com/ruby/<name>/archive/refs/tags/v<version>.tar.gz`。
+
+**着手順は「安い順・リスクの低い順」**。前半で足場を固め、後半の重い 3 件が
+露出させるギャップに時間を残す:
+
+| 順 | gem | version | 想定される難所 |
+|---|---|---|---|
+| 1 | `io-nonblock` | 0.3.2 | 単一ファイル ext。**最も安い**ので、default gem の差し込み手順の足場固めに使う |
+| 2 | `io-wait` | 0.4.0 | 単一ファイル ext。1 と同型 |
+| 3 | `erb` | 6.0.1.1 | `ext/erb/escape` のみ。**スイートの大半は純 Ruby の ERB を叩く**ので、sanity 式が特に重要(C 拡張を通らなくても合格しうる) |
+| 4 | `io-console` | 0.8.2 | **tty を要求するテストが多い**。非 tty 環境では omission/skip に落ちるので、(d) レベルの証拠として十分かを個別に判断し、足りなければ pty 経由の実走を検討する |
+| 5 | `digest` | 3.2.1 | **コーパス初の多 ext gem**(`ext/digest` + bubblebabble/md5/rmd160/sha1/sha2 の 6 extconf)。`sos` が 6 エントリになり、**mkmf shim と rmake の入れ子 ext 対応**が試される |
+| 6 | `zlib` | 3.2.3 | **ホストの `zlib.h` / `-lz`** に依存。R10 が想定するシステムライブラリ gem の第 1 号 |
+| 7 | `psych` | 5.3.1 | **ホストの libyaml** に依存。7 件で最重量 |
+
+**横断の決まりごと(いずれも既に代償を払って学んだこと)**:
+
+- **default gem は処理系が自分の同梱版を持っている**。`sanity` 式だけでなく
+  **`load_paths` に `lib` を入れて差し込んだ `.so` が勝つことを保証**する
+  (Step 157 の実測: stringio は `-Ilib` 無しだと処理系同梱の 3.1.2 がロードされて
+  100% パスする)。ツールの sanity ゲートは `$LOADED_FEATURES` で差し込み先の実パスを
+  検査するので、ここを省いてはいけない。
+- **失敗したら、まずホスト gcc の対照を取る**。Step 146 の教訓で、これをやらないと
+  「WSL2 では検証できない」で終わる。対照を取れば rubycc 側の非が確定し、
+  ギャップが最小再現つきで手に入る。**ギャップの修正は別ステップ**に切る。
+- **合格件数だけを記録しない**。probe の成否で gcc とは別の経路がビルドされうる
+  (Step 160 の bigdecimal、Step 161 での反転)。ビルドされた `.so` が
+  gcc ビルドと同じ経路かを疑い、違えば `notes` に書く。
+- `--update` は PASS を確認してから。`test/test_doctor.rb` の許可リストは**手で**更新する。
+
+**この 7 件のうち 5・6・7 は「検証済み gem を増やす」以上の意味がある**:
+多 ext(digest)とシステムライブラリ依存(zlib・psych)は
+**M5 のコーパスが本当に通るかを決める形**で、R10 が名指しで想定している類型でもある。
+1〜4 が順調なら、そこで得た足場を 5〜7 に投入する。
+
+### 環境が無くて測れていないことの解消(Steps 170〜172 予定)
+
+`docs/GAPS.md` §3 の 3 件。**§3.1 の負債表は H3 に割り当てていたが実施されないまま
+H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker マトリクス整備」として
+一括りにされていたが、**必要なものが違うので分けて順に片付ける**。
+
+| 順 | 対象 | 実行環境 | 主眼 |
+|---|---|---|---|
+| 1 | **musl(x86_64)** | GitHub Actions の `container: alpine`。**qemu 不要**なので 3 件で最も安い | M5 が掲げた「glibc/musl 互換ヘッダ」の**未検証の半分**。同梱ヘッダの musl 差が初めて実測できる |
+| 2 | **真の distroless 姿勢** | 1 で組んだジョブを再利用し、cc / make / sh / libc 開発ヘッダを取り除いた image を作る | Step 64 は `RUBYCC_HERMETIC_HEADERS` で**姿勢を模擬**しただけ。**本当に無い環境**で `RUBYCC=1 gem install` が通ることを示す |
+| 3 | **aarch64 での実走** | qemu + arm64 コンテナ(`docker/setup-qemu-action`) | M4 受け入れの最後の 1 項目。qemu 上の全スイートは**遅すぎるので回さない** — `gem install` の受け入れと `verify_gem_tests.rb` を 1〜2 gem に絞る |
+
+**置き場は Tier B(`weekly.yml`)**。3 件とも遅いので Tier A(`test.yml`)は速いまま保つ。
+
+**着手前に決めるべきだった件は解決済み**: `data/verified_gems.json` の `environment` は
+文字列 1 本で、musl で通っても書く場所が無かった。**1 gem = 1 エントリを保ったまま、
+環境ごとの記録をエントリの内側に持つ入れ子スキーマに拡張した**(`verifications` 配列。
+`versions` も環境ごとに違いうるので記録の内側へ移した)。`tools/verify_gem_tests.rb` は
+実行環境と一致する記録があればそれを更新し、無ければ末尾に足す。これにより
+**「ある環境で未検証」は記録の不在で表現される**ので、全エントリが持っていた
+「musl and aarch64 not yet verified」という notes は削除した。
+上の 3 件は、通った環境の記録を**追加するだけ**でよい。
+
+**局所的な代替は採らない**: qemu-user + aarch64 rootfs をローカルに置けば Docker 無しでも
+3 は動かせるが、**手元でしか再現しない検証は CI で腐る**。1 と 2 が CI の足場を作るので、
+3 はその上に乗せる(この順にした理由でもある)。
+
+- **検証が露出したギャップは `docs/GAPS.md` に分離した**(未解消のものだけを置く方針)。
+  Step 146(stackprof / nkf)の 6 件は Steps 147〜152 で、
+  Step 157(etc)の A〜D は Steps 158〜161 で全て解消し、
+  **残るは E(fcntl の `F_GETPIPE_SZ` / `F_SETPIPE_SZ`)のみ**。
+  各ギャップの経緯と設計判断は STEPS.md の該当ステップにある。
 - ~~コーパス拡張と検証済み gem 追加の一連の手順をスキル化する。~~
   **完了(Step 145)**: `.claude/skills/corpus-expansion/SKILL.md`。道具の使い方ではなく
   **道具の間をつなぐ判断**(Gap candidate の仕分け、(d) レベルの証拠の水準、
   sanity 式の選び方、横断規約)を持つ。事実は既存文書を指すだけにして二重管理を避ける。
-- **stackprof / nkf の検証で見つかったギャップ(Step 146 で実測・最小再現あり)**。
-  どちらもホスト gcc では上流スイートが完走する(stackprof 31 runs / 143 assertions、
-  nkf 8 tests / 46 assertions)ので、原因は全て rubycc 側。
-  レシピは `tools/verify_gem_tests.rb` に入っており、修正のたびに再検証できる:
-
-  | # | ギャップ | 影響 | 優先 |
-  |---|---|---|---|
-  | 1 | ~~**`sigset_t` の typedef 衝突**~~ **解消(Step 147)**: `signal.h` 側をガード `__sigset_t_defined` + `__sigset_t` エイリアスに揃え、`sys/select.h` と文字どおり同一にした。ABI ハーネスに**両方の include 順**のケースを x86_64・aarch64 の 4 件追加 | ~~`ruby.h` と `<signal.h>` を併用する任意の gem~~ | ~~最優先~~ **完了** |
-  | 2 | ~~**`sizeof(式)` が整数定数式に畳めない文脈がある**~~ **解消(Step 148)**: enumerator・ビットフィールド幅・case ラベル・配列デシグネータ・`aligned` 属性・`__builtin_choose_expr` の 6 箇所に `sizeof_expr: method(:fold_time_sizeof)` を配線。グローバル初期化子(`parser.rb:513`)は意図的に据え置き(`references_sizeof_expr?` ガードでジェネレータ側に回す既存の設計判断) | ~~nkf~~ | ~~高~~ **完了** |
-  | 3 | ~~`pthread_kill` / `pthread_atfork` が未宣言~~ **解消(Step 149)**: 両アーキの `pthread.h` に宣言を追加(シグネチャは実測)。`pthread_atfork` は**これでリンクが通るようになるわけではない**(6 番) | ~~stackprof~~ | ~~中~~ **完了** |
-  | 4 | ~~`_POSIX_MONOTONIC_CLOCK` が無い~~ **解消(Step 149)**: `include/libc/unistd.h` に追加。**実測値は 0**(= 対応するが `sysconf` での実行時確認が要る、という glibc と同じ意味)で、両アーキ一致のため共通層。他の `_POSIX_*` は網羅しない | ~~stackprof~~ | ~~中~~ **完了** |
-  | 5 | ~~**不完全配列型の補完が `conflicting types`**~~ **解消(Step 150)**: `Type.composite`(C11 6.2.7p3)を新設し、ファイルスコープの `extern` 参照・仮定義/実定義・ブロックスコープの `extern` の 3 経路を 1 つの規則に集約。多次元も対応。**これで nkf が PASS**(Step 151 で記録) | ~~nkf~~ | ~~中~~ **完了** |
-  | 6 | ~~**`__dso_handle` を供給できない**~~ **解消(Step 152)**: 供給元を**1 メンバのアーカイブ**として全リンクの末尾に足し、`ar` の遅延メンバ抽出をそのまま「未定義のときだけ供給」の条件に使う。語は自己参照の ABS64 で表現し、既存の適用エンジンが共有オブジェクトでは RELATIVE を出す。**これで stackprof が PASS**(Step 153 で記録) | ~~stackprof~~ | ~~低~~ **完了** |
-
-  1〜5 を潰した状態(scratch でのハンドパッチ)では**両 gem とも上流スイートが完走する**
-  ことを実測済み(ただし `__dso_handle` はスタブで代用しており、この結果は検証ではない)。
-  **aarch64 と musl では未実測**。
-
-  **6 ギャップは Step 147〜152 で全て解消**。nkf 0.3.0(Step 151)と
-  stackprof 0.2.28(Step 153)がどちらも検証済みになった。
-  Step 152 で残していた「`__cxa_finalize` を呼ぶ `.fini_array` エントリを合成しない」
+- Step 152 で残していた「`__cxa_finalize` を呼ぶ `.fini_array` エントリを合成しない」
   という限界は Step 156 で解消した。**init/fini array の整備は 3 段階**:
-  ~~(1) リンカ側のパイプライン~~ **完了(Step 154)**: `SHT_INIT_ARRAY` /
-  `SHT_FINI_ARRAY` の配置・優先度順・動的タグ 4 本。マージとリロケーションは既存機構で
-  足りていた。~~(2) フロントエンドの `__attribute__((constructor))` / `((destructor))`~~
-  **完了(Step 155)**: 名前引きの表で解決(gcc は定義より後の宣言にも書けるため)。
-  優先度は 5 桁ゼロ詰め、`constructor(65535)` は無印セクション(実測)。
-  gcc が警告で済ませる 3 ケースは診断にした(警告チャネルが無い処理系では
-  「警告して続行」は「黙殺」と同義のため)。~~(3) `__cxa_finalize(__dso_handle)` の
-  合成~~ **完了(Step 156)**: NULL 検査付きの終了子を手組みの機械語で合成し、
-  Step 154 の優先度機構(`.fini_array.00000`)で配列の先頭 = 実行順の最後に置く。
-  リンカ側は 1 行も足さずに済んだ(WEAK 未定義 + GOT + PLT は既存機構で通った)。
-  **これで Step 152 の「供給しなかった半分」が埋まった。**
-- **既知の負債(Step 149 で観測)**: `test/corpus/gems.rb` の 4 エントリ
-  (bigdecimal・date・racc・redcarpet)が `version: nil` = 最新追従になっており、
-  上流が新版を出すたびに `rake corpus:census` のスナップショットが動く。
-  この 4 つは `data/verified_gems.json` では**厳密なバージョンを固定している**ので、
-  センサスが記述するバージョンと検証済みバージョンが食い違いうる。
-  また Tier B(`weekly.yml`)の census ジョブは差分で失敗する設計なので、
-  gem のリリースだけで週次 CI が赤くなる。固定するとスナップショットが動くため
-  別ステップの作業。
+  ~~(1) リンカ側のパイプライン~~ **完了(Step 154)**、
+  ~~(2) フロントエンドの `__attribute__((constructor))` / `((destructor))`~~
+  **完了(Step 155)**、~~(3) `__cxa_finalize(__dso_handle)` の合成~~ **完了(Step 156)**。
+  **これで Step 152 の「供給しなかった半分」が埋まった**(設計判断は STEPS.md)。
+- **未解消の負債と未測定事項も `docs/GAPS.md` に集約した**
+  (`test/corpus/gems.rb` の `version: nil` 4 件、racc の assertions 差異、
+  musl / aarch64 / distroless の未測定)。
 - **受け入れ = v1.0 リリース = M5 完了**。
 
 ## 9. マイルストーン横断のリスク(DESIGN 7 章の運用)

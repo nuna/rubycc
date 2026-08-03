@@ -93,8 +93,13 @@ module Rubycc
             next Row.new(name: entry.name, version: entry.version, status: :local)
           end
 
-          if (record = verified.match(entry.name, entry.version))
-            note = "verified #{record.verified_at} (#{record.environment})"
+          # A gem may be verified in more than one environment, so name every
+          # environment that actually covers this version (and the newest date
+          # among them) instead of a single entry-level pair. A non-empty result
+          # is exactly what #match calls verified.
+          hits = verified.matching_verifications(entry.name, entry.version)
+          unless hits.empty?
+            note = "verified #{hits.map(&:verified_at).max} (#{hits.map(&:environment).join('; ')})"
             next Row.new(name: entry.name, version: entry.version, status: :verified, note: note)
           end
 
