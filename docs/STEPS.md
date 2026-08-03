@@ -6134,9 +6134,84 @@ static inline bool rb_ractor_shareable_p(VALUE obj)
 
 ---
 
+## Step 168 — ブロックスコープの関数宣言(M5 H6)
+
+Step 167 のヘッダ修正で先へ進んだ io-console が次に当てたギャップ。
+`console.c` が取り込む `ruby/ractor.h:248` に、
+**Ruby 本体の公開ヘッダが実際に使っている**この形がある:
+
+```c
+static inline bool
+rb_ractor_shareable_p(VALUE obj)
+{
+    bool rb_ractor_shareable_p_continue(VALUE obj);   /* ← */
+    ...
+}
+```
+
+rubycc は `generator.rb` でこれを明示的に拒否していた。
+ROADMAP §3 の負債表に「外部リンケージ未モデルで診断エラー / 実害が出た時点」と
+載っていた項目で、**c-testsuite 00078 の skip もこの理由で立っていた**。
+**H4 で「実害が出た時点」と先送りしたものに、H6 で実害が来た。**
+
+### 実装 — 新しい機構を作らず既存の署名テーブルへ合流させた
+
+C11 6.2.2p5: ブロックスコープで宣言された関数識別子は、記憶域クラス指定子が無いか
+`extern` なら**外部リンケージを持つ**。つまりファイルスコープで同名を宣言した場合と
+**同じ実体を指す**。したがって
+
+- **記憶域を消費しない**(ローカルスロットを割り当てない)
+- 呼び出しはファイルスコープのプロトタイプと同じ外部シンボル参照として解決される
+
+この 2 点は、既存の `declare_function` に流し込むだけで満たせた。IR 命令は増えていない。
+型が矛盾すれば `declare_function` の既存の「conflicting types」検査に自然に掛かる。
+
+**可視範囲は意図的にモデル化しなかった。** 本来この識別子はそのブロック内でしか
+見えないが、署名テーブルは翻訳単位全体で 1 つのままにした。理由は
+**外部リンケージだから**である — 同じ翻訳単位内の同名宣言は、ブロックの内外を問わず
+同一の実体を互換な型で指していなければならない(6.2.2p4 / 6.2.7p2)。
+緩めたことで余計に受理してしまうプログラムは、**そもそも単一の外部実体として
+成立していないプログラム**だけであり、ブロック単位の第 2 の署名テーブルを持つ手間に
+見合わない。この判断はコードのコメントに書いた。
+
+### 診断は 2 つ増やした
+
+- **`static` 付き**: 6.7.1p7 はブロックスコープの関数宣言に `extern` 以外の記憶域クラスを
+  許さない。制約違反なので診断する
+- **入れ子関数定義**: `int f(int) { ... }` をブロック内に書くのは GNU 拡張であり、
+  囲みフレームを捕まえるトランポリンが要る。**引き続き非対応**だが、
+  従来は素の `expected ';'` になっていたのを、パーサで
+  「nested function definitions are not supported」と名指しするようにした。
+  **宣言は通るのに定義は通らない**という区別を、利用者に分かる言葉で伝えるため
+
+`docs/GCC-EXTENSIONS.md` には入れ子関数定義の側だけを「未実装」として載せ、
+**標準 C のブロックスコープ関数宣言とは別物**であることを明記した(混同されやすい)。
+
+### `ruby/ractor.h` は単体でコンパイルできない
+
+`test/test_ruby_smoke.rb` には `ruby/atomic.h` を**単体で** include するケースがある
+(Step 161)。同じ形にしようとしたが、`ruby/ractor.h` は
+**ホスト gcc でも単体では通らない**ことが分かった
+(`RUBY_ALIGNAS(SIZEOF_VALUE)` で `expected identifier or '(' before numeric constant`、
+続いて `SIZE_MAX` 衝突)。このヘッダは `<ruby.h>` が先行することを前提にしている。
+そこで**実際の C 拡張が到達する順**(`ruby.h` → `ruby/ractor.h`)の 2 行にし、
+理由を実測値つきでテスト内に書いた。**「単体で通らない」ことも実測**である。
+
+### io-console が通った
+
+`tools/verify_gem_tests.rb io-console` が **28 tests / 109 assertions /
+0 failures / 0 errors / 0 omissions** で PASS。sanity も ok。
+記録は Step 169 に分ける。c-testsuite 00078 の skip も外れ、**skips が 47 → 45** になった。
+
+---
+
 ## 現在のテスト規模
 
-Step 167 完了時点: **2,717 runs / 7,979 assertions / 0 failures / 47 skips**
+Step 168 完了時点: **2,732 runs / 8,022 assertions / 0 failures / 45 skips**
+(Step 167 から +15 runs = 新規テストファイル 13 件、`ruby/ractor.h` の smoke 1 件、
+examples/m5 の追加で aarch64 側 1 件。**skips −2 は c-testsuite 00078 が
+x86_64・aarch64 の両方で実際に通るようになったため**)
+(以前) Step 167 完了時点: **2,717 runs / 7,979 assertions / 0 failures / 47 skips**
 (Step 166 と同数 = 追加した 2 宣言は既存 Spec の snippet 内の呼び出しとして
 検査されるので、テストメソッドも assertion も増えない)
 (以前) Step 166 完了時点: **2,717 runs / 7,979 assertions / 0 failures / 47 skips**

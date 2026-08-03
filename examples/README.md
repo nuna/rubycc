@@ -79,3 +79,13 @@ Step 37(L7)から M2 のサンプルを追加する。
 | `step51_float_thresholds.c` | Step 51(M2 追補): 浮動小数点定数の整数キャストのコンパイル時畳み込み(N1570 6.3.1.4p1 のゼロ方向切り捨て)。json の jeaiii-ltoa が 10 進しきい値を `u32(1e2)`〜`u64(1e15)`(double リテラル → unsigned long キャスト)と綴り、比較・除算・剰余のオペランドに使う形を実演。`(int)-2.9` → -2 の切り捨ても確認。`test_examples.rb` が gcc 差分で検証する |
 | `step52_unsigned_float.c` | Step 52(M2 追補): 実行時の unsigned long ⇔ float/double 変換(§3 負債の本体を解消)。x86-64 の cvt 命令は符号付きのみのため、符号ビット両側の分岐合成(u64→double は「半分+sticky ビット → 変換 → 2 倍」、double→u64 は「2^63 未満は直行 / 以上は 2^63 引いて変換後に最上位ビットを戻す」)を実演。json jeaiii の「double 式 × 実行時値を unsigned long に切り捨てる」形も含む。`test_examples.rb` が gcc 差分で検証する |
 | `step53_compound_literals.c` | Step 53(M2 追補): 複合リテラル(ISO C 6.5.2.5)— json の最後の壁。無名の自動記憶域オブジェクトを式中で生成・初期化する: 指示付き初期化子で struct を**値渡し**(json parser のスタックフレーム push の形)・未指定メンバのゼロ埋め・`&(T){...}` のアドレス渡し・配列複合リテラルの decay・スカラー形・ループ毎の再初期化を実演。`test_examples.rb` が gcc 差分で検証する |
+
+## m5 のサンプル一覧
+
+M3〜M5 のステップ(同梱ヘッダ・ドライバ・mkmf/rmake・コーパス検証)は
+C 言語機能をほとんど追加しないため、サンプルを持つのは言語機能を足した
+ステップだけである。
+
+| ファイル | 実演するステップと機能 |
+|---|---|
+| `step168_block_scope_function_decl.c` | Step 168: ブロックスコープの関数宣言(C11 6.2.2p5)。ブロック内で関数型の宣言子を書くと、記憶域指定子が無いか `extern` のとき外部リンケージを持つ**関数**の宣言になり、ローカルスロットを取らない。同一ファイルの後方で定義した関数の前方宣言・入れ子ブロックでの `extern` 形・関数指示子のポインタへの decay(間接呼び出し)を実演。CRuby の `<ruby/ractor.h>` が `rb_ractor_shareable_p_continue` をこの形で前方宣言しており、io-console のビルドを塞いでいた。**入れ子関数定義(GNU 拡張)は別物で、引き続き診断エラー**。`test_examples.rb` が gcc 差分で検証する |

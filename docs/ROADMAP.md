@@ -78,7 +78,7 @@
 | 不完全型 struct の param/return | 未呼び出しプロトタイプでも宣言時に診断エラー(分類にレイアウトが要るための簡略化) | 実害が出た時点 |
 | 可変長部への struct 渡し・va_arg(struct) | 診断エラーにして先送り | 実害が出た時点 |
 | 内側スコープの `struct S;` 再宣言 | C 6.7.2.3p7 に従わず外側タグを参照 | 実害が出た時点 |
-| ブロックスコープの関数宣言 | 外部リンケージ未モデルで診断エラー | 実害が出た時点 |
+| ~~ブロックスコープの関数宣言~~ | **解消(Step 168)**: 6.2.2p5 の外部リンケージとしてファイルスコープの宣言と同じ署名テーブルへ合流させ、ローカルスロットは取らない。`static` は 6.7.1p7 の制約違反として診断、入れ子関数定義(GNU 拡張)は引き続き拒否。io-console が `ruby/ractor.h` 経由で実害を出した。c-testsuite 00078 の skip も外れた | ~~実害が出た時点~~ **完了** |
 | ~~`&arr[i]` 等の計算アドレス定数~~ | **解消(Step 45、b4be1fe)**: 初期化子を「基点シンボル/文字列 + 定数変位 + pointee」へ畳む walker を追加し、キャスト・`&arr[i]`・`arr ± n`・`&rec.member` を R_X86_64_64 の addend に乗せる。json jeaiii-ltoa の「文字列リテラルを struct ポインタにキャストした桁テーブル」が通る | ~~実害が出た時点~~ **完了** |
 | 指し先 const の書き込み検出 | `const int *p` の `*p = x` を診断しない(型に修飾を載せない簡略化) | 実害が出た時点 |
 | ~~unsigned long ⇔ float/double 変換~~ | **解消(Step 51 定数側 1c65c47 + Step 52 実行時側 45b6606)**: 定数キャストは 6.3.1.4p1 で畳み込み、実行時は分岐 + 符号付き cvt + 補正(sticky ビット/2^63 しきい値)の IR 合成で lowering。float → unsigned int の既存オーバーフローも修正 | ~~実害が出た時点~~ **完了** |
@@ -108,7 +108,7 @@
 
 | 負債 | 解消予定 | 根拠 |
 |---|---|---|
-| 不完全型 struct の param/return、内側スコープ `struct S;` 再宣言、ブロックスコープ関数宣言、指し先 const 書き込み検出、compound literal / VLA / _Generic / ワイド文字列 / #pragma push_macro / K&R `int ()`、enum unsigned 底型 | **H4**(言語機能不足 → M1 流儀の追補ステップ) | H3 の #include/ビルド集計と gem テストで顕在化した順に H4 で追補。コーパスに現れないものは v1.0 の「既知の制限」として README 記載(H6) |
+| 不完全型 struct の param/return、内側スコープ `struct S;` 再宣言、~~ブロックスコープ関数宣言~~(**Step 168 で解消**)、指し先 const 書き込み検出、compound literal / VLA / _Generic / ワイド文字列 / #pragma push_macro / K&R `int ()`、enum unsigned 底型 | **H4**(言語機能不足 → M1 流儀の追補ステップ) | H3 の #include/ビルド集計と gem テストで顕在化した順に H4 で追補。コーパスに現れないものは v1.0 の「既知の制限」として README 記載(H6) |
 | 128 ビット整数の演算残り(除算・剰余・ビット演算) | **H4**(値渡し/返しは Step 94、シフトは Step 95 で解消済み)。残りの演算は必要になった時点 | 実 gem が `__int128` を使う頻度は低い。bigdecimal で実害が出た値渡し(Step 94)とシフト(Step 95)は解消。残りは使う gem がコーパスに現れれば H4 で実装 |
 | ~~`char *` と `signed char *` の非互換化~~ | **解消(Step 98)**: `pointer_sign_compatible?` で同サイズ逆符号 + 文字型3種の相互互換を受理。redcarpet の `uint8_t*` → `strncmp` で実害が出て緩和 | ~~Step 73 の副作用~~ **完了(Step 98)** |
 | ~~スタック引数の 16 バイト整列(x86_64/aarch64 共通)~~ **解消(Step 94)**、-fPIC の PC32 参照 | 16 バイト整列は Step 94 で解消(`:pad_stack` 機構 + クロス TU 実行オラクル)。-fPIC PC32 は **H4**(ABI バグ → 最優先修正 + ABI ファジングに再発防止ケース追加) | ABI 不一致は SEGV 直結の最重要リスク(DESIGN 7 章)。ファジング(下記)で網羅的に炙り出す |

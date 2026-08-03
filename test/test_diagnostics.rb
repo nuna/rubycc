@@ -1160,10 +1160,14 @@ class TestDiagnostics < Minitest::Test
     assert_match(/invalid application of 'sizeof' to a function type/, error.description)
   end
 
-  def test_block_scope_function_declaration_is_rejected
-    source = "int main(void) { int f(int); return 0; }"
+  # A block-scope function *declaration* is legal C (6.2.2p5) and supported
+  # since Step 168 — see TestBlockScopeFunctionDecl. What stays rejected here is
+  # the GNU nested function *definition*, whose body would need a trampoline to
+  # reach the enclosing frame.
+  def test_nested_function_definition_is_rejected
+    source = "int main(void) { int f(int) { return 1; } return f(1); }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/block-scope function declarations are not supported/, error.description)
+    assert_match(/nested function definitions are not supported/, error.description)
   end
 
   def test_struct_member_declared_as_a_function_is_rejected

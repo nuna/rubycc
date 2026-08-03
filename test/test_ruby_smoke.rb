@@ -96,6 +96,25 @@ class TestRubySmoke < Minitest::Test
     }
   C
 
+  # <ruby/ractor.h>, the header io-console's console.c drags in. Its
+  # rb_ractor_shareable_p() forward-declares rb_ractor_shareable_p_continue()
+  # from *inside its own body* — a block-scope function declaration (6.2.2p5),
+  # which rubycc rejected outright until Step 168 — so compiling this file is the
+  # direct reproduction of the gap that closed, exactly as ATOMIC_SOURCE is for
+  # the atomic builtins. The body calls the inline function so it is lowered
+  # rather than merely parsed.
+  #
+  # Unlike <ruby/atomic.h>, this header cannot be included on its own: it reaches
+  # RUBY_ALIGNAS and the stdint limits before anything has established them, and
+  # the host gcc fails on it too ("expected identifier or '(' before numeric
+  # constant" at RUBY_ALIGNAS(SIZEOF_VALUE), then a SIZE_MAX clash). <ruby.h>
+  # therefore comes first, which is also how a real extension reaches it.
+  RACTOR_SOURCE = <<~C
+    #include <ruby.h>
+    #include <ruby/ractor.h>
+    int probe(VALUE obj) { return rb_ractor_shareable_p(obj) ? 1 : 0; }
+  C
+
   def setup
     # Non-Linux or dev-header-less environments (no CRuby headers installed, or
     # no libc headers under /usr/include) cannot exercise this path; skip with a
@@ -123,6 +142,11 @@ class TestRubySmoke < Minitest::Test
     refute_empty object, "expected a non-empty object from #include <ruby/atomic.h>"
   end
 
+  def test_compiles_a_translation_unit_that_includes_ruby_ractor_h
+    object = compile_extension(RACTOR_SOURCE, "ractor.c")
+    refute_empty object, "expected a non-empty object from #include <ruby/ractor.h>"
+  end
+
   # The distroless criterion (Step 63): <ruby.h> compiles to an object using only
   # the bundled headers and the CRuby dirs, with the host /usr/include suppressed
   # entirely (-nostdinc, i.e. system_includes: false, and no /usr/include on the
@@ -132,7 +156,7 @@ class TestRubySmoke < Minitest::Test
   # from the next step.
   def test_ruby_h_compiles_against_bundled_headers_only_no_host_libc
     [["smoke.c", SMOKE_SOURCE], ["smoke2.c", RICHER_SOURCE],
-     ["atomic.c", ATOMIC_SOURCE]].each do |filename, source|
+     ["atomic.c", ATOMIC_SOURCE], ["ractor.c", RACTOR_SOURCE]].each do |filename, source|
       object = Dir.mktmpdir("rubycc-distroless") do |dir|
         obj = Rubycc::Compiler.new.compile(
           source, filename: filename,

@@ -810,8 +810,9 @@ class TestParser < Minitest::Test
   end
 
   # A local declarator that resolves to a bare function type ("int *f(int);")
-  # is parsed here as a VariableDecl; the generator later rejects it as a
-  # block-scope function declaration. The parser's job is to build the type.
+  # is parsed here as a VariableDecl; the generator recognizes the function type
+  # and turns it into a block-scope function declaration (6.2.2p5) rather than a
+  # local object. The parser's job is to build the type.
   def test_star_before_name_binds_to_the_return_type
     # "int *f(int)": f is a function taking int and returning "int *", so the
     # "*" applies to the return type, not to f (the function suffix "()" binds

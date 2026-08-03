@@ -1624,13 +1624,11 @@ module Rubycc
         end
 
         # A block-scope declarator that builds a function type ("int f(int);"
-        # inside a body) declares an external function, not a local object. This
-        # subset does not model that, so it is rejected here rather than laid out
-        # as if it were a variable. A function *pointer* local (Pointer with a
-        # FunctionType target) is an ordinary 8-byte scalar and falls through.
-        if decl.type.function?
-          error_at(decl.token, "block-scope function declarations are not supported")
-        end
+        # inside a body) declares a *function*, not a local object: it reserves
+        # no storage and so must not take a local slot. A function *pointer*
+        # local (Pointer with a FunctionType target) is an ordinary 8-byte scalar
+        # and falls through to the layout below.
+        return declare_block_scope_function(decl) if decl.type.function?
 
         # A block-scope storage class changes where the object lives, not its
         # visibility beyond this block: `static` gives it a private file-scope
@@ -1653,6 +1651,48 @@ module Rubycc
             gen_scalar_decl(decl, scope)
           end
         end
+      end
+
+      # A block-scope function declaration ("int f(int);" written inside a body,
+      # the shape CRuby's <ruby/ractor.h> uses to forward-declare
+      # rb_ractor_shareable_p_continue from inside a static inline function).
+      #
+      # 6.2.2p5 gives such an identifier *external* linkage when it carries no
+      # storage-class specifier or `extern`, so it names the very entity a
+      # file-scope declaration of that name would name: it declares nothing local,
+      # reserves no storage, and its calls resolve to an external symbol (the same
+      # PLT-bound :call a file-scope prototype's do). It is therefore merged into
+      # the one signature table #declare_function keeps, which also means a
+      # file-scope declaration of the same name disagreeing on type reaches that
+      # method's existing "conflicting types" check with no new machinery.
+      #
+      # The identifier's *scope* is really this block alone, so C would let a
+      # later, unrelated declaration of the name appear outside it. That
+      # distinction is deliberately not modeled: the signature table is
+      # translation-unit-wide, and because the linkage is external, every
+      # declaration of the name in this unit — inside a block or not — must denote
+      # the same function with a compatible type anyway (6.2.2p4/6.2.7p2). A
+      # program the loosened visibility would wrongly accept is therefore one
+      # already outside what a single external entity can mean; the cost of a
+      # second, block-local signature table buys nothing back.
+      def declare_block_scope_function(decl)
+        # 6.7.1p7: a block-scope function declaration may carry `extern` and
+        # nothing else, so `static` (which would ask for internal linkage on an
+        # identifier the enclosing block cannot define) is a constraint violation.
+        # gcc diagnoses it with this wording, and rubycc diagnoses where gcc does.
+        unless decl.storage.nil? || decl.storage == :extern
+          error_at(decl.token, "invalid storage class for function '#{decl.name}'")
+        end
+        # A declarator of function type has no object to initialize (6.7.9p3);
+        # the parser accepts "= ..." on any init-declarator, so the rejection
+        # belongs here rather than being silently dropped on the floor.
+        if decl.initializer
+          error_at(decl.token, "function '#{decl.name}' is initialized like a variable")
+        end
+
+        type = decl.type
+        declare_function(decl.name, type.return_type, type.param_types,
+                         variadic: type.variadic, defined: false, token: decl.token)
       end
 
       # A 128-bit local. Like a struct, it lives in a stack object (16 bytes here)
