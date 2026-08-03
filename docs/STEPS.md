@@ -5967,9 +5967,63 @@ require するので、その状態は PASS として記録されない。
 
 ---
 
+## Step 165 — io-wait 0.4.0 を記録する(M5 H6)
+
+7 件計画の 2 番。**リンカのバグを踏んだ 1 番と違い、コンパイラ側の変更は要らなかった。**
+gem 自身の test/unit スイートが **26 tests / 41 assertions / 0 failures / 0 errors /
+1 omission** で PASS。検証済み gem は **13 件**。
+
+### probe が無い gem なので、経路の一致は構造的に保証される
+
+`ext/io/wait/extconf.rb` は `require 'mkmf'` と `create_makefile("io/wait")` の
+実質 2 行しかない。**configure 時の分岐が 1 つも無い**ので、bigdecimal(Step 160)や
+io-nonblock(Step 164)で毎回突き合わせていた「rubycc と gcc で別の経路がビルドされて
+いないか」という疑いが、この gem では**構造的に立たない**。同じ翻訳単位を両者が
+コンパイルしている。
+
+それでも**ホスト gcc 対照は取った**。同じ上流ツリーの `.so` だけ差し替えてスイートを
+走らせ、**26 tests / 41 assertions / 0 failures / 0 errors / 1 omission と両者完全一致**。
+omission の 1 件は `test_tty_wait` で、`/dev/tty` が開けない
+(`Errno::ENXIO`、制御端末の無いセッション)という**環境の性質**であり、gcc 対照でも
+同じように omit される。「omission が 1 件ある」という事実だけを記録して
+理由を書かないと、後から読んだ人がここを rubycc の欠陥だと誤読しうるので notes に書いた。
+
+### ツールに `runner_args` を足した — `exclude` では代用できない
+
+io-wait の Rakefile は `Rake::TestTask#options` に
+`--ignore-name=/ungetc_in_text/` を渡している。上流自身が
+`test_after_ungetc_in_text_wait_readable` を走らせていないので、こちらも走らせては
+いけない(走らせて落ちれば、上流が意図的に外したものを rubycc の非として記録する)。
+
+既存の `exclude` は**ファイル単位**で test_glob から引くフィールドで、この 1 件は
+実際に走る他のテストと同じ `test_io_wait_uncommon.rb` に同居しているため、
+`exclude` を使うと**巻き添えで消える**。そこでスイートのランナー自身に渡す
+`runner_args` を新設した。
+
+**実装で 1 度踏んだ**: `ruby ... -e SCRIPT --ignore-name=...` と並べると、
+**ruby は `-e` の後ろも自分のオプションとして解釈し続ける**ため
+`invalid option --ignore-name=...` で子プロセスが死ぬ(判定は `unparsable`)。
+`--` で ruby のオプション解析を終わらせて初めて ARGV に届き、test-unit の
+autorunner が読む。`runner_args` が空のときは `--` も付けない。
+
+### 許可リストのゲートが 12 gem で静かに効かなくなっていた
+
+`test/test_doctor.rb` の許可リストは 12 gem 目(io-nonblock)で 120 桁を超えたので
+2 行に折ったが、`tools/verify_gem_tests.rb` の `ALLOWLIST_RE` が
+`\], raw\.keys\.sort` とリテラルの空白 1 個を要求していたため、
+**折った瞬間にゲートが見つからなくなり**「could not find the allow-list assertion」
+という警告に落ちていた。`\s*` に緩め、貼り付け用に印字する行も折った形にした。
+**gem が増えて初めて効かなくなるゲート**だったので、増やしている最中に気づけたのは
+運が良かった。
+
+---
+
 ## 現在のテスト規模
 
-Step 164 完了時点: **2,717 runs / 7,941 assertions / 0 failures / 47 skips**
+Step 165 完了時点: **2,717 runs / 7,961 assertions / 0 failures / 47 skips**
+(runs は Step 164 と同数 = DB のスキーマ検査が io-wait の 1 件分増え、
+バージョン固定の検査を 1 件足しただけ)
+(以前) Step 164 完了時点: **2,717 runs / 7,941 assertions / 0 failures / 47 skips**
 (runs は Step 163 と同数 = DB のスキーマ検査が io-nonblock の 1 件分増え、
 バージョン固定の検査を io-nonblock と etc の 2 件足しただけで、
 新しいテストメソッドは足していない)

@@ -57,7 +57,7 @@ class TestDoctor < Minitest::Test
 
   def test_verified_gems_json_holds_only_confirmed_gems
     raw = JSON.parse(File.read(DATA))
-    assert_equal %w[bigdecimal date etc io-nonblock json msgpack nkf racc redcarpet stackprof stringio strscan],
+    assert_equal %w[bigdecimal date etc io-nonblock io-wait json msgpack nkf racc redcarpet stackprof stringio strscan],
                  raw.keys.sort
 
     # `versions` lives inside each verification record, so the assertion is
@@ -77,6 +77,7 @@ class TestDoctor < Minitest::Test
     # only fixes *which* gems may appear, so a version pin is the separate check.
     assert_includes all_versions["etc"], "1.4.6"
     assert_includes all_versions["io-nonblock"], "0.3.2"
+    assert_includes all_versions["io-wait"], "0.4.0"
   end
 
   # --- gemspec packaging ----------------------------------------------------

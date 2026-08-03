@@ -105,6 +105,10 @@ CLEARED_ENV = {
 #   require_flags -r entries (the Rakefile's ruby_opts)
 #   test_glob     which files make up the suite
 #   exclude       globs subtracted from test_glob
+#   runner_args   arguments handed to the suite runner itself (the Rakefile's
+#                 Rake::TestTask#options / rspec flags), e.g. an --ignore-name
+#                 the gem's own task passes. Excluding such a test through
+#                 `exclude` instead would drop the whole file it lives in.
 #   sanity        { requires:, expr: } -- see check_sanity. MANDATORY.
 RECIPES = {
   "json" => {
@@ -428,6 +432,35 @@ RECIPES = {
       # io/nonblock ships with the interpreter and has no Ruby implementation to
       # fall back to, so the only wrong outcome to rule out is the interpreter's
       # own copy winning the require -- exactly what the injected-.so check sees.
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "io-wait" => {
+    version: "0.4.0",
+    tarball: "https://github.com/ruby/io-wait/archive/refs/tags/v0.4.0.tar.gz",
+    # create_makefile("io/wait") with no probes at all -- extconf.rb is three
+    # lines, so there is no configure-time branch for rubycc and gcc to disagree
+    # about and the same translation unit is what both compile.
+    sos: { "lib/io/wait.so" => "lib/io/wait.so" },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # The Rakefile's Rake::TestTask: libs = the built extension's dir + test/lib,
+    # ruby_opts -rhelper, test_files FileList["test/**/test_*.rb"], and the
+    # --ignore-name below.
+    load_paths: %w[lib test/lib],
+    require_flags: %w[helper],
+    test_glob: "test/**/test_*.rb",
+    # Upstream's own task skips test_after_ungetc_in_text_wait_readable. It lives
+    # in test_io_wait_uncommon.rb next to tests that do run, so `exclude` (which
+    # drops whole files) would take those with it.
+    runner_args: ["--ignore-name=/ungetc_in_text/"],
+    sanity: {
+      requires: %w[io/wait],
+      # io/wait ships with the interpreter and has no pure-Ruby implementation on
+      # MRI (ext/java/lib/io/wait.rb is the JRuby platform's), so the only wrong
+      # outcome is the interpreter's own copy winning the require.
       expr: "injected_so_loaded?"
     }
   }
@@ -786,6 +819,12 @@ def run_suite(name, recipe, src_dir, extra_load_paths)
 
   flags = load_path_flags(recipe, extra_load_paths)
   requires = Array(recipe[:require_flags]).map { |f| "-r#{f}" }
+  runner_args = Array(recipe[:runner_args])
+  # ruby keeps parsing its own options past `-e SCRIPT`, so a bare --ignore-name
+  # would be rejected by the interpreter before the suite ever saw it; `--` ends
+  # that parsing and puts the rest in the child's ARGV, where test-unit's
+  # autorunner reads its options from. Only added when there is something to pass.
+  ruby_runner_args = runner_args.empty? ? [] : ["--", *runner_args]
 
   cmd =
     case recipe.fetch(:runner)
@@ -793,10 +832,10 @@ def run_suite(name, recipe, src_dir, extra_load_paths)
       rspec = File.join(gem_home, "bin", "rspec")
       abort "#{name}: rspec is not installed in #{gem_home}" unless File.executable?(rspec)
 
-      [rspec, *flags, "--no-color", *files]
+      [rspec, *flags, "--no-color", *runner_args, *files]
     when :test_unit, :ruby_files
       loader = files.map { |f| "require #{File.join(src_dir, f).dump}" }.join("\n")
-      [RbConfig.ruby, *flags, *requires, "-e", loader]
+      [RbConfig.ruby, *flags, *requires, "-e", loader, *ruby_runner_args]
     end
 
   step "running #{name}'s suite (#{files.size} files, runner #{recipe.fetch(:runner)})"
@@ -1205,7 +1244,10 @@ end
 # gate is deliberate -- adding a gem must be a conscious edit -- so the tool only
 # prints the replacement line and never edits the test.
 DOCTOR_TEST = File.join(RUBYCC_ROOT, "test/test_doctor.rb")
-ALLOWLIST_RE = /assert_equal %w\[([^\]]*)\], raw\.keys\.sort/
+# `\s*` rather than a literal space: the list outgrew one line at 12 gems and had
+# to be wrapped, and a regex that only matched the one-line form would silently
+# stop finding the gate exactly when the gate started mattering most.
+ALLOWLIST_RE = /assert_equal %w\[([^\]]*)\],\s*raw\.keys\.sort/
 
 def check_doctor_allowlist(db)
   return unless File.file?(DOCTOR_TEST)
@@ -1225,7 +1267,10 @@ def check_doctor_allowlist(db)
   puts "  the database now holds #{actual.inspect}."
   puts "  Update test_verified_gems_json_holds_only_confirmed_gems by hand with:"
   puts
-  puts "    assert_equal %w[#{actual.join(' ')}], raw.keys.sort"
+  # Printed wrapped because the one-line form passed 120 columns at 12 gems and
+  # this is meant to be pasted as-is.
+  puts "    assert_equal %w[#{actual.join(' ')}],"
+  puts "                 raw.keys.sort"
   puts
   puts "  (this tool never edits the test: the allow-list is an intentional gate.)"
 end
