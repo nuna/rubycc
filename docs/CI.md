@@ -12,7 +12,7 @@ rubycc の継続的検証は 3 層に分かれている。**push ごとに回る
 | 層 | ファイル | トリガ | 目的 | 所要時間の目安 | 失敗が意味すること |
 |---|---|---|---|---|---|
 | **A** | `test.yml` | `push`(master)/ PR / 手動 / 他ワークフローからの呼び出し | 全 Minitest スイートを Ruby 3.3 / 4.0(両端)で実行 | 1 バージョンあたり 10〜20 分(2 本並列) | 回帰、またはサポート Ruby のいずれかでの非互換。**マージしてはいけない** |
-| **B** | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)/ 手動 | コーパス census の再生成差分、ネットワーク受け入れ、スループット計測、Ruby 3.4 の全スイート | census 〜20 分 / acceptance 〜60 分 / throughput 〜30 分 / ruby-3-4 〜25 分(4 ジョブ並列) | census: ヘッダ網羅性が変わった(要コミット)。acceptance: 実 gem のビルドが壊れた。throughput: **合否判定なし**(下記)。ruby-3-4: 中間バージョン固有の非互換 |
+| **B** | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)/ 手動 | コーパス census の再生成差分、ネットワーク受け入れ、スループット計測、Ruby 3.4 の全スイート、**musl での全スイートと gem install** | census 〜20 分 / acceptance 〜60 分 / throughput 〜30 分 / ruby-3-4 〜25 分 / musl 〜90 分(5 ジョブ並列) | census: ヘッダ網羅性が変わった(要コミット)。acceptance: 実 gem のビルドが壊れた。throughput: **合否判定なし**(下記)。ruby-3-4: 中間バージョン固有の非互換。musl: **glibc/musl 互換の主張の、未検証だった側が壊れた**(下記) |
 | **C** | `release.yml` | `v*` タグの push / 手動 | Tier A の再実行 + gem の再現ビルド検証 | 30〜50 分 | タグと `Rubycc::VERSION` の不一致、または gem がバイト再現しない。**リリースを止める** |
 
 Tier C の `test` ジョブは `uses: ./.github/workflows/test.yml` で **Tier A をそのまま
@@ -86,6 +86,52 @@ runs は一致しているのに skips が 5 件ずれているのは、内訳�
 テスト追加だけで誤検知することはない。テストの増減があった場合はこの基準値も
 追随して更新すること。
 
+## musl ジョブ(`weekly.yml` の `musl`)
+
+M5 は「glibc/musl 互換ヘッダ」を掲げているが、**その主張を支える計測は全て
+glibc 側で取られていた** — ABI ハーネスも、コーパスも、
+`data/verified_gems.json` の全 18 エントリもである。このジョブが残りの半分。
+構築は **Step 174**。
+
+### `container:` を使わず自分で `docker run` する
+
+GitHub Actions のジョブコンテナには、ランナーが**自前の glibc リンクの node**を
+差し込む。Alpine イメージはそれを実行できないので、`container: ruby:4.0-alpine`
+にすると `uses:` を使うステップが軒並み動かなくなる。
+**チェックアウトはホスト(glibc)側で済ませ、そのディレクトリを bind mount して
+`docker run` する**構成にすれば、Actions 側は glibc のまま、
+**musl に置かれるのは rubycc だけ**になる。計測したいのはそこだけなので、この形にした。
+
+コンテナ内で走るのは [`../.github/scripts/musl-suite.sh`](../.github/scripts/musl-suite.sh)。
+インラインの `run:` に書かないのは、`docker run ... sh -c '...'` の入れ子クォートが
+読めなくなることと、ファイルなら CI の外で `sh -n` にかけられるからである。
+
+### apk で入れるパッケージ
+
+| パッケージ | 何のために必要か |
+|---|---|
+| `build-base` | `gcc` / `make` / `musl-dev`。**Alpine の gcc は musl を吐く**ので、差分テストの参照実装が musl ツールチェインになる。このジョブの主眼そのもの |
+| `binutils` | glibc 側と同じ理由(`readelf` / `ld` / `ar` / `nm`) |
+| `pkgconf` | `pkg-config` の提供元(Alpine では `pkg-config` はこのパッケージ) |
+| `libffi-dev` | `fiddle`(生成した `.so` を dlopen するテストが使う)のビルドに要る |
+| `zlib-dev` / `yaml-dev` | zlib・psych の extconf が探すホストライブラリ。**このジョブが検証する 3 gem には含まれないが先に入れておく** — パッケージが無いせいで probe が落ちたものを「musl の差」と読み違えないため |
+
+**aarch64 のクロスツールチェインは Alpine に無い**ので、aarch64 差分テストは
+このジョブでは設計上まるごと skip される。`tools/ci_check_skips.rb` を
+このジョブで回していないのはそれが理由で、acceptance ジョブの理由(実行形状が変わる)
+とは別である。閾値は aarch64 の skip だけで発火してしまい、musl について何も語らない。
+
+### 週次は回帰、手動は記録
+
+`tools/verify_gem_tests.rb` は `--update` に `--step N` を要求する
+(番号が evidence 文字列に入る)。週次のスケジュール実行には渡せる番号が無いので、
+**`workflow_dispatch` の入力 `verify_step` の有無で 2 つのモードに分けた**。
+
+| 起動 | `verify_step` | phase 2 の挙動 |
+|---|---|---|
+| 週次スケジュール | 空 | **読み取り専用**。「この 3 gem は musl でまだビルドでき、テストが通るか」という回帰の問い |
+| 手動 dispatch | ステップ番号 | `--update` で `data/verified_gems.json` を書き、`weekly-musl` アーティファクトとして上げる。**そのファイルをそのままコミットする**ので、DB を書くのは変わらずツールだけ |
+
 ## 週次ベンチが合否判定をしない理由
 
 `throughput` ジョブは `BENCH_RUNS=7 rake bench:throughput` を回して結果を
@@ -158,8 +204,9 @@ RubyGems は gem 内の各エントリの mtime と build 時刻にこの環境�
 2. Tier B の頻度を夜間から週次に落とす。
 3. ドキュメントのみの変更では Tier A を起動しない(`test.yml` の `paths-ignore`)。
 
-削減後の見積りは、Tier A が 1 push あたり約 50 分、weekly が 1 週あたり約 165 分
-(census 20 分 + acceptance 90 分 + throughput 30 分 + ruby-3-4 25 分)。コードの
+削減後の見積りは、Tier A が 1 push あたり約 50 分、weekly が 1 週あたり約 255 分
+(census 20 分 + acceptance 90 分 + throughput 30 分 + ruby-3-4 25 分 +
+musl 90 分)。コードの
 push が月 20 回程度と仮定すると、概算で**月 1,700 分程度**となり無料枠に収まる。
 **これはあくまで見積りであり、実測値が出た段階でこの節を更新すること。**
 

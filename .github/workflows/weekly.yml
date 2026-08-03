@@ -8,6 +8,15 @@ name: weekly
     # Every Sunday 18:00 UTC = Monday 03:00 JST.
     - cron: "0 18 * * 0"
   workflow_dispatch:
+    inputs:
+      verify_step:
+        description: >-
+          Step number for the musl job's gem verification. Set it to record the
+          musl results into data/verified_gems.json (downloadable as the
+          weekly-musl artifact); leave it empty for a read-only regression run,
+          which is what the weekly schedule does.
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -188,6 +197,51 @@ jobs:
           path: |
             benchmark/results/
             tmp/ci/*.log
+          if-no-files-found: warn
+
+  # M5 claims glibc/musl compatible headers, but every measurement behind that
+  # claim -- the ABI harness, the corpus, all eighteen entries in
+  # data/verified_gems.json -- was taken on glibc. This job is the other half:
+  # the same suite and the same gem-install procedure on musl, with a musl gcc
+  # as the reference implementation the differential tests compare against.
+  #
+  # It runs the container itself rather than using `container:` on purpose. The
+  # runner injects its own glibc-linked node into a job container, which an
+  # Alpine image cannot execute, so every `uses:` step in such a job has to be
+  # worked around. Checking out on the host and bind-mounting the checkout into
+  # `docker run` keeps the actions on glibc and puts only rubycc on musl, which
+  # is the thing being measured.
+  musl:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # ruby:4.0-alpine matches the Ruby version the other weekly jobs use, so a
+      # difference this job reports is a libc difference and not a version one.
+      - name: Run the suite and the gem verification on musl
+        env:
+          VERIFY_STEP: ${{ inputs.verify_step }}
+        run: |
+          docker run --rm \
+            -v "$PWD":/w -w /w \
+            -e VERIFY_STEP \
+            ruby:4.0-alpine /w/.github/scripts/musl-suite.sh
+        # No tools/ci_check_skips.rb here, and for a different reason than the
+        # acceptance job's: Alpine packages no aarch64-linux-musl cross
+        # toolchain, so every aarch64 differential test skips. The Tier A skip
+        # thresholds would fire on that alone and say nothing about musl. The
+        # x86_64 half is what this job is for; failures still fail it through
+        # the script's exit status.
+
+      - name: Upload the musl logs and any recorded verifications
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-musl
+          path: |
+            tmp/ci/*.log
+            data/verified_gems.json
           if-no-files-found: warn
 
   # The intermediate version 3.4 is checked weekly rather than on every push,
