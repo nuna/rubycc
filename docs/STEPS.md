@@ -6294,9 +6294,47 @@ rubycc・gcc とも同じで、**両者とも同梱のアルゴリズム実装�
 
 ---
 
+## Step 171 — zlib 3.2.3 を記録する(M5 H6)
+
+7 件計画の 6 番、**コーパス初のホストシステムライブラリ依存 gem**。
+R10 が「システムライブラリに依存する gem」として想定していたケースの第 1 号で、
+ホストの `/usr/include/zlib.h` と `-lz` を実際に使う。gem 自身の test/unit スイートが
+**97 tests / 540 assertions / 0 failures / 0 errors** で PASS。
+検証済み gem は **17 件**。
+
+### probe が失敗しても**ビルドは止まらない** — だから Makefile を読んだ
+
+extconf.rb の `have_library('z', 'deflateReset(NULL)', 'zlib.h')` は try_link なので、
+成功は「rubycc がホストの `zlib.h` を見つけ、かつ `-lz` にリンクできた」を意味する。
+問題は**失敗したときで、ビルドは止まらず同梱 zlib のブランチに黙って切り替わる**
+(そのソースを gem は同梱していないので、そこから先で別の失敗をする)。
+つまり「ビルドが通った」だけでは**どちらの経路を通ったか分からない**。
+そこで生成された Makefile を読み、`-DHAVE_ZLIB_SIZE_T_FUNCS` が立っていること、
+`ZSRC` が空であることを確認した。Step 160 で払った
+「合格件数だけを見て経路を確かめない」の代償を繰り返さないための手順である。
+
+probe は 7 件すべて yes で、ホスト gcc 対照と一致した
+(`deflateReset` in `-lz`、`crc32_combine`、`adler32_combine`、`z_crc_t`、`z_size_t`、
+`crc32_z`、`adler32_z`)。
+
+### DT_NEEDED に `libm.so.6` が入らない — 意図した差
+
+ビルドされた `zlib.so` の DT_NEEDED には gcc 版と同じく `libz.so.1` が入る。
+一方 **gcc 版には `libm.so.6` も入るが、rubycc 版には入らない**。
+`LIBS` は両者とも `$(LIBRUBYARG_SHARED) -lz -lm -lpthread -lc` で同じであり、
+差が出るのは **rubycc のリンカが「未定義シンボルを実際に供給したライブラリ」だけを
+DT_NEEDED に記録する**ため。zlib.c は libm のシンボルを 1 つも参照していないので、
+`-lm` は与えられても記録されない。未定義シンボルは全て解決し、
+スイートはどちらでも通る。**バグではなく設計どおりの差**なので、そう記録する。
+
+---
+
 ## 現在のテスト規模
 
-Step 170 完了時点: **2,732 runs / 8,064 assertions / 0 failures / 45 skips**
+Step 171 完了時点: **2,732 runs / 8,084 assertions / 0 failures / 0 errors / 45 skips**
+(runs は Step 170 と同数 = DB のスキーマ検査が zlib の 1 件分増え、
+バージョン固定の検査を 1 件足しただけ)
+(以前) Step 170 完了時点: **2,732 runs / 8,064 assertions / 0 failures / 45 skips**
 (runs は Step 169 と同数 = DB のスキーマ検査が digest の 1 件分増え、
 バージョン固定の検査を 1 件足しただけ)
 (以前) Step 169 完了時点: **2,732 runs / 8,044 assertions / 0 failures / 45 skips**

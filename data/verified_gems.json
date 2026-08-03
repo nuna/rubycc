@@ -174,5 +174,16 @@
       }
     ],
     "notes": "The first corpus gem with more than one extension: six extconf.rb under ext/digest, six .so, all six built by rubycc through rmake in one gem install with no flag and no change to the mkmf shim. digest ships with the interpreter, so the run is against the injected copies; the sanity check requires all six by name, because requiring only \"digest\" loads two of them and leaves the other four unproven (Digest's const_missing pulls the algorithm extensions in lazily), and the gate demands every injected .so appear in $LOADED_FEATURES. What this suite proves is unusually direct for a corpus gem: it checks digests of known inputs against known hex outputs, so a miscompiled round function would show up as a wrong value rather than as a crash. The three extconf probes (CommonCrypto/CommonDigest.h no, u_int8_t yes, sys/cdefs.h yes) come out identical under rubycc and the host gcc control -- CommonCrypto is macOS-only, so both sides compile the bundled algorithm sources rather than the platform ones. The upstream tree keeps digest/loader.rb and digest/sha2/loader.rb under ext/digest/lib (gem install copies them into lib/), so that directory has to be on the load path as the Rakefile puts it there."
+  },
+  "zlib": {
+    "verifications": [
+      {
+        "versions": ["3.2.3"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-04",
+        "evidence": "RUBYCC=1 gem install zlib succeeded (zlib.so built through rmake); the gem's own test/unit suite passed 97 tests / 540 assertions / 0 failures / 0 errors (Step 171)."
+      }
+    ],
+    "notes": "The first corpus gem that links a host system library, the case R10 names. extconf's have_library('z', 'deflateReset(NULL)', 'zlib.h') is a try_link, so its success means rubycc both found the host's /usr/include/zlib.h and linked -lz; had it failed, the build would not have stopped but switched to the bundled-zlib branch, so the choice was read out of the generated Makefile rather than assumed. All seven probes come out yes under rubycc exactly as under the host gcc control (deflateReset in -lz, crc32_combine, adler32_combine, z_crc_t, z_size_t, crc32_z, adler32_z), the Makefile carries -DHAVE_ZLIB_SIZE_T_FUNCS and no ZSRC, and the built zlib.so records libz.so.1 in DT_NEEDED exactly as the gcc-built one does. One difference from the gcc control's .so: gcc's also lists libm.so.6 in DT_NEEDED while rubycc's does not, because rubycc's linker records only libraries that actually supply a needed symbol and zlib.c references none from libm; every undefined symbol resolves and the suite passes either way. zlib ships with the interpreter, so the run is against the injected copy, which the sanity check confirms through $LOADED_FEATURES."
   }
 }

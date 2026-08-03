@@ -554,6 +554,32 @@ RECIPES = {
       # -- and with six .so there are six chances to load the wrong one.
       expr: "injected_so_loaded?"
     }
+  },
+
+  "zlib" => {
+    version: "3.2.3",
+    tarball: "https://github.com/ruby/zlib/archive/refs/tags/v3.2.3.tar.gz",
+    # The first corpus gem that links a *host* library. extconf.rb's
+    # have_library('z', 'deflateReset(NULL)', 'zlib.h') is a try_link, so it only
+    # succeeds if rubycc can both find the host's zlib.h and link against -lz;
+    # failing it does not fail the build, it silently switches to the bundled-zlib
+    # branch (which needs sources the gem does not ship), so what the probe chose
+    # has to be read out of the generated Makefile rather than assumed.
+    sos: { "lib/zlib.so" => "lib/zlib.so" },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # The Rakefile's Rake::TestTask appends test/lib to the default libs
+    # (["lib"], where the built extension lands) and passes ruby_opts -rhelper.
+    load_paths: %w[lib test/lib],
+    require_flags: %w[helper],
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      requires: %w[zlib],
+      # zlib ships with the interpreter and has no pure-Ruby fallback, so the
+      # only wrong outcome is the interpreter's own copy winning the require.
+      expr: "injected_so_loaded?"
+    }
   }
 }.freeze
 
