@@ -6329,9 +6329,58 @@ DT_NEEDED に記録する**ため。zlib.c は libm のシンボルを 1 つも�
 
 ---
 
+## Step 172 — psych 5.3.1 を記録する(M5 H6)
+
+7 件計画の 7 番、最後の 1 件で最重量。ホストの libyaml に依存する。
+gem 自身の test/unit スイートが
+**633 tests / 1,598 assertions / 0 failures / 0 errors / 0 omissions** で PASS。
+検証済み gem は **18 件**。これで **7 件計画は完了**。
+
+### rubycc の pkg-config シムが、対照と**違う経路**を選ばせた
+
+この gem の一番の発見はここである。extconf.rb はまず `pkg_config('yaml-0.1')` を試し、
+空振りしたときだけ `find_header('yaml.h')` + `find_library('yaml', 'yaml_get_version')`
+に落ちる。**このホストには pkg-config が 1 つも入っていない**ので、
+gcc 対照は `not found` でフォールバック側を通る。ところが rubycc 経由では
+
+```
+checking for pkg-config for yaml-0.1... [" ", "", "-lyaml"]
+```
+
+と出る — **rubycc 自身の `exe/rubycc-pkgconf` が答えた**ので、pkg_config の枝が走った。
+`RbConfig::CONFIG["PKG_CONFIG"]` は `""` だがキー自体は存在するため、シムが差し込まれる。
+
+最終的な `LIBS` は両者とも `$(LIBRUBYARG_SHARED)  -lyaml -lm -lpthread  -lc` で一致し、
+スイートも通る。**が、両者は同じ configure 経路を通っていない**。
+Step 160 で払った代償(合格件数の一致を「同じものがビルドされた」証拠と読んだ)を
+繰り返さないため、**合致した結果ではなく食い違った経路の方を記録する**。
+
+### 副産物 — rmake に `MAKE` マクロが無い(GAPS F)
+
+ビルド中に `cd libyaml &&  clean` という出力が出た。生成 Makefile の 287 行目は
+`	-cd libyaml && $(MAKE) clean` で、**`$(MAKE)` が空に展開されている**。
+最小再現を取ったところ:
+
+| | `$(MAKE)` | `$(CC)` |
+|---|---|---|
+| rmake | `[]` | `[]` |
+| GNU make | `[make]` | `[cc]` |
+
+POSIX は `MAKE` を組み込みで定義することを要求している。
+今回当たった規則は行頭 `-` でエラー無視、しかもこのビルドはホストの libyaml を使うので
+**psych の合否には影響していない**。だが同じ Makefile の 282 行目
+`cd libyaml && $(MAKE)` は**同梱 libyaml を実際にビルドする規則**で、
+そこでは `cd libyaml &&` に潰れて**黙って no-op になる**。
+横断の決まりごと「ギャップの修正は別ステップ」に従い、docs/GAPS.md の F として残した。
+
+---
+
 ## 現在のテスト規模
 
-Step 171 完了時点: **2,732 runs / 8,084 assertions / 0 failures / 0 errors / 45 skips**
+Step 172 完了時点: **2,732 runs / 8,104 assertions / 0 failures / 0 errors / 45 skips**
+(runs は Step 171 と同数 = DB のスキーマ検査が psych の 1 件分増え、
+バージョン固定の検査を 1 件足しただけ)
+(以前) Step 171 完了時点: **2,732 runs / 8,084 assertions / 0 failures / 0 errors / 45 skips**
 (runs は Step 170 と同数 = DB のスキーマ検査が zlib の 1 件分増え、
 バージョン固定の検査を 1 件足しただけ)
 (以前) Step 170 完了時点: **2,732 runs / 8,064 assertions / 0 failures / 45 skips**

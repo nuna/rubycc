@@ -746,12 +746,12 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   差異あり・原因未特定)。**Step 151 で nkf 0.3.0、Step 153 で stackprof 0.2.28、
   Step 157 で strscan 3.1.6 と stringio 3.2.0、Step 162 で etc 1.4.6、
   Step 164 で io-nonblock 0.3.2、Step 165 で io-wait 0.4.0、Step 166 で erb 6.0.1.1、
-  Step 169 で io-console 0.8.2、Step 170 で digest 3.2.1、Step 171 で zlib 3.2.3 を
-  追加(6 → 17 件)。**
-- **コーパス未検証 gem(Step 157 で棚卸し、Step 171 で更新)**: センサス対象 36 件に対し
-  検証済み 17 件。**未検証 19 件のうち 17 件は R10 ゲートを通過**している(除外は sqlite3 と pg のみ)ので
-  着手先には困らない。形が揃っていて着手しやすいのは `ruby/*` の default gem 群
-  (`psych` 等)。
+  Step 169 で io-console 0.8.2、Step 170 で digest 3.2.1、Step 171 で zlib 3.2.3、
+  Step 172 で psych 5.3.1 を追加(6 → 18 件)。**
+- **コーパス未検証 gem(Step 157 で棚卸し、Step 172 で更新)**: センサス対象 36 件に対し
+  検証済み 18 件。**未検証 18 件のうち 16 件は R10 ゲートを通過**している(除外は sqlite3 と pg のみ)。
+  `ruby/*` の default gem 群は 7 件計画で出し切ったので、次に着手するなら
+  サードパーティ gem 側になる。
   **fcntl は上流にテストスイートが無く (d) レベルの証拠が原理的に得られない**ため対象外。
 
 ### 次の作業計画 — default gem 群の検証(Steps 163〜、番号は連番ではない)
@@ -765,9 +765,11 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
 | 164〜166 | io-nonblock / io-wait / erb の記録(2 番と 3 番はコンパイラ側の変更不要) |
 | 167 | 4 番が露出させた**同梱ヘッダの宣言漏れ** — `cfmakeraw` / `ttyname_r` |
 | 168 | 4 番が露出させた**ブロックスコープ関数宣言**の未対応(`ruby/ractor.h`) |
-| 169〜171 | io-console / digest / zlib の記録(いずれもコンパイラ側の変更不要) |
+| 169〜172 | io-console / digest / zlib / psych の記録(いずれもコンパイラ側の変更不要) |
 
-**残る 7 番(psych)は Step 172** に続く。
+**7 件計画は Step 172 で完了**(検証済み gem 6 → 18 件)。露出したギャップは
+コンパイラ側 3 件(Steps 163・167・168。いずれもその場で修正)と、
+rmake の `MAKE` マクロ未定義 1 件(GAPS F。別ステップ)。
 
 **1 gem = 1 ステップ**。手順は `.claude/skills/corpus-expansion/SKILL.md` のフェーズ 2
 そのままで、レシピの雛形は `tools/verify_gem_tests.rb` の **`RECIPES["etc"]` が最も近い**
@@ -786,7 +788,7 @@ tarball は `https://github.com/ruby/<name>/archive/refs/tags/v<version>.tar.gz`
 | ~~4~~ | ~~`io-console`~~ | ~~0.8.2~~ | **完了(Step 169)**。tty の懸念は外れた — omission も skip も 0 件で、tty を要するテストは `PTY.open` 経由で実際に走る。代わりに**コンパイラ側の修正が 2 つ**要った(Step 167 のヘッダ宣言漏れ、Step 168 のブロックスコープ関数宣言)。probe 13 件は全て gcc と一致していたのにこうなった |
 | ~~5~~ | ~~`digest`~~ | ~~3.2.1~~ | **完了(Step 170)**。難所と見ていた入れ子 ext は素通りで、6 つの `.so` が 1 回の `gem install` で全て rubycc + rmake からビルドされ、フラグも shim の変更も不要だった。代わりに分かったのは、**多 ext gem では sanity に `.so` を全部名指しする必要がある**こと(遅延ロードのため) |
 | ~~6~~ | ~~`zlib`~~ | ~~3.2.3~~ | **完了(Step 171)**。R10 が想定していたホストライブラリ依存の第 1 号だが、コンパイラ側の変更は不要だった。分かったのは、**probe(`have_library`)が失敗してもビルドは止まらず同梱 zlib のブランチに黙って切り替わる**こと — 「通った」だけでは経路が確定しないので、生成 Makefile の `-DHAVE_ZLIB_SIZE_T_FUNCS` と空の `ZSRC` を読んで確認した。probe 7 件は gcc と一致 |
-| 7 | `psych` | 5.3.1 | **ホストの libyaml** に依存。7 件で最重量 |
+| ~~7~~ | ~~`psych`~~ | ~~5.3.1~~ | **完了(Step 172)**。7 件計画はここで完了。重量の見立ては当たった(633 tests / 1,598 assertions)が、難所は libyaml ではなく**rubycc 自身の pkg-config シム**だった — このホストに pkg-config が無いため gcc 対照は `find_header` フォールバックを通るのに、rubycc 経由では `rubycc-pkgconf` が答えて `pkg_config` の枝が走る。`LIBS` は一致するが**経路は一致していない**。副産物として rmake の `MAKE` マクロ未定義(GAPS F)が露出 |
 
 **横断の決まりごと(いずれも既に代償を払って学んだこと)**:
 

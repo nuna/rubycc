@@ -11,6 +11,7 @@
 | # | ギャップ | 影響 | 優先 | 詳細 |
 |---|---|---|---|---|
 | E | `F_GETPIPE_SZ` / `F_SETPIPE_SZ` が同梱 `fcntl.h` に無い(`Fcntl` 定数が 24 対 26。**共通 24 個の値は一致**) | fcntl のみ | 低 | STEPS.md Step 157。**埋めても検証済み gem は増えない** — fcntl は上流にテストスイートが無く (d) レベルの証拠が原理的に得られないため |
+| F | rmake が **`MAKE` マクロを組み込みで定義していない**(POSIX 要求)。実測: `@echo "MAKE=[$(MAKE)]"` だけの Makefile で rmake は `MAKE=[]`、GNU make は `MAKE=[make]` | **再帰 make の規則が黙って no-op になる**。`cd sub && $(MAKE)` が `cd sub &&` に潰れ、シェル構文としては成功しうる。同梱ライブラリを自前でビルドする gem(psych の bundled libyaml 経路など)が該当 | 中 | STEPS.md Step 172。psych の検証で露出したが、当たった規則は `-` 前置でエラー無視のうえホスト libyaml を使う経路だったため psych 自身の合否には影響していない |
 
 ## 2. 未解消の負債
 

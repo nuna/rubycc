@@ -580,6 +580,33 @@ RECIPES = {
       # only wrong outcome is the interpreter's own copy winning the require.
       expr: "injected_so_loaded?"
     }
+  },
+
+  "psych" => {
+    version: "5.3.1",
+    tarball: "https://github.com/ruby/psych/archive/refs/tags/v5.3.1.tar.gz",
+    # The second host-library gem, and the one that reaches rubycc's pkg-config
+    # shim: extconf.rb tries pkg_config('yaml-0.1') first and only falls back to
+    # find_header('yaml.h') + find_library('yaml', ...) when that comes up empty.
+    # Both fallbacks abort the build outright when they fail, so unlike zlib there
+    # is no silent second path to end up on -- but which of the two branches ran
+    # still has to be read out of the transcript.
+    sos: { "lib/psych.so" => "lib/psych.so" },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # The Rakefile's Rake::TestTask appends test/lib and test to the default libs
+    # (["lib"]) and passes ruby_opts -rhelper.
+    load_paths: %w[lib test/lib test],
+    require_flags: %w[helper],
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      requires: %w[psych],
+      # psych ships with the interpreter and has no pure-Ruby parser on MRI
+      # (ext/java is JRuby's SnakeYAML binding), so the wrong copy is what the
+      # injected-.so check has to rule out.
+      expr: "injected_so_loaded?"
+    }
   }
 }.freeze
 
