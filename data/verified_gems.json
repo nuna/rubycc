@@ -1,79 +1,123 @@
 {
   "json": {
-    "versions": ["2.21.1"],
-    "verified_at": "2026-07-17",
-    "environment": "glibc x86_64 / ruby 3.4.5",
-    "evidence": "Built with rubycc (parser.so + generator.so via rmake); gem's own test suite passed 606 tests / 100% (Step 54). B6 in-process rmake build re-confirmed (Step 61), hermetic distroless-headers gem install succeeded (Step 64).",
+    "verifications": [
+      {
+        "versions": ["2.21.1"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-07-17",
+        "evidence": "Built with rubycc (parser.so + generator.so via rmake); gem's own test suite passed 606 tests / 100% (Step 54). B6 in-process rmake build re-confirmed (Step 61), hermetic distroless-headers gem install succeeded (Step 64)."
+      }
+    ],
     "notes": "The gem's SIMD probe (parser-use-simd/generator-use-simd) is naturally disabled when its conftests run through rubycc, so the scalar fallback path is what is built (Step 60). No JSON_DISABLE_SIMD flag needed via mkmf_shim."
   },
   "msgpack": {
-    "versions": ["1.8.3"],
-    "verified_at": "2026-07-17",
-    "environment": "glibc x86_64 / ruby 3.4.5",
-    "evidence": "Built with rubycc (12 translation units via rmake, jobs:4); gem's own RSpec suite passed 455 examples / 0 failures (Step 54). B6 in-process rmake build re-confirmed (Step 61), hermetic distroless-headers gem install succeeded (Step 64). Re-confirmed in H4 (Step 98) with no compiler changes: all MRI-applicable examples among the upstream 468 examples passed, with the 13 JRuby-only examples excluded as not applicable.",
-    "notes": "No known issues on glibc x86_64. musl and aarch64 not yet verified."
+    "verifications": [
+      {
+        "versions": ["1.8.3"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-07-17",
+        "evidence": "Built with rubycc (12 translation units via rmake, jobs:4); gem's own RSpec suite passed 455 examples / 0 failures (Step 54). B6 in-process rmake build re-confirmed (Step 61), hermetic distroless-headers gem install succeeded (Step 64). Re-confirmed in H4 (Step 98) with no compiler changes: all MRI-applicable examples among the upstream 468 examples passed, with the 13 JRuby-only examples excluded as not applicable."
+      }
+    ],
+    "notes": "No known issues on glibc x86_64."
   },
   "bigdecimal": {
-    "versions": ["4.1.2"],
-    "verified_at": "2026-08-01",
-    "environment": "glibc x86_64 / ruby 3.4.5",
-    "evidence": "RUBYCC=1 gem install bigdecimal succeeded (lib/bigdecimal.so built through rmake); the gem's own test suite passed 265 tests / 8,267 assertions / 0 failures / 0 errors (Steps 93-97). Re-verified with tools/verify_gem_tests.rb (Step 162): the gem's own test/unit suite passed 265 tests / 8,267 assertions / 0 failures / 0 errors.",
-    "notes": "11 tests are omitted because BIGDECIMAL_USE_VP_TEST_METHODS is not set; this is an expected, normal omission and not a failure. What this build compiles changed in Step 161, so the earlier runs of this suite and this one are not the same build. Until then, extconf's have_header(\"ruby/atomic.h\") — which mkmf aliases to try_compile, so it really does compile the header — failed under rubycc because that header reaches the __atomic_* builtins, HAVE_RUBY_ATOMIC_H was therefore never defined, and the gem's own non-atomic fallback was compiled where the gcc build compiled the atomic path (measured in Step 160). Step 161 lowers those builtins, the probe now succeeds, and this build takes the same atomic path gcc does: lock xadd / lock cmpxchg appear 12 times in the built bigdecimal.so, where the Step 160 build had none. The suite does not distinguish the two, because RUBY_ATOMIC_SIZE_INC is only reached under BIGDECIMAL_DEBUG. musl and aarch64 not yet verified."
+    "verifications": [
+      {
+        "versions": ["4.1.2"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-01",
+        "evidence": "RUBYCC=1 gem install bigdecimal succeeded (lib/bigdecimal.so built through rmake); the gem's own test suite passed 265 tests / 8,267 assertions / 0 failures / 0 errors (Steps 93-97). Re-verified with tools/verify_gem_tests.rb (Step 162): the gem's own test/unit suite passed 265 tests / 8,267 assertions / 0 failures / 0 errors."
+      }
+    ],
+    "notes": "11 tests are omitted because BIGDECIMAL_USE_VP_TEST_METHODS is not set; this is an expected, normal omission and not a failure. What this build compiles changed in Step 161, so the earlier runs of this suite and this one are not the same build. Until then, extconf's have_header(\"ruby/atomic.h\") — which mkmf aliases to try_compile, so it really does compile the header — failed under rubycc because that header reaches the __atomic_* builtins, HAVE_RUBY_ATOMIC_H was therefore never defined, and the gem's own non-atomic fallback was compiled where the gcc build compiled the atomic path (measured in Step 160). Step 161 lowers those builtins, the probe now succeeds, and this build takes the same atomic path gcc does: lock xadd / lock cmpxchg appear 12 times in the built bigdecimal.so, where the Step 160 build had none. The suite does not distinguish the two, because RUBY_ATOMIC_SIZE_INC is only reached under BIGDECIMAL_DEBUG."
   },
   "redcarpet": {
-    "versions": ["3.6.1"],
-    "verified_at": "2026-07-24",
-    "environment": "glibc x86_64 / ruby 3.4.5",
-    "evidence": "RUBYCC=1 gem install redcarpet succeeded; the gem's own test/unit suite passed 136 tests / 206 assertions / 0 failures / 0 errors / 0 skips (Step 98).",
-    "notes": "extconf.rb is a pure C-extension build with no configure-time probes. musl and aarch64 not yet verified."
+    "verifications": [
+      {
+        "versions": ["3.6.1"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-07-24",
+        "evidence": "RUBYCC=1 gem install redcarpet succeeded; the gem's own test/unit suite passed 136 tests / 206 assertions / 0 failures / 0 errors / 0 skips (Step 98)."
+      }
+    ],
+    "notes": "extconf.rb is a pure C-extension build with no configure-time probes."
   },
   "racc": {
-    "versions": ["1.8.1"],
-    "verified_at": "2026-07-24",
-    "environment": "glibc x86_64 / ruby 3.4.5",
-    "evidence": "RUBYCC=1 gem install racc built ext/racc/cparse (cparse.so); the gem's own test/unit suite passed 71 tests / 319 assertions / 0 failures / 0 errors (Step 99).",
-    "notes": "This was not a fully hands-off gem install: the generated file lib/racc/parser-text.rb had to be manually supplied from the rmake build's generated output. musl and aarch64 not yet verified."
+    "verifications": [
+      {
+        "versions": ["1.8.1"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-07-24",
+        "evidence": "RUBYCC=1 gem install racc built ext/racc/cparse (cparse.so); the gem's own test/unit suite passed 71 tests / 319 assertions / 0 failures / 0 errors (Step 99)."
+      }
+    ],
+    "notes": "This was not a fully hands-off gem install: the generated file lib/racc/parser-text.rb had to be manually supplied from the rmake build's generated output."
   },
   "date": {
-    "versions": ["3.5.1"],
-    "verified_at": "2026-07-24",
-    "environment": "glibc x86_64 / ruby 3.4.5",
-    "evidence": "RUBYCC=1 gem install date succeeded (lib/date_core.so built); the gem's own test/unit suite passed 143 tests / 162,593 assertions / 0 failures / 0 errors / 0 skips (Steps 99-104).",
-    "notes": "musl and aarch64 not yet verified."
+    "verifications": [
+      {
+        "versions": ["3.5.1"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-07-24",
+        "evidence": "RUBYCC=1 gem install date succeeded (lib/date_core.so built); the gem's own test/unit suite passed 143 tests / 162,593 assertions / 0 failures / 0 errors / 0 skips (Steps 99-104)."
+      }
+    ],
+    "notes": ""
   },
   "nkf": {
-    "versions": ["0.3.0"],
-    "verified_at": "2026-07-30",
-    "environment": "glibc x86_64 / ruby 3.4.5",
-    "evidence": "RUBYCC=1 gem install nkf succeeded (nkf.so built through rmake); the gem's own test/unit suite passed 8 tests / 46 assertions / 0 failures / 0 errors (Step 151).",
-    "notes": "nkf ships bundled with the interpreter, so this run is against the .so injected from the rubycc build (the sanity check confirms it via $LOADED_FEATURES). Building it required the incomplete-array-type composition from C11 6.2.7p3 (Step 150): nkf-utf8/utf8tbl.c combines an `extern const unsigned short euc_to_utf8_1byte[];` forward declaration with a bounds-fixing initializer. musl and aarch64 not yet verified."
+    "verifications": [
+      {
+        "versions": ["0.3.0"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-07-30",
+        "evidence": "RUBYCC=1 gem install nkf succeeded (nkf.so built through rmake); the gem's own test/unit suite passed 8 tests / 46 assertions / 0 failures / 0 errors (Step 151)."
+      }
+    ],
+    "notes": "nkf ships bundled with the interpreter, so this run is against the .so injected from the rubycc build (the sanity check confirms it via $LOADED_FEATURES). Building it required the incomplete-array-type composition from C11 6.2.7p3 (Step 150): nkf-utf8/utf8tbl.c combines an `extern const unsigned short euc_to_utf8_1byte[];` forward declaration with a bounds-fixing initializer."
   },
   "stackprof": {
-    "versions": ["0.2.28"],
-    "verified_at": "2026-07-31",
-    "environment": "glibc x86_64 / ruby 3.4.5",
-    "evidence": "RUBYCC=1 gem install stackprof succeeded (stackprof.so built through rmake); the gem's own test/unit suite passed 31 tests / 184 assertions / 0 failures / 0 errors (Step 153).",
-    "notes": "Building this required the __dso_handle synthesis from Step 152: stackprof calls pthread_atfork, which glibc's shared libc does not provide (it ships only in libc_nonshared.a), and the archive member that supplies it references __dso_handle. It also required the _POSIX_MONOTONIC_CLOCK definition from Step 149; without it stackprof falls into the upstream's dead #else branch, which has a syntax error. Step 156 closed the gap this entry originally recorded: the linker now synthesizes a .fini_array entry calling __cxa_finalize(__dso_handle), so the handlers this .so registers are dropped when it is dlclose'd (measured on the built stackprof.so). musl and aarch64 not yet verified."
+    "verifications": [
+      {
+        "versions": ["0.2.28"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-07-31",
+        "evidence": "RUBYCC=1 gem install stackprof succeeded (stackprof.so built through rmake); the gem's own test/unit suite passed 31 tests / 184 assertions / 0 failures / 0 errors (Step 153)."
+      }
+    ],
+    "notes": "Building this required the __dso_handle synthesis from Step 152: stackprof calls pthread_atfork, which glibc's shared libc does not provide (it ships only in libc_nonshared.a), and the archive member that supplies it references __dso_handle. It also required the _POSIX_MONOTONIC_CLOCK definition from Step 149; without it stackprof falls into the upstream's dead #else branch, which has a syntax error. Step 156 closed the gap this entry originally recorded: the linker now synthesizes a .fini_array entry calling __cxa_finalize(__dso_handle), so the handlers this .so registers are dropped when it is dlclose'd (measured on the built stackprof.so)."
   },
   "strscan": {
-    "versions": ["3.1.6"],
-    "verified_at": "2026-07-31",
-    "environment": "glibc x86_64 / ruby 3.4.5",
-    "evidence": "RUBYCC=1 gem install strscan succeeded (strscan.so built through rmake); the gem's own test/unit suite passed 150 tests / 1,049 assertions / 0 failures / 0 errors (Step 157).",
-    "notes": "strscan is a default gem shipped with the interpreter, so this run is against the .so injected from the rubycc build: the sanity check confirms through $LOADED_FEATURES that the injected copy, not the interpreter's own strscan.so, is what the suite loaded. Init_strscan calls rb_require(\"strscan/strscan\"), so the upstream tree's lib/strscan/strscan.rb (which defines StringScanner#scan_integer) must be on the load path as well; it ships in the tarball, so nothing had to be supplied by hand. No test was excluded and the build needed no extra flag. musl and aarch64 not yet verified."
+    "verifications": [
+      {
+        "versions": ["3.1.6"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-07-31",
+        "evidence": "RUBYCC=1 gem install strscan succeeded (strscan.so built through rmake); the gem's own test/unit suite passed 150 tests / 1,049 assertions / 0 failures / 0 errors (Step 157)."
+      }
+    ],
+    "notes": "strscan is a default gem shipped with the interpreter, so this run is against the .so injected from the rubycc build: the sanity check confirms through $LOADED_FEATURES that the injected copy, not the interpreter's own strscan.so, is what the suite loaded. Init_strscan calls rb_require(\"strscan/strscan\"), so the upstream tree's lib/strscan/strscan.rb (which defines StringScanner#scan_integer) must be on the load path as well; it ships in the tarball, so nothing had to be supplied by hand. No test was excluded and the build needed no extra flag."
   },
   "stringio": {
-    "versions": ["3.2.0"],
-    "verified_at": "2026-07-31",
-    "environment": "glibc x86_64 / ruby 3.4.5",
-    "evidence": "RUBYCC=1 gem install stringio succeeded (stringio.so built through rmake); the gem's own test/unit suite passed 103 tests / 626 assertions / 0 failures / 0 errors (Step 157).",
-    "notes": "stringio is a default gem shipped with the interpreter, so this run is against the .so injected from the rubycc build: the sanity check confirms through $LOADED_FEATURES that the injected copy, not the interpreter's own stringio.so (3.1.2 on this interpreter), is what the suite loaded. No test was excluded and the build needed no extra flag; test/ruby/ut_eof.rb is outside the test_*.rb glob because test_stringio.rb pulls it in with require_relative, exactly as the upstream Rakefile leaves it. musl and aarch64 not yet verified."
+    "verifications": [
+      {
+        "versions": ["3.2.0"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-07-31",
+        "evidence": "RUBYCC=1 gem install stringio succeeded (stringio.so built through rmake); the gem's own test/unit suite passed 103 tests / 626 assertions / 0 failures / 0 errors (Step 157)."
+      }
+    ],
+    "notes": "stringio is a default gem shipped with the interpreter, so this run is against the .so injected from the rubycc build: the sanity check confirms through $LOADED_FEATURES that the injected copy, not the interpreter's own stringio.so (3.1.2 on this interpreter), is what the suite loaded. No test was excluded and the build needed no extra flag; test/ruby/ut_eof.rb is outside the test_*.rb glob because test_stringio.rb pulls it in with require_relative, exactly as the upstream Rakefile leaves it."
   },
   "etc": {
-    "versions": ["1.4.6"],
-    "verified_at": "2026-08-01",
-    "environment": "glibc x86_64 / ruby 3.4.5",
-    "evidence": "RUBYCC=1 gem install etc succeeded (etc.so built through rmake); the gem's own test/unit suite passed 18 tests / 449 assertions / 0 failures / 0 errors (Step 162).",
-    "notes": "This entry needs three Step-158-to-161 changes at once: rmake's POSIX backslash removal (Step 158), the confstr/fpathconf/pathconf declarations added to the bundled unistd.h (Step 160), and the __atomic_* builtins (Step 161) that ruby.h reaches unconditionally. The bundled unistd.h defines only _CS_PATH and _PC_PIPE_BUF of the 46 _CS_*/_PC_* constants ext/etc/mkconstants.rb publishes, so ext/etc/constdefs.h comes out with 11 constants where the gcc build gets 179; test_etc.rb guards test_confstr and test_pathconf with 'if defined?', so the shortfall shows up as tests that are never defined rather than as failures. musl and aarch64 not yet verified. The run reported 2 omissions (not failures)."
+    "verifications": [
+      {
+        "versions": ["1.4.6"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-01",
+        "evidence": "RUBYCC=1 gem install etc succeeded (etc.so built through rmake); the gem's own test/unit suite passed 18 tests / 449 assertions / 0 failures / 0 errors (Step 162)."
+      }
+    ],
+    "notes": "This entry needs three Step-158-to-161 changes at once: rmake's POSIX backslash removal (Step 158), the confstr/fpathconf/pathconf declarations added to the bundled unistd.h (Step 160), and the __atomic_* builtins (Step 161) that ruby.h reaches unconditionally. The bundled unistd.h defines only _CS_PATH and _PC_PIPE_BUF of the 46 _CS_*/_PC_* constants ext/etc/mkconstants.rb publishes, so ext/etc/constdefs.h comes out with 11 constants where the gcc build gets 179; test_etc.rb guards test_confstr and test_pathconf with 'if defined?', so the shortfall shows up as tests that are never defined rather than as failures. The run reported 2 omissions (not failures)."
   }
 }

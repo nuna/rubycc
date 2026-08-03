@@ -28,18 +28,29 @@ class TestDoctor < Minitest::Test
 
     raw.each do |name, attrs|
       assert_kind_of String, name
-      %w[versions verified_at environment evidence notes].each do |key|
+      %w[verifications notes].each do |key|
         assert attrs.key?(key), "#{name}: missing #{key.inspect}"
       end
-      assert_kind_of Array, attrs["versions"], "#{name}: versions must be an array"
-      refute_empty attrs["versions"], "#{name}: versions must not be empty"
-      attrs["versions"].each do |req|
-        # Every entry must be a valid Gem::Requirement grammar (exact or range).
-        Gem::Requirement.new(req)
-      end
-      assert_match(/\A\d{4}-\d{2}-\d{2}\z/, attrs["verified_at"], "#{name}: verified_at YYYY-MM-DD")
-      %w[environment evidence notes].each do |key|
-        assert_kind_of String, attrs[key], "#{name}: #{key} must be a string"
+      assert_kind_of Array, attrs["verifications"], "#{name}: verifications must be an array"
+      # An entry with no verification would assert nothing at all; the gem
+      # simply should not be in the database in that case.
+      refute_empty attrs["verifications"], "#{name}: verifications must not be empty"
+      assert_kind_of String, attrs["notes"], "#{name}: notes must be a string"
+
+      attrs["verifications"].each do |record|
+        %w[versions environment verified_at evidence].each do |key|
+          assert record.key?(key), "#{name}: verification missing #{key.inspect}"
+        end
+        assert_kind_of Array, record["versions"], "#{name}: versions must be an array"
+        refute_empty record["versions"], "#{name}: versions must not be empty"
+        record["versions"].each do |req|
+          # Every entry must be a valid Gem::Requirement grammar (exact or range).
+          Gem::Requirement.new(req)
+        end
+        assert_match(/\A\d{4}-\d{2}-\d{2}\z/, record["verified_at"], "#{name}: verified_at YYYY-MM-DD")
+        %w[environment evidence].each do |key|
+          assert_kind_of String, record[key], "#{name}: #{key} must be a string"
+        end
       end
     end
   end
@@ -47,16 +58,20 @@ class TestDoctor < Minitest::Test
   def test_verified_gems_json_holds_only_confirmed_gems
     raw = JSON.parse(File.read(DATA))
     assert_equal %w[bigdecimal date etc json msgpack nkf racc redcarpet stackprof stringio strscan], raw.keys.sort
-    assert_includes raw["json"]["versions"], "2.21.1"
-    assert_includes raw["msgpack"]["versions"], "1.8.3"
-    assert_includes raw["bigdecimal"]["versions"], "4.1.2"
-    assert_includes raw["date"]["versions"], "3.5.1"
-    assert_includes raw["racc"]["versions"], "1.8.1"
-    assert_includes raw["redcarpet"]["versions"], "3.6.1"
-    assert_includes raw["nkf"]["versions"], "0.3.0"
-    assert_includes raw["stackprof"]["versions"], "0.2.28"
-    assert_includes raw["strscan"]["versions"], "3.1.6"
-    assert_includes raw["stringio"]["versions"], "3.2.0"
+
+    # `versions` lives inside each verification record, so the assertion is
+    # "some environment verified this version", which is what doctor reports.
+    all_versions = ->(name) { raw.fetch(name)["verifications"].flat_map { |v| v["versions"] } }
+    assert_includes all_versions["json"], "2.21.1"
+    assert_includes all_versions["msgpack"], "1.8.3"
+    assert_includes all_versions["bigdecimal"], "4.1.2"
+    assert_includes all_versions["date"], "3.5.1"
+    assert_includes all_versions["racc"], "1.8.1"
+    assert_includes all_versions["redcarpet"], "3.6.1"
+    assert_includes all_versions["nkf"], "0.3.0"
+    assert_includes all_versions["stackprof"], "0.2.28"
+    assert_includes all_versions["strscan"], "3.1.6"
+    assert_includes all_versions["stringio"], "3.2.0"
   end
 
   # --- gemspec packaging ----------------------------------------------------
@@ -75,9 +90,19 @@ class TestDoctor < Minitest::Test
     Doctor::VerifiedGems.new(hash)
   end
 
+  # One verification record with the fields the schema requires, so fixtures only
+  # have to name the parts the test under discussion actually cares about.
+  def verification(versions, environment: "x", verified_at: "2026-07-17", evidence: "y")
+    { "versions" => Array(versions), "environment" => environment,
+      "verified_at" => verified_at, "evidence" => evidence }
+  end
+
+  def entry(*records, notes: "")
+    { "verifications" => records, "notes" => notes }
+  end
+
   def test_verified_exact_version_match
-    db = build_db("json" => { "versions" => ["2.21.1"], "verified_at" => "2026-07-17",
-                              "environment" => "x", "evidence" => "y", "notes" => "" })
+    db = build_db("json" => entry(verification("2.21.1")))
     assert db.verified?("json", "2.21.1")
     refute db.verified?("json", "2.21.0")
     refute db.verified?("json", nil)
@@ -85,12 +110,33 @@ class TestDoctor < Minitest::Test
   end
 
   def test_verified_range_match
-    db = build_db("foo" => { "versions" => [">= 1.8, < 2"], "verified_at" => "2026-07-17",
-                             "environment" => "x", "evidence" => "y", "notes" => "" })
+    db = build_db("foo" => entry(verification(">= 1.8, < 2")))
     assert db.verified?("foo", "1.8.3")
     assert db.verified?("foo", "1.9.0")
     refute db.verified?("foo", "2.0.0")
     refute db.verified?("foo", "1.7.0")
+  end
+
+  # Being verified in *any* environment is what "verified" means, but a caller
+  # that reports where it held needs the per-environment breakdown.
+  def test_matching_verifications_returns_every_environment_that_covers_the_version
+    db = build_db(
+      "foo" => entry(
+        verification(["1.0.0", "1.1.0"], environment: "glibc x86_64 / ruby 3.4.5", verified_at: "2026-07-17"),
+        verification("1.1.0", environment: "musl x86_64 / ruby 3.4.5", verified_at: "2026-08-02")
+      )
+    )
+    both = db.matching_verifications("foo", "1.1.0")
+    assert_equal ["glibc x86_64 / ruby 3.4.5", "musl x86_64 / ruby 3.4.5"], both.map(&:environment)
+
+    only_glibc = db.matching_verifications("foo", "1.0.0")
+    assert_equal ["glibc x86_64 / ruby 3.4.5"], only_glibc.map(&:environment)
+
+    assert_empty db.matching_verifications("foo", "2.0.0")
+    assert_empty db.matching_verifications("missing", "1.1.0")
+
+    # The convenience union stays de-duplicated and in record order.
+    assert_equal ["1.0.0", "1.1.0"], db["foo"].versions
   end
 
   def test_shipped_database_verifies_json_and_msgpack
@@ -253,14 +299,8 @@ class TestDoctor < Minitest::Test
     # json/msgpack (already resolved verified elsewhere in the flow) are
     # listed here; racc is deliberately left out so it takes the build path.
     db_entries = {
-      "json" => {
-        "versions" => ["2.21.1"], "verified_at" => "2026-07-17",
-        "environment" => "x", "evidence" => "y", "notes" => ""
-      },
-      "msgpack" => {
-        "versions" => ["1.8.3"], "verified_at" => "2026-07-17",
-        "environment" => "x", "evidence" => "y", "notes" => ""
-      }
+      "json"    => entry(verification("2.21.1")),
+      "msgpack" => entry(verification("1.8.3"))
     }
     map = {
       "rake"     => R.new(status: :no_ext),

@@ -166,13 +166,19 @@ sanity・rubycc ビルドの証明・サマリ行のパースが通るかを先�
 tools/verify_gem_tests.rb --update --step N <gem>
 ```
 
-- `evidence` / `environment` / `verified_at` は実測から自動生成される
-- **既存エントリの `evidence` は追記**される(確認したステップの履歴を溜める欄)
+- スキーマは **1 gem = 1 エントリ、環境ごとの記録がその内側**という入れ子。
+  エントリは `verifications`(配列・挿入順)と `notes`、各記録は
+  `versions` / `environment` / `verified_at` / `evidence`。
+  `versions` が記録の内側にあるのは、環境ごとに検証したバージョンが違いうるため
+- `versions` / `environment` / `verified_at` / `evidence` は実測から自動生成される
+- 記録先はその実行の環境で決まる。**同じ環境の記録があればそれを更新**し
+  (`evidence` は追記 = 確認したステップの履歴を溜める欄)、
+  **無ければ `verifications` の末尾に新しい記録を足す**(`evidence` は新規形から始まる)
 - **`notes` は人間の責務**。機械が観測できない但し書き
   (racc の「`lib/racc/parser-text.rb` を手で供給した」など)は**手で書き加える**。
   skip / pending / omission の件数だけはツールが事実文を自動追記する
-- 新規エントリの既定 notes は `"musl and aarch64 not yet verified."`。
-  **musl / aarch64 は未検証**なので、この但し書きを消さないこと
+- **`notes` に「X ではまだ未検証」と書かない**。未検証はその環境の記録が無いことで
+  表現される。散文にも書くと二重管理になり必ず古くなる。新規エントリの既定 notes は空文字
 
 ### 2-4. `test/test_doctor.rb` の許可リストを手で更新する
 

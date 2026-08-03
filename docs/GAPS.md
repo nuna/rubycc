@@ -27,7 +27,7 @@
 
 | 未測定 | 詳細 |
 |---|---|
-| **musl** での全検証 | `data/verified_gems.json` の全エントリの `notes` が "musl and aarch64 not yet verified" を持つ |
+| **musl** での全検証 | `data/verified_gems.json` のどのエントリにも musl 環境の verification 記録が無い(全記録が `glibc x86_64 / ruby 3.4.5`) |
 | **aarch64 での gem install 実走** | qemu 上で動く aarch64 版 Ruby が要る。ROADMAP §「M4 受け入れ」と同じ枠 |
 | 真の distroless コンテナ検証 | ROADMAP の M3 残項目 |
 
