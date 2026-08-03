@@ -6608,9 +6608,70 @@ resolved 列は動かない。理由は 2 つ:
 
 ---
 
+## Step 177 — オーバーフロー検査組み込み関数 3 つ(M5 H6)
+
+Step 175 が露出させた**ギャップ H(`stdckdint.h` 欠落)を潰すための下ごしらえ**。
+このステップでは**組み込み関数だけ**を実装し、ヘッダは次のステップに分ける。
+
+```c
+__builtin_add_overflow(a, b, res)
+__builtin_sub_overflow(a, b, res)
+__builtin_mul_overflow(a, b, res)
+```
+
+### なぜヘッダの前に組み込み関数なのか
+
+ruby の `ruby/internal/stdckdint.h` は `<stdckdint.h>` を include したあと
+`ckd_add` / `ckd_sub` / `ckd_mul` が**定義されている前提**で進み、
+`ruby/internal/memory.h` は実際に `ckd_mul` を使う(`rbimpl_size_mul_overflow`)。
+つまり **`ckd_*` を定義しない `stdckdint.h` を置くのは嘘**であって、
+「include が通る」だけの解決にしかならない。C23 の `ckd_*` は型ジェネリックなので、
+`_Generic` を持たない rubycc では**組み込み関数として実装するのが唯一まともな道**である。
+
+### バックエンドのフラグを使わず 128 ビットに落とした
+
+x86 の `seto` / aarch64 の `cset ... vs` を使えば 1 命令だが、
+**2 つのバックエンドに手を入れることになるうえ、無限精度のセマンティクスと合わない**。
+`__builtin_*_overflow` は「a op b を無限精度で計算し、格納先の型に収まらなければ 1」であって、
+「計算した型の中で桁あふれしたか」ではない。**オペランドと格納先の型が違ってよい**のがその証拠で、
+`int a = -1; unsigned b = 1;` を `unsigned` に足すと**無限精度では 0**、返り値は 0 になる。
+
+そこで各オペランドを**自分の型のまま** 128 ビットへ拡張して計算する。
+64 ビット以下同士なら加減乗のいずれも 128 ビットに厳密に収まる。
+
+### 1 箇所だけ 128 ビットでも名前を付けられない値がある
+
+非負同士の積だけは `(2**64-1)**2` が **符号付き 128 ビットに収まらない**
+(ビットパターンは正確でも、符号付きとして読むと負に見える)。
+負のオペランドを含む積は絶対値が `2**63 * 2**64 < 2**127` なので符号付き解釈で正確。
+したがって**乗算のときだけ**「両オペランドが非負 かつ 積の符号ビットが立っている」を
+無条件オーバーフローとして OR する。真の積が `2**127` 以上ということは、
+64 ビット以下のどの格納先にも収まらないからである。
+`size_t` 同士の `SIZE_MAX * SIZE_MAX` が実際にこの経路を通る。
+
+### 検証
+
+ホスト gcc との差分で確かめた(このプロジェクトの流儀)。
+`SIZE_MAX * SIZE_MAX`、`LLONG_MIN - 1`、`int -1 + unsigned 1`、
+`signed char` への `200 + 100` を含めて**出力がバイト単位で一致**する。
+
+### 積み残し — aarch64 では乗算形が使えない
+
+`__builtin_mul_overflow` は 128 ビット乗算経由なので **IR の `:mulhi` に依存する**。
+aarch64 バックエンドは `:mulhi` を A4 の未実装項目として明示的に拒否しているため、
+**aarch64 では乗算形だけがコンパイルできない**(加減算形は動く)。
+サンプルも `test_examples_aarch64.rb` の `PENDING` に載せた。
+`umulh` / `smulh` 1 命令で塞げるが、**`stdckdint.h` を出す前に塞がないと
+aarch64 の ruby ビルドを壊す**(memory.h が `ckd_mul` を使うため)。次のステップにする。
+
+---
+
 ## 現在のテスト規模
 
-Step 176 完了時点: **2,743 runs / 8,125 assertions / 0 failures / 0 errors / 45 skips**
+Step 177 完了時点: **2,752 runs / 8,148 assertions / 0 failures / 0 errors / 46 skips**
+(Step 176 から +9 runs / +1 skip = 組み込み関数のテストと、
+aarch64 では乗算形が通らないぶんの pending サンプル 1 件)
+(以前) Step 176 完了時点: **2,743 runs / 8,125 assertions / 0 failures / 0 errors / 45 skips**
 (Step 173 から +4 assertions = コーパスの 4 件が `latest` ではなく固定バージョンに
 なったぶん `test_corpus_census.rb` の検査が増えた。Steps 174・175 は CI 設定と
 ドキュメントだけなのでローカルのテスト規模は動かない)

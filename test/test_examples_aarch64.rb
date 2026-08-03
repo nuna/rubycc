@@ -30,7 +30,11 @@ class TestExamplesAArch64 < Minitest::Test
   PENDING = {
     "step28_extensions" => "A4: alloca",
     "step28_wideint" => "A4: 128-bit multiply",
-    "step44_builtins" => "A4: bit-scan builtins"
+    "step44_builtins" => "A4: bit-scan builtins",
+    # __builtin_mul_overflow computes its infinite-precision product in 128 bits,
+    # so it rests on the same :mulhi step28_wideint does; the add and sub forms
+    # in this sample need nothing the backend lacks.
+    "step177_overflow_builtins" => "A4: 128-bit multiply"
   }.freeze
 
   EXAMPLE_SOURCES.each do |path|

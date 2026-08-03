@@ -1961,6 +1961,8 @@ module Rubycc
           gen_builtin_constant_p(node)
         when Front::AST::BuiltinBitScan
           gen_builtin_bit_scan(node)
+        when Front::AST::BuiltinOverflow
+          gen_builtin_overflow(node)
         when Front::AST::BuiltinAtomic
           gen_builtin_atomic(node)
         when Front::AST::BuiltinUnreachable
@@ -2298,6 +2300,105 @@ module Rubycc
         dst = new_vreg
         emit(:bit_scan, dst: dst, a: value, b: node.direction, size: node.width)
         [dst, Type::Int]
+      end
+
+      # "__builtin_add/sub/mul_overflow(a, b, res)": computes "a op b" with
+      # infinite precision, stores that result converted to *res (wrapping or
+      # truncating exactly as an assignment to that type would, overflow or not),
+      # and yields int 1 when the infinite-precision result was not representable
+      # in *res's type and 0 when it was.
+      #
+      # The infinite precision is carried by a 128-bit intermediate. Each operand
+      # is widened from *its own* type — no usual arithmetic conversion runs
+      # between them, so "int -1" plus "unsigned 1" is 0 and not UINT_MAX — and
+      # sign- or zero-extending a 64-bit-or-narrower operand to 128 bits preserves
+      # its value exactly, so the 128-bit sum, difference or low product carries
+      # the true mathematical result (see #gen_overflow_flag for the one case a
+      # 128-bit pattern cannot name outright). An operand or a destination that is
+      # itself 128 bits wide has no wider intermediate to compute in and is
+      # refused rather than answered wrongly.
+      def gen_builtin_overflow(node)
+        name = node.token.value
+        a, a_type = gen_overflow_operand(node.args[0], name)
+        b, b_type = gen_overflow_operand(node.args[1], name)
+        ptr, result_type = gen_overflow_result_pointer(node.args[2], name)
+
+        wide_a = convert(a, from: a_type, to: Type::Int128, token: node.token)
+        wide_b = convert(b, from: b_type, to: Type::Int128, token: node.token)
+        exact = gen_int128_arith(node.op, wide_a, wide_b, node.token)
+        flag = gen_overflow_flag(node, exact, [wide_a, a_type], [wide_b, b_type], result_type)
+
+        stored = convert(exact, from: Type::Int128, to: result_type, token: node.token)
+        emit(:store, a: ptr, b: stored, size: result_type.size)
+        [flag, Type::Int]
+      end
+
+      # One of the two value operands: any integer expression, keeping its own
+      # type (which the lowering widens on its own). A 128-bit operand would need
+      # a 256-bit intermediate to be checked exactly, which this subset has no
+      # value model for, so it is diagnosed instead of silently answered from a
+      # truncated computation.
+      def gen_overflow_operand(expr, name)
+        vreg, type = gen_value(expr)
+        error_at(expr.token, "argument to '#{name}' is not of integer type") unless type.integer?
+        if wide128?(type)
+          error_at(expr.token, "'#{name}' does not support 128-bit operands")
+        end
+        [vreg, type]
+      end
+
+      # The trailing "res" argument: a pointer to the integer object the result is
+      # stored into, whose type also fixes the range the check is against. Returns
+      # [pointer vreg, pointee type].
+      def gen_overflow_result_pointer(expr, name)
+        vreg, type = gen_value(expr)
+        unless type.pointer? && type.target.integer?
+          error_at(expr.token, "the last argument to '#{name}' is not a pointer to an integer")
+        end
+        if wide128?(type.target)
+          error_at(expr.token, "'#{name}' does not support a 128-bit result type")
+        end
+        [vreg, type.target]
+      end
+
+      # The int 0/1 answer: 1 when the infinite-precision result lies outside the
+      # destination type's range. The result is compared against that type's
+      # bounds as a *signed* 128-bit value, which is exact for every add and sub
+      # (two values below 2**64 in magnitude sum to well under 2**127) and for
+      # every product with a negative operand (magnitude at most 2**63 * 2**64,
+      # under 2**127).
+      #
+      # A product of two non-negative operands is the one case the signed reading
+      # can misname: (2**64-1)**2 needs 128 *unsigned* bits, so a true product of
+      # 2**127 or more shows up with its sign bit set and would read as negative.
+      # Such a product exceeds every destination type's maximum (all are 64 bits
+      # or narrower), so it is folded in as an unconditional overflow rather than
+      # compared: the flag is "the signed reading is out of range, or both
+      # operands were non-negative and the product's sign bit came out set".
+      def gen_overflow_flag(node, exact, operand_a, operand_b, result_type)
+        min, max = integer_range(result_type)
+        below = gen_int128_comparison(:lt, exact, int128_constant(min), true).first
+        above = gen_int128_comparison(:gt, exact, int128_constant(max), true).first
+        flag = int128_bool_or(below, above)
+        return flag unless node.op == :mul
+
+        a_addr, a_type = operand_a
+        b_addr, b_type = operand_b
+        both_non_negative = int128_bool_and(int128_non_negative(a_addr, a_type),
+                                           int128_non_negative(b_addr, b_type))
+        int128_bool_or(flag, int128_bool_and(both_non_negative, int128_sign_bit(exact)))
+      end
+
+      # The inclusive [min, max] range of an integer type, in Ruby Integers. A
+      # _Bool holds only 0 and 1 whatever its byte width says, so it is named
+      # apart from the width-derived ranges.
+      def integer_range(type)
+        return [0, 1] if type.bool?
+
+        bits = type.size * 8
+        return [0, (1 << bits) - 1] if type.unsigned?
+
+        [-(1 << (bits - 1)), (1 << (bits - 1)) - 1]
       end
 
       # The object widths the __atomic_* builtins lower for. Only these two are
@@ -4610,6 +4711,40 @@ module Rubycc
         base
       end
 
+      # A fresh 128-bit temporary holding the compile-time integer `value` (a
+      # destination type's bound, in the overflow builtins). Each eightbyte is
+      # materialized as a 64-bit two's-complement pattern, so a bound at or above
+      # 2**63 — ULONG_MAX is one — needs no unsigned constant form of its own.
+      def int128_constant(value)
+        int128_pack(int128_word(value & 0xFFFF_FFFF_FFFF_FFFF),
+                    int128_word((value >> 64) & 0xFFFF_FFFF_FFFF_FFFF))
+      end
+
+      # An int 0/1: whether the 128-bit value at `addr` has its sign bit set, i.e.
+      # its high eightbyte is negative read as a signed 64-bit value.
+      def int128_sign_bit(addr)
+        zero = new_vreg
+        emit(:const, dst: zero, a: 0, size: 8)
+        int128_cmp64(:lt, load_int128_half(addr, 8), zero)
+      end
+
+      # An int 0/1: whether the 128-bit value at `addr`, widened from an operand of
+      # `type`, is non-negative. A value widened from an unsigned type always is,
+      # so it folds to a constant 1 and emits no test.
+      def int128_non_negative(addr, type)
+        return int128_bool_const(1) if type.unsigned?
+
+        int128_bool_not(int128_sign_bit(addr))
+      end
+
+      # A fresh int vreg holding the 0/1 constant `value`, for a folded-away arm
+      # of a 0/1 computation.
+      def int128_bool_const(value)
+        dst = new_vreg
+        emit(:const, dst: dst, a: value)
+        dst
+      end
+
       # A 128-bit shift, built from 64-bit shifts of the two halves the way a
       # double-word shift crosses the word boundary. The count `c` is split into
       # three ranges so no 64-bit half is ever shifted by 64 or more (which the
@@ -5287,7 +5422,8 @@ module Rubycc
           # measures b's type.
           static_type(node.right)
         when Front::AST::LogicalAnd, Front::AST::LogicalOr,
-             Front::AST::BuiltinConstantP, Front::AST::BuiltinBitScan
+             Front::AST::BuiltinConstantP, Front::AST::BuiltinBitScan,
+             Front::AST::BuiltinOverflow
           Type::Int
         when Front::AST::BuiltinUnreachable
           Type::Void

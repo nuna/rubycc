@@ -223,6 +223,19 @@ module Rubycc
         "__atomic_or_fetch" => [:or_fetch, 3]
       }.freeze
 
+      # The gcc overflow-checked arithmetic builtins, mapping each keyword to its
+      # AST::BuiltinOverflow operator. All three take the same three arguments
+      # (the two operands and the pointer the result is stored through), so the
+      # operator is the only thing the spelling decides. The width-suffixed forms
+      # (__builtin_uaddll_overflow and kin) are deliberately absent: the generic
+      # forms cover every use here, and a missing one is an "undeclared
+      # identifier" rather than a wrong lowering.
+      OVERFLOW_BUILTINS = {
+        "__builtin_add_overflow" => :add,
+        "__builtin_sub_overflow" => :sub,
+        "__builtin_mul_overflow" => :mul
+      }.freeze
+
       # The hard ceiling on how deeply the recursive descent will nest before it
       # rejects an input rather than recurse further. A hostile source (tens of
       # thousands of nested parentheses, unary operators, braces, ...) would
@@ -2707,6 +2720,8 @@ module Rubycc
             parse_builtin_unreachable
           elsif peek.keyword?("__builtin_memcpy")
             parse_builtin_memcpy
+          elsif peek.type == :keyword && OVERFLOW_BUILTINS.key?(peek.value)
+            parse_builtin_overflow
           elsif peek.type == :keyword && ATOMIC_BUILTINS.key?(peek.value)
             parse_builtin_atomic
           elsif peek.punct?("+")
@@ -2927,6 +2942,22 @@ module Rubycc
         operand = parse_assignment_expression
         expect_punct(")")
         AST::BuiltinBitScan.new(operand, direction, width, keyword_tok)
+      end
+
+      # "__builtin_add/sub/mul_overflow ( a , b , res )": exactly three arguments,
+      # parsed as an ordinary argument list so a wrong count is an arity
+      # diagnostic. The keyword decides only the operator; the operand types are
+      # the generator's to check.
+      def parse_builtin_overflow
+        keyword_tok = advance # the "__builtin_..._overflow" keyword
+        op = OVERFLOW_BUILTINS.fetch(keyword_tok.value)
+        expect_punct("(")
+        args = parse_argument_expression_list
+        expect_punct(")")
+        unless args.size == 3
+          error_at(keyword_tok, "'#{keyword_tok.value}' expects 3 arguments, have #{args.size}")
+        end
+        AST::BuiltinOverflow.new(op, args, keyword_tok)
       end
 
       # "__atomic_xxx ( ... )": one of the nine gcc atomic builtins rubycc
