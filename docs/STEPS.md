@@ -5841,9 +5841,99 @@ cwd 相対でレポジトリ内のファイルを読むテストは無いこと�
 
 ---
 
+## Step 163 — 共有ライブラリの r-x ロードセグメントが `.plt` を覆っていなかった(M5 H6)
+
+default gem 検証の 1 件目に io-nonblock 0.3.2 を選んだ(ROADMAP の 7 件表の 1 番。
+単一ファイル ext で最も安く、差し込み手順の足場固めに使う想定だった)。
+**足場固めのつもりの 1 件目が、11 gem を検証してきた間ずっと潜んでいたリンカのバグを引いた。**
+
+### 症状と切り分け
+
+ビルドは通り、mkmf の probe も全て gcc と同じ結果になった
+(`rb_io_descriptor` yes / `O_NONBLOCK` yes / `F_GETFL` yes)。
+にもかかわらず `require "io/nonblock"` が **[BUG] Segmentation fault** で落ちる。
+
+`Fiddle.dlopen` は成功し、`dlsym("Init_nonblock")` もアドレスを返した。
+つまり**壊れているのは動的リンクではなく、`Init_nonblock` を実行した瞬間**である。
+逆アセンブルすると最初の命令列が `call 0xa020 <rb_ext_ractor_safe@plt>` で、
+クラッシュ時の RIP がロードベース + `0xa020` と一致した。
+
+セクションとセグメントを突き合わせて原因が確定した:
+
+| | 範囲 |
+|---|---|
+| `.text` | `0x160`–`0x9b7b` |
+| `.plt` | `0x9b80`–`0xa040` |
+| r-x の PT_LOAD | offset 0 / vaddr 0 / **`p_filesz` = `0x9ee0`** |
+
+正しい `p_filesz` は `0xa040`。差の **`0x160` は `.text` のファイルオフセット**、すなわち
+ELF ヘッダ + プログラムヘッダテーブルの長さである。ローダは `p_filesz` をページ境界に
+切り上げてマップするので `0xa000` までは載り、**`0xa000`–`0xa040` にある PLT エントリだけが
+未マップページに落ちる**。`rb_ext_ractor_safe@plt` = `0xa020` がちょうどそこだった。
+
+**ホスト gcc で同じ gem をビルドした対照は正常にロードできた**ので、非は rubycc 側に確定
+(Step 146 で決めた「失敗したらまず gcc 対照を取る」の適用。今回は原因が自前の ELF 出力に
+閉じていたので対照は追認にとどまったが、環境のせいにしない担保としては要る)。
+
+### 原因
+
+`lib/rubycc/link/shared_linker.rb` の `build_phdrs` が r-x セグメントの長さを
+`segment_extent` から取っていた。このヘルパが返すのは
+
+```ruby
+{ offset: sections.first.offset, filesz: finish - sections.first.offset }
+```
+
+= **最初のセクションのオフセットを起点とした長さ**である。`ro` / `rw` セグメントは
+`p_offset` にも同じ起点を入れるので整合するが、**r-x だけはファイルオフセット 0 から
+マップする**(ELF ヘッダと phdr 自身を覆うため)。起点が違うのに同じ計算を使ったので、
+先頭 `0x160` バイトぶん一貫して過小になっていた。
+
+`lib/rubycc/link/executable_linker.rb` は**同じ箇所を最初から正しく**
+`rx_last.offset + rx_last.size` と絶対値で計算していた。実行ファイル側だけが正しく、
+共有ライブラリ側が取り残されていた形で、**両者が同じ不変条件を別々に書いていたことが
+食い違いを見えなくしていた**。
+
+### なぜ 11 gem を検証する間ずっと表面化しなかったか
+
+**過小分がページ切り上げに吸収される限り実害が出ない**からである。
+`align_up(過小な終端, 0x1000) >= 本当の終端` なら全バイトがマップされ、何事も起きない。
+表面化するのは、過小な終端と本当の終端が**ページ境界をまたぐとき**だけ
+(ここでは `0x9ee0` → `0xa000` < `0xa040`)。つまり**出力サイズ次第の宝くじ**であり、
+既存の検証済み 11 gem はたまたま当たらなかっただけである。
+「11 gem が通っている」ことは、この不変条件が守られている証拠には**なっていなかった**。
+
+### 回帰テストはサイズ非依存の不変条件で書いた
+
+**サイズ依存のテストを書かなかった**のは、このバグがサイズの偶然で表面化する以上、
+特定の `.so` を固定したテストは次の同種のバグを捕まえられないからである。書いたのは:
+
+> PT_LOAD に属する全 `SHF_ALLOC` セクションは、そのセグメントの
+> `[p_vaddr, p_vaddr + p_memsz)` に収まり、`SHT_NOBITS` でなければ
+> `[p_offset, p_offset + p_filesz)` にも収まる
+
+x86_64(`test/test_shared_object.rb`)と aarch64(`test/test_aarch64_shared_object.rb`)の
+両方に置いた。**修正前に落ちることを確認済み**で、そのときの落ち方が示唆的だった:
+テスト用の小さな `.so` では過小分が `.text` の開始位置にすら届かず、
+`.text at 0x160 must fall inside a PT_LOAD segment` = **どのセグメントにも属さない**
+という形で落ちる。実際の gem では末尾の `.plt` だけが溢れ、小さな `.so` では
+セグメントが `.text` の手前で終わる。**同じバグが規模によって別の顔で出る**ことの実例。
+
+### この修正で io-nonblock は通った
+
+再ビルドした `nonblock.so` の r-x は `FileSiz 0x00a040` になり `.plt` 末尾を覆う。
+gem 自身のテストスイートは **2 tests / 8 assertions / 0 failures / 0 errors** で PASS。
+記録は Step 164 に分けた(ROADMAP の横断ルール「ギャップの修正は別ステップに切る」)。
+
+---
+
 ## 現在のテスト規模
 
-Step 162 完了時点: **2,712 runs / 7,766 assertions / 0 failures / 47 skips**
+Step 163 完了時点: **2,717 runs / 7,919 assertions / 0 failures / 47 skips**
+(Step 162 から +5 = PT_LOAD の不変条件 4 件(x86_64・aarch64 各 2)と、
+`verified_gems.json` のスキーマを入れ子にしたときに足した
+`matching_verifications` の 1 件)
+(以前) Step 162 完了時点: **2,712 runs / 7,766 assertions / 0 failures / 47 skips**
 (runs は Step 161 と同数 = DB のスキーマ検査が etc の 1 件分増えたのみで、
 新しいテストメソッドは足していない)
 (以前) Step 161 完了時点: **2,712 runs / 7,752 assertions / 0 failures / 47 skips**

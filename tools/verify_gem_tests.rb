@@ -359,9 +359,9 @@ RECIPES = {
     }
   },
 
-  # etc does not pass yet, and is kept for the same reason stackprof and nkf were
-  # (it is the harness that will confirm the fixes). Three rubycc gaps were
-  # measured in Step 157, each found by removing the one before it:
+  # etc passes as of Step 162. It is kept annotated because the three rubycc gaps
+  # it exposed are what Steps 158-161 fixed, and this recipe is the harness that
+  # confirmed them. Measured in Step 157, each found by removing the one before it:
   #   1. rmake's recipe tokenizer does not do POSIX backslash removal, so mkmf's
   #      `-DSYSCONFDIR=\"...\"` reaches the compiler with its backslashes intact.
   #      GNU make + rubycc builds the same Makefile, and rmake + gcc fails the
@@ -400,6 +400,34 @@ RECIPES = {
       # etc has no Ruby implementation at all (the gem is the extension), so there
       # is no fallback to detect -- only the wrong *copy* to rule out, which is
       # what the injected-.so check does.
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "io-nonblock" => {
+    version: "0.3.2",
+    tarball: "https://github.com/ruby/io-nonblock/archive/refs/tags/v0.3.2.tar.gz",
+    # create_makefile("io/nonblock"), so the installed gem puts the one extension
+    # under lib/io/. The upstream tarball ships no lib/ at all (the Rakefile
+    # builds into lib/<ruby version>/<platform>), so injecting here creates it.
+    sos: { "lib/io/nonblock.so" => "lib/io/nonblock.so" },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    # The Rakefile's Rake::TestTask: libs = the built extension's dir + test/lib,
+    # ruby_opts -rhelper, test_files FileList["test/**/test_*.rb"].
+    load_paths: %w[lib test/lib],
+    require_flags: %w[helper],
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      # test_flush.rb wraps its own `require 'io/nonblock'` in a rescue LoadError
+      # and then guards the whole class with `if IO.method_defined?(:nonblock)`,
+      # so a suite that loaded nothing reports zero failures rather than an error.
+      # Requiring it here, outside that rescue, is what turns that into a failure.
+      requires: %w[io/nonblock],
+      # io/nonblock ships with the interpreter and has no Ruby implementation to
+      # fall back to, so the only wrong outcome to rule out is the interpreter's
+      # own copy winning the require -- exactly what the injected-.so check sees.
       expr: "injected_so_loaded?"
     }
   }

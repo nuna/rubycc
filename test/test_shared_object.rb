@@ -241,6 +241,27 @@ class TestSharedObject < Minitest::Test
     assert_equal 0, stack[:memsz]
   end
 
+  # A loader maps only p_filesz bytes of a PT_LOAD segment (rounded up to the
+  # next page), so any allocatable, file-backed section placed in a segment
+  # but lying outside its [p_offset, p_offset + p_filesz) window risks landing
+  # on a page the loader never mapped. This must hold for every segment
+  # regardless of how large any one section happens to be — a size-dependent
+  # fixture would only catch the bug when the shortfall crosses a page
+  # boundary, exactly the way it hid for every gem this linker had verified
+  # before io-nonblock 0.3.2 exposed it (Step 163).
+  def test_every_allocatable_section_fits_within_its_load_segments_file_extent
+    assert_sections_fit_their_load_segments(build_so([SELF_CONTAINED]))
+  end
+
+  # The concrete shape of the reported failure: an external call routes
+  # through .plt, the last section placed in the r-x segment, so a short
+  # r-x p_filesz clips .plt first.
+  def test_plt_fits_within_the_rx_load_segments_file_extent
+    skip "libc unavailable" unless libc_path
+
+    assert_sections_fit_their_load_segments(build_so([EXTERNAL], needed: [libc_path]))
+  end
+
   # --- determinism --------------------------------------------------------
 
   def test_output_is_byte_identical_for_identical_inputs
@@ -1405,6 +1426,34 @@ class TestSharedObject < Minitest::Test
     call(lib, "my_len", [Fiddle::TYPE_VOIDP], Fiddle::TYPE_LONG).call("acceptance")
   ensure
     lib&.close
+  end
+
+  # Checks the PT_LOAD invariant every segment must uphold no matter what it
+  # happens to contain: each allocatable section placed in it fits entirely
+  # within its [p_vaddr, p_vaddr + p_memsz) memory extent and — unless it is
+  # SHT_NOBITS and so carries no file bytes at all — within its
+  # [p_offset, p_offset + p_filesz) file extent too. A section is matched to
+  # the one segment whose memory extent contains its address; every
+  # allocatable section must land in exactly one.
+  def assert_sections_fit_their_load_segments(bytes)
+    r = Reader.read(bytes)
+    loads = program_headers(bytes).select { |p| p[:type] == PT_LOAD }
+
+    r.sections.each do |sec|
+      next if sec.flags & SHF_ALLOC == 0
+
+      seg = loads.find { |p| sec.addr >= p[:vaddr] && sec.addr < p[:vaddr] + p[:memsz] }
+      refute_nil seg, "#{sec.name} at #{format('%#x', sec.addr)} must fall inside a PT_LOAD segment"
+      assert_operator sec.addr + sec.size, :<=, seg[:vaddr] + seg[:memsz],
+                       "#{sec.name} must fit within its segment's memory extent (p_vaddr + p_memsz)"
+      next if sec.nobits?
+
+      assert_operator sec.offset + sec.size, :<=, seg[:offset] + seg[:filesz],
+                       "#{sec.name} (file [#{format('%#x', sec.offset)}, " \
+                       "#{format('%#x', sec.offset + sec.size)})) must fit within its segment's " \
+                       "file extent [#{format('%#x', seg[:offset])}, " \
+                       "#{format('%#x', seg[:offset] + seg[:filesz])})"
+    end
   end
 
   # Parses the ELF program header table straight from the image bytes; the

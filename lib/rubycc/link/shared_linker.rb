@@ -1509,11 +1509,19 @@ module Rubycc
       def phnum = 5
 
       def build_phdrs
-        rx = segment_extent(@rx, base: 0)
+        # The r-x segment is the one exception to segment_extent's "span from
+        # the first section's file offset" rule: it maps from file offset 0 /
+        # vaddr 0, ahead of every section, so the ELF header and program header
+        # table it carries are covered too. p_filesz must therefore be the
+        # *absolute* length up to the last file-backed byte (last.offset +
+        # last.size), not that length minus the leading sections' own offset —
+        # matching ExecutableLinker's rx_filesz, which faces the same layout.
+        rx_last = @rx.reject { |s| s.type == SHT_NOBITS }.last
+        rx_filesz = rx_last.offset + rx_last.size
         ro = segment_extent(@ro, base: @ro.first.vaddr)
         dynamic = named(".dynamic")
         [
-          phdr(PT_LOAD, PF_R | PF_X, 0, 0, rx[:filesz], rx[:filesz], seg_align),
+          phdr(PT_LOAD, PF_R | PF_X, 0, 0, rx_filesz, rx_filesz, seg_align),
           phdr(PT_LOAD, PF_R, ro[:offset], ro[:offset], ro[:filesz], ro[:filesz], seg_align),
           phdr(PT_LOAD, PF_R | PF_W, @rw_start, @rw_start,
                @file_end - @rw_start, @mem_end - @rw_start, seg_align),

@@ -751,7 +751,13 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   (`io-wait` `io-nonblock` `io-console` `erb` `zlib` `digest` `psych` 等)。
   **fcntl は上流にテストスイートが無く (d) レベルの証拠が原理的に得られない**ため対象外。
 
-### 次の作業計画 — default gem 群の検証(Steps 163〜169 予定)
+### 次の作業計画 — default gem 群の検証(Steps 164〜170 予定)
+
+**Step 163 はこの計画の 1 番(io-nonblock)が露出させたリンカのバグに使った**
+(共有ライブラリの r-x ロードセグメントが `.plt` の末尾を覆っておらず、
+PLT エントリが未マップページに落ちて `require` が segfault していた)。
+横断ルール「ギャップの修正は別ステップに切る」に従ったので、7 件は 1 つ後ろにずれる。
+**この 1 件目で 11 gem ぶん潜んでいたバグが出た**ことは、この計画の値打ちそのものである。
 
 **1 gem = 1 ステップ**。手順は `.claude/skills/corpus-expansion/SKILL.md` のフェーズ 2
 そのままで、レシピの雛形は `tools/verify_gem_tests.rb` の **`RECIPES["etc"]` が最も近い**
