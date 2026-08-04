@@ -366,10 +366,11 @@ module Rubycc
       # A decimal floating constant (6.4.4.2): an integer part, an optional
       # fraction after a ".", and an optional exponent ("e"/"E" with an optional
       # sign and required digits). A trailing f/F makes it `float`, l/L `long
-      # double` (treated as `double`), and no suffix `double`. String#to_f parses
-      # every admitted spelling (including "1." and ".5") over the characters
-      # already validated here. An exponent with no digits, and a trailing
-      # identifier or "." character, are rejected.
+      # double` (treated as `double`), and no suffix `double`. The decimal is
+      # converted through Rational so a C header constant outside Ruby's Float
+      # range (for example `1e10000`) produces Infinity or 0.0 without Ruby's
+      # `-w` range warning. An exponent with no digits, and a trailing identifier
+      # or "." character, are rejected.
       def read_floating_constant
         start = @pos
         text = +""
@@ -393,17 +394,12 @@ module Rubycc
           raise LexError.new("invalid suffix on floating constant", @pos)
         end
         # C allows a floating constant with a "." followed by no fraction
-        # digits before the exponent (6.4.4.2), e.g. "1.e5". Ruby's
-        # String#to_f up to 3.3.x (fixed in 3.4) drops the exponent for
-        # exactly this shape and silently returns the wrong value (e.g.
-        # "1.e5".to_f == 1.0 instead of 100000.0). Since "N." and "N.0" are
-        # the same number, pad the fraction with a "0" before conversion so
-        # to_f sees the shape it parses correctly on every supported Ruby.
-        # This only affects the string handed to to_f, not the token's
-        # spelling (Result carries no spelling field; `text` here is purely
-        # a conversion buffer).
-        to_f_text = saw_fraction_digit ? text : text.sub(".", ".0")
-        Result.new(:float, to_f_text.to_f, nil, suffix)
+        # digits before the exponent (6.4.4.2), e.g. "1.e5". Since "N." and
+        # "N.0" are the same number, pad the fraction with a "0" before
+        # Rational parses it. This only affects the conversion buffer, not the
+        # token's spelling (Result carries no spelling field).
+        conversion_text = saw_fraction_digit ? text : text.sub(".", ".0")
+        Result.new(:float, Rational(conversion_text).to_f, nil, suffix)
       end
 
       # Consumes a floating constant's f/F or l/L suffix, returning it normalized

@@ -1877,18 +1877,6 @@ module Rubycc
         end
       end
 
-      # A vreg holding `base + offset`, or `base` itself when the offset is zero
-      # (the object's first byte needs no arithmetic).
-      def offset_address(base, offset)
-        return base if offset.zero?
-
-        off = new_vreg
-        emit(:const, dst: off, a: offset)
-        addr = new_vreg
-        emit(:add, dst: addr, a: base, b: off, size: 8)
-        addr
-      end
-
       # Lowers an expression, returning [result_vreg, Rubycc::Type]. The type
       # travels alongside the value so every caller can type-check its operands
       # and pick the right access width for pointer loads and stores.

@@ -51,7 +51,7 @@ jobs:
         ruby: ["3.3", "4.0"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the toolchains the differential tests compare against
         # qemu-user, NOT qemu-user-static: the aarch64 execution tests look for
@@ -115,7 +115,7 @@ jobs:
 
       - name: Upload the test log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           # Artifact names must be unique across the whole run (upload-artifact
           # v4 rejects duplicates), hence the matrix value in the name.
