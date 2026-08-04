@@ -143,7 +143,45 @@ class TestCorpusCensus < Minitest::Test
     assert_equal "", CENSUS.gate_hint("sys/random.h"), "unknown header should carry no gate hint"
   end
 
+  # ---- report rendering is deterministic (no timestamps / interpreter version) ----
+
+  def test_render_report_is_deterministic_across_runs
+    results = sample_results
+    bundled = Set.new(%w[stdio.h sys/socket.h])
+
+    first = CENSUS.render_report(results, bundled)
+    second = CENSUS.render_report(results, bundled)
+
+    assert_equal first, second, "render_report must be a pure function of its inputs"
+  end
+
+  def test_render_report_has_no_date_like_strings
+    body = CENSUS.render_report(sample_results, Set.new(%w[stdio.h]))
+    refute_match(/\d{4}-\d{2}-\d{2}/, body, "snapshot must not embed a run-specific date")
+  end
+
+  def test_render_report_does_not_embed_ruby_description
+    body = CENSUS.render_report(sample_results, Set.new(%w[stdio.h]))
+    refute_includes body, RUBY_DESCRIPTION, "snapshot must not embed the interpreter version"
+  end
+
   private
+
+  def sample_results
+    [
+      {
+        name: "examplegem", requested_version: "1.2.3", note: "sample",
+        status: :ok, reason: nil, version: "1.2.3",
+        includes: { "stdio.h" => :bundled, "cpuid.h" => :gap },
+        ruby_self: ["ruby.h"], ext_c_files: 2, ext_h_files: 1
+      },
+      {
+        name: "othergem", requested_version: nil, note: nil,
+        status: :excluded, reason: "C++ sources present", version: nil,
+        includes: {}, ruby_self: [], ext_c_files: 0, ext_h_files: 0
+      }
+    ]
+  end
 
   def make_header(root, rel)
     path = File.join(root, rel)
