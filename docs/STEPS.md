@@ -6884,9 +6884,58 @@ phase 2 は今度こそ走ったが、**`RUBYCC=1 gem install io-wait` が musl 
 
 ---
 
+## Step 182 — `_Noreturn` 関数指定子に対応する(M5 H6)
+
+Step 181 が記録したギャップ J の解消。**受け取って捨てるだけ**である。
+
+### 「既知の制限」が「壁」になっていた
+
+この制限は誰も知らなかったわけではない。`include/stdnoreturn.h` が
+**自分でそう書いていた** — 「rubycc は `_Noreturn` を受け付けないので
+`noreturn` を空に展開する。指定子は最適化のヒントに過ぎず、
+落としても観測可能な振る舞いは変わらない」。判断自体は正しい。
+
+**覆えていなかったのは、libc 自身のヘッダが素のキーワードを書いてくる経路**である。
+glibc は `__attribute__((__noreturn__))` を使うので当たらない。
+musl は `_Noreturn void abort (void);` と書く。だから
+
+**回避策がヘッダ 1 枚に閉じているとき、その外から同じ構文が来る経路を塞げているかは
+別に確かめないといけない。** ここでは 1 つの libc でしか試していなかったので、
+「マクロで避けられている」が「言語機能として無い」を隠していた。
+
+### `inline` の通り道にそのまま載せた
+
+`_Noreturn` は C11 6.7.4 の**関数指定子**で、`inline` と文法上の位置づけが同じである。
+そこで `DeclSpecInfo` に `inline_p` と対称な `noreturn_p` を置き、
+既存の `reject_object_specifiers` に相乗りさせた。**新しい仕組みは作っていない。**
+
+意味は持たせない。根拠は上記のとおり `stdnoreturn.h` が既に書いていたものと同じで、
+このステップでその根拠が変わったわけではない — **変わったのは適用範囲だけ**である。
+
+### 関数以外への適用は gcc より厳しくした
+
+```
+rubycc: error:   variable 'x' declared '_Noreturn'
+gcc:    warning: variable 'x' declared '_Noreturn'
+```
+
+文言は揃えたが、**gcc が warning のところを rubycc は error にしている**。
+C11 の制約違反であり、黙って通すより落とす方がこのプロジェクトの方針に合う。
+
+### `stdnoreturn.h` を本来の定義に戻した
+
+`#define noreturn`(空)→ `#define noreturn _Noreturn`。
+**回避策を残したままにすると、次に読む人が「rubycc は今も受け付けない」と読む。**
+ヘッダのコメントも、いつ・何によって前提が変わったかを書き直した。
+
+---
+
 ## 現在のテスト規模
 
-Step 181 完了時点: **2,764 runs / 8,177 assertions / 0 failures / 0 errors / 44 skips**
+Step 182 完了時点: **2,776 runs / 8,203 assertions / 0 failures / 0 errors / 44 skips**
+(Step 181 から +12 runs = パーサ 5 件・診断 2 件・gcc 差分の新ファイル 4 件・
+examples 1 件。**aarch64 でも PENDING 無しで通る**)
+(以前) Step 181 完了時点: **2,764 runs / 8,177 assertions / 0 failures / 0 errors / 44 skips**
 (Step 180 から +1 run = バンドル自身の区切りの検証)
 (以前) Step 180 完了時点: **2,763 runs / 8,172 assertions / 0 failures / 0 errors / 44 skips**
 (Step 179 から +6 runs = パラメタ化そのものの検証 6 件。

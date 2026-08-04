@@ -1255,6 +1255,20 @@ class TestDiagnostics < Minitest::Test
     assert_match(/variable 'z' declared 'inline'/, error.description)
   end
 
+  # _Noreturn is the second function specifier (6.7.4); like "inline", it may
+  # only apply to a function (Step 182).
+  def test_noreturn_on_a_variable_is_rejected
+    source = "_Noreturn int x; int main(void) { return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/variable 'x' declared '_Noreturn'/, error.description)
+  end
+
+  def test_noreturn_on_a_local_variable_is_rejected
+    source = "int main(void) { _Noreturn int z; return 0; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/variable 'z' declared '_Noreturn'/, error.description)
+  end
+
   def test_static_assert_failure_reports_the_message
     source = "int main(void) { _Static_assert(0, \"boom\"); return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }

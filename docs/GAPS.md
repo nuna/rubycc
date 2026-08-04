@@ -13,7 +13,6 @@
 | E | `F_GETPIPE_SZ` / `F_SETPIPE_SZ` が同梱 `fcntl.h` に無い(`Fcntl` 定数が 24 対 26。**共通 24 個の値は一致**) | fcntl のみ | 低 | STEPS.md Step 157。**埋めても検証済み gem は増えない** — fcntl は上流にテストスイートが無く (d) レベルの証拠が原理的に得られないため |
 | G | **同梱ヘッダが glibc の ABI を焼き込んでいる**。実測(musl 初回実行): `int_fast16_t` / `int_fast32_t` が musl では 4 バイト、rubycc は 8 バイト(glibc の値) | **M5 が掲げた「glibc/musl 互換ヘッダ」の主張が musl 側で外れている**。musl では全スイート 21 failures / 18 errors | **高** | STEPS.md Step 175。`<stdint.h>` は最も直接的な 1 例で、26 件ある rubycc 側の差の全容はまだ分類しきれていない |
 | I | **ABI ハーネスの glibc 固有ケースの分類が未完(残りわずか)**。Step 180 で仕組みを入れ、Steps 180・181 の 2 回の musl 実測で 13 ケースを分類。**gcc がエラーを打ち切るため、`_IS*` / `LC_*` / `_NL_ITEM*` の 3 系統は「系統ごと」の推論で移した**(全メンバの個別実測はしていない) | 推論が外れていれば、その項目が musl で不要に落ちる | 低 | STEPS.md Steps 175・180・181。次の musl 実走で残りが出る |
-| J | **`_Noreturn` 関数指定子を受け付けない**(C11 6.7.4)。実測: `_Noreturn void die(void);` が `error: expected type specifier`。**musl のヘッダは素の `_Noreturn` を使う**(glibc は `__attribute__((__noreturn__))`)ので、musl では `/usr/include/stdlib.h` の時点で止まる | **musl で `ruby.h` が通らない**(`TestRubySmoke` 5 件)。`stdckdint.h`(ギャップ H)を埋めても残った、その次の壁 | **高** | STEPS.md Step 181。`include/stdnoreturn.h` は「rubycc は `_Noreturn` を受け付けないので `noreturn` を空に展開する」と明記して回避しているが、**その回避はヘッダ経由の利用しか覆わない** |
 
 ## 2. 未解消の負債
 
@@ -42,6 +41,7 @@
   no-op になる): Step 173 で解消。
 - **Step 175 の H**(musl の実測が露出。同梱ヘッダに `stdckdint.h` が無い):
   Steps 177〜179 で解消(組み込み関数 → aarch64 の `:mulhi` → ヘッダ本体)。
-  **G と I は上の表に残っている。**
+- **Step 181 の J**(musl の 2 回目が露出。`_Noreturn` 関数指定子の未対応):
+  Step 182 で解消。**G と I は上の表に残っている。**
 
 いずれも設計判断は STEPS.md の各ステップに記録がある。

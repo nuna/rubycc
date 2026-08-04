@@ -32,7 +32,7 @@ module Rubycc
       Result = Struct.new(:type, :value, :base, :suffix)
 
       KEYWORDS = %w[int char void short long signed unsigned _Bool float double struct union
-                    enum typedef static extern const volatile inline register auto
+                    enum typedef static extern const volatile inline _Noreturn register auto
                     return if else while do for break continue
                     switch case default goto sizeof
                     _Static_assert _Alignof __int128
