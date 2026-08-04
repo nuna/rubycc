@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The reproducible-build step reads the commit timestamp out of git.
           fetch-depth: 0
@@ -92,7 +92,7 @@ jobs:
           gem specification "tmp/ci/rubycc-${version}.gem" files
 
       - name: Upload the gem
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rubycc-gem
           path: tmp/ci/*.gem

@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the toolchains the differential tests compare against
         # Same set as Tier A (.github/workflows/test.yml); qemu-user rather than
@@ -81,7 +81,7 @@ jobs:
 
       - name: Upload the regenerated census
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: weekly-census
           path: |
@@ -101,7 +101,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the toolchains the differential tests compare against
         # Same set as Tier A; see the comment in the census job.
@@ -146,7 +146,7 @@ jobs:
 
       - name: Upload the acceptance logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: weekly-acceptance-logs
           path: tmp/ci/*.log
@@ -162,7 +162,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the toolchains the differential tests compare against
         # Same set as Tier A; see the comment in the census job.
@@ -206,7 +206,7 @@ jobs:
         # hosted runner would pollute the measurement record in
         # benchmark/results/, which docs/THROUGHPUT.md reads as same-machine data.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: weekly-throughput
           path: |
@@ -230,7 +230,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # ruby:4.0-alpine matches the Ruby version the other weekly jobs use, so a
       # difference this job reports is a libc difference and not a version one.
@@ -251,7 +251,7 @@ jobs:
 
       - name: Upload the musl logs and any recorded verifications
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: weekly-musl
           path: |
@@ -272,7 +272,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the toolchains the differential tests compare against
         # Same set as Tier A; see the comment in the census job.
@@ -328,7 +328,7 @@ jobs:
 
       - name: Upload the test log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: weekly-test-log-ruby3.4
           path: tmp/ci/*.log
