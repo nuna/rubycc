@@ -7304,9 +7304,48 @@ rubycc が供給しているか」を、どちらのホストでも確かめる�
 
 ---
 
+## Step 192 — musl で **3/3 PASS**。gem が入るようになった(M5 H6)
+
+Step 190 のリンカ修正(musl の libc の在処)が効いた。
+
+| gem | musl での実走 |
+|---|---|
+| io-wait 0.4.0 | 26 tests / 41 assertions |
+| **stringio 3.2.0** | **103 tests / 626 assertions** |
+| **json 2.21.1** | **596 tests / 3,390 assertions**(`parser.so` + `generator.so`) |
+
+いずれも 0 failures / 0 errors。**musl の検証済み記録が 1 → 3 件**になった。
+
+### 直したのは gem 側ではなくリンカの探索先だった
+
+Step 183 で「3 gem 中 2 gem が入らない」と分かったとき、**理由は書けなかった**
+(mkmf.log をアーティファクトに入れ忘れていた)。入れてから 1 回回したら
+`cannot locate the C library` が出て、**gem の問題ですらなかった**ことが分かった。
+
+**「1/3 しか通らない」を gem の性質の話だと読まなくてよかった。**
+io-wait だけ通っていたのは、その extconf が probe を持たず**実行ファイルのリンクが
+一度も走らない**からで、gem の相性ではなく**踏む経路の違い**だった。
+
+### 記録の中の「Step 191」表記について
+
+`evidence` 文字列は **`(Step 191)`** と書かれている。CI を dispatch したとき
+`verify_step=191` を渡した後で、`__isoc_va_list` の修正が Step 191 を取ったためである。
+`data/verified_gems.json` は**ツール以外が書かない**規約なので、
+**番号を手で書き換えることはしない。** ここに経緯を残す。
+
+### スイート側も 17 → 16
+
+`2,803 runs / 15 failures / 1 error`。エラー 1 件は `__isoc_va_list` で、
+**この実走より後の Step 191 で解消済み**(次の実走で消えるはず)。
+
+---
+
 ## 現在のテスト規模
 
-Step 188 完了時点: **2,803 runs / 8,308 assertions / 0 failures / 0 errors / 44 skips**
+Step 192 完了時点: **2,804 runs / 8,336 assertions / 0 failures / 0 errors / 44 skips**
+(Step 188 から +1 run = 両方の va_list 綴りの検査。assertions の伸びは
+musl の verification が 3 本入ったぶん DB のスキーマ検査が増えた分)
+(以前) Step 188 完了時点: **2,803 runs / 8,308 assertions / 0 failures / 0 errors / 44 skips**
 (Step 187 から +3 runs = センサスが決定的であることを守る検査 3 件)
 (以前) Step 187 完了時点: **2,800 runs / 8,303 assertions / 0 failures / 0 errors / 44 skips**
 (Step 186 からの差は引き算形のテスト 9 件と examples 1 件。
