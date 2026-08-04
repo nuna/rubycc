@@ -171,14 +171,16 @@ class TestHeaderAbi < Minitest::Test
            # tests with no locale table, so the value must match glibc exactly.
            "isascii('a')", "isascii(200)", "isascii(0)", "isascii(127)",
            "toascii(0x1FF)", "toascii('A')",
-           HeaderAbiHarness::GLIBC_ONLY,
-           "_ISalpha", "_ISdigit", "_ISspace",
-           "_ISblank", "_IScntrl", "_ISpunct", "_ISalnum"],
-    # _ISupper and _ISlower are glibc's own spellings of two classification
-    # table bits: measured on musl (Step 175), gcc there fails on both. The
-    # rest of the _IS* set stays in the common list -- gcc stopped reporting
-    # after those two, so whether musl has the others is not yet measured.
-    glibc: { ints: %w[_ISupper _ISlower] }
+           HeaderAbiHarness::GLIBC_ONLY],
+    # The whole _IS* set is glibc's own spelling of the classification table's
+    # bits; musl has no equivalent names at all. Two musl runs measured four of
+    # them failing on the oracle and none passing (_ISupper/_ISlower in Step
+    # 175, _ISalpha/_ISdigit in Step 181, gcc truncating its report each time),
+    # and they are one enum in glibc. The remaining three are moved on that
+    # family reading rather than on their own measurement -- an inference, said
+    # out loud, in place of two more hour-long CI rounds to name each one.
+    glibc: { ints: %w[_ISupper _ISlower _ISalpha _ISdigit _ISspace
+                      _ISblank _IScntrl _ISpunct _ISalnum] }
   )
 
   # <assert.h>: the assert macro expands to usable code (its __assert_fail hook
@@ -875,13 +877,14 @@ class TestHeaderAbi < Minitest::Test
     header: "locale.h",
     sizes: %w[struct\ lconv],
     ints: %w[LC_ALL LC_COLLATE LC_CTYPE LC_MONETARY LC_NUMERIC LC_TIME LC_MESSAGES] +
-          [HeaderAbiHarness::GLIBC_ONLY] +
-          %w[LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT LC_IDENTIFICATION],
-    # LC_PAPER and LC_NAME are two of glibc's extra locale categories beyond the
-    # POSIX six: measured on musl (Step 175), gcc there has neither. The
-    # remaining extras (LC_ADDRESS and after) are not among what musl's gcc
-    # reported, so they stay in the common list.
-    glibc: { ints: %w[LC_PAPER LC_NAME] },
+          [HeaderAbiHarness::GLIBC_ONLY],
+    # Every category beyond the POSIX six is glibc's own. LC_PAPER/LC_NAME were
+    # measured on musl in Step 175 and LC_ADDRESS/LC_TELEPHONE/LC_MEASUREMENT in
+    # Step 181; LC_IDENTIFICATION is moved with them on the family reading
+    # rather than on its own measurement, since gcc truncated its report again.
+    # The six the list keeps are the ones POSIX requires of every libc.
+    glibc: { ints: %w[LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE
+                      LC_MEASUREMENT LC_IDENTIFICATION] },
     offsets: [["struct lconv", "decimal_point"], ["struct lconv", "thousands_sep"],
               ["struct lconv", "grouping"], ["struct lconv", "int_frac_digits"],
               ["struct lconv", "frac_digits"]],
@@ -1308,17 +1311,23 @@ class TestHeaderAbi < Minitest::Test
              MON_7 MON_8 MON_9 MON_10 MON_11 MON_12
              AM_STR PM_STR D_T_FMT D_FMT T_FMT T_FMT_AMPM
              ERA ERA_D_FMT ALT_DIGITS ERA_D_T_FMT ERA_T_FMT
-             CRNCYSTR YESEXPR NOEXPR YESSTR NOSTR] +
-          ["_NL_ITEM(2, 40)", "_NL_ITEM(5, 1)", "_NL_ITEM(0, 14)",
-           "_NL_ITEM_CATEGORY(D_T_FMT)", "_NL_ITEM_INDEX(D_T_FMT)",
-           "_NL_ITEM_CATEGORY(CODESET)", "_NL_ITEM_INDEX(CODESET)",
-           "_NL_ITEM_CATEGORY(NOEXPR)", "_NL_ITEM_INDEX(NOEXPR)"],
-    # DECIMAL_POINT and THOUSANDS_SEP are glibc's own aliases for the
-    # RADIXCHAR / THOUSEP items: measured on musl (Step 175), gcc there has
-    # neither. The items they alias are checked on both libcs above, and
-    # YESSTR / NOSTR -- behind the same __USE_GNU gate on glibc -- are not
-    # among what musl's gcc reported, so they stay in the common list.
-    glibc: { ints: %w[DECIMAL_POINT THOUSANDS_SEP] },
+             CRNCYSTR YESEXPR NOEXPR YESSTR NOSTR],
+    # Two groups, at two places in the list above, which is why the bundle
+    # carries its own GLIBC_ONLY separator (see HeaderAbiHarness#abi_checks):
+    # DECIMAL_POINT / THOUSANDS_SEP are glibc's aliases for RADIXCHAR / THOUSEP
+    # and sit third (measured on musl, Step 175), while the _NL_ITEM macros are
+    # glibc's item-encoding internals and sit last (measured in Step 181 --
+    # musl's gcc reports them as implicit function declarations, having no such
+    # macros). The items the aliases name are still checked on both libcs.
+    # YESSTR / NOSTR stay common: no musl run has reported them.
+    glibc: {
+      ints: %w[DECIMAL_POINT THOUSANDS_SEP] +
+            [HeaderAbiHarness::GLIBC_ONLY] +
+            ["_NL_ITEM(2, 40)", "_NL_ITEM(5, 1)", "_NL_ITEM(0, 14)",
+             "_NL_ITEM_CATEGORY(D_T_FMT)", "_NL_ITEM_INDEX(D_T_FMT)",
+             "_NL_ITEM_CATEGORY(CODESET)", "_NL_ITEM_INDEX(CODESET)",
+             "_NL_ITEM_CATEGORY(NOEXPR)", "_NL_ITEM_INDEX(NOEXPR)"]
+    },
     snippets: [<<~C.chomp]
       static int abi_langinfo(void) {
         return (nl_langinfo(CODESET) != (char *)0)
@@ -1850,12 +1859,33 @@ class TestHeaderAbiLibcParameterization < Minitest::Test
   # other line, and their order, is untouched.
   def test_musl_probe_drops_only_the_glibc_only_checks
     ctype = abi_probe_source(TestHeaderAbi::CTYPE, :glibc).lines
-    assert_equal ctype.reject { |line| line.include?("_ISupper") || line.include?("_ISlower") },
+    assert_equal ctype.reject { |line| line.include?("(_IS") },
                  abi_probe_source(TestHeaderAbi::CTYPE, :musl).lines
 
     termios = abi_probe_source(TestHeaderAbi::TERMIOS, :glibc).lines
     assert_equal termios.reject { |line| line.include?("c_ispeed") || line.include?("c_ospeed") },
                  abi_probe_source(TestHeaderAbi::TERMIOS, :musl).lines
+  end
+
+  # langinfo.h needs its glibc-only checks in two places at once -- the
+  # DECIMAL_POINT aliases third in the list, the _NL_ITEM internals last -- so
+  # its bundle carries its own separator. Both groups must land where they were
+  # and nowhere else, or the glibc baseline's probe text moves.
+  def test_bundle_with_its_own_separator_lands_in_both_places
+    glibc = abi_probe_source(TestHeaderAbi::LANGINFO, :glibc).lines
+    musl = abi_probe_source(TestHeaderAbi::LANGINFO, :musl).lines
+
+    decimal_point = glibc.index { |line| line.include?("DECIMAL_POINT") }
+    thousep = glibc.index { |line| line.include?("(THOUSEP)") }
+    abday = glibc.index { |line| line.include?("ABDAY_1") }
+    assert_operator thousep, :<, decimal_point, "the aliases follow the items they alias"
+    assert_operator decimal_point, :<, abday, "and precede the day names, as before the split"
+    assert_includes glibc.last(12).join, "_NL_ITEM_INDEX(NOEXPR)", "the internals stay last"
+
+    assert_equal glibc.reject { |line| line.include?("DECIMAL_POINT") ||
+                                       line.include?("THOUSANDS_SEP") ||
+                                       line.include?("_NL_ITEM") },
+                 musl
   end
 
   # A Spec that declares no bundle is libc-independent, which is what keeps the

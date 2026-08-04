@@ -30,7 +30,12 @@ set -eu
 # There is no packaged aarch64-linux-musl cross toolchain, so the aarch64
 # differential tests skip here by design -- see the job's note on why
 # tools/ci_check_skips.rb is not run.
-apk add --no-cache build-base binutils pkgconf git tar libffi-dev zlib-dev yaml-dev
+# curl is phase 2's downloader: tools/verify_gem_tests.rb shells out to it to
+# fetch each gem's upstream tarball (the tests are not inside the .gem). Alpine
+# does not ship it, which stopped phase 2 dead on the Step 181 run -- after
+# `RUBYCC=1 gem install io-wait` had already succeeded on musl, so the failure
+# was purely the container's, one package short of the answer.
+apk add --no-cache build-base binutils pkgconf git tar curl libffi-dev zlib-dev yaml-dev
 
 # The checkout is bind-mounted from the host, so its owner does not match the
 # container's root and git refuses to read the repository without this.

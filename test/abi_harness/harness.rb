@@ -115,13 +115,22 @@ module HeaderAbiHarness
   # `glibc:` bundle for that kind spliced in at the GLIBC_ONLY marker (or
   # appended at the tail, when the list carries no marker) if the effective libc
   # is glibc, and with both the marker and the bundle dropped otherwise.
+  #
+  # A bundle may itself carry one GLIBC_ONLY, splitting it into the entries that
+  # go at the base list's marker and the entries that go at its tail. One header
+  # needs both at once: langinfo.h's DECIMAL_POINT sits third in a sixty-entry
+  # list while its _NL_ITEM checks sit last, and neither may move if the glibc
+  # probe text is to stay byte-identical (see GLIBC_ONLY).
   def abi_checks(spec, kind, libc)
     base = Array(spec[kind])
-    extra = libc == :glibc ? Array(spec.glibc && spec.glibc[kind]) : []
-    at = base.index(GLIBC_ONLY)
-    return base + extra if at.nil?
+    bundle = libc == :glibc ? Array(spec.glibc && spec.glibc[kind]) : []
+    split = bundle.index(GLIBC_ONLY)
+    spliced, appended = split.nil? ? [bundle, []] : [bundle[0...split], bundle[(split + 1)..]]
 
-    base[0...at] + extra + base[(at + 1)..]
+    at = base.index(GLIBC_ONLY)
+    return base + spliced + appended if at.nil?
+
+    base[0...at] + spliced + base[(at + 1)..] + appended
   end
 
   # Builds the probe program for `spec` as compiled against `libc` (the host's

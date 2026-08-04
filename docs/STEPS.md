@@ -6811,9 +6811,84 @@ gcc は**最初の数件でエラーを打ち切る**。したがって上の 13
 
 ---
 
+## Step 181 — musl 2 回目の実測と、その反映(M5 H6)
+
+Steps 177〜180 を入れた状態で musl ジョブを回した。**測って初めて分かることばかりだった。**
+
+### 数字
+
+| | runs | assertions | failures | errors | skips |
+|---|---|---|---|---|---|
+| glibc | 2,763 | 8,172 | 0 | 0 | 44 |
+| musl(1 回目・Step 175) | 2,763 | 6,968 | 21 | **18** | 550 |
+| **musl(2 回目)** | 2,763 | 7,043 | 22 | **9** | 555 |
+
+**errors が 18 → 9**。ギャップ I の対処(Step 180)が効いた分である。
+failures が 21 → 22 に増えているのは**後退ではない** — **対照が取れるようになった結果、
+「判定できない」だったものが「差がある」に変わった**ものが含まれる。
+「分からない」が「分かった」に変わるのは前進である。
+
+### 予告どおり、打ち切りの陰に隠れていた
+
+Step 180 で「gcc は最初の数件でエラーを打ち切るので、この分類は完全とは限らない」と
+書いたとおりになった。2 回目で新たに出たのは 3 系統:
+
+| ケース | 隠れていたもの |
+|---|---|
+| `CTYPE` | `_ISalpha` / `_ISdigit`(1 回目は `_ISupper` / `_ISlower` まで) |
+| `LOCALE` | `LC_ADDRESS` / `LC_TELEPHONE` / `LC_MEASUREMENT` |
+| `LANGINFO` | `_NL_ITEM` / `_NL_ITEM_CATEGORY` / `_NL_ITEM_INDEX` |
+
+**ここで系統ごと移すことにした。** `_IS*` は glibc の分類表ビットが 1 つの enum を成しており、
+2 回の実測で 4 個が落ち、通ったものは 1 つも無い。残り 3 個を個別に名指しするには
+**90 分の CI を 2 回以上**回すことになる。**推論であることをコメントに明記した上で**、
+系統ごと移した。**黙って広げるのと、断って広げるのは別物である。**
+
+### バンドルに区切りが要った — `langinfo.h`
+
+`DECIMAL_POINT` は 60 項目中 3 番目、`_NL_ITEM*` は末尾。
+**1 つのヘッダで挿入位置が 2 か所**になったので、`glibc:` バンドル自身が
+`GLIBC_ONLY` を区切りとして持てるようにした(前が「マーカー位置」、後ろが「末尾」)。
+Step 180 の不変条件(glibc のプローブはバイト単位で不変)を崩さないための拡張である。
+
+検証は前回と同じやり方で、**60 個の Spec すべての glibc プローブを HEAD と突き合わせ、
+全件バイト単位で一致**を確認した。
+
+### 新しい壁 — `_Noreturn`(ギャップ J)
+
+**`stdckdint.h` を埋めても `TestRubySmoke` は musl で落ちたままだった。**
+理由が変わっていた:
+
+```
+/usr/include/stdlib.h:46:1: error: expected type specifier
+_Noreturn void abort (void);
+```
+
+**rubycc は C11 の `_Noreturn` 関数指定子を受け付けない。**
+glibc のヘッダは `__attribute__((__noreturn__))` を使うので当たらないが、
+**musl のヘッダは素の `_Noreturn` を使う**。ローカルでも 2 行で再現する。
+
+これは**既知だった** — `include/stdnoreturn.h` は
+「rubycc は `_Noreturn` を受け付けないので `noreturn` を空に展開する」と自分で書いている。
+だが**その回避はヘッダ経由の利用しか覆わない**。libc 自身のヘッダが素のキーワードを
+使ってくる経路は覆えていなかった。**ギャップ J として記録し、修正は次のステップに切る。**
+
+### 3 つ目のスクリプト欠陥 — `curl` が無い
+
+phase 2 は今度こそ走ったが、**`RUBYCC=1 gem install io-wait` が musl で成功した直後**に
+上流 tarball の取得で止まった。Alpine に `curl` が入っていないためである
+(`tools/verify_gem_tests.rb` はこれを呼ぶ)。**パッケージ 1 つ足りないだけで
+答えの手前まで来ていた。** apk のリストに足した。
+
+なお **rubycc が musl 上で `.so` をビルドできること自体は、この失敗の手前で確認できている。**
+
+---
+
 ## 現在のテスト規模
 
-Step 180 完了時点: **2,763 runs / 8,172 assertions / 0 failures / 0 errors / 44 skips**
+Step 181 完了時点: **2,764 runs / 8,177 assertions / 0 failures / 0 errors / 44 skips**
+(Step 180 から +1 run = バンドル自身の区切りの検証)
+(以前) Step 180 完了時点: **2,763 runs / 8,172 assertions / 0 failures / 0 errors / 44 skips**
 (Step 179 から +6 runs = パラメタ化そのものの検証 6 件。
 **skips は不変** — glibc ホストでは 1 件も新たに飛ばない)
 (以前) Step 179 完了時点: **2,757 runs / 8,157 assertions / 0 failures / 0 errors / 44 skips**
