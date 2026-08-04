@@ -7197,7 +7197,9 @@ Step 176 で「stackprof の note が Step 146 で直されたのにスナップ
 
 ## 現在のテスト規模
 
-Step 187 完了時点: **2,800 runs / 8,303 assertions / 0 failures / 0 errors / 44 skips**
+Step 188 完了時点: **2,803 runs / 8,308 assertions / 0 failures / 0 errors / 44 skips**
+(Step 187 から +3 runs = センサスが決定的であることを守る検査 3 件)
+(以前) Step 187 完了時点: **2,800 runs / 8,303 assertions / 0 failures / 0 errors / 44 skips**
 (Step 186 からの差は引き算形のテスト 9 件と examples 1 件。
 **aarch64 でも PENDING 無し**)
 (以前) Step 184 完了時点: **2,789 runs / 8,254 assertions / 0 failures / 0 errors / 44 skips**
