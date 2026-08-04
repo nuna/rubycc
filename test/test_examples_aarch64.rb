@@ -29,7 +29,6 @@ class TestExamplesAArch64 < Minitest::Test
   # UnsupportedError message.
   PENDING = {
     "step28_extensions" => "A4: alloca",
-    "step28_wideint" => "A4: 128-bit multiply",
     "step44_builtins" => "A4: bit-scan builtins"
   }.freeze
 

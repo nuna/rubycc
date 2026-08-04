@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "date"
 require "fileutils"
 require "open3"
 require "rubygems/package"
@@ -226,7 +225,7 @@ module Corpus
       requested = spec[:version]
       result = {
         name: name, requested_version: requested, note: spec[:note],
-        status: nil, reason: nil, version: nil, fetched_on: nil,
+        status: nil, reason: nil, version: nil,
         includes: {}, ruby_self: [], ext_c_files: 0, ext_h_files: 0
       }
 
@@ -238,7 +237,6 @@ module Corpus
       end
 
       result[:version] = version_from_gem(name, gem_path)
-      result[:fetched_on] = File.mtime(gem_path).utc.to_date.iso8601
 
       source_root = unpack_gem(gem_path, cache_dir)
 
@@ -283,6 +281,9 @@ module Corpus
     def run_and_write_report(repo_root: default_repo_root,
                              cache_dir: default_cache_dir,
                              report_path: default_report_path)
+      log("generated: #{Time.now.utc.iso8601}")
+      log("ruby: #{RUBY_DESCRIPTION}")
+
       include_root = File.join(repo_root, "include")
       bundled = bundled_headers(include_root)
 
@@ -347,9 +348,9 @@ module Corpus
         **Generated file. Do not hand-edit.** This is a snapshot produced by
         `rake corpus:census` (see `test/corpus/README.md`). Re-run that task to update
         it, then commit the result. The task requires network access; `rake test` does not.
+        The snapshot is deterministic: gem versions are pinned in `gems.rb`, so nothing
+        that varies run-to-run (timestamps, the interpreter version, ...) belongs in it.
 
-        - Generated: #{Time.now.utc.iso8601}
-        - Ruby: #{RUBY_DESCRIPTION}
         - Bundled header set: #{bundled_set.size} angle spellings computed from `include/`
           (freestanding `include/*.h` + `include/libc/**`, arch layer normalized).
 
@@ -364,15 +365,14 @@ module Corpus
 
     def render_corpus_table(results)
       out = +"## Corpus gems\n\n"
-      out << "| gem | requested | resolved | fetched | status | ext .c/.h | note |\n"
-      out << "|-----|-----------|----------|---------|--------|-----------|------|\n"
+      out << "| gem | requested | resolved | status | ext .c/.h | note |\n"
+      out << "|-----|-----------|----------|--------|-----------|------|\n"
       results.each do |r|
         out << format(
-          "| %s | %s | %s | %s | %s | %s | %s |\n",
+          "| %s | %s | %s | %s | %s | %s |\n",
           r[:name],
           r[:requested_version] || "latest",
           r[:version] || "—",
-          r[:fetched_on] || "—",
           r[:status],
           r[:status] == :ok ? "#{r[:ext_c_files]}/#{r[:ext_h_files]}" : "—",
           (r[:note] || "").gsub("|", "\\|")

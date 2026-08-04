@@ -68,6 +68,11 @@ typedef int pid_t;
 #define F_SETOWN 8
 #define F_GETOWN 9
 #define F_DUPFD_CLOEXEC 1030
+/* Linux pipe-buffer sizing (Fcntl exposes both). Measured on this target
+   rather than derived: 1024 + 7 and 1024 + 8 off the Linux-specific base,
+   the same pair on x86-64 and aarch64. */
+#define F_SETPIPE_SZ 1031
+#define F_GETPIPE_SZ 1032
 
 /* FD_CLOEXEC: the sole close-on-exec bit for F_GETFD/F_SETFD. */
 #define FD_CLOEXEC 1

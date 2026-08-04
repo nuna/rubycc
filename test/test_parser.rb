@@ -2305,6 +2305,49 @@ class TestParser < Minitest::Test
     assert_equal "f", program.functions.first.name
   end
 
+  # --- _Noreturn function specifier (ISO C11 6.7.4, Step 182) ---------------
+  #
+  # _Noreturn is only an optimization hint (see include/stdnoreturn.h), so it is
+  # accepted and dropped: it rides on a function declarator exactly where
+  # "inline" does, admits the same mixing with a storage class, and is rejected
+  # on an object (see test_diagnostics.rb).
+
+  def test_noreturn_prototype_is_accepted
+    program = parse("_Noreturn void die(void); int main(void) { return 0; }")
+    decl = program.functions.first
+    assert_kind_of AST::FunctionDecl, decl
+    assert_equal "die", decl.name
+  end
+
+  def test_noreturn_function_definition_is_accepted
+    program = parse("_Noreturn void die(void) { for (;;) ; } int main(void) { return 0; }")
+    assert_kind_of AST::FunctionDef, program.functions.first
+    assert_equal "die", program.functions.first.name
+  end
+
+  def test_noreturn_mixes_with_storage_class_in_either_order
+    a = parse("static _Noreturn void f(void); int main(void) { return 0; }").functions.first
+    assert_equal "f", a.name
+    assert_equal :static, a.storage
+
+    b = parse("_Noreturn static void g(void); int main(void) { return 0; }").functions.first
+    assert_equal "g", b.name
+    assert_equal :static, b.storage
+  end
+
+  def test_noreturn_may_be_repeated
+    program = parse("_Noreturn _Noreturn void die(void); int main(void) { return 0; }")
+    assert_equal "die", program.functions.first.name
+  end
+
+  # musl's <stdlib.h> forward-declares a block-scope function with the bare
+  # specifier (see the block-scope function declaration support, Step 168),
+  # unlike glibc's __attribute__((__noreturn__)) spelling.
+  def test_noreturn_on_a_block_scope_function_declaration_is_accepted
+    program = parse("int main(void) { _Noreturn void die(void); return 0; }")
+    assert_kind_of AST::VariableDecl, program.functions.first.body.first
+  end
+
   def test_static_assert_that_holds_yields_no_node
     # A satisfied _Static_assert declares nothing, so it disappears from the
     # translation unit and from a block's items.

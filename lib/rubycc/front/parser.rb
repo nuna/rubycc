@@ -223,6 +223,19 @@ module Rubycc
         "__atomic_or_fetch" => [:or_fetch, 3]
       }.freeze
 
+      # The gcc overflow-checked arithmetic builtins, mapping each keyword to its
+      # AST::BuiltinOverflow operator. All three take the same three arguments
+      # (the two operands and the pointer the result is stored through), so the
+      # operator is the only thing the spelling decides. The width-suffixed forms
+      # (__builtin_uaddll_overflow and kin) are deliberately absent: the generic
+      # forms cover every use here, and a missing one is an "undeclared
+      # identifier" rather than a wrong lowering.
+      OVERFLOW_BUILTINS = {
+        "__builtin_add_overflow" => :add,
+        "__builtin_sub_overflow" => :sub,
+        "__builtin_mul_overflow" => :mul
+      }.freeze
+
       # The hard ceiling on how deeply the recursive descent will nest before it
       # rejects an input rather than recurse further. A hostile source (tens of
       # thousands of nested parentheses, unary operators, braces, ...) would
@@ -268,14 +281,15 @@ module Rubycc
       # #parse_declaration_specifiers alongside the base type. `storage` is the
       # recorded storage class (nil, :typedef, :static or :extern); `const` is
       # whether the declaration is const-qualified (const seen among the
-      # specifiers, or folded in from a const typedef name); `inline_p` is
-      # whether "inline" appeared (a function specifier, accepted on functions
-      # and rejected on objects). `attributes` holds the GNU attributes written
-      # among the specifiers (position a), which apply to every declarator of the
+      # specifiers, or folded in from a const typedef name); `inline_p` and
+      # `noreturn_p` are whether "inline" or "_Noreturn" appeared (the two
+      # function specifiers, 6.7.4, accepted on functions and rejected on
+      # objects). `attributes` holds the GNU attributes written among the
+      # specifiers (position a), which apply to every declarator of the
       # declaration; only the init attributes are read back from it, and only
       # where they are admitted at all (see #parse_declaration_specifiers).
       # volatile and register/auto leave no trace here.
-      DeclSpecInfo = Data.define(:storage, :const, :inline_p, :attributes)
+      DeclSpecInfo = Data.define(:storage, :const, :inline_p, :noreturn_p, :attributes)
 
       # One parsed GNU attribute: its normalized `name`, the folded `argument`
       # (an integer for "aligned" and for the init attributes' priority, nil for
@@ -530,8 +544,9 @@ module Rubycc
       # ordinary identifier (so an inner block shadowing it is told from a typedef
       # use); every other declarator is a file-scope object (see
       # #parse_global_declarator, which reads any "=" initializer). `spec_info`
-      # carries the shared storage class and an "inline" flag, legal only on the
-      # function declarators (an object declarator rejects it downstream).
+      # carries the shared storage class and the "inline"/"_Noreturn" flags,
+      # legal only on the function declarators (an object declarator rejects
+      # them downstream).
       def parse_external_declarator(name_tok, type, params, pointer_quals, spec_info, return_tok,
                                     attributes)
         if type.function?
@@ -645,8 +660,9 @@ module Rubycc
       # even where T names a type (the standard rule that keeps typedef names
       # shadowable). Mixing categories ("unsigned struct", "enum T", ...) is a
       # diagnostic; `allow_storage_class` is false in the contexts a storage
-      # class or "inline" cannot appear (a member, a parameter, a type-name),
-      # where const/volatile are still admitted ("int f(const int x)",
+      # class or a function specifier ("inline"/"_Noreturn") cannot appear (a
+      # member, a parameter, a type-name), where const/volatile are still
+      # admitted ("int f(const int x)",
       # "sizeof(const int)"). `allow_init_attributes` opens the
       # constructor/destructor attributes, which only a file-scope declaration
       # can act on; every other context refuses them rather than dropping them.
@@ -661,6 +677,7 @@ module Rubycc
         storage_seen = false # any storage-class specifier (for the 6.7.1 check)
         const_p = false
         inline_p = false
+        noreturn_p = false
         typedef_const = false # const folded in from a const typedef name
         loop do
           tok = peek
@@ -685,6 +702,16 @@ module Rubycc
           elsif tok.keyword?("inline")
             error_at(tok, "'inline' is not allowed here") unless allow_storage_class
             inline_p = true
+            advance
+          elsif tok.keyword?("_Noreturn")
+            # The second function specifier (6.7.4): rides the same "may only
+            # appear where 'inline' may" rule and, like it, is only an
+            # optimization hint (see include/stdnoreturn.h) so it is recorded
+            # only for the object-declarator check below and otherwise dropped.
+            # C11 permits repeating a function specifier, so a second
+            # "_Noreturn" here simply re-sets the same flag.
+            error_at(tok, "'_Noreturn' is not allowed here") unless allow_storage_class
+            noreturn_p = true
             advance
           elsif tok.type == :keyword && DECL_SPECIFIER_KEYWORDS.include?(tok.value)
             error_at(tok, "two or more data types in declaration specifiers") if composite
@@ -715,7 +742,7 @@ module Rubycc
         # A "const" typedef name ("typedef const int ci; ci x;") contributes its
         # const to the declaration, OR-ed with any const written here directly.
         spec_info = DeclSpecInfo.new(storage: storage, const: const_p || typedef_const,
-                                     inline_p: inline_p, attributes: attributes)
+                                     inline_p: inline_p, noreturn_p: noreturn_p, attributes: attributes)
         if composite
           [composite, spec_info]
         else
@@ -1452,12 +1479,12 @@ module Rubycc
       # type-name from a parenthesized expression. A declaration begins with an
       # integer/void type-specifier keyword, "struct"/"union"/"enum", a storage
       # class ("typedef"/"static"/"extern"/"register"/"auto"), a type qualifier
-      # ("const"/"volatile"), the "inline" function specifier, or a typedef name —
-      # an identifier bound to a type in the ordinary namespace whose innermost
-      # binding is not shadowed by a variable. The storage-class and inline
-      # keywords never open an expression, so admitting them here only ever
-      # forwards a genuine declaration (a bare "static x;" then fails in the
-      # specifier parse, where it belongs).
+      # ("const"/"volatile"), the "inline"/"_Noreturn" function specifiers, or a
+      # typedef name — an identifier bound to a type in the ordinary namespace
+      # whose innermost binding is not shadowed by a variable. The storage-class
+      # and function-specifier keywords never open an expression, so admitting
+      # them here only ever forwards a genuine declaration (a bare "static x;"
+      # then fails in the specifier parse, where it belongs).
       def type_specifier?(token)
         if token.type == :keyword
           return DECL_SPECIFIER_KEYWORDS.include?(token.value) ||
@@ -1465,7 +1492,7 @@ module Rubycc
                  token.value == "struct" || token.value == "union" ||
                  token.value == "enum" ||
                  token.value == "const" || token.value == "volatile" ||
-                 token.value == "inline" ||
+                 token.value == "inline" || token.value == "_Noreturn" ||
                  # A leading GNU attribute opens a declaration too
                  # ("__attribute__((unused)) int x;"), so block-item and
                  # for-init recognize it as one rather than a statement.
@@ -1661,8 +1688,8 @@ module Rubycc
         # at the ";" and only names an external function). It needs a trampoline
         # to capture the enclosing frame, is out of scope for this compiler, and
         # would otherwise surface as a bare "expected ';'" that says nothing about
-        # why. "inline" rides on a function declarator legitimately (6.7.4), so
-        # the object-only specifier check is skipped for one.
+        # why. "inline"/"_Noreturn" ride on a function declarator legitimately
+        # (6.7.4), so the object-only specifier check is skipped for one.
         if type.function?
           if peek.punct?("{")
             error_at(name_tok, "nested function definitions are not supported")
@@ -1697,14 +1724,15 @@ module Rubycc
       end
 
       # Rejects the declaration specifiers that may sit on a function but not on
-      # an object: "inline" on a variable or global is ill-formed ("inline" is a
-      # function specifier, 6.7.4). Storage classes are already admitted here
-      # (recorded for Phase B), so only "inline" is caught. Shared by the local
-      # and file-scope object declarators.
+      # an object: "inline" or "_Noreturn" on a variable or global is ill-formed
+      # (both are function specifiers, 6.7.4). Storage classes are already
+      # admitted here (recorded for Phase B), so only these two are caught.
+      # Shared by the local and file-scope object declarators.
       def reject_object_specifiers(name_tok, spec_info)
-        return unless spec_info.inline_p
+        error_at(name_tok, "variable '#{name_tok.value}' declared 'inline'") if spec_info.inline_p
+        return unless spec_info.noreturn_p
 
-        error_at(name_tok, "variable '#{name_tok.value}' declared 'inline'")
+        error_at(name_tok, "variable '#{name_tok.value}' declared '_Noreturn'")
       end
 
       # Whether the object a declarator declares is top-level const-qualified,
@@ -2707,6 +2735,8 @@ module Rubycc
             parse_builtin_unreachable
           elsif peek.keyword?("__builtin_memcpy")
             parse_builtin_memcpy
+          elsif peek.type == :keyword && OVERFLOW_BUILTINS.key?(peek.value)
+            parse_builtin_overflow
           elsif peek.type == :keyword && ATOMIC_BUILTINS.key?(peek.value)
             parse_builtin_atomic
           elsif peek.punct?("+")
@@ -2927,6 +2957,22 @@ module Rubycc
         operand = parse_assignment_expression
         expect_punct(")")
         AST::BuiltinBitScan.new(operand, direction, width, keyword_tok)
+      end
+
+      # "__builtin_add/sub/mul_overflow ( a , b , res )": exactly three arguments,
+      # parsed as an ordinary argument list so a wrong count is an arity
+      # diagnostic. The keyword decides only the operator; the operand types are
+      # the generator's to check.
+      def parse_builtin_overflow
+        keyword_tok = advance # the "__builtin_..._overflow" keyword
+        op = OVERFLOW_BUILTINS.fetch(keyword_tok.value)
+        expect_punct("(")
+        args = parse_argument_expression_list
+        expect_punct(")")
+        unless args.size == 3
+          error_at(keyword_tok, "'#{keyword_tok.value}' expects 3 arguments, have #{args.size}")
+        end
+        AST::BuiltinOverflow.new(op, args, keyword_tok)
       end
 
       # "__atomic_xxx ( ... )": one of the nine gcc atomic builtins rubycc

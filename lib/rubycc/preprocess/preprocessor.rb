@@ -187,7 +187,8 @@ module Rubycc
       # builtins rubycc's front end actually recognizes — the varargs intrinsics,
       # the branch-prediction hint, the stack allocator, offsetof, the
       # constant/choose folds, the count-leading/trailing-zero scans, the
-      # unreachable hint, memcpy and the nine __atomic_* forms. Every other
+      # unreachable hint, memcpy, the three overflow-checked arithmetic forms
+      # and the nine __atomic_* forms. Every other
       # builtin query is false, so a header that guards a fallback behind
       # __has_builtin (e.g. json's bswap path) takes the fallback for one rubycc
       # does not provide. Kept in sync with the parser's builtin keywords. Kept
@@ -197,6 +198,8 @@ module Rubycc
                           __builtin_constant_p __builtin_choose_expr
                           __builtin_ctz __builtin_ctzll __builtin_clz __builtin_clzll
                           __builtin_unreachable __builtin_memcpy
+                          __builtin_add_overflow __builtin_sub_overflow
+                          __builtin_mul_overflow
                           __atomic_load_n __atomic_store_n __atomic_exchange_n
                           __atomic_compare_exchange_n
                           __atomic_fetch_add __atomic_fetch_sub

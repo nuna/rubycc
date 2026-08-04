@@ -14,9 +14,10 @@
 # Each entry:
 #   :name    — rubygems.org gem name (fetched with `gem fetch --platform=ruby`)
 #   :version — pinned version string, or nil to fetch the latest release. Every
-#              committed entry is pinned as of Step 176; nil stays supported
-#              because it is convenient while adding a gem, but leaving it in
-#              the committed list makes the census job fail on upstream drift.
+#              committed entry is pinned for reproducibility; nil stays
+#              supported because it is convenient while adding a gem, but
+#              leaving it in the committed list makes the census job fail on
+#              upstream drift.
 #   :note    — why this gem is in the corpus
 module Corpus
   module Gems
@@ -147,6 +148,28 @@ module Corpus
         version: "3.2.3",
         note: "Depends on the system zlib headers; DESIGN R10 expects gems built " \
               "against a system library (e.g. sqlite3) to be in scope."
+      },
+
+      # Ruby 4.0.6 also ships bundled gems with C extensions. These are kept in
+      # a separate group from the default gems above because they are not in
+      # `Gem::Specification.default_stubs`; versions are pinned to the copies
+      # shipped with Ruby 4.0.6. Windows-only win32ole is intentionally omitted.
+      {
+        name: "fiddle",
+        version: "1.1.8",
+        note: "Ruby 4.0 bundled gem; C extension backed by the system libffi " \
+              "headers and library."
+      },
+      {
+        name: "rbs",
+        version: "3.10.0",
+        note: "Ruby 4.0 bundled gem; pure C parser/type-signature extension."
+      },
+      {
+        name: "syslog",
+        version: "0.3.0",
+        note: "Ruby 4.0 bundled gem; small pure C extension using the system " \
+              "syslog API."
       },
 
       # rubygems.org's popular-gems corpus: all 100 gems on the first 10 pages

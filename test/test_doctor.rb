@@ -84,6 +84,19 @@ class TestDoctor < Minitest::Test
     assert_includes all_versions["digest"], "3.2.1"
     assert_includes all_versions["zlib"], "3.2.3"
     assert_includes all_versions["psych"], "5.3.1"
+
+    # Records from a libc other than glibc. The first arrived in Step 183 and
+    # the set grew to three in Step 192, once the linker learned where musl
+    # keeps its libc (Step 190) and every extconf probe stopped failing there.
+    # They are pinned because the nested schema was built for exactly this --
+    # one gem, one entry, one verification per environment -- and before Step 183
+    # every environment string in the file was the same one, so nothing proved
+    # the per-environment half of the schema was reachable.
+    musl = "musl x86_64 / ruby 4.0.6"
+    %w[io-wait stringio json].each do |name|
+      envs = raw.fetch(name)["verifications"].map { |v| v["environment"] }
+      assert_includes envs, musl, "#{name} should carry a musl verification"
+    end
   end
 
   # --- gemspec packaging ----------------------------------------------------

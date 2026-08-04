@@ -63,12 +63,23 @@ module Rubycc
       # The usual filesystem locations of the C library, consulted (in order) to
       # add libc as a default dependency. Only the SONAME the chosen file carries
       # affects the output, so which path matches does not disturb determinism.
+      #
+      # The glibc spellings come first, so a glibc host resolves exactly as it did
+      # before musl was added to the list. The musl entries are last and are a
+      # different shape on purpose: musl ships its loader and its C library as one
+      # file, so the path that answers here is the same MUSL_INTERP used as the
+      # program interpreter (Alpine's /usr/lib/libc.so is a symlink to it). There
+      # is no libc.so.6 on such a host, which is why every extconf probe that
+      # links an executable failed there until this list learned the musl name
+      # (measured on Alpine in CI, docs/STEPS.md Step 190).
       DEFAULT_LIBC_PATHS = [
         "/lib/x86_64-linux-gnu/libc.so.6",
         "/lib64/libc.so.6",
         "/usr/lib/x86_64-linux-gnu/libc.so.6",
         "/usr/lib/libc.so.6",
-        "/lib/libc.so.6"
+        "/lib/libc.so.6",
+        "/lib/ld-musl-x86_64.so.1",
+        "/usr/lib/libc.so"
       ].freeze
 
       # The aarch64 C library locations, including the cross-toolchain sysroot the

@@ -769,6 +769,54 @@ class TestAArch64Execution < Minitest::Test
     C
   end
 
+  # 128-bit multiply on aarch64: the high half of the synthesized product rests
+  # on `:mulhi`, a single `umulh`, combined with the two cross products the low
+  # halves make with the opposite operand's high half. SIZE_MAX * SIZE_MAX
+  # exercises umulh's own high word hardest; 2**32 * 2**32 exercises the carry
+  # umulh's result contributes into the top of the combined sum; the third case
+  # is an ordinary product that never leaves 64 bits, to check the common case
+  # is not disturbed. __builtin_mul_overflow (Step 177) computes its
+  # infinite-precision product the same way, so its 64-bit boundary cases ride
+  # along here too.
+  def test_int128_multiply
+    assert_aarch64_matches_gcc(source(<<~C))
+      typedef union { unsigned __int128 u; unsigned long h[2]; } S;
+      void show(unsigned __int128 v) { S s; s.u = v; put_long((long)s.h[0]); put_long((long)s.h[1]); }
+      int main(void) {
+        unsigned long max = 0xFFFFFFFFFFFFFFFFUL;
+        unsigned long high32 = 1UL << 32;
+        show((unsigned __int128)max * (unsigned __int128)max);
+        show((unsigned __int128)high32 * (unsigned __int128)high32);
+        show((unsigned __int128)12345UL * (unsigned __int128)6789UL);
+
+        unsigned long bytes;
+        int ov1 = __builtin_mul_overflow(max, max, &bytes);
+        put_long(ov1); put_long((long)bytes);
+        int ov2 = __builtin_mul_overflow(1000UL, 2000UL, &bytes);
+        put_long(ov2); put_long((long)bytes);
+        return 0;
+      }
+    C
+  end
+
+  # The same multiply, checked for the single instruction it should collapse
+  # to: a synthesized 128-bit multiply's high half is one `umulh`, not a
+  # software long-multiplication loop.
+  def test_int128_multiply_uses_umulh
+    skip_unless_aarch64_toolchain
+
+    in_tmpdir do |dir|
+      object_path = File.join(dir, "mulhi.o")
+      compile_with_rubycc_aarch64(source(<<~C), object_path)
+        unsigned __int128 wide_mul(unsigned long a, unsigned long b) {
+          return (unsigned __int128)a * (unsigned __int128)b;
+        }
+      C
+      listing = disassemble_aarch64(object_path)
+      assert_match(/\bumulh\b/, listing)
+    end
+  end
+
   # A deduced-size array of function pointers dispatched by index (Step 98): the
   # "[]" bound is inferred from the initializer even though it sits inside the
   # parenthesized declarator "int (*ops[])(int)", and each ops[i](10) is an

@@ -256,6 +256,7 @@ jobs:
           name: weekly-musl
           path: |
             tmp/ci/*.log
+            tmp/ci/extensions/**
             data/verified_gems.json
           if-no-files-found: warn
 

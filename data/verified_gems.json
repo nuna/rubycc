@@ -6,6 +6,12 @@
         "environment": "glibc x86_64 / ruby 3.4.5",
         "verified_at": "2026-07-17",
         "evidence": "Built with rubycc (parser.so + generator.so via rmake); gem's own test suite passed 606 tests / 100% (Step 54). B6 in-process rmake build re-confirmed (Step 61), hermetic distroless-headers gem install succeeded (Step 64)."
+      },
+      {
+        "versions": ["2.21.1"],
+        "environment": "musl x86_64 / ruby 4.0.6",
+        "verified_at": "2026-08-04",
+        "evidence": "RUBYCC=1 gem install json succeeded (parser.so + generator.so built through rmake); the gem's own test/unit suite passed 596 tests / 3,390 assertions / 0 failures / 0 errors (Step 191)."
       }
     ],
     "notes": "The gem's SIMD probe (parser-use-simd/generator-use-simd) is naturally disabled when its conftests run through rubycc, so the scalar fallback path is what is built (Step 60). No JSON_DISABLE_SIMD flag needed via mkmf_shim."
@@ -105,6 +111,12 @@
         "environment": "glibc x86_64 / ruby 3.4.5",
         "verified_at": "2026-07-31",
         "evidence": "RUBYCC=1 gem install stringio succeeded (stringio.so built through rmake); the gem's own test/unit suite passed 103 tests / 626 assertions / 0 failures / 0 errors (Step 157)."
+      },
+      {
+        "versions": ["3.2.0"],
+        "environment": "musl x86_64 / ruby 4.0.6",
+        "verified_at": "2026-08-04",
+        "evidence": "RUBYCC=1 gem install stringio succeeded (stringio.so built through rmake); the gem's own test/unit suite passed 103 tests / 626 assertions / 0 failures / 0 errors (Step 191)."
       }
     ],
     "notes": "stringio is a default gem shipped with the interpreter, so this run is against the .so injected from the rubycc build: the sanity check confirms through $LOADED_FEATURES that the injected copy, not the interpreter's own stringio.so (3.1.2 on this interpreter), is what the suite loaded. No test was excluded and the build needed no extra flag; test/ruby/ut_eof.rb is outside the test_*.rb glob because test_stringio.rb pulls it in with require_relative, exactly as the upstream Rakefile leaves it."
@@ -138,6 +150,12 @@
         "environment": "glibc x86_64 / ruby 3.4.5",
         "verified_at": "2026-08-04",
         "evidence": "RUBYCC=1 gem install io-wait succeeded (wait.so built through rmake); the gem's own test/unit suite passed 26 tests / 41 assertions / 0 failures / 0 errors (Step 165)."
+      },
+      {
+        "versions": ["0.4.0"],
+        "environment": "musl x86_64 / ruby 4.0.6",
+        "verified_at": "2026-08-04",
+        "evidence": "RUBYCC=1 gem install io-wait succeeded (wait.so built through rmake); the gem's own test/unit suite passed 26 tests / 41 assertions / 0 failures / 0 errors (Step 183). Re-verified with tools/verify_gem_tests.rb (Step 191): the gem's own test/unit suite passed 26 tests / 41 assertions / 0 failures / 0 errors."
       }
     ],
     "notes": "io/wait ships with the interpreter, so this run is against the .so injected from the rubycc build; the sanity check confirms through $LOADED_FEATURES that the injected copy, not the interpreter's own, is what the suite loaded. Its extconf.rb is three lines and runs no probes at all, so unlike bigdecimal or io-nonblock there is no configure-time branch rubycc and gcc could have taken differently: the same translation unit is what both compile. Measured against a host gcc control on the same upstream tree: 26 tests / 41 assertions / 0 failures / 0 errors / 1 omission on both sides, identical. The recipe passes upstream's own --ignore-name=/ungetc_in_text/ (its Rakefile's Rake::TestTask#options) rather than excluding the file, which holds tests that do run. The run reported 1 omission (not failures): test_tty_wait, because /dev/tty cannot be opened in a session with no controlling terminal (Errno::ENXIO) -- a property of the environment, and the gcc control omits it identically."

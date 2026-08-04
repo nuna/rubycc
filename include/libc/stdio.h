@@ -28,6 +28,11 @@ typedef long off_t;
 #define _RUBYCC_GNUC_VA_LIST
 typedef __builtin_va_list __gnuc_va_list;
 #endif
+/* musl's spelling of the same type; see the note in <stdarg.h>. */
+#ifndef _RUBYCC_ISOC_VA_LIST
+#define _RUBYCC_ISOC_VA_LIST
+typedef __builtin_va_list __isoc_va_list;
+#endif
 
 /* FILE: opaque. glibc's tag and guard, so a host <stdio.h> reached later is a
    no-op and code that spells `struct _IO_FILE` stays compatible. */

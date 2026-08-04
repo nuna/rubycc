@@ -157,11 +157,55 @@ module Rubycc
 
       def evaluate_binary(node)
         return evaluate_division(node) if node.op == :div || node.op == :mod
+        return evaluate_pointer_subtraction(node) if node.op == :sub
 
         operation = BINARY_OPERATIONS[node.op]
         raise NotConstant, node.token unless operation
 
         operation.call(evaluate(node.lhs), evaluate(node.rhs))
+      end
+
+      # Subtraction is ordinary integer arithmetic unless that fails and both
+      # operands are addresses this evaluator can place on its own (see
+      # #pointer_target) — the traditional "((size_t)(char *)&((t *)0)->m -
+      # (char *)0)" offsetof idiom, and its relatives with any pointed-to type,
+      # not only "char *". C's pointer-difference rule (6.5.6p9) then applies:
+      # the byte difference is divided by the shared pointed-to type's size,
+      # which must be identical on both sides and have one ("void *" and an
+      # incomplete type do not) for the division to mean anything. When
+      # #pointer_difference cannot place the difference this way it returns
+      # nil, and the original NotConstant from the ordinary attempt is what
+      # reaches the caller instead.
+      def evaluate_pointer_subtraction(node)
+        BINARY_OPERATIONS[:sub].call(evaluate(node.lhs), evaluate(node.rhs))
+      rescue NotConstant
+        difference = pointer_difference(node)
+        raise if difference.nil?
+
+        difference
+      end
+
+      # The [byte-difference / pointed-to-size] quotient of "lhs - rhs" when
+      # both sides are addresses #pointer_target can place, or nil when either
+      # side is not one or the two pointed-to types do not share a size. A
+      # non-zero remainder never happens for two addresses this evaluator
+      # itself derived from the same struct layout, but is still checked
+      # rather than silently truncated, surfacing as an (unfolded) NotConstant.
+      def pointer_difference(node)
+        lhs = pointer_target(node.lhs)
+        return nil if lhs.nil?
+
+        rhs = pointer_target(node.rhs)
+        return nil if rhs.nil?
+
+        lhs_address, lhs_type = lhs
+        rhs_address, rhs_type = rhs
+        return nil unless sized?(lhs_type) && sized?(rhs_type) && lhs_type.size == rhs_type.size
+
+        byte_difference = lhs_address - rhs_address
+        raise NotConstant, node.token unless (byte_difference % lhs_type.size).zero?
+
+        byte_difference / lhs_type.size
       end
 
       # Division and remainder truncate toward zero (6.5.5p6), unlike Ruby's
@@ -210,16 +254,183 @@ module Rubycc
 
       # The integer value of a cast-to-integer operand: an integer constant
       # expression normally, but a pointer→integer cast has a pointer operand the
-      # evaluator cannot fold on its own (the "(size_t)&((T*)0)->m" offsetof
-      # idiom). When such an operand is not an integer constant and a @pointer_int
-      # resolver is supplied, it is offered there; the resolver returns the
-      # pointer's absolute integer value or re-raises NotConstant.
+      # evaluator does not fold as an ordinary expression. One shape it folds
+      # itself is the traditional "(size_t)&((T*)0)->m" offsetof idiom, whose
+      # address is a member offset from a constant base and so needs nothing but
+      # the struct layout the evaluator already reads (see
+      # #absolute_pointer_value). When that does not apply and a @pointer_int
+      # resolver is supplied, the operand is offered there instead; the resolver
+      # returns the pointer's absolute integer value or re-raises NotConstant.
       def evaluate_integer_or_address(operand)
         evaluate(operand)
       rescue NotConstant
+        absolute = absolute_pointer_value(operand)
+        return absolute unless absolute.nil?
         raise unless @pointer_int
 
         @pointer_int.call(operand)
+      end
+
+      # The absolute integer value of a pointer-valued operand this evaluator can
+      # place on its own — "&((T *)N)->m" and its relatives, where the address-of
+      # applies to a designator rooted at a pointer cast of an integer constant,
+      # or such a cast written on its own. That is the offsetof idiom a header
+      # writes as "((size_t)&((T *)0)->m)", whose value is the member's byte
+      # offset; folding it here rather than through a resolver makes it a
+      # constant in every context, the parser's (a _Static_assert, an enumerator,
+      # a bit-field width, an array bound) as much as the generator's. Anything
+      # else is nil, an address only known at link time (a global's) included,
+      # which the @pointer_int resolver still handles.
+      def absolute_pointer_value(node)
+        case node
+        when AST::Unary
+          return nil unless node.op == :addr
+
+          address, = designator_address(node.operand)
+          address
+        when AST::Cast
+          pointer_target(node)&.first
+        end
+      end
+
+      # The [absolute address, pointed-to type] a pointer-valued expression
+      # denotes when its value is a compile-time constant: a cast to pointer type
+      # over an integer constant (or over another such pointer, as
+      # "(T *)(void *)0" writes it), or the address of a designator #designator_address
+      # can place. An array-typed operand never reaches here — the idiom's base is
+      # always a cast — so no array-to-pointer decay is modelled.
+      def pointer_target(node)
+        case node
+        when AST::Cast
+          return nil unless node.type.pointer?
+
+          address = constant_integer(node.operand) || pointer_target(node.operand)&.first
+          address.nil? ? nil : [address, node.type.target]
+        when AST::Unary
+          return nil unless node.op == :addr
+
+          designator_address(node.operand)
+        when AST::Binary
+          pointer_offset_target(node)
+        end
+      end
+
+      # "pointer + integer" and "pointer - integer" (6.5.6p8) over a pointer
+      # #pointer_target already places: the address moves by the integer
+      # operand times the pointed-to type's size, on whichever side of "+" the
+      # pointer operand is ("p + 1" and "1 + p" are both valid), or only the
+      # left side of "-" ("1 - p" is not a pointer expression at all). nil when
+      # neither operand is a foldable pointer, the other is not an integer
+      # constant, or the pointed-to type has no size to stride by.
+      def pointer_offset_target(node)
+        return nil unless node.op == :add || node.op == :sub
+
+        lhs_pointer = pointer_target(node.lhs)
+        if lhs_pointer
+          offset = constant_integer(node.rhs)
+          return nil if offset.nil?
+
+          return pointer_advance(lhs_pointer, node.op == :sub ? -offset : offset)
+        end
+
+        return nil if node.op == :sub
+
+        rhs_pointer = pointer_target(node.rhs)
+        return nil if rhs_pointer.nil?
+
+        offset = constant_integer(node.lhs)
+        return nil if offset.nil?
+
+        pointer_advance(rhs_pointer, offset)
+      end
+
+      # [address + offset * pointed-to size, pointed-to type], or nil when the
+      # pointed-to type has no size to stride by (void, a function, an
+      # incomplete aggregate or array).
+      def pointer_advance(pointer, offset)
+        address, type = pointer
+        return nil unless sized?(type)
+
+        [address + (offset * type.size), type]
+      end
+
+      # The [absolute address, type] of a designator whose base is a pointer of
+      # constant value: "*(T *)N" is [N, T], a member access adds the member's
+      # offset (6.7.2.1's layout, the same one #offsetof_member_step walks) and a
+      # subscript adds the index times the element size. nil for every other
+      # designator — one rooted at a named object, or at a pointer whose value is
+      # not constant.
+      #
+      # Unlike the __builtin_offsetof steps this mirrors, a step that names no
+      # byte offset (an unknown member, a bit-field, a subscript of a non-array)
+      # yields nil rather than an OffsetofError: the expression is an ordinary
+      # one the surrounding context still type-checks, so leaving it unfolded
+      # keeps that context's own diagnostic instead of pre-empting it here.
+      def designator_address(node)
+        case node
+        when AST::Unary
+          node.op == :deref ? pointer_target(node.operand) : nil
+        when AST::MemberAccess
+          member_designator_address(node)
+        when AST::Subscript
+          subscript_designator_address(node)
+        end
+      end
+
+      # "base->m" over a constant pointer, or "base.m" over a designator already
+      # placed, adds the member's offset to the base address.
+      def member_designator_address(node)
+        base = node.arrow ? pointer_target(node.base) : designator_address(node.base)
+        return nil if base.nil?
+
+        address, type = base
+        return nil unless type.struct? && type.complete?
+
+        member = type.member(node.member)
+        return nil if member.nil? || member.bitfield?
+
+        [address + member.offset, member.type]
+      end
+
+      # "base[i]" strides by the element size: over a constant pointer ("((T *)N)[i]")
+      # the element is what it points to, over an array designator
+      # ("((T *)0)->a[i]") it is the array's element type. A non-constant index,
+      # or an element with no size, leaves the address unfolded.
+      def subscript_designator_address(node)
+        index = constant_integer(node.index)
+        return nil if index.nil?
+
+        address, element = subscript_base(node.target)
+        return nil if address.nil? || !sized?(element)
+
+        [address + (index * element.size), element]
+      end
+
+      # Whether `type` has a byte size a subscript can stride by — every type
+      # but void, a function, an incomplete aggregate and an unbounded array.
+      def sized?(type)
+        return false if type.void? || type.function? || incomplete_aggregate?(type)
+
+        !(type.array? && type.incomplete?)
+      end
+
+      # The [base address, element type] a subscript strides over, or nil when
+      # neither form applies.
+      def subscript_base(target)
+        pointer = pointer_target(target)
+        return pointer if pointer
+
+        address, type = designator_address(target)
+        address.nil? || !type.array? ? nil : [address, type.element]
+      end
+
+      # `node`'s value as an integer constant, or nil when it is not one. Used
+      # where a non-constant sub-expression only means the surrounding address
+      # stays unfolded, rather than being a failure to report.
+      def constant_integer(node)
+        evaluate(node)
+      rescue NotConstant, DivisionByZero
+        nil
       end
 
       # The Float a floating-point constant operand denotes, or nil when

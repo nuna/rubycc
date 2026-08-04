@@ -438,8 +438,9 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   `IR::CallConvention` でターゲット化。va_arg を別 lowering に、va_copy を新規実装。
   呼び出し側は Step 75/76 で対応済みだった)。
 - **A4 の受け入れ達成**: c-testsuite 220 中 203 件通過(残り 17 件はターゲット非依存の
-  既知債務)、examples 36 中 33 件一致(残り 3 件 = alloca・128 ビット乗算・bit-scan は
-  aarch64 固有ではない既存の未実装機能)。x86_64 は各ステップで 254 ファイル規模の
+  既知債務)、examples 36 中 33 件一致(残り 3 件 = alloca・~~128 ビット乗算~~・bit-scan は
+  aarch64 固有ではない既存の未実装機能)。**128 ビット乗算(`:mulhi`)は Step 178 で解消**
+  — `UMULH` 1 命令で、`stdckdint.h`(ギャップ H)を出す前に塞ぐ必要があったため前倒しした。x86_64 は各ステップで 254 ファイル規模の
   バイト一致を維持。**未達**: Step 25 の ABI ファジングハーネスの機種パラメタ化は
   未実施(現状は c-testsuite + examples + 専用差分テストで代替。ハーネスは
   ホスト gcc 前提でクロス経路を持たないため。A5 で QEMU マトリクス整備時に検討)。
@@ -852,6 +853,10 @@ H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker 
   ~~(2) フロントエンドの `__attribute__((constructor))` / `((destructor))`~~
   **完了(Step 155)**、~~(3) `__cxa_finalize(__dso_handle)` の合成~~ **完了(Step 156)**。
   **これで Step 152 の「供給しなかった半分」が埋まった**(設計判断は STEPS.md)。
+- **対応しないと判断済みの gem は `docs/OUT-OF-SCOPE-GEMS.md` に分離した**(Step 185)。
+  R10 は目標を「コーパスの 90% 以上」と定量化しているので、**残る 10% をどこに置くかを
+  決める文書**が要る。「まだ通らない」(GAPS.md)と「通す気がない」を混ぜると、
+  90% の分母が何なのかが読めなくなる。
 - **未解消の負債と未測定事項も `docs/GAPS.md` に集約した**
   (`test/corpus/gems.rb` の `version: nil` 4 件、racc の assertions 差異、
   musl / aarch64 / distroless の未測定)。

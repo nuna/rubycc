@@ -171,8 +171,16 @@ class TestHeaderAbi < Minitest::Test
            # tests with no locale table, so the value must match glibc exactly.
            "isascii('a')", "isascii(200)", "isascii(0)", "isascii(127)",
            "toascii(0x1FF)", "toascii('A')",
-           "_ISupper", "_ISlower", "_ISalpha", "_ISdigit", "_ISspace",
-           "_ISblank", "_IScntrl", "_ISpunct", "_ISalnum"]
+           HeaderAbiHarness::GLIBC_ONLY],
+    # The whole _IS* set is glibc's own spelling of the classification table's
+    # bits; musl has no equivalent names at all. Two musl runs measured four of
+    # them failing on the oracle and none passing (_ISupper/_ISlower in Step
+    # 175, _ISalpha/_ISdigit in Step 181, gcc truncating its report each time),
+    # and they are one enum in glibc. The remaining three are moved on that
+    # family reading rather than on their own measurement -- an inference, said
+    # out loud, in place of two more hour-long CI rounds to name each one.
+    glibc: { ints: %w[_ISupper _ISlower _ISalpha _ISdigit _ISspace
+                      _ISblank _IScntrl _ISpunct _ISalnum] }
   )
 
   # <assert.h>: the assert macro expands to usable code (its __assert_fail hook
@@ -328,7 +336,12 @@ class TestHeaderAbi < Minitest::Test
   SIGSET_SELECT_FIRST = HeaderAbiHarness::Spec.new(
     header: "sys/select.h",
     also: ["signal.h"],
-    sizes: %w[sigset_t __sigset_t],
+    sizes: %w[sigset_t],
+    # __sigset_t is glibc's internal name for the type sigset_t is a typedef
+    # of; musl has no such alias (measured on musl, Step 175: gcc fails on it).
+    # The public sigset_t above is what the conflict this Spec pins is about,
+    # and it is checked on either libc.
+    glibc: { sizes: %w[__sigset_t] },
     snippets: [<<~C.chomp]
       static int abi_sigset_select_first(int fd) {
         fd_set f; FD_ZERO(&f); FD_SET(fd, &f);
@@ -346,7 +359,9 @@ class TestHeaderAbi < Minitest::Test
   SIGSET_SIGNAL_FIRST = HeaderAbiHarness::Spec.new(
     header: "signal.h",
     also: ["sys/select.h"],
-    sizes: %w[sigset_t __sigset_t],
+    sizes: %w[sigset_t],
+    # __sigset_t: glibc-only, for the same reason as SIGSET_SELECT_FIRST above.
+    glibc: { sizes: %w[__sigset_t] },
     snippets: [<<~C.chomp]
       static int abi_sigset_signal_first(int fd) {
         sigset_t s; sigemptyset(&s); sigaddset(&s, SIGINT);
@@ -389,9 +404,14 @@ class TestHeaderAbi < Minitest::Test
   )
 
   # <features.h>: the glibc version macros the version-gated header code branches
-  # on.
+  # on. The whole header is glibc's own -- musl ships no <features.h> surface of
+  # this kind, so __GLIBC__ / __GLIBC_MINOR__ / __GLIBC_PREREQ do not exist
+  # there (measured on musl, Step 175: gcc fails on all three) -- so `libc:`
+  # marks the case as unrunnable anywhere else rather than glibc-only checks
+  # being split out of it.
   FEATURES = HeaderAbiHarness::Spec.new(
     header: "features.h",
+    libc: :glibc,
     ints: ["__GLIBC__", "__GLIBC_MINOR__",
            "__GLIBC_PREREQ(2, 17)", "__GLIBC_PREREQ(2, 99)", "__GLIBC_PREREQ(3, 0)"]
   )
@@ -399,9 +419,13 @@ class TestHeaderAbi < Minitest::Test
   # <sys/cdefs.h>: the compiler-abstraction macros expand to usable code. The
   # __GNUC_PREREQ value is deliberately not asserted: rubycc does not define
   # __GNUC__ (DESIGN R7), so it evaluates to 0 where gcc yields 1 -- a real,
-  # intended toolchain difference rather than a header defect.
+  # intended toolchain difference rather than a header defect. Like
+  # <features.h>, the header itself is glibc's: on musl there is no
+  # <sys/cdefs.h> to be the oracle at all (measured, Step 175: "fatal error:
+  # sys/cdefs.h: No such file or directory"), hence `libc:`.
   SYS_CDEFS = HeaderAbiHarness::Spec.new(
     header: "sys/cdefs.h",
+    libc: :glibc,
     snippets: [<<~C.chomp]
       __BEGIN_DECLS
       extern int abi_cdefs(int) __THROW __attribute_pure__;
@@ -459,7 +483,7 @@ class TestHeaderAbi < Minitest::Test
              O_DSYNC O_ASYNC O_SYNC O_RSYNC O_CLOEXEC O_LARGEFILE O_NOATIME
              O_PATH O_DIRECT O_DIRECTORY O_NOFOLLOW O_TMPFILE
              F_DUPFD F_GETFD F_SETFD F_GETFL F_SETFL F_GETLK F_SETLK F_SETLKW
-             F_SETOWN F_GETOWN F_DUPFD_CLOEXEC FD_CLOEXEC
+             F_SETOWN F_GETOWN F_DUPFD_CLOEXEC F_SETPIPE_SZ F_GETPIPE_SZ FD_CLOEXEC
              F_RDLCK F_WRLCK F_UNLCK
              AT_FDCWD AT_SYMLINK_NOFOLLOW AT_REMOVEDIR AT_SYMLINK_FOLLOW
              SEEK_SET SEEK_CUR SEEK_END],
@@ -488,8 +512,13 @@ class TestHeaderAbi < Minitest::Test
     defines: ["_GNU_SOURCE"],
     sizes: %w[struct\ pollfd nfds_t],
     ints: %w[POLLIN POLLPRI POLLOUT POLLERR POLLHUP POLLNVAL
-             POLLRDNORM POLLRDBAND POLLWRNORM POLLWRBAND POLLMSG
-             POLLREMOVE POLLRDHUP],
+             POLLRDNORM POLLRDBAND POLLWRNORM POLLWRBAND POLLMSG] +
+          [HeaderAbiHarness::GLIBC_ONLY] + %w[POLLRDHUP],
+    # POLLREMOVE is one of the GNU names above: measured on musl (Step 175),
+    # gcc there has no such macro. POLLRDHUP, which the same _GNU_SOURCE gate
+    # covers on glibc, is left in the common list -- it is not among what musl's
+    # gcc reported, so it stays checked there until a run says otherwise.
+    glibc: { ints: %w[POLLREMOVE] },
     offsets: [["struct pollfd", "fd"], ["struct pollfd", "events"],
               ["struct pollfd", "revents"]],
     snippets: [<<~C.chomp]
@@ -514,8 +543,14 @@ class TestHeaderAbi < Minitest::Test
   DLFCN = HeaderAbiHarness::Spec.new(
     header: "dlfcn.h",
     defines: ["_GNU_SOURCE"],
-    ints: %w[RTLD_LAZY RTLD_NOW RTLD_GLOBAL RTLD_LOCAL
-             RTLD_NOLOAD RTLD_DEEPBIND RTLD_NODELETE],
+    ints: %w[RTLD_LAZY RTLD_NOW RTLD_GLOBAL RTLD_LOCAL RTLD_NOLOAD] +
+          [HeaderAbiHarness::GLIBC_ONLY] + %w[RTLD_NODELETE],
+    # RTLD_DEEPBIND is a glibc extension to dlopen's mode flags; musl has no
+    # equivalent (measured, Step 175: gcc there fails on it). Its neighbours
+    # RTLD_NOLOAD / RTLD_NODELETE and the RTLD_NEXT / RTLD_DEFAULT handles in
+    # the snippet are not among what musl's gcc reported, so they stay in the
+    # common list.
+    glibc: { ints: %w[RTLD_DEEPBIND] },
     snippets: [<<~C.chomp]
       static unsigned long abi_dlfcn(const char *name, const char *sym) {
         return sizeof(dlopen(name, RTLD_LAZY | RTLD_GLOBAL))
@@ -741,7 +776,8 @@ class TestHeaderAbi < Minitest::Test
   # pthread implementation in. The three PTHREAD_*_INITIALIZER macros and
   # PTHREAD_ONCE_INIT are exercised as file-scope static initializers.
   # pthread_kill and pthread_atfork (Step 146 gap 3) sit under the same
-  # sizeof-unevaluated umbrella as every other call above -- pthread_atfork
+  # sizeof-unevaluated umbrella as every other call above (pthread_kill from
+  # the glibc-only snippet, for the reason noted there) -- pthread_atfork
   # in particular must never be linked for real here, since glibc supplies it
   # only from libc_nonshared.a via a member that references __dso_handle
   # (Step 146 gap 6, unresolved).
@@ -754,6 +790,16 @@ class TestHeaderAbi < Minitest::Test
     ints: %w[PTHREAD_MUTEX_NORMAL PTHREAD_MUTEX_RECURSIVE PTHREAD_MUTEX_ERRORCHECK
              PTHREAD_MUTEX_DEFAULT PTHREAD_CREATE_JOINABLE PTHREAD_CREATE_DETACHED
              PTHREAD_PROCESS_PRIVATE PTHREAD_PROCESS_SHARED PTHREAD_ONCE_INIT],
+    # pthread_kill is declared by <pthread.h> on glibc but not on musl
+    # (measured, Step 175: gcc there rejects it inside the snippet below, where
+    # it used to sit next to pthread_self), so it is probed from a glibc-only
+    # snippet of its own. Same sizeof-unevaluated treatment as every other call
+    # here, for the same linking reason.
+    glibc: { snippets: [<<~PTHREAD_KILL.chomp] },
+      static unsigned long abi_pthread_kill(pthread_t t) {
+        return sizeof(pthread_kill(t, 0));
+      }
+    PTHREAD_KILL
     snippets: [<<~C.chomp]
       static pthread_mutex_t  abi_m  = PTHREAD_MUTEX_INITIALIZER;
       static pthread_cond_t   abi_c  = PTHREAD_COND_INITIALIZER;
@@ -767,7 +813,6 @@ class TestHeaderAbi < Minitest::Test
         return sizeof(pthread_create(t, at, abi_thread_start, (void *)0))
              + sizeof(pthread_join(*t, (void **)0)) + sizeof(pthread_detach(*t))
              + sizeof(pthread_equal(*t, pthread_self())) + sizeof(pthread_self())
-             + sizeof(pthread_kill(*t, 0))
              + sizeof(pthread_mutex_init(&abi_m, ma)) + sizeof(pthread_mutex_lock(&abi_m))
              + sizeof(pthread_mutex_trylock(&abi_m)) + sizeof(pthread_mutex_unlock(&abi_m))
              + sizeof(pthread_mutex_destroy(&abi_m))
@@ -831,8 +876,15 @@ class TestHeaderAbi < Minitest::Test
   LOCALE = HeaderAbiHarness::Spec.new(
     header: "locale.h",
     sizes: %w[struct\ lconv],
-    ints: %w[LC_ALL LC_COLLATE LC_CTYPE LC_MONETARY LC_NUMERIC LC_TIME LC_MESSAGES
-             LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT LC_IDENTIFICATION],
+    ints: %w[LC_ALL LC_COLLATE LC_CTYPE LC_MONETARY LC_NUMERIC LC_TIME LC_MESSAGES] +
+          [HeaderAbiHarness::GLIBC_ONLY],
+    # Every category beyond the POSIX six is glibc's own. LC_PAPER/LC_NAME were
+    # measured on musl in Step 175 and LC_ADDRESS/LC_TELEPHONE/LC_MEASUREMENT in
+    # Step 181; LC_IDENTIFICATION is moved with them on the family reading
+    # rather than on its own measurement, since gcc truncated its report again.
+    # The six the list keeps are the ones POSIX requires of every libc.
+    glibc: { ints: %w[LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE
+                      LC_MEASUREMENT LC_IDENTIFICATION] },
     offsets: [["struct lconv", "decimal_point"], ["struct lconv", "thousands_sep"],
               ["struct lconv", "grouping"], ["struct lconv", "int_frac_digits"],
               ["struct lconv", "frac_digits"]],
@@ -1053,8 +1105,15 @@ class TestHeaderAbi < Minitest::Test
              TCSANOW TCSADRAIN TCSAFLUSH TCIFLUSH TCOFLUSH TCIOFLUSH],
     offsets: [["struct termios", "c_iflag"], ["struct termios", "c_oflag"],
               ["struct termios", "c_cflag"], ["struct termios", "c_lflag"],
-              ["struct termios", "c_line"], ["struct termios", "c_cc"],
-              ["struct termios", "c_ispeed"], ["struct termios", "c_ospeed"]],
+              ["struct termios", "c_line"], ["struct termios", "c_cc"]],
+    # The speed members are glibc's public spelling: musl keeps them under
+    # reserved names (measured, Step 175: gcc there fails on c_ispeed and
+    # c_ospeed, reporting __c_ispeed / __c_ospeed as struct termios's members
+    # instead), so the two offsets are probed only where the public names are
+    # the members. The struct's overall size, which is what a caller allocating
+    # one depends on, is still checked on either libc through `sizes`.
+    glibc: { offsets: [["struct termios", "c_ispeed"],
+                       ["struct termios", "c_ospeed"]] },
     snippets: [<<~C.chomp]
       static int abi_termios(int fd, struct termios *t) {
         int rc = tcgetattr(fd, t);
@@ -1242,8 +1301,9 @@ class TestHeaderAbi < Minitest::Test
     defines: ["_GNU_SOURCE"],
     sizes: %w[nl_item],
     ints: %w[CODESET
-             RADIXCHAR THOUSEP DECIMAL_POINT THOUSANDS_SEP
-             ABDAY_1 ABDAY_2 ABDAY_3 ABDAY_4 ABDAY_5 ABDAY_6 ABDAY_7
+             RADIXCHAR THOUSEP] +
+          [HeaderAbiHarness::GLIBC_ONLY] +
+          %w[ABDAY_1 ABDAY_2 ABDAY_3 ABDAY_4 ABDAY_5 ABDAY_6 ABDAY_7
              DAY_1 DAY_2 DAY_3 DAY_4 DAY_5 DAY_6 DAY_7
              ABMON_1 ABMON_2 ABMON_3 ABMON_4 ABMON_5 ABMON_6
              ABMON_7 ABMON_8 ABMON_9 ABMON_10 ABMON_11 ABMON_12
@@ -1251,11 +1311,23 @@ class TestHeaderAbi < Minitest::Test
              MON_7 MON_8 MON_9 MON_10 MON_11 MON_12
              AM_STR PM_STR D_T_FMT D_FMT T_FMT T_FMT_AMPM
              ERA ERA_D_FMT ALT_DIGITS ERA_D_T_FMT ERA_T_FMT
-             CRNCYSTR YESEXPR NOEXPR YESSTR NOSTR] +
-          ["_NL_ITEM(2, 40)", "_NL_ITEM(5, 1)", "_NL_ITEM(0, 14)",
-           "_NL_ITEM_CATEGORY(D_T_FMT)", "_NL_ITEM_INDEX(D_T_FMT)",
-           "_NL_ITEM_CATEGORY(CODESET)", "_NL_ITEM_INDEX(CODESET)",
-           "_NL_ITEM_CATEGORY(NOEXPR)", "_NL_ITEM_INDEX(NOEXPR)"],
+             CRNCYSTR YESEXPR NOEXPR YESSTR NOSTR],
+    # Two groups, at two places in the list above, which is why the bundle
+    # carries its own GLIBC_ONLY separator (see HeaderAbiHarness#abi_checks):
+    # DECIMAL_POINT / THOUSANDS_SEP are glibc's aliases for RADIXCHAR / THOUSEP
+    # and sit third (measured on musl, Step 175), while the _NL_ITEM macros are
+    # glibc's item-encoding internals and sit last (measured in Step 181 --
+    # musl's gcc reports them as implicit function declarations, having no such
+    # macros). The items the aliases name are still checked on both libcs.
+    # YESSTR / NOSTR stay common: no musl run has reported them.
+    glibc: {
+      ints: %w[DECIMAL_POINT THOUSANDS_SEP] +
+            [HeaderAbiHarness::GLIBC_ONLY] +
+            ["_NL_ITEM(2, 40)", "_NL_ITEM(5, 1)", "_NL_ITEM(0, 14)",
+             "_NL_ITEM_CATEGORY(D_T_FMT)", "_NL_ITEM_INDEX(D_T_FMT)",
+             "_NL_ITEM_CATEGORY(CODESET)", "_NL_ITEM_INDEX(CODESET)",
+             "_NL_ITEM_CATEGORY(NOEXPR)", "_NL_ITEM_INDEX(NOEXPR)"]
+    },
     snippets: [<<~C.chomp]
       static int abi_langinfo(void) {
         return (nl_langinfo(CODESET) != (char *)0)
@@ -1373,7 +1445,12 @@ class TestHeaderAbi < Minitest::Test
   # signed 64-bit field, so it doubles as the signedness guard.
   STATFS = HeaderAbiHarness::Spec.new(
     header: "sys/statfs.h",
-    sizes: ["struct statfs", "__fsid_t"],
+    sizes: ["struct statfs"],
+    # __fsid_t is glibc's internal name for the f_fsid member's type; musl has
+    # no such alias (measured, Step 175: gcc there fails on it). The member
+    # itself is still checked on either libc, through the offset, the sizeof
+    # expression and the snippet's f_fsid.__val[0] read.
+    glibc: { sizes: ["__fsid_t"] },
     ints: ["sizeof(((struct statfs *)0)->f_type)",
            "sizeof(((struct statfs *)0)->f_bsize)",
            "sizeof(((struct statfs *)0)->f_blocks)",
@@ -1694,7 +1771,17 @@ class TestHeaderAbi < Minitest::Test
 
   # Runs a Spec both ways and asserts a clean run and byte-identical output. The
   # gcc side is the oracle; rubycc must reproduce it exactly.
+  #
+  # A Spec whose header belongs to one libc only is skipped rather than run
+  # here, and says so: on the other libc the oracle itself does not compile, so
+  # the case would report the harness's assumption as a rubycc failure. The skip
+  # is deliberately loud about which header and which libc -- a silently passing
+  # case is the failure mode docs/CI.md's skip guard exists to catch.
   def assert_abi_matches(spec)
+    unless spec_applies_to?(spec)
+      skip "<#{spec.header}> exists only on #{spec.libc}; this host's libc is #{host_libc}"
+    end
+
     result = run_abi_case(spec)
     assert_equal 0, result.gcc_status, "gcc-built probe for <#{spec.header}> exited #{result.gcc_status}"
     assert_equal 0, result.rubycc_status, "rubycc-built probe for <#{spec.header}> exited #{result.rubycc_status}"
@@ -1704,6 +1791,120 @@ class TestHeaderAbi < Minitest::Test
 
   def tool?(name)
     system(name, "--version", out: File::NULL, err: File::NULL) ? true : false
+  end
+end
+
+# Step 180 (M5 H6): the harness's libc parameterization itself. These are
+# assertions about the probe *text* the harness generates, so they need no
+# toolchain at all and run -- never skip -- on either kind of host.
+#
+# The load-bearing one is that the parameterization is invisible on a glibc
+# host: a check moved into a Spec's `glibc:` bundle must come back at exactly
+# the position it held before the move, so the long-standing glibc baseline is
+# still compiled from byte-identical source and its green means what it did
+# before. Each case spells the pre-split Spec out by hand and diffs the
+# generated source against the live one, which is what makes this a check on
+# the merge rather than a restatement of it.
+class TestHeaderAbiLibcParameterization < Minitest::Test
+  include HeaderAbiHarness
+
+  # <ctype.h> as it stood before _ISupper / _ISlower moved into its bundle:
+  # they sat in the middle of the _IS* group, which is why CTYPE's list carries
+  # a GLIBC_ONLY marker instead of letting the bundle land at the tail.
+  CTYPE_BEFORE_SPLIT = HeaderAbiHarness::Spec.new(
+    header: "ctype.h",
+    ints: ["isalpha('a')", "isdigit('5')", "isspace(' ')", "isupper('A')",
+           "islower('a')", "isxdigit('f')", "isalnum('z')", "ispunct('!')",
+           "toupper('a')", "tolower('A')",
+           "isascii('a')", "isascii(200)", "isascii(0)", "isascii(127)",
+           "toascii(0x1FF)", "toascii('A')",
+           "_ISupper", "_ISlower", "_ISalpha", "_ISdigit", "_ISspace",
+           "_ISblank", "_IScntrl", "_ISpunct", "_ISalnum"]
+  )
+
+  # <termios.h> as it stood before c_ispeed / c_ospeed moved into its bundle:
+  # those were the last two offsets, so no marker is needed -- the bundle is
+  # appended at the tail. Only the offsets changed, so only they are restated;
+  # every other field is taken from the live Spec.
+  TERMIOS_BEFORE_SPLIT = HeaderAbiHarness::Spec.new(
+    **TestHeaderAbi::TERMIOS.to_h.merge(
+      offsets: [["struct termios", "c_iflag"], ["struct termios", "c_oflag"],
+                ["struct termios", "c_cflag"], ["struct termios", "c_lflag"],
+                ["struct termios", "c_line"], ["struct termios", "c_cc"],
+                ["struct termios", "c_ispeed"], ["struct termios", "c_ospeed"]],
+      glibc: nil
+    )
+  )
+
+  def test_marker_splices_the_bundle_back_where_the_checks_were
+    assert_equal abi_probe_source(CTYPE_BEFORE_SPLIT, :glibc),
+                 abi_probe_source(TestHeaderAbi::CTYPE, :glibc)
+  end
+
+  def test_tail_bundle_is_appended_where_the_checks_were
+    assert_equal abi_probe_source(TERMIOS_BEFORE_SPLIT, :glibc),
+                 abi_probe_source(TestHeaderAbi::TERMIOS, :glibc)
+  end
+
+  # The marker is a harness-internal element, never a C spelling: it must not
+  # reach the probe text on either libc.
+  def test_marker_never_reaches_the_probe_text
+    refute_includes abi_probe_source(TestHeaderAbi::CTYPE, :glibc),
+                    HeaderAbiHarness::GLIBC_ONLY.to_s
+    refute_includes abi_probe_source(TestHeaderAbi::CTYPE, :musl),
+                    HeaderAbiHarness::GLIBC_ONLY.to_s
+  end
+
+  # The musl probe is the glibc one minus exactly the glibc-only checks: every
+  # other line, and their order, is untouched.
+  def test_musl_probe_drops_only_the_glibc_only_checks
+    ctype = abi_probe_source(TestHeaderAbi::CTYPE, :glibc).lines
+    assert_equal ctype.reject { |line| line.include?("(_IS") },
+                 abi_probe_source(TestHeaderAbi::CTYPE, :musl).lines
+
+    termios = abi_probe_source(TestHeaderAbi::TERMIOS, :glibc).lines
+    assert_equal termios.reject { |line| line.include?("c_ispeed") || line.include?("c_ospeed") },
+                 abi_probe_source(TestHeaderAbi::TERMIOS, :musl).lines
+  end
+
+  # langinfo.h needs its glibc-only checks in two places at once -- the
+  # DECIMAL_POINT aliases third in the list, the _NL_ITEM internals last -- so
+  # its bundle carries its own separator. Both groups must land where they were
+  # and nowhere else, or the glibc baseline's probe text moves.
+  def test_bundle_with_its_own_separator_lands_in_both_places
+    glibc = abi_probe_source(TestHeaderAbi::LANGINFO, :glibc).lines
+    musl = abi_probe_source(TestHeaderAbi::LANGINFO, :musl).lines
+
+    decimal_point = glibc.index { |line| line.include?("DECIMAL_POINT") }
+    thousep = glibc.index { |line| line.include?("(THOUSEP)") }
+    abday = glibc.index { |line| line.include?("ABDAY_1") }
+    assert_operator thousep, :<, decimal_point, "the aliases follow the items they alias"
+    assert_operator decimal_point, :<, abday, "and precede the day names, as before the split"
+    assert_includes glibc.last(12).join, "_NL_ITEM_INDEX(NOEXPR)", "the internals stay last"
+
+    assert_equal glibc.reject { |line| line.include?("DECIMAL_POINT") ||
+                                       line.include?("THOUSANDS_SEP") ||
+                                       line.include?("_NL_ITEM") },
+                 musl
+  end
+
+  # A Spec that declares no bundle is libc-independent, which is what keeps the
+  # other 40-odd cases' probe text exactly as it was.
+  def test_spec_without_a_bundle_is_identical_for_either_libc
+    assert_equal abi_probe_source(TestHeaderAbi::STDDEF, :glibc),
+                 abi_probe_source(TestHeaderAbi::STDDEF, :musl)
+    assert_equal abi_probe_source(TestHeaderAbi::SIGNAL, :glibc),
+                 abi_probe_source(TestHeaderAbi::SIGNAL, :musl)
+  end
+
+  # A Spec naming a `libc:` applies to that libc only; one that names none
+  # applies everywhere.
+  def test_libc_only_specs_apply_to_that_libc_only
+    assert spec_applies_to?(TestHeaderAbi::FEATURES, :glibc)
+    refute spec_applies_to?(TestHeaderAbi::FEATURES, :musl)
+    assert spec_applies_to?(TestHeaderAbi::SYS_CDEFS, :glibc)
+    refute spec_applies_to?(TestHeaderAbi::SYS_CDEFS, :musl)
+    assert spec_applies_to?(TestHeaderAbi::CTYPE, :musl)
   end
 end
 

@@ -170,6 +170,110 @@ class TestGccBuiltins < Minitest::Test
     }
   C
 
+  # __builtin_add/sub/mul_overflow over the shapes their users write: an
+  # unsigned wrap that is still stored, a computation that fits, a signed
+  # overflow at INT_MAX, an unsigned underflow at 0, the size_t product ruby's
+  # allocation paths check, operands whose types differ from the destination's
+  # (where the infinite-precision rule shows: int -1 plus unsigned 1 is 0, not
+  # UINT_MAX), and a destination narrower than the operands. Every value and
+  # every 0/1 answer is matched against gcc.
+  OVERFLOW_SOURCE = <<~C
+    #include <stdio.h>
+    #include <limits.h>
+    #include <stddef.h>
+    int main(void) {
+      unsigned char uc;
+      int wrapped = __builtin_add_overflow(200, 100, &uc);
+
+      int sum;
+      int fits = __builtin_add_overflow(2000000, 40, &sum);
+
+      int big;
+      int at_max = __builtin_add_overflow(INT_MAX, 1, &big);
+      int low;
+      int at_min = __builtin_sub_overflow(INT_MIN, 1, &low);
+
+      unsigned under;
+      int borrowed = __builtin_sub_overflow(0u, 1u, &under);
+
+      size_t bytes;
+      size_t count = (size_t)1 << 40;
+      int too_many = __builtin_mul_overflow(count, (size_t)0x10000000, &bytes);
+      size_t room;
+      int room_ok = __builtin_mul_overflow((size_t)12345, sizeof(long), &room);
+      size_t all;
+      int all_over = __builtin_mul_overflow((size_t)-1, (size_t)2, &all);
+
+      int a = -1;
+      unsigned b = 1;
+      unsigned mixed;
+      int mixed_over = __builtin_add_overflow(a, b, &mixed);
+      int negative;
+      int neg_over = __builtin_sub_overflow(a, b, &negative);
+
+      char narrow;
+      int narrowed = __builtin_add_overflow(300, 27, &narrow);
+
+      long product;
+      int signed_product = __builtin_mul_overflow(-3000000000L, 4L, &product);
+      long small;
+      int small_ok = __builtin_mul_overflow(-100000L, 3L, &small);
+
+      printf("%d %u\\n", wrapped, uc);
+      printf("%d %d\\n", fits, sum);
+      printf("%d %d %d %d\\n", at_max, big, at_min, low);
+      printf("%d %u\\n", borrowed, under);
+      printf("%d %zu %d %zu %d %zu\\n",
+             too_many, bytes, room_ok, room, all_over, all);
+      printf("%d %u %d %d\\n", mixed_over, mixed, neg_over, negative);
+      printf("%d %d\\n", narrowed, narrow);
+      printf("%d %ld %d %ld\\n", signed_product, product, small_ok, small);
+      return 0;
+    }
+  C
+
+  # The overflow builtins over every combination of operand signedness at the
+  # 64-bit boundary, where the 128-bit intermediate is worked hardest: two
+  # unsigned maxima multiply to nearly 2**128, a negative long times an unsigned
+  # long stays under 2**127, and the results land in destinations of both
+  # signednesses. Matched against gcc.
+  OVERFLOW_EXTREMES_SOURCE = <<~C
+    #include <stdio.h>
+    #include <limits.h>
+    int main(void) {
+      unsigned long um = ULONG_MAX, half = 1UL << 63;
+      long lmin = LONG_MIN, lmax = LONG_MAX;
+      unsigned long ur;
+      long lr;
+      int r[12];
+      r[0] = __builtin_mul_overflow(um, um, &ur);
+      printf("%d %lu\\n", r[0], ur);
+      r[1] = __builtin_mul_overflow(um, 1UL, &ur);
+      printf("%d %lu\\n", r[1], ur);
+      r[2] = __builtin_mul_overflow(half, 2UL, &ur);
+      printf("%d %lu\\n", r[2], ur);
+      r[3] = __builtin_mul_overflow(lmin, 2L, &lr);
+      printf("%d %ld\\n", r[3], lr);
+      r[4] = __builtin_mul_overflow(lmin, -1L, &lr);
+      printf("%d %ld\\n", r[4], lr);
+      r[5] = __builtin_mul_overflow(lmin, lmin, &lr);
+      printf("%d %ld\\n", r[5], lr);
+      r[6] = __builtin_mul_overflow(-1L, um, &ur);
+      printf("%d %lu\\n", r[6], ur);
+      r[7] = __builtin_mul_overflow(-1L, um, &lr);
+      printf("%d %ld\\n", r[7], lr);
+      r[8] = __builtin_add_overflow(um, um, &ur);
+      printf("%d %lu\\n", r[8], ur);
+      r[9] = __builtin_add_overflow(lmax, lmax, &lr);
+      printf("%d %ld\\n", r[9], lr);
+      r[10] = __builtin_sub_overflow(lmin, lmax, &lr);
+      printf("%d %ld\\n", r[10], lr);
+      r[11] = __builtin_sub_overflow(0UL, um, &lr);
+      printf("%d %ld\\n", r[11], lr);
+      return 0;
+    }
+  C
+
   def test_has_builtin_matches_gcc
     assert_matches_gcc(HAS_BUILTIN_SOURCE, "has_builtin")
   end
@@ -196,6 +300,106 @@ class TestGccBuiltins < Minitest::Test
 
   def test_binary_literal_matches_gcc
     assert_matches_gcc(BINARY_LITERAL_SOURCE, "binary_literal")
+  end
+
+  def test_overflow_builtins_match_gcc
+    assert_matches_gcc(OVERFLOW_SOURCE, "overflow")
+  end
+
+  def test_overflow_builtins_at_the_64_bit_boundary_match_gcc
+    assert_matches_gcc(OVERFLOW_EXTREMES_SOURCE, "overflow_extremes")
+  end
+
+  # The overflow builtins take exactly three arguments; a call with any other
+  # count is an arity diagnostic rather than a punctuator mismatch.
+  def test_overflow_builtin_wrong_argument_count_rejected
+    source = <<~C
+      int main(void) {
+        int r;
+        return __builtin_add_overflow(1, &r);
+      }
+    C
+    error = assert_raises(Rubycc::CompileError) do
+      Rubycc::Compiler.new.compile(source, filename: "overflow_arity.c")
+    end
+    assert_match(/__builtin_add_overflow' expects 3 arguments, have 2/, error.message)
+  end
+
+  # The third argument must be a pointer to an integer object: there is nowhere
+  # else to put the result, and its type is what the range check is against.
+  def test_overflow_builtin_non_integer_destination_rejected
+    source = <<~C
+      int main(void) {
+        double d;
+        return __builtin_mul_overflow(2, 3, &d);
+      }
+    C
+    error = assert_raises(Rubycc::CompileError) do
+      Rubycc::Compiler.new.compile(source, filename: "overflow_dest.c")
+    end
+    assert_match(/last argument to '__builtin_mul_overflow' is not a pointer to an integer/,
+                 error.message)
+  end
+
+  # Both value operands must be integers.
+  def test_overflow_builtin_non_integer_operand_rejected
+    source = <<~C
+      int main(void) {
+        int r;
+        int *p = &r;
+        return __builtin_sub_overflow(p, 1, &r);
+      }
+    C
+    error = assert_raises(Rubycc::CompileError) do
+      Rubycc::Compiler.new.compile(source, filename: "overflow_operand.c")
+    end
+    assert_match(/argument to '__builtin_sub_overflow' is not of integer type/, error.message)
+  end
+
+  # A 128-bit operand has no wider intermediate to be checked exactly in, so it
+  # is refused rather than answered from a truncated computation.
+  def test_overflow_builtin_128_bit_operand_rejected
+    source = <<~C
+      int main(void) {
+        unsigned __int128 wide = 1;
+        unsigned long r;
+        return __builtin_add_overflow(wide, 1UL, &r);
+      }
+    C
+    error = assert_raises(Rubycc::CompileError) do
+      Rubycc::Compiler.new.compile(source, filename: "overflow_wide.c")
+    end
+    assert_match(/'__builtin_add_overflow' does not support 128-bit operands/, error.message)
+  end
+
+  # ... and neither has a 128-bit destination.
+  def test_overflow_builtin_128_bit_destination_rejected
+    source = <<~C
+      int main(void) {
+        unsigned __int128 wide;
+        return __builtin_mul_overflow(2, 3, &wide);
+      }
+    C
+    error = assert_raises(Rubycc::CompileError) do
+      Rubycc::Compiler.new.compile(source, filename: "overflow_wide_dest.c")
+    end
+    assert_match(/'__builtin_mul_overflow' does not support a 128-bit result type/, error.message)
+  end
+
+  # __has_builtin reports the three overflow builtins present, which is how
+  # <stdckdint.h>-style headers pick the builtin path over a fallback.
+  def test_has_builtin_reports_overflow_builtins_present
+    source = <<~C
+      int main(void) {
+      #if __has_builtin(__builtin_add_overflow) && __has_builtin(__builtin_sub_overflow) \\
+          && __has_builtin(__builtin_mul_overflow)
+        return 0;
+      #else
+        return 1;
+      #endif
+      }
+    C
+    assert_c_exit_status(0, source)
   end
 
   # A __builtin_choose_expr whose first argument is not a constant expression is

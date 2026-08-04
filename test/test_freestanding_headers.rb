@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "rbconfig"
+
 require_relative "test_helper"
 
 # Step 41: rubycc ships its own compiler-supplied ("freestanding") headers
@@ -85,15 +87,71 @@ class TestFreestandingHeaders < Minitest::Test
     }
   C
 
+  # <stdckdint.h>: ckd_add/ckd_sub/ckd_mul, C23's type-generic checked-arithmetic
+  # macros (7.20.1), each a one-liner over the __builtin_*_overflow builtins
+  # added in Step 177. Note the result pointer is the *first* argument here,
+  # unlike the builtins it expands to.
+  STDCKDINT_SOURCE = <<~C
+    #include <stdckdint.h>
+    #include <stdint.h>
+    #include <stdio.h>
+    int main(void) {
+      size_t r;
+      int ov1 = ckd_mul(&r, (size_t)SIZE_MAX, (size_t)SIZE_MAX);
+      printf("%d %zu\\n", ov1, r);
+
+      size_t r2;
+      int ov2 = ckd_mul(&r2, (size_t)6, (size_t)7);
+      printf("%d %zu\\n", ov2, r2);
+
+      int q;
+      int ov3 = ckd_add(&q, 2147483647, 1);
+      printf("%d %d\\n", ov3, q);
+
+      int q2;
+      int ov4 = ckd_sub(&q2, -2147483647 - 1, 1);
+      printf("%d %d\\n", ov4, q2);
+
+      printf("%ld\\n", (long)__STDC_VERSION_STDCKDINT_H__);
+      return 0;
+    }
+  C
+
+  # Expected output of STDCKDINT_SOURCE, computed by hand from the type widths
+  # involved (matching the table used to verify __builtin_*_overflow itself in
+  # Step 177's docs/STEPS.md entry): SIZE_MAX * SIZE_MAX overflows size_t and
+  # (per the builtin's truncation contract) leaves 1 in *r; 6 * 7 does not
+  # overflow and stores 42; INT_MAX + 1 overflows int and wraps to INT_MIN;
+  # INT_MIN - 1 overflows int and wraps to INT_MAX; and
+  # __STDC_VERSION_STDCKDINT_H__ is the C23 202311L this header defines it as.
+  STDCKDINT_EXPECTED_OUTPUT = <<~OUT
+    1 1
+    0 42
+    1 -2147483648
+    1 2147483647
+    202311
+  OUT
+
+  # The name the partial include below asks for, which is the host libc's own:
+  # glibc calls the bare va_list type __gnuc_va_list, musl calls it
+  # __isoc_va_list (measured on musl, Step 175: gcc itself -- the oracle this
+  # file diffs against -- fails to compile the __gnuc_va_list spelling there,
+  # so the case proved nothing about rubycc). The libc is read from RbConfig's
+  # arch triplet, the same source test/abi_harness/harness.rb's #host_libc and
+  # tools/verify_gem_tests.rb's environment_string read: MRI spells a musl
+  # build "x86_64-linux-musl" and a glibc one "x86_64-linux".
+  VA_LIST_TYPE_NAME =
+    RbConfig::CONFIG["arch"].to_s.include?("musl") ? "__isoc_va_list" : "__gnuc_va_list"
+
   # The glibc partial-include protocol: a header defines __need___va_list and
-  # then includes <stdarg.h> to obtain only __gnuc_va_list (not va_list and the
-  # macros). rubycc's stdarg.h must satisfy exactly that request.
+  # then includes <stdarg.h> to obtain only the bare va_list type (not va_list
+  # itself and the macros). rubycc's stdarg.h must satisfy exactly that request.
   NEED_VA_LIST_SOURCE = <<~C
     #define __need___va_list
     #include <stdarg.h>
     #include <stdarg.h>
     #include <stdio.h>
-    static int forward(int n, __gnuc_va_list ap) { return va_arg(ap, int) + n; }
+    static int forward(int n, #{VA_LIST_TYPE_NAME} ap) { return va_arg(ap, int) + n; }
     static int run(int n, ...) {
       va_list ap;
       va_start(ap, n);
@@ -137,6 +195,61 @@ class TestFreestandingHeaders < Minitest::Test
 
   def test_iso646_operator_macros_match_gcc
     assert_matches_gcc(ISO646_SOURCE, "iso646")
+  end
+
+  # Not assert_matches_gcc: the host gcc used elsewhere in this file as the
+  # cross-check oracle has no <stdckdint.h> of its own (verified locally --
+  # "fatal error: stdckdint.h: No such file or directory" -- C23's freestanding
+  # headers being a recent addition gcc has not shipped everywhere yet), so
+  # there is no gcc-built binary to diff against here. Instead the program's
+  # output is checked against a hand-computed expected value; the
+  # __builtin_*_overflow instructions it expands to were already differentially
+  # verified against gcc in Step 177, so that is where this expected value's
+  # correctness ultimately rests.
+  def test_stdckdint_checked_arithmetic_macros
+    in_tmpdir do |dir|
+      rubycc_obj = File.join(dir, "stdckdint_rubycc.o")
+      binary = Rubycc::Compiler.new.compile(STDCKDINT_SOURCE, filename: "stdckdint.c")
+      File.binwrite(rubycc_obj, binary)
+      status, out = link_and_run(rubycc_obj)
+
+      assert_equal 0, status, "rubycc-built stdckdint exited #{status}"
+      assert_equal STDCKDINT_EXPECTED_OUTPUT, out
+    end
+  end
+
+  # Both internal spellings of the bare va_list type resolve, whichever libc
+  # this host has: glibc writes __gnuc_va_list, musl writes __isoc_va_list, and
+  # rubycc's stdarg.h offers both because they are aliases of one type (see the
+  # note there). Not assert_matches_gcc for the same reason as stdckdint above:
+  # on this glibc host gcc rejects __isoc_va_list outright ("unknown type name
+  # '__isoc_va_list'; did you mean '__gnuc_va_list'?", verified locally), so
+  # there is no oracle that accepts both names at once. What the case does prove
+  # is the thing that broke on musl -- that the name the *host libc* uses is one
+  # rubycc supplies -- and it proves it on either kind of host.
+  BOTH_VA_LIST_NAMES_SOURCE = <<~C
+    #include <stdio.h>
+    #include <stdarg.h>
+    static int through_gnuc(int n, __gnuc_va_list ap) { return va_arg(ap, int) + n; }
+    static int through_isoc(int n, __isoc_va_list ap) { return va_arg(ap, int) + n; }
+    static int sum(int n, ...) {
+      va_list ap;
+      va_start(ap, n); int a = through_gnuc(n, ap); va_end(ap);
+      va_start(ap, n); int b = through_isoc(n, ap); va_end(ap);
+      return a + b;
+    }
+    int main(void) { printf("%d\\n", sum(10, 5)); return 0; }
+  C
+
+  def test_both_internal_va_list_spellings_resolve
+    in_tmpdir do |dir|
+      obj = File.join(dir, "both_va_list_rubycc.o")
+      File.binwrite(obj, Rubycc::Compiler.new.compile(BOTH_VA_LIST_NAMES_SOURCE, filename: "both_va_list.c"))
+      status, out = link_and_run(obj)
+
+      assert_equal 0, status, "rubycc-built both_va_list exited #{status}"
+      assert_equal "30\n", out
+    end
   end
 
   def test_need_va_list_partial_include_matches_gcc

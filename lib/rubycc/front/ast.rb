@@ -367,6 +367,20 @@ module Rubycc
       # `token` is the builtin keyword.
       BuiltinBitScan = Data.define(:operand, :direction, :width, :token)
 
+      # "__builtin_add/sub/mul_overflow ( a , b , res )": computes "a op b" with
+      # infinite precision, stores the result converted to the type `res` points
+      # at (wrapping or truncating like any integer conversion), and yields int 1
+      # when that conversion lost the value and 0 when it did not. `op` is :add,
+      # :sub or :mul and `args` holds the three argument expressions as written.
+      # The parser checks only the argument *count*; the operand types (both
+      # integers, `res` a pointer to an integer) need resolved types and are the
+      # generator's to diagnose. `token` is the builtin keyword.
+      #
+      # The two operands keep their own types — no usual arithmetic conversion
+      # runs between them, which is the whole point of the builtin: "int -1" plus
+      # "unsigned 1" is 0 in infinite precision, not UINT_MAX.
+      BuiltinOverflow = Data.define(:op, :args, :token)
+
       # One of gcc's __atomic_* builtins (the nine forms rubycc lowers). `kind`
       # names the operation — :load, :store, :exchange, :compare_exchange,
       # :fetch_add, :fetch_sub, :add_fetch, :sub_fetch or :or_fetch — and `args`
