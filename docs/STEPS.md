@@ -6930,9 +6930,70 @@ C11 の制約違反であり、黙って通すより落とす方がこのプロ�
 
 ---
 
+## Step 183 — musl 3 回目。**初の非 glibc 記録**と、次の壁(M5 H6)
+
+### 数字
+
+| | runs | failures | errors | skips |
+|---|---|---|---|---|
+| musl 1 回目(Step 175) | 2,763 | 21 | 18 | 550 |
+| musl 2 回目(Step 181) | 2,763 | 22 | 9 | 555 |
+| **musl 3 回目** | **2,776** | **18** | **5** | 556 |
+
+**39 → 31 → 23。** Steps 177〜182 が効いている。
+
+### `data/verified_gems.json` に初めて glibc 以外の記録が入った
+
+**io-wait 0.4.0 が musl で PASS**(26 tests / 41 assertions / 0 failures / 0 errors)。
+`environment` は `musl x86_64 / ruby 4.0.6`。
+**Step 158 で入れ子スキーマにしたのは、この日のためだった** — 1 gem = 1 エントリのまま
+環境ごとの記録を内側に持つ形。**それまで全 18 エントリの `environment` が同じ文字列で、
+スキーマの「環境ごと」の半分が一度も使われていなかった。**
+`test_doctor.rb` にその記録を固定する検査を足した。
+
+### 3 gem 中 2 gem は入らなかった
+
+stringio(`have_type`)と json(`append_cflags`)が **extconf の probe 段階**で落ちた。
+**理由は分からない** — `gem install` は「mkmf.log を見ろ」と言うが、
+**その mkmf.log をアーティファクトに含めていなかった**のでコンテナと一緒に消えた。
+次の実行で拾えるようにスクリプトとワークフローを直した。**推測は書かない。**
+
+io-wait だけ通ったことには**心当たりがある** — Step 165 に書いたとおり
+**io-wait の extconf は probe を 1 つも持たない**。ただしこれは仮説であって、
+mkmf.log を見るまでは確定させない。
+
+### 新しい壁 — `offsetof` の cast 形が畳めない(ギャップ K)
+
+`ruby.h` は musl でまだ通らない。**理由がまた変わった**:
+
+```
+ruby/internal/core/rtypeddata.h:382: error: static assertion expression is not an integer constant
+RBIMPL_STATIC_ASSERT(data_in_rtypeddata, offsetof(struct RData, data) == offsetof(struct RTypedData, data));
+```
+
+**ローカルで 6 行に落とせた**:
+
+```c
+#define OFF(t, m) ((size_t)&((t *)0)->m)
+_Static_assert(OFF(struct A, data) == 8, "");   // rubycc: not an integer constant
+```
+
+`__builtin_offsetof` 形は畳める。**cast 形が畳めない。** gcc は両方畳む
+(厳密には ISO C の整数定数式ではなく gcc の拡張だが、musl のヘッダはこれを使う)。
+
+ここでも **Step 179 と同じ収穫**があった。**musl で見つかったが musl は要らない。**
+引き金は libc ではなく**この構文そのもの**なので、CI 往復なしで直せる。
+`ruby 4.0.6 + glibc` では通ることも手元で確認した(Tier A も `4fc71e5` で緑)ので、
+**Ruby バージョンの差ではない**ことは実測で潰してある。
+
+---
+
 ## 現在のテスト規模
 
-Step 182 完了時点: **2,776 runs / 8,203 assertions / 0 failures / 0 errors / 44 skips**
+Step 183 完了時点: **2,776 runs / 8,216 assertions / 0 failures / 0 errors / 44 skips**
+(Step 182 から +13 assertions = 初の musl 記録を固定する検査 1 件と、
+DB のスキーマ検査が verification 1 本ぶん増えた分)
+(以前) Step 182 完了時点: **2,776 runs / 8,203 assertions / 0 failures / 0 errors / 44 skips**
 (Step 181 から +12 runs = パーサ 5 件・診断 2 件・gcc 差分の新ファイル 4 件・
 examples 1 件。**aarch64 でも PENDING 無しで通る**)
 (以前) Step 181 完了時点: **2,764 runs / 8,177 assertions / 0 failures / 0 errors / 44 skips**

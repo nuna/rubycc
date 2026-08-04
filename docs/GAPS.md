@@ -13,6 +13,7 @@
 | E | `F_GETPIPE_SZ` / `F_SETPIPE_SZ` が同梱 `fcntl.h` に無い(`Fcntl` 定数が 24 対 26。**共通 24 個の値は一致**) | fcntl のみ | 低 | STEPS.md Step 157。**埋めても検証済み gem は増えない** — fcntl は上流にテストスイートが無く (d) レベルの証拠が原理的に得られないため |
 | G | **同梱ヘッダが glibc の ABI を焼き込んでいる**。実測(musl 初回実行): `int_fast16_t` / `int_fast32_t` が musl では 4 バイト、rubycc は 8 バイト(glibc の値) | **M5 が掲げた「glibc/musl 互換ヘッダ」の主張が musl 側で外れている**。musl では全スイート 21 failures / 18 errors | **高** | STEPS.md Step 175。`<stdint.h>` は最も直接的な 1 例で、26 件ある rubycc 側の差の全容はまだ分類しきれていない |
 | I | **ABI ハーネスの glibc 固有ケースの分類が未完(残りわずか)**。Step 180 で仕組みを入れ、Steps 180・181 の 2 回の musl 実測で 13 ケースを分類。**gcc がエラーを打ち切るため、`_IS*` / `LC_*` / `_NL_ITEM*` の 3 系統は「系統ごと」の推論で移した**(全メンバの個別実測はしていない) | 推論が外れていれば、その項目が musl で不要に落ちる | 低 | STEPS.md Steps 175・180・181。次の musl 実走で残りが出る |
+| K | **`offsetof` の cast 形をコンパイル時定数に畳めない**。実測(最小再現): `#define OFF(t,m) ((size_t)&((t *)0)->m)` を `_Static_assert` に置くと `error: static assertion expression is not an integer constant`。`__builtin_offsetof` 形は畳める。gcc は両方畳む | musl の実測で `ruby/internal/core/rtypeddata.h` の `RBIMPL_STATIC_ASSERT(... offsetof(struct RData, data) == offsetof(struct RTypedData, data))` が通らず、**musl で `ruby.h` が前処理できない**(`TestRubySmoke` 4 件)。この形は musl に限らず広く使われる | **高** | STEPS.md Step 183。**ローカルで再現するので CI 往復は不要** |
 
 ## 2. 未解消の負債
 

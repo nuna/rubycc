@@ -84,6 +84,14 @@ class TestDoctor < Minitest::Test
     assert_includes all_versions["digest"], "3.2.1"
     assert_includes all_versions["zlib"], "3.2.3"
     assert_includes all_versions["psych"], "5.3.1"
+
+    # The first record from a libc other than glibc (Step 183). It is pinned
+    # because the nested schema was built for exactly this -- one gem, one
+    # entry, one verification per environment -- and until this run every
+    # environment string in the file was the same one, so nothing proved the
+    # per-environment half of the schema was reachable.
+    io_wait_envs = raw.fetch("io-wait")["verifications"].map { |v| v["environment"] }
+    assert_includes io_wait_envs, "musl x86_64 / ruby 4.0.6"
   end
 
   # --- gemspec packaging ----------------------------------------------------

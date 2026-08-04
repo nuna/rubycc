@@ -102,5 +102,14 @@ fi
 } | tee tmp/ci/verify-gems-musl.log
 verify_status=$(cat tmp/ci/verify-status 2>/dev/null || echo "no-status")
 
+# A failed `gem install` prints "check the mkmf.log which can be found here"
+# and then the job ends, taking the log with it -- which is what happened to
+# stringio and json on the Step 183 run, leaving their extconf failures
+# unexplained. Copy the whole extensions tree out so the next failure arrives
+# with its mkmf.log and gem_make.out attached.
+if [ -d /tmp/rubycc_verify_gem_tests/gemhome/extensions ]; then
+  cp -r /tmp/rubycc_verify_gem_tests/gemhome/extensions tmp/ci/extensions || true
+fi
+
 echo "suite exit: ${suite_status}, gem verification exit: ${verify_status}"
 [ "${suite_status}" = "0" ] && [ "${verify_status}" = "0" ]
