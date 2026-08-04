@@ -6749,9 +6749,74 @@ $ rubycc -c rh.c -DHAVE_STDCKDINT_H -I<rubyhdrdir> -I<rubyarchhdrdir>
 
 ---
 
+## Step 180 — ABI ハーネスを libc でパラメタ化する(M5 H6)
+
+Step 175 が露出させた**ギャップ I** への対処。ハーネスは機種(x86-64 / aarch64)で
+パラメタ化されていたが、**libc の軸が無かった**。
+
+### 問題は「rubycc が落ちた」ではなく「対照が先に落ちた」
+
+musl では 13 ケースで**参照実装である gcc の方が先にコンパイルに失敗**していた。
+プローブが glibc 自身の名前(`__GLIBC__`、`__sigset_t`、`_ISupper`、
+`struct termios` の `c_ispeed`)で書かれているためである。
+**この状態は rubycc について何も語らない** — 落ちているのはハーネスの前提であって、
+コンパイラではない。にもかかわらず失敗として報告される。
+
+### 2 種類ある
+
+| 種別 | Spec の表現 | 例 |
+|---|---|---|
+| **ヘッダまるごとが片方にしか無い** | `libc: :glibc` | `features.h`(glibc 自身のバージョン機構)、`sys/cdefs.h`(musl には**インストールすらされない**) |
+| ヘッダは共通だが**一部の名前が glibc 固有** | `glibc:` バンドル | `RTLD_DEEPBIND`、`LC_PAPER`、`POLLREMOVE`、`__fsid_t` ほか |
+
+前者は `skip` にするが、**理由を必ずメッセージに書く**
+(`<features.h> exists only on glibc; this host's libc is musl`)。
+`docs/CI.md` が繰り返し書いているとおり、**静かに通る skip がこのプロジェクトの敵**である。
+
+### glibc 側のプローブは 1 バイトも変えない、を不変条件にした
+
+パラメタ化の目的は **musl を走らせられるようにすること**であって、
+**長年緑だった glibc の基準線を動かすことではない**。
+そこで「glibc ホストで生成されるプローブのソースが変更前とバイト単位で同一」を
+不変条件に置き、テストにした。
+
+ここで当初の設計(`glibc:` の項目をリストの**末尾に連結**する)が**破綻した**。
+glibc 固有と実測された項目の多くは**リストの途中**にあるからである
+(`LANGINFO` の `DECIMAL_POINT` は 60 項目中 4 番目)。末尾に足せば行順が変わる。
+そこで **`GLIBC_ONLY` マーカー**を導入し、リスト中のその位置に差し戻す形にした。
+
+検証は実測でやった。**変更前の 2 ファイルを `git show HEAD:` で取り出して別プロセスで読み、
+47 個の Spec すべてのプローブ出力を突き合わせた**結果、**46 件がバイト単位で一致**。
+
+**唯一動いたのが `PTHREAD`** で、これは避けられない。`pthread_kill` が
+snippet の**式の途中**(`+ sizeof(pthread_kill(*t, 0))`)にあり、
+リストの要素として動かせないためである。glibc 側で**検査内容は変わらない**が、
+テキストは変わる。**「1 件だけ動いた」を隠さずに記録しておく。**
+
+### aarch64 は常に glibc
+
+`run_abi_case_aarch64` の実効 libc は**ホストが何であれ `:glibc`** に固定した。
+クロスツールチェインが `aarch64-linux-gnu` = glibc だからである。
+musl ホストでこれを取り違えると、**両側とも glibc のプローブから
+glibc 固有の検査だけが落ちる**という無意味な比較になる。
+
+### まだ閉じていない
+
+gcc は**最初の数件でエラーを打ち切る**。したがって上の 13 件の陰に、
+まだ分類されていない glibc 固有の項目が隠れている可能性がある。
+**推測で分類を広げなかった** — 隣接する未実測の項目
+(`_ISalpha` 以降、`RTLD_NODELETE`、`POLLRDHUP`、`LC_ADDRESS` 以降)は共通のまま残し、
+「musl の gcc が報告していないので次の実走まで共通扱い」とコメントに書いた。
+**ギャップ I は消さず、「分類が未完」に書き換えて残した。**
+
+---
+
 ## 現在のテスト規模
 
-Step 179 完了時点: **2,757 runs / 8,157 assertions / 0 failures / 0 errors / 44 skips**
+Step 180 完了時点: **2,763 runs / 8,172 assertions / 0 failures / 0 errors / 44 skips**
+(Step 179 から +6 runs = パラメタ化そのものの検証 6 件。
+**skips は不変** — glibc ホストでは 1 件も新たに飛ばない)
+(以前) Step 179 完了時点: **2,757 runs / 8,157 assertions / 0 failures / 0 errors / 44 skips**
 (Step 178 から +2 runs = `ruby.h` の `HAVE_STDCKDINT_H` 回帰テストと
 freestanding の `stdckdint` ケース)
 (以前) Step 178 完了時点: **2,755 runs / 8,152 assertions / 0 failures / 0 errors / 44 skips**

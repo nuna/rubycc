@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "rbconfig"
+
 require_relative "test_helper"
 
 # Step 41: rubycc ships its own compiler-supplied ("freestanding") headers
@@ -130,15 +132,26 @@ class TestFreestandingHeaders < Minitest::Test
     202311
   OUT
 
+  # The name the partial include below asks for, which is the host libc's own:
+  # glibc calls the bare va_list type __gnuc_va_list, musl calls it
+  # __isoc_va_list (measured on musl, Step 175: gcc itself -- the oracle this
+  # file diffs against -- fails to compile the __gnuc_va_list spelling there,
+  # so the case proved nothing about rubycc). The libc is read from RbConfig's
+  # arch triplet, the same source test/abi_harness/harness.rb's #host_libc and
+  # tools/verify_gem_tests.rb's environment_string read: MRI spells a musl
+  # build "x86_64-linux-musl" and a glibc one "x86_64-linux".
+  VA_LIST_TYPE_NAME =
+    RbConfig::CONFIG["arch"].to_s.include?("musl") ? "__isoc_va_list" : "__gnuc_va_list"
+
   # The glibc partial-include protocol: a header defines __need___va_list and
-  # then includes <stdarg.h> to obtain only __gnuc_va_list (not va_list and the
-  # macros). rubycc's stdarg.h must satisfy exactly that request.
+  # then includes <stdarg.h> to obtain only the bare va_list type (not va_list
+  # itself and the macros). rubycc's stdarg.h must satisfy exactly that request.
   NEED_VA_LIST_SOURCE = <<~C
     #define __need___va_list
     #include <stdarg.h>
     #include <stdarg.h>
     #include <stdio.h>
-    static int forward(int n, __gnuc_va_list ap) { return va_arg(ap, int) + n; }
+    static int forward(int n, #{VA_LIST_TYPE_NAME} ap) { return va_arg(ap, int) + n; }
     static int run(int n, ...) {
       va_list ap;
       va_start(ap, n);

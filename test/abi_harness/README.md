@@ -11,6 +11,20 @@ its ABI correctness is machine-checked instead of eyeballed.
 The freestanding layer (`include/`, Step 41) is the current green baseline:
 `stddef`, `stdarg`, `stdbool`, `stdalign`, `float`, `iso646`.
 
+## libc parameterization (Step 180)
+
+A probe written in glibc's own names does not compile on a musl host **for the
+oracle either**, and a case where gcc fails first says nothing about rubycc. So
+a `Spec` declares the glibc-only part of its surface: `libc: :glibc` when the
+whole header is glibc's (`features.h`, `sys/cdefs.h` — those cases skip, loudly,
+elsewhere), and a `glibc:` bundle keyed by check kind when only some names are
+(`RTLD_DEEPBIND`, `__sigset_t`, `LC_PAPER`, `struct termios`'s `c_ispeed`, ...).
+The bundle is merged back at the `GLIBC_ONLY` marker in the base list, or at its
+tail when there is none, so a glibc host's probe text is byte-identical to what
+it was before the split; `TestHeaderAbiLibcParameterization` pins that. The
+aarch64 path always resolves as glibc — its cross toolchain is
+`aarch64-linux-gnu` whatever the host runs.
+
 ## Known freestanding discrepancies (not asserted, open rubycc gaps)
 
 These are surfaced by the harness but excluded from the asserted set because
