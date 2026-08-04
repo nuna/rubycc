@@ -84,7 +84,7 @@ musl の `COPYRIGHT`(https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT)より�
 - **clean-room** — 公開 ABI / ISO C 標準 / カーネル UAPI に対してゼロから記述。musl 由来ではない
   (一部は musl を「形状の参照」にしたが、テキストの派生はしていない)。
 
-### 3.1 freestanding(8 本、`include/*.h`)
+### 3.1 freestanding(9 本、`include/*.h`)
 
 libc 由来ではない。musl・glibc いずれの派生でもない。
 
@@ -95,6 +95,7 @@ libc 由来ではない。musl・glibc いずれの派生でもない。
 | `include/stdalign.h` | ISO C 7.15(`_Alignof` へのマッピング) |
 | `include/stdarg.h` | ISO C 7.16(`__builtin_va_*` へのマッピング) |
 | `include/stdbool.h` | ISO C 7.18 |
+| `include/stdckdint.h` | ISO C23 7.20(`__builtin_*_overflow` へのマッピング)|
 | `include/stddef.h` | ISO C 7.19(型は x86-64 SysV LP64 に固定) |
 | `include/stdnoreturn.h` | ISO C 7.23 |
 | `include/x86intrin.h` | 意図的な空スタブ(CRuby の config.h 対策) |
@@ -192,10 +193,10 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 
 | 分類 | 本数 |
 |---|---|
-| freestanding | 8 |
+| freestanding | 9 |
 | musl-derived | 22 |
 | clean-room | 47 |
-| **合計** | **77** |
+| **合計** | **78** |
 
 > Step 82(M5 H1)で `include/libc/glibc/aarch64/` 層 11 本を追加(30→41)。うち 8 本は
 > x86-64 版と宣言・値がバイト一致(`cmp` 確認済み)で、由来分類も x86-64 版を継承する。
@@ -233,6 +234,13 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 > 再現コストが見合わない)・`stdatomic.h`・`stdckdint.h`(いずれも rubycc が
 > `_Atomic` 型指定子・`__builtin_add_overflow` を実装しておらず、実測で
 > コンパイルエラーになることを確認した)の 3 本は今回のスコープ外(未着手)。
+
+> **`stdckdint.h` はその後 Step 179 で追加した**(上の見送り理由 = `__builtin_add_overflow`
+> 不在は Step 177 で解消)。freestanding 側に置いたのは、C23 の `ckd_*` が全整数型に対して
+> 型ジェネリックであり、コンパイラにしか表現できないからである。
+> 動機は musl の初回実行(Step 175)で、**ホストの ruby の `config.h` が
+> `HAVE_STDCKDINT_H` を焼き込んでいると rubycc では `ruby.h` が前処理すら通らない**
+> ことが分かったため。`stdatomic.h` は依然として未着手(`_Atomic` が無いまま)。
 
 > Step 135(M5 H2)で、コーパスセンサス(36 gem、Step 139)が挙げた実需ギャップから
 > `sys/wait.h`(nio4r)・`sys/epoll.h`(nio4r・unicorn)・`langinfo.h`(nkf)の 3 スペリング

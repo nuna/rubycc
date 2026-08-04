@@ -6694,9 +6694,67 @@ skips が 46 → 44 に減っているのはこの 2 件(step177 と step28_wide
 
 ---
 
+## Step 179 — `stdckdint.h` を同梱する(M5 H6)
+
+Steps 177・178 の仕上げ。**ギャップ H が閉じた。**
+
+### freestanding 側に置いた
+
+C23 の `ckd_*` は**全整数型に対して型ジェネリック**で、コンパイラにしか表現できない。
+だから C23 はこのヘッダを**処理系の責任**にしている。
+rubycc でも `include/libc/` ではなく `include/`(`stdarg.h`・`stdbool.h` と同じ層)に置き、
+中身は Step 177 の組み込み関数への 3 行のマクロにした。
+台帳の freestanding は 8 → 9 本、合計 77 → 78 本。
+
+`docs/HEADER-LICENSING.md` には **Step 135 の時点で「`stdckdint.h` は
+`__builtin_add_overflow` が無いのでスコープ外」と書いてあった**。
+その見送り理由が Step 177 で消えたので、同じ場所に消し込みを書いた。
+
+### 引数の順が組み込み関数と違う
+
+C23 は**結果ポインタを第 1 引数**に置く(`ckd_add(r, a, b)`)。
+`__builtin_add_overflow(a, b, r)` とは逆なので、マクロで入れ替えている。
+
+### musl の条件はローカルで再現できた
+
+これが一番効いた発見である。この不具合は musl で見つかったが、**musl は必要ない**。
+引き金は「ホストの ruby の `config.h` が `HAVE_STDCKDINT_H` を焼き込んでいるか」だけなので、
+**`-DHAVE_STDCKDINT_H` を渡せばローカルの glibc + ruby 3.4.5 でそのまま再現する**:
+
+```
+$ rubycc -c rh.c -DHAVE_STDCKDINT_H -I<rubyhdrdir> -I<rubyarchhdrdir>
+.../ruby/internal/stdckdint.h:48:1: error: stdckdint.h: No such file or directory
+```
+
+ヘッダを一時的に外して**このエラーが実際に出ることを確かめてから**回帰テストを書いた。
+90 分の CI 往復を待たずに済むうえ、**Tier A(push ごと)で守られる**ようになる。
+**「musl でしか出ない」と決めつけずに引き金を特定すると、テストがずっと安く手に入る。**
+
+### gcc 対照が取れないケース
+
+**このホストの gcc には `<stdckdint.h>` が無い**(実測: `fatal error`)。
+このプロジェクトは差分テスト主体だが、**ここだけはオラクルが存在しない**。
+そこで既知の期待出力と突き合わせる形にし、**その理由をテストのコメントに明記**した。
+正しさの根拠は Step 177 側にある — `__builtin_*_overflow` そのものは
+ホスト gcc との差分でバイト一致まで確かめてある。
+
+### サンプルを追加しなかった(運用ルールからの逸脱)
+
+**「ステップ完了ごとに `examples/` に C サンプルを追加する」というルールに従っていない。**
+`test/test_examples.rb` は `examples/**/*.c` を無条件に gcc との差分で検証するので、
+**gcc が `<stdckdint.h>` を持たない以上、サンプルを置けば必ず落ちる**。
+除外の仕組みは `test_examples.rb` には無い(aarch64 側の `PENDING` は別ファイルの別機構)。
+**このためだけに除外機構を作るのは割に合わない**と判断して見送った。
+ヘッダの実行時挙動は `test_freestanding_headers.rb` 側で検証している。
+
+---
+
 ## 現在のテスト規模
 
-Step 178 完了時点: **2,755 runs / 8,152 assertions / 0 failures / 0 errors / 44 skips**
+Step 179 完了時点: **2,757 runs / 8,157 assertions / 0 failures / 0 errors / 44 skips**
+(Step 178 から +2 runs = `ruby.h` の `HAVE_STDCKDINT_H` 回帰テストと
+freestanding の `stdckdint` ケース)
+(以前) Step 178 完了時点: **2,755 runs / 8,152 assertions / 0 failures / 0 errors / 44 skips**
 (Step 177 から +3 runs / **−2 skips** = aarch64 の逆アセンブル検証と qemu 差分実行、
 および PENDING から外れた examples 2 件)
 (以前) Step 177 完了時点: **2,752 runs / 8,148 assertions / 0 failures / 0 errors / 46 skips**

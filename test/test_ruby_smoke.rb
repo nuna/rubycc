@@ -115,6 +115,19 @@ class TestRubySmoke < Minitest::Test
     int probe(VALUE obj) { return rb_ractor_shareable_p(obj) ? 1 : 0; }
   C
 
+  # <ruby/internal/stdckdint.h>'s C23 shim takes the "#include <stdckdint.h>"
+  # branch whenever its own HAVE_STDCKDINT_H is defined -- and that macro comes
+  # from *the Ruby that built this test's headers' config.h*, baked in by
+  # whatever compiler configured that Ruby, not decided by rubycc. On a musl +
+  # Ruby 4.0 host config.h defines it (Step 175's docs/STEPS.md entry), and
+  # before rubycc shipped include/stdckdint.h that branch's
+  # "#include <stdckdint.h>" failed outright: "stdckdint.h: No such file or
+  # directory". This host's own config.h may or may not define the macro, so
+  # the condition is reproduced directly with -DHAVE_STDCKDINT_H (verified
+  # locally to flip the branch the same way), rather than relying on whichever
+  # way this particular Ruby happened to be built.
+  HAVE_STDCKDINT_H_DEFINE = [[:define, "HAVE_STDCKDINT_H"]].freeze
+
   def setup
     # Non-Linux or dev-header-less environments (no CRuby headers installed, or
     # no libc headers under /usr/include) cannot exercise this path; skip with a
@@ -147,6 +160,12 @@ class TestRubySmoke < Minitest::Test
     refute_empty object, "expected a non-empty object from #include <ruby/ractor.h>"
   end
 
+  def test_includes_ruby_h_with_have_stdckdint_h_forced
+    object = compile_extension(SMOKE_SOURCE, "smoke_stdckdint.c", defines: HAVE_STDCKDINT_H_DEFINE)
+    refute_empty object,
+                 "expected a non-empty object from #include <ruby.h> with HAVE_STDCKDINT_H forced"
+  end
+
   # The distroless criterion (Step 63): <ruby.h> compiles to an object using only
   # the bundled headers and the CRuby dirs, with the host /usr/include suppressed
   # entirely (-nostdinc, i.e. system_includes: false, and no /usr/include on the
@@ -176,9 +195,10 @@ class TestRubySmoke < Minitest::Test
   # (as an on-disk .o, the artifact a build would emit) and returning its bytes.
   # A CompileError surfaces the offending header line verbatim, so a future
   # regression names exactly which construct in the CRuby headers broke.
-  def compile_extension(source, filename)
+  def compile_extension(source, filename, defines: [])
     Dir.mktmpdir("rubycc-ruby-smoke") do |dir|
-      object = Rubycc::Compiler.new.compile(source, filename: filename, include_paths: INCLUDE_PATHS)
+      object = Rubycc::Compiler.new.compile(source, filename: filename, include_paths: INCLUDE_PATHS,
+                                                     defines: defines)
       object_path = File.join(dir, "#{File.basename(filename, ".c")}.o")
       File.binwrite(object_path, object)
       assert File.size?(object_path), "expected #{object_path} to be written and non-empty"

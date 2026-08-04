@@ -85,6 +85,51 @@ class TestFreestandingHeaders < Minitest::Test
     }
   C
 
+  # <stdckdint.h>: ckd_add/ckd_sub/ckd_mul, C23's type-generic checked-arithmetic
+  # macros (7.20.1), each a one-liner over the __builtin_*_overflow builtins
+  # added in Step 177. Note the result pointer is the *first* argument here,
+  # unlike the builtins it expands to.
+  STDCKDINT_SOURCE = <<~C
+    #include <stdckdint.h>
+    #include <stdint.h>
+    #include <stdio.h>
+    int main(void) {
+      size_t r;
+      int ov1 = ckd_mul(&r, (size_t)SIZE_MAX, (size_t)SIZE_MAX);
+      printf("%d %zu\\n", ov1, r);
+
+      size_t r2;
+      int ov2 = ckd_mul(&r2, (size_t)6, (size_t)7);
+      printf("%d %zu\\n", ov2, r2);
+
+      int q;
+      int ov3 = ckd_add(&q, 2147483647, 1);
+      printf("%d %d\\n", ov3, q);
+
+      int q2;
+      int ov4 = ckd_sub(&q2, -2147483647 - 1, 1);
+      printf("%d %d\\n", ov4, q2);
+
+      printf("%ld\\n", (long)__STDC_VERSION_STDCKDINT_H__);
+      return 0;
+    }
+  C
+
+  # Expected output of STDCKDINT_SOURCE, computed by hand from the type widths
+  # involved (matching the table used to verify __builtin_*_overflow itself in
+  # Step 177's docs/STEPS.md entry): SIZE_MAX * SIZE_MAX overflows size_t and
+  # (per the builtin's truncation contract) leaves 1 in *r; 6 * 7 does not
+  # overflow and stores 42; INT_MAX + 1 overflows int and wraps to INT_MIN;
+  # INT_MIN - 1 overflows int and wraps to INT_MAX; and
+  # __STDC_VERSION_STDCKDINT_H__ is the C23 202311L this header defines it as.
+  STDCKDINT_EXPECTED_OUTPUT = <<~OUT
+    1 1
+    0 42
+    1 -2147483648
+    1 2147483647
+    202311
+  OUT
+
   # The glibc partial-include protocol: a header defines __need___va_list and
   # then includes <stdarg.h> to obtain only __gnuc_va_list (not va_list and the
   # macros). rubycc's stdarg.h must satisfy exactly that request.
@@ -137,6 +182,27 @@ class TestFreestandingHeaders < Minitest::Test
 
   def test_iso646_operator_macros_match_gcc
     assert_matches_gcc(ISO646_SOURCE, "iso646")
+  end
+
+  # Not assert_matches_gcc: the host gcc used elsewhere in this file as the
+  # cross-check oracle has no <stdckdint.h> of its own (verified locally --
+  # "fatal error: stdckdint.h: No such file or directory" -- C23's freestanding
+  # headers being a recent addition gcc has not shipped everywhere yet), so
+  # there is no gcc-built binary to diff against here. Instead the program's
+  # output is checked against a hand-computed expected value; the
+  # __builtin_*_overflow instructions it expands to were already differentially
+  # verified against gcc in Step 177, so that is where this expected value's
+  # correctness ultimately rests.
+  def test_stdckdint_checked_arithmetic_macros
+    in_tmpdir do |dir|
+      rubycc_obj = File.join(dir, "stdckdint_rubycc.o")
+      binary = Rubycc::Compiler.new.compile(STDCKDINT_SOURCE, filename: "stdckdint.c")
+      File.binwrite(rubycc_obj, binary)
+      status, out = link_and_run(rubycc_obj)
+
+      assert_equal 0, status, "rubycc-built stdckdint exited #{status}"
+      assert_equal STDCKDINT_EXPECTED_OUTPUT, out
+    end
   end
 
   def test_need_va_list_partial_include_matches_gcc
