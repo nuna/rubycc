@@ -9,6 +9,18 @@ typedef __builtin_va_list __gnuc_va_list;
 #endif
 #undef __need___va_list
 
+/* __isoc_va_list is musl's name for the same type, where glibc writes
+   __gnuc_va_list. Both are provided unconditionally rather than per libc: they
+   are aliases of one type, so offering both costs nothing and lets a source
+   written against either libc's internal spelling compile. Repeating a typedef
+   with the same type is legal (C11 6.7p3), so a host header that defines its
+   own afterwards is not a conflict. Measured on musl in CI, where a probe
+   spelling it __isoc_va_list did not compile (docs/STEPS.md Step 190). */
+#if !defined _RUBYCC_ISOC_VA_LIST
+#define _RUBYCC_ISOC_VA_LIST
+typedef __builtin_va_list __isoc_va_list;
+#endif
+
 #ifndef _RUBYCC_STDARG_H
 #define _RUBYCC_STDARG_H
 typedef __builtin_va_list va_list;

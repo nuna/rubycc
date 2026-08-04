@@ -218,6 +218,40 @@ class TestFreestandingHeaders < Minitest::Test
     end
   end
 
+  # Both internal spellings of the bare va_list type resolve, whichever libc
+  # this host has: glibc writes __gnuc_va_list, musl writes __isoc_va_list, and
+  # rubycc's stdarg.h offers both because they are aliases of one type (see the
+  # note there). Not assert_matches_gcc for the same reason as stdckdint above:
+  # on this glibc host gcc rejects __isoc_va_list outright ("unknown type name
+  # '__isoc_va_list'; did you mean '__gnuc_va_list'?", verified locally), so
+  # there is no oracle that accepts both names at once. What the case does prove
+  # is the thing that broke on musl -- that the name the *host libc* uses is one
+  # rubycc supplies -- and it proves it on either kind of host.
+  BOTH_VA_LIST_NAMES_SOURCE = <<~C
+    #include <stdio.h>
+    #include <stdarg.h>
+    static int through_gnuc(int n, __gnuc_va_list ap) { return va_arg(ap, int) + n; }
+    static int through_isoc(int n, __isoc_va_list ap) { return va_arg(ap, int) + n; }
+    static int sum(int n, ...) {
+      va_list ap;
+      va_start(ap, n); int a = through_gnuc(n, ap); va_end(ap);
+      va_start(ap, n); int b = through_isoc(n, ap); va_end(ap);
+      return a + b;
+    }
+    int main(void) { printf("%d\\n", sum(10, 5)); return 0; }
+  C
+
+  def test_both_internal_va_list_spellings_resolve
+    in_tmpdir do |dir|
+      obj = File.join(dir, "both_va_list_rubycc.o")
+      File.binwrite(obj, Rubycc::Compiler.new.compile(BOTH_VA_LIST_NAMES_SOURCE, filename: "both_va_list.c"))
+      status, out = link_and_run(obj)
+
+      assert_equal 0, status, "rubycc-built both_va_list exited #{status}"
+      assert_equal "30\n", out
+    end
+  end
+
   def test_need_va_list_partial_include_matches_gcc
     assert_matches_gcc(NEED_VA_LIST_SOURCE, "need_va_list")
   end

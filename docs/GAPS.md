@@ -12,7 +12,6 @@
 |---|---|---|---|---|
 | G | **同梱ヘッダが glibc の ABI を焼き込んでいる**。実測(musl 初回実行): `int_fast16_t` / `int_fast32_t` が musl では 4 バイト、rubycc は 8 バイト(glibc の値) | **M5 が掲げた「glibc/musl 互換ヘッダ」の主張が musl 側で外れている**。musl では全スイート 21 failures / 18 errors | **高** | STEPS.md Step 175。`<stdint.h>` は最も直接的な 1 例で、26 件ある rubycc 側の差の全容はまだ分類しきれていない |
 | I | **ABI ハーネスの glibc 固有ケースの分類が未完(残りわずか)**。Step 180 で仕組みを入れ、Steps 180・181 の 2 回の musl 実測で 13 ケースを分類。**gcc がエラーを打ち切るため、`_IS*` / `LC_*` / `_NL_ITEM*` の 3 系統は「系統ごと」の推論で移した**(全メンバの個別実測はしていない) | 推論が外れていれば、その項目が musl で不要に落ちる | 低 | STEPS.md Steps 175・180・181。次の musl 実走で残りが出る |
-| L | **同梱ヘッダが musl の `__isoc_va_list` を提供しない**。rubycc が用意するのは `__gnuc_va_list` だけ。実測(musl): `static int forward(int n, __isoc_va_list ap)` が `error: expected type specifier` | musl のヘッダの綴りに合わせた C コードが通らない。現状は ABI ハーネスの `need_va_list` 1 件で顕在化 | 中 | STEPS.md Step 190 |
 
 ## 2. 未解消の負債
 
@@ -50,6 +49,9 @@
   定数と**過不足なく一致**することを確認した。
 - **Step 183 の K**(`offsetof` を定数式に畳めない): Steps 184・187 で解消
   (cast 形と引き算形の両方)。**musl がどちらの綴りかを確かめずに済ませないため、
-  両方に届かせた。****G と I は上の表に残っている。**
+  両方に届かせた。**
+- **Step 190 の L**(同梱ヘッダが musl の `__isoc_va_list` を提供しない):
+  Step 191 で解消。両方の綴りを無条件に提供した(同じ型の別名なので
+  片方だけを選ぶ理由が無い)。**G と I は上の表に残っている。**
 
 いずれも設計判断は STEPS.md の各ステップに記録がある。
