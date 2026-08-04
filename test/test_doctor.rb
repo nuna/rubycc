@@ -294,7 +294,7 @@ class TestDoctor < Minitest::Test
 
   def test_flow_verified_gems_need_no_build
     map = { "rake" => R.new(status: :no_ext) }
-    code, out, = run_cli(LOCK, map)
+    out = run_cli(LOCK, map)[1]
     assert_includes out, "json 2.21.1"
     assert_includes out, "verified"
     assert_includes out, "msgpack 1.8.3"

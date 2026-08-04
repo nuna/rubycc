@@ -2902,7 +2902,7 @@ module Rubycc
       # that loses is still caught; only the winner reaches code generation. A
       # non-constant first operand is diagnosed.
       def parse_builtin_choose_expr
-        keyword_tok = advance # "__builtin_choose_expr"
+        advance # "__builtin_choose_expr"
         expect_punct("(")
         condition = parse_assignment_expression
         expect_punct(",")
