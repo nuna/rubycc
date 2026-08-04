@@ -853,6 +853,10 @@ H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker 
   ~~(2) フロントエンドの `__attribute__((constructor))` / `((destructor))`~~
   **完了(Step 155)**、~~(3) `__cxa_finalize(__dso_handle)` の合成~~ **完了(Step 156)**。
   **これで Step 152 の「供給しなかった半分」が埋まった**(設計判断は STEPS.md)。
+- **対応しないと判断済みの gem は `docs/OUT-OF-SCOPE-GEMS.md` に分離した**(Step 185)。
+  R10 は目標を「コーパスの 90% 以上」と定量化しているので、**残る 10% をどこに置くかを
+  決める文書**が要る。「まだ通らない」(GAPS.md)と「通す気がない」を混ぜると、
+  90% の分母が何なのかが読めなくなる。
 - **未解消の負債と未測定事項も `docs/GAPS.md` に集約した**
   (`test/corpus/gems.rb` の `version: nil` 4 件、racc の assertions 差異、
   musl / aarch64 / distroless の未測定)。
