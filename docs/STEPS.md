@@ -6988,9 +6988,56 @@ _Static_assert(OFF(struct A, data) == 8, "");   // rubycc: not an integer consta
 
 ---
 
+## Step 184 — `offsetof` の cast 形を畳む(M5 H6)
+
+ギャップ K。`((size_t)&((T *)0)->m)` が定数式として畳めなかった。
+
+### 機構は既にあり、使われていない経路があった
+
+`constant_evaluator.rb` の `evaluate_integer_or_address` には
+**この用途そのものを名指ししたコメント**が最初から書かれていた
+(「the "(size_t)&((T\*)0)->m" offsetof idiom」)。
+`@pointer_int` リゾルバも `generator.rb` の `address_int_resolver` が供給していた。
+**足りなかったのは、その経路が `_Static_assert` に届いていないこと**である
+— リゾルバはグローバル初期化子の畳み込みにしか渡されておらず、
+`_Static_assert` はパーサ側で評価されるので素通りしていた。
+
+### リゾルバを増やさず、評価器の中に置いた
+
+この畳み込みに要るのは**構造体のレイアウトだけ**で、
+評価器は `evaluate_builtin_offsetof` のために既にそれを持っている。
+シンボルテーブルは要らない。**評価器の中に置けば、パーサ経路(`_Static_assert`・
+enum 値・ビットフィールド幅・配列長)と IR 生成経路(グローバル初期化子)の
+両方で同時に効く**。コールバックにしていたら、パーサ側にオフセット計算の
+第二実装を持つか、リゾルバを渡す配線を全呼び出し箇所に足すことになっていた。
+
+`@pointer_int` は**消していない**。あちらが返すのは
+「シンボル + addend」というリロケーションであって、評価器が返す整数とは別物である。
+`&global.m` は今回の畳み込みでは畳めず、従来どおりリゾルバへ回る
+(`test_address_constant_globals.rb` の 18 件が無変更で通ることがその証拠)。
+
+### 引き算形はまだ畳めない — musl がどちらを使うかは未確認
+
+```c
+#define OFF_SUB(t, m) ((size_t)((char *)&((t *)0)->m - (char *)0))   // gcc: 通る / rubycc: 落ちる
+```
+
+伝統的な `offsetof` にはこの綴りの版も広く存在する。
+**musl の `<stddef.h>` がどちらの綴りかは確認していない**(R11 により musl の
+ソースは読めず、手元に musl も無い)。ギャップ K の最小再現(Step 183)は
+直接の cast 形だったのでそちらを実装したが、**musl が引き算形なら
+このステップだけでは `ruby.h` は通らない**。
+**「直したので通るはず」とは書かない** — 次のステップで引き算形も畳み、
+どちらであっても届くようにする。
+
+---
+
 ## 現在のテスト規模
 
-Step 183 完了時点: **2,776 runs / 8,216 assertions / 0 failures / 0 errors / 44 skips**
+Step 184 完了時点: **2,789 runs / 8,254 assertions / 0 failures / 0 errors / 44 skips**
+(Step 183 から +13 runs = cast 形の gcc 差分と回帰防止、examples 1 件。
+**aarch64 でも PENDING 無し** — 畳み込みはフロントエンド完結でバックエンド非依存)
+(以前) Step 183 完了時点: **2,776 runs / 8,216 assertions / 0 failures / 0 errors / 44 skips**
 (Step 182 から +13 assertions = 初の musl 記録を固定する検査 1 件と、
 DB のスキーマ検査が verification 1 本ぶん増えた分)
 (以前) Step 182 完了時点: **2,776 runs / 8,203 assertions / 0 failures / 0 errors / 44 skips**
