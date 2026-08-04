@@ -7124,9 +7124,42 @@ Step 176 で「スナップショットが再生成されないまま古くな�
 
 ---
 
+## Step 187 — `offsetof` の引き算形も畳む(M5 H6)
+
+Step 184 の残り。**ギャップ K はこれで両方の綴りを覆った。**
+
+```c
+#define OFF_SUB(t, m) ((size_t)((char *)&((t *)0)->m - (char *)0))
+```
+
+伝統的な `offsetof` にはこの綴りの版も広く存在し、cast 形だけでは覆えない。
+**musl の `<stddef.h>` がどちらを使うかを確認できない**(R11 で musl のソースは読めず、
+手元に musl も無い)以上、**両方に届かせるのが唯一「確かめずに済ませない」やり方**である。
+「たぶん cast 形だろう」で止めれば、90 分の CI を回して外れを引く可能性が残る。
+
+### ポインタ差は「指す型のサイズで割る」
+
+`(char *)a - (char *)b` はバイト差だが `(int *)a - (int *)b` は要素数差になる。
+**`char *` だから 1 で割る、という特別扱いはしていない** — 一般に指す型のサイズで割る。
+両辺の指す型のサイズが違えば畳まず、`void *` のようにサイズを持たない型も畳まない
+(gcc は拡張として 1 バイト扱いするが、**受理範囲をそこまで広げる理由が無い**)。
+割り切れない差も**黙って切り捨てず**畳まない。
+
+### 既存の仕組みにそのまま乗った
+
+Step 184 で入れた `pointer_target` / `designator_address` がそのまま使えた。
+足したのは `evaluate_binary` の `:sub` 分岐と、`pointer_target` の `AST::Binary` 分岐だけである。
+後者のおかげで **ポインタ + 整数**(`&((t *)0)->m + 1`)も畳めるようになった —
+**分岐 1 つで自然に入ったので見送らなかった。**
+
+---
+
 ## 現在のテスト規模
 
-Step 184 完了時点: **2,789 runs / 8,254 assertions / 0 failures / 0 errors / 44 skips**
+Step 187 完了時点: **2,800 runs / 8,303 assertions / 0 failures / 0 errors / 44 skips**
+(Step 186 からの差は引き算形のテスト 9 件と examples 1 件。
+**aarch64 でも PENDING 無し**)
+(以前) Step 184 完了時点: **2,789 runs / 8,254 assertions / 0 failures / 0 errors / 44 skips**
 (Step 183 から +13 runs = cast 形の gcc 差分と回帰防止、examples 1 件。
 **aarch64 でも PENDING 無し** — 畳み込みはフロントエンド完結でバックエンド非依存)
 (以前) Step 183 完了時点: **2,776 runs / 8,216 assertions / 0 failures / 0 errors / 44 skips**

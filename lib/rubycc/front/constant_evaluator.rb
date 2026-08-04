@@ -157,11 +157,55 @@ module Rubycc
 
       def evaluate_binary(node)
         return evaluate_division(node) if node.op == :div || node.op == :mod
+        return evaluate_pointer_subtraction(node) if node.op == :sub
 
         operation = BINARY_OPERATIONS[node.op]
         raise NotConstant, node.token unless operation
 
         operation.call(evaluate(node.lhs), evaluate(node.rhs))
+      end
+
+      # Subtraction is ordinary integer arithmetic unless that fails and both
+      # operands are addresses this evaluator can place on its own (see
+      # #pointer_target) — the traditional "((size_t)(char *)&((t *)0)->m -
+      # (char *)0)" offsetof idiom, and its relatives with any pointed-to type,
+      # not only "char *". C's pointer-difference rule (6.5.6p9) then applies:
+      # the byte difference is divided by the shared pointed-to type's size,
+      # which must be identical on both sides and have one ("void *" and an
+      # incomplete type do not) for the division to mean anything. When
+      # #pointer_difference cannot place the difference this way it returns
+      # nil, and the original NotConstant from the ordinary attempt is what
+      # reaches the caller instead.
+      def evaluate_pointer_subtraction(node)
+        BINARY_OPERATIONS[:sub].call(evaluate(node.lhs), evaluate(node.rhs))
+      rescue NotConstant
+        difference = pointer_difference(node)
+        raise if difference.nil?
+
+        difference
+      end
+
+      # The [byte-difference / pointed-to-size] quotient of "lhs - rhs" when
+      # both sides are addresses #pointer_target can place, or nil when either
+      # side is not one or the two pointed-to types do not share a size. A
+      # non-zero remainder never happens for two addresses this evaluator
+      # itself derived from the same struct layout, but is still checked
+      # rather than silently truncated, surfacing as an (unfolded) NotConstant.
+      def pointer_difference(node)
+        lhs = pointer_target(node.lhs)
+        return nil if lhs.nil?
+
+        rhs = pointer_target(node.rhs)
+        return nil if rhs.nil?
+
+        lhs_address, lhs_type = lhs
+        rhs_address, rhs_type = rhs
+        return nil unless sized?(lhs_type) && sized?(rhs_type) && lhs_type.size == rhs_type.size
+
+        byte_difference = lhs_address - rhs_address
+        raise NotConstant, node.token unless (byte_difference % lhs_type.size).zero?
+
+        byte_difference / lhs_type.size
       end
 
       # Division and remainder truncate toward zero (6.5.5p6), unlike Ruby's
@@ -266,7 +310,48 @@ module Rubycc
           return nil unless node.op == :addr
 
           designator_address(node.operand)
+        when AST::Binary
+          pointer_offset_target(node)
         end
+      end
+
+      # "pointer + integer" and "pointer - integer" (6.5.6p8) over a pointer
+      # #pointer_target already places: the address moves by the integer
+      # operand times the pointed-to type's size, on whichever side of "+" the
+      # pointer operand is ("p + 1" and "1 + p" are both valid), or only the
+      # left side of "-" ("1 - p" is not a pointer expression at all). nil when
+      # neither operand is a foldable pointer, the other is not an integer
+      # constant, or the pointed-to type has no size to stride by.
+      def pointer_offset_target(node)
+        return nil unless node.op == :add || node.op == :sub
+
+        lhs_pointer = pointer_target(node.lhs)
+        if lhs_pointer
+          offset = constant_integer(node.rhs)
+          return nil if offset.nil?
+
+          return pointer_advance(lhs_pointer, node.op == :sub ? -offset : offset)
+        end
+
+        return nil if node.op == :sub
+
+        rhs_pointer = pointer_target(node.rhs)
+        return nil if rhs_pointer.nil?
+
+        offset = constant_integer(node.lhs)
+        return nil if offset.nil?
+
+        pointer_advance(rhs_pointer, offset)
+      end
+
+      # [address + offset * pointed-to size, pointed-to type], or nil when the
+      # pointed-to type has no size to stride by (void, a function, an
+      # incomplete aggregate or array).
+      def pointer_advance(pointer, offset)
+        address, type = pointer
+        return nil unless sized?(type)
+
+        [address + (offset * type.size), type]
       end
 
       # The [absolute address, type] of a designator whose base is a pointer of
