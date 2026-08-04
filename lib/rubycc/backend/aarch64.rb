@@ -98,12 +98,13 @@ module Rubycc
     # function pointer, floating-point arithmetic, comparison, conversion,
     # argument passing and return, whole-object copies, aggregates passed and
     # returned by value, and variadic function definitions (a register-save-area
-    # prologue and the AAPCS64 :va_start seed __builtin_va_arg walks). The atomic
-    # ops are covered too, built from the armv8-a baseline load-acquire /
-    # store-release exclusive pair (see the atomics section below). Features the
-    # generator can still hand it that belong to the rest of A4 (alloca, the
-    # bit-scan builtins, a 128-bit multiply) are refused with an explicit "not
-    # yet supported" error rather than miscompiled.
+    # prologue and the AAPCS64 :va_start seed __builtin_va_arg walks), plus the
+    # unsigned 64x64->128 multiply's high half (a single `umulh`) that a
+    # synthesized 128-bit multiply needs. The atomic ops are covered too, built
+    # from the armv8-a baseline load-acquire / store-release exclusive pair (see
+    # the atomics section below). Features the generator can still hand it that
+    # belong to the rest of A4 (alloca, the bit-scan builtins) are refused with
+    # an explicit "not yet supported" error rather than miscompiled.
     class AArch64
       # Result of compiling one function, the same shape the x86_64 backend
       # returns: `bytes` the machine code, `symbols` an array of
@@ -505,9 +506,9 @@ module Rubycc
         when :ftoi then emit_ftoi(inst.dst, inst.a, inst.b, inst.size)
         when :ftof then emit_ftof(inst.dst, inst.a, inst.size)
         when :call_indirect then emit_call_indirect(inst.dst, inst.a, inst.b, inst.size)
+        when :mulhi then emit_mulhi(inst.dst, inst.a, inst.b)
         # The remaining ops belong to the rest of A4. They are refused
         # explicitly so a program using them fails loudly instead of silently.
-        when :mulhi then unsupported("128-bit multiply")
         when :string_addr then emit_symbol_address(inst.dst, kind: :string, string_id: inst.a)
         when :global_addr then emit_symbol_address(inst.dst, kind: :global, symbol: inst.a)
         when :func_addr then emit_symbol_address(inst.dst, kind: :func, symbol: inst.a)
@@ -557,6 +558,20 @@ module Rubycc
         load_reg(B, b)
         base = size == 8 ? 0x9B007C00 : 0x1B007C00 # madd with Ra = xzr
         emit_word(base | (B << 16) | (A << 5) | A)
+        store_reg(A, dst)
+      end
+
+      # :mulhi — the unsigned high 64 bits of a 64x64 product, encoded as
+      # `umulh Rd, Rn, Rm`. It is a "data-processing (3 source)" instruction
+      # like madd/msub, but with op31 = 110 rather than 000 and Ra fixed to
+      # xzr (the field the format still carries but this variant ignores);
+      # unlike :mul it has no 32-bit operand form (there is no 16-bit-high-
+      # of-a-32x32-product need for it here), so this always runs on the X
+      # registers regardless of the IR size.
+      def emit_mulhi(dst, a, b)
+        load_reg(A, a)
+        load_reg(B, b)
+        emit_word(UMULH | (B << 16) | (A << 5) | A)
         store_reg(A, dst)
       end
 
@@ -1404,6 +1419,12 @@ module Rubycc
       LSLV = { 32 => 0x1AC02000, 64 => 0x9AC02000 }.freeze
       LSRV = { 32 => 0x1AC02400, 64 => 0x9AC02400 }.freeze
       ASRV = { 32 => 0x1AC02800, 64 => 0x9AC02800 }.freeze
+
+      # umulh Rd, Rn, Rm — a "data-processing (3 source)" instruction in the
+      # same family as madd/msub, with op31 = 110 selecting the unsigned-high
+      # variant and Ra fixed to xzr (31) in bits [14:10]. Only the 64-bit (sf=1)
+      # encoding exists; there is no 32-bit counterpart to pick between.
+      UMULH = 0x9BC07C00
 
       # The flag-setting subtract, in the same shifted-register family. With the
       # zero register as its destination it is the `cmp` both a comparison and an

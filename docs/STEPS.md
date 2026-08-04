@@ -6666,9 +6666,40 @@ aarch64 の ruby ビルドを壊す**(memory.h が `ckd_mul` を使うため)。
 
 ---
 
+## Step 178 — aarch64 に `:mulhi` を実装する(M5 H6 / M4 A4 の前倒し)
+
+Step 177 の積み残し。**`UMULH` 1 命令**で塞がった。
+
+これは本来 M4 A4 の残項目で、A4 受け入れ時に「aarch64 固有ではない既存の未実装機能」として
+examples 3 件の不一致に数えられていたものである。**前倒ししたのは、
+これを塞がずに `stdckdint.h`(ギャップ H)を出すと aarch64 の ruby ビルドを壊すから**である
+— `ruby/internal/memory.h` は `ckd_mul` が定義されていればそれを使い、
+`ckd_mul` は `__builtin_mul_overflow` = `:mulhi` に落ちる。
+**ヘッダを足すことが、aarch64 でだけコンパイルを壊す**という形になっていた。
+
+### エンコードは実測で確定させた
+
+`UMULH Xd, Xn, Xm` = `0x9BC07C00 | (Rm << 16) | (Rn << 5) | Rd`。
+推測で置かず、`aarch64-linux-gnu-as` で単発の `umulh x9, x9, x10` をアセンブルして
+`9bca7d29` を得、rubycc が生成した語を `aarch64-linux-gnu-objdump` で逆アセンブルして
+同じ語・同じニーモニックになることを確かめた(R8 と同じ「ABI は実測、写さない」の流儀)。
+
+### 副産物 — 古い PENDING が 1 件外れた
+
+`examples/m1/step28_wideint.c` も同じ `:mulhi` だけに依存しており、
+`test_examples_aarch64.rb` の `PENDING` に「A4: 128-bit multiply」として残っていた。
+**塞いだ結果この理由は成り立たなくなった**ので外した。
+skips が 46 → 44 に減っているのはこの 2 件(step177 と step28_wideint)である。
+**PENDING を消し込まないと、通るようになった機能が黙って検証されないまま残る。**
+
+---
+
 ## 現在のテスト規模
 
-Step 177 完了時点: **2,752 runs / 8,148 assertions / 0 failures / 0 errors / 46 skips**
+Step 178 完了時点: **2,755 runs / 8,152 assertions / 0 failures / 0 errors / 44 skips**
+(Step 177 から +3 runs / **−2 skips** = aarch64 の逆アセンブル検証と qemu 差分実行、
+および PENDING から外れた examples 2 件)
+(以前) Step 177 完了時点: **2,752 runs / 8,148 assertions / 0 failures / 0 errors / 46 skips**
 (Step 176 から +9 runs / +1 skip = 組み込み関数のテストと、
 aarch64 では乗算形が通らないぶんの pending サンプル 1 件)
 (以前) Step 176 完了時点: **2,743 runs / 8,125 assertions / 0 failures / 0 errors / 45 skips**

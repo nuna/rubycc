@@ -105,6 +105,13 @@ class TestAArch64Backend < Minitest::Test
     madd(sf, rd, rn, rm, ra) | (1 << 15)
   end
 
+  # UMULH Xd, Xn, Xm is the same "data-processing (3 source)" format with
+  # op31(23:21) = 110 rather than 000 and Ra(14:10) fixed to xzr (31); it has
+  # no sf = 0 form, so only the 64-bit encoding exists.
+  def umulh(rd, rn, rm)
+    (1 << 31) | (0b11011 << 24) | (0b110 << 21) | (rm << 16) | (0b11111 << 10) | (rn << 5) | rd
+  end
+
   # "Data-processing (2 source)":
   #   sf(31) 0(30) S(29)=0 11010110(28:21) Rm(20:16) opcode(15:10)
   #   Rn(9:5) Rd(4:0)
@@ -505,6 +512,14 @@ class TestAArch64Backend < Minitest::Test
                  body_of(:mul, dst: 2, a: 0, b: 1, size: 4)
     assert_words [ldr_slot(A, 0), ldr_slot(B, 1), madd(1, A, A, B, XZR), str_slot(A, 2)],
                  body_of(:mul, dst: 2, a: 0, b: 1, size: 8)
+  end
+
+  # :mulhi — the unsigned high 64 bits of a 64x64 product — is a single UMULH,
+  # regardless of the IR size the instruction carries (there is no narrower
+  # form to pick between).
+  def test_mulhi_is_umulh
+    assert_words [ldr_slot(A, 0), ldr_slot(B, 1), umulh(A, A, B), str_slot(A, 2)],
+                 body_of(:mulhi, dst: 2, a: 0, b: 1, size: 8)
   end
 
   # Negation is a subtraction from the zero register.
@@ -1113,7 +1128,6 @@ class TestAArch64Backend < Minitest::Test
   def test_later_milestone_ops_are_refused
     {
       inst(:alloca, dst: 0, a: 1) => /alloca/,
-      inst(:mulhi, dst: 0, a: 0, b: 1, size: 8) => /128-bit multiply/,
       inst(:bit_scan, dst: 0, a: 1, b: :forward, size: 4) => /bit-scan builtins/
     }.each do |instruction, pattern|
       error = assert_raises(Rubycc::Backend::UnsupportedError, instruction.op.to_s) do
