@@ -4,7 +4,7 @@
 `rake corpus:census` (see `test/corpus/README.md`). Re-run that task to update
 it, then commit the result. The task requires network access; `rake test` does not.
 
-- Generated: 2026-08-04T16:19:26Z
+- Generated: 2026-08-04T17:13:14Z
 - Ruby: ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]
 - Bundled header set: 61 angle spellings computed from `include/`
   (freestanding `include/*.h` + `include/libc/**`, arch layer normalized).
@@ -38,6 +38,9 @@ candidates with a note; the census does not evaluate the gate.
 | stringio | 3.2.0 | 3.2.0 | 2026-08-03 | ok | 1/0 | Single ext dir (ext/stringio). |
 | strscan | 3.1.6 | 3.1.6 | 2026-08-03 | ok | 1/0 | Single ext dir (ext/strscan). |
 | zlib | 3.2.3 | 3.2.3 | 2026-08-03 | ok | 1/0 | Depends on the system zlib headers; DESIGN R10 expects gems built against a system library (e.g. sqlite3) to be in scope. |
+| fiddle | 1.1.8 | 1.1.8 | 2026-08-04 | ok | 8/4 | Ruby 4.0 bundled gem; C extension backed by the system libffi headers and library. |
+| rbs | 3.10.0 | 3.10.0 | 2026-08-04 | ok | 5/6 | Ruby 4.0 bundled gem; pure C parser/type-signature extension. |
+| syslog | 0.3.0 | 0.3.0 | 2026-08-04 | ok | 1/0 | Ruby 4.0 bundled gem; small pure C extension using the system syslog API. |
 | websocket-driver | 0.8.2 | 0.8.2 | 2026-08-03 | ok | 1/0 | Single ext dir (ext/websocket-driver); extconf.rb only calls dir_config, no external library dependency, no C++. |
 | puma | 8.0.2 | 8.0.2 | 2026-08-03 | ok | 3/1 | Single ext dir (ext/puma_http11). OpenSSL is an optional dependency: extconf.rb only probes for it unless PUMA_DISABLE_SSL is set, and the build continues without SSL if it is not found. No C++, no mini_portile. DESIGN §3.1 names puma among the expected-in-scope gems. |
 | google-protobuf | 4.35.1 | 4.35.1 | 2026-08-03 | ok | 11/10 | ext/google/protobuf_c bundles ruby-upb.c (upb, a C implementation despite the gem's C++-sounding name) and utf8_range.c; the gem contains no .cc files. No mini_portile dependency. |
@@ -65,126 +68,131 @@ candidates with a note; the census does not evaluate the gate.
 
 ## gem × system header matrix
 
-| header | class | json | msgpack | bigdecimal | date | racc | redcarpet | digest | erb | etc | fcntl | io-console | io-nonblock | io-wait | openssl | prism | psych | stringio | strscan | zlib | websocket-driver | puma | google-protobuf | bootsnap | oj | nio4r | byebug | mysql2 | thin | http_parser.rb | stackprof | unicorn | debug | yajl-ruby | nkf |
-|--------|-------|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `AvailabilityMacros.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `BaseTsd.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |
-| `CommonCrypto/CommonDigest.h` | gap |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `WinNT.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `arm_neon.h` | gap | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
-| `arpa/inet.h` | bundled |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `assert.h` | bundled | x | x | x | x |  | x | x |  |  |  |  |  |  | x |  |  |  |  |  |  | x | x |  |  | x |  |  | x | x |  | x |  | x | x |
-| `builtins.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `conio.h` | gap |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `cpuid.h` | gap | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
-| `cstdbool` | gap | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `ctype.h` | bundled | x |  | x | x |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  |  |  | x |  | x | x |  |  |  | x |  |
-| `dirent.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |
-| `emmintrin.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
-| `errmsg.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |
-| `errno.h` | bundled |  |  | x | x |  |  |  |  | x |  |  |  |  | x |  |  |  |  |  |  |  | x | x | x | x |  | x |  |  |  | x |  | x |  |
-| `fcntl.h` | bundled |  |  |  |  |  |  |  |  |  | x | x | x |  |  |  |  | x |  |  |  |  |  | x | x | x |  | x |  |  |  |  |  |  | x |
-| `float.h` | bundled |  |  | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  | x |  |  |  |  |  |  |  | x |  |
-| `grp.h` | bundled |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `ieeefp.h` | gap |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `intrin.h` | gap | x |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  | x | x |  |  |  |  |  |  |  |  |  |
-| `inttypes.h` | bundled |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  | x |  |  |  |  |  |  |  |  |  |
-| `io.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  | x |
-| `langinfo.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
-| `libc/dosio.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
-| `limits.h` | bundled |  | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  | x |  |  |  | x |  | x |  | x |  |
-| `linux/aio_abi.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `linux/fs.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `linux/types.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `locale.h` | bundled |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
-| `machine/endian.h` | gap |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `math.h` | bundled | x |  | x | x |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  | x | x |  |  |  |  |  |  |  | x |  |
-| `mbarrier.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `mysql.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |
-| `mysql/errmsg.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |
-| `mysql/mysql.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |
-| `nmmintrin.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
-| `openssl/asn1.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/bio.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/bn.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/conf.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/crypto.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/decoder.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/dh.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/dsa.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/engine.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/err.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/evp.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/kdf.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/ocsp.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/opensslv.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/pkcs12.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/pkcs7.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/provider.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/rand.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/rsa.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/ssl.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/ts.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/x509.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `openssl/x509v3.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `os2.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
-| `poll.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  |  |  |  |  |  |  |  |  |
-| `port.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `pthread.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  |  |  |  | x |  |  |  |  |
-| `pwd.h` | bundled |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `regex.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
-| `sanitizer/hwasan_interface.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |
-| `sanitizer/msan_interface.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |
-| `sched.h` | bundled |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |
-| `setjmp.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |
-| `sgtty.h` | gap |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `shlobj.h` | gap |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `signal.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  | x |  |  |  |  |
-| `stdarg.h` | bundled |  |  |  |  |  | x |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  | x |  | x |  |  |  |  | x |  |  |  |  |  |
-| `stdatomic.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  | x |  |  |  |  |  |  |  |  |  |
-| `stdbool.h` | bundled | x | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  |  |  | x | x | x |  |  | x |  |  |  |  |  |  |  |
-| `stdckdint.h` | bundled |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `stddef.h` | bundled |  | x | x |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  |  | x |  |  | x | x |  |  |  |  |  |
-| `stdint.h` | bundled | x | x | x |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x | x | x |  |  |  | x |  |  |  |  |  |
-| `stdio.h` | bundled |  |  | x |  |  | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  | x | x |  |  | x | x |  | x |  | x | x |
-| `stdlib.h` | bundled |  | x | x | x |  | x | x |  | x |  |  |  |  |  |  |  |  |  |  |  | x | x |  | x | x |  |  | x | x |  |  |  | x | x |
-| `string.h` | bundled | x | x | x | x |  | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  | x | x |  |  | x | x |  | x |  | x | x |
-| `strings.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
-| `sys/cdefs.h` | bundled |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `sys/endian.h` | gap |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `sys/epoll.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  | x |  |  |  |
-| `sys/event.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `sys/fcntl.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `sys/inotify.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `sys/ioctl.h` | bundled |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `sys/mman.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `sys/param.h` | bundled |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `sys/resource.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
-| `sys/select.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `sys/socket.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |
-| `sys/stat.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  | x |  |  |  |  |  |  |  |  | x |
-| `sys/statfs.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `sys/syscall.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `sys/systm.h` | gap |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `sys/time.h` | bundled |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  | x | x |  |  |  |  |
-| `sys/timerfd.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `sys/types.h` | bundled |  |  |  |  |  |  | x |  | x |  |  |  |  |  |  |  |  |  |  |  | x |  | x | x | x |  | x | x | x |  | x |  |  | x |
-| `sys/uio.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
-| `sys/utime.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
-| `sys/utsname.h` | bundled |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `sys/wait.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `termio.h` | gap |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `termios.h` | bundled |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `time.h` | bundled |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  | x | x |  | x |  |  | x | x |  |  |  |
-| `unistd.h` | bundled |  |  |  |  |  |  |  |  | x |  | x | x |  |  |  |  |  |  |  |  |  |  | x | x | x |  | x |  |  |  | x |  |  | x |
-| `utime.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
-| `valgrind/memcheck.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `windows.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  | x |
-| `winioctl.h` | gap |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `winsock2.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
-| `x86intrin.h` | bundled | x |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
-| `yaml.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `zlib.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| header | class | json | msgpack | bigdecimal | date | racc | redcarpet | digest | erb | etc | fcntl | io-console | io-nonblock | io-wait | openssl | prism | psych | stringio | strscan | zlib | fiddle | rbs | syslog | websocket-driver | puma | google-protobuf | bootsnap | oj | nio4r | byebug | mysql2 | thin | http_parser.rb | stackprof | unicorn | debug | yajl-ruby | nkf |
+|--------|-------|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `AvailabilityMacros.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `BaseTsd.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |
+| `CommonCrypto/CommonDigest.h` | gap |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `WinNT.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `arm_neon.h` | gap | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
+| `arpa/inet.h` | bundled |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `assert.h` | bundled | x | x | x | x |  | x | x |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  | x | x |  |  | x |  |  | x | x |  | x |  | x | x |
+| `builtins.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `conio.h` | gap |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `cpuid.h` | gap | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
+| `cstdbool` | gap | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `ctype.h` | bundled | x |  | x | x |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  | x | x |  |  |  | x |  | x | x |  |  |  | x |  |
+| `dirent.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |
+| `dlfcn.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `emmintrin.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
+| `errmsg.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |
+| `errno.h` | bundled |  |  | x | x |  |  |  |  | x |  |  |  |  | x |  |  |  |  |  | x |  |  |  |  | x | x | x | x |  | x |  |  |  | x |  | x |  |
+| `fcntl.h` | bundled |  |  |  |  |  |  |  |  |  | x | x | x |  |  |  |  | x |  |  |  |  |  |  |  |  | x | x | x |  | x |  |  |  |  |  |  | x |
+| `ffi.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `ffi/ffi.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `float.h` | bundled |  |  | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  | x |  |  |  |  |  |  |  | x |  |
+| `grp.h` | bundled |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `ieeefp.h` | gap |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `intrin.h` | gap | x |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  | x | x |  |  |  |  |  |  |  |  |  |
+| `inttypes.h` | bundled |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  | x |  |  |  |  |  |  |  |  |  |
+| `io.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  | x |
+| `langinfo.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
+| `libc/dosio.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
+| `limits.h` | bundled |  | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  | x |  |  |  | x |  | x |  | x |  |
+| `link.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `linux/aio_abi.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `linux/fs.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `linux/types.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `locale.h` | bundled |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
+| `machine/endian.h` | gap |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `math.h` | bundled | x |  | x | x |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  | x | x |  |  |  |  |  |  |  | x |  |
+| `mbarrier.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `mysql.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |
+| `mysql/errmsg.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |
+| `mysql/mysql.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |
+| `nmmintrin.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
+| `openssl/asn1.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/bio.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/bn.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/conf.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/crypto.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/decoder.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/dh.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/dsa.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/engine.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/err.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/evp.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/kdf.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/ocsp.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/opensslv.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/pkcs12.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/pkcs7.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/provider.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/rand.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/rsa.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/ssl.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/ts.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/x509.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `openssl/x509v3.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `os2.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
+| `poll.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  |  |  |  |  |  |  |  |  |
+| `port.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `pthread.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  |  |  |  | x |  |  |  |  |
+| `pwd.h` | bundled |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `regex.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
+| `sanitizer/hwasan_interface.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |
+| `sanitizer/msan_interface.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |
+| `sched.h` | bundled |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |
+| `setjmp.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |
+| `sgtty.h` | gap |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `shlobj.h` | gap |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `signal.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  | x |  |  |  |  |
+| `stdarg.h` | bundled |  |  |  |  |  | x |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  | x |  | x |  |  |  |  | x |  |  |  |  |  |
+| `stdatomic.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  | x |  |  |  |  |  |  |  |  |  |
+| `stdbool.h` | bundled | x | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  | x | x |  |  |  | x | x | x |  |  | x |  |  |  |  |  |  |  |
+| `stdckdint.h` | bundled |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `stddef.h` | bundled |  | x | x |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  |  | x |  |  | x | x |  |  |  |  |  |
+| `stdint.h` | bundled | x | x | x |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x | x | x |  |  |  | x |  |  |  |  |  |
+| `stdio.h` | bundled |  |  | x |  |  | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  | x | x |  |  | x | x |  | x |  | x | x |
+| `stdlib.h` | bundled |  | x | x | x |  | x | x |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  | x | x |  |  | x | x |  |  |  | x | x |
+| `string.h` | bundled | x | x | x | x |  | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  | x | x |  |  | x | x |  | x |  | x | x |
+| `strings.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
+| `sys/cdefs.h` | bundled |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `sys/endian.h` | gap |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `sys/epoll.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  | x |  |  |  |
+| `sys/event.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `sys/fcntl.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `sys/inotify.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `sys/ioctl.h` | bundled |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `sys/mman.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `sys/param.h` | bundled |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `sys/resource.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
+| `sys/select.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `sys/socket.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |
+| `sys/stat.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  | x |  |  |  |  |  |  |  |  | x |
+| `sys/statfs.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `sys/syscall.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `sys/systm.h` | gap |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `sys/time.h` | bundled |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  | x | x |  |  |  |  |
+| `sys/timerfd.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `sys/types.h` | bundled |  |  |  |  |  |  | x |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  | x | x | x |  | x | x | x |  | x |  |  | x |
+| `sys/uio.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
+| `sys/utime.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
+| `sys/utsname.h` | bundled |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `sys/wait.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `syslog.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `termio.h` | gap |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `termios.h` | bundled |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `time.h` | bundled |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  | x | x |  | x |  |  | x | x |  |  |  |
+| `unistd.h` | bundled |  |  |  |  |  |  |  |  | x |  | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x | x |  | x |  |  |  | x |  |  | x |
+| `utime.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
+| `valgrind/memcheck.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `windows.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  | x |
+| `winioctl.h` | gap |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `winsock2.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
+| `x86intrin.h` | bundled | x |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
+| `yaml.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `zlib.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 
 ## Gap candidates (not bundled, used by ≥1 corpus gem)
 
@@ -201,10 +209,13 @@ candidates with a note; the census does not evaluate the gate.
 | `cstdbool` | json | C++-only (C++ standard header) | gated (likely not required) |
 | `emmintrin.h` | oj | SIMD/CPU-feature gate (arch/feature-conditional) | gated (likely not required) |
 | `errmsg.h` | mysql2 | — | review |
+| `ffi.h` | fiddle | — | review |
+| `ffi/ffi.h` | fiddle | — | review |
 | `ieeefp.h` | bigdecimal | — | review |
 | `intrin.h` | bigdecimal, google-protobuf, json, nio4r, oj | Windows-only gate | gated (likely not required) |
 | `io.h` | nio4r, nkf | Windows-only gate | gated (likely not required) |
 | `libc/dosio.h` | nkf | — | review |
+| `link.h` | fiddle | — | review |
 | `linux/aio_abi.h` | nio4r | — | review |
 | `linux/fs.h` | nio4r | — | review |
 | `linux/types.h` | nio4r | — | review |
@@ -249,10 +260,11 @@ candidates with a note; the census does not evaluate the gate.
 | `sys/event.h` | nio4r | — | review |
 | `sys/systm.h` | digest | — | review |
 | `sys/utime.h` | nkf | — | review |
+| `syslog.h` | syslog | — | review |
 | `termio.h` | io-console | — | review |
 | `utime.h` | nkf | — | review |
 | `valgrind/memcheck.h` | zlib | — | review |
-| `windows.h` | nio4r, nkf | Windows-only gate | gated (likely not required) |
+| `windows.h` | fiddle, nio4r, nkf | Windows-only gate | gated (likely not required) |
 | `winioctl.h` | io-console | — | review |
 | `winsock2.h` | nio4r | Windows-only gate | gated (likely not required) |
 | `yaml.h` | psych | — | review |
