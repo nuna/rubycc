@@ -490,13 +490,17 @@ class TestLexer < Minitest::Test
     assert_in_delta 0.015, tok.value, 1e-12
   end
 
-  # Regression tests for a Ruby 3.3.x-only String#to_f bug (fixed in 3.4):
-  # a floating constant whose "." is followed directly by an exponent, with
-  # no fraction digits in between (valid per C11 6.4.4.2, e.g. "1.e5"),
-  # made String#to_f silently drop the exponent on Ruby <= 3.3
-  # ("1.e5".to_f == 1.0 instead of 100000.0). These pass on Ruby 3.4+
-  # regardless of the fix; they exist to guard the 3.3 lower bound we
-  # support.
+  def test_out_of_range_floating_constant_folds_to_infinity
+    tok = lex("1e10000;").first
+    assert_equal :float, tok.type
+    assert_equal Float::INFINITY, tok.value
+  end
+
+  # Regression tests for a Ruby 3.3.x decimal-conversion issue: a floating
+  # constant whose "." is followed directly by an exponent, with no fraction
+  # digits in between (valid per C11 6.4.4.2, e.g. "1.e5"), used to lose the
+  # exponent on Ruby <= 3.3. The reader normalizes this shape before conversion
+  # so it remains correct across the supported Ruby versions.
 
   def test_dot_then_exponent_with_no_fraction_digits
     tok = lex("1.e5;").first
