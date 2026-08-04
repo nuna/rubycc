@@ -4,9 +4,9 @@
 `rake corpus:census` (see `test/corpus/README.md`). Re-run that task to update
 it, then commit the result. The task requires network access; `rake test` does not.
 
-- Generated: 2026-08-03T22:35:16Z
+- Generated: 2026-08-04T16:19:26Z
 - Ruby: ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]
-- Bundled header set: 60 angle spellings computed from `include/`
+- Bundled header set: 61 angle spellings computed from `include/`
   (freestanding `include/*.h` + `include/libc/**`, arch layer normalized).
 
 Angle-bracket (`#include <...>`) includes only; quoted local includes are ignored.
@@ -143,7 +143,7 @@ candidates with a note; the census does not evaluate the gate.
 | `stdarg.h` | bundled |  |  |  |  |  | x |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  | x |  | x |  |  |  |  | x |  |  |  |  |  |
 | `stdatomic.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  | x |  |  |  |  |  |  |  |  |  |
 | `stdbool.h` | bundled | x | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  |  |  | x | x | x |  |  | x |  |  |  |  |  |  |  |
-| `stdckdint.h` | gap |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `stdckdint.h` | bundled |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `stddef.h` | bundled |  | x | x |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  |  | x |  |  | x | x |  |  |  |  |  |
 | `stdint.h` | bundled | x | x | x |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x | x | x |  |  |  | x |  |  |  |  |  |
 | `stdio.h` | bundled |  |  | x |  |  | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  | x | x |  |  | x | x |  | x |  | x | x |
@@ -245,7 +245,6 @@ candidates with a note; the census does not evaluate the gate.
 | `sgtty.h` | io-console | — | review |
 | `shlobj.h` | etc | — | review |
 | `stdatomic.h` | google-protobuf, nio4r | — | review |
-| `stdckdint.h` | bigdecimal | — | review |
 | `sys/endian.h` | digest | — | review |
 | `sys/event.h` | nio4r | — | review |
 | `sys/systm.h` | digest | — | review |

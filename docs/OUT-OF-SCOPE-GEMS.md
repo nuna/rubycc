@@ -35,6 +35,7 @@ DESIGN が設計時に名指ししたものを集めたものである。
 | **rice** | A | C++ 拡張を書くためのライブラリそのもの | **設計時の判断**(DESIGN §3.3) |
 | **eventmachine** | A | C++ 拡張 | **観測**(`test/corpus/include-census.md` の thin の注記。thin 自身の拡張は純 C だが、実行時依存の eventmachine が C++ なので `gem install thin` は結局 C++ を要求する) |
 | **fcntl** | D | 上流にテストスイートが無い | **実測**(STEPS.md Step 157)。**同梱ヘッダの穴埋め対象からも外している** — 埋めても検証済み gem は増えないため(GAPS.md の E がその記録) |
+| **sqlite3(既定のインストール)** | C | 既定では `MiniPortile` が上流 sqlite3 の `configure` を実行する | **実測**(STEPS.md Step 186)。**`--enable-system-libraries` を付けた経路は対象内**。詳細は §3 |
 
 ### thin の扱いに注意
 
@@ -45,19 +46,39 @@ DESIGN が設計時に名指ししたものを集めたものである。
 この一覧は前者を扱う。unicorn も同じ形(依存の kgio / raindrops が C 拡張)だが、
 そちらは C なので対象内である。
 
-## 3. **対象外ではない**が、現在の機械判定が `excluded` と出す gem
+## 3. 機械判定が `excluded` と出す 2 件 — **中身は別物**
 
-ここを混同すると一覧が嘘になるので、節を分けて書く。
+`test/corpus/census.rb` の R10 判定は
+**「extconf.rb のどこかに `mini_portile` という文字列があるか」しか見ていない**
+(`configure_dependency?`)。この粗さで sqlite3 と pg が同じ `excluded` になっているが、
+**実物の extconf を読むと 2 件は性質がまったく違う**(Step 186 で実測)。
 
-| gem | 現在の判定 | 実際 |
+### sqlite3 — 既定の経路は**本当に対象外**。判定は正しい
+
+`ext/sqlite3/extconf.rb` は `system_libraries?`
+(`--enable-system-libraries` か sqlcipher 系オプション)で経路を分ける。
+
+| 経路 | 中身 | R10 |
 |---|---|---|
-| **sqlite3** | `excluded` | **DESIGN R10 が「システムライブラリ利用時」を想定内と名指し**している。既定では同梱の amalgamation を mini_portile2 でビルドするが、`--enable-system-libraries` でシステムの libsqlite3 に切り替わる。どちらの経路も **C++ は使わず `configure` も走らない**(amalgamation は `.c`)。rubycc は**その amalgamation 26 万行を単体でコンパイル済み**(STEPS.md Step 116) |
-| **pg** | `excluded` | **DESIGN R10 がスコープ内として名指し**している。extconf に mini_portile2 の参照はあるが、**`--with-cross-build` を指定したとき(事前ビルド済みバイナリ gem を作るクロスビルド)だけ**通る経路であり(`extconf.rb:26`)、通常のソースインストールは `pg_config` / pkg-config でシステムの libpq を探す |
+| **既定**(`configure_packaged_libraries`) | `MiniPortile` を使い、`recipe.configure_options += [...]` で**上流 sqlite3 の `configure` を実行する** | **対象外**(基準 C) |
+| `--enable-system-libraries` | システムの libsqlite3 を探す | **対象内** |
 
-**どちらも `test/corpus/census.rb` の R10 機械判定が
-「extconf.rb のどこかに mini_portile への参照があるか」しか見ていない**ために
-`excluded` になっている。**判定が粗いのであって、gem が対象外なのではない。**
-この粗さは `test/corpus/include-census.md` の当該行にも書いてある。
+**DESIGN R10 が「sqlite3(システムライブラリ利用時)」と括弧書きしているのは、
+まさにこの区別**である。**既定の `gem install sqlite3` は対象外で正しい。**
+
+(なお rubycc は **sqlite3 amalgamation 26 万行を単体でコンパイル済み**である
+(STEPS.md Step 116)。ただしそれは「amalgamation をコンパイルできる」話であって、
+「既定の `gem install` が通る」話ではない。**混同しないこと。**)
+
+### pg — こちらは**判定の誤り(偽陽性)**
+
+`ext/extconf.rb` の mini_portile 参照は **26 行目の
+`if gem_platform = with_config("cross-build")` ブロックの中に丸ごと入っている**。
+これは**事前ビルド済みバイナリ gem を作るときだけ**通る経路で、
+通常のソースインストールは `pg_config` / pkg-config でシステムの libpq を探す。
+
+**DESIGN R10 は pg をスコープ内として名指ししている。**
+つまり pg については、**判定が粗いのであって gem が対象外なのではない。**
 
 ## 4. 対象内である境界例(念のため)
 
@@ -85,6 +106,11 @@ DESIGN が設計時に名指ししたものを集めたものである。
   結論は変わらないと見ている。
 - 対象外の判断は**永久ではない**。基準 C は「システムライブラリ利用モードなら対象内」という
   例外を持ち、nokogiri と sqlite3 はその余地がある。
+- **この文書の初版(Step 185)は sqlite3 について誤りを書いていた** —
+  「既定の経路でも `configure` は走らない」としていたが、実物の extconf を読むと
+  既定は `MiniPortile` 経由で上流の `configure` を実行する(Step 186 で訂正)。
+  **DESIGN の記述だけを根拠に書き、extconf を読まなかったのが原因**である。
+  この文書に載せる判断は、**その gem の extconf を実際に読んでから**書くこと。
 
 ## 参照
 

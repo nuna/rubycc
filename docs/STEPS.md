@@ -7073,6 +7073,57 @@ extconf を読むと `.S` 由来のオブジェクトを要求している。
 
 ---
 
+## Step 186 — sqlite3 と pg の extconf を実測し、Step 185 の誤りを訂正する(M5 H6)
+
+「センサスが sqlite3 と pg を適切に判定するよう直せるか」というユーザの問いから、
+**両方の extconf.rb を実際に読んだ**。結果、**Step 185 で書いた記述が間違っていた**。
+
+### 訂正 — sqlite3 の既定経路は本当に対象外だった
+
+Step 185 は「sqlite3 はどちらの経路も `configure` を走らせない」と書いた。**誤りである。**
+`ext/sqlite3/extconf.rb` の `configure_packaged_libraries` は
+`MiniPortile` を使い `recipe.configure_options += [...]` を組み立てる。
+**既定の `gem install sqlite3` は上流 sqlite3 の `configure` を実行する。**
+対象内なのは `--enable-system-libraries`(または sqlcipher 系)を付けた経路だけである。
+
+**DESIGN R10 が「sqlite3(システムライブラリ利用時)」と括弧書きしているのは、
+まさにこの区別だった。** 括弧の意味を読み違えていた。
+
+原因ははっきりしている。**DESIGN の記述だけを根拠に書き、extconf を読まなかった。**
+Step 185 自身が「『対象外である』は extconf を読んで初めて確定することがある」と
+bcrypt を例に書いておきながら、**同じ文書の中でそれをやらなかった。**
+文書に「extconf を読んでから書くこと」を明記した。
+
+### pg は本物の偽陽性だった
+
+`ext/extconf.rb` の mini_portile 参照は
+**26 行目の `if gem_platform = with_config("cross-build")` ブロックに丸ごと入っている**。
+通常のソースインストールでは通らない。**判定が粗いのであって gem が対象外ではない。**
+
+### つまり 2 件は同じ `excluded` でも中身が別物
+
+| gem | 判定 | 実際 |
+|---|---|---|
+| sqlite3 | `excluded` | **正しい**(既定経路は configure を実行する) |
+| pg | `excluded` | **誤り**(cross-build 指定時しか通らない経路を見ている) |
+
+**「同じ判定が出ているから同じ問題」と読んではいけない**という例として記録する。
+
+### ついでに拾った消し忘れ — センサスのスナップショット
+
+**Step 179 で `include/stdckdint.h` を足したとき、センサスのスナップショットを
+再生成していなかった。** 同梱ヘッダ集合が 60 → 61 に増え、
+`stdckdint.h` の行が `gap` → `bundled` に変わり、
+gap 候補の `review` 一覧からも落ちる。ここで再生成して取り込んだ。
+
+**週次の census ジョブは差分で落ちる設計なので、これは次の週次で赤になっていた。**
+Step 176 で「スナップショットが再生成されないまま古くなっていた」ことを
+指摘したばかりで、**その 3 ステップ後に同じことをやっている。**
+同梱ヘッダ**ファイル**を足したら、台帳(HEADER-LICENSING)だけでなく
+**センサスのスナップショットも再生成する**。
+
+---
+
 ## 現在のテスト規模
 
 Step 184 完了時点: **2,789 runs / 8,254 assertions / 0 failures / 0 errors / 44 skips**
