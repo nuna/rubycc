@@ -165,6 +165,22 @@ class TestLibraryResolution < Minitest::Test
     assert_equal default_present, resolver.dirs
   end
 
+  # A native aarch64 process must search Debian's aarch64 multiarch trees rather
+  # than inheriting the x86_64 paths used by the development host.
+  def test_aarch64_default_system_directories_use_aarch64_multiarch_paths
+    dirs = Resolver.default_system_dirs(target: "aarch64-linux-gnu")
+
+    assert_equal [
+      "/usr/lib/aarch64-linux-gnu",
+      "/usr/lib",
+      "/lib/aarch64-linux-gnu",
+      "/lib",
+      "/usr/aarch64-linux-gnu/lib",
+      "/usr/local/lib"
+    ], dirs
+    refute_includes dirs, "/usr/lib/x86_64-linux-gnu"
+  end
+
   # --- classification of resolved files ----------------------------------------
 
   # A resolved file is routed by what it is: a shared object to `needed`, an

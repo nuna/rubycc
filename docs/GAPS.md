@@ -26,7 +26,7 @@
 | 未測定 | 詳細 |
 |---|---|
 | ~~**musl** での全検証~~ | **測定した(Step 175)**。結果は緑ではなく、ギャップ G・H・I として §1 に移した。`data/verified_gems.json` に musl の記録が 1 件も無いのは変わらないが、それは**環境が無いからではなく通っていないから**になった |
-| **aarch64 での gem install 実走** | qemu 上で動く aarch64 版 Ruby が要る。ROADMAP §「M4 受け入れ」と同じ枠 |
+| ~~**aarch64 での gem install 実走**~~ | **限定測定済み(Step 208)**。qemu 上の glibc / aarch64 Ruby 4.0.6 で `io-wait` と `stringio` の gem install・gem 自身のテストが通った。`json` / `msgpack` と全スイートは M4 受け入れとして未完了 |
 | ~~真の distroless コンテナ検証~~ | **測定済み(Step 202)**。glibc / musl の `ruby:4.0` distroless相当で json / msgpack / sqlite3 / pg のビルドとrequireに成功 |
 
 ## 4. 閉じたギャップ(参照のみ)
@@ -69,6 +69,7 @@
   突き合わせて 0 failures を確認した**(Step 205)。
 - **真の distroless コンテナ検証**: Step 202 で glibc / musl の両方を実測。
   cc / gcc / clang / make / sh と libc 開発ヘッダを除いた状態で、4 gem の
-  `--platform ruby` ビルドと実行に成功した。**musl 全スイートと aarch64 gem 実走は未完了**。
+  `--platform ruby` ビルドと実行に成功した。**musl 全スイートと aarch64 の
+  `json` / `msgpack` を含む M4 全面受入れは未完了**。
 
 いずれも設計判断は STEPS.md の各ステップに記録がある。
