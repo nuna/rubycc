@@ -11,7 +11,6 @@
 | # | ギャップ | 影響 | 優先 | 詳細 |
 |---|---|---|---|---|
 | G | **aarch64 musl の実測値を同梱ヘッダに未反映**。Step 200 で測り終えた(`O_LARGEFILE` 131072・`MB_LEN_MAX` 4・fast 型 4 バイト・`pthread_*` 5 項目・`ctype` の戻り値)が、まだ書いていない | aarch64 + musl では ABI が合わない | 中 | STEPS.md Step 200。**値は測ってある**ので、あとは反映して再測するだけ |
-| O | **`include/float.h` が x86-64 の `long double`(x87 80 ビット)を全機種に出している**。実測(aarch64): `LDBL_MANT_DIG` は 113(rubycc 64)、`LDBL_DIG` は 33(18)、`DECIMAL_DIG` は 36(21) — aarch64 の `long double` は 128 ビット quad | **musl とは無関係**。aarch64 では libc を問わず合わない。freestanding 層は 1 ファイルなので arch で分ける仕組みが無い | **高** | STEPS.md Step 200。**aarch64 の ABI ハーネスがこれまで `float.h` を検査していなかった**ため見つかっていなかった |
 | P | **aarch64 musl で `stdio.h` のプローブがリンクできない**。実測: `ld: final link failed: bad value`(rubycc が出したオブジェクトを musl の ld がリンクできない) | aarch64 + musl での実行可能ファイル生成が壊れている可能性 | **高** | STEPS.md Step 200。**原因未特定** — オブジェクトの何が bad value なのかを切り分けていない |
 | N | **rubycc の共有ライブラリが、自分で定義した外部データシンボルの介入(interposition)を尊重しない**。実測(**glibc で再現**): 同じソースから作った gcc 版と rubycc 版を `RTLD_GLOBAL` で順に `dlopen` すると、**gcc 版は先に載っている方の `trace` に書く**が、**rubycc 版は自分の `trace` に書く** | ELF の既定の意味論(`-Bsymbolic` でも protected 可視性でもないのに直接参照している)からの逸脱。`LD_PRELOAD` による差し替えや同一シンボルを持つ複数ライブラリの共存で挙動が gcc と変わる | **高** | STEPS.md Step 195。musl の実走で露出したが**musl は要らない** — musl は `dlclose` が解放しないので介入が観測できただけ。**修正は PIC のデータアクセスを GOT 経由にする話で、性能とのトレードオフがある**(未着手) |
 ## 2. 未解消の負債
@@ -58,6 +57,10 @@
   **musl 実走 3 回連続で「対照が先に落ちる」ケースが 0 件**であることを確認して
   Step 196 で閉じた。
 - **Step 194 の M**(`rubycc-pkgconf` のシステムパス除外が Debian 決め打ち):
-  Step 196 で解消(multiarch のパスは実在するときだけシステム扱いにする)。**G と I は上の表に残っている。**
+  Step 196 で解消(multiarch のパスは実在するときだけシステム扱いにする)。
+  ただし**その修正が隠れていた `-L` の重複を露出させ**、Step 199 で畳んだ。
+- **Step 200 の O**(`float.h` が x86-64 の `long double` を全機種に出していた):
+  Step 201 で解消。**aarch64 の ABI ハーネスに `float.h` の検査を足した**ので、
+  同じ見落とし(freestanding 層は機種に依らないという思い込み)は繰り返さない。**G と I は上の表に残っている。**
 
 いずれも設計判断は STEPS.md の各ステップに記録がある。

@@ -2145,6 +2145,16 @@ class TestHeaderAbiAarch64 < Minitest::Test
     assert_abi_matches_aarch64(TestHeaderAbi::STDINT)
   end
 
+  # <float.h> is a freestanding header -- one file for every machine -- so this
+  # class did not cover it, on the assumption that such a header has nothing
+  # arch-specific in it. It does: `long double` is x87 80-bit extended on x86-64
+  # and IEEE binary128 on aarch64, and this header handed x87's numbers to both
+  # until Step 200 measured the difference on real aarch64 hardware-emulation.
+  # The case exists so that assumption is checked rather than assumed again.
+  def test_float_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::FLOAT)
+  end
+
   def test_limits_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::LIMITS)
   end

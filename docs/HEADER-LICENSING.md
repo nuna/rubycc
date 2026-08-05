@@ -90,7 +90,7 @@ libc 由来ではない。musl・glibc いずれの派生でもない。
 
 | ファイル | 根拠 |
 |---|---|
-| `include/float.h` | ISO C 7.7(x86-64 の IEEE754/x87 一般値) |
+| `include/float.h` | ISO C 7.7。float/double は IEEE754 で全機種共通、**`long double` は機種で分岐**(x86-64 = x87 80 ビット、aarch64 = IEEE binary128。**両方とも各機種の gcc で実測**、Step 200) |
 | `include/iso646.h` | ISO C 7.9 |
 | `include/stdalign.h` | ISO C 7.15(`_Alignof` へのマッピング) |
 | `include/stdarg.h` | ISO C 7.16(`__builtin_va_*` へのマッピング) |
