@@ -81,9 +81,15 @@ module AArch64ExecutionHelper
   # Compiles `c_source` to an aarch64 relocatable object with rubycc. `pic`
   # selects the -fPIC lowering, which routes a reference to a symbol this unit
   # does not define through the GOT instead of forming its address directly.
-  def compile_with_rubycc_aarch64(c_source, object_path, pic: false)
+  # `libc` selects which bundled libc-arch header layer (and __RUBYCC_LIBC_MUSL__
+  # branch) the compile sees; nil leaves Rubycc::Compiler's own default (the
+  # host's libc) in place, which is glibc on the x86-64/aarch64-cross CI hosts
+  # this helper runs on.
+  def compile_with_rubycc_aarch64(c_source, object_path, pic: false, libc: nil)
     filename = "#{File.basename(object_path, ".*")}.c"
-    binary = Rubycc::Compiler.new.compile(c_source, filename: filename, target: "aarch64", pic: pic)
+    kwargs = { filename: filename, target: "aarch64", pic: pic }
+    kwargs[:libc] = libc if libc
+    binary = Rubycc::Compiler.new.compile(c_source, **kwargs)
     File.binwrite(object_path, binary)
     object_path
   end

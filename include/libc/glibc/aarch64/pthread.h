@@ -18,13 +18,19 @@
    are wider here than on x86-64, so this file differs from the companion
    glibc/x86-64/pthread.h only in those four __size[N] counts (and this
    provenance line).
-   No musl branch, deliberately: the x86-64 companion carries musl's 4-byte
-   alignment for pthread_rwlockattr_t alongside glibc's 8, but that was measured
-   on x86-64 only -- and the opaque pthreads objects are the single most
-   arch-dependent thing in this layer, as the four differing counts above show.
-   Copying it here would be an assumption, not a measurement (R8), so this file
-   stays glibc-valued until an aarch64 musl run measures it (docs/STEPS.md
-   Step 193). */
+   musl disagrees with glibc on five of these objects here, one more than the
+   x86-64 companion's single case (pthread_rwlockattr_t's alignment): musl's
+   pthread_mutex_t is 40 bytes against glibc's 48, its pthread_attr_t 56
+   against glibc's 64, its pthread_mutexattr_t and pthread_condattr_t 4 bytes
+   against glibc's 8 (all four with the same alignment on both libcs), and its
+   pthread_rwlockattr_t is 4-byte aligned against glibc's 8 (same 8-byte size
+   on both) -- the opaque pthreads objects are the single most arch-dependent
+   thing in this layer, as the four differing __size[N] counts above already
+   show, so this file's musl figures are its own measurement rather than the
+   x86-64 companion's single-case one, taken on the CI aarch64 musl run
+   (docs/STEPS.md Step 202). Every other pthreads object here (pthread_t,
+   pthread_cond_t, pthread_rwlock_t and the small scalar handles) measured
+   identical on the two libraries. */
 
 #ifndef _RUBYCC_PTHREAD_H
 #define _RUBYCC_PTHREAD_H
@@ -41,7 +47,22 @@ typedef int           pthread_spinlock_t;
    occupies the right space and alignment without copying glibc's field layout.
    pthread_attr_t, pthread_mutex_t, pthread_mutexattr_t and pthread_condattr_t
    have a wider __size[N] on aarch64 (the four counts that differ between the two
-   arch layers); the others are identical on both arches. */
+   arch layers); the others are identical on both arches.
+   Five of these additionally differ by libc on this arch (see the provenance
+   note above): pthread_mutex_t, pthread_attr_t, pthread_mutexattr_t and
+   pthread_condattr_t are narrower on musl (same alignment as glibc), and
+   pthread_rwlockattr_t keeps glibc's 8-byte size but musl's alignment is
+   narrower. Both figures measured with the ABI harness, glibc's on this host
+   and musl's on the CI aarch64 musl run (docs/STEPS.md Step 202). */
+#if defined(__RUBYCC_LIBC_MUSL__)
+typedef union { char __size[56]; long __align; } pthread_attr_t;
+typedef union { char __size[40]; long __align; } pthread_mutex_t;
+typedef union { char __size[4];  int  __align; } pthread_mutexattr_t;
+typedef union { char __size[48]; long __align; } pthread_cond_t;
+typedef union { char __size[4];  int  __align; } pthread_condattr_t;
+typedef union { char __size[56]; long __align; } pthread_rwlock_t;
+typedef union { char __size[8];  int  __align; } pthread_rwlockattr_t;
+#else
 typedef union { char __size[64]; long __align; } pthread_attr_t;
 typedef union { char __size[48]; long __align; } pthread_mutex_t;
 typedef union { char __size[8];  int  __align; } pthread_mutexattr_t;
@@ -49,6 +70,7 @@ typedef union { char __size[48]; long __align; } pthread_cond_t;
 typedef union { char __size[8];  int  __align; } pthread_condattr_t;
 typedef union { char __size[56]; long __align; } pthread_rwlock_t;
 typedef union { char __size[8];  long __align; } pthread_rwlockattr_t;
+#endif
 
 /* Mutex kinds (pthread_mutexattr_settype / __kind). */
 #define PTHREAD_MUTEX_NORMAL     0
