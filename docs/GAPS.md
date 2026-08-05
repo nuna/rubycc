@@ -10,7 +10,6 @@
 
 | # | ギャップ | 影響 | 優先 | 詳細 |
 |---|---|---|---|---|
-| G | **反映した aarch64 musl の値を、まだ musl 上で確かめていない**。値は Step 200 の実測、反映は Step 202。手元では qemu で「ヘッダが実測どおりの値を出す」ところまで確認したが、**本物の aarch64 musl gcc と突き合わせてはいない** | 反映漏れや取り違えがあれば残る | 低 | STEPS.md Step 202。**次の `only: musl-aarch64` 実走で確定する** |
 | P | **aarch64 musl で `stdio.h` のプローブがリンクできない**。実測: `ld: final link failed: bad value`(rubycc が出したオブジェクトを musl の ld がリンクできない) | aarch64 + musl での実行可能ファイル生成が壊れている可能性 | **高** | STEPS.md Step 200。**原因未特定** — オブジェクトの何が bad value なのかを切り分けていない |
 | N | **rubycc の共有ライブラリが、自分で定義した外部データシンボルの介入(interposition)を尊重しない**。実測(**glibc で再現**): 同じソースから作った gcc 版と rubycc 版を `RTLD_GLOBAL` で順に `dlopen` すると、**gcc 版は先に載っている方の `trace` に書く**が、**rubycc 版は自分の `trace` に書く** | ELF の既定の意味論(`-Bsymbolic` でも protected 可視性でもないのに直接参照している)からの逸脱。`LD_PRELOAD` による差し替えや同一シンボルを持つ複数ライブラリの共存で挙動が gcc と変わる | **高** | STEPS.md Step 195。musl の実走で露出したが**musl は要らない** — musl は `dlclose` が解放しないので介入が観測できただけ。**修正は PIC のデータアクセスを GOT 経由にする話で、性能とのトレードオフがある**(未着手) |
 ## 2. 未解消の負債
@@ -61,6 +60,9 @@
   ただし**その修正が隠れていた `-L` の重複を露出させ**、Step 199 で畳んだ。
 - **Step 200 の O**(`float.h` が x86-64 の `long double` を全機種に出していた):
   Step 201 で解消。**aarch64 の ABI ハーネスに `float.h` の検査を足した**ので、
-  同じ見落とし(freestanding 層は機種に依らないという思い込み)は繰り返さない。**G と I は上の表に残っている。**
+  同じ見落とし(freestanding 層は機種に依らないという思い込み)は繰り返さない。
+- **Step 175 の G**(同梱ヘッダが glibc の ABI を焼き込んでいる):
+  x86-64 は Step 193、aarch64 は Step 202 で解消。**両機種とも本物の musl gcc と
+  突き合わせて 0 failures を確認した**(Step 203)。**G と I は上の表に残っている。**
 
 いずれも設計判断は STEPS.md の各ステップに記録がある。

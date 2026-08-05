@@ -7781,9 +7781,41 @@ G は後者に書き換えて残した。
 
 ---
 
+## Step 203 — aarch64 musl で一致を確認。**ギャップ G が閉じた**(M5 H6)
+
+Step 202 の反映を、`only: musl-aarch64` で 1 ジョブだけ回して確かめた。
+
+| | failures | errors |
+|---|---|---|
+| 反映前(Step 200) | **6** | 2 |
+| **反映後** | **0** | 2 |
+
+**本物の aarch64 musl gcc と ABI が一致した。** `freestanding` 側も 0 failures。
+
+これで **x86-64(Step 193)と aarch64(Step 202)の両方**が、
+それぞれの機種の musl gcc と突き合わせて確認済みになった。
+**ギャップ G — M5 が掲げながら一度も測っていなかった「glibc/musl 互換ヘッダ」の
+主張 — が閉じた。**
+
+### 手元での確認と、本物での確認は別だった
+
+Step 202 の時点で「ヘッダが実測どおりの値を出す」ことは qemu で確かめてあった。
+それでも G を閉じなかったのは、**それは自分が書いた表と自分が書いたヘッダを
+突き合わせているだけ**だからである。**転記の誤りは捕まらない。**
+本物の対照と突き合わせて初めて閉じられる。
+
+### 残る 2 件は既知のもの
+
+- `alloca` — M4 A4 の未実装項目。**新しい発見ではない**
+- `stdio` のリンク失敗 — **ギャップ P**。原因は切り分けていない
+
+---
+
 ## 現在のテスト規模
 
-Step 202 完了時点: **2,819 runs / 8,375 assertions / 0 failures / 0 errors / 44 skips**
+Step 203 完了時点: **2,819 runs / 8,375 assertions / 0 failures / 0 errors / 44 skips**
+(Step 202 と同数 = CI での確認と記録のみ。コードは変更していない)
+(以前) Step 202 完了時点: **2,819 runs / 8,375 assertions / 0 failures / 0 errors / 44 skips**
 (Step 201 から +3 runs = aarch64 musl の期待値検査。
 既存の aarch64 クロス gcc 差分 46 件が変わらず通ることも確認済み)
 (以前) Step 201 完了時点: **2,816 runs / 8,369 assertions / 0 failures / 0 errors / 44 skips**
