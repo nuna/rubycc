@@ -203,6 +203,28 @@ module HeaderAbiHarness
     C
   end
 
+  # The keyword arguments #run_abi_case (and, since Step 207, the
+  # cross-toolchain-linking guard test in test_header_abi_harness_pic.rb) pass to
+  # Rubycc::Compiler#compile for `target`. Kept in one place so a test that wants
+  # to prove "the harness still builds its rubycc side the same way it links
+  # against the oracle" asks this method rather than copying the keyword list --
+  # a copy would only ever check itself, not the harness (docs/STEPS.md Step
+  # 206).
+  #
+  # `pic: true` so the two sides are built the same way. The oracle is compiled
+  # by gcc with whatever gcc's defaults are, and on a modern toolchain that means
+  # -fPIE; leaving rubycc's side non-PIC therefore compared a PIE build against a
+  # non-PIE one. On x86-64 that difference is invisible (the linker resolves a
+  # non-PIC reference to external data with a copy relocation), but on aarch64 it
+  # is fatal: ADRP+ADD to a preemptible symbol has no such fixup, so the link
+  # fails with "unresolvable R_AARCH64_ADR_PREL_PG_HI21". That is not a rubycc
+  # defect -- gcc's own -fno-pie object fails the same link with the same message
+  # (both measured locally) -- it is this harness handing the two sides different
+  # flags. Found on aarch64 musl, reproduced on glibc (docs/STEPS.md Step 206).
+  def rubycc_build_options(target)
+    { target: target, pic: true }
+  end
+
   # Compiles the probe for `spec` with both toolchains, runs each, and returns a
   # Result. The rubycc side passes no -I: the point is that the bundled headers
   # are found on rubycc's own default search path (bundled freestanding, then
@@ -216,21 +238,9 @@ module HeaderAbiHarness
     name = spec.header.gsub(/[^A-Za-z0-9]+/, "_")
     in_tmpdir do |dir|
       rubycc_obj = File.join(dir, "#{name}_rubycc.o")
-      # `pic: true` so the two sides are built the same way. The oracle is
-      # compiled by gcc with whatever gcc's defaults are, and on a modern
-      # toolchain that means -fPIE; leaving rubycc's side non-PIC therefore
-      # compared a PIE build against a non-PIE one. On x86-64 that difference is
-      # invisible (the linker resolves a non-PIC reference to external data with
-      # a copy relocation), but on aarch64 it is fatal: ADRP+ADD to a
-      # preemptible symbol has no such fixup, so the link fails with
-      # "unresolvable R_AARCH64_ADR_PREL_PG_HI21". That is not a rubycc defect --
-      # gcc's own -fno-pie object fails the same link with the same message
-      # (both measured locally) -- it is this harness handing the two sides
-      # different flags. Found on aarch64 musl, reproduced on glibc
-      # (docs/STEPS.md Step 206).
       File.binwrite(rubycc_obj,
                     Rubycc::Compiler.new.compile(source, filename: "#{name}.c",
-                                                 target: host_target, pic: true))
+                                                 **rubycc_build_options(host_target)))
       rubycc_status, rubycc_out = link_and_run(rubycc_obj)
 
       gcc_obj = compile_with_gcc(source, File.join(dir, "#{name}_gcc.o"))
