@@ -62,6 +62,9 @@ Set `RUBYCC=1` and install as usual:
 RUBYCC=1 gem install <gem>
 ```
 
+For a complete build-stage/runtime-stage example aimed at shell-less images,
+see [examples/distroless](examples/distroless/README.md).
+
 `RUBYCC=0` forces it off. With neither set, rubycc activates itself only when `cc` and
 `make` are absent from `PATH`, so it stays out of the way on a normal development machine.
 

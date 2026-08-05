@@ -4096,8 +4096,10 @@ module Rubycc
       # paired with a null pointer constant (in either position) takes the
       # pointer type, so "cond ? p : 0" is a pointer. A pointer to an object type
       # paired with a "void *" (in either position) yields "void *" (6.5.15p6),
-      # so "cond ? (char *)s : v" is well-typed. Anything else (a pointer vs a
-      # non-null int, or two unrelated pointer types) is rejected. When either
+      # so "cond ? (char *)s : v" is well-typed. GCC also accepts a void-pointer
+      # null constant paired with a function pointer and keeps the function
+      # pointer type. Anything else (a pointer vs a non-null int, or two
+      # unrelated pointer types) is rejected. When either
       # arm is void the whole conditional is void, which ISO C only admits when
       # both arms are void but GCC extends to a single void arm — the shape a
       # statement expression ending in a jump takes ("1 ? printf(...) : ({ ...;
@@ -4106,7 +4108,11 @@ module Rubycc
       # just its int type.
       def conditional_result_type(then_node, then_type, else_node, else_type, token)
         return then_type if then_type == else_type
-        if then_type.pointer? && Front::AST.null_pointer_constant?(else_node)
+        if (function_pointer_type = function_pointer_null_conditional_type(
+              then_node, then_type, else_node, else_type
+            ))
+          function_pointer_type
+        elsif then_type.pointer? && Front::AST.null_pointer_constant?(else_node)
           then_type
         elsif else_type.pointer? && Front::AST.null_pointer_constant?(then_node)
           else_type
@@ -4119,6 +4125,21 @@ module Rubycc
         else
           error_at(token, "type mismatch in conditional expression")
         end
+      end
+
+      # GCC accepts the CRuby-shaped extension "(void *)0" ?: a function
+      # pointer even though the ordinary 6.5.15 void-pointer composite only
+      # covers object/incomplete pointers. Keep this narrow: a non-null void *
+      # value must not silently become a function pointer.
+      def function_pointer_null_conditional_type(then_node, then_type, else_node, else_type)
+        return else_type if then_type.pointer? && else_type.pointer? &&
+                            then_type.target.void? && else_type.target.function? &&
+                            Front::AST.null_pointer_constant?(then_node)
+        return then_type if then_type.pointer? && else_type.pointer? &&
+                            else_type.target.void? && then_type.target.function? &&
+                            Front::AST.null_pointer_constant?(else_node)
+
+        nil
       end
 
       # Whether one arm is a pointer to an object type and the other a "void *"
@@ -5526,6 +5547,9 @@ module Rubycc
       # mirroring #gen_conditional: both arms must agree, and that shared type
       # is the result.
       def static_conditional_type(node)
+        # Keep static inference on the same path as code generation so the
+        # function-pointer/null extension has identical type semantics in
+        # code-free contexts.
         conditional_result_type(node.then_expr, static_type(node.then_expr),
                                 node.else_expr, static_type(node.else_expr), node.token)
       end

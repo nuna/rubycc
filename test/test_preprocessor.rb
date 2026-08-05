@@ -203,6 +203,11 @@ class TestPreprocessor < Minitest::Test
     assert_equal 2, error.line
   end
 
+  def test_restrict_alias_redefinition_is_accepted
+    tokens = pp("#define restrict __restrict__\n#define restrict __restrict\nint * restrict p;").reject(&:eof?)
+    assert_equal ["int", "*", "__restrict", "p", ";"], tokens.map(&:value)
+  end
+
   def test_object_macro_replacement_may_begin_with_parenthesis
     # A space before "(" makes it part of the replacement, not a parameter list.
     tokens = pp("#define X (1)\nint y = X;").reject(&:eof?)
@@ -1132,6 +1137,34 @@ class TestPreprocessor < Minitest::Test
     end
   end
 
+  def test_include_expands_a_command_line_header_macro
+    # The shell spelling in pg's Makefile is -DRUBY_EXTCONF_H=\"extconf.h\";
+    # after shell parsing, rubycc receives the quoted string as the macro value.
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "extconf.h"), "int from_extconf;\n")
+      main = File.join(dir, "main.c")
+      tokens = Rubycc::Preprocess::Preprocessor.new.run(
+        "#include RUBY_EXTCONF_H\n",
+        filename: main,
+        include_paths: [dir],
+        system_includes: false,
+        defines: [[:define, 'RUBY_EXTCONF_H="extconf.h"']]
+      ).reject(&:eof?)
+      assert_equal ["int", "from_extconf", ";"], tokens.map(&:value)
+    end
+  end
+
+  def test_include_macro_expansion_rescans_to_an_angle_header
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "generated.h"), "int generated;\n")
+      tokens = Rubycc::Preprocess::Preprocessor.new
+                 .run("#define HEADER <generated.h>\n#include HEADER\n",
+                      filename: "main.c", include_paths: [dir], system_includes: false)
+                 .reject(&:eof?)
+      assert_equal ["int", "generated", ";"], tokens.map(&:value)
+    end
+  end
+
   def test_angle_include_searches_the_include_path
     Dir.mktmpdir do |dir|
       File.write(File.join(dir, "sys.h"), "int fromsys;\n")
@@ -1139,6 +1172,19 @@ class TestPreprocessor < Minitest::Test
                  .run("#include <sys.h>\nint here;", filename: "main.c", include_paths: [dir])
                  .reject(&:eof?)
       assert_equal ["int", "fromsys", ";", "int", "here", ";"], tokens.map(&:value)
+    end
+  end
+
+  def test_direct_angle_include_keeps_header_name_tokens_literal
+    # A macro named like a token inside a directly written <...> header must not
+    # change which file is searched; only a non-header-name operand is expanded.
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "h.h"), "int literal_header;\n")
+      tokens = Rubycc::Preprocess::Preprocessor.new
+                 .run("#define h missing.h\n#include <h.h>\n",
+                      filename: "main.c", include_paths: [dir], system_includes: false)
+                 .reject(&:eof?)
+      assert_equal ["int", "literal_header", ";"], tokens.map(&:value)
     end
   end
 
@@ -1191,6 +1237,21 @@ class TestPreprocessor < Minitest::Test
                    .run("#include <h.h>\n", filename: "main.c", include_paths: [dir1, dir2])
                    .reject(&:eof?)
         assert_equal ["int", "from_dir2", ";", "int", "from", "=", 1, ";"], tokens.map(&:value)
+      end
+    end
+  end
+
+  def test_include_next_expands_a_header_macro
+    Dir.mktmpdir do |dir1|
+      Dir.mktmpdir do |dir2|
+        File.write(File.join(dir1, "h.h"), "#include_next HEADER\nint from = 1;\n")
+        File.write(File.join(dir2, "h.h"), "int from_dir2;\n")
+        tokens = Rubycc::Preprocess::Preprocessor.new
+                   .run("#define HEADER <h.h>\n#include <h.h>\n",
+                        filename: "main.c", include_paths: [dir1, dir2], system_includes: false)
+                   .reject(&:eof?)
+        assert_equal ["int", "from_dir2", ";", "int", "from", "=", 1, ";"],
+                     tokens.map(&:value)
       end
     end
   end

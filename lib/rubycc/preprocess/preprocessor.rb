@@ -923,7 +923,7 @@ module Rubycc
       # --- #include ----------------------------------------------------------
 
       def handle_include(hash, body, output, includer)
-        kind, name = parse_header_name(hash, body)
+        kind, name = parse_include_name(hash, body)
         path = resolve_include(kind, name, includer, hash)
         process_include(hash, name, path, output)
       end
@@ -937,7 +937,7 @@ module Rubycc
       # unlike a plain #include the quote form does not additionally search
       # `includer`'s own directory (gcc's behavior).
       def handle_include_next(hash, body, output, includer)
-        kind, name = parse_header_name(hash, body)
+        kind, name = parse_include_name(hash, body)
         path = resolve_include_next(kind, name, includer, hash)
         process_include(hash, name, path, output)
       end
@@ -1060,10 +1060,35 @@ module Rubycc
         nil
       end
 
-      # Reconstructs the header name from the raw tokens of an #include line. The
-      # scanner does not treat header-names specially, so a quoted form arrives as
-      # one :string token and an angled form as "<" ... ">"; the characters are
-      # taken verbatim (6.10.2), never macro-expanded.
+      # Parses a #include/#include_next operand. A directly written header-name
+      # is already complete and is kept verbatim: in particular, identifiers
+      # inside `<...>` are not accidentally expanded. Otherwise the operand is
+      # macro-expanded and the resulting token sequence must form a header-name
+      # (6.10.2); this is what permits `#define H "extconf.h"` followed by
+      # `#include H`, as emitted by mkmf for pg.
+      def parse_include_name(hash, body)
+        return parse_header_name(hash, body) if direct_header_name?(body)
+
+        expanded = []
+        expand_tokens(body, expanded)
+        parse_header_name(hash, expanded)
+      end
+
+      # Whether `body` is already a complete quoted or angled header-name. The
+      # scanner does not treat header-names specially, so an angled form arrives
+      # as "<" ... ">". A malformed direct form is deliberately left for the
+      # macro-expansion path: a macro can legally supply the missing pieces.
+      def direct_header_name?(body)
+        return true if body.length == 1 && body[0].type == :string
+
+        return false unless body.first&.punct?("<")
+
+        body.index { |token| token.punct?(">") } == body.length - 1
+      end
+
+      # Reconstructs a header name from a complete token sequence. The
+      # characters are taken verbatim (6.10.2), never macro-expanded here; the
+      # caller has already decided whether expansion was needed.
       def parse_header_name(hash, body)
         raise_at(hash, "#include expects \"FILENAME\" or <FILENAME>") if body.empty?
 
@@ -1183,10 +1208,31 @@ module Rubycc
         existing = @macros[name.text]
         if existing.nil?
           @macros[name.text] = macro
-        elsif !identical_macro?(existing, macro)
+        elsif !identical_macro?(existing, macro) &&
+              !compatible_restrict_redefinition?(name.text, existing, macro)
           # A benign redefinition (an identical definition) is allowed; a
           # differing one is an error (6.10.3p2, simplified to token spellings).
           raise_at(name, "macro '#{name.text}' redefined")
+        else
+          # Ruby's musl config.h and libpq's pg_config.h use the two reserved
+          # spellings of the same restrict qualifier. Keep the later spelling
+          # so subsequent expansion follows the header that most recently
+          # established the platform contract.
+          @macros[name.text] = macro
+        end
+      end
+
+      # GCC accepts the musl/Ruby and libpq pair of restrict definitions as a
+      # harmless portability difference: `__restrict__` and `__restrict` are
+      # both recognized by the front end as the same ignored qualifier. Do not
+      # weaken ordinary macro redefinition diagnostics for any other spelling.
+      def compatible_restrict_redefinition?(name, existing, replacement)
+        return false unless name == "restrict"
+        return false unless existing.kind == :object && replacement.kind == :object
+
+        spellings = ["__restrict", "__restrict__"]
+        [existing.replacement, replacement.replacement].all? do |tokens|
+          tokens.length == 1 && tokens.first.type == :identifier && spellings.include?(tokens.first.text)
         end
       end
 
