@@ -1,4 +1,10 @@
 #!/bin/sh
+#
+# Invoked as `sh <this file>` from the workflow, not by its own shebang: the
+# repository has core.filemode=false, so a local `chmod +x` never reaches git
+# and the file lands in the container mode 644. That cost a whole weekly run
+# once already (docs/STEPS.md Step 198) -- calling the interpreter explicitly
+# takes the exec bit out of the equation for good.
 # Container entry point for the `musl-aarch64` job in
 # .github/workflows/weekly.yml. Invoked as
 #

@@ -255,7 +255,7 @@ jobs:
           docker run --rm \
             -v "$PWD":/w -w /w \
             -e VERIFY_STEP \
-            ruby:4.0-alpine /w/.github/scripts/musl-suite.sh
+            ruby:4.0-alpine sh /w/.github/scripts/musl-suite.sh
         # No tools/ci_check_skips.rb here, and for a different reason than the
         # acceptance job's: Alpine packages no aarch64-linux-musl cross
         # toolchain, so every aarch64 differential test skips. The Tier A skip
@@ -319,7 +319,7 @@ jobs:
         run: |
           docker run --rm --platform linux/arm64 \
             -v "$PWD":/w -w /w \
-            ruby:4.0-alpine /w/.github/scripts/musl-aarch64-abi.sh
+            ruby:4.0-alpine sh /w/.github/scripts/musl-aarch64-abi.sh
 
       - name: Upload the aarch64 musl measurement logs
         # The whole deliverable of the job, and the reason for `always()`: the
