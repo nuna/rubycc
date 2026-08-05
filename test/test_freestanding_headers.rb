@@ -18,7 +18,21 @@ class TestFreestandingHeaders < Minitest::Test
   def setup
     skip "gcc unavailable (needed to link and cross-check)" unless tool?("gcc")
     skip "system libc headers not found (/usr/include/stdio.h missing)" unless File.exist?("/usr/include/stdio.h")
+    unless Rubycc::Compiler::TARGETS.key?(HOST_TARGET)
+      skip "host CPU #{HOST_TARGET.inspect} is not a rubycc target " \
+           "(#{Rubycc::Compiler::TARGETS.keys.join(", ")})"
+    end
   end
+
+  # The machine this host runs, as a Rubycc::Compiler::TARGETS name: every case
+  # below builds its rubycc side for it, because the object is linked and run by
+  # the host toolchain. Read from RbConfig's host_cpu, which is where
+  # exe/rubycc's driver takes its own default target from (Driver#target) and
+  # what test/abi_harness/harness.rb's #host_target reads; the read is spelled
+  # out here rather than shared, the same way VA_LIST_TYPE_NAME below spells out
+  # #host_libc's. On x86-64 it is "x86_64", which is Compiler#compile's own
+  # default, so nothing about the existing runs changes.
+  HOST_TARGET = RbConfig::CONFIG["host_cpu"].to_s
 
   # <stdarg.h>: variable arguments via __builtin_va_*.
   STDARG_SOURCE = <<~C
@@ -209,7 +223,7 @@ class TestFreestandingHeaders < Minitest::Test
   def test_stdckdint_checked_arithmetic_macros
     in_tmpdir do |dir|
       rubycc_obj = File.join(dir, "stdckdint_rubycc.o")
-      binary = Rubycc::Compiler.new.compile(STDCKDINT_SOURCE, filename: "stdckdint.c")
+      binary = Rubycc::Compiler.new.compile(STDCKDINT_SOURCE, filename: "stdckdint.c", target: HOST_TARGET)
       File.binwrite(rubycc_obj, binary)
       status, out = link_and_run(rubycc_obj)
 
@@ -244,7 +258,8 @@ class TestFreestandingHeaders < Minitest::Test
   def test_both_internal_va_list_spellings_resolve
     in_tmpdir do |dir|
       obj = File.join(dir, "both_va_list_rubycc.o")
-      File.binwrite(obj, Rubycc::Compiler.new.compile(BOTH_VA_LIST_NAMES_SOURCE, filename: "both_va_list.c"))
+      File.binwrite(obj, Rubycc::Compiler.new.compile(BOTH_VA_LIST_NAMES_SOURCE,
+                                                      filename: "both_va_list.c", target: HOST_TARGET))
       status, out = link_and_run(obj)
 
       assert_equal 0, status, "rubycc-built both_va_list exited #{status}"
@@ -279,10 +294,12 @@ class TestFreestandingHeaders < Minitest::Test
   # search path — no -I is passed — and with gcc, links and runs both, and
   # asserts a clean exit and byte-identical output. rubycc supplying no
   # include_paths is the point: the bundled headers must be found on their own.
+  # The target is the host's (HOST_TARGET), since the host gcc links and runs
+  # both objects.
   def assert_matches_gcc(source, name)
     in_tmpdir do |dir|
       rubycc_obj = File.join(dir, "#{name}_rubycc.o")
-      binary = Rubycc::Compiler.new.compile(source, filename: "#{name}.c")
+      binary = Rubycc::Compiler.new.compile(source, filename: "#{name}.c", target: HOST_TARGET)
       File.binwrite(rubycc_obj, binary)
       rubycc_status, rubycc_out = link_and_run(rubycc_obj)
 

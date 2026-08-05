@@ -17,6 +17,16 @@ name: weekly
           which is what the weekly schedule does.
         required: false
         default: ""
+      only:
+        description: >-
+          Run just one job instead of the whole weekly set. The aarch64 ABI
+          measurement in particular is reachable no other way: guarding it on
+          verify_step alone meant the only way to trigger it was a full weekly
+          run, which costs the other five jobs' minutes to get one job's answer.
+        required: false
+        default: ""
+        type: choice
+        options: ["", "musl-aarch64"]
 
 permissions:
   contents: read
@@ -31,7 +41,7 @@ jobs:
     # only the musl job has anything to do, and the free-tier minute budget
     # is tight enough that dragging the other four along would cost more than
     # the run itself. Everything else is unchanged for the weekly schedule.
-    if: inputs.verify_step == ''
+    if: inputs.verify_step == '' && inputs.only == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -97,7 +107,7 @@ jobs:
     # only the musl job has anything to do, and the free-tier minute budget
     # is tight enough that dragging the other four along would cost more than
     # the run itself. Everything else is unchanged for the weekly schedule.
-    if: inputs.verify_step == ''
+    if: inputs.verify_step == '' && inputs.only == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -158,7 +168,7 @@ jobs:
     # only the musl job has anything to do, and the free-tier minute budget
     # is tight enough that dragging the other four along would cost more than
     # the run itself. Everything else is unchanged for the weekly schedule.
-    if: inputs.verify_step == ''
+    if: inputs.verify_step == '' && inputs.only == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -227,6 +237,10 @@ jobs:
   # `docker run` keeps the actions on glibc and puts only rubycc on musl, which
   # is the thing being measured.
   musl:
+    # A verify_step dispatch is this job's own recording run, so unlike the
+    # other four it stays on for that; an `only` dispatch naming a different
+    # job skips it.
+    if: inputs.only == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -241,7 +255,7 @@ jobs:
           docker run --rm \
             -v "$PWD":/w -w /w \
             -e VERIFY_STEP \
-            ruby:4.0-alpine /w/.github/scripts/musl-suite.sh
+            ruby:4.0-alpine sh /w/.github/scripts/musl-suite.sh
         # No tools/ci_check_skips.rb here, and for a different reason than the
         # acceptance job's: Alpine packages no aarch64-linux-musl cross
         # toolchain, so every aarch64 differential test skips. The Tier A skip
@@ -260,6 +274,64 @@ jobs:
             data/verified_gems.json
           if-no-files-found: warn
 
+  # The other half of the musl question: the machine. Every musl measurement so
+  # far -- Step 193's divergence columns, everything the job above reports -- was
+  # taken on x86-64, so the bundled headers' aarch64 layer
+  # (include/libc/glibc/aarch64/) still carries glibc values only, each file
+  # saying in its own comment that it stays that way until an aarch64 musl run
+  # measures it. This job is that run: an arm64 container under qemu, with the
+  # container's musl gcc as the oracle.
+  #
+  # It runs only the two files that probe header ABI, not the suite. Under qemu
+  # emulation the suite is hours of runner time to re-measure what the x86-64
+  # musl job and the aarch64 cross job already cover; the ABI values are the one
+  # thing no other job can reach. It is also expected to fail until those values
+  # are transcribed, and that is the point -- the differences in the uploaded
+  # logs are the measurement, so the artifact is unconditional and the exit
+  # status is left honest rather than swallowed by continue-on-error.
+  #
+  # Same container structure as the job above (checkout on the host, bind-mount
+  # into `docker run`) and for the same reason: the runner's injected node
+  # cannot execute on Alpine, so the actions stay on glibc/x86-64 and only
+  # rubycc runs on musl/aarch64.
+  musl-aarch64:
+    # A dispatch that sets verify_step is a musl *recording* run (docs/CI.md),
+    # and this job records nothing: it writes no verified_gems.json entry and
+    # its logs are read by hand. Emulated minutes are the most expensive kind on
+    # the free tier, so a recording dispatch does not pay for them. It is also
+    # the one job `only` can select by name, because it is the one whose
+    # answer is worth a dispatch of its own.
+    if: inputs.verify_step == '' && (inputs.only == '' || inputs.only == 'musl-aarch64')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      # Registers the binfmt_misc handlers that let the x86-64 runner execute
+      # an arm64 image; without it `docker run --platform linux/arm64` fails on
+      # the first instruction of the container's entry point.
+      - uses: docker/setup-qemu-action@v3
+
+      # ruby:4.0-alpine has an arm64 image, so the Ruby version and the libc
+      # match the musl job above and only the machine differs -- which is what
+      # makes a difference this job reports an aarch64 one.
+      - name: Measure the header ABI on aarch64 musl
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD":/w -w /w \
+            ruby:4.0-alpine sh /w/.github/scripts/musl-aarch64-abi.sh
+
+      - name: Upload the aarch64 musl measurement logs
+        # The whole deliverable of the job, and the reason for `always()`: the
+        # run this is written for is a failing one, and its logs are the
+        # measurement the header values come from.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: weekly-musl-aarch64
+          path: tmp/ci/*.log
+          if-no-files-found: warn
+
   # The intermediate version 3.4 is checked weekly rather than on every push,
   # to save runner minutes. The two ends (3.3 and 4.0) are checked on every
   # push by test.yml, so a version-specific break is caught within the week
@@ -269,7 +341,7 @@ jobs:
     # only the musl job has anything to do, and the free-tier minute budget
     # is tight enough that dragging the other four along would cost more than
     # the run itself. Everything else is unchanged for the weekly schedule.
-    if: inputs.verify_step == ''
+    if: inputs.verify_step == '' && inputs.only == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
