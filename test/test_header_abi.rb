@@ -23,6 +23,10 @@ class TestHeaderAbi < Minitest::Test
   def setup
     skip "gcc unavailable (needed as the ABI oracle)" unless tool?("gcc")
     skip "system libc headers not found (/usr/include/stdio.h missing)" unless File.exist?("/usr/include/stdio.h")
+    # Both sides of this differential are built for, and run on, this host's own
+    # CPU (see HeaderAbiHarness#host_target), so a machine rubycc has no backend
+    # for has nothing to compare here.
+    skip_unless_host_target_supported
   end
 
   # <stddef.h>: the fundamental typedefs' widths and alignments, plus offsetof
@@ -1937,6 +1941,14 @@ class TestMuslBundledHeaderValues < Minitest::Test
 
   def setup
     skip "gcc unavailable (needed to link and run the probe)" unless tool?("gcc")
+    # The two expected columns below are transcribed x86-64 measurements, and
+    # every check in them is one the two C libraries were measured to disagree
+    # on *there*. Several are also arch-specific (the fast-type widths, O_*,
+    # struct rusage), so on another machine this case would be comparing that
+    # machine's values against a different machine's measurement -- a failure
+    # that says nothing about either. It is skipped until an aarch64 musl run
+    # supplies columns of its own.
+    skip "the expected columns are x86-64 measurements; this host is #{host_target}" unless host_target == "x86_64"
   end
 
   # Every check the two C libraries were measured to disagree on, gathered into

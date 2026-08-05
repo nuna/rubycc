@@ -7556,9 +7556,48 @@ Step 181 のように次の実走で 1 件でも顔を出すはずだった。�
 
 ---
 
+## Step 197 — aarch64 + musl の ABI を測る足場(M5 H6)
+
+ギャップ G の残り。**このステップは測る仕組みまで**で、
+値の反映は次のステップに分ける(CI を 1 回回さないと値が手に入らないため)。
+
+### ハーネスが x86_64 決め打ちだったことが先に出た
+
+`run_abi_case` は `Rubycc::Compiler.new.compile(source, filename: ...)` を呼んでいる。
+**この API の `target:` は既定が `"x86_64"` 固定**である。
+つまり **aarch64 ホストの上では x86_64 のオブジェクトが出て、リンクも実行もできない。**
+
+ドライバ(`exe/rubycc`)側は最初から `RbConfig::CONFIG["host_cpu"]` を既定にしていた。
+**ライブラリ API とドライバで既定が食い違っていた**わけで、
+ハーネスも同じ出所から読む形に直した。
+
+未知の機種のときは **`skip` にして、黙って x86_64 に落とさない**ようにした。
+落とせば「**別の機種を測って合格と言う**」ことになる。
+ギャップ I(ハーネスが glibc 固有)と同じ種類の誤りである。
+
+### 全スイートは走らせない
+
+qemu 上の全スイートは遅すぎる(ROADMAP に明記がある)。このジョブが走らせるのは
+**ABI を測る 2 本だけ** — `test_header_abi.rb` と `test_freestanding_headers.rb`。
+`bundler` も使わず `gem install minitest` だけにした
+(Gemfile の `fiddle` はソースビルドで、この 2 本は fiddle を使わない)。
+
+### 失敗してよいジョブである
+
+**このジョブの目的は測ることで、緑にすることではない。**
+差分がログに残ることが成果なので `continue-on-error` は付けず、
+**赤をそのまま出してログをアーティファクトに上げる**。
+`uname -m` と `RbConfig` の arch、`gcc -dumpmachine` を先頭に記録して、
+**本当に aarch64 かつ musl だったこと**を証拠として残す。
+
+---
+
 ## 現在のテスト規模
 
-Step 196 完了時点: **2,815 runs / 8,366 assertions / 0 failures / 0 errors / 44 skips**
+Step 197 完了時点: **2,815 runs / 8,366 assertions / 0 failures / 0 errors / 44 skips**
+(Step 196 と同数。`host_cpu` はこのホストで `"x86_64"` なので既定と一致し、
+**同じソースから出るオブジェクトが 1,184 バイト完全一致**することを確かめた)
+(以前) Step 196 完了時点: **2,815 runs / 8,366 assertions / 0 failures / 0 errors / 44 skips**
 (Step 195 と同数 = pkgconf の除外条件を実在条件にし、GAPS を消し込んだだけ。
 **この修正が効くのは multiarch のディレクトリが無いホスト**なので、
 このホストでは出力が 1 バイトも変わらない — それを確かめたことが結果である)

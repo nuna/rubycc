@@ -103,6 +103,35 @@ module HeaderAbiHarness
     RbConfig::CONFIG["arch"].to_s.include?("musl") ? :musl : :glibc
   end
 
+  # The machine this host runs, as a Rubycc::Compiler::TARGETS name. Read from
+  # RbConfig's host_cpu, which is where exe/rubycc's driver takes its own
+  # default target from (Driver#target), so the harness compiles for the same
+  # machine a plain `rubycc` invocation on this host would. Without it the host
+  # path would inherit Compiler#compile's "x86_64" default and emit x86-64
+  # objects on an aarch64 host, which the host gcc cannot link, let alone run.
+  # On x86-64 this is "x86_64" -- the default -- so nothing about the existing
+  # runs changes.
+  #
+  # No alias folding (the driver's #normalize_target does that for the triples
+  # a user may type on the command line): a host_cpu spelling that is not a
+  # TARGETS key is a machine this harness has never run on, and
+  # #skip_unless_host_target_supported says so rather than guessing at one.
+  def host_target
+    RbConfig::CONFIG["host_cpu"].to_s
+  end
+
+  # Skips the calling test on a machine rubycc has no backend for. Compiling
+  # for some other machine and reporting the result would be measuring a
+  # different CPU's ABI and calling it this host's, so the case is not run at
+  # all; the skip names the CPU so the reason is visible in the log rather than
+  # silently green.
+  def skip_unless_host_target_supported
+    return if Rubycc::Compiler::TARGETS.key?(host_target)
+
+    skip "host CPU #{host_target.inspect} is not a rubycc target " \
+         "(#{Rubycc::Compiler::TARGETS.keys.join(", ")})"
+  end
+
   # Whether `spec` can be probed against `libc` at all. A Spec that names a
   # `libc:` covers a header only that libc has, so anywhere else there is
   # nothing to compare: the oracle does not compile either, and running the case
@@ -179,13 +208,16 @@ module HeaderAbiHarness
   # are found on rubycc's own default search path (bundled freestanding, then
   # bundled libc, ahead of the host libc), exactly as an end user gets them. The
   # effective libc is the host's, since both toolchains here compile against the
-  # host's own libc headers.
+  # host's own libc headers, and so is the machine (see #host_target): the
+  # oracle on this path is the host gcc and the probe runs on this host, so both
+  # sides have to be built for the CPU underneath them.
   def run_abi_case(spec)
     source = abi_probe_source(spec, host_libc)
     name = spec.header.gsub(/[^A-Za-z0-9]+/, "_")
     in_tmpdir do |dir|
       rubycc_obj = File.join(dir, "#{name}_rubycc.o")
-      File.binwrite(rubycc_obj, Rubycc::Compiler.new.compile(source, filename: "#{name}.c"))
+      File.binwrite(rubycc_obj,
+                    Rubycc::Compiler.new.compile(source, filename: "#{name}.c", target: host_target))
       rubycc_status, rubycc_out = link_and_run(rubycc_obj)
 
       gcc_obj = compile_with_gcc(source, File.join(dir, "#{name}_gcc.o"))
