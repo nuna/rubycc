@@ -222,9 +222,18 @@ class TestLibraryResolution < Minitest::Test
     end
   end
 
-  # `-lc` must resolve glibc's libc.so — a GROUP linker script on the usual
-  # systems — reaching libc.so.6 so an imported libc function (strlen) binds and
-  # runs. Adapts to a host where libc.so is a direct .so instead of a script.
+  # The C library's SONAME on this host: glibc's libc.so.6, or musl's
+  # libc.musl-<arch>.so.1. What the case asserts is that `-lc` reached *the* C
+  # library, not that it reached glibc's; measured on musl in CI, where the
+  # hard-coded name failed against a correctly-linked musl object
+  # (docs/STEPS.md Step 194).
+  def host_libc_soname
+    RbConfig::CONFIG["arch"].to_s.include?("musl") ? "libc.musl-x86_64.so.1" : "libc.so.6"
+  end
+
+  # `-lc` must resolve the host's libc.so — a GROUP linker script under glibc,
+  # the library itself under musl — reaching the real C library so an imported
+  # libc function (strlen) binds and runs.
   def test_resolves_libc_and_binds_a_libc_function
     skip "libc unavailable" unless resolvable?("c")
 
@@ -234,7 +243,7 @@ class TestLibraryResolution < Minitest::Test
     C
     with_linked_so(src, libraries: ["c"], soname: "libctest.so") do |so|
       needed = Reader.read_file(so).needed
-      assert_includes needed, "libc.so.6", "the GROUP script reaches libc.so.6"
+      assert_includes needed, host_libc_soname, "resolving -lc must reach the host C library"
       lib = Fiddle.dlopen(so)
       len = call(lib, "my_len", [Fiddle::TYPE_VOIDP], Fiddle::TYPE_LONG).call("acceptance")
       assert_equal 10, len, "the imported strlen must run"

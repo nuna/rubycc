@@ -7410,9 +7410,56 @@ glibc ホストでは glibc にリンクされるので値が一致しない。
 
 ---
 
+## Step 194 — musl 6 回目。**ABI の失敗が全部消えた**(M5 H6)
+
+Step 193 を入れて回した。
+
+| 実走 | failures | errors |
+|---|---|---|
+| 1 回目(Step 175) | 21 | 18 |
+| 5 回目(Step 192) | 15 | 1 |
+| **6 回目** | **4** | **0** |
+
+**39 → 4。** そして**内訳が変わった**のが重要である。
+
+### 10 件あった header ABI の失敗が **1 件も残っていない**
+
+`stdint` / `limits` / `math` / `stdio` / `unistd` / `fcntl` / `pthread` /
+`resource` / `wait` / `ctype` — **Step 193 で反映した 15 項目がそのまま全部通った**。
+`gem` も 3/3 PASS のままである。
+
+**「glibc/musl 互換ヘッダ」の主張が、初めて musl 側でも測られた状態になった。**
+
+### 残る 4 件はどれも ABI ではない
+
+| 件 | 中身 |
+|---|---|
+| 2 件 | **テスト側が glibc の SONAME を決め打ち**していた(`libc.so.6`) |
+| 1 件 | `rubycc-pkgconf` のシステムパス除外が Debian の綴り決め打ち(**ギャップ M**) |
+| 1 件 | **共有ライブラリのコンストラクタが musl で 1 回しか走らない**(**ギャップ N**) |
+
+**SONAME の 2 件は rubycc の非ではない** — むしろ Step 190 の修正が効いて
+musl の libc を正しく見つけ、その SONAME(`libc.musl-x86_64.so.1`)を
+正しく記録した結果、**「glibc だと書いてあるテスト」の方が落ちた**。
+ギャップ I(ABI ハーネスが glibc 固有)と同じ形なので、同じように
+ホストの libc から名前を読む形に直した。**アサーションの意図は
+「libc に届いたか」であって「glibc に届いたか」ではない。**
+
+### ギャップ N は原因を切り分けていない
+
+gcc が `123L123L123L` を出すところ rubycc は `123L` しか出さない。
+**glibc ホストでは一致する。** rubycc の `.init_array` 合成の問題か、
+musl のローダの扱いの違いかを**まだ切り分けていない**ので、
+「musl では複数コンストラクタが走らない」という**観測**だけを記録した。
+優先度は高い — 複数の `__attribute__((constructor))` を持つ拡張が静かに壊れる形である。
+
+---
+
 ## 現在のテスト規模
 
-Step 193 完了時点: **2,815 runs / 8,366 assertions / 0 failures / 0 errors / 44 skips**
+Step 194 完了時点: **2,815 runs / 8,366 assertions / 0 failures / 0 errors / 44 skips**
+(Step 193 と同数 = テスト側の決め打ちを直しただけ)
+(以前) Step 193 完了時点: **2,815 runs / 8,366 assertions / 0 failures / 0 errors / 44 skips**
 (Step 192 から +11 runs = libc 軸の前処理器テスト 8 件と、
 musl 分岐の値・glibc 側不変・ctype の 3 件)
 (以前) Step 192 完了時点: **2,804 runs / 8,336 assertions / 0 failures / 0 errors / 44 skips**
