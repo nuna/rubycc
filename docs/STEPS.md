@@ -7839,9 +7839,56 @@ Step 204 の時点で「ヘッダが実測どおりの値を出す」ことは q
 
 ---
 
+## Step 206 — ギャップ P は rubycc の欠陥ではなかった(M5 H6)
+
+aarch64 musl で `stdio.h` のプローブがリンクできなかった件。
+
+```
+ld: relocation R_AARCH64_ADR_PREL_PG_HI21 against symbol `stdout'
+    which may bind externally can not be used when making a shared object
+ld: final link failed: bad value
+```
+
+### glibc で再現した — **6 回目**
+
+`aarch64-linux-gnu-gcc` で `-pie` を付けてリンクすると、**同じ relocation の
+同じエラー**が出た。musl は要らなかった。
+`stdckdint.h`・`_Noreturn`・`offsetof`・シンボル介入・`float.h` に続く 6 回目である。
+
+### gcc も同じエラーを出す
+
+決め手はこれだった。**gcc 自身の `-fno-pie` オブジェクト**を `-pie` でリンクすると、
+**一字一句同じエラー**になる。つまり **rubycc は gcc と同じ振る舞いをしている**。
+
+aarch64 では外部データシンボルへの ADRP+ADD は preemptible なシンボルに対して
+解決できず、PIE に入れられない。**x86-64 では同じことができる**
+(リンカが copy relocation で解決する)。**機種の性質**であって、
+どちらのコンパイラの欠陥でもない。
+
+### 本当の欠陥はハーネスにあった
+
+**ハーネスが両側に違うフラグを渡していた。**
+gcc 側は gcc の既定(最近のツールチェインでは `-fPIE`)、
+rubycc 側は非 PIC。**PIE のビルドと非 PIE のビルドを比べていた。**
+
+x86-64 では**この差が見えない**(リンカが吸収する)ので、
+**aarch64 で初めて表に出た**。両側とも PIC で作る形に直した。
+
+### 「対照と同じ条件で測る」を、また落としていた
+
+ギャップ I(ハーネスが glibc 固有)、Step 194(SONAME 決め打ち)、
+Step 197(ハーネスが x86_64 決め打ち)に続いて **4 回目**である。
+**同じ場所が繰り返し同じ種類の間違いを起こしている** — 対照を用意するコードは、
+対照と自分を同じ条件に置けているかを繰り返し疑う必要がある。
+
+---
+
 ## 現在のテスト規模
 
-Step 205 完了時点: **2,832 runs / 8,392 assertions / 0 failures / 0 errors / 44 skips**
+Step 206 完了時点: **2,832 runs / 8,392 assertions / 0 failures / 0 errors / 44 skips**
+(Step 205 と同数 = ハーネスのフラグを揃えただけ。
+**x86-64 では値が 1 つも変わらない**ことを確認済み)
+(以前) Step 205 完了時点: **2,832 runs / 8,392 assertions / 0 failures / 0 errors / 44 skips**
 (master の distroless 作業とこのブランチが**別々にテストを足していた**ので、
 どちらか片方の数字はマージ後の値にならない。**マージしてから測り直した**。
 2,829 + 2,819 − 2,816(共通の親)= 2,832 で辻褄が合う)
