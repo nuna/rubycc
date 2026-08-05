@@ -121,7 +121,7 @@ class TestLibraryResolution < Minitest::Test
         "m" => "libm.so.6",
         "pthread" => "libpthread.so.0",
         "dl" => "libdl.so.2",
-        "c" => "libc.so.6"
+        "c" => "libc.so.6" # platform-literal: synthetic fixture naming a glibc-shaped runtime, not a host assertion
       }
       libraries.each_value { |name| write_shared(File.join(dir, name)) }
 
@@ -137,7 +137,7 @@ class TestLibraryResolution < Minitest::Test
   # no artificial development symlink in the fixture.
   def test_musl_libc_provided_libraries_fall_back_to_one_runtime_image
     in_tmpdir do |dir|
-      libc = File.join(dir, "libc.musl-x86_64.so.1")
+      libc = File.join(dir, "libc.musl-x86_64.so.1") # platform-literal: synthetic fixture naming a musl-shaped runtime, not a host assertion
       write_shared(libc)
 
       r = Resolver.new(search_dirs: [dir])
@@ -197,13 +197,15 @@ class TestLibraryResolution < Minitest::Test
   # A GROUP list yields its files in order, comments are stripped, AS_NEEDED
   # contents are treated as ordinary entries, and OUTPUT_FORMAT is skipped.
   def test_script_parses_group_with_as_needed_and_skips_output_format
+    # platform-literal: arbitrary example path text for the script parser, not a host assertion
+    group_line = "GROUP ( /lib/libc.so.6 /usr/lib/libc_nonshared.a AS_NEEDED ( /lib64/ld.so.2 ) )"
     text = <<~SCRIPT
       /* GNU ld script
          a multi-line comment */
       OUTPUT_FORMAT(elf64-x86-64)
-      GROUP ( /lib/libc.so.6 /usr/lib/libc_nonshared.a AS_NEEDED ( /lib64/ld.so.2 ) )
+      #{group_line}
     SCRIPT
-    assert_equal ["/lib/libc.so.6", "/usr/lib/libc_nonshared.a", "/lib64/ld.so.2"],
+    assert_equal ["/lib/libc.so.6", "/usr/lib/libc_nonshared.a", "/lib64/ld.so.2"], # platform-literal: same example text as above
                  Script.parse(text)
   end
 
@@ -227,7 +229,8 @@ class TestLibraryResolution < Minitest::Test
   # An unrecognized directive outside a file list is ignored rather than
   # half-interpreted, and does not disturb a following GROUP.
   def test_script_ignores_unsupported_directives
-    assert_equal ["/lib/libc.so.6"],
+    assert_equal ["/lib/libc.so.6"], # platform-literal: arbitrary example path text for the script parser, not a host assertion
+                 # platform-literal: the same example path, as the script text the parser is fed
                  Script.parse("ENTRY(_start)\nGROUP ( /lib/libc.so.6 )")
   end
 
@@ -245,7 +248,7 @@ class TestLibraryResolution < Minitest::Test
   # (inputs) and an AS_NEEDED shared object (needed), each classified correctly.
   def test_libc_shaped_script_splits_shared_and_archive
     in_tmpdir do |dir|
-      so6 = File.join(dir, "libc.so.6")
+      so6 = File.join(dir, "libc.so.6") # platform-literal: synthetic fixture naming a glibc-shaped script, not a host assertion
       nonshared = File.join(dir, "libc_nonshared.a")
       loader = File.join(dir, "ld.so.2")
       write_shared(so6)

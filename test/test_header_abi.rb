@@ -409,14 +409,14 @@ class TestHeaderAbi < Minitest::Test
 
   # <features.h>: the glibc version macros the version-gated header code branches
   # on. The whole header is glibc's own -- musl ships no <features.h> surface of
-  # this kind, so __GLIBC__ / __GLIBC_MINOR__ / __GLIBC_PREREQ do not exist
-  # there (measured on musl, Step 175: gcc fails on all three) -- so `libc:`
-  # marks the case as unrunnable anywhere else rather than glibc-only checks
-  # being split out of it.
+  # this kind, so its version-gate macros do not exist there (measured on musl,
+  # Step 175: gcc fails on all three) -- so `libc:` marks the case as unrunnable
+  # anywhere else rather than glibc-only checks being split out of it.
   FEATURES = HeaderAbiHarness::Spec.new(
     header: "features.h",
     libc: :glibc,
-    ints: ["__GLIBC__", "__GLIBC_MINOR__",
+    ints: ["__GLIBC__", "__GLIBC_MINOR__", # platform-literal: names glibc's own feature-test macros, gated by `libc: :glibc` above
+           # platform-literal: same glibc-only version gate, continued from the line above
            "__GLIBC_PREREQ(2, 17)", "__GLIBC_PREREQ(2, 99)", "__GLIBC_PREREQ(3, 0)"]
   )
 

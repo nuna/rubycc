@@ -23,8 +23,8 @@ require "rubycc"
 #
 # The probe is parameterized on two axes: the machine (the host x86-64 path and
 # the aarch64 cross path below) and, since Step 180, the libc. A probe written
-# in glibc's own names -- __GLIBC__, __sigset_t, _ISupper, struct termios's
-# c_ispeed -- does not compile on a musl host *for the oracle either*, and a
+# in glibc's own names -- its version-test macros, __sigset_t, _ISupper, struct
+# termios's c_ispeed -- does not compile on a musl host *for the oracle either*, and a
 # case where gcc fails first proves nothing about rubycc: it reports as a
 # failure that is the harness's, not the compiler's (measured on musl, Step
 # 175: 13 cases in that state). So a Spec declares which of its checks only

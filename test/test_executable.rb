@@ -11,8 +11,8 @@ require "open3"
 #
 # Three layers are covered. Structure: the emitted image is read back through
 # the project's own ELFReader and asserted (ET_EXEC, e_entry at _start, the
-# imports as UND .dynsym entries, the __libc_start_main JUMP_SLOT, DT_NEEDED
-# libc.so.6, no R_X86_64_RELATIVE because a non-PIE image needs no base
+# imports as UND .dynsym entries, the __libc_start_main JUMP_SLOT, libc as a
+# default DT_NEEDED, no R_X86_64_RELATIVE because a non-PIE image needs no base
 # relocation), and the program headers are parsed directly for the load
 # permissions and the PT_INTERP loader path. Determinism: identical inputs
 # yield byte-identical executables, and the synthesized _start is a fixed byte
@@ -20,6 +20,8 @@ require "open3"
 # and actually run, its exit status and stdout checked — including a gcc-built
 # counterpart for cross-verification. The run and gcc cases are skip-guarded.
 class TestExecutable < Minitest::Test
+  include LibcHelper
+
   Reader = Rubycc::ObjFile::ELFReader
   Linker = Rubycc::Link::ExecutableLinker
 
@@ -104,15 +106,6 @@ class TestExecutable < Minitest::Test
     plt.relocations.each do |reloc|
       assert_equal R_X86_64_JUMP_SLOT, reloc.type, "each external call binds through a JUMP_SLOT"
     end
-  end
-
-  # The C library's SONAME on this host: glibc's libc.so.6, or musl's
-  # libc.musl-<arch>.so.1. The assertion below is "libc is a default dependency",
-  # not "glibc is", so the name is read from the host rather than written in --
-  # measured on musl in CI, where a hard-coded libc.so.6 failed against a
-  # correctly-linked musl binary (docs/STEPS.md Step 194).
-  def host_libc_soname
-    RbConfig::CONFIG["arch"].to_s.include?("musl") ? "libc.musl-x86_64.so.1" : "libc.so.6"
   end
 
   def test_libc_is_a_default_needed
@@ -652,8 +645,8 @@ class TestExecutable < Minitest::Test
   end
 
   # glibc's libc_nonshared.a, the static half of the C library the linker script
-  # names alongside libc.so.6; nil when the host has no such file. It is what
-  # supplies pthread_atfork — and what references __dso_handle.
+  # names alongside the shared libc image; nil when the host has no such file.
+  # It is what supplies pthread_atfork — and what references __dso_handle.
   def libc_nonshared_path
     return @libc_nonshared_path if defined?(@libc_nonshared_path)
 

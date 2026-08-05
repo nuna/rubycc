@@ -12,6 +12,7 @@ require "open3"
 # independent oracle where available.
 class TestElfReader < Minitest::Test
   include ExecutionHelper
+  include LibcHelper
 
   Reader = Rubycc::ObjFile::ELFReader
   Writer = Rubycc::ObjFile::ELFWriter
@@ -349,26 +350,18 @@ class TestElfReader < Minitest::Test
 
   # --- shared object (.so) dynamic reading --------------------------------
 
-  LIBC_PATH = "/lib/x86_64-linux-gnu/libc.so.6"
-
+  # Delegates to LibcHelper so this search is written once for the whole suite.
   def libc_path
-    return LIBC_PATH if File.exist?(LIBC_PATH)
-
-    # Fall back to whatever ldconfig knows, so the test survives a differently
-    # laid-out distro; nil (and a skip) if neither is present.
-    return nil unless system("which ldconfig > /dev/null 2>&1")
-
-    line = `ldconfig -p 2>/dev/null`.lines.find { |l| l.include?("libc.so.6") }
-    line&.split("=>")&.last&.strip
+    host_libc_path
   end
 
   def test_reads_libc_dynamic_symbols_and_soname
     path = libc_path
-    skip "libc.so.6 not found" unless path && File.exist?(path)
+    skip "host libc not found" unless path && File.exist?(path)
 
     lib = Reader.read_file(path)
     assert lib.shared_object?, "libc is ET_DYN"
-    assert_equal "libc.so.6", lib.soname
+    assert_equal host_libc_soname, lib.soname
 
     %w[printf malloc].each do |name|
       sym = lib.dynamic_symbol(name)
@@ -382,7 +375,7 @@ class TestElfReader < Minitest::Test
   def test_libc_soname_and_needed_match_readelf
     skip "readelf not available" unless readelf?
     path = libc_path
-    skip "libc.so.6 not found" unless path && File.exist?(path)
+    skip "host libc not found" unless path && File.exist?(path)
 
     lib = Reader.read_file(path)
     stdout, status = Open3.capture2("readelf", "-d", path)
@@ -398,7 +391,7 @@ class TestElfReader < Minitest::Test
   def test_dynamic_symbols_presence_matches_readelf
     skip "readelf not available" unless readelf?
     path = libc_path
-    skip "libc.so.6 not found" unless path && File.exist?(path)
+    skip "host libc not found" unless path && File.exist?(path)
 
     lib = Reader.read_file(path)
     stdout, status = Open3.capture2("readelf", "--dyn-syms", path)

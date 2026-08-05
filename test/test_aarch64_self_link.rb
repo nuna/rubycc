@@ -14,7 +14,7 @@ require "tmpdir"
 # language oracle — run under qemu-aarch64, and the two runs must agree on exit
 # status and stdout. Structure: the emitted image is read back through the
 # project's own ELFReader and asserted to be a well-formed aarch64 ET_EXEC (the
-# crt's _start at e_entry, libc.so.6 a default NEEDED, external calls bound
+# crt's _start at e_entry, libc a default NEEDED, external calls bound
 # through JUMP_SLOTs, no RELATIVE in a non-PIE image). The aarch64 *shared*
 # object counterpart is covered by TestAArch64SharedObject.
 #
@@ -203,7 +203,11 @@ class TestAArch64SelfLink < Minitest::Test
 
   def test_libc_is_a_default_needed
     r = Reader.read(build_exe("int main(void) { return 0; }"))
-    assert_includes r.needed, "libc.so.6", "libc is a default dependency (it defines __libc_start_main)"
+    # The aarch64-linux-gnu cross toolchain's sysroot is always glibc, so its
+    # SONAME (SYSROOT_LIBC's basename) is the correct expectation here rather
+    # than a hard-coded assumption about a host that could vary.
+    assert_includes r.needed, File.basename(SYSROOT_LIBC),
+                    "libc is a default dependency (it defines __libc_start_main)"
   end
 
   def test_external_calls_bind_through_jump_slots
@@ -256,7 +260,7 @@ class TestAArch64SelfLink < Minitest::Test
 
   # Builds an executable image (bytes) from a single source with the self-linker.
   # Structural tests do not run the binary, but the linker still resolves its
-  # libc import against the sysroot's libc.so.6, so they guard on the same
+  # libc import against the sysroot's libc image, so they guard on the same
   # sysroot the run tests need.
   def build_exe(source)
     skip_unless_aarch64_self_link
