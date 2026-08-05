@@ -7741,9 +7741,52 @@ Step 193 の libc 分岐と同じ手だが、条件は `__aarch64__`。
 
 ---
 
+## Step 202 — aarch64 musl の実測値を反映する(M5 H6)
+
+Step 200 で測った値を、Step 193 が意図的に空けておいた 5 ファイルに書いた。
+
+| ファイル | 反映した項目 |
+|---|---|
+| `limits.h` | `MB_LEN_MAX` 4 |
+| `stdint.h` | fast16/32 が 4 バイト、対応する `*_MAX` / `*_MIN` |
+| `fcntl.h` | `O_ACCMODE` 2097155、**`O_LARGEFILE` 131072** |
+| `ctype.h` | 実装形(musl では表引きマクロを使わず関数呼び出し) |
+| `pthread.h` | 5 項目(mutex 40 / attr 56 / mutexattr 4 / condattr 4 / rwlockattr の整列 4) |
+
+### 空けておいた判断が報われた
+
+`O_LARGEFILE` は **x86-64 musl では 32768、aarch64 musl では 131072**。
+Step 193 で「arch 層は機種で値が動く前提の層だから、x86-64 の値を写すのは
+**測定ではなく仮定**」として空けておいた。**その仮定が外れる値がまさにここにあった。**
+写していれば静かに間違っていた。コメントにその経緯を残した。
+
+一方 `MB_LEN_MAX`・fast 型・`O_ACCMODE`・`ctype` は x86-64 と同じだった。
+**同じものと違うものが混ざっている**から、写してよいかは事前には決められない。
+
+### コンパイル時定数は musl が無くても検証できる
+
+`sizeof` / `_Alignof` / マクロ値は**コンパイル時に決まる**ので、
+リンク先が glibc でも値は変わらない。そこで
+`target: "aarch64", libc: "musl"` でコンパイルし、クロス gcc でリンクして
+**qemu で実際に印字**させ、実測表と全項目一致することを確かめた。
+
+**「musl が無いから確かめられない」は、この範囲では正しくなかった。**
+確かめられないのは**本物の musl gcc との突き合わせ**の方だけである。
+
+### だからギャップ G は閉じていない
+
+反映したものが正しいかは、**次の `only: musl-aarch64` 実走で確定する**。
+「ヘッダが実測どおりの値を出す」ことと「本物の対照と一致する」ことは別なので、
+G は後者に書き換えて残した。
+
+---
+
 ## 現在のテスト規模
 
-Step 201 完了時点: **2,816 runs / 8,369 assertions / 0 failures / 0 errors / 44 skips**
+Step 202 完了時点: **2,819 runs / 8,375 assertions / 0 failures / 0 errors / 44 skips**
+(Step 201 から +3 runs = aarch64 musl の期待値検査。
+既存の aarch64 クロス gcc 差分 46 件が変わらず通ることも確認済み)
+(以前) Step 201 完了時点: **2,816 runs / 8,369 assertions / 0 failures / 0 errors / 44 skips**
 (Step 200 から +1 run = aarch64 の `float.h` 検査。
 **クロス gcc との差分で実際に通ることを確認済み**)
 (以前) Step 200 完了時点: **2,815 runs / 8,366 assertions / 0 failures / 0 errors / 44 skips**
