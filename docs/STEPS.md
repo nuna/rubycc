@@ -7643,9 +7643,68 @@ Debian では**フィルタが両方とも落としていた**ので、重複は
 
 ---
 
+## Step 200 — aarch64 + musl を初めて測った(M5 H6)
+
+`only: musl-aarch64` で 1 ジョブだけ回した。**環境は本物である**ことを先に記録している:
+
+```
+uname -m:    aarch64
+ruby arch:   aarch64-linux-musl, host_cpu: aarch64
+gcc target:  aarch64-alpine-linux-musl
+```
+
+`115 runs / 6 failures / 2 errors`。**測れた値がこのステップの成果**である。
+
+### `O_LARGEFILE` が機種で違った — 写さなかった判断が正しかった
+
+| | x86-64 musl | **aarch64 musl** |
+|---|---|---|
+| `O_LARGEFILE` | 32768 | **131072** |
+
+Step 193 で aarch64 に x86-64 の musl 値を**写さなかった**理由は
+「arch 層は機種で値が動くことを前提に存在する層だから、写すのは測定ではなく仮定」だった。
+**その仮定が実際に外れる値がここにあった。** 写していれば静かに間違っていた。
+
+一方 `MB_LEN_MAX`(4)・fast 型の幅(4 バイト)・`O_ACCMODE`(2097155)・
+`ctype` の戻り値は **x86-64 と同じ**だった。**同じものと違うものが混ざっている** —
+だからこそ「たぶん同じ」で書いてはいけない。
+
+### `pthread` は aarch64 の方が差が多い
+
+x86-64 musl では `_Alignof(pthread_rwlockattr_t)` の 1 項目だけだったが、
+aarch64 musl では **5 項目**が違う(`pthread_mutex_t` 40/48、`pthread_attr_t` 56/64、
+`pthread_mutexattr_t` 4/8、`pthread_condattr_t` 4/8、`rwlockattr` の整列 4/8)。
+
+### musl と無関係の発見が 2 つ出た
+
+**ギャップ O — `float.h` が x86-64 の `long double` を全機種に出していた。**
+aarch64 の `long double` は **128 ビット quad** で、`LDBL_MANT_DIG` は 113、
+`LDBL_DIG` は 33。rubycc は x87 80 ビットの 64 / 18 を出す。
+**これは musl とは無関係で、aarch64 では libc を問わず合わない。**
+`float.h` は freestanding 層(1 ファイル)にあり、**arch で分ける仕組みが無い**。
+
+**aarch64 の ABI ハーネスがこれまで `float.h` を検査していなかった**ので
+見つかっていなかった。**測る対象を増やしたら、測っていなかった穴が出た。**
+
+**ギャップ P — `stdio.h` のプローブが aarch64 musl でリンクできない。**
+`ld: final link failed: bad value`。rubycc が出したオブジェクトを musl の ld が
+受け付けていない。**原因は切り分けていない。**
+
+### 値はまだ反映していない
+
+**測っただけである。** ヘッダに書くのは次のステップにする —
+反映したら**もう一度測って一致を確かめる**必要があり、
+そこまでやって初めて「合った」と言える。
+
+`alloca` のエラーは A4 の既知の未実装項目で、新しい発見ではない。
+
+---
+
 ## 現在のテスト規模
 
-Step 199 完了時点: **2,815 runs / 8,366 assertions / 0 failures / 0 errors / 44 skips**
+Step 200 完了時点: **2,815 runs / 8,366 assertions / 0 failures / 0 errors / 44 skips**
+(Step 199 と同数 = 測定と記録のみ。コードは変更していない)
+(以前) Step 199 完了時点: **2,815 runs / 8,366 assertions / 0 failures / 0 errors / 44 skips**
 (Step 197 と同数。**`-L` の重複はこのホストではフィルタに隠れて見えない**ので、
 ローカルでは `PKG_CONFIG_ALLOW_SYSTEM_LIBS=1` を付けて再現・確認した)
 (以前) Step 197 完了時点: **2,815 runs / 8,366 assertions / 0 failures / 0 errors / 44 skips**
