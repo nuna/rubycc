@@ -53,16 +53,23 @@ typedef long intptr_t;
 #define W_OK 2
 #define R_OK 4
 
-/* POSIX option macro: the monotonic clock option is supported, but its
-   value (0, not a positive constant) means support must still be confirmed
-   at runtime via sysconf(_SC_MONOTONIC_CLOCK), matching the host glibc
-   (measured). Needed for stackprof: it branches on
-   `#ifdef _POSIX_MONOTONIC_CLOCK`, and the #else arm it would otherwise take
-   is upstream dead code containing a real syntax error, so a toolchain that
-   never defines this macro cannot build stackprof at all. Scope: only this
-   one _POSIX_* macro is added here, not the full POSIX options set (same
-   scoping judgment as sys/syscall.h's non-exhaustive number list). */
+/* POSIX option macro: the monotonic clock option is supported, and the two C
+   libraries say so with different strengths. glibc's value is 0, meaning
+   support must still be confirmed at runtime via
+   sysconf(_SC_MONOTONIC_CLOCK); musl's is 200809, the standard revision it
+   supports unconditionally. Both measured with the ABI harness, glibc's on
+   this host and musl's on the CI musl run (docs/STEPS.md Step 193). Needed for
+   stackprof: it branches on `#ifdef _POSIX_MONOTONIC_CLOCK`, and the #else arm
+   it would otherwise take is upstream dead code containing a real syntax
+   error, so a toolchain that never defines this macro cannot build stackprof
+   at all -- and both values above define it. Scope: only this one _POSIX_*
+   macro is added here, not the full POSIX options set (same scoping judgment
+   as sys/syscall.h's non-exhaustive number list). */
+#if defined(__RUBYCC_LIBC_MUSL__)
+#define _POSIX_MONOTONIC_CLOCK 200809
+#else
 #define _POSIX_MONOTONIC_CLOCK 0
+#endif
 
 #ifndef SEEK_SET
 #define SEEK_SET 0

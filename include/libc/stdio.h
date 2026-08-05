@@ -2,8 +2,10 @@
    7.21, POSIX). Derived from musl's <stdio.h> declaration set. FILE is kept
    opaque (an incomplete `struct _IO_FILE`, glibc's tag, reached only through
    FILE*), which is all ruby.h and the surveyed gems need. The macro values
-   (BUFSIZ, TMP_MAX, ...) are the glibc ones (measured). Common layer: only FILE*
-   crosses the ABI and it is a pointer, so nothing here is width sensitive. */
+   (BUFSIZ, TMP_MAX, ...) are measured, and the three of them the two C
+   libraries disagree on are carried under __RUBYCC_LIBC_MUSL__ (see the
+   preprocessor's LIBCS). Common layer: only FILE* crosses the ABI and it is a
+   pointer, so nothing here is width sensitive. */
 
 #ifndef _RUBYCC_STDIO_H
 #define _RUBYCC_STDIO_H
@@ -59,11 +61,23 @@ typedef struct { long __pos; struct { int __count; int __value; } __state; } fpo
 #define _IOLBF 1
 #define _IONBF 2
 
+/* BUFSIZ, FOPEN_MAX and TMP_MAX are the three values in this header the two C
+   libraries disagree on: musl reports 1024, 1000 and 10000 where glibc reports
+   8192, 16 and 238328. All six measured with the ABI harness, glibc's on this
+   host and musl's on the CI musl run (docs/STEPS.md Step 193). EOF, the SEEK_*
+   and _IO*BF sets, FILENAME_MAX and L_tmpnam are probed too and measured
+   identical on both; L_ctermid and P_tmpdir are not probed on either. */
+#if defined(__RUBYCC_LIBC_MUSL__)
+#define BUFSIZ       1024
+#define FOPEN_MAX    1000
+#define TMP_MAX      10000
+#else
 #define BUFSIZ       8192
 #define FOPEN_MAX    16
+#define TMP_MAX      238328
+#endif
 #define FILENAME_MAX 4096
 #define L_tmpnam     20
-#define TMP_MAX      238328
 #define L_ctermid    9
 #define P_tmpdir     "/tmp"
 

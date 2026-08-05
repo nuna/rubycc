@@ -2,7 +2,12 @@
    Derived from the ISO-mandated values with the `long`/`char` widths pinned to
    the glibc x86-64 LP64 ABI (`long` is 64-bit). ABI switch layer: LONG_MAX is
    arch specific, and so is the signedness of plain char -- that one is taken
-   from the compiler's own __CHAR_UNSIGNED__ rather than from this directory. */
+   from the compiler's own __CHAR_UNSIGNED__ rather than from this directory.
+   No musl branch, deliberately: the x86-64 companion carries musl's MB_LEN_MAX
+   of 4 alongside glibc's 16, but that figure was measured on x86-64 only.
+   Copying it here would be an assumption, not a measurement (R8), so this file
+   stays glibc-valued until an aarch64 musl run measures it (docs/STEPS.md
+   Step 193). */
 
 #ifndef _RUBYCC_LIMITS_H
 #define _RUBYCC_LIMITS_H

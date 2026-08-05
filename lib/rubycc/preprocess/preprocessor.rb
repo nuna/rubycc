@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "rbconfig"
 require_relative "scanner"
 require_relative "token_converter"
 require_relative "constant_expression"
@@ -45,12 +46,45 @@ module Rubycc
       # substitutes the instance's own arch directory (@libc_arch_include_dir). The
       # arch layer is searched before the common layer so a same-named header in it
       # (an ABI-specific override) wins over the shared declaration.
+      # The libc the headers describe is *not* a directory axis: both layers carry
+      # the glibc and the musl value of everything the two disagree on, selected
+      # by #if on LIBC_MUSL_MACRO (see LIBCS), so the directory names below still
+      # say "glibc" only because that is where the files have always lived.
       BUNDLED_LIBC_ARCH_INCLUDE_DIR = File.expand_path("../../../include/libc/glibc/x86_64", __dir__).freeze
       BUNDLED_LIBC_INCLUDE_DIR = File.expand_path("../../../include/libc", __dir__).freeze
 
       # The bundled libc-and-arch layers that ship under include/libc/glibc/;
       # `libc_arch` (see #initialize) must name one of them.
       LIBC_ARCHS = %w[x86_64 aarch64].freeze
+
+      # The C libraries the bundled headers can be read under; `libc` (see
+      # #initialize) must name one of them. This is an axis of its own, at right
+      # angles to `libc_arch`: the two libcs disagree on a handful of ABI values
+      # (struct rusage's size, O_ACCMODE, the fast-integer widths, BUFSIZ and
+      # kin) on every machine alike, so the difference is expressed as #if
+      # branches inside the bundled headers rather than as another directory
+      # layer -- fifteen-odd divergences do not justify duplicating a hundred
+      # files whose remaining content is identical, and an #if keeps both
+      # measured values side by side where they can be audited (R8).
+      #
+      # The musl side is complete only for x86-64: the aarch64 arch layer's five
+      # ABI-switched headers carry glibc's values alone, because the musl
+      # figures were measured on x86-64 and an arch layer is exactly where a
+      # value may move between machines (each of those files says so in its own
+      # provenance note). An aarch64 musl target therefore reads musl's common
+      # layer and glibc's arch layer until an aarch64 musl run measures it.
+      LIBCS = %w[glibc musl].freeze
+
+      # The macro the bundled headers select their musl branch on. It is
+      # predefined (to 1) only when `libc` is "musl"; on glibc it stays
+      # undefined, so `#if defined(__RUBYCC_LIBC_MUSL__)` reads "the musl ABI"
+      # and its #else arm is the long-standing glibc one. Unlike the platform
+      # macros it is reserved on *both* settings (see #reject_reserved_name): it
+      # names which ABI the bundled headers were pinned to when the compiler was
+      # configured, so a translation unit that could -D it into existence, or
+      # -U it away, would get headers describing one libc and an object laid out
+      # for the other.
+      LIBC_MUSL_MACRO = "__RUBYCC_LIBC_MUSL__"
 
       # The libc system header directories on this x86-64 Linux host, in the order
       # gcc reports them for angled includes. Only the C library's own directories
@@ -291,6 +325,19 @@ module Rubycc
         "__ATOMIC_SEQ_CST" => "5"
       }.freeze
 
+      # The libc this host's C library is: "musl" or "glibc" (see LIBCS). Read
+      # from RbConfig's arch triplet, which is how MRI itself distinguishes a
+      # musl build ("x86_64-linux-musl") from a glibc one ("x86_64-linux") --
+      # the same source test/abi_harness/harness.rb's #host_libc and
+      # tools/verify_gem_tests.rb's environment_string read, so the compiler,
+      # the ABI harness and the verification records all agree on what "this
+      # environment" is. It is the default for `libc` below, which is what makes
+      # an unconfigured compile on a musl host read the musl branches; a cross
+      # compile passes the target's own.
+      def self.host_libc
+        RbConfig::CONFIG["arch"].to_s.include?("musl") ? "musl" : "glibc"
+      end
+
       # `char_unsigned` says whether plain `char` is unsigned on the target being
       # compiled for (it is under AAPCS64, and is not under the x86-64 System V
       # psABI, hence the default). When it is, __CHAR_UNSIGNED__ joins the
@@ -305,9 +352,17 @@ module Rubycc
       # cross compile passes the target's own so its ABI headers (struct stat's
       # 128-byte aarch64 layout, the narrower nlink_t/blksize_t, the unsigned
       # WCHAR_MIN/MAX and kin) are read instead of the host's.
-      def initialize(char_unsigned: false, arch_macros: X86_64_ARCH_MACROS, libc_arch: "x86_64")
+      # `libc` selects which C library's ABI those bundled headers describe
+      # ("glibc" or "musl", see LIBCS); it defaults to the host's own (see
+      # .host_libc), and on "musl" it predefines LIBC_MUSL_MACRO so the headers
+      # take their musl branches.
+      def initialize(char_unsigned: false, arch_macros: X86_64_ARCH_MACROS, libc_arch: "x86_64",
+                     libc: Preprocessor.host_libc)
         unless LIBC_ARCHS.include?(libc_arch)
           raise ArgumentError, "unsupported libc arch: #{libc_arch.inspect} (expected one of #{LIBC_ARCHS.join(", ")})"
+        end
+        unless LIBCS.include?(libc)
+          raise ArgumentError, "unsupported libc: #{libc.inspect} (expected one of #{LIBCS.join(", ")})"
         end
 
         # The bundled libc arch layer this instance searches (see
@@ -318,6 +373,7 @@ module Rubycc
         @macros = {}
         (arch_macros + PREDEFINED_PLATFORM_MACROS).each { |name| @macros[name] = predefined_target_macro }
         @macros["__CHAR_UNSIGNED__"] = predefined_target_macro if char_unsigned
+        @macros[LIBC_MUSL_MACRO] = predefined_target_macro if libc == "musl"
         PREDEFINED_NUMERIC_MACROS.each { |name, text| @macros[name] = predefined_numeric_macro(text) }
         @include_depth = 0
         # Absolute paths of files that asked (via "#pragma once") to be read at
@@ -1217,11 +1273,15 @@ module Rubycc
       end
 
       # A macro name may not shadow a builtin (6.10.8.4) nor be the "defined"
-      # operator (6.10.1p4); both diagnose rather than silently redefine.
+      # operator (6.10.1p4); both diagnose rather than silently redefine. The
+      # libc-selecting macro is refused the same way, on either libc setting: it
+      # records the ABI the bundled headers were pinned to at configuration
+      # time, so a unit that could define or undefine it would read one libc's
+      # headers while the rest of the compile assumed the other's.
       def reject_reserved_name(name, verb)
         if name.text == "defined"
           raise_at(name, "\"defined\" cannot be used as a macro name")
-        elsif BUILTIN_MACROS.key?(name.text)
+        elsif BUILTIN_MACROS.key?(name.text) || name.text == LIBC_MUSL_MACRO
           verb = verb == "define" ? "define" : "undefine"
           raise_at(name, "cannot #{verb} builtin macro \"#{name.text}\"")
         end

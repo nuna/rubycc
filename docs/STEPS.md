@@ -7340,9 +7340,82 @@ io-wait だけ通っていたのは、その extconf が probe を持たず**実
 
 ---
 
+## Step 193 — 同梱ヘッダに libc の軸を入れ、musl の実測値を反映する(M5 H6)
+
+**ギャップ G の本体。** M5 は「glibc/musl 互換ヘッダ」を掲げながら、
+**その主張を支える値が全て glibc 側で取られていた**。musl 実走で差分が測れたので反映した。
+
+### ディレクトリ層ではなくマクロ分岐にした
+
+`include/libc/musl/<arch>/` を新設する形も採れたが、採らなかった。
+
+- 差分は **10 ヘッダで 15 項目**しかない。arch 層 13 ファイル × 2 arch を複製すれば
+  **中身の 95% が同じファイルが 26 個**でき、必ず腐る。
+- 差分は**3 つの層にまたがる** — arch 層(`fcntl.h`・`stdint.h`・`limits.h`・`ctype.h`・
+  `pthread.h`)と共通層(`stdio.h`・`math.h`・`unistd.h`・`sys/wait.h`・`sys/resource.h`)。
+  ディレクトリ方式なら libc 共通層も新設することになる。
+- **`#if` なら、差分 1 つ 1 つが両方の実測値を並べたコメントつきでその場に残る。**
+  R8 の「ABI は実測、写さない」を**監査可能**にするのはこの形である。
+
+前処理器に `libc:` の軸を足し、musl のとき `__RUBYCC_LIBC_MUSL__` を定義する。
+既定はホストの libc を `RbConfig` の arch トリプレットから判定する
+(**既に 3 か所にある同じ判定**に合わせた)。ユーザが `-D` で上書きすることはできない。
+
+### 測れた 15 項目(左が musl)
+
+| ヘッダ | 項目 | musl | glibc |
+|---|---|---|---|
+| `sys/resource.h` | `sizeof(struct rusage)` | **272** | 144 |
+| `fcntl.h` | `O_ACCMODE` / `O_LARGEFILE` | **2097155 / 32768** | 3 / 0 |
+| `stdint.h` | `[u]int_fast16_t` / `[u]int_fast32_t` | **4 バイト** | 8 バイト |
+| `limits.h` | `MB_LEN_MAX` | **4** | 16 |
+| `stdio.h` | `BUFSIZ` / `FOPEN_MAX` / `TMP_MAX` | **1024 / 1000 / 10000** | 8192 / 16 / 238328 |
+| `pthread.h` | `_Alignof(pthread_rwlockattr_t)` | **4** | 8 |
+| `math.h` | `math_errhandling` | **2** | 3 |
+| `unistd.h` | `_POSIX_MONOTONIC_CLOCK` | **200809** | 0 |
+| `sys/wait.h` | `WIFSTOPPED(0x007f)` | **0** | 1 |
+| `ctype.h` | `isalpha('a')` 等 | **素の 0/1** | 分類表のビット |
+
+`ctype.h` だけは**値ではなく実装形**の差である。glibc の `__isctype` マクロ
+(`__ctype_b_loc()` の表引き)は **musl 上でも表が引けてしまう**ので、
+musl の `isalpha()` が返す素の 0/1 ではなく分類表のビットが返っていた。
+musl では表引きマクロを使わず関数呼び出しにした。
+
+### aarch64 は**触っていない**
+
+同じ分岐が要るはずの aarch64 の arch 層は、**glibc 値のまま残した**。
+musl の測定は **x86-64 でしか取れていない**からである。
+arch 層は**「機種で値が動く」ことを前提に存在する層**で、
+`O_DIRECT` 群が x86-64 と aarch64 で入れ替わるのがその実例である。
+そこへ x86-64 の測定値を写すのは**測定ではなく仮定**になる。
+各ファイルに「なぜ触らないか」を英語で書き、ギャップ G は
+**「musl 対応が x86-64 のみ」に書き換えて残した。**
+
+### `WIFSTOPPED` だけ、引数を 2 回評価する
+
+このファイルは「各マクロは引数を 1 回だけ評価する」を不変条件にしていたが、
+musl 版だけ守れていない。「下位バイトが 0x7f かつ上位バイトが非ゼロ」を
+補助関数なしで 1 回評価に書く綴りが無いためである。
+**隠さずコメントに書いた。** 副作用のある引数を渡すと musl では 2 回評価される。
+
+### このホストで検証できたこと・できないこと
+
+**できた**: `libc: "musl"` を指定してコンパイル・実行し、
+上の表の値が実測どおりに出ること。glibc 側の出力が 1 つも変わっていないこと。
+
+**できない**: `ctype.h` のように**実行時に libc の関数を呼ぶ**ものは、
+glibc ホストでは glibc にリンクされるので値が一致しない。
+そこはコンパイルが通るところまでにとどめた。
+**musl で実際に通るかは次の実走まで確定しない。**
+
+---
+
 ## 現在のテスト規模
 
-Step 192 完了時点: **2,804 runs / 8,336 assertions / 0 failures / 0 errors / 44 skips**
+Step 193 完了時点: **2,815 runs / 8,366 assertions / 0 failures / 0 errors / 44 skips**
+(Step 192 から +11 runs = libc 軸の前処理器テスト 8 件と、
+musl 分岐の値・glibc 側不変・ctype の 3 件)
+(以前) Step 192 完了時点: **2,804 runs / 8,336 assertions / 0 failures / 0 errors / 44 skips**
 (Step 188 から +1 run = 両方の va_list 綴りの検査。assertions の伸びは
 musl の verification が 3 本入ったぶん DB のスキーマ検査が増えた分)
 (以前) Step 188 完了時点: **2,803 runs / 8,308 assertions / 0 failures / 0 errors / 44 skips**

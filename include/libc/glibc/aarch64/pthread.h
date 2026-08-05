@@ -17,7 +17,14 @@
    pthread_mutex_t, pthread_attr_t, pthread_mutexattr_t and pthread_condattr_t
    are wider here than on x86-64, so this file differs from the companion
    glibc/x86-64/pthread.h only in those four __size[N] counts (and this
-   provenance line). */
+   provenance line).
+   No musl branch, deliberately: the x86-64 companion carries musl's 4-byte
+   alignment for pthread_rwlockattr_t alongside glibc's 8, but that was measured
+   on x86-64 only -- and the opaque pthreads objects are the single most
+   arch-dependent thing in this layer, as the four differing counts above show.
+   Copying it here would be an assumption, not a measurement (R8), so this file
+   stays glibc-valued until an aarch64 musl run measures it (docs/STEPS.md
+   Step 193). */
 
 #ifndef _RUBYCC_PTHREAD_H
 #define _RUBYCC_PTHREAD_H

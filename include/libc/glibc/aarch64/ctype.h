@@ -7,7 +7,15 @@
    functions themselves are resolved from the host libc at link time. Placed in
    the glibc layer because the mechanism and its values are glibc specific (a
    musl target would classify differently), though the values are arch
-   independent. */
+   independent.
+   No musl branch, deliberately: the x86-64 companion switches the table-lookup
+   macros off under __RUBYCC_LIBC_MUSL__, having measured there that musl
+   returns a bare 0/1 and has no __ctype_b_loc() to reach a table through. That
+   observation is about the C library and not about the machine, so it very
+   likely holds here too -- but "very likely" is not a measurement (R8), and the
+   companion aarch64 headers are all staying glibc-valued for the same reason.
+   This file follows them until an aarch64 musl run measures it (docs/STEPS.md
+   Step 193). */
 
 #ifndef _RUBYCC_CTYPE_H
 #define _RUBYCC_CTYPE_H

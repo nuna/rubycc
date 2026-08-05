@@ -1908,6 +1908,187 @@ class TestHeaderAbiLibcParameterization < Minitest::Test
   end
 end
 
+# Step 193 (M5 H6): the musl branches of the bundled headers.
+#
+# The harness above is a differential against *this host's* real headers, so it
+# can only ever exercise the branch this host's libc selects: on a glibc machine
+# the musl arms of the bundled headers are never compiled at all, and the CI
+# musl run -- where their values were measured -- cannot be reproduced here.
+# What can be reproduced here is the branch selection, which is where a mistake
+# would actually live: sizes, alignments and macro values are settled at compile
+# time, so compiling the probe with `libc: "musl"` and running it shows exactly
+# which arm each #if took, on a host of either libc. The expected text below is
+# the measured musl column of Step 193 transcribed once; nothing in it is
+# derived from a header.
+#
+# The glibc case is the other half: it pins the #else arms to the values the
+# harness above has been proving against the gcc oracle all along, so a
+# mis-nested #if that quietly moved the default would fail here rather than only
+# on the next musl run.
+#
+# One kind of check cannot be made this way: anything whose value comes from the
+# libc at *runtime*. The ctype classifiers are the whole of that set -- glibc's
+# out-of-line isalpha() returns its own table bits, so a musl-compiled probe
+# linked against glibc still prints 1024 where musl would print 1. For those the
+# check is structural instead (see #test_ctype_calls_the_classifier_functions_on_musl).
+class TestMuslBundledHeaderValues < Minitest::Test
+  include ExecutionHelper
+  include HeaderAbiHarness
+
+  def setup
+    skip "gcc unavailable (needed to link and run the probe)" unless tool?("gcc")
+  end
+
+  # Every check the two C libraries were measured to disagree on, gathered into
+  # one probe. Unlike the Specs above this one is not per-header: it is the
+  # divergence list itself, which spans ten headers (stdio.h arrives with the
+  # harness's own preamble), and it is never run as a differential -- only
+  # compiled both ways and compared against the two measured columns.
+  DIVERGENCES = HeaderAbiHarness::Spec.new(
+    header: "stdint.h",
+    also: %w[limits.h fcntl.h math.h unistd.h pthread.h sys/wait.h sys/resource.h],
+    sizes: ["int_fast16_t", "int_fast32_t", "uint_fast16_t", "uint_fast32_t",
+            "pthread_rwlockattr_t", "struct rusage"],
+    ints: %w[O_ACCMODE O_LARGEFILE
+             INT_FAST16_MIN INT_FAST16_MAX INT_FAST32_MIN INT_FAST32_MAX
+             UINT_FAST16_MAX UINT_FAST32_MAX
+             MB_LEN_MAX BUFSIZ FOPEN_MAX TMP_MAX
+             math_errhandling _POSIX_MONOTONIC_CLOCK] +
+          ["WIFSTOPPED(0x0000)", "WIFSTOPPED(0x007f)",
+           "WIFSTOPPED(0x137f)", "WIFSTOPPED(0xffff)"]
+  )
+
+  # The measured musl column (docs/STEPS.md Step 193). The four fast-type sizes
+  # and the two INT_FAST*_MIN / UINT_FAST*_MAX pairs are what the 32-bit types
+  # imply, which is the point: the widths were measured and the limits follow
+  # them, rather than each limit being asserted on its own. WIFSTOPPED is
+  # printed for all four status words the harness probes, three of which musl
+  # and glibc agree on.
+  MUSL_EXPECTED = <<~OUT
+    sizeof(int_fast16_t) = 4, _Alignof(int_fast16_t) = 4
+    sizeof(int_fast32_t) = 4, _Alignof(int_fast32_t) = 4
+    sizeof(uint_fast16_t) = 4, _Alignof(uint_fast16_t) = 4
+    sizeof(uint_fast32_t) = 4, _Alignof(uint_fast32_t) = 4
+    sizeof(pthread_rwlockattr_t) = 8, _Alignof(pthread_rwlockattr_t) = 4
+    sizeof(struct rusage) = 272, _Alignof(struct rusage) = 8
+    O_ACCMODE = 2097155
+    O_LARGEFILE = 32768
+    INT_FAST16_MIN = -2147483648
+    INT_FAST16_MAX = 2147483647
+    INT_FAST32_MIN = -2147483648
+    INT_FAST32_MAX = 2147483647
+    UINT_FAST16_MAX = 4294967295
+    UINT_FAST32_MAX = 4294967295
+    MB_LEN_MAX = 4
+    BUFSIZ = 1024
+    FOPEN_MAX = 1000
+    TMP_MAX = 10000
+    math_errhandling = 2
+    _POSIX_MONOTONIC_CLOCK = 200809
+    WIFSTOPPED(0x0000) = 0
+    WIFSTOPPED(0x007f) = 0
+    WIFSTOPPED(0x137f) = 1
+    WIFSTOPPED(0xffff) = 0
+  OUT
+
+  # The glibc column: the values the harness above has been proving against the
+  # gcc oracle since these headers were written. The two unsigned fast limits
+  # print as -1 because the probe widens every integer check to (long long) and
+  # glibc's UINT_FAST16_MAX is UINT64_MAX; that is the harness's long-standing
+  # format, and the gcc oracle prints it the same way.
+  GLIBC_EXPECTED = <<~OUT
+    sizeof(int_fast16_t) = 8, _Alignof(int_fast16_t) = 8
+    sizeof(int_fast32_t) = 8, _Alignof(int_fast32_t) = 8
+    sizeof(uint_fast16_t) = 8, _Alignof(uint_fast16_t) = 8
+    sizeof(uint_fast32_t) = 8, _Alignof(uint_fast32_t) = 8
+    sizeof(pthread_rwlockattr_t) = 8, _Alignof(pthread_rwlockattr_t) = 8
+    sizeof(struct rusage) = 144, _Alignof(struct rusage) = 8
+    O_ACCMODE = 3
+    O_LARGEFILE = 0
+    INT_FAST16_MIN = -9223372036854775808
+    INT_FAST16_MAX = 9223372036854775807
+    INT_FAST32_MIN = -9223372036854775808
+    INT_FAST32_MAX = 9223372036854775807
+    UINT_FAST16_MAX = -1
+    UINT_FAST32_MAX = -1
+    MB_LEN_MAX = 16
+    BUFSIZ = 8192
+    FOPEN_MAX = 16
+    TMP_MAX = 238328
+    math_errhandling = 3
+    _POSIX_MONOTONIC_CLOCK = 0
+    WIFSTOPPED(0x0000) = 0
+    WIFSTOPPED(0x007f) = 1
+    WIFSTOPPED(0x137f) = 1
+    WIFSTOPPED(0xffff) = 0
+  OUT
+
+  # A probe that exercises the classification macros. Compiled only; its output
+  # is not compared, because on a glibc host the functions it resolves to are
+  # glibc's (see the class comment).
+  CTYPE_SOURCE = <<~C
+    #include <ctype.h>
+    int probe(int c) {
+      return isalpha(c) + isdigit(c) + isspace(c) + isupper(c) + islower(c)
+           + isxdigit(c) + isalnum(c) + ispunct(c) + iscntrl(c) + isgraph(c)
+           + isprint(c) + isblank(c) + toupper(c) + tolower(c)
+           + isascii(c) + toascii(c);
+    }
+  C
+
+  def test_musl_branches_yield_the_measured_musl_values
+    assert_equal MUSL_EXPECTED, run_divergence_probe("musl")
+  end
+
+  def test_glibc_branches_are_untouched_by_the_musl_ones
+    assert_equal GLIBC_EXPECTED, run_divergence_probe("glibc")
+  end
+
+  # The ctype difference is one of mechanism, not of constants: under musl the
+  # bundled header must not define the table-lookup macros, so every classifier
+  # is the out-of-line function -- which is also the only way musl's bare 0/1
+  # can be produced, since it has no __ctype_b_loc() table to mask. Reading the
+  # object's undefined symbols is what tells the two apart on this host: the
+  # glibc build reaches for the three table accessors and calls no classifier,
+  # the musl build calls the classifiers and reaches for no accessor.
+  def test_ctype_calls_the_classifier_functions_on_musl
+    assert_equal %w[isalnum isalpha isblank iscntrl isdigit isgraph islower isprint
+                    ispunct isspace isupper isxdigit tolower toupper],
+                 undefined_symbols(CTYPE_SOURCE, "musl")
+    assert_equal %w[__ctype_b_loc __ctype_tolower_loc __ctype_toupper_loc],
+                 undefined_symbols(CTYPE_SOURCE, "glibc")
+  end
+
+  private
+
+  # Compiles the divergence probe for `libc`, links and runs it, and returns its
+  # standard output. The probe text is the harness's own, so each line is
+  # labeled exactly as the differential above would label it.
+  def run_divergence_probe(libc)
+    source = abi_probe_source(DIVERGENCES, libc.to_sym)
+    in_tmpdir do |dir|
+      object = File.join(dir, "divergences_#{libc}.o")
+      File.binwrite(object, Rubycc::Compiler.new.compile(source, filename: "divergences.c",
+                                                                 libc: libc))
+      status, output = link_and_run(object)
+      assert_equal 0, status, "the #{libc} probe exited #{status}"
+      output
+    end
+  end
+
+  # The sorted names of the symbols `source` leaves for the linker when compiled
+  # for `libc`, read with the project's own ELF reader.
+  def undefined_symbols(source, libc)
+    object = Rubycc::Compiler.new.compile(source, filename: "ctype.c", libc: libc)
+    Rubycc::ObjFile::ELFReader.read(object)
+                              .symbols.select(&:undefined?).map(&:name).reject(&:empty?).sort
+  end
+
+  def tool?(name)
+    system(name, "--version", out: File::NULL, err: File::NULL) ? true : false
+  end
+end
+
 # Step 82 (M5 H1): the aarch64 side of the header ABI harness. Every Spec above
 # is declared once and here re-run against the cross ABI -- rubycc compiles the
 # probe for the aarch64 target (so its bundled glibc/aarch64 header layer is on

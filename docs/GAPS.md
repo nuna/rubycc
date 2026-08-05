@@ -10,7 +10,7 @@
 
 | # | ギャップ | 影響 | 優先 | 詳細 |
 |---|---|---|---|---|
-| G | **同梱ヘッダが glibc の ABI を焼き込んでいる**。実測(musl 初回実行): `int_fast16_t` / `int_fast32_t` が musl では 4 バイト、rubycc は 8 バイト(glibc の値) | **M5 が掲げた「glibc/musl 互換ヘッダ」の主張が musl 側で外れている**。musl では全スイート 21 failures / 18 errors | **高** | STEPS.md Step 175。`<stdint.h>` は最も直接的な 1 例で、26 件ある rubycc 側の差の全容はまだ分類しきれていない |
+| G | **同梱ヘッダの musl 対応が x86-64 のみ**。Step 193 で libc 軸を入れ、musl 実走で測れた 15 項目を反映したが、**aarch64 の musl 値は一度も測っていない**ので aarch64 の arch 層(`fcntl.h` / `stdint.h` / `limits.h` / `ctype.h` / `pthread.h`)は glibc 値のまま | aarch64 + musl では ABI が合わない可能性がある。**x86-64 の musl は次の実走で確認**(このホストでは検査できない) | 中 | STEPS.md Step 193。arch 層は「機種で値が動く」ことを前提に存在する層(`O_DIRECT` 群がその実例)なので、x86-64 の測定値を写すのは**測定ではなく仮定**になる |
 | I | **ABI ハーネスの glibc 固有ケースの分類が未完(残りわずか)**。Step 180 で仕組みを入れ、Steps 180・181 の 2 回の musl 実測で 13 ケースを分類。**gcc がエラーを打ち切るため、`_IS*` / `LC_*` / `_NL_ITEM*` の 3 系統は「系統ごと」の推論で移した**(全メンバの個別実測はしていない) | 推論が外れていれば、その項目が musl で不要に落ちる | 低 | STEPS.md Steps 175・180・181。次の musl 実走で残りが出る |
 
 ## 2. 未解消の負債

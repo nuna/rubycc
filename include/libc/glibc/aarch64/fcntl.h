@@ -6,7 +6,14 @@
    copied text (see docs/HEADER-LICENSING.md) -- the same treatment as
    errno.h and sys/stat.h. open/openat/creat/fcntl are POSIX declarations.
    Placed in the glibc/aarch64 layer because O_DIRECT, O_DIRECTORY and
-   O_NOFOLLOW swap bit assignments here versus x86-64's uapi/asm/fcntl.h. */
+   O_NOFOLLOW swap bit assignments here versus x86-64's uapi/asm/fcntl.h.
+   No musl branch, deliberately: the x86-64 companion carries both C libraries'
+   values for O_ACCMODE and O_LARGEFILE, but those musl figures were measured on
+   x86-64 only, and this is the layer that exists precisely because values move
+   between machines -- the O_DIRECT group above is the standing proof. Copying
+   them here would be an assumption, not a measurement (R8), so this file stays
+   glibc-valued until an aarch64 musl run measures them (docs/STEPS.md Step
+   193). */
 
 #ifndef _RUBYCC_FCNTL_H
 #define _RUBYCC_FCNTL_H

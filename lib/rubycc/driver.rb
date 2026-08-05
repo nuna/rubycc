@@ -257,6 +257,17 @@ module Rubycc
       @target ||= normalize_target(RbConfig::CONFIG["host_cpu"])
     end
 
+    # The C library whose ABI the bundled headers are read under: the host's
+    # own (see Preprocessor.host_libc), which is what makes a plain `rubycc`
+    # invocation on an Alpine image compile against the musl branches of the
+    # bundled headers and the same invocation on a Debian image against the
+    # glibc ones. It is not derived from #target: the machine and the libc are
+    # independent axes (either arch runs either libc), so it is threaded to the
+    # compiler separately rather than read out of Compiler::TARGETS.
+    def libc
+      @libc ||= Preprocess::Preprocessor.host_libc
+    end
+
     # Reduces a target spelling — a bare CPU name, a gcc/clang triple, or a
     # host_cpu string — to a canonical architecture name: the part before the
     # first "-" of a triple, with common aliases folded (amd64/x64 -> x86_64,
@@ -304,7 +315,7 @@ module Rubycc
         Compiler.compile_file(input[:path], output, include_paths: @include_paths,
                                                      pic: @pic, defines: @defines,
                                                      system_includes: @system_includes,
-                                                     target: target)
+                                                     target: target, libc: libc)
       end
     end
 
@@ -364,7 +375,7 @@ module Rubycc
     def compile_source(input)
       Compiler.new.compile(File.read(input[:path]), filename: input[:path],
                            include_paths: @include_paths, pic: @pic, defines: @defines,
-                           system_includes: @system_includes, target: target)
+                           system_includes: @system_includes, target: target, libc: libc)
     end
 
     # --- preprocess-only (-E) ----------------------------------------------
@@ -395,16 +406,17 @@ module Rubycc
       end
     end
 
-    # A preprocessor configured for the selected target, so `-E` predefines the
-    # same macros a full compile of the same command line would. An unknown
-    # target falls back to the x86-64 entry: `-E` never reaches
+    # A preprocessor configured for the selected target and libc, so `-E`
+    # predefines the same macros a full compile of the same command line would.
+    # An unknown target falls back to the x86-64 entry: `-E` never reaches
     # #ensure_supported_target, and reporting a bad -target as a preprocessing
     # crash would be worse than preprocessing under the default identity.
     def preprocessor_for_target
       entry = Compiler::TARGETS.fetch(target) { Compiler::TARGETS.fetch("x86_64") }
       Preprocess::Preprocessor.new(char_unsigned: !entry[:char_signed],
                                    arch_macros: entry[:arch_macros],
-                                   libc_arch: entry[:libc_arch])
+                                   libc_arch: entry[:libc_arch],
+                                   libc: libc)
     end
 
     def render_preprocessed(tokens)

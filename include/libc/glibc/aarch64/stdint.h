@@ -9,8 +9,14 @@
    _RUBYCC_WCHAR_T guard, so changing its signedness only here would make the two
    disagree depending on include order. wchar_t's signedness is therefore a known
    limitation (like long double's width); the ABI surface the harness checks --
-   the WCHAR_MIN/WCHAR_MAX macro values -- is what is pinned to aarch64 here. ABI
-   switch layer: these widths are arch specific. */
+   the WCHAR_MIN/WCHAR_MAX macro values -- is what is pinned to aarch64 here.
+   No musl branch, deliberately: the x86-64 companion carries a 32-bit
+   [u]int_fast16_t/[u]int_fast32_t for musl, but that was measured on x86-64
+   only, and a fast type's width is exactly the kind of thing this arch layer
+   exists to keep per-machine. Copying it here would be an assumption, not a
+   measurement (R8), so this file stays glibc-valued until an aarch64 musl run
+   measures it (docs/STEPS.md Step 193). ABI switch layer: these widths are arch
+   specific. */
 
 #ifndef _RUBYCC_STDINT_H
 #define _RUBYCC_STDINT_H

@@ -829,6 +829,97 @@ class TestPreprocessor < Minitest::Test
     assert_equal ["int", "intel", ";"], pp(source).reject(&:eof?).map(&:value)
   end
 
+  # --- the libc axis (Step 193, M5 H6) ---------------------------------------
+
+  # A source that reports which libc branch the bundled headers would take. It
+  # needs no header of its own: the macro is the whole interface between the
+  # preprocessor's `libc` keyword and every #if in include/libc.
+  LIBC_BRANCH_SOURCE = <<~C
+    #if defined(__RUBYCC_LIBC_MUSL__)
+    int musl;
+    #else
+    int glibc;
+    #endif
+  C
+
+  def preprocess_for_libc(libc, source = LIBC_BRANCH_SOURCE)
+    Rubycc::Preprocess::Preprocessor.new(libc: libc)
+                                    .run(source, filename: "t.c", system_includes: false)
+                                    .reject(&:eof?).map(&:value)
+  end
+
+  def test_musl_predefines_the_libc_selector_macro
+    assert_equal ["int", "musl", ";"], preprocess_for_libc("musl")
+  end
+
+  def test_musl_libc_selector_macro_expands_to_one
+    tokens = Rubycc::Preprocess::Preprocessor.new(libc: "musl")
+                                             .run("int a = __RUBYCC_LIBC_MUSL__;",
+                                                  filename: "t.c", system_includes: false)
+    assert_equal [1], tokens.select { |t| t.type == :num }.map(&:value)
+  end
+
+  def test_glibc_leaves_the_libc_selector_macro_undefined
+    # The glibc setting defines nothing at all, so every bundled header's #else
+    # arm -- the long-standing glibc one -- is what a default compile reads.
+    assert_equal ["int", "glibc", ";"], preprocess_for_libc("glibc")
+  end
+
+  def test_libc_defaults_to_the_host_libc
+    expected = RbConfig::CONFIG["arch"].to_s.include?("musl") ? "musl" : "glibc"
+    assert_equal expected, Rubycc::Preprocess::Preprocessor.host_libc
+    assert_equal ["int", expected, ";"],
+                 Rubycc::Preprocess::Preprocessor.new
+                                                 .run(LIBC_BRANCH_SOURCE, filename: "t.c",
+                                                                          system_includes: false)
+                                                 .reject(&:eof?).map(&:value)
+  end
+
+  def test_unsupported_libc_is_rejected
+    error = assert_raises(ArgumentError) { Rubycc::Preprocess::Preprocessor.new(libc: "uclibc") }
+    assert_match(/unsupported libc: "uclibc"/, error.message)
+    assert_raises(ArgumentError) { Rubycc::Preprocess::Preprocessor.new(libc: :musl) }
+    assert_raises(ArgumentError) { Rubycc::Preprocess::Preprocessor.new(libc: nil) }
+  end
+
+  def test_defining_the_libc_selector_is_rejected
+    # Unlike the platform macros, this one is not a translation unit's to set:
+    # it says which libc's ABI the bundled headers were pinned to, so a -D or a
+    # #define of it would produce headers describing one libc and an object
+    # laid out for the other. It is refused on either setting.
+    %w[glibc musl].each do |libc|
+      error = assert_raises(Rubycc::CompileError) do
+        Rubycc::Preprocess::Preprocessor.new(libc: libc)
+                                        .run("#define __RUBYCC_LIBC_MUSL__ 1\n",
+                                             filename: "t.c", system_includes: false)
+      end
+      assert_match(/cannot define builtin macro "__RUBYCC_LIBC_MUSL__"/, error.description)
+    end
+  end
+
+  def test_undefining_the_libc_selector_is_rejected
+    %w[glibc musl].each do |libc|
+      error = assert_raises(Rubycc::CompileError) do
+        Rubycc::Preprocess::Preprocessor.new(libc: libc)
+                                        .run("#undef __RUBYCC_LIBC_MUSL__\n",
+                                             filename: "t.c", system_includes: false)
+      end
+      assert_match(/cannot undefine builtin macro "__RUBYCC_LIBC_MUSL__"/, error.description)
+    end
+  end
+
+  def test_command_line_definitions_cannot_set_the_libc_selector
+    # -D and -U reach the same directive machinery, so the command line cannot
+    # smuggle the macro in either.
+    [[:define, "__RUBYCC_LIBC_MUSL__=1"], [:undef, "__RUBYCC_LIBC_MUSL__"]].each do |op, arg|
+      assert_raises(Rubycc::CompileError) do
+        Rubycc::Preprocess::Preprocessor.new.run(LIBC_BRANCH_SOURCE, filename: "t.c",
+                                                                     defines: [[op, arg]],
+                                                                     system_includes: false)
+      end
+    end
+  end
+
   def test_platform_macros_are_shared_by_every_target
     # Only the CPU identity varies; Linux/ELF/LP64 hold for both targets.
     tokens = Rubycc::Preprocess::Preprocessor.new(

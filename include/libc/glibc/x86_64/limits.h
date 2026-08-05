@@ -1,14 +1,25 @@
 /* rubycc bundled <limits.h>: the arithmetic-type ranges (ISO C 5.2.4.2.1).
    Derived from the ISO-mandated values with the `long`/`char` widths pinned to
-   the glibc x86-64 LP64 ABI (`long` is 64-bit). ABI switch layer: LONG_MAX is
-   arch specific, and so is the signedness of plain char -- that one is taken
-   from the compiler's own __CHAR_UNSIGNED__ rather than from this directory. */
+   the x86-64 LP64 ABI (`long` is 64-bit); the arithmetic ranges are the same
+   under either C library, and only MB_LEN_MAX differs between them (carried
+   below under __RUBYCC_LIBC_MUSL__, see the preprocessor's LIBCS). ABI switch
+   layer: LONG_MAX is arch specific, and so is the signedness of plain char --
+   that one is taken from the compiler's own __CHAR_UNSIGNED__ rather than from
+   this directory. */
 
 #ifndef _RUBYCC_LIMITS_H
 #define _RUBYCC_LIMITS_H
 
 #define CHAR_BIT    8
+/* MB_LEN_MAX is the one value in this header the two C libraries disagree on:
+   musl reports 4 (its widest multibyte character, UTF-8's four bytes) and glibc
+   16. Both measured with the ABI harness, glibc's on this host and musl's on
+   the CI musl run (docs/STEPS.md Step 193). */
+#if defined(__RUBYCC_LIBC_MUSL__)
+#define MB_LEN_MAX  4
+#else
 #define MB_LEN_MAX  16
+#endif
 
 #define SCHAR_MIN   (-128)
 #define SCHAR_MAX   127

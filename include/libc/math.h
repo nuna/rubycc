@@ -2,8 +2,10 @@
    macros (ISO C 7.12). Derived from musl's <math.h> declaration set; the special
    values and classifiers are expressed through the compiler builtins so they
    fold to the same bit patterns gcc uses, and the FP_* / math_errhandling values
-   match the glibc ABI (measured). Common layer: nothing here is arch specific
-   beyond the (universal on this target) IEEE 754 model. */
+   are measured (math_errhandling is the one the two C libraries differ on, so
+   both values are carried under __RUBYCC_LIBC_MUSL__; see the preprocessor's
+   LIBCS). Common layer: nothing here is arch specific beyond the (universal on
+   this target) IEEE 754 model. */
 
 #ifndef _RUBYCC_MATH_H
 #define _RUBYCC_MATH_H
@@ -30,7 +32,17 @@
 
 #define MATH_ERRNO     1
 #define MATH_ERREXCEPT 2
+/* math_errhandling is the one value in this header the two C libraries
+   disagree on: musl reports 2 (it raises the floating-point exceptions but
+   does not promise errno) where glibc reports 3 (both). Measured with the ABI
+   harness, glibc's on this host and musl's on the CI musl run (docs/STEPS.md
+   Step 193); MATH_ERRNO, MATH_ERREXCEPT, the FP_* codes and FP_ILOGB* are
+   probed too and measured identical on both. */
+#if defined(__RUBYCC_LIBC_MUSL__)
+#define math_errhandling (MATH_ERREXCEPT)
+#else
 #define math_errhandling (MATH_ERRNO | MATH_ERREXCEPT)
+#endif
 
 /* Classifiers, implemented in C (rubycc has no __builtin_isnan/signbit/...).
    The bit-inspecting helpers cover the double-or-narrower case; long double is
