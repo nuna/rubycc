@@ -17,6 +17,16 @@ name: weekly
           which is what the weekly schedule does.
         required: false
         default: ""
+      only:
+        description: >-
+          Run just one job instead of the whole weekly set. The aarch64 ABI
+          measurement in particular is reachable no other way: guarding it on
+          verify_step alone meant the only way to trigger it was a full weekly
+          run, which costs the other five jobs' minutes to get one job's answer.
+        required: false
+        default: ""
+        type: choice
+        options: ["", "musl-aarch64"]
 
 permissions:
   contents: read
@@ -31,7 +41,7 @@ jobs:
     # only the musl job has anything to do, and the free-tier minute budget
     # is tight enough that dragging the other four along would cost more than
     # the run itself. Everything else is unchanged for the weekly schedule.
-    if: inputs.verify_step == ''
+    if: inputs.verify_step == '' && inputs.only == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -97,7 +107,7 @@ jobs:
     # only the musl job has anything to do, and the free-tier minute budget
     # is tight enough that dragging the other four along would cost more than
     # the run itself. Everything else is unchanged for the weekly schedule.
-    if: inputs.verify_step == ''
+    if: inputs.verify_step == '' && inputs.only == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -158,7 +168,7 @@ jobs:
     # only the musl job has anything to do, and the free-tier minute budget
     # is tight enough that dragging the other four along would cost more than
     # the run itself. Everything else is unchanged for the weekly schedule.
-    if: inputs.verify_step == ''
+    if: inputs.verify_step == '' && inputs.only == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -227,6 +237,10 @@ jobs:
   # `docker run` keeps the actions on glibc and puts only rubycc on musl, which
   # is the thing being measured.
   musl:
+    # A verify_step dispatch is this job's own recording run, so unlike the
+    # other four it stays on for that; an `only` dispatch naming a different
+    # job skips it.
+    if: inputs.only == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -284,8 +298,10 @@ jobs:
     # A dispatch that sets verify_step is a musl *recording* run (docs/CI.md),
     # and this job records nothing: it writes no verified_gems.json entry and
     # its logs are read by hand. Emulated minutes are the most expensive kind on
-    # the free tier, so a recording dispatch does not pay for them.
-    if: inputs.verify_step == ''
+    # the free tier, so a recording dispatch does not pay for them. It is also
+    # the one job `only` can select by name, because it is the one whose
+    # answer is worth a dispatch of its own.
+    if: inputs.verify_step == '' && (inputs.only == '' || inputs.only == 'musl-aarch64')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -325,7 +341,7 @@ jobs:
     # only the musl job has anything to do, and the free-tier minute budget
     # is tight enough that dragging the other four along would cost more than
     # the run itself. Everything else is unchanged for the weekly schedule.
-    if: inputs.verify_step == ''
+    if: inputs.verify_step == '' && inputs.only == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:

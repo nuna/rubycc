@@ -12,7 +12,7 @@ rubycc の継続的検証は 3 層に分かれている。**push ごとに回る
 | 層 | ファイル | トリガ | 目的 | 所要時間の目安 | 失敗が意味すること |
 |---|---|---|---|---|---|
 | **A** | `test.yml` | `push`(master)/ PR / 手動 / 他ワークフローからの呼び出し | 全 Minitest スイートを Ruby 3.3 / 4.0(両端)で実行 | 1 バージョンあたり 10〜20 分(2 本並列) | 回帰、またはサポート Ruby のいずれかでの非互換。**マージしてはいけない** |
-| **B** | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)/ 手動 | コーパス census の再生成差分、ネットワーク受け入れ、スループット計測、Ruby 3.4 の全スイート、**musl での全スイートと gem install** | census 〜20 分 / acceptance 〜60 分 / throughput 〜30 分 / ruby-3-4 〜25 分 / musl 〜90 分(5 ジョブ並列) | census: ヘッダ網羅性が変わった(要コミット)。acceptance: 実 gem のビルドが壊れた。throughput: **合否判定なし**(下記)。ruby-3-4: 中間バージョン固有の非互換。musl: **glibc/musl 互換の主張の、未検証だった側が壊れた**(下記) |
+| **B** | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)/ 手動 | コーパス census の再生成差分、ネットワーク受け入れ、スループット計測、Ruby 3.4 の全スイート、**musl での全スイートと gem install** | census 〜20 分 / acceptance 〜60 分 / throughput 〜30 分 / ruby-3-4 〜25 分 / musl 〜90 分 / musl-aarch64 〜90 分(6 ジョブ並列) | census: ヘッダ網羅性が変わった(要コミット)。acceptance: 実 gem のビルドが壊れた。throughput: **合否判定なし**(下記)。ruby-3-4: 中間バージョン固有の非互換。musl: **glibc/musl 互換の主張の、未検証だった側が壊れた**(下記) |
 | **C** | `release.yml` | `v*` タグの push / 手動 | Tier A の再実行 + gem の再現ビルド検証 | 30〜50 分 | タグと `Rubycc::VERSION` の不一致、または gem がバイト再現しない。**リリースを止める** |
 
 Tier C の `test` ジョブは `uses: ./.github/workflows/test.yml` で **Tier A をそのまま
@@ -138,6 +138,40 @@ GitHub Actions のジョブコンテナには、ランナーが**自前の glibc
 `schedule` イベントでは `inputs` が null で、GitHub の式評価では
 `null == ''` が真になるので、**週次実行は従来どおり 5 ジョブ全部**が走る。
 記録用 dispatch のコストは musl ジョブの約 90 分だけ。
+
+## aarch64 musl の ABI 測定ジョブ(`weekly.yml` の `musl-aarch64`)
+
+Step 193 で musl の ABI を同梱ヘッダに反映したが、**測れたのは x86-64 だけ**だった。
+arch 層は「機種で値が動く」ことを前提に存在する層なので、
+x86-64 の値を aarch64 に写すのは**測定ではなく仮定**になる。
+このジョブがその測定を取る。構築は **Step 197**。
+
+### 全スイートは走らせない
+
+qemu エミュレーション下では遅すぎる(ROADMAP §8 が明記)。
+走らせるのは **ABI を測る 2 本だけ** — `test_header_abi.rb` と
+`test_freestanding_headers.rb`。`bundler` も使わず `gem install minitest` だけにする
+(Gemfile の `fiddle` はソースビルドを要するが、この 2 本は fiddle を使わない)。
+
+### 赤でよいジョブである
+
+**目的は測ることで、緑にすることではない。** 差分がログに残ることが成果なので
+`continue-on-error` は付けず、**赤をそのまま出してログを上げる**。
+先頭に `uname -m` / `RbConfig` の arch / `gcc -dumpmachine` を記録して、
+**本当に aarch64 かつ musl だったこと**を証拠として残す。
+
+### `only` 入力 — 1 ジョブだけ回すため
+
+このジョブを `verify_step` だけで守ると、**起動する手段が「週次まるごと」しか無くなる**。
+1 ジョブの答えを得るのに他 5 ジョブ分の分数を払うことになるので、
+`workflow_dispatch` に **`only`** 入力を足した。
+
+| 起動 | 走るジョブ |
+|---|---|
+| 週次スケジュール | **6 つ全部**(`inputs` が null で、GitHub の式評価では `null == ''` が真) |
+| `verify_step` 指定 | **`musl` のみ**(記録用) |
+| `only: musl-aarch64` | **`musl-aarch64` のみ**(測定用) |
+| 入力なしの手動 dispatch | 6 つ全部 |
 
 ## 週次ベンチが合否判定をしない理由
 
