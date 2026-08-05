@@ -7941,6 +7941,42 @@ ld: relocation R_AARCH64_ADR_PREL_PG_HI21 against symbol `stdout@@GLIBC_2.17'
 3 番だけで今回の 6 件のうち少なくとも 4 件は防げていたので、
 **まず 3 番だけ入れて様子を見る**という判断をした。
 
+## Step 208 — aarch64 glibc の Ruby 上で gem install を実走する(M5 H6)
+
+qemu-user を有効にした Docker の `ruby:4.0` arm64 コンテナで、aarch64 の Ruby 4.0.6
+を実際に動かし、`tools/verify_gem_tests.rb` の gem install 経路を通した。
+`RbConfig::CONFIG["arch"]` は `aarch64-linux`、libc は glibc である。
+
+```text
+VERIFY_WORK=/tmp/rubycc_verify_gem_tests
+ruby tools/verify_gem_tests.rb --update --step 208 io-wait stringio
+```
+
+| gem | gem install / gem 自身のテスト | 記録 |
+|---|---|---|
+| `io-wait` 0.4.0 | **PASS**、26 tests / 41 assertions / 0 failures / 0 errors / 1 omission | `data/verified_gems.json` に `glibc aarch64 / ruby 4.0.6` を追加 |
+| `stringio` 3.2.0 | **PASS**、103 tests / 626 assertions / 0 failures / 0 errors | 同上 |
+
+どちらも `Makefile: CC=rubycc` と `gem_make.out: rmake` を証拠として確認した。
+`io-wait` の 1 omission は `/dev/tty` が無い qemu コンテナでの `test_tty_wait` であり、
+gcc 側の対照でも同じだった。従って gem のテストを除外したものではない。
+
+### 実走で露出した aarch64 固有の探索バグ
+
+最初に `json` / `msgpack` を候補に実行したところ、extconf の `-lm` probe で
+`rubycc: error: cannot find -lm` になった。`LibraryResolver` が Debian の
+`/usr/lib/x86_64-linux-gnu` を既定値にしており、aarch64 の
+`/usr/lib/aarch64-linux-gnu` を探索していなかったことが原因だった。
+
+`LibraryResolver` に target ごとの system library directory を持たせ、driver から
+target を渡すよう修正した。aarch64 用の resolver 回帰テストを追加し、修正後に上記 2 gem
+の実インストールが完走した。qemu 上の extconf は probe 数に比例して非常に遅いため、
+このステップでは H6 の計画どおり軽量な C 拡張 default gem 2 件を受入れ対象とした。
+修正後に `msgpack` 1.8.3 も単独で試し、`-lm` probe を越えて `rmake` のコンパイルまで
+進んだが、検証ツールの 900 秒制限で未完了となった(機能エラーではなく qemu の速度による
+タイムアウトで、`data/verified_gems.json` には記録していない)。`json` / `msgpack` の
+完走と aarch64 全スイートは、別途 M4 の受入れとして残る。
+
 ---
 
 ## 現在のテスト規模
@@ -7950,6 +7986,9 @@ Step 207 完了時点: **2,833 runs / 8,395 assertions / 0 failures / 0 errors /
 (以前) Step 206 完了時点: **2,832 runs / 8,392 assertions / 0 failures / 0 errors / 44 skips**
 (Step 205 と同数 = ハーネスのフラグを揃えただけ。
 **x86-64 では値が 1 つも変わらない**ことを確認済み)
+Step 208 完了時点: **2,834 runs / 8,420 assertions / 0 failures / 0 errors / 44 skips**
+(ホスト側 `bundle exec rake test` の実測値。Step 207 から +1 run / +25 assertions。
+aarch64 の gem 実走記録と resolver 回帰テストを含む)
 (以前) Step 205 完了時点: **2,832 runs / 8,392 assertions / 0 failures / 0 errors / 44 skips**
 (master の distroless 作業とこのブランチが**別々にテストを足していた**ので、
 どちらか片方の数字はマージ後の値にならない。**マージしてから測り直した**。

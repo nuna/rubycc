@@ -359,7 +359,7 @@ module Rubycc
         end
       end
 
-      resolution = Link::LibraryResolver.resolve(@libraries, search_dirs: @lib_dirs)
+      resolution = Link::LibraryResolver.resolve(@libraries, search_dirs: @lib_dirs, target: target)
       link_inputs.concat(resolution.inputs)
       needed.concat(resolution.needed)
       link_inputs << Link::CompatRuntime.archive_bytes(target: target) if @default_libs
