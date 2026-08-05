@@ -94,6 +94,20 @@ module HeaderAbiHarness
   # byte-identical output.
   Result = Struct.new(:gcc_status, :gcc_out, :rubycc_status, :rubycc_out)
 
+  # The one build configuration a differential run applies to BOTH compiled
+  # sides: the CPU the object targets, the libc whose ABI the headers (and,
+  # for rubycc, its bundled header layer) describe, and whether the code is
+  # position-independent. #run_abi_case and #run_abi_case_aarch64 each build
+  # exactly one BuildProfile and read every setting that must agree between
+  # the two toolchains -- the probe's libc branch (#abi_probe_source), rubycc's
+  # compile options (#rubycc_build_options), and the oracle's compiler flags --
+  # off it, so there is one place that decides "what are the two sides
+  # supposed to agree on" instead of each call site picking its own default.
+  # That "each side picks its own default" is the mistake this harness made
+  # four separate times (docs/STEPS.md Steps 194, 197, 206): a BuildProfile
+  # cannot be half-applied the way two independent keyword lists can.
+  BuildProfile = Struct.new(:target, :libc, :pic, keyword_init: true)
+
   # The libc the C toolchain on this host compiles against. Read from RbConfig's
   # arch triplet, which is how MRI itself distinguishes a musl build
   # ("x86_64-linux-musl") from a glibc one ("x86_64-linux") -- the same source
@@ -203,47 +217,72 @@ module HeaderAbiHarness
     C
   end
 
-  # The keyword arguments #run_abi_case (and, since Step 207, the
-  # cross-toolchain-linking guard test in test_header_abi_harness_pic.rb) pass to
-  # Rubycc::Compiler#compile for `target`. Kept in one place so a test that wants
-  # to prove "the harness still builds its rubycc side the same way it links
-  # against the oracle" asks this method rather than copying the keyword list --
-  # a copy would only ever check itself, not the harness (docs/STEPS.md Step
-  # 206).
+  # The BuildProfile #run_abi_case runs under: this host's own CPU and libc
+  # (#host_target, #host_libc), and `pic: true` so the two sides are built the
+  # same way. The oracle is compiled by gcc, and on a modern toolchain gcc's
+  # own default means -fPIE; leaving rubycc's side non-PIC therefore compared
+  # a PIE build against a non-PIE one. On x86-64 that difference is invisible
+  # (the linker resolves a non-PIC reference to external data with a copy
+  # relocation), but on aarch64 it is fatal: ADRP+ADD to a preemptible symbol
+  # has no such fixup, so the link fails with "unresolvable
+  # R_AARCH64_ADR_PREL_PG_HI21". That is not a rubycc defect -- gcc's own
+  # -fno-pie object fails the same link with the same message (both measured
+  # locally) -- it is this harness handing the two sides different flags.
+  # Found on aarch64 musl, reproduced on glibc (docs/STEPS.md Step 206).
+  def host_build_profile
+    BuildProfile.new(target: host_target, libc: host_libc, pic: true)
+  end
+
+  # The BuildProfile #run_abi_case_aarch64 runs under: the aarch64 target, and
+  # glibc no matter what this dev host runs, because the cross toolchain is
+  # aarch64-linux-gnu -- there is no musl variant of that Debian cross package
+  # -- so the oracle always reads glibc's headers, and rubycc must be told to
+  # compile against its bundled glibc/aarch64 header layer to match it. A musl
+  # dev host would otherwise both mis-probe (the probe would drop the
+  # glibc-only checks meant for a run whose both sides are glibc's) and
+  # mis-compile rubycc's side against its own musl default.
+  def aarch64_cross_build_profile
+    BuildProfile.new(target: "aarch64", libc: :glibc, pic: false)
+  end
+
+  # The keyword arguments #run_abi_case and #run_abi_case_aarch64 pass to
+  # Rubycc::Compiler#compile for `profile`. Kept in one place so a test that
+  # wants to prove "the harness still builds its rubycc side the same way it
+  # links against the oracle" asks this method rather than copying the keyword
+  # list -- a copy would only ever check itself, not the harness (docs/STEPS.md
+  # Step 206).
   #
-  # `pic: true` so the two sides are built the same way. The oracle is compiled
-  # by gcc with whatever gcc's defaults are, and on a modern toolchain that means
-  # -fPIE; leaving rubycc's side non-PIC therefore compared a PIE build against a
-  # non-PIE one. On x86-64 that difference is invisible (the linker resolves a
-  # non-PIC reference to external data with a copy relocation), but on aarch64 it
-  # is fatal: ADRP+ADD to a preemptible symbol has no such fixup, so the link
-  # fails with "unresolvable R_AARCH64_ADR_PREL_PG_HI21". That is not a rubycc
-  # defect -- gcc's own -fno-pie object fails the same link with the same message
-  # (both measured locally) -- it is this harness handing the two sides different
-  # flags. Found on aarch64 musl, reproduced on glibc (docs/STEPS.md Step 206).
-  def rubycc_build_options(target)
-    { target: target, pic: true }
+  # `libc: profile.libc.to_s`: BuildProfile (like #host_libc and the rest of
+  # this harness) names the libc as a Symbol, but Rubycc::Compiler#compile's
+  # own `libc:` keyword takes the String Preprocess::Preprocessor validates
+  # against LIBCS ("glibc"/"musl") -- the same split #abi_probe_source's
+  # callers already navigate with an explicit `.to_sym`/`.to_s` at the
+  # boundary between the two conventions.
+  def rubycc_build_options(profile)
+    { target: profile.target, libc: profile.libc.to_s, pic: profile.pic }
   end
 
   # Compiles the probe for `spec` with both toolchains, runs each, and returns a
-  # Result. The rubycc side passes no -I: the point is that the bundled headers
-  # are found on rubycc's own default search path (bundled freestanding, then
-  # bundled libc, ahead of the host libc), exactly as an end user gets them. The
-  # effective libc is the host's, since both toolchains here compile against the
-  # host's own libc headers, and so is the machine (see #host_target): the
-  # oracle on this path is the host gcc and the probe runs on this host, so both
-  # sides have to be built for the CPU underneath them.
+  # Result. Every setting either side needs -- the probe's libc branch, rubycc's
+  # compile options, and (since both sides must be built the same way, not just
+  # rubycc's -- see BuildProfile) the oracle's own flags -- comes from one
+  # #host_build_profile, so nothing here can pick its own default the way Steps
+  # 194, 197 and 206 each independently did. The rubycc side passes no -I: the
+  # point is that the bundled headers are found on rubycc's own default search
+  # path (bundled freestanding, then bundled libc, ahead of the host libc),
+  # exactly as an end user gets them.
   def run_abi_case(spec)
-    source = abi_probe_source(spec, host_libc)
+    profile = host_build_profile
+    source = abi_probe_source(spec, profile.libc)
     name = spec.header.gsub(/[^A-Za-z0-9]+/, "_")
     in_tmpdir do |dir|
       rubycc_obj = File.join(dir, "#{name}_rubycc.o")
       File.binwrite(rubycc_obj,
                     Rubycc::Compiler.new.compile(source, filename: "#{name}.c",
-                                                 **rubycc_build_options(host_target)))
+                                                 **rubycc_build_options(profile)))
       rubycc_status, rubycc_out = link_and_run(rubycc_obj)
 
-      gcc_obj = compile_with_gcc(source, File.join(dir, "#{name}_gcc.o"))
+      gcc_obj = compile_with_gcc(source, File.join(dir, "#{name}_gcc.o"), pic: profile.pic)
       gcc_status, gcc_out = link_and_run(gcc_obj)
 
       Result.new(gcc_status, gcc_out, rubycc_status, rubycc_out)
@@ -253,27 +292,28 @@ module HeaderAbiHarness
   # The aarch64 counterpart of #run_abi_case, machine-parameterized so the same
   # declarative Spec is verified against the cross ABI. The probe source is
   # identical (the check text is architecture-independent); only the toolchains
-  # differ. The rubycc side compiles for the aarch64 target -- so its bundled
+  # differ. As in #run_abi_case, every setting either side needs comes from one
+  # #aarch64_cross_build_profile (see that method for why its libc is always
+  # glibc). The rubycc side compiles for the aarch64 target -- so its bundled
   # glibc/aarch64 header layer is on the search path -- links the object
   # statically with the cross gcc and runs it under qemu; the oracle side builds
-  # and runs the same source with the cross gcc against the target's real headers.
-  # Both stdouts are handed back for the byte comparison, exactly as the host
-  # path does. Requires AArch64ExecutionHelper (compile_with_rubycc_aarch64,
-  # compile_with_cross_gcc, link_and_run_aarch64) and the host ExecutionHelper's
-  # in_tmpdir to be mixed in alongside this module.
+  # and runs the same source with the cross gcc against the target's real
+  # headers. Both stdouts are handed back for the byte comparison, exactly as
+  # the host path does. Requires AArch64ExecutionHelper (compile_with_cross_gcc,
+  # link_and_run_aarch64) and the host ExecutionHelper's in_tmpdir to be mixed
+  # in alongside this module.
   def run_abi_case_aarch64(spec)
-    # The effective libc is glibc no matter what this host runs: the cross
-    # toolchain is aarch64-linux-gnu, so the oracle reads glibc's headers and
-    # rubycc compiles against its bundled glibc/aarch64 layer. A musl host would
-    # otherwise drop the glibc-only checks from a probe whose both sides are
-    # glibc's.
-    source = abi_probe_source(spec, :glibc)
+    profile = aarch64_cross_build_profile
+    source = abi_probe_source(spec, profile.libc)
     name = spec.header.gsub(/[^A-Za-z0-9]+/, "_")
     in_tmpdir do |dir|
-      rubycc_obj = compile_with_rubycc_aarch64(source, File.join(dir, "#{name}_rubycc.o"))
+      rubycc_obj = File.join(dir, "#{name}_rubycc.o")
+      File.binwrite(rubycc_obj,
+                    Rubycc::Compiler.new.compile(source, filename: "#{name}.c",
+                                                 **rubycc_build_options(profile)))
       rubycc_status, rubycc_out = link_and_run_aarch64(rubycc_obj)
 
-      gcc_obj = compile_with_cross_gcc(source, File.join(dir, "#{name}_gcc.o"))
+      gcc_obj = compile_with_cross_gcc(source, File.join(dir, "#{name}_gcc.o"), pic: profile.pic)
       gcc_status, gcc_out = link_and_run_aarch64(gcc_obj)
 
       Result.new(gcc_status, gcc_out, rubycc_status, rubycc_out)

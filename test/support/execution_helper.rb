@@ -24,12 +24,18 @@ module ExecutionHelper
     output_path
   end
 
-  def compile_with_gcc(c_source, output_path)
+  # `pic:` compiles with -fPIC, matching AArch64ExecutionHelper#compile_with_cross_gcc's
+  # kwarg of the same name and default (false), so a caller building the gcc
+  # side of a differential case can pick its PIC-ness the same way on either
+  # machine's oracle. Defaulted so every existing call site is unaffected.
+  def compile_with_gcc(c_source, output_path, pic: false)
     dir = File.dirname(output_path)
     source_path = File.join(dir, "#{File.basename(output_path, ".*")}.c")
     File.write(source_path, c_source)
 
-    stdout_and_stderr, status = Open3.capture2e("gcc", "-c", "-o", output_path, source_path)
+    args = ["gcc", "-c"]
+    args << "-fPIC" if pic
+    stdout_and_stderr, status = Open3.capture2e(*args, "-o", output_path, source_path)
     unless status.success?
       raise "gcc failed to compile source (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
     end
