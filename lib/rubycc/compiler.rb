@@ -32,6 +32,10 @@ module Rubycc
     # so a cross compile reads the target's ABI headers (struct stat, nlink_t,
     # WCHAR_* and kin) rather than the host's. Apart from those four every entry
     # shares the orchestration logic below unchanged.
+    #
+    # Which C library those headers describe is deliberately *not* in this table:
+    # the machine and the libc are independent axes (either arch runs either
+    # libc), so it is #compile's own `libc` keyword instead.
     TARGETS = {
       "x86_64" => { backend: Backend::X86_64, machine: ObjFile::ELFWriter::X86_64,
                     char_signed: true,
@@ -50,9 +54,13 @@ module Rubycc
     # Compiles C source into an ELF64 relocatable object, returned as an
     # ASCII-8BIT String. Raises Rubycc::CompileError on user errors. `target`
     # names the machine to generate code for (see TARGETS); it defaults to
-    # x86_64 and an unknown value is a caller error.
+    # x86_64 and an unknown value is a caller error. `libc` names the C library
+    # whose ABI the bundled headers are to describe ("glibc" or "musl"); it
+    # defaults to the host's own, so an unconfigured compile on a musl host
+    # reads the musl branches, and an unknown value is a caller error too (the
+    # preprocessor raises it).
     def compile(source, filename:, include_paths: [], pic: false, defines: [], system_includes: true,
-                target: "x86_64")
+                target: "x86_64", libc: Preprocess::Preprocessor.host_libc)
       entry = TARGETS.fetch(target) { raise ArgumentError, "unsupported target: #{target.inspect}" }
       # The target's plain-`char` type, threaded through every stage that builds
       # or reasons about one: the preprocessor (which predefines
@@ -62,7 +70,8 @@ module Rubycc
       plain_char = Type.plain_char(entry[:char_signed])
       tokens = Preprocess::Preprocessor.new(char_unsigned: plain_char.unsigned?,
                                             arch_macros: entry[:arch_macros],
-                                            libc_arch: entry[:libc_arch])
+                                            libc_arch: entry[:libc_arch],
+                                            libc: libc)
                                        .run(source, filename: filename,
                                             include_paths: include_paths, defines: defines,
                                             system_includes: system_includes)
@@ -275,11 +284,12 @@ module Rubycc
     # Convenience: read `input_path`, compile it and write the object to
     # `output_path`.
     def self.compile_file(input_path, output_path, include_paths: [], pic: false, defines: [],
-                          system_includes: true, target: "x86_64")
+                          system_includes: true, target: "x86_64",
+                          libc: Preprocess::Preprocessor.host_libc)
       source = File.read(input_path)
       binary = new.compile(source, filename: input_path, include_paths: include_paths,
                                    pic: pic, defines: defines, system_includes: system_includes,
-                                   target: target)
+                                   target: target, libc: libc)
       File.binwrite(output_path, binary)
       output_path
     end

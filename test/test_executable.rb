@@ -106,11 +106,21 @@ class TestExecutable < Minitest::Test
     end
   end
 
+  # The C library's SONAME on this host: glibc's libc.so.6, or musl's
+  # libc.musl-<arch>.so.1. The assertion below is "libc is a default dependency",
+  # not "glibc is", so the name is read from the host rather than written in --
+  # measured on musl in CI, where a hard-coded libc.so.6 failed against a
+  # correctly-linked musl binary (docs/STEPS.md Step 194).
+  def host_libc_soname
+    RbConfig::CONFIG["arch"].to_s.include?("musl") ? "libc.musl-x86_64.so.1" : "libc.so.6"
+  end
+
   def test_libc_is_a_default_needed
     skip_unless_linkable
 
     r = Reader.read(build_exe([RETURN_42]))
-    assert_includes r.needed, "libc.so.6", "libc is a default dependency (it defines __libc_start_main)"
+    assert_includes r.needed, host_libc_soname,
+                    "libc is a default dependency (it defines the program entry's startup hook)"
   end
 
   # A non-PIE executable is mapped at its exact link-time address, so no internal

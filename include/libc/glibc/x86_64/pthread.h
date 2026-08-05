@@ -40,7 +40,17 @@ typedef union { char __size[4];  int  __align; } pthread_mutexattr_t;
 typedef union { char __size[48]; long __align; } pthread_cond_t;
 typedef union { char __size[4];  int  __align; } pthread_condattr_t;
 typedef union { char __size[56]; long __align; } pthread_rwlock_t;
+/* pthread_rwlockattr_t is the one object the two C libraries lay out
+   differently here: 8 bytes on both, but 4-byte aligned on musl against
+   glibc's 8 (both sizeof/_Alignof pairs measured with the ABI harness, glibc's
+   on this host and musl's on the CI musl run, docs/STEPS.md Step 193), so the
+   aligning scalar of the opaque union is the narrower one there. Every other
+   pthreads object above measured identical on the two libraries. */
+#if defined(__RUBYCC_LIBC_MUSL__)
+typedef union { char __size[8];  int  __align; } pthread_rwlockattr_t;
+#else
 typedef union { char __size[8];  long __align; } pthread_rwlockattr_t;
+#endif
 
 /* Mutex kinds (pthread_mutexattr_settype / __kind). */
 #define PTHREAD_MUTEX_NORMAL     0

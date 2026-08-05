@@ -18,7 +18,10 @@
        return of WCOREDUMP, which yields the 0x80 flag bit rather than 1).
        The formulas below are therefore rubycc's own spelling of a measured
        fact; they are also written to evaluate their argument exactly once,
-       which glibc's differently-shaped bodies also do.
+       which glibc's differently-shaped bodies also do. That exhaustive
+       comparison had a glibc oracle; on musl the harness measured a
+       difference in WIFSTOPPED alone, so that macro (and only that one) has a
+       musl branch below.
 
    Common layer: every value and every macro result above is identical on
    x86-64 and aarch64, so this header is arch-neutral (unlike sys/epoll.h,
@@ -66,7 +69,8 @@ typedef unsigned int id_t;
      bit 7       core-dump flag
      bits 8..15  exit code, or the stopping signal when bits 0..7 are 0x7f
      0xffff      the whole word, meaning "continued"
-   Each macro evaluates its argument once. WIFSIGNALED's unsigned compare is
+   Each macro evaluates its argument once, WIFSTOPPED's musl branch excepted
+   (see its own note). WIFSIGNALED's unsigned compare is
    the single-evaluation way to say "the signal field is neither 0 nor the
    0x7f stopped marker": subtracting one wraps the 0 case past the range. */
 #define WTERMSIG(status)     ((status) & 0x7f)
@@ -74,7 +78,26 @@ typedef unsigned int id_t;
 #define WSTOPSIG(status)     (((status) & 0xff00) >> 8)
 #define WIFEXITED(status)    (((status) & 0x7f) == 0)
 #define WIFSIGNALED(status)  ((unsigned)(((status) & 0x7f) - 1) < 0x7eu)
+/* WIFSTOPPED is the one status macro the two C libraries answer differently:
+   musl also requires the stopping-signal byte to be non-zero, so the bare
+   0x007f word is not "stopped" there. Measured on the four status words the
+   ABI harness probes (docs/STEPS.md Step 193; glibc's side on this host):
+     status   glibc  musl
+     0x0000     0      0
+     0x007f     1      0
+     0x137f     1      1
+     0xffff     0      0
+   The musl form below is the narrowest formula that reproduces all four; no
+   other status word was measured on musl, so nothing stronger is claimed.
+   Unlike every other macro here it names its argument twice -- there is no
+   single-evaluation spelling of "low byte is 0x7f and high byte is not zero"
+   that does not go through a helper -- so an argument with a side effect is
+   evaluated twice under musl. */
+#if defined(__RUBYCC_LIBC_MUSL__)
+#define WIFSTOPPED(status)   (((status) & 0xff) == 0x7f && ((status) & 0xff00) != 0)
+#else
 #define WIFSTOPPED(status)   (((status) & 0xff) == 0x7f)
+#endif
 #define WIFCONTINUED(status) ((status) == 0xffff)
 #define WCOREDUMP(status)    ((status) & 0x80)
 
