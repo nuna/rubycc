@@ -13,7 +13,7 @@
 | G | **同梱ヘッダの musl 対応が x86-64 のみ**。Step 193 で libc 軸を入れ、musl 実走で測れた 15 項目を反映したが、**aarch64 の musl 値は一度も測っていない**ので aarch64 の arch 層(`fcntl.h` / `stdint.h` / `limits.h` / `ctype.h` / `pthread.h`)は glibc 値のまま | aarch64 + musl では ABI が合わない可能性がある。**x86-64 の musl は次の実走で確認**(このホストでは検査できない) | 中 | STEPS.md Step 193。arch 層は「機種で値が動く」ことを前提に存在する層(`O_DIRECT` 群がその実例)なので、x86-64 の測定値を写すのは**測定ではなく仮定**になる |
 | I | **ABI ハーネスの glibc 固有ケースの分類が未完(残りわずか)**。Step 180 で仕組みを入れ、Steps 180・181 の 2 回の musl 実測で 13 ケースを分類。**gcc がエラーを打ち切るため、`_IS*` / `LC_*` / `_NL_ITEM*` の 3 系統は「系統ごと」の推論で移した**(全メンバの個別実測はしていない) | 推論が外れていれば、その項目が musl で不要に落ちる | 低 | STEPS.md Steps 175・180・181。次の musl 実走で残りが出る |
 | M | **`rubycc-pkgconf` のシステムパス除外が Debian の綴り決め打ち**。実測(musl/Alpine): zlib の `--libs` が本物の pkgconf は `-L/usr/lib/x86_64-linux-gnu -lz`、rubycc は `-lz`。glibc ホストでは同じパスが実際にシステムパスなので両者とも落として一致していた | musl 環境で `-L` が 1 つ落ちる。今回の 3 gem は通っているので実害は未確認 | 低 | STEPS.md Step 194 |
-| N | **共有ライブラリのコンストラクタが musl で 1 回しか走らない**。実測: `test_compiled_constructor_order_matches_gcc` が gcc の `123L123L123L` に対し rubycc は `123L`(glibc ホストでは一致) | musl 上で `__attribute__((constructor))` を複数持つ拡張の初期化が落ちうる。**原因未特定** — rubycc の `.init_array` 合成か musl のローダの扱いかを切り分けていない | **高** | STEPS.md Step 194 |
+| N | **rubycc の共有ライブラリが、自分で定義した外部データシンボルの介入(interposition)を尊重しない**。実測(**glibc で再現**): 同じソースから作った gcc 版と rubycc 版を `RTLD_GLOBAL` で順に `dlopen` すると、**gcc 版は先に載っている方の `trace` に書く**が、**rubycc 版は自分の `trace` に書く** | ELF の既定の意味論(`-Bsymbolic` でも protected 可視性でもないのに直接参照している)からの逸脱。`LD_PRELOAD` による差し替えや同一シンボルを持つ複数ライブラリの共存で挙動が gcc と変わる | **高** | STEPS.md Step 195。musl の実走で露出したが**musl は要らない** — musl は `dlclose` が解放しないので介入が観測できただけ。**修正は PIC のデータアクセスを GOT 経由にする話で、性能とのトレードオフがある**(未着手) |
 ## 2. 未解消の負債
 
 | 負債 | 影響 | 優先 | 詳細 |
