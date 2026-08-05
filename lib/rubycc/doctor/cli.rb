@@ -2,6 +2,8 @@
 
 require "optparse"
 
+require_relative "../version"
+
 require_relative "gemfile"
 require_relative "verified_gems"
 require_relative "builder"
@@ -72,6 +74,10 @@ module Rubycc
         options = { gemfile: File.expand_path("Gemfile"), timeout: 300, max_builds: nil }
         parser = OptionParser.new do |o|
           o.banner = "Usage: rubycc-doctor [options]"
+          # OptionParser answers --version itself, but only once it has been given
+          # one; without this it prints its "version unknown" fallback, which is a
+          # poor answer from a command that does know its version.
+          o.version = Rubycc::VERSION
           o.on("--gemfile PATH", "Gemfile path (default ./Gemfile; .lock preferred)") { |v| options[:gemfile] = File.expand_path(v) }
           o.on("--timeout SECONDS", Integer, "Per-gem build timeout (default 300)") { |v| options[:timeout] = v }
           o.on("--max-builds N", Integer, "Cap the number of on-the-spot builds") { |v| options[:max_builds] = v }

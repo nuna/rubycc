@@ -8193,6 +8193,48 @@ CI マトリクスは `test.yml` に存在する)。
 
 ---
 
+## symbolic-decision-2 — v1.0 リリース準備(M5 H6)
+
+**準備のみ。タグも `gem push` もしていない**(ユーザ指示)。
+
+### やったこと
+
+`0.1.0` → `1.0.0`、`CHANGELOG.md` 新設、README の実績を実測値に更新
+(検証済み 18 gem、musl 3、aarch64 2)。
+
+**gem を `SOURCE_DATE_EPOCH` 固定で 2 回ビルドしてバイト一致を確認**した
+(474,112 bytes)。N4「決定的ビルド」の配布物版で、Tier C が同じことをする。
+
+### 準備中に見つけた欠陥 2 件
+
+**`rubycc-doctor --version` が「version unknown」を返していた。**
+OptionParser は `--version` を自前で処理するが、**バージョンを渡していなかった**ので
+既定のフォールバックが出ていた。**バージョンを知っているコマンドの答えとして不適切**である。
+
+途中で「未知の `--flag` が全部 gem 名になる」と読んだが、**これは誤りだった** —
+実際には `invalid option: --bogus` と正しく拒否される。**確かめてから書くべきだった。**
+
+**`CHANGELOG.md` が gem に入らなかった。** 作ったファイルを gemspec の `files` に
+足し忘れていた。**同梱物は毎回ビルドして確かめる**しかない。
+
+### 測って「直さない」と決めたもの
+
+`rmake --version` と `rubycc-pkgconf --version` は未対応のままにした。
+mkmf の `pkg_config` が実際に渡すのは
+`--exists` / `--modversion` / `--cflags*` / `--libs*` **だけ**で、
+**`--version` は呼ばない**(実測)。
+
+さらに **pkg-config の `--version` は本物ならツール自身のバージョンを返す**もので、
+スクリプトがその形式を解釈しうる。**似て非なる値を返す方が危険**なので、
+「5 つのコマンドで揃っていないから」という理由だけで足さない。
+
+### 残っているのはタグと push だけ
+
+`v1.0.0` を打てば Tier C が走り、タグと `Rubycc::VERSION` の一致と再現ビルドを検証する。
+**`gem push` は方針として自動化しない**(アカウント保有者の操作)。
+
+---
+
 ## 現在のテスト規模
 
 differential-discipline-2 完了時点: **2,839 runs / 8,438 assertions / 0 failures / 0 errors / 44 skips**

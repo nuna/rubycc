@@ -16,16 +16,34 @@ Successfully installed msgpack-1.8.3
 ## Status
 
 Working. The toolchain compiles and links real gems, and the gems' own test suites pass
-against the resulting binaries.
+against the resulting binaries. **18 gems are verified this way**, each by running the
+gem's own suite against the `.so` a `RUBYCC=1 gem install` produced — never by inspection:
+
+    bigdecimal  date  digest  erb  etc  io-console  io-nonblock  io-wait  json
+    msgpack  nkf  psych  racc  redcarpet  stackprof  stringio  strscan  zlib
+
+A few of the larger runs, for scale:
 
 | gem | result |
 |---|---|
+| date 3.5.1 | 143 tests / 162,593 assertions / 0 failures |
 | json 2.21.1 | 606 tests / 3,433 assertions / 0 failures |
 | bigdecimal 4.1.2 | 265 tests / 8,267 assertions / 0 failures |
-| redcarpet 3.6.1 | 136 tests / 206 assertions / 0 failures |
-| msgpack 1.8.3 | 468 examples, all MRI examples pass |
-| racc 1.8.1 | 71 tests / 319 assertions / 0 failures |
-| date 3.5.1 | 143 tests / 162,593 assertions / 0 failures |
+| psych 5.3.1 | 633 tests / 1,598 assertions / 0 failures |
+| digest 3.2.1 | 98 tests / 215 assertions / 0 failures (six extensions in one gem) |
+
+Beyond glibc/x86-64, the same procedure has been run on other environments. Those
+columns are thinner on purpose — each entry is a measured run, so the count is what has
+actually been executed, not what is expected to work:
+
+| environment | verified gems |
+|---|---|
+| glibc x86-64 | 18 |
+| musl x86-64 (Alpine) | 3 |
+| glibc aarch64 | 2 |
+
+The bundled headers are checked against each environment's own gcc by a differential
+ABI harness, on both machines and both C libraries.
 
 It also compiles the SQLite amalgamation — a single 261,463-line translation unit — in
 8.1 s using 467 MB of memory.

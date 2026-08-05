@@ -1,0 +1,48 @@
+# Changelog
+
+Notable changes per release. The per-step design record — why each decision was made,
+and what was measured to justify it — is in [docs/STEPS.md](docs/STEPS.md); this file is
+the summary a consumer of the gem needs.
+
+Versioning follows semver with one project-specific rule: **a regression in the corpus
+pass rate is a breaking change**, whatever the code change looked like. See the
+Versioning section of the README.
+
+## 1.0.0 (unreleased)
+
+First release. rubycc builds Ruby C extensions with no gcc, no binutils, no make and no
+shell — it is a C compiler, assembler-free ELF writer, linker, `ar`, `make`, `pkg-config`
+shim and preprocessor, written in Ruby.
+
+### What works
+
+- **18 gems verified**: bigdecimal, date, digest, erb, etc, io-console, io-nonblock,
+  io-wait, json, msgpack, nkf, psych, racc, redcarpet, stackprof, stringio, strscan,
+  zlib. "Verified" means the gem's own test suite passed against the `.so` that a
+  `RUBYCC=1 gem install` produced — the record is `data/verified_gems.json`, written
+  only by `tools/verify_gem_tests.rb`, never by hand.
+- **Two machines**: x86-64 and aarch64, each with its own backend and ABI.
+- **Two C libraries**: glibc and musl. The bundled headers carry both where they differ,
+  and every difference was measured against that environment's own gcc rather than
+  copied from a libc's sources.
+- **Bundled libc headers** so a distroless image with no libc development package still
+  compiles `ruby.h`.
+- `rubycc-doctor` reports whether a project's gems are known to build.
+
+### Known limitations
+
+Listed in full, with measurements, in the README. The ones most likely to matter:
+
+- Compile throughput is 69% of the 20,000 lines/sec target.
+- Generated code is unoptimized; up to 7.65x slower than `gcc -O2` on tight loops.
+- `_Atomic` is not implemented, so `<stdatomic.h>` is not bundled.
+- Shared objects bind their own global symbols directly (`ld -Bsymbolic` semantics),
+  with no switch to turn it off.
+- 128-bit integers: passing, returning and shifting work; division, remainder, bitwise
+  operators and variadic passing do not.
+
+### Not in scope
+
+C++ (grpc), gems that run `configure` through mini_portile (nokogiri's vendored build —
+`--use-system-libraries` is fine), and gems that ship assembly (ffi). The full list with
+reasons is [docs/OUT-OF-SCOPE-GEMS.md](docs/OUT-OF-SCOPE-GEMS.md).
