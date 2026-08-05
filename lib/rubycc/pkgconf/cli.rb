@@ -103,11 +103,36 @@ module Rubycc
       # unaffected in practice, since they keep only tokens the filter never
       # touches.
       def all_cflags
-        @filter.cflags(@modules.flat_map { |name| @resolver.cflags_tokens(name) })
+        dedupe_search_paths(@filter.cflags(@modules.flat_map { |name| @resolver.cflags_tokens(name) }), "-I")
       end
 
       def all_libs
-        @filter.libs(@modules.flat_map { |name| @resolver.libs_tokens(name) })
+        dedupe_search_paths(@filter.libs(@modules.flat_map { |name| @resolver.libs_tokens(name) }), "-L")
+      end
+
+      # Collapse a repeated search-path token to its first occurrence, the way
+      # the real pkg-config does. A directory named twice searches the same
+      # directory twice, so dropping the later copy cannot change what is found,
+      # while keeping the first preserves the order the .pc files asked for.
+      #
+      # This is not hypothetical tidying: zlib.pc writes
+      # `Libs: -L${libdir} -L${sharedlibdir} -lz` and on this environment both
+      # variables expand to the same directory, so the shim emitted that -L
+      # twice where the real tool emitted it once. It went unnoticed because the
+      # system-path filter happened to remove both copies on Debian; measured on
+      # Alpine, where that directory is not a system directory and neither copy
+      # is removed (docs/STEPS.md Step 199).
+      #
+      # Only search paths are collapsed. `-l` is deliberately left alone: a
+      # repeated library can matter to a static link's resolution order, and no
+      # measurement here covers it.
+      def dedupe_search_paths(tokens, flag)
+        seen = {}
+        tokens.reject do |token|
+          next false unless token.start_with?(flag) && token.length > flag.length
+
+          seen.key?(token).tap { seen[token] = true }
+        end
       end
     end
   end

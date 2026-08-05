@@ -208,7 +208,19 @@ class TestPkgconf < Minitest::Test
   # -L/usr/lib/x86_64-linux-gnu survived) before that measurement was
   # available; see test_cli_libs_zlib_output_matches_measured_real_pkg_config
   # below for the exact expected output.
+  # These three cases assert that the Debian/Ubuntu multiarch libdir is filtered
+  # out. That is only true where it *is* a system libdir: on a host without one
+  # (Alpine, measured in CI) the real pkg-config keeps a `-L` naming it, and so
+  # does this shim by design (see SystemPathFilter). Skipping there keeps the
+  # cases honest instead of asserting one distribution's layout everywhere.
+  def skip_unless_multiarch_libdir
+    return if File.directory?("/usr/lib/x86_64-linux-gnu")
+
+    skip "no multiarch libdir on this host; it is not a system directory here"
+  end
+
   def test_cli_libs_zlib_has_dash_l_zlib_but_not_the_multiarch_dash_capital_l
+    skip_unless_multiarch_libdir
     out, _err, status = run_cli("--libs", "zlib")
     assert status.success?
     tokens = out.chomp.split
@@ -221,6 +233,7 @@ class TestPkgconf < Minitest::Test
   # libdir, which is now filtered as a system directory), so this stands in
   # for that comparison on developer machines that lack a pkg-config binary.
   def test_cli_libs_zlib_output_matches_measured_real_pkg_config
+    skip_unless_multiarch_libdir
     out, _err, status = run_cli("--libs", "zlib")
     assert status.success?
     assert_equal "-lz", out.chomp
@@ -398,6 +411,7 @@ class TestPkgconf < Minitest::Test
   # multiarch directories are system directories by default alongside plain
   # /usr/lib and /lib.
   def test_filter_defaults_cover_the_multiarch_library_directories
+    skip_unless_multiarch_libdir
     assert_equal [], filter.libs(["-L/usr/lib/x86_64-linux-gnu"])
     assert_equal [], filter.libs(["-L/lib/x86_64-linux-gnu"])
   end
