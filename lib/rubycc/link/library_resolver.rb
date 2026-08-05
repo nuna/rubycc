@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "rbconfig"
 require "set"
 
 module Rubycc
@@ -43,16 +44,27 @@ module Rubycc
       AR_MAGIC = "!<arch>\n".b
       ET_DYN   = 3
 
-      # The platform's default library directories, consulted after every `-L`
-      # directory. Ordered most-specific (the x86_64 multiarch trees) to least, and
-      # filtered to the ones that exist on the host at construction time.
-      DEFAULT_SYSTEM_DIRS = [
-        "/usr/lib/x86_64-linux-gnu",
-        "/usr/lib",
-        "/lib/x86_64-linux-gnu",
-        "/lib",
-        "/usr/local/lib"
-      ].freeze
+      # The target's default library directories, consulted after every `-L`
+      # directory. Debian's multiarch directory is target-specific; using the
+      # x86_64 spelling unconditionally made a native aarch64 build unable to
+      # resolve even libc's ordinary `-lm`/`-lpthread` dependencies.
+      TARGET_SYSTEM_DIRS = {
+        "x86_64" => [
+          "/usr/lib/x86_64-linux-gnu",
+          "/usr/lib",
+          "/lib/x86_64-linux-gnu",
+          "/lib",
+          "/usr/local/lib"
+        ].freeze,
+        "aarch64" => [
+          "/usr/lib/aarch64-linux-gnu",
+          "/usr/lib",
+          "/lib/aarch64-linux-gnu",
+          "/lib",
+          "/usr/aarch64-linux-gnu/lib",
+          "/usr/local/lib"
+        ].freeze
+      }.freeze
 
       # musl folds the libraries that glibc normally exposes as separate DSOs into
       # libc. Runtime images therefore have no libm.so, libpthread.so, or libdl.so
@@ -70,11 +82,34 @@ module Rubycc
       VERSIONED_SHARED_SUFFIX = /\A\d[\w.-]*\z/
 
       class << self
+        # Return the conventional system library directories for +target+.
+        # A target triple is accepted because the driver normalizes one before
+        # passing it here. Unknown targets fall back to the host layout so that
+        # the resolver remains useful for diagnostics instead of inventing a
+        # multiarch path for an unsupported architecture.
+        def default_system_dirs(target: nil)
+          arch = normalize_target(target || RbConfig::CONFIG["host_cpu"])
+          TARGET_SYSTEM_DIRS.fetch(arch) do
+            TARGET_SYSTEM_DIRS.fetch(normalize_target(RbConfig::CONFIG["host_cpu"])) do
+              TARGET_SYSTEM_DIRS.fetch("x86_64")
+            end
+          end
+        end
+
+        def normalize_target(spec)
+          cpu = spec.to_s.split("-", 2).first.to_s
+          case cpu
+          when "amd64", "x64" then "x86_64"
+          when "arm64"        then "aarch64"
+          else cpu
+          end
+        end
+
         # Resolves `libraries` (an ordered array of `-l` argument strings, each the
         # text after `-l`, e.g. `"z"` or `":libfoo.so.1"`) against `search_dirs`
         # (the `-L` directories, in order) and returns a Resolution.
-        def resolve(libraries, search_dirs: [])
-          new(search_dirs: search_dirs).resolve(libraries)
+        def resolve(libraries, search_dirs: [], target: nil)
+          new(search_dirs: search_dirs, target: target).resolve(libraries)
         end
 
         # High-level convenience for a driver: resolves `libraries` and links them
@@ -82,24 +117,31 @@ module Rubycc
         # archives follow the objects so the lazy pull-in sees the objects'
         # undefined symbols first; the resolved shared objects become the
         # dependencies imports bind against.
-        def link(inputs, libraries: [], search_dirs: [], soname: nil)
-          r = resolve(libraries, search_dirs: search_dirs)
+        def link(inputs, libraries: [], search_dirs: [], soname: nil, target: nil)
+          r = resolve(libraries, search_dirs: search_dirs, target: target)
           SharedLinker.link(inputs + r.inputs, needed: r.needed, soname: soname)
         end
 
         # Convenience: link and write the shared object to `path`.
-        def link_to(inputs, path, libraries: [], search_dirs: [], soname: nil)
-          File.binwrite(path, link(inputs, libraries: libraries, search_dirs: search_dirs, soname: soname))
+        def link_to(inputs, path, libraries: [], search_dirs: [], soname: nil, target: nil)
+          File.binwrite(path, link(inputs, libraries: libraries, search_dirs: search_dirs,
+                                   soname: soname, target: target))
         end
       end
+
+      # Kept as a public host-layout constant for callers and tests that need to
+      # inspect the default search path without selecting a cross target.
+      DEFAULT_SYSTEM_DIRS = default_system_dirs.freeze
 
       # The outcome of resolving a set of library requests: `needed` are the shared
       # object paths to bind imports against, `inputs` the relocatable inputs
       # (archives and objects) to feed the merge, both in first-seen order.
       Resolution = Struct.new(:needed, :inputs, keyword_init: true)
 
-      def initialize(search_dirs: [])
-        @dirs = (search_dirs + DEFAULT_SYSTEM_DIRS).select { |d| File.directory?(d) }
+      def initialize(search_dirs: [], target: nil)
+        @dirs = (search_dirs + self.class.default_system_dirs(target: target)).select do |d|
+          File.directory?(d)
+        end
       end
 
       # The ordered search path actually consulted (existing `-L` dirs followed by

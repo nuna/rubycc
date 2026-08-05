@@ -17,10 +17,16 @@
 
 ---
 
-**最新追記(Step 193)**: 真のdistroless相当検証を完了。glibc / musl のRuby 4.0
+**最新追記(Step 208)**: aarch64 glibc の Ruby 4.0.6 上で、qemu-user を介した実際の
+`gem install` を完了。`io-wait` と `stringio` の C 拡張を `rubycc` でビルドし、各 gem の
+テストも成功した。`LibraryResolver` の x86_64 multiarch path 固定という実走時の不具合を
+修正し、aarch64 用の回帰テストを追加した。残る環境検証は musl全スイートと、aarch64 の
+`json` / `msgpack` を含む M4 全面受入れである。
+
+（以前の追記(Step 193)）: 真のdistroless相当検証を完了。glibc / musl のRuby 4.0
 コンテナで、cc / gcc / clang / make / sh と libc開発ヘッダを除いた状態の
 `json` / `msgpack` / `sqlite3` / `pg` のビルド・実行に成功した。残る環境検証は
-musl全スイートとaarch64 Ruby上のgem実走。
+musl全スイートとaarch64 Ruby上のM4全面受入れ。
 
 ## 1. 開発ワークフロー(1 ステップのサイクル)
 
@@ -485,8 +491,9 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   機種化されており、実変更は supported_machines の拡大が核心。PLT は BIND_NOW で
   PLT0 不要。CompatRuntime の機種不整合も解消。x86_64 は .so バイト一致。
 - **その後 M4 受け入れ**: aarch64 で全スイート + json/msgpack の gem install。
-  gem install の完走には **qemu 上で動く aarch64 版 Ruby(mkmf/rake が動く環境)が必要**で、
-  現環境には無いため未検証。**コンテナ/CI マトリクス整備時に対応**(musl 検証と同じ枠)。
+  Step 208 で qemu 上の aarch64 版 Ruby(mkmf/rake が動く環境)を整備し、
+  `io-wait` / `stringio` の限定実走は完了した。**json/msgpack と全スイートは未検証**で、
+  qemu の遅さを踏まえてコンテナ/CI マトリクスで継続する。
   リンカ・コンパイラ側の成果物は aarch64 .so を正しく生成できる段階に到達済み。
 - A4 から持ち越し: **ABI ファジングハーネス(Step 25/62)の機種パラメタ化**。現状は
   ホスト gcc 前提でクロス経路を持たないため、QEMU マトリクス整備と併せて対応する。
@@ -496,7 +503,8 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   挙動が違う。既定は QEMU の Docker マトリクスとし、リリース前検証だけ実機
   (Apple Silicon 上の Linux か ARM ランナー)で流す二段構えにする。
 - **受け入れ = M4 完了**: 全テストスイート + ABI ファジング + json/msgpack の
-  gem install が aarch64(glibc/musl)で成功。
+  gem install が aarch64(glibc/musl)で成功。Step 208 はこのうち aarch64 glibc の
+  軽量 default gem 2 件までを実測した段階である。
 
 ## 8. M5 — 互換ヘッダ・コーパス 90%・v1.0
 
@@ -849,7 +857,7 @@ H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker 
 |---|---|---|---|
 | 1 | **musl(x86_64)** | ~~GitHub Actions の `container: alpine`~~ → **ホストでチェックアウトして自分で `docker run ruby:4.0-alpine`**(ジョブコンテナにはランナーが glibc リンクの node を差し込むため `container:` は使えない)。**qemu 不要**なので 3 件で最も安い | M5 が掲げた「glibc/musl 互換ヘッダ」の**未検証の半分**。同梱ヘッダの musl 差が初めて実測できる。**足場は Step 174**、**初回実行は Step 175**。結果は**緑ではなかった** — 2,743 runs / 21 failures / 18 errors。**掲げた主張が musl 側で実際に外れていた**ことが分かり、GAPS の G(同梱ヘッダが glibc の ABI を焼き込んでいる)・H(`stdckdint.h` 欠落)・I(ABI ハーネスが glibc 固有)に分離した。**musl の検証済み記録は 1 件も足していない**(通っていないため) |
 | 2 | ~~**真の distroless 姿勢**~~ | 1 で組んだジョブを再利用し、cc / make / sh / libc 開発ヘッダを取り除いた image を作る | **完了(Step 193)**。glibc / musl の `ruby:4.0` distroless相当で、4 gemの`--platform ruby`ビルドとrequireに成功 |
-| 3 | **aarch64 での実走** | qemu + arm64 コンテナ(`docker/setup-qemu-action`) | M4 受け入れの最後の 1 項目。qemu 上の全スイートは**遅すぎるので回さない** — `gem install` の受け入れと `verify_gem_tests.rb` を 1〜2 gem に絞る |
+| 3 | ~~**aarch64 での実走**~~ | qemu + arm64 コンテナ(`docker/setup-qemu-action`) | **完了(Step 208)**。glibc / Ruby 4.0.6 で `io-wait` / `stringio` の `gem install` と gem 自身のテストを実施。qemu 上の全スイートと `json` / `msgpack` は M4 全面受入れとして継続 |
 
 **置き場は Tier B(`weekly.yml`)**。3 件とも遅いので Tier A(`test.yml`)は速いまま保つ。
 
@@ -887,7 +895,7 @@ H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker 
   90% の分母が何なのかが読めなくなる。
 - **未解消の負債と未測定事項も `docs/GAPS.md` に集約した**
   (`test/corpus/gems.rb` の `version: nil` 4 件、racc の assertions 差異、
-  musl 全スイート / aarch64 gem実走の未測定)。真のdistroless相当の4 gem受入れは
+  musl 全スイート / aarch64 M4全面受入れの未測定)。真のdistroless相当の4 gem受入れは
   Step 193で完了した。
 - **受け入れ = v1.0 リリース = M5 完了**。
 
