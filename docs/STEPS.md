@@ -7741,7 +7741,35 @@ Step 193 の libc 分岐と同じ手だが、条件は `__aarch64__`。
 
 ---
 
-## Step 202 — aarch64 musl の実測値を反映する(M5 H6)
+## Step 202 — glibc / musl の真の distroless 相当で4 gemを受入れ(M5 H6)
+
+Step 201 までの受入れは通常のツール環境またはhermeticヘッダ模擬だった。ここでは
+`ruby:4.0-slim`(glibc) と `ruby:4.0-alpine`(musl) のコンテナで、rubycc gemを
+インストールした後に `cc` / `gcc` / `clang` / `make` / `sh` と libc 開発ヘッダを
+取り除き、`RUBYCC=1 RUBYCC_HERMETIC_HEADERS=1` の実物経路を確認した。
+
+| 環境 | gem install | 実行確認 |
+|---|---|---|
+| glibc / Ruby 4.0.6 | `json:2.21.1`, `msgpack:1.8.3`, `sqlite3:2.9.5`, `pg:1.6.3` | JSON、MessagePack、SQLite in-memory、`PG.library_version` |
+| musl / Ruby 4.0.6 | `json:2.21.1`, `msgpack:1.8.3`, `sqlite3:2.9.5`, `pg:1.6.3` | 同上 |
+
+sqlite3 / pg は `--platform ruby` とし、外部 gem のヘッダと実行用 `.so` だけを残した。
+libc ヘッダを復元したり、開発用 `.so` の symlink を追加したりしていない。両環境とも
+PASSだった。今回の利用者向け再現例は `examples/distroless/Dockerfile` に置いた。
+
+この受入れで露出した実装上の穴も回帰テスト化した。
+
+- runtime-only の versioned `.so` と musl の統合 libc を `LibraryResolver` が解決する。
+- mkmf のマクロ化 header-name、`(void *)0` と function pointer の conditional、
+  GNUの構造体メンバー `[0]`、X-macro後の空外部宣言を受理する。
+- musl Ruby と libpq の `restrict` 別名再定義を限定的に許容する。
+
+> **番号の衝突について**: このブランチは当初この作業に Step 202・203 を使っており、
+> コミットの件名にはその番号が残っている。並行して master に入った distroless の
+> 作業が先に Step 202 を取っていたため、**この文書側を 204・205 に振り直した**。
+> 番号で追うときはこの対応を見ること。
+
+## Step 204 — aarch64 musl の実測値を反映する(M5 H6)
 
 Step 200 で測った値を、Step 193 が意図的に空けておいた 5 ファイルに書いた。
 
@@ -7781,9 +7809,9 @@ G は後者に書き換えて残した。
 
 ---
 
-## Step 203 — aarch64 musl で一致を確認。**ギャップ G が閉じた**(M5 H6)
+## Step 205 — aarch64 musl で一致を確認。**ギャップ G が閉じた**(M5 H6)
 
-Step 202 の反映を、`only: musl-aarch64` で 1 ジョブだけ回して確かめた。
+Step 204 の反映を、`only: musl-aarch64` で 1 ジョブだけ回して確かめた。
 
 | | failures | errors |
 |---|---|---|
@@ -7799,7 +7827,7 @@ Step 202 の反映を、`only: musl-aarch64` で 1 ジョブだけ回して確�
 
 ### 手元での確認と、本物での確認は別だった
 
-Step 202 の時点で「ヘッダが実測どおりの値を出す」ことは qemu で確かめてあった。
+Step 204 の時点で「ヘッダが実測どおりの値を出す」ことは qemu で確かめてあった。
 それでも G を閉じなかったのは、**それは自分が書いた表と自分が書いたヘッダを
 突き合わせているだけ**だからである。**転記の誤りは捕まらない。**
 本物の対照と突き合わせて初めて閉じられる。
@@ -7813,11 +7841,12 @@ Step 202 の時点で「ヘッダが実測どおりの値を出す」ことは q
 
 ## 現在のテスト規模
 
-Step 203 完了時点: **2,819 runs / 8,375 assertions / 0 failures / 0 errors / 44 skips**
-(Step 202 と同数 = CI での確認と記録のみ。コードは変更していない)
-(以前) Step 202 完了時点: **2,819 runs / 8,375 assertions / 0 failures / 0 errors / 44 skips**
-(Step 201 から +3 runs = aarch64 musl の期待値検査。
-既存の aarch64 クロス gcc 差分 46 件が変わらず通ることも確認済み)
+Step 205 完了時点: **2,832 runs / 8,392 assertions / 0 failures / 0 errors / 44 skips**
+(master の distroless 作業とこのブランチが**別々にテストを足していた**ので、
+どちらか片方の数字はマージ後の値にならない。**マージしてから測り直した**。
+2,829 + 2,819 − 2,816(共通の親)= 2,832 で辻褄が合う)
+(以前) Step 202 完了時点(distroless、master 側): **2,829 runs / 8,386 assertions / 0 failures / 0 errors / 44 skips**
+(以前) Step 204 完了時点(このブランチ側): **2,819 runs / 8,375 assertions / 0 failures / 0 errors / 44 skips**
 (以前) Step 201 完了時点: **2,816 runs / 8,369 assertions / 0 failures / 0 errors / 44 skips**
 (Step 200 から +1 run = aarch64 の `float.h` 検査。
 **クロス gcc との差分で実際に通ることを確認済み**)

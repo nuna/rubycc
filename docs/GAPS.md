@@ -28,7 +28,7 @@
 |---|---|
 | ~~**musl** での全検証~~ | **測定した(Step 175)**。結果は緑ではなく、ギャップ G・H・I として §1 に移した。`data/verified_gems.json` に musl の記録が 1 件も無いのは変わらないが、それは**環境が無いからではなく通っていないから**になった |
 | **aarch64 での gem install 実走** | qemu 上で動く aarch64 版 Ruby が要る。ROADMAP §「M4 受け入れ」と同じ枠 |
-| 真の distroless コンテナ検証 | ROADMAP の M3 残項目 |
+| ~~真の distroless コンテナ検証~~ | **測定済み(Step 202)**。glibc / musl の `ruby:4.0` distroless相当で json / msgpack / sqlite3 / pg のビルドとrequireに成功 |
 
 ## 4. 閉じたギャップ(参照のみ)
 
@@ -62,7 +62,10 @@
   Step 201 で解消。**aarch64 の ABI ハーネスに `float.h` の検査を足した**ので、
   同じ見落とし(freestanding 層は機種に依らないという思い込み)は繰り返さない。
 - **Step 175 の G**(同梱ヘッダが glibc の ABI を焼き込んでいる):
-  x86-64 は Step 193、aarch64 は Step 202 で解消。**両機種とも本物の musl gcc と
-  突き合わせて 0 failures を確認した**(Step 203)。**G と I は上の表に残っている。**
+  x86-64 は Step 193、aarch64 は Step 204 で解消。**両機種とも本物の musl gcc と
+  突き合わせて 0 failures を確認した**(Step 205)。
+- **真の distroless コンテナ検証**: Step 202 で glibc / musl の両方を実測。
+  cc / gcc / clang / make / sh と libc 開発ヘッダを除いた状態で、4 gem の
+  `--platform ruby` ビルドと実行に成功した。**musl 全スイートと aarch64 gem 実走は未完了**。
 
 いずれも設計判断は STEPS.md の各ステップに記録がある。

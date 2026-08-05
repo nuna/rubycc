@@ -16,7 +16,8 @@ module Rubycc
     #
     # Search follows the classic rule: each `-L` directory in command-line order,
     # then the platform's default library directories (only those that exist), and
-    # within a single directory `lib<name>.so` is preferred over `lib<name>.a`.
+    # within a single directory an unversioned `lib<name>.so`, a versioned
+    # `lib<name>.so.<version>`, and then `lib<name>.a` are preferred in that order.
     # The first directory holding either form settles the request — the `.so`/`.a`
     # preference does not reach across directories, so an earlier directory's `.a`
     # wins over a later directory's `.so`, matching the traditional linker. A
@@ -52,6 +53,21 @@ module Rubycc
         "/lib",
         "/usr/local/lib"
       ].freeze
+
+      # musl folds the libraries that glibc normally exposes as separate DSOs into
+      # libc. Runtime images therefore have no libm.so, libpthread.so, or libdl.so
+      # (and often no unversioned libc.so either), even though extconf-generated
+      # link flags still request them. Only these known libc-provided names are
+      # eligible for the fallback; an absent arbitrary `-lfoo` must remain an
+      # error rather than silently depending on libc.
+      MUSL_LIBC_PROVIDED_LIBRARIES = %w[c m pthread rt dl resolv util crypt nsl].freeze
+
+      # Alpine/musl runtime names. The loader is also the libc implementation, so
+      # it is a valid last-resort target when a libc.musl-* compatibility symlink
+      # is not present in a stripped runtime.
+      MUSL_LIBC_FILE = /\Alibc\.musl(?:-[^.]*)?\.so\.\d[\w.-]*\z/
+      MUSL_LOADER_FILE = /\Ald-musl-[^.]+\.so\.\d[\w.-]*\z/
+      VERSIONED_SHARED_SUFFIX = /\A\d[\w.-]*\z/
 
       class << self
         # Resolves `libraries` (an ordered array of `-l` argument strings, each the
@@ -108,25 +124,103 @@ module Rubycc
       end
 
       # Locates the file for a `-l` request. For a plain name each directory is
-      # tried in order, preferring `lib<name>.so` to `lib<name>.a` within that
-      # directory; the first directory carrying either form wins. A `:filename`
-      # request looks the given name up verbatim. An unsatisfiable request is a
-      # hard error, named the way a driver reports a missing library.
+      # tried in order, preferring an unversioned shared object, then a versioned
+      # shared object, then an archive within that directory; the first directory
+      # carrying any form wins. On musl, the small set of libraries folded into
+      # libc falls back to the detected musl libc image after the ordinary search.
+      # A `:filename` request looks the given name up verbatim. An unsatisfiable
+      # request is a hard error, named the way a driver reports a missing library.
       def find_library(spec)
         if spec.start_with?(":")
           exact = spec[1..]
           dir = @dirs.find { |d| File.file?(File.join(d, exact)) }
           return File.join(dir, exact) if dir
         else
-          @dirs.each do |d|
-            shared = File.join(d, "lib#{spec}.so")
-            return shared if File.file?(shared)
+          path = find_plain_library(spec)
+          return path if path
 
-            archive = File.join(d, "lib#{spec}.a")
-            return archive if File.file?(archive)
+          if MUSL_LIBC_PROVIDED_LIBRARIES.include?(spec)
+            libc = find_musl_libc
+            return libc if libc
           end
         end
         raise LinkError, "cannot find -l#{spec}"
+      end
+
+      # Searches the normal shared/archive forms for a plain `-l` request. The
+      # versioned form matters in runtime-only images, where package managers keep
+      # `libz.so.1` but omit the development symlink `libz.so`.
+      def find_plain_library(spec)
+        @dirs.each do |d|
+          shared = File.join(d, "lib#{spec}.so")
+          return shared if File.file?(shared)
+
+          versioned = find_versioned_shared(d, spec)
+          return versioned if versioned
+
+          archive = File.join(d, "lib#{spec}.a")
+          return archive if File.file?(archive)
+        end
+        nil
+      end
+
+      # Finds a versioned shared object without manufacturing or requiring the
+      # unversioned development symlink. Symlinks carrying the ABI/SONAME name
+      # are preferred over their fully-versioned targets when both are present;
+      # otherwise the highest numeric version is selected deterministically.
+      def find_versioned_shared(dir, spec)
+        prefix = "lib#{spec}.so."
+        candidates = directory_entries(dir).filter_map do |name|
+          next unless name.start_with?(prefix)
+          suffix = name.delete_prefix(prefix)
+          next unless VERSIONED_SHARED_SUFFIX.match?(suffix)
+
+          path = File.join(dir, name)
+          path if File.file?(path)
+        end
+        choose_versioned(candidates)
+      end
+
+      # Finds musl's combined libc image. Prefer the libc.musl-* name, which is
+      # the stable library spelling in Alpine runtime images, and use the loader
+      # name as a fallback because musl implements both entry points in one ELF.
+      # Searching the resolver's directories keeps this useful for a mounted
+      # runtime/sysroot rather than assuming only the host's /lib.
+      def find_musl_libc
+        @dirs.each do |dir|
+          candidate = choose_versioned(directory_entries(dir).filter_map do |name|
+            next unless MUSL_LIBC_FILE.match?(name)
+
+            path = File.join(dir, name)
+            path if File.file?(path)
+          end)
+          return candidate if candidate
+        end
+
+        @dirs.each do |dir|
+          candidate = choose_versioned(directory_entries(dir).filter_map do |name|
+            next unless MUSL_LOADER_FILE.match?(name)
+
+            path = File.join(dir, name)
+            path if File.file?(path)
+          end)
+          return candidate if candidate
+        end
+        nil
+      end
+
+      def choose_versioned(candidates)
+        candidates.max_by do |path|
+          name = File.basename(path)
+          version = name.split(".so.", 2).last.to_s.split(".").map(&:to_i)
+          [File.symlink?(path) ? 1 : 0, version, name]
+        end
+      end
+
+      def directory_entries(dir)
+        Dir.children(dir)
+      rescue SystemCallError
+        []
       end
 
       # Classifies a resolved file and routes it: a shared object to `needed`, a

@@ -173,17 +173,17 @@ module Rubycc
       # diagnosed as unsupported by the generator. `token` is the opening "(".
       CompoundLiteral = Data.define(:type, :initializer, :token)
 
-      # A null pointer constant, as this subset defines it: an integer literal
-      # whose value is 0, which also covers a character constant like '\0'
-      # (the lexer already lowers it to an integer 0). ISO C additionally admits
-      # any integer constant expression evaluating to 0, and such an expression
-      # cast to void *, but general constant-expression evaluation arrives in a
-      # later step, so matching the literal form is enough here. A null pointer
-      # constant converts implicitly to any pointer type in an assignment, an
-      # initializer, an argument, a return, an "=="/"!=" comparison and the arms
-      # of "?:".
+      # A null pointer constant in the forms this front end can recognize here:
+      # an integer literal whose value is 0 (which also covers a character
+      # constant like '\0', since the lexer lowers it to an integer 0), or that
+      # literal cast to void *. A null pointer constant converts implicitly to
+      # any pointer type in an assignment, an initializer, an argument, a
+      # return, an "=="/"!=" comparison and the arms of "?:".
       def self.null_pointer_constant?(node)
-        node.is_a?(IntLit) && node.value.zero?
+        return true if node.is_a?(IntLit) && node.value.zero?
+
+        node.is_a?(Cast) && node.type.pointer? && node.type.target.void? &&
+          node.operand.is_a?(IntLit) && node.operand.value.zero?
       end
 
       # Simple assignment `target = value`. `target` is a VariableRef or a
