@@ -7,13 +7,14 @@
    errno.h and sys/stat.h. open/openat/creat/fcntl are POSIX declarations.
    Placed in the glibc/aarch64 layer because O_DIRECT, O_DIRECTORY and
    O_NOFOLLOW swap bit assignments here versus x86-64's uapi/asm/fcntl.h.
-   No musl branch, deliberately: the x86-64 companion carries both C libraries'
-   values for O_ACCMODE and O_LARGEFILE, but those musl figures were measured on
-   x86-64 only, and this is the layer that exists precisely because values move
-   between machines -- the O_DIRECT group above is the standing proof. Copying
-   them here would be an assumption, not a measurement (R8), so this file stays
-   glibc-valued until an aarch64 musl run measures them (docs/STEPS.md Step
-   193). */
+   Two macros -- O_ACCMODE and O_LARGEFILE -- additionally differ between the
+   two C libraries; both measured values are carried below, selected by
+   __RUBYCC_LIBC_MUSL__ (see the preprocessor's LIBCS). This is also the layer
+   that exists precisely because values move between machines -- the O_DIRECT
+   group below is the standing proof, and O_LARGEFILE is a second one: musl's
+   figure here (131072, i.e. 0400000) is not musl's x86-64 figure (32768,
+   i.e. 0100000). Had this file copied the x86-64 companion's musl value
+   instead of measuring its own, it would have been wrong. */
 
 #ifndef _RUBYCC_FCNTL_H
 #define _RUBYCC_FCNTL_H
@@ -35,7 +36,18 @@ typedef int pid_t;
 #define O_RDONLY  0
 #define O_WRONLY  01
 #define O_RDWR    02
+/* O_ACCMODE is one of the two flag macros the two libcs disagree on: musl's
+   access-mode mask spans the O_PATH bit as well (measured 2097155, i.e.
+   010000003), glibc's is the low two bits only (measured 3, i.e. 03) -- the
+   same pair the x86-64 companion carries, and measured identically here
+   (docs/STEPS.md Step 202), not merely assumed to match it (R8). Both
+   figures are measurements of the ABI harness, glibc's on this host and
+   musl's on the CI aarch64 musl run. */
+#if defined(__RUBYCC_LIBC_MUSL__)
+#define O_ACCMODE 010000003
+#else
 #define O_ACCMODE 03
+#endif
 
 /* Creation and status flags (octal, kernel ABI). */
 #define O_CREAT     0100
@@ -50,7 +62,20 @@ typedef int pid_t;
 #define O_SYNC      04010000
 #define O_RSYNC     O_SYNC
 #define O_CLOEXEC   02000000
+/* O_LARGEFILE is the other flag macro the two libcs disagree on: musl hands
+   out the kernel's own large-file bit (measured 131072, i.e. 0400000) while
+   glibc, whose LP64 off_t is already 64-bit, leaves it empty (measured 0).
+   Unlike O_ACCMODE above, this is NOT the x86-64 companion's musl figure
+   (32768, i.e. 0100000): the large-file bit's position is arch specific, the
+   same way O_DIRECT/O_DIRECTORY/O_NOFOLLOW are, so copying x86-64's value here
+   would have been wrong rather than merely unmeasured (R8). Both measured
+   with the ABI harness, glibc's here and musl's on the CI aarch64 musl run
+   (docs/STEPS.md Step 202). */
+#if defined(__RUBYCC_LIBC_MUSL__)
+#define O_LARGEFILE 0400000
+#else
 #define O_LARGEFILE 0
+#endif
 #define O_NOATIME   01000000
 #define O_PATH      010000000
 

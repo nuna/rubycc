@@ -2352,3 +2352,162 @@ class TestHeaderAbiAarch64 < Minitest::Test
                  "<#{spec.header}>: rubycc aarch64 ABI output differs from cross gcc"
   end
 end
+
+# Step 202 (M5 H6): the aarch64 musl branches of the bundled headers, the
+# aarch64 counterpart of TestMuslBundledHeaderValues above.
+#
+# TestHeaderAbiAarch64 above is a differential against the *cross gcc's* real
+# headers, which are glibc's -- there is no musl cross gcc to compile an oracle
+# with, so the musl arms of the aarch64 layer cannot be checked that way, the
+# same limitation TestMuslBundledHeaderValues describes for a glibc host's own
+# musl branches. What can still be checked, the same way, is the branch
+# selection: sizes, alignments and macro values are settled at compile time, so
+# compiling the probe with `target: "aarch64", libc: "musl"` and *running it
+# under qemu* (the object needs a real linker and a real machine to execute on,
+# not merely to compile -- the cross gcc is that linker here, and the values
+# under test all come from the header, not from which libc the link actually
+# resolves against) shows exactly which arm each #if took. The expected text
+# below is the measured musl column of Step 202 transcribed once; nothing in it
+# is derived from a header, and no musl or glibc source was read to produce it
+# (R11) -- only the CI aarch64 Alpine run's own numbers.
+#
+# The glibc case is the other half, the same way: it pins the #else arms to the
+# values TestHeaderAbiAarch64 has been proving against the cross-gcc oracle all
+# along, so a mis-nested #if that quietly moved the default would fail here too.
+class TestAarch64MuslBundledHeaderValues < Minitest::Test
+  include ExecutionHelper
+  include AArch64ExecutionHelper
+  include HeaderAbiHarness
+
+  def setup
+    skip_unless_aarch64_toolchain
+  end
+
+  # Every aarch64 check Step 202 measured the two C libraries to disagree on,
+  # gathered into one probe: the four fast-type sizes (stdint.h), MB_LEN_MAX
+  # (limits.h), O_ACCMODE/O_LARGEFILE (fcntl.h), and the five pthreads opaque
+  # objects (pthread.h). INT_FAST16_MAX/INT_FAST32_MAX are the one macro pair
+  # Step 202 measured directly (the table in the task); INT_FAST16_MIN,
+  # INT_FAST32_MIN and the two UINT_FAST*_MAX are the values the measured
+  # 32-bit width already forces (the same relationship the bundled stdint.h
+  # itself encodes: those macros are spelled through the exact-width names
+  # rather than asserted on their own), so they are included as the width's
+  # necessary consequence, not as separate assumptions.
+  DIVERGENCES = HeaderAbiHarness::Spec.new(
+    header: "stdint.h",
+    also: %w[limits.h fcntl.h pthread.h],
+    sizes: ["int_fast16_t", "int_fast32_t", "uint_fast16_t", "uint_fast32_t",
+            "pthread_mutex_t", "pthread_attr_t", "pthread_mutexattr_t",
+            "pthread_condattr_t", "pthread_rwlockattr_t"],
+    ints: %w[MB_LEN_MAX O_ACCMODE O_LARGEFILE
+             INT_FAST16_MIN INT_FAST16_MAX INT_FAST32_MIN INT_FAST32_MAX
+             UINT_FAST16_MAX UINT_FAST32_MAX]
+  )
+
+  # The measured aarch64 musl column (docs/STEPS.md Step 202).
+  MUSL_EXPECTED = <<~OUT
+    sizeof(int_fast16_t) = 4, _Alignof(int_fast16_t) = 4
+    sizeof(int_fast32_t) = 4, _Alignof(int_fast32_t) = 4
+    sizeof(uint_fast16_t) = 4, _Alignof(uint_fast16_t) = 4
+    sizeof(uint_fast32_t) = 4, _Alignof(uint_fast32_t) = 4
+    sizeof(pthread_mutex_t) = 40, _Alignof(pthread_mutex_t) = 8
+    sizeof(pthread_attr_t) = 56, _Alignof(pthread_attr_t) = 8
+    sizeof(pthread_mutexattr_t) = 4, _Alignof(pthread_mutexattr_t) = 4
+    sizeof(pthread_condattr_t) = 4, _Alignof(pthread_condattr_t) = 4
+    sizeof(pthread_rwlockattr_t) = 8, _Alignof(pthread_rwlockattr_t) = 4
+    MB_LEN_MAX = 4
+    O_ACCMODE = 2097155
+    O_LARGEFILE = 131072
+    INT_FAST16_MIN = -2147483648
+    INT_FAST16_MAX = 2147483647
+    INT_FAST32_MIN = -2147483648
+    INT_FAST32_MAX = 2147483647
+    UINT_FAST16_MAX = 4294967295
+    UINT_FAST32_MAX = 4294967295
+  OUT
+
+  # The glibc column: the values TestHeaderAbiAarch64 has been proving against
+  # the cross-gcc oracle since these headers were written (STDINT, LIMITS,
+  # FCNTL, PTHREAD). The two unsigned fast limits print as -1 for the same
+  # reason the x86-64 GLIBC_EXPECTED's do: the probe widens every integer
+  # check to (long long), and glibc's UINT_FAST16_MAX/UINT_FAST32_MAX is
+  # UINT64_MAX.
+  GLIBC_EXPECTED = <<~OUT
+    sizeof(int_fast16_t) = 8, _Alignof(int_fast16_t) = 8
+    sizeof(int_fast32_t) = 8, _Alignof(int_fast32_t) = 8
+    sizeof(uint_fast16_t) = 8, _Alignof(uint_fast16_t) = 8
+    sizeof(uint_fast32_t) = 8, _Alignof(uint_fast32_t) = 8
+    sizeof(pthread_mutex_t) = 48, _Alignof(pthread_mutex_t) = 8
+    sizeof(pthread_attr_t) = 64, _Alignof(pthread_attr_t) = 8
+    sizeof(pthread_mutexattr_t) = 8, _Alignof(pthread_mutexattr_t) = 4
+    sizeof(pthread_condattr_t) = 8, _Alignof(pthread_condattr_t) = 4
+    sizeof(pthread_rwlockattr_t) = 8, _Alignof(pthread_rwlockattr_t) = 8
+    MB_LEN_MAX = 16
+    O_ACCMODE = 3
+    O_LARGEFILE = 0
+    INT_FAST16_MIN = -9223372036854775808
+    INT_FAST16_MAX = 9223372036854775807
+    INT_FAST32_MIN = -9223372036854775808
+    INT_FAST32_MAX = 9223372036854775807
+    UINT_FAST16_MAX = -1
+    UINT_FAST32_MAX = -1
+  OUT
+
+  # A probe that exercises the classification macros, the aarch64 counterpart
+  # of TestMuslBundledHeaderValues::CTYPE_SOURCE. Compiled only; the values it
+  # would print are not the point (see #test_ctype_calls_the_classifier_functions_on_musl).
+  CTYPE_SOURCE = <<~C
+    #include <ctype.h>
+    int probe(int c) {
+      return isalpha(c) + isdigit(c) + isspace(c) + isupper(c) + islower(c)
+           + isxdigit(c) + isalnum(c) + ispunct(c) + iscntrl(c) + isgraph(c)
+           + isprint(c) + isblank(c) + toupper(c) + tolower(c)
+           + isascii(c) + toascii(c);
+    }
+  C
+
+  def test_musl_branches_yield_the_measured_musl_values
+    assert_equal MUSL_EXPECTED, run_divergence_probe_aarch64("musl")
+  end
+
+  def test_glibc_branches_are_untouched_by_the_musl_ones
+    assert_equal GLIBC_EXPECTED, run_divergence_probe_aarch64("glibc")
+  end
+
+  # The structural check ctype.h needs (see the class comment on
+  # TestMuslBundledHeaderValues): under musl every classifier must resolve to
+  # the out-of-line function, and under glibc to the table accessors, which
+  # shows up in which symbols the compiled object leaves undefined.
+  def test_ctype_calls_the_classifier_functions_on_musl
+    assert_equal %w[isalnum isalpha isblank iscntrl isdigit isgraph islower isprint
+                    ispunct isspace isupper isxdigit tolower toupper],
+                 undefined_symbols_aarch64(CTYPE_SOURCE, "musl")
+    assert_equal %w[__ctype_b_loc __ctype_tolower_loc __ctype_toupper_loc],
+                 undefined_symbols_aarch64(CTYPE_SOURCE, "glibc")
+  end
+
+  private
+
+  # Compiles the divergence probe for `libc` targeting aarch64, links it
+  # statically with the cross gcc and runs it under qemu, and returns its
+  # standard output.
+  def run_divergence_probe_aarch64(libc)
+    source = abi_probe_source(DIVERGENCES, libc.to_sym)
+    in_tmpdir do |dir|
+      object = File.join(dir, "aarch64_divergences_#{libc}.o")
+      compile_with_rubycc_aarch64(source, object, libc: libc)
+      status, output = link_and_run_aarch64(object)
+      assert_equal 0, status, "the aarch64 #{libc} probe exited #{status}"
+      output
+    end
+  end
+
+  # The sorted names of the symbols `source` leaves for the linker when
+  # compiled for aarch64 against `libc`, read with the project's own ELF
+  # reader.
+  def undefined_symbols_aarch64(source, libc)
+    object = Rubycc::Compiler.new.compile(source, filename: "ctype.c", target: "aarch64", libc: libc)
+    Rubycc::ObjFile::ELFReader.read(object)
+                              .symbols.select(&:undefined?).map(&:name).reject(&:empty?).sort
+  end
+end

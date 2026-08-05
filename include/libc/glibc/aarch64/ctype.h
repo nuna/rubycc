@@ -4,18 +4,12 @@
    result values are part of its ABI. This header reproduces that mechanism clean
    room from the published _ISbit formula and accessor signatures (not copied
    from glibc, not derived from musl, whose ctype returns 0/1); the accessor
-   functions themselves are resolved from the host libc at link time. Placed in
-   the glibc layer because the mechanism and its values are glibc specific (a
-   musl target would classify differently), though the values are arch
-   independent.
-   No musl branch, deliberately: the x86-64 companion switches the table-lookup
-   macros off under __RUBYCC_LIBC_MUSL__, having measured there that musl
-   returns a bare 0/1 and has no __ctype_b_loc() to reach a table through. That
-   observation is about the C library and not about the machine, so it very
-   likely holds here too -- but "very likely" is not a measurement (R8), and the
-   companion aarch64 headers are all staying glibc-valued for the same reason.
-   This file follows them until an aarch64 musl run measures it (docs/STEPS.md
-   Step 193). */
+   functions themselves are resolved from the host libc at link time. The whole
+   mechanism is glibc's, so under __RUBYCC_LIBC_MUSL__ (see the preprocessor's
+   LIBCS) the classification macros are switched off and the plain function
+   calls stand instead -- see the note above them. Placed in the glibc layer
+   because that is where the arch-switched headers live; the values themselves
+   are arch independent. */
 
 #ifndef _RUBYCC_CTYPE_H
 #define _RUBYCC_CTYPE_H
@@ -64,6 +58,22 @@ extern int toupper(int __c);
 extern int isascii(int __c);
 extern int toascii(int __c);
 
+/* The classification macros are glibc's mechanism and glibc's result values,
+   so on musl they must not be used at all: the two libraries differ in the
+   *shape* of the answer, not merely in a constant. glibc's isalpha('a') is the
+   masked table entry (measured 1024, and 2048/8192/... for the other
+   properties) while musl's is a bare 1; and musl has no __ctype_b_loc() /
+   __ctype_tolower_loc() / __ctype_toupper_loc() to reach a table through in the
+   first place, so a table-lookup macro would not even link there. Both
+   behaviours measured with the ABI harness, glibc's on this host and musl's on
+   the CI aarch64 musl run (docs/STEPS.md Step 202). Under musl the macros are
+   therefore left undefined and every classifier resolves to the out-of-line
+   function declared above, which is what returns musl's 0/1. The accessor
+   prototypes and the _IS* enumerators stay declared on both: a prototype that
+   is never called emits nothing, and code that does call one is asking for
+   glibc's own interface by name. */
+#if !defined(__RUBYCC_LIBC_MUSL__)
+
 #define __isctype(c, type) ((*__ctype_b_loc())[(int)(c)] & (unsigned short int)(type))
 
 #define isalnum(c)  __isctype((c), _ISalnum)
@@ -82,11 +92,16 @@ extern int toascii(int __c);
 #define tolower(c) ((int) (*__ctype_tolower_loc())[(int)(c)])
 #define toupper(c) ((int) (*__ctype_toupper_loc())[(int)(c)])
 
+#endif /* !__RUBYCC_LIBC_MUSL__ */
+
 /* isascii/toascii: glibc declares these under __USE_MISC || __USE_XOPEN and
    defines them as pure bit tests (no locale classification table), so the
    inline value matches glibc's out-of-line result exactly -- no ABI subtlety
    like the isalpha() family above. Real sources (e.g. redcarpet's html.c) call
-   isascii() with only <ctype.h> included. */
+   isascii() with only <ctype.h> included. They stay macros under either C
+   library: the probed values (isascii of 'a'/200/0/127, toascii of 0x1FF/'A')
+   measured identical on glibc and musl (docs/STEPS.md Step 202), which is why
+   they sit outside the branch above. */
 #define isascii(c) (((c) & ~0x7f) == 0)
 #define toascii(c) ((c) & 0x7f)
 
