@@ -383,6 +383,15 @@ module Rubycc
       def parse
         declarations = []
         until peek.eof?
+          # GCC accepts a stray semicolon at file scope as an empty external
+          # declaration. X-macro headers commonly leave one after a macro that
+          # already emits semicolon-terminated declarations (for example pg's
+          # GVL wrapper table), so consume the GNU extension here.
+          if peek.punct?(";")
+            advance
+            next
+          end
+
           node = parse_external_declaration
           node.is_a?(Array) ? declarations.concat(node) : declarations << node
         end
@@ -1370,7 +1379,8 @@ module Rubycc
         # member may be a flexible array member; #reject_flexible_array_member
         # then enforces the 6.7.2.1p18 constraints (struct only, and never
         # followed by another member — see #reject_member_after_flexible_array).
-        name_tok, type = parse_declarator(member_base, allow_incomplete_array: true)
+        name_tok, type = parse_declarator(member_base, allow_incomplete_array: true,
+                                          allow_zero_length_array: true)
         if peek.punct?(":")
           advance # ":"
           width = parse_bitfield_width(type, name_tok)
@@ -1851,15 +1861,19 @@ module Rubycc
       # (a missing name is an error), :optional in a parameter (the name may be
       # omitted), or :forbidden in a type-name (a cast or sizeof, which never
       # names anything). `allow_incomplete_array` admits a trailing "[]" whose
-      # length an initializer will infer.
+      # length an initializer will infer. `allow_zero_length_array` is threaded
+      # only for struct members, where the GNU `[0]` extension is valid.
       # Returns [name_token_or_nil, type, function_params, pointer_quals], the
       # last being the declarator's leading "*" run as a list of per-level const
       # flags (see #parse_pointer_qualifiers) so an object declarator can settle
       # its top-level const-ness (see #declarator_object_const). Callers that do
       # not need the qualifiers simply ignore the trailing value.
-      def parse_declarator(base, name_mode: :required, allow_incomplete_array: false)
+      def parse_declarator(base, name_mode: :required, allow_incomplete_array: false,
+                           allow_zero_length_array: false)
         name_tok, build, function_params, pointer_quals =
-          parse_declarator_builder(name_mode: name_mode, allow_incomplete_array: allow_incomplete_array)
+          parse_declarator_builder(name_mode: name_mode,
+                                   allow_incomplete_array: allow_incomplete_array,
+                                   allow_zero_length_array: allow_zero_length_array)
         [name_tok, build.call(base), function_params, pointer_quals]
       end
 
@@ -1871,7 +1885,7 @@ module Rubycc
       # e.g. the return or element type) and the direct-declarator's suffixes
       # then wrap that — which is exactly why "int *f(int)" is a function
       # returning "int *" while "int (*f)(int)" is a pointer to a function.
-      def parse_declarator_builder(name_mode:, allow_incomplete_array:)
+      def parse_declarator_builder(name_mode:, allow_incomplete_array:, allow_zero_length_array:)
         # A parenthesized declarator recurses back here through
         # #parse_declarator_core, so guarding this entry bounds "int
         # ((((x))))"-style nesting (and the matching build-lambda recursion,
@@ -1884,7 +1898,9 @@ module Rubycc
           parse_attribute_specifiers
           pointer_quals = parse_pointer_qualifiers
           name_tok, direct_build, function_params =
-            parse_direct_declarator(name_mode: name_mode, allow_incomplete_array: allow_incomplete_array)
+            parse_direct_declarator(name_mode: name_mode,
+                                    allow_incomplete_array: allow_incomplete_array,
+                                    allow_zero_length_array: allow_zero_length_array)
           build = lambda do |base|
             type = base
             pointer_quals.each { type = Type::Pointer.new(type) }
@@ -1955,14 +1971,17 @@ module Rubycc
       # the core is parenthesized, so a name buried inside parentheses still
       # surfaces the suffix that makes it a function ("int (*g(int a))(int b)"
       # reports "int a", g's own parameters, not "int b").
-      def parse_direct_declarator(name_mode:, allow_incomplete_array:)
+      def parse_direct_declarator(name_mode:, allow_incomplete_array:, allow_zero_length_array:)
         name_tok, core_build, inner_params =
-          parse_declarator_core(name_mode: name_mode, allow_incomplete_array: allow_incomplete_array)
+          parse_declarator_core(name_mode: name_mode,
+                                allow_incomplete_array: allow_incomplete_array,
+                                allow_zero_length_array: allow_zero_length_array)
 
         suffixes = []
         loop do
           if peek.punct?("[")
-            suffixes << parse_array_suffix(allow_incomplete: allow_incomplete_array)
+            suffixes << parse_array_suffix(allow_incomplete: allow_incomplete_array,
+                                           allow_zero_length: allow_zero_length_array)
           elsif peek.punct?("(")
             suffixes << parse_function_suffix
           else
@@ -1998,11 +2017,13 @@ module Rubycc
       # "int (*fp[])(void) = { ... }" is the object's own array and its "[]" is
       # deducible from the initializer exactly as a bare "int fp[] = { ... }"
       # would be. Dropping the flag here rejected such declarators (6.7.6.3).
-      def parse_declarator_core(name_mode:, allow_incomplete_array:)
+      def parse_declarator_core(name_mode:, allow_incomplete_array:, allow_zero_length_array:)
         if peek.punct?("(") && paren_starts_declarator?
           advance # "("
           name_tok, build, inner_params =
-            parse_declarator_builder(name_mode: name_mode, allow_incomplete_array: allow_incomplete_array)
+            parse_declarator_builder(name_mode: name_mode,
+                                     allow_incomplete_array: allow_incomplete_array,
+                                     allow_zero_length_array: allow_zero_length_array)
           expect_punct(")")
           [name_tok, build, inner_params]
         elsif peek.type == :ident && name_mode != :forbidden
@@ -2066,13 +2087,16 @@ module Rubycc
       end
 
       # A direct-declarator's array suffix "[" size? "]". A bracketed length is
-      # a constant-expression (6.6) folded to a positive Ruby Integer. When
+      # a constant-expression (6.6) folded to a positive Ruby Integer. A zero
+      # bound is accepted only for a struct member as the GNU zero-length-array
+      # extension; it has the same zero-size trailing-member layout as a
+      # flexible array while retaining a complete array type. When
       # `allow_incomplete` is set (a variable or global with an initializer),
       # empty brackets "[]" leave the length nil for the initializer resolver to
       # infer (6.7.9p22); everywhere else "[]" is an error. Returns a suffix
       # descriptor [:array, length, bracket_token] applied later by
       # #apply_declarator_suffix.
-      def parse_array_suffix(allow_incomplete:)
+      def parse_array_suffix(allow_incomplete:, allow_zero_length:)
         bracket_tok = advance # "["
         # A parameter's array declarator may carry type qualifiers and/or
         # "static" inside the brackets (6.7.6.3p7): they qualify the pointer the
@@ -2099,7 +2123,8 @@ module Rubycc
           length = evaluate_constant_expression(expr, "array size must be an integer constant",
                                                 sizeof_expr: method(:fold_time_sizeof))
           expect_punct("]")
-          error_at(expr.token, "array size must be positive") unless length.positive?
+          error_at(expr.token, "array size must be positive") if length.negative? ||
+                                                                  (length.zero? && !allow_zero_length)
         end
         [:array, length, bracket_tok]
       end

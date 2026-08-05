@@ -47,6 +47,36 @@ class TestLibraryResolution < Minitest::Test
     end
   end
 
+  # A runtime-only installation may keep only the SONAME-bearing shared object
+  # (for example libz.so.1) and omit the development symlink libz.so. Plain -l
+  # resolution must still find that real file; this fixture deliberately creates
+  # no symlink.
+  def test_versioned_shared_is_used_for_plain_name
+    in_tmpdir do |dir|
+      versioned = File.join(dir, "libfoo.so.1")
+      write_shared(versioned)
+      r = Resolver.resolve(["foo"], search_dirs: [dir])
+      assert_equal [versioned], r.needed
+      assert_empty r.inputs
+    end
+  end
+
+  # An unversioned development library remains preferred when both spellings are
+  # present, and a versioned shared object still outranks a static archive.
+  def test_shared_preference_includes_versioned_runtime_library
+    in_tmpdir do |dir|
+      unversioned = File.join(dir, "libfoo.so")
+      versioned = File.join(dir, "libfoo.so.1")
+      archive = File.join(dir, "libfoo.a")
+      write_shared(unversioned)
+      write_shared(versioned)
+      write_archive(archive)
+      r = Resolver.resolve(["foo"], search_dirs: [dir])
+      assert_equal [unversioned], r.needed
+      assert_empty r.inputs
+    end
+  end
+
   # The `.so`/`.a` preference does not cross directories: an earlier directory's
   # `.a` settles the request before a later directory's `.so` is considered.
   def test_first_directory_with_either_form_wins
@@ -79,6 +109,41 @@ class TestLibraryResolution < Minitest::Test
       write_shared(File.join(dir, "libbar.so.1"))
       r = Resolver.resolve([":libbar.so.1"], search_dirs: [dir])
       assert_equal [File.join(dir, "libbar.so.1")], r.needed
+    end
+  end
+
+  # A glibc-shaped runtime with only versioned DSOs is resolved without relying
+  # on development symlinks. The files are bare ELF fixtures, so this remains a
+  # host-independent resolution test rather than a test of the host package set.
+  def test_versioned_glibc_runtime_libraries_are_resolved
+    in_tmpdir do |dir|
+      libraries = {
+        "m" => "libm.so.6",
+        "pthread" => "libpthread.so.0",
+        "dl" => "libdl.so.2",
+        "c" => "libc.so.6"
+      }
+      libraries.each_value { |name| write_shared(File.join(dir, name)) }
+
+      r = Resolver.new(search_dirs: [dir])
+      r.instance_variable_set(:@dirs, [dir])
+      resolution = r.resolve(libraries.keys)
+      assert_equal libraries.values.map { |name| File.join(dir, name) }, resolution.needed
+    end
+  end
+
+  # musl's runtime image has one libc ELF and no libm/libpthread/libdl/etc.
+  # development names. All of those requests must converge on that image, with
+  # no artificial development symlink in the fixture.
+  def test_musl_libc_provided_libraries_fall_back_to_one_runtime_image
+    in_tmpdir do |dir|
+      libc = File.join(dir, "libc.musl-x86_64.so.1")
+      write_shared(libc)
+
+      r = Resolver.new(search_dirs: [dir])
+      r.instance_variable_set(:@dirs, [dir])
+      resolution = r.resolve(Resolver::MUSL_LIBC_PROVIDED_LIBRARIES)
+      assert_equal [libc], resolution.needed
     end
   end
 
@@ -222,18 +287,10 @@ class TestLibraryResolution < Minitest::Test
     end
   end
 
-  # The C library's SONAME on this host: glibc's libc.so.6, or musl's
-  # libc.musl-<arch>.so.1. What the case asserts is that `-lc` reached *the* C
-  # library, not that it reached glibc's; measured on musl in CI, where the
-  # hard-coded name failed against a correctly-linked musl object
-  # (docs/STEPS.md Step 194).
-  def host_libc_soname
-    RbConfig::CONFIG["arch"].to_s.include?("musl") ? "libc.musl-x86_64.so.1" : "libc.so.6"
-  end
-
-  # `-lc` must resolve the host's libc.so — a GROUP linker script under glibc,
-  # the library itself under musl — reaching the real C library so an imported
-  # libc function (strlen) binds and runs.
+  # `-lc` must resolve the host's libc — a GROUP linker script on usual glibc
+  # systems, or musl's combined runtime image — so an imported libc function
+  # (strlen) binds and runs. The expected DT_NEEDED is taken from the resolved
+  # file's own SONAME because glibc and musl use different names.
   def test_resolves_libc_and_binds_a_libc_function
     skip "libc unavailable" unless resolvable?("c")
 
@@ -243,7 +300,10 @@ class TestLibraryResolution < Minitest::Test
     C
     with_linked_so(src, libraries: ["c"], soname: "libctest.so") do |so|
       needed = Reader.read_file(so).needed
-      assert_includes needed, host_libc_soname, "resolving -lc must reach the host C library"
+      libc_path = Resolver.resolve(["c"]).needed.first
+      libc = Reader.read_file(libc_path)
+      expected = libc.soname || File.basename(libc_path)
+      assert_includes needed, expected, "the resolved libc image supplies strlen"
       lib = Fiddle.dlopen(so)
       len = call(lib, "my_len", [Fiddle::TYPE_VOIDP], Fiddle::TYPE_LONG).call("acceptance")
       assert_equal 10, len, "the imported strlen must run"

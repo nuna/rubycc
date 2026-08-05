@@ -7741,9 +7741,36 @@ Step 193 の libc 分岐と同じ手だが、条件は `__aarch64__`。
 
 ---
 
+## Step 202 — glibc / musl の真の distroless 相当で4 gemを受入れ(M5 H6)
+
+Step 201 までの受入れは通常のツール環境またはhermeticヘッダ模擬だった。ここでは
+`ruby:4.0-slim`(glibc) と `ruby:4.0-alpine`(musl) のコンテナで、rubycc gemを
+インストールした後に `cc` / `gcc` / `clang` / `make` / `sh` と libc 開発ヘッダを
+取り除き、`RUBYCC=1 RUBYCC_HERMETIC_HEADERS=1` の実物経路を確認した。
+
+| 環境 | gem install | 実行確認 |
+|---|---|---|
+| glibc / Ruby 4.0.6 | `json:2.21.1`, `msgpack:1.8.3`, `sqlite3:2.9.5`, `pg:1.6.3` | JSON、MessagePack、SQLite in-memory、`PG.library_version` |
+| musl / Ruby 4.0.6 | `json:2.21.1`, `msgpack:1.8.3`, `sqlite3:2.9.5`, `pg:1.6.3` | 同上 |
+
+sqlite3 / pg は `--platform ruby` とし、外部 gem のヘッダと実行用 `.so` だけを残した。
+libc ヘッダを復元したり、開発用 `.so` の symlink を追加したりしていない。両環境とも
+PASSだった。今回の利用者向け再現例は `examples/distroless/Dockerfile` に置いた。
+
+この受入れで露出した実装上の穴も回帰テスト化した。
+
+- runtime-only の versioned `.so` と musl の統合 libc を `LibraryResolver` が解決する。
+- mkmf のマクロ化 header-name、`(void *)0` と function pointer の conditional、
+  GNUの構造体メンバー `[0]`、X-macro後の空外部宣言を受理する。
+- musl Ruby と libpq の `restrict` 別名再定義を限定的に許容する。
+
+---
+
 ## 現在のテスト規模
 
-Step 201 完了時点: **2,816 runs / 8,369 assertions / 0 failures / 0 errors / 44 skips**
+Step 202 完了時点: **2,829 runs / 8,386 assertions / 0 failures / 0 errors / 44 skips**
+(Step 201 から +13 runs / +17 assertions = distroless受入れで露出した回帰テスト)
+(以前) Step 201 完了時点: **2,816 runs / 8,369 assertions / 0 failures / 0 errors / 44 skips**
 (Step 200 から +1 run = aarch64 の `float.h` 検査。
 **クロス gcc との差分で実際に通ることを確認済み**)
 (以前) Step 200 完了時点: **2,815 runs / 8,366 assertions / 0 failures / 0 errors / 44 skips**
