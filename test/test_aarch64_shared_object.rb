@@ -453,7 +453,10 @@ class TestAArch64SharedObject < Minitest::Test
     skip "aarch64 sysroot libc unavailable" unless libc_available?
 
     r = Reader.read(build_so([EXTERNAL], needed: [SYSROOT_LIBC], soname: "libext.so"))
-    assert_equal ["libc.so.6"], r.needed, "the resolving dependency is a DT_NEEDED by SONAME"
+    # The aarch64-linux-gnu cross toolchain's sysroot is always glibc, so its
+    # SONAME (SYSROOT_LIBC's basename) is the correct expectation here rather
+    # than a hard-coded assumption about a host that could vary.
+    assert_equal [File.basename(SYSROOT_LIBC)], r.needed, "the resolving dependency is a DT_NEEDED by SONAME"
     assert_equal "libext.so", r.soname
 
     by_tag = r.dynamic_entries.to_h { |e| [e.tag, e.value] }

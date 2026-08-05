@@ -30,6 +30,9 @@ module AArch64ExecutionHelper
   # without the target's real root filesystem.
   SYSROOT = "/usr/aarch64-linux-gnu"
   SYSROOT_INTERP = "#{SYSROOT}/lib/ld-linux-aarch64.so.1"
+  # platform-literal: the aarch64-linux-gnu cross toolchain's sysroot is always glibc
+  # (there is no musl variant of this Debian cross package), so this name is a fact of
+  # the cross toolchain, not an assumption about a host that could vary.
   SYSROOT_LIBC = "#{SYSROOT}/lib/libc.so.6"
 
   # The canonical on-target dynamic-loader path a consumer executable names in
