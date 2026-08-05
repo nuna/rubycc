@@ -89,7 +89,6 @@ Measured, not guessed — each item links to the record that establishes it.
   branch- and call-bound code); against `gcc -O0` it is 1.1x–2.9x. See
   [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 - **`_Atomic` (C11 atomics) is not implemented**, so `<stdatomic.h>` is not bundled.
-- **`ckd_*` (C23 checked arithmetic) is not implemented**, so `<stdckdint.h>` is not bundled.
 - **`<regex.h>` is not bundled.** Reproducing `regex_t` faithfully is required by code that
   embeds it by value, and that is not done yet.
 - **`__GNUC__` is deliberately not defined.** Headers take their non-GNU fallback path.
@@ -98,10 +97,15 @@ Measured, not guessed — each item links to the record that establishes it.
 - **Out of scope**: gems needing a C++ compiler (grpc), or that run `configure` through
   mini_portile (nokogiri's vendored build; `--use-system-libraries` is fine), or that ship
   assembly (ffi).
-- **No CI matrix yet.** The suite is run by hand on Ruby 3.3, 3.4 and 4.0; nothing
-  re-checks them on every change. Running it on 3.3 is what caught a silent
-  float-constant miscompilation (a `String#to_f` bug in Ruby 3.3, worked around in
-  the lexer), so the floor is genuinely exercised — just not continuously.
+- **Shared objects bind their own global symbols directly.** A symbol a shared object
+  both defines and references resolves to that object's own definition, not to an
+  earlier one in the process — the behaviour `ld -Bsymbolic` gives, which many
+  distributions enable on purpose because it skips the PLT/GOT indirection. rubycc
+  always does it and offers no switch. Calls, struct passing, varargs and alignment
+  are unaffected; what changes is `LD_PRELOAD` interposition of such a symbol, and
+  the case where the same symbol is already defined elsewhere in the process (two
+  live copies instead of one). Measured for both data and functions. See
+  [docs/STEPS.md](docs/STEPS.md) Step 195 and the decision recorded with it.
 
 ## No gem-side changes required
 
