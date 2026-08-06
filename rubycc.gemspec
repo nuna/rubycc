@@ -22,7 +22,7 @@ Gem::Specification.new do |spec|
   spec.metadata["rubygems_mfa_required"] = "true"
 
   spec.files = Dir.glob("lib/**/*.rb") + Dir.glob("include/**/*.h") + Dir.glob("exe/*") +
-               Dir.glob("data/*") + ["LICENSE.txt", "NOTICE", "README.md"]
+               Dir.glob("data/*") + ["LICENSE.txt", "NOTICE", "README.md", "CHANGELOG.md"]
   spec.bindir = "exe"
   # `gem install` builds work without bin stubs (the plugin points MAKE/PKG_CONFIG at
   # gem-internal absolute paths), but rmake/rubycc-ar/rubycc-pkgconf are also tools

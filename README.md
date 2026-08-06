@@ -16,16 +16,34 @@ Successfully installed msgpack-1.8.3
 ## Status
 
 Working. The toolchain compiles and links real gems, and the gems' own test suites pass
-against the resulting binaries.
+against the resulting binaries. **18 gems are verified this way**, each by running the
+gem's own suite against the `.so` a `RUBYCC=1 gem install` produced — never by inspection:
+
+    bigdecimal  date  digest  erb  etc  io-console  io-nonblock  io-wait  json
+    msgpack  nkf  psych  racc  redcarpet  stackprof  stringio  strscan  zlib
+
+A few of the larger runs, for scale:
 
 | gem | result |
 |---|---|
+| date 3.5.1 | 143 tests / 162,593 assertions / 0 failures |
 | json 2.21.1 | 606 tests / 3,433 assertions / 0 failures |
 | bigdecimal 4.1.2 | 265 tests / 8,267 assertions / 0 failures |
-| redcarpet 3.6.1 | 136 tests / 206 assertions / 0 failures |
-| msgpack 1.8.3 | 468 examples, all MRI examples pass |
-| racc 1.8.1 | 71 tests / 319 assertions / 0 failures |
-| date 3.5.1 | 143 tests / 162,593 assertions / 0 failures |
+| psych 5.3.1 | 633 tests / 1,598 assertions / 0 failures |
+| digest 3.2.1 | 98 tests / 215 assertions / 0 failures (six extensions in one gem) |
+
+Beyond glibc/x86-64, the same procedure has been run on other environments. Those
+columns are thinner on purpose — each entry is a measured run, so the count is what has
+actually been executed, not what is expected to work:
+
+| environment | verified gems |
+|---|---|
+| glibc x86-64 | 18 |
+| musl x86-64 (Alpine) | 3 |
+| glibc aarch64 | 2 |
+
+The bundled headers are checked against each environment's own gcc by a differential
+ABI harness, on both machines and both C libraries.
 
 It also compiles the SQLite amalgamation — a single 261,463-line translation unit — in
 8.1 s using 467 MB of memory.
@@ -103,10 +121,15 @@ Measured, not guessed — each item links to the record that establishes it.
 - **Out of scope**: gems needing a C++ compiler (grpc), or that run `configure` through
   mini_portile (nokogiri's vendored build; `--use-system-libraries` is fine), or that ship
   assembly (ffi).
-- **No CI matrix yet.** The suite is run by hand on Ruby 3.3, 3.4 and 4.0; nothing
-  re-checks them on every change. Running it on 3.3 is what caught a silent
-  float-constant miscompilation (a `String#to_f` bug in Ruby 3.3, worked around in
-  the lexer), so the floor is genuinely exercised — just not continuously.
+- **Shared objects bind their own global symbols directly.** A symbol a shared object
+  both defines and references resolves to that object's own definition, not to an
+  earlier one in the process — the behaviour `ld -Bsymbolic` gives, which many
+  distributions enable on purpose because it skips the PLT/GOT indirection. rubycc
+  always does it and offers no switch. Calls, struct passing, varargs and alignment
+  are unaffected; what changes is `LD_PRELOAD` interposition of such a symbol, and
+  the case where the same symbol is already defined elsewhere in the process (two
+  live copies instead of one). Measured for both data and functions. See
+  [docs/STEPS.md](docs/STEPS.md) Step 195 and the decision recorded with it.
 
 ## No gem-side changes required
 

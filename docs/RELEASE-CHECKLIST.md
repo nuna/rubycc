@@ -152,3 +152,37 @@ README では要約に留めそちらへリンクする。
 - `STEPS.md` Step 115(N3)・116(N6)・124(未対応機能の実測)・126(N4)
 - `ROADMAP.md` §3(既知の負債)・`C11-COVERAGE.md`(条項別の適合状況)
 - `rubycc.gemspec`(N5 の宣言)
+
+## 5. リリース手順(v1.0.0)
+
+**準備は済んでいる。以下は未実施**(タグ push と `gem push` は**意図的に自動化しない** —
+アカウント保有者の操作である)。
+
+| | 状態 |
+|---|---|
+| `lib/rubycc/version.rb` を `1.0.0` に | **済** |
+| `CHANGELOG.md` の 1.0.0 エントリ | **済**(gemspec の `files` にも追加済み) |
+| README の実績を実測値に更新 | **済**(検証済み 18 gem / musl 3 / aarch64 2) |
+| `bundle exec rake test` | **済** — 2,839 runs / 8,438 assertions / 0 failures / 0 errors / 44 skips |
+| gem の再現ビルド | **済** — `SOURCE_DATE_EPOCH` 固定で 2 回ビルドし**バイト一致**(474,112 bytes) |
+| 同梱物の確認 | **済** — `LICENSE.txt` / `NOTICE` / `README.md` / `CHANGELOG.md` / `data/verified_gems.json` / ヘッダ 78 本 |
+| **タグ `v1.0.0` を打つ** | **未実施**。打つと Tier C(`release.yml`)が走り、タグと `Rubycc::VERSION` の一致・再現ビルドを検証する |
+| **`gem push`** | **未実施**。自動化しない方針(docs/CI.md) |
+
+### 準備中に見つけて直したもの
+
+- **`rubycc-doctor --version` が「version unknown」を返していた。** OptionParser が
+  `--version` を自前で処理するが、バージョンを渡していなかったための既定メッセージ。
+  **バージョンを知っている コマンドの答えとして不適切**なので直した。
+  他の 4 コマンドのうち `rubycc` / `rubycc-ar` は元から正しい。
+- **`CHANGELOG.md` が gem に入らなかった。** 追加したファイルを `gemspec` の
+  `files` に足し忘れていた。**同梱物は毎回ビルドして確かめること**。
+
+### 測って「直さない」と判断したもの
+
+- **`rmake --version` と `rubycc-pkgconf --version` は未対応のまま。**
+  mkmf の `pkg_config` が実際に渡すのは `--exists` / `--modversion` /
+  `--cflags*` / `--libs*` **だけ**で、`--version` は呼ばない(実測)。
+  **pkg-config の `--version` は本物なら pkg-config 自身のバージョンを返すもの**で、
+  スクリプトがその形式を解釈しうるため、**似て非なる値を返す方が危険**である。
+  必要になるまで足さない。
