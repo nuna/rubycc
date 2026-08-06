@@ -289,14 +289,23 @@ module Rubycc
       # specifiers (position a), which apply to every declarator of the
       # declaration; only the init attributes are read back from it, and only
       # where they are admitted at all (see #parse_declaration_specifiers).
-      # volatile and register/auto leave no trace here.
-      DeclSpecInfo = Data.define(:storage, :const, :inline_p, :noreturn_p, :attributes)
+      # `alignas` is the strongest _Alignas the run asked for (an Alignas, or nil
+      # when none appeared). volatile and register/auto leave no trace here.
+      DeclSpecInfo = Data.define(:storage, :const, :inline_p, :noreturn_p, :attributes, :alignas)
 
       # One parsed GNU attribute: its normalized `name`, the folded `argument`
       # (an integer for "aligned" and for the init attributes' priority, nil for
       # every other attribute, whose arguments are skipped) and the `token` that
       # spelled it, so a diagnostic about the attribute can be located.
       Attribute = Data.define(:name, :argument, :token)
+
+      # The alignment an _Alignas specifier run asks for (6.7.5): `alignment` is
+      # the strongest boundary requested — a declaration may carry several
+      # alignment-specifiers and the largest wins (measured: gcc gives
+      # "_Alignas(8) _Alignas(16) int a" a 16-byte boundary whichever order the
+      # two are written in) — and `token` is the "_Alignas" that asked for it, so
+      # a diagnostic about the request can be located.
+      Alignas = Data.define(:alignment, :token)
 
       # A tag scope entry for an enum tag. C keeps struct, union and enum tags in
       # one shared namespace, so enum tags live in @tag_scopes alongside the
@@ -520,6 +529,8 @@ module Rubycc
           if function_params.nil?
             error_at(name_tok, "function definition through a typedef is not allowed")
           end
+          # A function reserves no object to align (6.7.5p2).
+          reject_alignas(spec_info.alignas, "function '#{name_tok.value}'")
           declare_ordinary_name(name_tok.value, type)
           register_visibility_attributes(name_tok.value, attributes)
           register_init_attributes(name_tok.value, attributes)
@@ -565,6 +576,8 @@ module Rubycc
       def parse_external_declarator(name_tok, type, params, pointer_quals, spec_info, return_tok,
                                     attributes)
         if type.function?
+          # A function reserves no object to align (6.7.5p2).
+          reject_alignas(spec_info.alignas, "function '#{name_tok.value}'")
           declare_ordinary_name(name_tok.value, type)
           register_visibility_attributes(name_tok.value, attributes)
           register_init_attributes(name_tok.value, attributes)
@@ -627,7 +640,9 @@ module Rubycc
           advance # "="
           init = parse_initializer
           if InitializerResolver.structural?(type, init)
-            type = InitializerResolver.resolve(type, init).type
+            # A file-scope object always has static storage duration, which is
+            # what lets a trailing flexible array member be initialized.
+            type = InitializerResolver.resolve(type, init, static_storage: true).type
             initializer_node = init
           elsif type.integer? && !references_sizeof_expr?(init) && !references_address_of?(init)
             # An integer scalar initializer is folded to a value here, where the
@@ -651,15 +666,22 @@ module Rubycc
           error_at(name_tok, "array size missing in '#{name_tok.value}'")
         end
         declare_ordinary_name(name_tok.value, type)
-        AST::GlobalDecl.new(name_tok.value, type, initializer_value, initializer_node, name_tok, const, spec_info.storage)
+        # The boundary is settled against the *finished* type, so an inferred
+        # "[]" bound is already in place when the "cannot reduce" check runs.
+        AST::GlobalDecl.new(name_tok.value, type, initializer_value, initializer_node, name_tok, const,
+                            spec_info.storage,
+                            alignas_boundary(spec_info.alignas, type, "'#{name_tok.value}'"))
       end
 
-      # A bare type-specifier list with no storage class, used everywhere a type
-      # is written without a "typedef" in front of it: a struct member, a
-      # parameter, and a type-name in a cast or sizeof. It resolves to a single
-      # Rubycc::Type, discarding the (always-false) typedef flag.
+      # A bare type-specifier list with no storage class, used where a type is
+      # written with no declaration to hang it on: the type-name of a cast,
+      # sizeof, _Alignof or compound literal. It resolves to a single
+      # Rubycc::Type, discarding the (always-false) typedef flag. A type-name
+      # declares no object, so it has nothing for an _Alignas to align
+      # (6.7.5p2) — gcc refuses one here and so does this.
       def parse_type_specifier
-        type, = parse_declaration_specifiers(allow_storage_class: false)
+        type, spec_info = parse_declaration_specifiers(allow_storage_class: false)
+        reject_alignas(spec_info.alignas, "type name")
         type
       end
 
@@ -702,6 +724,7 @@ module Rubycc
         noreturn_p = false
         typedef_const = false # const folded in from a const typedef name
         atomic_tok = nil # the first "_Atomic" written as a qualifier, for its diagnostic
+        alignas = nil    # the strongest _Alignas the run asked for
         loop do
           tok = peek
           if tok.type == :keyword && STORAGE_CLASS_KEYWORDS.include?(tok.value)
@@ -735,6 +758,13 @@ module Rubycc
               atomic_tok ||= tok
               advance
             end
+          elsif tok.keyword?("_Alignas")
+            # An alignment-specifier may sit anywhere among the specifiers
+            # ("_Alignas(8) int x", "int _Alignas(8) x"). Where it may appear at
+            # all is the declarator's business — a typedef, function, parameter,
+            # bit-field or type-name refuses it (6.7.5p2) — so it is only
+            # collected here, strongest request winning.
+            alignas = stronger_alignas(alignas, parse_alignment_specifier)
           elsif tok.keyword?("inline")
             error_at(tok, "'inline' is not allowed here") unless allow_storage_class
             inline_p = true
@@ -778,7 +808,8 @@ module Rubycc
         # A "const" typedef name ("typedef const int ci; ci x;") contributes its
         # const to the declaration, OR-ed with any const written here directly.
         spec_info = DeclSpecInfo.new(storage: storage, const: const_p || typedef_const,
-                                     inline_p: inline_p, noreturn_p: noreturn_p, attributes: attributes)
+                                     inline_p: inline_p, noreturn_p: noreturn_p, attributes: attributes,
+                                     alignas: alignas)
         base = if composite
                  composite
                else
@@ -792,6 +823,96 @@ module Rubycc
         # the diagnostic.
         reject_unsupported_atomic_type(base, atomic_tok) if atomic_tok
         [base, spec_info]
+      end
+
+      # alignment-specifier = "_Alignas" "(" (type-name | constant-expression) ")"
+      # (6.7.5). The type-name spelling asks for that type's own boundary, the
+      # expression spelling for the folded value; the two are told apart exactly
+      # as sizeof tells its operands apart, by whether a type-specifier opens the
+      # parentheses. A request of zero "has no effect" (6.7.5p3) and so yields
+      # nil, and any other non-power-of-two is a constraint violation gcc words
+      # the same way an aligned(N) attribute's is. Returns an Alignas or nil.
+      def parse_alignment_specifier
+        alignas_tok = advance # "_Alignas"
+        expect_punct("(")
+        value = if type_specifier?(peek)
+                  alignment_of_type_name(alignas_tok)
+                else
+                  evaluate_constant_expression(parse_conditional_expression,
+                                               "'_Alignas' operand is not an integer constant",
+                                               sizeof_expr: method(:fold_time_sizeof))
+                end
+        expect_punct(")")
+        return nil if value.zero?
+
+        unless value.positive? && (value & (value - 1)).zero?
+          error_at(alignas_tok, "requested alignment '#{value}' is not a positive power of 2")
+        end
+        Alignas.new(alignment: value, token: alignas_tok)
+      end
+
+      # The boundary the "_Alignas ( type-name )" spelling asks for: the written
+      # type's own alignment, read here at parse time (the expression spelling's
+      # value is available just as early, so both reach the declarator as a plain
+      # Integer). A type with no alignment to speak of — void, a function, or an
+      # aggregate whose body this unit has not seen — is rejected the way
+      # _Alignof rejects the same operands rather than reaching Type's "incomplete
+      # struct has no alignment" guard.
+      def alignment_of_type_name(alignas_tok)
+        type = parse_type_name
+        unless alignment_known?(type)
+          error_at(alignas_tok, "invalid application of '_Alignas' to an incomplete type")
+        end
+        type.alignment
+      end
+
+      # Whether `type` has a boundary that can be read right now. Void and a
+      # function type have none at all, and an aggregate this unit has not
+      # defined (directly or as an array's element) has none *yet* — asking any
+      # of them for #alignment would trip Type's own guard.
+      def alignment_known?(type)
+        return false if type.void? || type.function?
+        return type.complete? if type.struct?
+        return alignment_known?(type.element) if type.array?
+
+        true
+      end
+
+      # The stronger of two alignment requests from one specifier run, either of
+      # which may be nil (no request). The larger boundary wins; on a tie the
+      # earlier token is kept, so a diagnostic points at the first spelling.
+      def stronger_alignas(current, addition)
+        return current if addition.nil?
+        return addition if current.nil?
+
+        addition.alignment > current.alignment ? addition : current
+      end
+
+      # Rejects an _Alignas written where 6.7.5p2 forbids one, naming the
+      # construct that refused it ("typedef", "parameter 'x'", ...). gcc's
+      # wording, which names the same five constructs.
+      def reject_alignas(alignas, what)
+        return if alignas.nil?
+
+        error_at(alignas.token, "alignment specified for #{what}")
+      end
+
+      # Enforces 6.7.5p4: an _Alignas may raise a declaration's boundary but
+      # never lower it, so a request weaker than the declared type's own
+      # alignment is a constraint violation rather than a silently ignored one.
+      # Returns the requested boundary (an Integer), or nil when nothing was
+      # asked for. `what` names the declarator in the diagnostic (gcc's wording:
+      # "'x'" for a named one, "unnamed field" for an anonymous member).
+      def alignas_boundary(alignas, type, what)
+        return nil if alignas.nil?
+
+        # An incomplete declared type has no boundary to compare against; such a
+        # declarator is refused for being incomplete downstream, so the check is
+        # skipped rather than tripping Type's guard here.
+        if alignment_known?(type) && alignas.alignment < type.alignment
+          error_at(alignas.token, "'_Alignas' specifiers cannot reduce alignment of #{what}")
+        end
+        alignas.alignment
       end
 
       # Whether the "_Atomic" at `peek` opens the parenthesized
@@ -1450,11 +1571,15 @@ module Rubycc
           end
 
           spec_tok = peek
-          member_base = parse_type_specifier
+          # An _Alignas among a member declaration's specifiers belongs to every
+          # declarator it introduces, exactly as the base type does, so it is
+          # carried alongside it rather than folded into the type.
+          member_base, member_spec = parse_declaration_specifiers(allow_storage_class: false)
+          alignas = member_spec.alignas
           if peek.punct?(";")
-            parse_anonymous_member(member_base, spec_tok, raw_members, seen, flex)
+            parse_anonymous_member(member_base, spec_tok, raw_members, seen, flex, alignas)
           else
-            parse_member_declarators(member_base, spec_tok, raw_members, seen, flex)
+            parse_member_declarators(member_base, spec_tok, raw_members, seen, flex, alignas)
           end
           expect_punct(";")
         end
@@ -1472,7 +1597,7 @@ module Rubycc
       # declares nothing and is rejected. The member is recorded with a nil name
       # and its inner type; every name it exposes transparently is added to
       # `seen` so a later member cannot shadow one of them.
-      def parse_anonymous_member(member_base, spec_tok, raw_members, seen, flex)
+      def parse_anonymous_member(member_base, spec_tok, raw_members, seen, flex, alignas = nil)
         reject_member_after_flexible_array(flex, spec_tok)
         unless member_base.struct? && member_base.tag.nil?
           error_at(spec_tok, "declaration does not declare anything")
@@ -1482,7 +1607,7 @@ module Rubycc
           seen[name] = true
         end
         flex[:others] += 1
-        raw_members << [nil, member_base, nil]
+        raw_members << [nil, member_base, nil, alignas_boundary(alignas, member_base, "unnamed field")]
       end
 
       # The comma-separated struct-declarators sharing `member_base`. Each is
@@ -1493,18 +1618,22 @@ module Rubycc
       # shapes the layout but declares nothing (6.7.2.1). A member may not be a
       # bare function; a pointer to one is fine. Each named member is checked for
       # a duplicate against `seen` (which already holds any transparently exposed
-      # names) and then added to it. Every recorded triple is
-      # [name, Type, bit_width], bit_width nil for a plain member.
-      def parse_member_declarators(member_base, spec_tok, raw_members, seen, flex)
+      # names) and then added to it. Every recorded entry is
+      # [name, Type, bit_width, alignas], bit_width nil for a plain member and
+      # alignas the boundary an _Alignas asked for (nil for none).
+      def parse_member_declarators(member_base, spec_tok, raw_members, seen, flex, alignas = nil)
         loop do
           reject_member_after_flexible_array(flex, spec_tok)
           if peek.punct?(":")
             advance # ":"
+            # A bit-field has no address of its own to align, so 6.7.5p2 forbids
+            # an _Alignas on one.
+            reject_alignas(alignas, "bit-field")
             # An unnamed bit-field declares no member, so it does not satisfy the
             # "a FAM needs another named member" rule (flex[:others] untouched).
             raw_members << [nil, member_base, parse_bitfield_width(member_base, spec_tok)]
           else
-            parse_named_member(member_base, raw_members, seen, flex)
+            parse_named_member(member_base, raw_members, seen, flex, alignas)
           end
           break unless peek.punct?(",")
 
@@ -1517,7 +1646,7 @@ module Rubycc
       # constraint violation (6.7.2.1p3, "only an unnamed member may be
       # zero-width"). A plain member may not be a function, void, or an
       # incomplete aggregate by value.
-      def parse_named_member(member_base, raw_members, seen, flex)
+      def parse_named_member(member_base, raw_members, seen, flex, alignas = nil)
         # A trailing "[]" (an incomplete array) is admitted here so the last
         # member may be a flexible array member; #reject_flexible_array_member
         # then enforces the 6.7.2.1p18 constraints (struct only, and never
@@ -1526,6 +1655,7 @@ module Rubycc
                                           allow_zero_length_array: true)
         if peek.punct?(":")
           advance # ":"
+          reject_alignas(alignas, "bit-field '#{name_tok.value}'")
           width = parse_bitfield_width(type, name_tok)
           error_at(name_tok, "named bit-field '#{name_tok.value}' has zero width") if width.zero?
           register_member_name(name_tok, seen)
@@ -1535,7 +1665,8 @@ module Rubycc
           # A GNU attribute may trail a member declarator (position f):
           # "int m __attribute__((packed));". Accepted and discarded — a
           # member-level packed/aligned has no effect on this subset's layout
-          # (only a whole-struct attribute steers #layout_struct).
+          # (only a whole-struct attribute steers #layout_struct, and only an
+          # _Alignas raises a single member's boundary).
           parse_attribute_specifiers
           error_at(name_tok, "field '#{name_tok.value}' declared as a function") if type.function?
           reject_void_type(type, name_tok)
@@ -1547,7 +1678,8 @@ module Rubycc
           else
             flex[:others] += 1
           end
-          raw_members << [name_tok.value, type, nil]
+          raw_members << [name_tok.value, type, nil,
+                          alignas_boundary(alignas, type, "'#{name_tok.value}'")]
         end
       end
 
@@ -1647,6 +1779,10 @@ module Rubycc
                  token.value == "enum" ||
                  token.value == "const" || token.value == "volatile" ||
                  token.value == "_Atomic" ||
+                 # An alignment-specifier opens a declaration too ("_Alignas(16)
+                 # char buf[64];"), and never an expression, so block-item and
+                 # for-init must not read one as a statement.
+                 token.value == "_Alignas" ||
                  token.value == "inline" || token.value == "_Noreturn" ||
                  # A leading GNU attribute opens a declaration too
                  # ("__attribute__((unused)) int x;"), so block-item and
@@ -1743,6 +1879,10 @@ module Rubycc
         # incomplete array; #adjust_parameter_type resolves it below.
         name_tok, type, _params, pointer_quals =
           parse_declarator(base_type, name_mode: :optional, allow_incomplete_array: true)
+        # A parameter's boundary is the calling convention's to choose, not the
+        # declaration's, so 6.7.5p2 forbids an _Alignas on one.
+        reject_alignas(spec_info.alignas,
+                       name_tok ? "parameter '#{name_tok.value}'" : "parameter")
         # A GNU attribute may trail a parameter declarator (position e):
         # "int f(int x __attribute__((unused)))". Accepted and discarded; the
         # specifier-position form is already handled in the specifier parse.
@@ -1817,6 +1957,9 @@ module Rubycc
         loop do
           name_tok, type, _params, pointer_quals = parse_declarator(base_type)
           parse_attribute_specifiers # position d: a trailing attribute on the typedef name
+          # A typedef declares a type, not an object, so there is nothing for an
+          # _Alignas to align (6.7.5p2).
+          reject_alignas(spec_info.alignas, "typedef '#{name_tok.value}'")
           if peek.punct?("=")
             error_at(peek, "typedef '#{name_tok.value}' must not be initialized")
           end
@@ -1849,6 +1992,8 @@ module Rubycc
           if peek.punct?("{")
             error_at(name_tok, "nested function definitions are not supported")
           end
+          # A function reserves no object to align (6.7.5p2).
+          reject_alignas(spec_info.alignas, "function '#{name_tok.value}'")
         else
           reject_object_specifiers(name_tok, spec_info)
         end
@@ -1864,7 +2009,8 @@ module Rubycc
           # fixes the object's type — completing an inferred "[]" bound — and is
           # validated for shape here, so a later stage sees a finished type.
           if InitializerResolver.structural?(type, initializer)
-            type = InitializerResolver.resolve(type, initializer).type
+            type = InitializerResolver.resolve(type, initializer,
+                                               static_storage: spec_info.storage == :static).type
           end
         elsif type.array? && type.length.nil? && spec_info.storage != :extern
           # A block-scope `extern T a[];` references a file-scope array defined
@@ -1875,7 +2021,10 @@ module Rubycc
           error_at(name_tok, "array size missing in '#{name_tok.value}'")
         end
         declare_ordinary_name(name_tok.value, type)
-        AST::VariableDecl.new(name_tok.value, type, initializer, name_tok, const, spec_info.storage)
+        # The boundary is settled against the *finished* type, so an inferred
+        # "[]" bound is already in place when the "cannot reduce" check runs.
+        AST::VariableDecl.new(name_tok.value, type, initializer, name_tok, const, spec_info.storage,
+                              alignas_boundary(spec_info.alignas, type, "'#{name_tok.value}'"))
       end
 
       # Rejects the declaration specifiers that may sit on a function but not on

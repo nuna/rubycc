@@ -75,8 +75,9 @@ module Rubycc
       # top-level const-qualified (the only qualification M1 tracks), which the
       # generator rejects writes against. `storage` records the storage-class
       # specifier (nil, :static or :extern) for Phase B; the generator does not
-      # consume it yet.
-      VariableDecl = Data.define(:name, :type, :initializer, :token, :const, :storage)
+      # consume it yet. `alignas` is the boundary an _Alignas specifier asked for
+      # (6.7.5), or nil when the object takes its type's own alignment.
+      VariableDecl = Data.define(:name, :type, :initializer, :token, :const, :storage, :alignas)
 
       # A file-scope (global) variable declaration. `type` is the declared
       # Rubycc::Type (int, char, a pointer, a one-dimensional array or a
@@ -92,8 +93,10 @@ module Rubycc
       # in .bss. `const` and `storage` carry the same top-level const flag and
       # storage-class specifier (nil/:static/:extern) as VariableDecl; the
       # generator diagnoses writes against a const global but does not yet act
-      # on the storage class (Phase B).
-      GlobalDecl = Data.define(:name, :type, :initializer_value, :initializer_node, :token, :const, :storage)
+      # on the storage class (Phase B). `alignas` carries the same _Alignas
+      # boundary VariableDecl does.
+      GlobalDecl = Data.define(:name, :type, :initializer_value, :initializer_node, :token, :const, :storage,
+                               :alignas)
 
       # A brace-enclosed initializer "{ ... }" (ISO C 6.7.9). `items` is the
       # ordered list of InitItem, one per comma-separated element (a trailing

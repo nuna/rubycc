@@ -273,10 +273,12 @@ class TestLexer < Minitest::Test
     assert_kind_of Integer, tokens[0].value
   end
 
+  # All eleven simple escape sequences of 6.4.4.4p1 (plus "\0", an octal one),
+  # including "\?" -- the trigraph-avoiding spelling of a plain '?'.
   def test_character_constant_escape_sequences
     { "'\\n'" => 10, "'\\t'" => 9, "'\\r'" => 13, "'\\0'" => 0,
-      "'\\\\'" => 92, "'\\''" => 39, "'\\\"'" => 34, "'\\a'" => 7,
-      "'\\b'" => 8, "'\\f'" => 12, "'\\v'" => 11 }.each do |source, value|
+      "'\\\\'" => 92, "'\\''" => 39, "'\\\"'" => 34, "'\\?'" => 63,
+      "'\\a'" => 7, "'\\b'" => 8, "'\\f'" => 12, "'\\v'" => 11 }.each do |source, value|
       tokens = lex(source).reject(&:eof?)
       assert_equal :num, tokens[0].type, "#{source} should lex as a :num token"
       assert_equal value, tokens[0].value, "#{source} should have value #{value}"

@@ -932,6 +932,21 @@ class TestHeaderAbi < Minitest::Test
         if (r) _longjmp(env, r + 1);
         return r;
       }
+      /* jmp_buf and sigjmp_buf must be the *same* type, not merely the same
+         size: glibc spells both as arrays of one shared tag, so code that
+         stores a jmp_buf and hands it to siglongjmp() compiles. Declaring them
+         as two anonymous unions gave each its own distinct type and made that
+         call a type error here while gcc accepted it (found building
+         google-protobuf's ruby-upb.h). Passing each buffer to the other
+         family's function is what pins the compatibility; the sizes above only
+         pin the widths. */
+      static int abi_setjmp_buffers_are_one_type(jmp_buf a, sigjmp_buf b) {
+        int r = sigsetjmp(a, 0);
+        if (r) siglongjmp(a, r + 1);
+        r += setjmp(b);
+        if (r) longjmp(b, r + 1);
+        return r;
+      }
     C
   )
 

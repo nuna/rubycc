@@ -34,6 +34,17 @@ module Rubycc
       PAD_GP_PIECE = AbiPiece.new(offset: 0, size: 8, kind: :pad)
       PAD_STACK_PIECE = AbiPiece.new(offset: 0, size: 8, kind: :pad_stack)
 
+      # The boundaries an automatic object is guaranteed to land on. Both
+      # backends build the frame from a 16-byte-aligned base and then place each
+      # stack object (an aggregate or a 128-bit integer) a 16-byte-rounded
+      # distance from it, while a scalar lives in one cell of the 8-byte
+      # virtual-register run. An _Alignas asking for more than that would need a
+      # prologue that realigns the stack pointer at run time, which neither
+      # backend emits, so #reject_overaligned_automatic refuses the declaration
+      # rather than letting it compile to a weaker boundary than it asked for.
+      STACK_OBJECT_ALIGNMENT = 16
+      VREG_SLOT_ALIGNMENT = 8
+
       # The merged state of a file-scope object's tentative/real definitions
       # (6.9.2), one per name in @object_records. `type` and `linkage` are the
       # agreed type and linkage of the run, `initialized` records whether any
@@ -309,7 +320,8 @@ module Rubycc
         end
 
         index = @globals.length
-        @globals << Global.new(name: decl.name, size: type.size, align: type.alignment,
+        @globals << Global.new(name: decl.name, size: object_size(type, init),
+                               align: object_alignment(type, decl.alignas),
                                init: init, linkage: linkage)
         @object_records[decl.name] = ObjectRecord.new(type, linkage, has_init, index)
         @global_bindings[decl.name] = Local.new(type: type, storage: decl.name, global: true, const: decl.const)
@@ -325,9 +337,31 @@ module Rubycc
 
         record.initialized = true
         record.type = type
-        @globals[record.index] = Global.new(name: decl.name, size: type.size,
-                                             align: type.alignment, init: init, linkage: linkage)
+        # Every declaration of one object may carry its own _Alignas, and the
+        # strongest wins (measured: gcc gives "int g; _Alignas(64) int g = 1;" a
+        # 64-byte boundary, and so does the reverse order), so the tentative
+        # object's boundary is carried into the definition rather than replaced.
+        align = [object_alignment(type, decl.alignas), @globals[record.index].align].max
+        @globals[record.index] = Global.new(name: decl.name, size: object_size(type, init),
+                                             align: align, init: init, linkage: linkage)
         @global_bindings[decl.name] = Local.new(type: type, storage: decl.name, global: true, const: decl.const)
+      end
+
+      # The boundary a static-duration object is laid out on: its type's own
+      # alignment, raised by an _Alignas the declaration asked for. The parser
+      # has already refused a request that would weaken the type's alignment, so
+      # the larger of the two is the requested one whenever there is one.
+      def object_alignment(type, alignas)
+        alignas && alignas > type.alignment ? alignas : type.alignment
+      end
+
+      # The storage a static-duration object occupies. An initialized one is
+      # exactly as wide as the image emitted for it, which is normally its
+      # type's size but wider when a trailing flexible array member was
+      # initialized (that member lies outside sizeof). An uninitialized
+      # (tentative, .bss) object has no image and takes its type's size.
+      def object_size(type, init)
+        init ? init.bytes.bytesize : type.size
       end
 
       # Diagnoses a static/non-static disagreement across the declarations of one
@@ -350,10 +384,13 @@ module Rubycc
       # array's tail, a string's NUL — is already zero (6.7.9p10/p21).
       def build_global_init(type, node, token)
         if Front::InitializerResolver.structural?(type, node)
-          resolved = Front::InitializerResolver.resolve(type, node)
+          # Both callers place the object in .data/.bss, so a trailing flexible
+          # array member may be initialized; the storage it adds beyond
+          # sizeof widens the image (and with it the object, see #object_size).
+          resolved = Front::InitializerResolver.resolve(type, node, static_storage: true)
           final_type = resolved.type
           require_complete(final_type, token)
-          image = "\0".b * final_type.size
+          image = "\0".b * (final_type.size + resolved.flexible_bytes)
           relocations = []
           resolved.entries.each { |entry| pack_global_entry(entry, image, relocations) }
           [final_type, GlobalInit.new(bytes: image, relocations: relocations)]
@@ -738,14 +775,22 @@ module Rubycc
         end
       end
 
-      # The address of "target[index]": the target's pointer value shifted by the
-      # constant index times the element size.
+      # The address of "target[index]": the pointer operand's value shifted by
+      # the constant index times the element size. Either side may be the
+      # pointer, as in #pointer_operand — a subscript is an addition
+      # (6.5.2.1p2), so "0[x]" designates the object "x[0]" does — so each is
+      # probed in turn.
       def subscript_address(node)
-        base = pointer_value(node.target)
+        if (base = maybe_pointer_value(node.target))
+          index_node = node.index
+        else
+          base = pointer_value(node.index)
+          index_node = node.target
+        end
         element = base.pointee
         raise NotAddressConstant unless element&.size
 
-        base.with(offset: base.offset + fold_constant_index(node.index) * element.size)
+        base.with(offset: base.offset + fold_constant_index(index_node) * element.size)
       end
 
       # The address of "base.member" (a struct lvalue) or "base->member" (a struct
@@ -1662,6 +1707,7 @@ module Rubycc
         # An array or a struct is an aggregate lowered onto a stack object; a
         # scalar (int, pointer) takes a vreg slot.
         else
+          reject_overaligned_automatic(decl)
           if decl.type.array? || decl.type.struct?
             gen_aggregate_decl(decl, scope)
           elsif wide128?(decl.type)
@@ -1670,6 +1716,26 @@ module Rubycc
             gen_scalar_decl(decl, scope)
           end
         end
+      end
+
+      # Rejects an automatic object whose _Alignas asks for a stronger boundary
+      # than the frame gives it (see STACK_OBJECT_ALIGNMENT/VREG_SLOT_ALIGNMENT).
+      # A static-duration object has no such ceiling — the section layout honours
+      # any power of two — so only this path checks.
+      def reject_overaligned_automatic(decl)
+        requested = decl.alignas
+        return if requested.nil?
+
+        limit = if decl.type.array? || decl.type.struct? || wide128?(decl.type)
+                  STACK_OBJECT_ALIGNMENT
+                else
+                  VREG_SLOT_ALIGNMENT
+                end
+        return if requested <= limit
+
+        error_at(decl.token,
+                 "requested alignment #{requested} for '#{decl.name}' exceeds the #{limit} bytes " \
+                 "an automatic object is laid out on")
       end
 
       # A block-scope function declaration ("int f(int);" written inside a body,
@@ -1754,7 +1820,8 @@ module Rubycc
         type, init = build_global_init(type, decl.initializer, decl.token) if decl.initializer
         require_complete(type, decl.token)
         scope[decl.name] = Local.new(type: type, storage: name, global: true, const: decl.const)
-        @globals << Global.new(name: name, size: type.size, align: type.alignment,
+        @globals << Global.new(name: name, size: object_size(type, init),
+                               align: object_alignment(type, decl.alignas),
                                init: init, linkage: :internal)
       end
 
@@ -3083,12 +3150,34 @@ module Rubycc
       # missing member, a subscript of a non-array, or a bit-field target — is
       # reported at the token the evaluator flags, with its specific wording.
       def gen_offsetof(node)
-        offset = Front::ConstantEvaluator.evaluate(node)
+        offset, terms = Front::ConstantEvaluator.offsetof_plan(node)
         dst = new_vreg
         emit(:const, dst: dst, a: offset)
-        [dst, Type::ULong]
+        return [dst, Type::ULong] if terms.empty?
+
+        [sum_offsetof_terms(dst, terms), Type::ULong]
       rescue Front::ConstantEvaluator::OffsetofError => e
         error_at(e.token, e.detail)
+      end
+
+      # Adds the run-time part of an offsetof designator to the constant part
+      # already in `base`: one "index * element size" per subscript whose index
+      # is not a constant expression, each lowered and scaled exactly as an
+      # ordinary subscript's is. The designator names no object, so the indices
+      # are the only thing evaluated — nothing is loaded and no aggregate is
+      # materialized, just as in the all-constant case.
+      def sum_offsetof_terms(base, terms)
+        terms.each do |term|
+          index, index_type = gen_value(term.index)
+          unless index_type.integer?
+            error_at(term.index.token, "array subscript is not an integer")
+          end
+          scaled = scale_index(index, index_type, term.scale)
+          total = new_vreg
+          emit(:add, dst: total, a: base, b: scaled, size: 8)
+          base = total
+        end
+        base
       end
 
       # A cast "( type-name ) operand". The destination type steers the whole
@@ -3425,19 +3514,29 @@ module Rubycc
       end
 
       # Computes the address of "e[i]" — the lvalue shared by subscript reads
-      # and writes and by "&e[i]". The target decays to a pointer (an array
+      # and writes and by "&e[i]". The pointer operand decays first (an array
       # becomes a pointer to its first element); the int index is scaled by the
       # element size and added, exactly like "*(e + i)" (rejected up front when
       # the element type is void, since there is no size to scale by). Returns
       # [address_vreg, element_type].
       def gen_element_address(node)
-        base, base_type = gen_value(node.target)
+        # Both operands are lowered in the order written, before either is
+        # assigned a role: 6.5.2.1p2 defines "E1[E2]" as "*((E1)+(E2))" and that
+        # addition commutes, so the pointer may stand on either side and only
+        # the operand *types* say which is which.
+        left, left_type = gen_value(node.target)
+        right, right_type = gen_value(node.index)
+        base, base_type, index, index_type =
+          if left_type.pointer?
+            [left, left_type, right, right_type]
+          else
+            [right, right_type, left, left_type]
+          end
         element_type = subscript_element_type(base_type, node.token)
         error_at(node.token, "invalid use of void pointer") if element_type.void?
         # The element's size scales the index, so an incomplete struct element
         # (its width unknown) is rejected before it reaches #scale_index.
         require_complete(element_type, node.token)
-        index, index_type = gen_value(node.index)
         unless index_type.integer?
           error_at(node.token, "array subscript is not an integer")
         end
@@ -5400,6 +5499,20 @@ module Rubycc
         base_type.target
       end
 
+      # The decayed type of the *pointer* operand of a subscript, for the paths
+      # that only need the type ("sizeof a[i]", "&a[i]"). "E1[E2]" is
+      # "*((E1)+(E2))" (6.5.2.1p2), an addition that commutes, so the index may
+      # be written on the left — "0[x]", the spelling upb's ARRAY_SIZE macro
+      # uses. The target is looked at first, which is the only side an ordinary
+      # subscript needs, and the index only when the target turns out not to be
+      # the pointer one.
+      def subscript_pointer_type(node)
+        target_type = decay(static_type(node.target))
+        return target_type if target_type.pointer?
+
+        decay(static_type(node.index))
+      end
+
       # sizeof measures the operand's type without evaluating it. A bare array
       # variable keeps its array type (no decay), so "sizeof a" is the whole
       # array; a string literal is likewise measured as its char[N+1] array
@@ -5458,10 +5571,11 @@ module Rubycc
             Type::Pointer.new(function_type_of(sig))
           end
         when Front::AST::Subscript
-          # The target decays before it is indexed, so a nested subscript whose
-          # target is itself an array row ("a[i]" of a multidimensional array)
-          # decays that row to a pointer before the outer "[j]" indexes it.
-          subscript_element_type(decay(static_type(node.target)), node.token)
+          # The pointer operand decays before it is indexed, so a nested
+          # subscript whose target is itself an array row ("a[i]" of a
+          # multidimensional array) decays that row to a pointer before the
+          # outer "[j]" indexes it.
+          subscript_element_type(subscript_pointer_type(node), node.token)
         when Front::AST::MemberAccess
           member = static_member(node)
           decay(member.type)
@@ -5652,7 +5766,7 @@ module Rubycc
 
           Type::Pointer.new(local.type)
         elsif operand.is_a?(Front::AST::Subscript)
-          Type::Pointer.new(subscript_element_type(static_type(operand.target), operand.token))
+          Type::Pointer.new(subscript_element_type(subscript_pointer_type(operand), operand.token))
         elsif operand.is_a?(Front::AST::MemberAccess)
           Type::Pointer.new(static_member(operand).type)
         elsif operand.is_a?(Front::AST::Unary) && operand.op == :deref

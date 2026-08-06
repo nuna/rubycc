@@ -1,7 +1,6 @@
 /* rubycc freestanding <stdalign.h>: alignment macros (ISO C 7.15).
-   alignof maps onto rubycc's _Alignof operator. rubycc does not accept the
-   _Alignas specifier yet, but the macro is still provided for source that only
-   references it behind a feature guard. */
+   alignas and alignof map onto rubycc's _Alignas specifier and _Alignof
+   operator, both of which the compiler implements. */
 
 #ifndef _RUBYCC_STDALIGN_H
 #define _RUBYCC_STDALIGN_H
