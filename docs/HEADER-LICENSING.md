@@ -74,7 +74,7 @@ musl の `COPYRIGHT`(https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT)より�
 
 ---
 
-## 3. 同梱ヘッダの由来台帳(77 本)
+## 3. 同梱ヘッダの由来台帳(81 本)
 
 各ヘッダ冒頭の provenance コメントを棚卸しした結果。分類は次の 4 種:
 
@@ -84,7 +84,7 @@ musl の `COPYRIGHT`(https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT)より�
 - **clean-room** — 公開 ABI / ISO C 標準 / カーネル UAPI に対してゼロから記述。musl 由来ではない
   (一部は musl を「形状の参照」にしたが、テキストの派生はしていない)。
 
-### 3.1 freestanding(9 本、`include/*.h`)
+### 3.1 freestanding(10 本、`include/*.h`)
 
 libc 由来ではない。musl・glibc いずれの派生でもない。
 
@@ -96,6 +96,7 @@ libc 由来ではない。musl・glibc いずれの派生でもない。
 | `include/stdarg.h` | ISO C 7.16(`__builtin_va_*` へのマッピング) |
 | `include/stdbool.h` | ISO C 7.18 |
 | `include/stdckdint.h` | ISO C23 7.20(`__builtin_*_overflow` へのマッピング)|
+| `include/stdatomic.h` | ISO C 7.17 の部分実装。`memory_order_*` と fence のみを `__atomic_thread_fence` へマッピング。`_Atomic` と atomic 操作は未実装(Step 209) |
 | `include/stddef.h` | ISO C 7.19(型は x86-64 SysV LP64 に固定) |
 | `include/stdnoreturn.h` | ISO C 7.23 |
 | `include/x86intrin.h` | 意図的な空スタブ(CRuby の config.h 対策) |
@@ -130,7 +131,7 @@ musl の宣言セット/形状を出発点にし、glibc の対象 arch(x86-64 /
 | `include/libc/glibc/aarch64/sys/types.h` | 全幅・符号を glibc aarch64 LP64 に固定。nlink_t/blksize_t=32bit で x86-64 と相違(実測) |
 | `include/libc/glibc/aarch64/time.h` | `time_t`=long、`struct tm` 拡張(x86-64 版とバイト一致) |
 
-### 3.3 clean-room(47 本)
+### 3.3 clean-room(49 本)
 
 musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI に対してゼロから記述。
 
@@ -183,6 +184,9 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 | `include/libc/sys/statfs.h` | **Linux statfs(2) の `struct statfs` レイアウト**(実測 120 バイト・_Alignof 8・全メンバ 8 バイト・パディングなし)。カーネルには 32bit カウンタ版と 64bit 版の 2 系統があり glibc はワード幅 typedef で書いているため sys/stat.h のようなアーキ差を予想したが、**実測では両 LP64 ターゲットとも同一**だったため共通層。符号は一様ではなく f_type/f_bsize/f_namelen/f_frsize/f_flags/f_spare が符号付き、f_blocks/f_bfree/f_bavail/f_files/f_ffree が符号なし(実測)。`__fsid_t` は実測 8 バイト・align 4(= int 2 本、8 バイト語ではない)。`fsid_t` は glibc では sys/types.h 側の別名だが rubycc には型分割層がないため同じガード内に置く。statfs/fstatfs は Linux/glibc 宣言(Step 141) | なし(UAPI/glibc ABI 実測) |
 | `include/libc/glibc/x86_64/sys/syscall.h` | **Linux x86-64 システムコール番号**(実測)。glibc の `sys/syscall.h` が `<asm/unistd.h>` を取り込んで `SYS_*` を `__NR_*` の別名として定義する 2 段構成であることも実測で確認し、その関係ごと再現。番号はアーキ別体系で、実測すると `SYS_read` 0 対 63・`SYS_openat` 257 対 56 のようにほぼ全項目が食い違うため **arch 層に 2 本**(io_uring の 3 本 425/426/427 だけが共通)。全数網羅ではなく、nio4r/libev が生 syscall で発行するもの(clock_gettime・eventfd2/signalfd4/inotify_init1/epoll_create1・linux-aio と io_uring)と代表的な中核呼び出しに限定し、**両アーキに存在する名前のみ**を対象とした(x86-64 専用の旧エントリ open/poll/select/pipe/dup2 等は asm-generic 表に存在しないため両側で対象外)。glibc 同様 `syscall()` の宣言は持たない(unistd.h の担当)(Step 141) | なし(kernel ABI 実測) |
 | `include/libc/glibc/aarch64/sys/syscall.h` | 同上。aarch64(asm-generic)の番号体系。x86-64 版と名前集合は完全に同じで、番号のみが異なる(クロス gcc + qemu で実測)(Step 141) | なし(kernel ABI 実測) |
+
+| `include/libc/link.h` | `struct link_map` の先頭フィールドを glibc の動的リンク ABI の実測値で再現。`dlinfo(RTLD_DI_LINKMAP)` の linker-map 取得に必要な範囲に限定 | なし(glibc ABI 実測) |
+| `include/libc/regex.h` | `regex_t`/`regmatch_t` の glibc-compatible なサイズ・アライメント・メンバ配置を実測して再現。C 拡張の値埋め込みに必要な ABI のみで、POSIX regex の実装は含めない | なし(glibc ABI 実測) |
 
 > `assert.h` と `features.h` は自己申告で clean-room だが、冒頭コメントに
 > 「musl's <…> was the shape reference」とある。**形状(どの宣言を並べるか)の参照**で
@@ -240,7 +244,8 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 > 型ジェネリックであり、コンパイラにしか表現できないからである。
 > 動機は musl の初回実行(Step 175)で、**ホストの ruby の `config.h` が
 > `HAVE_STDCKDINT_H` を焼き込んでいると rubycc では `ruby.h` が前処理すら通らない**
-> ことが分かったため。`stdatomic.h` は依然として未着手(`_Atomic` が無いまま)。
+> ことが分かったため。`stdatomic.h` は Step 209 で最小の fence API を追加したが、
+> `_Atomic` オブジェクトと atomic load/store/RMW は依然として未実装である。
 
 > Step 135(M5 H2)で、コーパスセンサス(36 gem、Step 139)が挙げた実需ギャップから
 > `sys/wait.h`(nio4r)・`sys/epoll.h`(nio4r・unicorn)・`langinfo.h`(nkf)の 3 スペリング

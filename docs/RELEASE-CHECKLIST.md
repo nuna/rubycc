@@ -128,12 +128,12 @@ N5(gemspec 宣言の確認・静的スキャン・rbenv の状況)と N7(代表�
    sqlite3 amalgamation も 16,001 行/秒・467MB で完走(`THROUGHPUT.md`)。
 2. **N2 の超過**: gcc -O2 比で最大 7.65x(json)。レジスタ割付が無いことの構造的帰結で、
    gcc -O0 比では 1.1〜2.9x。M6 で改善予定(`BENCHMARKS.md`)。
-3. **`_Atomic`(C11)未対応**: `stdatomic.h` を同梱しない。`_Atomic int x = 0;` は
-   `error: expected ';'` になることを実測確認(Step 124)。
-4. **`ckd_*`(C23)未対応**: `__builtin_add_overflow` 相当が無く `stdckdint.h` を
-   同梱できない(Step 124)。
-5. **`regex.h` 非同梱**: oj が `regex_t` を値で埋め込むため不透明型で済まず、
-   全メンバの再現がコストに見合わない(Step 124)。
+3. **`_Atomic`(C11)未対応**: `_Atomic int x = 0;` は `error: expected ';'` になる。
+   `<stdatomic.h>` は部分実装で、`memory_order_*` と `atomic_thread_fence` のみを提供する。
+4. **C23 checked arithmetic は部分対応**: 同梱の `stdckdint.h` は `ckd_add`/
+   `ckd_sub`/`ckd_mul` を overflow builtin にマッピングする。その他の C23 は未対応。
+5. **`regex.h` は最小 ABI のみ**: `regex_t` を値で埋め込む拡張向けに
+   glibc-compatible なレイアウトは同梱するが、完全な POSIX regex 実装は提供しない。
 6. **`__GNUC__` を定義しない(R7)**: `#ifdef __GNUC__` の非 GNUC 側に常に展開される。
    GNU 拡張前提の最適化パスには乗れない。
 7. **128 ビット整数の除算・剰余・ビット演算(`& | ^`)・可変長引数渡しが未実装**

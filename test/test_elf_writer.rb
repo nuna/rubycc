@@ -411,6 +411,19 @@ class TestElfWriter < Minitest::Test
     assert_equal "main", name
   end
 
+  def test_default_visibility_and_explicit_export_visibility_reach_elf
+    source = <<~C
+      __attribute__((visibility("default"))) extern int exported(void);
+      int exported(void) { return 1; }
+      int hidden(void) { return 2; }
+    C
+    binary = Rubycc::Compiler.new.compile(source, filename: "visibility.c",
+                                          default_visibility: :hidden)
+    reader = Rubycc::ObjFile::ELFReader.read(binary)
+    assert_equal :default, reader.symbol("exported").visibility
+    assert_equal :hidden, reader.symbol("hidden").visibility
+  end
+
   def test_rela_text_section_layout
     bin = build_object_with_relocation
     rela = find_section(bin, ".rela.text")

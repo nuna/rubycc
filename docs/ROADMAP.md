@@ -785,8 +785,8 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   Step 164 で io-nonblock 0.3.2、Step 165 で io-wait 0.4.0、Step 166 で erb 6.0.1.1、
   Step 169 で io-console 0.8.2、Step 170 で digest 3.2.1、Step 171 で zlib 3.2.3、
   Step 172 で psych 5.3.1 を追加(6 → 18 件)。**
-- **コーパス未検証 gem(Step 157 で棚卸し、Step 172 で更新)**: センサス対象 36 件に対し
-  検証済み 18 件。**未検証 18 件のうち 16 件は R10 ゲートを通過**している(除外は sqlite3 と pg のみ)。
+- **コーパス未検証 gem(Step 157 で棚卸し、Step 172 で更新)**: この記述は当時の
+  36 件・18 件時点の履歴である。現在の分母と実測値は下記の Step 209〜213 に更新した。
   `ruby/*` の default gem 群は 7 件計画で出し切ったので、次に着手するなら
   サードパーティ gem 側になる。
   **fcntl は上流にテストスイートが無く (d) レベルの証拠が原理的に得られない**ため対象外。
@@ -846,6 +846,27 @@ tarball は `https://github.com/ruby/<name>/archive/refs/tags/v<version>.tar.gz`
 多 ext(digest)とシステムライブラリ依存(zlib・psych)は
 **M5 のコーパスが本当に通るかを決める形**で、R10 が名指しで想定している類型でもある。
 1〜4 が順調なら、そこで得た足場を 5〜7 に投入する。
+
+#### 現在の R10 実測値(Steps 209〜213)
+
+2026-08-06 の glibc x86_64 / Ruby 3.4.5 で、R10 ゲートを通過した 37 gem を同じ
+`RUBYCC=1 gem install` → sanity → 上流テストの手順で再確認した。`websocket-driver`
+0.8.2、`bootsnap` 1.24.6、`yajl-ruby` 1.4.3、`prism` 1.8.1、`fiddle` 1.1.8 の
+5 件が PASS となり、**25/37 = 67.6%** になった。R10 の 90% は 34/37 件なので、
+この時点ではまだ受入れ条件を満たしていない。
+
+残り 12 件の内訳も確定している。`nio4r` は rubycc ビルド・sanity までは通ったが、
+上流 112 examples のうち 44 件が sandbox の socket `EPERM` で失敗し、gcc ビルドの
+対照も同じ結果だった。`byebug`/`debug`/`openssl` も PTY/socket 制約または実行時
+クラッシュ、`puma` は上流テストの未同梱依存、`oj` は rubycc/gcc 対照とも上流側の
+失敗、`google-protobuf` は `_Atomic` 言語機能、`rbs` は designated initializer、
+`mysql2`/`thin`/`unicorn` は依存または上流テスト取得条件、`fcntl` は上流テストなしで
+ある。これらを PASS として水増しせず、34/37 に届くには依存関係と実行環境を整えた
+再実走が必要である。
+
+`include/stdatomic.h` は `_Atomic` 自体ではなく `atomic_thread_fence` だけを提供する
+部分実装であり、`nio4r` のビルドを前進させた。`include/libc/link.h`、`regex.h` と
+あわせてセンサスの bundled header set は 61 から 64 spellings になった。
 
 ### 環境が無くて測れていないことの解消(上の 7 件計画の後、3 ステップ)
 

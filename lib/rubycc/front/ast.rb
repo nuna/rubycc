@@ -381,9 +381,9 @@ module Rubycc
       # "unsigned 1" is 0 in infinite precision, not UINT_MAX.
       BuiltinOverflow = Data.define(:op, :args, :token)
 
-      # One of gcc's __atomic_* builtins (the nine forms rubycc lowers). `kind`
-      # names the operation — :load, :store, :exchange, :compare_exchange,
-      # :fetch_add, :fetch_sub, :add_fetch, :sub_fetch or :or_fetch — and `args`
+      # One of gcc's __atomic_* builtins. `kind` names the operation — :load,
+      # :store, :exchange, :compare_exchange, :fetch_add, :fetch_sub,
+      # :add_fetch, :sub_fetch, :or_fetch or :fence — and `args`
       # holds the argument expressions exactly as written, including the trailing
       # memory-order argument(s) and __atomic_compare_exchange_n's `weak` flag.
       # The parser checks only the argument *count* here; the operand types (and
@@ -445,9 +445,11 @@ module Rubycc
       # rather than of any one node because the attribute may be written on a
       # prototype that precedes or follows the definition (see
       # Parser#register_init_attributes). Names never defined here appear in it
-      # too and are dropped by the generator.
-      Program = Data.define(:functions, :init_attributes) do
-        def initialize(functions:, init_attributes: {})
+      # too and are dropped by the generator. `visibility_attributes` maps an
+      # identifier to an explicit GNU ELF visibility; it is kept at program
+      # scope because an exported declaration often precedes its definition.
+      Program = Data.define(:functions, :init_attributes, :visibility_attributes) do
+        def initialize(functions:, init_attributes: {}, visibility_attributes: {})
           super
         end
       end

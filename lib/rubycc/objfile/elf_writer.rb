@@ -89,6 +89,7 @@ module Rubycc
       STT_FUNC    = 2
       STT_SECTION = 3
       STT_FILE    = 4
+      STV = { default: 0, internal: 1, hidden: 2, protected: 3 }.freeze
 
       # x86_64 relocation types: 64 for an absolute 64-bit address (a pointer
       # slot in .data initialized to another object's address), PC32 for a plain
@@ -325,8 +326,9 @@ module Rubycc
         self
       end
 
-      def add_global_func(name, offset, size)
-        @func_symbols << { name: name, offset: offset, size: size, bind: STB_GLOBAL }
+      def add_global_func(name, offset, size, visibility: :default)
+        @func_symbols << { name: name, offset: offset, size: size, bind: STB_GLOBAL,
+                            visibility: STV.fetch(visibility, visibility) }
         self
       end
 
@@ -341,8 +343,9 @@ module Rubycc
       # Registers a defined file-scope variable as a global STT_OBJECT symbol.
       # `section` is :data or :bss, `offset` its byte offset within that section
       # (st_value) and `size` its storage width (st_size).
-      def add_global_object(name, section, offset, size)
-        @object_symbols << { name: name, section: section, offset: offset, size: size, bind: STB_GLOBAL }
+      def add_global_object(name, section, offset, size, visibility: :default)
+        @object_symbols << { name: name, section: section, offset: offset, size: size,
+                             bind: STB_GLOBAL, visibility: STV.fetch(visibility, visibility) }
         self
       end
 
@@ -567,13 +570,15 @@ module Rubycc
             next unless sym[:bind] == bind
 
             syms << { name: sym[:name], bind: bind, type: STT_FUNC,
-                      shndx: :text, value: sym[:offset], size: sym[:size] }
+                      shndx: :text, value: sym[:offset], size: sym[:size],
+                      visibility: sym[:visibility] || 0 }
           end
           @object_symbols.each do |obj|
             next unless obj[:bind] == bind
 
             syms << { name: obj[:name], bind: bind, type: STT_OBJECT,
-                      shndx: obj[:section], value: obj[:offset], size: obj[:size] }
+                      shndx: obj[:section], value: obj[:offset], size: obj[:size],
+                      visibility: obj[:visibility] || 0 }
           end
         end
         @undefined_symbols.each do |name|
@@ -619,7 +624,7 @@ module Rubycc
           buf << sym_entry(
             name: sym[:name] ? sym_name_offsets[sym[:name]] : 0,
             info: (sym[:bind] << 4) | sym[:type],
-            other: 0,
+            other: sym[:visibility] || 0,
             shndx: sym[:shndx].is_a?(Symbol) ? section_index(sym[:shndx]) : sym[:shndx],
             value: sym[:value],
             size: sym[:size]

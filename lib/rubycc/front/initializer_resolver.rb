@@ -13,15 +13,28 @@ module Rubycc
     # of the generator and of constant evaluation.
     ScalarInit = Data.define(:offset, :type, :value)
 
+    # A scalar placed into a bit-field. `offset` identifies the containing
+    # storage unit; `shift` is the field's bit position within that unit. It
+    # stays separate from ScalarInit because a bit-field initializer must be a
+    # read-modify-write, not a whole-width scalar store at the member's byte.
+    BitfieldInit = Data.define(:offset, :type, :value, :width, :shift)
+
     # A run of literal bytes a string initializer places at `offset` (the raw
     # string-literal bytes, without the terminating NUL). The caller zero-fills
     # the whole object first, so the NUL and any trailing array slots come for
     # free and are not recorded here.
     StringInit = Data.define(:offset, :bytes)
 
+    # A whole aggregate expression (normally a compound literal) copied into
+    # an aggregate subobject at `offset`. C permits an initializer-list element
+    # such as `.base = (Node){ .type = 1 }`; it is an expression initializer,
+    # not a brace-elided walk of the outer cursor.
+    AggregateInit = Data.define(:offset, :type, :value)
+
     # The outcome of resolving an initializer: `type` is the object's type with
     # any "[]" array bound now filled in (so sizeof and the storage layout see a
-    # complete type), and `entries` is the flat list of ScalarInit/StringInit
+    # complete type), and `entries` is the flat list of ScalarInit/BitfieldInit/
+    # StringInit/AggregateInit placements
     # placements, in source order, that the caller lowers.
     ResolvedInitializer = Data.define(:type, :entries)
 
@@ -39,7 +52,7 @@ module Rubycc
     # never type-checks a scalar against its slot (the caller applies the
     # ordinary assignment conversion). It only diagnoses the structural errors —
     # excess elements, a braced list for a scalar, an unknown member, an
-    # out-of-range index, an empty "{}", an over-long char-array string — that
+    # out-of-range index and an over-long char-array string — that
     # depend on the shape alone.
     class InitializerResolver
       # A forward cursor over one brace level's items. Brace elision hands the
@@ -125,9 +138,11 @@ module Rubycc
       # braces ("int x = {5};") is unwrapped; an aggregate is walked by its kind,
       # then any leftover item is an excess element.
       def init_object_from_list(type, base, list)
-        if list.items.empty?
-          error(list.token, "empty braces are not a valid initializer")
-        end
+        # GCC accepts the empty compound literal used by yajl-ruby, and C23
+        # standardizes the same zero-initializer form. The lowering zero-fills
+        # the whole object before applying entries, so no entry is needed here.
+        return type if list.items.empty?
+
         return init_scalar_from_list(type, base, list) if scalar?(type)
 
         require_layout(type, list.token)
@@ -218,14 +233,14 @@ module Rubycc
 
             member, index = locate_member(type, designator)
             reject_flexible_array_init(member, item)
-            init_subobject(member.type, base + member.offset, cursor, item, item.designators[1..])
+            init_subobject(member.type, base + member.offset, cursor, item, item.designators[1..], member)
             index += 1
           else
             break if index >= members.size
 
             member = members[index]
             reject_flexible_array_init(member, item)
-            init_subobject(member.type, base + member.offset, cursor, item, [])
+            init_subobject(member.type, base + member.offset, cursor, item, [], member)
             index += 1
           end
         end
@@ -252,13 +267,13 @@ module Rubycc
         designator = item.designators.first
         if designator.is_a?(AST::MemberDesignator)
           member, = locate_member(type, designator)
-          init_subobject(member.type, base + member.offset, cursor, item, item.designators[1..])
+          init_subobject(member.type, base + member.offset, cursor, item, item.designators[1..], member)
         elsif designator
           # An array designator here is for an enclosing object; leave it.
           nil
         else
           member = type.members.first
-          init_subobject(member.type, base + member.offset, cursor, item, [])
+          init_subobject(member.type, base + member.offset, cursor, item, [], member)
         end
       end
 
@@ -267,10 +282,10 @@ module Rubycc
       # the item's value initializes the subobject: a char array takes a string,
       # a nested brace recurses with its own cursor, a scalar is recorded, and a
       # braceless aggregate elides — it keeps drawing from the *same* cursor.
-      def init_subobject(sub_type, sub_offset, cursor, item, designators)
+      def init_subobject(sub_type, sub_offset, cursor, item, designators, member = nil)
         unless designators.empty?
-          inner_type, inner_offset = step_designator(sub_type, sub_offset, designators.first)
-          return init_subobject(inner_type, inner_offset, cursor, item, designators[1..])
+          inner_type, inner_offset, inner_member = step_designator(sub_type, sub_offset, designators.first)
+          return init_subobject(inner_type, inner_offset, cursor, item, designators[1..], inner_member)
         end
 
         value = item.value
@@ -280,9 +295,20 @@ module Rubycc
         elsif value.is_a?(AST::InitializerList)
           cursor.advance
           init_object_from_list(sub_type, sub_offset, value)
+        elsif sub_type.struct? && aggregate_expression?(value)
+          cursor.advance
+          @entries << AggregateInit.new(sub_offset, sub_type, value)
         elsif scalar?(sub_type)
           cursor.advance
-          @entries << ScalarInit.new(sub_offset, sub_type, value)
+          if member&.bitfield?
+            unit_bits = member.type.size * 8
+            unit_offset = (member.bit_offset / unit_bits) * member.type.size
+            shift = member.bit_offset % unit_bits
+            unit_base = sub_offset - member.offset + unit_offset
+            @entries << BitfieldInit.new(unit_base, sub_type, value, member.bit_width, shift)
+          else
+            @entries << ScalarInit.new(sub_offset, sub_type, value)
+          end
         else
           # Brace elision (6.7.9p20): a braceless aggregate subobject consumes as
           # many following items as it needs from the shared cursor.
@@ -325,13 +351,13 @@ module Rubycc
           end
           member = type.member(designator.name) ||
                    error(designator.token, "unknown field designator '.#{designator.name}'")
-          [member.type, base + member.offset]
+          [member.type, base + member.offset, member]
         else
           unless type.array?
             error(designator.token, "array designator in non-array initializer")
           end
           check_array_index(type, designator)
-          [type.element, base + designator.index * type.element.size]
+          [type.element, base + designator.index * type.element.size, nil]
         end
       end
 
@@ -374,6 +400,34 @@ module Rubycc
 
       def scalar?(type)
         !type.array? && !type.struct?
+      end
+
+      # Whether the syntax is known to produce an aggregate value without
+      # consulting the surrounding expression scope. Compound literals are the
+      # direct form; a conditional or comma expression keeps that aggregate
+      # value when all of the value-producing arms/operands do. Other expression
+      # forms remain on the brace-elision path, which preserves `{ 0 }` and the
+      # ordinary positional initializer rules.
+      def aggregate_expression?(node)
+        case node
+        when AST::CompoundLiteral
+          node.type.array? || node.type.struct?
+        when AST::Conditional
+          aggregate_expression?(node.then_expr) && aggregate_expression?(node.else_expr)
+        when AST::Comma
+          aggregate_expression?(node.right)
+        when AST::Unary
+          # A dereference preserves the pointed-to object's aggregate value;
+          # the generator performs the final type check when the pointer's
+          # target is known.
+          node.op == :deref
+        when AST::MemberAccess, AST::Subscript
+          # These lvalue expressions can likewise denote an aggregate member or
+          # element; the generator settles their actual type and compatibility.
+          true
+        else
+          false
+        end
       end
 
       # The token that locates an item for diagnostics: its first designator, or

@@ -8004,6 +8004,96 @@ target を渡すよう修正した。aarch64 用の resolver 回帰テストを�
 
 ---
 
+## Step 209 — `__atomic_thread_fence` と `websocket-driver` の再実走(M5 H4)
+
+`nio4r` 2.7.5 の再実走で、libev が要求する C11 の `__atomic_thread_fence` と
+いくつかの POSIX 宣言が rubycc の同梱面から抜けていることが分かった。
+`__atomic_thread_fence` を lexer/parser/AST/IR に追加し、x86-64 では MFENCE、
+AArch64 では DMB ISH を生成するようにした。同梱の `<stdatomic.h>` は
+`memory_order_*` と `atomic_thread_fence` だけを提供する部分実装であり、`_Atomic`
+オブジェクトや load/store/RMW は引き続き未実装である。`test/test_atomic_builtins.rb`
+は 23 runs / 94 assertions / 0 failures / 0 errors になった。
+
+同じビルドで現れた `VARx` マクロ由来の struct 内空宣言は parser が無視する C の
+`struct point { int x;; };` を追加して修正し、`syscall()` の宣言と `_POSIX_TIMERS`
+も `unistd.h` に追加した。追加した `test/test_parser.rb` の回帰ケースと syscall ABI
+ケースは green である。
+
+この足場で、`websocket-driver` 0.8.2 を rubycc/rmake でビルドし、注入した
+`websocket_mask.so` のロードを sanity で確認した後、上流 RSpec を実走した。
+**196 examples / 0 failures** であり、`data/verified_gems.json` に glibc x86_64 /
+Ruby 3.4.5 の記録を追加した。
+
+なお `nio4r` 自体はビルドと sanity までは到達したが、上流は 112 examples / 44
+failures / 1 pending だった。失敗は socket 作成・接続の `Errno::EPERM` で、同じソースを
+gcc でビルドした対照も 112 examples / 44 failures になったため、rubycc の合格記録には
+していない。sandbox の socket 制約が解除された環境で再実走する対象として残す。
+
+## Step 210 — `bootsnap` 1.24.6 の gem 本体テスト(M5 H4)
+
+`bootsnap.so` を rubycc/rmake で生成し、`bootsnap/compile_cache` 経由の sanity で
+注入した拡張がロードされたことを確認した。上流の 20 ファイルを test/unit で実走し、
+**154 tests / 331 assertions / 0 failures / 0 errors**。開発用 Gemfile の依存を持ち込ま
+ない synthetic Gemfile と、上流の互換条件に合わせた minitest 5.25.5 を使用した。
+
+## Step 211 — `yajl-ruby` 1.4.3 の gem 本体テスト(M5 H4)
+
+`yajl.so` を rubycc/rmake で生成して sanity でロードを確認した。上流 RSpec 14 ファイル
+を実走し、**416 examples / 0 failures** で合格した。`data/verified_gems.json` に
+glibc x86_64 / Ruby 3.4.5 の記録を追加した。
+
+## Step 212 — `prism` 1.8.1 の全テスト(M5 H4)
+
+Prism のビルドで、ビットフィールド初期化子と aggregate/compound literal の指定初期化子
+が露出したため、initializer resolver と IR の bitfield/aggregate 経路を補った。上流
+source archive に含まれない生成 Ruby API ファイルは、gem package の生成物をそのまま
+テストツリーへ注入する recipe とした。
+
+`prism.so` の sanity 後、64 ファイルを test/unit で実走し、**17,306 tests /
+1,762,400 assertions / 0 failures / 0 errors / 3 omissions**。omission は失敗ではなく、
+`data/verified_gems.json` にはその事実を notes として残した。
+
+## Step 213 — `fiddle` 1.1.8 の system-libffi 経路(M5 H4)
+
+Fiddle の `Handle#file_name` が linker script を指すケースで nil になったため、
+`dlfcn.h` に `RTLD_DI_LINKMAP`/`dlinfo`、`link.h` に必要な `link_map` の ABI 前半を追加した。
+その後、`fiddle.so` を rubycc/rmake で生成し、dlfcn ABI の gcc 対照も通過した。
+上流 14 ファイルを実走して **227 tests / 615 assertions / 0 failures / 0 errors**。
+
+## Step 214 — R10 実測値の確定と残件の分類(M5 H4)
+
+上記 5 件を `tools/verify_gem_tests.rb --update` で記録した後、R10 ゲートを通過した
+分母 37 件を再計算した。検証済みは既存 20 件 + 新規 5 件の **25/37 = 67.6%**。
+90% に必要な 34 件にはまだ 9 件足りず、ここで受入れ完了とはしない。
+
+未合格 12 件は次の通りである。
+
+- `nio4r`: rubycc ビルドは通るが sandbox の socket `EPERM`。gcc 対照も同じ。
+- `byebug` / `debug`: PTY・socket 制約により上流の対話的テストを完走できない。
+- `openssl`: ビルド後に socket 制約と KDF テストの実行時クラッシュがある。
+- `oj`: rubycc と gcc の対照の双方で上流テストが失敗し、rubycc 固有の合格とは言えない。
+- `puma`: 上流テストが要求する `minitest/proveit` 等の依存が利用できない。
+- `google-protobuf`: `<stdatomic.h>` の `_Atomic` 言語機能が未実装。
+- `rbs`: gem package に上流テストがなく、さらに designated initializer の typedef/aggregate
+  解決が未実装のためビルドも止まる。
+- `mysql2` / `thin` / `unicorn`: 必要な外部ライブラリ・依存拡張・上流テスト取得条件を
+  この環境では揃えられない。
+- `fcntl`: 上流にテストスイートがないため、証拠水準(d)の記録を作らない。
+
+以上は未合格を分母から除外したり、build-only の結果を PASS にしたりせずに残した。
+90% の再開条件は、socket/PTY と依存 gem を備えた実行環境でこの 12 件を再走し、
+少なくとも 9 件を gem 自身の全テスト合格として確認することである。
+
+## 現在のテスト規模
+
+master マージ後の統合スイート: **2,846 runs / 8,575 assertions / 0 failures / 0 errors / 44 skips**
+(`rake test` の実測値)
+Step 214 完了時点: **2,841 runs / 8,557 assertions / 0 failures / 0 errors / 44 skips**
+(ホスト側 `rake test` の実測値。Step 208 から +7 runs / +137 assertions。atomic fence、
+parser の空宣言、Doctor の5 gem許可リスト、dlfcn/link/regex ABI と aggregate 初期化子の
+回帰テストを含む)
+Step 207 完了時点: **2,833 runs / 8,395 assertions / 0 failures / 0 errors / 44 skips**
+
 ## differential-discipline-1 — 再発防止の 4 番と 2 番(M5 H6)
 
 > **採番方式の変更はここから**: このブランチは当初 Step 208・209 を使っていたが、
@@ -8235,7 +8325,7 @@ mkmf の `pkg_config` が実際に渡すのは
 
 ---
 
-## 現在のテスト規模
+### master 側のマージ直前のテスト規模
 
 differential-discipline-2 完了時点: **2,839 runs / 8,438 assertions / 0 failures / 0 errors / 44 skips**
 (master の Step 208(aarch64 gem 実走)を取り込んだ後の実測値)

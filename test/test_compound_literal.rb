@@ -92,6 +92,20 @@ class TestCompoundLiteral < Minitest::Test
     assert_c_exit_status(24, src)
   end
 
+  # A compound literal used as an initializer-list expression for a nested
+  # aggregate is a whole-object copy, not brace elision of the outer list.
+  def test_nested_compound_literal_initializer_expression
+    src = <<~C
+      typedef struct { int x; int y; } point;
+      typedef struct { point origin; int tag; } shape;
+      int main(void) {
+        shape value = { .origin = (point){ .x = 8, .y = 5 }, .tag = 1 };
+        return value.origin.x * 10 + value.origin.y + value.tag;
+      }
+    C
+    assert_c_exit_status(86, src)
+  end
+
   # A partially designated literal zero-fills its unspecified members.
   def test_unspecified_members_are_zero_filled
     src = <<~C

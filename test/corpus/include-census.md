@@ -6,7 +6,7 @@ it, then commit the result. The task requires network access; `rake test` does n
 The snapshot is deterministic: gem versions are pinned in `gems.rb`, so nothing
 that varies run-to-run (timestamps, the interpreter version, ...) belongs in it.
 
-- Bundled header set: 61 angle spellings computed from `include/`
+- Bundled header set: 64 angle spellings computed from `include/`
   (freestanding `include/*.h` + `include/libc/**`, arch layer normalized).
 
 Angle-bracket (`#include <...>`) includes only; quoted local includes are ignored.
@@ -99,7 +99,7 @@ candidates with a note; the census does not evaluate the gate.
 | `langinfo.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
 | `libc/dosio.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |
 | `limits.h` | bundled |  | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  | x |  |  |  | x |  | x |  | x |  |
-| `link.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+| `link.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `linux/aio_abi.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
 | `linux/fs.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
 | `linux/types.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
@@ -139,7 +139,7 @@ candidates with a note; the census does not evaluate the gate.
 | `port.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |
 | `pthread.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  |  |  |  | x |  |  |  |  |
 | `pwd.h` | bundled |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-| `regex.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
+| `regex.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |
 | `sanitizer/hwasan_interface.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |
 | `sanitizer/msan_interface.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |
 | `sched.h` | bundled |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |
@@ -148,7 +148,7 @@ candidates with a note; the census does not evaluate the gate.
 | `shlobj.h` | gap |  |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `signal.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  |  |  | x |  |  |  |  |
 | `stdarg.h` | bundled |  |  |  |  |  | x |  |  |  |  |  |  |  | x |  |  |  |  |  |  |  |  |  |  | x |  | x |  |  |  |  | x |  |  |  |  |  |
-| `stdatomic.h` | gap |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  | x |  |  |  |  |  |  |  |  |  |
+| `stdatomic.h` | bundled |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x |  |  | x |  |  |  |  |  |  |  |  |  |
 | `stdbool.h` | bundled | x | x | x |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  | x | x |  |  |  | x | x | x |  |  | x |  |  |  |  |  |  |  |
 | `stdckdint.h` | bundled |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
 | `stddef.h` | bundled |  | x | x |  |  | x |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  | x | x |  |  | x |  |  | x | x |  |  |  |  |  |
@@ -215,7 +215,6 @@ candidates with a note; the census does not evaluate the gate.
 | `intrin.h` | bigdecimal, google-protobuf, json, nio4r, oj | Windows-only gate | gated (likely not required) |
 | `io.h` | nio4r, nkf | Windows-only gate | gated (likely not required) |
 | `libc/dosio.h` | nkf | — | review |
-| `link.h` | fiddle | — | review |
 | `linux/aio_abi.h` | nio4r | — | review |
 | `linux/fs.h` | nio4r | — | review |
 | `linux/types.h` | nio4r | — | review |
@@ -250,12 +249,10 @@ candidates with a note; the census does not evaluate the gate.
 | `openssl/x509v3.h` | openssl | — | review |
 | `os2.h` | nkf | — | review |
 | `port.h` | nio4r | — | review |
-| `regex.h` | oj | — | review |
 | `sanitizer/hwasan_interface.h` | google-protobuf | — | review |
 | `sanitizer/msan_interface.h` | google-protobuf | — | review |
 | `sgtty.h` | io-console | — | review |
 | `shlobj.h` | etc | — | review |
-| `stdatomic.h` | google-protobuf, nio4r | — | review |
 | `sys/endian.h` | digest | — | review |
 | `sys/event.h` | nio4r | — | review |
 | `sys/systm.h` | digest | — | review |

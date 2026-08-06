@@ -98,6 +98,10 @@ CLEARED_ENV = {
 #   test_deps     pure-Ruby gems the suite needs. Installed *without* RUBYCC:
 #                 a Ruby test dependency has no C to compile and must not be
 #                 dragged through the compiler under test.
+#   test_dep_versions  exact versions for test_deps whose upstream suite has a
+#                 compatibility pin; these are installed in preference to any
+#                 incompatible version already cached in the scratch GEM_HOME.
+#   extconf_args  arguments after `--` passed to the gem's extconf.rb
 #   dep_load_paths  test_deps whose lib/ is put on the load path explicitly
 #                 rather than left to RubyGems' require fallback
 #   runner        :test_unit | :rspec | :ruby_files (see run_suite)
@@ -105,6 +109,12 @@ CLEARED_ENV = {
 #   require_flags -r entries (the Rakefile's ruby_opts)
 #   test_glob     which files make up the suite
 #   exclude       globs subtracted from test_glob
+#   bundle_gemfile :empty when the upstream helper requires bundler/setup but
+#                 the suite should run without resolving the source Gemfile's
+#                 development-only dependencies; bundle_gems lists the runtime
+#                 and test gems that the synthetic file should activate
+#   child_load_paths paths to export through RUBYLIB for subprocesses spawned by
+#                 the suite (the parent gets -I flags, but children do not)
 #   runner_args   arguments handed to the suite runner itself (the Rakefile's
 #                 Rake::TestTask#options / rspec flags), e.g. an --ignore-name
 #                 the gem's own task passes. Excluding such a test through
@@ -607,6 +617,227 @@ RECIPES = {
       # injected-.so check has to rule out.
       expr: "injected_so_loaded?"
     }
+  },
+
+  "openssl" => {
+    version: "4.0.2",
+    tarball: "https://github.com/ruby/openssl/archive/refs/tags/v4.0.2.tar.gz",
+    sos: { "lib/openssl.so" => "lib/openssl.so" },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    load_paths: %w[lib test],
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      requires: %w[openssl],
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "syslog" => {
+    version: "0.3.0",
+    tarball: "https://github.com/ruby/syslog/archive/refs/tags/v0.3.0.tar.gz",
+    sos: { "lib/syslog_ext.so" => "lib/syslog_ext.so" },
+    test_deps: %w[test-unit],
+    runner: :test_unit,
+    load_paths: %w[lib test],
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      requires: %w[syslog],
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "nio4r" => {
+    version: "2.7.5",
+    tarball: "https://github.com/socketry/nio4r/archive/refs/tags/v2.7.5.tar.gz",
+    sos: { "lib/nio4r_ext.so" => "lib/nio4r_ext.so" },
+    test_deps: %w[rspec],
+    # libev is embedded in nio4r, so its API is intentionally private to the
+    # extension. Its C11 memory fence is lowered by rubycc to the target's
+    # machine barrier; EV_API_STATIC also keeps libev's initialized globals in
+    # the same translation unit instead of relying on an `extern` definition.
+    extconf_args: ["--with-cflags=-fPIC -DEV_API_STATIC"],
+    runner: :rspec,
+    load_paths: %w[lib spec],
+    test_glob: "spec/**/*_spec.rb",
+    sanity: {
+      requires: %w[nio],
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "byebug" => {
+    version: "13.0.0",
+    tarball: "https://github.com/deivid-rodriguez/byebug/archive/refs/tags/v13.0.0.tar.gz",
+    sos: { "lib/byebug/byebug.so" => "lib/byebug/byebug.so" },
+    test_deps: %w[minitest pry],
+    # The current minitest 6 release removed minitest/mock; byebug's upstream
+    # Gemfile pins its development suite to ~> 5.25.
+    test_dep_versions: { "minitest" => "5.25.5", "pry" => "0.15.2" },
+    runner: :test_unit,
+    load_paths: %w[lib test],
+    require_flags: %w[minitest/autorun],
+    test_glob: "test/**/*_test.rb",
+    sanity: {
+      # byebug.rb only installs Kernel#byebug; the extension itself is loaded
+      # by byebug/core, which is what the upstream test helper requires too.
+      requires: %w[byebug/core],
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "http_parser.rb" => {
+    version: "0.8.1",
+    tarball: "https://github.com/tmm1/http_parser.rb/archive/refs/tags/v0.8.1.tar.gz",
+    sos: { "lib/ruby_http_parser.so" => "lib/ruby_http_parser.so" },
+    test_deps: %w[rspec],
+    runner: :rspec,
+    load_paths: %w[lib spec],
+    test_glob: "spec/**/*_spec.rb",
+    sanity: {
+      requires: %w[http_parser],
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "debug" => {
+    version: "1.11.1",
+    tarball: "https://github.com/ruby/debug/archive/refs/tags/v1.11.1.tar.gz",
+    sos: { "lib/debug/debug.so" => "lib/debug/debug.so" },
+    test_deps: %w[test-unit],
+    runner: :test_unit,
+    load_paths: %w[lib test],
+    test_glob: "test/console/*_test.rb",
+    sanity: {
+      requires: %w[debug],
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "websocket-driver" => {
+    version: "0.8.2",
+    tarball: "https://github.com/faye/websocket-driver-ruby/archive/refs/tags/0.8.2.tar.gz",
+    sos: { "lib/websocket_mask.so" => "lib/websocket_mask.so" },
+    test_deps: %w[rspec],
+    runner: :rspec,
+    load_paths: %w[lib spec],
+    bundle_gemfile: :empty,
+    bundle_gems: %w[base64 websocket-extensions rspec],
+    test_glob: "spec/**/*_spec.rb",
+    sanity: {
+      requires: %w[websocket/driver],
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "prism" => {
+    version: "1.8.1",
+    tarball: "https://github.com/ruby/prism/archive/refs/tags/v1.8.1.tar.gz",
+    sos: { "lib/prism/prism.so" => "lib/prism/prism.so" },
+    # The source archive leaves the generated Ruby API files out; they are
+    # present in the packaged gem and are required by lib/prism.rb or its test
+    # visitors before/after the extension loads.
+    extra_copies: {
+      "lib/prism/compiler.rb" => "lib/prism/compiler.rb",
+      "lib/prism/dispatcher.rb" => "lib/prism/dispatcher.rb",
+      "lib/prism/dot_visitor.rb" => "lib/prism/dot_visitor.rb",
+      "lib/prism/dsl.rb" => "lib/prism/dsl.rb",
+      "lib/prism/inspect_visitor.rb" => "lib/prism/inspect_visitor.rb",
+      "lib/prism/mutation_compiler.rb" => "lib/prism/mutation_compiler.rb",
+      "lib/prism/node.rb" => "lib/prism/node.rb",
+      "lib/prism/reflection.rb" => "lib/prism/reflection.rb",
+      "lib/prism/serialize.rb" => "lib/prism/serialize.rb",
+      "lib/prism/visitor.rb" => "lib/prism/visitor.rb"
+    },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    load_paths: %w[lib test/prism],
+    test_glob: "test/prism/**/*_test.rb",
+    sanity: {
+      requires: %w[prism],
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "fiddle" => {
+    version: "1.1.8",
+    tarball: "https://github.com/ruby/fiddle/archive/refs/tags/v1.1.8.tar.gz",
+    sos: { "lib/fiddle.so" => "lib/fiddle.so" },
+    test_deps: %w[test-unit test-unit-ruby-core],
+    dep_load_paths: %w[test-unit-ruby-core],
+    runner: :test_unit,
+    load_paths: %w[lib test/fiddle],
+    test_glob: "test/fiddle/test_*.rb",
+    sanity: {
+      requires: %w[fiddle],
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "bootsnap" => {
+    version: "1.24.6",
+    tarball: "https://github.com/Shopify/bootsnap/archive/refs/tags/v1.24.6.tar.gz",
+    sos: { "lib/bootsnap/bootsnap.so" => "lib/bootsnap/bootsnap.so" },
+    test_deps: %w[minitest mocha],
+    test_dep_versions: { "minitest" => "5.25.5" },
+    runner: :test_unit,
+    load_paths: %w[lib test],
+    bundle_gemfile: :empty,
+    bundle_gems: %w[msgpack bundler minitest mocha],
+    child_load_paths: %w[lib test],
+    test_glob: "test/**/*_test.rb",
+    sanity: {
+      # Init_bootsnap looks up UNCOMPILABLE, which the Ruby wrapper defines
+      # before loading the .so. Requiring only the .so would be an invalid
+      # sanity probe rather than a build failure.
+      requires: %w[bootsnap/compile_cache bootsnap/bootsnap],
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "oj" => {
+    version: "3.17.4",
+    tarball: "https://github.com/ohler55/oj/archive/refs/tags/v3.17.4.tar.gz",
+    sos: { "lib/oj/oj.so" => "lib/oj/oj.so" },
+    test_deps: %w[minitest],
+    test_dep_versions: { "minitest" => "5.25.5" },
+    runner: :test_unit,
+    load_paths: %w[lib test ext],
+    test_glob: "test/test_*.rb",
+    sanity: {
+      requires: %w[oj],
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "yajl-ruby" => {
+    version: "1.4.3",
+    tarball: "https://github.com/brianmario/yajl-ruby/archive/refs/tags/1.4.3.tar.gz",
+    sos: { "lib/yajl/yajl.so" => "lib/yajl/yajl.so" },
+    test_deps: %w[rspec],
+    runner: :rspec,
+    load_paths: %w[lib spec],
+    test_glob: "spec/**/*_spec.rb",
+    sanity: {
+      requires: %w[yajl],
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "puma" => {
+    version: "8.0.2",
+    tarball: "https://github.com/puma/puma/archive/refs/tags/v8.0.2.tar.gz",
+    sos: { "lib/puma/puma_http11.so" => "lib/puma/puma_http11.so" },
+    test_deps: %w[minitest],
+    runner: :test_unit,
+    load_paths: %w[lib test],
+    test_glob: "test/test_*.rb",
+    sanity: {
+      requires: %w[puma],
+      expr: "injected_so_loaded?"
+    }
   }
 }.freeze
 
@@ -717,6 +948,25 @@ def gem_installed?(name, version = nil)
   version ? versions.include?(Gem::Version.new(version)) : versions.any?
 end
 
+# RubyGems stores every successfully downloaded package in GEM_HOME/cache. Use
+# an exact cached package when it is available so a re-run remains useful during
+# a network outage; the normal registry lookup remains the fallback for a cold
+# cache. The exact filename is safe for gem names containing dots (for example
+# http_parser.rb) because the version is already pinned by the recipe.
+def cached_gem_path(name, version)
+  filenames = if version
+                ["#{name}-#{version}.gem"]
+              else
+                ["#{name}-*.gem"]
+              end
+  directories = [File.join(gem_home, "cache"), File.join(WORK_DIR, "packages")]
+  paths = directories.flat_map { |dir| filenames.flat_map { |pattern| Dir.glob(File.join(dir, pattern)) } }
+  paths.select! { |path| File.file?(path) }
+  paths.max_by do |path|
+    Gem::Version.new(File.basename(path, ".gem").delete_prefix("#{name}-"))
+  end
+end
+
 # Build this checkout into a .gem and install it into the scratch GEM_HOME. That
 # installed copy is what makes `RUBYCC=1 gem install <gem>` route through rubycc:
 # RubyGems loads every installed gem's rubygems_plugin.rb before building an
@@ -733,11 +983,29 @@ end
 
 # Install a pure-Ruby test dependency. Never with RUBYCC=1: these gems are not
 # what is under test, and routing them through rubycc would only add failure modes.
-def ensure_test_dep(name)
-  return if gem_installed?(name)
+def ensure_test_dep(name, version = nil)
+  if version
+    requirement = Gem::Requirement.new("=#{version}")
+    return if installed_versions(name).any? { |installed| requirement.satisfied_by?(installed) }
+
+    # RubyGems activates the newest installed version when a test does a plain
+    # require, so remove incompatible cached versions from this scratch GEM_HOME
+    # before installing the pinned suite dependency.
+    installed_versions(name).reject { |installed| requirement.satisfied_by?(installed) }.each do |installed|
+      run("gem", "uninstall", name, "--version", installed.to_s, "--force",
+          "--install-dir", gem_home, env: gem_env, timeout: BUILD_TIMEOUT)
+    end
+  else
+    return if gem_installed?(name)
+  end
 
   step "installing test dependency #{name} (no RUBYCC)"
-  run!("gem", "install", name, "--install-dir", gem_home, "--no-document", env: gem_env)
+  cached = cached_gem_path(name, version)
+  args = ["gem", "install", cached || name]
+  args.concat(["--version", version]) if version && !cached
+  args << "--local" if cached
+  args << "--ignore-dependencies" if cached
+  run!(*args, "--install-dir", gem_home, "--no-document", env: gem_env)
 end
 
 # The lib/ of an installed dependency, for recipes that put it on the load path
@@ -769,8 +1037,21 @@ end
 def install_through_rubycc(name, version)
   uninstall_gem(name, version)
   step "RUBYCC=1 gem install #{name} #{version}"
-  out, ok = run("gem", "install", name, "--version", version, "--install-dir", gem_home,
-                "--no-document", env: gem_env.merge("RUBYCC" => "1"), timeout: BUILD_TIMEOUT)
+  recipe = RECIPES.fetch(name)
+  cached = cached_gem_path(name, version)
+  args = ["gem", "install", cached || name]
+  args.concat(["--version", version]) unless cached
+  args.concat(["--install-dir", gem_home, "--no-document"])
+  args << "--local" if cached
+  # `gem install /path/to/pkg.gem --local` resolves dependencies from the
+  # local source index only; it does not use already-installed gems in the
+  # scratch GEM_HOME. The cached packages are used specifically for an offline
+  # retry, so dependency activation is still checked by the suite below while
+  # the target package is installed without a registry lookup.
+  args << "--ignore-dependencies" if cached
+  extconf_args = Array(recipe[:extconf_args])
+  args.concat(["--", *extconf_args]) unless extconf_args.empty?
+  out, ok = run(*args, env: gem_env.merge("RUBYCC" => "1"), timeout: BUILD_TIMEOUT)
   [out, ok]
 end
 
@@ -983,7 +1264,18 @@ def run_suite(name, recipe, src_dir, extra_load_paths)
     end
 
   step "running #{name}'s suite (#{files.size} files, runner #{recipe.fetch(:runner)})"
-  out, ok = run(*cmd, chdir: src_dir, env: gem_env)
+  suite_env = gem_env.dup
+  if recipe[:bundle_gemfile] == :empty
+    empty_gemfile = File.join(src_dir, ".rubycc-empty-Gemfile")
+    gems = Array(recipe[:bundle_gems])
+    contents = "source \"https://rubygems.org\"\n" \
+               "#{gems.map { |gem| %(gem \"#{gem}\") }.join("\n")}\n"
+    File.write(empty_gemfile, contents)
+    suite_env["BUNDLE_GEMFILE"] = empty_gemfile
+  end
+  child_load_paths = Array(recipe[:child_load_paths]).map { |path| File.expand_path(path, src_dir) }
+  suite_env["RUBYLIB"] = (child_load_paths + extra_load_paths).join(File::PATH_SEPARATOR) unless child_load_paths.empty?
+  out, ok = run(*cmd, chdir: src_dir, env: suite_env)
   [out, ok, files.size]
 end
 
@@ -1062,7 +1354,8 @@ def verify_gem(name, recipe)
     return result
   end
 
-  Array(recipe[:test_deps]).each { |dep| ensure_test_dep(dep) }
+  test_dep_versions = recipe.fetch(:test_dep_versions, {})
+  Array(recipe[:test_deps]).each { |dep| ensure_test_dep(dep, test_dep_versions[dep]) }
   extra_load_paths = Array(recipe[:dep_load_paths]).map { |dep| dep_lib_dir(dep) }
 
   src_dir = fetch_source(name, recipe)

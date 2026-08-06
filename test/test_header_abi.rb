@@ -385,7 +385,9 @@ class TestHeaderAbi < Minitest::Test
   # ttyname_r (Step 167, M5 H6): io-console's other real-build gap alongside
   # termios.h's cfmakeraw, added as ttyname's POSIX reentrant pair; it carries
   # no numeric surface of its own, so it is likewise just called in the
-  # snippet to prove it is usable.
+  # snippet to prove it is usable. fdatasync() is a declaration-only check here:
+  # bootsnap calls it, but invoking it in an ABI probe would make the probe
+  # mutate a caller-supplied descriptor.
   UNISTD = HeaderAbiHarness::Spec.new(
     header: "unistd.h",
     sizes: %w[ssize_t off_t pid_t uid_t gid_t],
@@ -402,7 +404,7 @@ class TestHeaderAbi < Minitest::Test
              + sysconf(_SC_PAGESIZE)
              + (long)confstr(_CS_PATH, (char *)buf, n)
              + fpathconf(fd, _PC_PIPE_BUF) + pathconf(path, _PC_PIPE_BUF)
-             + ttyname_r(fd, (char *)buf, n);
+             + ttyname_r(fd, (char *)buf, n) + (fdatasync != 0);
       }
     C
   )
@@ -1500,9 +1502,9 @@ class TestHeaderAbi < Minitest::Test
   # checked: the __NR_ names and the SYS_ aliases the header derives from
   # them, since third-party code writes either. `syscall(SYS_getpid)` in the
   # snippet is the end-to-end check that a measured number actually reaches
-  # the kernel entry point it names; the prototype is declared locally
-  # because measurement confirms <sys/syscall.h> does not supply it (glibc
-  # keeps it in <unistd.h>, and so does rubycc's header note).
+  # the kernel entry point it names. The prototype is declared locally because
+  # <sys/syscall.h> itself does not supply it; glibc keeps it in <unistd.h>,
+  # and rubycc exposes it there too for users that include that header.
   SYSCALL_NUMBERS = %w[read write close lseek openat readlinkat faccessat
                        ioctl fcntl pipe2 dup3 statfs fstatfs
                        mmap mprotect munmap

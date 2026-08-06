@@ -60,7 +60,8 @@ module Rubycc
     # reads the musl branches, and an unknown value is a caller error too (the
     # preprocessor raises it).
     def compile(source, filename:, include_paths: [], pic: false, defines: [], system_includes: true,
-                target: "x86_64", libc: Preprocess::Preprocessor.host_libc)
+                target: "x86_64", libc: Preprocess::Preprocessor.host_libc,
+                default_visibility: :default)
       entry = TARGETS.fetch(target) { raise ArgumentError, "unsupported target: #{target.inspect}" }
       # The target's plain-`char` type, threaded through every stage that builds
       # or reasons about one: the preprocessor (which predefines
@@ -118,13 +119,15 @@ module Rubycc
         if global.init.nil?
           bss_align = [bss_align, global.align].max
           bss_size = align_up(bss_size, global.align)
-          add_object_symbol(writer, internal, global.name, :bss, bss_size, global.size)
+          add_object_symbol(writer, internal, global.name, :bss, bss_size, global.size,
+                            visibility: ir_program.visibility.fetch(global.name, default_visibility))
           bss_size += global.size
         else
           data_align = [data_align, global.align].max
           offset = align_up(data.bytesize, global.align)
           data << ("\0".b * (offset - data.bytesize))
-          add_object_symbol(writer, internal, global.name, :data, offset, global.size)
+          add_object_symbol(writer, internal, global.name, :data, offset, global.size,
+                            visibility: ir_program.visibility.fetch(global.name, default_visibility))
           data << global.init.bytes
           # Each pointer slot in the image is patched by a .data relocation,
           # its .text-relative offset (within the global) biased by where the
@@ -158,7 +161,10 @@ module Rubycc
           if ir_func.linkage == :internal
             writer.add_local_func(sym[:name], base + sym[:offset], sym[:size])
           else
-            writer.add_global_func(sym[:name], base + sym[:offset], sym[:size])
+            writer.add_global_func(
+              sym[:name], base + sym[:offset], sym[:size],
+              visibility: ir_program.visibility.fetch(ir_func.name, default_visibility)
+            )
           end
           defined_names << sym[:name]
         end
@@ -254,11 +260,11 @@ module Rubycc
     # Registers a file-scope object's symbol, choosing the internal-linkage
     # (STB_LOCAL) writer entry for a `static` object and the global one
     # otherwise.
-    def add_object_symbol(writer, internal, name, section, offset, size)
+    def add_object_symbol(writer, internal, name, section, offset, size, visibility: :default)
       if internal
         writer.add_local_object(name, section, offset, size)
       else
-        writer.add_global_object(name, section, offset, size)
+        writer.add_global_object(name, section, offset, size, visibility: visibility)
       end
     end
 
@@ -285,11 +291,13 @@ module Rubycc
     # `output_path`.
     def self.compile_file(input_path, output_path, include_paths: [], pic: false, defines: [],
                           system_includes: true, target: "x86_64",
-                          libc: Preprocess::Preprocessor.host_libc)
+                          libc: Preprocess::Preprocessor.host_libc,
+                          default_visibility: :default)
       source = File.read(input_path)
       binary = new.compile(source, filename: input_path, include_paths: include_paths,
                                    pic: pic, defines: defines, system_includes: system_includes,
-                                   target: target, libc: libc)
+                                   target: target, libc: libc,
+                                   default_visibility: default_visibility)
       File.binwrite(output_path, binary)
       output_path
     end

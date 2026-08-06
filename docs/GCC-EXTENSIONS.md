@@ -82,9 +82,9 @@ rubycc はその関数を互換ランタイムとして供給するだけで済�
 - `typeof` / `__typeof__`
 - `__attribute__((__mode__(...)))` 等、aligned/packed 以外で意味を持たせている属性
 - 実体のあるインラインアセンブリ(オペランド・クロバーを実際に処理する asm 文)
-- `__atomic_thread_fence` / `__atomic_test_and_set` / `__atomic_*` の非 `_n` 総称形 /
-  `__sync_*` 系 / C11 の `_Atomic` と `<stdatomic.h>` — コーパスに消費者がおらず、
-  実装した 9 形と同じく `__has_builtin` も正直に 0 を返す(Step 161)
+- `__atomic_test_and_set` / `__atomic_*` の非 `_n` 総称形 / `__sync_*` 系 / C11 の
+  `_Atomic` — 未実装。`__atomic_thread_fence` と `<stdatomic.h>` の
+  `atomic_thread_fence` は実装済み(Step 209)。
 
 ---
 

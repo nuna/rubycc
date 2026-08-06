@@ -166,7 +166,8 @@ module Rubycc
             ir_functions << gen_function(decl, linkage)
           end
         end
-        Program.new(ir_functions, @strings, @globals, array_entries(program, ir_functions))
+        Program.new(ir_functions, @strings, @globals, array_entries(program, ir_functions),
+                    program.visibility_attributes)
       end
 
       private
@@ -372,8 +373,12 @@ module Rubycc
         case entry
         when Front::ScalarInit
           pack_global_scalar(entry.offset, entry.type, entry.value, image, relocations)
+        when Front::BitfieldInit
+          pack_global_bitfield(entry, image)
         when Front::StringInit
           image[entry.offset, entry.bytes.bytesize] = entry.bytes.b
+        when Front::AggregateInit
+          reject_file_scope_compound_literal(entry.value)
         end
       end
 
@@ -398,6 +403,20 @@ module Rubycc
         else
           error_at(value.token, "unsupported initializer for global variable")
         end
+      end
+
+      # Packs a constant bit-field initializer into its containing storage unit.
+      # The resolver records the field width and shift because a bit-field has no
+      # independently addressable byte slot; later fields in the same unit must
+      # preserve the bits already written by earlier entries.
+      def pack_global_bitfield(entry, image)
+        reject_file_scope_compound_literal(entry.value)
+        value = floating_constant?(entry.value) ? fold_global_float(entry.value).to_i : fold_global_constant(entry.value)
+        value = value.zero? ? 0 : 1 if entry.type.bool?
+        mask = (1 << entry.width) - 1
+        unit = image.byteslice(entry.offset, entry.type.size).ljust(8, "\0").unpack1("Q<")
+        unit = (unit & ~(mask << entry.shift)) | ((value & mask) << entry.shift)
+        image[entry.offset, entry.type.size] = pack_integer(unit, entry.type.size)
       end
 
       # A compound literal in a static-storage-duration initializer (a file-scope
@@ -1844,8 +1863,22 @@ module Rubycc
             end
             converted = convert_for_assignment(value, value_type, entry.type, token: entry.value.token)
             emit(:store, a: addr, b: converted, size: entry.type.size)
+          when Front::BitfieldInit
+            value, value_type = gen_value(entry.value)
+            unless compatible_assignment?(entry.type, entry.value, value_type)
+              error_at(entry.value.token, "incompatible types in initialization")
+            end
+            unit_addr = offset_address(base, entry.offset)
+            store_bitfield_value(unit_addr, entry.type, entry.width, entry.shift,
+                                 value, value_type, entry.value.token)
           when Front::StringInit
             write_string_bytes(base, entry.offset, entry.bytes)
+          when Front::AggregateInit
+            src, src_type = gen_value(entry.value)
+            unless src_type == entry.type
+              error_at(entry.value.token, "incompatible aggregate initializer")
+            end
+            emit(:memcpy, a: offset_address(base, entry.offset), b: src, size: entry.type.size)
           end
         end
       end
@@ -2419,6 +2452,11 @@ module Rubycc
       # weak contract too.
       def gen_builtin_atomic(node)
         name = node.token.value
+        if node.kind == :fence
+          gen_atomic_fence(node, name)
+          return [nil, Type::Void]
+        end
+
         ptr, value_type = gen_atomic_object_pointer(node.args[0], name)
         case node.kind
         when :load then gen_atomic_load(node, ptr, value_type, name)
@@ -2426,6 +2464,15 @@ module Rubycc
         when :compare_exchange then gen_atomic_compare_exchange(node, ptr, value_type, name)
         else gen_atomic_rmw(node, ptr, value_type, name)
         end
+      end
+
+      # "__atomic_thread_fence(order)": evaluates the memory-order expression
+      # and emits a sequentially-consistent machine fence. The backend uses the
+      # strongest order for the same reason as the object forms: strengthening a
+      # requested order is sound, while silently dropping a fence is not.
+      def gen_atomic_fence(node, name)
+        gen_atomic_flag_argument(node.args.first, name, "memory order")
+        emit(:atomic_fence)
       end
 
       # Evaluates the leading pointer argument every __atomic_* builtin takes and
@@ -2903,21 +2950,30 @@ module Rubycc
       # yield — which for a signed field is sign-extended (gcc's rule).
       def store_bitfield(base_addr, member, value, value_type, token)
         unit_addr, shift = bitfield_unit(base_addr, member)
-        size = bitfield_op_size(member)
-        width = member.bit_width
+        converted = store_bitfield_value(unit_addr, member.type, member.bit_width, shift,
+                                         value, value_type, token)
+        extract_bitfield_bits(converted, member)
+      end
+
+      # The common read-modify-write used by both a bit-field assignment
+      # expression and a resolved aggregate initializer. Initializers do not
+      # have a full Member object, but the resolver records exactly the same
+      # storage-unit offset, width and shift.
+      def store_bitfield_value(unit_addr, type, width, shift, value, value_type, token)
+        size = 8 if type.size == 8
         mask = (1 << width) - 1
-        converted = convert_for_assignment(value, value_type, member.type, token: token)
+        converted = convert_for_assignment(value, value_type, type, token: token)
 
         old = new_vreg
-        emit(:uload, dst: old, a: unit_addr, size: member.type.size)
+        emit(:uload, dst: old, a: unit_addr, size: type.size)
         cleared = emit_and_const(old, ~(mask << shift), size)
         field = emit_and_const(converted, mask, size)
         field = emit_shift(:shl, field, shift, size) if shift.positive?
         merged = new_vreg
         emit(:or, dst: merged, a: cleared, b: field, size: size)
-        emit(:store, a: unit_addr, b: merged, size: member.type.size)
+        emit(:store, a: unit_addr, b: merged, size: type.size)
 
-        extract_bitfield_bits(converted, member)
+        converted
       end
 
       # The IR operand size for a bit-field's storage-unit arithmetic: 8 (64-bit)
@@ -5459,6 +5515,7 @@ module Rubycc
       # belongs to the lowering, which is where a real call goes.
       def static_atomic_type(node)
         case node.kind
+        when :fence then Type::Void
         when :store then Type::Void
         when :compare_exchange then Type::Bool
         else

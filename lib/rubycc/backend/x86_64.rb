@@ -376,6 +376,8 @@ module Rubycc
           emit_atomic_rmw(inst.dst, inst.a, inst.b[0], inst.b[1], inst.size)
         when :atomic_cas
           emit_atomic_cas(inst.dst, inst.a, inst.b[0], inst.b[1], inst.size)
+        when :atomic_fence
+          emit_atomic_fence
         when :ret
           emit_ret(inst.a, inst.size)
         else
@@ -756,6 +758,13 @@ module Rubycc
       # here rather than a mov. Every read-modify-write carries an explicit `lock`
       # (F0) except `xchg` with a memory operand, whose lock is architecturally
       # implicit; adding a redundant F0 there would only make the encoding longer.
+
+      # :atomic_fence — a full sequentially-consistent fence. The encoding is
+      # MFENCE (0f ae f0); unlike an empty inline-asm memory clobber this also
+      # constrains the hardware's store/load ordering.
+      def emit_atomic_fence
+        emit(0x0F, 0xAE, 0xF0)
+      end
 
       # :atomic_load — a sequentially consistent read. On this target that is an
       # ordinary aligned mov (see the section comment), so the code is exactly

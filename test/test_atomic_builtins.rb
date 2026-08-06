@@ -5,9 +5,9 @@ require "open3"
 
 # The gcc __atomic_* builtins <ruby/atomic.h> uses unconditionally (its
 # HAVE_GCC_ATOMIC_BUILTINS branch, which CRuby's baked-in config.h always
-# selects), so any gem whose sources reach ruby.h can be compiled: nine forms,
-# at the two object widths that header needs (4 for rb_atomic_t, 8 for size_t
-# and VALUE).
+# selects), so any gem whose sources reach ruby.h can be compiled: nine object
+# forms, at the two object widths that header needs (4 for rb_atomic_t, 8 for
+# size_t and VALUE), plus the C11 fence used by libev.
 #
 # The semantics are pinned by an execution oracle rather than by hand-computed
 # expectations: a single-threaded program's atomic operations have completely
@@ -144,6 +144,18 @@ class TestAtomicBuiltins < Minitest::Test
     }
   C
 
+  FENCE_SOURCE = <<~C
+    #include <stdio.h>
+    #include <stdatomic.h>
+    int main(void) {
+      int value = 7;
+      atomic_thread_fence(memory_order_seq_cst);
+      value += 5;
+      printf("%d\\n", value);
+      return 0;
+    }
+  C
+
   # The builtins reach pointer-typed objects too (VALUE * and void * in
   # <ruby/atomic.h>'s exchange/CAS helpers). gcc's atomic add on a pointer object
   # is *unscaled* — it adds plain bytes rather than applying C's pointer
@@ -212,7 +224,7 @@ class TestAtomicBuiltins < Minitest::Test
   # test names the expected value.
   UNIMPLEMENTED_HAS_BUILTIN_SOURCE = <<~C
     #include <stdio.h>
-    #if __has_builtin(__atomic_thread_fence) || __has_builtin(__atomic_test_and_set) || \\
+    #if __has_builtin(__atomic_test_and_set) || \\
         __has_builtin(__atomic_load) || __has_builtin(__sync_fetch_and_add)
     #define ANY_CLAIMED 1
     #else
@@ -276,6 +288,25 @@ class TestAtomicBuiltins < Minitest::Test
 
   def test_memory_orders_are_accepted_and_match_gcc
     assert_matches_gcc(MEMORY_ORDER_SOURCE, "atomic_orders")
+  end
+
+  def test_thread_fence_matches_gcc
+    assert_matches_gcc(FENCE_SOURCE, "atomic_thread_fence")
+  end
+
+  def test_x86_64_emits_mfence
+    skip "objdump unavailable" unless tool?("objdump")
+
+    listing = in_tmpdir do |dir|
+      object_path = File.join(dir, "fence.o")
+      compile_with_rubycc(FENCE_SOURCE, object_path)
+      stdout, _stderr, status = Open3.capture3("objdump", "-d", object_path)
+      raise "objdump failed" unless status.success?
+
+      stdout
+    end
+
+    assert_match(/mfence/, listing)
   end
 
   def test_pointer_objects_match_gcc
@@ -436,7 +467,7 @@ class TestAtomicBuiltins < Minitest::Test
   # consumer for them, they stay ordinary identifiers, so a program calling one
   # is refused rather than silently mislowered.
   def test_unimplemented_atomic_forms_are_not_recognized
-    ["__atomic_thread_fence(5)", "__atomic_test_and_set(&x, 5)",
+    ["__atomic_test_and_set(&x, 5)",
      "__sync_fetch_and_add(&x, 1)"].each do |call|
       error = assert_raises(Rubycc::CompileError, "expected '#{call}' to be refused") do
         compile("int main(void) { int x = 0; #{call}; return x; }")

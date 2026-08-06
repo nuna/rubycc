@@ -1752,6 +1752,15 @@ class TestParser < Minitest::Test
     assert_kind_of AST::FunctionDef, program.functions.first
   end
 
+  def test_gcc_empty_declaration_in_struct_body_is_ignored
+    # Declaration macros such as libev's VARx can leave a second semicolon
+    # after expansion. GCC accepts that empty declaration in an aggregate body.
+    program = parse("struct point { int x;; }; int main(void) { return 0; }")
+
+    assert_equal 1, program.functions.size
+    assert_kind_of AST::FunctionDef, program.functions.first
+  end
+
   def test_parses_struct_variable_declaration_type
     program = parse("struct point { int x; int y; }; " \
                     "int main(void) { struct point p; return 0; }")

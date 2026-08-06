@@ -226,5 +226,82 @@
       }
     ],
     "notes": "The second corpus gem that links a host system library, and the first whose configure path rubycc's own pkg-config shim *changed*. extconf tries pkg_config('yaml-0.1') first and only falls back to find_header('yaml.h') + find_library('yaml', 'yaml_get_version') when that comes up empty. This host has no pkg-config at all, so the gcc control gets \"not found\" and takes the fallback branch, while under rubycc the transcript reads `checking for pkg-config for yaml-0.1... [\" \", \"\", \"-lyaml\"]` -- exe/rubycc-pkgconf answered, so the pkg_config branch ran instead. Both branches converge on the same LIBS = $(LIBRUBYARG_SHARED)  -lyaml -lm -lpthread  -lc and the suite passes, but the two sides did not configure through the same code path, which is recorded here rather than left implicit (Step 160's lesson: a matching pass count is not evidence that the same thing was built). The build also exposed a separate rmake gap, fixed in Step 173: the Makefile's `-cd libyaml && $(MAKE) clean` echoed as `cd libyaml &&  clean` because rmake did not predefine the MAKE macro that POSIX requires. It was harmless here -- the rule is `-`-prefixed so its failure is ignored, and this build uses the host libyaml rather than the bundled one -- but it would have silently no-opped the recursive-make rule that builds bundled libyaml. psych ships with the interpreter and MRI has no pure-Ruby parser to fall back to (ext/java is JRuby's SnakeYAML binding), so the sanity check's $LOADED_FEATURES test is what rules out the interpreter's own copy winning the require."
+  },
+  "syslog": {
+    "verifications": [
+      {
+        "versions": ["0.3.0"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-06",
+        "evidence": "RUBYCC=1 gem install syslog succeeded (syslog_ext.so built through rmake); the gem's own test/unit suite passed 32 tests / 234 assertions / 0 failures / 0 errors (Step 209)."
+      }
+    ],
+    "notes": "Ruby 3.4.5 glibc x86_64; upstream tests ran against rubycc-built extension."
+  },
+  "http_parser.rb": {
+    "verifications": [
+      {
+        "versions": ["0.8.1"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-06",
+        "evidence": "RUBYCC=1 gem install http_parser.rb succeeded (ruby_http_parser.so built through rmake); the gem's own RSpec suite passed 72 examples / 0 failures (Step 209)."
+      }
+    ],
+    "notes": "Ruby 3.4.5 glibc x86_64; upstream tests ran against rubycc-built extension."
+  },
+  "websocket-driver": {
+    "verifications": [
+      {
+        "versions": ["0.8.2"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-06",
+        "evidence": "RUBYCC=1 gem install websocket-driver succeeded (websocket_mask.so built through rmake); the gem's own RSpec suite passed 196 examples / 0 failures (Step 209)."
+      }
+    ],
+    "notes": "The upstream RSpec suite passed 196 examples against the injected websocket_mask.so. The run used the recipe's synthetic Gemfile to activate the runtime/test dependencies without resolving the repository's development-only bundle."
+  },
+  "bootsnap": {
+    "verifications": [
+      {
+        "versions": ["1.24.6"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-06",
+        "evidence": "RUBYCC=1 gem install bootsnap succeeded (bootsnap.so built through rmake); the gem's own test/unit suite passed 154 tests / 331 assertions / 0 failures / 0 errors (Step 210)."
+      }
+    ],
+    "notes": "The upstream test/unit suite passed 154 tests / 331 assertions against the injected bootsnap.so. The run used the recipe's synthetic Gemfile and pinned minitest 5.25.5, matching the suite's compatibility requirement."
+  },
+  "yajl-ruby": {
+    "verifications": [
+      {
+        "versions": ["1.4.3"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-06",
+        "evidence": "RUBYCC=1 gem install yajl-ruby succeeded (yajl.so built through rmake); the gem's own RSpec suite passed 416 examples / 0 failures (Step 211)."
+      }
+    ],
+    "notes": "The upstream RSpec suite passed 416 examples against the injected yajl.so; the extension was loaded from the rubycc build, not a fallback implementation."
+  },
+  "prism": {
+    "verifications": [
+      {
+        "versions": ["1.8.1"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-06",
+        "evidence": "RUBYCC=1 gem install prism succeeded (prism.so built through rmake); the gem's own test/unit suite passed 17,306 tests / 1,762,400 assertions / 0 failures / 0 errors (Step 212)."
+      }
+    ],
+    "notes": "The upstream test/unit suite passed 17,306 tests / 1,762,400 assertions against the injected prism.so. The run reported 3 omissions (not failures); the source archive was supplemented with the generated Ruby API files present in the gem package."
+  },
+  "fiddle": {
+    "verifications": [
+      {
+        "versions": ["1.1.8"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-06",
+        "evidence": "RUBYCC=1 gem install fiddle succeeded (fiddle.so built through rmake); the gem's own test/unit suite passed 227 tests / 615 assertions / 0 failures / 0 errors (Step 213)."
+      }
+    ],
+    "notes": "The upstream test/unit suite passed 227 tests / 615 assertions against the injected fiddle.so, with the system libffi ABI path enabled."
   }
 }
