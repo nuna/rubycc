@@ -74,10 +74,17 @@ OpenAI の Codex プラグイン(`/plugin install codex@openai-codex`)が提供�
 
 | | 値 | 出所 |
 |---|---|---|
-| モデル | `gpt-5.6-luna` | `~/.codex/config.toml` の `model` |
-| reasoning effort | `max` | 同 `model_reasoning_effort` |
+| モデル | `gpt-5.6-luna` | `.codex/config.toml`(**リポジトリ内**) |
+| reasoning effort | `max` | 同上 |
 
 **他のモデルは使わない。**
+
+`.codex/config.toml` は `~/.codex/config.toml` の**上に重なり、書いたキーが勝つ**
+(実測: プロジェクト側に存在しないモデル名を置くとホスト側の設定を押しのけて 400 になる)。
+**ヘルプは `~/.codex/config.toml` しか挙げていないが、プロジェクト配下も読まれる** —
+推測ではなく実測で確かめること。
+
+リポジトリ内に置く理由は、**この取り決めが個人設定では他の作業者に伝わらない**からである。
 
 **`--model` も `--effort` もプラグインに渡してはいけない。** プラグインは既定でどちらも
 未設定のまま渡すので、放っておけば上表の設定がそのまま効く。渡すと壊れる:

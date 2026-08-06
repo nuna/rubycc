@@ -1,0 +1,16 @@
+# Codex settings for this repository. Layered over ~/.codex/config.toml, so keys
+# left out here keep whatever the user's own config says; the two below are the
+# ones this project pins, and they win over the user's values.
+#
+# Why pin them here rather than rely on the user's config: the role table
+# (references/role-based-model-selection.md) commits this project to one model
+# for Codex work, and a per-user setting cannot carry that commitment to anyone
+# else who checks the repository out.
+#
+# Do not pass --model or --effort through the Codex plugin. The plugin leaves
+# both unset by default, which is what lets these values apply; its --effort
+# accepts none/minimal/low/medium/high/xhigh and has no "max" (measured), so
+# naming it explicitly would silently select a *lower* effort than this file
+# asks for.
+model = "gpt-5.6-luna"
+model_reasoning_effort = "max"
