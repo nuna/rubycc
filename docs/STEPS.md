@@ -8086,6 +8086,8 @@ Fiddle の `Handle#file_name` が linker script を指すケースで nil にな
 
 ## 現在のテスト規模
 
+master マージ後の統合スイート: **2,846 runs / 8,575 assertions / 0 failures / 0 errors / 44 skips**
+(`rake test` の実測値)
 Step 214 完了時点: **2,841 runs / 8,557 assertions / 0 failures / 0 errors / 44 skips**
 (ホスト側 `rake test` の実測値。Step 208 から +7 runs / +137 assertions。atomic fence、
 parser の空宣言、Doctor の5 gem許可リスト、dlfcn/link/regex ABI と aggregate 初期化子の
