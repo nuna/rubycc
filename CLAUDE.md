@@ -40,3 +40,9 @@
   `rake corpus:census` → ヘッダギャップ充填)と検証済み gem 追加(gem 本体テストの実走 →
   `data/verified_gems.json` 更新)の一連のワークフロー。
   定義は `.claude/skills/corpus-expansion/SKILL.md`
+- `codex:rescue` — OpenAI の Codex プラグイン(モデル `gpt-5.6-luna` / effort `max`)。
+  用途は **(1) 1 ファイルに閉じた単純・無依存の実装が複数あるときの多重起動**と
+  **(2) 行き詰まったときに別系統の意見を得る**の 2 つに限る。
+  **`--model` / `--effort` は渡さない**(`~/.codex/config.toml` の設定が効く。
+  プラグインの `--effort` は `max` を受け付けず、明示すると効果が下がる)。
+  判断基準は `references/role-based-model-selection.md`
