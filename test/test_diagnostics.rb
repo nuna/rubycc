@@ -959,7 +959,11 @@ class TestDiagnostics < Minitest::Test
     assert_match(/typedef 'T' must not be initialized/, error.description)
   end
 
-  def test_typedef_name_redefinition_is_rejected
+  def test_typedef_name_redefinition_with_compatible_type_is_allowed
+    compile("typedef int T; typedef int T; int main(void) { T value = 0; return value; }")
+  end
+
+  def test_typedef_name_redefinition_with_incompatible_type_is_rejected
     source = "typedef int T; typedef char T; int main(void) { return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/redefinition of typedef 'T'/, error.description)
@@ -1093,10 +1097,9 @@ class TestDiagnostics < Minitest::Test
     assert_match(/array designator index 5 exceeds array bounds/, error.description)
   end
 
-  def test_empty_braces_initializer_is_rejected
+  def test_empty_braces_initializer_zero_fills
     source = "int main(void) { int a[3] = {}; return 0; }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/empty braces are not a valid initializer/, error.description)
+    compile(source)
   end
 
   def test_array_without_size_or_initializer_is_rejected

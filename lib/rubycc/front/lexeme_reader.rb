@@ -46,6 +46,7 @@ module Rubycc
                     __atomic_compare_exchange_n
                     __atomic_fetch_add __atomic_fetch_sub
                     __atomic_add_fetch __atomic_sub_fetch __atomic_or_fetch
+                    __atomic_thread_fence
                     __asm__
                     __attribute__ __extension__].freeze
 

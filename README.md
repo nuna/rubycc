@@ -88,10 +88,15 @@ Measured, not guessed — each item links to the record that establishes it.
   stack. Against `gcc -O2` the slowdown reaches 7.65x on tight loops (1.2x–2.6x on
   branch- and call-bound code); against `gcc -O0` it is 1.1x–2.9x. See
   [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
-- **`_Atomic` (C11 atomics) is not implemented**, so `<stdatomic.h>` is not bundled.
-- **`ckd_*` (C23 checked arithmetic) is not implemented**, so `<stdckdint.h>` is not bundled.
-- **`<regex.h>` is not bundled.** Reproducing `regex_t` faithfully is required by code that
-  embeds it by value, and that is not done yet.
+- **C11 atomics are partial.** `_Atomic` objects and the atomic load/store/RMW
+  operations are not implemented, but the bundled `<stdatomic.h>` provides the
+  memory-order constants and `atomic_thread_fence`, lowered to the target fence
+  instruction. See `docs/C11-COVERAGE.md`.
+- **C23 checked arithmetic is partial.** The bundled `<stdckdint.h>` maps `ckd_add`,
+  `ckd_sub`, and `ckd_mul` to rubycc's overflow builtins; the rest of C23 is not implemented.
+- **`<regex.h>` is a minimal ABI header.** It provides the glibc-compatible `regex_t`/
+  `regmatch_t` layout needed by C extensions, but the full POSIX regex implementation is
+  not part of rubycc.
 - **`__GNUC__` is deliberately not defined.** Headers take their non-GNU fallback path.
 - **128-bit integers**: passing, returning and shifting work; division, remainder, bitwise
   `& | ^` and variadic passing do not.
@@ -120,7 +125,7 @@ not a rubycc workaround.
 Semantic versioning, with one project-specific rule:
 
 - **A regression in the corpus pass rate is a breaking change.** The corpus
-  (`test/corpus/gems.rb`, 25 gems) is the contract. If a release stops building a gem that
+  (`test/corpus/gems.rb`, 37 R10-eligible gems) is the contract. If a release stops building a gem that
   the previous release built, that is major-version territory, not a patch — regardless of
   how small the code change was.
 - **Minor** releases add language or header coverage, new targets, or new gems that build.

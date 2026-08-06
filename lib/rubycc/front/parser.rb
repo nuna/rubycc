@@ -201,12 +201,12 @@ module Rubycc
       RESTRICT_SPELLINGS = %w[restrict __restrict __restrict__].freeze
 
       # The gcc __atomic_* builtins this subset lowers, mapping each keyword to
-      # its [AST::BuiltinAtomic kind, argument count]. The set is exactly the
-      # nine forms <ruby/atomic.h> reaches for, which is the whole of what any
-      # consumer here needs; the fence, test-and-set, the generic (non-"_n")
-      # address-taking forms and the __sync_* family are deliberately absent, so
-      # a program using one of those gets an "undeclared identifier" rather than
-      # a silently wrong lowering.
+      # its [AST::BuiltinAtomic kind, argument count]. The nine object forms
+      # cover <ruby/atomic.h>; the fence is also supported because C11 library
+      # headers and libev use it without an _Atomic object. The test-and-set,
+      # generic (non-"_n") address-taking forms and the __sync_* family remain
+      # deliberately absent, so a program using one of those gets an
+      # "undeclared identifier" rather than a silently wrong lowering.
       #
       # The counts include the trailing memory-order argument(s) gcc's signatures
       # take — one for every form but __atomic_compare_exchange_n, which takes a
@@ -220,7 +220,8 @@ module Rubycc
         "__atomic_fetch_sub" => [:fetch_sub, 3],
         "__atomic_add_fetch" => [:add_fetch, 3],
         "__atomic_sub_fetch" => [:sub_fetch, 3],
-        "__atomic_or_fetch" => [:or_fetch, 3]
+        "__atomic_or_fetch" => [:or_fetch, 3],
+        "__atomic_thread_fence" => [:fence, 1]
       }.freeze
 
       # The gcc overflow-checked arithmetic builtins, mapping each keyword to its
@@ -374,6 +375,10 @@ module Rubycc
         # written on a prototype that precedes *or* follows the definition, so no
         # single declaration node can be the one that carries it.
         @init_attributes = {}
+        # GNU visibility attributes are also declaration-order independent:
+        # Ruby's exported-function macro puts the explicit default visibility
+        # on a prototype, while the definition appears later without it.
+        @visibility_attributes = {}
       end
 
       # Parses the whole translation unit into an AST::Program. An external
@@ -395,7 +400,7 @@ module Rubycc
           node = parse_external_declaration
           node.is_a?(Array) ? declarations.concat(node) : declarations << node
         end
-        AST::Program.new(declarations, @init_attributes)
+        AST::Program.new(declarations, @init_attributes, @visibility_attributes)
       end
 
       private
@@ -516,6 +521,7 @@ module Rubycc
             error_at(name_tok, "function definition through a typedef is not allowed")
           end
           declare_ordinary_name(name_tok.value, type)
+          register_visibility_attributes(name_tok.value, attributes)
           register_init_attributes(name_tok.value, attributes)
           return parse_function_definition(name_tok.value, type.return_type, function_params,
                                            type_tok, spec_info.storage, type.variadic)
@@ -560,6 +566,7 @@ module Rubycc
                                     attributes)
         if type.function?
           declare_ordinary_name(name_tok.value, type)
+          register_visibility_attributes(name_tok.value, attributes)
           register_init_attributes(name_tok.value, attributes)
           AST::FunctionDecl.new(name_tok.value, type.return_type,
                                 declarator_prototype_params(type, params, return_tok), return_tok,
@@ -571,6 +578,7 @@ module Rubycc
           # silent drop, and a dropped initializer is invisible until the program
           # misbehaves at run time.
           reject_init_attributes(attributes)
+          register_visibility_attributes(name_tok.value, attributes)
           parse_global_declarator(type, name_tok, pointer_quals, spec_info)
         end
       end
@@ -963,6 +971,14 @@ module Rubycc
         end
       end
 
+      def register_visibility_attributes(name, attributes)
+        attributes.each do |attribute|
+          next unless attribute.name == "visibility"
+
+          @visibility_attributes[name] = attribute.argument
+        end
+      end
+
       # attribute-list: a comma-separated sequence of attributes, possibly empty
       # ("__attribute__(())") and admitting empty elements ("__attribute__((,))",
       # which gcc allows), each appended to `attributes` as a [name, argument]
@@ -1003,8 +1019,24 @@ module Rubycc
       def parse_attribute_arguments(name)
         return parse_aligned_argument if name == "aligned"
         return parse_init_priority_argument(name) if INIT_ATTRIBUTES.key?(name)
+        return parse_visibility_argument if name == "visibility"
 
         skip_balanced_parentheses && nil
+      end
+
+      def parse_visibility_argument
+        advance # "("
+        tok = peek
+        unless %i[string ident keyword].include?(tok.type)
+          error_at(tok, "visibility attribute requires a string or identifier argument")
+        end
+        value = tok.value.to_s
+        advance
+        expect_punct(")")
+        unless %w[default hidden internal protected].include?(value)
+          error_at(tok, "unknown visibility '#{value}'")
+        end
+        value.to_sym
       end
 
       def parse_aligned_argument
@@ -1306,6 +1338,16 @@ module Rubycc
         # is a FAM is rejected. `kind` lets a FAM in a union be rejected.
         flex = { kind: kind, token: nil, others: 0 }
         until peek.punct?("}")
+          # GCC accepts an empty declaration in an aggregate body. Generated C
+          # commonly reaches it when a declaration macro already supplies `;`
+          # and the call site supplies another one (libev's VARx is one such
+          # case). It contributes no member and must not be mistaken for a
+          # declarator-less anonymous member.
+          if peek.punct?(";")
+            advance
+            next
+          end
+
           spec_tok = peek
           member_base = parse_type_specifier
           if peek.punct?(";")
@@ -3241,12 +3283,14 @@ module Rubycc
       end
 
       # Binds a typedef name to its resolved type (and whether it names a
-      # const-qualified object type) in the current ordinary scope. A name
-      # already bound there — by an earlier typedef (even to the same type, which
-      # M1 rejects for simplicity), or by any other declaration — is a
-      # redefinition.
+      # const-qualified object type) in the current ordinary scope. C permits a
+      # typedef name to be redeclared in the same scope when the new declaration
+      # names the same type; a different type remains a redefinition diagnostic.
       def declare_typedef_name(name_tok, type, const)
-        if @ordinary_scopes.last.key?(name_tok.value)
+        existing = @ordinary_scopes.last[name_tok.value]
+        if existing
+          return if existing.kind == :typedef && existing.value == [type, const]
+
           error_at(name_tok, "redefinition of typedef '#{name_tok.value}'")
         end
         @ordinary_scopes.last[name_tok.value] = OrdinaryName.new(:typedef, [type, const])

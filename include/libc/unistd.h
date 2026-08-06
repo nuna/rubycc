@@ -70,6 +70,7 @@ typedef long intptr_t;
 #else
 #define _POSIX_MONOTONIC_CLOCK 0
 #endif
+#define _POSIX_TIMERS 200809L
 
 #ifndef SEEK_SET
 #define SEEK_SET 0
@@ -93,6 +94,10 @@ int     rmdir(const char *__path);
 int     chdir(const char *__path);
 char   *getcwd(char *__buf, size_t __size);
 int     fsync(int __fd);
+/* Linux exposes fdatasync() from <unistd.h>; bootsnap probes it and then calls
+   it when flushing its cache. Keep the declaration in the bundled surface so
+   the probe and the extension compile against the same measured ABI. */
+int     fdatasync(int __fd);
 int     ftruncate(int __fd, off_t __length);
 int     truncate(const char *__file, off_t __length);
 int     isatty(int __fd);
@@ -111,6 +116,9 @@ int     getpagesize(void);
 pid_t   fork(void);
 pid_t   getpid(void);
 pid_t   getppid(void);
+/* GNU's raw system-call escape hatch; libev's io_uring backend uses it when
+   the libc wrapper is not available. */
+long    syscall(long __number, ...);
 uid_t   getuid(void);
 uid_t   geteuid(void);
 gid_t   getgid(void);

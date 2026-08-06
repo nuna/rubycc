@@ -220,13 +220,14 @@ module Rubycc
     #                               operand is undefined (as in gcc), so no zero
     #                               case is emitted. The result is an int
     #
-    # The four atomic ops below lower gcc's __atomic_* builtins. Every one is
+    # The five atomic ops below lower gcc's __atomic_* builtins. Every one is
     # sequentially consistent — the IR carries no memory order at all, because
     # the generator lowers every order the source asked for at the strongest one
     # (strengthening an order is always sound; see #gen_builtin_atomic). `size`
     # is the access width and is only ever 4 or 8: the generator diagnoses every
     # other width, so no backend needs a narrower or wider case.
     #
+    #   :atomic_fence                  a sequentially-consistent memory fence
     #   :atomic_load dst <- atomic *a   dst gets `size` bytes read atomically
     #                               through pointer a, with sequentially
     #                               consistent ordering. Distinct from :load
@@ -402,8 +403,8 @@ module Rubycc
     # a unit with no constructor/destructor). Identical string contents are
     # pooled once, so the compiler can lay them out in .rodata in this order and
     # resolve each :string_addr to an offset.
-    Program = Data.define(:functions, :strings, :globals, :array_entries) do
-      def initialize(functions:, strings:, globals:, array_entries: [])
+    Program = Data.define(:functions, :strings, :globals, :array_entries, :visibility) do
+      def initialize(functions:, strings:, globals:, array_entries: [], visibility: {})
         super
       end
     end

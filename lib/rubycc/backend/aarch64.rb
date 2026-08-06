@@ -518,6 +518,7 @@ module Rubycc
         when :atomic_store then emit_atomic_store(inst.a, inst.b, inst.size)
         when :atomic_rmw then emit_atomic_rmw(inst.dst, inst.a, inst.b[0], inst.b[1], inst.size)
         when :atomic_cas then emit_atomic_cas(inst.dst, inst.a, inst.b[0], inst.b[1], inst.size)
+        when :atomic_fence then emit_atomic_fence
         when :va_start then emit_va_start(inst.a)
         when :alloca then unsupported("alloca")
         when :bit_scan then unsupported("bit-scan builtins")
@@ -953,6 +954,12 @@ module Rubycc
       # CBNZ_W, ATOMIC_RMW_OPCODES) sit with the rest of the machine encodings at
       # the foot of the class, since the read-modify-write table is built from
       # the same shifted-register forms the ordinary binary ops use.
+
+      # :atomic_fence — DMB ISH, the full-system-domain barrier used by C11's
+      # sequentially-consistent fence on the baseline AArch64 target.
+      def emit_atomic_fence
+        emit_word(0xD5033BBF)
+      end
 
       # :atomic_load — a sequentially consistent read (LDAR).
       def emit_atomic_load(dst, ptr, size)

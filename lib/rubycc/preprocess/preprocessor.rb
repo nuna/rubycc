@@ -238,7 +238,7 @@ module Rubycc
                           __atomic_compare_exchange_n
                           __atomic_fetch_add __atomic_fetch_sub
                           __atomic_add_fetch __atomic_sub_fetch
-                          __atomic_or_fetch].to_h { |name| [name, true] }.freeze
+                          __atomic_or_fetch __atomic_thread_fence].to_h { |name| [name, true] }.freeze
 
       # The platform macros gcc keeps predefined even under strict ISO C
       # (-std=c11): only the reserved forms (a leading underscore followed by
@@ -424,7 +424,9 @@ module Rubycc
       # <stdarg.h> or a libc header resolves with no explicit -I; the driver's
       # -nostdinc passes it false to search only the caller's directories.
       def preprocess(source, filename:, include_paths: [], defines: [], system_includes: true)
-        @include_paths = include_paths + (system_includes ? default_system_include_paths : [])
+        system_paths = system_includes ? default_system_include_paths : []
+        @system_include_paths = system_paths.map { |path| File.expand_path(path) }
+        @include_paths = include_paths + system_paths
         # #resolve_include's cache keys a resolved path off @include_paths (and,
         # for quote includes, the includer's directory), so it must start empty
         # every run rather than survive across calls with a different search path.
@@ -1209,7 +1211,8 @@ module Rubycc
         if existing.nil?
           @macros[name.text] = macro
         elsif !identical_macro?(existing, macro) &&
-              !compatible_restrict_redefinition?(name.text, existing, macro)
+              !compatible_restrict_redefinition?(name.text, existing, macro) &&
+              !system_header_redefinition?(name)
           # A benign redefinition (an identical definition) is allowed; a
           # differing one is an error (6.10.3p2, simplified to token spellings).
           raise_at(name, "macro '#{name.text}' redefined")
@@ -1234,6 +1237,20 @@ module Rubycc
         [existing.replacement, replacement.replacement].all? do |tokens|
           tokens.length == 1 && tokens.first.type == :identifier && spellings.include?(tokens.first.text)
         end
+      end
+
+      # GCC diagnoses a conflicting redefinition from a system header as a
+      # warning, not a preprocessing error. Rubycc has no warning stream, so
+      # keep the header's later definition and continue; this is required by
+      # libffi, whose target header changes FFI_GO_CLOSURES after fiddle's local
+      # compatibility header intentionally set it to zero. User-source
+      # conflicts retain the strict diagnostic above.
+      def system_header_redefinition?(name)
+        filename = name.filename.to_s
+        return false if filename.empty? || filename.start_with?("<")
+
+        path = File.expand_path(filename)
+        @system_include_paths.any? { |root| path == root || path.start_with?("#{root}/") }
       end
 
       # Parses a function-like macro's parameter list, `rest` being the tokens

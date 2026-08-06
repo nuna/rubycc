@@ -28,7 +28,7 @@ module Rubycc
   # intermediate `.o` is ever written to disk. `-E` runs the preprocessor only.
   #
   # Unknown options are handled the tolerant way a build driver must (R6): a
-  # documented-but-unmodelled flag family (`-O*`, `-g*`, `-W*`, `-f*`, `-m*`,
+  # documented-but-unmodelled flag family (`-O*`, `-g*`, `-W*`, most `-f*`, `-m*`,
   # `-std=…`, and friends) is accepted and ignored silently, and any other
   # `-`-prefixed token draws a warning and is ignored, so an environment-specific
   # flag mkmf passes never derails a build. A genuine mistake with a definite
@@ -74,6 +74,7 @@ module Rubycc
       @libraries = []       # -l request strings, in order
       @lib_dirs = []        # -L directories, in order
       @pic = false
+      @default_visibility = :default
       @soname = nil
       @system_includes = true  # -nostdinc clears this
       @default_libs = true     # -nodefaultlibs clears this
@@ -136,6 +137,10 @@ module Rubycc
       when "-shared"                             then @mode_flag = :shared;  i + 1
       when "-E"                                  then @mode_flag = :preprocess; i + 1
       when "-fPIC", "-fpic", "-fPIE", "-fpie"    then @pic = true; i + 1
+      when "-fvisibility=hidden"                  then @default_visibility = :hidden; i + 1
+      when "-fvisibility=default"                 then @default_visibility = :default; i + 1
+      when "-fvisibility=internal"                then @default_visibility = :internal; i + 1
+      when "-fvisibility=protected"               then @default_visibility = :protected; i + 1
       when "-nostdinc"                           then @system_includes = false; i + 1
       when "-nodefaultlibs"                       then @default_libs = false; i + 1
       when "-target", "--target" then @target = normalize_target(value(arg, i)); i + 2
@@ -176,7 +181,7 @@ module Rubycc
 
     # Whether `arg` is a documented gcc flag family this toolchain does not model
     # but accepts without complaint: the optimization (`-O*`), debug (`-g*`),
-    # warning (`-W*`) and code-generation (`-f*`) switches, the language-standard
+    # warning (`-W*`) and remaining code-generation (`-f*`) switches, the language-standard
     # selector (`-std=…`), and the fixed bare set above. A machine switch (`-m*`)
     # is deliberately excluded — it names a target capability this toolchain does
     # not honor, so it is warned about like any other unmodelled option.
@@ -315,7 +320,8 @@ module Rubycc
         Compiler.compile_file(input[:path], output, include_paths: @include_paths,
                                                      pic: @pic, defines: @defines,
                                                      system_includes: @system_includes,
-                                                     target: target, libc: libc)
+                                                     target: target, libc: libc,
+                                                     default_visibility: @default_visibility)
       end
     end
 
@@ -375,7 +381,8 @@ module Rubycc
     def compile_source(input)
       Compiler.new.compile(File.read(input[:path]), filename: input[:path],
                            include_paths: @include_paths, pic: @pic, defines: @defines,
-                           system_includes: @system_includes, target: target, libc: libc)
+                           system_includes: @system_includes, target: target, libc: libc,
+                           default_visibility: @default_visibility)
     end
 
     # --- preprocess-only (-E) ----------------------------------------------

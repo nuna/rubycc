@@ -208,7 +208,7 @@ rubycc はコンパイラであり libc の実装ではないため、第 7 章�
 
 | 条番号 | 見出し | 状態 | 備考 |
 |---|---|---|---|
-| 7.17 | Atomics `<stdatomic.h>` | スコープ外 | `_Atomic` 型・アトミック操作は C11 のオプション機能(DESIGN R7 が明示的にスコープ外化)。ヘッダも同梱しない |
+| 7.17 | Atomics `<stdatomic.h>` | 部分実装 | `_Atomic` オブジェクトと load/store/RMW 操作は未実装。`memory_order_*` 定数と `atomic_thread_fence` は同梱ヘッダから `__atomic_thread_fence` へ展開し、x86-64 の MFENCE / AArch64 の DMB ISH を生成(Step 209)。 |
 
 ### その他の第 7 章(同梱 libc ヘッダの範囲)
 

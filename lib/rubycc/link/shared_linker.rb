@@ -68,6 +68,7 @@ module Rubycc
       # into its load segment.
       SHT_NULL     = 0
       SHT_PROGBITS = 1
+      SHT_SYMTAB   = 2
       SHT_STRTAB   = 3
       SHT_RELA     = 4
       SHT_HASH     = 5
@@ -96,6 +97,9 @@ module Rubycc
 
       # Reserved section index for an undefined symbol reference.
       SHN_UNDEF = 0
+      SHN_LORESERVE = 0xFF00
+      SHN_ABS = 0xFFF1
+      SHN_COMMON = 0xFFF2
 
       # Symbol binding/type/visibility encodings for the .dynsym entries.
       STB = { local: 0, global: 1, weak: 2 }.freeze
@@ -941,7 +945,13 @@ module Rubycc
           @section_index[sec.name] = sec.index
           @vaddr[sec.name] = sec.vaddr
         end
-        @shstrtab_index = @placed.size + 1
+        # The regular linker symbol/string tables are non-allocatable metadata
+        # appended after the loadable image. Keep their indices out of
+        # @section_index: dynamic symbols must continue to name only mapped
+        # sections.
+        @symtab_index = @placed.size + 1
+        @strtab_index = @symtab_index + 1
+        @shstrtab_index = @strtab_index + 1
       end
 
       # The executable .plt (one stub per imported function), or none when there
@@ -1477,13 +1487,106 @@ module Rubycc
         end
       end
 
+      # --- regular symbol table ----------------------------------------------
+
+      # Builds the non-allocatable symbol and string tables that describe the
+      # final image to ordinary ELF tools. The dynamic tables above are the
+      # loader-facing interface; `.symtab` is deliberately separate and may
+      # contain local/hidden definitions that must not be exported through
+      # `.dynsym`.
+      def build_metadata_sections
+        return @metadata_sections if @metadata_sections
+
+        records = regular_symbol_records
+        strtab, offsets = regular_strtab(records)
+        symtab = regular_symtab(records, offsets)
+        cursor = align([@file_end, @mem_end].max, 8)
+        symtab_section = Placed.new(
+          name: ".symtab", type: SHT_SYMTAB, flags: 0, addralign: 8,
+          entsize: SYM_ENTSIZE, size: symtab.bytesize, data: symtab,
+          vaddr: 0, offset: cursor, link: @strtab_index,
+          info: @symtab_first_global, index: @symtab_index
+        )
+        cursor += symtab.bytesize
+        strtab_section = Placed.new(
+          name: ".strtab", type: SHT_STRTAB, flags: 0, addralign: 1,
+          entsize: 0, size: strtab.bytesize, data: strtab,
+          vaddr: 0, offset: cursor, link: 0, info: 0, index: @strtab_index
+        )
+        @metadata_sections = [symtab_section, strtab_section]
+      end
+
+      def regular_symbol_records
+        candidates = @reader.symbols.drop(1).filter_map do |sym|
+          shndx = regular_symbol_shndx(sym)
+          next if shndx.nil?
+
+          value = sym.section ? @vaddr.fetch(sym.section.name) + sym.value : sym.value
+          bind = STB.fetch(sym.bind, sym.bind)
+          # GNU ld localizes hidden/internal definitions in the regular symbol
+          # table at final-link time. Keep the same convention so `nm` renders
+          # them as lowercase private symbols while default/protected definitions
+          # remain externally visible uppercase entries.
+          bind = STB[:local] if [STV[:hidden], STV[:internal]].include?(STV.fetch(sym.visibility, sym.visibility))
+          {
+            name: sym.name,
+            bind: bind,
+            type: STT.fetch(sym.type, sym.type),
+            visibility: STV.fetch(sym.visibility, sym.visibility),
+            shndx: shndx,
+            value: value,
+            size: sym.size
+          }
+        end
+        locals, globals = candidates.partition { |sym| sym[:bind] == STB[:local] }
+        @symtab_first_global = locals.length + 1 # the null symbol is entry zero
+        [null_symbol_record] + locals + globals
+      end
+
+      def regular_symbol_shndx(sym)
+        return @section_index[sym.section.name] if sym.section && @section_index.key?(sym.section.name)
+        return sym.shndx if sym.undefined? || sym.absolute? || sym.common?
+
+        nil
+      end
+
+      def null_symbol_record
+        { name: nil, bind: 0, type: 0, visibility: 0, shndx: SHN_UNDEF, value: 0, size: 0 }
+      end
+
+      def regular_strtab(records)
+        buf = +"\0".b
+        offsets = {}
+        records.each do |record|
+          name = record[:name]
+          next if name.nil? || name.empty? || offsets.key?(name)
+
+          offsets[name] = buf.bytesize
+          buf << name.b << "\0".b
+        end
+        [buf, offsets]
+      end
+
+      def regular_symtab(records, offsets)
+        records.map do |record|
+          name = record[:name]
+          sym_entry(name: name && !name.empty? ? offsets.fetch(name) : 0,
+                    info: (record[:bind] << 4) | record[:type],
+                    other: record[:visibility], shndx: record[:shndx],
+                    value: record[:value], size: record[:size])
+        end.join
+      end
+
       # --- assembly ----------------------------------------------------------
 
       # Concatenates the ELF header, program headers, the placed sections' file
-      # bytes, .shstrtab and the section header table into the final image.
+      # bytes, regular symbol/string tables, .shstrtab and the section header
+      # table into the final image. The regular tables are not loaded; they are
+      # retained so ordinary ELF tooling such as `nm` can inspect a linked `.so`.
       def assemble
+        metadata = build_metadata_sections
         shstrtab, name_offsets = build_shstrtab
-        shstrtab_offset = @file_end
+        shstrtab_offset = metadata.last.offset + metadata.last.size
         shoff = align(shstrtab_offset + shstrtab.bytesize, 8)
 
         out = +"".b
@@ -1495,11 +1598,16 @@ module Rubycc
           pad_to(out, sec.offset)
           out << section_bytes(sec)
         end
+        metadata.each do |sec|
+          pad_to(out, sec.offset)
+          out << sec.data
+        end
         pad_to(out, shstrtab_offset)
         out << shstrtab
         pad_to(out, shoff)
         out << build_null_shdr(name_offsets)
         @placed.each { |sec| out << build_shdr(sec, name_offsets) }
+        metadata.each { |sec| out << build_shdr(sec, name_offsets) }
         out << build_shstrtab_shdr(shstrtab_offset, shstrtab.bytesize, name_offsets)
         out
       end
@@ -1560,14 +1668,14 @@ module Rubycc
           [PHDR_SIZE].pack("S<") +        # e_phentsize
           [phnum].pack("S<") +            # e_phnum
           [SHDR_SIZE].pack("S<") +        # e_shentsize
-          [@placed.size + 2].pack("S<") + # e_shnum (NULL + placed + .shstrtab)
+          [@placed.size + @metadata_sections.size + 2].pack("S<") + # NULL + sections + .shstrtab
           [@shstrtab_index].pack("S<")    # e_shstrndx
       end
 
       def build_shstrtab
         buf = +"\0".b
         offsets = {}
-        (@placed.map(&:name) + [".shstrtab"]).each do |name|
+        (@placed.map(&:name) + @metadata_sections.map(&:name) + [".shstrtab"]).each do |name|
           next if offsets.key?(name)
 
           offsets[name] = buf.bytesize

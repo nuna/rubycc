@@ -51,6 +51,12 @@ typedef unsigned int id_t;
 #endif
 
 /* waitpid / waitid options (measured, both arches). */
+#if defined(WNOHANG) && WNOHANG != 1
+/* ruby.h's ruby/missing.h supplies a zero fallback before this header.  That
+   fallback is only for platforms without waitpid; on Linux this measured ABI
+   value must replace it rather than trigger a conflicting redefinition. */
+#undef WNOHANG
+#endif
 #define WNOHANG    1
 #define WUNTRACED  2
 #define WSTOPPED   2

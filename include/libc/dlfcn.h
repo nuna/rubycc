@@ -35,4 +35,24 @@ void *dlsym(void *__handle, const char *__name);
 int   dlclose(void *__handle);
 char *dlerror(void);
 
+/* Requests accepted by the glibc dlinfo extension.  They are enum constants
+   in the system header (rather than preprocessor macros), so extensions that
+   probe them with mkmf's have_const can see the same interface here. */
+enum {
+    RTLD_DI_LMID = 1,
+    RTLD_DI_LINKMAP = 2,
+    RTLD_DI_CONFIGADDR = 3,
+    RTLD_DI_SERINFO = 4,
+    RTLD_DI_SERINFOSIZE = 5,
+    RTLD_DI_ORIGIN = 6,
+    RTLD_DI_PROFILENAME = 7,
+    RTLD_DI_PROFILEOUT = 8,
+    RTLD_DI_TLS_MODID = 9,
+    RTLD_DI_TLS_DATA = 10,
+    RTLD_DI_PHDR = 11,
+    RTLD_DI_MAX = 11
+};
+
+int dlinfo(void *__handle, int __request, void *__arg);
+
 #endif /* _RUBYCC_DLFCN_H */

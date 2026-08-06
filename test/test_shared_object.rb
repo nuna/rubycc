@@ -142,6 +142,28 @@ class TestSharedObject < Minitest::Test
     assert_equal r.section(".data").addr, counter.value
   end
 
+  def test_retains_regular_symbol_table_for_elf_tools
+    skip "nm unavailable" unless tool?("nm")
+
+    with_so([SELF_CONTAINED]) do |so|
+      r = Reader.read(File.binread(so))
+      symtab = r.section(".symtab")
+      strtab = r.section(".strtab")
+      refute_nil symtab, "a linked shared object should retain .symtab"
+      refute_nil strtab, "a linked shared object should retain .strtab"
+      assert_equal 2, symtab.type
+      assert_equal strtab.index, symtab.link
+
+      output, status = Open3.capture2e("nm", so)
+      assert status.success?, "nm could not inspect the shared object:\n#{output}"
+      global_text = output.lines.filter_map do |line|
+        fields = line.split
+        fields.last if fields.length >= 3 && fields[-2] == "T"
+      end
+      assert_includes global_text, "add3"
+    end
+  end
+
   def test_hidden_static_helper_is_not_exported
     r = Reader.read(build_so([SELF_CONTAINED]))
     assert_nil r.dynamic_symbol("dbl"), "a static function must not be exported"
