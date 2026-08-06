@@ -26,6 +26,12 @@ require_relative "support/aarch64_execution_helper"
 # does not copy that keyword list: a copy would only ever check itself, not
 # the harness. Sharing the method is what makes "someone drops `pic: true`
 # from the harness" a failure here too.
+#
+# The profile passed in is built here, not taken from
+# #aarch64_cross_build_profile: that BuildProfile's `pic` is false (it drives
+# #run_abi_case_aarch64, which links -static and so is immune to the PIE
+# defect this test exists to catch -- see that method's own comment), so
+# reusing it here would make this test assert nothing.
 class TestAbiHarnessPieLink < Minitest::Test
   include ExecutionHelper
   include HeaderAbiHarness
@@ -44,9 +50,10 @@ class TestAbiHarnessPieLink < Minitest::Test
 
     in_tmpdir do |dir|
       object_path = File.join(dir, "probe.o")
+      profile = HeaderAbiHarness::BuildProfile.new(target: "aarch64", libc: :glibc, pic: true)
       File.binwrite(object_path,
                     Rubycc::Compiler.new.compile(PROBE, filename: "probe.c",
-                                                 **rubycc_build_options("aarch64")))
+                                                 **rubycc_build_options(profile)))
 
       exe_path = File.join(dir, "probe.out")
       link_out, link_status = Open3.capture2e(

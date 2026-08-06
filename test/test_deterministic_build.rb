@@ -20,6 +20,8 @@ require "stringio"
 # ordering (symbol table, relocations, hash iteration) would show up as a
 # mismatch rather than being masked by a nearly-empty object.
 class TestDeterministicBuild < Minitest::Test
+  include LibcHelper
+
   ArWriter = Rubycc::ObjFile::ArWriter
   ArReader = Rubycc::ObjFile::ArReader
   SharedLinker = Rubycc::Link::SharedLinker
@@ -362,21 +364,9 @@ class TestDeterministicBuild < Minitest::Test
     end
   end
 
+  # Delegates to LibcHelper so this search is written once for the whole suite.
   def libc_path
-    return @libc_path if defined?(@libc_path)
-
-    @libc_path = ["/lib/x86_64-linux-gnu/libc.so.6", "/lib64/libc.so.6", "/usr/lib/libc.so.6"]
-                 .find { |p| File.exist?(p) } || libc_from_ldconfig
-  end
-
-  def libc_from_ldconfig
-    out, status = Open3.capture2e("ldconfig", "-p")
-    return nil unless status.success?
-
-    line = out.lines.find { |l| l =~ /\blibc\.so\.6\b.*=>\s*(\S+)/ }
-    line && Regexp.last_match(1)
-  rescue Errno::ENOENT
-    nil
+    host_libc_path
   end
 
   def executable_linkable?

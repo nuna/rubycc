@@ -20,6 +20,8 @@ require "set"
 # actually called and its return value compared. The external-tool cases
 # (readelf, eu-elflint, gcc -shared interop) are skip-guarded.
 class TestSharedObject < Minitest::Test
+  include LibcHelper
+
   Reader = Rubycc::ObjFile::ELFReader
   Linker = Rubycc::Link::SharedLinker
 
@@ -321,7 +323,7 @@ class TestSharedObject < Minitest::Test
       assert sym.undefined?, "#{name} is imported, so its .dynsym entry is UND"
       assert_equal 0, sym.value
     end
-    assert_equal ["libc.so.6"], r.needed, "the resolving dependency is a DT_NEEDED by SONAME"
+    assert_equal [host_libc_soname], r.needed, "the resolving dependency is a DT_NEEDED by SONAME"
     assert_equal "libext.so", r.soname, "DT_SONAME is the given name"
   end
 
@@ -468,8 +470,8 @@ class TestSharedObject < Minitest::Test
       out, status = Open3.capture2e("gcc", "-shared", "-o", theirs, *objects, "-lc")
       skip "gcc -shared failed:\n#{out}" unless status.success?
 
-      assert_includes Reader.read_file(ours).needed, "libc.so.6"
-      assert_includes Reader.read_file(theirs).needed, "libc.so.6"
+      assert_includes Reader.read_file(ours).needed, host_libc_soname
+      assert_includes Reader.read_file(theirs).needed, host_libc_soname
 
       assert_equal run_my_len(theirs), run_my_len(ours),
                    "both shared objects must compute the same imported result"
@@ -1362,34 +1364,23 @@ class TestSharedObject < Minitest::Test
   end
 
   # The host's libc shared object, located at the usual multiarch path or via
-  # `ldconfig`, or nil when neither turns it up (the external-import cases skip).
+  # `ldconfig`, or nil when neither turns it up (the external-import cases
+  # skip). Delegates to LibcHelper so this search is written once for the
+  # whole suite.
   def libc_path
-    return @libc_path if defined?(@libc_path)
-
-    @libc_path = ["/lib/x86_64-linux-gnu/libc.so.6", "/lib64/libc.so.6", "/usr/lib/libc.so.6"]
-                 .find { |p| File.exist?(p) } || libc_from_ldconfig
+    host_libc_path
   end
 
   # glibc's libc_nonshared.a, the static half of the C library the linker script
-  # names alongside libc.so.6; nil when the host has no such file (the
-  # pthread_atfork case skips). It is what supplies pthread_atfork — and what
-  # references __dso_handle.
+  # names alongside the shared libc image; nil when the host has no such file
+  # (the pthread_atfork case skips). It is what supplies pthread_atfork — and
+  # what references __dso_handle.
   def libc_nonshared_path
     return @libc_nonshared_path if defined?(@libc_nonshared_path)
 
     @libc_nonshared_path = ["/usr/lib/x86_64-linux-gnu/libc_nonshared.a",
                             "/usr/lib64/libc_nonshared.a",
                             "/usr/lib/libc_nonshared.a"].find { |p| File.exist?(p) }
-  end
-
-  def libc_from_ldconfig
-    out, status = Open3.capture2e("ldconfig", "-p")
-    return nil unless status.success?
-
-    line = out.lines.find { |l| l =~ /\blibc\.so\.6\b.*=>\s*(\S+)/ }
-    line && Regexp.last_match(1)
-  rescue Errno::ENOENT
-    nil
   end
 
   # Compiles each source with rubycc under -fPIC into its own object file and
