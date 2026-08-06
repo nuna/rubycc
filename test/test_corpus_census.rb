@@ -29,10 +29,25 @@ class TestCorpusCensus < Minitest::Test
       refute_empty entry[:name], "gem entry has blank :name: #{entry.inspect}"
       # :version is optional (nil = latest); when present it must be a String.
       assert_kind_of String, entry[:version] if entry.key?(:version) && !entry[:version].nil?
+      # :upstream_tests is optional (absent = true); when present it must be false
+      # (the only meaningful declared value — see the field comment in gems.rb).
+      if entry.key?(:upstream_tests)
+        assert_equal false, entry[:upstream_tests],
+                     "gem entry #{entry[:name]} declares upstream_tests other than false: " \
+                     "#{entry[:upstream_tests].inspect}"
+      end
     end
 
     names = list.map { |e| e[:name] }
     assert_equal names, names.uniq, "duplicate gem names in corpus list"
+  end
+
+  def test_fcntl_declares_no_upstream_tests
+    fcntl = Corpus::Gems::LIST.find { |e| e[:name] == "fcntl" }
+    refute_nil fcntl, "fcntl entry missing from corpus list"
+    assert_equal false, fcntl[:upstream_tests],
+                 "fcntl must declare upstream_tests: false (docs/STEPS.md Step 157: " \
+                 "upstream ships no test suite)"
   end
 
   def test_snapshot_report_is_present_and_non_empty
@@ -135,6 +150,63 @@ class TestCorpusCensus < Minitest::Test
     refute CENSUS.configure_dependency?("have_header('ruby.h')\nhave_func('rb_str_new')")
   end
 
+  def test_excluded_by_upstream_tests_detection
+    assert CENSUS.excluded_by_upstream_tests?({ upstream_tests: false })
+    refute CENSUS.excluded_by_upstream_tests?({ upstream_tests: true })
+    refute CENSUS.excluded_by_upstream_tests?({}), "absent field must default to not-excluded"
+  end
+
+  # census_gem's upstream_tests exclusion is checked right after a cached .gem
+  # is located, before unpacking — so a stub cache entry is enough to exercise
+  # it without touching the network (fetch_gem returns early on a cache hit).
+  def test_census_gem_excludes_gem_with_upstream_tests_false
+    Dir.mktmpdir do |cache_dir|
+      File.write(File.join(cache_dir, "examplegem-1.0.0.gem"), "not a real gem")
+      spec = { name: "examplegem", version: "1.0.0", note: "sample", upstream_tests: false }
+
+      result = CENSUS.census_gem(spec, cache_dir, Set.new)
+
+      assert_equal :excluded, result[:status]
+      assert_match(/no test suite/, result[:reason])
+      assert_equal "1.0.0", result[:version], "version should still resolve from the cache hit"
+    end
+  end
+
+  def test_census_gem_defaults_upstream_tests_to_not_excluded
+    refute CENSUS.excluded_by_upstream_tests?({ name: "examplegem" }),
+           "a spec without :upstream_tests must not be excluded by this gate"
+  end
+
+  # ---- R10 pass-rate summary ----
+
+  def test_r10_summary_counts_and_rate
+    r10 = CENSUS.r10_summary(%w[a b c d], Set.new(%w[a b]))
+    assert_equal 4, r10[:denominator]
+    assert_equal 2, r10[:numerator]
+    assert_in_delta 50.0, r10[:rate], 0.001
+  end
+
+  def test_r10_summary_remaining_to_90
+    # 25/37 verified: needs 9 more to reach ceil(0.9*37)=34.
+    r10 = CENSUS.r10_summary((1..37).map(&:to_s), Set.new((1..25).map(&:to_s)))
+    assert_equal 37, r10[:denominator]
+    assert_equal 25, r10[:numerator]
+    assert_equal 9, r10[:remaining_to_90]
+  end
+
+  def test_r10_summary_remaining_is_zero_once_at_target
+    r10 = CENSUS.r10_summary(%w[a b c d e f g h i j], Set.new(%w[a b c d e f g h i]))
+    assert_equal 0, r10[:remaining_to_90], "9/10 already meets the 90% target"
+  end
+
+  def test_r10_summary_handles_empty_denominator
+    r10 = CENSUS.r10_summary([], Set.new)
+    assert_equal 0, r10[:denominator]
+    assert_equal 0, r10[:numerator]
+    assert_equal 0.0, r10[:rate]
+    assert_equal 0, r10[:remaining_to_90]
+  end
+
   def test_gate_hint_annotations
     assert_match(/SIMD/, CENSUS.gate_hint("cpuid.h"))
     assert_match(/SIMD/, CENSUS.gate_hint("arm_neon.h"))
@@ -149,23 +221,34 @@ class TestCorpusCensus < Minitest::Test
     results = sample_results
     bundled = Set.new(%w[stdio.h sys/socket.h])
 
-    first = CENSUS.render_report(results, bundled)
-    second = CENSUS.render_report(results, bundled)
+    first = CENSUS.render_report(results, bundled, sample_verified_names)
+    second = CENSUS.render_report(results, bundled, sample_verified_names)
 
     assert_equal first, second, "render_report must be a pure function of its inputs"
   end
 
   def test_render_report_has_no_date_like_strings
-    body = CENSUS.render_report(sample_results, Set.new(%w[stdio.h]))
+    body = CENSUS.render_report(sample_results, Set.new(%w[stdio.h]), sample_verified_names)
     refute_match(/\d{4}-\d{2}-\d{2}/, body, "snapshot must not embed a run-specific date")
   end
 
   def test_render_report_does_not_embed_ruby_description
-    body = CENSUS.render_report(sample_results, Set.new(%w[stdio.h]))
+    body = CENSUS.render_report(sample_results, Set.new(%w[stdio.h]), sample_verified_names)
     refute_includes body, RUBY_DESCRIPTION, "snapshot must not embed the interpreter version"
   end
 
+  def test_render_report_includes_r10_pass_rate_section
+    body = CENSUS.render_report(sample_results, Set.new(%w[stdio.h]), sample_verified_names)
+    assert_includes body, "## R10 pass rate"
+    # sample_results has exactly one :ok gem ("examplegem"), which is in sample_verified_names.
+    assert_includes body, "| 1 | 1 | 100.0% | 0 |"
+  end
+
   private
+
+  def sample_verified_names
+    Set.new(%w[examplegem])
+  end
 
   def sample_results
     [

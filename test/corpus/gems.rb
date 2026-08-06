@@ -19,6 +19,17 @@
 #              leaving it in the committed list makes the census job fail on
 #              upstream drift.
 #   :note    — why this gem is in the corpus
+#   :upstream_tests — false when the gem's upstream project ships no test suite
+#                     at all, verified by inspecting the upstream repo/tag
+#                     directly (not by "it fails to run here" or "no test
+#                     environment is set up"). Defaults to true when absent.
+#                     This is NOT a general-purpose exclusion switch: R10's
+#                     "gem's own tests passed" evidence (verification level
+#                     (d)) is impossible to obtain when no suite exists, so
+#                     test/corpus/census.rb excludes such a gem from the R10
+#                     denominator. A gem that has a suite but currently fails
+#                     it, or one this project simply has not run yet, stays
+#                     true and stays in the denominator.
 module Corpus
   module Gems
     LIST = [
@@ -99,7 +110,12 @@ module Corpus
       {
         name: "fcntl",
         version: "1.3.0",
-        note: "Small single-file ext (ext/fcntl)."
+        upstream_tests: false,
+        note: "Small single-file ext (ext/fcntl). Upstream ruby/fcntl carries no " \
+              "test/ directory, no test task in its Rakefile, and no test step in " \
+              "its CI (measured against v1.3.0 and master, docs/STEPS.md Step 157); " \
+              "excluded from the R10 denominator because \"gem's own tests passed\" " \
+              "evidence is impossible to obtain, not because rubycc fails it."
       },
       {
         name: "io-console",
