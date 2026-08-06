@@ -8126,9 +8126,74 @@ Step 188 の決定性は守っている(日時や実行環境を新しい節に�
 
 ---
 
+## atomic-type-1 — `_Atomic` 型指定子を実装する(M5 H4)
+
+google-protobuf が `_Atomic` 未実装だけで止まっていた(Step 214)ので着手した。
+
+### 想定よりずっと小さい仕事だった
+
+着手前に**測った**ところ、**アトミック演算そのものは既に実装済みで gcc と完全一致**していた
+(`__atomic_load_n` / `store_n` / `fetch_add` / `exchange_n` / `compare_exchange_n` が
+9 形すべてパーサに登録済み)。足りないのは **`_Atomic` 型指定子**と
+**ヘッダの総称マクロ**の 2 つだけだった。
+
+**「C11 アトミックの実装」と一括りにしていたら、既にあるものを作り直していた。**
+
+### レイアウトは実測してから同一と決めた
+
+`_Atomic T` を `T` と同じレイアウトとして扱ってよいかを、gcc と突き合わせた:
+
+- **スカラは全て一致**(1/2/4/8/16 バイトのいずれも、サイズ・アラインメントとも)
+- **struct は一致しない** — サイズが 2 のべき乗の struct は**アラインメントが引き上げられる**
+  (`struct{char a,b;}` が align 1 → **2**、16 バイト struct が align 8 → **16**)
+
+**仮定で進めていたら struct で静かに壊れていた。**
+
+### 受け付ける範囲を決めて、範囲外は診断で落とす
+
+**受理**: 整数・浮動小数・ポインタで幅が 1/2/4/8 バイト。
+**拒否**: struct / union、16 バイトスカラ、配列、関数型。
+
+16 バイトを拒否するのは、rubycc が出す ISA ベースライン
+(cmpxchg16b 無しの x86-64、LSE 無しの armv8-a)に**単一命令が無い**ためである。
+レイアウトは一致するが**アトミックにできない**ので、受けてはいけない。
+
+### 提供しなかったものが、この作業のいちばんの判断
+
+- **`atomic_fetch_or` / `_and` / `_xor` を提供しない。** 既存の組み込みは
+  `__atomic_or_fetch`(**新しい値**を返す)であって `__atomic_fetch_or`(**古い値**を返す)ではない。
+  **OR は非可逆なので新しい値から古い値を復元できない。**
+  名前だけ生やせば**誤った値を返す**ので、出さない方が正しい。
+- **`atomic_flag` を提供しない。** 1 バイトの test-and-set 組み込みが無く、
+  幅を変えると gcc の `sizeof(atomic_flag) == 1` と ABI が食い違う。
+- **`ATOMIC_*_LOCK_FREE` は gcc と意図的に値を変えた。** gcc は全て 2 だが、
+  rubycc は拒否する幅を **0**(ロックフリーでない)と答える。
+  **分岐する側が「ロックフリーでない」枝に落ちる**ので安全側である。
+
+### 残る制限も書いた
+
+`_Atomic` オブジェクトを**通常の演算子**で読み書きしても、C11 の seq_cst 順序は付かない。
+受理幅では自然整列した単一命令になるので**不可分性は保たれる**が、順序が要るなら
+マクロを使う必要がある。**黙って落とさず README とヘッダに明記した。**
+
+### それでも google-protobuf は通らない
+
+`ruby-upb.c` を実際にコンパイルして、**次の 3 件を実測**した(いずれも gcc は通る):
+
+1. **`'\?'` 単純エスケープ**が `LexemeReader::ESCAPES` に無い(C11 6.4.4.4)
+2. **flexible array member を持つ struct のファイルスコープ初期化**(gcc の拡張)
+3. **`jmp_buf` と `sigjmp_buf` の型不一致** — 同梱 `setjmp.h` が別々の無名 union で
+   宣言しているが、glibc は**同一の `struct __jmp_buf_tag[1]`** にしている
+
+**「ブロッカーを 1 つ潰したら通る」ではなかった。** 測って初めて分かったことなので、
+そのまま次の作業対象として記録する。
+
+---
+
 ## 現在のテスト規模
 
-corpus-denominator-1 完了時点: **2,855 runs / 8,601 assertions / 0 failures / 0 errors / 44 skips**
+atomic-type-1 完了時点: **2,874 runs / 8,698 assertions / 0 failures / 0 errors / 44 skips**
+(以前) corpus-denominator-1 完了時点: **2,855 runs / 8,601 assertions / 0 failures / 0 errors / 44 skips**
 (以前) master マージ後の統合スイート: **2,846 runs / 8,575 assertions / 0 failures / 0 errors / 44 skips**
 (`rake test` の実測値)
 Step 214 完了時点: **2,841 runs / 8,557 assertions / 0 failures / 0 errors / 44 skips**

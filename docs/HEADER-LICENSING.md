@@ -96,7 +96,7 @@ libc 由来ではない。musl・glibc いずれの派生でもない。
 | `include/stdarg.h` | ISO C 7.16(`__builtin_va_*` へのマッピング) |
 | `include/stdbool.h` | ISO C 7.18 |
 | `include/stdckdint.h` | ISO C23 7.20(`__builtin_*_overflow` へのマッピング)|
-| `include/stdatomic.h` | ISO C 7.17 の部分実装。`memory_order_*` と fence のみを `__atomic_thread_fence` へマッピング。`_Atomic` と atomic 操作は未実装(Step 209) |
+| `include/stdatomic.h` | ISO C 7.17 の部分実装。`_Atomic` 型指定子と総称マクロ(load/store/exchange/compare_exchange/fetch_add/sub)を既存の `__atomic_*` 組み込みへマッピング(atomic-type-1)。**`fetch_or`/`_and`/`_xor`・`atomic_flag`・`atomic_is_lock_free` は提供しない**(対応する組み込みが無く、名前だけ生やすと誤った値を返すため)。`ATOMIC_*_LOCK_FREE` は **gcc と意図的に値が違う**(rubycc が拒否する幅を 0 と答える安全側) |
 | `include/stddef.h` | ISO C 7.19(型は x86-64 SysV LP64 に固定) |
 | `include/stdnoreturn.h` | ISO C 7.23 |
 | `include/x86intrin.h` | 意図的な空スタブ(CRuby の config.h 対策) |
@@ -244,7 +244,8 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 > 型ジェネリックであり、コンパイラにしか表現できないからである。
 > 動機は musl の初回実行(Step 175)で、**ホストの ruby の `config.h` が
 > `HAVE_STDCKDINT_H` を焼き込んでいると rubycc では `ruby.h` が前処理すら通らない**
-> ことが分かったため。`stdatomic.h` は Step 209 で最小の fence API を追加したが、
+> ことが分かったため。`stdatomic.h` は Step 209 で最小の fence API を追加し、
+> atomic-type-1 で `_Atomic` と総称マクロまで広げたが、
 > `_Atomic` オブジェクトと atomic load/store/RMW は依然として未実装である。
 
 > Step 135(M5 H2)で、コーパスセンサス(36 gem、Step 139)が挙げた実需ギャップから

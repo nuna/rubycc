@@ -675,7 +675,12 @@ module Rubycc
       # first (and only) type-specifier — once any type keyword has been seen, a
       # following identifier is the declarator, so "int T" declares a variable T
       # even where T names a type (the standard rule that keeps typedef names
-      # shadowable). Mixing categories ("unsigned struct", "enum T", ...) is a
+      # shadowable). "_Atomic" appears in both of the roles C11 gives it — a
+      # qualifier written among the other specifiers ("_Atomic int x", "int
+      # _Atomic x") and the parenthesized atomic-type-specifier
+      # ("_Atomic(int) x"), the two told apart by #atomic_type_specifier? — and
+      # #reject_unsupported_atomic_type settles which types it may name. Mixing
+      # categories ("unsigned struct", "enum T", ...) is a
       # diagnostic; `allow_storage_class` is false in the contexts a storage
       # class or a function specifier ("inline"/"_Noreturn") cannot appear (a
       # member, a parameter, a type-name), where const/volatile are still
@@ -696,6 +701,7 @@ module Rubycc
         inline_p = false
         noreturn_p = false
         typedef_const = false # const folded in from a const typedef name
+        atomic_tok = nil # the first "_Atomic" written as a qualifier, for its diagnostic
         loop do
           tok = peek
           if tok.type == :keyword && STORAGE_CLASS_KEYWORDS.include?(tok.value)
@@ -716,6 +722,19 @@ module Rubycc
             advance
           elsif tok.keyword?("volatile")
             advance # accepted and ignored: M1 carries no qualified types
+          elsif tok.keyword?("_Atomic")
+            if atomic_type_specifier?
+              # "_Atomic ( type-name )" — a type-specifier, so it excludes every
+              # other one exactly as a struct or enum specifier does.
+              error_at(tok, "two or more data types in declaration specifiers") if composite || !specs.empty?
+              composite = parse_atomic_type_specifier
+            else
+              # "_Atomic" written as a bare type qualifier, before or after the
+              # type it qualifies. The type it lands on is only known once the
+              # whole run is read, so the token is kept for the check below.
+              atomic_tok ||= tok
+              advance
+            end
           elsif tok.keyword?("inline")
             error_at(tok, "'inline' is not allowed here") unless allow_storage_class
             inline_p = true
@@ -760,12 +779,94 @@ module Rubycc
         # const to the declaration, OR-ed with any const written here directly.
         spec_info = DeclSpecInfo.new(storage: storage, const: const_p || typedef_const,
                                      inline_p: inline_p, noreturn_p: noreturn_p, attributes: attributes)
-        if composite
-          [composite, spec_info]
-        else
-          error_at(start_tok, "expected type specifier") if specs.empty?
-          [normalize_type_specifiers(specs, start_tok), spec_info]
+        base = if composite
+                 composite
+               else
+                 error_at(start_tok, "expected type specifier") if specs.empty?
+                 normalize_type_specifiers(specs, start_tok)
+               end
+        # A qualifier-spelled "_Atomic" qualifies whatever the run resolved to,
+        # so its admissibility is settled here, once that type is known. The
+        # parenthesized spelling checked its own operand in
+        # #parse_atomic_type_specifier, where the type-name's own token locates
+        # the diagnostic.
+        reject_unsupported_atomic_type(base, atomic_tok) if atomic_tok
+        [base, spec_info]
+      end
+
+      # Whether the "_Atomic" at `peek` opens the parenthesized
+      # atomic-type-specifier "_Atomic ( type-name )" rather than standing as a
+      # bare type qualifier. C11 6.7.2.4 spells the two identically up to the
+      # "(", and the grammar separates them by what follows it: a type-name
+      # makes it the specifier, anything else leaves the "_Atomic" a qualifier
+      # of the surrounding declaration ("_Atomic (*p)" qualifies the pointee).
+      def atomic_type_specifier?
+        peek_ahead(1)&.punct?("(") && !peek_ahead(2).nil? && type_specifier?(peek_ahead(2))
+      end
+
+      # atomic-type-specifier = "_Atomic" "(" type-name ")" (6.7.2.4), the
+      # "_Atomic" not yet consumed. The type-name is an ordinary one, so it may
+      # itself be a pointer or a typedef name ("_Atomic(const upb_ArenaRef *)"
+      # is how upb spells one), and it goes through the same admissibility check
+      # the qualifier spelling does.
+      def parse_atomic_type_specifier
+        keyword_tok = advance # "_Atomic"
+        # The type-name nests a full declarator, which may nest further
+        # specifiers, so the shared recursion counter bounds it here just as it
+        # bounds a struct body.
+        with_nesting_guard(keyword_tok, "_Atomic type specifier") do
+          expect_punct("(")
+          type_tok = peek
+          type = parse_type_name
+          expect_punct(")")
+          reject_unsupported_atomic_type(type, type_tok)
+          type
         end
+      end
+
+      # The object widths a plain machine access is indivisible at on both
+      # targets: one naturally aligned load or store instruction covers each of
+      # them, and #reject_unsupported_atomic_type admits an _Atomic type only at
+      # these widths. Wider than 8 there is no such instruction on either
+      # baseline ISA rubycc emits for (x86-64 without cmpxchg16b, armv8-a
+      # without LSE), so an _Atomic 16-byte object would be a plainly
+      # non-atomic one.
+      ATOMIC_TYPE_WIDTHS = [1, 2, 4, 8].freeze
+
+      # Rejects an `_Atomic T` this subset cannot honestly represent.
+      #
+      # rubycc compiles `_Atomic T` as plain `T`: same layout, same ABI. That is
+      # a measurement, not an assumption — gcc's sizeof and _Alignof for
+      # `_Atomic(T)` equal those of `T` for every integer, floating and pointer
+      # type (verified type by type in test/test_header_abi.rb's STDATOMIC
+      # spec) — but it holds only for the types listed there. It fails for an
+      # aggregate: gcc raises a power-of-two-sized struct's alignment to its
+      # size under _Atomic (measured: a 2-byte struct goes from _Alignof 1 to 2,
+      # a 16-byte one from 8 to 16), and an aggregate of any other size is not
+      # lock-free at all, so gcc routes it through libatomic's locked path.
+      # Compiling either as a plain struct would silently drop both the layout
+      # and the atomicity, so an aggregate is refused here instead.
+      #
+      # The same reasoning bounds the widths: 16-byte scalars (`__int128`, and
+      # `long double` on a target that has one) do share `T`'s layout, but no
+      # single instruction accesses them on the ISA baselines rubycc emits, so
+      # they are refused too. C11 6.7.2.4p3 already forbids `_Atomic` on an
+      # array or a function type, and gcc diagnoses the array form
+      # ("'_Atomic'-qualified array type", measured), so those get their own
+      # message.
+      def reject_unsupported_atomic_type(type, tok)
+        if type.array? || type.function?
+          error_at(tok, "'_Atomic' cannot be applied to #{type.array? ? "an array" : "a function"} type")
+        end
+        # "_Atomic void" names no object at all — the only way to write it is
+        # "_Atomic void *", where the qualifier lands on a pointee nothing ever
+        # loads — so gcc accepts it (measured) and so does this, leaving the
+        # existing void-object rules to refuse a real "_Atomic void v;".
+        return if type.void?
+        return if (type.arithmetic? || type.pointer?) && ATOMIC_TYPE_WIDTHS.include?(type.size)
+
+        error_at(tok, "'_Atomic' is not supported on '#{type}': this subset applies it only to " \
+                      "integer, floating and pointer types of #{ATOMIC_TYPE_WIDTHS.join(", ")} bytes")
       end
 
       # Collapses a multiset of integer type-specifier keywords (in any order:
@@ -1531,8 +1632,9 @@ module Rubycc
       # type-name from a parenthesized expression. A declaration begins with an
       # integer/void type-specifier keyword, "struct"/"union"/"enum", a storage
       # class ("typedef"/"static"/"extern"/"register"/"auto"), a type qualifier
-      # ("const"/"volatile"), the "inline"/"_Noreturn" function specifiers, or a
-      # typedef name — an identifier bound to a type in the ordinary namespace
+      # ("const"/"volatile"/"_Atomic"), the "inline"/"_Noreturn" function
+      # specifiers, or a typedef name
+      # — an identifier bound to a type in the ordinary namespace
       # whose innermost binding is not shadowed by a variable. The storage-class
       # and function-specifier keywords never open an expression, so admitting
       # them here only ever forwards a genuine declaration (a bare "static x;"
@@ -1544,6 +1646,7 @@ module Rubycc
                  token.value == "struct" || token.value == "union" ||
                  token.value == "enum" ||
                  token.value == "const" || token.value == "volatile" ||
+                 token.value == "_Atomic" ||
                  token.value == "inline" || token.value == "_Noreturn" ||
                  # A leading GNU attribute opens a declaration too
                  # ("__attribute__((unused)) int x;"), so block-item and
@@ -1954,8 +2057,9 @@ module Rubycc
 
       # A declarator's "*" run, each star optionally followed by a type-qualifier
       # list ("int * const p", "char * const * volatile q"). Returns one boolean
-      # per star, true when that pointer level is const-qualified; "volatile" is
-      # accepted and ignored, since M1 carries no qualified types. The list is in
+      # per star, true when that pointer level is const-qualified; "volatile" and
+      # "_Atomic" are accepted and ignored, since M1 carries no qualified types.
+      # The list is in
       # textual order, so the first star wraps the base first (the innermost
       # pointer) and the last is the outermost — the level that qualifies the
       # declared object.
@@ -1968,6 +2072,12 @@ module Rubycc
               const_here = true
               advance
             elsif peek.keyword?("volatile")
+              advance
+            elsif peek.keyword?("_Atomic")
+              # "_Atomic" on this pointer level ("int * _Atomic p"): it qualifies
+              # the pointer itself, which is one of the widths
+              # ATOMIC_TYPE_WIDTHS admits whatever it points at, so there is
+              # nothing to refuse and it is dropped like "volatile".
               advance
             elsif peek.keyword?("__attribute__")
               # A GNU attribute may follow a pointer's "*" ("int * __attribute__
@@ -2178,7 +2288,8 @@ module Rubycc
       # here in its identifier spellings (see #restrict_qualifier?).
       def skip_array_qualifiers
         loop do
-          if peek.keyword?("const") || peek.keyword?("volatile") || peek.keyword?("static")
+          if peek.keyword?("const") || peek.keyword?("volatile") ||
+             peek.keyword?("_Atomic") || peek.keyword?("static")
             advance
           elsif restrict_qualifier?(peek)
             advance

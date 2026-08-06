@@ -93,6 +93,71 @@ class TestHeaderAbi < Minitest::Test
     snippets: ["static int abi_iso646(int a, int b) { return (a and b) or (a bitor b); }"]
   )
 
+  # The scalar types rubycc admits under _Atomic, each probed twice -- bare and
+  # under the parenthesized atomic-type-specifier -- so the claim the whole
+  # implementation rests on ("_Atomic T has T's layout") is measured against gcc
+  # type by type rather than assumed. `long double` is deliberately absent: it
+  # is the one freestanding type rubycc already models differently (8-byte
+  # double against x87's 16), so a row for it would report that known gap here
+  # (see this file's header comment for the same exclusion around max_align_t).
+  ATOMIC_SCALARS = %w[_Bool char signed\ char unsigned\ char
+                      short unsigned\ short int unsigned\ int
+                      long unsigned\ long long\ long unsigned\ long\ long
+                      float double void\ * int\ * size_t ptrdiff_t].freeze
+
+  # <stdatomic.h>: the layout claim above, the C11 typedefs, memory_order's
+  # width and the memory-order constants' values, plus a snippet exercising
+  # every generic macro the bundled header provides so a missing or unusable
+  # one fails to compile on rubycc's side.
+  #
+  # The ATOMIC_*_LOCK_FREE macros are deliberately *not* probed: gcc answers 2
+  # for all ten because it falls back to libatomic for the widths its ISA
+  # cannot do inline, while rubycc refuses those operations outright and so
+  # answers 0 for them (measured; see include/stdatomic.h). That is an intended
+  # divergence, and the values are pinned in test_atomic_type.rb instead, where
+  # they can be stated as rubycc's own answer rather than compared to gcc's.
+  STDATOMIC = HeaderAbiHarness::Spec.new(
+    header: "stdatomic.h",
+    sizes: ATOMIC_SCALARS.flat_map { |type| [type, "_Atomic(#{type})"] } +
+           %w[atomic_bool atomic_char atomic_schar atomic_uchar
+              atomic_short atomic_ushort atomic_int atomic_uint
+              atomic_long atomic_ulong atomic_llong atomic_ullong
+              atomic_size_t atomic_ptrdiff_t memory_order],
+    ints: %w[memory_order_relaxed memory_order_consume memory_order_acquire
+             memory_order_release memory_order_acq_rel memory_order_seq_cst] +
+          ["ATOMIC_VAR_INIT(7)", "kill_dependency(9)", "abi_stdatomic()"],
+    snippets: [<<~C.chomp]
+      static int abi_stdatomic(void) {
+        atomic_int object;
+        int expected;
+        int total = 0;
+        atomic_init(&object, 1);
+        total += atomic_load(&object);
+        total += atomic_load_explicit(&object, memory_order_acquire);
+        atomic_store(&object, 2);
+        atomic_store_explicit(&object, 3, memory_order_release);
+        total += atomic_exchange(&object, 4);
+        total += atomic_exchange_explicit(&object, 5, memory_order_acq_rel);
+        total += atomic_fetch_add(&object, 6);
+        total += atomic_fetch_add_explicit(&object, 7, memory_order_relaxed);
+        total += atomic_fetch_sub(&object, 8);
+        total += atomic_fetch_sub_explicit(&object, 9, memory_order_relaxed);
+        expected = atomic_load(&object);
+        total += atomic_compare_exchange_strong(&object, &expected, 10);
+        total += atomic_compare_exchange_weak(&object, &expected, 11);
+        total += atomic_compare_exchange_strong_explicit(&object, &expected, 12,
+                                                         memory_order_acq_rel,
+                                                         memory_order_relaxed);
+        total += atomic_compare_exchange_weak_explicit(&object, &expected, 13,
+                                                       memory_order_acq_rel,
+                                                       memory_order_relaxed);
+        atomic_thread_fence(memory_order_seq_cst);
+        atomic_signal_fence(memory_order_seq_cst);
+        return total + atomic_load(&object);
+      }
+    C
+  )
+
   # ---------------------------------------------------------------------------
   # Step 63 (M3 B7): the bundled libc first batch. Each Spec probes the ABI
   # surface the bundled header commits to -- macro values, type widths, struct
@@ -1773,6 +1838,10 @@ class TestHeaderAbi < Minitest::Test
     assert_abi_matches(ISO646)
   end
 
+  def test_stdatomic_abi_matches_gcc
+    assert_abi_matches(STDATOMIC)
+  end
+
   private
 
   # Runs a Spec both ways and asserts a clean run and byte-identical output. The
@@ -2241,6 +2310,14 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_stddef_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::STDDEF)
+  end
+
+  # <stdatomic.h> is freestanding, so like <float.h> it is one file for every
+  # machine -- and the layout claim it rests on ("_Atomic T has T's layout") is
+  # a per-target measurement, not a portable one. The cross run makes the
+  # aarch64 ABI say so too.
+  def test_stdatomic_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::STDATOMIC)
   end
 
   def test_poll_abi_matches_cross_gcc
