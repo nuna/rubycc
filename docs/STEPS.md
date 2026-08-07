@@ -8761,6 +8761,100 @@ extconf の 18 プローブ通過 → 全 5 翻訳単位のコンパイル → `
 
 ---
 
+## atomic-type-12 — 残り 3 件の正体を突き止めた(M5 H4)
+
+atomic-type-10 / 11 で mysql2 のビルドが通ったので、
+**oj・mysql2・rbs が本当は何で止まっているのか**を測り切った。
+
+### oj — ランダムなテスト順が数値を揺らしていただけだった
+
+これまでの計測で対照と rubycc の failures/errors が毎回違っていた
+(37/35 対 49/14、次の回は 40/36 対 48/19)。**minitest が既定でテスト順を
+ランダム化する**のが原因で、**回数を比べていたこと自体が誤り**だった。
+
+`--seed 1234` で順を固定し、**失敗テスト名の集合**で比べたところ:
+
+```
+gcc    75 件
+rubycc 76 件
+gcc にだけ:    (無し)
+rubycc にだけ: UsualTest#test_decimal
+```
+
+**差はちょうど 1 件。** 74 件の共通失敗は oj 側の事情で、rubycc は無関係である。
+
+### その 1 件は `long double` だった
+
+```
+UsualTest#test_decimal:
+ArgumentError: invalid value for BigDecimal(): "-nan"
+```
+
+oj の `usual.c:470`:
+
+```c
+static void add_float_as_big(ojParser p) {
+    char buf[64];
+    sprintf(buf, "%Lg", p->num.dub);   /* p->num.dub は long double */
+```
+
+最小再現:
+
+| | 出力 | `sizeof(long double)` |
+|---|---|---|
+| gcc | `[1.23457]` | **16** |
+| rubycc | `[7.46537e-4948]` | **8** |
+
+rubycc は `long double` を `double` として扱う(DESIGN 3.3 の既知の制限)。
+可変長引数に 8 バイトを積むが、**glibc の `sprintf` は `%Lg` で 16 バイトを読む**。
+食い違った分だけずれた値が出る。
+
+**ROADMAP §3 の負債「long double = double 扱い」に、初めて実害が出た。**
+これまでは `max_align_t` の相違としてしか観測されておらず、
+ABI ハーネスの該当検査を非 assert にして先送りしていたものである。
+解消には x87 80 ビット対応が要り、1 ステップの仕事ではない。
+
+**oj は分母に残す。** 対照が通すテストを rubycc が落としているのだから、
+これは rubycc が負うべき差である。
+
+### mysql2 — 対照と完全に並んだ
+
+`libmariadb-dev` 導入 + atomic-type-10/11 でビルドが通り、上流 spec を走らせた。
+
+| | 結果 |
+|---|---|
+| rubycc | **340 examples / 1 failure / 6 pending** |
+| gcc | **340 examples / 1 failure / 6 pending**(**同じ 1 件**) |
+
+残る 1 件は `result_spec.rb:240`「streaming が timeout で終わることの検査」で、
+`net_write_timeout = 1` を設定して読み遅らせる形。**ループバック接続では発火しない**
+(bridge / host どちらのネットワークでも同じ)。gcc でも落ちるので **rubycc の非ではない**。
+
+### DB は Docker で用意した
+
+ホストに MariaDB を入れる案もあったが、**コンテナの方が正しい** — 版を固定でき、
+ホストを汚さず、このリポジトリが musl コンテナで既に採っている流儀と揃う。
+
+```
+docker run -d --name rubycc-mariadb --network host \
+  -e MARIADB_ROOT_PASSWORD=rubycc -e MARIADB_DATABASE=test mariadb:11 --port=3307
+```
+
+**ホストに mariadb-server が居ると邪魔になる**という罠があった。
+mysql2 の spec の 1 つが `host: 'localhost'` を直書きしており、MySQL の規約では
+`localhost` は**ポート指定を無視して UNIX ソケット**を使うので、
+コンテナではなく**ホストのサーバ**に当たる。そちらは `unix_socket` 認証なので
+エラー番号が違い、spec が期待する例外クラスにならない。
+`MYSQL_UNIX_PORT` を存在しないパスに向けて、ソケット経路を閉じて解決した。
+
+### rbs — ビルドは通る
+
+`RUBYCC=1 gem install rbs --version 3.10.0` は**成功する**(`rbs_extension.so` 生成)。
+上流テストは開発依存が 15 本以上あり(`rspec` / `json-schema` / `goodcheck` /
+`rubocop-on-rbs` ほか)、レシピ化は別途。**ビルド不可という以前の記録は誤りだった。**
+
+---
+
 ## 現在のテスト規模
 
 atomic-type-11 完了時点: **2,949 runs / 9,355 assertions / 0 failures / 0 errors / 44 skips**

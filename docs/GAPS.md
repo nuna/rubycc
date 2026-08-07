@@ -13,6 +13,8 @@
 | **Q** | **K&R(旧形式)の関数定義**(ISO C 6.9.1 の identifier-list 宣言子 + declaration-list)が未実装 | **mysql2**。同梱の `ext/mysql2/mysql_enc_name_to_ruby.h`(**gperf の生成物**)がこの形で、`client.c` のコンパイルが `expected type specifier` で止まる | **実測**(2026-08-08)。最小再現あり(下記) | ROADMAP §3 の既知債務「K&R `int ()` 型」に**実害が出た**。着手予定 = 次のステップ |
 | **R** | **`.cpp` を渡されても診断で拒否せず、黙って何も出さない** | `gem install thin` が依存の **eventmachine**(C++)で、`warning: em.cpp: linker input file unused because linking not done` を 9 本出したあと、**リンク段階で `No such file or directory - binder.o`** という原因を示さない形で落ちる | **実測**(2026-08-08) | R10 は C++ を対象外と明示しているので、**そう言って落ちる**のが正しい。ROADMAP §2 の「未対応機能は黙って壊さない」に反している |
 
+| **S** | **`long double` が 8 バイト**(`double` として扱う。DESIGN 3.3 の既知の制限) | **oj**。`usual.c` が `sprintf(buf, "%Lg", (long double)x)` を使い、glibc は 16 バイトを読むので値が壊れる(`BigDecimal(): "-nan"`)。**対照と食い違う唯一のテスト** `UsualTest#test_decimal` の原因 | **実測**(2026-08-08)。最小再現: gcc `[1.23457]` / rubycc `[7.46537e-4948]` | ROADMAP §3 の負債に**初めて実害が出た**。解消には x87 80 ビット対応が要り、1 ステップの仕事ではない |
+
 **Q の最小再現**(gcc は `68 9 7` を出力、rubycc は 3 行目で診断エラー):
 
 ```c
