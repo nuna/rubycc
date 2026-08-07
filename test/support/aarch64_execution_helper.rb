@@ -19,21 +19,27 @@ require "open3"
 # these tests rather than failing them, so the suite stays green wherever the
 # rest of it runs.
 module AArch64ExecutionHelper
-  QEMU = "qemu-aarch64"
-  CROSS_GCC = "aarch64-linux-gnu-gcc"
-  CROSS_OBJDUMP = "aarch64-linux-gnu-objdump"
+  # The default profile is the x86_64-hosted cross toolchain. An actual
+  # aarch64 Ruby run can select its native gcc/objdump and a direct executable
+  # runner through environment variables; this keeps the same test corpus
+  # useful on both sides of the emulation boundary.
+  QEMU = ENV.fetch("RUBYCC_AARCH64_QEMU", "qemu-aarch64")
+  CROSS_GCC = ENV.fetch("RUBYCC_AARCH64_GCC", "aarch64-linux-gnu-gcc")
+  CROSS_OBJDUMP = ENV.fetch("RUBYCC_AARCH64_OBJDUMP", "aarch64-linux-gnu-objdump")
 
   # The cross toolchain's sysroot, holding the aarch64 dynamic loader and libc.
   # A dynamically-linked executable rubycc's own linker produces names the
   # on-target loader path (/lib/ld-linux-aarch64.so.1); qemu resolves that (and
   # the shared libraries) beneath this prefix, so the self-linked binary runs
   # without the target's real root filesystem.
-  SYSROOT = "/usr/aarch64-linux-gnu"
-  SYSROOT_INTERP = "#{SYSROOT}/lib/ld-linux-aarch64.so.1"
+  SYSROOT = ENV.fetch("RUBYCC_AARCH64_SYSROOT", "/usr/aarch64-linux-gnu")
+  SYSROOT_INTERP = ENV.fetch(
+    "RUBYCC_AARCH64_SYSROOT_INTERP", "#{SYSROOT}/lib/ld-linux-aarch64.so.1"
+  )
   # platform-literal: the aarch64-linux-gnu cross toolchain's sysroot is always glibc
   # (there is no musl variant of this Debian cross package), so this name is a fact of
   # the cross toolchain, not an assumption about a host that could vary.
-  SYSROOT_LIBC = "#{SYSROOT}/lib/libc.so.6"
+  SYSROOT_LIBC = ENV.fetch("RUBYCC_AARCH64_SYSROOT_LIBC", "#{SYSROOT}/lib/libc.so.6")
 
   # The canonical on-target dynamic-loader path a consumer executable names in
   # its PT_INTERP; qemu resolves it beneath QEMU_LD_PREFIX, so it is the target

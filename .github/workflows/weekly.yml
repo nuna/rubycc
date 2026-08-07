@@ -20,13 +20,13 @@ name: weekly
       only:
         description: >-
           Run just one job instead of the whole weekly set. The aarch64 ABI
-          measurement in particular is reachable no other way: guarding it on
-          verify_step alone meant the only way to trigger it was a full weekly
-          run, which costs the other five jobs' minutes to get one job's answer.
+          measurement and native glibc acceptance are reachable no other way:
+          guarding them on verify_step alone would make the only way to trigger
+          one answer a full weekly run.
         required: false
         default: ""
         type: choice
-        options: ["", "musl-aarch64"]
+        options: ["", "aarch64-glibc", "musl-aarch64"]
 
 permissions:
   contents: read
@@ -159,6 +159,34 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: weekly-acceptance-logs
+          path: tmp/ci/*.log
+          if-no-files-found: warn
+
+  # The cross-gcc jobs above run aarch64 code from an x86-64 Ruby process. This
+  # job answers the remaining M4 question: does an actual aarch64 Ruby process
+  # build and load the native extensions, and does its full suite pass?
+  aarch64-glibc:
+    if: inputs.verify_step == '' && (inputs.only == '' || inputs.only == 'aarch64-glibc')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Run the native aarch64 glibc acceptance
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD":/w -w /w \
+            ruby:4.0 bash /w/.github/scripts/aarch64-glibc-acceptance.sh
+
+      - name: Upload the aarch64 glibc acceptance logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: weekly-aarch64-glibc
           path: tmp/ci/*.log
           if-no-files-found: warn
 

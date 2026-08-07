@@ -49,6 +49,10 @@ aarch64用の gcc caller / rubycc callee、gcc callee / rubycc caller の両方�
 8レジスタ境界の双方をまたぐ。単体テストは **4 runs / 4 assertions / 0 failures**、
 全スイートは **2,904 runs / 9,061 assertions / 0 failures / 0 errors / 44 skips** だった。
 
+今回、`weekly.yml` に `aarch64-glibc` ジョブを追加した。arm64 の `ruby:4.0` を
+QEMU 上で起動し、aarch64 Ruby 自身による全スイートと json / msgpack の M2 受け入れを
+同じジョブで実行する。初回の実行結果はまだ未取得であり、結果を確認してこの表を更新する。
+
 なお、先行実行で出た `TestDoctor#test_verified_gems_json_holds_only_confirmed_gems` の
 1 failure は、実行中に `nio4r` の検証記録を `data/verified_gems.json` に追加した一方で、
 テスト側の期待キーがまだ古かったデータ・期待値の不整合だった。両方を同期した後の

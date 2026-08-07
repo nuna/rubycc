@@ -12,7 +12,7 @@ rubycc の継続的検証は 3 層に分かれている。**push ごとに回る
 | 層 | ファイル | トリガ | 目的 | 所要時間の目安 | 失敗が意味すること |
 |---|---|---|---|---|---|
 | **A** | `test.yml` | `push`(master)/ PR / 手動 / 他ワークフローからの呼び出し | 全 Minitest スイートを Ruby 3.3 / 4.0(両端)で実行 | 1 バージョンあたり 10〜20 分(2 本並列) | 回帰、またはサポート Ruby のいずれかでの非互換。**マージしてはいけない** |
-| **B** | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)/ 手動 | コーパス census の再生成差分、ネットワーク受け入れ、スループット計測、Ruby 3.4 の全スイート、**musl での全スイートと gem install** | census 〜20 分 / acceptance 〜60 分 / throughput 〜30 分 / ruby-3-4 〜25 分 / musl 〜90 分 / musl-aarch64 〜90 分(6 ジョブ並列) | census: ヘッダ網羅性が変わった(要コミット)。acceptance: 実 gem のビルドが壊れた。throughput: **合否判定なし**(下記)。ruby-3-4: 中間バージョン固有の非互換。musl: **glibc/musl 互換の主張の、未検証だった側が壊れた**(下記) |
+| **B** | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)/ 手動 | コーパス census の再生成差分、ネットワーク受け入れ、スループット計測、Ruby 3.4 の全スイート、**aarch64 glibc / musl での実走受け入れ** | census 〜20 分 / acceptance 〜60 分 / aarch64-glibc 〜180 分 / throughput 〜30 分 / ruby-3-4 〜25 分 / musl 〜90 分 / musl-aarch64 〜90 分(7 ジョブ並列) | census: ヘッダ網羅性が変わった(要コミット)。acceptance: 実 gem のビルドが壊れた。aarch64-glibc: **実 aarch64 Ruby の全スイートまたは gem 受け入れが壊れた**。throughput: **合否判定なし**(下記)。ruby-3-4: 中間バージョン固有の非互換。musl: **glibc/musl 互換の主張の、未検証だった側が壊れた**(下記) |
 | **C** | `release.yml` | `v*` タグの push / 手動 | Tier A の再実行 + gem の再現ビルド検証 | 30〜50 分 | タグと `Rubycc::VERSION` の不一致、または gem がバイト再現しない。**リリースを止める** |
 
 Tier C の `test` ジョブは `uses: ./.github/workflows/test.yml` で **Tier A をそのまま
@@ -85,6 +85,29 @@ runs は一致しているのに skips が 5 件ずれているのは、内訳�
 足したもの。テストを増やすと runs は増える一方なので、`CI_MIN_RUNS` が
 テスト追加だけで誤検知することはない。テストの増減があった場合はこの基準値も
 追随して更新すること。
+
+## aarch64 glibc ジョブ(`weekly.yml` の `aarch64-glibc`)
+
+M4 のクロス検証だけでは、x86-64 Ruby から aarch64 の生成物を実行していることしか
+確認できない。`aarch64-glibc` ジョブは `docker/setup-qemu-action` で arm64 の
+`ruby:4.0` イメージを起動し、**Ruby 自身を aarch64 glibc 上で実行**する。
+チェックアウトと Actions のステップはホスト側で行い、リポジトリをコンテナへ bind mount
+する構成は musl ジョブと同じである。
+
+コンテナ内の `.github/scripts/aarch64-glibc-acceptance.sh` は次の順で実行する。
+
+1. native build 用の `build-essential` と `libffi-dev` を導入する。既存の差分テストが
+   cross toolchain の名前で参照する gcc / objdump / runner は、native arm64 の
+   `gcc` / `objdump` / `/usr/bin/env` へ環境変数で切り替える。arm64 コンテナ内へ
+   amd64 用の cross toolchain を持ち込まない。
+2. aarch64 Ruby 上で `bundle exec rake test` を実行し、`ci_check_skips.rb` で
+   ツール欠落による静かな skip を拒否する。
+3. `RMAKE_ACCEPTANCE=1 ruby tools/m2_acceptance.rb` で json / msgpack のビルドと
+   gem 本体テストを実行する。
+
+suite と gem acceptance は片方が失敗しても両方のログを残し、最後にまとめてジョブを
+失敗させる。`workflow_dispatch` の `only: aarch64-glibc` を指定すれば、このジョブだけを
+手動で実行できる。実行結果は `weekly-aarch64-glibc` アーティファクトに保存する。
 
 ## musl ジョブ(`weekly.yml` の `musl`)
 
