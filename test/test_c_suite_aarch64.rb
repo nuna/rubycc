@@ -44,9 +44,15 @@ class TestCSuiteAArch64 < Minitest::Test
     *AARCH64_LIBC_SYSTEM_INCLUDE_PATHS
   ].uniq.freeze
 
-  # The aarch64 sysroot the cases are compiled against. Its absence means the
-  # cross libc headers are not installed, which is a skip, not a failure.
-  CROSS_SYSROOT_INCLUDE_DIR = AARCH64_LIBC_SYSTEM_INCLUDE_PATHS.first
+  # The aarch64 sysroot the cases are compiled against. Cross Debian installs
+  # it under /usr/aarch64-linux-gnu/include; a native arm64 image may instead
+  # keep the same headers under /usr/include/aarch64-linux-gnu or /usr/include.
+  # Pick the first existing target candidate so native and cross layouts share
+  # the test without treating the host's generic /usr/include as a target
+  # sysroot when a real cross sysroot is available.
+  CROSS_SYSROOT_INCLUDE_DIR = AARCH64_LIBC_SYSTEM_INCLUDE_PATHS.find do |path|
+    File.directory?(path)
+  end
 
   # Cases whose only obstacle is a feature the aarch64 backend has not been
   # taught yet (M4 A4). Everything here compiles and runs on x86-64 today, so
@@ -88,7 +94,7 @@ class TestCSuiteAArch64 < Minitest::Test
     end
 
     skip_unless_aarch64_toolchain
-    unless File.directory?(CROSS_SYSROOT_INCLUDE_DIR)
+    unless CROSS_SYSROOT_INCLUDE_DIR && File.directory?(CROSS_SYSROOT_INCLUDE_DIR)
       skip "aarch64 libc headers (#{CROSS_SYSROOT_INCLUDE_DIR}) are not installed"
     end
 

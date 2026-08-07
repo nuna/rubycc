@@ -28,8 +28,7 @@ class TestExamplesAArch64 < Minitest::Test
   # Each builds and runs on x86-64 today; the reason is the backend's own
   # UnsupportedError message.
   PENDING = {
-    "step28_extensions" => "A4: alloca",
-    "step44_builtins" => "A4: bit-scan builtins"
+    "step28_extensions" => "A4: alloca"
   }.freeze
 
   EXAMPLE_SOURCES.each do |path|

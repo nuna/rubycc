@@ -26,13 +26,11 @@ class TestFreestandingHeaders < Minitest::Test
 
   # The machine this host runs, as a Rubycc::Compiler::TARGETS name: every case
   # below builds its rubycc side for it, because the object is linked and run by
-  # the host toolchain. Read from RbConfig's host_cpu, which is where
-  # exe/rubycc's driver takes its own default target from (Driver#target) and
-  # what test/abi_harness/harness.rb's #host_target reads; the read is spelled
-  # out here rather than shared, the same way VA_LIST_TYPE_NAME below spells out
-  # #host_libc's. On x86-64 it is "x86_64", which is Compiler#compile's own
-  # default, so nothing about the existing runs changes.
-  HOST_TARGET = RbConfig::CONFIG["host_cpu"].to_s
+  # the active execution toolchain. Follow ExecutionHelper's target so a native
+  # arm64 CI job and the local cross-toolchain simulation exercise the same path.
+  # On x86-64 it is "x86_64", which is Compiler#compile's own default, so
+  # nothing about the existing runs changes.
+  HOST_TARGET = ExecutionHelper::EXECUTION_TARGET
 
   # <stdarg.h>: variable arguments via __builtin_va_*.
   STDARG_SOURCE = <<~C

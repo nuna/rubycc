@@ -19,6 +19,8 @@ require "fiddle"
 # is expanded to reach libc, and the DT_NEEDED result is cross-checked against
 # gcc's own `-shared` output. Every host-dependent case is skip-guarded.
 class TestLibraryResolution < Minitest::Test
+  include ExecutionHelper
+
   Resolver = Rubycc::Link::LibraryResolver
   Script = Rubycc::Link::LinkerScript
   LinkError = Rubycc::Link::LinkError
@@ -345,7 +347,8 @@ class TestLibraryResolution < Minitest::Test
       main_o = File.join(dir, "main.o")
       File.binwrite(main_o, main)
 
-      so_bytes = Resolver.link([main_o], libraries: ["help"], search_dirs: [dir], soname: "libc2.so")
+      so_bytes = Resolver.link([main_o], libraries: ["help"], search_dirs: [dir],
+                               soname: "libc2.so", target: ExecutionHelper::EXECUTION_TARGET)
       reader = Reader.read(so_bytes)
       exported = reader.dynamic_symbols.select { |s| s.defined? }.map(&:name)
       assert_includes exported, "helper", "the needed member is pulled in and its symbol defined"
@@ -366,9 +369,10 @@ class TestLibraryResolution < Minitest::Test
     in_tmpdir do |dir|
       obj = File.join(dir, "u.o")
       File.binwrite(obj, compile(src, "u.c"))
-      ours = Resolver.link([obj], libraries: ["z"], soname: "libz-interop.so")
+      ours = Resolver.link([obj], libraries: ["z"], soname: "libz-interop.so",
+                           target: ExecutionHelper::EXECUTION_TARGET)
       theirs = File.join(dir, "theirs.so")
-      out, status = Open3.capture2e("gcc", "-shared", "-o", theirs, obj, "-lz")
+      out, status = Open3.capture2e(*execution_gcc_command("-shared", "-o", theirs, obj, "-lz"))
       skip "gcc -shared failed:\n#{out}" unless status.success?
       assert_equal Reader.read_file(theirs).needed, Reader.read(ours).needed,
                    "both link results depend on the same zlib SONAME"
@@ -379,7 +383,8 @@ class TestLibraryResolution < Minitest::Test
 
   # Compiles one C source with rubycc under -fPIC into an object image.
   def compile(src, name)
-    Rubycc::Compiler.new.compile(src, filename: name, pic: true)
+    Rubycc::Compiler.new.compile(src, filename: name, pic: true,
+                                 target: ExecutionHelper::EXECUTION_TARGET)
   end
 
   # Compiles `src`, resolves `libraries`, links a shared object to disk and yields
@@ -389,7 +394,8 @@ class TestLibraryResolution < Minitest::Test
       obj = File.join(dir, "u.o")
       File.binwrite(obj, compile(src, "u.c"))
       so = File.join(dir, "libtest.so")
-      Resolver.link_to([obj], so, libraries: libraries, soname: soname)
+      Resolver.link_to([obj], so, libraries: libraries, soname: soname,
+                       target: ExecutionHelper::EXECUTION_TARGET)
       yield so
     end
   end
@@ -400,7 +406,7 @@ class TestLibraryResolution < Minitest::Test
 
   # Whether a `-l` request resolves against the host's default search path.
   def resolvable?(spec)
-    Resolver.resolve([spec])
+    Resolver.resolve([spec], target: ExecutionHelper::EXECUTION_TARGET)
     true
   rescue LinkError
     false

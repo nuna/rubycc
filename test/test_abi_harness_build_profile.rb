@@ -35,7 +35,10 @@ class TestAbiHarnessBuildProfile < Minitest::Test
   include HeaderAbiHarness
 
   Reader = Rubycc::ObjFile::ELFReader
-  GOT_RELOCS = %i[R_X86_64_GOTPCREL R_X86_64_GOTPCRELX R_X86_64_REX_GOTPCRELX].freeze
+  GOT_RELOCS_BY_TARGET = {
+    "x86_64" => %i[R_X86_64_GOTPCREL R_X86_64_GOTPCRELX R_X86_64_REX_GOTPCRELX],
+    "aarch64" => %i[R_AARCH64_ADR_GOT_PAGE R_AARCH64_LD64_GOT_LO12_NC]
+  }.freeze
 
   # A reference to data this translation unit does not define: the shape
   # test_pic.rb's own PIC-discrimination tests use, because a *call* is
@@ -78,8 +81,8 @@ class TestAbiHarnessBuildProfile < Minitest::Test
                                                    **rubycc_build_options(profile)))
         gcc_obj = compile_with_gcc(PROBE, File.join(dir, "probe_gcc.o"), pic: profile.pic)
 
-        rubycc_got = extern_access_is_got_relative?(rubycc_obj)
-        gcc_got = extern_access_is_got_relative?(gcc_obj)
+        rubycc_got = extern_access_is_got_relative?(rubycc_obj, target: profile.target)
+        gcc_got = extern_access_is_got_relative?(gcc_obj, target: profile.target)
 
         assert_equal profile.pic, rubycc_got,
                      "rubycc built from BuildProfile(pic: #{profile.pic}) should access " \
@@ -96,11 +99,11 @@ class TestAbiHarnessBuildProfile < Minitest::Test
 
   private
 
-  def extern_access_is_got_relative?(object_path)
+  def extern_access_is_got_relative?(object_path, target:)
     reloc = Reader.read_file(object_path).relocations_for(".text").find do |r|
       r.symbol&.name == "probe_external"
     end
     refute_nil reloc, "expected a relocation against probe_external in #{object_path}"
-    GOT_RELOCS.include?(reloc.type_name)
+    GOT_RELOCS_BY_TARGET.fetch(target).include?(reloc.type_name)
   end
 end

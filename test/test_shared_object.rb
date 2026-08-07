@@ -20,6 +20,7 @@ require "set"
 # actually called and its return value compared. The external-tool cases
 # (readelf, eu-elflint, gcc -shared interop) are skip-guarded.
 class TestSharedObject < Minitest::Test
+  include ExecutionHelper
   include LibcHelper
 
   Reader = Rubycc::ObjFile::ELFReader
@@ -1206,6 +1207,7 @@ class TestSharedObject < Minitest::Test
   # same program GCC_CONSTRUCTORS below feeds through gcc's compiler, so the two
   # tests together pin both halves of the toolchain against it.
   def test_compiled_constructor_order_matches_gcc
+    skip_unless_x86_runtime
     skip "gcc unavailable" unless tool?("gcc")
 
     order = ->(so) do
@@ -1286,6 +1288,7 @@ class TestSharedObject < Minitest::Test
   C
 
   def test_links_gcc_constructors_and_matches_gcc_ordering
+    skip_unless_x86_runtime
     skip "gcc unavailable" unless tool?("gcc")
 
     in_tmpdir do |dir|
@@ -1321,6 +1324,7 @@ class TestSharedObject < Minitest::Test
   end
 
   def test_matches_gcc_shared_object_exports_and_behavior
+    skip_unless_x86_runtime
     skip "gcc unavailable" unless tool?("gcc")
 
     in_tmpdir do |dir|
@@ -1356,6 +1360,7 @@ class TestSharedObject < Minitest::Test
   end
 
   def with_so(sources, needed: [], soname: nil, inputs: [])
+    skip_unless_x86_runtime
     in_tmpdir do |dir|
       so = File.join(dir, "libtest.so")
       Linker.link_to(objects_for(sources, dir) + inputs, so, needed: needed, soname: soname)
@@ -1368,7 +1373,19 @@ class TestSharedObject < Minitest::Test
   # skip). Delegates to LibcHelper so this search is written once for the
   # whole suite.
   def libc_path
+    return nil unless x86_runtime?
+
     host_libc_path
+  end
+
+  def skip_unless_x86_runtime
+    return if x86_runtime?
+
+    skip "x86_64 shared-object runtime checks are not active (current target: #{ExecutionHelper::EXECUTION_TARGET})"
+  end
+
+  def x86_runtime?
+    ExecutionHelper::EXECUTION_TARGET == "x86_64"
   end
 
   # glibc's libc_nonshared.a, the static half of the C library the linker script

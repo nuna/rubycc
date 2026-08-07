@@ -197,7 +197,7 @@ class TestLink < Minitest::Test
   # --- archive lazy extraction -------------------------------------------
 
   def compile(src, name)
-    Rubycc::Compiler.new.compile(src, filename: name)
+    Rubycc::Compiler.new.compile(src, filename: name, target: ExecutionHelper::EXECUTION_TARGET)
   end
 
   # Builds an ar archive from [name, bytes] members.
@@ -265,10 +265,10 @@ class TestLink < Minitest::Test
   # gcc-links a single object and runs it, returning [exit, stdout].
   def run_linked(dir, object_path)
     exe = File.join(dir, "exe.out")
-    out, status = Open3.capture2e("gcc", "-o", exe, object_path)
+    out, status = Open3.capture2e(*execution_link_command("-o", exe, object_path))
     raise "gcc failed to link merged object:\n#{out}" unless status.success?
 
-    stdout, run_status = Open3.capture2(exe)
+    stdout, run_status = Open3.capture2(*execution_run_command(exe))
     [run_status.exitstatus, stdout]
   end
 
@@ -352,7 +352,7 @@ class TestLink < Minitest::Test
       Linker.link_to([pa, pb], ours)
 
       theirs = File.join(dir, "theirs.o")
-      out, status = Open3.capture2e("ld", "-r", "-o", theirs, pa, pb)
+      out, status = Open3.capture2e(*execution_ld_command("-r", "-o", theirs, pa, pb))
       skip "system ld -r failed:\n#{out}" unless status.success?
 
       # Compare symbol resolution outcomes (name -> defined?), not bytes.
@@ -381,7 +381,7 @@ class TestLink < Minitest::Test
   end
 
   def gcc_available?
-    @gcc_available ||= tool_available?("gcc")
+    @gcc_available ||= tool_available?(ExecutionHelper::EXECUTION_GCC)
   end
 
   def readelf_available?
@@ -389,7 +389,7 @@ class TestLink < Minitest::Test
   end
 
   def ld_available?
-    @ld_available ||= tool_available?("ld")
+    @ld_available ||= tool_available?(ENV.fetch("RUBYCC_EXECUTION_LD", "ld"))
   end
 
   def tool_available?(tool)

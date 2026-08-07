@@ -175,8 +175,7 @@ class TestSubOffsetof < Minitest::Test
   def assert_matches_gcc(source, name)
     in_tmpdir do |dir|
       rubycc_obj = File.join(dir, "#{name}_rubycc.o")
-      binary = Rubycc::Compiler.new.compile(source, filename: "#{name}.c")
-      File.binwrite(rubycc_obj, binary)
+      compile_with_rubycc(source, rubycc_obj)
       rubycc_status, rubycc_out = link_and_run(rubycc_obj)
 
       gcc_obj = compile_with_gcc(source, File.join(dir, "#{name}_gcc.o"))

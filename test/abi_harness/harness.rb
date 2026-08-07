@@ -117,21 +117,25 @@ module HeaderAbiHarness
     RbConfig::CONFIG["arch"].to_s.include?("musl") ? :musl : :glibc
   end
 
-  # The machine this host runs, as a Rubycc::Compiler::TARGETS name. Read from
-  # RbConfig's host_cpu, which is where exe/rubycc's driver takes its own
-  # default target from (Driver#target), so the harness compiles for the same
-  # machine a plain `rubycc` invocation on this host would. Without it the host
+  # The machine this host runs, as a Rubycc::Compiler::TARGETS name. It follows
+  # the execution profile when the test harness is deliberately pointed at a
+  # native-target simulation, and otherwise RbConfig's host_cpu, which is where
+  # exe/rubycc's driver takes its default target from. Without this the host
   # path would inherit Compiler#compile's "x86_64" default and emit x86-64
   # objects on an aarch64 host, which the host gcc cannot link, let alone run.
-  # On x86-64 this is "x86_64" -- the default -- so nothing about the existing
-  # runs changes.
+  # On x86-64 this is "x86_64" -- the default -- so nothing about existing runs
+  # changes.
   #
   # No alias folding (the driver's #normalize_target does that for the triples
   # a user may type on the command line): a host_cpu spelling that is not a
   # TARGETS key is a machine this harness has never run on, and
   # #skip_unless_host_target_supported says so rather than guessing at one.
   def host_target
-    RbConfig::CONFIG["host_cpu"].to_s
+    if defined?(ExecutionHelper::EXECUTION_TARGET)
+      ExecutionHelper::EXECUTION_TARGET
+    else
+      RbConfig::CONFIG["host_cpu"].to_s
+    end
   end
 
   # Skips the calling test on a machine rubycc has no backend for. Compiling

@@ -2083,7 +2083,7 @@ class TestMuslBundledHeaderValues < Minitest::Test
     in_tmpdir do |dir|
       object = File.join(dir, "divergences_#{libc}.o")
       File.binwrite(object, Rubycc::Compiler.new.compile(source, filename: "divergences.c",
-                                                                 libc: libc))
+                                                                 target: host_target, libc: libc))
       status, output = link_and_run(object)
       assert_equal 0, status, "the #{libc} probe exited #{status}"
       output
@@ -2093,7 +2093,8 @@ class TestMuslBundledHeaderValues < Minitest::Test
   # The sorted names of the symbols `source` leaves for the linker when compiled
   # for `libc`, read with the project's own ELF reader.
   def undefined_symbols(source, libc)
-    object = Rubycc::Compiler.new.compile(source, filename: "ctype.c", libc: libc)
+    object = Rubycc::Compiler.new.compile(source, filename: "ctype.c",
+                                          target: host_target, libc: libc)
     Rubycc::ObjFile::ELFReader.read(object)
                               .symbols.select(&:undefined?).map(&:name).reject(&:empty?).sort
   end

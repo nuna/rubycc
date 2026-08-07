@@ -113,6 +113,7 @@ class TestPic < Minitest::Test
   # against that symbol, exactly the family rubycc selects — pinning the choice
   # to the ecosystem's.
   def test_gcc_uses_gotpcrel_for_extern_data
+    skip_unless_x86_pic
     skip "gcc not available" unless gcc_available?
 
     in_tmpdir do |dir|
@@ -138,6 +139,7 @@ class TestPic < Minitest::Test
   # (b) round-trips a value through GOT-based extern data reads/writes and an
   # extern function called through a GOT-loaded pointer, dlopened via Fiddle.
   def test_pic_objects_link_into_a_shared_object_and_round_trip
+    skip_unless_x86_pic
     skip "gcc not available" unless gcc_available?
 
     access = <<~C
@@ -219,5 +221,11 @@ class TestPic < Minitest::Test
 
   def gcc_available?
     @gcc_available ||= system("gcc", "--version", out: File::NULL, err: File::NULL) ? true : false
+  end
+
+  def skip_unless_x86_pic
+    return if ExecutionHelper::EXECUTION_TARGET == "x86_64"
+
+    skip "x86_64 PIC relocation and dlopen checks are not active (current target: #{ExecutionHelper::EXECUTION_TARGET})"
   end
 end

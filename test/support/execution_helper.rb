@@ -26,6 +26,7 @@ module ExecutionHelper
                 end
   EXECUTION_TARGET = ENV.fetch("RUBYCC_EXECUTION_TARGET", HOST_TARGET)
   EXECUTION_GCC = ENV.fetch("RUBYCC_EXECUTION_GCC", "gcc")
+  EXECUTION_LD = ENV.fetch("RUBYCC_EXECUTION_LD", "ld")
   EXECUTION_RUNNER = ENV.fetch("RUBYCC_EXECUTION_RUNNER", "")
   EXECUTION_LINK_FLAGS = ENV.fetch("RUBYCC_EXECUTION_LINK_FLAGS", "").split
 
@@ -35,6 +36,10 @@ module ExecutionHelper
 
   def execution_link_command(*args)
     execution_gcc_command(*EXECUTION_LINK_FLAGS, *args)
+  end
+
+  def execution_ld_command(*args)
+    [EXECUTION_LD, *args]
   end
 
   def execution_run_command(*args)
@@ -60,17 +65,17 @@ module ExecutionHelper
     output_path
   end
 
-  # `pic:` compiles with -fPIC, matching AArch64ExecutionHelper#compile_with_cross_gcc's
-  # kwarg of the same name and default (false), so a caller building the gcc
-  # side of a differential case can pick its PIC-ness the same way on either
-  # machine's oracle. Defaulted so every existing call site is unaffected.
+  # `pic:` selects explicit PIC or non-PIE code, matching
+  # AArch64ExecutionHelper#compile_with_cross_gcc's kwarg of the same name.
+  # Making the false branch explicit matters on Debian aarch64 gcc, whose
+  # configured default may be PIE even for a relocatable compile; otherwise a
+  # BuildProfile(pic: false) oracle silently uses GOT relocations.
   def compile_with_gcc(c_source, output_path, pic: false)
     dir = File.dirname(output_path)
     source_path = File.join(dir, "#{File.basename(output_path, ".*")}.c")
     File.write(source_path, c_source)
 
-    args = execution_gcc_command("-c")
-    args << "-fPIC" if pic
+    args = execution_gcc_command("-c", pic ? "-fPIC" : "-fno-pie")
     stdout_and_stderr, status = Open3.capture2e(*args, "-o", output_path, source_path)
     unless status.success?
       raise "#{EXECUTION_GCC} failed to compile source (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
