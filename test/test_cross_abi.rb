@@ -6,29 +6,65 @@ require_relative "test_helper"
 # with the same compiler, so a self-consistent but gcc-incompatible layout
 # would still pass. Linking a gcc-built translation unit against a
 # rubycc-built one into a single executable forces both sides to agree on the
-# actual System V AMD64 psABI, not merely on each other.
+# target psABI, not merely on each other. The same generated layouts run on
+# x86_64 and aarch64; the latter uses the cross gcc and qemu path so this test
+# does not require an aarch64 Ruby runtime.
 class TestCrossAbi < Minitest::Test
   include ExecutionHelper
+  include AArch64ExecutionHelper
 
   SEED = 0x5225C
   LAYOUT_COUNT = 40
+  # Eight leading integer parameters reach the last AAPCS64 integer register;
+  # the same cases also cross System V AMD64's six-register boundary.
+  MAX_LEADING_INT_COUNT = 8
   MEMBER_KINDS = %i[char short int long float double array nested].freeze
 
   def test_gcc_caller_with_rubycc_callee_matches_gcc_oracle
-    # gcc building both sides is the oracle; swapping the callee for rubycc's
-    # object must not change a single printed member.
-    oracle = link_units_and_run([[callee_source, :gcc], [caller_source, :gcc]])
-    cross = link_units_and_run([[callee_source, :rubycc], [caller_source, :gcc]])
-    assert_equal oracle, cross
+    assert_callee_compatibility(:x86_64)
+  end
+
+  def test_gcc_caller_with_rubycc_callee_matches_gcc_oracle_aarch64
+    assert_callee_compatibility(:aarch64)
   end
 
   def test_rubycc_caller_with_gcc_callee_matches_gcc_oracle
-    oracle = link_units_and_run([[callee_source, :gcc], [caller_source, :gcc]])
-    cross = link_units_and_run([[callee_source, :gcc], [caller_source, :rubycc]])
-    assert_equal oracle, cross
+    assert_caller_compatibility(:x86_64)
+  end
+
+  def test_rubycc_caller_with_gcc_callee_matches_gcc_oracle_aarch64
+    assert_caller_compatibility(:aarch64)
   end
 
   private
+
+  # gcc building both sides is the oracle; swapping one side for rubycc's
+  # object must not change a single printed member. The target is an explicit
+  # parameter rather than a second copy of this test, so adding another
+  # machine keeps the generated ABI cases shared across all backends.
+  def assert_callee_compatibility(target)
+    skip_unless_aarch64_toolchain if target == :aarch64
+
+    oracle = link_units_and_run_for(target, [[callee_source, :gcc], [caller_source, :gcc]])
+    cross = link_units_and_run_for(target, [[callee_source, :rubycc], [caller_source, :gcc]])
+    assert_equal oracle, cross, "#{target}: gcc caller/rubycc callee output mismatch"
+  end
+
+  def assert_caller_compatibility(target)
+    skip_unless_aarch64_toolchain if target == :aarch64
+
+    oracle = link_units_and_run_for(target, [[callee_source, :gcc], [caller_source, :gcc]])
+    cross = link_units_and_run_for(target, [[callee_source, :gcc], [caller_source, :rubycc]])
+    assert_equal oracle, cross, "#{target}: rubycc caller/gcc callee output mismatch"
+  end
+
+  def link_units_and_run_for(target, units)
+    case target
+    when :x86_64 then link_units_and_run(units)
+    when :aarch64 then link_units_and_run_aarch64(units)
+    else raise ArgumentError, "unknown ABI target: #{target.inspect}"
+    end
+  end
 
   # --- source assembly ------------------------------------------------------
 
@@ -76,7 +112,7 @@ class TestCrossAbi < Minitest::Test
   def generate_layout(rng, index)
     member_count = 1 + rng.rand(4)
     members = Array.new(member_count) { MEMBER_KINDS[rng.rand(MEMBER_KINDS.size)] }
-    leading_int_count = rng.rand(6)
+    leading_int_count = rng.rand(0..MAX_LEADING_INT_COUNT)
     call_args = Array.new(leading_int_count) { rng.rand(-9..9) }
     initial_values = members.map { |kind| random_initial_value(rng, kind) }
 
