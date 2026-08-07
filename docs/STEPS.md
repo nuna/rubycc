@@ -8606,6 +8606,61 @@ R10 通過率 **26/36 = 72.2% → 26/33 = 78.8%**(90% には 30 件、**あと 4
 
 ---
 
+## atomic-type-9 — 残り 4 件の内訳を測り切った(M5 H4)
+
+atomic-type-8 で分母が 33・分子 26 になり、90% まで **4 件**。
+残る未検証 6 件が**それぞれ何で止まっているのか**を、推測せず 1 件ずつ測った。
+
+| gem | 止まっている理由 | 種類 |
+|---|---|---|
+| **mysql2** | **K&R(旧形式)の関数定義**が未実装 | **rubycc の欠陥**(GAPS Q) |
+| **oj** | 対照と落ち方が違う(37/35 err 対 49/14 err) | **rubycc の欠陥**(未調査) |
+| **puma** | 失敗は bundler 環境と不安定な結合テスト | 環境 |
+| **thin** | 依存 eventmachine が C++ | 対象外(OUT-OF-SCOPE 基準 A) |
+| **google-protobuf** | テスト取得に `protoc` が要る | 環境 |
+| **rbs** | 未再測定 | 不明 |
+
+### puma — 差は「両方向」に出た
+
+対照と rubycc で失敗テスト**名の集合**を取って差を見た。回数ではなく名前で比べたのは、
+サーバを立てる時間依存のスイートは回数が動くからである(実際、**同じ gcc ビルドの
+2 回の実行で 6 failures と 7 failures**になった)。
+
+| | 名前 |
+|---|---|
+| gcc にだけ | `TestIntegrationCluster#test_hot_restart_does_not_drop_connections_threads` |
+| rubycc にだけ | `#test_phased_restart_does_not_drop_connections`・`#test_refork_phased_restart_with_fork_worker_and_high_worker_count` |
+
+**14 件中 13 件は共通**で、残る 3 件はすべて同じ `TestIntegrationCluster`
+(worker を fork して phased restart 中の接続断を見る族)である。
+**rubycc が gcc の落ちるテストを通せるはずがない**ので、gcc 側にだけ出る 1 件は
+不安定さの証拠になる。共通の 13 件は `TestWorkerGemIndependence` /
+`TestPreserveBundlerEnv` など **bundler 環境**のテストで、C 拡張に触れていない。
+
+除外はしない。**両方向に差が出るものを「対照と一致」とは呼べない**からである。
+
+### mysql2 — ヘッダが入って、次のブロッカーが出た
+
+`libmariadb-dev` の導入後、extconf の 18 個のプローブはすべて通る
+(`mysql.h` / `errmsg.h` / `MYSQL.net.pvio` ほか)。止まるのは `client.c` で、
+原因は同梱の `mysql_enc_name_to_ruby.h` — **gperf の生成物**で、旧形式定義である。
+
+**ROADMAP §3 の既知債務「K&R `int ()` 型」に、ついに実害が出た。**
+「実害が出た時点」で先送りしていたものが、コーパスの側から回ってきた形である。
+
+### thin — 拒否の仕方が間違っている
+
+`gem install thin` を実際に走らせた。eventmachine の `.cpp` 9 本に対して rubycc は
+`warning: em.cpp: linker input file unused because linking not done` を出すだけで、
+**何も生成せずに成功したふりをする**。落ちるのはずっと後のリンク段階で、
+メッセージは `No such file or directory - binder.o` である。**原因を少しも示さない。**
+
+C++ が対象外なのは R10 が明示しているとおりで、**そこは正しい**。
+正しくないのは**言い方**で、ROADMAP §2 の「未対応機能は黙って壊さない —
+明確な文言の診断で拒否する」に反している(GAPS R)。
+
+---
+
 ## 現在のテスト規模
 
 atomic-type-8 完了時点: **2,930 runs / 9,248 assertions / 0 failures / 0 errors / 44 skips**

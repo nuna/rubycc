@@ -8,10 +8,37 @@
 
 ## 1. 未解消のギャップ
 
-**現時点で 0 件。** 直近まであった A〜P は §5 に移した。
+| # | 何が足りないか | 誰が困るか | 確からしさ | 詳細 |
+|---|---|---|---|---|
+| **Q** | **K&R(旧形式)の関数定義**(ISO C 6.9.1 の identifier-list 宣言子 + declaration-list)が未実装 | **mysql2**。同梱の `ext/mysql2/mysql_enc_name_to_ruby.h`(**gperf の生成物**)がこの形で、`client.c` のコンパイルが `expected type specifier` で止まる | **実測**(2026-08-08)。最小再現あり(下記) | ROADMAP §3 の既知債務「K&R `int ()` 型」に**実害が出た**。着手予定 = 次のステップ |
+| **R** | **`.cpp` を渡されても診断で拒否せず、黙って何も出さない** | `gem install thin` が依存の **eventmachine**(C++)で、`warning: em.cpp: linker input file unused because linking not done` を 9 本出したあと、**リンク段階で `No such file or directory - binder.o`** という原因を示さない形で落ちる | **実測**(2026-08-08) | R10 は C++ を対象外と明示しているので、**そう言って落ちる**のが正しい。ROADMAP §2 の「未対応機能は黙って壊さない」に反している |
 
-ここが空であることは「もう欠陥が無い」ではなく、**「測った範囲に未解消のものが無い」**
-という意味である。musl / aarch64 を測るたびに新しいものが出てきた経緯が §5 にある。
+**Q の最小再現**(gcc は `68 9 7` を出力、rubycc は 3 行目で診断エラー):
+
+```c
+#include <stdio.h>
+
+static unsigned int knr_hash (str, len)
+     register const char *str;
+     register unsigned int len;
+{ return (unsigned int)str[0] + len; }
+
+int add(a, b)
+  int a;
+  int b;
+{ return a + b; }
+
+int no_decls(void) { return 7; }
+
+int main(void) {
+  printf("%u %d %d\n", knr_hash("A", 3), add(4, 5), no_decls());
+  return 0;
+}
+```
+
+Q・R とも **v1.0 リリース前に測って出てきたもの**で、直近まで §1 は 0 件だった。
+ここが空になることは「もう欠陥が無い」ではなく、**「測った範囲に未解消のものが無い」**
+という意味でしかない、という §5 の経緯がそのまま繰り返されている。
 
 ## 2. 未解消の負債
 
