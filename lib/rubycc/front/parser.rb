@@ -43,11 +43,16 @@ module Rubycc
     #                             | parameter-declaration
     #                               ("," parameter-declaration)*
     #   parameter-declaration     = type-specifier declarator
+    #   identifier-list           = identifier ("," identifier)*
     #   declarator                = "*"* direct-declarator
     #   direct-declarator         = (identifier | "(" declarator ")")
     #                               direct-declarator-suffix*
     #   direct-declarator-suffix  = "[" constant-expression? "]"
     #                             | "(" parameter-type-list? ")"
+    #                             | "(" identifier-list ")"     -- old style
+    #   function-definition       = declaration-specifiers declarator
+    #                               declaration-list? compound-statement
+    #   declaration-list          = declaration+
     #   abstract-declarator       = "*"* direct-abstract-declarator?
     #   direct-abstract-declarator = ("(" abstract-declarator ")")?
     #                               direct-declarator-suffix*
@@ -339,6 +344,19 @@ module Rubycc
       # a diagnostic about the request can be located.
       Alignas = Data.define(:alignment, :token)
 
+      # The identifier list of an old-style (K&R) function declarator — the
+      # "(a, b)" of "int add(a, b)", whose parentheses hold parameter *names*
+      # with no types at all (6.7.6.3, identifier-list form). `names` are the
+      # identifier tokens in order and `token` is the "(" that opened the list,
+      # both wanted by the declaration-list checks below.
+      #
+      # It rides the very channel a prototype's Parameter array does (the
+      # `function_params` a declarator reports), so it reaches every declarator
+      # position a parameter list can — and each of those refuses it (see
+      # #reject_identifier_list) except the one 6.7.6.3p3 allows, the definition
+      # of that same function.
+      IdentifierList = Data.define(:names, :token)
+
       # A tag scope entry for an enum tag. C keeps struct, union and enum tags in
       # one shared namespace, so enum tags live in @tag_scopes alongside the
       # StructType objects that stand for struct tags. An enum contributes no
@@ -420,6 +438,14 @@ module Rubycc
         # Ruby's exported-function macro puts the explicit default visibility
         # on a prototype, while the definition appears later without it.
         @visibility_attributes = {}
+        # The parameter types each file-scope function *prototype* declared,
+        # keyed by name. Only one construct reads them: an old-style definition
+        # of a name a prototype already declared, which 6.7.6.3p14 checks
+        # against that prototype and which is then passed its arguments in the
+        # prototype's form rather than the promoted one (see
+        # #old_style_parameter_abi_types). Every other agreement between
+        # declarations of one function is the generator's to enforce.
+        @prototype_param_types = {}
       end
 
       # Parses the whole translation unit into an AST::Program. An external
@@ -545,6 +571,16 @@ module Rubycc
         # position-by-position handling exists to avoid.
         attributes = spec_info.attributes + parse_attribute_specifiers(init_attributes: :allow)
 
+        # An old-style declarator ("int add(a, b)") names its parameters without
+        # typing them, so what follows is not a "{" but the declaration-list that
+        # supplies those types (6.9.1). This is the one position where such a
+        # declarator is legal at all, so it branches off before the ordinary
+        # "declarator then {" test below.
+        if function_params.is_a?(IdentifierList)
+          return parse_old_style_function_definition(name_tok, type, function_params, spec_info,
+                                                     type_tok, attributes)
+        end
+
         # A function definition is the one external declaration whose declarator
         # is followed by a compound statement (6.9.1); the declarator must be a
         # function type and it stands alone. Every other shape — a function
@@ -572,6 +608,209 @@ module Rubycc
 
         parse_external_declaration_list(base_type, name_tok, type, function_params,
                                         pointer_quals, spec_info, type_tok, attributes)
+      end
+
+      # An old-style (K&R) function definition, 6.9.1's second form: a declarator
+      # whose parentheses hold an identifier-list, then the declaration-list that
+      # gives those identifiers their types, then the body —
+      #
+      #   int add(a, b)
+      #     int a;
+      #     int b;
+      #   { return a + b; }
+      #
+      # The declarator has already been read (`type` is the function type its
+      # suffix built with an empty parameter list, a placeholder this rebuilds).
+      # Three rules of 6.9.1 shape what follows: an identifier the
+      # declaration-list never declares has type `int` (p6); the parameters are
+      # adjusted and default-argument promoted, because a function defined this
+      # way has no prototype and its arguments therefore arrive promoted (p10
+      # with 6.5.2.2p6); and the identifier list is only legal here, in the
+      # definition of that very function (6.7.6.3p3).
+      #
+      # The declaration-list is read in the *enclosing* scope rather than the
+      # body's, so a tag first mentioned there ("int f(p) struct s *p; {...}")
+      # lands at file scope. That is a superset of what C scopes it to, and the
+      # alternative — a scope the body then inherits — would need the body's
+      # scope opened before the declaration-list is even seen; gcc warns about
+      # such a tag rather than making it useful, so nothing real depends on the
+      # difference.
+      def parse_old_style_function_definition(name_tok, type, identifier_list, spec_info,
+                                              return_tok, attributes)
+        # Every suffix that could have wrapped the identifier list into something
+        # other than a function type is already refused where it is applied (a
+        # function returning a function, an array of functions), so this only
+        # guards the invariant the rebuild below depends on.
+        error_at(name_tok, "expected a function declarator") unless type.function?
+
+        declared = parse_parameter_declaration_list(identifier_list)
+        params = old_style_parameters(identifier_list, declared)
+        abi_types = old_style_parameter_abi_types(name_tok.value, params.map(&:type))
+        params = params.each_with_index.map do |param, i|
+          next param if abi_types[i] == param.type
+
+          AST::Parameter.new(param.name, param.type, param.token, param.const, abi_types[i])
+        end
+        # The declarator's own suffix could only build "returning T" with an
+        # empty parameter list; the types are known now, so the function's real
+        # type is put together here. An old-style definition is never variadic —
+        # an identifier list has no "..." — so the flag is false throughout.
+        type = Type::FunctionType.new(type.return_type, abi_types, false)
+
+        # A function reserves no object to align (6.7.5p2).
+        reject_alignas(spec_info.alignas, "function '#{name_tok.value}'")
+        declare_ordinary_name(name_tok.value, type)
+        register_visibility_attributes(name_tok.value, attributes)
+        register_init_attributes(name_tok.value, attributes)
+        parse_function_definition(name_tok.value, type.return_type, params, return_tok,
+                                  spec_info.storage, false)
+      end
+
+      # The declaration-list of an old-style definition: the run of declarations
+      # between the declarator and the body, each declaring one or more of the
+      # identifiers the list named. Returns a "name => [type, const, token]" map
+      # for #old_style_parameters, and leaves the stream on the body's "{".
+      #
+      # These are parameter declarations, so they take a parameter's specifiers —
+      # const/volatile but no storage class other than `register`, the only one
+      # 6.9.1p6 admits (the shared specifier parse raises "'static' is not
+      # allowed here" for the rest) — and a parameter's adjustments, an array or
+      # function declarator becoming a pointer (6.7.6.3p7-8), which is what makes
+      # "int f(a) int a[10];" a pointer parameter exactly as the prototyped
+      # spelling is.
+      def parse_parameter_declaration_list(identifier_list)
+        names = identifier_list.names.map(&:value)
+        declared = {}
+        until peek.punct?("{")
+          unless type_specifier?(peek)
+            # A ";", "," or "=" here ends the declarator as a *declaration*, so
+            # this was never a definition and 6.7.6.3p3 has the last word on the
+            # identifier list. Anything else (a stray token, end of file) is a
+            # definition that simply broke off, and says so.
+            reject_identifier_list(identifier_list) if peek.punct?(";") || peek.punct?(",") ||
+                                                       peek.punct?("=")
+            error_at(peek, "expected a parameter declaration or '{'")
+          end
+          parse_one_parameter_declaration(names, declared)
+        end
+        declared
+      end
+
+      # One declaration of the declaration-list: shared specifiers, then a
+      # comma-separated run of named declarators ("int a, *b;"), each of which
+      # must name a parameter of the identifier list exactly once.
+      def parse_one_parameter_declaration(names, declared)
+        base_type, spec_info = parse_declaration_specifiers(allow_storage_class: false,
+                                                            allow_register: true)
+        loop do
+          # A parameter's array declarator adjusts to a pointer, so "[]" is
+          # admitted here for the same reason #parse_parameter_declaration admits
+          # it in a prototype.
+          name_tok, param_type, params, pointer_quals =
+            parse_declarator(base_type, allow_incomplete_array: true)
+          reject_identifier_list(params)
+          parse_attribute_specifiers # position d: a trailing attribute on this declarator
+          # A parameter's boundary belongs to the calling convention, not to the
+          # declaration (6.7.5p2) — the same refusal a prototyped parameter gets.
+          reject_alignas(spec_info.alignas, "parameter '#{name_tok.value}'")
+          if peek.punct?("=")
+            error_at(name_tok, "parameter '#{name_tok.value}' must not be initialized")
+          end
+          unless names.include?(name_tok.value)
+            error_at(name_tok, "declaration for '#{name_tok.value}', which is not a parameter")
+          end
+          if declared.key?(name_tok.value)
+            error_at(name_tok, "redefinition of parameter '#{name_tok.value}'")
+          end
+          param_type = adjust_parameter_type(param_type)
+          reject_void_type(param_type, name_tok)
+          declared[name_tok.value] = [param_type,
+                                      declarator_object_const(param_type, spec_info.const, pointer_quals),
+                                      name_tok]
+          break unless peek.punct?(",")
+
+          advance # ","
+        end
+        expect_punct(";")
+      end
+
+      # The parameters of an old-style definition, in the identifier list's
+      # order: each name's declared entry, or — for a name the declaration-list
+      # left out — type `int`, located at the identifier itself (6.9.1p6). C90
+      # spelled that default out; C11 instead requires every identifier to be
+      # declared, but gcc keeps accepting the omission with a -Wimplicit-int
+      # warning (measured), and a warning is not a channel this compiler has, so
+      # the older, permissive reading is the one implemented.
+      def old_style_parameters(identifier_list, declared)
+        identifier_list.names.map do |name_tok|
+          type, const, decl_tok = declared[name_tok.value]
+          if type
+            AST::Parameter.new(name_tok.value, type, decl_tok, const)
+          else
+            AST::Parameter.new(name_tok.value, Type::Int, name_tok, false)
+          end
+        end
+      end
+
+      # The types an old-style definition's parameters are actually *passed* as,
+      # which is also its function type's parameter list.
+      #
+      # Normally these are the default-argument promotions of the declared types:
+      # the definition supplies no prototype, so every call to it promotes its
+      # arguments (6.5.2.2p6) and 6.9.1p10 makes the definition receive them that
+      # way — a `float` parameter is handed a `double`, a `char`/`short`/`_Bool`
+      # parameter an `int`.
+      #
+      # A prototype already declared for the same name overrides that, because
+      # calls compiled against it pass what *it* says (measured: gcc's
+      # "double h(float); double h(f) float f; {...}" receives a bare float in
+      # xmm0, while the same definition without the prototype receives a double
+      # and narrows it). 6.7.6.3p14 requires each prototype parameter to be
+      # compatible with the promoted declared type; gcc additionally accepts the
+      # unpromoted declared type there, warning only under -Wpedantic, and that
+      # is the case this branch exists for. Anything else is left to reach the
+      # generator's "conflicting types" check as the promoted form, which rejects
+      # exactly the mismatches gcc rejects ("int f(long); int f(a) int a;").
+      def old_style_parameter_abi_types(name, declared_types)
+        promoted = declared_types.map { |type| default_argument_promotion(type) }
+        prototype = @prototype_param_types[name]
+        return promoted unless prototype && prototype.size == declared_types.size
+
+        adoptable = prototype.each_with_index.all? do |type, i|
+          type == declared_types[i] || type == promoted[i]
+        end
+        adoptable ? prototype : promoted
+      end
+
+      # The default argument promotions (6.5.2.2p6) applied to one parameter
+      # type: `float` widens to `double` and an integer type narrower than `int`
+      # (char, short, their unsigned forms and _Bool) to `int`, which every such
+      # type fits since `int` is 32 bits on both targets. Everything else — int,
+      # long, their unsigned forms, __int128, double, pointers and structs —
+      # passes through unchanged. The array/function adjustments are not applied
+      # here: the declaration-list already made them (see
+      # #parse_one_parameter_declaration), exactly as a prototype's parameters do.
+      def default_argument_promotion(type)
+        return Type::Double if type.float? && type.size < 8
+        return Type::Int if type.integer? && type.size < 4
+
+        type
+      end
+
+      # Refuses an identifier list at a declarator position that cannot be the
+      # definition of that function. 6.7.6.3p3 lets a non-empty identifier list
+      # appear only there, so a prototype, a typedef, a member, a parameter or a
+      # local written that way ("int f(a, b);") names parameters whose types it
+      # never supplies. gcc only warns and reads such a declarator as the
+      # unprototyped "int f()"; this compiler models no unprototyped function
+      # type, so reading it that way would silently give the name a "(void)"
+      # signature and then check every call against it — a confident wrong
+      # diagnosis in place of an accurate one.
+      def reject_identifier_list(params)
+        return unless params.is_a?(IdentifierList)
+
+        error_at(params.token,
+                 "parameter names without types are only allowed in a function definition")
       end
 
       # The declaration-list form of an external declaration: a comma-separated
@@ -607,10 +846,17 @@ module Rubycc
       # them downstream).
       def parse_external_declarator(name_tok, type, params, pointer_quals, spec_info, return_tok,
                                     attributes)
+        # This declarator ends at a "," or a ";", so it is a declaration and not
+        # a definition — the one place 6.7.6.3p3 allows a non-empty identifier
+        # list.
+        reject_identifier_list(params)
         if type.function?
           # A function reserves no object to align (6.7.5p2).
           reject_alignas(spec_info.alignas, "function '#{name_tok.value}'")
           declare_ordinary_name(name_tok.value, type)
+          # A prototype's parameter types are kept for the one construct that
+          # consults them, an old-style definition of the same name.
+          @prototype_param_types[name_tok.value] = type.param_types
           register_visibility_attributes(name_tok.value, attributes)
           register_init_attributes(name_tok.value, attributes)
           AST::FunctionDecl.new(name_tok.value, type.return_type,
@@ -1683,8 +1929,13 @@ module Rubycc
         # member may be a flexible array member; #reject_flexible_array_member
         # then enforces the 6.7.2.1p18 constraints (struct only, and never
         # followed by another member — see #reject_member_after_flexible_array).
-        name_tok, type = parse_declarator(member_base, allow_incomplete_array: true,
-                                          allow_zero_length_array: true)
+        name_tok, type, params = parse_declarator(member_base, allow_incomplete_array: true,
+                                                  allow_zero_length_array: true)
+        # A member is never a function definition, so an identifier list on one
+        # ("struct s { int m(a, b); };") names types that never arrive. The
+        # "declared as a function" refusal below would also catch it, but only
+        # after the declarator had been read as a plain "int m()".
+        reject_identifier_list(params)
         if peek.punct?(":")
           advance # ":"
           reject_alignas(alignas, "bit-field '#{name_tok.value}'")
@@ -1909,8 +2160,12 @@ module Rubycc
         # A parameter's array declarator adjusts to a pointer (6.7.6.3p7), so an
         # empty "[]" is admitted here just as it is for an external declaration's
         # incomplete array; #adjust_parameter_type resolves it below.
-        name_tok, type, _params, pointer_quals =
+        name_tok, type, params, pointer_quals =
           parse_declarator(base_type, name_mode: :optional, allow_incomplete_array: true)
+        # A parameter that is itself a function declarator ("int f(int g(a, b))")
+        # is a declaration, not the definition of g, so its identifier list has
+        # no types to come.
+        reject_identifier_list(params)
         # A parameter's boundary is the calling convention's to choose, not the
         # declaration's, so 6.7.5p2 forbids an _Alignas on one.
         reject_alignas(spec_info.alignas,
@@ -1987,7 +2242,10 @@ module Rubycc
       # AST node, so this returns an empty run.
       def parse_typedef_declaration(base_type, spec_info)
         loop do
-          name_tok, type, _params, pointer_quals = parse_declarator(base_type)
+          name_tok, type, params, pointer_quals = parse_declarator(base_type)
+          # A typedef names a type, never a function this unit defines, so an
+          # identifier list ("typedef int F(a, b);") could not be a definition.
+          reject_identifier_list(params)
           parse_attribute_specifiers # position d: a trailing attribute on the typedef name
           # A typedef declares a type, not an object, so there is nothing for an
           # _Alignas to align (6.7.5p2).
@@ -2010,7 +2268,11 @@ module Rubycc
       end
 
       def parse_init_declarator(base_type, spec_info)
-        name_tok, type, _params, pointer_quals = parse_declarator(base_type, allow_incomplete_array: true)
+        name_tok, type, params, pointer_quals = parse_declarator(base_type, allow_incomplete_array: true)
+        # A block-scope declarator declares; a definition never nests (see the
+        # nested-function refusal below), so an identifier list here supplies no
+        # types either.
+        reject_identifier_list(params)
         parse_attribute_specifiers # position d: a trailing attribute on this local declarator
         reject_void_type(type, name_tok)
         # A body here would be a *nested function definition* — a GNU extension,
@@ -2336,7 +2598,24 @@ module Rubycc
           elsif suffixes.first&.first == :function
             suffixes.first[1]
           end
+        reject_unsurfaced_identifier_lists(suffixes, function_params)
         [name_tok, build, function_params]
+      end
+
+      # Refuses an identifier list written on a suffix that is not the one making
+      # the declared name a function — "int (*g)(a, b);", where the list sits on
+      # the pointer's own suffix, or a second suffix on the same declarator. Only
+      # the surfaced suffix can ever be a definition's parameter list, and only
+      # that one reaches #reject_identifier_list through `function_params`; the
+      # rest would otherwise be quietly read as an empty parameter list, since
+      # that is the placeholder type #apply_declarator_suffix builds for them.
+      def reject_unsurfaced_identifier_lists(suffixes, function_params)
+        suffixes.each do |suffix|
+          next unless suffix[1].is_a?(IdentifierList)
+          next if suffix[1].equal?(function_params)
+
+          reject_identifier_list(suffix[1])
+        end
       end
 
       # The core of a direct-declarator, returning [name_token, build,
@@ -2480,18 +2759,55 @@ module Rubycc
         end
       end
 
-      # A direct-declarator's function suffix "(" parameter-type-list? ")". The
-      # parameters are parsed (and array/function ones adjusted, see
-      # #parse_parameter_declaration) here so the suffix can both build the
-      # function type and, when it belongs to a real function, hand its
-      # Parameter objects back for the body. Returns [:function, params,
-      # paren_token, variadic], the variadic flag carrying the trailing "..."
-      # forward to #apply_declarator_suffix so it lands on the FunctionType.
+      # A direct-declarator's function suffix: "(" parameter-type-list? ")", or
+      # the old-style "(" identifier-list ")". The parameters are parsed (and
+      # array/function ones adjusted, see #parse_parameter_declaration) here so
+      # the suffix can both build the function type and, when it belongs to a
+      # real function, hand its Parameter objects back for the body. Returns
+      # [:function, params, paren_token, variadic], `params` being either the
+      # Parameter array of a prototype or an IdentifierList; the variadic flag
+      # carries a trailing "..." forward to #apply_declarator_suffix so it lands
+      # on the FunctionType.
       def parse_function_suffix
         paren_tok = advance # "("
+        return [:function, parse_identifier_list(paren_tok), paren_tok, false] if identifier_list_ahead?
+
         params, variadic = parse_parameter_type_list
         expect_punct(")")
         [:function, params, paren_tok, variadic]
+      end
+
+      # Whether the just-opened "(" holds an identifier-list rather than a
+      # parameter-type-list. A parameter declaration always begins with a
+      # type-specifier — a keyword, or an identifier bound as a typedef name — so
+      # a plain identifier at this position can only be a parameter *name*, which
+      # is the old-style form. The empty "()" is neither: it stays the
+      # no-parameter list it has always been here (C calls it an empty identifier
+      # list, so "int f() { }" is an old-style definition of a function with no
+      # parameters, which is the same thing this subset already builds).
+      def identifier_list_ahead?
+        peek.type == :ident && !typedef_name?(peek.value)
+      end
+
+      # identifier-list = identifier ("," identifier)*, closed by the ")".
+      # Repeating a name would leave the definition with two parameters of the
+      # same name and no way to refer to either, so it is refused here rather
+      # than at the binding.
+      def parse_identifier_list(paren_tok)
+        names = []
+        loop do
+          name_tok = peek
+          error_at(name_tok, "expected identifier") unless name_tok.type == :ident
+          if names.any? { |seen| seen.value == name_tok.value }
+            error_at(name_tok, "duplicate parameter name '#{name_tok.value}'")
+          end
+          names << advance
+          break unless peek.punct?(",")
+
+          advance # ","
+        end
+        expect_punct(")")
+        IdentifierList.new(names, paren_tok)
       end
 
       # Wraps `inner` in one declarator suffix, enforcing the constraints a
@@ -2511,7 +2827,14 @@ module Rubycc
         if kind == :function
           error_at(tok, "function returning a function is not allowed") if inner.function?
           error_at(tok, "function returning an array is not allowed") if inner.array?
-          Type::FunctionType.new(inner, data.map(&:type), variadic)
+          # An identifier list carries no types yet — the declaration-list that
+          # follows the declarator supplies them — so the type built here is a
+          # placeholder with no parameters, which
+          # #parse_old_style_function_definition replaces once they are known.
+          # It matches what an empty "()" builds, so a declarator that never
+          # reaches a definition still has a usable (if arity-less) type.
+          params = data.is_a?(IdentifierList) ? [] : data.map(&:type)
+          Type::FunctionType.new(inner, params, variadic)
         else
           error_at(tok, "array of functions is not allowed") if inner.function?
           error_at(tok, "array has incomplete element type") if inner.array? && inner.incomplete?

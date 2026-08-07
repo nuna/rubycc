@@ -166,10 +166,14 @@ module Rubycc
             # AST but drives no behavior here: a declaration reserves nothing and
             # M1 does not diagnose a static/extern mismatch against the eventual
             # definition, so a prototype only contributes a signature.
-            declare_function(decl.name, decl.return_type, decl.params.map(&:type),
+            declare_function(decl.name, decl.return_type, decl.params.map(&:abi_type),
                              variadic: decl.variadic, defined: false, token: decl.token)
           when Front::AST::FunctionDef
-            declare_function(decl.name, decl.return_type, decl.params.map(&:type),
+            # A signature is what *callers* must agree with, so it is built from
+            # the types the parameters are passed as. The two differ only for an
+            # old-style definition, whose narrow parameters arrive promoted
+            # (see AST::Parameter#abi_type).
+            declare_function(decl.name, decl.return_type, decl.params.map(&:abi_type),
                              variadic: decl.variadic, defined: true, token: decl.token)
             # `static` gives the definition internal linkage (an STB_LOCAL text
             # symbol); an absent or `extern` specifier leaves it external.
@@ -1107,7 +1111,14 @@ module Rubycc
         # One plan per by-value parameter (nil for a scalar), then the placement
         # of every ABI entity in slot order: the hidden return pointer (if any)
         # first, then the parameters left to right.
-        plans = func.params.map { |param| aggregate_by_value?(param.type) ? @convention.aggregate_plan(param.type) : nil }
+        #
+        # Every step below works from the parameter's #abi_type — the type the
+        # caller actually hands over, which is the declared type except in an
+        # old-style definition, where a narrow parameter is passed promoted
+        # (6.9.1p10). The declared type only comes back once the slot is bound.
+        plans = func.params.map do |param|
+          aggregate_by_value?(param.abi_type) ? @convention.aggregate_plan(param.abi_type) : nil
+        end
         placer = @convention.placer
         if hidden_return
           placer.place(ArgumentRequest.new(kinds: [@convention.hidden_result_kind], align16: false, mem_eightbytes: 1))
@@ -1116,7 +1127,7 @@ module Rubycc
         # just before it (see AAPCS64::Placer#pad_gp/#pad_stack), so #placed_pieces
         # can prepend a matching pad slot to the parameter's pieces.
         placements = func.params.each_with_index.map do |param, i|
-          status = placer.place(abi_request(param.type, plans[i]))
+          status = placer.place(abi_request(param.abi_type, plans[i]))
           [status, placer.pad_gp, placer.pad_stack]
         end
 
@@ -1128,7 +1139,7 @@ module Rubycc
         piece_lists << [AbiPiece.new(offset: 0, size: 8, kind: @convention.hidden_result_kind)] if hidden_return
         func.params.each_with_index do |param, i|
           status, pad_gp, pad_stack = placements[i]
-          piece_lists << placed_pieces(param.type, plans[i], status, pad_gp, pad_stack)
+          piece_lists << placed_pieces(param.abi_type, plans[i], status, pad_gp, pad_stack)
         end
 
         slot_vregs = piece_lists.map { |pieces| pieces.map { new_vreg } }
@@ -1144,11 +1155,14 @@ module Rubycc
           vregs = slot_vregs[index]
           pieces = piece_lists[index]
           index += 1
-          if aggregate_by_value?(param.type)
+          if aggregate_by_value?(param.abi_type)
+            # No promotion touches a struct, so an aggregate parameter's declared
+            # and incoming types are the same object.
             bind_struct_parameter(param, vregs, pieces, plans[i].mode == :by_reference)
           else
             @scopes.last[param.name] =
-              Local.new(type: param.type, storage: vregs.first, global: false, const: param.const)
+              Local.new(type: param.type, storage: bind_scalar_parameter(param, vregs.first),
+                        global: false, const: param.const)
           end
         end
 
@@ -1157,6 +1171,13 @@ module Rubycc
         # from the low bytes in place, by the type's signedness, so its slot holds
         # the properly extended value like any other narrow lvalue. Wider scalars
         # and structs need no fix-up.
+        #
+        # This is also what narrows an old-style definition's promoted parameter:
+        # a `char` handed a whole `int` keeps its low byte and re-extends it,
+        # which is exactly the truncating conversion its declared type asks for
+        # (measured against gcc, down to a `_Bool` parameter passed 2 reading
+        # back as 2 rather than as 1 — gcc stores the low byte and does not
+        # normalize).
         func.params.each do |param|
           type = param.type
           next unless type.integer? && (type.size == 1 || type.size == 2)
@@ -1164,6 +1185,22 @@ module Rubycc
           slot = @scopes.last[param.name].storage
           emit(type.signed? ? :sext : :zext, dst: slot, a: slot, size: type.size)
         end
+      end
+
+      # The vreg a scalar parameter's name is bound to: normally the incoming ABI
+      # slot itself. An old-style definition's parameter can arrive as something
+      # wider than it declared (see AST::Parameter#abi_type), and when a floating
+      # type is on either side of that difference the two forms share no
+      # representation at all — a `float` parameter is passed a `double` — so the
+      # value is converted into a vreg of its own. An integer difference needs
+      # nothing here: it is always "passed an int, declared narrower", which
+      # #setup_parameters' narrow-parameter fix-up already finishes by truncating
+      # and re-extending the slot in place.
+      def bind_scalar_parameter(param, slot)
+        return slot unless param.incoming_type
+        return slot unless param.incoming_type.float? || param.type.float?
+
+        convert(slot, from: param.incoming_type, to: param.type, token: param.token)
       end
 
       # Whether a struct result travels through a hidden pointer rather than in

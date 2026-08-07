@@ -428,7 +428,26 @@ module Rubycc
       # object is top-level const-qualified ("int f(const int x)"), computed
       # after the array/function-to-pointer adjustment, so the generator can
       # reject writes to it.
-      Parameter = Data.define(:name, :type, :token, :const)
+      #
+      # `incoming_type` is the type the *caller* hands over when that differs
+      # from the declared one, and nil (the common case) when the two coincide.
+      # Only an old-style (identifier-list) definition can separate them: such a
+      # function has no prototype, so its arguments arrive default-argument
+      # promoted (6.9.1p10 with 6.5.2.2p6) — a `float` parameter is passed a
+      # `double`, a `char`/`short`/`_Bool` parameter an `int` — and the body
+      # still sees the narrow object it declared. #abi_type is what the calling
+      # convention and the function's own type are built from; `type` is what
+      # the body reads and writes.
+      Parameter = Data.define(:name, :type, :token, :const, :incoming_type) do
+        def initialize(name:, type:, token:, const:, incoming_type: nil)
+          super
+        end
+
+        # The type this parameter occupies an ABI slot as.
+        def abi_type
+          incoming_type || type
+        end
+      end
 
       # A function prototype (a bare declaration with no body), e.g.
       # "int f(int a, int b);". `return_type` is the declared Rubycc::Type
