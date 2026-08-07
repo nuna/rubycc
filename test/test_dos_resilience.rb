@@ -27,6 +27,16 @@ class TestDosResilience < Minitest::Test
   Preprocessor = Rubycc::Preprocess::Preprocessor
   CompileError = Rubycc::CompileError
 
+  # The native AArch64 acceptance job runs this Ruby process under QEMU. Keep
+  # the limits finite and meaningful there, but account for the measured
+  # emulation overhead without weakening the default host-side checks.
+  DOS_PERFORMANCE_FACTOR = Integer(ENV.fetch("RUBYCC_DOS_PERFORMANCE_FACTOR", "1"), 10)
+  raise ArgumentError, "RUBYCC_DOS_PERFORMANCE_FACTOR must be positive" unless DOS_PERFORMANCE_FACTOR.positive?
+
+  def dos_time_limit(seconds)
+    seconds * DOS_PERFORMANCE_FACTOR
+  end
+
   def compile(source, filename: "dos.c")
     Compiler.new.compile(source, filename: filename)
   end
@@ -185,7 +195,7 @@ class TestDosResilience < Minitest::Test
     assert_match(/macro expansion is too large/, error.description)
     # The cut-off must be prompt: the budget bounds the work, so this is seconds,
     # not the minutes an unbounded 2^21 expansion would take.
-    assert_operator Time.now - started, :<, 20, "runaway macro was not cut off promptly"
+    assert_operator Time.now - started, :<, dos_time_limit(20), "runaway macro was not cut off promptly"
   end
 
   def test_deeply_nested_conditional_directives_are_rejected
@@ -229,7 +239,7 @@ class TestDosResilience < Minitest::Test
     started = Time.now
     error = assert_raises(ExpansionError) { makefile.variable_value("A30") }
     assert_match(/produced more than \d+ characters/, error.message)
-    assert_operator Time.now - started, :<, 5, "runaway variable expansion was not cut off promptly"
+    assert_operator Time.now - started, :<, dos_time_limit(5), "runaway variable expansion was not cut off promptly"
   end
 
   # The reference budget: the same chain over an EMPTY leaf produces no text at
@@ -362,7 +372,7 @@ class TestDosResilience < Minitest::Test
     assert_equal CHAIN_MEMBERS + 1, defined_names.size
     assert_includes defined_names, "s0"
     assert_includes defined_names, "s#{CHAIN_MEMBERS - 1}"
-    assert_operator elapsed, :<, 5, "archive extraction is not linear in member count"
+    assert_operator elapsed, :<, dos_time_limit(5), "archive extraction is not linear in member count"
   end
 
   # The pull order is what fixes the merged section and symbol order, so N4

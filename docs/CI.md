@@ -105,6 +105,11 @@ M4 のクロス検証だけでは、x86-64 Ruby から aarch64 の生成物を�
 3. `RMAKE_ACCEPTANCE=1 ruby tools/m2_acceptance.rb` で json / msgpack のビルドと
    gem 本体テストを実行する。
 
+Step 120 のDoS耐性テストにある計算量の壁時計閾値は、通常環境では従来どおり
+係数1で検証する。native AArch64 ジョブだけは QEMU の実測オーバーヘッドを考慮して
+`RUBYCC_DOS_PERFORMANCE_FACTOR=4` を設定するが、閾値は有限のままであり、計算量の
+上限そのものを無効化しない。
+
 suite と gem acceptance は片方が失敗しても両方のログを残し、最後にまとめてジョブを
 失敗させる。`workflow_dispatch` の `only: aarch64-glibc` を指定すれば、このジョブだけを
 手動で実行できる。試行錯誤中は `test_scope: smoke` を指定すると、バックエンド・実行・

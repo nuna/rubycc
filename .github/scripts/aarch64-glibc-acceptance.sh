@@ -46,6 +46,11 @@ export RUBYCC_AARCH64_SYSROOT_INTERP=/lib/ld-linux-aarch64.so.1
 export RUBYCC_EXECUTION_TARGET=aarch64
 export RUBYCC_EXECUTION_GCC=gcc
 export RUBYCC_EXECUTION_RUNNER=/usr/bin/env
+# These complexity tests remain bounded under native AArch64 emulation, but
+# their wall-clock measurements include the QEMU slowdown. The default factor
+# is 1 everywhere else; 4 is the smallest CI-specific margin over the initial
+# native measurements (42.3s, 6.9s, and 10.6s).
+export RUBYCC_DOS_PERFORMANCE_FACTOR=4
 AARCH64_LIBC=/lib/aarch64-linux-gnu/libc.so.6
 if [ ! -f "${AARCH64_LIBC}" ]; then
   AARCH64_LIBC=$(ldconfig -p | awk '/libc\.so\.6.*aarch64/{print $NF; exit}')
