@@ -303,5 +303,16 @@
       }
     ],
     "notes": "The upstream test/unit suite passed 227 tests / 615 assertions against the injected fiddle.so, with the system libffi ABI path enabled."
+  },
+  "nio4r": {
+    "verifications": [
+      {
+        "versions": ["2.7.5"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-07",
+        "evidence": "RUBYCC=1 gem install nio4r succeeded (nio4r_ext.so built through rmake); the gem's own RSpec suite passed 112 examples / 0 failures (Step atomic-type-4)."
+      }
+    ],
+    "notes": "PR #19 recorded nio4r as blocked by sandbox socket/PTY constraints; a re-measurement showed TCP, PTY and UNIX sockets all work here, and the suite passed with no rubycc change. The run reported 2 pendings (not failures)."
   }
 }

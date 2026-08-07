@@ -73,7 +73,7 @@ DESIGN R10 targets >= 90% of the corpus at gem-install success *and* the gem's o
 
 | R10 gate passes (denominator) | verified (numerator) | pass rate | remaining to 90% |
 |---|---|---|---|
-| 36 | 25 | 69.4% | 8 |
+| 36 | 26 | 72.2% | 7 |
 
 ## gem × system header matrix
 

@@ -8319,9 +8319,46 @@ index へ入った**からで、規律があったからではない。
 
 ---
 
+## atomic-type-4 — nio4r は環境制約が消えて通った(M5 H4)
+
+PR #19 は nio4r を **「サンドボックスの socket/PTY 制約」で 44 failures** として
+記録していた。**制約が今も有るのかを測り直した**ところ、TCP・PTY・UNIX ソケットの
+いずれも**動く**。そのまま再走させると:
+
+```
+PASS  nio4r 2.7.5  112 examples, 0 failures, 2 pending
+```
+
+**rubycc 側の変更はゼロ**である。44 failures は rubycc の欠陥ではなく、
+**測定環境の側の状態**だった。
+
+### 教訓 — 「環境が理由で落ちた」は賞味期限付きの記録である
+
+R10 の未検証リストには「環境が理由」の項目が他にもある。それらは
+**その時の環境で測った結果**でしかなく、**環境が変われば黙って古くなる**。
+今回は 1 件が 44 failures → 0 になった。**再測定を挟まずに未検証のまま数えると、
+達成済みのものを未達成として数え続ける。**
+
+同じ理由で保留していた byebug / debug も測り直したが、こちらは別の原因だった:
+
+| gem | 実測した原因 |
+|---|---|
+| byebug | 535 runs / 22 failures / 6 errors(**内容未分析**) |
+| debug | `test/unit/rr` が LoadError(**テスト依存 gem が無い**) |
+
+**socket 制約ではなかった。**「同じ理由でまとめて保留」していたものが、
+測り直すと**3 件とも別の理由**だったということである。
+
+R10 通過率は **25/36 = 69.4% → 26/36 = 72.2%**(90% には 33 件、あと 7 件)。
+
+---
+
 ## 現在のテスト規模
 
-atomic-type-2 完了時点: **2,902 runs / 8,810 assertions / 0 failures / 0 errors / 44 skips**
+atomic-type-4 完了時点: **2,902 runs / 9,059 assertions / 0 failures / 0 errors / 44 skips**
+(atomic-type-2 からテストメソッドは増えず、assertions のみ +249 = nio4r の記録が
+`data/verified_gems.json` を舐めるドクターのテストの照合対象に入ったため)
+(以前) atomic-type-2 完了時点: **2,902 runs / 8,810 assertions / 0 failures / 0 errors / 44 skips**
 (以前) atomic-type-1 完了時点: **2,874 runs / 8,698 assertions / 0 failures / 0 errors / 44 skips**
 (以前) corpus-denominator-1 完了時点: **2,855 runs / 8,601 assertions / 0 failures / 0 errors / 44 skips**
 (以前) master マージ後の統合スイート: **2,846 runs / 8,575 assertions / 0 failures / 0 errors / 44 skips**

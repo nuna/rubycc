@@ -23,6 +23,33 @@
 修正し、aarch64 用の回帰テストを追加した。残る環境検証は musl全スイートと、aarch64 の
 `json` / `msgpack` を含む M4 全面受入れである。
 
+**M4最終受入れ確認記録(2026-08-07)**: ローカルで `bundle exec rake test` を再実行した。
+ホスト Ruby 3.4.5(x86_64)に aarch64-linux-gnu-gcc と qemu-aarch64 を組み合わせる
+クロス検証では、**2,902 runs / 9,059 assertions / 0 failures / 0 errors / 44 skips**。
+`ci_check_skips.rb` も `OK`(skips <= 55、runs >= 2500)だった。aarch64 固有部分も
+バックエンド 76、実行 39、集約 11、引数 13、浮動小数 24、globals 23、self-link 18、
+shared object 23、variadic 9、header ABI 47、c-testsuite 205 pass + 16 skip、
+examples 37 pass + 2 skip が全て成功した。`test_header_abi.rb` 単体も 121 runs /
+358 assertions / 0 failures で、musl 分岐の値検査 3 件も含めて成功した。
+
+ただし、これは**ホスト Ruby から aarch64 のコードをクロスコンパイルし、静的 probe を
+QEMU で実行した結果**であり、aarch64 Ruby 自身で `rake test` や `gem install` を走らせた
+結果ではない。M4 の残項目は次の通りである。
+
+| M4受入れ項目 | 確認結果 | 未完了の原因 |
+|---|---|---|
+| aarch64 上の全テストスイート | クロス経路は green | ローカルに aarch64 Ruby が無い。`ruby` は x86_64 で、既存の Ruby 4.0.6 も x86_64。 |
+| ABI ファジングハーネスの機種パラメタ化 | 未実施 | `TestCrossAbi` は決定論的な 40 レイアウトを生成するが host gcc / x86_64 専用。aarch64 は header ABI の専用差分テストで代替している。 |
+| aarch64 の json / msgpack `gem install` | 未実施 | ネットワーク受入れテストは `RMAKE_ACCEPTANCE=1` 未指定のため 44 skips に含まれる。aarch64 Ruby が必要で、Docker daemon も `/var/run/docker.sock` の permission denied で利用できない。 |
+| aarch64 musl の全受入れ | 未実施 | `musl-gcc` / `aarch64-linux-musl-gcc` が無く、Docker daemon も利用できない。今回の musl 3件は bundled header の分岐値を glibc cross linker + QEMU で確認したもので、musl libc/Ruby の実走ではない。 |
+
+なお、先行実行で出た `TestDoctor#test_verified_gems_json_holds_only_confirmed_gems` の
+1 failure は、実行中に `nio4r` の検証記録を `data/verified_gems.json` に追加した一方で、
+テスト側の期待キーがまだ古かったデータ・期待値の不整合だった。両方を同期した後の
+Doctor 単体は **21 runs / 638 assertions / 0 failures / 0 errors / 2 skips**、上記の
+全スイート再実行も green になった。したがって、今回の未完了はこの失敗の再発ではなく、
+実 ARM Ruby / musl 実行環境が無いことによる測定未完了である。
+
 （以前の追記(Step 193)）: 真のdistroless相当検証を完了。glibc / musl のRuby 4.0
 コンテナで、cc / gcc / clang / make / sh と libc開発ヘッダを除いた状態の
 `json` / `msgpack` / `sqlite3` / `pg` のビルド・実行に成功した。残る環境検証は
