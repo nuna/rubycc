@@ -203,10 +203,11 @@ module Rubycc
       # The gcc __atomic_* builtins this subset lowers, mapping each keyword to
       # its [AST::BuiltinAtomic kind, argument count]. The nine object forms
       # cover <ruby/atomic.h>; the fence is also supported because C11 library
-      # headers and libev use it without an _Atomic object. The test-and-set,
-      # generic (non-"_n") address-taking forms and the __sync_* family remain
-      # deliberately absent, so a program using one of those gets an
-      # "undeclared identifier" rather than a silently wrong lowering.
+      # headers and libev use it without an _Atomic object. The test-and-set and
+      # the generic (non-"_n") address-taking forms remain deliberately absent,
+      # so a program using one of those gets an "undeclared identifier" rather
+      # than a silently wrong lowering. (The legacy __sync_* family has its own
+      # table below.)
       #
       # The counts include the trailing memory-order argument(s) gcc's signatures
       # take — one for every form but __atomic_compare_exchange_n, which takes a
@@ -222,6 +223,37 @@ module Rubycc
         "__atomic_sub_fetch" => [:sub_fetch, 3],
         "__atomic_or_fetch" => [:or_fetch, 3],
         "__atomic_thread_fence" => [:fence, 1]
+      }.freeze
+
+      # The legacy gcc __sync_* builtins this subset lowers, mapping each keyword
+      # to its [AST::BuiltinSync kind, argument count]. These predate the
+      # __atomic_* family and differ from it in two ways that matter here: each
+      # one is a *full barrier* by definition, so none takes a memory-order
+      # argument, and the two compare-and-swap forms take the value they expect
+      # directly rather than through a pointer.
+      #
+      # The set is exactly the forms an existing IR op already gives the right
+      # meaning for. The bitwise members with no matching op — __sync_fetch_and_or,
+      # __sync_fetch_and_and, __sync_fetch_and_xor, __sync_fetch_and_nand,
+      # __sync_and_and_fetch, __sync_xor_and_fetch and __sync_nand_and_fetch —
+      # stay deliberately absent for the same reason the missing __atomic_* forms
+      # do: a program using one gets an "undeclared identifier" instead of a
+      # silently wrong lowering.
+      #
+      # gcc tolerates extra trailing arguments on all of these (its documented
+      # but ignored list of variables to protect). rubycc requires the exact
+      # count, so a miscount is reported here rather than quietly dropped.
+      SYNC_BUILTINS = {
+        "__sync_fetch_and_add" => [:fetch_add, 2],
+        "__sync_fetch_and_sub" => [:fetch_sub, 2],
+        "__sync_add_and_fetch" => [:add_fetch, 2],
+        "__sync_sub_and_fetch" => [:sub_fetch, 2],
+        "__sync_or_and_fetch" => [:or_fetch, 2],
+        "__sync_lock_test_and_set" => [:exchange, 2],
+        "__sync_lock_release" => [:release, 1],
+        "__sync_synchronize" => [:fence, 0],
+        "__sync_bool_compare_and_swap" => [:bool_compare_and_swap, 3],
+        "__sync_val_compare_and_swap" => [:val_compare_and_swap, 3]
       }.freeze
 
       # The gcc overflow-checked arithmetic builtins, mapping each keyword to its
@@ -3066,6 +3098,8 @@ module Rubycc
             parse_builtin_overflow
           elsif peek.type == :keyword && ATOMIC_BUILTINS.key?(peek.value)
             parse_builtin_atomic
+          elsif peek.type == :keyword && SYNC_BUILTINS.key?(peek.value)
+            parse_builtin_sync
           elsif peek.punct?("+")
             advance # unary + is a no-op; fold it away
             parse_cast_expression
@@ -3317,6 +3351,28 @@ module Rubycc
           error_at(keyword_tok, "'#{keyword_tok.value}' expects #{arity} arguments, have #{args.size}")
         end
         AST::BuiltinAtomic.new(kind, args, keyword_tok)
+      end
+
+      # "__sync_xxx ( ... )": one of the legacy gcc atomic builtins rubycc
+      # lowers. Shaped like #parse_builtin_atomic — SYNC_BUILTINS records the
+      # kind and the exact argument count, and everything type-dependent is the
+      # generator's to diagnose — but the counts here are the operand counts
+      # alone, no memory order being part of these signatures.
+      #
+      # gcc lets a caller append extra arguments (the "protected variables" its
+      # manual describes and then ignores); rubycc holds every form to its exact
+      # arity, so a call that drifted from the intended shape is reported instead
+      # of silently accepted.
+      def parse_builtin_sync
+        keyword_tok = advance # the "__sync_..." keyword
+        kind, arity = SYNC_BUILTINS.fetch(keyword_tok.value)
+        expect_punct("(")
+        args = parse_argument_expression_list
+        expect_punct(")")
+        unless args.size == arity
+          error_at(keyword_tok, "'#{keyword_tok.value}' expects #{arity} arguments, have #{args.size}")
+        end
+        AST::BuiltinSync.new(kind, args, keyword_tok)
       end
 
       # "__builtin_unreachable ()": no operands. Lowers to no code (rubycc does

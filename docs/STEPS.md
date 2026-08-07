@@ -8387,9 +8387,88 @@ index が 100644、というのがこの欠陥そのものだからである。
 
 ---
 
+## atomic-type-6 — レガシー `__sync_*` を実装する(M5 H4)
+
+`RUBYCC=1 gem install unicorn` が**依存の raindrops 0.20.1** で止まっていた。
+extconf.rb:119 の "GCC 4+ atomic builtins" プローブがコンパイル+リンクできず、
+`atomic_ops.h` も無いので **abort する**(代替経路が無い)。
+
+必要なのは実測で **4 種**だった: `__sync_lock_test_and_set`・
+`__sync_bool_compare_and_swap`・`__sync_add_and_fetch`・`__sync_sub_and_fetch`。
+**kgio 2.11.4 と unicorn 本体はアトミック組み込みを 1 つも使わない**(実測)。
+
+### 範囲の決め方 — 「既存 IR 命令で意味が出せる形だけ」
+
+10 形を実装し、**新しい IR 命令は 1 つも足さなかった**。バックエンドも無変更である
+(kind の集合が `__atomic_*` と同じになるため)。
+
+対応する IR 命令が無い 7 綴り(`__sync_fetch_and_or` / `_and` / `_xor` / `_nand`、
+`__sync_and_and_fetch` / `_xor_and_fetch` / `_nand_and_fetch`)は
+**意図的に未実装のまま**にした。`ATOMIC_BUILTINS` が最初から採っている
+「黙って誤った lowering をするより undeclared identifier にする」方針の踏襲である。
+
+### `__atomic_*` と同じノードにしなかった
+
+`BuiltinAtomic` にフラグを足すのではなく **`BuiltinSync` を別ノード**にした。
+2 族は**引数のレイアウトが違う**(メモリオーダ引数が無い・CAS が期待値を値で取る)ため、
+同じノードを共有すると「`args[2]` はメモリオーダ」という前提のコードを
+**取り違えて流用しやすい**。別ノードなら構造的に起こらない。
+
+### 値で取る期待値 — 専用スタックスロットで橋渡しした
+
+`:atomic_cas` は `__atomic_compare_exchange_n` に由来する形で、期待値を**メモリから読み、
+失敗時は同じポインタへ書き戻す**。`__sync_*_compare_and_swap` は期待値を**値で**取る。
+そこで**新規スタックスロット**を取って `oldval` を書き、そのアドレスを渡し、後で読み直す。
+
+読み直した値が `val_` 形の返すべき「実際に読んだ値」に**両方の結果で**一致する:
+失敗時は `:atomic_cas` が読んだ値で上書きしており、成功時は定義上 `oldval` がそのまま残る。
+スロットは新規なのでアトミックオブジェクトと**絶対に別名にならず**、
+書き戻しの別名ガードはここでは無関係になる。
+
+### 実測して分かったこと
+
+| 項目 | 実測結果 |
+|---|---|
+| ポインタ型への加算 | **スケールされず生バイト**。`int *p` に `__sync_fetch_and_add(&p, 1)` で **1 バイト**進む |
+| `bool_` 形の結果 | **1 バイトの `_Bool`**(gcc のマニュアルは `bool` としか書かない) |
+| 末尾の余分な引数 | gcc は**本当に黙って無視する**。`__sync_add_and_fetch(&i, 1, 2, 3)` が通る |
+| `__sync_lock_release` | ポインタオブジェクトも**幅ぶんゼロ書き**して NULL にする |
+
+ポインタ加算の件は `__atomic_*` 側のコメントに同じ主張があるが、
+**引き写さずに独立の差分テストで測り直した**(`test_sync_pointer_add_is_unscaled`)。
+
+引数の**固定アリティは rubycc 側で要求する**ことにした。gcc の「余分を無視」に
+合わせても得るものが無く、綴り間違いが黙って通るだけだからである。
+
+### 計測プログラム自体の落とし穴
+
+最初の計測で `printf("%u %u\n", __sync_or_and_fetch(&u, x), u)` と書いたところ、
+gcc(右→左)と rubycc(左→右)で出力が食い違った。**アトミックのバグではなく、
+C が未規定にしている引数評価順の差**である。テストとサンプルは
+「builtin を 1 文で実行 → 次の `printf` でオブジェクトを読む」形に統一した。
+
+### 副作用として受け入れたもの
+
+10 綴りを**キーワード**にしたので、`static inline unsigned long __sync_add_and_fetch(...)`
+と**自前定義する**ソースはその分岐に入るとパースエラーになる。raindrops の場合その
+`#else` は `HAVE_GCC_ATOMIC_BUILTINS` 未定義時のみで、プローブが通る以上到達しない。
+`__atomic_*` 族が最初から持っている性質と同じである。
+
+### まだ通っていない
+
+raindrops の `raindrops.c` はコンパイルできるようになったが、
+**`linux_inet_diag.c` が `AF_NETLINK` 未定義で落ちる** — 同梱の
+`include/libc/sys/socket.h` が `AF_UNSPEC/UNIX/LOCAL/INET/INET6` の 5 つしか持たない。
+**アトミックとは無関係のヘッダギャップ**なので、1 件 1 件の方針に従って次のステップに切る。
+
+---
+
 ## 現在のテスト規模
 
-atomic-type-5 完了時点: **2,905 runs / 9,065 assertions / 0 failures / 0 errors / 44 skips**
+atomic-type-6 完了時点: **2,928 runs / 9,230 assertions / 0 failures / 0 errors / 44 skips**
+(atomic-type-5 から +23 = `__sync_*` の gcc 差分実行(x86_64・aarch64)・
+未実装綴りの undeclared identifier・アリティ違反の診断 + サンプル 1 本)
+(以前) atomic-type-5 完了時点: **2,905 runs / 9,065 assertions / 0 failures / 0 errors / 44 skips**
 (atomic-type-4 から +3 = リポジトリの実行ビット検査)
 (以前) atomic-type-4 完了時点: **2,902 runs / 9,059 assertions / 0 failures / 0 errors / 44 skips**
 (atomic-type-2 からテストメソッドは増えず、assertions のみ +249 = nio4r の記録が

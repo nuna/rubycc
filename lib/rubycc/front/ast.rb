@@ -399,6 +399,22 @@ module Rubycc
       # folding here.
       BuiltinAtomic = Data.define(:kind, :args, :token)
 
+      # One of gcc's legacy __sync_* builtins. `kind` names the operation —
+      # :fetch_add, :fetch_sub, :add_fetch, :sub_fetch, :or_fetch, :exchange,
+      # :release, :fence, :bool_compare_and_swap or :val_compare_and_swap — and
+      # `args` holds the argument expressions exactly as written. As with
+      # BuiltinAtomic the parser checks only the argument *count*; the operand
+      # types and the width restriction need resolved types and belong to the
+      # generator. `token` is the builtin keyword.
+      #
+      # This is a node of its own rather than a flag on BuiltinAtomic because the
+      # two families' argument *layouts* differ: the __sync_* forms are full
+      # barriers by definition and so carry no memory-order argument at all,
+      # while the compare-and-swap pair takes its expected value directly instead
+      # of through a pointer. Sharing a node would invite lowering code written
+      # for one layout to read the other's arguments by index.
+      BuiltinSync = Data.define(:kind, :args, :token)
+
       # "__builtin_unreachable ()": marks a point control never reaches, typed
       # void. rubycc performs no optimization, so it lowers to no code at all —
       # its only role is to let constructs like CRuby's UNREACHABLE_RETURN

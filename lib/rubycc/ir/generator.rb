@@ -2053,6 +2053,8 @@ module Rubycc
           gen_builtin_overflow(node)
         when Front::AST::BuiltinAtomic
           gen_builtin_atomic(node)
+        when Front::AST::BuiltinSync
+          gen_builtin_sync(node)
         when Front::AST::BuiltinUnreachable
           gen_builtin_unreachable(node)
         else
@@ -2542,8 +2544,10 @@ module Rubycc
         emit(:atomic_fence)
       end
 
-      # Evaluates the leading pointer argument every __atomic_* builtin takes and
-      # returns [vreg, object type]. The object must be an integer or a pointer
+      # Evaluates the leading pointer argument every atomic builtin (__atomic_*
+      # and __sync_* alike) takes and returns [vreg, object type]. `name` is the
+      # spelling as written, so the diagnostics name the builtin the program
+      # actually called. The object must be an integer or a pointer
       # of one of ATOMIC_WIDTHS: a floating, aggregate or void target has no
       # atomic form here, and a width outside that pair has no instruction to
       # lower to. Any top-level qualifier on the target ("volatile rb_atomic_t *",
@@ -2639,6 +2643,93 @@ module Rubycc
                    "#{value_type.size}-byte object")
         end
         vreg
+      end
+
+      # One of gcc's legacy __sync_* builtins (Front::Parser::SYNC_BUILTINS).
+      # Every one is documented as a full barrier, which is exactly the order the
+      # atomic IR ops already carry, so nothing here has to ask for an order or
+      # weaken one — the family's whole difference from __atomic_* is in the
+      # argument layout, not in the machine sequence.
+      #
+      # Only the forms an existing IR op already means correctly are lowered; the
+      # bitwise ones with no matching op stay unrecognized identifiers (see
+      # SYNC_BUILTINS for the list and the reasoning).
+      def gen_builtin_sync(node)
+        name = node.token.value
+        if node.kind == :fence
+          emit(:atomic_fence)
+          return [nil, Type::Void]
+        end
+
+        ptr, value_type = gen_atomic_object_pointer(node.args[0], name)
+        case node.kind
+        when :release then gen_sync_lock_release(ptr, value_type)
+        when :bool_compare_and_swap, :val_compare_and_swap
+          gen_sync_compare_and_swap(node, ptr, value_type, name)
+        else gen_sync_rmw(node, ptr, value_type, name)
+        end
+      end
+
+      # The read-modify-write family — __sync_lock_test_and_set and the five
+      # fetch/modify spellings — all written "(ptr, value)". The kind the parser
+      # recorded is already the IR's, so this is #gen_atomic_rmw's emission
+      # without the memory-order argument to consume, and the result type is the
+      # object's: the value read for :exchange/:fetch_*, the value stored for
+      # :add_fetch/:sub_fetch/:or_fetch.
+      #
+      # A pointer-typed object takes its operand unscaled here too — measured
+      # separately for this family rather than assumed from the __atomic_* one:
+      # "__sync_fetch_and_add(&p, 1)" on an "int *" advances p by a single byte.
+      def gen_sync_rmw(node, ptr, value_type, name)
+        value = gen_atomic_operand(node.args[1], value_type, name)
+        dst = new_vreg
+        emit(:atomic_rmw, dst: dst, a: ptr, b: [value, node.kind], size: value_type.size)
+        [dst, value_type]
+      end
+
+      # "__sync_lock_release(ptr)": writes zero into the object and yields void.
+      # gcc documents it as the release half of __sync_lock_test_and_set's pair;
+      # :atomic_store is sequentially consistent, which is a sound strengthening
+      # of that (see #gen_builtin_atomic). The zero is materialized at the
+      # object's own width, so a pointer object is left null rather than
+      # half-cleared.
+      def gen_sync_lock_release(ptr, value_type)
+        zero = new_vreg
+        emit(:const, dst: zero, a: 0, size: value_type.size)
+        emit(:atomic_store, a: ptr, b: zero, size: value_type.size)
+        [nil, Type::Void]
+      end
+
+      # "__sync_bool_compare_and_swap(ptr, oldval, newval)" and its "val_" twin:
+      # if *ptr equals `oldval` it becomes `newval`. The boolean form yields
+      # whether that happened; the value form yields the value actually read.
+      #
+      # Unlike __atomic_compare_exchange_n these take `oldval` *by value*, while
+      # :atomic_cas — which owes its shape to that builtin — reads the expected
+      # value from memory and writes back through the same pointer on the failing
+      # path. The gap is closed by giving the comparison a private stack slot:
+      # `oldval` is stored into a fresh object, the object's address is handed to
+      # :atomic_cas, and the slot is read back afterwards.
+      #
+      # That read-back is precisely the "value actually read" the value form must
+      # return, in both outcomes: on failure :atomic_cas has overwritten the slot
+      # with what it found, and on success the value found is by definition the
+      # `oldval` still sitting there. The slot is fresh, so it cannot alias the
+      # atomic object and the aliasing case the write-back is guarded against
+      # never arises here.
+      def gen_sync_compare_and_swap(node, ptr, value_type, name)
+        oldval = gen_atomic_operand(node.args[1], value_type, name)
+        newval = gen_atomic_operand(node.args[2], value_type, name)
+        expected = new_vreg
+        emit(:object_addr, dst: expected, a: new_object(value_type.size))
+        emit(:store, a: expected, b: oldval, size: value_type.size)
+        swapped = new_vreg
+        emit(:atomic_cas, dst: swapped, a: ptr, b: [expected, newval], size: value_type.size)
+        return [swapped, Type::Bool] if node.kind == :bool_compare_and_swap
+
+        found = new_vreg
+        emit(:load, dst: found, a: expected, size: value_type.size)
+        [found, value_type]
       end
 
       # A value operand (the one stored, added, or exchanged in): evaluated and
@@ -5608,6 +5699,8 @@ module Rubycc
           Type::Void
         when Front::AST::BuiltinAtomic
           static_atomic_type(node)
+        when Front::AST::BuiltinSync
+          static_sync_type(node)
         when Front::AST::BuiltinAlloca
           # "__builtin_alloca(n)" yields a "void *" (see #gen_builtin_alloca), the
           # type CRuby's RB_ALLOCV macro relies on when it picks between the
@@ -5632,6 +5725,27 @@ module Rubycc
         when :fence then Type::Void
         when :store then Type::Void
         when :compare_exchange then Type::Bool
+        else
+          type = decay(static_type(node.args.first))
+          unless type.pointer?
+            error_at(node.args.first.token,
+                     "first argument to '#{node.token.value}' is not a pointer")
+          end
+
+          type.target
+        end
+      end
+
+      # The type of a __sync_* builtin without emitting code, mirroring
+      # #gen_builtin_sync: the barrier and the lock release are void, the boolean
+      # compare-and-swap is _Bool, and every other form — including
+      # __sync_val_compare_and_swap — takes the type of the object its first
+      # argument points at. As in #static_atomic_type only the pointer shape is
+      # checked; the operand validation belongs to the lowering.
+      def static_sync_type(node)
+        case node.kind
+        when :fence, :release then Type::Void
+        when :bool_compare_and_swap then Type::Bool
         else
           type = decay(static_type(node.args.first))
           unless type.pointer?

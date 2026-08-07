@@ -47,6 +47,10 @@ module Rubycc
                     __atomic_fetch_add __atomic_fetch_sub
                     __atomic_add_fetch __atomic_sub_fetch __atomic_or_fetch
                     __atomic_thread_fence
+                    __sync_fetch_and_add __sync_fetch_and_sub
+                    __sync_add_and_fetch __sync_sub_and_fetch __sync_or_and_fetch
+                    __sync_lock_test_and_set __sync_lock_release __sync_synchronize
+                    __sync_bool_compare_and_swap __sync_val_compare_and_swap
                     __asm__
                     __attribute__ __extension__].freeze
 
