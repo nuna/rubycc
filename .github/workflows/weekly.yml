@@ -27,6 +27,14 @@ name: weekly
         default: ""
         type: choice
         options: ["", "aarch64-glibc", "musl-aarch64"]
+      test_scope:
+        description: >-
+          Native aarch64 acceptance scope. Use smoke while iterating on the
+          container/test harness; use full for the final acceptance run.
+        required: false
+        default: "full"
+        type: choice
+        options: ["smoke", "full"]
 
 permissions:
   contents: read
@@ -177,9 +185,12 @@ jobs:
           platforms: arm64
 
       - name: Run the native aarch64 glibc acceptance
+        env:
+          AARCH64_TEST_SCOPE: ${{ inputs.test_scope || 'full' }}
         run: |
           docker run --rm --platform linux/arm64 \
             -v "$PWD":/w -w /w \
+            -e "AARCH64_TEST_SCOPE=${AARCH64_TEST_SCOPE}" \
             ruby:4.0 bash /w/.github/scripts/aarch64-glibc-acceptance.sh
 
       - name: Upload the aarch64 glibc acceptance logs

@@ -47,6 +47,15 @@ fi
 test -n "${AARCH64_LIBC}" && test -f "${AARCH64_LIBC}"
 export RUBYCC_AARCH64_SYSROOT_LIBC="${AARCH64_LIBC}"
 
+TEST_SCOPE=${AARCH64_TEST_SCOPE:-full}
+case "${TEST_SCOPE}" in
+  smoke|full) ;;
+  *)
+    echo "unsupported AARCH64_TEST_SCOPE=${TEST_SCOPE} (expected smoke or full)" >&2
+    exit 2
+    ;;
+esac
+
 mkdir -p tmp/ci
 
 {
@@ -67,16 +76,43 @@ bundle install --jobs 4 --retry 3
 # fails the job if either phase is red.
 set +e
 
-bundle exec rake test TESTOPTS="--verbose" 2>&1 | tee tmp/ci/aarch64-glibc-suite.log
+if [ "${TEST_SCOPE}" = smoke ]; then
+  echo "test scope: smoke (four native aarch64 acceptance tests; M2 is deferred)"
+  # Rake's test loader treats the argument after --name as another file. Load
+  # the small fixed file set directly so one regex can select one representative
+  # test from each acceptance layer without paying for the full suite.
+  bundle exec ruby -Ilib:test \
+    -e 'files = ARGV.shift(4); files.each { |file| require File.expand_path(file) }' \
+    test/test_aarch64_backend.rb \
+    test/test_aarch64_execution.rb \
+    test/test_aarch64_self_link.rb \
+    test/test_aarch64_shared_object.rb \
+    --name '/test_(prologue_and_epilogue_frame_record|signed_arithmetic|main_return_status|self_contained_exports_run_under_qemu)/' \
+    --verbose 2>&1 | tee tmp/ci/aarch64-glibc-suite.log
+else
+  echo "test scope: full"
+  bundle exec rake test TESTOPTS="--verbose" 2>&1 | tee tmp/ci/aarch64-glibc-suite.log
+fi
 suite_status=${PIPESTATUS[0]}
 
-ruby tools/ci_check_skips.rb tmp/ci/aarch64-glibc-suite.log 2>&1 \
+if [ "${TEST_SCOPE}" = smoke ]; then
+  CI_MAX_SKIPS=0 CI_MIN_RUNS=4 ruby tools/ci_check_skips.rb \
+    tmp/ci/aarch64-glibc-suite.log 2>&1 \
+    | tee tmp/ci/aarch64-glibc-skip-check.log
+else
+  ruby tools/ci_check_skips.rb tmp/ci/aarch64-glibc-suite.log 2>&1 \
   | tee tmp/ci/aarch64-glibc-skip-check.log
+fi
 skip_status=${PIPESTATUS[0]}
 
-RMAKE_ACCEPTANCE=1 ruby tools/m2_acceptance.rb /tmp/rubycc-aarch64-glibc-m2 2>&1 \
-  | tee tmp/ci/aarch64-glibc-m2-acceptance.log
-m2_status=${PIPESTATUS[0]}
+if [ "${TEST_SCOPE}" = smoke ]; then
+  echo "M2 acceptance: deferred in smoke scope" | tee tmp/ci/aarch64-glibc-m2-acceptance.log
+  m2_status=0
+else
+  RMAKE_ACCEPTANCE=1 ruby tools/m2_acceptance.rb /tmp/rubycc-aarch64-glibc-m2 2>&1 \
+    | tee tmp/ci/aarch64-glibc-m2-acceptance.log
+  m2_status=${PIPESTATUS[0]}
+fi
 
 set -e
 
