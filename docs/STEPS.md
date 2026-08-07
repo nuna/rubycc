@@ -8353,9 +8353,45 @@ R10 通過率は **25/36 = 69.4% → 26/36 = 72.2%**(90% には 33 件、あと 
 
 ---
 
+## atomic-type-5 — 実行ビットの食い違いを常時検査する(M5 H4)
+
+atomic-type-3 で真因が `core.filemode = false` だと分かったので、**伝わる形**にした。
+`.git/config` は追跡されないため、設定を直しても他の作業者には届かない。
+テストなら届く。
+
+`test/test_repo_file_modes.rb` は **`git ls-files -s` を読む**。
+`File.executable?` では**原理的に捕まらない** — 作業ツリーは 755 に見えるのに
+index が 100644、というのがこの欠陥そのものだからである。
+
+方針はディレクトリで割った。リポジトリが既にきれいに割れていたためである:
+
+| 群 | モード | 起動のされ方 |
+|---|---|---|
+| `exe/`・`.github/scripts/` | **100755** | コマンドとして直に起動(gem の bindir、`run:` ステップ) |
+| それ以外 | **100644** | インタプリタ経由(`ruby tools/x.rb`・`sh script.sh`) |
+
+検査は 3 本:
+
+1. 上記 2 ディレクトリの追跡ファイルが 100755 であること
+   (失敗時は `git update-index --chmod=+x <path>` をそのまま出す)
+2. **それ以外に 100755 が無い**こと — 逆方向。実際 `.claude/agents/*.md` と
+   `references/*.md` が作業ツリーで 755 になっていた(明らかに意図ではない)
+3. 100755 のファイルが `#!` で始まること
+
+**両方向で実際に落ちることを確かめた**(index を一時的に壊して実測)。
+片方向だけ確かめると、次に逆を踏んだとき気づけない。
+
+作業ツリー側の 755 も 644 に揃え、**このチェックアウトの `core.filemode` を `true` に
+戻した**(以後 `chmod +x` が `git status` に出る)。ただしこれは局所設定で、
+**共有される防止策はテストの方**である。
+
+---
+
 ## 現在のテスト規模
 
-atomic-type-4 完了時点: **2,902 runs / 9,059 assertions / 0 failures / 0 errors / 44 skips**
+atomic-type-5 完了時点: **2,905 runs / 9,065 assertions / 0 failures / 0 errors / 44 skips**
+(atomic-type-4 から +3 = リポジトリの実行ビット検査)
+(以前) atomic-type-4 完了時点: **2,902 runs / 9,059 assertions / 0 failures / 0 errors / 44 skips**
 (atomic-type-2 からテストメソッドは増えず、assertions のみ +249 = nio4r の記録が
 `data/verified_gems.json` を舐めるドクターのテストの照合対象に入ったため)
 (以前) atomic-type-2 完了時点: **2,902 runs / 8,810 assertions / 0 failures / 0 errors / 44 skips**

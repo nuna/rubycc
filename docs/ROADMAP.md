@@ -127,6 +127,17 @@ musl全スイートとaarch64 Ruby上のM4全面受入れ。
   - **検査は「自分が書いた値」を見てはいけない**。テストがオプションや期待値を
     本体から**書き写す**と、自分の転記を自分で検証するだけになる
     (STEPS.md Step 207 の `rubycc_build_options` 共有がその対処)。
+- **実行ビットは index が真実、作業ツリーは嘘をつく**。このチェックアウトは
+  `core.filemode = false` を持つので、`chmod +x` しても git は 100644 のまま記録し、
+  `git status` は黙る。**手元で実行できるのに CI では "permission denied"** という形で、
+  Step 174・198 の 2 回、90 分の実走を潰した。方針は 2 つ:
+  - **`exe/` と `.github/scripts/` だけが 100755**(コマンドとして直に起動されるため)。
+    足すときは `git update-index --chmod=+x` で **index に入れる**。
+  - **それ以外は 100644**。`tools/` は shebang を持つが**インタプリタ経由で起動する**
+    (`ruby tools/x.rb`)。`bundle exec tools/x.rb` は `not executable` で拒否される。
+
+  この不変条件は `test/test_repo_file_modes.rb` が `git ls-files -s` を読んで常時検査する
+  (`File.executable?` では上記の理由で捕まらない)。
 - **コメント**: 「なぜそうなっているか」を説明する英語の説明的コメントを既存と同じ密度で
   書く(type.rb / backend/x86_64.rb が基準)。
 - **R11**: chibicc/tcc/8cc/lacc・教材(compilerbook 等)に類似したファイル構成・
