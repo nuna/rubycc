@@ -176,17 +176,49 @@ module Rubycc
       # diagnosed as unsupported by the generator. `token` is the opening "(".
       CompoundLiteral = Data.define(:type, :initializer, :token)
 
-      # A null pointer constant in the forms this front end can recognize here:
-      # an integer literal whose value is 0 (which also covers a character
-      # constant like '\0', since the lexer lowers it to an integer 0), or that
-      # literal cast to void *. A null pointer constant converts implicitly to
-      # any pointer type in an assignment, an initializer, an argument, a
-      # return, an "=="/"!=" comparison and the arms of "?:".
+      # A null pointer constant (ISO C11 6.3.2.3p3): "An integer constant
+      # expression with the value 0, or such an expression cast to type
+      # void *, is called a null pointer constant." #integer_constant_zero?
+      # below recognizes the first alternative on its own — that is exactly
+      # ConstantEvaluator's notion of an expression that folds to the integer
+      # 0, which already covers a plain integer literal 0, a character
+      # constant like '\0' (the lexer lowers it to an IntLit 0), an
+      # enumeration constant of value 0 (the parser folds a reference to one
+      # into an IntLit 0 on the spot, see #parse_primary_expression), a purely
+      # arithmetic fold such as "1 - 1", and — because 6.6p6 allows a cast to
+      # an integer type inside an integer constant expression — any of those
+      # cast to another integer type, such as "(unsigned long)0" or
+      # "(char)0". A cast to a *floating* type is never allowed in an integer
+      # constant expression (6.6p6 restricts a constant-expression cast to
+      # converting to an integer type, outside sizeof/alignof/_Alignof), so
+      # "(double)0" is correctly excluded here — matching the "invalid
+      # operands" gcc gives comparing it against a pointer, rather than the
+      # silent accept a floating cast would otherwise get. The second
+      # alternative — that whole expression additionally cast to "void *" — is
+      # the explicit Cast case below, since ConstantEvaluator itself only
+      # folds a cast to an *integer* destination.
+      #
+      # A null pointer constant converts implicitly to any pointer type in an
+      # assignment, an initializer, an argument, a return, an "=="/"!="
+      # comparison and the arms of "?:".
       def self.null_pointer_constant?(node)
-        return true if node.is_a?(IntLit) && node.value.zero?
+        return true if integer_constant_zero?(node)
 
         node.is_a?(Cast) && node.type.pointer? && node.type.target.void? &&
-          node.operand.is_a?(IntLit) && node.operand.value.zero?
+          integer_constant_zero?(node.operand)
+      end
+
+      # Whether `node` is an integer constant expression (6.6) whose value is
+      # 0, via the shared ConstantEvaluator — not just a syntactic IntLit, so
+      # a foldable expression (an enum constant, "1 - 1", a cast to another
+      # integer type) is recognized too. Not a constant expression at all (a
+      # variable, a call, ...) or a division by a folded-zero divisor rescues
+      # to false rather than propagating, since this is a yes/no predicate,
+      # not a context that should surface either as a diagnostic.
+      def self.integer_constant_zero?(node)
+        ConstantEvaluator.evaluate(node).zero?
+      rescue ConstantEvaluator::NotConstant, ConstantEvaluator::DivisionByZero
+        false
       end
 
       # Simple assignment `target = value`. `target` is a VariableRef or a

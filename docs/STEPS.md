@@ -8712,9 +8712,61 @@ c-testsuite 00209 の skip 理由)そのもので、`f()` の挙動は今回変�
 
 ---
 
+## atomic-type-11 — 空ポインタ定数の判定が規格より狭かった(M5 H4)
+
+mysql2 の**最後のブロッカー**:
+
+```
+client.c:1213:74: error: invalid operands to binary expression
+  if (rb_thread_call_without_gvl(...) == Qfalse)
+```
+
+CRuby の `Qfalse` は `((VALUE)RUBY_Qfalse)` で、`RUBY_Qfalse` は**値 0 の enum 定数**。
+`AST.null_pointer_constant?` は「値 0 の整数リテラル」か「それを `void *` へキャストしたもの」
+しか認めていなかった。
+
+**これは gcc 拡張への追随ではなく、rubycc 側の適合性の欠陥である。** ISO C11 6.3.2.3p3:
+
+> **An integer constant expression with the value 0**, or such an expression
+> cast to type `void *`, is called a null pointer constant.
+
+整数型へのキャストは 6.6p6 により**整数定数式のまま**なので、`(unsigned long)0` は
+規格の第 1 の選択肢そのものに当たる。`void *` へのキャストは**追加の**選択肢であって、
+唯一の形ではなかった。
+
+### 実測した境界
+
+| 式 | gcc |
+|---|---|
+| `p == (VALUE)0` | 受理・無警告 |
+| `p == (VALUE)(1 - 1)` | 受理・無警告 |
+| `p == (char)0` | 受理(`-Wpointer-compare` の警告は出るが受理する) |
+| `p == (VALUE)1` | `comparison between pointer and integer` = 空ポインタ定数ではない |
+| `p == (double)0` | **error**。浮動小数型は整数定数式ではない |
+
+### 既存の定数評価器に乗るだけで足りた
+
+`ConstantEvaluator#evaluate_cast` は既に
+「**整数型へのキャストのみ畳む・浮動小数型へのキャストは畳まない**」(6.6p6)という
+規約を持っていた。判定をそこへ委譲すると、`(VALUE)0` / `(char)0` / `(VALUE)(1-1)` /
+enum 定数が**一様に**「値 0 の整数定数式」として認識され、`(VALUE)1` は非ゼロ、
+`(double)0` は畳めない、で自然に落ちる。**新しい規則を書かずに済んだ。**
+
+**両方向をテストで固定した** — 受理側だけ書くと、次に広げすぎたときに気づけない。
+
+### 結果
+
+**`RUBYCC=1 gem install mysql2 --version 0.5.7` が成功する。**
+extconf の 18 プローブ通過 → 全 5 翻訳単位のコンパイル → `mysql2.so` の生成まで通った。
+
+---
+
 ## 現在のテスト規模
 
-atomic-type-10 完了時点: **2,944 runs / 9,342 assertions / 0 failures / 0 errors / 44 skips**
+atomic-type-11 完了時点: **2,949 runs / 9,355 assertions / 0 failures / 0 errors / 44 skips**
+(atomic-type-10 から +5 = 整数キャスト形の空ポインタ定数の gcc 差分実行(x86_64・aarch64)・
+`(VALUE)1` と `(double)0` が落ちることの診断 + サンプル 1 本)
+(以前) atomic-type-10 完了時点: **2,944 runs / 9,342 assertions / 0 failures / 0 errors / 44 skips**
 (atomic-type-8 から +14 = K&R 定義の gcc 差分実行(x86_64・aarch64)・制約違反の診断・
 既定の実引数拡張・プロトタイプ併記の受理/拒否 4 件 + サンプル 1 本。
 atomic-type-9 は測定と文書のみでテスト増なし)
