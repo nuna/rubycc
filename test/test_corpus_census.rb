@@ -36,6 +36,13 @@ class TestCorpusCensus < Minitest::Test
                      "gem entry #{entry[:name]} declares upstream_tests other than false: " \
                      "#{entry[:upstream_tests].inspect}"
       end
+      # :control_suite_passes is the same shape: absent means "not claimed", and
+      # false is the only value that says anything.
+      if entry.key?(:control_suite_passes)
+        assert_equal false, entry[:control_suite_passes],
+                     "gem entry #{entry[:name]} declares control_suite_passes other than " \
+                     "false: #{entry[:control_suite_passes].inspect}"
+      end
     end
 
     names = list.map { |e| e[:name] }
@@ -154,6 +161,28 @@ class TestCorpusCensus < Minitest::Test
     assert CENSUS.excluded_by_upstream_tests?({ upstream_tests: false })
     refute CENSUS.excluded_by_upstream_tests?({ upstream_tests: true })
     refute CENSUS.excluded_by_upstream_tests?({}), "absent field must default to not-excluded"
+  end
+
+  def test_excluded_by_control_suite_detection
+    assert CENSUS.excluded_by_control_suite?({ control_suite_passes: false })
+    refute CENSUS.excluded_by_control_suite?({ control_suite_passes: true })
+    refute CENSUS.excluded_by_control_suite?({}), "absent field must default to not-excluded"
+  end
+
+  # Every control_suite_passes: false is a claim that a --control run was made
+  # and matched, and the numbers that back it belong in the note (see the field
+  # documentation in gems.rb). A bare `control_suite_passes: false` with nothing
+  # to re-check is exactly the unfalsifiable exclusion the field must not become.
+  def test_control_suite_exclusions_cite_their_measurement
+    Corpus::Gems::LIST.select { |e| e[:control_suite_passes] == false }.each do |entry|
+      note = entry[:note].to_s
+      assert_includes note, "reference compiler",
+                      "#{entry[:name]} excludes itself from the R10 denominator without saying " \
+                      "the claim is about the reference compiler"
+      assert_match(/Measured on \d{4}-\d{2}-\d{2}/, note,
+                   "#{entry[:name]} excludes itself from the R10 denominator without dating the " \
+                   "measurement that backs it")
+    end
   end
 
   # census_gem's upstream_tests exclusion is checked right after a cached .gem

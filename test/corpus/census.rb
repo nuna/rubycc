@@ -99,6 +99,15 @@ module Corpus
       spec[:upstream_tests] == false
     end
 
+    # The second way that evidence becomes unobtainable: the suite exists and
+    # runs, but does not pass with the reference compiler either, so no compiler
+    # could earn the (d)-level record. Only ever set from a `--control`
+    # measurement -- see the field's documentation in gems.rb, which is where the
+    # reasoning and its limits live rather than being restated here.
+    def excluded_by_control_suite?(spec)
+      spec[:control_suite_passes] == false
+    end
+
     # Detect a configure / mini_portile dependency in extconf text (R10 exclusion).
     # Conservative so the pure-C corpus is not falsely excluded: matches an
     # autoconf-style `configure` invocation via a shell call, or mini_portile.
@@ -252,6 +261,14 @@ module Corpus
         result[:reason] = "upstream ships no test suite — R10's \"gem's own tests passed\" " \
                            "evidence (verification level (d)) is impossible to obtain " \
                            "(docs/OUT-OF-SCOPE-GEMS.md basis D)"
+        return result
+      end
+
+      if excluded_by_control_suite?(spec)
+        result[:status] = :excluded
+        result[:reason] = "upstream suite does not pass with the reference compiler either " \
+                           "(measured with tools/verify_gem_tests.rb --control) — no compiler " \
+                           "can earn R10's verification level (d) here"
         return result
       end
 
@@ -458,7 +475,15 @@ module Corpus
              "gem's own test suite passing against the rubycc-built extension " \
              "(`data/verified_gems.json`, verification level (d)). The denominator below " \
              "is gems that passed the R10 machine gate above (`status: ok`); the numerator " \
-             "is how many of those have a `data/verified_gems.json` record.\n\n"
+             "is how many of those have a `data/verified_gems.json` record.\n\n" \
+             "Two kinds of gem are excluded from the denominator because *no* compiler " \
+             "could earn that record for them: one whose upstream ships no test suite at " \
+             "all, and one whose upstream suite does not pass with the reference compiler " \
+             "either (measured with `tools/verify_gem_tests.rb --control`). Both are " \
+             "declared per gem in `test/corpus/gems.rb`, whose field documentation states " \
+             "what evidence each claim requires — in particular, a gem whose control run " \
+             "fails *differently* from its rubycc run is not excluded, because the " \
+             "difference is rubycc's to answer for.\n\n"
       out << "| R10 gate passes (denominator) | verified (numerator) | pass rate | remaining to 90% |\n"
       out << "|---|---|---|---|\n"
       out << format(

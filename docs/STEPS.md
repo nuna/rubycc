@@ -8531,9 +8531,87 @@ oj と同じ形である(あちらも gcc 対照が落ちる)。R10 の分母を
 
 ---
 
+## atomic-type-8 — 対照を機械化し、分母の 2 つ目の除外理由を入れた(M5 H4)
+
+R10 の分母には「**どの実装で建てても (d) 水準の証拠が取れない gem**」が混ざっていた。
+corpus-denominator-1 で 1 つ目(上流にテストが無い)を外したので、
+**2 つ目(上流テストが対照コンパイラでも通らない)**をここで外す。
+
+ただしこれは **corpus-denominator-1 より強い主張**である。「テストが落ちる」と
+「rubycc と無関係な理由でテストが落ちる」は **rubycc 側だけを見ても区別がつかない**。
+nio4r がその反例として立っている — 44 failures で環境要因として記録され、
+**rubycc を 1 行も変えずに 0 failures** になった。だから**測定を先に道具にした**。
+
+### `tools/verify_gem_tests.rb --control`
+
+`RUBYCC=1` を付けずに**まったく同じ手順**を回す。要点は 3 つ:
+
+- **別の scratch GEM_HOME**(`gemhome-control`)。同じものを使い回すと、
+  どちらのビルドの `.so` が残っているのか分からなくなる。
+- **ビルド証拠の検査を裏返す**。通常は「rubycc が使われた証拠」が無ければ失敗にするが、
+  対照では **rubycc の痕跡が有ったら失敗**にする。対照が黙って rubycc を使ってしまったら、
+  比較が無意味になったことに気づけない。既存の sanity チェック(拡張がロードされずに
+  テストが通るのを防ぐ)と同じ種類のガードである。
+- **`--update` との併用を禁止**。対照の結果を「検証済み」として記録するのは、
+  このツールが存在する理由そのものに反する。
+
+これは ROADMAP §2 の不変条件「**差分テストは、対照と自分を同じ条件に置く**」の機械化でもある。
+同じ落とし穴を 4 回踏んだ実績があり、5 回目は人手の注意では防げない。
+
+### 測った結果 — 3 通りに割れた
+
+| gem | 対照(gcc) | rubycc | 判定 |
+|---|---|---|---|
+| byebug | 535 runs / 22 fail / 6 err / 2 skip | **完全一致** | 除外 |
+| debug | 305 tests / 1 fail / 1 omission | **完全一致** | 除外 |
+| unicorn | 10 err・1 err・3 fail(ファイル別) | **完全一致** | 除外 |
+| oj | 627 runs / 37 fail / **35 err** | 627 runs / 49 fail / **14 err** | **除外しない** |
+| puma | 840 runs / 6 fail / **7 err** | 840 runs / 6 fail / **8 err** | **除外しない** |
+
+**除外は「対照と数値が一致したときだけ」に限った。** 落ち方が違うということは、
+その差は rubycc が出しているということで、**追うべき欠陥であって縮めるべき分母ではない**。
+この線引きは `test/corpus/gems.rb` の `:control_suite_passes` の説明に書いた。
+
+puma は **1 error 差**まで来ている。サーバを立てる時間依存のスイートなので
+再測定が要るが、**どちらにせよ除外しない側**なので分母はそのままにした。
+**保守的に外す方へ倒す**のが、分母を動かす変更での正しい誤り方である。
+
+### 除外の前に確かめたことが 2 件を救った
+
+debug と puma は最初 `UNPARSABLE` で、対照でも同じだった。中身を見たら
+**テスト依存 gem が無いだけ**だった:
+
+| gem | 欠けていたもの |
+|---|---|
+| debug | `test/unit/rr`(gem `test-unit-rr`) |
+| puma | `minitest/proveit`・`minitest/stub_const`・`minitest/mock` ほか 5 本 |
+
+**除外せずに入れたら走った**(debug 305 tests、puma 840 runs)。
+「対照でも落ちる」で機械的に外していたら、**測れるものを測らずに捨てていた**。
+
+### ツール自身の欠陥 — ピン留めが後から効かなくなる
+
+puma は minitest を 5.x に固定する必要がある(6 系は `minitest/mock` を別 gem に
+出しており、その別 gem は minitest ~> 5 に依存するので、6 系が activate された時点で
+require が満たせない)。ところが**ピン留めの掃除が「未インストールのとき」しか
+走っていなかった**。scratch GEM_HOME は全レシピ共有なので、後から走る byebug の
+**ピン無し `minitest`** が 6.0.6 を引き戻し、puma が `require "minitest/mock"` で死ぬ。
+
+**共有環境が後から書き換わる**形の事故で、症状(LoadError)は原因を少しも示さない。
+掃除を**毎回**走らせるようにした。
+
+### 結果
+
+R10 通過率 **26/36 = 72.2% → 26/33 = 78.8%**(90% には 30 件、**あと 4 件**)。
+
+---
+
 ## 現在のテスト規模
 
-atomic-type-6 完了時点: **2,928 runs / 9,230 assertions / 0 failures / 0 errors / 44 skips**
+atomic-type-8 完了時点: **2,930 runs / 9,248 assertions / 0 failures / 0 errors / 44 skips**
+(atomic-type-6 から +2 = `:control_suite_passes` の検出と、除外が測定を引用していることの検査。
+atomic-type-7 はヘッダ追加のため ABI ハーネス既存ケースへの追記でテストメソッドは増えない)
+(以前) atomic-type-6 完了時点: **2,928 runs / 9,230 assertions / 0 failures / 0 errors / 44 skips**
 (atomic-type-5 から +23 = `__sync_*` の gcc 差分実行(x86_64・aarch64)・
 未実装綴りの undeclared identifier・アリティ違反の診断 + サンプル 1 本)
 (以前) atomic-type-5 完了時点: **2,905 runs / 9,065 assertions / 0 failures / 0 errors / 44 skips**

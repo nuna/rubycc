@@ -38,6 +38,7 @@
 #   ruby tools/verify_gem_tests.rb --update --step ID <gem>...   # ...and record the passes
 #   ruby tools/verify_gem_tests.rb --update --step ID --notes TEXT <gem>
 #   ruby tools/verify_gem_tests.rb --data /tmp/copy.json --update --step ID <gem>
+#   ruby tools/verify_gem_tests.rb --control <gem>...             # same suite, host cc
 #   VERIFY_WORK=/path/to/work ruby tools/verify_gem_tests.rb ...
 #
 # Options:
@@ -47,6 +48,9 @@
 #   --notes TEXT       notes for a *new* entry (existing entries keep their notes)
 #   --data PATH        database file to read/update (default: data/verified_gems.json)
 #   --list             print the recipe table and exit
+#   --control          run the same recipe against the host cc instead of rubycc,
+#                      in a separate scratch GEM_HOME (refuses --update: a control
+#                      run must never be recorded as "verified")
 #
 # The work directory (VERIFY_WORK, default <tmpdir>/rubycc_verify_gem_tests) is
 # always kept: the tarballs and the scratch GEM_HOME are reused by later runs,
@@ -713,7 +717,12 @@ RECIPES = {
     version: "1.11.1",
     tarball: "https://github.com/ruby/debug/archive/refs/tags/v1.11.1.tar.gz",
     sos: { "lib/debug/debug.so" => "lib/debug/debug.so" },
-    test_deps: %w[test-unit],
+    # test-unit-rr provides the "test/unit/rr" every console test requires; it is
+    # a test dependency the .gem does not carry, and without it the suite dies at
+    # load with a LoadError rather than running (measured, and identically so
+    # under --control, which is what proved it was a missing gem rather than a
+    # rubycc failure).
+    test_deps: %w[test-unit test-unit-rr],
     runner: :test_unit,
     load_paths: %w[lib test],
     test_glob: "test/console/*_test.rb",
@@ -838,7 +847,21 @@ RECIPES = {
     version: "8.0.2",
     tarball: "https://github.com/puma/puma/archive/refs/tags/v8.0.2.tar.gz",
     sos: { "lib/puma/puma_http11.so" => "lib/puma/puma_http11.so" },
-    test_deps: %w[minitest],
+    # minitest-proveit is required by puma's own test/helper.rb; like debug's
+    # test-unit-rr it is absent from the .gem and its absence kills the suite at
+    # load time, in the control run just as much as the rubycc one.
+    # puma's test/helper.rb and its Gemfile name the whole set below; the .gem
+    # carries none of them, and each missing one kills the suite at load rather
+    # than failing a test. They were found one at a time by --control runs, which
+    # is what proved every one of them was a missing gem and not a rubycc defect.
+    test_deps: %w[minitest minitest-proveit minitest-stub-const
+                  minitest-retry concurrent-ruby rack rackup localhost],
+    # minitest must stay on the 5.x line: puma's helper.rb requires
+    # "minitest/mock", which minitest 6 moved out into a separate gem that in
+    # turn depends on minitest ~> 5 -- so a 6.x activation makes the require
+    # unsatisfiable no matter which extra gems are installed. 5.27.0 is the
+    # newest 5.x and satisfies the Gemfile's ">= 5.26".
+    test_dep_versions: { "minitest" => "5.27.0" },
     runner: :test_unit,
     load_paths: %w[lib test],
     test_glob: "test/test_*.rb",
@@ -860,18 +883,19 @@ RECIPES = {
 # --- CLI --------------------------------------------------------------------
 
 options = { gems: [], all: false, update: false, step: nil, notes: nil,
-            data: Rubycc::Doctor::VerifiedGems::DEFAULT_PATH, list: false }
+            data: Rubycc::Doctor::VerifiedGems::DEFAULT_PATH, list: false, control: false }
 
 args = ARGV.dup
 until args.empty?
   arg = args.shift
   case arg
-  when "--all"    then options[:all] = true
-  when "--update" then options[:update] = true
-  when "--list"   then options[:list] = true
-  when "--step"   then options[:step] = (args.shift || abort("--step needs a step number"))
-  when "--notes"  then options[:notes] = (args.shift || abort("--notes needs text"))
-  when "--data"   then options[:data] = (args.shift || abort("--data needs a path"))
+  when "--all"     then options[:all] = true
+  when "--update"  then options[:update] = true
+  when "--list"    then options[:list] = true
+  when "--control" then options[:control] = true
+  when "--step"    then options[:step] = (args.shift || abort("--step needs a step number"))
+  when "--notes"   then options[:notes] = (args.shift || abort("--notes needs text"))
+  when "--data"    then options[:data] = (args.shift || abort("--data needs a path"))
   when "-h", "--help"
     # The file's own header comment is the usage text: skip the shebang and the
     # magic comment, then print the comment block that follows.
@@ -932,13 +956,41 @@ end
 # installs into the developer's real gem home (and, under bundler, can rewrite
 # this repository's state). Everything below therefore threads an explicit
 # --install-dir as well as GEM_HOME/GEM_PATH.
+#
+# --control uses a *second* scratch GEM_HOME (gemhome-control) rather than
+# reusing the rubycc one: sharing it would leave both builds' .so files mixed
+# together on disk with no way to tell, after the fact, which build produced
+# what got tested.
 
 def gem_home
-  File.join(WORK_DIR, "gemhome")
+  File.join(WORK_DIR, $control_mode ? "gemhome-control" : "gemhome")
 end
 
 def gem_env
   { "GEM_HOME" => gem_home, "GEM_PATH" => gem_home, "RUBYCC" => "0" }
+end
+
+# The install command line every gem install shares, whichever cc ends up
+# building it. Only the env passed alongside it (gem_env for --control,
+# gem_env.merge("RUBYCC" => "1") for the rubycc path) decides which compiler
+# runs -- and for --control, the rubycc gem is never installed into this
+# scratch GEM_HOME at all (see install_through_control), so RUBYCC has no
+# rubygems_plugin.rb to be read by in the first place.
+def install_args(name, version, recipe)
+  cached = cached_gem_path(name, version)
+  args = ["gem", "install", cached || name]
+  args.concat(["--version", version]) unless cached
+  args.concat(["--install-dir", gem_home, "--no-document"])
+  args << "--local" if cached
+  # `gem install /path/to/pkg.gem --local` resolves dependencies from the
+  # local source index only; it does not use already-installed gems in the
+  # scratch GEM_HOME. The cached packages are used specifically for an offline
+  # retry, so dependency activation is still checked by the suite below while
+  # the target package is installed without a registry lookup.
+  args << "--ignore-dependencies" if cached
+  extconf_args = Array(recipe[:extconf_args])
+  args.concat(["--", *extconf_args]) unless extconf_args.empty?
+  args
 end
 
 # Versions of +name+ present in the scratch GEM_HOME, newest last. The glob
@@ -994,15 +1046,21 @@ end
 def ensure_test_dep(name, version = nil)
   if version
     requirement = Gem::Requirement.new("=#{version}")
-    return if installed_versions(name).any? { |installed| requirement.satisfied_by?(installed) }
 
     # RubyGems activates the newest installed version when a test does a plain
-    # require, so remove incompatible cached versions from this scratch GEM_HOME
-    # before installing the pinned suite dependency.
+    # require, so an incompatible version merely *present* in this scratch
+    # GEM_HOME defeats the pin. The sweep therefore runs on every call, not only
+    # on the one that installs: the GEM_HOME is shared by every recipe in the
+    # run, so a later recipe with an unpinned test_dep can drag a newer version
+    # back in behind this one's back. Measured: puma pins minitest to the 5.x
+    # line, byebug's unpinned `minitest` reinstalled 6.0.6 afterwards, and puma's
+    # suite then died on `require "minitest/mock"` -- a load error that looks
+    # nothing like the shared-environment problem it actually was.
     installed_versions(name).reject { |installed| requirement.satisfied_by?(installed) }.each do |installed|
       run("gem", "uninstall", name, "--version", installed.to_s, "--force",
           "--install-dir", gem_home, env: gem_env, timeout: BUILD_TIMEOUT)
     end
+    return if installed_versions(name).any? { |installed| requirement.satisfied_by?(installed) }
   else
     return if gem_installed?(name)
   end
@@ -1045,21 +1103,23 @@ end
 def install_through_rubycc(name, version)
   uninstall_gem(name, version)
   step "RUBYCC=1 gem install #{name} #{version}"
-  recipe = RECIPES.fetch(name)
-  cached = cached_gem_path(name, version)
-  args = ["gem", "install", cached || name]
-  args.concat(["--version", version]) unless cached
-  args.concat(["--install-dir", gem_home, "--no-document"])
-  args << "--local" if cached
-  # `gem install /path/to/pkg.gem --local` resolves dependencies from the
-  # local source index only; it does not use already-installed gems in the
-  # scratch GEM_HOME. The cached packages are used specifically for an offline
-  # retry, so dependency activation is still checked by the suite below while
-  # the target package is installed without a registry lookup.
-  args << "--ignore-dependencies" if cached
-  extconf_args = Array(recipe[:extconf_args])
-  args.concat(["--", *extconf_args]) unless extconf_args.empty?
+  args = install_args(name, version, RECIPES.fetch(name))
   out, ok = run(*args, env: gem_env.merge("RUBYCC" => "1"), timeout: BUILD_TIMEOUT)
+  [out, ok]
+end
+
+# The --control counterpart: same command line (install_args), same scratch-home
+# machinery (gem_home already points at gemhome-control -- see $control_mode),
+# but no rubycc gem is ever built or installed here (install_rubycc! is only
+# called for the rubycc path -- see the bottom of the file), so there is no
+# rubygems_plugin.rb in this GEM_HOME to route the build anywhere but the host's
+# own cc/make. RUBYCC=0 on top of that is redundant insurance, not what does the
+# work.
+def install_through_control(name, version)
+  uninstall_gem(name, version)
+  step "gem install #{name} #{version} (control: host cc)"
+  args = install_args(name, version, RECIPES.fetch(name))
+  out, ok = run(*args, env: gem_env, timeout: BUILD_TIMEOUT)
   [out, ok]
 end
 
@@ -1098,6 +1158,32 @@ def rubycc_build_evidence(name, version)
   found << "mkmf.log:rubycc" if mkmf_logs.any? { |f| File.read(f).match?(RUBYCC_CC_RE) }
 
   [found, missing]
+end
+
+# The --control mirror of the check above: instead of demanding rubycc's
+# fingerprints, it demands their *absence*. A control run that quietly went
+# through rubycc anyway (a stray rubycc gem left over in gemhome-control from
+# an earlier bug, say) would make the comparison this flag exists for
+# meaningless, and nothing about the gem's own test output would say so -- the
+# suite would just look like it "passed under gcc" when it never ran under gcc
+# at all. Same three transcripts as rubycc_build_evidence, same regexes, the
+# opposite verdict.
+def control_build_evidence(name, version)
+  traces = []
+
+  make_outs = Dir.glob(File.join(gem_home, "extensions", "*", "*", "#{name}-#{version}", "gem_make.out"))
+  traces << "gem_make.out names rubycc's exe/rmake as $(MAKE)" if
+    make_outs.any? { |f| File.read(f).match?(RUBYCC_RMAKE_RE) }
+
+  makefiles = Dir.glob(File.join(installed_gem_dir(name, version), "**", "Makefile"))
+  traces << "a generated Makefile has CC = <rubycc>" if
+    makefiles.any? { |f| File.readlines(f).grep(/\ACC\s*=/).any? { |l| l.match?(RUBYCC_CC_RE) } }
+
+  mkmf_logs = Dir.glob(File.join(gem_home, "extensions", "*", "*", "#{name}-#{version}", "mkmf.log")) +
+              Dir.glob(File.join(installed_gem_dir(name, version), "**", "mkmf.log"))
+  traces << "mkmf.log names rubycc" if mkmf_logs.any? { |f| File.read(f).match?(RUBYCC_CC_RE) }
+
+  traces
 end
 
 # --- step 4/5: upstream source and .so injection -----------------------------
@@ -1344,7 +1430,8 @@ def verify_gem(name, recipe)
   result = { name: name, version: version, runner: recipe.fetch(:runner),
              status: nil, reason: nil, summary: nil, sanity: nil, evidence: [], output: nil }
 
-  install_out, install_ok = install_through_rubycc(name, version)
+  install_out, install_ok =
+    $control_mode ? install_through_control(name, version) : install_through_rubycc(name, version)
   unless install_ok
     result[:status] = :fail
     result[:reason] = "gem install failed"
@@ -1352,14 +1439,27 @@ def verify_gem(name, recipe)
     return result
   end
 
-  found, missing = rubycc_build_evidence(name, version)
-  result[:evidence] = found
-  unless missing.empty?
-    # The install "succeeded" but not through rubycc -- recording that as verified
-    # would be the same lie the sanity check guards against, so it is a failure.
-    result[:status] = :fail
-    result[:reason] = "no proof the build used rubycc: missing #{missing.join('; ')}"
-    return result
+  if $control_mode
+    traces = control_build_evidence(name, version)
+    result[:evidence] = traces.empty? ? ["no rubycc traces (host cc)"] : []
+    unless traces.empty?
+      # The install "succeeded" but is not the control it claims to be -- a
+      # silent rubycc build here would make the whole comparison meaningless,
+      # so it is a failure rather than a pass with a caveat.
+      result[:status] = :fail
+      result[:reason] = "not a control run: found rubycc traces: #{traces.join('; ')}"
+      return result
+    end
+  else
+    found, missing = rubycc_build_evidence(name, version)
+    result[:evidence] = found
+    unless missing.empty?
+      # The install "succeeded" but not through rubycc -- recording that as verified
+      # would be the same lie the sanity check guards against, so it is a failure.
+      result[:status] = :fail
+      result[:reason] = "no proof the build used rubycc: missing #{missing.join('; ')}"
+      return result
+    end
   end
 
   test_dep_versions = recipe.fetch(:test_dep_versions, {})
@@ -1457,6 +1557,7 @@ end
 def report(results)
   puts "=" * 100
   puts "gem test-suite verification against rubycc-built extensions"
+  puts "  mode      : #{$control_mode ? 'CONTROL (host cc, not rubycc)' : 'rubycc'}"
   puts "  work dir  : #{WORK_DIR}"
   puts "  gem home  : #{gem_home}"
   puts "  ruby      : #{RUBY_DESCRIPTION}"
@@ -1477,7 +1578,7 @@ def report(results)
   )
 
   print_table(
-    "[2] rubycc build evidence",
+    $control_mode ? "[2] control build evidence (absence of rubycc)" : "[2] rubycc build evidence",
     %w[gem evidence],
     results.map { |r| [r[:name], r[:evidence].empty? ? "—" : r[:evidence].join(", ")] }
   )
@@ -1493,9 +1594,10 @@ def report(results)
   end
 
   passes = results.count { |r| r[:status] == :pass }
+  mode_tag = $control_mode ? " (control: host cc)" : ""
   puts
   puts "-" * 100
-  puts "summary: #{passes}/#{results.size} PASS"
+  puts "summary: #{passes}/#{results.size} PASS#{mode_tag}"
   results.each do |r|
     s = r[:summary]
     detail = s ? s[:line] : (r[:reason] || "")
@@ -1737,6 +1839,18 @@ end
 
 # --- main --------------------------------------------------------------------
 
+# Read by gem_home and every install/evidence function below that has to tell
+# the rubycc path from the control path apart. A CLI-parsed value rather than a
+# parameter because both paths already share every function down to gem_home
+# itself, and threading one more argument through all of them would be a much
+# larger diff than this one flag deserves.
+$control_mode = options[:control]
+
+# Recording a control run as "verified" would defeat the reason this flag
+# exists: the whole point is to compare the rubycc run against something that
+# is deliberately *not* recorded, not to grow the database with host-cc runs.
+abort "--control cannot be combined with --update" if options[:control] && options[:update]
+
 if options[:list]
   print_table("recipes", %w[gem version runner sanity],
               RECIPES.map { |n, r| [n, r[:version], r[:runner], r.dig(:sanity, :expr)] })
@@ -1759,10 +1873,13 @@ abort "--step N is required with --update (it goes into the recorded evidence)" 
   options[:update] && options[:step].to_s.empty?
 abort "--data #{options[:data]} does not exist" if options[:update] && !File.file?(options[:data])
 
-step "verifying #{selected.join(', ')}"
+step "verifying #{selected.join(', ')}#{$control_mode ? ' (control: host cc)' : ''}"
 step "work dir: #{WORK_DIR} (kept and reused)"
 FileUtils.mkdir_p(WORK_DIR)
-install_rubycc!
+# The control path never installs rubycc into its scratch GEM_HOME: rubycc
+# itself is what is under test, and a control run exists precisely to show
+# what happens without it.
+install_rubycc! unless $control_mode
 
 results = selected.map { |name| verify_gem(name, RECIPES.fetch(name)) }
 report(results)

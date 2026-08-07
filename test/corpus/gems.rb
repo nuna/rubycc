@@ -28,8 +28,36 @@
 #                     (d)) is impossible to obtain when no suite exists, so
 #                     test/corpus/census.rb excludes such a gem from the R10
 #                     denominator. A gem that has a suite but currently fails
-#                     it, or one this project simply has not run yet, stays
-#                     true and stays in the denominator.
+#                     it for a reason nobody has measured, or one this project
+#                     simply has not run yet, stays true and stays in the
+#                     denominator.
+#   :control_suite_passes — false when the gem's upstream suite does not pass
+#                     with the *reference compiler* either. This is the second
+#                     way (d)-level evidence becomes unobtainable, and it is a
+#                     strictly stronger claim than "it fails here", so it may
+#                     only be set from a measurement:
+#
+#                       ruby tools/verify_gem_tests.rb --control <gem>
+#
+#                     which repeats the entire verification with the host cc in
+#                     place of rubycc, in a separate scratch GEM_HOME, and
+#                     refuses to run if it finds any rubycc trace in the build.
+#                     The measured control numbers belong in :note so the claim
+#                     can be re-checked without re-deriving it.
+#
+#                     Setting this without that measurement is the failure mode
+#                     the whole field exists to prevent: "the suite fails" and
+#                     "the suite fails for reasons that have nothing to do with
+#                     rubycc" look identical from the rubycc side alone, and
+#                     nio4r is the standing counter-example -- it was recorded
+#                     as environment-blocked with 44 failures and later passed
+#                     with 0 after no rubycc change at all.
+#
+#                     Note what this does *not* license: a gem whose control run
+#                     fails *differently* from its rubycc run is not covered.
+#                     Differing numbers mean rubycc contributes failures of its
+#                     own, which is a defect to chase, not a denominator to
+#                     shrink.
 module Corpus
   module Gems
     LIST = [
@@ -301,8 +329,14 @@ module Corpus
       {
         name: "byebug",
         version: "13.0.0",
+        control_suite_passes: false,
         note: "470,544,259 downloads. Single ext dir (ext/byebug); extconf.rb " \
-              "is 12 lines and only calls dir_config. C 5 files / H 1 file."
+              "is 12 lines and only calls dir_config. C 5 files / H 1 file. " \
+              "Out of the R10 denominator: the upstream suite does not pass " \
+              "with the reference compiler either. Measured on 2026-08-07 with " \
+              "tools/verify_gem_tests.rb, control and rubycc runs reporting the " \
+              "same numbers to the digit — 535 runs, 776 assertions, 22 " \
+              "failures, 6 errors, 2 skips (docs/STEPS.md atomic-type-8)."
       },
       {
         name: "pg",
@@ -359,17 +393,32 @@ module Corpus
       {
         name: "unicorn",
         version: "6.1.0",
+        control_suite_passes: false,
         note: "118,284,401 downloads. Single ext dir (ext/unicorn_http); C 2 " \
               "files / H 5 files, extconf.rb has no probes. Note: its " \
               "dependencies kgio and raindrops are also C extensions, so " \
-              "`gem install unicorn` additionally requires building those."
+              "`gem install unicorn` additionally requires building those; " \
+              "rubycc builds all three since atomic-type-6/7. Out of the R10 " \
+              "denominator: the upstream suite does not pass with the reference " \
+              "compiler either. Measured on 2026-08-07 by building both ways " \
+              "and running the same 15 files, with identical results — " \
+              "test_request.rb 10 errors, test_signals.rb 1 error, " \
+              "test_util.rb 3 failures. unicorn 6.1.0 is the newest release and " \
+              "announces at load that it was only tested up to MRI 3.0; the " \
+              "failures are Ruby 3.4 incompatibilities in its Ruby code " \
+              "(docs/STEPS.md atomic-type-7)."
       },
       {
         name: "debug",
         version: "1.11.1",
+        control_suite_passes: false,
         note: "116,172,789 downloads. Single ext dir (ext/debug); C 2 " \
               "files, extconf.rb 27 lines with no probes. Ruby's standard " \
-              "debugger."
+              "debugger. Out of the R10 denominator: the upstream suite does " \
+              "not pass with the reference compiler either. Measured on " \
+              "2026-08-07 with tools/verify_gem_tests.rb, control and rubycc " \
+              "runs reporting the same numbers to the digit — 305 tests, 571 " \
+              "assertions, 1 failure, 1 omission (docs/STEPS.md atomic-type-8)."
       },
       {
         name: "yajl-ruby",
