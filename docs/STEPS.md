@@ -8254,6 +8254,71 @@ upb は静的記憶域しか使わないので影響しない。
 
 ---
 
+## atomic-type-3 — `bundle exec` 下で検証ツールが動かなくなっていた(M5 H4)
+
+`bundle exec ruby tools/verify_gem_tests.rb nio4r` が **scratch GEM_HOME を作る前に**落ちた:
+
+```
+FAILED: gem build rubycc.gemspec --output /tmp/rubycc_verify_gem_tests/rubycc.gem
+Could not find rake-13.4.2, minitest-6.0.6, ... in locally installed gems (Bundler::GemNotFound)
+```
+
+`CLEARED_ENV` は `RUBYOPT` も `BUNDLE_*` も消していたのに、**bundler が子プロセスで
+復活していた**。犯人は **`BUNDLER_SETUP`** である。
+
+```ruby
+# rubygems.rb の末尾(3.4.5)
+require ENV["BUNDLER_SETUP"] if ENV["BUNDLER_SETUP"] && !defined?(Bundler)
+```
+
+`bundle exec` がこれに `bundler/setup` の絶対パスを入れる。すると **gem_prelude →
+rubygems.rb → bundler/setup** の順で、`RUBYOPT` を経由せずに bundler へ再突入する。
+bundler はチェックアウトの Gemfile を **scratch GEM_HOME に対して**解決しようとし、
+当然 gem が無いので死ぬ。**環境変数を消す方式の穴**で、消し漏らした 1 個が
+別経路(gem_prelude)から入ってきた形である。`BUNDLER_SETUP` を `CLEARED_ENV` に足した。
+
+### 実行ビットの件は「直さず、書き方を直した」
+
+`bundle exec tools/verify_gem_tests.rb` は **`not executable`** で拒否される。
+`tools/` の 5 本はすべて **git 上 100644**(shebang はあるが実行ビットは追跡していない)
+で、これはリポジトリの一貫した状態なので**そちらが正**とした。誤っていたのは
+**ヘッダの Usage が `ruby` を省いていたこと**である(CI も STEPS.md も
+`ruby tools/...` と書いていた)。`verify_gem_tests.rb` と `m2_acceptance.rb` の
+Usage を実態に合わせ、**なぜ `ruby` が要るのか**を併記した。
+
+### 真因は WSL2 ではなく `core.filemode = false` だった
+
+実行ビットは Step 174・198 でも踏んでいる。**3 回目なので原因を測った。**
+「WSL2 だから実行ビットが付かない」は**誤り**である:
+
+| 測ったこと | 結果 |
+|---|---|
+| チェックアウトの FS | `/dev/sdd` **ext4**(WSL2 の VHD 内。`/mnt/c` の DrvFs ではない) |
+| 作業ツリーで `chmod +x` | **効く**(リポジトリ直下に 755 のファイルを作れる) |
+| `core.filemode` | **`.git/config` に `false`**(グローバルではなくリポジトリ局所) |
+
+`core.filemode = false` は **git に作業ツリーのモードを見せなくする**。したがって
+`chmod +x` しても **index は 100644 のまま**で、`git status` は何も言わない。
+**手元では実行できるのに、CI のチェックアウトでは実行できない**という
+Step 174・198 そのものの形が、ここから出る。実際に食い違っていた:
+
+```
+.claude/agents/code-explore.md          worktree=755  index=100644
+references/role-based-model-selection.md worktree=755  index=100644
+tools/collect_mkmf_corpus.rb            worktree=755  index=100644
+tools/scan_popular_gems.rb              worktree=755  index=100644
+.github/scripts/musl-suite.sh           worktree=755  index=100755  ← 正しく追跡されている
+```
+
+**`.md` に実行ビットが付いている**のは明らかに意図ではない。
+`.github/scripts/*.sh` だけが 100755 で追跡できているのは、**追加時にたまたま
+index へ入った**からで、規律があったからではない。
+
+`core.filemode` は `.git/config`(**追跡されない**)なので、設定を直しても
+**他の作業者には伝わらない**。伝わる形の防止策は別ステップに切る。
+
+---
+
 ## 現在のテスト規模
 
 atomic-type-2 完了時点: **2,902 runs / 8,810 assertions / 0 failures / 0 errors / 44 skips**

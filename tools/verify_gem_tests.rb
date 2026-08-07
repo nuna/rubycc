@@ -31,18 +31,19 @@
 # Network (rubygems.org, GitHub) and external gems are required, so this is a
 # manual/CI tool like tools/m2_acceptance.rb -- never part of `rake test`.
 #
-# Usage:
-#   tools/verify_gem_tests.rb <gem>...                      # run and report only
-#   tools/verify_gem_tests.rb --all                         # every gem with a recipe
-#   tools/verify_gem_tests.rb --update --step N <gem>...    # ...and record the passes
-#   tools/verify_gem_tests.rb --update --step N --notes TEXT <gem>
-#   tools/verify_gem_tests.rb --data /tmp/copy.json --update --step N <gem>
-#   VERIFY_WORK=/path/to/work tools/verify_gem_tests.rb ...
+# Usage (spell out `ruby`: tools/ is not tracked with the executable bit, and
+# `bundle exec tools/...` would refuse it with "not executable"):
+#   ruby tools/verify_gem_tests.rb <gem>...                      # run and report only
+#   ruby tools/verify_gem_tests.rb --all                         # every gem with a recipe
+#   ruby tools/verify_gem_tests.rb --update --step ID <gem>...   # ...and record the passes
+#   ruby tools/verify_gem_tests.rb --update --step ID --notes TEXT <gem>
+#   ruby tools/verify_gem_tests.rb --data /tmp/copy.json --update --step ID <gem>
+#   VERIFY_WORK=/path/to/work ruby tools/verify_gem_tests.rb ...
 #
 # Options:
 #   --all              run every gem in RECIPES
 #   --update           write the PASSing gems into the database (default: read only)
-#   --step N           the step number quoted in the generated evidence (--update only)
+#   --step ID          the step ID quoted in the generated evidence (--update only)
 #   --notes TEXT       notes for a *new* entry (existing entries keep their notes)
 #   --data PATH        database file to read/update (default: data/verified_gems.json)
 #   --list             print the recipe table and exit
@@ -75,10 +76,17 @@ BUILD_TIMEOUT = 900
 # The tool normally runs under `bundle exec` inside the rubycc checkout, whose
 # RUBYOPT/BUNDLE_* would otherwise pull the repo's Gemfile into every scratch
 # GEM_HOME child and defeat the isolation. Passing nil to spawn unsets a variable.
+#
+# BUNDLER_SETUP is the one that does not announce itself. `bundle exec` sets it
+# to bundler/setup's absolute path, and rubygems.rb requires whatever it names
+# from gem_prelude -- so it re-enters bundler even with RUBYOPT and every
+# BUNDLE_* cleared, and bundler then resolves the checkout's Gemfile against the
+# scratch GEM_HOME and dies with "Could not find rake-... in locally installed
+# gems". Measured on bundler 2.6.9 / ruby 3.4.5.
 CLEARED_ENV = {
   "RUBYOPT" => nil, "RUBYLIB" => nil, "BUNDLE_GEMFILE" => nil,
   "BUNDLE_BIN_PATH" => nil, "BUNDLE_PATH" => nil, "BUNDLER_VERSION" => nil,
-  "RUBYGEMS_GEMDEPS" => nil
+  "BUNDLER_SETUP" => nil, "RUBYGEMS_GEMDEPS" => nil
 }.freeze
 
 # --- recipes ----------------------------------------------------------------
