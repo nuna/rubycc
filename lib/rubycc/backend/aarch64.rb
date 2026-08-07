@@ -102,9 +102,8 @@ module Rubycc
     # unsigned 64x64->128 multiply's high half (a single `umulh`) that a
     # synthesized 128-bit multiply needs. The atomic ops are covered too, built
     # from the armv8-a baseline load-acquire / store-release exclusive pair (see
-    # the atomics section below). Features the generator can still hand it that
-    # belong to the rest of A4 (alloca, the bit-scan builtins) are refused with
-    # an explicit "not yet supported" error rather than miscompiled.
+    # the atomics section below). The remaining A4 operation, alloca, is refused
+    # with an explicit "not yet supported" error rather than miscompiled.
     class AArch64
       # Result of compiling one function, the same shape the x86_64 backend
       # returns: `bytes` the machine code, `symbols` an array of
@@ -521,7 +520,7 @@ module Rubycc
         when :atomic_fence then emit_atomic_fence
         when :va_start then emit_va_start(inst.a)
         when :alloca then unsupported("alloca")
-        when :bit_scan then unsupported("bit-scan builtins")
+        when :bit_scan then emit_bit_scan(inst.dst, inst.a, inst.b, inst.size)
         else
           raise "aarch64: unsupported IR op: #{inst.op}"
         end
@@ -533,6 +532,18 @@ module Rubycc
       # the x86_64 backend's "mov eax, imm32" behavior.
       def emit_const(dst, value, size)
         materialize(A, value, size == 8 ? 64 : 32)
+        store_reg(A, dst)
+      end
+
+      # :bit_scan uses the AArch64 bit-reverse and count-leading-zeros
+      # instructions. CTZ is CLZ(RBIT(x)); CLZ is just CLZ(x). The operand is
+      # nonzero for the builtin forms tested by the front end, so the
+      # architecture's zero-result convention needs no extra branch here.
+      def emit_bit_scan(dst, src_vreg, direction, size)
+        load_reg(A, src_vreg)
+        base = size == 8 ? 0xDAC00000 : 0x5AC00000
+        emit_word(base | (A << 5) | A) if direction == :forward
+        emit_word((base + 0x1000) | (A << 5) | A)
         store_reg(A, dst)
       end
 

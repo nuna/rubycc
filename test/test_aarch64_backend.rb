@@ -112,6 +112,14 @@ class TestAArch64Backend < Minitest::Test
     (1 << 31) | (0b11011 << 24) | (0b110 << 21) | (rm << 16) | (0b11111 << 10) | (rn << 5) | rd
   end
 
+  def rbit(sf, rd, rn)
+    (sf == 1 ? 0xDAC00000 : 0x5AC00000) | (rn << 5) | rd
+  end
+
+  def clz(sf, rd, rn)
+    (sf == 1 ? 0xDAC01000 : 0x5AC01000) | (rn << 5) | rd
+  end
+
   # "Data-processing (2 source)":
   #   sf(31) 0(30) S(29)=0 11010110(28:21) Rm(20:16) opcode(15:10)
   #   Rn(9:5) Rd(4:0)
@@ -520,6 +528,17 @@ class TestAArch64Backend < Minitest::Test
   def test_mulhi_is_umulh
     assert_words [ldr_slot(A, 0), ldr_slot(B, 1), umulh(A, A, B), str_slot(A, 2)],
                  body_of(:mulhi, dst: 2, a: 0, b: 1, size: 8)
+  end
+
+  def test_bit_scan_uses_clz_and_rbit_for_both_widths
+    assert_words [ldr_slot(A, 0), rbit(0, A, A), clz(0, A, A), str_slot(A, 2)],
+                 body_of(:bit_scan, dst: 2, a: 0, b: :forward, size: 4)
+    assert_words [ldr_slot(A, 0), clz(0, A, A), str_slot(A, 2)],
+                 body_of(:bit_scan, dst: 2, a: 0, b: :reverse, size: 4)
+    assert_words [ldr_slot(A, 0), rbit(1, A, A), clz(1, A, A), str_slot(A, 2)],
+                 body_of(:bit_scan, dst: 2, a: 0, b: :forward, size: 8)
+    assert_words [ldr_slot(A, 0), clz(1, A, A), str_slot(A, 2)],
+                 body_of(:bit_scan, dst: 2, a: 0, b: :reverse, size: 8)
   end
 
   # Negation is a subtraction from the zero register.
@@ -1127,8 +1146,7 @@ class TestAArch64Backend < Minitest::Test
   # something plausible-looking.
   def test_later_milestone_ops_are_refused
     {
-      inst(:alloca, dst: 0, a: 1) => /alloca/,
-      inst(:bit_scan, dst: 0, a: 1, b: :forward, size: 4) => /bit-scan builtins/
+      inst(:alloca, dst: 0, a: 1) => /alloca/
     }.each do |instruction, pattern|
       error = assert_raises(Rubycc::Backend::UnsupportedError, instruction.op.to_s) do
         compile(func([instruction], vregs: 4))
@@ -1223,8 +1241,7 @@ class TestAArch64Backend < Minitest::Test
   # A4 feature stops with a clear error instead of producing an object.
   def test_unsupported_c_constructs_are_refused_end_to_end
     {
-      "void *f(int n){ return __builtin_alloca(n); }" => /alloca/,
-      "int f(unsigned x){ return __builtin_ctz(x); }" => /bit-scan builtins/
+      "void *f(int n){ return __builtin_alloca(n); }" => /alloca/
     }.each do |source, pattern|
       error = assert_raises(Rubycc::Backend::UnsupportedError, source) { compile_c(source) }
       assert_match pattern, error.message, source

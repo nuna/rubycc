@@ -83,12 +83,12 @@ bundle install --jobs 4 --retry 3
 set +e
 
 if [ "${TEST_SCOPE}" = smoke ]; then
-  echo "test scope: smoke (eight native aarch64 acceptance tests; M2 is deferred)"
+  echo "test scope: smoke (nine native aarch64 acceptance tests; M2 is deferred)"
   # Rake's test loader treats the argument after --name as another file. Load
   # the small fixed file set directly so one regex can select one representative
   # test from each acceptance layer without paying for the full suite.
   bundle exec ruby -Ilib:test \
-    -e 'files = ARGV.shift(8); files.each { |file| require File.expand_path(file) }' \
+    -e 'files = ARGV.shift(9); files.each { |file| require File.expand_path(file) }' \
     test/test_aarch64_backend.rb \
     test/test_aarch64_execution.rb \
     test/test_aarch64_self_link.rb \
@@ -97,7 +97,8 @@ if [ "${TEST_SCOPE}" = smoke ]; then
     test/test_c_suite.rb \
     test/test_ruby_smoke.rb \
     test/test_extension_build.rb \
-    --name '/test_(prologue_and_epilogue_frame_record|signed_arithmetic|main_return_status|self_contained_exports_run_under_qemu|compound_assignment_mod|c_suite_00101|includes_ruby_h_and_compiles_a_module_init_to_an_object|rubycc_built_extension_loads_and_runs_under_require)/' \
+    test/test_gcc_builtins.rb \
+    --name '/test_(prologue_and_epilogue_frame_record|signed_arithmetic|main_return_status|self_contained_exports_run_under_qemu|compound_assignment_mod|c_suite_00101|includes_ruby_h_and_compiles_a_module_init_to_an_object|rubycc_built_extension_loads_and_runs_under_require|bit_scan_matches_gcc)/' \
     --verbose 2>&1 | tee tmp/ci/aarch64-glibc-suite.log
 else
   echo "test scope: full"
@@ -106,7 +107,7 @@ fi
 suite_status=${PIPESTATUS[0]}
 
 if [ "${TEST_SCOPE}" = smoke ]; then
-  CI_MAX_SKIPS=0 CI_MIN_RUNS=8 ruby tools/ci_check_skips.rb \
+  CI_MAX_SKIPS=0 CI_MIN_RUNS=9 ruby tools/ci_check_skips.rb \
     tmp/ci/aarch64-glibc-suite.log 2>&1 \
     | tee tmp/ci/aarch64-glibc-skip-check.log
 else
