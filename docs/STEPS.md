@@ -8463,6 +8463,74 @@ raindrops の `raindrops.c` はコンパイルできるようになったが、
 
 ---
 
+## atomic-type-7 — unicorn がインストールできるまでヘッダを埋める(M5 H4)
+
+atomic-type-6 で `__sync_*` が通ったあと、`RUBYCC=1 gem install unicorn` を
+**1 件ずつ実測で潰した**。ブロッカーは**すべて同梱ヘッダの欠落**で、
+コンパイラ本体の変更は 1 行も要らなかった。
+
+| # | 欠落 | 要求した側 | 実測値 |
+|---|---|---|---|
+| 1 | `AF_NETLINK` / `PF_NETLINK` | raindrops `linux_inet_diag.c` | 16(両 arch 一致) |
+| 2 | `INET_ADDRSTRLEN` / `INET6_ADDRSTRLEN` | 同上 | 16 / 46 |
+| 3 | TCP 状態機械の 11 状態 | 同上 + `tcp_info.c` | 1〜11 |
+| 4 | `in6addr_any` / `in6addr_loopback` | 同上 | **マクロではなくオブジェクト** |
+| 5 | `accept4` | kgio `accept.c` | Linux 拡張の宣言 |
+| 6 | `_SC_IOV_MAX` | kgio `writev.c` | 60 |
+
+**5 番と 4 番は種類が違う。** 1〜3・6 は整数値なので実測して書けば済むが、
+
+- **`in6addr_any` は libc の実オブジェクト**である(実測: `nm -D` で
+  `V in6addr_any@@GLIBC_2.2.5`)。同梱ヘッダは `IN6ADDR_ANY_INIT` マクロしか
+  持っていなかった。raindrops は `memcmp(&in6addr_any, ...)` と**アドレスを取る**ので、
+  初期化子マクロでは代替できない。**宣言が無いとリンク時にも解決されない。**
+- **`accept4`** は `SOCK_CLOEXEC`/`SOCK_NONBLOCK` を accept 自体に畳み込む Linux 拡張で、
+  glibc は `_GNU_SOURCE` で隠す。同梱ヘッダは既に `SOCK_CLOEXEC` を無条件に見せているので、
+  **専用の feature-test マクロを増やさず**同じ扱いにした。
+
+### AF_ を 1 個だけ足した理由
+
+アドレスファミリは数十個ある番号空間で、`AF_NETLINK` だけ足すのは一見中途半端である。
+それでも **名指しで要求された 1 個だけ**にした。残りは**誰も測っていない値**であり、
+測っていない値を置くのはこのプロジェクトが一貫して避けてきたことだからである
+(`sys/syscall.h` の番号表・`unistd.h` の `_CS_`/`_PC_` 名と同じ判断)。
+
+### 検査
+
+6 件すべてを ABI ハーネスに載せた(**x86_64・aarch64 の両方で自動再走**)。
+整数は `ints:` に、`in6addr_*` と `accept4` は**実際に呼ぶ/参照する snippet** として
+足した — 宣言があるだけでは、リンク時に解決されるかを検査したことにならない。
+`accept4` の snippet は接続を待たない非ブロッキング listen ソケットに対して呼び、
+**EAGAIN が返ること**を答えにしてある。
+
+検査が効いていることは**壊して確かめた**: `AF_NETLINK` を 17 に書き換えると
+**x86_64・aarch64 の両方で落ちる**。通ったことを通ったと言うには、
+落ちるはずのものが落ちることを見ておく必要がある。
+
+### 結果 — ビルドは通る。テストは gcc でも通らない
+
+**`gem install unicorn` が成功する**(raindrops 0.20.1・kgio 2.11.4・unicorn 6.1.0 の
+3 つとも rubycc がビルド)。上流テストを 15 ファイル走らせると:
+
+```
+224 tests 中、失敗は 3 ファイル
+  test_request.rb  10 errors
+  test_signals.rb   1 error
+  test_util.rb      3 failures
+```
+
+**gcc で同じ 3 つを建てて同じ 3 ファイルを走らせたら、数値が完全に一致した**
+(10 errors / 1 error / 3 failures)。unicorn 自身がロード時に
+`Unicorn was only tested against MRI up to 3.0. It might not properly work with 3.4.5`
+と言う。失敗の中身も `fp.external_encoding` が nil を返すといった **Ruby 3.4 側の
+非互換**で、C 拡張には触れていない。unicorn 6.1.0 が最新版なので、上げて逃げる先も無い。
+
+**つまり rubycc の非ではないが、(d) 水準の「gem 自身のテストが通った」証拠は得られない。**
+oj と同じ形である(あちらも gcc 対照が落ちる)。R10 の分母をどう扱うかは
+**測定とは別の判断**なので、ここでは記録だけして分母は動かしていない。
+
+---
+
 ## 現在のテスト規模
 
 atomic-type-6 完了時点: **2,928 runs / 9,230 assertions / 0 failures / 0 errors / 44 skips**

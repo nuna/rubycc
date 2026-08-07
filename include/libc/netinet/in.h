@@ -94,6 +94,13 @@ struct sockaddr_in6 {
 #define INADDR_BROADCAST ((in_addr_t)0xffffffff)
 #define INADDR_NONE      ((in_addr_t)0xffffffff)
 
+/* Buffer sizes for inet_ntop's textual forms, counting the terminating NUL:
+   "255.255.255.255" and the longest IPv6 spelling (an IPv4-mapped address with
+   a scope, "ffff:...:255.255.255.255%4294967295"). Measured, and identical on
+   x86-64 and aarch64. */
+#define INET_ADDRSTRLEN  16
+#define INET6_ADDRSTRLEN 46
+
 /* Well-known IPv6 addresses, as struct in6_addr initializers (glibc's
    IN6ADDR_*_INIT macros); the triple brace reaches through struct in6_addr's
    anonymous union member down to the byte array. */
@@ -101,6 +108,14 @@ struct sockaddr_in6 {
   { { { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } } }
 #define IN6ADDR_LOOPBACK_INIT \
   { { { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 } } }
+
+/* The same two addresses as objects the host libc defines (measured: both are
+   real exported symbols, `V in6addr_any` / `V in6addr_loopback`). A program
+   that needs the *address* of one -- raindrops' linux_inet_diag.c memcmps
+   against &in6addr_any -- cannot use the initializer macros, so the
+   declarations have to be here for the definitions to resolve at link time. */
+extern const struct in6_addr in6addr_any;
+extern const struct in6_addr in6addr_loopback;
 
 /* Host<->network byte-order conversions (same declarations as <arpa/inet.h>). */
 uint32_t htonl(uint32_t __hostlong);

@@ -115,7 +115,7 @@ musl の宣言セット/形状を出発点にし、glibc の対象 arch(x86-64 /
 | `include/libc/stdlib.h` | `div_t`/`ldiv_t`/`lldiv_t` の LP64 レイアウト、`RAND_MAX`/`EXIT_*` |
 | `include/libc/string.h` | 純粋プロトタイプ(arch 非依存) |
 | `include/libc/strings.h` | 純粋プロトタイプ(arch 非依存) |
-| `include/libc/unistd.h` | ABI 型付き名の LP64 幅 |
+| `include/libc/unistd.h` | ABI 型付き名の LP64 幅(`_SC_IOV_MAX` = 60 を atomic-type-7 で追加・実測) |
 | `include/libc/glibc/x86_64/endian.h` | little-endian x86-64 に固定 |
 | `include/libc/glibc/x86_64/inttypes.h` | 64bit/MAX/PTR/fast16+ の "l" 形(実測) |
 | `include/libc/glibc/x86_64/stdint.h` | 幅を glibc x86-64 LP64 に固定(実測) |
@@ -157,9 +157,9 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 | `include/libc/dlfcn.h` | **glibc の動的リンク ABI(bits/dlfcn.h)の RTLD_* 値**を実測再現。dlopen/dlsym 等は POSIX 宣言でホスト libc から解決(kernel UAPI ではない)。両 arch 同一のため共通層 | なし(glibc ABI 実測) |
 | `include/libc/sys/mman.h` | **Linux UAPI の PROT_/MAP_/MS_/MADV_ 値と MAP_FAILED**(asm-generic/mman・実測・§4)。mmap/munmap 等は POSIX 宣言。両 arch 同一のため共通層 | なし(UAPI 由来) |
 | `include/libc/signal.h` | **シグナル番号・SA_ フラグと sigset_t/siginfo_t/struct sigaction のレイアウト**(kernel UAPI + glibc ABI・実測 offsetof・§4)。signal/kill/sigaction 等は POSIX 宣言。両 arch 同一のため共通層 | なし(UAPI+glibc ABI 実測) |
-| `include/libc/sys/socket.h` | **AF_/SOCK_/SO_/MSG_ 値と sockaddr/sockaddr_storage/msghdr/iovec 等のレイアウト**(kernel UAPI + glibc ABI・実測 offsetof・§4)。socket/bind/connect 等は POSIX 宣言。両 arch 同一のため共通層 | なし(UAPI+glibc ABI 実測) |
-| `include/libc/netinet/in.h` | **IPPROTO_/INADDR_ 値と sockaddr_in/in6・in6_addr のレイアウト**(kernel UAPI linux/in.h+in6.h・実測 offsetof・§4)。arpa/inet.h/sys/socket.h と共有ガードで共存。両 arch 同一のため共通層 | なし(UAPI+glibc ABI 実測) |
-| `include/libc/netinet/tcp.h` | **TCP_ ソケットオプション名**(kernel UAPI linux/tcp.h・実測・§4)。両 arch 同一のため共通層 | なし(UAPI 由来) |
+| `include/libc/sys/socket.h` | **AF_/SOCK_/SO_/MSG_ 値と sockaddr/sockaddr_storage/msghdr/iovec 等のレイアウト**(kernel UAPI + glibc ABI・実測 offsetof・§4)。socket/bind/connect 等は POSIX 宣言。`AF_NETLINK`/`PF_NETLINK`(値 16・実測)と Linux 拡張 `accept4` の宣言を atomic-type-7 で追加(raindrops/kgio が名指しで要求)。両 arch 同一のため共通層 | なし(UAPI+glibc ABI 実測) |
+| `include/libc/netinet/in.h` | **IPPROTO_/INADDR_ 値と sockaddr_in/in6・in6_addr のレイアウト**(kernel UAPI linux/in.h+in6.h・実測 offsetof・§4)。arpa/inet.h/sys/socket.h と共有ガードで共存。`INET_ADDRSTRLEN`/`INET6_ADDRSTRLEN`(16/46・実測)と、**マクロではなく libc の実オブジェクト**である `in6addr_any`/`in6addr_loopback` の extern 宣言を atomic-type-7 で追加(実測: どちらも `V` としてエクスポートされている。アドレスを取る用途は INIT マクロでは代替できない)。両 arch 同一のため共通層 | なし(UAPI+glibc ABI 実測) |
+| `include/libc/netinet/tcp.h` | **TCP_ ソケットオプション名**(kernel UAPI linux/tcp.h・実測・§4)。TCP 状態機械の 11 状態(`TCP_ESTABLISHED` 1 〜 `TCP_CLOSING` 11・実測)を atomic-type-7 で追加。glibc は無名 enum + 同名 `#define` の 2 段だが、観測可能な振る舞いは object マクロと区別できないため本ヘッダ既存の綴りに揃えた。両 arch 同一のため共通層 | なし(UAPI 由来) |
 | `include/libc/sys/un.h` | **struct sockaddr_un の 110 バイトレイアウト**(kernel UAPI linux/un.h・実測 offsetof・§4)。両 arch 同一のため共通層 | なし(UAPI 由来) |
 | `include/libc/glibc/x86_64/pthread.h` | **pthreads opaque 型のサイズ/アライメント**(glibc ABI・実測。内部フィールドは不再現の不透明 blob・§4)。pthread_* は POSIX 宣言 | なし(glibc ABI 実測) |
 | `include/libc/glibc/aarch64/pthread.h` | 同上。mutex_t/attr_t/mutexattr_t/condattr_t が x86-64 より広い(実測。arch 依存ゆえ 2 本) | なし(glibc ABI 実測) |

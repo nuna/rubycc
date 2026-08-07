@@ -146,6 +146,9 @@ int     execlp(const char *__file, const char *__arg, ...);
 #define _SC_OPEN_MAX         4
 #define _SC_PAGESIZE         30
 #define _SC_PAGE_SIZE        _SC_PAGESIZE
+/* _SC_IOV_MAX answers how many struct iovec a single writev may carry; kgio's
+   writev.c asks for it once and caches the answer to size its own batches. */
+#define _SC_IOV_MAX          60
 #define _SC_NPROCESSORS_CONF 83
 #define _SC_NPROCESSORS_ONLN 84
 #define _SC_PHYS_PAGES       85
