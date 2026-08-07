@@ -1378,9 +1378,7 @@ class TestSharedObject < Minitest::Test
   def libc_nonshared_path
     return @libc_nonshared_path if defined?(@libc_nonshared_path)
 
-    @libc_nonshared_path = ["/usr/lib/x86_64-linux-gnu/libc_nonshared.a",
-                            "/usr/lib64/libc_nonshared.a",
-                            "/usr/lib/libc_nonshared.a"].find { |p| File.exist?(p) }
+    @libc_nonshared_path = host_libc_nonshared_paths.find { |p| File.exist?(p) }
   end
 
   # Compiles each source with rubycc under -fPIC into its own object file and

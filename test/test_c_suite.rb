@@ -26,9 +26,8 @@ class TestCSuite < Minitest::Test
   # (Step 41), so this suite compiles without touching /usr/lib/gcc.
   SYSTEM_INCLUDE_PATHS = [
     "/usr/local/include",
-    "/usr/include/x86_64-linux-gnu",
-    "/usr/include"
-  ].freeze
+    *Rubycc::Preprocess::Preprocessor.libc_system_include_paths(ExecutionHelper::EXECUTION_TARGET)
+  ].uniq.freeze
 
   # Cases the current rubycc subset cannot build or run correctly yet, each
   # with a one-line reason. Kept here (not silently dropped from the vendored
@@ -79,7 +78,8 @@ class TestCSuite < Minitest::Test
 
       begin
         binary = Rubycc::Compiler.new.compile(
-          File.read(c_path), filename: File.basename(c_path), include_paths: SYSTEM_INCLUDE_PATHS
+          File.read(c_path), filename: File.basename(c_path),
+          target: ExecutionHelper::EXECUTION_TARGET, include_paths: SYSTEM_INCLUDE_PATHS
         )
       rescue Rubycc::CompileError => e
         flunk "rubycc failed to compile #{basename}.c: #{e.message}"

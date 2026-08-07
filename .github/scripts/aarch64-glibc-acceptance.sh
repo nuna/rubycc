@@ -40,6 +40,12 @@ export RUBYCC_AARCH64_OBJDUMP=objdump
 export RUBYCC_AARCH64_QEMU=/usr/bin/env
 export RUBYCC_AARCH64_SYSROOT=/
 export RUBYCC_AARCH64_SYSROOT_INTERP=/lib/ld-linux-aarch64.so.1
+# The generic execution harness normally follows RbConfig's host CPU. Make the
+# native profile explicit as well: every object it compiles and every linker/run
+# command it invokes must stay in the same aarch64 world.
+export RUBYCC_EXECUTION_TARGET=aarch64
+export RUBYCC_EXECUTION_GCC=gcc
+export RUBYCC_EXECUTION_RUNNER=/usr/bin/env
 AARCH64_LIBC=/lib/aarch64-linux-gnu/libc.so.6
 if [ ! -f "${AARCH64_LIBC}" ]; then
   AARCH64_LIBC=$(ldconfig -p | awk '/libc\.so\.6.*aarch64/{print $NF; exit}')
@@ -77,17 +83,21 @@ bundle install --jobs 4 --retry 3
 set +e
 
 if [ "${TEST_SCOPE}" = smoke ]; then
-  echo "test scope: smoke (four native aarch64 acceptance tests; M2 is deferred)"
+  echo "test scope: smoke (eight native aarch64 acceptance tests; M2 is deferred)"
   # Rake's test loader treats the argument after --name as another file. Load
   # the small fixed file set directly so one regex can select one representative
   # test from each acceptance layer without paying for the full suite.
   bundle exec ruby -Ilib:test \
-    -e 'files = ARGV.shift(4); files.each { |file| require File.expand_path(file) }' \
+    -e 'files = ARGV.shift(8); files.each { |file| require File.expand_path(file) }' \
     test/test_aarch64_backend.rb \
     test/test_aarch64_execution.rb \
     test/test_aarch64_self_link.rb \
     test/test_aarch64_shared_object.rb \
-    --name '/test_(prologue_and_epilogue_frame_record|signed_arithmetic|main_return_status|self_contained_exports_run_under_qemu)/' \
+    test/test_execution_harness.rb \
+    test/test_c_suite.rb \
+    test/test_ruby_smoke.rb \
+    test/test_extension_build.rb \
+    --name '/test_(prologue_and_epilogue_frame_record|signed_arithmetic|main_return_status|self_contained_exports_run_under_qemu|compound_assignment_mod|c_suite_00101|includes_ruby_h_and_compiles_a_module_init_to_an_object|rubycc_built_extension_loads_and_runs_under_require)/' \
     --verbose 2>&1 | tee tmp/ci/aarch64-glibc-suite.log
 else
   echo "test scope: full"
@@ -96,7 +106,7 @@ fi
 suite_status=${PIPESTATUS[0]}
 
 if [ "${TEST_SCOPE}" = smoke ]; then
-  CI_MAX_SKIPS=0 CI_MIN_RUNS=4 ruby tools/ci_check_skips.rb \
+  CI_MAX_SKIPS=0 CI_MIN_RUNS=8 ruby tools/ci_check_skips.rb \
     tmp/ci/aarch64-glibc-suite.log 2>&1 \
     | tee tmp/ci/aarch64-glibc-skip-check.log
 else

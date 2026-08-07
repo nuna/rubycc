@@ -18,6 +18,8 @@ require "tmpdir"
 # extension's real entry points are resolved by the Ruby runtime, which this
 # harness does not stand up. Producing a non-empty object is the success signal.
 class TestRubySmoke < Minitest::Test
+  TARGET = ExecutionHelper::EXECUTION_TARGET
+
   # CRuby's own public headers, discovered at runtime from the interpreter
   # running the suite (rather than pinned) so the test tracks whatever Ruby
   # built it: "rubyhdrdir" holds ruby.h and the ruby/ tree, "rubyarchhdrdir"
@@ -32,9 +34,8 @@ class TestRubySmoke < Minitest::Test
   # so this test relies on nothing under /usr/lib/gcc.
   SYSTEM_INCLUDE_PATHS = [
     "/usr/local/include",
-    "/usr/include/x86_64-linux-gnu",
-    "/usr/include"
-  ].freeze
+    *Rubycc::Preprocess::Preprocessor.libc_system_include_paths(TARGET)
+  ].uniq.freeze
 
   # The Ruby headers first (so <ruby.h> and its arch "ruby/config.h" resolve),
   # then the libc set; rubycc's bundled freestanding headers are appended
@@ -44,7 +45,7 @@ class TestRubySmoke < Minitest::Test
   # The bundled header directories, resolved from the gem checkout: the
   # freestanding layer, then the two bundled-libc layers (arch before common).
   BUNDLED_INCLUDE = File.expand_path("../include", __dir__)
-  BUNDLED_LIBC_ARCH_INCLUDE = File.expand_path("../include/libc/glibc/x86_64", __dir__)
+  BUNDLED_LIBC_ARCH_INCLUDE = File.expand_path("../include/libc/glibc/#{TARGET}", __dir__)
   BUNDLED_LIBC_INCLUDE = File.expand_path("../include/libc", __dir__)
 
   # The distroless include path (Step 63 acceptance 2): the bundled freestanding
@@ -178,7 +179,7 @@ class TestRubySmoke < Minitest::Test
      ["atomic.c", ATOMIC_SOURCE], ["ractor.c", RACTOR_SOURCE]].each do |filename, source|
       object = Dir.mktmpdir("rubycc-distroless") do |dir|
         obj = Rubycc::Compiler.new.compile(
-          source, filename: filename,
+          source, filename: filename, target: TARGET,
           include_paths: DISTROLESS_INCLUDE_PATHS, system_includes: false
         )
         File.binwrite(File.join(dir, "#{File.basename(filename, ".c")}.o"), obj)
@@ -197,8 +198,8 @@ class TestRubySmoke < Minitest::Test
   # regression names exactly which construct in the CRuby headers broke.
   def compile_extension(source, filename, defines: [])
     Dir.mktmpdir("rubycc-ruby-smoke") do |dir|
-      object = Rubycc::Compiler.new.compile(source, filename: filename, include_paths: INCLUDE_PATHS,
-                                                     defines: defines)
+      object = Rubycc::Compiler.new.compile(source, filename: filename, target: TARGET,
+                                            include_paths: INCLUDE_PATHS, defines: defines)
       object_path = File.join(dir, "#{File.basename(filename, ".c")}.o")
       File.binwrite(object_path, object)
       assert File.size?(object_path), "expected #{object_path} to be written and non-empty"

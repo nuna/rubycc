@@ -21,6 +21,7 @@ class TestCrossAbi < Minitest::Test
   MEMBER_KINDS = %i[char short int long float double array nested].freeze
 
   def test_gcc_caller_with_rubycc_callee_matches_gcc_oracle
+    skip_unless_x86_execution
     assert_callee_compatibility(:x86_64)
   end
 
@@ -29,6 +30,7 @@ class TestCrossAbi < Minitest::Test
   end
 
   def test_rubycc_caller_with_gcc_callee_matches_gcc_oracle
+    skip_unless_x86_execution
     assert_caller_compatibility(:x86_64)
   end
 

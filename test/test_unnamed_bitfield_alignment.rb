@@ -96,6 +96,7 @@ class TestUnnamedBitfieldAlignment < Minitest::Test
   # --- the x86-64 execution layer -------------------------------------------
 
   def test_x86_64_layout_still_matches_gcc
+    skip_unless_x86_execution
     skip "gcc unavailable (needed to cross-check)" unless gcc?
 
     in_tmpdir do |dir|

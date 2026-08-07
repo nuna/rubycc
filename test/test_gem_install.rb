@@ -271,7 +271,9 @@ class TestGemInstall < Minitest::Test
   # The host libc development-header directories rubycc drops in hermetic mode
   # (the same set Preprocessor::LIBC_SYSTEM_INCLUDE_PATHS carries). A hermetic
   # build must never pass one of these on a compile command line.
-  HOST_LIBC_INCLUDE_DIRS = %w[/usr/include/x86_64-linux-gnu /usr/include].freeze
+  HOST_LIBC_INCLUDE_DIRS = [
+    *Rubycc::Preprocess::Preprocessor.libc_system_include_paths(ExecutionHelper::EXECUTION_TARGET)
+  ].uniq.freeze
 
   # Best-effort evidence, from the RubyGems install transcripts, that the
   # hermetic build did not reach into the host libc development headers. The

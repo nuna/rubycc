@@ -26,11 +26,19 @@ module LibcHelper
   # The canonical host-to-SONAME mapping (docs/STEPS.md Step 194); the sole place
   # in the suite allowed to name either spelling -- everything else calls this.
   def host_libc_soname
-    musl_host? ? "libc.musl-x86_64.so.1" : "libc.so.6" # platform-literal: see method doc above
+    musl_host? ? "libc.musl-#{host_arch}.so.1" : "libc.so.6"
   end
 
   def musl_host?
     RbConfig::CONFIG["arch"].to_s.include?("musl")
+  end
+
+  def host_arch
+    case RbConfig::CONFIG["host_cpu"].to_s
+    when "aarch64", "arm64" then "aarch64"
+    when "x86_64", "amd64" then "x86_64"
+    else RbConfig::CONFIG["host_cpu"].to_s
+    end
   end
 
   def host_libc_path
@@ -42,14 +50,30 @@ module LibcHelper
   # The usual glibc multiarch install locations, a concrete DSO oracle for
   # acceptance cases; skip-guarded wherever none of these exist.
   def glibc_multiarch_paths
-    ["/lib/x86_64-linux-gnu/libc.so.6", "/lib64/libc.so.6", "/usr/lib/libc.so.6"] # platform-literal: see method doc above
+    multiarch = "#{host_arch}-linux-gnu"
+    [
+      "/lib/#{multiarch}/libc.so.6",
+      "/usr/lib/#{multiarch}/libc.so.6",
+      "/lib64/libc.so.6",
+      "/usr/lib/libc.so.6"
+    ]
+  end
+
+  def host_libc_nonshared_paths
+    multiarch = "#{host_arch}-linux-gnu"
+    [
+      "/usr/lib/#{multiarch}/libc_nonshared.a",
+      "/lib/#{multiarch}/libc_nonshared.a",
+      "/usr/lib64/libc_nonshared.a",
+      "/usr/lib/libc_nonshared.a"
+    ]
   end
 
   def host_libc_path_from_ldconfig
     out, status = Open3.capture2e("ldconfig", "-p")
     return nil unless status.success?
 
-    # platform-literal: matches the same glibc SONAME the multiarch search above looks for.
+    # Matches the same glibc SONAME the multiarch search above looks for.
     line = out.lines.find { |l| l =~ /\blibc\.so\.6\b.*=>\s*(\S+)/ }
     line && Regexp.last_match(1)
   rescue Errno::ENOENT

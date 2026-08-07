@@ -113,6 +113,7 @@ class TestPlainCharSignedness < Minitest::Test
   # The regression guard: making the signedness target-dependent must not have
   # moved the default target off the System V psABI's signed plain `char`.
   def test_x86_64_plain_char_sign_extends
+    skip_unless_x86_execution
     assert_c_program(<<~C, exit_status: 0, stdout: "-16 -16 -16 -16\n")
       int printf(const char *fmt, ...);
       char g = (char)0xF0;
@@ -126,6 +127,7 @@ class TestPlainCharSignedness < Minitest::Test
   end
 
   def test_x86_64_plain_char_compares_as_signed
+    skip_unless_x86_execution
     assert_c_program(<<~C, exit_status: 0, stdout: "1 0 1\n")
       int printf(const char *fmt, ...);
       int main(void) {
@@ -137,6 +139,7 @@ class TestPlainCharSignedness < Minitest::Test
   end
 
   def test_x86_64_char_limits_are_the_signed_range
+    skip_unless_x86_execution
     assert_c_program(<<~C, exit_status: 0, stdout: "-128 127 signed\n")
       #include <limits.h>
       int printf(const char *fmt, ...);

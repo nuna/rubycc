@@ -2,6 +2,7 @@
 
 require "tmpdir"
 require "open3"
+require "rbconfig"
 
 # ExecutionHelper provides the scaffolding shared by execution tests:
 # compile a C source string down to an object file, link it into an
@@ -11,6 +12,41 @@ require "open3"
 # exists purely to validate the harness itself. `compiler: :rubycc` drives the
 # Almost Pure Ruby toolchain (Rubycc::Compiler).
 module ExecutionHelper
+  # Generic execution tests are intended to exercise the host ABI. The old
+  # helper compiled rubycc's side with Compiler#compile's x86_64 default and
+  # then linked it with the host gcc. That is coherent on x86-64, but an
+  # aarch64 Ruby process consequently handed an x86_64 object to an aarch64
+  # linker. Keep the x86-64 default on an x86 host and select the native target
+  # and tools on an aarch64 host. The explicit AArch64ExecutionHelper remains
+  # the cross-target oracle for tests that intentionally run a second target.
+  HOST_TARGET = case RbConfig::CONFIG["host_cpu"].to_s
+                when "aarch64", "arm64" then "aarch64"
+                when "x86_64", "amd64" then "x86_64"
+                else "x86_64"
+                end
+  EXECUTION_TARGET = ENV.fetch("RUBYCC_EXECUTION_TARGET", HOST_TARGET)
+  EXECUTION_GCC = ENV.fetch("RUBYCC_EXECUTION_GCC", "gcc")
+  EXECUTION_RUNNER = ENV.fetch("RUBYCC_EXECUTION_RUNNER", "")
+  EXECUTION_LINK_FLAGS = ENV.fetch("RUBYCC_EXECUTION_LINK_FLAGS", "").split
+
+  def execution_gcc_command(*args)
+    [EXECUTION_GCC, *args]
+  end
+
+  def execution_link_command(*args)
+    execution_gcc_command(*EXECUTION_LINK_FLAGS, *args)
+  end
+
+  def execution_run_command(*args)
+    EXECUTION_RUNNER.empty? ? args : [EXECUTION_RUNNER, *args]
+  end
+
+  def skip_unless_x86_execution
+    return if ExecutionHelper::EXECUTION_TARGET == "x86_64"
+
+    skip "x86_64 execution profile is not active (current target: #{ExecutionHelper::EXECUTION_TARGET})"
+  end
+
   def in_tmpdir
     Dir.mktmpdir("rubycc-test") do |dir|
       yield dir
@@ -19,7 +55,7 @@ module ExecutionHelper
 
   def compile_with_rubycc(c_source, output_path)
     filename = "#{File.basename(output_path, ".*")}.c"
-    binary = Rubycc::Compiler.new.compile(c_source, filename: filename)
+    binary = Rubycc::Compiler.new.compile(c_source, filename: filename, target: EXECUTION_TARGET)
     File.binwrite(output_path, binary)
     output_path
   end
@@ -33,11 +69,11 @@ module ExecutionHelper
     source_path = File.join(dir, "#{File.basename(output_path, ".*")}.c")
     File.write(source_path, c_source)
 
-    args = ["gcc", "-c"]
+    args = execution_gcc_command("-c")
     args << "-fPIC" if pic
     stdout_and_stderr, status = Open3.capture2e(*args, "-o", output_path, source_path)
     unless status.success?
-      raise "gcc failed to compile source (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
+      raise "#{EXECUTION_GCC} failed to compile source (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
     end
 
     output_path
@@ -51,8 +87,8 @@ module ExecutionHelper
     in_tmpdir do |dir|
       source_path = File.join(dir, "input.c")
       File.write(source_path, c_source)
-      stdout, stderr, status = Open3.capture3("gcc", "-E", "-P", source_path)
-      raise "gcc failed to preprocess source (exit #{status.exitstatus}):\n#{stderr}" unless status.success?
+      stdout, stderr, status = Open3.capture3(*execution_gcc_command("-E", "-P", source_path))
+      raise "#{EXECUTION_GCC} failed to preprocess source (exit #{status.exitstatus}):\n#{stderr}" unless status.success?
 
       stdout
     end
@@ -64,12 +100,12 @@ module ExecutionHelper
     dir = File.dirname(object_path)
     exe_path = File.join(dir, "#{File.basename(object_path, ".*")}.out")
 
-    stdout_and_stderr, status = Open3.capture2e("gcc", "-o", exe_path, object_path)
+    stdout_and_stderr, status = Open3.capture2e(*execution_link_command("-o", exe_path, object_path))
     unless status.success?
-      raise "gcc failed to link object file (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
+      raise "#{EXECUTION_GCC} failed to link object file (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
     end
 
-    stdout, run_status = Open3.capture2(exe_path)
+    stdout, run_status = Open3.capture2(*execution_run_command(exe_path))
     [run_status.exitstatus, stdout]
   end
 
@@ -82,16 +118,16 @@ module ExecutionHelper
     dir = File.dirname(object_path)
     exe_path = File.join(dir, "#{File.basename(object_path, ".*")}.out")
 
-    stdout_and_stderr, status = Open3.capture2e("gcc", "-o", exe_path, object_path, "-lm")
+    stdout_and_stderr, status = Open3.capture2e(*execution_link_command("-o", exe_path, object_path, "-lm"))
     unless status.success?
-      raise "gcc failed to link object file (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
+      raise "#{EXECUTION_GCC} failed to link object file (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
     end
 
     # Run with the executable's own scratch directory as the working directory,
     # not the test process's. Some c-testsuite cases exercise stdio by writing a
     # file through a *relative* path (00187.c does an fopen("fred.txt", "w")),
     # which would otherwise land in the repository root and stay there.
-    Open3.capture2e(exe_path, chdir: dir)
+    Open3.capture2e(*execution_run_command(exe_path), chdir: dir)
   end
 
   # Links `object_path` into an executable and returns the linker's combined
@@ -100,7 +136,7 @@ module ExecutionHelper
   def link_stderr(object_path)
     dir = File.dirname(object_path)
     exe_path = File.join(dir, "#{File.basename(object_path, ".*")}.out")
-    _stdout, stderr, _status = Open3.capture3("gcc", "-o", exe_path, object_path)
+    _stdout, stderr, _status = Open3.capture3(*execution_link_command("-o", exe_path, object_path))
     stderr
   end
 
@@ -117,12 +153,12 @@ module ExecutionHelper
       end
 
       exe_path = File.join(dir, "exe")
-      stdout_and_stderr, status = Open3.capture2e("gcc", "-o", exe_path, *object_paths)
+      stdout_and_stderr, status = Open3.capture2e(*execution_link_command("-o", exe_path, *object_paths))
       unless status.success?
-        raise "gcc failed to link object files (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
+        raise "#{EXECUTION_GCC} failed to link object files (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
       end
 
-      stdout, run_status = Open3.capture2(exe_path)
+      stdout, run_status = Open3.capture2(*execution_run_command(exe_path))
       [run_status.exitstatus, stdout]
     end
   end

@@ -36,14 +36,17 @@ class TestCSuiteAArch64 < Minitest::Test
   # for angled includes ("aarch64-linux-gnu-gcc -E -v -", which lists
   # .../13/../../../../aarch64-linux-gnu/include); its own private include
   # directory is left out for the same reason TestCSuite leaves out the host's.
+  AARCH64_LIBC_SYSTEM_INCLUDE_PATHS =
+    Rubycc::Preprocess::Preprocessor.libc_system_include_paths("aarch64")
+
   CROSS_SYSTEM_INCLUDE_PATHS = [
     Rubycc::Preprocess::Preprocessor::BUNDLED_INCLUDE_DIR,
-    "/usr/aarch64-linux-gnu/include"
-  ].freeze
+    *AARCH64_LIBC_SYSTEM_INCLUDE_PATHS
+  ].uniq.freeze
 
   # The aarch64 sysroot the cases are compiled against. Its absence means the
   # cross libc headers are not installed, which is a skip, not a failure.
-  CROSS_SYSROOT_INCLUDE_DIR = CROSS_SYSTEM_INCLUDE_PATHS.last
+  CROSS_SYSROOT_INCLUDE_DIR = AARCH64_LIBC_SYSTEM_INCLUDE_PATHS.first
 
   # Cases whose only obstacle is a feature the aarch64 backend has not been
   # taught yet (M4 A4). Everything here compiles and runs on x86-64 today, so

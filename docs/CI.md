@@ -108,7 +108,8 @@ M4 のクロス検証だけでは、x86-64 Ruby から aarch64 の生成物を�
 suite と gem acceptance は片方が失敗しても両方のログを残し、最後にまとめてジョブを
 失敗させる。`workflow_dispatch` の `only: aarch64-glibc` を指定すれば、このジョブだけを
 手動で実行できる。試行錯誤中は `test_scope: smoke` を指定すると、バックエンド・実行・
-self-link・shared object の代表4テストだけを実行し、M2 は保留する。最終確認だけ
+self-link・shared object・generic execution・c-suite・Ruby header・extension の代表8テストだけを
+実行し、M2 は保留する。最終確認だけ
 `test_scope: full`(既定値)で全スイートと json/msgpack の M2 受入れを実行する。実行結果は
 `weekly-aarch64-glibc` アーティファクトに保存する。
 

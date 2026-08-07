@@ -15,6 +15,8 @@ require "open3"
 # and hands it to a *separate* Ruby process's `require` so the resolution
 # genuinely happens against a live interpreter rather than this test's own.
 class TestExtensionBuild < Minitest::Test
+  TARGET = ExecutionHelper::EXECUTION_TARGET
+
   # CRuby's own public headers, discovered at runtime from the interpreter
   # running the suite (rather than pinned), matching TestRubySmoke.
   RUBY_HDR_DIR = RbConfig::CONFIG["rubyhdrdir"]
@@ -26,9 +28,8 @@ class TestExtensionBuild < Minitest::Test
   # default system search path (Step 41), so the build never reads /usr/lib/gcc.
   SYSTEM_INCLUDE_PATHS = [
     "/usr/local/include",
-    "/usr/include/x86_64-linux-gnu",
-    "/usr/include"
-  ].freeze
+    *Rubycc::Preprocess::Preprocessor.libc_system_include_paths(TARGET)
+  ].uniq.freeze
 
   INCLUDE_PATHS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR, *SYSTEM_INCLUDE_PATHS].freeze
   INCLUDE_FLAGS = INCLUDE_PATHS.map { |p| "-I#{p}" }.freeze

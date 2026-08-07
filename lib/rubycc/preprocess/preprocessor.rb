@@ -86,11 +86,33 @@ module Rubycc
       # for the other.
       LIBC_MUSL_MACRO = "__RUBYCC_LIBC_MUSL__"
 
-      # The libc system header directories on this x86-64 Linux host, in the order
-      # gcc reports them for angled includes. Only the C library's own directories
-      # are listed; the compiler's private include directory is deliberately
-      # absent, because BUNDLED_INCLUDE_DIR supplies those headers instead.
-      LIBC_SYSTEM_INCLUDE_PATHS = %w[/usr/include/x86_64-linux-gnu /usr/include].freeze
+      # The libc system header directories, in the order gcc reports them for
+      # angled includes. Only the C library's own directories are listed; the
+      # compiler's private include directory is deliberately absent, because
+      # BUNDLED_INCLUDE_DIR supplies those headers instead. Debian uses the
+      # /usr/<target>-linux-gnu/include spelling for a cross toolchain and
+      # /usr/include/<target>-linux-gnu for a native multiarch installation.
+      # Select between those layouts from the host, while keeping the target
+      # dimension explicit for a Compiler#compile(target: ...) call.
+      LIBC_SYSTEM_INCLUDE_PATHS_BY_ARCH = {
+        "x86_64" => %w[/usr/include/x86_64-linux-gnu /usr/include].freeze,
+        "aarch64" => begin
+          host_cpu = RbConfig::CONFIG["host_cpu"].to_s
+          if %w[aarch64 arm64].include?(host_cpu)
+            %w[/usr/include/aarch64-linux-gnu /usr/include].freeze
+          else
+            %w[/usr/aarch64-linux-gnu/include /usr/include].freeze
+          end
+        end
+      }.freeze
+
+      HOST_LIBC_ARCH = %w[aarch64 arm64].include?(RbConfig::CONFIG["host_cpu"].to_s) ?
+        "aarch64" : "x86_64"
+      LIBC_SYSTEM_INCLUDE_PATHS = LIBC_SYSTEM_INCLUDE_PATHS_BY_ARCH.fetch(HOST_LIBC_ARCH)
+
+      def self.libc_system_include_paths(libc_arch)
+        LIBC_SYSTEM_INCLUDE_PATHS_BY_ARCH.fetch(libc_arch)
+      end
 
       # The default system include search path: the bundled freestanding headers
       # first (so rubycc's stdarg.h/stddef.h win over any same-named file further
@@ -368,6 +390,7 @@ module Rubycc
         # The bundled libc arch layer this instance searches (see
         # BUNDLED_LIBC_ARCH_INCLUDE_DIR). For the x86-64 default it equals that
         # constant, so the default search path is identical to before.
+        @libc_arch = libc_arch
         @libc_arch_include_dir = File.expand_path("../../../include/libc/glibc/#{libc_arch}", __dir__)
         # name (String) => Macro.
         @macros = {}
@@ -466,7 +489,7 @@ module Rubycc
         bundled = [BUNDLED_INCLUDE_DIR, @libc_arch_include_dir, BUNDLED_LIBC_INCLUDE_DIR]
         return bundled if hermetic_headers?
 
-        [*bundled, *LIBC_SYSTEM_INCLUDE_PATHS]
+        [*bundled, *self.class.libc_system_include_paths(@libc_arch)]
       end
 
       def hermetic_headers?

@@ -295,6 +295,7 @@ class TestAtomicBuiltins < Minitest::Test
   end
 
   def test_x86_64_emits_mfence
+    skip_unless_x86_execution
     skip "objdump unavailable" unless tool?("objdump")
 
     listing = in_tmpdir do |dir|
@@ -333,6 +334,7 @@ class TestAtomicBuiltins < Minitest::Test
   # `lock`-prefixed or an `xchg` (whose lock is architecturally implicit), and a
   # seq_cst store must be an exchange rather than a plain mov.
   def test_x86_64_emits_locked_instructions
+    skip_unless_x86_execution
     skip "objdump unavailable" unless tool?("objdump")
 
     listing = in_tmpdir do |dir|
