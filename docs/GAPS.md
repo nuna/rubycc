@@ -10,37 +10,13 @@
 
 | # | 何が足りないか | 誰が困るか | 確からしさ | 詳細 |
 |---|---|---|---|---|
-| **Q** | **K&R(旧形式)の関数定義**(ISO C 6.9.1 の identifier-list 宣言子 + declaration-list)が未実装 | **mysql2**。同梱の `ext/mysql2/mysql_enc_name_to_ruby.h`(**gperf の生成物**)がこの形で、`client.c` のコンパイルが `expected type specifier` で止まる | **実測**(2026-08-08)。最小再現あり(下記) | ROADMAP §3 の既知債務「K&R `int ()` 型」に**実害が出た**。着手予定 = 次のステップ |
 | **R** | **`.cpp` を渡されても診断で拒否せず、黙って何も出さない** | `gem install thin` が依存の **eventmachine**(C++)で、`warning: em.cpp: linker input file unused because linking not done` を 9 本出したあと、**リンク段階で `No such file or directory - binder.o`** という原因を示さない形で落ちる | **実測**(2026-08-08) | R10 は C++ を対象外と明示しているので、**そう言って落ちる**のが正しい。ROADMAP §2 の「未対応機能は黙って壊さない」に反している |
 
 | **S** | **`long double` が 8 バイト**(`double` として扱う。DESIGN 3.3 の既知の制限) | **oj**。`usual.c` が `sprintf(buf, "%Lg", (long double)x)` を使い、glibc は 16 バイトを読むので値が壊れる(`BigDecimal(): "-nan"`)。**対照と食い違う唯一のテスト** `UsualTest#test_decimal` の原因 | **実測**(2026-08-08)。最小再現: gcc `[1.23457]` / rubycc `[7.46537e-4948]` | ROADMAP §3 の負債に**初めて実害が出た**。解消には x87 80 ビット対応が要り、1 ステップの仕事ではない |
 
 | **T** | **配列の要素数をパーサが数える文脈で、struct を返す式が単一式初期化子として読めない** | `pt b[] = { {1,2}, fp(), {5,6} };` が `excess elements in scalar initializer` になる(gcc は 3 要素)。パーサは `[]` の長さをここで確定させる必要があるが、型表を持たないので `fp()` の型が分からない | **実測**(2026-08-08) | struct を直接初期化する形は通る(atomic-type-13)。解消にはパーサ側に型を引く手段が要る |
 
-**Q の最小再現**(gcc は `68 9 7` を出力、rubycc は 3 行目で診断エラー):
-
-```c
-#include <stdio.h>
-
-static unsigned int knr_hash (str, len)
-     register const char *str;
-     register unsigned int len;
-{ return (unsigned int)str[0] + len; }
-
-int add(a, b)
-  int a;
-  int b;
-{ return a + b; }
-
-int no_decls(void) { return 7; }
-
-int main(void) {
-  printf("%u %d %d\n", knr_hash("A", 3), add(4, 5), no_decls());
-  return 0;
-}
-```
-
-Q・R とも **v1.0 リリース前に測って出てきたもの**で、直近まで §1 は 0 件だった。
+**R は v1.0 リリース前に測って出てきたもの**で、直近まで §1 は 0 件だった。
 ここが空になることは「もう欠陥が無い」ではなく、**「測った範囲に未解消のものが無い」**
 という意味でしかない、という §5 の経緯がそのまま繰り返されている。
 
@@ -71,6 +47,9 @@ Q・R とも **v1.0 リリース前に測って出てきたもの**で、直近�
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **GAPS Q**(K&R 旧形式の関数定義): Step `atomic-type-10` で実装。
+  mysql2 の別の最後のブロッカーも Step `atomic-type-11` で解消し、
+  Step `atomic-type-15` で上流 spec が `340 examples / 0 failures / 6 pending` となったため閉じた。
 - **Step 146 の 6 件**(stackprof / nkf の検証が露出): Steps 147〜152 で全て解消。
 - **Step 157 の A〜D**(etc の検証が露出): Steps 158〜161 で全て解消し、
   Step 162 で etc 1.4.6 が検証済みになった。**E だけが上の表に残っている。**
