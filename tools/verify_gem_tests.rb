@@ -119,11 +119,38 @@ CLEARED_ENV = {
 #                 must run once per file matched inside `chdir` (protoc across
 #                 every .proto in a directory); one of the `argv` entries must
 #                 then be the symbol :file, substituted with each match in turn
-#                 -- this is what stands in for a shell `for` loop.
+#                 -- this is what stands in for a shell `for` loop. A step may
+#                 instead give `write:` (a path) with `content:` (a literal
+#                 string) in place of `argv:`, for a file the upstream Rakefile
+#                 would template from an `.example` at test time rather than
+#                 build with an external tool (mysql2's spec/configuration.yml,
+#                 templated from spec/configuration.yml.example by
+#                 tasks/rspec.rake) -- no tool is required for these, and
+#                 required_generate_tools skips them.
 #   generated_copies  extra_copies' counterpart for files a `generate` step
 #                 wrote: same { from => to } shape, but from is relative to the
 #                 just-fetched source tree (where `generate` wrote it) rather
 #                 than the installed gem.
+#   suite_exec    runs step 7 (only step 7 -- build, .so injection and sanity
+#                 all still run on the host) inside `docker run --network
+#                 container:<container> <image> <the ordinary suite command>`
+#                 instead of directly on the host: { container:, image:,
+#                 mounts:, env: }. Every host path the suite's command line
+#                 already carries (GEM_HOME, the source tree, the injected
+#                 .so) is an absolute path under WORK_DIR or the running
+#                 ruby's own prefix, so those two are mounted at their host
+#                 path unchanged -- the rest of the command line needs no
+#                 translation (see suite_docker_argv). `mounts:` names
+#                 anything a recipe needs beyond that, mounted read-only the
+#                 same way; `env:` adds environment variables the container
+#                 alone needs (LD_LIBRARY_PATH for a host library the image
+#                 does not ship, say), on top of the suite's own env, which is
+#                 passed through with -e (mysql2 is the one recipe that uses
+#                 this, to run its suite where a socket write can actually
+#                 block -- see that recipe's comment for why that is
+#                 necessary). ensure_suite_exec! refuses to run rather than
+#                 silently falling back to the host when docker or the named
+#                 container is not available.
 #   test_deps     pure-Ruby gems the suite needs. Installed *without* RUBYCC:
 #                 a Ruby test dependency has no C to compile and must not be
 #                 dragged through the compiler under test.
@@ -980,6 +1007,100 @@ RECIPES = {
       # the injected-.so check to rule out.
       expr: "injected_so_loaded?"
     }
+  },
+
+  # mysql2's own suite is 340 examples / 0 failures / 6 pending against both
+  # rubycc's and gcc's build of ext/mysql2.so -- but only inside the
+  # environment suite_exec sets up below. Run directly on this host, one spec
+  # fails under *either* compiler: spec/mysql2/result_spec.rb:240 sets
+  # `net_write_timeout = 1` on the connection and then streams a result set
+  # slowly enough that it expects the server's write to eventually block and
+  # the server to drop the connection once that timeout elapses.
+  # `net_write_timeout` only fires while the server is *blocked* writing to
+  # the socket, though, and on this host it never blocks: the fixture is
+  # 10,000 rows * 255 bytes =~ 2.4 MiB, comfortably under this host's
+  # `sysctl net.ipv4.tcp_wmem` ceiling (4 MiB) and `net.ipv4.tcp_rmem`
+  # ceiling (6 MiB), so the whole result fits in the kernel's socket buffers
+  # and the server finishes writing it without ever waiting on the client.
+  # This is not a rubycc (or gcc) defect: pointing the same code path at
+  # 60,000 rows (~14.6 MiB) does make it block, and the client sees "Lost
+  # connection to server during query" at row 47,248 under both compilers
+  # (measured by hand). Rather than edit the upstream spec, suite_exec below
+  # runs the suite in the *same* network namespace as the mariadb server,
+  # with that namespace's tcp_wmem/tcp_rmem sysctls turned down to 32 KiB on
+  # the server container (`docker run --sysctl net.ipv4.tcp_wmem='4096 8192
+  # 32768' --sysctl net.ipv4.tcp_rmem='4096 8192 32768' ...`, applied when
+  # that container was started -- this recipe only runs the client side
+  # inside it), which is small enough that the unmodified 10,000-row fixture
+  # blocks the server exactly as the spec intends.
+  "mysql2" => {
+    version: "0.5.7",
+    tarball: "https://github.com/brianmario/mysql2/archive/refs/tags/0.5.7.tar.gz",
+    sos: { "lib/mysql2/mysql2.so" => "lib/mysql2/mysql2.so" },
+    # tasks/rspec.rake templates spec/configuration.yml and spec/my.cnf from
+    # an .example at test time by substituting the local username in;
+    # neither file is in the source tarball, and nothing in this tool's
+    # environment runs that Rakefile task, so both are written directly here
+    # instead. The values point at the mariadb container's own root user and
+    # at the unprivileged 'nuna'@'%' user / mysql2_test database the same
+    # container was set up with (see suite_exec below), not at the
+    # LOCALUSERNAME the Rakefile task would have substituted.
+    generate: [
+      { write: "spec/configuration.yml", content: <<~YAML },
+        root:
+          host: 127.0.0.1
+          port: 3306
+          username: root
+          password: rubycc
+          database: test
+
+        user:
+          host: 127.0.0.1
+          port: 3306
+          username: nuna
+          password:
+          database: mysql2_test
+      YAML
+      # Only spec/mysql2/client_spec.rb's "using defaults file" context reads
+      # this, with default_group: "test" -- a group this file does not
+      # define, so (per the MySQL client library's own default-file
+      # behaviour) only [client] below actually applies; [root] is kept for
+      # parity with the upstream .example this replaces, but nothing reads it.
+      { write: "spec/my.cnf", content: <<~CNF }
+        [root]
+        host=127.0.0.1
+        user=root
+        password=rubycc
+
+        [client]
+        host=127.0.0.1
+        user=nuna
+        password=
+      CNF
+    ],
+    suite_exec: {
+      container: "rubycc-mariadb",
+      image: "mariadb:11",
+      # mariadb:11 is Ubuntu 24.04-based, so its glibc matches this host's --
+      # the mysql2.so injected below was linked against the host's
+      # libmariadb, and a mismatched libc would fail to *load* it rather
+      # than fail a test. The image ships no libyaml, though, and
+      # spec_helper.rb does `require 'yaml'`; /tmp/extralibs holds a single
+      # host libyaml-0.so.2 for that, picked up via LD_LIBRARY_PATH below.
+      mounts: ["/tmp/extralibs"],
+      env: { "LD_LIBRARY_PATH" => "/tmp/extralibs" }
+    },
+    test_deps: %w[rspec],
+    runner: :rspec,
+    load_paths: %w[lib spec],
+    test_glob: "spec/**/*_spec.rb",
+    sanity: {
+      requires: %w[mysql2],
+      # lib/mysql2.rb requires the extension unconditionally (there is no
+      # pure-Ruby fallback), so the only wrong outcome is the wrong *copy*
+      # winning the require -- exactly what the injected-.so check rules out.
+      expr: "injected_so_loaded?"
+    }
   }
 }.freeze
 
@@ -1392,9 +1513,11 @@ end
 # The external tool(s) a recipe's `generate` steps need, deduplicated. Reading
 # this before running anything means a recipe with a missing tool fails with
 # one clear line instead of a protoc-shaped hole three steps further down
-# turning into a baffling test failure.
+# turning into a baffling test failure. A `write:` step needs no external
+# tool (it is this process writing a string to a file), so it is excluded
+# rather than made to fail :argv.fetch.
 def required_generate_tools(recipe)
-  Array(recipe[:generate]).map { |g| g.fetch(:argv).first }.uniq
+  Array(recipe[:generate]).reject { |g| g[:write] }.map { |g| g.fetch(:argv).first }.uniq
 end
 
 # A minimal, dependency-free PATH search -- this tool has no other reason to
@@ -1438,6 +1561,15 @@ def run_generate_steps(name, recipe, src_dir)
 
   steps.each do |gen|
     chdir = gen[:chdir] ? File.join(src_dir, gen[:chdir]) : src_dir
+
+    if gen[:write]
+      dest = File.join(chdir, gen.fetch(:write))
+      step "generate (#{name}): write #{gen.fetch(:write)} (in #{gen[:chdir] || '.'})"
+      FileUtils.mkdir_p(File.dirname(dest))
+      File.write(dest, gen.fetch(:content))
+      next
+    end
+
     argv_list =
       if gen[:glob]
         matches = Dir.glob(gen.fetch(:glob), base: chdir).sort
@@ -1485,7 +1617,15 @@ def verify_recipe!(name, recipe)
   abort "#{name}: unknown runner #{recipe[:runner].inspect}" unless
     %i[test_unit rspec ruby_files].include?(recipe[:runner])
   Array(recipe[:generate]).each do |gen|
-    abort "#{name}: a generate step needs :argv" if Array(gen[:argv]).empty?
+    if gen[:write]
+      abort "#{name}: a generate write step needs :content" if gen[:content].to_s.empty?
+    else
+      abort "#{name}: a generate step needs :argv" if Array(gen[:argv]).empty?
+    end
+  end
+  if (exec = recipe[:suite_exec])
+    abort "#{name}: suite_exec needs :container" if exec[:container].to_s.strip.empty?
+    abort "#{name}: suite_exec needs :image" if exec[:image].to_s.strip.empty?
   end
 end
 
@@ -1552,6 +1692,57 @@ def suite_files(recipe, src_dir)
   files
 end
 
+# --- step 7 (optional): run the suite inside recipe[:suite_exec] -------------
+#
+# A recipe's suite normally runs directly on the host (run below just execs
+# `cmd`). `suite_exec` is the escape hatch for a suite that needs an
+# environment the host itself is not, or must not be, one instance of --
+# mysql2's flaky-without-it timeout test is the case that needed this (see
+# that recipe's comment for the measurements behind it). Nothing upstream of
+# this point changes: the .so is still built and injected on the host, and
+# the sanity check above still runs there too, so the only thing this
+# redirects is the one subprocess that actually runs the test files.
+def ensure_suite_exec!(name, recipe)
+  exec = recipe.fetch(:suite_exec)
+  abort "#{name}: suite_exec needs docker on PATH, but it was not found. Install docker and re-run." unless
+    find_on_path("docker")
+
+  container = exec.fetch(:container)
+  out, ok = capture(["docker", "inspect", "-f", "{{.State.Running}}", container], chdir: nil, env: {}, timeout: 30)
+  unless ok && out.strip == "true"
+    abort "#{name}: suite_exec needs a running docker container named #{container.inspect}, but " \
+          "#{ok ? "docker inspect reports it is not running (state #{out.strip.inspect})" : "docker inspect failed:\n#{out}"}. " \
+          "Start it first (see the #{name} recipe's comment) and re-run."
+  end
+end
+
+# Wraps the already-built host `cmd`/`env` so it runs as `docker run
+# --network container:<container> <image> <cmd>` instead. This is only
+# transparent because it never renames a path: `cmd`, `chdir` and every value
+# in `env` are absolute host paths built by the rest of run_suite (GEM_HOME
+# under WORK_DIR, the source tree under WORK_DIR, -I flags into both), and the
+# two things every suite_exec recipe needs -- that WORK_DIR and the running
+# ruby's own install prefix (its interpreter binary, stdlib, and what an
+# installed gem's bin/ shebang points back at) -- are therefore mounted at
+# that identical path rather than remapped, so nothing downstream has to know
+# it is running in a container at all. `env` cannot be handed to Open3 here
+# (that would only set it for the `docker` process on the host, not whatever
+# docker execs inside the container), so it is translated to `-e` flags
+# instead.
+def suite_docker_argv(recipe, cmd, chdir, env)
+  exec = recipe.fetch(:suite_exec)
+  ro_mounts = ([RbConfig::CONFIG["prefix"]] + Array(exec[:mounts])).uniq
+  mount_flags = ["-v", "#{WORK_DIR}:#{WORK_DIR}"] + ro_mounts.flat_map { |path| ["-v", "#{path}:#{path}:ro"] }
+  env_flags = env.flat_map { |k, v| ["-e", "#{k}=#{v}"] }
+  extra_env_flags = exec.fetch(:env, {}).flat_map { |k, v| ["-e", "#{k}=#{v}"] }
+  [
+    "docker", "run", "--rm", "--network", "container:#{exec.fetch(:container)}",
+    *mount_flags, *env_flags, *extra_env_flags,
+    "-w", chdir, exec.fetch(:image),
+    *cmd
+  ]
+end
+
 # The three runner shapes:
 #   :test_unit  -- one ruby child that requires every suite file; the framework's
 #                  own at_exit runner prints the summary, which must then be in
@@ -1601,7 +1792,14 @@ def run_suite(name, recipe, src_dir, extra_load_paths)
   end
   child_load_paths = Array(recipe[:child_load_paths]).map { |path| File.expand_path(path, src_dir) }
   suite_env["RUBYLIB"] = (child_load_paths + extra_load_paths).join(File::PATH_SEPARATOR) unless child_load_paths.empty?
-  out, ok = run(*cmd, chdir: src_dir, env: suite_env)
+
+  if recipe[:suite_exec]
+    ensure_suite_exec!(name, recipe)
+    cmd = suite_docker_argv(recipe, cmd, src_dir, suite_env)
+    out, ok = run(*cmd, chdir: src_dir, env: {})
+  else
+    out, ok = run(*cmd, chdir: src_dir, env: suite_env)
+  end
   [out, ok, files.size]
 end
 

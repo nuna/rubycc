@@ -325,5 +325,16 @@
       }
     ],
     "notes": "Verification requires protoc: the upstream tarball ships no _pb.rb, so the recipe generates all 27 of them (12 well-known + 15 test protos) with the protoc matching the pinned tag. Measured with libprotoc 35.1 -- note the gemspec version 4.35.1 and the upstream tag v35.1 differ. The gemspec lists two extensions in one directory, so RubyGems overwrites gem_make.out with the second (non-compiling) one; the Makefile's CC=rubycc is what proves the build, and the .so carries no .comment section (a gcc-built .so on this host carries 'GCC: (Ubuntu 13.3.0-...)'). The run reported 2 omissions (not failures)."
+  },
+  "mysql2": {
+    "verifications": [
+      {
+        "versions": ["0.5.7"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-08",
+        "evidence": "RUBYCC=1 gem install mysql2 succeeded (mysql2.so built through rmake); the gem's own RSpec suite passed 340 examples / 0 failures (Step atomic-type-15)."
+      }
+    ],
+    "notes": "Verification needs a MariaDB server AND a small-socket-buffer network namespace: spec/mysql2/result_spec.rb:240 asserts that net_write_timeout aborts a stream the client reads too slowly, and that never fires on an ordinary loopback -- the 10,000-row / 2.4 MiB result fits entirely inside the host's tcp_wmem (4 MiB) and tcp_rmem (6 MiB), so the server never blocks writing. Measured: the same test raises 'Lost connection to server during query' at row 47,248 when the table is grown to 60,000 rows (14.6 MiB). It fails identically under gcc without this environment, and passes identically under gcc with it. The recipe therefore runs the suite inside the DB container's network namespace, whose buffers are pinned to 32 KiB both ways; see suite_exec in tools/verify_gem_tests.rb. The run also mounts a host libyaml-0.so.2 because the mariadb:11 image has none and Ruby's psych needs it. The run reported 6 pendings (not failures)."
   }
 }

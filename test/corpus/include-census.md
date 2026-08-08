@@ -78,7 +78,7 @@ Two kinds of gem are excluded from the denominator because *no* compiler could e
 
 | R10 gate passes (denominator) | verified (numerator) | pass rate | remaining to 90% |
 |---|---|---|---|
-| 33 | 27 | 81.8% | 3 |
+| 33 | 28 | 84.8% | 2 |
 
 ## gem × system header matrix
 
