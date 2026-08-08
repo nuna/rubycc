@@ -1,9 +1,8 @@
 # 同梱ヘッダのライセンス整理(H0)
 
-**位置づけ**: M4 完了後・M5(互換ヘッダの大量拡充)着手前の必須ゲート(ユーザ指示、
-2026-07-19)。M5 で `include/libc/` 配下のヘッダが大きく広がる前に、musl からの派生・
-glibc ABI への追従・カーネル UAPI の扱いについてライセンス上の体制を確定させ、以後の
-ヘッダ追加をワークフロー化する。
+**位置づけ**: H0 で確定した方針を、M5 の H4/H6 によるヘッダ追加後も更新する現行台帳。
+最終更新は 2026-08-08。現在の `include/` は物理ファイル 81 本で、分類・配布物・由来の
+記録をこの文書、ルート `NOTICE`、`rubycc.gemspec` の三者で突き合わせられる状態に保つ。
 
 このドキュメントは監査可能な一次記録であり、各ヘッダ冒頭の provenance コメント・
 ルート `NOTICE`・`rubycc.gemspec`・運用ルール(`CLAUDE.md` R11 派生の
@@ -78,8 +77,8 @@ musl の `COPYRIGHT`(https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT)より�
 
 各ヘッダ冒頭の provenance コメントを棚卸しした結果。分類は次の 4 種:
 
-- **freestanding** — ISO C §7 が規定する自立ヘッダ。コンパイラが提供すべきもので、
-  libc(musl/glibc)由来ではない。
+- **freestanding** — ISO C §7 の自立ヘッダと、コンパイラが提供する互換スタブ。libc
+  (musl/glibc)由来ではない。
 - **musl-derived** — musl の宣言セット/形状を出発点にし、glibc の対象 arch(x86-64 / aarch64)ABI に合わせて改変。
 - **clean-room** — 公開 ABI / ISO C 標準 / カーネル UAPI に対してゼロから記述。musl 由来ではない
   (一部は musl を「形状の参照」にしたが、テキストの派生はしていない)。
@@ -90,13 +89,13 @@ libc 由来ではない。musl・glibc いずれの派生でもない。
 
 | ファイル | 根拠 |
 |---|---|
-| `include/float.h` | ISO C 7.7。float/double は IEEE754 で全機種共通、**`long double` は機種で分岐**(x86-64 = x87 80 ビット、aarch64 = IEEE binary128。**両方とも各機種の gcc で実測**、Step 200) |
+| `include/float.h` | ISO C 7.7。float/double は IEEE754 で全機種共通、**`long double` は機種で分岐**(x86-64 = x87 80 ビット、aarch64 = IEEE binary128。**両方とも各機種の gcc で実測**、Step 201) |
 | `include/iso646.h` | ISO C 7.9 |
 | `include/stdalign.h` | ISO C 7.15(`_Alignof` へのマッピング) |
 | `include/stdarg.h` | ISO C 7.16(`__builtin_va_*` へのマッピング) |
 | `include/stdbool.h` | ISO C 7.18 |
 | `include/stdckdint.h` | ISO C23 7.20(`__builtin_*_overflow` へのマッピング)|
-| `include/stdatomic.h` | ISO C 7.17 の部分実装。`_Atomic` 型指定子と総称マクロ(load/store/exchange/compare_exchange/fetch_add/sub)を既存の `__atomic_*` 組み込みへマッピング(atomic-type-1)。**`fetch_or`/`_and`/`_xor`・`atomic_flag`・`atomic_is_lock_free` は提供しない**(対応する組み込みが無く、名前だけ生やすと誤った値を返すため)。`ATOMIC_*_LOCK_FREE` は **gcc と意図的に値が違う**(rubycc が拒否する幅を 0 と答える安全側) |
+| `include/stdatomic.h` | ISO C 7.17 の部分実装。`_Atomic` 型指定子と typedef、`atomic_init`/`ATOMIC_VAR_INIT`/`kill_dependency`、総称マクロ(load/store/exchange/compare_exchange/fetch_add/sub)を既存の `__atomic_*` 組み込みへマッピング(atomic-type-1)。**`fetch_or`/`_and`/`_xor`・`atomic_flag`・`atomic_is_lock_free` は提供しない**(対応する組み込みが無く、名前だけ生やすと誤った値を返すため)。`ATOMIC_*_LOCK_FREE` は **gcc と意図的に値が違う**(rubycc が拒否する幅を 0 と答える安全側) |
 | `include/stddef.h` | ISO C 7.19(型は x86-64 SysV LP64 に固定) |
 | `include/stdnoreturn.h` | ISO C 7.23 |
 | `include/x86intrin.h` | 意図的な空スタブ(CRuby の config.h 対策) |
@@ -197,10 +196,10 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 
 | 分類 | 本数 |
 |---|---|
-| freestanding | 9 |
+| freestanding | 10 |
 | musl-derived | 22 |
-| clean-room | 47 |
-| **合計** | **78** |
+| clean-room | 49 |
+| **合計** | **81** |
 
 > Step 82(M5 H1)で `include/libc/glibc/aarch64/` 層 11 本を追加(30→41)。うち 8 本は
 > x86-64 版と宣言・値がバイト一致(`cmp` 確認済み)で、由来分類も x86-64 版を継承する。
@@ -237,16 +236,19 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 > 確認した)。`regex.h`(oj、`regex_t` を値で埋め込むため実測 64 バイトの内部構造の
 > 再現コストが見合わない)・`stdatomic.h`・`stdckdint.h`(いずれも rubycc が
 > `_Atomic` 型指定子・`__builtin_add_overflow` を実装しておらず、実測で
-> コンパイルエラーになることを確認した)の 3 本は今回のスコープ外(未着手)。
+> コンパイルエラーになることを確認した)の 3 本は、Step 124 時点ではスコープ外(未着手)
+> とした。
 
 > **`stdckdint.h` はその後 Step 179 で追加した**(上の見送り理由 = `__builtin_add_overflow`
 > 不在は Step 177 で解消)。freestanding 側に置いたのは、C23 の `ckd_*` が全整数型に対して
 > 型ジェネリックであり、コンパイラにしか表現できないからである。
 > 動機は musl の初回実行(Step 175)で、**ホストの ruby の `config.h` が
 > `HAVE_STDCKDINT_H` を焼き込んでいると rubycc では `ruby.h` が前処理すら通らない**
-> ことが分かったため。`stdatomic.h` は Step 209 で最小の fence API を追加し、
-> atomic-type-1 で `_Atomic` と総称マクロまで広げたが、
-> `_Atomic` オブジェクトと atomic load/store/RMW は依然として未実装である。
+> ことが分かったため。`stdatomic.h` は Step 209 で最小の fence API を追加し、atomic-type-1
+> 以降で `_Atomic` 型指定子と総称マクロを実装した。現在は整数・浮動小数点・ポインタの
+> 1/2/4/8 バイト型、`atomic_init`/`ATOMIC_VAR_INIT`/`kill_dependency`、load/store/exchange/CAS、fetch-add/sub、および fence を
+> 提供する(メモリ順序は受理するが実装上は seq_cst)。`fetch_or/and/xor`、`atomic_flag`、
+> `atomic_is_lock_free`、集成型の atomic オブジェクトは未対応である。
 
 > Step 135(M5 H2)で、コーパスセンサス(36 gem、Step 139)が挙げた実需ギャップから
 > `sys/wait.h`(nio4r)・`sys/epoll.h`(nio4r・unicorn)・`langinfo.h`(nkf)の 3 スペリング
@@ -351,11 +353,11 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 
 ### 5.1 gemspec への NOTICE 同梱(是正済み)
 
-`rubycc.gemspec` の `spec.files` は当初 `["LICENSE.txt", "README.md"]` のみを含み、
-**`NOTICE` が gem パッケージに入っていなかった**。musl の omit 許可により NOTICE 同梱は
-厳密な義務ではないが、由来を受領者へ伝える方針(§2 解釈)に反するため、`spec.files` に
-`NOTICE` を追加した。これで `gem install rubycc` の受領者にも musl の謝辞・MIT 全文と
-本ドキュメントが指し示す由来体制が届く。
+`rubycc.gemspec` の `spec.files` は現在、`lib/**/*.rb`・`include/**/*.h`・`exe/*`・
+`data/*` と `LICENSE.txt`・`NOTICE`・`README.md`・`CHANGELOG.md` を同梱する。
+H0 で追加した **`NOTICE` は引き続き gem パッケージに含まれており**、`gem install rubycc`
+の受領者にも musl の謝辞・MIT 全文が届く。`HEADER-LICENSING.md` 自体は監査用のリポジトリ
+文書で、gem には含めず、`README.md` と `NOTICE` から参照する。
 
 ### 5.2 ライセンス表記の整合
 
@@ -367,7 +369,7 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 
 ## 6. 今後のヘッダ追加ワークフロー(H2 以降)
 
-M5 で libc 互換ヘッダを拡充する際、由来の記録と NOTICE の整合を保つため、
+今後 libc 互換ヘッダを拡充する際も、由来の記録と NOTICE の整合を保つため、
 新規ヘッダ追加時に次を必須手順とする:
 
 1. **冒頭 provenance コメントを必ず書く**。§3 の 4 分類のどれかを明示する:
@@ -390,6 +392,7 @@ M5 で libc 互換ヘッダを拡充する際、由来の記録と NOTICE の整
 ## 参考
 
 - musl `COPYRIGHT`: https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT
-- 実測 ABI の方針・同梱ヘッダの設計判断: `docs/STEPS.md`(Step 63/64)、`docs/DESIGN.md`
+- 実測 ABI の方針・同梱ヘッダの設計判断: `docs/STEPS.md`(Step 63/64、123〜141、174〜205)、
+  `docs/DESIGN.md`
 - 派生禁止ルール(R11): `CLAUDE.md`
 - gem 配布物の謝辞: リポジトリルート `NOTICE`

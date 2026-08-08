@@ -39,7 +39,9 @@ rubycc はその関数を互換ランタイムとして供給するだけで済�
 | `__builtin_constant_p` | 意味論まで正確に対応 | ConstantEvaluator で引数を評価してみて、成功なら 1・非定数(NotConstant/DivisionByZero)なら 0 を返す「試し畳み」。引数自体は評価しない | gcc の `__builtin_constant_p` の真偽と比較。ruby.h の `INT2FIX` 経路(`__builtin_choose_expr` と組み合わせ)が実 gem ビルドで通ることを確認 | Step 44 |
 | `__builtin_choose_expr(const, a, b)` | 意味論まで正確に対応 | 第 1 引数を既存の定数評価で畳み、選ばれた側の AST ノードをそのまま返す(専用 AST を作らない)。選ばれない側は構文チェックのみで評価もコード生成もされない | 定数文脈(static 初期化子)でも実行時文脈でも選択結果が gcc と一致することを確認 | Step 44 |
 | `__builtin_ctz`/`__builtin_ctzll`/`__builtin_clz`/`__builtin_clzll` | 意味論まで正確に対応 | 新 IR 命令 `:bit_scan`(a=対象, b=`:forward`/`:reverse`, size=4/8)を追加し、backend で `bsf`(0F BC)/`bsr`(0F BD)+ 補正演算に降ろす。定数畳み込みも同値対応 | gcc の演算結果とビット単位で一致することを実行テストで確認。オペランド 0 は両者とも UB につき未定義のまま(ゼロ処理コードを追加しない) | Step 44 |
-| `__atomic_*` ビルトイン 9 形(`load_n`/`store_n`/`exchange_n`/`compare_exchange_n`/`fetch_add`/`fetch_sub`/`add_fetch`/`sub_fetch`/`or_fetch`)+ `__ATOMIC_*` メモリオーダマクロ 6 種 | 意味論まで正確に対応(対応範囲内) | 新 IR 命令 4 つ(`:atomic_load` / `:atomic_store` / `:atomic_rmw` / `:atomic_cas`)。x86-64 は `mov` / `xchg` / `lock xadd` / `lock cmpxchg`(`or_fetch` のみ cmpxchg リトライループ)、aarch64 は `ldar` / `stlr` と armv8-a ベースラインの LDAXR/STLXR リトライループ(**LSE も libgcc の outline atomics も使わない**)。**メモリオーダは受理するが検査せず、常に最強(seq_cst)で降ろす** — オーダの強化は制約を増やすだけで常に意味論的に妥当であり、`__ATOMIC_RELAXED` を seq_cst として実装するのは正しい(`compare_exchange_n` の `weak` も同じ理由で常に strong)。**型幅は 4 と 8 のみ**で、1/2/16 バイトは診断(黙って非アトミックな列を出すより落とす)。`compare_exchange_n` の失敗時の `*expected` 書き戻しは必須の副作用として実装 | gcc 差分の実行テストで 9 形全ての戻り値と副作用が一致することを確認(成功/失敗両経路と `expected` が対象に別名で重なる場合を含む)。逆アセンブルで x86-64 の `lock` 前置と aarch64 の LDAXR/STLXR ループを検査。aarch64 は qemu で実走。`<ruby/atomic.h>` を単体で include する翻訳単位のコンパイルを回帰テスト化 | Step 161 |
+| `__atomic_*` ビルトイン 10 形(データ 9 形 + `thread_fence`) — `load_n`/`store_n`/`exchange_n`/`compare_exchange_n`/`fetch_add`/`fetch_sub`/`add_fetch`/`sub_fetch`/`or_fetch`/`thread_fence` — + `__ATOMIC_*` メモリオーダマクロ 6 種 | 意味論まで正確に対応(対応範囲内) | 新 IR 命令 4 つ(`:atomic_load` / `:atomic_store` / `:atomic_rmw` / `:atomic_cas`)。x86-64 は `mov` / `xchg` / `lock xadd` / `lock cmpxchg`(`or_fetch` のみ cmpxchg リトライループ)と MFENCE、aarch64 は `ldar` / `stlr`、LDAXR/STLXR リトライループと DMB ISH(**LSE も libgcc の outline atomics も使わない**)。**メモリオーダは受理するが検査せず、常に最強(seq_cst)で降ろす**。`compare_exchange_n` の `weak` も常に strong として扱う。**型幅は 4 と 8 のみ**で、1/2/16 バイトは診断。`compare_exchange_n` の失敗時の `*expected` 書き戻しも実装 | gcc 差分の実行テストでデータ 9 形の戻り値・副作用と fence を確認。逆アセンブルで x86-64 の `lock`/MFENCE と aarch64 の LDAXR/STLXR/DMB ISH を検査し、aarch64 は qemu で実走 | Step 161 / Step 209 |
+| `__builtin_add_overflow` / `__builtin_sub_overflow` / `__builtin_mul_overflow` | 意味論まで正確に対応 | 整数の無限精度で演算し、格納先の型への変換でオーバーフローしたかを `_Bool` で返す。符号付き・符号なし、幅の異なる整数、64 ビット境界まで対応。非整数・128 ビットの組み合わせは診断 | gcc との戻り値・格納値の差分実行と `__has_builtin` の結果を検証 | Step 177 |
+| `__sync_*` ビルトイン 10 形(`fetch_and_add`/`fetch_and_sub`/`add_and_fetch`/`sub_and_fetch`/`or_and_fetch`/`lock_test_and_set`/`lock_release`/`synchronize`/`bool_compare_and_swap`/`val_compare_and_swap`) | 意味論まで正確に対応(対応範囲内) | x86-64 は lock 命令列と MFENCE、aarch64 は LDAXR/STLXR ループと DMB ISH に降ろす。整数・ポインタの 4/8 バイトを対象とし、legacy family 固有の full barrier 契約を保つ | gcc 差分の戻り値・副作用、ポインタ加算、signedness、両 target の命令列を検証 | atomic-type-6 |
 | `__builtin_unreachable()` | 受理するが実体は何もしない | rubycc は最適化を行わないため、void 値を返すだけのコードで意味論上安全(到達すればそのまま実行が続く。gcc は UB として最適化に使うが、rubycc は使わないため無害) | CRuby `assert.h` の `UNREACHABLE_RETURN` マクロ(`return (__builtin_unreachable(), val)` のコンマ式)が既存の void 対応で通ることを確認 | Step 44 |
 | `__builtin_memcpy` | 意味論まで正確に対応 | パース時に `Call("memcpy", …)` へ書き換え、組み込みプロトタイプを seed(未宣言でも可)。実体は libc の `memcpy` に UND 解決される | gcc ビルドとのリンク・実行結果比較 | Step 44 |
 | `<x86intrin.h>`(空スタブ) | 受理するが実体は何もしない | ヘッダを空で提供する。実 intrinsic の使用箇所は全て `__AVX2__`/`__LZCNT__` 等の別ガードで守られており、rubycc はそれらのマクロを定義しないため到達しない(実測確認) | CRuby config.h が焼き込む `HAVE_X86INTRIN_H` ガード付きの `#include <x86intrin.h>` が実 gem ビルドで通ることを確認 | Step 44 |
@@ -53,22 +55,22 @@ rubycc はその関数を互換ランタイムとして供給するだけで済�
 | `__extension__` | 受理するが実体は何もしない | cast 前置の読み飛ばし経路で吸収。ISO 厳格モード(`-pedantic` 等)を持たないため抑制すべき警告がそもそも存在せず、単純な読み飛ばしで十分 | `__extension__ ({ … })` が文式と組み合わさって構文的に通ることを確認 | Step 28 |
 | GNU 別名キーワード(`__signed__`/`__const__`/`__volatile__`/`__inline__` とその単一アンダースコア形) | 意味論まで正確に対応 | lexer が字句解析時に正規綴り(`signed`/`const`/`volatile`/`inline`)へ 1 回だけ写像(KEYWORD_ALIASES)。以降の全判定サイトは通常のキーワードとして扱われる | glibc の kernel UAPI ヘッダ(`asm-generic/int-ll64.h` の `typedef __signed__ char __s8;`)が実 gem ビルドで通ることを確認。適合修正(Step 49)が開いた新経路への対応として同時実装 | Step 49 |
 | `restrict` / `__restrict` / `__restrict__` | 受理するが実体は何もしない | 型修飾子として構文は受理するが、rubycc はエイリアス解析に基づく最適化を行わないため意味上の効果を持たせない | 構文受理をユニットテストで確認 | Step 28 |
-| `__int128`(算術サブセット) | 意味論まで正確に対応(対応範囲内) | 16 バイト値をスタックオブジェクトのアドレスとして表現し、加減算・乗算(新 IR `:mulhi` を含む半語 64bit 演算の合成)・比較・変換を実装。**除算・シフト・ビット演算・値渡し/返し・可変長引数渡しは診断エラー**(未対応であることを明示) | gcc との演算結果一致(CRuby `rb_mul_size_overflow` の乗算・比較・変換、onigmo.h のメンバレイアウトで実測) | Step 28 |
+| `__int128`(算術サブセット) | 意味論まで正確に対応(対応範囲内) | 16 バイト値をスタックオブジェクトのアドレスとして表現し、加減算・乗算(半語 64bit 演算の合成)・比較・変換、値渡し/値返し、シフトを実装。**除算・剰余・ビット演算・可変長引数渡しは診断エラー** | gcc との演算結果・ABI 一致(CRuby `rb_mul_size_overflow`、`bits.h` の値渡し/シフト、onigmo.h のメンバレイアウト)を実測 | Step 28 / Steps 94–95 |
 | `#pragma once` | 意味論まで正確に対応 | `#include` 解決後・読み込み前に `File.expand_path` をキーに照合し、2 回目以降の読み込みをスキップ | インクルードガード無しヘッダの多重インクルード防止が gcc と同じ効果を持つことを確認 | Step 27 |
 | `#pragma` のその他(`push_macro`/`pop_macro` 等) | 受理するが実体は何もしない | `#pragma once` 以外の pragma は本文を読み飛ばして無視する(実際のマクロ退避・復元は行わない) | gcc 固有・ベンダ固有 pragma が構文エラーにならないことを確認。c-testsuite 00206(`push_macro`/`pop_macro` を使うケース)はマクロの退避・復元自体は再現されないため意図的にスキップ | Step 27 |
 | `_Pragma("...")` 演算子 | 受理するが実体は何もしない | ディレクティブでなく演算子として、再走査中に `_Pragma ( 文字列 )` の 4 トークンを消費して丸ごと破棄する | config.h が無条件に吐く `_Pragma("GCC visibility push(default)")` 等が実 gem ビルドで通ることを確認 | Step 28 |
 | `__builtin_expect(exp, c)` | 受理するが実体は何もしない | 両オペランドを `long` へ変換し値は `exp` 側をそのまま返す。rubycc に分岐予測最適化が無いためヒントは意味を持たない(no-op が正確な実装) | `exp` の値がそのまま得られることを実行テストで確認 | Step 28 |
-| `__builtin_alloca(n)` / `alloca(n)` | 意味論まで正確に対応 | 新 IR `:alloca` で 16 の倍数に切り上げて `sub rsp` し、以降 `rsp` を恒久的に動かす。同梱 `<alloca.h>` が `alloca` を `__builtin_alloca` へマクロ展開 | gcc との動的スタック確保サイズ・内容比較(実行テスト) | Step 28(ビルトイン)/ Step 63(同梱 `alloca.h`) |
+| `__builtin_alloca(n)` / `alloca(n)` | 意味論まで正確に対応(対象 target 内) | x86-64 では新 IR `:alloca` で 16 の倍数に切り上げてスタックを確保し、同梱 `<alloca.h>` が `alloca` を `__builtin_alloca` へ展開する。aarch64 backend では現在も診断する | gcc との動的スタック確保サイズ・内容比較(実行テスト)。aarch64 は pending として明示 | Step 28(ビルトイン)/ Step 63(同梱 `alloca.h`) |
 | 定義済みターゲット/数値限界マクロ(`__x86_64__`/`__linux__`/`__LP64__`/`__LONG_MAX__` 等 36 種) | 意味論まで正確に対応 | 予約形のみ(`__GNUC__`・非予約形の `linux`/`unix` は定義しない)。数値系はサフィックス込みで gcc -dM の綴りと一致させる | `gcc -dM -E` の出力値との一致をユニットテストで検証 | Step 28 |
 | `#include_next` | 意味論まで正確に対応 | 各ファイルの解決元 `-I` ディレクトリを記録し、その次のディレクトリから探索を再開する | gcc の `#include_next` と同じ解決順で、fixinclude 由来の limits.h 連鎖が通ることを確認 | Step 28 |
 | RB_GC_GUARD 互換ランタイム(`rb_gc_guarded_ptr_val`) | 意味論まで正確に対応 | `__GNUC__` を名乗らないため CRuby の `RB_GC_GUARD` は asm バリア版でなく extern 関数呼び出し版へ展開される。rubycc ドライバがリンク入力の末尾に自動追加する互換アーカイブ(libgcc 相当の位置づけ、シンボル参照時のみ実体化)でこの関数を供給し、ポインタをそのまま返すことで「呼び出しの存在自体が最適化バリア」という契約を満たす | msgpack 実 gem を rubycc 単体ツールチェーンで .so 化・require・round-trip テストして正常動作を確認 | Step 50 |
 
 ---
 
-## 検討したが未実装の GNU 拡張(参考)
+## 現在も未実装または部分対応の GNU 拡張(参考)
 
-以下は実コーパス(json/msgpack 等)では未だ要求されておらず、rubycc は実装していない。
-使用すると通常の構文エラー(未認識の記号・識別子)になる:
+以下は実コーパスでまだ要求されていないか、対応範囲を限定している。
+未対応の名前は通常の構文エラー(未認識の記号・識別子)になる:
 
 - **入れ子関数定義**(ブロック内の関数 *定義*。`int main(void) { int f(int) { … } … }`)—
   囲むフレームを捕捉するトランポリンが要る GNU 拡張。「nested function definitions are
@@ -82,14 +84,24 @@ rubycc はその関数を互換ランタイムとして供給するだけで済�
 - `typeof` / `__typeof__`
 - `__attribute__((__mode__(...)))` 等、aligned/packed 以外で意味を持たせている属性
 - 実体のあるインラインアセンブリ(オペランド・クロバーを実際に処理する asm 文)
-- `__atomic_test_and_set` / `__atomic_*` の非 `_n` 総称形 / `__sync_*` 系 / C11 の
-  `_Atomic` — 未実装。`__atomic_thread_fence` と `<stdatomic.h>` の
-  `atomic_thread_fence` は実装済み(Step 209)。
+- **`__atomic_test_and_set` / `__atomic_clear`、データ操作の generic
+  `__atomic_load` / `__atomic_store` / `__atomic_exchange` /
+  `__atomic_compare_exchange`**、`__sync_*` の未対応 7 形
+  (`__sync_fetch_and_or` / `__sync_fetch_and_and` / `__sync_fetch_and_xor` /
+  `__sync_fetch_and_nand` / `__sync_and_and_fetch` / `__sync_xor_and_fetch` /
+  `__sync_nand_and_fetch`)、および `__atomic_fetch_or` /
+  `__atomic_fetch_and` / `__atomic_fetch_xor` / `__atomic_fetch_nand` /
+  `__atomic_and_fetch` / `__atomic_xor_fetch` / `__atomic_nand_fetch`は未実装。
+  `__atomic_fetch_add` など表に記載した 9 形と `__atomic_thread_fence` は対応範囲内である。
+  C11 の `_Atomic` と `<stdatomic.h>` は限定的に実装済みだが、`atomic_fetch_or`/
+  `_and`/`_xor`、`atomic_flag`、`atomic_is_lock_free`は提供しない
+  (atomic-type-1)。
 
 ---
 
 ## 出典
 
 - docs/DESIGN.md R7(`__GNUC__` 非定義方針)
-- docs/STEPS.md Step 27・28・40・42・43・44・49・50 の設計記録
+- docs/STEPS.md Step 27・28・40・42・43・44・49・50・94・95・161・177・209、
+  `atomic-type-1`・`atomic-type-6` の設計記録
 - docs/ROADMAP.md §3(既知の逸脱・技術的負債の一覧表)

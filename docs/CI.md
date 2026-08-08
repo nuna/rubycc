@@ -5,15 +5,16 @@ rubycc の継続的検証は 3 層に分かれている。**push ごとに回る
 分離してある。ワークフローは `.github/workflows/` 配下、skip ガードは
 [`../tools/ci_check_skips.rb`](../tools/ci_check_skips.rb)。
 
-構築は **Step 135**。
+初期構築は **Step 135**。現在の構成には musl(Step 174 以降)、aarch64 musl(Step 197 以降)、
+native aarch64 の手動受入れ(最終 M4 記録)までを反映している。
 
 ## 3 層の構成
 
-| 層 | ファイル | トリガ | 目的 | 所要時間の目安 | 失敗が意味すること |
+| 層 | ファイル | トリガ | 目的 | 設定上限 | 失敗が意味すること |
 |---|---|---|---|---|---|
-| **A** | `test.yml` | `push`(master)/ PR / 手動 / 他ワークフローからの呼び出し | 全 Minitest スイートを Ruby 3.3 / 4.0(両端)で実行 | 1 バージョンあたり 10〜20 分(2 本並列) | 回帰、またはサポート Ruby のいずれかでの非互換。**マージしてはいけない** |
-| **B** | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)/ 手動 | コーパス census の再生成差分、ネットワーク受け入れ、スループット計測、Ruby 3.4 の全スイート、**手動の native aarch64 全スイート**、**musl での全スイートと gem install** | census 〜20 分 / acceptance 〜60 分 / throughput 〜30 分 / ruby-3-4 〜25 分 / aarch64 〜60 分(2本並列) / musl 〜90 分 / musl-aarch64 〜90 分(6 ジョブ並列。aarch64 は `only` の手動実行) | census: ヘッダ網羅性が変わった(要コミット)。acceptance: 実 gem のビルドが壊れた。throughput: **合否判定なし**(下記)。ruby-3-4: 中間バージョン固有の非互換。aarch64: native ARM Ruby/runner 上の非互換。musl: **glibc/musl 互換の主張の、未検証だった側が壊れた**(下記) |
-| **C** | `release.yml` | `v*` タグの push / 手動 | Tier A の再実行 + gem の再現ビルド検証 | 30〜50 分 | タグと `Rubycc::VERSION` の不一致、または gem がバイト再現しない。**リリースを止める** |
+| **A** | `test.yml` | `push`(master)/ PR / 手動 / 他ワークフローからの呼び出し | 全 Minitest スイートを Ruby 3.3 / 4.0(両端)で実行 | 60 分 / 1 バージョン(2 本並列) | 回帰、またはサポート Ruby のいずれかでの非互換。**マージしてはいけない** |
+| **B** | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)/ 手動 | コーパス census の再生成差分、ネットワーク受け入れ、スループット計測、Ruby 3.4 の全スイート、**手動の native aarch64 全スイート**、**musl での全スイートと gem install** | census 45 分 / acceptance 90 分 / throughput 60 分 / ruby-3-4 60 分 / musl 90 分 / musl-aarch64 90 分。schedule は 6 ジョブ並列、native aarch64 は `only` の手動実行 | census: ヘッダ網羅性が変わった(要コミット)。acceptance: 実 gem のビルドが壊れた。throughput: **合否判定なし**(下記)。ruby-3-4: 中間バージョン固有の非互換。aarch64: native ARM Ruby/runner 上の非互換。musl: **glibc/musl 互換の主張の、未検証だった側が壊れた**(下記) |
+| **C** | `release.yml` | `v*` タグの push / 手動 | Tier A の再実行 + gem の再現ビルド検証 | test 60 分 + package 30 分 | タグと `Rubycc::VERSION` の不一致、または gem がバイト再現しない。**リリースを止める** |
 
 Tier C の `test` ジョブは `uses: ./.github/workflows/test.yml` で **Tier A をそのまま
 再利用**している(このため `test.yml` に `workflow_call` トリガが必要)。リリースが
@@ -80,10 +81,13 @@ static 版だけを入れると `available?` が false になり、**aarch64 実
 無限に増えることはない。数値が動いたときに「どのツールが消えたか」がログの先頭で
 分かる。
 
-**運用**: 最初の green run(Step 135)で CI 実測値が出た結果、CI は
-**2,547 runs / 52 skips**、ローカルは **2,547 runs / 47 skips** だった。
-runs は一致しているのに skips が 5 件ずれているのは、内訳が異なる 2 つの効果が
-たまたま相殺しているためで、単一の原因ではない。
+**運用**: 最初の green run(Step 135)の CI 実測値は **2,547 runs / 52 skips**で、
+これは履歴上の基準値である。現在のローカル実測(2026-08-08)は
+**2,957 runs / 9,456 assertions / 0 failures / 0 errors / 44 skips**であり、
+機能追加後の CI 件数を古い 2,547 件で表してはいけない。CI の実行ごとの正確な値は
+Actions artifact のログで確認する。
+
+なお、Step 135 の CI 52 skips とローカル 47 skips の差(5 件)は、次の相殺だった。
 
 - **−1**: CI には本物の `pkg-config` が入っているため、
   `test_matches_real_pkg_config_for_zlib` が skip ではなく実行される
@@ -93,17 +97,16 @@ runs は一致しているのに skips が 5 件ずれているのは、内訳�
   埋め込んでおり、その絶対パスが CI ランナー上には存在しないため。これは
   CI 側だけでは解消できない構造的な差である。
 
-現在の閾値 55 / 2500 は、この実測値(52 skips / 2,547 runs)に小さな余裕を
-足したもの。テストを増やすと runs は増える一方なので、`CI_MIN_RUNS` が
-テスト追加だけで誤検知することはない。テストの増減があった場合はこの基準値も
-追随して更新すること。
+現在の閾値 55 / 2500 は、上記の CI 実測値(52 skips / 2,547 runs)に小さな余裕を
+足したもの。現在のローカル実測にも収まっているが、テスト規模が大きく変わったため、
+次回 CI の green run で skip 分布を再確認し、必要なら閾値を更新すること。
 
 ## musl ジョブ(`weekly.yml` の `musl`)
 
 M5 は「glibc/musl 互換ヘッダ」を掲げているが、**その主張を支える計測は全て
 glibc 側で取られていた** — ABI ハーネスも、コーパスも、
-`data/verified_gems.json` の全 18 エントリもである。このジョブが残りの半分。
-構築は **Step 174**。
+`data/verified_gems.json` の glibc x86-64 側 29 gem 分もである。このジョブが残りの半分。
+初期構築は **Step 174**、現在の 3 gem 回帰・記録手順は Steps 181〜194 で確立した。
 
 ### `container:` を使わず自分で `docker run` する
 
@@ -144,19 +147,20 @@ GitHub Actions のジョブコンテナには、ランナーが**自前の glibc
 | 週次スケジュール | 空 | **読み取り専用**。「この 3 gem は musl でまだビルドでき、テストが通るか」という回帰の問い |
 | 手動 dispatch | ステップ番号 | `--update` で `data/verified_gems.json` を書き、`weekly-musl` アーティファクトとして上げる。**そのファイルをそのままコミットする**ので、DB を書くのは変わらずツールだけ |
 
-**記録用の dispatch では musl 以外の 4 ジョブが走らない**(各ジョブの
-`if: inputs.verify_step == ''`)。記録したいときに他の 4 本を引き連れると
-1 回あたり 255 分かかり、**記録そのものより随伴のほうが高くつく**ためである。
+**記録用の dispatch では musl 以外の 5 ジョブが走らない**(各ジョブの
+`if: inputs.verify_step == ''`)。記録したいときに他の 5 本を引き連れると
+数百分の runner 上限を伴い、**記録そのものより随伴のほうが高くつく**ためである。
 `schedule` イベントでは `inputs` が null で、GitHub の式評価では
-`null == ''` が真になるので、**週次実行は従来どおり 5 ジョブ全部**が走る。
+`null == ''` が真になるので、**週次実行は現在の 6 ジョブ全部**が走る。
 記録用 dispatch のコストは musl ジョブの約 90 分だけ。
 
 ## aarch64 musl の ABI 測定ジョブ(`weekly.yml` の `musl-aarch64`)
 
-Step 193 で musl の ABI を同梱ヘッダに反映したが、**測れたのは x86-64 だけ**だった。
+Step 193 で musl の ABI を同梱ヘッダに反映したが、**当初測れたのは x86-64 だけ**だった。
 arch 層は「機種で値が動く」ことを前提に存在する層なので、
 x86-64 の値を aarch64 に写すのは**測定ではなく仮定**になる。
-このジョブがその測定を取る。構築は **Step 197**。
+このジョブがその測定を取る。足場は **Step 197**、初回 aarch64 musl 実測と反映は
+Steps 200/204/205 で記録している。
 
 ### 全スイートは走らせない
 
@@ -165,12 +169,13 @@ qemu エミュレーション下では遅すぎる(ROADMAP §8 が明記)。
 `test_freestanding_headers.rb`。`bundler` も使わず `gem install minitest` だけにする
 (Gemfile の `fiddle` はソースビルドを要するが、この 2 本は fiddle を使わない)。
 
-### 赤でよいジョブである
+### 測定結果が赤になることを許容するジョブ
 
 **目的は測ることで、緑にすることではない。** 差分がログに残ることが成果なので
-`continue-on-error` は付けず、**赤をそのまま出してログを上げる**。
-先頭に `uname -m` / `RbConfig` の arch / `gcc -dumpmachine` を記録して、
-**本当に aarch64 かつ musl だったこと**を証拠として残す。
+`continue-on-error` は付けず、**失敗扱いのままログを上げる**。Step 205 でヘッダ ABI
+と freestanding ヘッダの整合は確認済みだが、現在も A4 の `alloca` と、stdio のリンク
+に関する Gap P の既知エラーが残る。先頭に `uname -m` / `RbConfig` の arch /
+`gcc -dumpmachine` を記録して、**本当に aarch64 かつ musl だったこと**を証拠として残す。
 
 ### `only` 入力 — 1 ジョブだけ回すため
 
@@ -258,11 +263,12 @@ RubyGems は gem 内の各エントリの mtime と build 時刻にこの環境�
 2. Tier B の頻度を夜間から週次に落とす。
 3. ドキュメントのみの変更では Tier A を起動しない(`test.yml` の `paths-ignore`)。
 
-削減後の見積りは、Tier A が 1 push あたり約 50 分、weekly が 1 週あたり約 255 分
-(census 20 分 + acceptance 90 分 + throughput 30 分 + ruby-3-4 25 分 +
-musl 90 分)。コードの
-push が月 20 回程度と仮定すると、概算で**月 1,700 分程度**となり無料枠に収まる。
-**これはあくまで見積りであり、実測値が出た段階でこの節を更新すること。**
+現行の設定上限で見ると、Tier A は 1 push あたり最大 120 分(60 分 × 2 本)、weekly の
+schedule は 1 週あたり最大 435 分(45 + 90 + 60 + 60 + 90 + 90 分の 6 ジョブ)である。
+native aarch64 の手動実行は Ruby 3.3 / 4.0 の 2 本で最大 120 分が別途かかる。
+ただしこれは `timeout-minutes` の合計であり、実際の消費量ではない。GitHub Actions の
+実測分数はジョブごとの実行時間と切り上げ規則に依存するため、musl-aarch64 追加前の
+旧来の weekly/月間見積りは廃止した。無料枠との照合は、次回以降の Actions 実績で行う。
 
 トレードオフも明記しておく。中間バージョン(3.4)固有の非互換は、週次実行のため
 **検出が最大 1 週間遅れる**可能性がある。ただし両端(下限の 3.3 と最新の 4.0)は

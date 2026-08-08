@@ -31,7 +31,8 @@ gem install 成功 + テスト合格」を到達目標(DESIGN R10)とし、C11 �
 
 ## 最終更新
 
-2026-07-19 時点、**Step 64(M3 完了)までの実装状態**を対象とする。
+2026-08-08 時点。**番号付き Step 215 まで**と、後続の
+`atomic-type-1`〜`atomic-type-15` / `r-input-diagnostic-1` の実装状態を反映する。
 
 ---
 
@@ -41,7 +42,7 @@ gem install 成功 + テスト合格」を到達目標(DESIGN R10)とし、C11 �
 |---|---|---|---|
 | 5.1.1.2 | Translation phases | 実装済み | フェーズ 1〜4(行継続・コメント除去・pp トークン化・#include/マクロ展開・条件コンパイル)は Step 26/27、フェーズ 5〜7(隣接文字列リテラル連結を含む)は Step 28 の TokenConverter、フェーズ 8(コンパイル・リンク)は Driver(Step 38)が担う。フェーズ 9(リンク)相当は自前リンカ(Step 34〜37)。#line(6.10.4)によるフェーズ間の行番号制御は Step 102 で対応 |
 | 5.1.2.2.1 | Program startup(`main` / argc,argv) | 実装済み | 実行ファイルは自前 crt(_start)経由で `__libc_start_main` を呼び、`int main(void)` / `int main(int argc, char *argv[])` の両形式で argc/argv が実測どおり渡ることを検証済み(Step 37) |
-| 5.2.4.2 | Numerical limits(`<limits.h>` / `<float.h>` の値) | 部分実装 | 同梱 limits.h/float.h の値は ABI 一致ハーネス(Step 62)で gcc + 実ヘッダと突き合わせ済みだが、2 件の既知バグ・制限が残る: (1) float リテラルの binary32 丸めに誤りがあり `FLT_MAX` の 10 進綴りが `+inf` になる(ROADMAP §3 の負債、該当ハーネス検査は非 assert)、(2) `long double` を 8 バイト `double` として扱う簡略化(DESIGN §3.3)により `max_align_t` が glibc 実測値と相違 |
+| 5.2.4.2 | Numerical limits(`<limits.h>` / `<float.h>` の値) | 部分実装 | 同梱 limits.h/float.h の値は ABI 一致ハーネス(Step 62/63)で gcc + 実ヘッダと突き合わせ済み。binary32 の丸めは Step 69 で修正済みだが、`long double` を 8 バイト `double` として扱う簡略化(DESIGN §3.3)により、その表現と `max_align_t` は glibc 実測値と一致しない |
 
 ---
 
@@ -55,10 +56,10 @@ gem install 成功 + テスト合格」を到達目標(DESIGN R10)とし、C11 �
 | 6.2.2 | Linkages of identifiers | 部分実装 | 外部・内部・無リンケージは Step 22(static の内部リンケージ、extern の束縛登録)で実装。ブロックスコープの関数宣言(6.2.2p5)は Step 168 で対応 — 記憶域を消費せず、ファイルスコープのプロトタイプと同じ署名テーブルへ合流する(`static` を伴う形は 6.7.1p7 の制約違反として診断)。既知の逸脱: ブロックスコープ関数宣言・ブロックスコープ extern の束縛は、外部リンケージが翻訳単位内で単一の実体を指すことを根拠にブロックを超えて残る |
 | 6.2.3 | Name spaces of identifiers | 実装済み | ラベル・タグ・メンバ・通常識別子の 4 名前空間(Step 13 タグ、Step 16 ラベル、Step 18 通常識別子、Step 19 メンバ) |
 | 6.2.4 | Storage durations of objects | 部分実装 | static/automatic は Step 3, 11, 22 で実装。allocated(malloc 等)は libc 任せ(通常の C 拡張同様)。VLA の自動記憶域はスコープ外(DESIGN §3.3) |
-| 6.2.5 | Types | 部分実装 | 基本型・派生型(ポインタ・配列・struct/union・関数・enum=int)は Step 2〜24 で網羅。**多次元配列(配列の配列)は非対応**(既知の負債、c-testsuite 00130/00151)。`_Atomic` 修飾型はスコープ外 |
+| 6.2.5 | Types | 部分実装 | 基本型・派生型(ポインタ・配列・struct/union・関数・enum=int)は Step 2〜24 で実装。多次元配列は添字・初期化を含め Step 99 で実装済みだが、c-testsuite の 00130/00151 は既存の skip 表に残る。VLA はスコープ外。`_Atomic` は下記の限定範囲で部分実装 |
 | 6.2.6 | Representations of types | 部分実装 | 値表現規約(スロット 8 バイト固定・スカラは 32bit 以上へ符号拡張済み、backend/x86_64.rb 冒頭)で一貫実装。`long double` = `double` 扱いの簡略化(DESIGN §3.3)により表現がビット単位で glibc と一致しない既知の制限あり |
 | 6.2.7 | Compatible type and composite type | 部分実装 | 関数ポインタ署名の一致検査(Step 21, 23)、struct/union タグの恒等同一性(Step 13)、tentative definition のマージ(Step 28 の「一時定義」)を実装。配列サイズ不一致等の細かな composite type 規則までは追跡しない |
-| 6.2.8 | Alignment of objects | 部分実装 | `_Alignof` は実装(Step 22)。アラインメント指定子 `_Alignas`(6.7.5)は非対応。`__attribute__((aligned(N)))` は struct/union に限り実装(Step 28、GCC 拡張。詳細は GCC-EXTENSIONS.md) |
+| 6.2.8 | Alignment of objects | 部分実装 | `_Alignof` は実装(Step 22)、`_Alignas` はオブジェクト・メンバで実装(Step atomic-type-2)。自然アラインメントを弱める指定、関数・引数・ビットフィールド・typedef・型名への指定、16 バイトを超える自動オブジェクトは診断する。`__attribute__((aligned(N)))` は struct/union に限り実装(Step 28、GCC 拡張) |
 
 ### 6.3 Conversions
 
@@ -80,11 +81,11 @@ gem install 成功 + テスト合格」を到達目標(DESIGN R10)とし、C11 �
 
 | 条番号 | 見出し | 状態 | 備考 |
 |---|---|---|---|
-| 6.4.1 | Keywords | 部分実装 | 標準キーワードのほぼ全てを実装。**`_Alignas` / `_Atomic` / `_Generic` / `_Thread_local` / `_Complex` / `_Imaginary` は未実装**(lexer の KEYWORDS 表に不在。識別子として扱われ、通常は構文エラーになる) |
+| 6.4.1 | Keywords | 部分実装 | `_Alignas` / `_Atomic` / `_Noreturn` は認識する。`_Generic` / `_Thread_local` / `_Complex` / `_Imaginary` は未実装で、通常は診断になる |
 | 6.4.2 | Identifiers | 実装済み | ASCII 識別子(Step 2〜) |
 | 6.4.3 | Universal character names | 非対応 | `\uXXXX` / `\UXXXXXXXX` の字句解析は未実装 |
 | 6.4.4.1 | Integer constants | 実装済み | 10/8/16 進、u/l/ll 接尾辞(Step 17)。2 進リテラル `0b...` は GNU 拡張として Step 44 で追加(詳細は GCC-EXTENSIONS.md) |
-| 6.4.4.2 | Floating constants | 部分実装 | 小数・指数・f/l 接尾辞(Step 24)。**binary32(float)への丸めに既知のバグ**があり `FLT_MAX` の 10 進綴りが `+inf` になる(ROADMAP §3 の負債) |
+| 6.4.4.2 | Floating constants | 部分実装 | 小数・指数・f/l 接尾辞(Step 24)。binary32(float)への round-to-nearest, ties-to-even は Step 69 で修正済み。`long double` はコンパイラ内部では `double` として扱う |
 | 6.4.4.3 | Enumeration constants | 実装済み | enum 定数はパーサが `IntLit(Type::Int)` へ畳み込む(Step 18) |
 | 6.4.4.4 | Character constants | 実装済み | 通常の文字定数、および wide 文字定数 `L'x'`(int 型として扱う、Step 28) |
 | 6.4.5 | String literals | 部分実装 | 隣接文字列リテラルの連結(Step 28)。**wide 文字列リテラル `L"..."` は非対応**(診断、c-testsuite 00220) |
@@ -131,14 +132,14 @@ gem install 成功 + テスト合格」を到達目標(DESIGN R10)とし、C11 �
 | 6.7.2.1 | Struct or union specifiers(ビットフィールド・FAM 含む) | 実装済み | struct/union レイアウト(Step 13, 19)、ビットフィールドのレイアウト(Step 28)とアクセス(Step 48)、可変長配列メンバ(6.7.2.1p18、Step 46)。無名メンバ内のタグ付き無宣言子(`struct { struct Inner {...}; }` 形)は拒否(gcc は警告どまりだが M1 は簡略化しエラー、Step 19) |
 | 6.7.2.2 | Enumeration specifiers | 部分実装 | enum 型は専用型を持たず `Type::Int` に一元化(Step 18)。**enum の基底型を常に符号付きとして扱う**ため、gcc の「全非負 enum は unsigned int」規則との不一致が bit-field 読み出し・ポインタ符号比較で顕在化(c-testsuite 00170, 00218、ROADMAP §3 の既知の負債) |
 | 6.7.2.3 | Tags | 部分実装 | 前方宣言・自己参照・タグスコープ(Step 13)。内側スコープでの `struct S;` 再宣言は 6.7.2.3p7 に従わず外側タグを参照する既知の逸脱(ROADMAP §3) |
-| 6.7.2.4 | Atomic type specifiers | スコープ外 | `_Atomic` は未対応。DESIGN R7 が C11 のオプション機能として明示的にスコープ外化 |
-| 6.7.3 | Type qualifiers | 部分実装 | `const` はトップレベル修飾のみ宣言のフラグとして追跡し代入違反を診断(Step 22。指し先 const の書き込みは検出しない)。`volatile` は構文のみ受理し完全に無視(最適化を行わないため意味差なし)。`restrict` は受理して意味を持たせない(構文のみ、Step 28) |
-| 6.7.4 | Function specifiers | 部分実装 | `inline` は構文のみ受理(意味論上の効果なし、最適化器が無いため無害、Step 22)。`_Noreturn` は非対応(キーワード未実装)。同梱 stdnoreturn.h の `noreturn` マクロは空展開で無害化 |
-| 6.7.5 | Alignment specifier | 非対応 | `_Alignas` は未実装。同梱 stdalign.h の `alignas` マクロは `_Alignas` へ展開されるため、実際に使用すると診断エラーになる |
+| 6.7.2.4 | Atomic type specifiers | 部分実装 | `_Atomic T` / `_Atomic(T)` を受理し、整数・浮動小数・ポインタの 1/2/4/8 バイトでは非修飾型と同じレイアウト・ABIにする。struct/union・16 バイトスカラ・配列・関数型は診断する(atomic-type-1) |
+| 6.7.3 | Type qualifiers | 部分実装 | `const` はトップレベル修飾のみ宣言のフラグとして追跡し代入違反を診断(Step 22。指し先 const の書き込みは検出しない)。`volatile` は構文のみ受理し完全に無視、`restrict` は受理して意味を持たせない。`_Atomic` は上記の限定された型で同じ表現を持つが、通常の読み書きには C11 の seq_cst 順序を付けない |
+| 6.7.4 | Function specifiers | 部分実装 | `inline` は構文のみ受理(意味論上の効果なし、Step 22)。`_Noreturn` は Step 182 で受理するが、最適化や到達性診断には使わない。同梱 stdnoreturn.h の `noreturn` は `_Noreturn` に展開する |
+| 6.7.5 | Alignment specifier | 部分実装 | `_Alignas` と同梱 stdalign.h の `alignas` を実装(Step atomic-type-2)。要求値は自然アラインメント以上である必要があり、対象外の宣言位置やフレームで保証できない過剰アラインメントは診断する |
 | 6.7.6 | Declarators | 部分実装 | 下記 6.7.6.1〜6.7.6.3 のとおり |
 | 6.7.6.1 | Pointer declarators | 実装済み | `int *p` / `int **pp` 等(Step 7)、`restrict`/`const`/`volatile` 修飾は構文受理(Step 22, 28) |
-| 6.7.6.2 | Array declarators | 部分実装 | 1 次元配列(Step 8)。**多次元配列(配列の配列)は非対応**(既知の負債)。**可変長配列(VLA)はスコープ外**(DESIGN §3.3) |
-| 6.7.6.3 | Function declarators(プロトタイプ含む) | 部分実装 | プロトタイプ形式の宣言子(Step 6, 21)。**K&R 形式(非プロトタイプの旧式パラメータリスト)は非対応**(c-testsuite 00209) |
+| 6.7.6.2 | Array declarators | 部分実装 | 1 次元・多次元配列(Step 8, 99)を実装。**可変長配列(VLA)はスコープ外**(DESIGN §3.3)。c-testsuite の 00130/00151 は skip 表に残る |
+| 6.7.6.3 | Function declarators(プロトタイプ含む) | 部分実装 | プロトタイプ形式(Step 6, 21)と K&R 形式の旧式パラメータリスト(atomic-type-10)を実装。未指定引数型を関数パラメータ型として使う形は未対応(c-testsuite 00209) |
 | 6.7.7 | Type names | 実装済み | `sizeof(型名)`(Step 8)、キャスト式の型名(Step 14)。parse_type_name として共有 |
 | 6.7.8 | Type definitions | 部分実装 | `typedef`(Step 18)。**同一型への再 typedef も一律拒否**(C11 6.7p3 は同一型なら許容するが M1 単純化として拒否) |
 | 6.7.9 | Initialization | 実装済み | 定数式評価器と一体の初期化子リゾルバ(Step 20)。brace 省略・指示付き初期化子・`[]` 長さ推論・文字列初期化に対応。文字列初期化は NUL 込みで収まる長さを要求(`char s[2]="ab"` の NUL 落ちは C では合法だが診断) |
@@ -159,7 +160,7 @@ gem install 成功 + テスト合格」を到達目標(DESIGN R10)とし、C11 �
 
 | 条番号 | 見出し | 状態 | 備考 |
 |---|---|---|---|
-| 6.9.1 | Function definitions | 部分実装 | プロトタイプ形式の関数定義(Step 6〜25)。K&R 形式は非対応(6.7.6.3 と同根) |
+| 6.9.1 | Function definitions | 部分実装 | プロトタイプ形式(Step 6〜25)と K&R 形式の関数定義(atomic-type-10)を実装。未指定引数型を関数パラメータ型として使う形は未対応 |
 | 6.9.2 | External object definitions | 実装済み | tentative definition のマージ(Step 28 の「一時定義」)、`static`/内部リンケージ(Step 22) |
 
 ### 6.10 Preprocessing directives
@@ -187,34 +188,35 @@ gem install 成功 + テスト合格」を到達目標(DESIGN R10)とし、C11 �
 ## 7. Library(フリースタンディングヘッダ + 同梱 libc ヘッダの範囲)
 
 rubycc はコンパイラであり libc の実装ではないため、第 7 章はコンパイラが供給すべき
-**フリースタンディングヘッダ**(5.1.2.1 が列挙する 9 本)と、同梱する **libc 互換ヘッダ**
+**C11 のフリースタンディングヘッダ**(5.1.2.1 が列挙する 9 本)、C11 の部分実装である
+`<stdatomic.h>`、追加の C23 `<stdckdint.h>`、および同梱する **libc 互換ヘッダ**
 (R8、musl 派生 + glibc 実測 ABI)の範囲に限定して扱う。
 
 ### 7.x フリースタンディングヘッダ(5.1.2.1 が要求する 9 本)
 
 | 条番号 | 見出し | 状態 | 備考 |
 |---|---|---|---|
-| 7.7 | Characteristics of floating types `<float.h>` | 部分実装 | 同梱(Step 41)。ABI ハーネス(Step 62/63)で gcc と一致検証済みだが、`FLT_MAX` 等の binary32 丸めバグにより該当検査は非 assert(ROADMAP §3) |
+| 7.7 | Characteristics of floating types `<float.h>` | 部分実装 | 同梱(Step 41)。ABI ハーネス(Step 62/63)で gcc と一致検証済み。binary32 の丸めは Step 69 で修正済みだが、`long double` のコンパイラ内部表現は `double` のまま(機種別定数は Step 201) |
 | 7.9 | Alternative spellings `<iso646.h>` | 実装済み | 同梱(Step 41) |
 | 7.10 | Sizes of integer types `<limits.h>` | 実装済み | 同梱(共通層 + glibc/x86_64 型幅切替層、Step 63) |
-| 7.15 | Alignment `<stdalign.h>` | 部分実装 | `alignof` → `_Alignof` のマッピングは実装。`alignas` → `_Alignas` は _Alignas 自体が非対応のため、マクロを実際に使うとコンパイルエラーになる(Step 41) |
+| 7.15 | Alignment `<stdalign.h>` | 部分実装 | `alignof` → `_Alignof`、`alignas` → `_Alignas` のマッピングと実体を実装(Step 41, atomic-type-2)。自然アラインメントを弱める指定や対象外の宣言位置など、コンパイラが保証できない形は診断する |
 | 7.16 | Variable arguments `<stdarg.h>` | 実装済み | `__builtin_va_start`/`va_arg`/`va_end`(SysV reg_save_area 方式、整数・ポインタは Step 23、浮動小数点は Step 24) |
 | 7.18 | Boolean type and values `<stdbool.h>` | 実装済み | 同梱(Step 41)。`_Bool` 自体は Step 17 |
 | 7.19 | Common definitions `<stddef.h>` | 実装済み | 同梱(Step 41)。`offsetof` は `__builtin_offsetof` 展開で定数文脈にも対応(Step 42) |
 | 7.20 | Integer types `<stdint.h>` | 実装済み | 同梱(glibc/x86_64 切替層、Step 63) |
-| 7.23 | `_Noreturn` `<stdnoreturn.h>` | 部分実装 | `noreturn` マクロは空展開(無視)で無害化(Step 41)。`_Noreturn` 指定子自体は非対応 |
+| 7.23 | `_Noreturn` `<stdnoreturn.h>` | 部分実装 | `noreturn` は `_Noreturn` に展開し、指定子を受理する(Step 182)。ただし最適化・到達性診断には利用せず、実体は no-op |
 
 ### 7.17 Atomics `<stdatomic.h>`
 
 | 条番号 | 見出し | 状態 | 備考 |
 |---|---|---|---|
-| 7.17 | Atomics `<stdatomic.h>` | 部分実装 | `_Atomic` オブジェクトと load/store/RMW 操作は未実装。`memory_order_*` 定数と `atomic_thread_fence` は同梱ヘッダから `__atomic_thread_fence` へ展開し、x86-64 の MFENCE / AArch64 の DMB ISH を生成(Step 209)。 |
+| 7.17 | Atomics `<stdatomic.h>` | 部分実装 | `_Atomic` の型指定子と typedef、`atomic_init`/`ATOMIC_VAR_INIT`/`kill_dependency`、memory-order 定数、thread/signal fence、load/store/exchange/compare-exchange/fetch-add/fetch-sub の総称マクロを提供(atomic-type-1, Step 209)。組み込みの対応幅は 4/8 バイトで、メモリオーダは受理するが常に seq_cst、weak CAS は strong として降ろす。`fetch_or/and/xor`、`atomic_flag`、`atomic_is_lock_free` は未提供。通常の C 演算子による読み書きは非アトミック順序のまま |
 
 ### その他の第 7 章(同梱 libc ヘッダの範囲)
 
 | 状態 | 備考 |
 |---|---|
-| 部分実装(範囲限定) | ruby.h・json・msgpack 等の実コーパスが `#include` する範囲を実測で棚卸しし(Step 62)、対象トップレベル 25 本のうち第一陣 21 本(Step 63)+ arpa/inet.h(Step 64)を同梱。宣言は musl 派生(MIT、NOTICE 表記)、型幅・レイアウト・マクロ値は ABI ハーネスで glibc 実測値に合わせる方針(R8)。stdio/stdlib/string/errno/ctype/math/time/sys-types/sys-stat 等の主要ヘッダは「ABI に効く最小限だけ正確に、それ以外は不透明に」の原則で実装(例: `FILE` は不透明ポインタ)。**ソケット関連(netinet/in.h, sys/socket.h 等)の UAPI 連鎖は未着手**(実コーパスで要求されていない)。網羅的な章番号単位の内訳は同梱ヘッダのファイル一覧(include/ 以下)を参照 |
+| 部分実装(範囲限定) | 実コーパスが `#include` する範囲を Step 62 以降の census で棚卸しし、現在は `include/` に 81 物理ファイル、arch 層を正規化した 64 の angle spellings を同梱する。stdio/stdlib/string/errno/ctype/math/time/sys-types/sys-stat に加え、socket/netinet/tcp/un、epoll、timerfd、inotify、syscall 等の Linux/POSIX surface も実需に応じて追加済み(Steps 123〜141)。宣言は musl 派生(MIT、NOTICE 表記)または clean-room、型幅・レイアウト・マクロ値は ABI ハーネスで glibc 実測値に合わせる方針(R8)。実装は libc 全体ではなく、C 拡張が使う宣言・ABI の範囲に限定する |
 
 ---
 
@@ -222,5 +224,5 @@ rubycc はコンパイラであり libc の実装ではないため、第 7 章�
 
 - docs/DESIGN.md §3.3(スコープ外の明示)・§9.1(N1570 一次資料指定)
 - docs/ROADMAP.md §3(既知の逸脱・技術的負債の一覧表)
-- docs/STEPS.md 各ステップの設計記録(Step 1〜64。本書の「備考」列が引用する Step 番号の根拠)
+- docs/STEPS.md 各ステップの設計記録(Step 1〜215、`atomic-type-*`、`r-input-diagnostic-1`。本書の「備考」列が引用する Step 番号の根拠)
 - test/test_c_suite.rb の SKIP 表(c-testsuite の未対応ケースと理由)
