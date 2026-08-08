@@ -25,10 +25,12 @@ module Rubycc
     # free and are not recorded here.
     StringInit = Data.define(:offset, :bytes)
 
-    # A whole aggregate expression (normally a compound literal) copied into
-    # an aggregate subobject at `offset`. C permits an initializer-list element
-    # such as `.base = (Node){ .type = 1 }`; it is an expression initializer,
-    # not a brace-elided walk of the outer cursor.
+    # A whole aggregate expression copied into an aggregate subobject at
+    # `offset`. C permits an initializer-list element to be a single expression
+    # of the subobject's own structure/union type (6.7.9p13) -- a compound
+    # literal such as `.base = (Node){ .type = 1 }`, a call returning that
+    # struct, a variable of it; it is an expression initializer, not a
+    # brace-elided walk of the outer cursor.
     AggregateInit = Data.define(:offset, :type, :value)
 
     # The outcome of resolving an initializer: `type` is the object's type with
@@ -101,13 +103,23 @@ module Rubycc
       # `static_storage` says the object being initialized lives in .data/.bss
       # (a file-scope definition or a block-scope `static`), which is the only
       # place a trailing flexible array member may be initialized.
-      def self.resolve(type, initializer, static_storage: false)
-        new.resolve(type, initializer, static_storage: static_storage)
+      #
+      # `type_of` is how the caller lends this resolver its view of expression
+      # types: a callable taking an expression node and answering its
+      # Rubycc::Type, or nil when it cannot tell (see #single_expression_init?,
+      # which is the only thing that asks). It must not emit code or evaluate
+      # anything — the generator passes its #static_type inference, the parser
+      # the smaller one it uses for parse-time sizeof. A caller with no type
+      # table at all may leave it out, and every subobject then falls to brace
+      # elision as it did before the hook existed.
+      def self.resolve(type, initializer, static_storage: false, type_of: nil)
+        new.resolve(type, initializer, static_storage: static_storage, type_of: type_of)
       end
 
-      def resolve(type, initializer, static_storage: false)
+      def resolve(type, initializer, static_storage: false, type_of: nil)
         @entries = []
         @static_storage = static_storage
+        @type_of = type_of
         @flexible_bytes = 0
         # Only the object's *own* trailing flexible array member may be
         # initialized; one reached through a nested struct is rejected, so
@@ -243,7 +255,7 @@ module Rubycc
             break unless designator.is_a?(AST::MemberDesignator)
 
             member, index = locate_member(type, designator)
-            fill_member(type, member, base, cursor, item, item.designators[1..])
+            fill_member(type, member, base, cursor, item, item.designators[1..], designated: true)
             index += 1
           else
             break if index >= members.size
@@ -258,11 +270,12 @@ module Rubycc
       # Places `item` into one member of `type`. A flexible array member takes
       # the separate path below, since it has no reserved storage of its own and
       # so decides how much the object grows.
-      def fill_member(type, member, base, cursor, item, designators)
+      def fill_member(type, member, base, cursor, item, designators, designated: false)
         if flexible_array_member?(member)
           fill_flexible_array_member(type, member, base, cursor, item, designators)
         else
-          init_subobject(member.type, base + member.offset, cursor, item, designators, member)
+          init_subobject(member.type, base + member.offset, cursor, item, designators, member,
+                         designated: designated)
         end
       end
 
@@ -324,7 +337,8 @@ module Rubycc
         designator = item.designators.first
         if designator.is_a?(AST::MemberDesignator)
           member, = locate_member(type, designator)
-          init_subobject(member.type, base + member.offset, cursor, item, item.designators[1..], member)
+          init_subobject(member.type, base + member.offset, cursor, item, item.designators[1..], member,
+                         designated: true)
         elsif designator
           # An array designator here is for an enclosing object; leave it.
           nil
@@ -339,16 +353,11 @@ module Rubycc
       # the item's value initializes the subobject: a char array takes a string,
       # a nested brace recurses with its own cursor, a scalar is recorded, and a
       # braceless aggregate elides — it keeps drawing from the *same* cursor.
-      def init_subobject(sub_type, sub_offset, cursor, item, designators, member = nil, designated: nil)
-        # Whether a designator picked this subobject out by name, as opposed to
-        # positional filling reaching it. It decides how a bare expression of
-        # unknown type is read below; the default keeps every existing caller's
-        # meaning, since a caller passing designators is designating.
-        designated = !item.designators.empty? if designated.nil?
+      def init_subobject(sub_type, sub_offset, cursor, item, designators, member = nil, designated: false)
         unless designators.empty?
           inner_type, inner_offset, inner_member = step_designator(sub_type, sub_offset, designators.first)
           return init_subobject(inner_type, inner_offset, cursor, item, designators[1..], inner_member,
-                                designated: designated)
+                                designated: true)
         end
 
         value = item.value
@@ -358,7 +367,7 @@ module Rubycc
         elsif value.is_a?(AST::InitializerList)
           cursor.advance
           init_object_from_list(sub_type, sub_offset, value)
-        elsif sub_type.struct? && aggregate_expression?(value, designated)
+        elsif single_expression_init?(sub_type, value, designated)
           cursor.advance
           @entries << AggregateInit.new(sub_offset, sub_type, value)
         elsif scalar?(sub_type)
@@ -465,61 +474,67 @@ module Rubycc
         !type.array? && !type.struct?
       end
 
-      # Whether the syntax is known to produce an aggregate value without
-      # consulting the surrounding expression scope. Compound literals are the
-      # direct form; a conditional or comma expression keeps that aggregate
-      # value when all of the value-producing arms/operands do. Other expression
-      # forms remain on the brace-elision path, which preserves `{ 0 }` and the
-      # ordinary positional initializer rules.
-      # `designated` says a designator named this subobject. It matters for the
-      # forms whose type this resolver cannot see: a call or a plain variable
-      # may denote a struct, but it may equally be the scalar that brace
-      # elision is about to drop into the innermost member. Reading `f()` as an
-      # aggregate during elision made `PT a[] = { 1,2,3, f(),9,10 }` -- which
-      # gcc fills as two elements -- an error (measured). With a designator
-      # there is no elision to be ambiguous about: `.str = f()` names the
-      # member the expression initializes.
-      def aggregate_expression?(node, designated = true)
+      # Whether `value` initializes the whole subobject as a single expression,
+      # rather than being the next item brace elision drops into the subobject's
+      # innermost member. 6.7.9p13 draws that line by *type*, not by syntax and
+      # not by whether a designator named the subobject: the initializer for a
+      # structure or union object is either a brace list "or a single expression
+      # that has compatible structure or union type". So the question here is
+      # only whether the expression's type is that of the struct/union subobject
+      # standing at the cursor.
+      #
+      # A designator does not enter into it, which is why the earlier
+      # approximation (any call/variable/member expression counts as an
+      # aggregate when designated, never when reached positionally) was wrong in
+      # both directions, as measured against gcc:
+      #
+      #   MapInit m = { map, TypeInfo_get(f), TypeInfo_get(g), arena };
+      #
+      # has no designator anywhere, yet gcc initializes the two TypeInfo members
+      # from the calls that return TypeInfo (google-protobuf's message.c writes
+      # exactly this, and rubycc rejected it with "incompatible types in
+      # initialization"); while
+      #
+      #   pt a[] = { 1, 2, 3, f(), 9, 10 };   /* int f(void) */
+      #
+      # is a two-element array for gcc because f() is an ordinary scalar item
+      # mid-elision -- and a three-element one when the same call returns pt,
+      # since then the expression fills a whole element. Only the type tells the
+      # two apart.
+      #
+      # An expression whose type is unknown (no `type_of` hook, or a form it
+      # does not cover) stays on the brace-elision path, which is what preserves
+      # `{ 0 }` and the ordinary positional rules.
+      # `designated` says a designator named this subobject, and only matters
+      # when no `type_of` hook was lent (the parser resolves with no type table
+      # at all, purely to complete an inferred array bound). There, a designator
+      # naming a struct/union subobject whose item is not a brace list leaves
+      # exactly one reading open under 6.7.9p13 -- the single-expression form --
+      # because brace elision cannot descend into a subobject the designator
+      # already selected. Guessing that way keeps the parser's type completion
+      # working; the generator re-resolves the same initializer *with* the hook,
+      # so a genuinely mistyped expression is still caught, by the pass that can
+      # actually see the type.
+      def single_expression_init?(sub_type, value, designated = false)
+        return false unless sub_type.struct?
+
+        value_type = expression_type(value)
+        return designated if value_type.nil?
+
+        value_type.struct? && value_type == sub_type
+      end
+
+      # The type of an initializer item's expression, or nil when it cannot be
+      # told here. A compound literal and a cast name their own type, so they
+      # are answered without help and identically on every caller's path;
+      # everything else needs the surrounding scope and goes to the caller's
+      # `type_of` hook.
+      def expression_type(node)
         case node
-        when AST::CompoundLiteral
-          node.type.array? || node.type.struct?
-        when AST::Conditional
-          aggregate_expression?(node.then_expr, designated) && aggregate_expression?(node.else_expr, designated)
-        when AST::Comma
-          aggregate_expression?(node.right, designated)
-        when AST::Unary
-          # A dereference preserves the pointed-to object's aggregate value;
-          # the generator performs the final type check when the pointer's
-          # target is known.
-          node.op == :deref
-        when AST::MemberAccess, AST::Subscript
-          # These lvalue expressions can likewise denote an aggregate member or
-          # element; the generator settles their actual type and compatibility.
-          true
-        when AST::Call, AST::Assignment, AST::VariableRef
-          # A call returning a struct, an assignment yielding one and a plain
-          # variable of struct type are single-expression initializers for an
-          # aggregate subobject (6.7.9p13). The generator settles the actual
-          # type, as it does for the lvalue forms above.
-          #
-          # Leaving these out did not merely reject them: the caller falls
-          # through to brace elision, which re-reads the *same* item against the
-          # subobject's own type, so `.str = f()` on a union reported
-          # "unknown field designator '.str'" -- a designator error for a
-          # designator that was correct. Measured on google-protobuf's
-          # ruby-upb.c, which writes exactly that (docs/STEPS.md atomic-type-2).
-          designated
-        when AST::Cast
-          # A cast is the one of these forms that names its own type, so it can
-          # be told apart here rather than deferred: it initializes an aggregate
-          # subobject only when the type it names is one. A cast to a scalar is
-          # an ordinary scalar item, and treating it as an aggregate one instead
-          # swallowed the whole subobject -- c-testsuite 00205 writes
-          # "PT cases[] = { ..., (I)67108864L, ... }" with brace elision, and
-          # gave a 10-element array where gcc gives 9.
-          node.type.struct?
+        when AST::CompoundLiteral, AST::Cast
+          node.type
         else
-          false
+          @type_of&.call(node)
         end
       end
 

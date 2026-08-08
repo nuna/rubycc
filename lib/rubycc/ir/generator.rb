@@ -391,7 +391,8 @@ module Rubycc
           # Both callers place the object in .data/.bss, so a trailing flexible
           # array member may be initialized; the storage it adds beyond
           # sizeof widens the image (and with it the object, see #object_size).
-          resolved = Front::InitializerResolver.resolve(type, node, static_storage: true)
+          resolved = Front::InitializerResolver.resolve(type, node, static_storage: true,
+                                                        type_of: method(:initializer_expression_type))
           final_type = resolved.type
           require_complete(final_type, token)
           image = "\0".b * (final_type.size + resolved.flexible_bytes)
@@ -1828,7 +1829,9 @@ module Rubycc
 
         value_node = decl.initializer
         if value_node.is_a?(Front::AST::InitializerList)
-          value_node = Front::InitializerResolver.resolve(decl.type, value_node).entries.first.value
+          resolved = Front::InitializerResolver.resolve(decl.type, value_node,
+                                                        type_of: method(:initializer_expression_type))
+          value_node = resolved.entries.first.value
         end
         value, value_type = gen_value(value_node)
         unless compatible_assignment?(decl.type, value_node, value_type)
@@ -1893,7 +1896,9 @@ module Rubycc
 
         value_node = decl.initializer
         if value_node.is_a?(Front::AST::InitializerList)
-          value_node = Front::InitializerResolver.resolve(decl.type, value_node).entries.first.value
+          resolved = Front::InitializerResolver.resolve(decl.type, value_node,
+                                                        type_of: method(:initializer_expression_type))
+          value_node = resolved.entries.first.value
         end
         value, value_type = gen_value(value_node)
         unless compatible_assignment?(decl.type, value_node, value_type)
@@ -1913,7 +1918,8 @@ module Rubycc
         init = decl.initializer
 
         if init && Front::InitializerResolver.structural?(type, init)
-          resolved = Front::InitializerResolver.resolve(type, init)
+          resolved = Front::InitializerResolver.resolve(type, init,
+                                                        type_of: method(:initializer_expression_type))
           type = resolved.type
           require_complete(type, decl.token)
           base = bind_stack_object(scope, decl.name, type, decl.const)
@@ -3370,7 +3376,8 @@ module Rubycc
         object_id = new_object(type.size)
         base = new_vreg
         emit(:object_addr, dst: base, a: object_id)
-        resolved = Front::InitializerResolver.resolve(type, node.initializer)
+        resolved = Front::InitializerResolver.resolve(type, node.initializer,
+                                                      type_of: method(:initializer_expression_type))
         lower_resolved_init(base, resolved.type, resolved.entries)
         [base, resolved.type]
       end
@@ -5671,6 +5678,21 @@ module Rubycc
         else
           static_type(node)
         end
+      end
+
+      # The `type_of` hook the initializer resolver borrows to decide whether an
+      # item is a single expression initializing a whole struct/union subobject
+      # (6.7.9p13) or the next scalar brace elision drops into it. It is
+      # #static_type, which emits no code, with one difference: a form the
+      # inference does not cover, or a name it cannot resolve, answers nil
+      # instead of raising. The item is lowered for real afterwards, so a
+      # genuine "undeclared variable" or "implicit declaration" is reported
+      # there, by the path that has the right diagnostic for it; here it only
+      # means "type unknown", which leaves the item on the brace-elision path.
+      def initializer_expression_type(node)
+        static_type(node)
+      rescue CompileError, RuntimeError
+        nil
       end
 
       # Infers an expression's rvalue type without emitting any code, applying
