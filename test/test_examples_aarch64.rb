@@ -11,9 +11,8 @@ require_relative "test_c_suite_aarch64"
 # The samples are shaped differently from the c-testsuite cases (they are
 # ordinary programs written against the libc rubycc ships headers for, rather
 # than minimal conformance probes), so running them here covers ground the suite
-# does not, at a fraction of its cost. As there, a sample the aarch64 backend
-# cannot lower yet is named in PENDING with the construct that stops it, so the
-# list is a work item rather than a silent gap.
+# does not, at a fraction of its cost. The samples are compiled and run through
+# the same cross-target path as the focused execution tests.
 #
 # The whole file skips on a host without the cross toolchain.
 class TestExamplesAArch64 < Minitest::Test
@@ -23,13 +22,6 @@ class TestExamplesAArch64 < Minitest::Test
   EXAMPLE_SOURCES = TestExamples::EXAMPLE_SOURCES
 
   CROSS_SYSTEM_INCLUDE_PATHS = TestCSuiteAArch64::CROSS_SYSTEM_INCLUDE_PATHS
-
-  # Samples resting on an M4 A4 feature the aarch64 backend has yet to grow.
-  # Each builds and runs on x86-64 today; the reason is the backend's own
-  # UnsupportedError message.
-  PENDING = {
-    "step28_extensions" => "A4: alloca"
-  }.freeze
 
   EXAMPLE_SOURCES.each do |path|
     basename = File.basename(path, ".c")
@@ -42,11 +34,6 @@ class TestExamplesAArch64 < Minitest::Test
   private
 
   def run_example(path, basename)
-    if (reason = PENDING[basename])
-      skip reason
-      return
-    end
-
     skip_unless_aarch64_toolchain
     unless File.directory?(TestCSuiteAArch64::CROSS_SYSROOT_INCLUDE_DIR)
       skip "aarch64 libc headers (#{TestCSuiteAArch64::CROSS_SYSROOT_INCLUDE_DIR}) are not installed"

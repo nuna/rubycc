@@ -28,7 +28,15 @@ module ExecutionHelper
   EXECUTION_GCC = ENV.fetch("RUBYCC_EXECUTION_GCC", "gcc")
   EXECUTION_LD = ENV.fetch("RUBYCC_EXECUTION_LD", "ld")
   EXECUTION_RUNNER = ENV.fetch("RUBYCC_EXECUTION_RUNNER", "")
-  EXECUTION_LINK_FLAGS = ENV.fetch("RUBYCC_EXECUTION_LINK_FLAGS", "").split
+  # Debian's AArch64 gcc defaults to PIE. rubycc deliberately emits ordinary
+  # PC-relative objects for the execution harness, so a generic executable
+  # link needs the non-PIE mode just as the compile side needs -fno-pie. Keep
+  # the override explicit for unusual toolchains and leave the x86 profile
+  # unchanged.
+  EXECUTION_LINK_FLAGS = ENV.fetch(
+    "RUBYCC_EXECUTION_LINK_FLAGS",
+    EXECUTION_TARGET == "aarch64" ? "-no-pie" : ""
+  ).split
 
   def execution_gcc_command(*args)
     [EXECUTION_GCC, *args]

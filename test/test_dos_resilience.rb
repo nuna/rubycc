@@ -254,7 +254,7 @@ class TestDosResilience < Minitest::Test
     started = Time.now
     error = assert_raises(ExpansionError) { makefile.variable_value("A30") }
     assert_match(/resolved more than \d+ references/, error.message)
-    assert_operator Time.now - started, :<, 5, "runaway variable expansion was not cut off promptly"
+    assert_operator Time.now - started, :<, dos_time_limit(5), "runaway variable expansion was not cut off promptly"
   end
 
   # A `:=` assignment expands as it is parsed, so this one never even reaches a

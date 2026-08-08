@@ -217,6 +217,11 @@ class TestAArch64Backend < Minitest::Test
   def add_imm(rd, rn, imm12, shift12: false) = addsub_imm(0, 1, rd, rn, imm12, shift12)
   def sub_imm(rd, rn, imm12, shift12: false) = addsub_imm(1, 1, rd, rn, imm12, shift12)
 
+  # SUB (extended register), UXT X, used for a register-sized dynamic stack
+  # adjustment because the architectural SP form is not the shifted-register
+  # encoding.
+  def sub_ext_uxtx(rd, rn, rm) = 0xCB206000 | (rm << 16) | (rn << 5) | rd
+
   # The flag-setting subtract (S = 1), which is what lets a loop counter be
   # tested by the branch that follows it.
   def subs_imm(rd, rn, imm12) = addsub_imm(1, 1, rd, rn, imm12, false) | (1 << 29)
@@ -845,14 +850,16 @@ class TestAArch64Backend < Minitest::Test
     end
   end
 
-  # :ftoi truncates toward zero (rmode 11), the C cast's rule, into the X view
-  # for a width-8 destination and the W view otherwise. `size` names the source
-  # float width, which selects the type field.
+  # :ftoi truncates toward zero (rmode 11), the C cast's rule. The generator's
+  # widened [8, false] descriptor is still a 32-bit unsigned destination on
+  # this target, so it uses the W conversion; AArch64 saturates that conversion
+  # at UINT_MAX, unlike the X result whose low four bytes would wrap to zero.
   def test_floating_to_integer_truncates_toward_zero
     {
       [4, true] => [0, method(:fcvtzs)],
       [8, true] => [1, method(:fcvtzs)],
-      [8, false] => [1, method(:fcvtzu)]
+      [4, false] => [0, method(:fcvtzu)],
+      [8, false] => [0, method(:fcvtzu)]
     }.each do |desc, (sf, expected)|
       [4, 8].each do |float_size|
         assert_words [ldr_fp_slot(FA, 1, float_size), expected.call(sf, float_size, A, FA),
@@ -1140,19 +1147,23 @@ class TestAArch64Backend < Minitest::Test
     assert_equal movz(0, B, 0, 0), all[start + 7]    # __gr_offs = 0 (file spent)
   end
 
-  # --- refusals ------------------------------------------------------------
+  # --- dynamic stack allocation -------------------------------------------
 
-  # The IR ops that belong to A4 are refused by name rather than lowered to
-  # something plausible-looking.
-  def test_later_milestone_ops_are_refused
-    {
-      inst(:alloca, dst: 0, a: 1) => /alloca/
-    }.each do |instruction, pattern|
-      error = assert_raises(Rubycc::Backend::UnsupportedError, instruction.op.to_s) do
-        compile(func([instruction], vregs: 4))
-      end
-      assert_match pattern, error.message
-    end
+  # alloca anchors the fixed frame in x29, rounds the requested size up to a
+  # 16-byte boundary, and leaves the returned pointer in the destination slot.
+  # The epilogue restores sp from x29 before reloading the caller's frame
+  # record, so the dynamic allocation cannot corrupt either fixed-frame data or
+  # the return address.
+  def test_alloca_anchors_fixed_frame
+    fn = func([inst(:alloca, dst: 0, a: 1), inst(:ret, a: 0)], vregs: 2)
+    assert_words [add_imm(FP, SP, 0), ldr_x(A, FP, 24), add_imm(A, A, 15),
+                  movz(1, B, 0xFFF0, 0), movk(1, B, 0xFFFF, 1),
+                  movk(1, B, 0xFFFF, 2), movk(1, B, 0xFFFF, 3),
+                  and_reg(1, A, A, B), sub_ext_uxtx(SP, SP, A),
+                  add_imm(A, SP, 0), str_x(A, FP, 16),
+                  ldr_x(0, FP, 16), add_imm(SP, FP, 0),
+                  ldp_x(FP, LR, SP, 0), add_imm(SP, SP, 32), ret_x30],
+                 body(fn)
   end
 
   # --- aggregates ----------------------------------------------------------
@@ -1235,17 +1246,6 @@ class TestAArch64Backend < Minitest::Test
                   add_imm(B, B, 8), add_imm(A, A, 8),
                   subs_imm(C, C, 1), b_cond(COND_NE, -5)],
                  emitted.drop(3)
-  end
-
-  # The same refusals seen from the front of the compiler: valid C that uses an
-  # A4 feature stops with a clear error instead of producing an object.
-  def test_unsupported_c_constructs_are_refused_end_to_end
-    {
-      "void *f(int n){ return __builtin_alloca(n); }" => /alloca/
-    }.each do |source, pattern|
-      error = assert_raises(Rubycc::Backend::UnsupportedError, source) { compile_c(source) }
-      assert_match pattern, error.message, source
-    end
   end
 
   # --- object-file integration --------------------------------------------
