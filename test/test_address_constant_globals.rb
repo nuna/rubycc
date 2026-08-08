@@ -185,6 +185,7 @@ class TestAddressConstantGlobals < Minitest::Test
   # result and reads it back, so the addend rides through our shared-object path
   # (and its R_X86_64_RELATIVE rebasing) too.
   def test_shared_linker_applies_the_addend
+    skip_unless_x86_execution
     skip "not a Linux host" unless RUBY_PLATFORM.include?("linux")
 
     src = <<~C

@@ -332,20 +332,16 @@ class TestDriver < Minitest::Test
     end
   end
 
-  # A construct the aarch64 backend does not lower yet (alloca, part of what is
-  # left of A4) fails as a driver diagnostic with a non-zero exit, never as a
-  # silently wrong object. This diagnostic's example has moved three times as the
-  # backend grew: string-literal and global-variable references before A3
-  # (Step 72) added the memory-access layer, then indirect calls until A4's first
-  # half lowered them, then whole-struct assignment until aggregates by value
-  # arrived with the target-dependent classification.
-  def test_aarch64_unsupported_construct_is_diagnosed
+  # alloca is lowered by the A4 AArch64 backend and therefore produces a valid
+  # AArch64 relocatable object rather than the old unsupported-feature diagnostic.
+  def test_aarch64_alloca_is_lowered
     in_tmpdir do |dir|
       File.write(File.join(dir, "u.c"), "void *f(int n){ return __builtin_alloca(n); }")
       _out, err, status = rubycc("-c", "u.c", "-target", "aarch64", "-o", "u.o", dir: dir)
-      assert_equal 1, status.exitstatus
-      assert_match(/aarch64: not yet supported: alloca/, err)
-      refute File.exist?(File.join(dir, "u.o")), "no object is written for a refused compilation"
+      assert_equal 0, status.exitstatus, err
+      obj = Reader.read_file(File.join(dir, "u.o"))
+      assert_equal Reader::EM_AARCH64, obj.machine
+      assert obj.relocatable?
     end
   end
 
