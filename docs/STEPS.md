@@ -9042,9 +9042,39 @@ R10 通過率 **27/33 = 81.8% → 28/33 = 84.8%**(90% には 30 件、**あと 2
 
 ---
 
+## corpus-ninety-1 — thin は R10 自身の C++ 除外で分母から外れる(M5 H4)
+
+thin の**自前の拡張は純 C** で、機械判定(C++ ソースの有無・configure 依存)を通る。
+しかし `gem install thin` は**実行時依存の eventmachine** を必要とし、それは C++ 拡張である。
+atomic-type-9 で実走して確かめてある — rubycc は eventmachine の **`.cpp` 9 本**に到達し、
+そこでビルドが止まる。
+
+**これは新しい除外規則ではない。** R10 は C++ 拡張を対象外と明示しており、
+eventmachine は既に `docs/OUT-OF-SCOPE-GEMS.md` に**基準 A** で記載済みである。
+**その規則が 1 段外側まで届いただけ**である。
+
+### 機械判定に見えないものを、宣言で見えるようにした
+
+census の C++ ゲートは **その gem 自身の ext ソースしか読まない**ので、
+C++ の**依存**は原理的に見えない。そこで `:out_of_scope_dependency` を足した。
+**フラグではなく文字列**にして、**どの gem がなぜ対象外なのか**を書かせる形にしてある。
+
+### 「決定を指すだけ」であることをテストで固定した
+
+この欄が**新しい除外を発明する**場所になっては困る。そこで、
+**ここで名指しした gem が `docs/OUT-OF-SCOPE-GEMS.md` に実際に記載されていること**を
+検査するテストを足した。どこにも書かれていない名前を書けば落ちる。
+
+R10 通過率 **28/33 = 84.8% → 28/32 = 87.5%**(90% には 29 件、**あと 1 件**)。
+
+---
+
 ## 現在のテスト規模
 
-atomic-type-15 完了時点: **2,949 runs / 9,391 assertions / 0 failures / 0 errors / 44 skips**
+corpus-ninety-1 完了時点: **2,953 runs / 9,400 assertions / 0 failures / 0 errors / 44 skips**
+(atomic-type-15 から +4 = `:out_of_scope_dependency` の形式検査・検出・
+OUT-OF-SCOPE-GEMS.md との突き合わせ。master マージで TestCrossAbi の aarch64 分が +2)
+(以前) atomic-type-15 完了時点: **2,949 runs / 9,391 assertions / 0 failures / 0 errors / 44 skips**
 (テストメソッドは増えず、assertions のみ +18 = mysql2 の記録がドクターのテストの
 照合対象に入ったため)
 (以前) atomic-type-14 完了時点: **2,949 runs / 9,373 assertions / 0 failures / 0 errors / 44 skips**

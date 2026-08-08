@@ -43,6 +43,13 @@ class TestCorpusCensus < Minitest::Test
                      "gem entry #{entry[:name]} declares control_suite_passes other than " \
                      "false: #{entry[:control_suite_passes].inspect}"
       end
+      # :out_of_scope_dependency names the blocking gem *and* its basis, so it
+      # must be a non-empty String rather than a bare flag.
+      if entry.key?(:out_of_scope_dependency)
+        assert_kind_of String, entry[:out_of_scope_dependency]
+        refute_empty entry[:out_of_scope_dependency],
+                     "gem entry #{entry[:name]} declares a blank out_of_scope_dependency"
+      end
     end
 
     names = list.map { |e| e[:name] }
@@ -161,6 +168,27 @@ class TestCorpusCensus < Minitest::Test
     assert CENSUS.excluded_by_upstream_tests?({ upstream_tests: false })
     refute CENSUS.excluded_by_upstream_tests?({ upstream_tests: true })
     refute CENSUS.excluded_by_upstream_tests?({}), "absent field must default to not-excluded"
+  end
+
+  def test_excluded_by_out_of_scope_dependency_detection
+    assert CENSUS.excluded_by_out_of_scope_dependency({ out_of_scope_dependency: "eventmachine (C++)" })
+    assert_nil CENSUS.excluded_by_out_of_scope_dependency({}),
+               "absent field must default to not-excluded"
+  end
+
+  # The point of the field is that it *points at* an existing decision rather
+  # than making a new one, so every gem it names must already be recorded in
+  # docs/OUT-OF-SCOPE-GEMS.md. A name that appears nowhere else would be an
+  # exclusion invented here, which is what this test exists to prevent.
+  def test_out_of_scope_dependencies_are_already_recorded_as_out_of_scope
+    doc = File.read(File.expand_path("../docs/OUT-OF-SCOPE-GEMS.md", __dir__))
+    Corpus::Gems::LIST.filter_map { |e| [e[:name], e[:out_of_scope_dependency]] if e[:out_of_scope_dependency] }
+                      .each do |name, blocker|
+      gem_name = blocker[/\A[a-z0-9_.-]+/]
+      assert_includes doc, "**#{gem_name}**",
+                      "#{name} is excluded because of #{gem_name}, but docs/OUT-OF-SCOPE-GEMS.md " \
+                      "does not record #{gem_name} as out of scope"
+    end
   end
 
   def test_excluded_by_control_suite_detection

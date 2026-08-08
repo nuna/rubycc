@@ -58,6 +58,21 @@
 #                     Differing numbers mean rubycc contributes failures of its
 #                     own, which is a defect to chase, not a denominator to
 #                     shrink.
+#   :out_of_scope_dependency — a string naming a gem that `gem install`ing this
+#                     one requires, and that DESIGN R10 already puts out of
+#                     scope, together with the basis. This is not a new
+#                     exclusion rule: R10 excludes C++ extensions, and a gem
+#                     that cannot be installed without building one is excluded
+#                     by that same rule reaching one level further out.
+#
+#                     The census's own C++ gate only reads the gem's *own* ext
+#                     sources, so it cannot see this -- thin's parser is pure C
+#                     and passes the machine gate while `gem install thin` still
+#                     stops on eventmachine's .cpp files (measured,
+#                     docs/STEPS.md atomic-type-9). The dependency named here
+#                     must already appear in docs/OUT-OF-SCOPE-GEMS.md with its
+#                     basis, so this field points at a decision rather than
+#                     making one.
 module Corpus
   module Gems
     LIST = [
@@ -366,12 +381,17 @@ module Corpus
       {
         name: "thin",
         version: "2.0.1",
+        out_of_scope_dependency: "eventmachine (C++ extension — " \
+                                 "docs/OUT-OF-SCOPE-GEMS.md basis A)",
         note: "207,539,292 downloads. Single ext dir (ext/thin_parser), a " \
-              "Ragel-generated parser: C 2 files / H 2 files. Note: thin's " \
-              "own extension is pure C, but its runtime dependency " \
-              "eventmachine is a C++ extension, so `gem install thin` " \
-              "additionally requires building eventmachine; the census " \
-              "here only looks at thin's own C sources."
+              "Ragel-generated parser: C 2 files / H 2 files. thin's own " \
+              "extension is pure C and passes the machine gate, but its " \
+              "runtime dependency eventmachine is a C++ extension, so " \
+              "`gem install thin` cannot complete without building one. " \
+              "Measured on 2026-08-08: rubycc reaches eventmachine's nine " \
+              ".cpp files and the build stops there (docs/STEPS.md " \
+              "atomic-type-9). Out of the R10 denominator by R10's own C++ " \
+              "exclusion, reaching one level past thin's own sources."
       },
       {
         name: "http_parser.rb",
