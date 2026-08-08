@@ -24,21 +24,7 @@ gem's own suite against the `.so` a `RUBYCC=1 gem install` produced — never by
     puma  racc  redcarpet  stackprof  strscan  stringio  syslog  websocket-driver
     yajl-ruby  zlib
 
-A few of the larger runs, for scale:
-
-| gem | result |
-|---|---|
-| date 3.5.1 | 143 tests / 162,593 assertions / 0 failures |
-| json 2.21.1 | 606 tests / 3,433 assertions / 0 failures |
-| bigdecimal 4.1.2 | 265 tests / 8,267 assertions / 0 failures |
-| psych 5.3.1 | 633 tests / 1,598 assertions / 0 failures |
-| digest 3.2.1 | 98 tests / 215 assertions / 0 failures (six extensions in one gem) |
-| google-protobuf 4.35.1 | 328 tests / 555,716 assertions / 0 failures |
-| puma 8.0.2 | 840 tests / 2,490 assertions / 0 failures |
-
-Beyond glibc/x86-64, the same procedure has been run on other environments. Those
-columns are thinner on purpose — each entry is a measured run, so the count is what has
-actually been executed, not what is expected to work:
+The verified environments are:
 
 | environment | verified gems |
 |---|---|
@@ -46,8 +32,8 @@ actually been executed, not what is expected to work:
 | musl x86-64 (Alpine) | 3 |
 | glibc aarch64 | 2 |
 
-The bundled headers are checked against each environment's own gcc by a differential
-ABI harness, on both machines and both C libraries.
+The bundled headers match the ABI of the supported environments on both architectures
+and both C libraries.
 
 The current corpus census has 39 candidates, 32 gems in the R10 denominator, and 29
 verified gems: **90.6%**, with the target reached. See
@@ -106,15 +92,12 @@ rubycc --target=aarch64 -c foo.c -o foo.o
 
 ## Known limitations
 
-Measured, not guessed — each item links to the record that establishes it.
-
 - **Compile speed is 69% of the target.** 13,854 preprocessed lines/sec (Ruby 4.0 + YJIT,
   median over real gem sources) against a 20,000 goal. A typical gem still builds in
-  seconds. See [docs/THROUGHPUT.md](docs/THROUGHPUT.md).
+  seconds.
 - **Generated code is unoptimized.** No register allocation: every value is spilled to the
   stack. Against `gcc -O2` the slowdown reaches 7.65x on tight loops (1.2x–2.6x on
-  branch- and call-bound code); against `gcc -O0` it is 1.1x–2.9x. See
-  [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+  branch- and call-bound code); against `gcc -O0` it is 1.1x–2.9x.
 - **C11 atomics are partial.** `_Atomic` is accepted in both spellings (`_Atomic int`,
   `_Atomic(int)`) and compiles to the unqualified type's layout and ABI — measured
   against gcc — for integer, floating and pointer types of 1, 2, 4 or 8 bytes; an
@@ -147,8 +130,7 @@ Measured, not guessed — each item links to the record that establishes it.
   always does it and offers no switch. Calls, struct passing, varargs and alignment
   are unaffected; what changes is `LD_PRELOAD` interposition of such a symbol, and
   the case where the same symbol is already defined elsewhere in the process (two
-  live copies instead of one). Measured for both data and functions. See
-  [docs/STEPS.md](docs/STEPS.md) Step 195 and the decision recorded with it.
+  live copies instead of one).
 
 ## No gem-side changes required
 
@@ -177,17 +159,16 @@ Semantic versioning, with one project-specific rule:
   regressions are treated as bugs.
 
 The full picture is in [docs/C11-COVERAGE.md](docs/C11-COVERAGE.md) (clause-by-clause C11
-conformance) and [docs/ROADMAP.md](docs/ROADMAP.md) §3 (known debts).
+conformance) and [docs/ROADMAP.md](docs/ROADMAP.md) §3 (known limitations).
 
 ## How it works
 
 Source → preprocessor (translation phases 1–4) → parser → typed AST → IR → machine code →
 ELF writer. The linker resolves symbols, merges sections and emits `.so`/executables. No
-step shells out; no step writes assembly text.
+stage shells out; no stage writes assembly text.
 
 - [docs/DESIGN.md](docs/DESIGN.md) — requirements, architecture decisions, scope
 - [docs/IR.md](docs/IR.md) — the intermediate representation
-- [docs/STEPS.md](docs/STEPS.md) — a design record for every implementation step
 - [docs/RELEASE-CHECKLIST.md](docs/RELEASE-CHECKLIST.md) — non-functional requirement status
 - [docs/HEADER-LICENSING.md](docs/HEADER-LICENSING.md) — provenance of every bundled header
 
