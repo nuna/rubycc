@@ -325,6 +325,10 @@ RECIPES = {
     # step the racc entry's notes already record.
     extra_copies: { "lib/racc/parser-text.rb" => "lib/racc/parser-text.rb" },
     test_deps: %w[test-unit test-unit-ruby-core],
+    # Racc's Gemfile pins these versions. Without the pins, a later
+    # test-unit-ruby-core release can change the assertion count inside
+    # assert_raise_with_message without changing the suite result.
+    test_dep_versions: { "test-unit" => "3.6.1", "test-unit-ruby-core" => "1.0.5" },
     runner: :test_unit,
     load_paths: %w[lib test/lib],
     require_flags: %w[helper],

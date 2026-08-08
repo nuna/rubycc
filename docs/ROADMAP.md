@@ -823,8 +823,9 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   上流タグの取得と `.so` 差し込み → gem 自身のテスト実走 → `--update` で DB へ。
   **`sanity` 式が必須**(C 拡張がロードされていなくてもスイートは合格しうるため。
   racc の `cparse.so` を壊しても 71 tests / 0 failures で通ることを実測)。
-  既存 6 件を全て再現して自身を検証済み(racc の assertions のみ 319 → 320 で
-  差異あり・原因未特定)。**Step 151 で nkf 0.3.0、Step 153 で stackprof 0.2.28、
+  既存 6 件を全て再現して自身を検証済み。racc の assertions 差異は、上流 Gemfile の
+  test-unit / test-unit-ruby-core の固定版をレシピにも設定して解消した(Step
+  codex/gaps-debt-20260808-1)。**Step 151 で nkf 0.3.0、Step 153 で stackprof 0.2.28、
   Step 157 で strscan 3.1.6 と stringio 3.2.0、Step 162 で etc 1.4.6、
   Step 164 で io-nonblock 0.3.2、Step 165 で io-wait 0.4.0、Step 166 で erb 6.0.1.1、
   Step 169 で io-console 0.8.2、Step 170 で digest 3.2.1、Step 171 で zlib 3.2.3、
@@ -959,8 +960,8 @@ H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker 
   決める文書**が要る。「まだ通らない」(GAPS.md)と「通す気がない」を混ぜると、
   90% の分母が何なのかが読めなくなる。
 - **未解消の負債と未測定事項も `docs/GAPS.md` に集約した**
-  (`test/corpus/gems.rb` の `version: nil` 4 件、racc の assertions 差異、
-  musl 全スイート / aarch64 M4全面受入れの未測定)。真のdistroless相当の4 gem受入れは
+  (`test/corpus/gems.rb` の `version: nil` 4 件、musl 全スイート /
+  aarch64 M4全面受入れの未測定)。真のdistroless相当の4 gem受入れは
   Step 193で完了した。
 - **受け入れ = v1.0 リリース = M5 完了**。
 

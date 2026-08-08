@@ -9404,6 +9404,34 @@ mkmf の `pkg_config` が実際に渡すのは
 
 ---
 
+## codex/gaps-debt-20260808-1 — racc のテスト依存を上流の固定版に揃える(M5 H6)
+
+`docs/GAPS.md` §2 に残っていた、racc の assertion 数が Step 99 の 319 から
+`tools/verify_gem_tests.rb` の 320 に増える差異を調査した。
+
+### 原因
+
+racc 1.8.1 の上流 `Gemfile` は `test-unit 3.6.1` と `test-unit-ruby-core 1.0.5` を
+固定している。一方、検証ツールのレシピは test dependency の版を指定していなかったため、
+実行時点の版を使っていた。
+
+`test-unit-ruby-core 1.0.14` の `assert_raise_with_message` は、Regexp の期待値に対して
+`assert_respond_to(expected, :===)` を追加で数える。racc の
+`test_error_on_expect_mismatch` がこの API を使うため、このテストだけが 6 assertions から
+7 assertions になり、合計が 319 から 320 になった。これは rubycc の生成コードやテスト結果の
+差ではなく、検証依存の変更である。
+
+### 対応と確認
+
+`RECIPES["racc"]` に上流 Gemfile と同じ `test_dep_versions` を設定した。これにより、
+検証ツールは共有 scratch GEM_HOME に残った新しい版も掃除してから、固定版をインストールする。
+固定後の再実行は **71 tests / 319 assertions / 0 failures / 0 errors** で、Step 99 の記録を
+再現した。依存版の変更による assertion 数の変動を、racc の検証差異として再び GAPS に残さない。
+
+このステップは検証ツールと文書だけの変更であり、新しい C の examples は追加していない。
+
+---
+
 ### master 側のマージ直前のテスト規模
 
 differential-discipline-2 完了時点: **2,839 runs / 8,438 assertions / 0 failures / 0 errors / 44 skips**
