@@ -38,7 +38,7 @@ QEMU で実行した結果**であり、aarch64 Ruby 自身で `rake test` や `
 
 | M4受入れ項目 | 確認結果 | 未完了の原因 |
 |---|---|---|
-| aarch64 上の全テストスイート | クロス経路は green | ローカルに aarch64 Ruby が無い。`ruby` は x86_64 で、既存の Ruby 4.0.6 も x86_64。 |
+| aarch64 上の全テストスイート | クロス経路は green。native job を設計・追加(実走待ち) | ローカルに aarch64 Ruby が無い。`weekly.yml` の `only: aarch64` を手動実行して確認する。 |
 | ABI ファジングハーネスの機種パラメタ化 | **実装済み(本ブランチ)** | `TestCrossAbi` が同じ決定論的な 40 レイアウトを x86_64 と aarch64 で実行する。aarch64 は既存のクロスgcc + QEMU経路を使うため aarch64 Ruby は不要。 |
 | aarch64 の json / msgpack `gem install` | 未実施 | ネットワーク受入れテストは `RMAKE_ACCEPTANCE=1` 未指定のため 44 skips に含まれる。aarch64 Ruby が必要で、Docker daemon も `/var/run/docker.sock` の permission denied で利用できない。 |
 | aarch64 musl の全受入れ | 未実施 | `musl-gcc` / `aarch64-linux-musl-gcc` が無く、Docker daemon も利用できない。今回の musl 3件は bundled header の分岐値を glibc cross linker + QEMU で確認したもので、musl libc/Ruby の実走ではない。 |

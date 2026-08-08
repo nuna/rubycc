@@ -9657,3 +9657,27 @@ ar・リンク(ld -r 併合 + .so + 外部 import + ライブラリ解決 + 実�
 (gcc 差分比較・クロスリンク ABI 差分・gcc -E トークン列差分・Fiddle dlopen 実
 呼び出し・生成実行ファイルの実走・一気通貫ビルド・C 拡張の require 実行込み)+
 c-testsuite 220 ケース + ruby.h スモークテスト。
+
+## codex/arm-ci-m4-20260808-1 — native aarch64 CI を既存 workflow に統合(M4 H6)
+
+native aarch64 Ruby 上の M4 全スイート受入れを、専用の `arm-ci.yml` として増やさず、
+既存の Tier B / Tier A の構成に合わせた。
+
+### 設計
+
+`.github/workflows/test.yml` に `workflow_call` の `runner` と `artifact_prefix` 入力を追加した。
+通常の push / PR / release では既定値を使い、`weekly.yml` から呼び出すときだけ
+`ubuntu-24.04-arm` を渡す。native runner のときは `uname -m` と Ruby の target を記録する。
+toolchain の導入、Ruby 3.3 / 4.0 matrix、全スイート、skip guard、artifact は同じ workflow を
+再利用するため、x86_64 の Tier A と手順が分岐しない。weekly 側は専用の concurrency group
+も渡し、master の通常テスト実行を相互に cancel しない。
+
+`weekly.yml` には薄い `aarch64` job だけを置き、手動 dispatch の `only: aarch64` で起動する。
+週次 schedule には含めない。native ARM の 2 matrix job は hosted runner の無料枠を大きく
+消費するため、必要な M4 受入れ時に明示的に測定する。既存の `musl-aarch64` と同じ
+`only` の導線を使う。
+
+### 結果
+
+専用 `arm-ci.yml` は削除し、CI の構成説明を `docs/CI.md` と `docs/ROADMAP.md` に反映した。
+これは workflow と文書だけの変更なので、C の examples は追加していない。
