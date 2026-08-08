@@ -54,8 +54,8 @@
       {
         "versions": ["1.8.1"],
         "environment": "glibc x86_64 / ruby 3.4.5",
-        "verified_at": "2026-07-24",
-        "evidence": "RUBYCC=1 gem install racc built ext/racc/cparse (cparse.so); the gem's own test/unit suite passed 71 tests / 319 assertions / 0 failures / 0 errors (Step 99)."
+        "verified_at": "2026-08-08",
+        "evidence": "RUBYCC=1 gem install racc built ext/racc/cparse (cparse.so); the gem's own test/unit suite passed 71 tests / 319 assertions / 0 failures / 0 errors (Step 99). Re-verified with tools/verify_gem_tests.rb (Step codex/gaps-debt-20260808-1): the gem's own test/unit suite passed 71 tests / 319 assertions / 0 failures / 0 errors."
       }
     ],
     "notes": "This was not a fully hands-off gem install: the generated file lib/racc/parser-text.rb had to be manually supplied from the rmake build's generated output."
