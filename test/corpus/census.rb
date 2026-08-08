@@ -108,6 +108,16 @@ module Corpus
       spec[:control_suite_passes] == false
     end
 
+    # The third way: the gem's own sources pass every machine gate, but
+    # `gem install` cannot finish without building a gem R10 already excludes.
+    # The C++ gate above only reads this gem's ext sources, so it is blind to a
+    # C++ *dependency*; naming that dependency is how a corpus entry says so.
+    # See the field's documentation in gems.rb, which is where the reasoning and
+    # its limits live.
+    def excluded_by_out_of_scope_dependency(spec)
+      spec[:out_of_scope_dependency]
+    end
+
     # Detect a configure / mini_portile dependency in extconf text (R10 exclusion).
     # Conservative so the pure-C corpus is not falsely excluded: matches an
     # autoconf-style `configure` invocation via a shell call, or mini_portile.
@@ -269,6 +279,14 @@ module Corpus
         result[:reason] = "upstream suite does not pass with the reference compiler either " \
                            "(measured with tools/verify_gem_tests.rb --control) — no compiler " \
                            "can earn R10's verification level (d) here"
+        return result
+      end
+
+      if (blocker = excluded_by_out_of_scope_dependency(spec))
+        result[:status] = :excluded
+        result[:reason] = "`gem install` requires #{blocker}, which R10 already excludes — " \
+                           "this gem's own sources pass the machine gate, but the install " \
+                           "cannot complete without building an out-of-scope extension"
         return result
       end
 
