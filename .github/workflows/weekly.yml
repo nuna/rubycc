@@ -19,14 +19,13 @@ name: weekly
         default: ""
       only:
         description: >-
-          Run just one job instead of the whole weekly set. The aarch64 ABI
-          measurement in particular is reachable no other way: guarding it on
-          verify_step alone meant the only way to trigger it was a full weekly
-          run, which costs the other five jobs' minutes to get one job's answer.
+          Run just one job instead of the whole weekly set. The native aarch64
+          suite and aarch64 ABI measurement are reachable without paying for
+          the other six jobs' minutes.
         required: false
         default: ""
         type: choice
-        options: ["", "musl-aarch64"]
+        options: ["", "aarch64", "musl-aarch64"]
 
 permissions:
   contents: read
@@ -39,7 +38,7 @@ jobs:
   census:
     # A dispatch that sets verify_step is a musl *recording* run (docs/CI.md):
     # only the musl job has anything to do, and the free-tier minute budget
-    # is tight enough that dragging the other four along would cost more than
+    # is tight enough that dragging the other six along would cost more than
     # the run itself. Everything else is unchanged for the weekly schedule.
     if: inputs.verify_step == '' && inputs.only == ''
     runs-on: ubuntu-24.04
@@ -105,7 +104,7 @@ jobs:
   acceptance:
     # A dispatch that sets verify_step is a musl *recording* run (docs/CI.md):
     # only the musl job has anything to do, and the free-tier minute budget
-    # is tight enough that dragging the other four along would cost more than
+    # is tight enough that dragging the other six along would cost more than
     # the run itself. Everything else is unchanged for the weekly schedule.
     if: inputs.verify_step == '' && inputs.only == ''
     runs-on: ubuntu-24.04
@@ -166,7 +165,7 @@ jobs:
   throughput:
     # A dispatch that sets verify_step is a musl *recording* run (docs/CI.md):
     # only the musl job has anything to do, and the free-tier minute budget
-    # is tight enough that dragging the other four along would cost more than
+    # is tight enough that dragging the other six along would cost more than
     # the run itself. Everything else is unchanged for the weekly schedule.
     if: inputs.verify_step == '' && inputs.only == ''
     runs-on: ubuntu-24.04
@@ -238,7 +237,7 @@ jobs:
   # is the thing being measured.
   musl:
     # A verify_step dispatch is this job's own recording run, so unlike the
-    # other four it stays on for that; an `only` dispatch naming a different
+    # other six it stays on for that; an `only` dispatch naming a different
     # job skips it.
     if: inputs.only == ''
     runs-on: ubuntu-24.04
@@ -332,6 +331,19 @@ jobs:
           path: tmp/ci/*.log
           if-no-files-found: warn
 
+  # Native aarch64 is a manual-only M4 acceptance. Reuse Tier A's full-suite
+  # workflow so toolchain setup, Ruby matrix, skip guard and artifact handling
+  # cannot drift between the two paths. It is not part of the weekly schedule
+  # because two native ARM matrix jobs would consume a large share of the free
+  # Actions budget.
+  aarch64:
+    if: inputs.verify_step == '' && inputs.only == 'aarch64'
+    uses: ./.github/workflows/test.yml
+    with:
+      runner: ubuntu-24.04-arm
+      artifact_prefix: weekly-aarch64-test-log
+      concurrency_group: weekly-aarch64-${{ github.ref }}
+
   # The intermediate version 3.4 is checked weekly rather than on every push,
   # to save runner minutes. The two ends (3.3 and 4.0) are checked on every
   # push by test.yml, so a version-specific break is caught within the week
@@ -339,7 +351,7 @@ jobs:
   ruby-3-4:
     # A dispatch that sets verify_step is a musl *recording* run (docs/CI.md):
     # only the musl job has anything to do, and the free-tier minute budget
-    # is tight enough that dragging the other four along would cost more than
+    # is tight enough that dragging the other six along would cost more than
     # the run itself. Everything else is unchanged for the weekly schedule.
     if: inputs.verify_step == '' && inputs.only == ''
     runs-on: ubuntu-24.04
