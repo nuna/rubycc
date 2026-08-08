@@ -119,7 +119,10 @@ if [ "${TEST_SCOPE}" = smoke ]; then
     tmp/ci/aarch64-glibc-suite.log 2>&1 \
     | tee tmp/ci/aarch64-glibc-skip-check.log
 else
-  ruby tools/ci_check_skips.rb tmp/ci/aarch64-glibc-suite.log 2>&1 \
+  # The native profile intentionally skips the x86_64-only linker/PIC cases and
+  # the known out-of-scope corpus entries. Its measured baseline is 128 skips;
+  # keep a small margin while retaining the same histogram/toolchain guard.
+  CI_MAX_SKIPS=130 ruby tools/ci_check_skips.rb tmp/ci/aarch64-glibc-suite.log 2>&1 \
   | tee tmp/ci/aarch64-glibc-skip-check.log
 fi
 skip_status=${PIPESTATUS[0]}

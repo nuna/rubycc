@@ -417,7 +417,10 @@ class TestHeaderAbi < Minitest::Test
   FEATURES = HeaderAbiHarness::Spec.new(
     header: "features.h",
     libc: :glibc,
-    ints: ["__GLIBC__", "__GLIBC_MINOR__", # platform-literal: names glibc's own feature-test macros, gated by `libc: :glibc` above
+    # The major/version-gate values are ABI-relevant, but glibc's minor-version macro is a
+    # release fact of the machine running the probe, not a stable header ABI.
+    # Keep the boundary checks below; omit only the volatile minor number itself.
+    ints: ["__GLIBC__", # platform-literal: names glibc's own feature-test macros, gated by `libc: :glibc` above
            # platform-literal: same glibc-only version gate, continued from the line above
            "__GLIBC_PREREQ(2, 17)", "__GLIBC_PREREQ(2, 99)", "__GLIBC_PREREQ(3, 0)"]
   )
@@ -789,6 +792,9 @@ class TestHeaderAbi < Minitest::Test
   # (Step 146 gap 6, unresolved).
   PTHREAD = HeaderAbiHarness::Spec.new(
     header: "pthread.h",
+    # glibc declares pthread_kill through <signal.h>'s bits/sigthread.h rather
+    # than from pthread.h itself; include that companion header in the oracle.
+    also: ["signal.h"],
     defines: ["_GNU_SOURCE"],
     sizes: %w[pthread_t pthread_mutex_t pthread_cond_t pthread_rwlock_t
               pthread_attr_t pthread_mutexattr_t pthread_condattr_t

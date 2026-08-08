@@ -25,8 +25,9 @@ require "open3"
 module LibcHelper
   # The canonical host-to-SONAME mapping (docs/STEPS.md Step 194); the sole place
   # in the suite allowed to name either spelling -- everything else calls this.
+  # platform-literal: these are the two SONAME spellings selected from the host libc identity.
   def host_libc_soname
-    musl_host? ? "libc.musl-#{host_arch}.so.1" : "libc.so.6"
+    musl_host? ? "libc.musl-#{host_arch}.so.1" : "libc.so.6" # platform-literal: host SONAME spellings
   end
 
   def musl_host?
@@ -52,10 +53,10 @@ module LibcHelper
   def glibc_multiarch_paths
     multiarch = "#{host_arch}-linux-gnu"
     [
-      "/lib/#{multiarch}/libc.so.6",
-      "/usr/lib/#{multiarch}/libc.so.6",
-      "/lib64/libc.so.6",
-      "/usr/lib/libc.so.6"
+      "/lib/#{multiarch}/libc.so.6", # platform-literal: glibc multiarch candidate path
+      "/usr/lib/#{multiarch}/libc.so.6", # platform-literal: glibc multiarch candidate path
+      "/lib64/libc.so.6", # platform-literal: glibc generic candidate path
+      "/usr/lib/libc.so.6" # platform-literal: glibc generic candidate path
     ]
   end
 

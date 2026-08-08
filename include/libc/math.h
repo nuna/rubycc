@@ -27,8 +27,16 @@
 #define FP_SUBNORMAL 3
 #define FP_NORMAL    4
 
-#define FP_ILOGB0   (-2147483647-1)
-#define FP_ILOGBNAN (-2147483647-1)
+/* glibc's AArch64 math ABI uses the finite neighboring sentinels, while its
+   x86-64 ABI uses INT_MIN for both. The target macro comes from rubycc's
+   selected backend, so this common declaration layer can carry both values. */
+#if defined(__aarch64__)
+# define FP_ILOGB0   (-2147483647)
+# define FP_ILOGBNAN 2147483647
+#else
+# define FP_ILOGB0   (-2147483647-1)
+# define FP_ILOGBNAN (-2147483647-1)
+#endif
 
 #define MATH_ERRNO     1
 #define MATH_ERREXCEPT 2

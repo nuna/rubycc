@@ -253,6 +253,8 @@ class TestAddressConstantGlobals < Minitest::Test
 
   def skip_unless_runnable
     skip "not a Linux host" unless RUBY_PLATFORM.include?("linux")
+    skip "x86_64 linker runtime checks are not active (current target: #{ExecutionHelper::EXECUTION_TARGET})" \
+      unless ExecutionHelper::EXECUTION_TARGET == "x86_64"
     interp = ["/lib64/ld-linux-x86-64.so.2", "/lib/ld-musl-x86_64.so.1"].any? { |p| File.exist?(p) }
     libc = ExecLinker::DEFAULT_LIBC_PATHS.any? { |p| File.exist?(p) }
     skip "no dynamic loader / libc on host" unless interp && libc

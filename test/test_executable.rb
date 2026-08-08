@@ -20,6 +20,7 @@ require "open3"
 # and actually run, its exit status and stdout checked — including a gcc-built
 # counterpart for cross-verification. The run and gcc cases are skip-guarded.
 class TestExecutable < Minitest::Test
+  include ExecutionHelper
   include LibcHelper
 
   Reader = Rubycc::ObjFile::ELFReader
@@ -677,6 +678,8 @@ class TestExecutable < Minitest::Test
   # The host must supply a dynamic loader and a libc for the writer to link at
   # all; without them the emitted executable could not run and the writer raises.
   def skip_unless_linkable
+    skip "x86_64 executable linker checks are not active (current target: #{ExecutionHelper::EXECUTION_TARGET})" \
+      unless ExecutionHelper::EXECUTION_TARGET == "x86_64"
     skip "no dynamic loader / libc on host" unless linkable?
   end
 

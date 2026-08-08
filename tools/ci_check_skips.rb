@@ -18,7 +18,7 @@
 # instead of leaving you to diff two 3,000-line logs.
 #
 # Thresholds: CI_MAX_SKIPS / CI_MIN_RUNS below are tightened to the numbers
-# the first green run on CI actually measured: 2,547 runs / 52 skips on CI,
+# the first green x86 run on CI actually measured: 2,547 runs / 52 skips on CI,
 # versus 2,547 runs / 47 skips on a developer machine. The 5-skip gap between
 # the two splits into two independent effects, not one:
 #   -1  CI has a real `pkg-config` binary installed, so
@@ -31,8 +31,10 @@
 # 55, runs 2,547 -> 2,500) rather than the measurement itself, so that adding
 # tests over time does not immediately trip CI_MIN_RUNS (more tests only ever
 # raise the run count) while still catching a real regression rather than
-# only a catastrophic one. Re-tighten these whenever the suite's size changes
-# meaningfully.
+# only a catastrophic one. The native AArch64 acceptance script overrides only
+# CI_MAX_SKIPS to 130 because its profile intentionally leaves x86_64-only
+# linker/PIC cases and known out-of-scope corpus cases inactive. Re-tighten
+# either profile whenever its suite shape changes meaningfully.
 #
 # Usage:
 #   ruby tools/ci_check_skips.rb <logfile>
