@@ -34,6 +34,17 @@ module Rubycc
       PAD_GP_PIECE = AbiPiece.new(offset: 0, size: 8, kind: :pad)
       PAD_STACK_PIECE = AbiPiece.new(offset: 0, size: 8, kind: :pad_stack)
 
+      # The boundaries an automatic object is guaranteed to land on. Both
+      # backends build the frame from a 16-byte-aligned base and then place each
+      # stack object (an aggregate or a 128-bit integer) a 16-byte-rounded
+      # distance from it, while a scalar lives in one cell of the 8-byte
+      # virtual-register run. An _Alignas asking for more than that would need a
+      # prologue that realigns the stack pointer at run time, which neither
+      # backend emits, so #reject_overaligned_automatic refuses the declaration
+      # rather than letting it compile to a weaker boundary than it asked for.
+      STACK_OBJECT_ALIGNMENT = 16
+      VREG_SLOT_ALIGNMENT = 8
+
       # The merged state of a file-scope object's tentative/real definitions
       # (6.9.2), one per name in @object_records. `type` and `linkage` are the
       # agreed type and linkage of the run, `initialized` records whether any
@@ -155,10 +166,14 @@ module Rubycc
             # AST but drives no behavior here: a declaration reserves nothing and
             # M1 does not diagnose a static/extern mismatch against the eventual
             # definition, so a prototype only contributes a signature.
-            declare_function(decl.name, decl.return_type, decl.params.map(&:type),
+            declare_function(decl.name, decl.return_type, decl.params.map(&:abi_type),
                              variadic: decl.variadic, defined: false, token: decl.token)
           when Front::AST::FunctionDef
-            declare_function(decl.name, decl.return_type, decl.params.map(&:type),
+            # A signature is what *callers* must agree with, so it is built from
+            # the types the parameters are passed as. The two differ only for an
+            # old-style definition, whose narrow parameters arrive promoted
+            # (see AST::Parameter#abi_type).
+            declare_function(decl.name, decl.return_type, decl.params.map(&:abi_type),
                              variadic: decl.variadic, defined: true, token: decl.token)
             # `static` gives the definition internal linkage (an STB_LOCAL text
             # symbol); an absent or `extern` specifier leaves it external.
@@ -309,7 +324,8 @@ module Rubycc
         end
 
         index = @globals.length
-        @globals << Global.new(name: decl.name, size: type.size, align: type.alignment,
+        @globals << Global.new(name: decl.name, size: object_size(type, init),
+                               align: object_alignment(type, decl.alignas),
                                init: init, linkage: linkage)
         @object_records[decl.name] = ObjectRecord.new(type, linkage, has_init, index)
         @global_bindings[decl.name] = Local.new(type: type, storage: decl.name, global: true, const: decl.const)
@@ -325,9 +341,31 @@ module Rubycc
 
         record.initialized = true
         record.type = type
-        @globals[record.index] = Global.new(name: decl.name, size: type.size,
-                                             align: type.alignment, init: init, linkage: linkage)
+        # Every declaration of one object may carry its own _Alignas, and the
+        # strongest wins (measured: gcc gives "int g; _Alignas(64) int g = 1;" a
+        # 64-byte boundary, and so does the reverse order), so the tentative
+        # object's boundary is carried into the definition rather than replaced.
+        align = [object_alignment(type, decl.alignas), @globals[record.index].align].max
+        @globals[record.index] = Global.new(name: decl.name, size: object_size(type, init),
+                                             align: align, init: init, linkage: linkage)
         @global_bindings[decl.name] = Local.new(type: type, storage: decl.name, global: true, const: decl.const)
+      end
+
+      # The boundary a static-duration object is laid out on: its type's own
+      # alignment, raised by an _Alignas the declaration asked for. The parser
+      # has already refused a request that would weaken the type's alignment, so
+      # the larger of the two is the requested one whenever there is one.
+      def object_alignment(type, alignas)
+        alignas && alignas > type.alignment ? alignas : type.alignment
+      end
+
+      # The storage a static-duration object occupies. An initialized one is
+      # exactly as wide as the image emitted for it, which is normally its
+      # type's size but wider when a trailing flexible array member was
+      # initialized (that member lies outside sizeof). An uninitialized
+      # (tentative, .bss) object has no image and takes its type's size.
+      def object_size(type, init)
+        init ? init.bytes.bytesize : type.size
       end
 
       # Diagnoses a static/non-static disagreement across the declarations of one
@@ -350,10 +388,14 @@ module Rubycc
       # array's tail, a string's NUL — is already zero (6.7.9p10/p21).
       def build_global_init(type, node, token)
         if Front::InitializerResolver.structural?(type, node)
-          resolved = Front::InitializerResolver.resolve(type, node)
+          # Both callers place the object in .data/.bss, so a trailing flexible
+          # array member may be initialized; the storage it adds beyond
+          # sizeof widens the image (and with it the object, see #object_size).
+          resolved = Front::InitializerResolver.resolve(type, node, static_storage: true,
+                                                        type_of: method(:initializer_expression_type))
           final_type = resolved.type
           require_complete(final_type, token)
-          image = "\0".b * final_type.size
+          image = "\0".b * (final_type.size + resolved.flexible_bytes)
           relocations = []
           resolved.entries.each { |entry| pack_global_entry(entry, image, relocations) }
           [final_type, GlobalInit.new(bytes: image, relocations: relocations)]
@@ -738,14 +780,22 @@ module Rubycc
         end
       end
 
-      # The address of "target[index]": the target's pointer value shifted by the
-      # constant index times the element size.
+      # The address of "target[index]": the pointer operand's value shifted by
+      # the constant index times the element size. Either side may be the
+      # pointer, as in #pointer_operand — a subscript is an addition
+      # (6.5.2.1p2), so "0[x]" designates the object "x[0]" does — so each is
+      # probed in turn.
       def subscript_address(node)
-        base = pointer_value(node.target)
+        if (base = maybe_pointer_value(node.target))
+          index_node = node.index
+        else
+          base = pointer_value(node.index)
+          index_node = node.target
+        end
         element = base.pointee
         raise NotAddressConstant unless element&.size
 
-        base.with(offset: base.offset + fold_constant_index(node.index) * element.size)
+        base.with(offset: base.offset + fold_constant_index(index_node) * element.size)
       end
 
       # The address of "base.member" (a struct lvalue) or "base->member" (a struct
@@ -1062,7 +1112,14 @@ module Rubycc
         # One plan per by-value parameter (nil for a scalar), then the placement
         # of every ABI entity in slot order: the hidden return pointer (if any)
         # first, then the parameters left to right.
-        plans = func.params.map { |param| aggregate_by_value?(param.type) ? @convention.aggregate_plan(param.type) : nil }
+        #
+        # Every step below works from the parameter's #abi_type — the type the
+        # caller actually hands over, which is the declared type except in an
+        # old-style definition, where a narrow parameter is passed promoted
+        # (6.9.1p10). The declared type only comes back once the slot is bound.
+        plans = func.params.map do |param|
+          aggregate_by_value?(param.abi_type) ? @convention.aggregate_plan(param.abi_type) : nil
+        end
         placer = @convention.placer
         if hidden_return
           placer.place(ArgumentRequest.new(kinds: [@convention.hidden_result_kind], align16: false, mem_eightbytes: 1))
@@ -1071,7 +1128,7 @@ module Rubycc
         # just before it (see AAPCS64::Placer#pad_gp/#pad_stack), so #placed_pieces
         # can prepend a matching pad slot to the parameter's pieces.
         placements = func.params.each_with_index.map do |param, i|
-          status = placer.place(abi_request(param.type, plans[i]))
+          status = placer.place(abi_request(param.abi_type, plans[i]))
           [status, placer.pad_gp, placer.pad_stack]
         end
 
@@ -1083,7 +1140,7 @@ module Rubycc
         piece_lists << [AbiPiece.new(offset: 0, size: 8, kind: @convention.hidden_result_kind)] if hidden_return
         func.params.each_with_index do |param, i|
           status, pad_gp, pad_stack = placements[i]
-          piece_lists << placed_pieces(param.type, plans[i], status, pad_gp, pad_stack)
+          piece_lists << placed_pieces(param.abi_type, plans[i], status, pad_gp, pad_stack)
         end
 
         slot_vregs = piece_lists.map { |pieces| pieces.map { new_vreg } }
@@ -1099,11 +1156,14 @@ module Rubycc
           vregs = slot_vregs[index]
           pieces = piece_lists[index]
           index += 1
-          if aggregate_by_value?(param.type)
+          if aggregate_by_value?(param.abi_type)
+            # No promotion touches a struct, so an aggregate parameter's declared
+            # and incoming types are the same object.
             bind_struct_parameter(param, vregs, pieces, plans[i].mode == :by_reference)
           else
             @scopes.last[param.name] =
-              Local.new(type: param.type, storage: vregs.first, global: false, const: param.const)
+              Local.new(type: param.type, storage: bind_scalar_parameter(param, vregs.first),
+                        global: false, const: param.const)
           end
         end
 
@@ -1112,6 +1172,13 @@ module Rubycc
         # from the low bytes in place, by the type's signedness, so its slot holds
         # the properly extended value like any other narrow lvalue. Wider scalars
         # and structs need no fix-up.
+        #
+        # This is also what narrows an old-style definition's promoted parameter:
+        # a `char` handed a whole `int` keeps its low byte and re-extends it,
+        # which is exactly the truncating conversion its declared type asks for
+        # (measured against gcc, down to a `_Bool` parameter passed 2 reading
+        # back as 2 rather than as 1 — gcc stores the low byte and does not
+        # normalize).
         func.params.each do |param|
           type = param.type
           next unless type.integer? && (type.size == 1 || type.size == 2)
@@ -1119,6 +1186,22 @@ module Rubycc
           slot = @scopes.last[param.name].storage
           emit(type.signed? ? :sext : :zext, dst: slot, a: slot, size: type.size)
         end
+      end
+
+      # The vreg a scalar parameter's name is bound to: normally the incoming ABI
+      # slot itself. An old-style definition's parameter can arrive as something
+      # wider than it declared (see AST::Parameter#abi_type), and when a floating
+      # type is on either side of that difference the two forms share no
+      # representation at all — a `float` parameter is passed a `double` — so the
+      # value is converted into a vreg of its own. An integer difference needs
+      # nothing here: it is always "passed an int, declared narrower", which
+      # #setup_parameters' narrow-parameter fix-up already finishes by truncating
+      # and re-extending the slot in place.
+      def bind_scalar_parameter(param, slot)
+        return slot unless param.incoming_type
+        return slot unless param.incoming_type.float? || param.type.float?
+
+        convert(slot, from: param.incoming_type, to: param.type, token: param.token)
       end
 
       # Whether a struct result travels through a hidden pointer rather than in
@@ -1662,6 +1745,7 @@ module Rubycc
         # An array or a struct is an aggregate lowered onto a stack object; a
         # scalar (int, pointer) takes a vreg slot.
         else
+          reject_overaligned_automatic(decl)
           if decl.type.array? || decl.type.struct?
             gen_aggregate_decl(decl, scope)
           elsif wide128?(decl.type)
@@ -1670,6 +1754,26 @@ module Rubycc
             gen_scalar_decl(decl, scope)
           end
         end
+      end
+
+      # Rejects an automatic object whose _Alignas asks for a stronger boundary
+      # than the frame gives it (see STACK_OBJECT_ALIGNMENT/VREG_SLOT_ALIGNMENT).
+      # A static-duration object has no such ceiling — the section layout honours
+      # any power of two — so only this path checks.
+      def reject_overaligned_automatic(decl)
+        requested = decl.alignas
+        return if requested.nil?
+
+        limit = if decl.type.array? || decl.type.struct? || wide128?(decl.type)
+                  STACK_OBJECT_ALIGNMENT
+                else
+                  VREG_SLOT_ALIGNMENT
+                end
+        return if requested <= limit
+
+        error_at(decl.token,
+                 "requested alignment #{requested} for '#{decl.name}' exceeds the #{limit} bytes " \
+                 "an automatic object is laid out on")
       end
 
       # A block-scope function declaration ("int f(int);" written inside a body,
@@ -1725,7 +1829,9 @@ module Rubycc
 
         value_node = decl.initializer
         if value_node.is_a?(Front::AST::InitializerList)
-          value_node = Front::InitializerResolver.resolve(decl.type, value_node).entries.first.value
+          resolved = Front::InitializerResolver.resolve(decl.type, value_node,
+                                                        type_of: method(:initializer_expression_type))
+          value_node = resolved.entries.first.value
         end
         value, value_type = gen_value(value_node)
         unless compatible_assignment?(decl.type, value_node, value_type)
@@ -1754,7 +1860,8 @@ module Rubycc
         type, init = build_global_init(type, decl.initializer, decl.token) if decl.initializer
         require_complete(type, decl.token)
         scope[decl.name] = Local.new(type: type, storage: name, global: true, const: decl.const)
-        @globals << Global.new(name: name, size: type.size, align: type.alignment,
+        @globals << Global.new(name: name, size: object_size(type, init),
+                               align: object_alignment(type, decl.alignas),
                                init: init, linkage: :internal)
       end
 
@@ -1789,7 +1896,9 @@ module Rubycc
 
         value_node = decl.initializer
         if value_node.is_a?(Front::AST::InitializerList)
-          value_node = Front::InitializerResolver.resolve(decl.type, value_node).entries.first.value
+          resolved = Front::InitializerResolver.resolve(decl.type, value_node,
+                                                        type_of: method(:initializer_expression_type))
+          value_node = resolved.entries.first.value
         end
         value, value_type = gen_value(value_node)
         unless compatible_assignment?(decl.type, value_node, value_type)
@@ -1809,7 +1918,8 @@ module Rubycc
         init = decl.initializer
 
         if init && Front::InitializerResolver.structural?(type, init)
-          resolved = Front::InitializerResolver.resolve(type, init)
+          resolved = Front::InitializerResolver.resolve(type, init,
+                                                        type_of: method(:initializer_expression_type))
           type = resolved.type
           require_complete(type, decl.token)
           base = bind_stack_object(scope, decl.name, type, decl.const)
@@ -1986,6 +2096,8 @@ module Rubycc
           gen_builtin_overflow(node)
         when Front::AST::BuiltinAtomic
           gen_builtin_atomic(node)
+        when Front::AST::BuiltinSync
+          gen_builtin_sync(node)
         when Front::AST::BuiltinUnreachable
           gen_builtin_unreachable(node)
         else
@@ -2475,8 +2587,10 @@ module Rubycc
         emit(:atomic_fence)
       end
 
-      # Evaluates the leading pointer argument every __atomic_* builtin takes and
-      # returns [vreg, object type]. The object must be an integer or a pointer
+      # Evaluates the leading pointer argument every atomic builtin (__atomic_*
+      # and __sync_* alike) takes and returns [vreg, object type]. `name` is the
+      # spelling as written, so the diagnostics name the builtin the program
+      # actually called. The object must be an integer or a pointer
       # of one of ATOMIC_WIDTHS: a floating, aggregate or void target has no
       # atomic form here, and a width outside that pair has no instruction to
       # lower to. Any top-level qualifier on the target ("volatile rb_atomic_t *",
@@ -2572,6 +2686,93 @@ module Rubycc
                    "#{value_type.size}-byte object")
         end
         vreg
+      end
+
+      # One of gcc's legacy __sync_* builtins (Front::Parser::SYNC_BUILTINS).
+      # Every one is documented as a full barrier, which is exactly the order the
+      # atomic IR ops already carry, so nothing here has to ask for an order or
+      # weaken one — the family's whole difference from __atomic_* is in the
+      # argument layout, not in the machine sequence.
+      #
+      # Only the forms an existing IR op already means correctly are lowered; the
+      # bitwise ones with no matching op stay unrecognized identifiers (see
+      # SYNC_BUILTINS for the list and the reasoning).
+      def gen_builtin_sync(node)
+        name = node.token.value
+        if node.kind == :fence
+          emit(:atomic_fence)
+          return [nil, Type::Void]
+        end
+
+        ptr, value_type = gen_atomic_object_pointer(node.args[0], name)
+        case node.kind
+        when :release then gen_sync_lock_release(ptr, value_type)
+        when :bool_compare_and_swap, :val_compare_and_swap
+          gen_sync_compare_and_swap(node, ptr, value_type, name)
+        else gen_sync_rmw(node, ptr, value_type, name)
+        end
+      end
+
+      # The read-modify-write family — __sync_lock_test_and_set and the five
+      # fetch/modify spellings — all written "(ptr, value)". The kind the parser
+      # recorded is already the IR's, so this is #gen_atomic_rmw's emission
+      # without the memory-order argument to consume, and the result type is the
+      # object's: the value read for :exchange/:fetch_*, the value stored for
+      # :add_fetch/:sub_fetch/:or_fetch.
+      #
+      # A pointer-typed object takes its operand unscaled here too — measured
+      # separately for this family rather than assumed from the __atomic_* one:
+      # "__sync_fetch_and_add(&p, 1)" on an "int *" advances p by a single byte.
+      def gen_sync_rmw(node, ptr, value_type, name)
+        value = gen_atomic_operand(node.args[1], value_type, name)
+        dst = new_vreg
+        emit(:atomic_rmw, dst: dst, a: ptr, b: [value, node.kind], size: value_type.size)
+        [dst, value_type]
+      end
+
+      # "__sync_lock_release(ptr)": writes zero into the object and yields void.
+      # gcc documents it as the release half of __sync_lock_test_and_set's pair;
+      # :atomic_store is sequentially consistent, which is a sound strengthening
+      # of that (see #gen_builtin_atomic). The zero is materialized at the
+      # object's own width, so a pointer object is left null rather than
+      # half-cleared.
+      def gen_sync_lock_release(ptr, value_type)
+        zero = new_vreg
+        emit(:const, dst: zero, a: 0, size: value_type.size)
+        emit(:atomic_store, a: ptr, b: zero, size: value_type.size)
+        [nil, Type::Void]
+      end
+
+      # "__sync_bool_compare_and_swap(ptr, oldval, newval)" and its "val_" twin:
+      # if *ptr equals `oldval` it becomes `newval`. The boolean form yields
+      # whether that happened; the value form yields the value actually read.
+      #
+      # Unlike __atomic_compare_exchange_n these take `oldval` *by value*, while
+      # :atomic_cas — which owes its shape to that builtin — reads the expected
+      # value from memory and writes back through the same pointer on the failing
+      # path. The gap is closed by giving the comparison a private stack slot:
+      # `oldval` is stored into a fresh object, the object's address is handed to
+      # :atomic_cas, and the slot is read back afterwards.
+      #
+      # That read-back is precisely the "value actually read" the value form must
+      # return, in both outcomes: on failure :atomic_cas has overwritten the slot
+      # with what it found, and on success the value found is by definition the
+      # `oldval` still sitting there. The slot is fresh, so it cannot alias the
+      # atomic object and the aliasing case the write-back is guarded against
+      # never arises here.
+      def gen_sync_compare_and_swap(node, ptr, value_type, name)
+        oldval = gen_atomic_operand(node.args[1], value_type, name)
+        newval = gen_atomic_operand(node.args[2], value_type, name)
+        expected = new_vreg
+        emit(:object_addr, dst: expected, a: new_object(value_type.size))
+        emit(:store, a: expected, b: oldval, size: value_type.size)
+        swapped = new_vreg
+        emit(:atomic_cas, dst: swapped, a: ptr, b: [expected, newval], size: value_type.size)
+        return [swapped, Type::Bool] if node.kind == :bool_compare_and_swap
+
+        found = new_vreg
+        emit(:load, dst: found, a: expected, size: value_type.size)
+        [found, value_type]
       end
 
       # A value operand (the one stored, added, or exchanged in): evaluated and
@@ -3083,12 +3284,34 @@ module Rubycc
       # missing member, a subscript of a non-array, or a bit-field target — is
       # reported at the token the evaluator flags, with its specific wording.
       def gen_offsetof(node)
-        offset = Front::ConstantEvaluator.evaluate(node)
+        offset, terms = Front::ConstantEvaluator.offsetof_plan(node)
         dst = new_vreg
         emit(:const, dst: dst, a: offset)
-        [dst, Type::ULong]
+        return [dst, Type::ULong] if terms.empty?
+
+        [sum_offsetof_terms(dst, terms), Type::ULong]
       rescue Front::ConstantEvaluator::OffsetofError => e
         error_at(e.token, e.detail)
+      end
+
+      # Adds the run-time part of an offsetof designator to the constant part
+      # already in `base`: one "index * element size" per subscript whose index
+      # is not a constant expression, each lowered and scaled exactly as an
+      # ordinary subscript's is. The designator names no object, so the indices
+      # are the only thing evaluated — nothing is loaded and no aggregate is
+      # materialized, just as in the all-constant case.
+      def sum_offsetof_terms(base, terms)
+        terms.each do |term|
+          index, index_type = gen_value(term.index)
+          unless index_type.integer?
+            error_at(term.index.token, "array subscript is not an integer")
+          end
+          scaled = scale_index(index, index_type, term.scale)
+          total = new_vreg
+          emit(:add, dst: total, a: base, b: scaled, size: 8)
+          base = total
+        end
+        base
       end
 
       # A cast "( type-name ) operand". The destination type steers the whole
@@ -3153,7 +3376,8 @@ module Rubycc
         object_id = new_object(type.size)
         base = new_vreg
         emit(:object_addr, dst: base, a: object_id)
-        resolved = Front::InitializerResolver.resolve(type, node.initializer)
+        resolved = Front::InitializerResolver.resolve(type, node.initializer,
+                                                      type_of: method(:initializer_expression_type))
         lower_resolved_init(base, resolved.type, resolved.entries)
         [base, resolved.type]
       end
@@ -3425,19 +3649,29 @@ module Rubycc
       end
 
       # Computes the address of "e[i]" — the lvalue shared by subscript reads
-      # and writes and by "&e[i]". The target decays to a pointer (an array
+      # and writes and by "&e[i]". The pointer operand decays first (an array
       # becomes a pointer to its first element); the int index is scaled by the
       # element size and added, exactly like "*(e + i)" (rejected up front when
       # the element type is void, since there is no size to scale by). Returns
       # [address_vreg, element_type].
       def gen_element_address(node)
-        base, base_type = gen_value(node.target)
+        # Both operands are lowered in the order written, before either is
+        # assigned a role: 6.5.2.1p2 defines "E1[E2]" as "*((E1)+(E2))" and that
+        # addition commutes, so the pointer may stand on either side and only
+        # the operand *types* say which is which.
+        left, left_type = gen_value(node.target)
+        right, right_type = gen_value(node.index)
+        base, base_type, index, index_type =
+          if left_type.pointer?
+            [left, left_type, right, right_type]
+          else
+            [right, right_type, left, left_type]
+          end
         element_type = subscript_element_type(base_type, node.token)
         error_at(node.token, "invalid use of void pointer") if element_type.void?
         # The element's size scales the index, so an incomplete struct element
         # (its width unknown) is rejected before it reaches #scale_index.
         require_complete(element_type, node.token)
-        index, index_type = gen_value(node.index)
         unless index_type.integer?
           error_at(node.token, "array subscript is not an integer")
         end
@@ -5400,6 +5634,20 @@ module Rubycc
         base_type.target
       end
 
+      # The decayed type of the *pointer* operand of a subscript, for the paths
+      # that only need the type ("sizeof a[i]", "&a[i]"). "E1[E2]" is
+      # "*((E1)+(E2))" (6.5.2.1p2), an addition that commutes, so the index may
+      # be written on the left — "0[x]", the spelling upb's ARRAY_SIZE macro
+      # uses. The target is looked at first, which is the only side an ordinary
+      # subscript needs, and the index only when the target turns out not to be
+      # the pointer one.
+      def subscript_pointer_type(node)
+        target_type = decay(static_type(node.target))
+        return target_type if target_type.pointer?
+
+        decay(static_type(node.index))
+      end
+
       # sizeof measures the operand's type without evaluating it. A bare array
       # variable keeps its array type (no decay), so "sizeof a" is the whole
       # array; a string literal is likewise measured as its char[N+1] array
@@ -5432,6 +5680,21 @@ module Rubycc
         end
       end
 
+      # The `type_of` hook the initializer resolver borrows to decide whether an
+      # item is a single expression initializing a whole struct/union subobject
+      # (6.7.9p13) or the next scalar brace elision drops into it. It is
+      # #static_type, which emits no code, with one difference: a form the
+      # inference does not cover, or a name it cannot resolve, answers nil
+      # instead of raising. The item is lowered for real afterwards, so a
+      # genuine "undeclared variable" or "implicit declaration" is reported
+      # there, by the path that has the right diagnostic for it; here it only
+      # means "type unknown", which leaves the item on the brace-elision path.
+      def initializer_expression_type(node)
+        static_type(node)
+      rescue CompileError, RuntimeError
+        nil
+      end
+
       # Infers an expression's rvalue type without emitting any code, applying
       # the same rules (and array-to-pointer decay) as #gen_expr. Used only to
       # resolve a sizeof operand's type.
@@ -5458,10 +5721,11 @@ module Rubycc
             Type::Pointer.new(function_type_of(sig))
           end
         when Front::AST::Subscript
-          # The target decays before it is indexed, so a nested subscript whose
-          # target is itself an array row ("a[i]" of a multidimensional array)
-          # decays that row to a pointer before the outer "[j]" indexes it.
-          subscript_element_type(decay(static_type(node.target)), node.token)
+          # The pointer operand decays before it is indexed, so a nested
+          # subscript whose target is itself an array row ("a[i]" of a
+          # multidimensional array) decays that row to a pointer before the
+          # outer "[j]" indexes it.
+          subscript_element_type(subscript_pointer_type(node), node.token)
         when Front::AST::MemberAccess
           member = static_member(node)
           decay(member.type)
@@ -5494,6 +5758,8 @@ module Rubycc
           Type::Void
         when Front::AST::BuiltinAtomic
           static_atomic_type(node)
+        when Front::AST::BuiltinSync
+          static_sync_type(node)
         when Front::AST::BuiltinAlloca
           # "__builtin_alloca(n)" yields a "void *" (see #gen_builtin_alloca), the
           # type CRuby's RB_ALLOCV macro relies on when it picks between the
@@ -5518,6 +5784,27 @@ module Rubycc
         when :fence then Type::Void
         when :store then Type::Void
         when :compare_exchange then Type::Bool
+        else
+          type = decay(static_type(node.args.first))
+          unless type.pointer?
+            error_at(node.args.first.token,
+                     "first argument to '#{node.token.value}' is not a pointer")
+          end
+
+          type.target
+        end
+      end
+
+      # The type of a __sync_* builtin without emitting code, mirroring
+      # #gen_builtin_sync: the barrier and the lock release are void, the boolean
+      # compare-and-swap is _Bool, and every other form — including
+      # __sync_val_compare_and_swap — takes the type of the object its first
+      # argument points at. As in #static_atomic_type only the pointer shape is
+      # checked; the operand validation belongs to the lowering.
+      def static_sync_type(node)
+        case node.kind
+        when :fence, :release then Type::Void
+        when :bool_compare_and_swap then Type::Bool
         else
           type = decay(static_type(node.args.first))
           unless type.pointer?
@@ -5652,7 +5939,7 @@ module Rubycc
 
           Type::Pointer.new(local.type)
         elsif operand.is_a?(Front::AST::Subscript)
-          Type::Pointer.new(subscript_element_type(static_type(operand.target), operand.token))
+          Type::Pointer.new(subscript_element_type(subscript_pointer_type(operand), operand.token))
         elsif operand.is_a?(Front::AST::MemberAccess)
           Type::Pointer.new(static_member(operand).type)
         elsif operand.is_a?(Front::AST::Unary) && operand.op == :deref

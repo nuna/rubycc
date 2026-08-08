@@ -221,8 +221,8 @@ module Rubycc
       # builtins rubycc's front end actually recognizes — the varargs intrinsics,
       # the branch-prediction hint, the stack allocator, offsetof, the
       # constant/choose folds, the count-leading/trailing-zero scans, the
-      # unreachable hint, memcpy, the three overflow-checked arithmetic forms
-      # and the nine __atomic_* forms. Every other
+      # unreachable hint, memcpy, the three overflow-checked arithmetic forms,
+      # the nine __atomic_* forms and the ten legacy __sync_* forms. Every other
       # builtin query is false, so a header that guards a fallback behind
       # __has_builtin (e.g. json's bswap path) takes the fallback for one rubycc
       # does not provide. Kept in sync with the parser's builtin keywords. Kept
@@ -238,7 +238,13 @@ module Rubycc
                           __atomic_compare_exchange_n
                           __atomic_fetch_add __atomic_fetch_sub
                           __atomic_add_fetch __atomic_sub_fetch
-                          __atomic_or_fetch __atomic_thread_fence].to_h { |name| [name, true] }.freeze
+                          __atomic_or_fetch __atomic_thread_fence
+                          __sync_fetch_and_add __sync_fetch_and_sub
+                          __sync_add_and_fetch __sync_sub_and_fetch
+                          __sync_or_and_fetch __sync_lock_test_and_set
+                          __sync_lock_release __sync_synchronize
+                          __sync_bool_compare_and_swap
+                          __sync_val_compare_and_swap].to_h { |name| [name, true] }.freeze
 
       # The platform macros gcc keeps predefined even under strict ISO C
       # (-std=c11): only the reserved forms (a leading underscore followed by

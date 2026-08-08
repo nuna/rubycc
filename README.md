@@ -106,10 +106,19 @@ Measured, not guessed — each item links to the record that establishes it.
   stack. Against `gcc -O2` the slowdown reaches 7.65x on tight loops (1.2x–2.6x on
   branch- and call-bound code); against `gcc -O0` it is 1.1x–2.9x. See
   [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
-- **C11 atomics are partial.** `_Atomic` objects and the atomic load/store/RMW
-  operations are not implemented, but the bundled `<stdatomic.h>` provides the
-  memory-order constants and `atomic_thread_fence`, lowered to the target fence
-  instruction. See `docs/C11-COVERAGE.md`.
+- **C11 atomics are partial.** `_Atomic` is accepted in both spellings (`_Atomic int`,
+  `_Atomic(int)`) and compiles to the unqualified type's layout and ABI — measured
+  against gcc — for integer, floating and pointer types of 1, 2, 4 or 8 bytes; an
+  aggregate, a 16-byte scalar, an array or a function under `_Atomic` is a compile
+  error rather than a silently non-atomic object. The bundled `<stdatomic.h>` provides
+  the memory-order constants, `atomic_thread_fence`/`atomic_signal_fence`,
+  `atomic_init`, and the load/store/exchange/compare-exchange/fetch-add/fetch-sub
+  generic macros, all lowered to locked machine sequences at 4 and 8 bytes.
+  What is missing: `atomic_fetch_or`/`_and`/`_xor`, `atomic_flag`,
+  `atomic_is_lock_free`, and the implicit sequential consistency C11 gives a plain
+  read or write of an `_Atomic` object (such an access compiles to an ordinary,
+  still-indivisible, instruction — use the macros where the ordering matters).
+  See `docs/C11-COVERAGE.md`.
 - **C23 checked arithmetic is partial.** The bundled `<stdckdint.h>` maps `ckd_add`,
   `ckd_sub`, and `ckd_mul` to rubycc's overflow builtins; the rest of C23 is not implemented.
 - **`<regex.h>` is a minimal ABI header.** It provides the glibc-compatible `regex_t`/

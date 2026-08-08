@@ -35,7 +35,7 @@ module Rubycc
                     enum typedef static extern const volatile inline _Noreturn register auto
                     return if else while do for break continue
                     switch case default goto sizeof
-                    _Static_assert _Alignof __int128
+                    _Static_assert _Alignof _Alignas _Atomic __int128
                     __builtin_va_start __builtin_va_arg __builtin_va_end __builtin_va_copy
                     __builtin_expect __builtin_alloca __builtin_offsetof
                     __builtin_constant_p __builtin_choose_expr
@@ -47,6 +47,10 @@ module Rubycc
                     __atomic_fetch_add __atomic_fetch_sub
                     __atomic_add_fetch __atomic_sub_fetch __atomic_or_fetch
                     __atomic_thread_fence
+                    __sync_fetch_and_add __sync_fetch_and_sub
+                    __sync_add_and_fetch __sync_sub_and_fetch __sync_or_and_fetch
+                    __sync_lock_test_and_set __sync_lock_release __sync_synchronize
+                    __sync_bool_compare_and_swap __sync_val_compare_and_swap
                     __asm__
                     __attribute__ __extension__].freeze
 
@@ -71,14 +75,18 @@ module Rubycc
         "__inline" => "inline", "__inline__" => "inline"
       }.freeze
 
-      # Escape sequences shared by character constants and string literals,
-      # mapping the letter after the backslash to the byte value it denotes.
-      # "\x" (hexadecimal, any number of digits) and octal ("\ooo", 1-3 digits,
-      # "0" included) are handled separately in #read_escaped_byte since their
-      # value comes from digits rather than a fixed table lookup.
+      # The eleven simple escape sequences of 6.4.4.4p1, shared by character
+      # constants and string literals, mapping the character after the backslash
+      # to the byte value it denotes. "\?" is the one whose escaped and plain
+      # spellings mean the same byte ('?'): it exists only so a source line can
+      # avoid accidentally spelling a trigraph, and gcc accepts it in both
+      # constructs. "\x" (hexadecimal, any number of digits) and octal ("\ooo",
+      # 1-3 digits, "0" included) are handled separately in #read_escaped_byte
+      # since their value comes from digits rather than a fixed table lookup.
       ESCAPES = {
         "n" => 10, "t" => 9, "r" => 13, "\\" => 92,
-        "'" => 39, "\"" => 34, "a" => 7, "b" => 8, "f" => 12, "v" => 11
+        "'" => 39, "\"" => 34, "?" => 63,
+        "a" => 7, "b" => 8, "f" => 12, "v" => 11
       }.freeze
 
       # Three-character punctuators, matched before the shorter lists so the

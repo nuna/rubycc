@@ -88,12 +88,19 @@ struct linger {
 #define AF_LOCAL  AF_UNIX
 #define AF_INET   2
 #define AF_INET6  10
+/* AF_NETLINK is the kernel-configuration socket family. It is here because a
+   corpus gem asked for it by name (raindrops' linux_inet_diag.c opens one to
+   read TCP listen queues) and for no other reason: the families are a numbered
+   space with dozens of members, and adding the ones nobody has reached for
+   would be values nobody has measured. */
+#define AF_NETLINK 16
 
 #define PF_UNSPEC AF_UNSPEC
 #define PF_UNIX   AF_UNIX
 #define PF_LOCAL  AF_UNIX
 #define PF_INET   AF_INET
 #define PF_INET6  AF_INET6
+#define PF_NETLINK AF_NETLINK
 
 /* Socket types. SOCK_CLOEXEC/SOCK_NONBLOCK are Linux extensions that may be
    OR'd into the type argument of socket()/socketpair(). */
@@ -148,6 +155,13 @@ int     getsockopt(int __fd, int __level, int __optname, void *__optval, socklen
 int     setsockopt(int __fd, int __level, int __optname, const void *__optval, socklen_t __optlen);
 int     listen(int __fd, int __n);
 int     accept(int __fd, struct sockaddr *__addr, socklen_t *__addr_len);
+/* accept4 is the Linux extension that folds SOCK_CLOEXEC / SOCK_NONBLOCK into
+   the accept itself, closing the race a separate fcntl leaves open. glibc gates
+   it behind _GNU_SOURCE; this header exposes SOCK_CLOEXEC unconditionally
+   already (see the socket types above), so the declaration follows the same
+   rule rather than growing a feature-test macro of its own. kgio's accept.c
+   calls it whenever its extconf found it. */
+int     accept4(int __fd, struct sockaddr *__addr, socklen_t *__addr_len, int __flags);
 int     shutdown(int __fd, int __how);
 
 #endif /* _RUBYCC_SYS_SOCKET_H */

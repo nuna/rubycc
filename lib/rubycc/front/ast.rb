@@ -75,8 +75,9 @@ module Rubycc
       # top-level const-qualified (the only qualification M1 tracks), which the
       # generator rejects writes against. `storage` records the storage-class
       # specifier (nil, :static or :extern) for Phase B; the generator does not
-      # consume it yet.
-      VariableDecl = Data.define(:name, :type, :initializer, :token, :const, :storage)
+      # consume it yet. `alignas` is the boundary an _Alignas specifier asked for
+      # (6.7.5), or nil when the object takes its type's own alignment.
+      VariableDecl = Data.define(:name, :type, :initializer, :token, :const, :storage, :alignas)
 
       # A file-scope (global) variable declaration. `type` is the declared
       # Rubycc::Type (int, char, a pointer, a one-dimensional array or a
@@ -92,8 +93,10 @@ module Rubycc
       # in .bss. `const` and `storage` carry the same top-level const flag and
       # storage-class specifier (nil/:static/:extern) as VariableDecl; the
       # generator diagnoses writes against a const global but does not yet act
-      # on the storage class (Phase B).
-      GlobalDecl = Data.define(:name, :type, :initializer_value, :initializer_node, :token, :const, :storage)
+      # on the storage class (Phase B). `alignas` carries the same _Alignas
+      # boundary VariableDecl does.
+      GlobalDecl = Data.define(:name, :type, :initializer_value, :initializer_node, :token, :const, :storage,
+                               :alignas)
 
       # A brace-enclosed initializer "{ ... }" (ISO C 6.7.9). `items` is the
       # ordered list of InitItem, one per comma-separated element (a trailing
@@ -173,17 +176,49 @@ module Rubycc
       # diagnosed as unsupported by the generator. `token` is the opening "(".
       CompoundLiteral = Data.define(:type, :initializer, :token)
 
-      # A null pointer constant in the forms this front end can recognize here:
-      # an integer literal whose value is 0 (which also covers a character
-      # constant like '\0', since the lexer lowers it to an integer 0), or that
-      # literal cast to void *. A null pointer constant converts implicitly to
-      # any pointer type in an assignment, an initializer, an argument, a
-      # return, an "=="/"!=" comparison and the arms of "?:".
+      # A null pointer constant (ISO C11 6.3.2.3p3): "An integer constant
+      # expression with the value 0, or such an expression cast to type
+      # void *, is called a null pointer constant." #integer_constant_zero?
+      # below recognizes the first alternative on its own — that is exactly
+      # ConstantEvaluator's notion of an expression that folds to the integer
+      # 0, which already covers a plain integer literal 0, a character
+      # constant like '\0' (the lexer lowers it to an IntLit 0), an
+      # enumeration constant of value 0 (the parser folds a reference to one
+      # into an IntLit 0 on the spot, see #parse_primary_expression), a purely
+      # arithmetic fold such as "1 - 1", and — because 6.6p6 allows a cast to
+      # an integer type inside an integer constant expression — any of those
+      # cast to another integer type, such as "(unsigned long)0" or
+      # "(char)0". A cast to a *floating* type is never allowed in an integer
+      # constant expression (6.6p6 restricts a constant-expression cast to
+      # converting to an integer type, outside sizeof/alignof/_Alignof), so
+      # "(double)0" is correctly excluded here — matching the "invalid
+      # operands" gcc gives comparing it against a pointer, rather than the
+      # silent accept a floating cast would otherwise get. The second
+      # alternative — that whole expression additionally cast to "void *" — is
+      # the explicit Cast case below, since ConstantEvaluator itself only
+      # folds a cast to an *integer* destination.
+      #
+      # A null pointer constant converts implicitly to any pointer type in an
+      # assignment, an initializer, an argument, a return, an "=="/"!="
+      # comparison and the arms of "?:".
       def self.null_pointer_constant?(node)
-        return true if node.is_a?(IntLit) && node.value.zero?
+        return true if integer_constant_zero?(node)
 
         node.is_a?(Cast) && node.type.pointer? && node.type.target.void? &&
-          node.operand.is_a?(IntLit) && node.operand.value.zero?
+          integer_constant_zero?(node.operand)
+      end
+
+      # Whether `node` is an integer constant expression (6.6) whose value is
+      # 0, via the shared ConstantEvaluator — not just a syntactic IntLit, so
+      # a foldable expression (an enum constant, "1 - 1", a cast to another
+      # integer type) is recognized too. Not a constant expression at all (a
+      # variable, a call, ...) or a division by a folded-zero divisor rescues
+      # to false rather than propagating, since this is a yes/no predicate,
+      # not a context that should surface either as a diagnostic.
+      def self.integer_constant_zero?(node)
+        ConstantEvaluator.evaluate(node).zero?
+      rescue ConstantEvaluator::NotConstant, ConstantEvaluator::DivisionByZero
+        false
       end
 
       # Simple assignment `target = value`. `target` is a VariableRef or a
@@ -396,6 +431,22 @@ module Rubycc
       # folding here.
       BuiltinAtomic = Data.define(:kind, :args, :token)
 
+      # One of gcc's legacy __sync_* builtins. `kind` names the operation —
+      # :fetch_add, :fetch_sub, :add_fetch, :sub_fetch, :or_fetch, :exchange,
+      # :release, :fence, :bool_compare_and_swap or :val_compare_and_swap — and
+      # `args` holds the argument expressions exactly as written. As with
+      # BuiltinAtomic the parser checks only the argument *count*; the operand
+      # types and the width restriction need resolved types and belong to the
+      # generator. `token` is the builtin keyword.
+      #
+      # This is a node of its own rather than a flag on BuiltinAtomic because the
+      # two families' argument *layouts* differ: the __sync_* forms are full
+      # barriers by definition and so carry no memory-order argument at all,
+      # while the compare-and-swap pair takes its expected value directly instead
+      # of through a pointer. Sharing a node would invite lowering code written
+      # for one layout to read the other's arguments by index.
+      BuiltinSync = Data.define(:kind, :args, :token)
+
       # "__builtin_unreachable ()": marks a point control never reaches, typed
       # void. rubycc performs no optimization, so it lowers to no code at all —
       # its only role is to let constructs like CRuby's UNREACHABLE_RETURN
@@ -409,7 +460,26 @@ module Rubycc
       # object is top-level const-qualified ("int f(const int x)"), computed
       # after the array/function-to-pointer adjustment, so the generator can
       # reject writes to it.
-      Parameter = Data.define(:name, :type, :token, :const)
+      #
+      # `incoming_type` is the type the *caller* hands over when that differs
+      # from the declared one, and nil (the common case) when the two coincide.
+      # Only an old-style (identifier-list) definition can separate them: such a
+      # function has no prototype, so its arguments arrive default-argument
+      # promoted (6.9.1p10 with 6.5.2.2p6) — a `float` parameter is passed a
+      # `double`, a `char`/`short`/`_Bool` parameter an `int` — and the body
+      # still sees the narrow object it declared. #abi_type is what the calling
+      # convention and the function's own type are built from; `type` is what
+      # the body reads and writes.
+      Parameter = Data.define(:name, :type, :token, :const, :incoming_type) do
+        def initialize(name:, type:, token:, const:, incoming_type: nil)
+          super
+        end
+
+        # The type this parameter occupies an ABI slot as.
+        def abi_type
+          incoming_type || type
+        end
+      end
 
       # A function prototype (a bare declaration with no body), e.g.
       # "int f(int a, int b);". `return_type` is the declared Rubycc::Type

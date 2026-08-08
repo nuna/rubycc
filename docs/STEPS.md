@@ -8084,9 +8084,995 @@ Fiddle の `Handle#file_name` が linker script を指すケースで nil にな
 90% の再開条件は、socket/PTY と依存 gem を備えた実行環境でこの 12 件を再走し、
 少なくとも 9 件を gem 自身の全テスト合格として確認することである。
 
+## corpus-denominator-1 — 上流にテストが無い gem を分母から外す(M5 H4)
+
+R10 は「コーパスの 90% 以上が **gem 自身のテストスイートに合格**」を目標にしている。
+ところが分母に **`fcntl`** が入っていた。**上流にテストスイートが無い**ので、
+証拠水準 (d) が**原理的に作れない** gem である(Step 157 の実測)。
+
+**分母に「検証不能なもの」が入っていると、90% が rubycc の能力ではなく
+コーパスの作り方で決まってしまう。**
+
+### 機械判定にできなかった
+
+センサスが展開するのは `.gem` パッケージだが、**コーパスのどの gem も
+`.gem` にテストを同梱していない**(だから `verify_gem_tests.rb` は上流 tarball を
+別途取りに行く)。「`.gem` に test があるか」で判定すると **json や msgpack まで除外される**。
+
+そこで **curated リスト側の宣言**にした。`test/corpus/gems.rb` に
+`upstream_tests: false` を書き、センサスがそれを読んで `excluded` にする。
+**人が上流を見れば誰でも確認できる事実**なので、宣言でも検証可能性は落ちない。
+
+### 「通らないものを外す」に使えない形にした
+
+ここが設計上いちばん重要なところである。**汎用の `excluded:` にはしなかった。**
+何でも除外できる逃げ道があると、**90% は「都合の悪いものを外した結果」になりうる**。
+
+フィールド名を `upstream_tests` に限定し、説明コメントに
+**「失敗するから」「テスト環境が無いから」は理由にできない**と明記した。
+
+### R10 の実測値がどこにも出ていなかった
+
+**90% という目標に対する現在値が、生成物のどこにも書かれていなかった**
+(この分析でも手で計算した)。センサスに節を足して、
+**分母・分子・合格率・90% までの残り件数**を出すようにした。
+
+| R10 ゲート通過 | 検証済み | 合格率 | 90% まで |
+|---|---|---|---|
+| 36 | 25 | **69.4%** | **8 件** |
+
+Step 188 の決定性は守っている(日時や実行環境を新しい節に入れていない)。
+再生成を 2 回行って diff が空になることを確認済み。
+
+---
+
+## atomic-type-1 — `_Atomic` 型指定子を実装する(M5 H4)
+
+google-protobuf が `_Atomic` 未実装だけで止まっていた(Step 214)ので着手した。
+
+### 想定よりずっと小さい仕事だった
+
+着手前に**測った**ところ、**アトミック演算そのものは既に実装済みで gcc と完全一致**していた
+(`__atomic_load_n` / `store_n` / `fetch_add` / `exchange_n` / `compare_exchange_n` が
+9 形すべてパーサに登録済み)。足りないのは **`_Atomic` 型指定子**と
+**ヘッダの総称マクロ**の 2 つだけだった。
+
+**「C11 アトミックの実装」と一括りにしていたら、既にあるものを作り直していた。**
+
+### レイアウトは実測してから同一と決めた
+
+`_Atomic T` を `T` と同じレイアウトとして扱ってよいかを、gcc と突き合わせた:
+
+- **スカラは全て一致**(1/2/4/8/16 バイトのいずれも、サイズ・アラインメントとも)
+- **struct は一致しない** — サイズが 2 のべき乗の struct は**アラインメントが引き上げられる**
+  (`struct{char a,b;}` が align 1 → **2**、16 バイト struct が align 8 → **16**)
+
+**仮定で進めていたら struct で静かに壊れていた。**
+
+### 受け付ける範囲を決めて、範囲外は診断で落とす
+
+**受理**: 整数・浮動小数・ポインタで幅が 1/2/4/8 バイト。
+**拒否**: struct / union、16 バイトスカラ、配列、関数型。
+
+16 バイトを拒否するのは、rubycc が出す ISA ベースライン
+(cmpxchg16b 無しの x86-64、LSE 無しの armv8-a)に**単一命令が無い**ためである。
+レイアウトは一致するが**アトミックにできない**ので、受けてはいけない。
+
+### 提供しなかったものが、この作業のいちばんの判断
+
+- **`atomic_fetch_or` / `_and` / `_xor` を提供しない。** 既存の組み込みは
+  `__atomic_or_fetch`(**新しい値**を返す)であって `__atomic_fetch_or`(**古い値**を返す)ではない。
+  **OR は非可逆なので新しい値から古い値を復元できない。**
+  名前だけ生やせば**誤った値を返す**ので、出さない方が正しい。
+- **`atomic_flag` を提供しない。** 1 バイトの test-and-set 組み込みが無く、
+  幅を変えると gcc の `sizeof(atomic_flag) == 1` と ABI が食い違う。
+- **`ATOMIC_*_LOCK_FREE` は gcc と意図的に値を変えた。** gcc は全て 2 だが、
+  rubycc は拒否する幅を **0**(ロックフリーでない)と答える。
+  **分岐する側が「ロックフリーでない」枝に落ちる**ので安全側である。
+
+### 残る制限も書いた
+
+`_Atomic` オブジェクトを**通常の演算子**で読み書きしても、C11 の seq_cst 順序は付かない。
+受理幅では自然整列した単一命令になるので**不可分性は保たれる**が、順序が要るなら
+マクロを使う必要がある。**黙って落とさず README とヘッダに明記した。**
+
+### それでも google-protobuf は通らない
+
+`ruby-upb.c` を実際にコンパイルして、**次の 3 件を実測**した(いずれも gcc は通る):
+
+1. **`'\?'` 単純エスケープ**が `LexemeReader::ESCAPES` に無い(C11 6.4.4.4)
+2. **flexible array member を持つ struct のファイルスコープ初期化**(gcc の拡張)
+3. **`jmp_buf` と `sigjmp_buf` の型不一致** — 同梱 `setjmp.h` が別々の無名 union で
+   宣言しているが、glibc は**同一の `struct __jmp_buf_tag[1]`** にしている
+
+**「ブロッカーを 1 つ潰したら通る」ではなかった。** 測って初めて分かったことなので、
+そのまま次の作業対象として記録する。
+
+---
+
+## atomic-type-2 — `ruby-upb.c` が通るまで詰める(M5 H4)
+
+atomic-type-1 で `_Atomic` を入れたが google-protobuf は通らなかった。
+**出てくるブロッカーを 1 件ずつ、最小再現 → gcc 実測 → 実装 → 差分テスト → 再コンパイル
+で潰した。** 結果、`ruby-upb.c` を含む拡張の**全ソースがコンパイルできる**ようになった。
+
+| # | ブロッカー |
+|---|---|
+| 1 | `'\?'` 単純エスケープが無い(C11 6.4.4.4) |
+| 2 | flexible array member を持つ struct のファイルスコープ初期化(gcc 拡張) |
+| 3 | `jmp_buf` と `sigjmp_buf` が**別々の無名 union** で型が食い違う |
+| 4 | 集約サブオブジェクトへの**単一式**初期化子(`.str = f()`) |
+| 5 | `_Alignas` 未実装 |
+| 6 | **交換した添字** `0[x]`(upb の `ARRAY_SIZE` が使う) |
+| 7 | `__builtin_offsetof` の**非定数添字**(upb の `UPB_SIZEOF_FLEX`) |
+
+**7 件。「1 つ潰せば通る」ではなかった。** 測らずに見積もっていたら大きく外していた。
+
+### `jmp_buf` — 同じレイアウトでも「同じ型」ではなかった
+
+`jmp_buf` と `sigjmp_buf` を**別々の無名 union** で宣言していた。
+C は無名 union のたびに**別の型**を作るので、`jmp_buf` を `siglongjmp()` に渡すと型エラーになる。
+glibc は**ひとつの共有タグ**にしているので通る。
+
+**サイズが同じでも型が同じとは限らない**という形の欠陥で、
+`sizeof` を検査していた既存の ABI ハーネスでは**原理的に捕まらなかった**。
+そこで **両方の関数族に互いのバッファを渡す** snippet を検査に足した — 幅ではなく**型の同一性**を固定するために。
+
+### 私が入れた変更が回帰を作った
+
+4 番(`.str = f()`)の最初の実装で、`Call` / `VariableRef` / `Cast` を**無条件に**
+集約式として扱った。**これは誤りだった。**
+
+```c
+pt a[] = { 1, 2, 3, f(), 9, 10 };   /* gcc: 2 要素 / rubycc: 3 要素 */
+```
+
+波括弧省略中の `f()` は**内側のスカラが食うべき値**なのに、サブオブジェクト丸ごとを
+食っていた。**エラーにならず、要素数が静かに変わる**形の壊れ方である。
+
+分かれ目は式の種類ではなく **指示子の有無**だった:
+
+- **指示子がある** — `.str = f()` は「どのメンバを初期化するか」が確定しており、省略の曖昧さが無い
+- **指示子が無い** — 省略の途中なので、スカラとして読むのが正しい
+
+`designated` を通して分けた。**回帰の方向(省略時)にもテストを足した** — 直した側だけ
+テストすると、次に同じ誤りをしたとき気づけないからである。
+
+### 設計判断: 自動変数の過大整列は拒否した
+
+`_Alignas` で 16 バイトを超える整列を**自動変数**に要求されたら診断で落とす。
+両バックエンドともフレーム基準は 16 バイトで、それを超えるにはランタイム再整列の
+プロローグが要る(どちらも出さない)。**黙って弱い境界に置くより落とす。**
+upb は静的記憶域しか使わないので影響しない。
+
+### まだ残っているもの
+
+**メンバに付いた `__attribute__((aligned(N)))` は今も捨てられている**
+(実測: gcc は `_Alignof` 8、rubycc は 4)。`_Alignas` の配線ができたので数行で繋がるが、
+`packed` との組み合わせと引数なし形の実測が別途要る。
+**upb は `__GNUC__` を見ないのでブロッカーではない**ため、1 件 1 件の方針に従って残した。
+
+---
+
+## atomic-type-3 — `bundle exec` 下で検証ツールが動かなくなっていた(M5 H4)
+
+`bundle exec ruby tools/verify_gem_tests.rb nio4r` が **scratch GEM_HOME を作る前に**落ちた:
+
+```
+FAILED: gem build rubycc.gemspec --output /tmp/rubycc_verify_gem_tests/rubycc.gem
+Could not find rake-13.4.2, minitest-6.0.6, ... in locally installed gems (Bundler::GemNotFound)
+```
+
+`CLEARED_ENV` は `RUBYOPT` も `BUNDLE_*` も消していたのに、**bundler が子プロセスで
+復活していた**。犯人は **`BUNDLER_SETUP`** である。
+
+```ruby
+# rubygems.rb の末尾(3.4.5)
+require ENV["BUNDLER_SETUP"] if ENV["BUNDLER_SETUP"] && !defined?(Bundler)
+```
+
+`bundle exec` がこれに `bundler/setup` の絶対パスを入れる。すると **gem_prelude →
+rubygems.rb → bundler/setup** の順で、`RUBYOPT` を経由せずに bundler へ再突入する。
+bundler はチェックアウトの Gemfile を **scratch GEM_HOME に対して**解決しようとし、
+当然 gem が無いので死ぬ。**環境変数を消す方式の穴**で、消し漏らした 1 個が
+別経路(gem_prelude)から入ってきた形である。`BUNDLER_SETUP` を `CLEARED_ENV` に足した。
+
+### 実行ビットの件は「直さず、書き方を直した」
+
+`bundle exec tools/verify_gem_tests.rb` は **`not executable`** で拒否される。
+`tools/` の 5 本はすべて **git 上 100644**(shebang はあるが実行ビットは追跡していない)
+で、これはリポジトリの一貫した状態なので**そちらが正**とした。誤っていたのは
+**ヘッダの Usage が `ruby` を省いていたこと**である(CI も STEPS.md も
+`ruby tools/...` と書いていた)。`verify_gem_tests.rb` と `m2_acceptance.rb` の
+Usage を実態に合わせ、**なぜ `ruby` が要るのか**を併記した。
+
+### 真因は WSL2 ではなく `core.filemode = false` だった
+
+実行ビットは Step 174・198 でも踏んでいる。**3 回目なので原因を測った。**
+「WSL2 だから実行ビットが付かない」は**誤り**である:
+
+| 測ったこと | 結果 |
+|---|---|
+| チェックアウトの FS | `/dev/sdd` **ext4**(WSL2 の VHD 内。`/mnt/c` の DrvFs ではない) |
+| 作業ツリーで `chmod +x` | **効く**(リポジトリ直下に 755 のファイルを作れる) |
+| `core.filemode` | **`.git/config` に `false`**(グローバルではなくリポジトリ局所) |
+
+`core.filemode = false` は **git に作業ツリーのモードを見せなくする**。したがって
+`chmod +x` しても **index は 100644 のまま**で、`git status` は何も言わない。
+**手元では実行できるのに、CI のチェックアウトでは実行できない**という
+Step 174・198 そのものの形が、ここから出る。実際に食い違っていた:
+
+```
+.claude/agents/code-explore.md          worktree=755  index=100644
+references/role-based-model-selection.md worktree=755  index=100644
+tools/collect_mkmf_corpus.rb            worktree=755  index=100644
+tools/scan_popular_gems.rb              worktree=755  index=100644
+.github/scripts/musl-suite.sh           worktree=755  index=100755  ← 正しく追跡されている
+```
+
+**`.md` に実行ビットが付いている**のは明らかに意図ではない。
+`.github/scripts/*.sh` だけが 100755 で追跡できているのは、**追加時にたまたま
+index へ入った**からで、規律があったからではない。
+
+`core.filemode` は `.git/config`(**追跡されない**)なので、設定を直しても
+**他の作業者には伝わらない**。伝わる形の防止策は別ステップに切る。
+
+---
+
+## atomic-type-4 — nio4r は環境制約が消えて通った(M5 H4)
+
+PR #19 は nio4r を **「サンドボックスの socket/PTY 制約」で 44 failures** として
+記録していた。**制約が今も有るのかを測り直した**ところ、TCP・PTY・UNIX ソケットの
+いずれも**動く**。そのまま再走させると:
+
+```
+PASS  nio4r 2.7.5  112 examples, 0 failures, 2 pending
+```
+
+**rubycc 側の変更はゼロ**である。44 failures は rubycc の欠陥ではなく、
+**測定環境の側の状態**だった。
+
+### 教訓 — 「環境が理由で落ちた」は賞味期限付きの記録である
+
+R10 の未検証リストには「環境が理由」の項目が他にもある。それらは
+**その時の環境で測った結果**でしかなく、**環境が変われば黙って古くなる**。
+今回は 1 件が 44 failures → 0 になった。**再測定を挟まずに未検証のまま数えると、
+達成済みのものを未達成として数え続ける。**
+
+同じ理由で保留していた byebug / debug も測り直したが、こちらは別の原因だった:
+
+| gem | 実測した原因 |
+|---|---|
+| byebug | 535 runs / 22 failures / 6 errors(**内容未分析**) |
+| debug | `test/unit/rr` が LoadError(**テスト依存 gem が無い**) |
+
+**socket 制約ではなかった。**「同じ理由でまとめて保留」していたものが、
+測り直すと**3 件とも別の理由**だったということである。
+
+R10 通過率は **25/36 = 69.4% → 26/36 = 72.2%**(90% には 33 件、あと 7 件)。
+
+---
+
+## atomic-type-5 — 実行ビットの食い違いを常時検査する(M5 H4)
+
+atomic-type-3 で真因が `core.filemode = false` だと分かったので、**伝わる形**にした。
+`.git/config` は追跡されないため、設定を直しても他の作業者には届かない。
+テストなら届く。
+
+`test/test_repo_file_modes.rb` は **`git ls-files -s` を読む**。
+`File.executable?` では**原理的に捕まらない** — 作業ツリーは 755 に見えるのに
+index が 100644、というのがこの欠陥そのものだからである。
+
+方針はディレクトリで割った。リポジトリが既にきれいに割れていたためである:
+
+| 群 | モード | 起動のされ方 |
+|---|---|---|
+| `exe/`・`.github/scripts/` | **100755** | コマンドとして直に起動(gem の bindir、`run:` ステップ) |
+| それ以外 | **100644** | インタプリタ経由(`ruby tools/x.rb`・`sh script.sh`) |
+
+検査は 3 本:
+
+1. 上記 2 ディレクトリの追跡ファイルが 100755 であること
+   (失敗時は `git update-index --chmod=+x <path>` をそのまま出す)
+2. **それ以外に 100755 が無い**こと — 逆方向。実際 `.claude/agents/*.md` と
+   `references/*.md` が作業ツリーで 755 になっていた(明らかに意図ではない)
+3. 100755 のファイルが `#!` で始まること
+
+**両方向で実際に落ちることを確かめた**(index を一時的に壊して実測)。
+片方向だけ確かめると、次に逆を踏んだとき気づけない。
+
+作業ツリー側の 755 も 644 に揃え、**このチェックアウトの `core.filemode` を `true` に
+戻した**(以後 `chmod +x` が `git status` に出る)。ただしこれは局所設定で、
+**共有される防止策はテストの方**である。
+
+---
+
+## atomic-type-6 — レガシー `__sync_*` を実装する(M5 H4)
+
+`RUBYCC=1 gem install unicorn` が**依存の raindrops 0.20.1** で止まっていた。
+extconf.rb:119 の "GCC 4+ atomic builtins" プローブがコンパイル+リンクできず、
+`atomic_ops.h` も無いので **abort する**(代替経路が無い)。
+
+必要なのは実測で **4 種**だった: `__sync_lock_test_and_set`・
+`__sync_bool_compare_and_swap`・`__sync_add_and_fetch`・`__sync_sub_and_fetch`。
+**kgio 2.11.4 と unicorn 本体はアトミック組み込みを 1 つも使わない**(実測)。
+
+### 範囲の決め方 — 「既存 IR 命令で意味が出せる形だけ」
+
+10 形を実装し、**新しい IR 命令は 1 つも足さなかった**。バックエンドも無変更である
+(kind の集合が `__atomic_*` と同じになるため)。
+
+対応する IR 命令が無い 7 綴り(`__sync_fetch_and_or` / `_and` / `_xor` / `_nand`、
+`__sync_and_and_fetch` / `_xor_and_fetch` / `_nand_and_fetch`)は
+**意図的に未実装のまま**にした。`ATOMIC_BUILTINS` が最初から採っている
+「黙って誤った lowering をするより undeclared identifier にする」方針の踏襲である。
+
+### `__atomic_*` と同じノードにしなかった
+
+`BuiltinAtomic` にフラグを足すのではなく **`BuiltinSync` を別ノード**にした。
+2 族は**引数のレイアウトが違う**(メモリオーダ引数が無い・CAS が期待値を値で取る)ため、
+同じノードを共有すると「`args[2]` はメモリオーダ」という前提のコードを
+**取り違えて流用しやすい**。別ノードなら構造的に起こらない。
+
+### 値で取る期待値 — 専用スタックスロットで橋渡しした
+
+`:atomic_cas` は `__atomic_compare_exchange_n` に由来する形で、期待値を**メモリから読み、
+失敗時は同じポインタへ書き戻す**。`__sync_*_compare_and_swap` は期待値を**値で**取る。
+そこで**新規スタックスロット**を取って `oldval` を書き、そのアドレスを渡し、後で読み直す。
+
+読み直した値が `val_` 形の返すべき「実際に読んだ値」に**両方の結果で**一致する:
+失敗時は `:atomic_cas` が読んだ値で上書きしており、成功時は定義上 `oldval` がそのまま残る。
+スロットは新規なのでアトミックオブジェクトと**絶対に別名にならず**、
+書き戻しの別名ガードはここでは無関係になる。
+
+### 実測して分かったこと
+
+| 項目 | 実測結果 |
+|---|---|
+| ポインタ型への加算 | **スケールされず生バイト**。`int *p` に `__sync_fetch_and_add(&p, 1)` で **1 バイト**進む |
+| `bool_` 形の結果 | **1 バイトの `_Bool`**(gcc のマニュアルは `bool` としか書かない) |
+| 末尾の余分な引数 | gcc は**本当に黙って無視する**。`__sync_add_and_fetch(&i, 1, 2, 3)` が通る |
+| `__sync_lock_release` | ポインタオブジェクトも**幅ぶんゼロ書き**して NULL にする |
+
+ポインタ加算の件は `__atomic_*` 側のコメントに同じ主張があるが、
+**引き写さずに独立の差分テストで測り直した**(`test_sync_pointer_add_is_unscaled`)。
+
+引数の**固定アリティは rubycc 側で要求する**ことにした。gcc の「余分を無視」に
+合わせても得るものが無く、綴り間違いが黙って通るだけだからである。
+
+### 計測プログラム自体の落とし穴
+
+最初の計測で `printf("%u %u\n", __sync_or_and_fetch(&u, x), u)` と書いたところ、
+gcc(右→左)と rubycc(左→右)で出力が食い違った。**アトミックのバグではなく、
+C が未規定にしている引数評価順の差**である。テストとサンプルは
+「builtin を 1 文で実行 → 次の `printf` でオブジェクトを読む」形に統一した。
+
+### 副作用として受け入れたもの
+
+10 綴りを**キーワード**にしたので、`static inline unsigned long __sync_add_and_fetch(...)`
+と**自前定義する**ソースはその分岐に入るとパースエラーになる。raindrops の場合その
+`#else` は `HAVE_GCC_ATOMIC_BUILTINS` 未定義時のみで、プローブが通る以上到達しない。
+`__atomic_*` 族が最初から持っている性質と同じである。
+
+### まだ通っていない
+
+raindrops の `raindrops.c` はコンパイルできるようになったが、
+**`linux_inet_diag.c` が `AF_NETLINK` 未定義で落ちる** — 同梱の
+`include/libc/sys/socket.h` が `AF_UNSPEC/UNIX/LOCAL/INET/INET6` の 5 つしか持たない。
+**アトミックとは無関係のヘッダギャップ**なので、1 件 1 件の方針に従って次のステップに切る。
+
+---
+
+## atomic-type-7 — unicorn がインストールできるまでヘッダを埋める(M5 H4)
+
+atomic-type-6 で `__sync_*` が通ったあと、`RUBYCC=1 gem install unicorn` を
+**1 件ずつ実測で潰した**。ブロッカーは**すべて同梱ヘッダの欠落**で、
+コンパイラ本体の変更は 1 行も要らなかった。
+
+| # | 欠落 | 要求した側 | 実測値 |
+|---|---|---|---|
+| 1 | `AF_NETLINK` / `PF_NETLINK` | raindrops `linux_inet_diag.c` | 16(両 arch 一致) |
+| 2 | `INET_ADDRSTRLEN` / `INET6_ADDRSTRLEN` | 同上 | 16 / 46 |
+| 3 | TCP 状態機械の 11 状態 | 同上 + `tcp_info.c` | 1〜11 |
+| 4 | `in6addr_any` / `in6addr_loopback` | 同上 | **マクロではなくオブジェクト** |
+| 5 | `accept4` | kgio `accept.c` | Linux 拡張の宣言 |
+| 6 | `_SC_IOV_MAX` | kgio `writev.c` | 60 |
+
+**5 番と 4 番は種類が違う。** 1〜3・6 は整数値なので実測して書けば済むが、
+
+- **`in6addr_any` は libc の実オブジェクト**である(実測: `nm -D` で
+  `V in6addr_any@@GLIBC_2.2.5`)。同梱ヘッダは `IN6ADDR_ANY_INIT` マクロしか
+  持っていなかった。raindrops は `memcmp(&in6addr_any, ...)` と**アドレスを取る**ので、
+  初期化子マクロでは代替できない。**宣言が無いとリンク時にも解決されない。**
+- **`accept4`** は `SOCK_CLOEXEC`/`SOCK_NONBLOCK` を accept 自体に畳み込む Linux 拡張で、
+  glibc は `_GNU_SOURCE` で隠す。同梱ヘッダは既に `SOCK_CLOEXEC` を無条件に見せているので、
+  **専用の feature-test マクロを増やさず**同じ扱いにした。
+
+### AF_ を 1 個だけ足した理由
+
+アドレスファミリは数十個ある番号空間で、`AF_NETLINK` だけ足すのは一見中途半端である。
+それでも **名指しで要求された 1 個だけ**にした。残りは**誰も測っていない値**であり、
+測っていない値を置くのはこのプロジェクトが一貫して避けてきたことだからである
+(`sys/syscall.h` の番号表・`unistd.h` の `_CS_`/`_PC_` 名と同じ判断)。
+
+### 検査
+
+6 件すべてを ABI ハーネスに載せた(**x86_64・aarch64 の両方で自動再走**)。
+整数は `ints:` に、`in6addr_*` と `accept4` は**実際に呼ぶ/参照する snippet** として
+足した — 宣言があるだけでは、リンク時に解決されるかを検査したことにならない。
+`accept4` の snippet は接続を待たない非ブロッキング listen ソケットに対して呼び、
+**EAGAIN が返ること**を答えにしてある。
+
+検査が効いていることは**壊して確かめた**: `AF_NETLINK` を 17 に書き換えると
+**x86_64・aarch64 の両方で落ちる**。通ったことを通ったと言うには、
+落ちるはずのものが落ちることを見ておく必要がある。
+
+### 結果 — ビルドは通る。テストは gcc でも通らない
+
+**`gem install unicorn` が成功する**(raindrops 0.20.1・kgio 2.11.4・unicorn 6.1.0 の
+3 つとも rubycc がビルド)。上流テストを 15 ファイル走らせると:
+
+```
+224 tests 中、失敗は 3 ファイル
+  test_request.rb  10 errors
+  test_signals.rb   1 error
+  test_util.rb      3 failures
+```
+
+**gcc で同じ 3 つを建てて同じ 3 ファイルを走らせたら、数値が完全に一致した**
+(10 errors / 1 error / 3 failures)。unicorn 自身がロード時に
+`Unicorn was only tested against MRI up to 3.0. It might not properly work with 3.4.5`
+と言う。失敗の中身も `fp.external_encoding` が nil を返すといった **Ruby 3.4 側の
+非互換**で、C 拡張には触れていない。unicorn 6.1.0 が最新版なので、上げて逃げる先も無い。
+
+**つまり rubycc の非ではないが、(d) 水準の「gem 自身のテストが通った」証拠は得られない。**
+oj と同じ形である(あちらも gcc 対照が落ちる)。R10 の分母をどう扱うかは
+**測定とは別の判断**なので、ここでは記録だけして分母は動かしていない。
+
+---
+
+## atomic-type-8 — 対照を機械化し、分母の 2 つ目の除外理由を入れた(M5 H4)
+
+R10 の分母には「**どの実装で建てても (d) 水準の証拠が取れない gem**」が混ざっていた。
+corpus-denominator-1 で 1 つ目(上流にテストが無い)を外したので、
+**2 つ目(上流テストが対照コンパイラでも通らない)**をここで外す。
+
+ただしこれは **corpus-denominator-1 より強い主張**である。「テストが落ちる」と
+「rubycc と無関係な理由でテストが落ちる」は **rubycc 側だけを見ても区別がつかない**。
+nio4r がその反例として立っている — 44 failures で環境要因として記録され、
+**rubycc を 1 行も変えずに 0 failures** になった。だから**測定を先に道具にした**。
+
+### `tools/verify_gem_tests.rb --control`
+
+`RUBYCC=1` を付けずに**まったく同じ手順**を回す。要点は 3 つ:
+
+- **別の scratch GEM_HOME**(`gemhome-control`)。同じものを使い回すと、
+  どちらのビルドの `.so` が残っているのか分からなくなる。
+- **ビルド証拠の検査を裏返す**。通常は「rubycc が使われた証拠」が無ければ失敗にするが、
+  対照では **rubycc の痕跡が有ったら失敗**にする。対照が黙って rubycc を使ってしまったら、
+  比較が無意味になったことに気づけない。既存の sanity チェック(拡張がロードされずに
+  テストが通るのを防ぐ)と同じ種類のガードである。
+- **`--update` との併用を禁止**。対照の結果を「検証済み」として記録するのは、
+  このツールが存在する理由そのものに反する。
+
+これは ROADMAP §2 の不変条件「**差分テストは、対照と自分を同じ条件に置く**」の機械化でもある。
+同じ落とし穴を 4 回踏んだ実績があり、5 回目は人手の注意では防げない。
+
+### 測った結果 — 3 通りに割れた
+
+| gem | 対照(gcc) | rubycc | 判定 |
+|---|---|---|---|
+| byebug | 535 runs / 22 fail / 6 err / 2 skip | **完全一致** | 除外 |
+| debug | 305 tests / 1 fail / 1 omission | **完全一致** | 除外 |
+| unicorn | 10 err・1 err・3 fail(ファイル別) | **完全一致** | 除外 |
+| oj | 627 runs / 37 fail / **35 err** | 627 runs / 49 fail / **14 err** | **除外しない** |
+| puma | 840 runs / 6 fail / **7 err** | 840 runs / 6 fail / **8 err** | **除外しない** |
+
+**除外は「対照と数値が一致したときだけ」に限った。** 落ち方が違うということは、
+その差は rubycc が出しているということで、**追うべき欠陥であって縮めるべき分母ではない**。
+この線引きは `test/corpus/gems.rb` の `:control_suite_passes` の説明に書いた。
+
+puma は **1 error 差**まで来ている。サーバを立てる時間依存のスイートなので
+再測定が要るが、**どちらにせよ除外しない側**なので分母はそのままにした。
+**保守的に外す方へ倒す**のが、分母を動かす変更での正しい誤り方である。
+
+### 除外の前に確かめたことが 2 件を救った
+
+debug と puma は最初 `UNPARSABLE` で、対照でも同じだった。中身を見たら
+**テスト依存 gem が無いだけ**だった:
+
+| gem | 欠けていたもの |
+|---|---|
+| debug | `test/unit/rr`(gem `test-unit-rr`) |
+| puma | `minitest/proveit`・`minitest/stub_const`・`minitest/mock` ほか 5 本 |
+
+**除外せずに入れたら走った**(debug 305 tests、puma 840 runs)。
+「対照でも落ちる」で機械的に外していたら、**測れるものを測らずに捨てていた**。
+
+### ツール自身の欠陥 — ピン留めが後から効かなくなる
+
+puma は minitest を 5.x に固定する必要がある(6 系は `minitest/mock` を別 gem に
+出しており、その別 gem は minitest ~> 5 に依存するので、6 系が activate された時点で
+require が満たせない)。ところが**ピン留めの掃除が「未インストールのとき」しか
+走っていなかった**。scratch GEM_HOME は全レシピ共有なので、後から走る byebug の
+**ピン無し `minitest`** が 6.0.6 を引き戻し、puma が `require "minitest/mock"` で死ぬ。
+
+**共有環境が後から書き換わる**形の事故で、症状(LoadError)は原因を少しも示さない。
+掃除を**毎回**走らせるようにした。
+
+### 結果
+
+R10 通過率 **26/36 = 72.2% → 26/33 = 78.8%**(90% には 30 件、**あと 4 件**)。
+
+---
+
+## atomic-type-9 — 残り 4 件の内訳を測り切った(M5 H4)
+
+atomic-type-8 で分母が 33・分子 26 になり、90% まで **4 件**。
+残る未検証 6 件が**それぞれ何で止まっているのか**を、推測せず 1 件ずつ測った。
+
+| gem | 止まっている理由 | 種類 |
+|---|---|---|
+| **mysql2** | **K&R(旧形式)の関数定義**が未実装 | **rubycc の欠陥**(GAPS Q) |
+| **oj** | 対照と落ち方が違う(37/35 err 対 49/14 err) | **rubycc の欠陥**(未調査) |
+| **puma** | 失敗は bundler 環境と不安定な結合テスト | 環境 |
+| **thin** | 依存 eventmachine が C++ | 対象外(OUT-OF-SCOPE 基準 A) |
+| **google-protobuf** | テスト取得に `protoc` が要る | 環境 |
+| **rbs** | 未再測定 | 不明 |
+
+### puma — 差は「両方向」に出た
+
+対照と rubycc で失敗テスト**名の集合**を取って差を見た。回数ではなく名前で比べたのは、
+サーバを立てる時間依存のスイートは回数が動くからである(実際、**同じ gcc ビルドの
+2 回の実行で 6 failures と 7 failures**になった)。
+
+| | 名前 |
+|---|---|
+| gcc にだけ | `TestIntegrationCluster#test_hot_restart_does_not_drop_connections_threads` |
+| rubycc にだけ | `#test_phased_restart_does_not_drop_connections`・`#test_refork_phased_restart_with_fork_worker_and_high_worker_count` |
+
+**14 件中 13 件は共通**で、残る 3 件はすべて同じ `TestIntegrationCluster`
+(worker を fork して phased restart 中の接続断を見る族)である。
+**rubycc が gcc の落ちるテストを通せるはずがない**ので、gcc 側にだけ出る 1 件は
+不安定さの証拠になる。共通の 13 件は `TestWorkerGemIndependence` /
+`TestPreserveBundlerEnv` など **bundler 環境**のテストで、C 拡張に触れていない。
+
+除外はしない。**両方向に差が出るものを「対照と一致」とは呼べない**からである。
+
+### mysql2 — ヘッダが入って、次のブロッカーが出た
+
+`libmariadb-dev` の導入後、extconf の 18 個のプローブはすべて通る
+(`mysql.h` / `errmsg.h` / `MYSQL.net.pvio` ほか)。止まるのは `client.c` で、
+原因は同梱の `mysql_enc_name_to_ruby.h` — **gperf の生成物**で、旧形式定義である。
+
+**ROADMAP §3 の既知債務「K&R `int ()` 型」に、ついに実害が出た。**
+「実害が出た時点」で先送りしていたものが、コーパスの側から回ってきた形である。
+
+### thin — 拒否の仕方が間違っている
+
+`gem install thin` を実際に走らせた。eventmachine の `.cpp` 9 本に対して rubycc は
+`warning: em.cpp: linker input file unused because linking not done` を出すだけで、
+**何も生成せずに成功したふりをする**。落ちるのはずっと後のリンク段階で、
+メッセージは `No such file or directory - binder.o` である。**原因を少しも示さない。**
+
+C++ が対象外なのは R10 が明示しているとおりで、**そこは正しい**。
+正しくないのは**言い方**で、ROADMAP §2 の「未対応機能は黙って壊さない —
+明確な文言の診断で拒否する」に反している(GAPS R)。
+
+---
+
+## atomic-type-10 — K&R 旧形式の関数定義(M5 H4)
+
+GAPS Q。mysql2 の同梱ヘッダ `mysql_enc_name_to_ruby.h`(**gperf の生成物**)が
+旧形式定義で、`client.c` が止まっていた。ROADMAP §3 の既知債務
+「K&R `int ()` 型」に**実害が出た**ので実装した。
+
+### 設計の要点 — 「宣言された型」と「受け取る型」を分けた
+
+旧形式定義の関数は**プロトタイプを持たない**ので、パラメタは既定の実引数拡張を受ける。
+つまり `float f;` と書いてあっても、実際に届くのは `double` である。
+そこで `AST::Parameter` に **`incoming_type`** を足し、
+
+- **関数型の引数型 = 拡張後の型**(ABI とシグネチャを駆動)
+- **`Parameter` の型 = 宣言どおりの型**(本体を駆動)
+
+の 2 本立てにした。**この分離が本質**で、片方に寄せると本体が誤った型で書かれるか、
+ABI が食い違うかのどちらかになる。
+
+### 実測して分かったこと
+
+| 実測 | 結果 |
+|---|---|
+| 狭い整数の受け取り | **変換命令が要らない**。gcc は昇格 `int` の**下位バイトを格納するだけ**で、`_Bool` を 0/1 に正規化しない(`take_bool(2)` は **2** を返す) |
+| `float` の受け取り | ここだけ本物の変換が要る(`double` で受けて `ftof`) |
+| プロトタイプ併記時 | gcc は**プロトタイプ側の ABI** を使う。`double h(float); double h(f) float f;` は `xmm0` に float をそのまま受け(`movss`)、プロトタイプ無しの同じ定義は double を受けて `cvtsd2ss` する |
+| 6.7.6.3p14 の適合性 | gcc は**宣言どおりの型を書いたプロトタイプも受理**し、警告は `-Wpedantic` のときだけ |
+
+**「昇格後の型と適合すること」という規格の文面どおりに実装していたら、
+gcc が受理するものを拒否していた。** 測ってよかった箇所である。
+`プロトタイプ型 == 宣言型 || プロトタイプ型 == 昇格型` のときプロトタイプ側を採る形にした。
+
+gcc が**拒否する**組み合わせ(`int f(long); int f(a) int a;` ほか)は、
+昇格型のまま既存の `conflicting types` に落ちて**同じ受理/拒否**になる。4 件をテストで固定した。
+
+### 定義でない位置の識別子リストは診断で落とす
+
+`int f(x);` を gcc は警告だけ出して `int f()` と読む。rubycc は**診断エラー**にした。
+無プロトタイプ関数型を持たないので、そう読むと `(void)` シグネチャで全呼び出しを
+誤検査することになるからである。**現状も落ちていた**(`expected type specifier`)ので
+後退はなく、文言が正確になっただけである。
+
+名前に付かない接尾辞(`int (*g)(a,b);`)も捕捉する。**黙って `()` と読まない。**
+
+### 残した既存制限
+
+`int f(); int f(a) int a; {...}` は `conflicting types` になる。これは
+**`int f()` を `(void)` としてモデル化している既存の負債**(ROADMAP §3、
+c-testsuite 00209 の skip 理由)そのもので、`f()` の挙動は今回変えていない。
+
+---
+
+## atomic-type-11 — 空ポインタ定数の判定が規格より狭かった(M5 H4)
+
+mysql2 の**最後のブロッカー**:
+
+```
+client.c:1213:74: error: invalid operands to binary expression
+  if (rb_thread_call_without_gvl(...) == Qfalse)
+```
+
+CRuby の `Qfalse` は `((VALUE)RUBY_Qfalse)` で、`RUBY_Qfalse` は**値 0 の enum 定数**。
+`AST.null_pointer_constant?` は「値 0 の整数リテラル」か「それを `void *` へキャストしたもの」
+しか認めていなかった。
+
+**これは gcc 拡張への追随ではなく、rubycc 側の適合性の欠陥である。** ISO C11 6.3.2.3p3:
+
+> **An integer constant expression with the value 0**, or such an expression
+> cast to type `void *`, is called a null pointer constant.
+
+整数型へのキャストは 6.6p6 により**整数定数式のまま**なので、`(unsigned long)0` は
+規格の第 1 の選択肢そのものに当たる。`void *` へのキャストは**追加の**選択肢であって、
+唯一の形ではなかった。
+
+### 実測した境界
+
+| 式 | gcc |
+|---|---|
+| `p == (VALUE)0` | 受理・無警告 |
+| `p == (VALUE)(1 - 1)` | 受理・無警告 |
+| `p == (char)0` | 受理(`-Wpointer-compare` の警告は出るが受理する) |
+| `p == (VALUE)1` | `comparison between pointer and integer` = 空ポインタ定数ではない |
+| `p == (double)0` | **error**。浮動小数型は整数定数式ではない |
+
+### 既存の定数評価器に乗るだけで足りた
+
+`ConstantEvaluator#evaluate_cast` は既に
+「**整数型へのキャストのみ畳む・浮動小数型へのキャストは畳まない**」(6.6p6)という
+規約を持っていた。判定をそこへ委譲すると、`(VALUE)0` / `(char)0` / `(VALUE)(1-1)` /
+enum 定数が**一様に**「値 0 の整数定数式」として認識され、`(VALUE)1` は非ゼロ、
+`(double)0` は畳めない、で自然に落ちる。**新しい規則を書かずに済んだ。**
+
+**両方向をテストで固定した** — 受理側だけ書くと、次に広げすぎたときに気づけない。
+
+### 結果
+
+**`RUBYCC=1 gem install mysql2 --version 0.5.7` が成功する。**
+extconf の 18 プローブ通過 → 全 5 翻訳単位のコンパイル → `mysql2.so` の生成まで通った。
+
+---
+
+## atomic-type-12 — 残り 3 件の正体を突き止めた(M5 H4)
+
+atomic-type-10 / 11 で mysql2 のビルドが通ったので、
+**oj・mysql2・rbs が本当は何で止まっているのか**を測り切った。
+
+### oj — ランダムなテスト順が数値を揺らしていただけだった
+
+これまでの計測で対照と rubycc の failures/errors が毎回違っていた
+(37/35 対 49/14、次の回は 40/36 対 48/19)。**minitest が既定でテスト順を
+ランダム化する**のが原因で、**回数を比べていたこと自体が誤り**だった。
+
+`--seed 1234` で順を固定し、**失敗テスト名の集合**で比べたところ:
+
+```
+gcc    75 件
+rubycc 76 件
+gcc にだけ:    (無し)
+rubycc にだけ: UsualTest#test_decimal
+```
+
+**差はちょうど 1 件。** 74 件の共通失敗は oj 側の事情で、rubycc は無関係である。
+
+### その 1 件は `long double` だった
+
+```
+UsualTest#test_decimal:
+ArgumentError: invalid value for BigDecimal(): "-nan"
+```
+
+oj の `usual.c:470`:
+
+```c
+static void add_float_as_big(ojParser p) {
+    char buf[64];
+    sprintf(buf, "%Lg", p->num.dub);   /* p->num.dub は long double */
+```
+
+最小再現:
+
+| | 出力 | `sizeof(long double)` |
+|---|---|---|
+| gcc | `[1.23457]` | **16** |
+| rubycc | `[7.46537e-4948]` | **8** |
+
+rubycc は `long double` を `double` として扱う(DESIGN 3.3 の既知の制限)。
+可変長引数に 8 バイトを積むが、**glibc の `sprintf` は `%Lg` で 16 バイトを読む**。
+食い違った分だけずれた値が出る。
+
+**ROADMAP §3 の負債「long double = double 扱い」に、初めて実害が出た。**
+これまでは `max_align_t` の相違としてしか観測されておらず、
+ABI ハーネスの該当検査を非 assert にして先送りしていたものである。
+解消には x87 80 ビット対応が要り、1 ステップの仕事ではない。
+
+**oj は分母に残す。** 対照が通すテストを rubycc が落としているのだから、
+これは rubycc が負うべき差である。
+
+### mysql2 — 対照と完全に並んだ
+
+`libmariadb-dev` 導入 + atomic-type-10/11 でビルドが通り、上流 spec を走らせた。
+
+| | 結果 |
+|---|---|
+| rubycc | **340 examples / 1 failure / 6 pending** |
+| gcc | **340 examples / 1 failure / 6 pending**(**同じ 1 件**) |
+
+残る 1 件は `result_spec.rb:240`「streaming が timeout で終わることの検査」で、
+`net_write_timeout = 1` を設定して読み遅らせる形。**ループバック接続では発火しない**
+(bridge / host どちらのネットワークでも同じ)。gcc でも落ちるので **rubycc の非ではない**。
+
+### DB は Docker で用意した
+
+ホストに MariaDB を入れる案もあったが、**コンテナの方が正しい** — 版を固定でき、
+ホストを汚さず、このリポジトリが musl コンテナで既に採っている流儀と揃う。
+
+```
+docker run -d --name rubycc-mariadb --network host \
+  -e MARIADB_ROOT_PASSWORD=rubycc -e MARIADB_DATABASE=test mariadb:11 --port=3307
+```
+
+**ホストに mariadb-server が居ると邪魔になる**という罠があった。
+mysql2 の spec の 1 つが `host: 'localhost'` を直書きしており、MySQL の規約では
+`localhost` は**ポート指定を無視して UNIX ソケット**を使うので、
+コンテナではなく**ホストのサーバ**に当たる。そちらは `unix_socket` 認証なので
+エラー番号が違い、spec が期待する例外クラスにならない。
+`MYSQL_UNIX_PORT` を存在しないパスに向けて、ソケット経路を閉じて解決した。
+
+### rbs — ビルドは通る
+
+`RUBYCC=1 gem install rbs --version 3.10.0` は**成功する**(`rbs_extension.so` 生成)。
+上流テストは開発依存が 15 本以上あり(`rspec` / `json-schema` / `goodcheck` /
+`rubocop-on-rbs` ほか)、レシピ化は別途。**ビルド不可という以前の記録は誤りだった。**
+
+---
+
+## atomic-type-13 — 波括弧省略は指示子ではなく型で決まる(M5 H4)
+
+`RUBYCC=1 gem install google-protobuf --platform=ruby` が落ちていた:
+
+```
+message.c:546:40: error: incompatible types in initialization
+  MapInit map_init = {map, TypeInfo_get(key_f), TypeInfo_get(val_f), arena};
+```
+
+`TypeInfo_get()` は **struct を値で返し**、`MapInit` の対応メンバも同じ struct 型。
+**指示子が 1 つも無い。**
+
+### atomic-type-2 で私が入れた判定が誤りだった
+
+あのステップで `.str = f()` を通すために
+**「指示子が有れば集約式、無ければスカラ」**という規則を入れた。**これは近似でしかなかった。**
+ISO C11 6.7.9p13 が引く線は指示子ではない:
+
+> ... or **a single expression that has compatible structure or union type**.
+
+**式の型**が部分オブジェクトの型と適合するかどうかだけが問題で、指示子は関係ない。
+近似は**両方向に誤っていた** — 上の `MapInit` を拒否し、
+逆に指示子さえあれば型の合わない式も集約扱いにしていた。
+
+### 型を借りる — ただし借りられない呼び手がいる
+
+リゾルバは型表を持たないので、呼び手から `type_of` フックを借りる形にした
+(ジェネレータは副作用の無い `static_type` を渡す)。
+
+**ここに落とし穴があった。** `InitializerResolver.resolve` の呼び手は
+ジェネレータだけではない。**パーサも呼ぶ** — `[]` の要素数を埋めて型を完成させるために。
+パーサには型表が無いのでフックを渡せない。
+
+フックが無いときは、**指示子が有ることを最後の手がかりとして使う**ことにした。
+指示子が部分オブジェクトを名指ししていて値が波括弧リストでないなら、
+6.7.9p13 の下で読み方は単一式形しか残らない(省略は名指し済みの部分オブジェクトへ
+降りられない)。**ジェネレータが同じ初期化子をフック付きで再解決する**ので、
+型が実際に違えば**型を見られる側**が捕まえる。
+
+この `designated` を通す経路は `fill_member` にもあり、**そこを忘れていて**
+`.str = make(3,4)` が退行した(既存テストが捕まえた)。
+**指示子を消費する場所が 2 か所ある**というのが、この構造の分かりにくいところである。
+
+### 実測 — 以前の記録が間違っていた
+
+| 式 | gcc |
+|---|---|
+| `pt a[] = { 1, 2, 3, fi(), 9, 10 }`(`fi` は `int` を返す) | **3 要素**、`a[1].y == 4` |
+| `pt b[] = { {1,2}, fp(), {5,6} }`(`fp` は `pt` を返す) | **3 要素**、`b[1].x == 7` |
+
+atomic-type-2 のコメントは前者を「gcc は 2 要素」と書いていたが、**誤りだった**。
+6 個のスカラは 3 要素を埋める。
+
+### 残った穴
+
+**配列の要素数をパーサが数える場合だけ**、まだ通らない:
+
+```c
+pt b[] = { {1,2}, fp(), {5,6} };   /* error: excess elements in scalar initializer */
+```
+
+パーサは `[]` の長さをここで確定させねばならず、フックが無いと `fp()` の型が分からない。
+**struct を直接初期化する形(protobuf が使う形)は通る**ので、
+1 件 1 件の方針に従って残した(GAPS T)。
+
+### 結果
+
+**`gem install google-protobuf --platform=ruby` が成功する。**
+`--platform=ruby` を付けないと**プリコンパイル済みの x86_64-linux-gnu 版**が入り、
+rubycc が一度も動かないまま「成功」する — 測定として無意味になる罠である。
+
+---
+
+## atomic-type-14 — google-protobuf を検証した(M5 H4)
+
+atomic-type-13 でビルドが通ったので、上流テストを実走した。
+
+```
+328 tests, 574,617 assertions, 0 failures, 0 errors, 2 omissions
+100% passed
+```
+
+**コーパス最大の gem が 100% 通った。**
+
+### protoc が要る — それを注記として残す
+
+上流ターボールに **`_pb.rb` が 1 本も入っていない**。`ruby/Rakefile` の `:genproto` が
+protoc で生成する前提なので、**protoc 無しでは原理的に検証できない**。
+レシピに `generate:` を足し、27 本(well-known 12 + テスト用 15)を生成する形にした。
+
+**外部コマンド依存はレシピが明示し、無ければ何が足りないかを述べて落ちる。**
+黙って進んで意味の分からないテスト失敗になるのが最悪だからである。
+
+**版の食い違いに注意**: gemspec は **4.35.1** だが**上流タグは `v35.1`**。
+以前このずれで 404 を踏んで「テスト取得不能」と記録していた。
+
+### ビルド証拠の検査を 1 つ緩めた — その分を別の証拠で埋めた
+
+gemspec が **同じディレクトリに 2 つの extension**(`extconf.rb` と `Rakefile`)を
+挙げているため、RubyGems が **`gem_make.out` を 2 つ目(コンパイルしない方)の
+記録で上書きする**。`gem_make.out:rmake` の検査が通らなくなる。
+
+**緩めた分は自分で埋めた。** 独立に確かめたこと:
+
+| 証拠 | 結果 |
+|---|---|
+| 生成された Makefile | `CC = .../rubycc-1.0.0/exe/rubycc` |
+| `.so` の `.comment` セクション | **無い**(このホストの gcc 製 `.so` は `GCC: (Ubuntu 13.3.0-...)` を持つ) |
+
+`.comment` の不在は「gcc が作ったものではない」ことの**積極的な証拠**である。
+検査を緩めるときは、**緩めた分を別の角度から埋める**必要がある。
+
+### プリコンパイル版という罠
+
+`--platform=ruby` を付けないと **x86_64-linux-gnu のプリコンパイル済み gem** が入り、
+**rubycc が一度も動かないまま「Successfully installed」**になる。
+最初にこれを踏んだ。レシピには `force_ruby_platform` として畳み込んである。
+
+### 結果
+
+R10 通過率 **26/33 = 78.8% → 27/33 = 81.8%**(90% には 30 件、**あと 3 件**)。
+
+---
+
+## atomic-type-15 — mysql2 を検証した(M5 H4)
+
+atomic-type-12 では **rubycc・gcc とも 340 examples / 1 failure** で並び、
+「対照と同点だが (d) は取れない」で止めていた。その 1 件を追い切った。
+
+### 落ちていたのは実装ではなく、測定環境の方だった
+
+`spec/mysql2/result_spec.rb:240` は
+**サーバ側の書き込みタイムアウトで接続が切れること**を確かめる:
+`SET net_write_timeout = 1` して、ストリーミング中に 1000 行ごとに 4 秒眠る。
+
+`net_write_timeout` は**サーバが書き込みでブロックした時間**の上限なので、
+**ブロックが一度も起きなければ発火しない**。実測:
+
+| | 値 |
+|---|---|
+| テストのデータ量 | 10,000 行 × 255 バイト = **2.4 MiB** |
+| ホストの `tcp_wmem` 上限 | **4 MiB** |
+| ホストの `tcp_rmem` 上限 | **6 MiB** |
+
+**結果全体がカーネルのバッファに収まる**ので、サーバは一度も待たされない。
+36 秒かけて読み遅らせても例外は上がらなかった。
+
+決定的な確認: **同じ条件で 60,000 行(14.6 MiB)にすると、47,248 行目で
+`Lost connection to server during query` が出る**。
+**実装は正しく動いている。テストの前提がこのホストに対して小さすぎただけである。**
+
+### コンテナ側だけ絞っても駄目だった
+
+まずコンテナの `tcp_wmem` を 32 KiB に絞ったが、**変わらなかった**。
+**クライアントがホスト側にいる**限り、ホストの `tcp_rmem`(6 MiB)がデータを吸い込むので、
+アプリが読まなくてもカーネルが受け取ってしまう。**片側だけでは塞げない。**
+
+通ったのは**サーバとクライアントを同じ network namespace に置き、その namespace の
+送受信バッファを両方 32 KiB に絞った**ときである。
+クライアントは `--network container:rubycc-mariadb` で同じ netns に入れ、
+ホストの rbenv ruby をマウントして使う。
+
+### 結果
+
+**rubycc・gcc とも 340 examples / 0 failures / 6 pending。**
+対照も**同じ条件でだけ**通る — つまりこれは rubycc の話ではなく、
+**このテストが要求する環境の話**である。
+
+### ツール側: スイートだけ別環境で走らせる
+
+レシピに `suite_exec` を足した。**前置きが効くのはスイート実行だけ**で、
+ビルド・`.so` の注入・sanity はホストのままである。
+`WORK_DIR` と ruby の prefix を**コンテナ内に同じ絶対パスでマウントする**ので、
+既存が組み立てるホスト絶対パス(`-I`・`GEM_HOME`・注入した `.so`)がそのまま通り、
+**前置きは透明**になる。docker が無い / コンテナが動いていない場合は、
+何が足りないかを述べて落ちる。
+
+`generate:` には `write:` ステップを足した(上流には `configuration.yml.example`
+しか無い)。`_pb.rb` の生成と同じ性質のものである。
+
+**隠れた依存が 1 つある**: `mariadb:11` イメージに **libyaml が無く**、
+Ruby の psych が読めない。ホストの `libyaml-0.so.2` を 1 本マウントして回避した。
+
+R10 通過率 **27/33 = 81.8% → 28/33 = 84.8%**(90% には 30 件、**あと 2 件**)。
+
+---
+
 ## 現在のテスト規模
 
-master マージ後の統合スイート: **2,846 runs / 8,575 assertions / 0 failures / 0 errors / 44 skips**
+atomic-type-15 完了時点: **2,949 runs / 9,391 assertions / 0 failures / 0 errors / 44 skips**
+(テストメソッドは増えず、assertions のみ +18 = mysql2 の記録がドクターのテストの
+照合対象に入ったため)
+(以前) atomic-type-14 完了時点: **2,949 runs / 9,373 assertions / 0 failures / 0 errors / 44 skips**
+(テストメソッドは増えず、assertions のみ +18 = google-protobuf の記録が
+`data/verified_gems.json` を舐めるドクターのテストの照合対象に入ったため。
+atomic-type-13 はリゾルバの是正でテスト増なし)
+(以前) atomic-type-11 完了時点: **2,949 runs / 9,355 assertions / 0 failures / 0 errors / 44 skips**
+(atomic-type-10 から +5 = 整数キャスト形の空ポインタ定数の gcc 差分実行(x86_64・aarch64)・
+`(VALUE)1` と `(double)0` が落ちることの診断 + サンプル 1 本)
+(以前) atomic-type-10 完了時点: **2,944 runs / 9,342 assertions / 0 failures / 0 errors / 44 skips**
+(atomic-type-8 から +14 = K&R 定義の gcc 差分実行(x86_64・aarch64)・制約違反の診断・
+既定の実引数拡張・プロトタイプ併記の受理/拒否 4 件 + サンプル 1 本。
+atomic-type-9 は測定と文書のみでテスト増なし)
+(以前) atomic-type-8 完了時点: **2,930 runs / 9,248 assertions / 0 failures / 0 errors / 44 skips**
+(atomic-type-6 から +2 = `:control_suite_passes` の検出と、除外が測定を引用していることの検査。
+atomic-type-7 はヘッダ追加のため ABI ハーネス既存ケースへの追記でテストメソッドは増えない)
+(以前) atomic-type-6 完了時点: **2,928 runs / 9,230 assertions / 0 failures / 0 errors / 44 skips**
+(atomic-type-5 から +23 = `__sync_*` の gcc 差分実行(x86_64・aarch64)・
+未実装綴りの undeclared identifier・アリティ違反の診断 + サンプル 1 本)
+(以前) atomic-type-5 完了時点: **2,905 runs / 9,065 assertions / 0 failures / 0 errors / 44 skips**
+(atomic-type-4 から +3 = リポジトリの実行ビット検査)
+(以前) atomic-type-4 完了時点: **2,902 runs / 9,059 assertions / 0 failures / 0 errors / 44 skips**
+(atomic-type-2 からテストメソッドは増えず、assertions のみ +249 = nio4r の記録が
+`data/verified_gems.json` を舐めるドクターのテストの照合対象に入ったため)
+(以前) atomic-type-2 完了時点: **2,902 runs / 8,810 assertions / 0 failures / 0 errors / 44 skips**
+(以前) atomic-type-1 完了時点: **2,874 runs / 8,698 assertions / 0 failures / 0 errors / 44 skips**
+(以前) corpus-denominator-1 完了時点: **2,855 runs / 8,601 assertions / 0 failures / 0 errors / 44 skips**
+(以前) master マージ後の統合スイート: **2,846 runs / 8,575 assertions / 0 failures / 0 errors / 44 skips**
 (`rake test` の実測値)
 Step 214 完了時点: **2,841 runs / 8,557 assertions / 0 failures / 0 errors / 44 skips**
 (ホスト側 `rake test` の実測値。Step 208 から +7 runs / +137 assertions。atomic fence、

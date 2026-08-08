@@ -106,6 +106,49 @@ class TestCompoundLiteral < Minitest::Test
     assert_c_exit_status(86, src)
   end
 
+  # A designator naming an aggregate member may initialize it with a single
+  # expression whose type this resolver cannot see -- a call, a plain variable
+  # (6.7.9p13). Without that, `.str = f()` fell through to brace elision, which
+  # re-read the same item against the member's own type and reported
+  # "unknown field designator '.str'" for a designator that was correct.
+  # google-protobuf's ruby-upb.c writes exactly this shape.
+  def test_designated_member_takes_a_single_expression_of_unseen_type
+    src = <<~C
+      typedef struct { int p; int n; } sv;
+      typedef union { long num; sv str; } key;
+      static sv make(int p, int n) { sv v; v.p = p; v.n = n; return v; }
+      int main(void) {
+        sv held = make(6, 7);
+        key a = (key){ .str = make(3, 4) };
+        key b = (key){ .str = held };
+        return a.str.p * 10 + a.str.n + b.str.p + b.str.n;
+      }
+    C
+    assert_c_exit_status(47, src)
+  end
+
+  # The same expression forms must stay *scalars* when brace elision reaches
+  # them positionally: there the innermost member is what consumes the value.
+  # Reading them as aggregates instead made this two-element array a
+  # three-element one, silently changing what the program means -- gcc fills it
+  # as two. The distinction is the designator, not the expression.
+  def test_brace_elision_still_reads_those_forms_as_scalars
+    src = <<~C
+      typedef long I;
+      typedef struct { I c[2]; I b; } pt;
+      static I f(void) { return 8; }
+      int main(void) {
+        I lv = 8;
+        pt a[] = { 1, 2, 3, lv, 9, 10 };
+        pt b[] = { 1, 2, 3, f(), 9, 10 };
+        if (sizeof(a) / sizeof(*a) != 2) return 1;
+        if (sizeof(b) / sizeof(*b) != 2) return 2;
+        return (int)(a[1].c[0] + b[1].c[0]);
+      }
+    C
+    assert_c_exit_status(16, src)
+  end
+
   # A partially designated literal zero-fills its unspecified members.
   def test_unspecified_members_are_zero_filled
     src = <<~C

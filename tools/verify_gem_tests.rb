@@ -31,21 +31,26 @@
 # Network (rubygems.org, GitHub) and external gems are required, so this is a
 # manual/CI tool like tools/m2_acceptance.rb -- never part of `rake test`.
 #
-# Usage:
-#   tools/verify_gem_tests.rb <gem>...                      # run and report only
-#   tools/verify_gem_tests.rb --all                         # every gem with a recipe
-#   tools/verify_gem_tests.rb --update --step N <gem>...    # ...and record the passes
-#   tools/verify_gem_tests.rb --update --step N --notes TEXT <gem>
-#   tools/verify_gem_tests.rb --data /tmp/copy.json --update --step N <gem>
-#   VERIFY_WORK=/path/to/work tools/verify_gem_tests.rb ...
+# Usage (spell out `ruby`: tools/ is not tracked with the executable bit, and
+# `bundle exec tools/...` would refuse it with "not executable"):
+#   ruby tools/verify_gem_tests.rb <gem>...                      # run and report only
+#   ruby tools/verify_gem_tests.rb --all                         # every gem with a recipe
+#   ruby tools/verify_gem_tests.rb --update --step ID <gem>...   # ...and record the passes
+#   ruby tools/verify_gem_tests.rb --update --step ID --notes TEXT <gem>
+#   ruby tools/verify_gem_tests.rb --data /tmp/copy.json --update --step ID <gem>
+#   ruby tools/verify_gem_tests.rb --control <gem>...             # same suite, host cc
+#   VERIFY_WORK=/path/to/work ruby tools/verify_gem_tests.rb ...
 #
 # Options:
 #   --all              run every gem in RECIPES
 #   --update           write the PASSing gems into the database (default: read only)
-#   --step N           the step number quoted in the generated evidence (--update only)
+#   --step ID          the step ID quoted in the generated evidence (--update only)
 #   --notes TEXT       notes for a *new* entry (existing entries keep their notes)
 #   --data PATH        database file to read/update (default: data/verified_gems.json)
 #   --list             print the recipe table and exit
+#   --control          run the same recipe against the host cc instead of rubycc,
+#                      in a separate scratch GEM_HOME (refuses --update: a control
+#                      run must never be recorded as "verified")
 #
 # The work directory (VERIFY_WORK, default <tmpdir>/rubycc_verify_gem_tests) is
 # always kept: the tarballs and the scratch GEM_HOME are reused by later runs,
@@ -75,10 +80,17 @@ BUILD_TIMEOUT = 900
 # The tool normally runs under `bundle exec` inside the rubycc checkout, whose
 # RUBYOPT/BUNDLE_* would otherwise pull the repo's Gemfile into every scratch
 # GEM_HOME child and defeat the isolation. Passing nil to spawn unsets a variable.
+#
+# BUNDLER_SETUP is the one that does not announce itself. `bundle exec` sets it
+# to bundler/setup's absolute path, and rubygems.rb requires whatever it names
+# from gem_prelude -- so it re-enters bundler even with RUBYOPT and every
+# BUNDLE_* cleared, and bundler then resolves the checkout's Gemfile against the
+# scratch GEM_HOME and dies with "Could not find rake-... in locally installed
+# gems". Measured on bundler 2.6.9 / ruby 3.4.5.
 CLEARED_ENV = {
   "RUBYOPT" => nil, "RUBYLIB" => nil, "BUNDLE_GEMFILE" => nil,
   "BUNDLE_BIN_PATH" => nil, "BUNDLE_PATH" => nil, "BUNDLER_VERSION" => nil,
-  "RUBYGEMS_GEMDEPS" => nil
+  "BUNDLER_SETUP" => nil, "RUBYGEMS_GEMDEPS" => nil
 }.freeze
 
 # --- recipes ----------------------------------------------------------------
@@ -95,12 +107,67 @@ CLEARED_ENV = {
 #   sos           installed-gem .so path => destination inside the upstream tree
 #   extra_copies  non-.so files to copy the same way (generated sources that the
 #                 gem's rakelib would build; the upstream tarball lacks them)
+#   generate      external commands to run against the just-fetched upstream
+#                 tree, before the .so is injected: { chdir:, argv: } steps run
+#                 in order (see run_generate_steps). Used for a gem whose
+#                 rakelib generates sources with a tool this repository does
+#                 not carry (protoc, for google-protobuf) -- the upstream
+#                 *source* tarball never contains what that tool would have
+#                 produced at release time, unlike extra_copies' generated
+#                 files, which the packaged .gem already carries. A step may
+#                 give `glob:` instead of a literal argv, for a command that
+#                 must run once per file matched inside `chdir` (protoc across
+#                 every .proto in a directory); one of the `argv` entries must
+#                 then be the symbol :file, substituted with each match in turn
+#                 -- this is what stands in for a shell `for` loop. A step may
+#                 instead give `write:` (a path) with `content:` (a literal
+#                 string) in place of `argv:`, for a file the upstream Rakefile
+#                 would template from an `.example` at test time rather than
+#                 build with an external tool (mysql2's spec/configuration.yml,
+#                 templated from spec/configuration.yml.example by
+#                 tasks/rspec.rake) -- no tool is required for these, and
+#                 required_generate_tools skips them.
+#   generated_copies  extra_copies' counterpart for files a `generate` step
+#                 wrote: same { from => to } shape, but from is relative to the
+#                 just-fetched source tree (where `generate` wrote it) rather
+#                 than the installed gem.
+#   suite_exec    runs step 7 (only step 7 -- build, .so injection and sanity
+#                 all still run on the host) inside `docker run --network
+#                 container:<container> <image> <the ordinary suite command>`
+#                 instead of directly on the host: { container:, image:,
+#                 mounts:, env: }. Every host path the suite's command line
+#                 already carries (GEM_HOME, the source tree, the injected
+#                 .so) is an absolute path under WORK_DIR or the running
+#                 ruby's own prefix, so those two are mounted at their host
+#                 path unchanged -- the rest of the command line needs no
+#                 translation (see suite_docker_argv). `mounts:` names
+#                 anything a recipe needs beyond that, mounted read-only the
+#                 same way; `env:` adds environment variables the container
+#                 alone needs (LD_LIBRARY_PATH for a host library the image
+#                 does not ship, say), on top of the suite's own env, which is
+#                 passed through with -e (mysql2 is the one recipe that uses
+#                 this, to run its suite where a socket write can actually
+#                 block -- see that recipe's comment for why that is
+#                 necessary). ensure_suite_exec! refuses to run rather than
+#                 silently falling back to the host when docker or the named
+#                 container is not available.
 #   test_deps     pure-Ruby gems the suite needs. Installed *without* RUBYCC:
 #                 a Ruby test dependency has no C to compile and must not be
 #                 dragged through the compiler under test.
 #   test_dep_versions  exact versions for test_deps whose upstream suite has a
 #                 compatibility pin; these are installed in preference to any
 #                 incompatible version already cached in the scratch GEM_HOME.
+#   force_ruby_platform  passes `--platform ruby` to `gem install`, for a gem
+#                 that also publishes precompiled native-platform gems
+#                 RubyGems would otherwise prefer over the source one (see
+#                 install_args)
+#   multi_extension_overwrites_gem_make_out  the gem's extensions list names
+#                 more than one extension in the same ext directory, so
+#                 RubyGems overwrites gem_make.out with the last one's
+#                 transcript; skips the gem_make.out check in
+#                 rubycc_build_evidence for this one gem rather than weakening
+#                 it for every recipe (the Makefile check, still required,
+#                 carries the proof instead)
 #   extconf_args  arguments after `--` passed to the gem's extconf.rb
 #   dep_load_paths  test_deps whose lib/ is put on the load path explicitly
 #                 rather than left to RubyGems' require fallback
@@ -120,6 +187,15 @@ CLEARED_ENV = {
 #                 the gem's own task passes. Excluding such a test through
 #                 `exclude` instead would drop the whole file it lives in.
 #   sanity        { requires:, expr: } -- see check_sanity. MANDATORY.
+# google-protobuf's generate step (below) reproduces ruby/Rakefile's
+# well_known_protos list by hand -- protoc has to be run against each of these
+# individually (plus compiler/plugin.proto, added separately below since its
+# output lands in a different tmp/protoc-out subdirectory) because they are
+# not covered by the tests/*.proto glob a `generate` step can express directly.
+WELL_KNOWN_PROTOBUF_PROTOS = %w[
+  any api descriptor duration empty field_mask source_context struct timestamp type wrappers
+].freeze
+
 RECIPES = {
   "json" => {
     version: "2.21.1",
@@ -705,7 +781,12 @@ RECIPES = {
     version: "1.11.1",
     tarball: "https://github.com/ruby/debug/archive/refs/tags/v1.11.1.tar.gz",
     sos: { "lib/debug/debug.so" => "lib/debug/debug.so" },
-    test_deps: %w[test-unit],
+    # test-unit-rr provides the "test/unit/rr" every console test requires; it is
+    # a test dependency the .gem does not carry, and without it the suite dies at
+    # load with a LoadError rather than running (measured, and identically so
+    # under --control, which is what proved it was a missing gem rather than a
+    # rubycc failure).
+    test_deps: %w[test-unit test-unit-rr],
     runner: :test_unit,
     load_paths: %w[lib test],
     test_glob: "test/console/*_test.rb",
@@ -830,12 +911,194 @@ RECIPES = {
     version: "8.0.2",
     tarball: "https://github.com/puma/puma/archive/refs/tags/v8.0.2.tar.gz",
     sos: { "lib/puma/puma_http11.so" => "lib/puma/puma_http11.so" },
-    test_deps: %w[minitest],
+    # minitest-proveit is required by puma's own test/helper.rb; like debug's
+    # test-unit-rr it is absent from the .gem and its absence kills the suite at
+    # load time, in the control run just as much as the rubycc one.
+    # puma's test/helper.rb and its Gemfile name the whole set below; the .gem
+    # carries none of them, and each missing one kills the suite at load rather
+    # than failing a test. They were found one at a time by --control runs, which
+    # is what proved every one of them was a missing gem and not a rubycc defect.
+    test_deps: %w[minitest minitest-proveit minitest-stub-const
+                  minitest-retry concurrent-ruby rack rackup localhost],
+    # minitest must stay on the 5.x line: puma's helper.rb requires
+    # "minitest/mock", which minitest 6 moved out into a separate gem that in
+    # turn depends on minitest ~> 5 -- so a 6.x activation makes the require
+    # unsatisfiable no matter which extra gems are installed. 5.27.0 is the
+    # newest 5.x and satisfies the Gemfile's ">= 5.26".
+    test_dep_versions: { "minitest" => "5.27.0" },
     runner: :test_unit,
     load_paths: %w[lib test],
     test_glob: "test/test_*.rb",
     sanity: {
       requires: %w[puma],
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  "google-protobuf" => {
+    version: "4.35.1",
+    # protocolbuffers/protobuf tags its Ruby releases without the leading
+    # major component: the gemspec this version installs reports 4.35.1, but
+    # the upstream tag is "v35.1" (there is no "v4.35.1" tag). Measured
+    # against the tag list at protocolbuffers/protobuf.
+    tarball: "https://github.com/protocolbuffers/protobuf/archive/refs/tags/v35.1.tar.gz",
+    # google-protobuf ships precompiled gems for several platforms; without
+    # this, `gem install` picks one of those over the source gem and the
+    # build never goes near rubycc at all. See install_args.
+    force_ruby_platform: true,
+    # The gemspec lists two extensions in ext/google/protobuf_c/ (extconf.rb,
+    # then Rakefile); both build into the same directory, so RubyGems' second
+    # (Rakefile-driven, FFI-variant-only) build overwrites the first's
+    # gem_make.out on disk even though `gem install -V` shows the first one
+    # genuinely invoked rubycc's exe/rmake (measured). See
+    # multi_extension_overwrites_gem_make_out in rubycc_build_evidence.
+    multi_extension_overwrites_gem_make_out: true,
+    # ruby/Rakefile's :genproto task runs protoc against the repo's own
+    # .proto files and copies the result into lib/google/protobuf and tests/;
+    # none of that is in the source tarball (only the .proto inputs are), so
+    # it is reproduced here with an external protoc instead of being copied
+    # from anywhere. The well-known types need protoc run once per file
+    # because their output lands in tmp/protoc-out/google/protobuf and is
+    # picked up by generated_copies below; the test protos are handled with a
+    # single `glob` step because their names do not matter beyond that.
+    generate: [
+      { chdir: "ruby", argv: ["mkdir", "-p", "tmp/protoc-out"] },
+      *WELL_KNOWN_PROTOBUF_PROTOS.map do |proto|
+        { chdir: "ruby",
+          argv: ["protoc", "-I../src", "--ruby_out=tmp/protoc-out", "../src/google/protobuf/#{proto}.proto"] }
+      end,
+      { chdir: "ruby",
+        argv: ["protoc", "-I../src", "--ruby_out=tmp/protoc-out", "../src/google/protobuf/compiler/plugin.proto"] },
+      { chdir: "ruby", glob: "tests/*.proto",
+        argv: ["protoc", "-I../src", "-I./tests", "--ruby_out=tests", :file] }
+    ],
+    # protoc mirrors each .proto's own path under tmp/protoc-out (so
+    # compiler/plugin.proto lands at .../compiler/plugin_pb.rb), but the
+    # Rakefile flattens every one of them into lib/google/protobuf -- matched
+    # here file by file, rather than with a glob, so a proto that stops
+    # generating shows up as "no such file" instead of a silently short suite.
+    generated_copies: WELL_KNOWN_PROTOBUF_PROTOS.to_h { |proto|
+      ["ruby/tmp/protoc-out/google/protobuf/#{proto}_pb.rb", "ruby/lib/google/protobuf/#{proto}_pb.rb"]
+    }.merge(
+      "ruby/tmp/protoc-out/google/protobuf/compiler/plugin_pb.rb" => "ruby/lib/google/protobuf/plugin_pb.rb"
+    ),
+    # ext/google/protobuf_c/extconf.rb calls create_makefile(ext_name) with
+    # ext_name "google/protobuf_c", so the built object lands at
+    # lib/google/protobuf_c.so both in the installed gem and in the upstream
+    # tree the suite loads from.
+    sos: { "lib/google/protobuf_c.so" => "ruby/lib/google/protobuf_c.so" },
+    test_deps: %w[test-unit],
+    runner: :test_unit,
+    load_paths: %w[ruby/lib ruby/tests],
+    # ruby/Rakefile:200's Rake::TestTask: FileList["tests/*.rb"].exclude(
+    # "tests/gc_test.rb", "tests/common_tests.rb"). *_pb.rb is excluded on top
+    # of that here: it is generate's own output (protoc-generated message
+    # definitions), not a test file, and the Rakefile only gets away with
+    # leaving it in the glob because loading one defines no test cases.
+    test_glob: "ruby/tests/*.rb",
+    exclude: %w[ruby/tests/gc_test.rb ruby/tests/common_tests.rb ruby/tests/*_pb.rb],
+    sanity: {
+      requires: %w[google/protobuf],
+      # lib/google/protobuf.rb only switches to the pure-Ruby FFI
+      # implementation when PROTOCOL_BUFFERS_RUBY_IMPLEMENTATION=ffi is set in
+      # the environment, which this run never does, so it always takes the
+      # NATIVE branch and requires the .so directly. The wrong *copy* -- not a
+      # wrong implementation -- is therefore the only failure mode left for
+      # the injected-.so check to rule out.
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  # mysql2's own suite is 340 examples / 0 failures / 6 pending against both
+  # rubycc's and gcc's build of ext/mysql2.so -- but only inside the
+  # environment suite_exec sets up below. Run directly on this host, one spec
+  # fails under *either* compiler: spec/mysql2/result_spec.rb:240 sets
+  # `net_write_timeout = 1` on the connection and then streams a result set
+  # slowly enough that it expects the server's write to eventually block and
+  # the server to drop the connection once that timeout elapses.
+  # `net_write_timeout` only fires while the server is *blocked* writing to
+  # the socket, though, and on this host it never blocks: the fixture is
+  # 10,000 rows * 255 bytes =~ 2.4 MiB, comfortably under this host's
+  # `sysctl net.ipv4.tcp_wmem` ceiling (4 MiB) and `net.ipv4.tcp_rmem`
+  # ceiling (6 MiB), so the whole result fits in the kernel's socket buffers
+  # and the server finishes writing it without ever waiting on the client.
+  # This is not a rubycc (or gcc) defect: pointing the same code path at
+  # 60,000 rows (~14.6 MiB) does make it block, and the client sees "Lost
+  # connection to server during query" at row 47,248 under both compilers
+  # (measured by hand). Rather than edit the upstream spec, suite_exec below
+  # runs the suite in the *same* network namespace as the mariadb server,
+  # with that namespace's tcp_wmem/tcp_rmem sysctls turned down to 32 KiB on
+  # the server container (`docker run --sysctl net.ipv4.tcp_wmem='4096 8192
+  # 32768' --sysctl net.ipv4.tcp_rmem='4096 8192 32768' ...`, applied when
+  # that container was started -- this recipe only runs the client side
+  # inside it), which is small enough that the unmodified 10,000-row fixture
+  # blocks the server exactly as the spec intends.
+  "mysql2" => {
+    version: "0.5.7",
+    tarball: "https://github.com/brianmario/mysql2/archive/refs/tags/0.5.7.tar.gz",
+    sos: { "lib/mysql2/mysql2.so" => "lib/mysql2/mysql2.so" },
+    # tasks/rspec.rake templates spec/configuration.yml and spec/my.cnf from
+    # an .example at test time by substituting the local username in;
+    # neither file is in the source tarball, and nothing in this tool's
+    # environment runs that Rakefile task, so both are written directly here
+    # instead. The values point at the mariadb container's own root user and
+    # at the unprivileged 'nuna'@'%' user / mysql2_test database the same
+    # container was set up with (see suite_exec below), not at the
+    # LOCALUSERNAME the Rakefile task would have substituted.
+    generate: [
+      { write: "spec/configuration.yml", content: <<~YAML },
+        root:
+          host: 127.0.0.1
+          port: 3306
+          username: root
+          password: rubycc
+          database: test
+
+        user:
+          host: 127.0.0.1
+          port: 3306
+          username: nuna
+          password:
+          database: mysql2_test
+      YAML
+      # Only spec/mysql2/client_spec.rb's "using defaults file" context reads
+      # this, with default_group: "test" -- a group this file does not
+      # define, so (per the MySQL client library's own default-file
+      # behaviour) only [client] below actually applies; [root] is kept for
+      # parity with the upstream .example this replaces, but nothing reads it.
+      { write: "spec/my.cnf", content: <<~CNF }
+        [root]
+        host=127.0.0.1
+        user=root
+        password=rubycc
+
+        [client]
+        host=127.0.0.1
+        user=nuna
+        password=
+      CNF
+    ],
+    suite_exec: {
+      container: "rubycc-mariadb",
+      image: "mariadb:11",
+      # mariadb:11 is Ubuntu 24.04-based, so its glibc matches this host's --
+      # the mysql2.so injected below was linked against the host's
+      # libmariadb, and a mismatched libc would fail to *load* it rather
+      # than fail a test. The image ships no libyaml, though, and
+      # spec_helper.rb does `require 'yaml'`; /tmp/extralibs holds a single
+      # host libyaml-0.so.2 for that, picked up via LD_LIBRARY_PATH below.
+      mounts: ["/tmp/extralibs"],
+      env: { "LD_LIBRARY_PATH" => "/tmp/extralibs" }
+    },
+    test_deps: %w[rspec],
+    runner: :rspec,
+    load_paths: %w[lib spec],
+    test_glob: "spec/**/*_spec.rb",
+    sanity: {
+      requires: %w[mysql2],
+      # lib/mysql2.rb requires the extension unconditionally (there is no
+      # pure-Ruby fallback), so the only wrong outcome is the wrong *copy*
+      # winning the require -- exactly what the injected-.so check rules out.
       expr: "injected_so_loaded?"
     }
   }
@@ -852,18 +1115,19 @@ RECIPES = {
 # --- CLI --------------------------------------------------------------------
 
 options = { gems: [], all: false, update: false, step: nil, notes: nil,
-            data: Rubycc::Doctor::VerifiedGems::DEFAULT_PATH, list: false }
+            data: Rubycc::Doctor::VerifiedGems::DEFAULT_PATH, list: false, control: false }
 
 args = ARGV.dup
 until args.empty?
   arg = args.shift
   case arg
-  when "--all"    then options[:all] = true
-  when "--update" then options[:update] = true
-  when "--list"   then options[:list] = true
-  when "--step"   then options[:step] = (args.shift || abort("--step needs a step number"))
-  when "--notes"  then options[:notes] = (args.shift || abort("--notes needs text"))
-  when "--data"   then options[:data] = (args.shift || abort("--data needs a path"))
+  when "--all"     then options[:all] = true
+  when "--update"  then options[:update] = true
+  when "--list"    then options[:list] = true
+  when "--control" then options[:control] = true
+  when "--step"    then options[:step] = (args.shift || abort("--step needs a step number"))
+  when "--notes"   then options[:notes] = (args.shift || abort("--notes needs text"))
+  when "--data"    then options[:data] = (args.shift || abort("--data needs a path"))
   when "-h", "--help"
     # The file's own header comment is the usage text: skip the shebang and the
     # magic comment, then print the comment block that follows.
@@ -924,13 +1188,52 @@ end
 # installs into the developer's real gem home (and, under bundler, can rewrite
 # this repository's state). Everything below therefore threads an explicit
 # --install-dir as well as GEM_HOME/GEM_PATH.
+#
+# --control uses a *second* scratch GEM_HOME (gemhome-control) rather than
+# reusing the rubycc one: sharing it would leave both builds' .so files mixed
+# together on disk with no way to tell, after the fact, which build produced
+# what got tested.
 
 def gem_home
-  File.join(WORK_DIR, "gemhome")
+  File.join(WORK_DIR, $control_mode ? "gemhome-control" : "gemhome")
 end
 
 def gem_env
   { "GEM_HOME" => gem_home, "GEM_PATH" => gem_home, "RUBYCC" => "0" }
+end
+
+# The install command line every gem install shares, whichever cc ends up
+# building it. Only the env passed alongside it (gem_env for --control,
+# gem_env.merge("RUBYCC" => "1") for the rubycc path) decides which compiler
+# runs -- and for --control, the rubycc gem is never installed into this
+# scratch GEM_HOME at all (see install_through_control), so RUBYCC has no
+# rubygems_plugin.rb to be read by in the first place.
+def install_args(name, version, recipe)
+  cached = cached_gem_path(name, version)
+  args = ["gem", "install", cached || name]
+  args.concat(["--version", version]) unless cached
+  args.concat(["--install-dir", gem_home, "--no-document"])
+  args << "--local" if cached
+  # Some gems (google-protobuf among them) publish precompiled native-platform
+  # gems alongside the source one; RubyGems prefers whichever matches the
+  # running platform, which for the corpus environment means an install that
+  # never calls extconf.rb at all -- and never touches rubycc (measured: a
+  # plain `gem install google-protobuf --version 4.35.1` here installs
+  # google-protobuf-4.35.1-x86_64-linux-gnu, with no ext/ and nothing for
+  # rubycc_build_evidence to find). `--platform ruby` is RubyGems' own way to
+  # ask for the source gem instead, so a recipe opts into it explicitly rather
+  # than this being the default for every gem here (most never ship a native
+  # platform gem to begin with).
+  args.concat(["--platform", "ruby"]) if recipe[:force_ruby_platform] && !cached
+  # `gem install /path/to/pkg.gem --local` resolves dependencies from the
+  # local source index only; it does not use already-installed gems in the
+  # scratch GEM_HOME. The cached packages are used specifically for an offline
+  # retry, so dependency activation is still checked by the suite below while
+  # the target package is installed without a registry lookup.
+  args << "--ignore-dependencies" if cached
+  extconf_args = Array(recipe[:extconf_args])
+  args.concat(["--", *extconf_args]) unless extconf_args.empty?
+  args
 end
 
 # Versions of +name+ present in the scratch GEM_HOME, newest last. The glob
@@ -986,15 +1289,21 @@ end
 def ensure_test_dep(name, version = nil)
   if version
     requirement = Gem::Requirement.new("=#{version}")
-    return if installed_versions(name).any? { |installed| requirement.satisfied_by?(installed) }
 
     # RubyGems activates the newest installed version when a test does a plain
-    # require, so remove incompatible cached versions from this scratch GEM_HOME
-    # before installing the pinned suite dependency.
+    # require, so an incompatible version merely *present* in this scratch
+    # GEM_HOME defeats the pin. The sweep therefore runs on every call, not only
+    # on the one that installs: the GEM_HOME is shared by every recipe in the
+    # run, so a later recipe with an unpinned test_dep can drag a newer version
+    # back in behind this one's back. Measured: puma pins minitest to the 5.x
+    # line, byebug's unpinned `minitest` reinstalled 6.0.6 afterwards, and puma's
+    # suite then died on `require "minitest/mock"` -- a load error that looks
+    # nothing like the shared-environment problem it actually was.
     installed_versions(name).reject { |installed| requirement.satisfied_by?(installed) }.each do |installed|
       run("gem", "uninstall", name, "--version", installed.to_s, "--force",
           "--install-dir", gem_home, env: gem_env, timeout: BUILD_TIMEOUT)
     end
+    return if installed_versions(name).any? { |installed| requirement.satisfied_by?(installed) }
   else
     return if gem_installed?(name)
   end
@@ -1037,21 +1346,23 @@ end
 def install_through_rubycc(name, version)
   uninstall_gem(name, version)
   step "RUBYCC=1 gem install #{name} #{version}"
-  recipe = RECIPES.fetch(name)
-  cached = cached_gem_path(name, version)
-  args = ["gem", "install", cached || name]
-  args.concat(["--version", version]) unless cached
-  args.concat(["--install-dir", gem_home, "--no-document"])
-  args << "--local" if cached
-  # `gem install /path/to/pkg.gem --local` resolves dependencies from the
-  # local source index only; it does not use already-installed gems in the
-  # scratch GEM_HOME. The cached packages are used specifically for an offline
-  # retry, so dependency activation is still checked by the suite below while
-  # the target package is installed without a registry lookup.
-  args << "--ignore-dependencies" if cached
-  extconf_args = Array(recipe[:extconf_args])
-  args.concat(["--", *extconf_args]) unless extconf_args.empty?
+  args = install_args(name, version, RECIPES.fetch(name))
   out, ok = run(*args, env: gem_env.merge("RUBYCC" => "1"), timeout: BUILD_TIMEOUT)
+  [out, ok]
+end
+
+# The --control counterpart: same command line (install_args), same scratch-home
+# machinery (gem_home already points at gemhome-control -- see $control_mode),
+# but no rubycc gem is ever built or installed here (install_rubycc! is only
+# called for the rubycc path -- see the bottom of the file), so there is no
+# rubygems_plugin.rb in this GEM_HOME to route the build anywhere but the host's
+# own cc/make. RUBYCC=0 on top of that is redundant insurance, not what does the
+# work.
+def install_through_control(name, version)
+  uninstall_gem(name, version)
+  step "gem install #{name} #{version} (control: host cc)"
+  args = install_args(name, version, RECIPES.fetch(name))
+  out, ok = run(*args, env: gem_env, timeout: BUILD_TIMEOUT)
   [out, ok]
 end
 
@@ -1064,16 +1375,29 @@ end
 #   * mkmf.log, when the extconf ran any probe at all, names exe/rubycc too
 #     (redcarpet's extconf has no probes and writes no mkmf.log -- measured).
 # The first two are required; mkmf.log is reported when present.
+#
+# google-protobuf's gemspec lists two extensions in the *same* ext directory
+# (ext/google/protobuf_c/extconf.rb, then ext/google/protobuf_c/Rakefile), and
+# RubyGems writes both builds' transcript to the one gem_make.out that
+# directory gets -- so the second (a Rakefile that only orchestrates the
+# optional FFI variant, not a C compile) overwrites the first's rmake trace on
+# disk even though `gem install -V` shows rmake genuinely ran (measured).
+# recipe[:multi_extension_overwrites_gem_make_out] is the opt-in for that one
+# known case: the gem_make.out check is skipped rather than weakened for
+# every recipe, and the Makefile check below -- still required -- is what
+# carries the proof instead.
 RUBYCC_RMAKE_RE = %r{gems/rubycc-[^/]+/exe/rmake}
 RUBYCC_CC_RE = %r{gems/rubycc-[^/]+/exe/rubycc}
 
-def rubycc_build_evidence(name, version)
+def rubycc_build_evidence(name, version, recipe)
   found = []
   missing = []
 
   make_outs = Dir.glob(File.join(gem_home, "extensions", "*", "*", "#{name}-#{version}", "gem_make.out"))
   if make_outs.any? { |f| File.read(f).match?(RUBYCC_RMAKE_RE) }
     found << "gem_make.out:rmake"
+  elsif recipe[:multi_extension_overwrites_gem_make_out]
+    found << "gem_make.out:rmake (skipped -- overwritten by a later extension, see recipe)"
   else
     missing << "gem_make.out naming rubycc's exe/rmake as $(MAKE)"
   end
@@ -1090,6 +1414,32 @@ def rubycc_build_evidence(name, version)
   found << "mkmf.log:rubycc" if mkmf_logs.any? { |f| File.read(f).match?(RUBYCC_CC_RE) }
 
   [found, missing]
+end
+
+# The --control mirror of the check above: instead of demanding rubycc's
+# fingerprints, it demands their *absence*. A control run that quietly went
+# through rubycc anyway (a stray rubycc gem left over in gemhome-control from
+# an earlier bug, say) would make the comparison this flag exists for
+# meaningless, and nothing about the gem's own test output would say so -- the
+# suite would just look like it "passed under gcc" when it never ran under gcc
+# at all. Same three transcripts as rubycc_build_evidence, same regexes, the
+# opposite verdict.
+def control_build_evidence(name, version)
+  traces = []
+
+  make_outs = Dir.glob(File.join(gem_home, "extensions", "*", "*", "#{name}-#{version}", "gem_make.out"))
+  traces << "gem_make.out names rubycc's exe/rmake as $(MAKE)" if
+    make_outs.any? { |f| File.read(f).match?(RUBYCC_RMAKE_RE) }
+
+  makefiles = Dir.glob(File.join(installed_gem_dir(name, version), "**", "Makefile"))
+  traces << "a generated Makefile has CC = <rubycc>" if
+    makefiles.any? { |f| File.readlines(f).grep(/\ACC\s*=/).any? { |l| l.match?(RUBYCC_CC_RE) } }
+
+  mkmf_logs = Dir.glob(File.join(gem_home, "extensions", "*", "*", "#{name}-#{version}", "mkmf.log")) +
+              Dir.glob(File.join(installed_gem_dir(name, version), "**", "mkmf.log"))
+  traces << "mkmf.log names rubycc" if mkmf_logs.any? { |f| File.read(f).match?(RUBYCC_CC_RE) }
+
+  traces
 end
 
 # --- step 4/5: upstream source and .so injection -----------------------------
@@ -1148,6 +1498,111 @@ def inject_build_products(name, recipe, src_dir)
   injected
 end
 
+# --- step 3.5 (optional): reproduce generated sources -------------------------
+#
+# A handful of gems' suites need something the packaged .gem carries but the
+# upstream *source* tarball does not -- files a release-time tool (protoc, for
+# google-protobuf) would have generated. Recipe field `generate` is the list
+# of external commands that reproduce them; this is deliberately separate from
+# `extra_copies`, which only ever moves a file that already exists somewhere
+# (the installed gem). No shell is involved: each step is an argv array run
+# directly, and the one place upstream's own Rakefile would use a shell `for`
+# loop (protoc once per test .proto, whose names are not known until the
+# tarball is unpacked) is expressed as `glob:` + a :file placeholder instead.
+
+# The external tool(s) a recipe's `generate` steps need, deduplicated. Reading
+# this before running anything means a recipe with a missing tool fails with
+# one clear line instead of a protoc-shaped hole three steps further down
+# turning into a baffling test failure. A `write:` step needs no external
+# tool (it is this process writing a string to a file), so it is excluded
+# rather than made to fail :argv.fetch.
+def required_generate_tools(recipe)
+  Array(recipe[:generate]).reject { |g| g[:write] }.map { |g| g.fetch(:argv).first }.uniq
+end
+
+# A minimal, dependency-free PATH search -- this tool has no other reason to
+# probe for an external command's presence, so it does not lean on a gem for
+# the one line `which` would give it.
+def find_on_path(cmd)
+  return cmd if cmd.include?("/") && File.executable?(cmd) && !File.directory?(cmd)
+
+  ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).each do |dir|
+    candidate = File.join(dir, cmd)
+    return candidate if File.executable?(candidate) && !File.directory?(candidate)
+  end
+  nil
+end
+
+def ensure_generate_tools!(name, recipe)
+  missing = required_generate_tools(recipe).reject { |cmd| find_on_path(cmd) }
+  return if missing.empty?
+
+  abort "#{name}: the generate step needs #{missing.join(', ')} on PATH, but " \
+        "#{missing.one? ? 'it was' : 'they were'} not found. Install " \
+        "#{missing.join(', ')} and re-run."
+end
+
+# Runs every `generate` step against the just-fetched source tree, in order.
+# Each step is either a literal argv (run once) or a `glob:` step (run once
+# per file the glob matches inside `chdir`, with the symbol :file in argv
+# replaced by that file's path). Every command is a hard precondition -- a
+# generator that fails leaves the tree in a state the suite cannot honestly
+# run against, so this aborts the whole tool rather than reporting a per-gem
+# failure (mirrors run! elsewhere in this file).
+#
+# Idempotent by construction: `mkdir -p` tolerates re-runs, and protoc (or any
+# similar generator) simply overwrites its own prior output, so re-verifying a
+# gem whose work dir was kept from an earlier run regenerates the same files.
+def run_generate_steps(name, recipe, src_dir)
+  steps = Array(recipe[:generate])
+  return if steps.empty?
+
+  ensure_generate_tools!(name, recipe)
+
+  steps.each do |gen|
+    chdir = gen[:chdir] ? File.join(src_dir, gen[:chdir]) : src_dir
+
+    if gen[:write]
+      dest = File.join(chdir, gen.fetch(:write))
+      step "generate (#{name}): write #{gen.fetch(:write)} (in #{gen[:chdir] || '.'})"
+      FileUtils.mkdir_p(File.dirname(dest))
+      File.write(dest, gen.fetch(:content))
+      next
+    end
+
+    argv_list =
+      if gen[:glob]
+        matches = Dir.glob(gen.fetch(:glob), base: chdir).sort
+        abort "#{name}: generate glob #{gen.fetch(:glob).inspect} matched no files in #{chdir}" if matches.empty?
+
+        matches.map { |file| gen.fetch(:argv).map { |token| token == :file ? file : token } }
+      else
+        [gen.fetch(:argv)]
+      end
+
+    argv_list.each do |argv|
+      step "generate (#{name}): #{argv.join(' ')} (in #{gen[:chdir] || '.'})"
+      run!(*argv, chdir: chdir)
+    end
+  end
+end
+
+# extra_copies' counterpart for what `generate` just produced: same { from =>
+# to } shape, but `from` is resolved against the source tree itself (where the
+# generator wrote it) rather than the installed gem. Kept as a distinct field
+# instead of overloading extra_copies so a reader never has to work out which
+# root a given `from` is relative to.
+def copy_generated_files(name, recipe, src_dir)
+  recipe.fetch(:generated_copies, {}).each do |from, to|
+    source = File.join(src_dir, from)
+    abort "#{name}: generate step produced no #{from} (generated_copies)" unless File.file?(source)
+
+    dest = File.join(src_dir, to)
+    FileUtils.mkdir_p(File.dirname(dest))
+    FileUtils.cp(source, dest)
+  end
+end
+
 # --- step 6: sanity ----------------------------------------------------------
 
 # A recipe with no sanity expression is refused rather than run: without it a
@@ -1161,6 +1616,17 @@ def verify_recipe!(name, recipe)
   abort "#{name}: :sanity needs :requires" if Array(sanity[:requires]).empty?
   abort "#{name}: unknown runner #{recipe[:runner].inspect}" unless
     %i[test_unit rspec ruby_files].include?(recipe[:runner])
+  Array(recipe[:generate]).each do |gen|
+    if gen[:write]
+      abort "#{name}: a generate write step needs :content" if gen[:content].to_s.empty?
+    else
+      abort "#{name}: a generate step needs :argv" if Array(gen[:argv]).empty?
+    end
+  end
+  if (exec = recipe[:suite_exec])
+    abort "#{name}: suite_exec needs :container" if exec[:container].to_s.strip.empty?
+    abort "#{name}: suite_exec needs :image" if exec[:image].to_s.strip.empty?
+  end
 end
 
 # Child-process script: require the gem the ordinary way, then check both that
@@ -1226,6 +1692,57 @@ def suite_files(recipe, src_dir)
   files
 end
 
+# --- step 7 (optional): run the suite inside recipe[:suite_exec] -------------
+#
+# A recipe's suite normally runs directly on the host (run below just execs
+# `cmd`). `suite_exec` is the escape hatch for a suite that needs an
+# environment the host itself is not, or must not be, one instance of --
+# mysql2's flaky-without-it timeout test is the case that needed this (see
+# that recipe's comment for the measurements behind it). Nothing upstream of
+# this point changes: the .so is still built and injected on the host, and
+# the sanity check above still runs there too, so the only thing this
+# redirects is the one subprocess that actually runs the test files.
+def ensure_suite_exec!(name, recipe)
+  exec = recipe.fetch(:suite_exec)
+  abort "#{name}: suite_exec needs docker on PATH, but it was not found. Install docker and re-run." unless
+    find_on_path("docker")
+
+  container = exec.fetch(:container)
+  out, ok = capture(["docker", "inspect", "-f", "{{.State.Running}}", container], chdir: nil, env: {}, timeout: 30)
+  unless ok && out.strip == "true"
+    abort "#{name}: suite_exec needs a running docker container named #{container.inspect}, but " \
+          "#{ok ? "docker inspect reports it is not running (state #{out.strip.inspect})" : "docker inspect failed:\n#{out}"}. " \
+          "Start it first (see the #{name} recipe's comment) and re-run."
+  end
+end
+
+# Wraps the already-built host `cmd`/`env` so it runs as `docker run
+# --network container:<container> <image> <cmd>` instead. This is only
+# transparent because it never renames a path: `cmd`, `chdir` and every value
+# in `env` are absolute host paths built by the rest of run_suite (GEM_HOME
+# under WORK_DIR, the source tree under WORK_DIR, -I flags into both), and the
+# two things every suite_exec recipe needs -- that WORK_DIR and the running
+# ruby's own install prefix (its interpreter binary, stdlib, and what an
+# installed gem's bin/ shebang points back at) -- are therefore mounted at
+# that identical path rather than remapped, so nothing downstream has to know
+# it is running in a container at all. `env` cannot be handed to Open3 here
+# (that would only set it for the `docker` process on the host, not whatever
+# docker execs inside the container), so it is translated to `-e` flags
+# instead.
+def suite_docker_argv(recipe, cmd, chdir, env)
+  exec = recipe.fetch(:suite_exec)
+  ro_mounts = ([RbConfig::CONFIG["prefix"]] + Array(exec[:mounts])).uniq
+  mount_flags = ["-v", "#{WORK_DIR}:#{WORK_DIR}"] + ro_mounts.flat_map { |path| ["-v", "#{path}:#{path}:ro"] }
+  env_flags = env.flat_map { |k, v| ["-e", "#{k}=#{v}"] }
+  extra_env_flags = exec.fetch(:env, {}).flat_map { |k, v| ["-e", "#{k}=#{v}"] }
+  [
+    "docker", "run", "--rm", "--network", "container:#{exec.fetch(:container)}",
+    *mount_flags, *env_flags, *extra_env_flags,
+    "-w", chdir, exec.fetch(:image),
+    *cmd
+  ]
+end
+
 # The three runner shapes:
 #   :test_unit  -- one ruby child that requires every suite file; the framework's
 #                  own at_exit runner prints the summary, which must then be in
@@ -1275,7 +1792,14 @@ def run_suite(name, recipe, src_dir, extra_load_paths)
   end
   child_load_paths = Array(recipe[:child_load_paths]).map { |path| File.expand_path(path, src_dir) }
   suite_env["RUBYLIB"] = (child_load_paths + extra_load_paths).join(File::PATH_SEPARATOR) unless child_load_paths.empty?
-  out, ok = run(*cmd, chdir: src_dir, env: suite_env)
+
+  if recipe[:suite_exec]
+    ensure_suite_exec!(name, recipe)
+    cmd = suite_docker_argv(recipe, cmd, src_dir, suite_env)
+    out, ok = run(*cmd, chdir: src_dir, env: {})
+  else
+    out, ok = run(*cmd, chdir: src_dir, env: suite_env)
+  end
   [out, ok, files.size]
 end
 
@@ -1336,7 +1860,8 @@ def verify_gem(name, recipe)
   result = { name: name, version: version, runner: recipe.fetch(:runner),
              status: nil, reason: nil, summary: nil, sanity: nil, evidence: [], output: nil }
 
-  install_out, install_ok = install_through_rubycc(name, version)
+  install_out, install_ok =
+    $control_mode ? install_through_control(name, version) : install_through_rubycc(name, version)
   unless install_ok
     result[:status] = :fail
     result[:reason] = "gem install failed"
@@ -1344,14 +1869,27 @@ def verify_gem(name, recipe)
     return result
   end
 
-  found, missing = rubycc_build_evidence(name, version)
-  result[:evidence] = found
-  unless missing.empty?
-    # The install "succeeded" but not through rubycc -- recording that as verified
-    # would be the same lie the sanity check guards against, so it is a failure.
-    result[:status] = :fail
-    result[:reason] = "no proof the build used rubycc: missing #{missing.join('; ')}"
-    return result
+  if $control_mode
+    traces = control_build_evidence(name, version)
+    result[:evidence] = traces.empty? ? ["no rubycc traces (host cc)"] : []
+    unless traces.empty?
+      # The install "succeeded" but is not the control it claims to be -- a
+      # silent rubycc build here would make the whole comparison meaningless,
+      # so it is a failure rather than a pass with a caveat.
+      result[:status] = :fail
+      result[:reason] = "not a control run: found rubycc traces: #{traces.join('; ')}"
+      return result
+    end
+  else
+    found, missing = rubycc_build_evidence(name, version, recipe)
+    result[:evidence] = found
+    unless missing.empty?
+      # The install "succeeded" but not through rubycc -- recording that as verified
+      # would be the same lie the sanity check guards against, so it is a failure.
+      result[:status] = :fail
+      result[:reason] = "no proof the build used rubycc: missing #{missing.join('; ')}"
+      return result
+    end
   end
 
   test_dep_versions = recipe.fetch(:test_dep_versions, {})
@@ -1359,6 +1897,8 @@ def verify_gem(name, recipe)
   extra_load_paths = Array(recipe[:dep_load_paths]).map { |dep| dep_lib_dir(dep) }
 
   src_dir = fetch_source(name, recipe)
+  run_generate_steps(name, recipe, src_dir)
+  copy_generated_files(name, recipe, src_dir)
   injected = inject_build_products(name, recipe, src_dir)
 
   sanity_ok, sanity_out = check_sanity(name, recipe, src_dir, injected, extra_load_paths)
@@ -1449,6 +1989,7 @@ end
 def report(results)
   puts "=" * 100
   puts "gem test-suite verification against rubycc-built extensions"
+  puts "  mode      : #{$control_mode ? 'CONTROL (host cc, not rubycc)' : 'rubycc'}"
   puts "  work dir  : #{WORK_DIR}"
   puts "  gem home  : #{gem_home}"
   puts "  ruby      : #{RUBY_DESCRIPTION}"
@@ -1469,7 +2010,7 @@ def report(results)
   )
 
   print_table(
-    "[2] rubycc build evidence",
+    $control_mode ? "[2] control build evidence (absence of rubycc)" : "[2] rubycc build evidence",
     %w[gem evidence],
     results.map { |r| [r[:name], r[:evidence].empty? ? "—" : r[:evidence].join(", ")] }
   )
@@ -1485,9 +2026,10 @@ def report(results)
   end
 
   passes = results.count { |r| r[:status] == :pass }
+  mode_tag = $control_mode ? " (control: host cc)" : ""
   puts
   puts "-" * 100
-  puts "summary: #{passes}/#{results.size} PASS"
+  puts "summary: #{passes}/#{results.size} PASS#{mode_tag}"
   results.each do |r|
     s = r[:summary]
     detail = s ? s[:line] : (r[:reason] || "")
@@ -1729,6 +2271,18 @@ end
 
 # --- main --------------------------------------------------------------------
 
+# Read by gem_home and every install/evidence function below that has to tell
+# the rubycc path from the control path apart. A CLI-parsed value rather than a
+# parameter because both paths already share every function down to gem_home
+# itself, and threading one more argument through all of them would be a much
+# larger diff than this one flag deserves.
+$control_mode = options[:control]
+
+# Recording a control run as "verified" would defeat the reason this flag
+# exists: the whole point is to compare the rubycc run against something that
+# is deliberately *not* recorded, not to grow the database with host-cc runs.
+abort "--control cannot be combined with --update" if options[:control] && options[:update]
+
 if options[:list]
   print_table("recipes", %w[gem version runner sanity],
               RECIPES.map { |n, r| [n, r[:version], r[:runner], r.dig(:sanity, :expr)] })
@@ -1751,10 +2305,13 @@ abort "--step N is required with --update (it goes into the recorded evidence)" 
   options[:update] && options[:step].to_s.empty?
 abort "--data #{options[:data]} does not exist" if options[:update] && !File.file?(options[:data])
 
-step "verifying #{selected.join(', ')}"
+step "verifying #{selected.join(', ')}#{$control_mode ? ' (control: host cc)' : ''}"
 step "work dir: #{WORK_DIR} (kept and reused)"
 FileUtils.mkdir_p(WORK_DIR)
-install_rubycc!
+# The control path never installs rubycc into its scratch GEM_HOME: rubycc
+# itself is what is under test, and a control run exists precisely to show
+# what happens without it.
+install_rubycc! unless $control_mode
 
 results = selected.map { |name| verify_gem(name, RECIPES.fetch(name)) }
 report(results)

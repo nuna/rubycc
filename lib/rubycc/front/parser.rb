@@ -43,11 +43,16 @@ module Rubycc
     #                             | parameter-declaration
     #                               ("," parameter-declaration)*
     #   parameter-declaration     = type-specifier declarator
+    #   identifier-list           = identifier ("," identifier)*
     #   declarator                = "*"* direct-declarator
     #   direct-declarator         = (identifier | "(" declarator ")")
     #                               direct-declarator-suffix*
     #   direct-declarator-suffix  = "[" constant-expression? "]"
     #                             | "(" parameter-type-list? ")"
+    #                             | "(" identifier-list ")"     -- old style
+    #   function-definition       = declaration-specifiers declarator
+    #                               declaration-list? compound-statement
+    #   declaration-list          = declaration+
     #   abstract-declarator       = "*"* direct-abstract-declarator?
     #   direct-abstract-declarator = ("(" abstract-declarator ")")?
     #                               direct-declarator-suffix*
@@ -203,10 +208,11 @@ module Rubycc
       # The gcc __atomic_* builtins this subset lowers, mapping each keyword to
       # its [AST::BuiltinAtomic kind, argument count]. The nine object forms
       # cover <ruby/atomic.h>; the fence is also supported because C11 library
-      # headers and libev use it without an _Atomic object. The test-and-set,
-      # generic (non-"_n") address-taking forms and the __sync_* family remain
-      # deliberately absent, so a program using one of those gets an
-      # "undeclared identifier" rather than a silently wrong lowering.
+      # headers and libev use it without an _Atomic object. The test-and-set and
+      # the generic (non-"_n") address-taking forms remain deliberately absent,
+      # so a program using one of those gets an "undeclared identifier" rather
+      # than a silently wrong lowering. (The legacy __sync_* family has its own
+      # table below.)
       #
       # The counts include the trailing memory-order argument(s) gcc's signatures
       # take — one for every form but __atomic_compare_exchange_n, which takes a
@@ -222,6 +228,37 @@ module Rubycc
         "__atomic_sub_fetch" => [:sub_fetch, 3],
         "__atomic_or_fetch" => [:or_fetch, 3],
         "__atomic_thread_fence" => [:fence, 1]
+      }.freeze
+
+      # The legacy gcc __sync_* builtins this subset lowers, mapping each keyword
+      # to its [AST::BuiltinSync kind, argument count]. These predate the
+      # __atomic_* family and differ from it in two ways that matter here: each
+      # one is a *full barrier* by definition, so none takes a memory-order
+      # argument, and the two compare-and-swap forms take the value they expect
+      # directly rather than through a pointer.
+      #
+      # The set is exactly the forms an existing IR op already gives the right
+      # meaning for. The bitwise members with no matching op — __sync_fetch_and_or,
+      # __sync_fetch_and_and, __sync_fetch_and_xor, __sync_fetch_and_nand,
+      # __sync_and_and_fetch, __sync_xor_and_fetch and __sync_nand_and_fetch —
+      # stay deliberately absent for the same reason the missing __atomic_* forms
+      # do: a program using one gets an "undeclared identifier" instead of a
+      # silently wrong lowering.
+      #
+      # gcc tolerates extra trailing arguments on all of these (its documented
+      # but ignored list of variables to protect). rubycc requires the exact
+      # count, so a miscount is reported here rather than quietly dropped.
+      SYNC_BUILTINS = {
+        "__sync_fetch_and_add" => [:fetch_add, 2],
+        "__sync_fetch_and_sub" => [:fetch_sub, 2],
+        "__sync_add_and_fetch" => [:add_fetch, 2],
+        "__sync_sub_and_fetch" => [:sub_fetch, 2],
+        "__sync_or_and_fetch" => [:or_fetch, 2],
+        "__sync_lock_test_and_set" => [:exchange, 2],
+        "__sync_lock_release" => [:release, 1],
+        "__sync_synchronize" => [:fence, 0],
+        "__sync_bool_compare_and_swap" => [:bool_compare_and_swap, 3],
+        "__sync_val_compare_and_swap" => [:val_compare_and_swap, 3]
       }.freeze
 
       # The gcc overflow-checked arithmetic builtins, mapping each keyword to its
@@ -289,14 +326,36 @@ module Rubycc
       # specifiers (position a), which apply to every declarator of the
       # declaration; only the init attributes are read back from it, and only
       # where they are admitted at all (see #parse_declaration_specifiers).
-      # volatile and register/auto leave no trace here.
-      DeclSpecInfo = Data.define(:storage, :const, :inline_p, :noreturn_p, :attributes)
+      # `alignas` is the strongest _Alignas the run asked for (an Alignas, or nil
+      # when none appeared). volatile and register/auto leave no trace here.
+      DeclSpecInfo = Data.define(:storage, :const, :inline_p, :noreturn_p, :attributes, :alignas)
 
       # One parsed GNU attribute: its normalized `name`, the folded `argument`
       # (an integer for "aligned" and for the init attributes' priority, nil for
       # every other attribute, whose arguments are skipped) and the `token` that
       # spelled it, so a diagnostic about the attribute can be located.
       Attribute = Data.define(:name, :argument, :token)
+
+      # The alignment an _Alignas specifier run asks for (6.7.5): `alignment` is
+      # the strongest boundary requested — a declaration may carry several
+      # alignment-specifiers and the largest wins (measured: gcc gives
+      # "_Alignas(8) _Alignas(16) int a" a 16-byte boundary whichever order the
+      # two are written in) — and `token` is the "_Alignas" that asked for it, so
+      # a diagnostic about the request can be located.
+      Alignas = Data.define(:alignment, :token)
+
+      # The identifier list of an old-style (K&R) function declarator — the
+      # "(a, b)" of "int add(a, b)", whose parentheses hold parameter *names*
+      # with no types at all (6.7.6.3, identifier-list form). `names` are the
+      # identifier tokens in order and `token` is the "(" that opened the list,
+      # both wanted by the declaration-list checks below.
+      #
+      # It rides the very channel a prototype's Parameter array does (the
+      # `function_params` a declarator reports), so it reaches every declarator
+      # position a parameter list can — and each of those refuses it (see
+      # #reject_identifier_list) except the one 6.7.6.3p3 allows, the definition
+      # of that same function.
+      IdentifierList = Data.define(:names, :token)
 
       # A tag scope entry for an enum tag. C keeps struct, union and enum tags in
       # one shared namespace, so enum tags live in @tag_scopes alongside the
@@ -379,6 +438,14 @@ module Rubycc
         # Ruby's exported-function macro puts the explicit default visibility
         # on a prototype, while the definition appears later without it.
         @visibility_attributes = {}
+        # The parameter types each file-scope function *prototype* declared,
+        # keyed by name. Only one construct reads them: an old-style definition
+        # of a name a prototype already declared, which 6.7.6.3p14 checks
+        # against that prototype and which is then passed its arguments in the
+        # prototype's form rather than the promoted one (see
+        # #old_style_parameter_abi_types). Every other agreement between
+        # declarations of one function is the generator's to enforce.
+        @prototype_param_types = {}
       end
 
       # Parses the whole translation unit into an AST::Program. An external
@@ -504,6 +571,16 @@ module Rubycc
         # position-by-position handling exists to avoid.
         attributes = spec_info.attributes + parse_attribute_specifiers(init_attributes: :allow)
 
+        # An old-style declarator ("int add(a, b)") names its parameters without
+        # typing them, so what follows is not a "{" but the declaration-list that
+        # supplies those types (6.9.1). This is the one position where such a
+        # declarator is legal at all, so it branches off before the ordinary
+        # "declarator then {" test below.
+        if function_params.is_a?(IdentifierList)
+          return parse_old_style_function_definition(name_tok, type, function_params, spec_info,
+                                                     type_tok, attributes)
+        end
+
         # A function definition is the one external declaration whose declarator
         # is followed by a compound statement (6.9.1); the declarator must be a
         # function type and it stands alone. Every other shape — a function
@@ -520,6 +597,8 @@ module Rubycc
           if function_params.nil?
             error_at(name_tok, "function definition through a typedef is not allowed")
           end
+          # A function reserves no object to align (6.7.5p2).
+          reject_alignas(spec_info.alignas, "function '#{name_tok.value}'")
           declare_ordinary_name(name_tok.value, type)
           register_visibility_attributes(name_tok.value, attributes)
           register_init_attributes(name_tok.value, attributes)
@@ -529,6 +608,209 @@ module Rubycc
 
         parse_external_declaration_list(base_type, name_tok, type, function_params,
                                         pointer_quals, spec_info, type_tok, attributes)
+      end
+
+      # An old-style (K&R) function definition, 6.9.1's second form: a declarator
+      # whose parentheses hold an identifier-list, then the declaration-list that
+      # gives those identifiers their types, then the body —
+      #
+      #   int add(a, b)
+      #     int a;
+      #     int b;
+      #   { return a + b; }
+      #
+      # The declarator has already been read (`type` is the function type its
+      # suffix built with an empty parameter list, a placeholder this rebuilds).
+      # Three rules of 6.9.1 shape what follows: an identifier the
+      # declaration-list never declares has type `int` (p6); the parameters are
+      # adjusted and default-argument promoted, because a function defined this
+      # way has no prototype and its arguments therefore arrive promoted (p10
+      # with 6.5.2.2p6); and the identifier list is only legal here, in the
+      # definition of that very function (6.7.6.3p3).
+      #
+      # The declaration-list is read in the *enclosing* scope rather than the
+      # body's, so a tag first mentioned there ("int f(p) struct s *p; {...}")
+      # lands at file scope. That is a superset of what C scopes it to, and the
+      # alternative — a scope the body then inherits — would need the body's
+      # scope opened before the declaration-list is even seen; gcc warns about
+      # such a tag rather than making it useful, so nothing real depends on the
+      # difference.
+      def parse_old_style_function_definition(name_tok, type, identifier_list, spec_info,
+                                              return_tok, attributes)
+        # Every suffix that could have wrapped the identifier list into something
+        # other than a function type is already refused where it is applied (a
+        # function returning a function, an array of functions), so this only
+        # guards the invariant the rebuild below depends on.
+        error_at(name_tok, "expected a function declarator") unless type.function?
+
+        declared = parse_parameter_declaration_list(identifier_list)
+        params = old_style_parameters(identifier_list, declared)
+        abi_types = old_style_parameter_abi_types(name_tok.value, params.map(&:type))
+        params = params.each_with_index.map do |param, i|
+          next param if abi_types[i] == param.type
+
+          AST::Parameter.new(param.name, param.type, param.token, param.const, abi_types[i])
+        end
+        # The declarator's own suffix could only build "returning T" with an
+        # empty parameter list; the types are known now, so the function's real
+        # type is put together here. An old-style definition is never variadic —
+        # an identifier list has no "..." — so the flag is false throughout.
+        type = Type::FunctionType.new(type.return_type, abi_types, false)
+
+        # A function reserves no object to align (6.7.5p2).
+        reject_alignas(spec_info.alignas, "function '#{name_tok.value}'")
+        declare_ordinary_name(name_tok.value, type)
+        register_visibility_attributes(name_tok.value, attributes)
+        register_init_attributes(name_tok.value, attributes)
+        parse_function_definition(name_tok.value, type.return_type, params, return_tok,
+                                  spec_info.storage, false)
+      end
+
+      # The declaration-list of an old-style definition: the run of declarations
+      # between the declarator and the body, each declaring one or more of the
+      # identifiers the list named. Returns a "name => [type, const, token]" map
+      # for #old_style_parameters, and leaves the stream on the body's "{".
+      #
+      # These are parameter declarations, so they take a parameter's specifiers —
+      # const/volatile but no storage class other than `register`, the only one
+      # 6.9.1p6 admits (the shared specifier parse raises "'static' is not
+      # allowed here" for the rest) — and a parameter's adjustments, an array or
+      # function declarator becoming a pointer (6.7.6.3p7-8), which is what makes
+      # "int f(a) int a[10];" a pointer parameter exactly as the prototyped
+      # spelling is.
+      def parse_parameter_declaration_list(identifier_list)
+        names = identifier_list.names.map(&:value)
+        declared = {}
+        until peek.punct?("{")
+          unless type_specifier?(peek)
+            # A ";", "," or "=" here ends the declarator as a *declaration*, so
+            # this was never a definition and 6.7.6.3p3 has the last word on the
+            # identifier list. Anything else (a stray token, end of file) is a
+            # definition that simply broke off, and says so.
+            reject_identifier_list(identifier_list) if peek.punct?(";") || peek.punct?(",") ||
+                                                       peek.punct?("=")
+            error_at(peek, "expected a parameter declaration or '{'")
+          end
+          parse_one_parameter_declaration(names, declared)
+        end
+        declared
+      end
+
+      # One declaration of the declaration-list: shared specifiers, then a
+      # comma-separated run of named declarators ("int a, *b;"), each of which
+      # must name a parameter of the identifier list exactly once.
+      def parse_one_parameter_declaration(names, declared)
+        base_type, spec_info = parse_declaration_specifiers(allow_storage_class: false,
+                                                            allow_register: true)
+        loop do
+          # A parameter's array declarator adjusts to a pointer, so "[]" is
+          # admitted here for the same reason #parse_parameter_declaration admits
+          # it in a prototype.
+          name_tok, param_type, params, pointer_quals =
+            parse_declarator(base_type, allow_incomplete_array: true)
+          reject_identifier_list(params)
+          parse_attribute_specifiers # position d: a trailing attribute on this declarator
+          # A parameter's boundary belongs to the calling convention, not to the
+          # declaration (6.7.5p2) — the same refusal a prototyped parameter gets.
+          reject_alignas(spec_info.alignas, "parameter '#{name_tok.value}'")
+          if peek.punct?("=")
+            error_at(name_tok, "parameter '#{name_tok.value}' must not be initialized")
+          end
+          unless names.include?(name_tok.value)
+            error_at(name_tok, "declaration for '#{name_tok.value}', which is not a parameter")
+          end
+          if declared.key?(name_tok.value)
+            error_at(name_tok, "redefinition of parameter '#{name_tok.value}'")
+          end
+          param_type = adjust_parameter_type(param_type)
+          reject_void_type(param_type, name_tok)
+          declared[name_tok.value] = [param_type,
+                                      declarator_object_const(param_type, spec_info.const, pointer_quals),
+                                      name_tok]
+          break unless peek.punct?(",")
+
+          advance # ","
+        end
+        expect_punct(";")
+      end
+
+      # The parameters of an old-style definition, in the identifier list's
+      # order: each name's declared entry, or — for a name the declaration-list
+      # left out — type `int`, located at the identifier itself (6.9.1p6). C90
+      # spelled that default out; C11 instead requires every identifier to be
+      # declared, but gcc keeps accepting the omission with a -Wimplicit-int
+      # warning (measured), and a warning is not a channel this compiler has, so
+      # the older, permissive reading is the one implemented.
+      def old_style_parameters(identifier_list, declared)
+        identifier_list.names.map do |name_tok|
+          type, const, decl_tok = declared[name_tok.value]
+          if type
+            AST::Parameter.new(name_tok.value, type, decl_tok, const)
+          else
+            AST::Parameter.new(name_tok.value, Type::Int, name_tok, false)
+          end
+        end
+      end
+
+      # The types an old-style definition's parameters are actually *passed* as,
+      # which is also its function type's parameter list.
+      #
+      # Normally these are the default-argument promotions of the declared types:
+      # the definition supplies no prototype, so every call to it promotes its
+      # arguments (6.5.2.2p6) and 6.9.1p10 makes the definition receive them that
+      # way — a `float` parameter is handed a `double`, a `char`/`short`/`_Bool`
+      # parameter an `int`.
+      #
+      # A prototype already declared for the same name overrides that, because
+      # calls compiled against it pass what *it* says (measured: gcc's
+      # "double h(float); double h(f) float f; {...}" receives a bare float in
+      # xmm0, while the same definition without the prototype receives a double
+      # and narrows it). 6.7.6.3p14 requires each prototype parameter to be
+      # compatible with the promoted declared type; gcc additionally accepts the
+      # unpromoted declared type there, warning only under -Wpedantic, and that
+      # is the case this branch exists for. Anything else is left to reach the
+      # generator's "conflicting types" check as the promoted form, which rejects
+      # exactly the mismatches gcc rejects ("int f(long); int f(a) int a;").
+      def old_style_parameter_abi_types(name, declared_types)
+        promoted = declared_types.map { |type| default_argument_promotion(type) }
+        prototype = @prototype_param_types[name]
+        return promoted unless prototype && prototype.size == declared_types.size
+
+        adoptable = prototype.each_with_index.all? do |type, i|
+          type == declared_types[i] || type == promoted[i]
+        end
+        adoptable ? prototype : promoted
+      end
+
+      # The default argument promotions (6.5.2.2p6) applied to one parameter
+      # type: `float` widens to `double` and an integer type narrower than `int`
+      # (char, short, their unsigned forms and _Bool) to `int`, which every such
+      # type fits since `int` is 32 bits on both targets. Everything else — int,
+      # long, their unsigned forms, __int128, double, pointers and structs —
+      # passes through unchanged. The array/function adjustments are not applied
+      # here: the declaration-list already made them (see
+      # #parse_one_parameter_declaration), exactly as a prototype's parameters do.
+      def default_argument_promotion(type)
+        return Type::Double if type.float? && type.size < 8
+        return Type::Int if type.integer? && type.size < 4
+
+        type
+      end
+
+      # Refuses an identifier list at a declarator position that cannot be the
+      # definition of that function. 6.7.6.3p3 lets a non-empty identifier list
+      # appear only there, so a prototype, a typedef, a member, a parameter or a
+      # local written that way ("int f(a, b);") names parameters whose types it
+      # never supplies. gcc only warns and reads such a declarator as the
+      # unprototyped "int f()"; this compiler models no unprototyped function
+      # type, so reading it that way would silently give the name a "(void)"
+      # signature and then check every call against it — a confident wrong
+      # diagnosis in place of an accurate one.
+      def reject_identifier_list(params)
+        return unless params.is_a?(IdentifierList)
+
+        error_at(params.token,
+                 "parameter names without types are only allowed in a function definition")
       end
 
       # The declaration-list form of an external declaration: a comma-separated
@@ -564,8 +846,17 @@ module Rubycc
       # them downstream).
       def parse_external_declarator(name_tok, type, params, pointer_quals, spec_info, return_tok,
                                     attributes)
+        # This declarator ends at a "," or a ";", so it is a declaration and not
+        # a definition — the one place 6.7.6.3p3 allows a non-empty identifier
+        # list.
+        reject_identifier_list(params)
         if type.function?
+          # A function reserves no object to align (6.7.5p2).
+          reject_alignas(spec_info.alignas, "function '#{name_tok.value}'")
           declare_ordinary_name(name_tok.value, type)
+          # A prototype's parameter types are kept for the one construct that
+          # consults them, an old-style definition of the same name.
+          @prototype_param_types[name_tok.value] = type.param_types
           register_visibility_attributes(name_tok.value, attributes)
           register_init_attributes(name_tok.value, attributes)
           AST::FunctionDecl.new(name_tok.value, type.return_type,
@@ -627,7 +918,9 @@ module Rubycc
           advance # "="
           init = parse_initializer
           if InitializerResolver.structural?(type, init)
-            type = InitializerResolver.resolve(type, init).type
+            # A file-scope object always has static storage duration, which is
+            # what lets a trailing flexible array member be initialized.
+            type = InitializerResolver.resolve(type, init, static_storage: true).type
             initializer_node = init
           elsif type.integer? && !references_sizeof_expr?(init) && !references_address_of?(init)
             # An integer scalar initializer is folded to a value here, where the
@@ -651,15 +944,22 @@ module Rubycc
           error_at(name_tok, "array size missing in '#{name_tok.value}'")
         end
         declare_ordinary_name(name_tok.value, type)
-        AST::GlobalDecl.new(name_tok.value, type, initializer_value, initializer_node, name_tok, const, spec_info.storage)
+        # The boundary is settled against the *finished* type, so an inferred
+        # "[]" bound is already in place when the "cannot reduce" check runs.
+        AST::GlobalDecl.new(name_tok.value, type, initializer_value, initializer_node, name_tok, const,
+                            spec_info.storage,
+                            alignas_boundary(spec_info.alignas, type, "'#{name_tok.value}'"))
       end
 
-      # A bare type-specifier list with no storage class, used everywhere a type
-      # is written without a "typedef" in front of it: a struct member, a
-      # parameter, and a type-name in a cast or sizeof. It resolves to a single
-      # Rubycc::Type, discarding the (always-false) typedef flag.
+      # A bare type-specifier list with no storage class, used where a type is
+      # written with no declaration to hang it on: the type-name of a cast,
+      # sizeof, _Alignof or compound literal. It resolves to a single
+      # Rubycc::Type, discarding the (always-false) typedef flag. A type-name
+      # declares no object, so it has nothing for an _Alignas to align
+      # (6.7.5p2) — gcc refuses one here and so does this.
       def parse_type_specifier
-        type, = parse_declaration_specifiers(allow_storage_class: false)
+        type, spec_info = parse_declaration_specifiers(allow_storage_class: false)
+        reject_alignas(spec_info.alignas, "type name")
         type
       end
 
@@ -675,7 +975,12 @@ module Rubycc
       # first (and only) type-specifier — once any type keyword has been seen, a
       # following identifier is the declarator, so "int T" declares a variable T
       # even where T names a type (the standard rule that keeps typedef names
-      # shadowable). Mixing categories ("unsigned struct", "enum T", ...) is a
+      # shadowable). "_Atomic" appears in both of the roles C11 gives it — a
+      # qualifier written among the other specifiers ("_Atomic int x", "int
+      # _Atomic x") and the parenthesized atomic-type-specifier
+      # ("_Atomic(int) x"), the two told apart by #atomic_type_specifier? — and
+      # #reject_unsupported_atomic_type settles which types it may name. Mixing
+      # categories ("unsigned struct", "enum T", ...) is a
       # diagnostic; `allow_storage_class` is false in the contexts a storage
       # class or a function specifier ("inline"/"_Noreturn") cannot appear (a
       # member, a parameter, a type-name), where const/volatile are still
@@ -696,6 +1001,8 @@ module Rubycc
         inline_p = false
         noreturn_p = false
         typedef_const = false # const folded in from a const typedef name
+        atomic_tok = nil # the first "_Atomic" written as a qualifier, for its diagnostic
+        alignas = nil    # the strongest _Alignas the run asked for
         loop do
           tok = peek
           if tok.type == :keyword && STORAGE_CLASS_KEYWORDS.include?(tok.value)
@@ -716,6 +1023,26 @@ module Rubycc
             advance
           elsif tok.keyword?("volatile")
             advance # accepted and ignored: M1 carries no qualified types
+          elsif tok.keyword?("_Atomic")
+            if atomic_type_specifier?
+              # "_Atomic ( type-name )" — a type-specifier, so it excludes every
+              # other one exactly as a struct or enum specifier does.
+              error_at(tok, "two or more data types in declaration specifiers") if composite || !specs.empty?
+              composite = parse_atomic_type_specifier
+            else
+              # "_Atomic" written as a bare type qualifier, before or after the
+              # type it qualifies. The type it lands on is only known once the
+              # whole run is read, so the token is kept for the check below.
+              atomic_tok ||= tok
+              advance
+            end
+          elsif tok.keyword?("_Alignas")
+            # An alignment-specifier may sit anywhere among the specifiers
+            # ("_Alignas(8) int x", "int _Alignas(8) x"). Where it may appear at
+            # all is the declarator's business — a typedef, function, parameter,
+            # bit-field or type-name refuses it (6.7.5p2) — so it is only
+            # collected here, strongest request winning.
+            alignas = stronger_alignas(alignas, parse_alignment_specifier)
           elsif tok.keyword?("inline")
             error_at(tok, "'inline' is not allowed here") unless allow_storage_class
             inline_p = true
@@ -759,13 +1086,186 @@ module Rubycc
         # A "const" typedef name ("typedef const int ci; ci x;") contributes its
         # const to the declaration, OR-ed with any const written here directly.
         spec_info = DeclSpecInfo.new(storage: storage, const: const_p || typedef_const,
-                                     inline_p: inline_p, noreturn_p: noreturn_p, attributes: attributes)
-        if composite
-          [composite, spec_info]
-        else
-          error_at(start_tok, "expected type specifier") if specs.empty?
-          [normalize_type_specifiers(specs, start_tok), spec_info]
+                                     inline_p: inline_p, noreturn_p: noreturn_p, attributes: attributes,
+                                     alignas: alignas)
+        base = if composite
+                 composite
+               else
+                 error_at(start_tok, "expected type specifier") if specs.empty?
+                 normalize_type_specifiers(specs, start_tok)
+               end
+        # A qualifier-spelled "_Atomic" qualifies whatever the run resolved to,
+        # so its admissibility is settled here, once that type is known. The
+        # parenthesized spelling checked its own operand in
+        # #parse_atomic_type_specifier, where the type-name's own token locates
+        # the diagnostic.
+        reject_unsupported_atomic_type(base, atomic_tok) if atomic_tok
+        [base, spec_info]
+      end
+
+      # alignment-specifier = "_Alignas" "(" (type-name | constant-expression) ")"
+      # (6.7.5). The type-name spelling asks for that type's own boundary, the
+      # expression spelling for the folded value; the two are told apart exactly
+      # as sizeof tells its operands apart, by whether a type-specifier opens the
+      # parentheses. A request of zero "has no effect" (6.7.5p3) and so yields
+      # nil, and any other non-power-of-two is a constraint violation gcc words
+      # the same way an aligned(N) attribute's is. Returns an Alignas or nil.
+      def parse_alignment_specifier
+        alignas_tok = advance # "_Alignas"
+        expect_punct("(")
+        value = if type_specifier?(peek)
+                  alignment_of_type_name(alignas_tok)
+                else
+                  evaluate_constant_expression(parse_conditional_expression,
+                                               "'_Alignas' operand is not an integer constant",
+                                               sizeof_expr: method(:fold_time_sizeof))
+                end
+        expect_punct(")")
+        return nil if value.zero?
+
+        unless value.positive? && (value & (value - 1)).zero?
+          error_at(alignas_tok, "requested alignment '#{value}' is not a positive power of 2")
         end
+        Alignas.new(alignment: value, token: alignas_tok)
+      end
+
+      # The boundary the "_Alignas ( type-name )" spelling asks for: the written
+      # type's own alignment, read here at parse time (the expression spelling's
+      # value is available just as early, so both reach the declarator as a plain
+      # Integer). A type with no alignment to speak of — void, a function, or an
+      # aggregate whose body this unit has not seen — is rejected the way
+      # _Alignof rejects the same operands rather than reaching Type's "incomplete
+      # struct has no alignment" guard.
+      def alignment_of_type_name(alignas_tok)
+        type = parse_type_name
+        unless alignment_known?(type)
+          error_at(alignas_tok, "invalid application of '_Alignas' to an incomplete type")
+        end
+        type.alignment
+      end
+
+      # Whether `type` has a boundary that can be read right now. Void and a
+      # function type have none at all, and an aggregate this unit has not
+      # defined (directly or as an array's element) has none *yet* — asking any
+      # of them for #alignment would trip Type's own guard.
+      def alignment_known?(type)
+        return false if type.void? || type.function?
+        return type.complete? if type.struct?
+        return alignment_known?(type.element) if type.array?
+
+        true
+      end
+
+      # The stronger of two alignment requests from one specifier run, either of
+      # which may be nil (no request). The larger boundary wins; on a tie the
+      # earlier token is kept, so a diagnostic points at the first spelling.
+      def stronger_alignas(current, addition)
+        return current if addition.nil?
+        return addition if current.nil?
+
+        addition.alignment > current.alignment ? addition : current
+      end
+
+      # Rejects an _Alignas written where 6.7.5p2 forbids one, naming the
+      # construct that refused it ("typedef", "parameter 'x'", ...). gcc's
+      # wording, which names the same five constructs.
+      def reject_alignas(alignas, what)
+        return if alignas.nil?
+
+        error_at(alignas.token, "alignment specified for #{what}")
+      end
+
+      # Enforces 6.7.5p4: an _Alignas may raise a declaration's boundary but
+      # never lower it, so a request weaker than the declared type's own
+      # alignment is a constraint violation rather than a silently ignored one.
+      # Returns the requested boundary (an Integer), or nil when nothing was
+      # asked for. `what` names the declarator in the diagnostic (gcc's wording:
+      # "'x'" for a named one, "unnamed field" for an anonymous member).
+      def alignas_boundary(alignas, type, what)
+        return nil if alignas.nil?
+
+        # An incomplete declared type has no boundary to compare against; such a
+        # declarator is refused for being incomplete downstream, so the check is
+        # skipped rather than tripping Type's guard here.
+        if alignment_known?(type) && alignas.alignment < type.alignment
+          error_at(alignas.token, "'_Alignas' specifiers cannot reduce alignment of #{what}")
+        end
+        alignas.alignment
+      end
+
+      # Whether the "_Atomic" at `peek` opens the parenthesized
+      # atomic-type-specifier "_Atomic ( type-name )" rather than standing as a
+      # bare type qualifier. C11 6.7.2.4 spells the two identically up to the
+      # "(", and the grammar separates them by what follows it: a type-name
+      # makes it the specifier, anything else leaves the "_Atomic" a qualifier
+      # of the surrounding declaration ("_Atomic (*p)" qualifies the pointee).
+      def atomic_type_specifier?
+        peek_ahead(1)&.punct?("(") && !peek_ahead(2).nil? && type_specifier?(peek_ahead(2))
+      end
+
+      # atomic-type-specifier = "_Atomic" "(" type-name ")" (6.7.2.4), the
+      # "_Atomic" not yet consumed. The type-name is an ordinary one, so it may
+      # itself be a pointer or a typedef name ("_Atomic(const upb_ArenaRef *)"
+      # is how upb spells one), and it goes through the same admissibility check
+      # the qualifier spelling does.
+      def parse_atomic_type_specifier
+        keyword_tok = advance # "_Atomic"
+        # The type-name nests a full declarator, which may nest further
+        # specifiers, so the shared recursion counter bounds it here just as it
+        # bounds a struct body.
+        with_nesting_guard(keyword_tok, "_Atomic type specifier") do
+          expect_punct("(")
+          type_tok = peek
+          type = parse_type_name
+          expect_punct(")")
+          reject_unsupported_atomic_type(type, type_tok)
+          type
+        end
+      end
+
+      # The object widths a plain machine access is indivisible at on both
+      # targets: one naturally aligned load or store instruction covers each of
+      # them, and #reject_unsupported_atomic_type admits an _Atomic type only at
+      # these widths. Wider than 8 there is no such instruction on either
+      # baseline ISA rubycc emits for (x86-64 without cmpxchg16b, armv8-a
+      # without LSE), so an _Atomic 16-byte object would be a plainly
+      # non-atomic one.
+      ATOMIC_TYPE_WIDTHS = [1, 2, 4, 8].freeze
+
+      # Rejects an `_Atomic T` this subset cannot honestly represent.
+      #
+      # rubycc compiles `_Atomic T` as plain `T`: same layout, same ABI. That is
+      # a measurement, not an assumption — gcc's sizeof and _Alignof for
+      # `_Atomic(T)` equal those of `T` for every integer, floating and pointer
+      # type (verified type by type in test/test_header_abi.rb's STDATOMIC
+      # spec) — but it holds only for the types listed there. It fails for an
+      # aggregate: gcc raises a power-of-two-sized struct's alignment to its
+      # size under _Atomic (measured: a 2-byte struct goes from _Alignof 1 to 2,
+      # a 16-byte one from 8 to 16), and an aggregate of any other size is not
+      # lock-free at all, so gcc routes it through libatomic's locked path.
+      # Compiling either as a plain struct would silently drop both the layout
+      # and the atomicity, so an aggregate is refused here instead.
+      #
+      # The same reasoning bounds the widths: 16-byte scalars (`__int128`, and
+      # `long double` on a target that has one) do share `T`'s layout, but no
+      # single instruction accesses them on the ISA baselines rubycc emits, so
+      # they are refused too. C11 6.7.2.4p3 already forbids `_Atomic` on an
+      # array or a function type, and gcc diagnoses the array form
+      # ("'_Atomic'-qualified array type", measured), so those get their own
+      # message.
+      def reject_unsupported_atomic_type(type, tok)
+        if type.array? || type.function?
+          error_at(tok, "'_Atomic' cannot be applied to #{type.array? ? "an array" : "a function"} type")
+        end
+        # "_Atomic void" names no object at all — the only way to write it is
+        # "_Atomic void *", where the qualifier lands on a pointee nothing ever
+        # loads — so gcc accepts it (measured) and so does this, leaving the
+        # existing void-object rules to refuse a real "_Atomic void v;".
+        return if type.void?
+        return if (type.arithmetic? || type.pointer?) && ATOMIC_TYPE_WIDTHS.include?(type.size)
+
+        error_at(tok, "'_Atomic' is not supported on '#{type}': this subset applies it only to " \
+                      "integer, floating and pointer types of #{ATOMIC_TYPE_WIDTHS.join(", ")} bytes")
       end
 
       # Collapses a multiset of integer type-specifier keywords (in any order:
@@ -1349,11 +1849,15 @@ module Rubycc
           end
 
           spec_tok = peek
-          member_base = parse_type_specifier
+          # An _Alignas among a member declaration's specifiers belongs to every
+          # declarator it introduces, exactly as the base type does, so it is
+          # carried alongside it rather than folded into the type.
+          member_base, member_spec = parse_declaration_specifiers(allow_storage_class: false)
+          alignas = member_spec.alignas
           if peek.punct?(";")
-            parse_anonymous_member(member_base, spec_tok, raw_members, seen, flex)
+            parse_anonymous_member(member_base, spec_tok, raw_members, seen, flex, alignas)
           else
-            parse_member_declarators(member_base, spec_tok, raw_members, seen, flex)
+            parse_member_declarators(member_base, spec_tok, raw_members, seen, flex, alignas)
           end
           expect_punct(";")
         end
@@ -1371,7 +1875,7 @@ module Rubycc
       # declares nothing and is rejected. The member is recorded with a nil name
       # and its inner type; every name it exposes transparently is added to
       # `seen` so a later member cannot shadow one of them.
-      def parse_anonymous_member(member_base, spec_tok, raw_members, seen, flex)
+      def parse_anonymous_member(member_base, spec_tok, raw_members, seen, flex, alignas = nil)
         reject_member_after_flexible_array(flex, spec_tok)
         unless member_base.struct? && member_base.tag.nil?
           error_at(spec_tok, "declaration does not declare anything")
@@ -1381,7 +1885,7 @@ module Rubycc
           seen[name] = true
         end
         flex[:others] += 1
-        raw_members << [nil, member_base, nil]
+        raw_members << [nil, member_base, nil, alignas_boundary(alignas, member_base, "unnamed field")]
       end
 
       # The comma-separated struct-declarators sharing `member_base`. Each is
@@ -1392,18 +1896,22 @@ module Rubycc
       # shapes the layout but declares nothing (6.7.2.1). A member may not be a
       # bare function; a pointer to one is fine. Each named member is checked for
       # a duplicate against `seen` (which already holds any transparently exposed
-      # names) and then added to it. Every recorded triple is
-      # [name, Type, bit_width], bit_width nil for a plain member.
-      def parse_member_declarators(member_base, spec_tok, raw_members, seen, flex)
+      # names) and then added to it. Every recorded entry is
+      # [name, Type, bit_width, alignas], bit_width nil for a plain member and
+      # alignas the boundary an _Alignas asked for (nil for none).
+      def parse_member_declarators(member_base, spec_tok, raw_members, seen, flex, alignas = nil)
         loop do
           reject_member_after_flexible_array(flex, spec_tok)
           if peek.punct?(":")
             advance # ":"
+            # A bit-field has no address of its own to align, so 6.7.5p2 forbids
+            # an _Alignas on one.
+            reject_alignas(alignas, "bit-field")
             # An unnamed bit-field declares no member, so it does not satisfy the
             # "a FAM needs another named member" rule (flex[:others] untouched).
             raw_members << [nil, member_base, parse_bitfield_width(member_base, spec_tok)]
           else
-            parse_named_member(member_base, raw_members, seen, flex)
+            parse_named_member(member_base, raw_members, seen, flex, alignas)
           end
           break unless peek.punct?(",")
 
@@ -1416,15 +1924,21 @@ module Rubycc
       # constraint violation (6.7.2.1p3, "only an unnamed member may be
       # zero-width"). A plain member may not be a function, void, or an
       # incomplete aggregate by value.
-      def parse_named_member(member_base, raw_members, seen, flex)
+      def parse_named_member(member_base, raw_members, seen, flex, alignas = nil)
         # A trailing "[]" (an incomplete array) is admitted here so the last
         # member may be a flexible array member; #reject_flexible_array_member
         # then enforces the 6.7.2.1p18 constraints (struct only, and never
         # followed by another member — see #reject_member_after_flexible_array).
-        name_tok, type = parse_declarator(member_base, allow_incomplete_array: true,
-                                          allow_zero_length_array: true)
+        name_tok, type, params = parse_declarator(member_base, allow_incomplete_array: true,
+                                                  allow_zero_length_array: true)
+        # A member is never a function definition, so an identifier list on one
+        # ("struct s { int m(a, b); };") names types that never arrive. The
+        # "declared as a function" refusal below would also catch it, but only
+        # after the declarator had been read as a plain "int m()".
+        reject_identifier_list(params)
         if peek.punct?(":")
           advance # ":"
+          reject_alignas(alignas, "bit-field '#{name_tok.value}'")
           width = parse_bitfield_width(type, name_tok)
           error_at(name_tok, "named bit-field '#{name_tok.value}' has zero width") if width.zero?
           register_member_name(name_tok, seen)
@@ -1434,7 +1948,8 @@ module Rubycc
           # A GNU attribute may trail a member declarator (position f):
           # "int m __attribute__((packed));". Accepted and discarded — a
           # member-level packed/aligned has no effect on this subset's layout
-          # (only a whole-struct attribute steers #layout_struct).
+          # (only a whole-struct attribute steers #layout_struct, and only an
+          # _Alignas raises a single member's boundary).
           parse_attribute_specifiers
           error_at(name_tok, "field '#{name_tok.value}' declared as a function") if type.function?
           reject_void_type(type, name_tok)
@@ -1446,7 +1961,8 @@ module Rubycc
           else
             flex[:others] += 1
           end
-          raw_members << [name_tok.value, type, nil]
+          raw_members << [name_tok.value, type, nil,
+                          alignas_boundary(alignas, type, "'#{name_tok.value}'")]
         end
       end
 
@@ -1531,8 +2047,9 @@ module Rubycc
       # type-name from a parenthesized expression. A declaration begins with an
       # integer/void type-specifier keyword, "struct"/"union"/"enum", a storage
       # class ("typedef"/"static"/"extern"/"register"/"auto"), a type qualifier
-      # ("const"/"volatile"), the "inline"/"_Noreturn" function specifiers, or a
-      # typedef name — an identifier bound to a type in the ordinary namespace
+      # ("const"/"volatile"/"_Atomic"), the "inline"/"_Noreturn" function
+      # specifiers, or a typedef name
+      # — an identifier bound to a type in the ordinary namespace
       # whose innermost binding is not shadowed by a variable. The storage-class
       # and function-specifier keywords never open an expression, so admitting
       # them here only ever forwards a genuine declaration (a bare "static x;"
@@ -1544,6 +2061,11 @@ module Rubycc
                  token.value == "struct" || token.value == "union" ||
                  token.value == "enum" ||
                  token.value == "const" || token.value == "volatile" ||
+                 token.value == "_Atomic" ||
+                 # An alignment-specifier opens a declaration too ("_Alignas(16)
+                 # char buf[64];"), and never an expression, so block-item and
+                 # for-init must not read one as a statement.
+                 token.value == "_Alignas" ||
                  token.value == "inline" || token.value == "_Noreturn" ||
                  # A leading GNU attribute opens a declaration too
                  # ("__attribute__((unused)) int x;"), so block-item and
@@ -1638,8 +2160,16 @@ module Rubycc
         # A parameter's array declarator adjusts to a pointer (6.7.6.3p7), so an
         # empty "[]" is admitted here just as it is for an external declaration's
         # incomplete array; #adjust_parameter_type resolves it below.
-        name_tok, type, _params, pointer_quals =
+        name_tok, type, params, pointer_quals =
           parse_declarator(base_type, name_mode: :optional, allow_incomplete_array: true)
+        # A parameter that is itself a function declarator ("int f(int g(a, b))")
+        # is a declaration, not the definition of g, so its identifier list has
+        # no types to come.
+        reject_identifier_list(params)
+        # A parameter's boundary is the calling convention's to choose, not the
+        # declaration's, so 6.7.5p2 forbids an _Alignas on one.
+        reject_alignas(spec_info.alignas,
+                       name_tok ? "parameter '#{name_tok.value}'" : "parameter")
         # A GNU attribute may trail a parameter declarator (position e):
         # "int f(int x __attribute__((unused)))". Accepted and discarded; the
         # specifier-position form is already handled in the specifier parse.
@@ -1712,8 +2242,14 @@ module Rubycc
       # AST node, so this returns an empty run.
       def parse_typedef_declaration(base_type, spec_info)
         loop do
-          name_tok, type, _params, pointer_quals = parse_declarator(base_type)
+          name_tok, type, params, pointer_quals = parse_declarator(base_type)
+          # A typedef names a type, never a function this unit defines, so an
+          # identifier list ("typedef int F(a, b);") could not be a definition.
+          reject_identifier_list(params)
           parse_attribute_specifiers # position d: a trailing attribute on the typedef name
+          # A typedef declares a type, not an object, so there is nothing for an
+          # _Alignas to align (6.7.5p2).
+          reject_alignas(spec_info.alignas, "typedef '#{name_tok.value}'")
           if peek.punct?("=")
             error_at(peek, "typedef '#{name_tok.value}' must not be initialized")
           end
@@ -1732,7 +2268,11 @@ module Rubycc
       end
 
       def parse_init_declarator(base_type, spec_info)
-        name_tok, type, _params, pointer_quals = parse_declarator(base_type, allow_incomplete_array: true)
+        name_tok, type, params, pointer_quals = parse_declarator(base_type, allow_incomplete_array: true)
+        # A block-scope declarator declares; a definition never nests (see the
+        # nested-function refusal below), so an identifier list here supplies no
+        # types either.
+        reject_identifier_list(params)
         parse_attribute_specifiers # position d: a trailing attribute on this local declarator
         reject_void_type(type, name_tok)
         # A body here would be a *nested function definition* — a GNU extension,
@@ -1746,6 +2286,8 @@ module Rubycc
           if peek.punct?("{")
             error_at(name_tok, "nested function definitions are not supported")
           end
+          # A function reserves no object to align (6.7.5p2).
+          reject_alignas(spec_info.alignas, "function '#{name_tok.value}'")
         else
           reject_object_specifiers(name_tok, spec_info)
         end
@@ -1761,7 +2303,8 @@ module Rubycc
           # fixes the object's type — completing an inferred "[]" bound — and is
           # validated for shape here, so a later stage sees a finished type.
           if InitializerResolver.structural?(type, initializer)
-            type = InitializerResolver.resolve(type, initializer).type
+            type = InitializerResolver.resolve(type, initializer,
+                                               static_storage: spec_info.storage == :static).type
           end
         elsif type.array? && type.length.nil? && spec_info.storage != :extern
           # A block-scope `extern T a[];` references a file-scope array defined
@@ -1772,7 +2315,10 @@ module Rubycc
           error_at(name_tok, "array size missing in '#{name_tok.value}'")
         end
         declare_ordinary_name(name_tok.value, type)
-        AST::VariableDecl.new(name_tok.value, type, initializer, name_tok, const, spec_info.storage)
+        # The boundary is settled against the *finished* type, so an inferred
+        # "[]" bound is already in place when the "cannot reduce" check runs.
+        AST::VariableDecl.new(name_tok.value, type, initializer, name_tok, const, spec_info.storage,
+                              alignas_boundary(spec_info.alignas, type, "'#{name_tok.value}'"))
       end
 
       # Rejects the declaration specifiers that may sit on a function but not on
@@ -1954,8 +2500,9 @@ module Rubycc
 
       # A declarator's "*" run, each star optionally followed by a type-qualifier
       # list ("int * const p", "char * const * volatile q"). Returns one boolean
-      # per star, true when that pointer level is const-qualified; "volatile" is
-      # accepted and ignored, since M1 carries no qualified types. The list is in
+      # per star, true when that pointer level is const-qualified; "volatile" and
+      # "_Atomic" are accepted and ignored, since M1 carries no qualified types.
+      # The list is in
       # textual order, so the first star wraps the base first (the innermost
       # pointer) and the last is the outermost — the level that qualifies the
       # declared object.
@@ -1968,6 +2515,12 @@ module Rubycc
               const_here = true
               advance
             elsif peek.keyword?("volatile")
+              advance
+            elsif peek.keyword?("_Atomic")
+              # "_Atomic" on this pointer level ("int * _Atomic p"): it qualifies
+              # the pointer itself, which is one of the widths
+              # ATOMIC_TYPE_WIDTHS admits whatever it points at, so there is
+              # nothing to refuse and it is dropped like "volatile".
               advance
             elsif peek.keyword?("__attribute__")
               # A GNU attribute may follow a pointer's "*" ("int * __attribute__
@@ -2045,7 +2598,24 @@ module Rubycc
           elsif suffixes.first&.first == :function
             suffixes.first[1]
           end
+        reject_unsurfaced_identifier_lists(suffixes, function_params)
         [name_tok, build, function_params]
+      end
+
+      # Refuses an identifier list written on a suffix that is not the one making
+      # the declared name a function — "int (*g)(a, b);", where the list sits on
+      # the pointer's own suffix, or a second suffix on the same declarator. Only
+      # the surfaced suffix can ever be a definition's parameter list, and only
+      # that one reaches #reject_identifier_list through `function_params`; the
+      # rest would otherwise be quietly read as an empty parameter list, since
+      # that is the placeholder type #apply_declarator_suffix builds for them.
+      def reject_unsurfaced_identifier_lists(suffixes, function_params)
+        suffixes.each do |suffix|
+          next unless suffix[1].is_a?(IdentifierList)
+          next if suffix[1].equal?(function_params)
+
+          reject_identifier_list(suffix[1])
+        end
       end
 
       # The core of a direct-declarator, returning [name_token, build,
@@ -2178,7 +2748,8 @@ module Rubycc
       # here in its identifier spellings (see #restrict_qualifier?).
       def skip_array_qualifiers
         loop do
-          if peek.keyword?("const") || peek.keyword?("volatile") || peek.keyword?("static")
+          if peek.keyword?("const") || peek.keyword?("volatile") ||
+             peek.keyword?("_Atomic") || peek.keyword?("static")
             advance
           elsif restrict_qualifier?(peek)
             advance
@@ -2188,18 +2759,55 @@ module Rubycc
         end
       end
 
-      # A direct-declarator's function suffix "(" parameter-type-list? ")". The
-      # parameters are parsed (and array/function ones adjusted, see
-      # #parse_parameter_declaration) here so the suffix can both build the
-      # function type and, when it belongs to a real function, hand its
-      # Parameter objects back for the body. Returns [:function, params,
-      # paren_token, variadic], the variadic flag carrying the trailing "..."
-      # forward to #apply_declarator_suffix so it lands on the FunctionType.
+      # A direct-declarator's function suffix: "(" parameter-type-list? ")", or
+      # the old-style "(" identifier-list ")". The parameters are parsed (and
+      # array/function ones adjusted, see #parse_parameter_declaration) here so
+      # the suffix can both build the function type and, when it belongs to a
+      # real function, hand its Parameter objects back for the body. Returns
+      # [:function, params, paren_token, variadic], `params` being either the
+      # Parameter array of a prototype or an IdentifierList; the variadic flag
+      # carries a trailing "..." forward to #apply_declarator_suffix so it lands
+      # on the FunctionType.
       def parse_function_suffix
         paren_tok = advance # "("
+        return [:function, parse_identifier_list(paren_tok), paren_tok, false] if identifier_list_ahead?
+
         params, variadic = parse_parameter_type_list
         expect_punct(")")
         [:function, params, paren_tok, variadic]
+      end
+
+      # Whether the just-opened "(" holds an identifier-list rather than a
+      # parameter-type-list. A parameter declaration always begins with a
+      # type-specifier — a keyword, or an identifier bound as a typedef name — so
+      # a plain identifier at this position can only be a parameter *name*, which
+      # is the old-style form. The empty "()" is neither: it stays the
+      # no-parameter list it has always been here (C calls it an empty identifier
+      # list, so "int f() { }" is an old-style definition of a function with no
+      # parameters, which is the same thing this subset already builds).
+      def identifier_list_ahead?
+        peek.type == :ident && !typedef_name?(peek.value)
+      end
+
+      # identifier-list = identifier ("," identifier)*, closed by the ")".
+      # Repeating a name would leave the definition with two parameters of the
+      # same name and no way to refer to either, so it is refused here rather
+      # than at the binding.
+      def parse_identifier_list(paren_tok)
+        names = []
+        loop do
+          name_tok = peek
+          error_at(name_tok, "expected identifier") unless name_tok.type == :ident
+          if names.any? { |seen| seen.value == name_tok.value }
+            error_at(name_tok, "duplicate parameter name '#{name_tok.value}'")
+          end
+          names << advance
+          break unless peek.punct?(",")
+
+          advance # ","
+        end
+        expect_punct(")")
+        IdentifierList.new(names, paren_tok)
       end
 
       # Wraps `inner` in one declarator suffix, enforcing the constraints a
@@ -2219,7 +2827,14 @@ module Rubycc
         if kind == :function
           error_at(tok, "function returning a function is not allowed") if inner.function?
           error_at(tok, "function returning an array is not allowed") if inner.array?
-          Type::FunctionType.new(inner, data.map(&:type), variadic)
+          # An identifier list carries no types yet — the declaration-list that
+          # follows the declarator supplies them — so the type built here is a
+          # placeholder with no parameters, which
+          # #parse_old_style_function_definition replaces once they are known.
+          # It matches what an empty "()" builds, so a declarator that never
+          # reaches a definition still has a usable (if arity-less) type.
+          params = data.is_a?(IdentifierList) ? [] : data.map(&:type)
+          Type::FunctionType.new(inner, params, variadic)
         else
           error_at(tok, "array of functions is not allowed") if inner.function?
           error_at(tok, "array has incomplete element type") if inner.array? && inner.incomplete?
@@ -2806,6 +3421,8 @@ module Rubycc
             parse_builtin_overflow
           elsif peek.type == :keyword && ATOMIC_BUILTINS.key?(peek.value)
             parse_builtin_atomic
+          elsif peek.type == :keyword && SYNC_BUILTINS.key?(peek.value)
+            parse_builtin_sync
           elsif peek.punct?("+")
             advance # unary + is a no-op; fold it away
             parse_cast_expression
@@ -3057,6 +3674,28 @@ module Rubycc
           error_at(keyword_tok, "'#{keyword_tok.value}' expects #{arity} arguments, have #{args.size}")
         end
         AST::BuiltinAtomic.new(kind, args, keyword_tok)
+      end
+
+      # "__sync_xxx ( ... )": one of the legacy gcc atomic builtins rubycc
+      # lowers. Shaped like #parse_builtin_atomic — SYNC_BUILTINS records the
+      # kind and the exact argument count, and everything type-dependent is the
+      # generator's to diagnose — but the counts here are the operand counts
+      # alone, no memory order being part of these signatures.
+      #
+      # gcc lets a caller append extra arguments (the "protected variables" its
+      # manual describes and then ignores); rubycc holds every form to its exact
+      # arity, so a call that drifted from the intended shape is reported instead
+      # of silently accepted.
+      def parse_builtin_sync
+        keyword_tok = advance # the "__sync_..." keyword
+        kind, arity = SYNC_BUILTINS.fetch(keyword_tok.value)
+        expect_punct("(")
+        args = parse_argument_expression_list
+        expect_punct(")")
+        unless args.size == arity
+          error_at(keyword_tok, "'#{keyword_tok.value}' expects #{arity} arguments, have #{args.size}")
+        end
+        AST::BuiltinSync.new(kind, args, keyword_tok)
       end
 
       # "__builtin_unreachable ()": no operands. Lowers to no code (rubycc does
