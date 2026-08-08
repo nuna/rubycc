@@ -314,5 +314,16 @@
       }
     ],
     "notes": "PR #19 recorded nio4r as blocked by sandbox socket/PTY constraints; a re-measurement showed TCP, PTY and UNIX sockets all work here, and the suite passed with no rubycc change. The run reported 2 pendings (not failures)."
+  },
+  "google-protobuf": {
+    "verifications": [
+      {
+        "versions": ["4.35.1"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-08",
+        "evidence": "RUBYCC=1 gem install google-protobuf succeeded (protobuf_c.so built through rmake); the gem's own test/unit suite passed 328 tests / 555,716 assertions / 0 failures / 0 errors (Step atomic-type-14)."
+      }
+    ],
+    "notes": "Verification requires protoc: the upstream tarball ships no _pb.rb, so the recipe generates all 27 of them (12 well-known + 15 test protos) with the protoc matching the pinned tag. Measured with libprotoc 35.1 -- note the gemspec version 4.35.1 and the upstream tag v35.1 differ. The gemspec lists two extensions in one directory, so RubyGems overwrites gem_make.out with the second (non-compiling) one; the Makefile's CC=rubycc is what proves the build, and the .so carries no .comment section (a gcc-built .so on this host carries 'GCC: (Ubuntu 13.3.0-...)'). The run reported 2 omissions (not failures)."
   }
 }

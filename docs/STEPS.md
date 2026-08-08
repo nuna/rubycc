@@ -8928,9 +8928,64 @@ rubycc が一度も動かないまま「成功」する — 測定として無�
 
 ---
 
+## atomic-type-14 — google-protobuf を検証した(M5 H4)
+
+atomic-type-13 でビルドが通ったので、上流テストを実走した。
+
+```
+328 tests, 574,617 assertions, 0 failures, 0 errors, 2 omissions
+100% passed
+```
+
+**コーパス最大の gem が 100% 通った。**
+
+### protoc が要る — それを注記として残す
+
+上流ターボールに **`_pb.rb` が 1 本も入っていない**。`ruby/Rakefile` の `:genproto` が
+protoc で生成する前提なので、**protoc 無しでは原理的に検証できない**。
+レシピに `generate:` を足し、27 本(well-known 12 + テスト用 15)を生成する形にした。
+
+**外部コマンド依存はレシピが明示し、無ければ何が足りないかを述べて落ちる。**
+黙って進んで意味の分からないテスト失敗になるのが最悪だからである。
+
+**版の食い違いに注意**: gemspec は **4.35.1** だが**上流タグは `v35.1`**。
+以前このずれで 404 を踏んで「テスト取得不能」と記録していた。
+
+### ビルド証拠の検査を 1 つ緩めた — その分を別の証拠で埋めた
+
+gemspec が **同じディレクトリに 2 つの extension**(`extconf.rb` と `Rakefile`)を
+挙げているため、RubyGems が **`gem_make.out` を 2 つ目(コンパイルしない方)の
+記録で上書きする**。`gem_make.out:rmake` の検査が通らなくなる。
+
+**緩めた分は自分で埋めた。** 独立に確かめたこと:
+
+| 証拠 | 結果 |
+|---|---|
+| 生成された Makefile | `CC = .../rubycc-1.0.0/exe/rubycc` |
+| `.so` の `.comment` セクション | **無い**(このホストの gcc 製 `.so` は `GCC: (Ubuntu 13.3.0-...)` を持つ) |
+
+`.comment` の不在は「gcc が作ったものではない」ことの**積極的な証拠**である。
+検査を緩めるときは、**緩めた分を別の角度から埋める**必要がある。
+
+### プリコンパイル版という罠
+
+`--platform=ruby` を付けないと **x86_64-linux-gnu のプリコンパイル済み gem** が入り、
+**rubycc が一度も動かないまま「Successfully installed」**になる。
+最初にこれを踏んだ。レシピには `force_ruby_platform` として畳み込んである。
+
+### 結果
+
+R10 通過率 **26/33 = 78.8% → 27/33 = 81.8%**(90% には 30 件、**あと 3 件**)。
+
+---
+
 ## 現在のテスト規模
 
-atomic-type-11 完了時点: **2,949 runs / 9,355 assertions / 0 failures / 0 errors / 44 skips**
+atomic-type-14 完了時点: **2,949 runs / 9,373 assertions / 0 failures / 0 errors / 44 skips**
+(テストメソッドは増えず、assertions のみ +18 = google-protobuf の記録が
+`data/verified_gems.json` を舐めるドクターのテストの照合対象に入ったため。
+atomic-type-13 はリゾルバの是正でテスト増なし)
+(以前) atomic-type-11 完了時点: **2,949 runs / 9,355 assertions / 0 failures / 0 errors / 44 skips**
 (atomic-type-10 から +5 = 整数キャスト形の空ポインタ定数の gcc 差分実行(x86_64・aarch64)・
 `(VALUE)1` と `(double)0` が落ちることの診断 + サンプル 1 本)
 (以前) atomic-type-10 完了時点: **2,944 runs / 9,342 assertions / 0 failures / 0 errors / 44 skips**
