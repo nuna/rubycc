@@ -9069,9 +9069,72 @@ R10 通過率 **28/33 = 84.8% → 28/32 = 87.5%**(90% には 29 件、**あと 1
 
 ---
 
+## corpus-ninety-2 — puma を上流と同じ回し方で検証した。**R10 達成**(M5 H4)
+
+puma は 840 runs 中 **13 件**落ちていた。中身を見たら **12 件は「bundler が無いこと」
+そのもの**が原因だった:
+
+| 件数 | 失敗内容 |
+|---|---|
+| 6 | `NameError: uninitialized constant TestWorkerGemIndependence::Bundler` |
+| 1 | `BUNDLE_GEMFILE` が nil(phased restart で引き継がれることの検査) |
+| 2 | `prune_bundler` が対象を持たずタイムアウト |
+| 2 | load path に Gemfile 由来の依存が出ない |
+| 1 | `TestURLMap`: `Expected "OK" / Actual "::Rack::URLMap is loaded"` |
+| 1 | `rackup` の binstub が PATH に無い |
+
+**テストが検査したい機能そのものが、bundler の無い環境には存在しない。**
+検証ツールが bundler を排除しているのは scratch GEM_HOME を汚さないための正しい設計
+(atomic-type-3)だが、**puma のスイートはその前提を要求する**。
+
+### `bundle_install` — `bundle_gemfile: :empty` の逆向き
+
+上流の Gemfile で `bundle install` してから `bundle exec` で回すモードを足した。
+既存の `bundle_gemfile: :empty`(**合成**の Gemfile を渡して開発依存を避ける)とは
+**逆向き**の機能なので、両方を同時に指定したら abort するようにしてある。
+`BUNDLE_PATH` は src ツリー配下に固定し、ホストの gem 環境を汚さない。
+
+### `CI=1` は緑を選び取る細工ではない
+
+`test/helper.rb:118` は **`if ENV['CI']` のときだけ `minitest-retry` を有効化**する。
+`TestIntegrationCluster` の fork / phased-restart 系は worker を fork して
+再起動中の接続を見る作りで**元から不安定**である:
+
+- **同じ gcc ビルドの 2 回の実行で 6 failures と 7 failures**
+- bundler 経由にした後も、**rubycc 側と gcc 側で別々のテストが 1 件ずつ**落ちた
+
+**上流自身が再試行前提で回している。** `CI=1` はその回し方に合わせることであって、
+緑になる実行を選び取ることではない。**この区別は記録に残す価値がある** —
+不安定なスイートで「何度か回して緑を採る」のは証拠にならないが、
+「上流が定めた手順で回す」のは証拠になる。
+
+### 結果
+
+```
+rubycc : 840 runs, 2500 assertions, 0 failures, 0 errors, 8 skips
+gcc    : 840 runs, 2500 assertions, 0 failures, 0 errors, 8 skips
+```
+
+**R10 通過率 28/32 = 87.5% → 29/32 = 90.6%。DESIGN R10 の 90% ラインを達成した。**
+
+### 到達点の正しい読み方
+
+分母 32 は、**測って除外を積み上げた結果**である(上流にテストが無い 1 件、
+対照でも通らない 3 件、C++ 依存 1 件、C++/configure の機械判定 2 件)。
+**除外はすべて実測に基づき、`--control` で対照を機械的に取れるようにした上で、
+「対照と数値が一致したときだけ」に限っている**(oj は落ち方が違うので除外していない)。
+
+残る未検証は **oj のみ**で、原因は特定済み — `long double` が 8 バイトであること
+(GAPS S)。**唯一の差分が 1 テストに絞れており、rubycc 側の欠陥として残っている。**
+
+---
+
 ## 現在のテスト規模
 
-corpus-ninety-1 完了時点: **2,953 runs / 9,400 assertions / 0 failures / 0 errors / 44 skips**
+corpus-ninety-2 完了時点: **2,953 runs / 9,418 assertions / 0 failures / 0 errors / 44 skips**
+(テストメソッドは増えず、assertions のみ +18 = puma の記録がドクターのテストの
+照合対象に入ったため)
+(以前) corpus-ninety-1 完了時点: **2,953 runs / 9,400 assertions / 0 failures / 0 errors / 44 skips**
 (atomic-type-15 から +4 = `:out_of_scope_dependency` の形式検査・検出・
 OUT-OF-SCOPE-GEMS.md との突き合わせ。master マージで TestCrossAbi の aarch64 分が +2)
 (以前) atomic-type-15 完了時点: **2,949 runs / 9,391 assertions / 0 failures / 0 errors / 44 skips**

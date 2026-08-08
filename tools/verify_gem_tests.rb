@@ -180,6 +180,34 @@ CLEARED_ENV = {
 #                 the suite should run without resolving the source Gemfile's
 #                 development-only dependencies; bundle_gems lists the runtime
 #                 and test gems that the synthetic file should activate
+#   bundle_install  the opposite of bundle_gemfile: :empty (the two are refused
+#                 together -- see verify_recipe!): true when the suite itself
+#                 needs the source tree's *real* Gemfile resolved -- not a
+#                 synthetic stand-in -- because it references Bundler directly
+#                 or expects the Gemfile's own dependency set to be on the load
+#                 path (puma's TestWorkerGemIndependence and
+#                 TestPreserveBundlerEnv are the case that needed this). When
+#                 set, run_bundle_install runs `bundle install` against the
+#                 upstream Gemfile with BUNDLE_PATH pinned inside the
+#                 just-fetched source tree (never the host's or this
+#                 checkout's gem environment), and run_suite / check_sanity
+#                 both run their command through `bundle exec` instead of
+#                 plain ruby, with the same BUNDLE_GEMFILE/BUNDLE_PATH -- so
+#                 the sanity check proves the injected .so is what the suite's
+#                 own bundle-exec'd load path resolves to, not just what a
+#                 plain `ruby -I` would find. test_deps / test_dep_versions
+#                 are normally unneeded alongside this: bundler is what
+#                 supplies the suite's dependencies instead.
+#   bundle_env    env vars merged into *every* bundler invocation this recipe
+#                 makes (both `bundle install` and every `bundle exec`) --
+#                 for a variable the Gemfile itself inspects while being
+#                 parsed (puma's PUMA_NO_RUBOCOP), which every bundler command
+#                 re-parses the Gemfile to do, not only the install. Only
+#                 meaningful alongside bundle_install.
+#   suite_env     env vars merged into the suite run only (not `bundle
+#                 install`), for a variable the suite -- not the Gemfile --
+#                 inspects (puma's CI, which test/helper.rb reads to decide
+#                 whether to enable minitest-retry).
 #   child_load_paths paths to export through RUBYLIB for subprocesses spawned by
 #                 the suite (the parent gets -I flags, but children do not)
 #   runner_args   arguments handed to the suite runner itself (the Rakefile's
@@ -911,26 +939,55 @@ RECIPES = {
     version: "8.0.2",
     tarball: "https://github.com/puma/puma/archive/refs/tags/v8.0.2.tar.gz",
     sos: { "lib/puma/puma_http11.so" => "lib/puma/puma_http11.so" },
-    # minitest-proveit is required by puma's own test/helper.rb; like debug's
-    # test-unit-rr it is absent from the .gem and its absence kills the suite at
-    # load time, in the control run just as much as the rubycc one.
-    # puma's test/helper.rb and its Gemfile name the whole set below; the .gem
-    # carries none of them, and each missing one kills the suite at load rather
-    # than failing a test. They were found one at a time by --control runs, which
-    # is what proved every one of them was a missing gem and not a rubycc defect.
-    test_deps: %w[minitest minitest-proveit minitest-stub-const
-                  minitest-retry concurrent-ruby rack rackup localhost],
-    # minitest must stay on the 5.x line: puma's helper.rb requires
-    # "minitest/mock", which minitest 6 moved out into a separate gem that in
-    # turn depends on minitest ~> 5 -- so a 6.x activation makes the require
-    # unsatisfiable no matter which extra gems are installed. 5.27.0 is the
-    # newest 5.x and satisfies the Gemfile's ">= 5.26".
-    test_dep_versions: { "minitest" => "5.27.0" },
+    # Run the way upstream itself runs this suite -- `bundle install` against
+    # puma's real Gemfile, then `bundle exec` -- rather than hand-picking
+    # test_deps and running plain ruby against them (this recipe's previous
+    # shape). Measured: outside a Bundler.setup context, 12 of 840 runs fail,
+    # every one traceable to the missing bundler context itself rather than a
+    # rubycc or gcc defect --
+    #   * TestWorkerGemIndependence#test_changing_* (6): NameError,
+    #     uninitialized constant Bundler
+    #   * TestPreserveBundlerEnv#test_phased_restart_preserves_unspecified_bundle_gemfile (1):
+    #     BUNDLE_GEMFILE is nil
+    #   * TestIntegrationCluster / Pumactl #test_prune_bundler_with_multiple_workers (2):
+    #     timed out waiting for the master PID in the log
+    #   * TestIntegrationCluster#test_load_path_{includes_extra_deps,does_not_include_nio4r} (2):
+    #     the Gemfile's own dependencies never show up on the load path
+    #   * TestURLMap#test_basic_url_mapping (1): rack loaded from the wrong place
+    #   * TestRackUp::RackUp#test_bin (1): Errno::ENOENT -- rackup, no binstub on PATH
+    # All 12 are gone under bundle_install. test_deps / test_dep_versions are
+    # therefore not needed either: bundler resolves the Gemfile's own
+    # dependency set (minitest pinned to 5.27.0 there already, same reasoning
+    # this recipe used to state by hand) instead of this recipe hand-picking a
+    # subset of it.
+    bundle_install: true,
+    # The Gemfile's own escape hatch: `unless ENV['PUMA_NO_RUBOCOP'] ... gem
+    # "rubocop"`. Lint is no part of this suite, and pulling the whole rubocop
+    # toolchain into `bundle install` only slows it down for nothing this tool
+    # reads. Bundler re-parses the Gemfile on every invocation it makes, not
+    # only the install, so this has to reach `bundle exec` too -- see
+    # run_bundle_install / run_suite / check_sanity, which all merge
+    # bundle_env in.
+    bundle_env: { "PUMA_NO_RUBOCOP" => "1" },
+    # test/helper.rb:118 only enables minitest-retry `if ENV['CI']`. Puma's
+    # cluster / phased-restart fixtures fork worker processes and race a real
+    # restart against a live connection, so they are inherently flaky --
+    # measured back to back on the *same* gcc build: 6 failures, then 7, and
+    # not even the same tests failing both times (and separately, rubycc's and
+    # gcc's runs each had one different single test fail without CI=1). Since
+    # upstream's own test/helper.rb only ever turns retries on and never off,
+    # matching that is following upstream's procedure, not selecting a lucky
+    # run.
+    suite_env: { "CI" => "1" },
     runner: :test_unit,
     load_paths: %w[lib test],
     test_glob: "test/test_*.rb",
     sanity: {
       requires: %w[puma],
+      # bundle_install makes this run through `bundle exec` too (see
+      # check_sanity), so this is proof that the injected .so is what the
+      # suite's own bundle-exec'd load path resolves to -- not just what a
+      # plain `ruby -I` would find.
       expr: "injected_so_loaded?"
     }
   },
@@ -1603,6 +1660,43 @@ def copy_generated_files(name, recipe, src_dir)
   end
 end
 
+# --- step 4.5 (optional): resolve the upstream Gemfile for real --------------
+#
+# bundle_gemfile: :empty (see run_suite) hands the *suite's own* Bundler.setup
+# a synthetic, minimal Gemfile so a test helper that merely requires
+# bundler/setup does not have to resolve the source tree's full development
+# Gemfile. bundle_install is the opposite: some suites need that Gemfile
+# resolved for real, because they reference Bundler directly or expect its
+# own dependency set to be on the load path (see the puma recipe). The two
+# are refused together in verify_recipe! so a recipe can never end up asking
+# for both a synthetic Gemfile and the real one at once.
+#
+# BUNDLE_PATH is pinned inside the just-fetched source tree -- never the
+# host's or this checkout's gem environment -- so this never touches anything
+# outside WORK_DIR, and is idempotent the same way fetch_source's own
+# sentinel is: a second run's `bundle install` against an already-satisfied
+# Gemfile.lock is a fast no-op.
+def bundle_install_path(src_dir)
+  File.join(src_dir, ".bundle")
+end
+
+def bundle_gemfile_path(src_dir)
+  File.join(src_dir, "Gemfile")
+end
+
+def run_bundle_install(name, recipe, src_dir)
+  return unless recipe[:bundle_install]
+
+  gemfile = bundle_gemfile_path(src_dir)
+  abort "#{name}: bundle_install is set but #{gemfile} is missing from the upstream tree" unless
+    File.file?(gemfile)
+
+  env = { "BUNDLE_GEMFILE" => gemfile, "BUNDLE_PATH" => bundle_install_path(src_dir) }
+        .merge(recipe.fetch(:bundle_env, {}))
+  step "bundle install for #{name} (#{gemfile})"
+  run!("bundle", "install", chdir: src_dir, env: env)
+end
+
 # --- step 6: sanity ----------------------------------------------------------
 
 # A recipe with no sanity expression is refused rather than run: without it a
@@ -1616,6 +1710,11 @@ def verify_recipe!(name, recipe)
   abort "#{name}: :sanity needs :requires" if Array(sanity[:requires]).empty?
   abort "#{name}: unknown runner #{recipe[:runner].inspect}" unless
     %i[test_unit rspec ruby_files].include?(recipe[:runner])
+  # Opposite features (a synthetic Gemfile vs. resolving the real one for
+  # real) that must never be confused for one another; see bundle_install's
+  # own comment.
+  abort "#{name}: bundle_gemfile: :empty and bundle_install cannot both be set" if
+    recipe[:bundle_gemfile] == :empty && recipe[:bundle_install]
   Array(recipe[:generate]).each do |gen|
     if gen[:write]
       abort "#{name}: a generate write step needs :content" if gen[:content].to_s.empty?
@@ -1672,6 +1771,17 @@ def check_sanity(name, recipe, src_dir, injected, extra_load_paths)
     "VERIFY_REQUIRES" => Array(sanity.fetch(:requires)).join(","),
     "VERIFY_EXPR" => sanity.fetch(:expr)
   )
+  if recipe[:bundle_install]
+    # Run the sanity probe through the same `bundle exec` the suite itself
+    # runs under (see run_suite), with the same Gemfile resolved -- so the
+    # check proves the injected .so is what bundler's own load path resolves
+    # to for this gem, not merely what a plain `ruby -I` finds outside any
+    # bundler context.
+    env["BUNDLE_GEMFILE"] = bundle_gemfile_path(src_dir)
+    env["BUNDLE_PATH"] = bundle_install_path(src_dir)
+    env.merge!(recipe.fetch(:bundle_env, {}))
+    cmd = ["bundle", "exec", *cmd]
+  end
   step "sanity check for #{name}: #{sanity.fetch(:expr)}"
   out, ok = run(*cmd, chdir: src_dir, env: env, timeout: BUILD_TIMEOUT)
   [ok, out]
@@ -1782,6 +1892,7 @@ def run_suite(name, recipe, src_dir, extra_load_paths)
 
   step "running #{name}'s suite (#{files.size} files, runner #{recipe.fetch(:runner)})"
   suite_env = gem_env.dup
+  suite_env.merge!(recipe.fetch(:suite_env, {}))
   if recipe[:bundle_gemfile] == :empty
     empty_gemfile = File.join(src_dir, ".rubycc-empty-Gemfile")
     gems = Array(recipe[:bundle_gems])
@@ -1789,6 +1900,16 @@ def run_suite(name, recipe, src_dir, extra_load_paths)
                "#{gems.map { |gem| %(gem \"#{gem}\") }.join("\n")}\n"
     File.write(empty_gemfile, contents)
     suite_env["BUNDLE_GEMFILE"] = empty_gemfile
+  end
+  if recipe[:bundle_install]
+    # The opposite of the :empty branch above: resolve the source tree's real
+    # Gemfile (already installed by run_bundle_install) and run the suite
+    # itself through `bundle exec`, so Bundler.setup sees exactly what
+    # upstream's own test run would.
+    suite_env["BUNDLE_GEMFILE"] = bundle_gemfile_path(src_dir)
+    suite_env["BUNDLE_PATH"] = bundle_install_path(src_dir)
+    suite_env.merge!(recipe.fetch(:bundle_env, {}))
+    cmd = ["bundle", "exec", *cmd]
   end
   child_load_paths = Array(recipe[:child_load_paths]).map { |path| File.expand_path(path, src_dir) }
   suite_env["RUBYLIB"] = (child_load_paths + extra_load_paths).join(File::PATH_SEPARATOR) unless child_load_paths.empty?
@@ -1897,6 +2018,7 @@ def verify_gem(name, recipe)
   extra_load_paths = Array(recipe[:dep_load_paths]).map { |dep| dep_lib_dir(dep) }
 
   src_dir = fetch_source(name, recipe)
+  run_bundle_install(name, recipe, src_dir)
   run_generate_steps(name, recipe, src_dir)
   copy_generated_files(name, recipe, src_dir)
   injected = inject_build_products(name, recipe, src_dir)

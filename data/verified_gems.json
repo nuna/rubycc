@@ -336,5 +336,16 @@
       }
     ],
     "notes": "Verification needs a MariaDB server AND a small-socket-buffer network namespace: spec/mysql2/result_spec.rb:240 asserts that net_write_timeout aborts a stream the client reads too slowly, and that never fires on an ordinary loopback -- the 10,000-row / 2.4 MiB result fits entirely inside the host's tcp_wmem (4 MiB) and tcp_rmem (6 MiB), so the server never blocks writing. Measured: the same test raises 'Lost connection to server during query' at row 47,248 when the table is grown to 60,000 rows (14.6 MiB). It fails identically under gcc without this environment, and passes identically under gcc with it. The recipe therefore runs the suite inside the DB container's network namespace, whose buffers are pinned to 32 KiB both ways; see suite_exec in tools/verify_gem_tests.rb. The run also mounts a host libyaml-0.so.2 because the mariadb:11 image has none and Ruby's psych needs it. The run reported 6 pendings (not failures)."
+  },
+  "puma": {
+    "verifications": [
+      {
+        "versions": ["8.0.2"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-08",
+        "evidence": "RUBYCC=1 gem install puma succeeded (puma_http11.so built through rmake); the gem's own test/unit suite passed 840 tests / 2,490 assertions / 0 failures / 0 errors (Step corpus-ninety-2)."
+      }
+    ],
+    "notes": "The suite must run the way upstream runs it: under bundler with puma's own Gemfile, and with CI=1. Without bundler 12 of the 840 tests fail on their absence alone (TestWorkerGemIndependence calls Bundler.with_unbundled_env, TestPreserveBundlerEnv asserts BUNDLE_GEMFILE survives a phased restart, prune_bundler has nothing to prune, and TestRackUp cannot find the rackup binstub) -- identically under gcc. CI=1 is what test/helper.rb:118 checks before enabling minitest-retry: the TestIntegrationCluster fork/phased-restart cases are inherently timing-dependent (measured: two runs of the same gcc build gave 6 and 7 failures, and rubycc and gcc each failed a different single case), so upstream itself runs them with retries. PUMA_NO_RUBOCOP=1 keeps the lint-only half of the Gemfile out. The run reported 8 skips (not failures)."
   }
 }
