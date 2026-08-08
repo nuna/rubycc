@@ -9129,9 +9129,60 @@ gcc    : 840 runs, 2500 assertions, 0 failures, 0 errors, 8 skips
 
 ---
 
+## r-input-diagnostic-1 — C++入力をドライバで診断する(M5 H4)
+
+GAPS R。R10/DESIGN §3.3 では C++ を対象外としているため、C++を実装するのではなく、
+入力時点で対象外であることを診断する。
+
+### Step 1 — 影響範囲を先に測った
+
+`Rubycc::Driver#classify_input` は `.c` だけをソースとして扱い、それ以外を
+`.o` 等のリンク入力へフォールバックしていた。そのため、
+`rubycc -c em.cpp` は `linker input file unused because linking not done` という警告だけで
+終了コード 0になり、リンク経路では存在しないオブジェクトとして後段で失敗していた。
+
+一方、census のC++判定は `test/corpus/census.rb` の `CPP_SOURCE_EXTS` と
+`cpp_source?` が担当しており、`Rubycc::Driver` は呼び出さない。したがって、
+ドライバの入力分類を修正しても、censusの除外判定・分母・
+`test/corpus/include-census.md` の生成物には影響しない。
+
+### Step 2 — 修正方法を確定した
+
+入力分類の境界で、censusと同じ `.cpp` / `.cc` / `.cxx` / `.c++` / `.hpp` / `.hxx` /
+`.hh` を明示的にC++入力として拒否する。`UsageError`で終了コード1とし、入力パスを含む
+`C++ input '<path>' is not supported` を表示する。
+
+この判定はモード分岐より前に置くので、`-c` とリンクの両方で同じ診断になる。
+同時に、`.o` / `.obj` / `.a` / `.so` の compile-only 警告と、C++以外の未知拡張子を
+リンク入力として扱う既存のgcc互換フォールバックは維持する。
+
+### Step 3 — 実装と回帰テスト
+
+`lib/rubycc/driver.rb` にC++入力拡張子の定数と診断を追加し、
+`test/test_driver.rb` に次を追加した。
+
+- 7種類のC++ソース／ヘッダ拡張子がcompile-onlyで診断され、オブジェクトを作らない
+- リンク経路でも診断され、実行ファイルを作らない
+- C++以外の未知拡張子をオブジェクトとしてリンクできる
+- `.o`入力のcompile-only警告が従来どおり残る
+
+### 結果
+
+- `test/test_driver.rb`: **25 runs / 110 assertions / 0 failures**
+- `test/test_cli.rb`: **10 runs / 33 assertions / 0 failures**
+- `test/test_corpus_census.rb`: **27 runs / 351 assertions / 0 failures**
+- `rake test`: **2,957 runs / 9,456 assertions / 0 failures / 0 errors / 44 skips**
+
+この対応でRは解消し、`docs/GAPS.md` には残さない。censusのコードとスナップショットは
+変更していない。
+
+---
+
 ## 現在のテスト規模
 
-corpus-ninety-2 完了時点: **2,953 runs / 9,418 assertions / 0 failures / 0 errors / 44 skips**
+r-input-diagnostic-1 完了時点: **2,957 runs / 9,456 assertions / 0 failures / 0 errors / 44 skips**
+(Rのドライバ診断回帰テスト4件を追加。censusのコードとスナップショットは不変)
+(以前) corpus-ninety-2 完了時点: **2,953 runs / 9,418 assertions / 0 failures / 0 errors / 44 skips**
 (テストメソッドは増えず、assertions のみ +18 = puma の記録がドクターのテストの
 照合対象に入ったため)
 (以前) corpus-ninety-1 完了時点: **2,953 runs / 9,400 assertions / 0 failures / 0 errors / 44 skips**

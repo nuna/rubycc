@@ -57,6 +57,67 @@ class TestDriver < Minitest::Test
     end
   end
 
+  # C++ is outside rubycc's language scope. Diagnose every C++ source/header
+  # suffix at input classification time, before compile-only can turn it into a
+  # misleading "linker input unused" warning.
+  def test_cpp_inputs_are_rejected_with_a_diagnostic
+    in_tmpdir do |dir|
+      %w[.cpp .cc .cxx .c++ .hpp .hxx .hh].each do |extension|
+        path = "input#{extension}"
+        File.write(File.join(dir, path), "int main(void){ return 0; }")
+        _out, err, status = rubycc("-c", path, "-o", "input.o", dir: dir)
+
+        assert_equal 1, status.exitstatus, "#{path}: #{err}"
+        assert_match(/C\+\+ input 'input#{Regexp.escape(extension)}' is not supported/, err)
+        refute File.exist?(File.join(dir, "input.o")), "#{path} must not produce an object"
+      end
+    end
+  end
+
+  # The same classification must protect the link path, where the old behavior
+  # eventually failed with a missing object rather than identifying C++ input.
+  def test_cpp_input_is_rejected_before_linking
+    in_tmpdir do |dir|
+      File.write(File.join(dir, "em.cpp"), "int main(void){ return 0; }")
+      _out, err, status = rubycc("-o", "prog", "em.cpp", dir: dir)
+
+      assert_equal 1, status.exitstatus
+      assert_match(/C\+\+ input 'em\.cpp' is not supported/, err)
+      refute File.exist?(File.join(dir, "prog")), "a refused input must not produce an executable"
+    end
+  end
+
+  # Non-C++ unknown suffixes remain linker inputs, preserving gcc-compatible
+  # fallback behavior for build systems that use a custom object suffix.
+  def test_unknown_suffix_remains_a_linker_input
+    skip_unless_runnable
+
+    in_tmpdir do |dir|
+      File.write(File.join(dir, "lib.c"), "int twice(int x){ return x * 2; }")
+      _out, err, status = rubycc("-c", "lib.c", "-o", "lib.o", dir: dir)
+      assert_equal 0, status.exitstatus, err
+      File.rename(File.join(dir, "lib.o"), File.join(dir, "lib.custom"))
+
+      File.write(File.join(dir, "main.c"), "int twice(int); int main(void){ return twice(21); }")
+      _out, err, status = rubycc("-o", "prog", "main.c", "lib.custom", dir: dir)
+      assert_equal 0, status.exitstatus, err
+
+      _out, run = Open3.capture2(File.join(dir, "prog"))
+      assert_equal 42, run.exitstatus
+    end
+  end
+
+  # Ordinary link inputs still keep gcc's compile-only warning behavior; the
+  # C++ rejection must not broaden into a rejection of `.o` inputs.
+  def test_object_input_still_warns_in_compile_only_mode
+    in_tmpdir do |dir|
+      _out, err, status = rubycc("-c", "input.o", dir: dir)
+
+      assert_equal 0, status.exitstatus
+      assert_match(/input\.o: linker input file unused because linking not done/, err)
+    end
+  end
+
   # --- one-shot compile + link (executable) -------------------------------
 
   # Two translation units that reference each other's functions/globals compile
