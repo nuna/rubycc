@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "json"
 require "open3"
 require "rubygems/package"
 require "set"
@@ -88,6 +89,33 @@ module Corpus
 
     def cpp_source?(path)
       CPP_SOURCE_EXTS.include?(File.extname(path).downcase)
+    end
+
+    # A gem entry (test/corpus/gems.rb) opts out of the R10 denominator with
+    # `upstream_tests: false` when its upstream ships no test suite at all, so
+    # "gem's own tests passed" evidence is impossible to obtain. Absent (or
+    # true) keeps the gem in the denominator.
+    def excluded_by_upstream_tests?(spec)
+      spec[:upstream_tests] == false
+    end
+
+    # The second way that evidence becomes unobtainable: the suite exists and
+    # runs, but does not pass with the reference compiler either, so no compiler
+    # could earn the (d)-level record. Only ever set from a `--control`
+    # measurement -- see the field's documentation in gems.rb, which is where the
+    # reasoning and its limits live rather than being restated here.
+    def excluded_by_control_suite?(spec)
+      spec[:control_suite_passes] == false
+    end
+
+    # The third way: the gem's own sources pass every machine gate, but
+    # `gem install` cannot finish without building a gem R10 already excludes.
+    # The C++ gate above only reads this gem's ext sources, so it is blind to a
+    # C++ *dependency*; naming that dependency is how a corpus entry says so.
+    # See the field's documentation in gems.rb, which is where the reasoning and
+    # its limits live.
+    def excluded_by_out_of_scope_dependency(spec)
+      spec[:out_of_scope_dependency]
     end
 
     # Detect a configure / mini_portile dependency in extconf text (R10 exclusion).
@@ -238,6 +266,30 @@ module Corpus
 
       result[:version] = version_from_gem(name, gem_path)
 
+      if excluded_by_upstream_tests?(spec)
+        result[:status] = :excluded
+        result[:reason] = "upstream ships no test suite — R10's \"gem's own tests passed\" " \
+                           "evidence (verification level (d)) is impossible to obtain " \
+                           "(docs/OUT-OF-SCOPE-GEMS.md basis D)"
+        return result
+      end
+
+      if excluded_by_control_suite?(spec)
+        result[:status] = :excluded
+        result[:reason] = "upstream suite does not pass with the reference compiler either " \
+                           "(measured with tools/verify_gem_tests.rb --control) — no compiler " \
+                           "can earn R10's verification level (d) here"
+        return result
+      end
+
+      if (blocker = excluded_by_out_of_scope_dependency(spec))
+        result[:status] = :excluded
+        result[:reason] = "`gem install` requires #{blocker}, which R10 already excludes — " \
+                           "this gem's own sources pass the machine gate, but the install " \
+                           "cannot complete without building an out-of-scope extension"
+        return result
+      end
+
       source_root = unpack_gem(gem_path, cache_dir)
 
       cpp = ext_cpp_files(source_root)
@@ -292,9 +344,27 @@ module Corpus
         census_gem(spec, cache_dir, bundled)
       end
 
-      File.write(report_path, render_report(results, bundled))
+      verified = verified_gem_names(default_verified_gems_path(repo_root))
+
+      File.write(report_path, render_report(results, bundled, verified))
       print_summary(results)
       report_path
+    end
+
+    def default_verified_gems_path(repo_root)
+      File.join(repo_root, "data", "verified_gems.json")
+    end
+
+    # Names (top-level keys) recorded in data/verified_gems.json. Read-only:
+    # that file is written only by tools/verify_gem_tests.rb. Missing or
+    # unparsable file yields an empty set rather than raising, so a checkout
+    # without the data file still produces a report (with a 0% R10 section).
+    def verified_gem_names(path)
+      return Set.new unless File.file?(path)
+
+      Set.new(JSON.parse(File.read(path)).keys)
+    rescue JSON::ParserError
+      Set.new
     end
 
     # Aggregate gap candidates across the ok gems: header => sorted list of gems.
@@ -307,6 +377,25 @@ module Corpus
       end
       candidates.transform_values! { |gems| gems.uniq.sort }
       candidates
+    end
+
+    # R10 target: >=90% of the corpus at gem-install success AND the gem's own
+    # test suite passing. Denominator = gems that passed the R10 machine gate
+    # (status :ok); numerator = of those, gems with a data/verified_gems.json
+    # record. Pure function: no I/O, so it stays hermetic-testable.
+    def r10_summary(ok_names, verified_names)
+      ok_names = ok_names.to_a
+      denominator = ok_names.size
+      numerator = ok_names.count { |name| verified_names.include?(name) }
+      rate = denominator.zero? ? 0.0 : (numerator.to_f / denominator * 100)
+      remaining =
+        if denominator.zero?
+          0
+        else
+          threshold = Rational(9, 10) * denominator
+          numerator >= threshold ? 0 : (threshold - numerator).ceil
+        end
+      { denominator: denominator, numerator: numerator, rate: rate, remaining_to_90: remaining }
     end
 
     def print_summary(results)
@@ -326,16 +415,18 @@ module Corpus
     # Report rendering.
     # ------------------------------------------------------------------
 
-    def render_report(results, bundled_set)
+    def render_report(results, bundled_set, verified_names)
       ok = results.select { |r| r[:status] == :ok }
       excluded = results.select { |r| r[:status] == :excluded }
       skipped = results.select { |r| r[:status] == :skipped }
       gaps = gap_candidates(results)
+      r10 = r10_summary(ok.map { |r| r[:name] }, verified_names)
 
       out = +""
       out << render_header(bundled_set)
       out << render_corpus_table(results)
       out << render_exclusions(excluded, skipped)
+      out << render_r10_summary(r10)
       out << render_matrix(ok)
       out << render_gap_candidates(gaps)
       out
@@ -393,6 +484,30 @@ module Corpus
         out << format("| %s | %s | %s |\n", r[:name], r[:status], (r[:reason] || "").gsub("|", "\\|"))
       end
       out << "\n"
+      out
+    end
+
+    def render_r10_summary(r10)
+      out = +"## R10 pass rate\n\n"
+      out << "DESIGN R10 targets >= 90% of the corpus at gem-install success *and* the " \
+             "gem's own test suite passing against the rubycc-built extension " \
+             "(`data/verified_gems.json`, verification level (d)). The denominator below " \
+             "is gems that passed the R10 machine gate above (`status: ok`); the numerator " \
+             "is how many of those have a `data/verified_gems.json` record.\n\n" \
+             "Two kinds of gem are excluded from the denominator because *no* compiler " \
+             "could earn that record for them: one whose upstream ships no test suite at " \
+             "all, and one whose upstream suite does not pass with the reference compiler " \
+             "either (measured with `tools/verify_gem_tests.rb --control`). Both are " \
+             "declared per gem in `test/corpus/gems.rb`, whose field documentation states " \
+             "what evidence each claim requires — in particular, a gem whose control run " \
+             "fails *differently* from its rubycc run is not excluded, because the " \
+             "difference is rubycc's to answer for.\n\n"
+      out << "| R10 gate passes (denominator) | verified (numerator) | pass rate | remaining to 90% |\n"
+      out << "|---|---|---|---|\n"
+      out << format(
+        "| %d | %d | %.1f%% | %d |\n\n",
+        r10[:denominator], r10[:numerator], r10[:rate], r10[:remaining_to_90]
+      )
       out
     end
 

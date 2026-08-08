@@ -9,6 +9,11 @@ require "open3"
 # forms, at the two object widths that header needs (4 for rb_atomic_t, 8 for
 # size_t and VALUE), plus the C11 fence used by libev.
 #
+# The legacy __sync_* family is covered here too. raindrops' extconf.rb probes
+# for it directly and aborts the build when the probe does not compile, so its
+# absence stopped `gem install unicorn` at the dependency; the ten forms rubycc
+# lowers are the ones an existing IR operation already means correctly.
+#
 # The semantics are pinned by an execution oracle rather than by hand-computed
 # expectations: a single-threaded program's atomic operations have completely
 # determined results and side effects, so running the same source under gcc and
@@ -225,7 +230,10 @@ class TestAtomicBuiltins < Minitest::Test
   UNIMPLEMENTED_HAS_BUILTIN_SOURCE = <<~C
     #include <stdio.h>
     #if __has_builtin(__atomic_test_and_set) || \\
-        __has_builtin(__atomic_load) || __has_builtin(__sync_fetch_and_add)
+        __has_builtin(__atomic_load) || __has_builtin(__sync_fetch_and_or) || \\
+        __has_builtin(__sync_fetch_and_and) || __has_builtin(__sync_fetch_and_xor) || \\
+        __has_builtin(__sync_fetch_and_nand) || __has_builtin(__sync_and_and_fetch) || \\
+        __has_builtin(__sync_xor_and_fetch) || __has_builtin(__sync_nand_and_fetch)
     #define ANY_CLAIMED 1
     #else
     #define ANY_CLAIMED 0
@@ -259,6 +267,273 @@ class TestAtomicBuiltins < Minitest::Test
       return 0;
     }
   C
+
+  # --- the legacy __sync_* family -----------------------------------------
+
+  # Every one of the ten __sync_* forms rubycc lowers, at both object widths.
+  # Each builtin gets a statement of its own and the object is read back in the
+  # printf that follows, for the same reason the __atomic_* sources are shaped
+  # that way: a printf that both called the builtin and read the object would
+  # compare the two compilers' argument evaluation order, which C leaves
+  # unspecified (measured: gcc evaluates right to left here, rubycc left to
+  # right, so such a line differs even when both lowerings are correct).
+  SYNC_ALL_FORMS_SOURCE = <<~C
+    #include <stdio.h>
+    #include <stddef.h>
+    int main(void) {
+      unsigned int u = 10;
+      size_t s = 100;
+      unsigned int r;
+      size_t rs;
+      int ok;
+
+      r = __sync_fetch_and_add(&u, 5u);      printf("%u %u\\n", r, u);
+      r = __sync_fetch_and_sub(&u, 3u);      printf("%u %u\\n", r, u);
+      r = __sync_add_and_fetch(&u, 7u);      printf("%u %u\\n", r, u);
+      r = __sync_sub_and_fetch(&u, 2u);      printf("%u %u\\n", r, u);
+      r = __sync_or_and_fetch(&u, 0x100u);   printf("%u %u\\n", r, u);
+      r = __sync_lock_test_and_set(&u, 33u); printf("%u %u\\n", r, u);
+      ok = __sync_bool_compare_and_swap(&u, 33u, 44u); printf("%d %u\\n", ok, u);
+      r = __sync_val_compare_and_swap(&u, 44u, 66u);   printf("%u %u\\n", r, u);
+      __sync_lock_release(&u);               printf("%u\\n", u);
+      __sync_synchronize();
+
+      rs = __sync_fetch_and_add(&s, 5);      printf("%zu %zu\\n", rs, s);
+      rs = __sync_fetch_and_sub(&s, 3);      printf("%zu %zu\\n", rs, s);
+      rs = __sync_add_and_fetch(&s, 7);      printf("%zu %zu\\n", rs, s);
+      rs = __sync_sub_and_fetch(&s, 2);      printf("%zu %zu\\n", rs, s);
+      rs = __sync_or_and_fetch(&s, 0x10000); printf("%zu %zu\\n", rs, s);
+      rs = __sync_lock_test_and_set(&s, 900); printf("%zu %zu\\n", rs, s);
+      ok = __sync_bool_compare_and_swap(&s, 900, 1100); printf("%d %zu\\n", ok, s);
+      rs = __sync_val_compare_and_swap(&s, 1100, 1200); printf("%zu %zu\\n", rs, s);
+      __sync_lock_release(&s);               printf("%zu\\n", s);
+      __sync_synchronize();
+      return 0;
+    }
+  C
+
+  # Both compare-and-swap spellings, on both outcomes, at both widths. The value
+  # form has to answer with the value it *actually read* — which is the one it
+  # was given when the swap wins and the one that was really there when it loses
+  # — so a lowering that reported the guess on the failing path (or the guess's
+  # replacement on the winning one) is what these lines catch. The bool form's
+  # result must be exactly 0 or 1, as a _Bool's is.
+  SYNC_COMPARE_AND_SWAP_SOURCE = <<~C
+    #include <stdio.h>
+    #include <stddef.h>
+    int main(void) {
+      unsigned int u = 7;
+      size_t s = 900;
+      unsigned int r;
+      size_t rs;
+      int ok;
+
+      ok = __sync_bool_compare_and_swap(&u, 7u, 11u);
+      printf("bwin4 %d object=%u\\n", ok, u);
+      ok = __sync_bool_compare_and_swap(&u, 1234u, 99u);
+      printf("blose4 %d object=%u\\n", ok, u);
+
+      r = __sync_val_compare_and_swap(&u, 11u, 22u);
+      printf("vwin4 %u object=%u\\n", r, u);
+      r = __sync_val_compare_and_swap(&u, 11u, 33u);
+      printf("vlose4 %u object=%u\\n", r, u);
+
+      ok = __sync_bool_compare_and_swap(&s, 900, 1100);
+      printf("bwin8 %d object=%zu\\n", ok, s);
+      ok = __sync_bool_compare_and_swap(&s, 5, 3);
+      printf("blose8 %d object=%zu\\n", ok, s);
+
+      rs = __sync_val_compare_and_swap(&s, 1100, 1300);
+      printf("vwin8 %zu object=%zu\\n", rs, s);
+      rs = __sync_val_compare_and_swap(&s, 1100, 1400);
+      printf("vlose8 %zu object=%zu\\n", rs, s);
+
+      /* A _Bool object of its own, so the result's 0/1 is read back through a
+         one-byte slot rather than through an int conversion. */
+      _Bool flag = __sync_bool_compare_and_swap(&s, 1300, 1500);
+      printf("flag %d object=%zu\\n", (int)flag, s);
+      flag = __sync_bool_compare_and_swap(&s, 1300, 1600);
+      printf("flag %d object=%zu\\n", (int)flag, s);
+      return 0;
+    }
+  C
+
+  # Signed objects at both widths, including the wrap a negative operand causes
+  # in an unsigned one. The __sync_* forms have no separate signed spelling — the
+  # object's own type decides — so this pins that the result is extended the way
+  # that type says.
+  SYNC_SIGNEDNESS_SOURCE = <<~C
+    #include <stdio.h>
+    int main(void) {
+      int i = -5;
+      long l = -1;
+      unsigned int u = 5;
+      int r;
+      long rl;
+
+      r = __sync_add_and_fetch(&i, 3);       printf("%d %d\\n", r, i);
+      r = __sync_fetch_and_sub(&i, 10);      printf("%d %d\\n", r, i);
+      r = __sync_sub_and_fetch(&i, -100);    printf("%d %d\\n", r, i);
+      r = __sync_or_and_fetch(&i, 0xF);      printf("%d %d\\n", r, i);
+      rl = __sync_val_compare_and_swap(&l, -1L, 42L);  printf("%ld %ld\\n", rl, l);
+      rl = __sync_add_and_fetch(&l, -100L);            printf("%ld %ld\\n", rl, l);
+      /* A negative operand on an unsigned object wraps, as the conversion to the
+         object's type says it must. */
+      u = __sync_add_and_fetch(&u, -7);      printf("%u\\n", u);
+      return 0;
+    }
+  C
+
+  # A pointer-typed object. Whether the operand is scaled by the pointee's size
+  # or added as plain bytes is measured for *this* family rather than assumed
+  # from the __atomic_* one, since the two are separate builtins with separate
+  # documented histories.
+  SYNC_POINTER_OBJECT_SOURCE = <<~C
+    #include <stdio.h>
+    int cells[8];
+    int *p;
+    int main(void) {
+      int *previous;
+      int *now;
+
+      p = cells;
+      previous = __sync_fetch_and_add(&p, 1);
+      printf("%ld %ld\\n", (long)(previous - cells), (long)((char *)p - (char *)cells));
+
+      p = cells;
+      now = __sync_add_and_fetch(&p, 4);
+      printf("%ld %ld\\n", (long)((char *)now - (char *)cells),
+                           (long)((char *)p - (char *)cells));
+
+      p = cells + 2;
+      now = __sync_sub_and_fetch(&p, 4);
+      printf("%ld %ld\\n", (long)((char *)now - (char *)cells),
+                           (long)((char *)p - (char *)cells));
+
+      previous = __sync_lock_test_and_set(&p, cells + 3);
+      printf("%ld %ld\\n", (long)(previous - cells), (long)(p - cells));
+
+      int ok = __sync_bool_compare_and_swap(&p, cells + 3, cells + 7);
+      printf("%d %ld\\n", ok, (long)(p - cells));
+
+      previous = __sync_val_compare_and_swap(&p, cells + 7, cells + 1);
+      printf("%ld %ld\\n", (long)(previous - cells), (long)(p - cells));
+
+      previous = __sync_val_compare_and_swap(&p, cells + 7, cells + 5);
+      printf("%ld %ld\\n", (long)(previous - cells), (long)(p - cells));
+
+      __sync_lock_release(&p);
+      printf("%d\\n", p == 0);
+      return 0;
+    }
+  C
+
+  # The volatile-qualified spelling a lock or a counter is normally declared
+  # with, reached through functions so the object arrives as a parameter.
+  SYNC_VOLATILE_OBJECT_SOURCE = <<~C
+    #include <stdio.h>
+    static volatile unsigned long lock;
+    static volatile unsigned int events;
+    static int acquire(volatile unsigned long *l) {
+      return __sync_lock_test_and_set(l, 1UL) == 0UL;
+    }
+    static void release(volatile unsigned long *l) {
+      __sync_lock_release(l);
+    }
+    static unsigned int record(volatile unsigned int *c, unsigned int by) {
+      return __sync_add_and_fetch(c, by);
+    }
+    int main(void) {
+      int first = acquire(&lock);
+      printf("%d %lu\\n", first, lock);
+      int second = acquire(&lock);
+      printf("%d %lu\\n", second, lock);
+      release(&lock);
+      printf("%lu\\n", lock);
+      printf("%u\\n", record(&events, 3));
+      printf("%u\\n", record(&events, 4));
+      printf("%u\\n", events);
+      return 0;
+    }
+  C
+
+  # __has_builtin answers for all ten forms, and the whole expression's type is
+  # what gcc gives it: the object's own type for the fetch/exchange/val_ forms
+  # and a one-byte _Bool for the bool_ one. sizeof does not evaluate its operand,
+  # so the objects must come out untouched — which also exercises the type
+  # inference path that never emits code.
+  SYNC_HAS_BUILTIN_AND_TYPE_SOURCE = <<~C
+    #include <stdio.h>
+    #include <stddef.h>
+    #if __has_builtin(__sync_fetch_and_add) && __has_builtin(__sync_fetch_and_sub) && \\
+        __has_builtin(__sync_add_and_fetch) && __has_builtin(__sync_sub_and_fetch) && \\
+        __has_builtin(__sync_or_and_fetch) && __has_builtin(__sync_lock_test_and_set) && \\
+        __has_builtin(__sync_lock_release) && __has_builtin(__sync_synchronize) && \\
+        __has_builtin(__sync_bool_compare_and_swap) && \\
+        __has_builtin(__sync_val_compare_and_swap)
+    #define ALL_KNOWN 1
+    #else
+    #define ALL_KNOWN 0
+    #endif
+    int main(void) {
+      unsigned int u = 1;
+      size_t s = 2;
+      printf("%d %zu %zu %zu %zu %zu\\n", ALL_KNOWN,
+             sizeof(__sync_fetch_and_add(&u, 1u)),
+             sizeof(__sync_add_and_fetch(&s, 1)),
+             sizeof(__sync_lock_test_and_set(&s, 1)),
+             sizeof(__sync_val_compare_and_swap(&s, 1, 2)),
+             sizeof(__sync_bool_compare_and_swap(&u, 1u, 2u)));
+      printf("%u %zu\\n", u, s);
+      return 0;
+    }
+  C
+
+  # raindrops' extconf.rb probe, verbatim but for the ruby.h include (which the
+  # probe only needs to prove the header and the builtins coexist) and a printf
+  # so the run has something to compare. Its failure to compile is what aborted
+  # `gem install unicorn` at the raindrops dependency.
+  RAINDROPS_PROBE_SOURCE = <<~C
+    #include <stdio.h>
+    int main(int argc, char * const argv[]) {
+      unsigned long i = 0;
+      (void)argv;
+      __sync_lock_test_and_set(&i, 0);
+      __sync_lock_test_and_set(&i, 1);
+      __sync_bool_compare_and_swap(&i, 0, 1);
+      __sync_add_and_fetch(&i, argc);
+      __sync_sub_and_fetch(&i, argc);
+      printf("%lu\\n", i);
+      return 0;
+    }
+  C
+
+  # The __sync_* spellings rubycc deliberately does not lower, each in a call
+  # that would compile under gcc. They must stay ordinary identifiers, so the
+  # program is refused instead of silently mislowered.
+  UNIMPLEMENTED_SYNC_FORMS = %w[
+    __sync_fetch_and_or __sync_fetch_and_and __sync_fetch_and_xor
+    __sync_fetch_and_nand __sync_and_and_fetch __sync_xor_and_fetch
+    __sync_nand_and_fetch
+  ].freeze
+
+  # Each implemented form with an argument count one off its signature. gcc
+  # accepts extra trailing arguments here (its documented, ignored list of
+  # variables to protect — measured: "__sync_add_and_fetch(&i, 1, 2, 3)" builds
+  # and behaves as the two-argument call); rubycc requires the exact arity so a
+  # call that drifted from the intended shape is reported.
+  SYNC_ARITIES = {
+    "__sync_fetch_and_add" => 2,
+    "__sync_fetch_and_sub" => 2,
+    "__sync_add_and_fetch" => 2,
+    "__sync_sub_and_fetch" => 2,
+    "__sync_or_and_fetch" => 2,
+    "__sync_lock_test_and_set" => 2,
+    "__sync_lock_release" => 1,
+    "__sync_synchronize" => 0,
+    "__sync_bool_compare_and_swap" => 3,
+    "__sync_val_compare_and_swap" => 3
+  }.freeze
 
   def setup
     skip "gcc unavailable (needed to link and cross-check)" unless tool?("gcc")
@@ -470,12 +745,204 @@ class TestAtomicBuiltins < Minitest::Test
   # is refused rather than silently mislowered.
   def test_unimplemented_atomic_forms_are_not_recognized
     ["__atomic_test_and_set(&x, 5)",
-     "__sync_fetch_and_add(&x, 1)"].each do |call|
+     "__atomic_load(&x, &x, 5)"].each do |call|
       error = assert_raises(Rubycc::CompileError, "expected '#{call}' to be refused") do
         compile("int main(void) { int x = 0; #{call}; return x; }")
       end
       assert_match(/undeclared|unknown function|implicit/i, error.message)
     end
+  end
+
+  # --- the legacy __sync_* family -----------------------------------------
+
+  def test_sync_all_forms_match_gcc
+    assert_matches_gcc(SYNC_ALL_FORMS_SOURCE, "sync_all_forms")
+  end
+
+  def test_sync_compare_and_swap_matches_gcc
+    assert_matches_gcc(SYNC_COMPARE_AND_SWAP_SOURCE, "sync_cas")
+  end
+
+  # The value form's answer, asserted against literal expectations as well as
+  # against gcc, so the property a caller depends on — that a losing swap reports
+  # the value that was really there, not the one it guessed — is named in the
+  # test rather than inferred from a diff.
+  def test_sync_val_compare_and_swap_reports_the_value_it_actually_found
+    _status, stdout = run_source(SYNC_COMPARE_AND_SWAP_SOURCE, :rubycc)
+    lines = stdout.lines.map(&:chomp)
+    assert_equal "bwin4 1 object=11", lines[0]
+    assert_equal "blose4 0 object=11", lines[1]
+    assert_equal "vwin4 11 object=22", lines[2]
+    assert_equal "vlose4 22 object=22", lines[3]
+    assert_equal "bwin8 1 object=1100", lines[4]
+    assert_equal "blose8 0 object=1100", lines[5]
+    assert_equal "vwin8 1100 object=1300", lines[6]
+    assert_equal "vlose8 1300 object=1300", lines[7]
+    assert_equal "flag 1 object=1500", lines[8]
+    assert_equal "flag 0 object=1500", lines[9]
+  end
+
+  def test_sync_signedness_matches_gcc
+    assert_matches_gcc(SYNC_SIGNEDNESS_SOURCE, "sync_signedness")
+  end
+
+  def test_sync_pointer_objects_match_gcc
+    assert_matches_gcc(SYNC_POINTER_OBJECT_SOURCE, "sync_pointer")
+  end
+
+  # The unscaled-operand property, named outright rather than only diffed: on an
+  # "int *" object, adding 1 advances the pointer by one *byte*. Measured for the
+  # __sync_* family in its own right — the __atomic_* family behaving the same
+  # way is not on its own evidence about this one.
+  def test_sync_pointer_add_is_unscaled
+    _status, stdout = run_source(SYNC_POINTER_OBJECT_SOURCE, :rubycc)
+    lines = stdout.lines.map(&:chomp)
+    assert_equal "0 1", lines[0], "__sync_fetch_and_add(&p, 1) must advance p by one byte"
+    assert_equal "4 4", lines[1], "__sync_add_and_fetch(&p, 4) must advance p by four bytes"
+    assert_equal "4 4", lines[2], "__sync_sub_and_fetch(&p, 4) must retreat p by four bytes"
+  end
+
+  def test_sync_volatile_qualified_objects_match_gcc
+    assert_matches_gcc(SYNC_VOLATILE_OBJECT_SOURCE, "sync_volatile")
+  end
+
+  def test_sync_has_builtin_and_result_types_match_gcc
+    assert_matches_gcc(SYNC_HAS_BUILTIN_AND_TYPE_SOURCE, "sync_has_builtin")
+  end
+
+  def test_raindrops_probe_matches_gcc
+    assert_matches_gcc(RAINDROPS_PROBE_SOURCE, "raindrops_probe")
+  end
+
+  def test_aarch64_sync_all_forms_match_gcc
+    assert_aarch64_matches_gcc(SYNC_ALL_FORMS_SOURCE)
+  end
+
+  def test_aarch64_sync_compare_and_swap_matches_gcc
+    assert_aarch64_matches_gcc(SYNC_COMPARE_AND_SWAP_SOURCE)
+  end
+
+  def test_aarch64_sync_signedness_matches_gcc
+    assert_aarch64_matches_gcc(SYNC_SIGNEDNESS_SOURCE)
+  end
+
+  def test_aarch64_sync_pointer_objects_match_gcc
+    assert_aarch64_matches_gcc(SYNC_POINTER_OBJECT_SOURCE)
+  end
+
+  def test_aarch64_sync_volatile_qualified_objects_match_gcc
+    assert_aarch64_matches_gcc(SYNC_VOLATILE_OBJECT_SOURCE)
+  end
+
+  def test_aarch64_raindrops_probe_matches_gcc
+    assert_aarch64_matches_gcc(RAINDROPS_PROBE_SOURCE)
+  end
+
+  # Atomicity, asserted on the instruction stream as for the __atomic_* family:
+  # the __sync_* forms share its IR ops, so on x86-64 every read-modify-write is
+  # either `lock`-prefixed or an `xchg`, and __sync_synchronize is an mfence.
+  def test_x86_64_sync_emits_locked_instructions
+    skip "objdump unavailable" unless tool?("objdump")
+
+    listing = in_tmpdir do |dir|
+      object_path = File.join(dir, "sync.o")
+      compile_with_rubycc(SYNC_ALL_FORMS_SOURCE, object_path)
+      stdout, _stderr, status = Open3.capture3("objdump", "-d", object_path)
+      raise "objdump failed" unless status.success?
+
+      stdout
+    end
+
+    # fetch_and_add/fetch_and_sub/add_and_fetch/sub_and_fetch at both widths.
+    assert_equal 4, listing.scan(/lock xadd\s+%ecx/).size, "expected four 32-bit lock xadd"
+    assert_equal 4, listing.scan(/lock xadd\s+%rcx/).size, "expected four 64-bit lock xadd"
+    # or_and_fetch's retry loop plus the two compare-and-swaps, at both widths.
+    assert_equal 3, listing.scan(/lock cmpxchg\s+%edx/).size, "expected three 32-bit lock cmpxchg"
+    assert_equal 3, listing.scan(/lock cmpxchg\s+%rdx/).size, "expected three 64-bit lock cmpxchg"
+    # lock_test_and_set and lock_release at both widths: four exchanges.
+    assert_equal 2, listing.scan(/xchg\s+%ecx,\(%rax\)/).size, "expected two 32-bit xchg"
+    assert_equal 2, listing.scan(/xchg\s+%rcx,\(%rax\)/).size, "expected two 64-bit xchg"
+    assert_equal 2, listing.scan(/mfence/).size, "expected one mfence per __sync_synchronize"
+  end
+
+  def test_aarch64_sync_emits_exclusive_loops
+    skip_unless_aarch64_toolchain
+
+    listing = in_tmpdir do |dir|
+      object_path = File.join(dir, "sync.o")
+      compile_with_rubycc_aarch64(SYNC_ALL_FORMS_SOURCE, object_path)
+      disassemble_aarch64(object_path)
+    end
+
+    assert_operator listing.scan(/\bldaxr\b/).size, :>=, 16,
+                    "expected an ldaxr per read-modify-write and compare-and-swap"
+    assert_equal listing.scan(/\bldaxr\b/).size, listing.scan(/\bstlxr\b/).size,
+                 "every ldaxr must be paired with a stlxr"
+    assert_equal 2, listing.scan(/\bdmb\s+ish\b/).size,
+                 "expected one dmb ish per __sync_synchronize"
+    refute_match(/\b(casal|cas|ldadd|ldaddal|swp|swpal)\b/, listing,
+                 "the LSE atomics need armv8.1-a and must not be emitted")
+    refute_match(/__aarch64_(ldadd|swp|cas)/, listing,
+                 "libgcc's outline atomics must not be called")
+  end
+
+  # The __sync_* spellings with no IR operation behind them (see
+  # Front::Parser::SYNC_BUILTINS): they stay ordinary identifiers, so a program
+  # calling one is refused rather than silently given the wrong operation.
+  def test_unimplemented_sync_forms_are_not_recognized
+    UNIMPLEMENTED_SYNC_FORMS.each do |spelling|
+      error = assert_raises(Rubycc::CompileError, "expected '#{spelling}' to be refused") do
+        compile("int main(void) { int x = 0; #{spelling}(&x, 1); return x; }")
+      end
+      assert_match(/undeclared|unknown function|implicit/i, error.message)
+    end
+  end
+
+  # gcc lets a caller append the extra "protected variable" arguments its manual
+  # documents and then ignores. rubycc holds every form to its exact arity in
+  # both directions, so a miscount is a located diagnostic rather than a silent
+  # acceptance.
+  def test_sync_wrong_argument_count_is_diagnosed
+    SYNC_ARITIES.each do |spelling, arity|
+      [arity + 1, arity - 1].reject(&:negative?).each do |count|
+        args = Array.new(count) { |index| index.zero? ? "&x" : "1" }.join(", ")
+        error = assert_raises(Rubycc::CompileError,
+                              "expected '#{spelling}' with #{count} arguments to be refused") do
+          compile("int main(void) { unsigned int x = 0; #{spelling}(#{args}); return 0; }")
+        end
+        assert_match(/'#{spelling}' expects #{arity} arguments, have #{count}/, error.message)
+      end
+    end
+  end
+
+  def test_sync_narrow_and_wide_objects_are_diagnosed
+    {
+      "char" => 1,
+      "short" => 2,
+      "__int128" => 16
+    }.each do |spelling, width|
+      error = assert_raises(Rubycc::CompileError, "expected '#{spelling}' to be refused") do
+        compile("int main(void) { #{spelling} c = 0; return (int)__sync_add_and_fetch(&c, 1); }")
+      end
+      assert_match(/'__sync_add_and_fetch' supports atomic objects of 4 or 8 bytes only/, error.message)
+      assert_match(/has width #{width}/, error.message)
+    end
+  end
+
+  def test_sync_non_integer_objects_are_diagnosed
+    ["double d = 0;", "struct pair { int a, b; } d;"].each do |declaration|
+      error = assert_raises(Rubycc::CompileError) do
+        compile("int main(void) { #{declaration} __sync_lock_release(&d); return 0; }")
+      end
+      assert_match(/does not support atomic operations on/, error.message)
+    end
+  end
+
+  def test_sync_non_pointer_first_argument_is_diagnosed
+    error = assert_raises(Rubycc::CompileError) do
+      compile("int main(void) { int x = 0; return (int)__sync_add_and_fetch(x, 1); }")
+    end
+    assert_match(/first argument to '__sync_add_and_fetch' is not a pointer/, error.message)
   end
 
   private

@@ -103,8 +103,69 @@ class TestOffsetof < Minitest::Test
     }
   C
 
+  # A designator subscript whose index is *not* a constant expression. ISO
+  # offsetof needs a constant, but gcc's __builtin_offsetof computes the offset
+  # at run time instead of rejecting it, which is what google-protobuf's
+  # bundled upb leans on: its UPB_SIZEOF_FLEX(type, member, count) macro is
+  # "UPB_MAX(sizeof(type), offsetof(type, member[count]))" with `count` a
+  # parameter, so the flexible array member's allocation size folds the trailing
+  # padding in. The shapes here are that macro (over a flexible array member),
+  # a variable index into a fixed array, two variable indices through nested
+  # aggregates, and an index expression with side effects, which pins that the
+  # index is evaluated exactly once and nothing else is.
+  RUNTIME_INDEX_SOURCE = <<~C
+    #include <stddef.h>
+    #include <stdio.h>
+
+    #define UPB_MAX(a, b) ((a) > (b) ? (a) : (b))
+    #define UPB_SIZEOF_FLEX(type, member, count) \\
+      UPB_MAX(sizeof(type), offsetof(type, member[count]))
+
+    struct flex { int count; char tag; double items[]; };
+    struct cell { short lead; int slot; };
+    struct grid { char gate; struct cell cells[4]; int plain[8]; };
+
+    static size_t flex_size(size_t count) {
+      return UPB_SIZEOF_FLEX(struct flex, items, count);
+    }
+
+    int main(void) {
+      int i = 2;
+      int j = 3;
+      int ticks = 0;
+
+      printf("%zu %zu %zu %zu\\n", flex_size(0), flex_size(1), flex_size(2), flex_size(5));
+      printf("%zu %zu\\n", offsetof(struct grid, plain[i]), offsetof(struct grid, cells[i].slot));
+      printf("%zu %zu\\n", offsetof(struct grid, cells[j]), offsetof(struct grid, plain[i + j]));
+      printf("%zu %d\\n", offsetof(struct grid, plain[ticks++]), ticks);
+      printf("%zu %zu\\n", offsetof(struct grid, plain[-1]), offsetof(struct grid, plain[i - 4]));
+      return 0;
+    }
+  C
+
   def test_runtime_offsetof_matches_gcc
     assert_matches_gcc(RUNTIME_SOURCE, "offsetof_runtime")
+  end
+
+  def test_runtime_index_offsetof_matches_gcc
+    assert_matches_gcc(RUNTIME_INDEX_SOURCE, "offsetof_runtime_index")
+  end
+
+  # A constant context has no place to evaluate a run-time index, so the same
+  # designator that compiles above is rejected as a non-constant there — the
+  # diagnostic gcc also gives, rather than the unhandled evaluator failure a
+  # deferred term would otherwise become.
+  def test_runtime_index_is_rejected_in_a_constant_context
+    source = <<~C
+      struct grid { char gate; int plain[8]; };
+      int n;
+      static char probe[__builtin_offsetof(struct grid, plain[n])];
+      int main(void) { return (int)sizeof(probe); }
+    C
+    error = assert_raises(Rubycc::CompileError) do
+      Rubycc::Compiler.new.compile(source, filename: "runtime_index_constant.c")
+    end
+    assert_match(/array size must be an integer constant/, error.message)
   end
 
   def test_constant_context_offsetof_matches_gcc

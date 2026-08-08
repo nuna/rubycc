@@ -25,18 +25,22 @@ module Rubycc
     # free and are not recorded here.
     StringInit = Data.define(:offset, :bytes)
 
-    # A whole aggregate expression (normally a compound literal) copied into
-    # an aggregate subobject at `offset`. C permits an initializer-list element
-    # such as `.base = (Node){ .type = 1 }`; it is an expression initializer,
-    # not a brace-elided walk of the outer cursor.
+    # A whole aggregate expression copied into an aggregate subobject at
+    # `offset`. C permits an initializer-list element to be a single expression
+    # of the subobject's own structure/union type (6.7.9p13) -- a compound
+    # literal such as `.base = (Node){ .type = 1 }`, a call returning that
+    # struct, a variable of it; it is an expression initializer, not a
+    # brace-elided walk of the outer cursor.
     AggregateInit = Data.define(:offset, :type, :value)
 
     # The outcome of resolving an initializer: `type` is the object's type with
     # any "[]" array bound now filled in (so sizeof and the storage layout see a
-    # complete type), and `entries` is the flat list of ScalarInit/BitfieldInit/
+    # complete type), `entries` is the flat list of ScalarInit/BitfieldInit/
     # StringInit/AggregateInit placements
-    # placements, in source order, that the caller lowers.
-    ResolvedInitializer = Data.define(:type, :entries)
+    # placements, in source order, that the caller lowers, and `flexible_bytes`
+    # is the storage an initialized flexible array member adds *beyond*
+    # `type.size` (0 for every other object; see #fill_flexible_array_member).
+    ResolvedInitializer = Data.define(:type, :entries, :flexible_bytes)
 
     # Resolves an initializer (6.7.9) against the object's type into a flat list
     # of scalar/string placements plus a completed type. The whole current-object
@@ -96,14 +100,33 @@ module Rubycc
         type.array? && Type.character?(type.element)
       end
 
-      def self.resolve(type, initializer)
-        new.resolve(type, initializer)
+      # `static_storage` says the object being initialized lives in .data/.bss
+      # (a file-scope definition or a block-scope `static`), which is the only
+      # place a trailing flexible array member may be initialized.
+      #
+      # `type_of` is how the caller lends this resolver its view of expression
+      # types: a callable taking an expression node and answering its
+      # Rubycc::Type, or nil when it cannot tell (see #single_expression_init?,
+      # which is the only thing that asks). It must not emit code or evaluate
+      # anything — the generator passes its #static_type inference, the parser
+      # the smaller one it uses for parse-time sizeof. A caller with no type
+      # table at all may leave it out, and every subobject then falls to brace
+      # elision as it did before the hook existed.
+      def self.resolve(type, initializer, static_storage: false, type_of: nil)
+        new.resolve(type, initializer, static_storage: static_storage, type_of: type_of)
       end
 
-      def resolve(type, initializer)
+      def resolve(type, initializer, static_storage: false, type_of: nil)
         @entries = []
+        @static_storage = static_storage
+        @type_of = type_of
+        @flexible_bytes = 0
+        # Only the object's *own* trailing flexible array member may be
+        # initialized; one reached through a nested struct is rejected, so
+        # remember which struct owns the one initializer this run may fill.
+        @flexible_owner = type.struct? ? type : nil
         final = init_top(type, initializer)
-        ResolvedInitializer.new(final, @entries)
+        ResolvedInitializer.new(final, @entries, @flexible_bytes)
       end
 
       private
@@ -232,29 +255,76 @@ module Rubycc
             break unless designator.is_a?(AST::MemberDesignator)
 
             member, index = locate_member(type, designator)
-            reject_flexible_array_init(member, item)
-            init_subobject(member.type, base + member.offset, cursor, item, item.designators[1..], member)
+            fill_member(type, member, base, cursor, item, item.designators[1..], designated: true)
             index += 1
           else
             break if index >= members.size
 
             member = members[index]
-            reject_flexible_array_init(member, item)
-            init_subobject(member.type, base + member.offset, cursor, item, [], member)
+            fill_member(type, member, base, cursor, item, [])
             index += 1
           end
         end
       end
 
-      # A flexible array member cannot be initialized: it has no reserved
-      # storage (it contributes nothing to sizeof), so an initializer for it
-      # would write past the object (6.7.2.1p18). An initializer that only fills
-      # the struct's other members is fine — this fires solely when an item is
-      # actually directed at the FAM.
-      def reject_flexible_array_init(member, item)
-        return unless member.type.array? && member.type.incomplete?
+      # Places `item` into one member of `type`. A flexible array member takes
+      # the separate path below, since it has no reserved storage of its own and
+      # so decides how much the object grows.
+      def fill_member(type, member, base, cursor, item, designators, designated: false)
+        if flexible_array_member?(member)
+          fill_flexible_array_member(type, member, base, cursor, item, designators)
+        else
+          init_subobject(member.type, base + member.offset, cursor, item, designators, member,
+                         designated: designated)
+        end
+      end
 
-        error(item_token(item), "initialization of a flexible array member is not allowed")
+      # The trailing "T name[]" of a struct (6.7.2.1p18): an array member with
+      # no bound, hence an incomplete type.
+      def flexible_array_member?(member)
+        member.type.array? && member.type.incomplete?
+      end
+
+      # An initializer directed at a flexible array member. ISO C reserves no
+      # storage for one (it contributes nothing to sizeof), so the standard has
+      # no meaning for this; gcc extends the language to allow it for an object
+      # with static storage duration, laying the elements out at the member's
+      # offset and widening the *object* past its type's size. Measured against
+      # gcc: the object occupies sizeof(struct) + n * sizeof(element) bytes for
+      # n elements (so the struct's own trailing padding stays, and the extra
+      # bytes ride behind it), the count n is the highest element index any item
+      # reaches plus one whatever order the items arrive in, and an initialized
+      # FAM at automatic storage duration, or one reached through a nested
+      # struct, is rejected. `@flexible_bytes` carries n * sizeof(element) out
+      # to the caller, which sizes the object's image by it.
+      def fill_flexible_array_member(type, member, base, cursor, item, designators)
+        unless type.equal?(@flexible_owner)
+          error(item_token(item), "initialization of a flexible array member in a nested context")
+        end
+        unless @static_storage
+          error(item_token(item), "non-static initialization of a flexible array member")
+        end
+
+        element = member.type.element
+        offset = base + member.offset
+        count = flexible_array_count(member, offset, cursor, item, designators)
+        @flexible_bytes = count * element.size if count * element.size > @flexible_bytes
+      end
+
+      # How many elements an item directed at a flexible array member reaches.
+      # A leading "[i]" designator names one element, so it reaches i + 1; every
+      # other form (a brace list, a string, or brace elision drawing from the
+      # enclosing list) fills the member as a whole, and the bound the fill
+      # infers for the unbounded array is the count.
+      def flexible_array_count(member, offset, cursor, item, designators)
+        if designators.first.is_a?(AST::ArrayDesignator)
+          index = designators.first.index
+          init_subobject(member.type, offset, cursor, item, designators, member)
+          index + 1
+        else
+          completed = init_subobject(member.type, offset, cursor, item, designators, member)
+          (completed.is_a?(Type::Array) && completed.length) || 0
+        end
       end
 
       # A union holds one member at a time: the first by default, or the one a
@@ -267,7 +337,8 @@ module Rubycc
         designator = item.designators.first
         if designator.is_a?(AST::MemberDesignator)
           member, = locate_member(type, designator)
-          init_subobject(member.type, base + member.offset, cursor, item, item.designators[1..], member)
+          init_subobject(member.type, base + member.offset, cursor, item, item.designators[1..], member,
+                         designated: true)
         elsif designator
           # An array designator here is for an enclosing object; leave it.
           nil
@@ -282,10 +353,11 @@ module Rubycc
       # the item's value initializes the subobject: a char array takes a string,
       # a nested brace recurses with its own cursor, a scalar is recorded, and a
       # braceless aggregate elides — it keeps drawing from the *same* cursor.
-      def init_subobject(sub_type, sub_offset, cursor, item, designators, member = nil)
+      def init_subobject(sub_type, sub_offset, cursor, item, designators, member = nil, designated: false)
         unless designators.empty?
           inner_type, inner_offset, inner_member = step_designator(sub_type, sub_offset, designators.first)
-          return init_subobject(inner_type, inner_offset, cursor, item, designators[1..], inner_member)
+          return init_subobject(inner_type, inner_offset, cursor, item, designators[1..], inner_member,
+                                designated: true)
         end
 
         value = item.value
@@ -295,7 +367,7 @@ module Rubycc
         elsif value.is_a?(AST::InitializerList)
           cursor.advance
           init_object_from_list(sub_type, sub_offset, value)
-        elsif sub_type.struct? && aggregate_expression?(value)
+        elsif single_expression_init?(sub_type, value, designated)
           cursor.advance
           @entries << AggregateInit.new(sub_offset, sub_type, value)
         elsif scalar?(sub_type)
@@ -402,31 +474,67 @@ module Rubycc
         !type.array? && !type.struct?
       end
 
-      # Whether the syntax is known to produce an aggregate value without
-      # consulting the surrounding expression scope. Compound literals are the
-      # direct form; a conditional or comma expression keeps that aggregate
-      # value when all of the value-producing arms/operands do. Other expression
-      # forms remain on the brace-elision path, which preserves `{ 0 }` and the
-      # ordinary positional initializer rules.
-      def aggregate_expression?(node)
+      # Whether `value` initializes the whole subobject as a single expression,
+      # rather than being the next item brace elision drops into the subobject's
+      # innermost member. 6.7.9p13 draws that line by *type*, not by syntax and
+      # not by whether a designator named the subobject: the initializer for a
+      # structure or union object is either a brace list "or a single expression
+      # that has compatible structure or union type". So the question here is
+      # only whether the expression's type is that of the struct/union subobject
+      # standing at the cursor.
+      #
+      # A designator does not enter into it, which is why the earlier
+      # approximation (any call/variable/member expression counts as an
+      # aggregate when designated, never when reached positionally) was wrong in
+      # both directions, as measured against gcc:
+      #
+      #   MapInit m = { map, TypeInfo_get(f), TypeInfo_get(g), arena };
+      #
+      # has no designator anywhere, yet gcc initializes the two TypeInfo members
+      # from the calls that return TypeInfo (google-protobuf's message.c writes
+      # exactly this, and rubycc rejected it with "incompatible types in
+      # initialization"); while
+      #
+      #   pt a[] = { 1, 2, 3, f(), 9, 10 };   /* int f(void) */
+      #
+      # is a two-element array for gcc because f() is an ordinary scalar item
+      # mid-elision -- and a three-element one when the same call returns pt,
+      # since then the expression fills a whole element. Only the type tells the
+      # two apart.
+      #
+      # An expression whose type is unknown (no `type_of` hook, or a form it
+      # does not cover) stays on the brace-elision path, which is what preserves
+      # `{ 0 }` and the ordinary positional rules.
+      # `designated` says a designator named this subobject, and only matters
+      # when no `type_of` hook was lent (the parser resolves with no type table
+      # at all, purely to complete an inferred array bound). There, a designator
+      # naming a struct/union subobject whose item is not a brace list leaves
+      # exactly one reading open under 6.7.9p13 -- the single-expression form --
+      # because brace elision cannot descend into a subobject the designator
+      # already selected. Guessing that way keeps the parser's type completion
+      # working; the generator re-resolves the same initializer *with* the hook,
+      # so a genuinely mistyped expression is still caught, by the pass that can
+      # actually see the type.
+      def single_expression_init?(sub_type, value, designated = false)
+        return false unless sub_type.struct?
+
+        value_type = expression_type(value)
+        return designated if value_type.nil?
+
+        value_type.struct? && value_type == sub_type
+      end
+
+      # The type of an initializer item's expression, or nil when it cannot be
+      # told here. A compound literal and a cast name their own type, so they
+      # are answered without help and identically on every caller's path;
+      # everything else needs the surrounding scope and goes to the caller's
+      # `type_of` hook.
+      def expression_type(node)
         case node
-        when AST::CompoundLiteral
-          node.type.array? || node.type.struct?
-        when AST::Conditional
-          aggregate_expression?(node.then_expr) && aggregate_expression?(node.else_expr)
-        when AST::Comma
-          aggregate_expression?(node.right)
-        when AST::Unary
-          # A dereference preserves the pointed-to object's aggregate value;
-          # the generator performs the final type check when the pointer's
-          # target is known.
-          node.op == :deref
-        when AST::MemberAccess, AST::Subscript
-          # These lvalue expressions can likewise denote an aggregate member or
-          # element; the generator settles their actual type and compatibility.
-          true
+        when AST::CompoundLiteral, AST::Cast
+          node.type
         else
-          false
+          @type_of&.call(node)
         end
       end
 

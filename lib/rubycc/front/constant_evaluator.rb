@@ -86,8 +86,22 @@ module Rubycc
         ge: ->(a, b) { a >= b ? 1 : 0 }
       }.freeze
 
+      # One subscript step of a __builtin_offsetof designator whose index is not
+      # a constant expression: its contribution to the offset is the value of
+      # `index` (an expression node the caller lowers) times `scale`, the
+      # element's byte size.
+      OffsetofTerm = Data.define(:index, :scale)
+
       def self.evaluate(node, sizeof_expr: nil, pointer_int: nil)
         new(sizeof_expr: sizeof_expr, pointer_int: pointer_int).evaluate(node)
+      end
+
+      # Splits an AST::BuiltinOffsetof into [constant_offset, terms]: the byte
+      # offset every member step and constant-indexed subscript contributes, and
+      # an OffsetofTerm for each subscript whose index is not constant. See
+      # #offsetof_plan.
+      def self.offsetof_plan(node, sizeof_expr: nil, pointer_int: nil)
+        new(sizeof_expr: sizeof_expr, pointer_int: pointer_int).offsetof_plan(node)
       end
 
       # `sizeof_expr`, when supplied, resolves a `sizeof <expression>` operand
@@ -143,6 +157,33 @@ module Rubycc
           # Comma — is not a constant-expression here.
           raise NotConstant, node.token
         end
+      end
+
+      # Walks a __builtin_offsetof designator once and reports it as
+      # [constant_offset, terms]: the bytes every member step and
+      # constant-indexed subscript contributes, plus one OffsetofTerm per
+      # subscript whose index is not a constant expression.
+      #
+      # gcc's __builtin_offsetof admits such a subscript and computes the offset
+      # at run time (measured: "offsetof(struct S, d[n])" with a variable n
+      # compiles and returns 8, 16, 32 for n = 0, 1, 3 on an 8-byte element),
+      # which ISO offsetof does not, so a caller that can emit code (the IR
+      # generator) takes the terms and lowers them while a caller that needs a
+      # constant (#evaluate_builtin_offsetof, and through it every array bound,
+      # case label and static initializer) rejects them.
+      def offsetof_plan(node)
+        type = node.type
+        offset = 0
+        terms = []
+        node.designator.each do |step|
+          case step
+          when AST::OffsetofMember
+            offset, type = offsetof_member_step(type, step, offset)
+          when AST::OffsetofIndex
+            offset, type = offsetof_index_step(type, step, offset, terms)
+          end
+        end
+        [offset, terms]
       end
 
       private
@@ -502,16 +543,11 @@ module Rubycc
       # through Type::StructType#member, so an anonymous struct/union member is
       # traversed transparently with its own offset already folded in.
       def evaluate_builtin_offsetof(node)
-        type = node.type
-        offset = 0
-        node.designator.each do |step|
-          case step
-          when AST::OffsetofMember
-            offset, type = offsetof_member_step(type, step, offset)
-          when AST::OffsetofIndex
-            offset, type = offsetof_index_step(type, step, offset)
-          end
-        end
+        offset, terms = offsetof_plan(node)
+        # A constant context has no place to evaluate a run-time index, so a
+        # deferred term is simply the non-constant expression it came from.
+        raise NotConstant, terms.first.index.token unless terms.empty?
+
         offset
       end
 
@@ -533,13 +569,24 @@ module Rubycc
         [offset + member.offset, member.type]
       end
 
-      def offsetof_index_step(type, step, offset)
+      # One "[i]" step. A constant index folds straight into the running offset;
+      # a non-constant one is deferred to `terms` for a caller that can lower it
+      # (an OffsetofError from a nested designator is a real diagnostic, not a
+      # deferrable index, so it passes through).
+      def offsetof_index_step(type, step, offset, terms)
         unless type.array?
           raise OffsetofError.new(step.token, "subscripted value in offsetof is not an array")
         end
 
-        index = evaluate(step.index)
-        [offset + index * type.element.size, type.element]
+        element = type.element
+        begin
+          [offset + evaluate(step.index) * element.size, element]
+        rescue OffsetofError
+          raise
+        rescue NotConstant
+          terms << OffsetofTerm.new(index: step.index, scale: element.size)
+          [offset, element]
+        end
       end
 
       # __builtin_constant_p(expr) folds to 1 when its operand is itself a

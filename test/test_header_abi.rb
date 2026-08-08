@@ -93,6 +93,71 @@ class TestHeaderAbi < Minitest::Test
     snippets: ["static int abi_iso646(int a, int b) { return (a and b) or (a bitor b); }"]
   )
 
+  # The scalar types rubycc admits under _Atomic, each probed twice -- bare and
+  # under the parenthesized atomic-type-specifier -- so the claim the whole
+  # implementation rests on ("_Atomic T has T's layout") is measured against gcc
+  # type by type rather than assumed. `long double` is deliberately absent: it
+  # is the one freestanding type rubycc already models differently (8-byte
+  # double against x87's 16), so a row for it would report that known gap here
+  # (see this file's header comment for the same exclusion around max_align_t).
+  ATOMIC_SCALARS = %w[_Bool char signed\ char unsigned\ char
+                      short unsigned\ short int unsigned\ int
+                      long unsigned\ long long\ long unsigned\ long\ long
+                      float double void\ * int\ * size_t ptrdiff_t].freeze
+
+  # <stdatomic.h>: the layout claim above, the C11 typedefs, memory_order's
+  # width and the memory-order constants' values, plus a snippet exercising
+  # every generic macro the bundled header provides so a missing or unusable
+  # one fails to compile on rubycc's side.
+  #
+  # The ATOMIC_*_LOCK_FREE macros are deliberately *not* probed: gcc answers 2
+  # for all ten because it falls back to libatomic for the widths its ISA
+  # cannot do inline, while rubycc refuses those operations outright and so
+  # answers 0 for them (measured; see include/stdatomic.h). That is an intended
+  # divergence, and the values are pinned in test_atomic_type.rb instead, where
+  # they can be stated as rubycc's own answer rather than compared to gcc's.
+  STDATOMIC = HeaderAbiHarness::Spec.new(
+    header: "stdatomic.h",
+    sizes: ATOMIC_SCALARS.flat_map { |type| [type, "_Atomic(#{type})"] } +
+           %w[atomic_bool atomic_char atomic_schar atomic_uchar
+              atomic_short atomic_ushort atomic_int atomic_uint
+              atomic_long atomic_ulong atomic_llong atomic_ullong
+              atomic_size_t atomic_ptrdiff_t memory_order],
+    ints: %w[memory_order_relaxed memory_order_consume memory_order_acquire
+             memory_order_release memory_order_acq_rel memory_order_seq_cst] +
+          ["ATOMIC_VAR_INIT(7)", "kill_dependency(9)", "abi_stdatomic()"],
+    snippets: [<<~C.chomp]
+      static int abi_stdatomic(void) {
+        atomic_int object;
+        int expected;
+        int total = 0;
+        atomic_init(&object, 1);
+        total += atomic_load(&object);
+        total += atomic_load_explicit(&object, memory_order_acquire);
+        atomic_store(&object, 2);
+        atomic_store_explicit(&object, 3, memory_order_release);
+        total += atomic_exchange(&object, 4);
+        total += atomic_exchange_explicit(&object, 5, memory_order_acq_rel);
+        total += atomic_fetch_add(&object, 6);
+        total += atomic_fetch_add_explicit(&object, 7, memory_order_relaxed);
+        total += atomic_fetch_sub(&object, 8);
+        total += atomic_fetch_sub_explicit(&object, 9, memory_order_relaxed);
+        expected = atomic_load(&object);
+        total += atomic_compare_exchange_strong(&object, &expected, 10);
+        total += atomic_compare_exchange_weak(&object, &expected, 11);
+        total += atomic_compare_exchange_strong_explicit(&object, &expected, 12,
+                                                         memory_order_acq_rel,
+                                                         memory_order_relaxed);
+        total += atomic_compare_exchange_weak_explicit(&object, &expected, 13,
+                                                       memory_order_acq_rel,
+                                                       memory_order_relaxed);
+        atomic_thread_fence(memory_order_seq_cst);
+        atomic_signal_fence(memory_order_seq_cst);
+        return total + atomic_load(&object);
+      }
+    C
+  )
+
   # ---------------------------------------------------------------------------
   # Step 63 (M3 B7): the bundled libc first batch. Each Spec probes the ABI
   # surface the bundled header commits to -- macro values, type widths, struct
@@ -395,7 +460,7 @@ class TestHeaderAbi < Minitest::Test
              SEEK_SET SEEK_CUR SEEK_END
              _SC_ARG_MAX _SC_CHILD_MAX _SC_CLK_TCK _SC_NGROUPS_MAX
              _SC_OPEN_MAX _SC_PAGESIZE _SC_PAGE_SIZE _SC_NPROCESSORS_CONF
-             _SC_NPROCESSORS_ONLN _SC_PHYS_PAGES _SC_AVPHYS_PAGES
+             _SC_NPROCESSORS_ONLN _SC_PHYS_PAGES _SC_AVPHYS_PAGES _SC_IOV_MAX
              _POSIX_MONOTONIC_CLOCK _CS_PATH _PC_PIPE_BUF],
     snippets: [<<~C.chomp]
       static long abi_unistd(int fd, const char *path, void *buf, unsigned long n) {
@@ -660,7 +725,7 @@ class TestHeaderAbi < Minitest::Test
     defines: ["_GNU_SOURCE"],
     sizes: %w[socklen_t sa_family_t struct\ sockaddr struct\ sockaddr_storage
               struct\ msghdr struct\ iovec struct\ linger],
-    ints: %w[AF_UNSPEC AF_UNIX AF_INET AF_INET6 PF_INET
+    ints: %w[AF_UNSPEC AF_UNIX AF_INET AF_INET6 AF_NETLINK PF_INET PF_NETLINK
              SOCK_STREAM SOCK_DGRAM SOCK_RAW SOCK_SEQPACKET SOCK_CLOEXEC SOCK_NONBLOCK
              SOL_SOCKET
              SO_REUSEADDR SO_TYPE SO_ERROR SO_BROADCAST SO_SNDBUF SO_RCVBUF
@@ -681,6 +746,19 @@ class TestHeaderAbi < Minitest::Test
         if (connect(fd, sa, len) < 0) return -1;
         char buf[4];
         return (int)recv(fd, buf, sizeof buf, MSG_PEEK) + (int)send(fd, buf, 1, 0);
+      }
+
+      /* accept4 on a listening socket that has nothing pending: the call is
+         what is under test (the declaration and the libc definition behind it),
+         so the interesting answer is the EAGAIN a non-blocking accept gives,
+         not a connection. kgio calls it exactly this way. */
+      static int abi_accept4(void) {
+        int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+        struct sockaddr_storage ss;
+        socklen_t len = sizeof ss;
+        if (fd < 0 || listen(fd, 1) < 0) return -1;
+        int got = accept4(fd, (struct sockaddr *)&ss, &len, SOCK_NONBLOCK);
+        return (got < 0) ? 1 : 0;
       }
     C
   )
@@ -718,12 +796,13 @@ class TestHeaderAbi < Minitest::Test
   # pulls in AF_INET for the snippet without redefining anything.
   NETINET_IN = HeaderAbiHarness::Spec.new(
     header: "netinet/in.h",
-    also: ["sys/socket.h"],
+    also: ["sys/socket.h", "string.h"],
     defines: ["_GNU_SOURCE"],
     sizes: %w[in_addr_t in_port_t sa_family_t struct\ in_addr struct\ in6_addr
               struct\ sockaddr_in struct\ sockaddr_in6],
     ints: %w[IPPROTO_IP IPPROTO_ICMP IPPROTO_TCP IPPROTO_UDP IPPROTO_IPV6 IPPROTO_RAW
              INADDR_ANY INADDR_LOOPBACK INADDR_BROADCAST INADDR_NONE
+             INET_ADDRSTRLEN INET6_ADDRSTRLEN
              htons(0x1234) htonl(0x12345678)],
     offsets: [["struct sockaddr_in", "sin_family"], ["struct sockaddr_in", "sin_port"],
               ["struct sockaddr_in", "sin_addr"],
@@ -736,6 +815,18 @@ class TestHeaderAbi < Minitest::Test
         a->sin_family = AF_INET; a->sin_port = htons(80); a->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         return (int)a->sin_addr.s_addr + any.s6_addr[15] + IPPROTO_TCP;
       }
+
+      /* in6addr_any / in6addr_loopback are libc *objects*, not macros, so this
+         case is about the definitions resolving at link time and holding the
+         addresses the INIT macros spell. raindrops reaches for the address of
+         one, which the initializer macros cannot give it. */
+      static int abi_in6addr(void) {
+        struct in6_addr any = IN6ADDR_ANY_INIT;
+        struct in6_addr lo = IN6ADDR_LOOPBACK_INIT;
+        return (memcmp(&in6addr_any, &any, sizeof any) == 0)
+             + (memcmp(&in6addr_loopback, &lo, sizeof lo) == 0) * 2
+             + in6addr_loopback.s6_addr[15];
+      }
     C
   )
 
@@ -746,7 +837,9 @@ class TestHeaderAbi < Minitest::Test
     header: "netinet/tcp.h",
     defines: ["_GNU_SOURCE"],
     ints: %w[TCP_NODELAY TCP_MAXSEG TCP_CORK TCP_KEEPIDLE TCP_KEEPINTVL
-             TCP_KEEPCNT TCP_INFO TCP_QUICKACK TCP_USER_TIMEOUT TCP_FASTOPEN],
+             TCP_KEEPCNT TCP_INFO TCP_QUICKACK TCP_USER_TIMEOUT TCP_FASTOPEN
+             TCP_ESTABLISHED TCP_SYN_SENT TCP_SYN_RECV TCP_FIN_WAIT1 TCP_FIN_WAIT2
+             TCP_TIME_WAIT TCP_CLOSE TCP_CLOSE_WAIT TCP_LAST_ACK TCP_LISTEN TCP_CLOSING],
     snippets: [<<~C.chomp]
       static int abi_tcp(void) { return TCP_NODELAY + TCP_KEEPIDLE; }
     C
@@ -871,6 +964,21 @@ class TestHeaderAbi < Minitest::Test
       static int abi_bsd_setjmp(jmp_buf env) {
         int r = _setjmp(env);
         if (r) _longjmp(env, r + 1);
+        return r;
+      }
+      /* jmp_buf and sigjmp_buf must be the *same* type, not merely the same
+         size: glibc spells both as arrays of one shared tag, so code that
+         stores a jmp_buf and hands it to siglongjmp() compiles. Declaring them
+         as two anonymous unions gave each its own distinct type and made that
+         call a type error here while gcc accepted it (found building
+         google-protobuf's ruby-upb.h). Passing each buffer to the other
+         family's function is what pins the compatibility; the sizes above only
+         pin the widths. */
+      static int abi_setjmp_buffers_are_one_type(jmp_buf a, sigjmp_buf b) {
+        int r = sigsetjmp(a, 0);
+        if (r) siglongjmp(a, r + 1);
+        r += setjmp(b);
+        if (r) longjmp(b, r + 1);
         return r;
       }
     C
@@ -1779,6 +1887,10 @@ class TestHeaderAbi < Minitest::Test
     assert_abi_matches(ISO646)
   end
 
+  def test_stdatomic_abi_matches_gcc
+    assert_abi_matches(STDATOMIC)
+  end
+
   private
 
   # Runs a Spec both ways and asserts a clean run and byte-identical output. The
@@ -2248,6 +2360,14 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_stddef_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::STDDEF)
+  end
+
+  # <stdatomic.h> is freestanding, so like <float.h> it is one file for every
+  # machine -- and the layout claim it rests on ("_Atomic T has T's layout") is
+  # a per-target measurement, not a portable one. The cross run makes the
+  # aarch64 ABI say so too.
+  def test_stdatomic_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::STDATOMIC)
   end
 
   def test_poll_abi_matches_cross_gcc

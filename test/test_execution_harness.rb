@@ -2710,6 +2710,25 @@ class TestExecutionHarness < Minitest::Test
                  "rubycc and gcc disagree on [exit, stdout] for mixed hex/octal escapes"
   end
 
+  # The eleven simple escape sequences of 6.4.4.4p1, printed as their byte
+  # values from character constants and echoed from a string literal, so gcc
+  # decides every one of them. "\?" is the odd member: it denotes a plain '?'
+  # and exists only to break up a would-be trigraph, so an unescaped '?' in the
+  # same run must produce the identical byte.
+  SIMPLE_ESCAPE_PROGRAM = "int printf(const char *format, ...);\n" \
+                          "int main(void) {\n" \
+                          "  printf(\"%d %d %d %d %d %d %d %d %d %d %d %d\\n\",\n" \
+                          "         '\\'', '\\\"', '\\?', '?', '\\\\',\n" \
+                          "         '\\a', '\\b', '\\f', '\\n', '\\r', '\\t', '\\v');\n" \
+                          "  printf(\"[%s]\\n\", \"\\'\\\"\\?q\\\\\\a\\b\\f\\v\");\n" \
+                          "  return 0;\n}\n"
+
+  def test_simple_escapes_match_gcc_stdout_and_exit
+    assert_equal program_output(SIMPLE_ESCAPE_PROGRAM, compiler: :gcc),
+                 program_output(SIMPLE_ESCAPE_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on [exit, stdout] for the simple escape sequences"
+  end
+
   # 6.7.6.3p7: an unsized array parameter adjusts to a pointer, so a caller may
   # pass an array by decay and the callee may index it as usual.
   ARRAY_PARAMETER_PROGRAM = "int sum(int a[], int n) { int i; int total = 0; " \

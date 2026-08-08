@@ -10,9 +10,10 @@
 # 持つため常設テストスイートには含めない、手動/CI 実行用のツール。
 # 実測合格の記録は docs/STEPS.md の Step 54。
 #
-# Usage:
-#   tools/m2_acceptance.rb [work_dir]
-#   M2_WORK=/path/to/work tools/m2_acceptance.rb
+# Usage(`ruby` を省かないこと。tools/ は実行ビット無しで追跡しているので、
+# `bundle exec tools/...` は "not executable" で拒否される):
+#   ruby tools/m2_acceptance.rb [work_dir]
+#   M2_WORK=/path/to/work ruby tools/m2_acceptance.rb
 
 require "fileutils"
 require "open3"

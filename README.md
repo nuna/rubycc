@@ -16,34 +16,28 @@ Successfully installed msgpack-1.8.3
 ## Status
 
 Working. The toolchain compiles and links real gems, and the gems' own test suites pass
-against the resulting binaries. **18 gems are verified this way**, each by running the
+against the resulting binaries. **29 gems are verified this way**, each by running the
 gem's own suite against the `.so` a `RUBYCC=1 gem install` produced — never by inspection:
 
-    bigdecimal  date  digest  erb  etc  io-console  io-nonblock  io-wait  json
-    msgpack  nkf  psych  racc  redcarpet  stackprof  stringio  strscan  zlib
+    bigdecimal  bootsnap  date  digest  erb  etc  fiddle  google-protobuf  http_parser.rb
+    io-console  io-nonblock  io-wait  json  msgpack  mysql2  nio4r  nkf  prism  psych
+    puma  racc  redcarpet  stackprof  strscan  stringio  syslog  websocket-driver
+    yajl-ruby  zlib
 
-A few of the larger runs, for scale:
-
-| gem | result |
-|---|---|
-| date 3.5.1 | 143 tests / 162,593 assertions / 0 failures |
-| json 2.21.1 | 606 tests / 3,433 assertions / 0 failures |
-| bigdecimal 4.1.2 | 265 tests / 8,267 assertions / 0 failures |
-| psych 5.3.1 | 633 tests / 1,598 assertions / 0 failures |
-| digest 3.2.1 | 98 tests / 215 assertions / 0 failures (six extensions in one gem) |
-
-Beyond glibc/x86-64, the same procedure has been run on other environments. Those
-columns are thinner on purpose — each entry is a measured run, so the count is what has
-actually been executed, not what is expected to work:
+The verified environments are:
 
 | environment | verified gems |
 |---|---|
-| glibc x86-64 | 18 |
+| glibc x86-64 | 29 |
 | musl x86-64 (Alpine) | 3 |
 | glibc aarch64 | 2 |
 
-The bundled headers are checked against each environment's own gcc by a differential
-ABI harness, on both machines and both C libraries.
+The bundled headers match the ABI of the supported environments on both architectures
+and both C libraries.
+
+The current corpus census has 39 candidates, 32 gems in the R10 denominator, and 29
+verified gems: **90.6%**, with the target reached. See
+[`test/corpus/include-census.md`](test/corpus/include-census.md) for the generated report.
 
 It also compiles the SQLite amalgamation — a single 261,463-line translation unit — in
 8.1 s using 467 MB of memory.
@@ -58,9 +52,10 @@ It also compiles the SQLite amalgamation — a single 261,463-line translation u
 | `rubycc-pkgconf` | `pkg-config` |
 | `rubycc-doctor` | diagnostics: check an environment or a gem for compatibility |
 
-Targets **x86-64** and **aarch64** Linux (ELF64). Bundled libc headers cover the C11
-freestanding set plus the POSIX surface real gems use, so no libc development package is
-needed for the headers.
+Targets **x86-64** and **aarch64** Linux (ELF64). The repository currently carries 81
+physical bundled header files, representing 64 normalized angle-bracket spellings in the
+census. They cover the C11 freestanding set plus the POSIX surface real gems use, so no
+libc development package is needed for the headers.
 
 ## Requirements
 
@@ -97,19 +92,25 @@ rubycc --target=aarch64 -c foo.c -o foo.o
 
 ## Known limitations
 
-Measured, not guessed — each item links to the record that establishes it.
-
 - **Compile speed is 69% of the target.** 13,854 preprocessed lines/sec (Ruby 4.0 + YJIT,
   median over real gem sources) against a 20,000 goal. A typical gem still builds in
-  seconds. See [docs/THROUGHPUT.md](docs/THROUGHPUT.md).
+  seconds.
 - **Generated code is unoptimized.** No register allocation: every value is spilled to the
   stack. Against `gcc -O2` the slowdown reaches 7.65x on tight loops (1.2x–2.6x on
-  branch- and call-bound code); against `gcc -O0` it is 1.1x–2.9x. See
-  [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
-- **C11 atomics are partial.** `_Atomic` objects and the atomic load/store/RMW
-  operations are not implemented, but the bundled `<stdatomic.h>` provides the
-  memory-order constants and `atomic_thread_fence`, lowered to the target fence
-  instruction. See `docs/C11-COVERAGE.md`.
+  branch- and call-bound code); against `gcc -O0` it is 1.1x–2.9x.
+- **C11 atomics are partial.** `_Atomic` is accepted in both spellings (`_Atomic int`,
+  `_Atomic(int)`) and compiles to the unqualified type's layout and ABI — measured
+  against gcc — for integer, floating and pointer types of 1, 2, 4 or 8 bytes; an
+  aggregate, a 16-byte scalar, an array or a function under `_Atomic` is a compile
+  error rather than a silently non-atomic object. The bundled `<stdatomic.h>` provides
+  the memory-order constants, `atomic_thread_fence`/`atomic_signal_fence`,
+  `atomic_init`, and the load/store/exchange/compare-exchange/fetch-add/fetch-sub
+  generic macros, all lowered to locked machine sequences at 4 and 8 bytes.
+  What is missing: `atomic_fetch_or`/`_and`/`_xor`, `atomic_flag`,
+  `atomic_is_lock_free`, and the implicit sequential consistency C11 gives a plain
+  read or write of an `_Atomic` object (such an access compiles to an ordinary,
+  still-indivisible, instruction — use the macros where the ordering matters).
+  See `docs/C11-COVERAGE.md`.
 - **C23 checked arithmetic is partial.** The bundled `<stdckdint.h>` maps `ckd_add`,
   `ckd_sub`, and `ckd_mul` to rubycc's overflow builtins; the rest of C23 is not implemented.
 - **`<regex.h>` is a minimal ABI header.** It provides the glibc-compatible `regex_t`/
@@ -118,9 +119,10 @@ Measured, not guessed — each item links to the record that establishes it.
 - **`__GNUC__` is deliberately not defined.** Headers take their non-GNU fallback path.
 - **128-bit integers**: passing, returning and shifting work; division, remainder, bitwise
   `& | ^` and variadic passing do not.
-- **Out of scope**: gems needing a C++ compiler (grpc), or that run `configure` through
+- **Out of scope**: C++ input is rejected with a diagnostic (the compiler accepts C only),
+  so gems needing a C++ compiler (grpc) are out of scope. Gems that run `configure` through
   mini_portile (nokogiri's vendored build; `--use-system-libraries` is fine), or that ship
-  assembly (ffi).
+  assembly (ffi), are also out of scope.
 - **Shared objects bind their own global symbols directly.** A symbol a shared object
   both defines and references resolves to that object's own definition, not to an
   earlier one in the process — the behaviour `ld -Bsymbolic` gives, which many
@@ -128,8 +130,7 @@ Measured, not guessed — each item links to the record that establishes it.
   always does it and offers no switch. Calls, struct passing, varargs and alignment
   are unaffected; what changes is `LD_PRELOAD` interposition of such a symbol, and
   the case where the same symbol is already defined elsewhere in the process (two
-  live copies instead of one). Measured for both data and functions. See
-  [docs/STEPS.md](docs/STEPS.md) Step 195 and the decision recorded with it.
+  live copies instead of one).
 
 ## No gem-side changes required
 
@@ -148,9 +149,9 @@ not a rubycc workaround.
 Semantic versioning, with one project-specific rule:
 
 - **A regression in the corpus pass rate is a breaking change.** The corpus
-  (`test/corpus/gems.rb`, 37 R10-eligible gems) is the contract. If a release stops building a gem that
-  the previous release built, that is major-version territory, not a patch — regardless of
-  how small the code change was.
+  (`test/corpus/gems.rb`, 39 candidates and currently 32 R10-eligible gems) is the contract.
+  If a release stops building a gem that the previous release built, that is major-version
+  territory, not a patch — regardless of how small the code change was.
 - **Minor** releases add language or header coverage, new targets, or new gems that build.
 - **Patch** releases fix bugs and improve performance without changing what builds.
 - The generated code's *speed* is not part of the compatibility contract, but throughput
@@ -158,17 +159,16 @@ Semantic versioning, with one project-specific rule:
   regressions are treated as bugs.
 
 The full picture is in [docs/C11-COVERAGE.md](docs/C11-COVERAGE.md) (clause-by-clause C11
-conformance) and [docs/ROADMAP.md](docs/ROADMAP.md) §3 (known debts).
+conformance) and [docs/ROADMAP.md](docs/ROADMAP.md) §3 (known limitations).
 
 ## How it works
 
 Source → preprocessor (translation phases 1–4) → parser → typed AST → IR → machine code →
 ELF writer. The linker resolves symbols, merges sections and emits `.so`/executables. No
-step shells out; no step writes assembly text.
+stage shells out; no stage writes assembly text.
 
 - [docs/DESIGN.md](docs/DESIGN.md) — requirements, architecture decisions, scope
 - [docs/IR.md](docs/IR.md) — the intermediate representation
-- [docs/STEPS.md](docs/STEPS.md) — a design record for every implementation step
 - [docs/RELEASE-CHECKLIST.md](docs/RELEASE-CHECKLIST.md) — non-functional requirement status
 - [docs/HEADER-LICENSING.md](docs/HEADER-LICENSING.md) — provenance of every bundled header
 

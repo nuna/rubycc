@@ -2,14 +2,13 @@
 
 コンパイラの中間表現(`lib/rubycc/ir/ir.rb`)の仕様書。フロントエンド
 (`IR::Generator`)が AST から IR を構築し、バックエンド
-(`Backend::X86_64`)が IR から機械語を生成する。両者はこの仕様だけを
+(`Backend::X86_64` / `Backend::AArch64`)が IR から機械語を生成する。両者はこの仕様だけを
 接点とする。
 
 **正本は `ir.rb` のコメント**(命令一覧)と `backend/x86_64.rb` 冒頭の
-値表現規約。本書はそれらを 1 か所にまとめた読み物であり、命令の追加・変更時は
+値表現規約、および `backend/aarch64.rb` のターゲット固有規約。本書はそれらを
+1 か所にまとめた読み物であり、命令の追加・変更時は
 `ir.rb` のコメントと本書の両方を更新すること(ROADMAP §2)。
-
-対応コミット時点: Step 25(struct の値渡し・値返し)完了。
 
 ---
 
@@ -26,10 +25,11 @@
   va_arg はすべて既存命令への脱糖で実現している。新命令はバックエンドしか
   知り得ない情報(フレーム内配置・ABI 詳細)を要するときだけ足す
   (:va_start がその例)。
-- **機種非依存性は限定的**。IR は x86_64 System V を第一ターゲットとした
-  抽象化であり、命令の粒度(32/64 bit 演算の区別、符号別の除算・シフト・
-  比較)はコード選択がほぼ 1:1 で済むように切ってある。aarch64(M4)でも
-  同じ粒度で対応付けられる見込み。
+- **ターゲット共通の契約を持つが、完全な機種非依存 IR ではない**。命令の粒度
+  (32/64 bit 演算の区別、符号別の除算・シフト・比較)は x86-64 System V と
+  AAPCS64 の両方でコード選択がほぼ 1:1 になるように切ってある。一方、
+  ABI 分類、可変長引数、フレーム配置、再配置形式、未実装命令の扱いは
+  ターゲットごとのバックエンド契約に依存する。
 
 各設計要素がどこまで一般概念・公開仕様由来で、どこが本プロジェクト固有かは
 §8 に明記する。
@@ -41,8 +41,14 @@ IR::Program
 ├── functions     : [IR::Function]   関数定義(ソース順)
 ├── strings       : [String]         読み取り専用文字列プール(:string_addr の id で索引)
 ├── globals       : [IR::Global]     ファイルスコープ変数(ソース順)
-└── array_entries : [IR::ArrayEntry] 初期化子/終了子配列のエントリ(既定 [])
+├── array_entries : [IR::ArrayEntry] 初期化子/終了子配列のエントリ(既定 [])
+└── visibility    : {String => Symbol} ELF シンボル可視性(既定 :default)
 ```
+
+`visibility` は `visibility` 属性が付いた外部関数・外部オブジェクトの
+シンボル名から ELF 可視性(`:default` / `:internal` / `:hidden` /
+`:protected`)への対応表である。`static` の内部リンケージは `linkage` が
+担い、可視性表の対象にはしない。
 
 ### IR::Function
 
@@ -65,12 +71,14 @@ IR::Program
   ポインタスロットは 8 バイトのゼロのまま置き、`GlobalReloc` がリンク時に
   埋める。「全ゼロだが明示初期化」は nil init(.bss)と区別される。
 - `GlobalReloc(offset, kind, symbol, string_id, addend)` — グローバル像内のバイト
-  オフセット `offset` にある 8 バイトスロットへの再配置。`addend`(既定 0)は
-  基点アドレスに加える定数バイト変位で、`&arr[i]`・`arr + n`・`&rec.member` の
-  ような計算アドレス定数(ISO C 6.6)で非ゼロになり、R_X86_64_64 の r_addend となる。
+  オフセット `offset` にある 8 バイトスロットへの**絶対アドレス再配置**。
+  `addend`(既定 0)は基点アドレスに加える定数バイト変位で、`&arr[i]`・`arr + n`・
+  `&rec.member` のような計算アドレス定数(ISO C 6.6)で非ゼロになる。具体的な
+  ELF 再配置型はターゲットの機種記述が選び、x86-64 は `R_X86_64_64`、
+  AArch64 は `R_AARCH64_ABS64` として同じ addend を保持する。
   - `kind: :symbol` — 他のファイルスコープオブジェクトまたは関数のアドレス
     (`&global`・グローバル配列名の減衰・関数名 `f`/`&f`、および `&arr[i]` 等の
-    計算アドレス)。絶対 64 bit(R_X86_64_64、addend = `addend`)で解決。
+    計算アドレス)。絶対 64 bit 再配置(addend = `addend`)で解決。
   - `kind: :string` — 文字列リテラル。`string_id` が文字列プールを指し、
     コンパイラが .rodata オフセット + `addend` へ解決。
 
@@ -95,7 +103,8 @@ IR::Program
 
 ## 3. 値表現規約(スロット規約)
 
-バックエンドとの最重要契約。`backend/x86_64.rb` 冒頭に原文がある。
+バックエンドとの最重要契約。`backend/x86_64.rb` と `backend/aarch64.rb` の
+冒頭に原文がある。
 
 - vreg のスロットは **8 バイト固定**で、常に 64 bit 単位で読み書きする
   (ポインタ値が必ず無傷で往復する)。
@@ -112,8 +121,9 @@ IR::Program
 - **浮動小数点値も同じスロット規律に従う**: `float` はスロット下位 4 バイトに
   IEEE754 単精度ビットパターンで(ビット 32..63 は狭い整数と同様に不定)、
   `double` は 8 バイトスロット全体に倍精度で保持する。浮動小数点命令は
-  xmm0/xmm1 をスクラッチとして movss/movsd でスロットを直接読み書きするので、
-  :const が整数即値として実体化した浮動小数点ビットパターンをそのまま拾える。
+  ターゲットのスクラッチレジスタを使ってスロットを直接読み書きするので、
+  :const が整数即値として実体化した浮動小数点ビットパターンをそのまま拾える
+  (x86-64 は xmm0/xmm1、AArch64 は v0/v1 を使用する)。
 - **集約オブジェクト(配列・struct)の「値」はそのアドレス**。式の中では
   「アドレスを持つ vreg + その型」で流通し、実体は stack_objects または
   グローバルシンボルにある。
@@ -137,8 +147,8 @@ Instruction(op, dst:, a:, b:, size:)
 | :const | 8 = 64 bit 即値ロード(long/ポインタ定数)。それ以外は 32 bit 即値 |
 | 浮動小数点演算(:fadd 系・:f 比較) | 浮動小数点オペランド幅(4 = float / 8 = double) |
 | :itof / :ftoi / :ftof | :itof は変換**先**の浮動小数点幅、:ftoi / :ftof は変換**元**の幅(§5) |
-| :call / :call_indirect | nil、または **[fixed, ret] ペア**(どちらかが非 nil のとき)。fixed = 可変長 callee の固定パラメータ数(非可変長は nil)で、バックエンドは call 直前に al = 使用 xmm 数を出す。ret = 戻り値が float/double なら :sse4/:sse8(xmm0 から回収)、レジスタ返しの struct なら **[buffer_vreg, pieces]**(pieces は `IR::AbiPiece` の配列で各ピースの offset / size / kind を持つ。バックエンドが戻りレジスタ — System V は rax→rdx / xmm0→xmm1、AAPCS64 は x0→x1 / v0..v3 — の内容を buffer_vreg の指すスクラッチバッファへ各ピースの offset・幅で散布)、それ以外は nil(整数戻りレジスタ) |
-| :ret | nil = 整数/ポインタ戻り値(rax)。4/8 = 浮動小数点戻り値(スロットから movss/movsd で xmm0 へ)。**AbiPiece 配列** = レジスタ返しの struct(a の指すバッファから各ピースを自身の offset・幅で戻りレジスタへ収集) |
+| :call / :call_indirect | nil、または **[fixed, ret] ペア**(どちらかが非 nil のとき)。fixed = 可変長 callee の固定パラメータ数(非可変長は nil)で、x86-64 のバックエンドは call 直前に al = 使用 xmm 数を出し、AArch64 はこの値を使わない。ret = 戻り値が float/double なら :sse4/:sse8、レジスタ返しの struct なら **[buffer_vreg, pieces]**(pieces は `IR::AbiPiece` の配列で各ピースの offset / size / kind を持ち、戻りレジスタから散布)、それ以外は nil(ターゲットの整数戻りレジスタ) |
+| :ret | nil = 整数/ポインタ戻り値(x86-64 は rax、AArch64 は x0)。4/8 = 浮動小数点戻り値(x86-64 は xmm0、AArch64 は v0)。**AbiPiece 配列** = レジスタ返しの struct(a の指すバッファから各ピースを自身の offset・幅で戻りレジスタへ収集) |
 | :memcpy | コピーするバイト数(struct 全体代入) |
 
 ## 5. 命令一覧
@@ -155,6 +165,7 @@ Instruction(op, dst:, a:, b:, size:)
 | 命令 | 形 | 意味 |
 |---|---|---|
 | :add / :sub / :mul | dst ← a op b | |
+| :mulhi | dst ← hi64(a × b) | 64 bit unsigned 乗算の上位 64 bit。`size` は常に 8。`__int128` の乗算を合成するために使い、x86-64 は `mul`、AArch64 は `umulh` へ下ろす |
 | :div / :mod | dst ← a op b | 符号付き除算・剰余 |
 | :udiv / :umod | dst ← a op b | 符号無し除算・剰余(バックエンドは edx をゼロにして `div`) |
 | :and / :or / :xor | dst ← a op b | ビット演算 |
@@ -171,7 +182,7 @@ Instruction(op, dst:, a:, b:, size:)
 ### 浮動小数点演算
 
 `size` は浮動小数点オペランド幅(4 = float / 8 = double)で ss/sd 形を選ぶ。
-バックエンドは xmm0/xmm1 をスクラッチに movss/movsd でスロットを直接読み書きする。
+バックエンドは x86-64 では xmm0/xmm1、AArch64 では v0/v1 をスクラッチに使い、スロットを直接読み書きする。
 
 | 命令 | 形 | 意味 |
 |---|---|---|
@@ -209,14 +220,14 @@ Instruction(op, dst:, a:, b:, size:)
 | :label | a = ラベル id | ジャンプ先。それ自体はコードを出さない |
 | :jump | a = ラベル id | 無条件分岐 |
 | :jump_if_zero | a = 条件 vreg、b = ラベル id | a == 0 のとき分岐 |
-| :ret | a = 値 vreg または nil | 関数から戻る。nil は void の `return;` / 末尾到達(値ロードなし)。`size` nil = rax 戻り、4/8 = 浮動小数点戻り(スロットから movss/movsd で xmm0 へ)、AbiPiece 配列 = レジスタ返しの struct — a はジェネレータが memcpy 済みのスクラッチバッファのアドレス vreg で、バックエンドはそれをスクラッチにロードし各ピースの offset・幅で戻りレジスタへ収集する(System V は INTEGER = rax→rdx / SSE = xmm0→xmm1、AAPCS64 は :gp = x0→x1 / HFA メンバ = v0..v3)。レジスタ返しできない struct の `return` は隠れ結果ポインタへの :memcpy の後、そのポインタを size nil で返す |
+| :ret | a = 値 vreg または nil | 関数から戻る。nil は void の `return;` / 末尾到達(値ロードなし)。`size` nil = 整数/ポインタ戻り(x86-64 は rax、AArch64 は x0)、4/8 = 浮動小数点戻り(x86-64 は xmm0、AArch64 は v0)、AbiPiece 配列 = レジスタ返しの struct — a はジェネレータが memcpy 済みのスクラッチバッファのアドレス vreg で、バックエンドはそれをスクラッチにロードし各ピースの offset・幅で戻りレジスタへ収集する(System V は INTEGER = rax→rdx / SSE = xmm0→xmm1、AAPCS64 は :gp = x0→x1 / HFA メンバ = v0..v3)。レジスタ返しできない struct の `return` は隠れ結果ポインタへの :memcpy の後、そのポインタを size nil で返す |
 
 ### 呼び出し
 
 | 命令 | 形 | 意味 |
 |---|---|---|
 | :call | dst ← f(args)。a = callee 名(String)、b = **[vreg, kind] ペアの配列**(左から右。kind は :gp / :sse4 / :sse8 / :mem、および §2 param_kinds の :indirect_result / :pad / :pad_stack。:pad / :pad_stack は 16 バイト整列集約の整列 pad で vreg は nil) | kind は**ジェネレータがターゲットの CallConvention で配置シミュレーションを行い確定済みの着信位置**(以下は x86_64 の場合): :gp は edi..r9d の次の空き、:sse4/:sse8 は xmm0..7 の次の空き(movss/movsd でロード)、:mem は 8 バイトスロット内容のまま逆順 push のスタック渡し(:mem 同士は左→右の順序を保つ)。バックエンドは指定に従うだけで、超過(7 個目の :gp 等)は契約違反として raise。struct 引数はジェネレータが規約のピースごとの複数ペアに展開済み(all-or-nothing 規則も配置時に適用済み。AAPCS64 が参照渡しする集約はコピーへの :gp ポインタ 1 つに縮約済み)。隠れ結果ポインタ戻りの callee には [vreg, kind] ペアが先頭に加わる。`size` = nil または [fixed, ret](§4)。可変長 callee には call 直前に al = 使用 xmm 数(mov al, imm8) |
-| :call_indirect | dst ← (*a)(args)。a = 関数アドレスの vreg、b = [vreg, kind] ペアの配列 | 引数・size の扱いは :call と同一。バックエンドはスクラッチレジスタ(r10)経由で call |
+| :call_indirect | dst ← (*a)(args)。a = 関数アドレスの vreg、b = [vreg, kind] ペアの配列 | 引数・size の扱いは :call と同一。バックエンドはターゲットの非引数 scratch レジスタ(x86-64 は r10、AArch64 は x9)経由で call |
 | :func_addr | dst ← &func。a = 関数名(String) | 関数指示子の退化・`&f` の値。:global_addr 同様の PC 相対再配置で解決 |
 
 ### アドレス生成
@@ -227,7 +238,7 @@ Instruction(op, dst:, a:, b:, size:)
 | :object_addr | dst ← &object(a)。a = オブジェクト id | stack_objects の基底アドレス(配列の先頭要素) |
 | :string_addr | dst ← &string(a)。a = 文字列プール id | 読み取り専用文字列のアドレス(減衰済み char *) |
 | :global_addr | dst ← &global(a)。a = シンボル名(String) | ファイルスコープ変数のアドレス。グローバルの読み書き・`&g`・配列減衰はすべてこれを経由 |
-| :got_addr | dst ← &symbol(a) via GOT。a = シンボル名(String) | `-fPIC` 指定時、この翻訳単位が定義しないファイルスコープのオブジェクト/関数のアドレスを、PC 相対で形成する代わりに Global Offset Table スロットから読み込む(`mov rax,[rip+disp32]`、リンカが `R_X86_64_REX_GOTPCRELX` type 42・addend −4 で解決)。他 DSO の定義が interpose し得るため。この TU が定義するシンボルは同一 DSO 内で必ず解決されるので `:global_addr`/`:func_addr` を保つ。データ・関数共通(GOT スロットにはシンボルの実アドレスが入るので以降の load/store は不変) |
+| :got_addr | dst ← &symbol(a) via GOT。a = シンボル名(String) | `-fPIC` 指定時、この翻訳単位が定義しないファイルスコープのオブジェクト/関数のアドレスを、PC 相対で形成する代わりに Global Offset Table スロットから読み込む。x86-64 は `mov rax,[rip+disp32]`、AArch64 は `adrp` + `ldr` で GOT スロットを読む。具体的な再配置型は §6 の機種記述が選ぶ。他 DSO の定義が interpose し得るため。この TU が定義するシンボルは同一 DSO 内で必ず解決されるので `:global_addr`/`:func_addr` を保つ。データ・関数共通(GOT スロットにはシンボルの実アドレスが入るので以降の load/store は不変) |
 
 ### メモリアクセス
 
@@ -242,29 +253,36 @@ Instruction(op, dst:, a:, b:, size:)
 
 | 命令 | 形 | 意味 |
 |---|---|---|
-| :va_start | a = __va_list_tag のアドレス vreg、b = 取り囲む関数の固定パラメータ数 | ターゲットの va_list フィールドを初期化する。SysV は 4 フィールド(gp_offset / fp_offset / overflow_arg_area / reg_save_area)、AAPCS64 は 5 フィールド(__stack / __gr_top / __vr_top / __gr_offs / __vr_offs)。名前付きパラメータが消費済みの GP/SSE レジスタ数は b ではなく **Function.param_kinds のカウントから導出**する。SysV: gp_offset = 8×count(:gp)、fp_offset = 48 + 16×(count(:sse4)+count(:sse8))、overflow_arg_area の開始は count(:mem) を反映、reg_save_area は退避領域を指す。AAPCS64: __gr_offs = −(8−count(:gp))×8、__vr_offs = −(8−count(:sse4/:sse8))×16(退避領域の末尾 __gr_top/__vr_top からの負オフセットで 0 に向かって増える)、__stack と __gr_top/__vr_top は退避領域とスタック引数の境界を指す。**va_arg / va_end / va_copy に専用命令は無い** — ジェネレータが通常の load/store/分岐に降ろす(SysV の double は fp_offset を `:ult 176` で分岐しレジスタ側 +=16 / あふれ側 +=8;AAPCS64 は offs を `:lt 0` で分岐しレジスタ側は top+offs、offs += 8/16;va_copy はタグ全体の :memcpy) |
+| :va_start | a = __va_list_tag のアドレス vreg、b = 取り囲む関数の固定パラメータ数 | ターゲットの va_list フィールドを初期化する。SysV は 4 フィールド(gp_offset / fp_offset / overflow_arg_area / reg_save_area)、AAPCS64 は 5 フィールド(__stack / __gr_top / __vr_top / __gr_offs / __vr_offs)。名前付きパラメータが消費済みの GP/SSE レジスタ数は b ではなく **Function.param_kinds のカウントから導出**する。SysV: gp_offset = 8×count(:gp)、fp_offset = 48 + 16×(count(:sse4)+count(:sse8))、overflow_arg_area の開始は count(:mem) を反映、reg_save_area は退避領域を指す。AAPCS64: __gr_offs = −(8−count(:gp)−count(:pad))×8、__vr_offs = −(8−count(:sse4/:sse8))×16(退避領域の末尾 __gr_top/__vr_top からの負オフセットで 0 に向かって増える)、__stack の開始は count(:mem)+count(:pad_stack) を反映し、__gr_top/__vr_top は退避領域とスタック引数の境界を指す。**va_arg / va_end / va_copy に専用命令は無い** — ジェネレータが通常の load/store/分岐に降ろす(SysV の double は fp_offset を `:ult 176` で分岐しレジスタ側 +=16 / あふれ側 +=8;AAPCS64 は offs を `:lt 0` で分岐しレジスタ側は top+offs、offs += 8/16;va_copy はタグ全体の :memcpy) |
+
+### スタック領域確保
+
+| 命令 | 形 | 意味 |
+|---|---|---|
+| :alloca | dst ← alloca(a) | a はバイト数を持つ vreg。関数の自動記憶域を動的に確保し、その基底アドレスを dst に置く。x86-64 は 16 バイト単位に切り上げてスタックから確保し、関数復帰時にまとめて解放する。AArch64 では現在未対応で `UnsupportedError` になる |
 
 ### ビットスキャン
 
 | 命令 | 形 | 意味 |
 |---|---|---|
-| :bit_scan | dst ← scan(a)。b = 方向、size = 4/8 | 整数 a の 0 ビット数を数える(__builtin_ctz/clz とその ll 形)。b = `:forward` は末尾 0 の個数(ctz)で `bsf` に、`:reverse` は先頭 0 の個数(clz)で `bsr` の後 (size*8−1) との `xor`(= (幅−1) − 最上位セットビット位置)に降ろす。size 8 は REX.W 付き。オペランド 0 は未定義(gcc 準拠)なのでゼロ処理は出さない。結果は int |
+| :bit_scan | dst ← scan(a)。b = 方向、size = 4/8 | 整数 a の 0 ビット数を数える(__builtin_ctz/clz とその ll 形)。b = `:forward` は末尾 0 の個数(ctz)で `bsf` に、`:reverse` は先頭 0 の個数(clz)で `bsr` の後 (size*8−1) との `xor`(= (幅−1) − 最上位セットビット位置)に降ろす。size 8 は REX.W 付き。オペランド 0 は未定義(gcc 準拠)なのでゼロ処理は出さない。結果は int。x86-64 が実装し、AArch64 では `UnsupportedError` になる |
 
 ### アトミック操作
 
-gcc の `__atomic_*` 組み込み(ジェネレータが扱う 9 形)の降ろし先。**IR はメモリオーダを
+gcc の `__atomic_*` 組み込み(ジェネレータが扱う 5 つの IR 命令)の降ろし先。**IR はメモリオーダを
 一切運ばない** — ジェネレータがソースの指定したオーダによらず全てを最強の順序
 (seq_cst)で降ろすため。オーダの強化は常に意味論的に妥当(制約を増やすだけ)なので、
 `__ATOMIC_RELAXED` を seq_cst として実装するのは正しく、診断にするより堅牢である
 (同じ理由で `__atomic_compare_exchange_n` の `weak` も無視して常に strong)。
-`size` は 4 か 8 のみ — それ以外の幅はジェネレータが診断するので、バックエンドに
-狭い/広いケースは無い。
+`size` は load/store/rmw/cas では 4 か 8 のみ — それ以外の幅はジェネレータが診断
+するので、バックエンドに狭い/広いケースは無い。
 
 | 命令 | 形 | 意味 |
 |---|---|---|
+| :atomic_fence | — | 逐次一貫なメモリフェンス。x86-64 は `mfence`、AArch64 は `dmb ish` |
 | :atomic_load | dst ← atomic *a。size = 4/8 | ポインタ a から `size` バイトを逐次一貫に読む。`:load` と別命令なのは 2 ターゲットで形が違うから — x86-64 は整列した素の `mov` が既に seq_cst ロード、aarch64 は acquire 形(`ldar`)が要る |
 | :atomic_store | *a ← b。size = 4/8 | ポインタ a へ b の `size` バイトを逐次一貫に書く。x86-64 は `xchg`(暗黙の lock が seq_cst ストアに必要な後続バリアを兼ねる)、aarch64 は `stlr` |
-| :atomic_rmw | dst ← rmw(a, b)。b = [値 vreg, kind]、size = 4/8 | ポインタ a を通したアトミックな read-modify-write。kind は `:exchange` / `:fetch_add` / `:fetch_sub` / `:add_fetch` / `:sub_fetch` / `:or_fetch`。dst には対応する組み込みの戻り値(`:exchange` と `:fetch_*` は**読んだ値**、`:*_fetch` は**書いた値**)。x86-64 は `xchg` / `lock xadd`(`:fetch_sub` は `neg` してから、`:*_fetch` はオペランドを退避して加え直す)で、`:or_fetch` だけ `lock cmpxchg` リトライループ。aarch64 は全 kind が LDAXR/STLXR リトライループ 1 本 |
+| :atomic_rmw | dst ← rmw(a, b)。b = [値 vreg, kind]、size = 4/8 | ポインタ a を通したアトミックな read-modify-write。kind は `:exchange` / `:fetch_add` / `:fetch_sub` / `:add_fetch` / `:sub_fetch` / `:or_fetch`。dst には対応する組み込みの戻り値(`:exchange` と `:fetch_*` は**読んだ値**、`:*_fetch` は**書いた値**。結果を捨てる場合は nil)。x86-64 は `xchg` / `lock xadd`(`:fetch_sub` は `neg` してから、`:*_fetch` はオペランドを退避して加え直す)で、`:or_fetch` だけ `lock cmpxchg` リトライループ。aarch64 は全 kind が LDAXR/STLXR リトライループ 1 本 |
 | :atomic_cas | dst ← cas(a, b)。b = [expected ポインタ vreg, desired vreg]、size = 4/8 | `__atomic_compare_exchange_n`。*a が \*expected と等しければ *a ← desired で dst = 1、等しくなければ *a は不変で dst = 0 かつ**実際に読めた値を expected 経由で書き戻す**(`<ruby/atomic.h>` の RUBY_ATOMIC_CAS はこの副作用から答えを取り出すので必須)。書き戻しは失敗経路のみ(分岐でガード)— expected が a に別名で重なった場合に、交換したばかりの値を古い値で潰さないため。dst は _Bool(0/1)で nil にならない |
 
 `:atomic_rmw` と `:atomic_cas` のリトライループ・分岐は **1 つの IR 命令の内側で閉じる**ので、
@@ -275,50 +293,86 @@ gcc の `__atomic_*` 組み込み(ジェネレータが扱う 9 形)の降ろし
 
 IR 自体の仕様ではないが、IR を書く側・読む側が共有する前提。
 
-- **フレーム配置**(rbp から下へ): vreg スロット(8 バイト × vreg_count、
-  16 バイト整列)→ stack_objects(各 16 バイト整列)→ 可変長関数のみ
-  レジスタ退避領域 176 バイト(GP 6 本 × 8 = 48 + xmm 8 本 × 16 = 128。
-  psABI レイアウト。xmm は al によるガードをせず常時 movsd で各 16 バイト
-  スロットの下位 8 バイトへ退避 — va_arg(double) が読むのはその 8 バイトで、
-  引数個数によらず発行コードが固定になり決定性を保つ)。
-- **パラメータ**: param_kinds に従い、:gp は edi..r9d の次の空きから、
-  :sse4/:sse8 は xmm0..7 の次の空きから(movss/movsd で)vreg スロットへ
-  spill、:mem は [rbp + 16 + 8k](k は :mem の通し番号)からコピー。
-  配置はジェネレータ確定済みで、バックエンドはレジスタ超過を契約違反として
-  raise する。struct パラメータのスロット→stack object 再組み立てと、
-  狭い整数パラメータの 32 bit 正規化(:sext/:zext)はジェネレータが行う
-  (バックエンドは関知しない)。
-- **戻り値**: 整数/ポインタ(および MEMORY struct の隠れポインタ)は rax、
-  float/double は xmm0(:ret の size と :call の ret クラスが movss/movsd を
-  選ぶ)。レジスタ返しの struct は eightbyte のクラス順に INTEGER = rax→rdx、
-  SSE = xmm0→xmm1(callee は :ret のバッファから収集、caller は :call の
-  [buffer_vreg, classes] でスクラッチバッファへ散布。どちらもバッファアドレスは
-  rcx 経由 — rcx は戻りレジスタと重ならない)。
-- **再配置**: 関数コンパイル結果(`Backend::X86_64::Result`)の relocations は
-  **機種非依存のリロケーション語彙**で記録される。バックエンドは機種別の
-  リロケーション型番号(`R_X86_64_*`)を一切知らず、抽象 kind を出すだけ:
-  - .text 用(`result.relocations`): `:call`(call rel32)、`:func`(lea の
-    関数アドレス。compiler.rb が `:call` と同一の .rela.text 経路に集約)、
-    `:global`(lea のデータシンボル)、`:string`(lea の .rodata、`string_id`
-    付き)、`:got`(GOT スロット参照。`-fPIC` のみ)。
-  - .data 用(`GlobalInit.relocations`、§2): `:symbol`(他オブジェクト/関数の
-    絶対アドレス)、`:string`(.rodata の文字列)。ELF ライタ内部では前者を
-    `:symbol`、後者を `:rodata` kind として保持する。
-  この語彙から機種別リロケーション型への変換は **ELF ライタに注入される機種記述**
-  (`ObjFile::ELFWriter::MachineDescription`)が担う。機種記述は `e_machine` 値と
-  「kind → `RelocDesc(type, addend, symbol)`」表の対だけを持ち、`type` が具体的な
-  ELF リロケーション型、`addend` が固定の PC 相対バイアス(x86_64 では call/global/
-  got が −4)または `:recorded`(reloc 自身の addend を使う。string/symbol/rodata)、
-  `symbol` が解決先シンボル(`:named` = reloc 自身のシンボル / `:rodata_section` =
-  .rodata セクションシンボル)を表す。既定の機種記述 `ELFWriter::X86_64` が
-  x86_64 の型・addend 規約(`:call`→PLT32/−4、`:string`→PC32/自 addend、
-  `:global`→PC32/−4、`:got`→REX_GOTPCRELX/−4、`:symbol`/`:rodata`→R_X86_64_64/
-  自 addend)を固定する。セクションレイアウトとシンボルテーブル生成は機種非依存で、
-  第二バックエンド(aarch64)は別の機種記述を注入するだけで対応できる。
-  ターゲット選択は `Compiler::TARGETS`(ターゲット名 → backend クラス + 機種記述)が
-  ディスパッチし、ドライバの `-target`/`--target=`(既定はホスト CPU 検出)が指定する。
-- **呼び出し時の整列**: プロローグが rsp を常に 16 バイト整列に保ち、
-  スタック引数の push 本数が奇数のときだけ 8 バイトの先行パディングを入れる。
+### 6.1 共通契約
+
+- **値と引数分類**: vreg は 8 バイトスロットに対応し、`param_kinds` は
+  ジェネレータがターゲットの `IR::CallConvention` で確定する。バックエンドは
+  `:gp` / `:sse4` / `:sse8` / `:mem` / `:indirect_result` / `:pad` /
+  `:pad_stack` の指定に従って受け渡しを行い、集約の分解・再組み立ては
+  `IR::AbiPiece` とジェネレータが担う。
+- **コンパイル結果**: `Backend::X86_64` と `Backend::AArch64` は同じ
+  `Result(bytes, symbols, relocations)` の形を返す。命令のレベルでは
+  リロケーション語彙(`:call` / `:func` / `:string` / `:global` / `:got`)だけを
+  記録し、ELF の具体的な型番号はバックエンドから分離する。
+- **データ再配置**: `GlobalInit.relocations` の `:symbol` / `:string` は
+  8 バイトの絶対アドレススロットを表す。addend は `GlobalReloc` に保持し、
+  最終的な ELF 型への変換は機種記述が行う。
+
+### 6.2 x86-64 System V
+
+- **フレーム配置**: `rbp` を基準に vreg スロット(8 バイト × `vreg_count`)、
+  stack object、可変長関数のレジスタ退避領域を負の方向へ配置する。各領域は
+  16 バイト境界に揃え、退避領域は GP 6 本 × 8 バイト + xmm 8 本 × 16 バイト
+  の 176 バイトである。`:alloca` は `rsp` を動かして動的領域を確保するが、
+  vreg と stack object は `rbp` 基準なのでアドレスが変わらない。復帰時に
+  フレーム全体と同時に解放する。
+- **引数と呼び出し**: `param_kinds` の `:gp` は edi, esi, edx, ecx, r8d, r9d、
+  `:sse4` / `:sse8` は xmm0..xmm7、`:mem` は `[rbp + 16 + 8k]` の
+  スタック eightbyte に対応する。呼び出し側はスタック引数を逆順に配置し、
+  必要な 16 バイト整列 pad を加えてから call し、終了後に領域を戻す。
+  可変長 callee には call 前に al へ使用した xmm レジスタ数を入れる。
+- **戻り値**: 整数・ポインタと MEMORY struct の隠れ結果ポインタは rax、
+  float/double は xmm0。レジスタ返し struct は `IR::AbiPiece` の kind 順に
+  INTEGER を rax→rdx、SSE を xmm0→xmm1 へ対応させる。呼び出し側と callee
+  は同じ piece の offset・幅でスクラッチバッファへ散布・収集する。
+
+### 6.3 AArch64 AAPCS64
+
+- **フレーム配置**: `sp` を基準に、下から outgoing argument area、保存した
+  x29/x30 の 16 バイト、vreg スロット、stack object を非負オフセットで置く。
+  outgoing area は関数内の最も広い呼び出しに合わせて一度だけ確保し、各 call で
+  push しない。可変長関数ではその上にベクタ 8 本 × 16 バイトと整数 8 本 ×
+  8 バイトの 192 バイトのレジスタ退避領域を置く。
+- **引数と呼び出し**: `param_kinds` の `:gp` は x0..x7、`:sse4` / `:sse8` は
+  v0..v7、`:mem` は caller の stack area に対応する。`:pad` は整数レジスタ
+  1 本、`:pad_stack` は stack eightbyte を予約するだけで値を運ばない。
+  関数入口の stack 引数は `[sp + frame_size + 8k]`、呼び出し時の stack 引数は
+  `[sp + 8k]` に置く。間接呼び出しのアドレスは引数レジスタでない scratch
+  レジスタへ最後にロードする。可変長呼び出しで al は使わない。
+- **戻り値**: 整数・ポインタは x0、float/double は v0、レジスタ返し struct
+  は INTEGER を x0→x1、HFA の浮動小数点 piece を v0..v3 へ対応させる。
+  レジスタに載らない集約は x8 の hidden result pointer 経由で書き込み、その
+  ポインタを通常の整数戻り値として扱う。
+
+### 6.4 機種別 ELF 再配置
+
+`ObjFile::ELFWriter::MachineDescription` が、共通の kind からターゲット固有の
+型・addend・解決シンボルへ変換する。
+
+| 共通 kind | x86-64 System V | AArch64 |
+|---|---|---|
+| `.text :call` | `R_X86_64_PLT32` | `R_AARCH64_CALL26` |
+| `.text :func` | `R_X86_64_PLT32` | `R_AARCH64_ADR_PREL_PG_HI21` + `R_AARCH64_ADD_ABS_LO12_NC` |
+| `.text :string` | `R_X86_64_PC32` | `R_AARCH64_ADR_PREL_PG_HI21` + `R_AARCH64_ADD_ABS_LO12_NC` |
+| `.text :global` | `R_X86_64_PC32` | `R_AARCH64_ADR_PREL_PG_HI21` + `R_AARCH64_ADD_ABS_LO12_NC` |
+| `.text :got` | `R_X86_64_REX_GOTPCRELX` | `R_AARCH64_ADR_GOT_PAGE` + `R_AARCH64_LD64_GOT_LO12_NC` |
+| `.data :symbol` / `:rodata` | `R_X86_64_64` | `R_AARCH64_ABS64` |
+
+x86-64 の PC 相対 `.text` 再配置は、rel32 フィールドの位置に応じた
+addend bias `−4` を使う。AArch64 のアドレス形成は `adrp` と `add`/`ldr` の
+命令対になり、1 つの IR relocation record から複数の ELF relocation を生成する。
+`.data` と init/fini array の絶対ポインタスロットは、両ターゲットとも 64 bit
+絶対再配置で addend を保持する。
+
+ターゲット選択は `Compiler::TARGETS` が target 名、バックエンド、
+`MachineDescription`、ABI 規約を対応付けて行う。現在の target 名は
+`x86_64` と `aarch64` である。
+
+### 6.5 ターゲット別の実装範囲
+
+§5 の命令のうち、`:alloca` と `:bit_scan` は x86-64 が実装する。
+AArch64 はこの 2 命令を `UnsupportedError` として明示的に拒否し、それ以外の
+列挙された命令を実装する。
 
 ## 7. 不変条件チェックリスト(命令を追加・変更するとき)
 
@@ -360,7 +414,7 @@ DESIGN.md §9.1 の一次資料に基づく。仕様への準拠であり、実�
 | 引数レジスタ順(rdi, rsi, rdx, rcx, r8, r9)、7 個目以降のスタック渡し、16 バイト整列(§5 :call・§6) | System V AMD64 psABI |
 | 引数レジスタ本数のターゲット差(整数 x0..x7 の 8 本、ベクタ v0..v7 の 8 本)、スタック引数の 8 バイト単位・8 バイト整列(**16 バイト整列集約は 16 バイト境界へ pad**、`:pad_stack`)、隠れ結果ポインタの x8(§2 param_kinds の :indirect_result)、集約の分類(HFA は 4 メンバまで各自 v レジスタ、非 HFA は 16 バイト以下なら x レジスタ連番・16 バイト超は参照渡し、**16 バイト整列集約は偶数レジスタペアに載せ手前の 1 本を `:pad` で空ける**、レジスタ不足時は NGRN/NSRN が 8 に飽和) | AAPCS64 §6.4.2 |
 | 可変長呼び出しの al = 使用ベクタレジスタ数、レジスタ退避領域、va_list の 4 フィールド構造(gp_offset / fp_offset / overflow_arg_area / reg_save_area)(§5 :va_start・§6) | System V AMD64 psABI §3.5.7 |
-| 再配置種別(R_X86_64_PLT32 / PC32 / 64)(§2 GlobalReloc・§6) | System V AMD64 psABI / System V gABI |
+| 再配置種別(R_X86_64_PLT32 / PC32 / 64、R_AARCH64_CALL26 / ADR_PREL_PG_HI21 / ADD_ABS_LO12_NC / ABS64)(§2 GlobalReloc・§6) | System V AMD64 psABI / AArch64 ELF ABI / System V gABI |
 | 符号別の命令分割(:div/:udiv、:sar/:shr、:lt/:ult 系)と movsx/movzx 対応(§5) | x86-64 の機械命令が符号で分かれること(Intel SDM)への 1:1 対応 |
 
 ### 8.3 既存実装との対比(参照していないが、結果の異同を明記)
@@ -375,7 +429,7 @@ DESIGN.md §9.1 の一次資料に基づく。仕様への準拠であり、実�
   意味論も異なる(LLVM は型付き SSA 値の型変換、本 IR は size =
   **変換元**幅を持つ非 SSA のスロット操作)。
 - **命令の粒度** — QBE や LLVM のような機種独立を狙う IR と違い、本 IR は
-  x86_64 のコード選択がほぼ 1:1 で済む粒度に意図的に寄せている(§1)。
+  x86-64 と AArch64 のコード選択がほぼ 1:1 で済む粒度に意図的に寄せている(§1)。
 
 ### 8.4 本プロジェクト固有の要素
 

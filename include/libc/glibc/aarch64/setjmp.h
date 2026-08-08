@@ -50,8 +50,17 @@
    variable of the type occupies the right space and alignment without copying
    glibc's field layout. Wider than on x86-64 (a different register file),
    which is why this header lives in the arch layer. */
-typedef union { char __size[312]; long __align; } jmp_buf[1];
-typedef union { char __size[312]; long __align; } sigjmp_buf[1];
+/* One named type, not two anonymous ones. C gives every anonymous union its
+   own distinct type, so declaring jmp_buf and sigjmp_buf separately made
+   them incompatible: passing a jmp_buf to siglongjmp() was a type error
+   here while gcc accepted it, because glibc spells both as arrays of one
+   shared tag. Measured: gcc reports sizeof and _Alignof identical for the
+   two names (312 and 8 on this target), which is what lets them share a
+   definition. Found building google-protobuf's ruby-upb.h, which stores a
+   jmp_buf and hands it to siglongjmp(). */
+union __jmp_buf_tag { char __size[312]; long __align; };
+typedef union __jmp_buf_tag jmp_buf[1];
+typedef union __jmp_buf_tag sigjmp_buf[1];
 
 int  setjmp(jmp_buf __env);
 void longjmp(jmp_buf __env, int __val) __attribute__((__noreturn__));

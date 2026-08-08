@@ -127,6 +127,17 @@ skip上限の不足だった。これらを修正した後に残った1 failure/
   - **検査は「自分が書いた値」を見てはいけない**。テストがオプションや期待値を
     本体から**書き写す**と、自分の転記を自分で検証するだけになる
     (STEPS.md Step 207 の `rubycc_build_options` 共有がその対処)。
+- **実行ビットは index が真実、作業ツリーは嘘をつく**。このチェックアウトは
+  `core.filemode = false` を持つので、`chmod +x` しても git は 100644 のまま記録し、
+  `git status` は黙る。**手元で実行できるのに CI では "permission denied"** という形で、
+  Step 174・198 の 2 回、90 分の実走を潰した。方針は 2 つ:
+  - **`exe/` と `.github/scripts/` だけが 100755**(コマンドとして直に起動されるため)。
+    足すときは `git update-index --chmod=+x` で **index に入れる**。
+  - **それ以外は 100644**。`tools/` は shebang を持つが**インタプリタ経由で起動する**
+    (`ruby tools/x.rb`)。`bundle exec tools/x.rb` は `not executable` で拒否される。
+
+  この不変条件は `test/test_repo_file_modes.rb` が `git ls-files -s` を読んで常時検査する
+  (`File.executable?` では上記の理由で捕まらない)。
 - **コメント**: 「なぜそうなっているか」を説明する英語の説明的コメントを既存と同じ密度で
   書く(type.rb / backend/x86_64.rb が基準)。
 - **R11**: chibicc/tcc/8cc/lacc・教材(compilerbook 等)に類似したファイル構成・
@@ -806,8 +817,9 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   上流タグの取得と `.so` 差し込み → gem 自身のテスト実走 → `--update` で DB へ。
   **`sanity` 式が必須**(C 拡張がロードされていなくてもスイートは合格しうるため。
   racc の `cparse.so` を壊しても 71 tests / 0 failures で通ることを実測)。
-  既存 6 件を全て再現して自身を検証済み(racc の assertions のみ 319 → 320 で
-  差異あり・原因未特定)。**Step 151 で nkf 0.3.0、Step 153 で stackprof 0.2.28、
+  既存 6 件を全て再現して自身を検証済み。racc の assertions 差異は、上流 Gemfile の
+  test-unit / test-unit-ruby-core の固定版をレシピにも設定して解消した(Step
+  codex/gaps-debt-20260808-1)。**Step 151 で nkf 0.3.0、Step 153 で stackprof 0.2.28、
   Step 157 で strscan 3.1.6 と stringio 3.2.0、Step 162 で etc 1.4.6、
   Step 164 で io-nonblock 0.3.2、Step 165 で io-wait 0.4.0、Step 166 で erb 6.0.1.1、
   Step 169 で io-console 0.8.2、Step 170 で digest 3.2.1、Step 171 で zlib 3.2.3、

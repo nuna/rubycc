@@ -35,6 +35,10 @@ module Rubycc
   # meaning — a missing `-o` operand — is still an error.
   class Driver
     PROG = "rubycc"
+    # C++ is outside rubycc's supported language scope (DESIGN §3.3). Keep the
+    # list in step with the corpus census gate so a C++ file passed directly to
+    # the driver is diagnosed instead of falling through as an object input.
+    CPP_INPUT_EXTENSIONS = %w[.cpp .cc .cxx .c++ .hpp .hxx .hh].freeze
 
     # Options that take a separate operand this driver does not act on. They are
     # recognized only so the operand is not mistaken for an input file; both the
@@ -229,11 +233,17 @@ module Rubycc
 
     # Classifies an input by extension into the role it plays: a `.c` source to
     # compile, a `.o`/`.obj` object or `.a` archive to link, a `.so[.N]` shared
-    # library to depend on. Anything else is treated as a linker input object, as
-    # gcc defaults an unrecognized suffix to.
+    # library to depend on. C++ source/header suffixes are rejected explicitly;
+    # anything else is treated as a linker input object, as gcc defaults an
+    # unrecognized suffix to.
     def classify_input(path)
+      extension = File.extname(path).downcase
+      if CPP_INPUT_EXTENSIONS.include?(extension)
+        raise UsageError, "C++ input '#{path}' is not supported"
+      end
+
       kind =
-        case File.extname(path).downcase
+        case extension
         when ".c"          then :source
         when ".o", ".obj"  then :object
         when ".a"          then :archive

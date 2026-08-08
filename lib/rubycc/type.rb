@@ -905,9 +905,12 @@ module Rubycc
       end
 
       # Lays out the aggregate from `raw_members` (an array of [name, Type,
-      # bit_width] triples in declaration order; an anonymous struct/union member
-      # has a nil name, and a plain member a nil bit_width — see #layout_struct
-      # for how a bit-field is placed). A struct follows the System V AMD64 rules:
+      # bit_width, alignas] entries in declaration order; an anonymous
+      # struct/union member has a nil name, a plain member a nil bit_width — see
+      # #layout_struct for how a bit-field is placed — and `alignas` is the
+      # boundary a C11 _Alignas asked for on that one member, nil for none, a
+      # trailing field a caller with no such member may leave off entirely).
+      # A struct follows the System V AMD64 rules:
       # each member starts at
       # the next offset that satisfies its own alignment (inserting padding as
       # needed), the alignment is the widest member's, and the size is rounded
@@ -924,6 +927,12 @@ module Rubycc
       # none) raises the aggregate's alignment to at least that value, rounding
       # the size up to it; combined with `packed` the members stay packed while
       # the aggregate takes `aligned` as its boundary and tail-rounding.
+      #
+      # A member's own `alignas` overrides both of those for that one member: it
+      # is placed at the boundary the _Alignas names and joins the aggregate's
+      # alignment as any member's does, even under `packed` (measured: gcc gives
+      # "struct __attribute__((packed)) { char c; _Alignas(8) int a; char b; }"
+      # size 16, alignment 8 and "a" at offset 8).
       #
       # `unnamed_bitfields_align` selects the one layout rule the two supported
       # ABIs spell differently (see #layout_struct): whether an unnamed
@@ -998,9 +1007,9 @@ module Rubycc
         bit_pos = 0
         max_alignment = 1
         members = []
-        raw_members.each do |name, type, bit_width|
+        raw_members.each do |name, type, bit_width, alignas|
           if bit_width.nil?
-            member_alignment = packed ? 1 : type.alignment
+            member_alignment = member_boundary(type, packed, alignas)
             byte_offset = align_up(bits_to_bytes(bit_pos), member_alignment)
             members << Member.new(name: name, type: type, offset: byte_offset)
             # A flexible array member (the trailing "T name[]") sits at its
@@ -1057,11 +1066,11 @@ module Rubycc
         members = []
         max_size = 0
         natural_alignment = 1
-        raw_members.each do |name, type, bit_width|
+        raw_members.each do |name, type, bit_width, alignas|
           if bit_width.nil?
             members << Member.new(name: name, type: type, offset: 0)
             byte_size = type.size
-            member_alignment = packed ? 1 : type.alignment
+            member_alignment = member_boundary(type, packed, alignas)
           else
             unnamed_alignment = unnamed_bitfields_align && name.nil? ? type.alignment : 1
             if bit_width.zero?
@@ -1095,6 +1104,16 @@ module Rubycc
       # when aligned(N) is combined with packed.
       def final_alignment(natural, aligned)
         aligned && aligned > natural ? aligned : natural
+      end
+
+      # One plain member's boundary: its type's own alignment, dropped to 1 byte
+      # by a `packed` aggregate, and raised by an _Alignas the member itself
+      # carries. The parser refuses an _Alignas weaker than the member's type,
+      # so the request only ever raises; taking the larger of the two keeps that
+      # true against a `packed` 1 as well.
+      def member_boundary(type, packed, alignas)
+        natural = packed ? 1 : type.alignment
+        alignas && alignas > natural ? alignas : natural
       end
 
       def align_up(value, alignment)

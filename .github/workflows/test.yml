@@ -25,11 +25,27 @@ name: test
       - 'benchmark/results/**'
   pull_request:
   workflow_dispatch:
-  # release.yml reuses this workflow, so it must be callable.
+  # release.yml and weekly.yml reuse this workflow, so it must be callable.
   workflow_call:
+    inputs:
+      runner:
+        description: Runner label for the full suite.
+        required: false
+        type: string
+        default: ubuntu-24.04
+      artifact_prefix:
+        description: Prefix for the uploaded test log artifact.
+        required: false
+        type: string
+        default: test-log
+      concurrency_group:
+        description: Optional concurrency group for a caller-specific run.
+        required: false
+        type: string
+        default: ""
 
 concurrency:
-  group: test-${{ github.ref }}
+  group: ${{ inputs.concurrency_group || format('test-{0}', github.ref) }}
   cancel-in-progress: true
 
 permissions:
@@ -37,7 +53,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 60
     strategy:
       # Do not cancel the other Ruby versions when one fails: a version-specific
@@ -52,6 +68,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Verify that the runner is native aarch64
+        if: inputs.runner == 'ubuntu-24.04-arm'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          uname -a
+          dpkg --print-architecture
 
       - name: Install the toolchains the differential tests compare against
         # qemu-user, NOT qemu-user-static: the aarch64 execution tests look for
@@ -100,6 +125,10 @@ jobs:
           # dependencies are just rake and minitest; installing them is cheap.
           bundler-cache: false
 
+      - name: Record the Ruby architecture
+        if: inputs.runner == 'ubuntu-24.04-arm'
+        run: ruby -rrbconfig -e 'puts RbConfig::CONFIG.values_at("arch", "host", "target")'
+
       - name: bundle install
         run: bundle install --jobs 4 --retry 3
 
@@ -119,6 +148,6 @@ jobs:
         with:
           # Artifact names must be unique across the whole run (upload-artifact
           # v4 rejects duplicates), hence the matrix value in the name.
-          name: test-log-ruby${{ matrix.ruby }}
+          name: ${{ inputs.artifact_prefix || 'test-log' }}-ruby${{ matrix.ruby }}
           path: tmp/ci/*.log
           if-no-files-found: warn
