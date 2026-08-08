@@ -39,9 +39,15 @@ QEMU で実行した結果**であり、aarch64 Ruby 自身で `rake test` や `
 | M4受入れ項目 | 確認結果 | 未完了の原因 |
 |---|---|---|
 | aarch64 上の全テストスイート | クロス経路は green | ローカルに aarch64 Ruby が無い。`ruby` は x86_64 で、既存の Ruby 4.0.6 も x86_64。 |
-| ABI ファジングハーネスの機種パラメタ化 | 未実施 | `TestCrossAbi` は決定論的な 40 レイアウトを生成するが host gcc / x86_64 専用。aarch64 は header ABI の専用差分テストで代替している。 |
+| ABI ファジングハーネスの機種パラメタ化 | **実装済み(本ブランチ)** | `TestCrossAbi` が同じ決定論的な 40 レイアウトを x86_64 と aarch64 で実行する。aarch64 は既存のクロスgcc + QEMU経路を使うため aarch64 Ruby は不要。 |
 | aarch64 の json / msgpack `gem install` | 未実施 | ネットワーク受入れテストは `RMAKE_ACCEPTANCE=1` 未指定のため 44 skips に含まれる。aarch64 Ruby が必要で、Docker daemon も `/var/run/docker.sock` の permission denied で利用できない。 |
 | aarch64 musl の全受入れ | 未実施 | `musl-gcc` / `aarch64-linux-musl-gcc` が無く、Docker daemon も利用できない。今回の musl 3件は bundled header の分岐値を glibc cross linker + QEMU で確認したもので、musl libc/Ruby の実走ではない。 |
+
+このブランチで実施したABI作業では、`TestCrossAbi` を target-aware にし、x86_64用と
+aarch64用の gcc caller / rubycc callee、gcc callee / rubycc caller の両方向を追加した。
+各ケースは最大8個の先行整数引数を生成し、System V AMD64の6レジスタ境界とAAPCS64の
+8レジスタ境界の双方をまたぐ。単体テストは **4 runs / 4 assertions / 0 failures**、
+全スイートは **2,904 runs / 9,061 assertions / 0 failures / 0 errors / 44 skips** だった。
 
 なお、先行実行で出た `TestDoctor#test_verified_gems_json_holds_only_confirmed_gems` の
 1 failure は、実行中に `nio4r` の検証記録を `data/verified_gems.json` に追加した一方で、
