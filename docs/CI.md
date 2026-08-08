@@ -122,6 +122,32 @@ bit-scan、ABI profile、native c-suite、exampleを含む代表12テストだ�
 `test_scope: full`(既定値)で全スイートと json/msgpack の M2 受入れを実行する。実行結果は
 `weekly-aarch64-glibc` アーティファクトに保存する。
 
+### M4 native AArch64 glibc 受入れ記録(2026-08-08)
+
+初回のnativeフル実行([run 31192043425](https://github.com/nuna/rubycc/actions/runs/31192043425))は
+`2848 runs / 6753 assertions / 71 failures / 536 errors / 338 skips` で失敗した。
+原因を分けて修正し、smoke([run 31235353834](https://github.com/nuna/rubycc/actions/runs/31235353834)、
+`12 / 36 / 0 / 0 / 0`)を通した後、最終フル実行([run 31235668846](https://github.com/nuna/rubycc/actions/runs/31235668846)、
+native job 1時間10分28秒)を実施した。
+
+| 確認 | 最終結果 |
+|---|---|
+| aarch64 Ruby 上の全スイート | `2848 runs / 8437 assertions / 0 failures / 0 errors / 128 skips` |
+| skip ガード | `ci_check_skips: OK (skips <= 130, runs >= 2500)` |
+| M2 json 2.21.1 | `607 tests / 3435 assertions / 0 failures / 0 errors / 100% passed` |
+| M2 msgpack 1.8.3 | `455 examples / 0 failures / 1 pending` |
+
+初回失敗から切り分けた主な原因と修正は次の通り。
+
+- AArch64 backend が `alloca` と bit-scan を未実装で、後者はmsgpack、前者はjson parserのビルドを止めていた。動的スタックフレーム、AArch64命令、符号なしint→float変換を実装した。
+- native arm64 GCC の既定PIEと、x86-64用のオブジェクト・リンカテストを一般実行ハーネスが前提としていた。ターゲットに応じたコンパイラ/リンクフラグへ統一し、x86-64専用の実行・PIC・SharedLinker検査を明示的にskipした。
+- ABI検査にglibcのリリース番号、`pthread_kill` の宣言位置、AArch64の`math.h`定数というターゲット/環境依存値が混在していた。ヘッダとABI期待値をターゲット依存に修正した。
+- QEMU上のDoS壁時計閾値が狭く、nativeジョブのskip上限も通常の55件のままだった。性能係数4とnative専用上限130件を設定した。
+- 最後に、alloca実装後も失敗を期待していた古いdriverテストと、AArch64で実行してはいけないx86-64専用SharedLinkerテストを修正した。
+
+初回修正後の中間実行([run 31232423276](https://github.com/nuna/rubycc/actions/runs/31232423276))では
+suiteが `1 failure / 1 error` まで減り、M2は両gemとも通過した。残った2件は上記の古いテスト期待値とターゲット条件の問題であり、最終runで解消した。
+
 ## musl ジョブ(`weekly.yml` の `musl`)
 
 M5 は「glibc/musl 互換ヘッダ」を掲げているが、**その主張を支える計測は全て

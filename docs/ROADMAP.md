@@ -5,6 +5,10 @@
 トレードオフを記録する。要件とアーキテクチャの根拠は [DESIGN.md](DESIGN.md)、
 完了済みステップの設計記録は [STEPS.md](STEPS.md) を参照。
 
+**現行状態(2026-08-08)**: M4のnative glibc/aarch64全スイート、ABIファジング、
+`json` / `msgpack` のM2受入れは完了した。残る環境実走はaarch64 muslなど、
+最終受入れ記録に明記した項目だけである。途中時点の計画・数値は履歴として残す。
+
 マイルストーン定義(DESIGN.md 8 章の再掲):
 - **M1**: プリプロセッサ + C11 サブセットコンパイラ + x86_64 ELF .o 出力。自己テスト合格。
 - **M2**: リンカ(.so / 実行ファイル)+ ar。json / msgpack 級の gem を手動ビルドしテスト合格。
@@ -20,50 +24,36 @@
 **最新追記(Step 208)**: aarch64 glibc の Ruby 4.0.6 上で、qemu-user を介した実際の
 `gem install` を完了。`io-wait` と `stringio` の C 拡張を `rubycc` でビルドし、各 gem の
 テストも成功した。`LibraryResolver` の x86_64 multiarch path 固定という実走時の不具合を
-修正し、aarch64 用の回帰テストを追加した。残る環境検証は musl全スイートと、aarch64 の
-`json` / `msgpack` を含む M4 全面受入れである。
+修正し、aarch64 用の回帰テストを追加した。この時点で残っていた aarch64 の全スイートと
+`json` / `msgpack` の実走も、下記のnative受入れで完了した。
 
-**M4最終受入れ確認記録(2026-08-07)**: ローカルで `bundle exec rake test` を再実行した。
-ホスト Ruby 3.4.5(x86_64)に aarch64-linux-gnu-gcc と qemu-aarch64 を組み合わせる
-クロス検証では、**2,902 runs / 9,059 assertions / 0 failures / 0 errors / 44 skips**。
-`ci_check_skips.rb` も `OK`(skips <= 55、runs >= 2500)だった。aarch64 固有部分も
-バックエンド 76、実行 39、集約 11、引数 13、浮動小数 24、globals 23、self-link 18、
-shared object 23、variadic 9、header ABI 47、c-testsuite 205 pass + 16 skip、
-examples 37 pass + 2 skip が全て成功した。`test_header_abi.rb` 単体も 121 runs /
-358 assertions / 0 failures で、musl 分岐の値検査 3 件も含めて成功した。
+**M4最終受入れ確認記録(2026-08-08)**: arm64 `ruby:4.0` をQEMU上のglibc環境で起動し、
+aarch64 Ruby自身で全スイートとM2を実行した。初回nativeフル実行
+([run 31192043425](https://github.com/nuna/rubycc/actions/runs/31192043425))は
+`2848 runs / 6753 assertions / 71 failures / 536 errors / 338 skips` だった。
+原因別に修正し、smoke([run 31235353834](https://github.com/nuna/rubycc/actions/runs/31235353834))を
+通過させた後、最終フル実行([run 31235668846](https://github.com/nuna/rubycc/actions/runs/31235668846)、
+native job 1時間10分28秒)は次の結果になった。
 
-ただし、これは**ホスト Ruby から aarch64 のコードをクロスコンパイルし、静的 probe を
-QEMU で実行した結果**であり、aarch64 Ruby 自身で `rake test` や `gem install` を走らせた
-結果ではない。M4 の残項目は次の通りである。
+| M4受入れ項目 | 確認結果 |
+|---|---|
+| aarch64上の全テストスイート | **2848 runs / 8437 assertions / 0 failures / 0 errors / 128 skips** |
+| skipガード | **OK**(`skips <= 130`, `runs >= 2500`) |
+| aarch64のjson 2.21.1 / msgpack 1.8.3 | json: **607 tests / 3435 assertions / 100% passed**。msgpack: **455 examples / 0 failures / 1 pending** |
+| ABIファジングハーネスの機種パラメタ化 | **実装済み**。x86_64とaarch64の40レイアウトをtarget-awareに検証 |
+| aarch64 muslの全受入れ | **未実施**。musl libc/Rubyの実行環境が別途必要 |
 
-| M4受入れ項目 | 確認結果 | 未完了の原因 |
-|---|---|---|
-| aarch64 上の全テストスイート | クロス経路は green | ローカルに aarch64 Ruby が無い。`ruby` は x86_64 で、既存の Ruby 4.0.6 も x86_64。 |
-| ABI ファジングハーネスの機種パラメタ化 | **実装済み(本ブランチ)** | `TestCrossAbi` が同じ決定論的な 40 レイアウトを x86_64 と aarch64 で実行する。aarch64 は既存のクロスgcc + QEMU経路を使うため aarch64 Ruby は不要。 |
-| aarch64 の json / msgpack `gem install` | 未実施 | ネットワーク受入れテストは `RMAKE_ACCEPTANCE=1` 未指定のため 44 skips に含まれる。aarch64 Ruby が必要で、Docker daemon も `/var/run/docker.sock` の permission denied で利用できない。 |
-| aarch64 musl の全受入れ | 未実施 | `musl-gcc` / `aarch64-linux-musl-gcc` が無く、Docker daemon も利用できない。今回の musl 3件は bundled header の分岐値を glibc cross linker + QEMU で確認したもので、musl libc/Ruby の実走ではない。 |
-
-このブランチで実施したABI作業では、`TestCrossAbi` を target-aware にし、x86_64用と
-aarch64用の gcc caller / rubycc callee、gcc callee / rubycc caller の両方向を追加した。
-各ケースは最大8個の先行整数引数を生成し、System V AMD64の6レジスタ境界とAAPCS64の
-8レジスタ境界の双方をまたぐ。単体テストは **4 runs / 4 assertions / 0 failures**、
-全スイートは **2,904 runs / 9,061 assertions / 0 failures / 0 errors / 44 skips** だった。
-
-今回、`weekly.yml` に `aarch64-glibc` ジョブを追加した。arm64 の `ruby:4.0` を
-QEMU 上で起動し、aarch64 Ruby 自身による全スイートと json / msgpack の M2 受け入れを
-同じジョブで実行する。初回の実行結果はまだ未取得であり、結果を確認してこの表を更新する。
-
-なお、先行実行で出た `TestDoctor#test_verified_gems_json_holds_only_confirmed_gems` の
-1 failure は、実行中に `nio4r` の検証記録を `data/verified_gems.json` に追加した一方で、
-テスト側の期待キーがまだ古かったデータ・期待値の不整合だった。両方を同期した後の
-Doctor 単体は **21 runs / 638 assertions / 0 failures / 0 errors / 2 skips**、上記の
-全スイート再実行も green になった。したがって、今回の未完了はこの失敗の再発ではなく、
-実 ARM Ruby / musl 実行環境が無いことによる測定未完了である。
+主な原因は、AArch64 backendの`alloca`/bit-scan/符号なしint→float変換の不足、native arm64 GCCの
+既定PIEとx86-64前提の実行ハーネス、glibc ABI値のターゲット依存性、QEMU用DoS閾値、native専用
+skip上限の不足だった。これらを修正した後に残った1 failure/1 errorは、alloca実装後も古い失敗を
+期待していたdriverテストと、AArch64で走らせるべきでないx86-64専用SharedLinkerテストだった。
+ターゲット条件と期待値を更新した結果、最終runで解消した。詳細なrun履歴と修正一覧は
+[CI.mdのM4受入れ記録](CI.md#m4-native-aarch64-glibc-受入れ記録2026-08-08)に記載する。
 
 （以前の追記(Step 193)）: 真のdistroless相当検証を完了。glibc / musl のRuby 4.0
 コンテナで、cc / gcc / clang / make / sh と libc開発ヘッダを除いた状態の
-`json` / `msgpack` / `sqlite3` / `pg` のビルド・実行に成功した。残る環境検証は
-musl全スイートとaarch64 Ruby上のM4全面受入れ。
+`json` / `msgpack` / `sqlite3` / `pg` のビルド・実行に成功した。当時残っていた
+環境検証のうち、aarch64 glibc上のM4全面受入れは下記の最終runで完了し、musl全スイートが残る。
 
 ## 1. 開発ワークフロー(1 ステップのサイクル)
 
@@ -185,7 +175,7 @@ musl全スイートとaarch64 Ruby上のM4全面受入れ。
 | ~~スタック引数の 16 バイト整列(x86_64/aarch64 共通)~~ **解消(Step 94)**、-fPIC の PC32 参照 | 16 バイト整列は Step 94 で解消(`:pad_stack` 機構 + クロス TU 実行オラクル)。-fPIC PC32 は **H4**(ABI バグ → 最優先修正 + ABI ファジングに再発防止ケース追加) | ABI 不一致は SEGV 直結の最重要リスク(DESIGN 7 章)。ファジング(下記)で網羅的に炙り出す |
 | `wchar_t` typedef 符号性、long double = double による max_align_t 相違 | **feature-gated**(ワイド文字対応時 / x87 80bit 対応時) | いずれも該当機能を意図的に未対応(診断で拒否 / DESIGN 3.3 既知制限)としているため、当該機能に着手するまで観測不能。H4 でワイド文字/long double を使う gem が有意に落ちるなら前倒しを判断 |
 | DoS フェイルセーフ上限値の再調整 | **H4**(コーパス R10 実測で再調整) | docs/security-dos-review.md 記載。極浅スタック環境の実測が入手できた時点 |
-| ABI ファジングハーネス(Step 25/62)の機種パラメタ化、aarch64 全スイート + gem install 実走、musl/distroless コンテナ検証、sqlite3/pg コーパス | ~~**H3**(QEMU の Docker マトリクス整備と併せて)~~ → **H6 の default gem 検証(§8)の後ろに再割り当て**(§8 の「環境が無くて測れていないことの解消」)。**H3 に割り当てたまま実施されず H6 まで来た**ので、期限を持たせ直した。musl → distroless → aarch64 の順に分けて片付ける | §8 M4 受け入れ参照。現環境に Docker/aarch64 Ruby が無いため、CI マトリクス整備が前提。ネットワーク/コンテナ依存はこの相に閉じる |
+| ABI ファジングハーネス(Step 25/62)の機種パラメタ化、aarch64 全スイート + gem install 実走、musl/distroless コンテナ検証、sqlite3/pg コーパス | ~~**H3**(QEMU の Docker マトリクス整備と併せて)~~ → **H6 の default gem 検証(§8)の後ろに再割り当て**(§8 の「環境が無くて測れていないことの解消」)。**ABI機種化とaarch64 glibc受入れは完了**。musl → distroless → aarch64 の計画のうち、musl全スイートとaarch64 musl受入れが残る | §8 M4 受け入れ参照。aarch64 glibcの最終runは31235668846。muslの実行環境とsqlite3/pgコーパスは別途実施する |
 
 ## 4. M1 実行計画 — **完了**
 
@@ -295,7 +285,7 @@ STEPS.md の Step 37。musl での検証は L8 の M2 受け入れ(両コンテ�
   `.name`・添字 `[expr]`・匿名メンバ対応、ビットフィールドは診断。同梱 stddef.h の
   offsetof を __builtin_offsetof 展開へ変更し、static 初期化子・配列サイズ・
   case ラベルで使えるようにした。設計記録は STEPS.md の Step 42。
-- **M2 受け入れの最終形(残り、次ステップ)**: json と msgpack を「extconf.rb が
+- **M2 受け入れの最終形(当時の計画、現在は完了)**: json と msgpack を「extconf.rb が
   生成した Makefile のコマンドを
   手動で rubycc に置き換えて」ビルドし、**gem 自身のテストスイートに合格**。
   glibc / musl 両コンテナで確認。
@@ -529,11 +519,11 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   PLT0 不要。CompatRuntime の機種不整合も解消。x86_64 は .so バイト一致。
 - **その後 M4 受け入れ**: aarch64 で全スイート + json/msgpack の gem install。
   Step 208 で qemu 上の aarch64 版 Ruby(mkmf/rake が動く環境)を整備し、
-  `io-wait` / `stringio` の限定実走は完了した。**json/msgpack と全スイートは未検証**で、
-  qemu の遅さを踏まえてコンテナ/CI マトリクスで継続する。
+  `io-wait` / `stringio` の限定実走を完了した。その後のnative受入れで
+  **json/msgpack と全スイートも完了**した(詳細は上記のrun 31235668846)。
   リンカ・コンパイラ側の成果物は aarch64 .so を正しく生成できる段階に到達済み。
-- A4 から持ち越し: **ABI ファジングハーネス(Step 25/62)の機種パラメタ化**。現状は
-  ホスト gcc 前提でクロス経路を持たないため、QEMU マトリクス整備と併せて対応する。
+- ~~A4 から持ち越し: **ABI ファジングハーネス(Step 25/62)の機種パラメタ化**~~
+  **完了**。x86_64 / aarch64 の40レイアウトをtarget-awareに検証する。
 - **CI 環境のトレードオフ**(再掲): QEMU はどこでも動くが遅く、まれに実機と挙動が違う。
   既定は QEMU の Docker マトリクス、リリース前検証だけ実機。
 - **CI 環境のトレードオフ**: QEMU(binfmt_misc)はどこでも動くが遅く、まれに実機と
@@ -915,7 +905,7 @@ H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker 
 |---|---|---|---|
 | 1 | **musl(x86_64)** | ~~GitHub Actions の `container: alpine`~~ → **ホストでチェックアウトして自分で `docker run ruby:4.0-alpine`**(ジョブコンテナにはランナーが glibc リンクの node を差し込むため `container:` は使えない)。**qemu 不要**なので 3 件で最も安い | M5 が掲げた「glibc/musl 互換ヘッダ」の**未検証の半分**。同梱ヘッダの musl 差が初めて実測できる。**足場は Step 174**、**初回実行は Step 175**。結果は**緑ではなかった** — 2,743 runs / 21 failures / 18 errors。**掲げた主張が musl 側で実際に外れていた**ことが分かり、GAPS の G(同梱ヘッダが glibc の ABI を焼き込んでいる)・H(`stdckdint.h` 欠落)・I(ABI ハーネスが glibc 固有)に分離した。**musl の検証済み記録は 1 件も足していない**(通っていないため) |
 | 2 | ~~**真の distroless 姿勢**~~ | 1 で組んだジョブを再利用し、cc / make / sh / libc 開発ヘッダを取り除いた image を作る | **完了(Step 193)**。glibc / musl の `ruby:4.0` distroless相当で、4 gemの`--platform ruby`ビルドとrequireに成功 |
-| 3 | ~~**aarch64 での実走**~~ | qemu + arm64 コンテナ(`docker/setup-qemu-action`) | **完了(Step 208)**。glibc / Ruby 4.0.6 で `io-wait` / `stringio` の `gem install` と gem 自身のテストを実施。qemu 上の全スイートと `json` / `msgpack` は M4 全面受入れとして継続 |
+| 3 | ~~**aarch64 での実走**~~ | qemu + arm64 コンテナ(`docker/setup-qemu-action`) | **完了(Step 208以降)**。glibc / Ruby 4.0.6 で `io-wait` / `stringio` の限定実走後、native受入れで全スイートと `json` / `msgpack` のM2も完了。aarch64 muslは別項目として未実施 |
 
 **置き場は Tier B(`weekly.yml`)**。3 件とも遅いので Tier A(`test.yml`)は速いまま保つ。
 
@@ -953,7 +943,7 @@ H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker 
   90% の分母が何なのかが読めなくなる。
 - **未解消の負債と未測定事項も `docs/GAPS.md` に集約した**
   (`test/corpus/gems.rb` の `version: nil` 4 件、racc の assertions 差異、
-  musl 全スイート / aarch64 M4全面受入れの未測定)。真のdistroless相当の4 gem受入れは
+  musl 全スイートの未測定)。aarch64 glibcのM4全面受入れはrun 31235668846で完了した。真のdistroless相当の4 gem受入れは
   Step 193で完了した。
 - **受け入れ = v1.0 リリース = M5 完了**。
 
