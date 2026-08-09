@@ -130,6 +130,8 @@ class TestInt128Abi < Minitest::Test
   ].freeze
 
   def test_int128_by_value_abi_x86_64
+    skip_unless_x86_64_host
+
     oracle_status, oracle_stdout = link_units_and_run([[MAIN, :gcc], [DEFS, :gcc]])
 
     MIXES.each do |(main_cc, defs_cc), label|

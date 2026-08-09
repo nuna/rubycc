@@ -2,6 +2,7 @@
 
 require "tmpdir"
 require "open3"
+require "rbconfig"
 
 # ExecutionHelper provides the scaffolding shared by execution tests:
 # compile a C source string down to an object file, link it into an
@@ -11,6 +12,25 @@ require "open3"
 # exists purely to validate the harness itself. `compiler: :rubycc` drives the
 # Almost Pure Ruby toolchain (Rubycc::Compiler).
 module ExecutionHelper
+  # The generic execution tests compare a rubycc object with the host gcc and
+  # then execute the result. Compile for the host ABI here; Compiler#compile's
+  # library default remains x86_64 so callers that intentionally test a
+  # specific backend still have to say so explicitly.
+  def host_target
+    case RbConfig::CONFIG["host_cpu"].to_s.downcase
+    when "x86_64", "amd64" then "x86_64"
+    when "aarch64", "arm64" then "aarch64"
+    else
+      raise "unsupported host CPU for execution tests: #{RbConfig::CONFIG["host_cpu"].inspect}"
+    end
+  end
+
+  def skip_unless_x86_64_host
+    return if host_target == "x86_64"
+
+    skip "x86_64 host execution is not valid on #{host_target}"
+  end
+
   def in_tmpdir
     Dir.mktmpdir("rubycc-test") do |dir|
       yield dir
@@ -19,7 +39,7 @@ module ExecutionHelper
 
   def compile_with_rubycc(c_source, output_path)
     filename = "#{File.basename(output_path, ".*")}.c"
-    binary = Rubycc::Compiler.new.compile(c_source, filename: filename)
+    binary = Rubycc::Compiler.new.compile(c_source, filename: filename, target: host_target)
     File.binwrite(output_path, binary)
     output_path
   end
