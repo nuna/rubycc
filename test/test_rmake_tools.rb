@@ -289,13 +289,22 @@ class TestRmakeTools < Minitest::Test
 
   def test_json_parser_makefile_template_is_portable
     fixture = File.join(FIXTURES_ROOT, "json-2.21.1/parser/Makefile")
-    text = portable_json_parser_makefile(File.read(fixture))
+    raw = File.read(fixture)
+    assert_equal 1, raw.lines.count { |line| line == "topdir = /rubycc-fixture/ruby-4.0.6/include/ruby-4.0.6\n" }
+    assert_equal 1, raw.lines.count { |line| line == "arch_hdrdir = /rubycc-fixture/ruby-4.0.6/include/ruby-4.0.6/x86_64-linux\n" }
+    assert_equal 1, raw.lines.count { |line| line == "prefix = $(DESTDIR)/rubycc-fixture/ruby-4.0.6\n" }
+    assert_equal 1, raw.lines.count { |line| line == "arch = x86_64-linux\n" }
+    assert_equal 1, raw.lines.count { |line| line == "ruby_version = 4.0.6\n" }
+
+    text = portable_json_parser_makefile(raw)
 
     refute_match(/__RUBY_[A-Z]+__/, text)
-    assert_includes text, "topdir = #{RbConfig::CONFIG.fetch('rubyhdrdir')}"
-    assert_includes text, "arch_hdrdir = #{RbConfig::CONFIG.fetch('rubyarchhdrdir')}"
-    assert_includes text, "arch = #{RbConfig::CONFIG.fetch('arch')}"
-    assert_includes text, "ruby_version = #{RbConfig::CONFIG.fetch('ruby_version')}"
+    refute_includes text, "/rubycc-fixture/ruby-4.0.6"
+    assert_equal 1, text.lines.count { |line| line == "topdir = #{RbConfig::CONFIG.fetch('rubyhdrdir')}\n" }
+    assert_equal 1, text.lines.count { |line| line == "arch_hdrdir = #{RbConfig::CONFIG.fetch('rubyarchhdrdir')}\n" }
+    assert_equal 1, text.lines.count { |line| line == "prefix = $(DESTDIR)#{RbConfig::CONFIG.fetch('prefix')}\n" }
+    assert_equal 1, text.lines.count { |line| line == "arch = #{RbConfig::CONFIG.fetch('arch')}\n" }
+    assert_equal 1, text.lines.count { |line| line == "ruby_version = #{RbConfig::CONFIG.fetch('ruby_version')}\n" }
   end
 
   # --- optional real json acceptance (network) ------------------------------
@@ -338,14 +347,19 @@ class TestRmakeTools < Minitest::Test
   # same acceptance runs on a developer checkout and on a GitHub Actions Ruby
   # installation with a different prefix, architecture, or Ruby ABI version.
   def portable_json_parser_makefile(text)
-    replacements = {
-      "__RUBY_HDRDIR__" => RbConfig::CONFIG.fetch("rubyhdrdir"),
-      "__RUBY_ARCHHDRDIR__" => RbConfig::CONFIG.fetch("rubyarchhdrdir"),
-      "__RUBY_PREFIX__" => RbConfig::CONFIG.fetch("prefix"),
-      "__RUBY_ARCH__" => RbConfig::CONFIG.fetch("arch"),
-      "__RUBY_VERSION__" => RbConfig::CONFIG.fetch("ruby_version")
+    assignments = {
+      /^topdir = .*$/ => "topdir = #{RbConfig::CONFIG.fetch('rubyhdrdir')}",
+      /^arch_hdrdir = .*$/ => "arch_hdrdir = #{RbConfig::CONFIG.fetch('rubyarchhdrdir')}",
+      /^prefix = \$\(DESTDIR\).*$/ => "prefix = \$(DESTDIR)#{RbConfig::CONFIG.fetch('prefix')}",
+      /^arch = .*$/ => "arch = #{RbConfig::CONFIG.fetch('arch')}",
+      /^ruby_version = .*$/ => "ruby_version = #{RbConfig::CONFIG.fetch('ruby_version')}"
     }
-    replacements.each { |placeholder, value| text = text.gsub(placeholder, value) }
+    assignments.each do |pattern, replacement|
+      count = text.scan(pattern).size
+      raise "portable JSON fixture expected one #{pattern.inspect} assignment, got #{count}" unless count == 1
+
+      text = text.sub(pattern, replacement)
+    end
     text
   end
 

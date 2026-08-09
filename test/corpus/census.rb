@@ -129,6 +129,8 @@ module Corpus
       false
     end
 
+    KNOWN_R10_PROFILES = %w[pg-native-source sqlite3-system-libraries].freeze
+
     # The raw text check above intentionally fails closed. Two DESIGN-listed
     # gems have an explicit, reproducible profile whose extconf contains an
     # unselected configure/mini_portile path:
@@ -144,24 +146,55 @@ module Corpus
       profile = spec[:r10_profile]
       args = Array(spec[:r10_extconf_args])
 
+      # No profile means the ordinary conservative rule. An explicit profile
+      # (or arguments without one) is a contract, so an unknown/incomplete
+      # declaration is excluded rather than accidentally widening the corpus.
+      return true if spec.key?(:r10_extconf_args) && profile.nil?
+      return configure_dependency?(text) if profile.nil?
+      return true unless KNOWN_R10_PROFILES.include?(profile)
+
       case profile
       when "pg-native-source"
         return true unless spec[:name] == "pg"
         return true unless args.empty?
-        return true unless text.match?(/if\s+gem_platform\s*=\s*with_config\(\s*["']cross-build["']\s*\)/)
-        return true unless text.match?(/#\s*Native build/)
+        cross = text.match(/if\s+gem_platform\s*=\s*with_config\(\s*["']cross-build["']\s*\)/)
+        native = text.match(/\n\s*else\s*\n\s*#\s*Native build\b/)
+        return true unless cross && native && native.begin(0) > cross.begin(0)
+
+        native_branch = text.byteslice(native.begin(0), text.bytesize - native.begin(0))
+        return true unless native_branch.match?(/\bpgconfig\s*=\s*with_config\(/)
+        return true unless native_branch.match?(/find_executable\(\s*["']pg_config["']\s*\)/)
+        return true if configure_dependency?(native_branch)
+
         false
       when "sqlite3-system-libraries"
         return true unless spec[:name] == "sqlite3"
         return true unless args == ["--enable-system-libraries"]
         return true unless text.match?(/def\s+system_libraries\?/) &&
                           text.match?(/enable_config\(\s*["']system-libraries["']\s*\)/)
-        return true unless text.match?(/def\s+configure_system_libraries/) &&
-                          text.match?(/def\s+configure_packaged_libraries/)
+        system_method = method_body(text, "configure_system_libraries")
+        return true unless system_method && text.match?(/def\s+configure_packaged_libraries/)
+        # The profile selects the system-library method. A method-name marker
+        # alone is not enough: if the selected method itself starts invoking
+        # mini_portile/configure, the profile must fall back to exclusion.
+        return true if configure_dependency?(system_method)
+
         false
       else
         configure_dependency?(text)
       end
+    end
+
+    # Return the source slice for a simple Ruby method up to the next method
+    # declaration. This is intentionally a conservative structural check, not
+    # a Ruby parser; it is used only to ensure a selected profile's method does
+    # not contain the dependency marker that excludes the ordinary path.
+    def method_body(text, name)
+      start = text.match(/^[ \t]*def\s+#{Regexp.escape(name)}\b/)&.begin(0)
+      return nil unless start
+
+      following = text.match(/^[ \t]*def\s+[A-Za-z_][A-Za-z0-9_!?=]*/, start + 1)
+      text.byteslice(start, (following ? following.begin(0) : text.bytesize) - start)
     end
 
     # Headers that only appear behind a SIMD / CPU-feature #ifdef. Bundled or not,

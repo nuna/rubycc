@@ -27,6 +27,19 @@ RUBYCC_ROOT = File.expand_path("..", __dir__)
 WORK_DIR = File.expand_path(ARGV[0] || ENV["CORPUS_WORK"] || "/tmp/rubycc_corpus")
 FIXTURES_ROOT = File.join(RUBYCC_ROOT, "test/fixtures/mkmf")
 
+# The parser Makefile is also used by the network acceptance test. Keep the
+# committed fixture reproducible when the collector runs on another machine:
+# retain the mkmf.log as collected evidence, but replace only these Makefile
+# assignments with a fixed logical x86_64 fixture identity. The acceptance
+# helper then injects the current Ruby's RbConfig values before building.
+PORTABLE_JSON_PARSER_ASSIGNMENTS = {
+  /^topdir = .*$/ => "topdir = /rubycc-fixture/ruby-4.0.6/include/ruby-4.0.6",
+  /^arch_hdrdir = .*$/ => "arch_hdrdir = /rubycc-fixture/ruby-4.0.6/include/ruby-4.0.6/x86_64-linux",
+  /^prefix = \$\(DESTDIR\).*$/ => "prefix = $(DESTDIR)/rubycc-fixture/ruby-4.0.6",
+  /^arch = .*$/ => "arch = x86_64-linux",
+  /^ruby_version = .*$/ => "ruby_version = 4.0.6"
+}.freeze
+
 # name => { version: "x.y.z" | :latest, ext_dirs: { fixture_ext_name => relative_path },
 #           extconf_env: { ... } (optional) }
 GEMS = {
@@ -77,6 +90,18 @@ end
 
 def clean_env(extra = {})
   CLEAN_ENV_UNSET.each_with_object({}) { |k, h| h[k] = nil }.merge(extra)
+end
+
+def normalize_fixture_makefile(name, ext_name, text)
+  return text unless name == "json" && ext_name == "parser"
+
+  PORTABLE_JSON_PARSER_ASSIGNMENTS.each do |pattern, replacement|
+    count = text.scan(pattern).size
+    raise "JSON parser Makefile expected one #{pattern.inspect} assignment, got #{count}" unless count == 1
+
+    text = text.sub(pattern, replacement)
+  end
+  text
 end
 
 # --- material fetch (idempotent: skipped once already fetched/unpacked) ----
@@ -146,7 +171,8 @@ def collect_ext(name, version, ext_name, ext_dir, extra_env)
   dest_dir = File.join(FIXTURES_ROOT, "#{name}-#{version}", ext_name)
   FileUtils.rm_rf(dest_dir)
   FileUtils.mkdir_p(dest_dir)
-  FileUtils.cp(makefile, dest_dir)
+  makefile_text = File.read(makefile)
+  File.write(File.join(dest_dir, "Makefile"), normalize_fixture_makefile(name, ext_name, makefile_text))
   FileUtils.cp(mkmf_log, dest_dir) if File.exist?(mkmf_log)
   FileUtils.cp(extconf_h, dest_dir) if File.exist?(extconf_h)
 

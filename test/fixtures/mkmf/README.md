@@ -15,8 +15,8 @@ B1(rmake の Makefile サブセット)・B5(conftest 対応)の機能セット�
 - `provenance.txt`(採取日時・ruby バージョン・`RbConfig::CONFIG["CC"]`・
   gem バージョン・各 ext の採取結果サマリ)
 
-を、`test/fixtures/mkmf/<gem>-<version>/<ext名>/` にテキストのまま(改変なし)で
-配置したもの。
+を、`test/fixtures/mkmf/<gem>-<version>/<ext名>/` に配置したもの。Makefileは原則
+実物だが、json parserだけは受入れテストで使うため後述の論理パス正規化を行う。
 
 採取対象(2026-07-18 時点):
 
@@ -47,10 +47,13 @@ sqlite3 / pg は、この環境にシステム開発ヘッダ(`sqlite3.h` / `lib
 
 ## 採取内容の正規化について
 
-Makefile・mkmf.log はこの環境の絶対パス(`/home/...`、`/tmp/...` 等)や
-このマシンの ruby インストールパスをそのまま含んでいる(改変せずコピーする
-方針のため)。golden テスト側(B1)でパスの正規化・差分許容をどう扱うかは
-B1 実装時の課題とする。ここでは「実物そのまま」を保持することを優先する。
+`mkmf.log` はprobeの一次資料として採取時の絶対パスを含むため、そのまま保持する。
+一方、json 2.21.1 parserのMakefileは `topdir`、`arch_hdrdir`、`prefix`、`arch`、
+`ruby_version` の5 assignmentだけを固定した論理fixtureへ正規化する。
+`test/test_rmake_tools.rb` はこれらを実行時の `RbConfig` へ注入するため、採取したPCの
+Ruby prefixに依存しない。このfixtureはjsonのx86_64用probe結果
+(`HAVE_X86INTRIN_H`)を含むため、AArch64の実ビルド証拠としては使わない。
+collector(`tools/collect_mkmf_corpus.rb`)も同じ正規化を適用するので、再生成で戻らない。
 
 ## 再生成方法
 
@@ -62,7 +65,7 @@ ruby tools/collect_mkmf_corpus.rb [work_dir]
 ネットワーク(rubygems.org)とシステムの `ruby` / `gcc` / mkmf が必要
 (probe 自体は環境の gcc で行う — tools/m2_acceptance.rb と同じ前提)。
 `gem fetch` / `gem unpack` は冪等(作業ディレクトリに既に取得済みなら再取得しない)。
-fixtures は毎回上書きされる。取得・展開に失敗した gem はスキップして
+fixtures は毎回上書きされる(ただしjson parser Makefileは上記の正規化を再適用する)。取得・展開に失敗した gem はスキップして
 標準エラーに理由を出し、1 つでも採取に成功していれば終了コード 0 を返す。
 
 ## 対応する軽量テスト

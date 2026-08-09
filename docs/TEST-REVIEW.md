@@ -230,3 +230,51 @@ ci_check_skips: OK (skips <= 55, runs >= 2500)
 以上でローカルで完了できる計画・入口・preflight強化のレビューと修正は完了した。
 ただし、GitHub Actionsのlive/native実runner実測とR10全対象gemの手動分類は、上記の
 完了条件を満たすまで未完了であり、ローカル結果を代用しない。
+
+## 実装継続分の批判的レビューと修正（2026-08-10）
+
+### acceptance-only実runnerの失敗と修正
+
+commit `8a371237d5813d63d2795fe7777f0a666b238031` の
+[acceptance-only run 31340014349](https://github.com/nuna/rubycc/actions/runs/31340014349) は、
+fixture jobとdispatch契約はpassし、liveのrequired resultも一見passしたが、通常suiteの
+`TestRmakeGolden`が次の2件でfail/errorとなった。
+
+```text
+fixture has no Ruby header directory in test/fixtures/mkmf/json-2.21.1/parser/Makefile
+fixture has no Ruby architecture header path
+```
+
+原因は、PC依存pathを除くためにMakefileへplaceholderを入れた一方、golden testが
+実在pathのsuffixからRuby header directory/architectureを抽出する契約だったことである。
+失敗をskipへ変換せず、fixtureを固定論理path（x86_64のprobe結果を含む）へ正規化し、
+`test/test_rmake_tools.rb`で実行時の`RbConfig`を5 assignmentへ注入する修正を入れた。
+さらにcollectorへ同じ正規化を移し、再生成でPC依存pathへ戻らないようにした。厳密な
+assignment数・placeholder残存・期待値をテストし、golden 7 runs / 24 assertions、
+rmake tools 12 runs / 36 assertionsを再実行した。
+
+この修正のtrade-offは、Makefileの一次資料性を一部失う代わりにCI再現性を得る点である。
+そのためrawの`mkmf.log`は保持し、fixtureの正規化対象とx86_64限定性を
+`test/fixtures/mkmf/README.md`と`provenance.txt`へ明記した。AArch64の実ビルド証拠には
+流用しない。GitHub Actions上の再実行は、この修正を含む最終commitで別途確認する。
+
+### R10 profile境界・candidate artifactのレビュー
+
+`pg`と`sqlite3`をrawの文字列判定だけで除外しない案について、次の失敗モードを確認した。
+
+- profile名だけを追加すると未知profileがfail-openになる。
+- `r10_extconf_args`を宣言しても、実際のverification recipeが同じ引数を使わなければ、
+  censusの対象境界と`data/verified_gems.json`の証拠が分離する。
+- scannerの空結果を「struct利用なし」と解釈すると、macro・生成コード・未選択platform
+  の見逃しをpassへ変換する。
+
+これを受け、既知profileのallowlist、pg native branchの`pg_config`/system-library marker、
+sqlite3の`--enable-system-libraries`を要求し、未知・引数不足・marker不足をfail-closedに
+した。`tools/r10_corpus_scan.rb`と`data/r10_corpus_scan.json`では39候補/34対象/5除外、
+既存record 29件、scanner候補128件、34件すべてmanual classification pendingを記録する。
+control/rubycc、extension load、upstream suiteはこのscanで実行したことにせず、既存recordも
+再実行済みとはしない。`docs/R10-CORPUS-SCAN.md`はこの境界を明記する。
+
+prosは対象数と根拠の追跡性が上がること、consはprofileとverification recipeの二重管理が
+残り、手動分類・install/suite実測を別途完了する必要があることである。したがって現時点の
+R10 pass rateは34分母/29記録/85.3%であり、90%達成とは記載しない。

@@ -80,6 +80,12 @@ skip 理由は絶対パスと数値を正規化したヒストグラムとして
 `bundle exec rake corpus:census` を実行し、
 `test/corpus/include-census.md` と生成ログを artifact に保存する。
 コミット済み census と差分がある場合はジョブを失敗させる。
+R10のmachine-gate境界は `pg-native-source` と
+`sqlite3-system-libraries` の明示的なprofileを含む。profileの引数はcensusへ記録
+されるが、`data/verified_gems.json`のinstall・extension load・upstream suite証拠を
+代用しない。手元のcacheから候補抽出とgem SHAを残す場合は
+`R10_CORPUS_CACHE=... rake corpus:r10_scan`を使い、
+`data/r10_corpus_scan.json` / `docs/R10-CORPUS-SCAN.md`を更新する。
 
 ### acceptance-fixture
 

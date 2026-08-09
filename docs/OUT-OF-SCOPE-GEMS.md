@@ -46,12 +46,14 @@ DESIGN が設計時に名指ししたものを集めたものである。
 この一覧は前者を扱う。unicorn も同じ形(依存の kgio / raindrops が C 拡張)だが、
 そちらは C なので対象内である。
 
-## 3. 機械判定が `excluded` と出す 2 件 — **中身は別物**
+## 3. censusのraw判定とprofile判定が分かれる2件 — **中身は別物**
 
-`test/corpus/census.rb` の R10 判定は
-**「extconf.rb のどこかに `mini_portile` という文字列があるか」しか見ていない**
-(`configure_dependency?`)。この粗さで sqlite3 と pg が同じ `excluded` になっているが、
-**実物の extconf を読むと 2 件は性質がまったく違う**(Step 186 で実測)。
+`test/corpus/census.rb` の通常判定は
+**「extconf.rb のどこかに `mini_portile` という文字列があるか」**を含む保守的な
+rawチェックである。現在はDESIGNとextconfの実行経路を明示したprofileを追加し、
+`pg-native-source` と `sqlite3-system-libraries` だけが、指定引数・branch markerを
+満たした場合にraw判定を上書きする。未知profileや条件不足はfail-closedである。
+**実物のextconfを読まないまま対象件数を確定してはいけない**(Step 186で実測)。
 
 ### sqlite3 — 既定の経路は**本当に対象外**。判定は正しい
 
@@ -70,7 +72,7 @@ DESIGN が設計時に名指ししたものを集めたものである。
 (STEPS.md Step 116)。ただしそれは「amalgamation をコンパイルできる」話であって、
 「既定の `gem install` が通る」話ではない。**混同しないこと。**)
 
-### pg — こちらは**判定の誤り(偽陽性)**
+### pg — `pg-native-source` profileで対象内
 
 `ext/extconf.rb` の mini_portile 参照は **26 行目の
 `if gem_platform = with_config("cross-build")` ブロックの中に丸ごと入っている**。
@@ -78,7 +80,11 @@ DESIGN が設計時に名指ししたものを集めたものである。
 通常のソースインストールは `pg_config` / pkg-config でシステムの libpq を探す。
 
 **DESIGN R10 は pg をスコープ内として名指ししている。**
-つまり pg については、**判定が粗いのであって gem が対象外なのではない。**
+`gems.rb`の`pg-native-source` profileはcross-build引数を許可せず、native branchの
+`pg_config`/system-library markerを要求する。これで通常のsource installの境界を
+machine gateへ反映する。ただし、このprofileはinstall・extension load・upstream suite
+のverification recordそのものではなく、`data/r10_corpus_scan.json`でも手動/control/
+rubycc証拠はpendingとしている。
 
 ## 4. 対象内である境界例(念のため)
 

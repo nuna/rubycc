@@ -425,28 +425,28 @@ architectureの生成物へ流れないことも確認できる点である。�
 ### 3. R10対象gemの手動分類
 
 この作業は、scannerの件数をR10合否やstruct `va_arg`対応の証拠にしないための調査である。
-まず現在のmachine gateで`status: ok`の32件を初期母集団とする。ただし、`DESIGN.md`が
-in-scopeとする`pg`をcensusがmini_portile文字列だけでexcludedにしている点、
-`sqlite3`のsystem-library profileを別経路とする点は、分類開始前にスコープ境界を確定する。
-この境界が未決のままでは「全対象」の件数を固定しない。
+現在のmachine gateで`status: ok`の34件を母集団とする。`DESIGN.md`がin-scopeとする
+`pg`は`pg-native-source`、`sqlite3`は`sqlite3-system-libraries`（`--enable-system-libraries`）
+という明示的profileで境界を確定済みである。未知profile、指定引数不足、native branchの
+marker不足はfail-closedであり、profileの存在だけではinstall・suite verificationとは数えない。
 
-初期母集団（census `status: ok`）は次の32件である。
+母集団（census `status: ok`）は次の34件である。
 
 `json`, `msgpack`, `bigdecimal`, `date`, `racc`, `redcarpet`, `digest`, `erb`,
 `etc`, `io-console`, `io-nonblock`, `io-wait`, `openssl`, `prism`, `psych`,
 `stringio`, `strscan`, `zlib`, `fiddle`, `rbs`, `syslog`, `websocket-driver`, `puma`,
 `google-protobuf`, `bootsnap`, `oj`, `nio4r`, `mysql2`, `http_parser.rb`, `stackprof`,
-`yajl-ruby`, `nkf`。
+`yajl-ruby`, `nkf`, `sqlite3`, `pg`。
 
 | ID | タスク | 成果物・完了条件 | 依存 |
 |---|---|---|---|
-| R10-0 | 母集団・境界を確定 | DESIGN、`gems.rb`、censusの差分を確認し、pg、sqlite3 system-library、除外7件の扱いを明記する。対象名・versionが一意で、件数と理由が一致する | なし |
+| R10-0 | 母集団・境界を確定 | DESIGN、`gems.rb`、censusの差分を確認し、pg、sqlite3 system-library、除外5件の扱いを明記する。profile、対象名・versionが一意で、39候補・34対象・5除外の件数と理由が一致する | なし |
 | R10-1 | source provenanceと記録形式を固定 | 各gemのversion、取得URL、SHA-256、取得日時、解凍元、生成ファイルの入手経路を記録する。作業用scratch GEM_HOME/ディレクトリを使用し、ローカルBundlerや既存gemを混ぜない。記録は後述の必須フィールドを持つ | R10-0 |
 | R10-2 | 機械的候補抽出 | C source、header、extconf、macro、生成前後のsourceを、実際のextconf/Rakeで選ばれたフラグとpreprocessor条件に沿って走査し、`va_list`/`va_arg`/struct型/可変呼出し候補と位置をartifact化する。scanner結果は候補一覧に限定し、不在証明に使わない | R10-1 |
 | R10-3 | gemごとの手動分類 | 各候補を、(a)実使用、(b)誤検出、(c)要追加確認に分類する。コメント・dead code・未選択platform、macro展開後、Rake/extconf生成後の実コンパイル経路を根拠付きで記録する。(c)は未解決理由・次の確認・担当・期限を必須にし、pass扱いしない | R10-2 |
 | R10-4 | recipeとcontrol/rubyccの対象経路確認 | 全対象について検証recipeまたは同等の再現手順を用意する。(a)および判断に影響する(c)は、同一source・同一testでGCC controlとrubyccを分離実行する。extensionが実際にloadされたこと、suiteがfallbackを使っていないことを確認する。AArch64条件を含む場合はAArch64 runner上だけで実行する | R10-3 |
 | R10-5 | 仕様判断 | 実使用の型、SysV AMD64/AAPCS64、レジスタ枯渇、HFA、生成コードの有無を整理し、structを`...`へ渡す場合とstruct `va_arg`を独立判定する。必要な場合だけ段階実装の対象を決める。x86_64の結果をAArch64の証拠にしない | R10-4 |
-| R10-6 | 完了性レビュー | 対象全件に分類・根拠・source SHA・実行profile・未確定理由があり、「未調査」を空欄やpassにしていないことを第三者が確認する。全32件に最終分類があり、cの件数と未解決理由を集計する | R10-5 |
+| R10-6 | 完了性レビュー | 対象全件に分類・根拠・source SHA・実行profile・未確定理由があり、「未調査」を空欄やpassにしていないことを第三者が確認する。全34件に最終分類があり、cの件数と未解決理由を集計する | R10-5 |
 | R10-7 | 修正・再実測・記録 | レビュー指摘で分類、scanner、verify tool、仕様文書に修正を入れ、該当gemの確認を再実行する。`data/verified_gems.json`は(d)水準のinstall+upstream suite証拠が揃ったgemだけ更新し、手動分類結果とは混同しない | R10-6 |
 
 R10分類記録の各gem行には、少なくとも `name`、`version`、source/gem SHA-256、ext root、
@@ -457,7 +457,7 @@ translation unitまたは実行経路まで示し、(b)はなぜ未選択かを�
 分類済みとは数えない。
 
 手動分類の利点は、macro・生成コード・platform gateを実際のビルド経路に沿って判断
-できる点である。欠点は32件分のsource取得・依存導入・control/rubycc実行に時間がかかり、
+できる点である。欠点は34件分のsource取得・依存導入・control/rubycc実行に時間がかかり、
 system libraryやarchitecture差で再現条件が増える点である。scannerだけなら安価だが偽陽性・
 見逃しを除去できず、suite passだけなら実使用していない経路を証明できない。したがって
 候補抽出、手動根拠、control/rubycc実測を別証拠として保存する。
@@ -466,7 +466,7 @@ system libraryやarchitecture差で再現条件が増える点である。scanne
 
 LIVE-0〜2とARM-0〜1はローカルで並列に進められる。外部runner実測は同じcommit SHAを
 使うため、LIVE-3とARM-2はref固定後に実行する。R10-0〜3はCI実測とは独立だが、
-R10-0の境界確定前に32件の分類を開始しない。
+R10-0の境界確定前に34件の分類を開始しない。
 
 各レビューでは少なくとも次を問う。
 
@@ -487,9 +487,24 @@ native failure、既存scanner結果を、これらの実測の代用にはし�
 | LIVE-1 acceptance-only入口 | ローカル完了 | `workflow_dispatch.only=acceptance`、fixture/liveの条件、入力組み合わせ検証、workflow静的テストを追加。`test/test_weekly_workflow.rb` 3 runs / 21 assertionsで確認 |
 | LIVE-2 preflight順序 | ローカル完了 | live preflightを`bundle install`前へ移動し、依存導入失敗時にも結果JSONを残す契約へ修正。YAML、manifest、checker、preflightを再確認 |
 | ARM-1/ARM-3 native preflight | ローカル完了・実runner未実測 | Ruby ELF/dynamic dependency、Fiddle loader、Ruby header compileを実測するcontext/resultへ強化。`test/test_native_aarch64_preflight.rb` 1 run / 8 assertions、x86_64ではstructured failを確認 |
-| R10-0〜R10-6 計画 | 批判レビュー・改善完了、実分類未着手 | 32件暫定母集団、pg/sqlite3境界、証拠フィールド、macro/生成コード、control/rubycc、architecture profile、`要追加確認`の期限、全件レビュー条件を文書化 |
+| R10-0〜R10-6 計画 | 批判レビュー・改善完了、R10-0〜2実装済み | 34件の母集団、pg/sqlite3境界、証拠フィールド、macro/生成コード、control/rubycc、architecture profile、`要追加確認`の期限、全件レビュー条件を文書化 |
 | LIVE-3/ARM-2 外部実測 | 未実施 | commit SHAを固定してpush/dispatchする外部操作が必要。未実施をpassへ扱わない |
 | R10-7 手動分類実測 | 未実施 | ユーザー指定のR10全対象gem手動分類は、境界確定後に別工程として実施する |
+
+R10-0〜R10-2のcacheを使う機械的な範囲は、`ruby tools/r10_corpus_scan.rb --cache DIR`
+（または`R10_CORPUS_CACHE=DIR rake corpus:r10_scan`）で実行できる。これはcensusと同じ
+machine gateを再利用し、各status:ok対象についてversion、rubygems URL、`.gem`
+SHA-256、cache/unpack相対パス、R10 profile、extconf args、ext file数、variadic
+scannerのfindings/file:line/kind/confidenceを
+[`data/r10_corpus_scan.json`](../data/r10_corpus_scan.json)と
+[`docs/R10-CORPUS-SCAN.md`](R10-CORPUS-SCAN.md)へ保存する。現状は39候補、34対象、5除外、
+29 existing verification records、scanner候補128件である。
+
+generated source、手動分類、control/rubycc、extension load、upstream suiteは34件
+すべて`pending`/`not-run-by-this-scan`であり、既存recordも再実行済みとは扱わない。
+scannerの空結果も不在証明にしない。このartifactはR10-3手動分類の入力であって、
+R10合否を更新しない。`pg`/`sqlite3` profileもmachine-gate境界を定めるだけで、
+verification recordへ昇格させない。
 
 この計画レビュー後の全体回帰は `3000 runs / 9689 assertions / 0 failures /
 0 errors / 42 skips` で、`tools/ci_check_skips.rb`も `skips <= 55`、`runs >= 2500`

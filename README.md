@@ -35,8 +35,11 @@ The verified environments are:
 The bundled headers match the ABI of the supported environments on both architectures
 and both C libraries.
 
-The current corpus census has 39 candidates, 32 gems in the R10 denominator, and 29
-verified gems: **90.6%**, with the target reached. See
+The current corpus census has 39 candidates, 34 gems in the R10 machine-gate denominator,
+and 29 verified gems: **85.3%**. The 90% target is not yet reached; two additional
+machine-gate targets need verification records. `pg` and `sqlite3` are included through
+explicit DESIGN-compatible profiles, while manual variadic classification remains pending.
+See
 [`test/corpus/include-census.md`](test/corpus/include-census.md) for the generated report.
 
 It also compiles the SQLite amalgamation — a single 261,463-line translation unit — in
@@ -149,7 +152,9 @@ not a rubycc workaround.
 Semantic versioning, with one project-specific rule:
 
 - **A regression in the corpus pass rate is a breaking change.** The corpus
-  (`test/corpus/gems.rb`, 39 candidates and currently 32 R10-eligible gems) is the contract.
+  (`test/corpus/gems.rb`, 39 candidates and currently 34 R10 machine-gate targets) is the
+  contract. The selected profile and exact extconf arguments are part of each target's
+  identity; they do not by themselves count as an upstream-suite verification.
   If a release stops building a gem that the previous release built, that is major-version
   territory, not a patch — regardless of how small the code change was.
 - **Minor** releases add language or header coverage, new targets, or new gems that build.
@@ -178,6 +183,7 @@ stage shells out; no stage writes assembly text.
 rake test                  # full suite
 rake bench:throughput      # compile-speed benchmark (network: fetches gems)
 rake corpus:census         # which headers do real gems need? (network)
+R10_CORPUS_CACHE=... rake corpus:r10_scan # provenance + variadic candidates (no network)
 ruby benchmark/run.rb      # generated-code speed vs gcc
 ```
 

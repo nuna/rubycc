@@ -4,6 +4,9 @@ ruby_version: 3.4.5 (x86_64-linux)
 cc: gcc
 rubygems_version: 3.6.9
 collector: tools/collect_mkmf_corpus.rb
+fixture_normalization: json parser Makefile uses a fixed logical x86_64 identity; test/test_rmake_tools.rb injects the current RbConfig values before the acceptance build
+normalized_makefile_assignments: topdir, arch_hdrdir, prefix, arch, ruby_version
+raw_evidence: mkmf.log remains an unmodified capture from the collection environment
 exts:
   parser: ok (Makefile 273 lines, 13 conftest entries in mkmf.log)
   generator: ok (Makefile 273 lines, 5 conftest entries in mkmf.log)

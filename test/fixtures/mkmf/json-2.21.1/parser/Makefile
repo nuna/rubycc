@@ -13,12 +13,12 @@ NULLCMD = :
 #### Start of system configuration section. ####
 
 srcdir = .
-topdir = __RUBY_HDRDIR__
+topdir = /rubycc-fixture/ruby-4.0.6/include/ruby-4.0.6
 hdrdir = $(topdir)
-arch_hdrdir = __RUBY_ARCHHDRDIR__
+arch_hdrdir = /rubycc-fixture/ruby-4.0.6/include/ruby-4.0.6/x86_64-linux
 PATH_SEPARATOR = :
 VPATH = $(srcdir):$(arch_hdrdir)/ruby:$(hdrdir)/ruby
-prefix = $(DESTDIR)__RUBY_PREFIX__
+prefix = $(DESTDIR)/rubycc-fixture/ruby-4.0.6
 rubysitearchprefix = $(rubylibprefix)/$(sitearch)
 rubyarchprefix = $(rubylibprefix)/$(arch)
 rubylibprefix = $(libdir)/$(RUBY_BASE_NAME)
@@ -109,9 +109,9 @@ RUBY_VERSION_NAME = $(RUBY_BASE_NAME)-$(ruby_version)
 RUBYW_BASE_NAME = rubyw
 RUBY_BASE_NAME = ruby
 
-arch = __RUBY_ARCH__
+arch = x86_64-linux
 sitearch = $(arch)
-ruby_version = __RUBY_VERSION__
+ruby_version = 4.0.6
 ruby = $(bindir)/$(RUBY_BASE_NAME)
 RUBY = $(ruby)
 BUILTRUBY = $(bindir)/$(RUBY_BASE_NAME)
