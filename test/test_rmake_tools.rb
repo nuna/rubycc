@@ -6,6 +6,7 @@ require "tmpdir"
 require "fileutils"
 require "stringio"
 require "fiddle"
+require "rbconfig"
 require_relative "support/acceptance_fetch_helper"
 require_relative "support/acceptance_manifest_helper"
 require_relative "support/acceptance_result_reporter"
@@ -286,6 +287,17 @@ class TestRmakeTools < Minitest::Test
     end
   end
 
+  def test_json_parser_makefile_template_is_portable
+    fixture = File.join(FIXTURES_ROOT, "json-2.21.1/parser/Makefile")
+    text = portable_json_parser_makefile(File.read(fixture))
+
+    refute_match(/__RUBY_[A-Z]+__/, text)
+    assert_includes text, "topdir = #{RbConfig::CONFIG.fetch('rubyhdrdir')}"
+    assert_includes text, "arch_hdrdir = #{RbConfig::CONFIG.fetch('rubyarchhdrdir')}"
+    assert_includes text, "arch = #{RbConfig::CONFIG.fetch('arch')}"
+    assert_includes text, "ruby_version = #{RbConfig::CONFIG.fetch('ruby_version')}"
+  end
+
   # --- optional real json acceptance (network) ------------------------------
 
   # The ROADMAP B3 acceptance: drive the real fixture parser Makefile to
@@ -301,7 +313,7 @@ class TestRmakeTools < Minitest::Test
       src_parser = fetch_json_parser_src
       with_dir do |dir|
         fixture = File.join(FIXTURES_ROOT, "json-2.21.1/parser/Makefile")
-        text = File.read(fixture)
+        text = portable_json_parser_makefile(File.read(fixture))
         # Point srcdir/VPATH at the fetched source (fixtures stay untouched).
         text = text.sub(/^srcdir = .*$/, "srcdir = #{src_parser}")
         text = text.sub(/^VPATH = .*$/, "VPATH = #{src_parser}")
@@ -319,6 +331,22 @@ class TestRmakeTools < Minitest::Test
         lib&.close
       end
     end
+  end
+
+  # The committed Makefile is a source fixture, not a snapshot of the machine
+  # that generated it. Resolve the Ruby installation paths at test time so the
+  # same acceptance runs on a developer checkout and on a GitHub Actions Ruby
+  # installation with a different prefix, architecture, or Ruby ABI version.
+  def portable_json_parser_makefile(text)
+    replacements = {
+      "__RUBY_HDRDIR__" => RbConfig::CONFIG.fetch("rubyhdrdir"),
+      "__RUBY_ARCHHDRDIR__" => RbConfig::CONFIG.fetch("rubyarchhdrdir"),
+      "__RUBY_PREFIX__" => RbConfig::CONFIG.fetch("prefix"),
+      "__RUBY_ARCH__" => RbConfig::CONFIG.fetch("arch"),
+      "__RUBY_VERSION__" => RbConfig::CONFIG.fetch("ruby_version")
+    }
+    replacements.each { |placeholder, value| text = text.gsub(placeholder, value) }
+    text
   end
 
   # Fetch and unpack json 2.21.1, returning its ext/json/ext/parser dir. Normal
