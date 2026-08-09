@@ -25,12 +25,32 @@ name: weekly
         required: false
         default: ""
         type: choice
-        options: ["", "aarch64", "musl-aarch64"]
+        options: ["", "acceptance", "aarch64", "musl-aarch64"]
 
 permissions:
   contents: read
 
 jobs:
+  # A malformed manual dispatch must fail explicitly. Without this guard,
+  # combining verify_step with an only=... selector would make every workload
+  # job skip and could look like a successful run with no product signal.
+  dispatch-contract:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Validate manual input combination
+        shell: bash
+        env:
+          VERIFY_STEP: ${{ inputs.verify_step }}
+          ONLY: ${{ inputs.only }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$VERIFY_STEP" && -n "$ONLY" ]]; then
+            echo "verify_step and only cannot be combined" >&2
+            exit 1
+          fi
+
   # Regenerates the committed corpus #include census and fails when it moved.
   # The gem versions are pinned in test/corpus/gems.rb, so a diff cannot come
   # from upstream drift: it means rubycc's own header coverage changed, which is
@@ -101,12 +121,75 @@ jobs:
   # The opt-in acceptance work: the networked tests behind RMAKE_ACCEPTANCE=1
   # plus the M2 acceptance tool (build json/msgpack with rubycc and run their own
   # test suites).
+  acceptance-fixture:
+    # This is the deterministic acceptance contract. It runs on every scheduled
+    # weekly invocation and on an acceptance-only dispatch, independently of
+    # rubygems.org. It is the required product signal when the live network is
+    # unavailable.
+    if: inputs.verify_step == '' && (inputs.only == '' || inputs.only == 'acceptance')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the local fixture toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: false
+
+      - name: bundle install
+        run: bundle install --jobs 4 --retry 3
+
+      - name: Run deterministic mkmf and rmake fixtures
+        shell: bash
+        env:
+          CI_PROFILE: acceptance-fixture
+          CI_RESULT_PATH: tmp/ci/acceptance-fixture-results.json
+          CI_NETWORK: fixture
+        run: |
+          set -o pipefail
+          mkdir -p tmp/ci
+          set +e
+          bundle exec ruby -Ilib:test test/test_mkmf_conftest.rb \
+            --name test_conftest_probe_api_matches_gcc_truth --verbose \
+            2>&1 | tee tmp/ci/acceptance-fixture-mkmf.log
+          mkmf_status=${PIPESTATUS[0]}
+          bundle exec ruby -Ilib:test test/test_rmake_tools.rb \
+            --name test_tools_substitution_builds_loadable_so_sequential --verbose \
+            2>&1 | tee tmp/ci/acceptance-fixture-rmake.log
+          rmake_status=${PIPESTATUS[0]}
+          if [ "$mkmf_status" -ne 0 ] || [ "$rmake_status" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Check required fixture results
+        if: always()
+        run: |
+          ruby tools/ci_check_acceptance.rb \
+            --manifest config/ci/acceptance_manifest.json \
+            --results tmp/ci/acceptance-fixture-results.json \
+            --profile acceptance-fixture \
+            --strict
+
+      - name: Upload deterministic acceptance artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: weekly-acceptance-fixture
+          path: |
+            tmp/ci/acceptance-fixture-*.log
+            tmp/ci/acceptance-fixture-results.json
+          if-no-files-found: warn
+
   acceptance:
-    # A dispatch that sets verify_step is a musl *recording* run (docs/CI.md):
-    # only the musl job has anything to do, and the free-tier minute budget
-    # is tight enough that dragging the other six along would cost more than
-    # the run itself. Everything else is unchanged for the weekly schedule.
-    if: inputs.verify_step == '' && inputs.only == ''
+    # An acceptance-only dispatch runs this live job together with the
+    # deterministic fixture, while skipping the unrelated weekly jobs.
+    if: inputs.verify_step == '' && (inputs.only == '' || inputs.only == 'acceptance')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -130,6 +213,19 @@ jobs:
           ruby-version: "4.0"
           bundler-cache: false
 
+      - name: Run live acceptance preflight
+        shell: bash
+        env:
+          RMAKE_ACCEPTANCE_STRICT: "1"
+          CI_PROFILE: acceptance-live
+          CI_RESULT_PATH: tmp/ci/acceptance-results.json
+          CI_ARTIFACT_REPORT_PATH: tmp/ci/acceptance-artifacts.json
+          CI_NETWORK: live
+        run: |
+          set -o pipefail
+          mkdir -p tmp/ci
+          ruby tools/live_acceptance_preflight.rb 2>&1 | tee tmp/ci/acceptance-preflight.log
+
       - name: bundle install
         run: bundle install --jobs 4 --retry 3
 
@@ -137,28 +233,58 @@ jobs:
         shell: bash
         env:
           RMAKE_ACCEPTANCE: "1"
+          RMAKE_ACCEPTANCE_STRICT: "1"
+          CI_PROFILE: acceptance-live
+          CI_RESULT_PATH: tmp/ci/acceptance-results.json
+          CI_ARTIFACT_REPORT_PATH: tmp/ci/acceptance-artifacts.json
+          CI_NETWORK: live
+          GEM_SPEC_CACHE: ${{ runner.temp }}/gem-spec-cache
         run: |
           set -o pipefail
           mkdir -p tmp/ci
           bundle exec rake test TESTOPTS="--verbose" 2>&1 | tee tmp/ci/acceptance-suite.log
-        # No tools/ci_check_skips.rb here on purpose: enabling the acceptance
-        # tests changes the run's shape (different runs/skips counts), so the
-        # Tier A thresholds do not apply. Failures still fail the job through
-        # rake's exit status; the log is kept for inspection.
 
       - name: Run the M2 acceptance tool
+        if: always()
         shell: bash
+        env:
+          CI_PROFILE: acceptance-live
+          CI_RESULT_PATH: tmp/ci/acceptance-results.json
+          CI_ARTIFACT_REPORT_PATH: tmp/ci/acceptance-artifacts.json
+          CI_NETWORK: live
+          M2_VARIADIC_REPORT: tmp/ci/m2-variadics.json
+          GEM_SPEC_CACHE: ${{ runner.temp }}/gem-spec-cache
+          GEM_HOME: ${{ runner.temp }}/m2-gem-home
+          GEM_PATH: ${{ runner.temp }}/m2-gem-home
         run: |
           set -o pipefail
           mkdir -p tmp/ci
           ruby tools/m2_acceptance.rb "$RUNNER_TEMP/m2" 2>&1 | tee tmp/ci/m2-acceptance.log
+
+      - name: Check required live acceptance results
+        if: always()
+        run: |
+          ruby tools/ci_check_acceptance.rb \
+            --manifest config/ci/acceptance_manifest.json \
+            --results tmp/ci/acceptance-results.json \
+            --profile acceptance-live \
+            --artifacts tmp/ci/acceptance-artifacts.json \
+            --strict
+        # No tools/ci_check_skips.rb here: enabling acceptance changes the
+        # suite's run/skip shape. The structured checker instead verifies that
+        # every required ID ran, that no fetch failure became a skip, and that
+        # M2 reported both gem suites.
 
       - name: Upload the acceptance logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: weekly-acceptance-logs
-          path: tmp/ci/*.log
+          path: |
+            tmp/ci/*.log
+            tmp/ci/acceptance-results.json
+            tmp/ci/acceptance-artifacts.json
+            tmp/ci/m2-variadics.json
           if-no-files-found: warn
 
   # Throughput (requirement N1) as a trend line only.
@@ -343,6 +469,85 @@ jobs:
       runner: ubuntu-24.04-arm
       artifact_prefix: weekly-aarch64-test-log
       concurrency_group: weekly-aarch64-${{ github.ref }}
+
+  # A small native-only profile makes the native guarantee visible without
+  # making the full-suite result the only evidence. The full native suite above
+  # remains available for manual acceptance; this smoke is the focused contract
+  # for Ruby/loader/libc/Fiddle and representative AArch64 ABI behaviour.
+  native-aarch64-smoke:
+    if: inputs.verify_step == '' && inputs.only == 'aarch64'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Initialize native smoke artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tmp/ci
+          : > tmp/ci/native-aarch64-results.json
+          : > tmp/ci/native-aarch64-context.json
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: false
+
+      - name: Run native AArch64 preflight
+        shell: bash
+        env:
+          CI_PROFILE: native-aarch64-smoke
+          CI_RESULT_PATH: tmp/ci/native-aarch64-results.json
+          CI_NATIVE_CONTEXT_PATH: tmp/ci/native-aarch64-context.json
+          CI_HOST: aarch64
+          CI_TARGET: aarch64
+          CI_RUNNER: native-aarch64
+          CI_LIBC: glibc
+          CI_NETWORK: none
+        run: |
+          set -euo pipefail
+          ruby tools/native_aarch64_preflight.rb | tee tmp/ci/native-aarch64-preflight.log
+
+      - name: bundle install
+        run: bundle install --jobs 4 --retry 3
+
+      - name: Run the native AArch64 smoke
+        shell: bash
+        env:
+          NATIVE_AARCH64_REQUIRED: "1"
+          CI_PROFILE: native-aarch64-smoke
+          CI_RESULT_PATH: tmp/ci/native-aarch64-results.json
+          CI_HOST: aarch64
+          CI_TARGET: aarch64
+          CI_RUNNER: native-aarch64
+          CI_LIBC: glibc
+          CI_NETWORK: none
+        run: |
+          set -o pipefail
+          mkdir -p tmp/ci
+          bundle exec ruby -Ilib:test test/test_native_aarch64_smoke.rb --verbose 2>&1 | tee tmp/ci/native-aarch64-smoke.log
+
+      - name: Check required native smoke results
+        if: always()
+        run: |
+          ruby tools/ci_check_acceptance.rb \
+            --manifest config/ci/acceptance_manifest.json \
+            --results tmp/ci/native-aarch64-results.json \
+            --profile native-aarch64-smoke \
+            --strict
+
+      - name: Upload the native smoke log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: weekly-native-aarch64-smoke
+          path: |
+            tmp/ci/native-aarch64-smoke.log
+            tmp/ci/native-aarch64-preflight.log
+            tmp/ci/native-aarch64-context.json
+            tmp/ci/native-aarch64-results.json
+          if-no-files-found: error
 
   # The intermediate version 3.4 is checked weekly rather than on every push,
   # to save runner minutes. The two ends (3.3 and 4.0) are checked on every

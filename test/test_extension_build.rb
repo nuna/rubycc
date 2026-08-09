@@ -15,6 +15,12 @@ require "open3"
 # and hands it to a *separate* Ruby process's `require` so the resolution
 # genuinely happens against a live interpreter rather than this test's own.
 class TestExtensionBuild < Minitest::Test
+  HOST_TARGET = case RbConfig::CONFIG["host_cpu"].to_s
+                when /\A(?:x86_64|amd64)\z/i then "x86_64"
+                when /\A(?:aarch64|arm64)\z/i then "aarch64"
+                else RbConfig::CONFIG["host_cpu"].to_s
+                end
+
   # CRuby's own public headers, discovered at runtime from the interpreter
   # running the suite (rather than pinned), matching TestRubySmoke.
   RUBY_HDR_DIR = RbConfig::CONFIG["rubyhdrdir"]
@@ -26,11 +32,16 @@ class TestExtensionBuild < Minitest::Test
   # default system search path (Step 41), so the build never reads /usr/lib/gcc.
   SYSTEM_INCLUDE_PATHS = [
     "/usr/local/include",
-    "/usr/include/x86_64-linux-gnu",
+    (HOST_TARGET == "aarch64" ? "/usr/include/aarch64-linux-gnu" : "/usr/include/x86_64-linux-gnu"),
     "/usr/include"
   ].freeze
 
-  INCLUDE_PATHS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR, *SYSTEM_INCLUDE_PATHS].freeze
+  BUNDLED_INCLUDE = File.expand_path("../include", __dir__)
+  BUNDLED_LIBC_ARCH_INCLUDE = File.expand_path("../include/libc/glibc/#{HOST_TARGET}", __dir__)
+  BUNDLED_LIBC_INCLUDE = File.expand_path("../include/libc", __dir__)
+  INCLUDE_PATHS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR, BUNDLED_INCLUDE,
+                   BUNDLED_LIBC_ARCH_INCLUDE, BUNDLED_LIBC_INCLUDE,
+                   *SYSTEM_INCLUDE_PATHS].freeze
   INCLUDE_FLAGS = INCLUDE_PATHS.map { |p| "-I#{p}" }.freeze
 
   # For the freestanding-header acceptance (Step 41): only the CRuby header
@@ -125,6 +136,7 @@ class TestExtensionBuild < Minitest::Test
   C
 
   def setup
+    skip "host CPU #{HOST_TARGET.inspect} is not a rubycc target" unless Rubycc::Compiler::TARGETS.key?(HOST_TARGET)
     unless RUBY_HDR_DIR && File.directory?(RUBY_HDR_DIR)
       skip "CRuby public headers (rubyhdrdir) not found: #{RUBY_HDR_DIR.inspect}"
     end

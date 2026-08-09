@@ -17,22 +17,13 @@
 # what you actually want when the numbers move -- it names the missing tool
 # instead of leaving you to diff two 3,000-line logs.
 #
-# Thresholds: CI_MAX_SKIPS / CI_MIN_RUNS below are tightened to the numbers
-# the first green run on CI actually measured: 2,547 runs / 52 skips on CI,
-# versus 2,547 runs / 47 skips on a developer machine. The 5-skip gap between
-# the two splits into two independent effects, not one:
-#   -1  CI has a real `pkg-config` binary installed, so
-#       test_matches_real_pkg_config_for_zlib runs instead of skipping.
-#   +6  test_rmake_golden.rb's `make -n` comparison skips on CI: its fixture
-#       Makefile embeds this development machine's absolute Ruby header path,
-#       which does not exist on the CI runner. That is a structural
-#       difference the CI environment cannot resolve by itself.
-# The thresholds below are that measurement plus a small margin (skips 52 ->
-# 55, runs 2,547 -> 2,500) rather than the measurement itself, so that adding
-# tests over time does not immediately trip CI_MIN_RUNS (more tests only ever
-# raise the run count) while still catching a real regression rather than
-# only a catastrophic one. Re-tighten these whenever the suite's size changes
-# meaningfully.
+# Thresholds: the current host measurement is 2,986 runs / 42 skips. The
+# rmake-golden path is now logical-path based, so the old CI-only header-path
+# skip gap is no longer an expected difference. The values below retain a
+# small operational margin while still catching missing toolchains or a
+# truncated suite. Re-tighten them whenever the suite's size changes
+# meaningfully; acceptance profiles use stable IDs instead of this aggregate
+# guard because their run/skip shape is intentionally different.
 #
 # Usage:
 #   ruby tools/ci_check_skips.rb <logfile>

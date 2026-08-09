@@ -6,6 +6,9 @@ require "tmpdir"
 require "fileutils"
 require "open3"
 require "set"
+require_relative "support/acceptance_fetch_helper"
+require_relative "support/acceptance_manifest_helper"
+require_relative "support/acceptance_result_reporter"
 
 # Step 60 (M3 / ROADMAP §6 B5): conftest 完全対応(mkmf 統合 shim)。
 #
@@ -66,34 +69,36 @@ class TestMkmfConftest < Minitest::Test
   # --- the probe API surface, driven through real mkmf -----------------------
 
   def test_conftest_probe_api_matches_gcc_truth
-    result, _log, err, status = run_in_mkmf(<<~RUBY)
-      result = {
-        hdr_present: have_header("stdio.h"),
-        hdr_missing: have_header("rubycc_definitely_no_such_header.h"),
-        func_present: have_func("printf"),
-        func_missing: have_func("rubycc_no_such_func_xyz"),
-        lib_crc32: have_library("z", "crc32"),
-        compile: try_compile("int main(void){return 0;}"),
-        link: try_link("int main(void){return 0;}"),
-        run: try_run("int main(void){return 0;}"),
-        sizeof_int: check_sizeof("int"),
-        sizeof_long: check_sizeof("long")
-      }
-    RUBY
+    AcceptanceResultReporter.with_result("mkmf-fixture-probes") do
+      result, _log, err, status = run_in_mkmf(<<~RUBY)
+        result = {
+          hdr_present: have_header("stdio.h"),
+          hdr_missing: have_header("rubycc_definitely_no_such_header.h"),
+          func_present: have_func("printf"),
+          func_missing: have_func("rubycc_no_such_func_xyz"),
+          lib_crc32: have_library("z", "crc32"),
+          compile: try_compile("int main(void){return 0;}"),
+          link: try_link("int main(void){return 0;}"),
+          run: try_run("int main(void){return 0;}"),
+          sizeof_int: check_sizeof("int"),
+          sizeof_long: check_sizeof("long")
+        }
+      RUBY
 
-    assert status.success?, "the mkmf child exited nonzero:\n#{err}"
-    refute_nil result, "no Marshal result from the mkmf child:\n#{err}"
+      assert status.success?, "the mkmf child exited nonzero:\n#{err}"
+      refute_nil result, "no Marshal result from the mkmf child:\n#{err}"
 
-    assert_equal true, result[:hdr_present], "have_header('stdio.h') should be true"
-    assert_equal false, result[:hdr_missing], "have_header of a missing header should be false"
-    assert_equal true, result[:func_present], "have_func('printf') should be true"
-    assert_equal false, result[:func_missing], "have_func of a missing function should be false"
-    assert_equal true, result[:lib_crc32], "have_library('z','crc32') should be true"
-    assert_equal true, result[:compile], "try_compile of a trivial program should be true"
-    assert_equal true, result[:link], "try_link of a trivial program should be true"
-    assert_equal true, result[:run], "try_run of an exit-0 program should be true"
-    assert_equal 4, result[:sizeof_int], "check_sizeof('int') should be 4"
-    assert_equal 8, result[:sizeof_long], "check_sizeof('long') should be 8"
+      assert_equal true, result[:hdr_present], "have_header('stdio.h') should be true"
+      assert_equal false, result[:hdr_missing], "have_header of a missing header should be false"
+      assert_equal true, result[:func_present], "have_func('printf') should be true"
+      assert_equal false, result[:func_missing], "have_func of a missing function should be false"
+      assert_equal true, result[:lib_crc32], "have_library('z','crc32') should be true"
+      assert_equal true, result[:compile], "try_compile of a trivial program should be true"
+      assert_equal true, result[:link], "try_link of a trivial program should be true"
+      assert_equal true, result[:run], "try_run of an exit-0 program should be true"
+      assert_equal 4, result[:sizeof_int], "check_sizeof('int') should be 4"
+      assert_equal 8, result[:sizeof_long], "check_sizeof('long') should be 8"
+    end
   end
 
   # mkmf.log is written by mkmf itself, so its format is the genuine article:
@@ -164,15 +169,17 @@ class TestMkmfConftest < Minitest::Test
   # Step 55 fixture (collected with the real toolchain). Tool-name differences
   # (CC = rubycc vs gcc) are excluded because only the HAVE_ set is compared.
   def test_msgpack_extconf_probe_set_matches_fixture
-    skip "set RMAKE_ACCEPTANCE=1 to run the networked msgpack extconf acceptance" unless acceptance?
+    AcceptanceResultReporter.with_result("mkmf-msgpack-extconf") do
+      require_acceptance!
 
-    ext_dir = fetch_and_unpack_ext("msgpack", "1.8.3", "ext/msgpack")
-    makefile = run_extconf(ext_dir)
+      ext_dir = fetch_and_unpack_ext("msgpack", "1.8.3", "ext/msgpack")
+      makefile = run_extconf(ext_dir)
 
-    expected = have_macros(File.read(File.join(FIXTURES_ROOT, "msgpack-1.8.3/msgpack/Makefile")))
-    actual = have_macros(makefile)
-    assert_equal expected, actual,
-                 "rubycc's msgpack probe set (-DHAVE_*) must match the fixture's"
+      expected = have_macros(File.read(File.join(FIXTURES_ROOT, "msgpack-1.8.3/msgpack/Makefile")))
+      actual = have_macros(makefile)
+      assert_equal expected, actual,
+                   "rubycc's msgpack probe set (-DHAVE_*) must match the fixture's"
+    end
   end
 
   # json 2.21.1's parser extconf, run under the shim with no JSON_DISABLE_SIMD
@@ -182,19 +189,27 @@ class TestMkmfConftest < Minitest::Test
   # the env-var workaround M2 needed is gone. The Makefile is generated (exit 0)
   # and carries no SIMD-enabling macro.
   def test_json_extconf_simd_probe_is_naturally_off
-    skip "set RMAKE_ACCEPTANCE=1 to run the networked json SIMD acceptance" unless acceptance?
+    AcceptanceResultReporter.with_result("mkmf-json-extconf") do
+      require_acceptance!
 
-    ext_dir = fetch_and_unpack_ext("json", "2.21.1", "ext/json/ext/parser")
-    makefile = run_extconf(ext_dir)
+      ext_dir = fetch_and_unpack_ext("json", "2.21.1", "ext/json/ext/parser")
+      makefile = run_extconf(ext_dir)
 
-    refute_match(/JSON_ENABLE_SIMD/, makefile, "SIMD must not be enabled for rubycc")
-    refute_match(/-DHAVE_CPUID_H\b/, makefile, "cpuid.h must probe absent for rubycc")
+      refute_match(/JSON_ENABLE_SIMD/, makefile, "SIMD must not be enabled for rubycc")
+      refute_match(/-DHAVE_CPUID_H\b/, makefile, "cpuid.h must probe absent for rubycc")
+    end
   end
 
   private
 
   def acceptance?
-    ENV["RMAKE_ACCEPTANCE"] == "1"
+    ENV["RMAKE_ACCEPTANCE"] == "1" || AcceptanceFetchHelper.strict?
+  end
+
+  def require_acceptance!
+    return true if acceptance?
+
+    skip "set RMAKE_ACCEPTANCE=1 to run the networked acceptance"
   end
 
   # The set of HAVE_* macro names a Makefile defines through its CPPFLAGS, read
@@ -219,25 +234,19 @@ class TestMkmfConftest < Minitest::Test
   end
 
   # Fetches and unpacks a gem, returning the absolute path of one of its ext
-  # directories. Skips (rather than fails) when the network or gem tooling is
-  # unavailable, matching the opt-in acceptance flow elsewhere in the suite.
+  # directories. Normal development runs preserve the opt-in skip behaviour;
+  # strict acceptance turns the typed fetch failure into a test failure.
   def fetch_and_unpack_ext(gem_name, version, ext_subdir)
     work = File.join(Dir.tmpdir, "rubycc_mkmf_acceptance", "#{gem_name}-#{version}")
-    FileUtils.mkdir_p(work)
-    unpacked = File.join(work, "#{gem_name}-#{version}")
-    ext_dir = File.join(unpacked, ext_subdir)
-    return ext_dir if File.exist?(File.join(ext_dir, "extconf.rb"))
+    artifact = AcceptanceManifestHelper.artifact("gem-#{gem_name}-#{version}-ruby")
+    AcceptanceFetchHelper::Fetcher.new(work_dir: work).fetch_gem(
+      gem_name: gem_name, version: version, extension_subdir: ext_subdir,
+      expected_sha256: artifact.fetch("sha256"), artifact_id: artifact.fetch("id"),
+      artifact_url: artifact.fetch("url")
+    )
+  rescue AcceptanceFetchHelper::Failure => e
+    raise e if AcceptanceFetchHelper.strict?
 
-    gem_file = File.join(work, "#{gem_name}-#{version}.gem")
-    unless File.exist?(gem_file)
-      _out, status = Open3.capture2e("gem", "fetch", gem_name, "--version", version,
-                                     "--platform", "ruby", chdir: work)
-      skip "could not fetch #{gem_name} gem (offline?)" unless status.success?
-    end
-    FileUtils.rm_rf(unpacked)
-    _out, status = Open3.capture2e("gem", "unpack", gem_file, chdir: work)
-    skip "could not unpack #{gem_name} gem" unless status.success?
-    assert File.exist?(File.join(ext_dir, "extconf.rb")), "#{ext_subdir}/extconf.rb missing after unpack"
-    ext_dir
+    skip "could not prepare #{gem_name}-#{version}: #{e.message}"
   end
 end

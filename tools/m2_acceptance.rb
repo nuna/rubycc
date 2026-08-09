@@ -16,10 +16,13 @@
 #   M2_WORK=/path/to/work ruby tools/m2_acceptance.rb
 
 require "fileutils"
-require "open3"
+require "json"
 require "rbconfig"
 require "rubygems"
-require "timeout"
+require_relative "scan_corpus_variadics"
+require_relative "ci_result"
+require_relative "ci_check_acceptance"
+require_relative "../test/support/acceptance_fetch_helper"
 
 RUBYCC_ROOT = File.expand_path("..", __dir__)
 WORK_DIR = File.expand_path(ARGV[0] || ENV["M2_WORK"] || "/tmp/rubycc_m2")
@@ -28,27 +31,103 @@ RUBYCC_CMD = ["ruby", "-I#{RUBYCC_ROOT}/lib", "#{RUBYCC_ROOT}/exe/rubycc"].freez
 # Generous ceiling for the test-suite runs (json/msgpack finish in well under
 # a minute each in practice); this only guards against a genuine hang.
 TEST_TIMEOUT = 600
+COMMAND_TIMEOUT = Float(ENV.fetch("M2_COMMAND_TIMEOUT_SECONDS", "300"))
+raise "M2_COMMAND_TIMEOUT_SECONDS must be positive" unless COMMAND_TIMEOUT.positive?
 
 GEMS = {
   "json" => {
     version: "2.21.1",
-    tarball: "https://github.com/ruby/json/archive/refs/tags/v2.21.1.tar.gz"
+    gem_artifact: "gem-json-2.21.1-ruby",
+    source_artifact: "source-json-2.21.1-github"
   },
   "msgpack" => {
     version: "1.8.3",
-    tarball: "https://github.com/msgpack/msgpack-ruby/archive/refs/tags/v1.8.3.tar.gz"
+    gem_artifact: "gem-msgpack-1.8.3-ruby",
+    source_artifact: "source-msgpack-1.8.3-github"
   }
 }.freeze
 
+M2_TEST_GEMS = {
+  "test-unit" => "3.6.1",
+  "test-unit-ruby-core" => "1.0.5",
+  "rspec" => "3.13.2"
+}.freeze
+
+MANIFEST_PATH = File.expand_path("../config/ci/acceptance_manifest.json", __dir__)
+ACCEPTANCE_MANIFEST = Rubycc::CICheckAcceptance.load_manifest(MANIFEST_PATH)
+
 def step(msg)
   puts "==> #{msg}"
+end
+
+def record_ci_result(id, state, reason = nil, **details)
+  path = ENV["CI_RESULT_PATH"]
+  return if path.nil? || path.empty?
+
+  path = File.expand_path(path)
+  FileUtils.mkdir_p(File.dirname(path))
+  lock_path = "#{path}.lock"
+  File.open(lock_path, File::RDWR | File::CREAT, 0o644) do |lock|
+    lock.flock(File::LOCK_EX)
+    document = if File.file?(path) && File.size(path).positive?
+                 Rubycc::CIResult.read(path)
+               else
+                 Rubycc::CIResult.document(results: [], metadata: ci_metadata)
+               end
+    existing_profile = document.fetch("metadata", {})["profile"]
+    current_profile = ci_metadata.fetch(:profile)
+    if existing_profile && existing_profile != current_profile
+      raise Rubycc::CIResult::Error, "acceptance result file mixes profiles: " \
+                                    "#{existing_profile.inspect} and #{current_profile.inspect}"
+    end
+    results = document.fetch("results")
+    raise Rubycc::CIResult::Error, "duplicate acceptance result ID: #{id}" \
+      if results.any? { |entry| entry["id"] == id }
+
+    results << Rubycc::CIResult.result(id: id, state: state, reason: reason,
+                                       **ci_metadata, **details)
+    Rubycc::CIResult.write(path, results: results, metadata: document.fetch("metadata", ci_metadata))
+  ensure
+    lock.flock(File::LOCK_UN) if lock
+  end
+end
+
+def artifact_entry(id)
+  entry = ACCEPTANCE_MANIFEST.fetch("artifacts").find { |candidate| candidate.fetch("id") == id }
+  return entry if entry
+
+  raise "acceptance artifact #{id.inspect} is not in #{MANIFEST_PATH}"
+end
+
+def ci_metadata
+  {
+    profile: ENV.fetch("CI_PROFILE", "acceptance-live"),
+    host: ENV["CI_HOST"],
+    target: ENV["CI_TARGET"],
+    runner: ENV["CI_RUNNER"],
+    libc: ENV["CI_LIBC"],
+    network: ENV.fetch("CI_NETWORK", "live")
+  }.compact
+end
+
+def write_variadic_scan(roots)
+  report = CorpusVariadicsScanner::Scanner.new(roots: roots).scan
+  path = ENV["M2_VARIADIC_REPORT"]
+  return report if path.nil? || path.empty?
+
+  path = File.expand_path(path)
+  FileUtils.mkdir_p(File.dirname(path))
+  File.write(path, JSON.pretty_generate(report) + "\n")
+  report
 end
 
 # Runs cmd and aborts the whole tool on failure. Used for steps that are
 # preconditions for everything after them (fetch/unpack/extconf/build).
 def run!(*cmd, chdir: nil, env: {})
   chdir ||= Dir.pwd
-  stdout, status = Open3.capture2e(env, *cmd, chdir: chdir)
+  stdout, status = AcceptanceFetchHelper.capture2e(
+    cmd, chdir: chdir, env: env, timeout_seconds: COMMAND_TIMEOUT
+  )
   unless status.success?
     warn "FAILED (exit #{status.exitstatus}): #{cmd.join(' ')}  (in #{chdir})"
     warn stdout
@@ -63,49 +142,62 @@ end
 # genuine hang doesn't block the tool forever.
 def run(*cmd, chdir: nil, env: {})
   chdir ||= Dir.pwd
-  output = +""
-  status = nil
-  Timeout.timeout(TEST_TIMEOUT) do
-    output, status = Open3.capture2e(env, *cmd, chdir: chdir)
-  end
+  output, status = AcceptanceFetchHelper.capture2e(
+    cmd, chdir: chdir, env: env, timeout_seconds: TEST_TIMEOUT
+  )
   [output, status&.success? || false]
-rescue Timeout::Error
-  ["timed out after #{TEST_TIMEOUT}s", false]
-end
-
-def download(url, dest)
-  return if File.exist?(dest)
-
-  run!("curl", "-sL", "-o", dest, url)
+rescue AcceptanceFetchHelper::Failure => e
+  [e.output.to_s.empty? ? e.message : e.output, false]
 end
 
 def ensure_gem(name)
-  return if Gem::Specification.find_all_by_name(name).any?
+  version = M2_TEST_GEMS.fetch(name)
+  return if Gem::Specification.find_all_by_name(name, "= #{version}").any?
 
-  step "installing #{name} (missing)"
-  run!("gem", "install", name, "--no-document")
+  step "installing #{name} #{version} (missing)"
+  run!("gem", "install", name, "--version", version, "--no-document")
 end
 
 # --- material fetch (idempotent: skipped once already merged) ------------
 
 def fetch_gem(name)
-  version = GEMS.fetch(name).fetch(:version)
+  spec = GEMS.fetch(name)
+  version = spec.fetch(:version)
   unpack_dir = File.join(WORK_DIR, "#{name}-#{version}")
   sentinel = File.join(unpack_dir, ".m2_fetched")
+  gem_file = File.join(WORK_DIR, "#{name}-#{version}.gem")
+  gem_artifact = artifact_entry(spec.fetch(:gem_artifact))
+  source_artifact = artifact_entry(spec.fetch(:source_artifact))
+  unless gem_artifact.values_at("name", "version", "platform") == [name, version, "ruby"]
+    raise "gem artifact metadata for #{name}-#{version} does not match GEMS"
+  end
+  unless source_artifact.values_at("name", "version") == [name, version]
+    raise "source artifact metadata for #{name}-#{version} does not match GEMS"
+  end
+  fetcher = AcceptanceFetchHelper::Fetcher.new(work_dir: WORK_DIR)
+  gem_file = fetcher.fetch_url(
+    url: gem_artifact.fetch("url"), destination: gem_file,
+    expected_sha256: gem_artifact.fetch("sha256"), artifact_id: gem_artifact.fetch("id"),
+    artifact_kind: gem_artifact.fetch("kind"), artifact_url: gem_artifact.fetch("url")
+  )
+
+  tarball = File.join(WORK_DIR, "#{name}-#{version}-src.tar.gz")
+  fetcher.fetch_url(
+    url: source_artifact.fetch("url"), destination: tarball,
+    expected_sha256: source_artifact.fetch("sha256"), artifact_id: source_artifact.fetch("id"),
+    artifact_kind: source_artifact.fetch("kind"), artifact_url: source_artifact.fetch("url")
+  )
+
   if File.exist?(sentinel)
     step "reusing fetched #{name} #{version} at #{unpack_dir}"
     return unpack_dir
   end
 
-  step "fetching #{name} #{version} (gem + GitHub source tarball)"
-  gem_file = File.join(WORK_DIR, "#{name}-#{version}.gem")
-  run!("gem", "fetch", name, "--version", version, chdir: WORK_DIR) unless File.exist?(gem_file)
+  step "unpacking fetched #{name} #{version} (pinned gem + GitHub source tarball)"
 
   FileUtils.rm_rf(unpack_dir)
   run!("gem", "unpack", gem_file, chdir: WORK_DIR)
 
-  tarball = File.join(WORK_DIR, "#{name}-#{version}-src.tar.gz")
-  download(GEMS.fetch(name).fetch(:tarball), tarball)
   # The gem package has ext/lib but no test/spec; merge the GitHub source
   # tarball's contents (which do) into the same directory the gem unpacked
   # into, stripping its single top-level directory component.
@@ -210,10 +302,12 @@ end
 
 def test_msgpack(unpack_dir, mpext_dir)
   ensure_gem("rspec")
+  rspec = File.join(Gem.bindir, "rspec")
+  raise "rspec executable is missing from #{Gem.bindir}" unless File.executable?(rspec)
 
   step "running msgpack test suite"
   out, ok = run(
-    "rspec", "-I#{mpext_dir}", "-Ilib", "--no-color", "spec",
+    rspec, "-I#{mpext_dir}", "-Ilib", "--no-color", "spec",
     "--exclude-pattern", "spec/jruby/**/*",
     chdir: unpack_dir
   )
@@ -229,6 +323,9 @@ FileUtils.mkdir_p(WORK_DIR)
 json_dir = fetch_gem("json")
 msgpack_dir = fetch_gem("msgpack")
 
+variadic_report = write_variadic_scan([json_dir, msgpack_dir])
+step "variadic candidate scan: #{variadic_report.fetch("summary").inspect}"
+
 mpext_dir = File.join(WORK_DIR, "mpext")
 jext_dir = File.join(WORK_DIR, "jext")
 FileUtils.rm_rf(mpext_dir)
@@ -239,6 +336,16 @@ build_json(json_dir)
 
 json_result = test_json(json_dir, jext_dir)
 msgpack_result = test_msgpack(msgpack_dir, mpext_dir)
+record_ci_result(
+  "m2-json-suite", json_result[:pass] ? "pass" : "fail", json_result[:summary],
+  gem_artifact: GEMS.fetch("json").fetch(:gem_artifact),
+  source_artifact: GEMS.fetch("json").fetch(:source_artifact)
+)
+record_ci_result(
+  "m2-msgpack-suite", msgpack_result[:pass] ? "pass" : "fail", msgpack_result[:summary],
+  gem_artifact: GEMS.fetch("msgpack").fetch(:gem_artifact),
+  source_artifact: GEMS.fetch("msgpack").fetch(:source_artifact)
+)
 
 puts
 puts "==================== M2 acceptance summary ===================="

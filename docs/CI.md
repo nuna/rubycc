@@ -9,7 +9,7 @@ rubycc の継続的検証は、通常の回帰、週次の追加検証、リリ�
 | 層 | ワークフロー | トリガ | 対象 | 設定上限 |
 |---|---|---|---|---|
 | Tier A | `test.yml` | master への push、pull request、手動、reusable workflow 呼び出し | Ruby 3.3 / 4.0 の全 Minitest スイート | 60 分 / Ruby 1 本 |
-| Tier B | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)、手動 | census、受入れ、スループット、Ruby 3.4、musl、musl/aarch64 | 45〜90 分 / ジョブ |
+| Tier B | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)、手動 | census、決定的fixture、受入れ、スループット、Ruby 3.4、musl、musl/aarch64 | 25〜90 分 / ジョブ |
 | Tier C | `release.yml` | `v*` タグの push、手動 | Tier A の再実行と gem の再現ビルド | test 60 分 + package 30 分 |
 
 Tier A の push 実行は、テスト結果に影響しない文書・参照資料・ライセンス・既存ベンチ
@@ -29,6 +29,16 @@ Tier C の test ジョブは `test.yml` をそのまま再利用する。
 native aarch64 は `weekly.yml` の `aarch64` ジョブから
 `test.yml` を再利用する。手動実行で `only: aarch64` を選んだ場合だけ、
 `ubuntu-24.04-arm` 上で Ruby 3.3 / 4.0 の全スイートを実行する。
+同じ手動実行では `native-aarch64-smoke` も実行し、AArch64 Ruby上の
+native loader/libc、Fiddleによるshared object、aggregate・variadic ABIを
+小さな専用テストで確認する。x86_64上のQEMU実行結果をnative integrationの
+代用にはしない。native smoke jobは `uname` だけでなく、Rubyの
+`RbConfig::CONFIG["host_cpu"]` と `arch` も検証し、誤ったRubyが2件のskipだけで
+greenになることを防ぐ。job冒頭の `tools/native_aarch64_preflight.rb` は
+`uname`、Ruby、`gcc -dumpmachine`、Fiddle、Ruby headers、dynamic loader、libcを
+実測し、`native-aarch64-preflight` として結果JSON・context artifactへ記録する。
+preflightを含むrequired IDがすべて `pass` で、native contextの実測値がAArch64に
+一致しない限りjobはgreenにならない。
 
 ## 参照用ツールチェーン
 
@@ -71,12 +81,45 @@ skip 理由は絶対パスと数値を正規化したヒストグラムとして
 `test/corpus/include-census.md` と生成ログを artifact に保存する。
 コミット済み census と差分がある場合はジョブを失敗させる。
 
+### acceptance-fixture
+
+`acceptance-fixture` はネットワークを使わない必須の製品シグナルである。
+コミット済みのmkmf/rmake fixtureを専用profileで実行し、
+`mkmf-fixture-probes` と `rmake-fixture-build` の両方を構造化結果に記録する。
+このjobが通らない場合、live networkの結果が成功しても製品の受入れ成功とは扱わない。
+
 ### acceptance
 
 `RMAKE_ACCEPTANCE=1 bundle exec rake test TESTOPTS="--verbose"` でネットワークを
 必要とする受入れテストを実行し、続けて
 `ruby tools/m2_acceptance.rb` で M2 の受入れを実行する。
 通常の Tier A と実行件数が異なるため、Tier A の skip 閾値は適用しない。
+
+strict acceptanceでは `RMAKE_ACCEPTANCE_STRICT=1`、`CI_PROFILE=acceptance-live`、
+`CI_RESULT_PATH=tmp/ci/acceptance-results.json` を設定する。受入れテストは
+stable IDごとの構造化結果を出力し、`tools/ci_check_acceptance.rb` が
+[`config/ci/acceptance_manifest.json`](../config/ci/acceptance_manifest.json)の必須ID、
+未実行、skip、`inconclusive`を確認する。fetch/unpack失敗はstrict経路でskipに変換しない。
+テスト開始前に `tools/live_acceptance_preflight.rb` が Ruby、RubyGems、curl、rmake、rubycc、
+strict/profile/network設定、実行CPU、結果・artifactパスを確認し、
+`acceptance-live-preflight`として構造化結果へ記録する。preflight失敗は必須IDのfailとなり、
+suiteの未実行をpassへ変換しない。
+ネットワークやRubyGemsなど外部要因による判定不能は製品のpassにはせず、live受入れ運用で
+`inconclusive`として分類する。`--allow-inconclusive` は非strictの診断レポートに
+限られ、strict required jobでは指定しても失敗する。M2のjson/msgpack自身の
+テスト結果もstable IDとして同じファイルに追加する。
+
+live対象のgemとsource tarballはmanifestに固定したHTTPS URLとSHA-256を使う。
+`test/support/acceptance_fetch_helper.rb` は取得を一時ファイルへ行い、digest確認後に
+atomic renameする。取得結果にはexpected/actual digest、bytes、cache hit/missを
+`acceptance-artifacts.json`へ記録し、checkerもlive required IDごとにartifactの存在、
+URL一致、digest一致を検証する。キャッシュのchecksum不一致は自動でpassへ変換せず、
+upstream変更またはmanifest更新が必要な明示的失敗とする。M2のtest-unit、
+test-unit-ruby-core、rspecもバージョンを固定し、CIでは専用GEM_HOME/GEM_PATHを使う。
+
+M2の実行後には、取得したjson/msgpackのextツリーを
+`tools/scan_corpus_variadics.rb`で走査し、候補抽出結果をartifactに保存する。
+scannerは候補調査用であり、struct利用の不在証明や合否判定には使わない。
 
 ### throughput
 
@@ -116,12 +159,16 @@ stdio のリンクに関する Gap P である。
 
 ## 手動実行の選択
 
+手動実行では最初に`dispatch-contract`が入力の組み合わせを検証する。
+`verify_step`と`only`を同時に指定した場合は全jobをskipせず、このvalidation jobがfailする。
+
 | 入力 | 実行対象 |
 |---|---|
 | スケジュール | census、acceptance、throughput、musl、musl/aarch64、Ruby 3.4 |
 | 入力なしの手動実行 | 上記 6 ジョブ |
 | `verify_step` 指定 | musl の更新モード |
 | `only: musl-aarch64` | musl/aarch64 のみ |
+| `only: acceptance` | 決定的 fixture と live acceptance のみ |
 | `only: aarch64` | native aarch64 の Tier A 全スイート |
 
 ## リリース配布物

@@ -1,0 +1,37 @@
+# frozen_string_literal: true
+
+require "minitest/autorun"
+require "yaml"
+
+class TestWeeklyWorkflow < Minitest::Test
+  WORKFLOW = File.expand_path("../.github/workflows/weekly.yml", __dir__).freeze
+
+  def setup
+    @workflow = YAML.load_file(WORKFLOW)
+    @jobs = @workflow.fetch("jobs")
+  end
+
+  def test_acceptance_only_is_a_choice_and_runs_fixture_and_live
+    options = @workflow.fetch("on").fetch("workflow_dispatch").fetch("inputs").fetch("only").fetch("options")
+    assert_includes options, "acceptance"
+
+    expected = "inputs.verify_step == '' && (inputs.only == '' || inputs.only == 'acceptance')"
+    assert_equal expected, @jobs.fetch("acceptance-fixture").fetch("if")
+    assert_equal expected, @jobs.fetch("acceptance").fetch("if")
+  end
+
+  def test_acceptance_only_does_not_enable_unrelated_weekly_jobs
+    unrelated = @jobs.keys - %w[dispatch-contract acceptance-fixture acceptance]
+    unrelated.each do |name|
+      condition = @jobs.fetch(name).fetch("if", "").to_s
+      refute_includes condition, "inputs.only == 'acceptance'", "#{name} is enabled by acceptance-only"
+    end
+  end
+
+  def test_invalid_manual_input_has_an_explicit_failing_contract
+    contract = @jobs.fetch("dispatch-contract")
+    assert_equal "github.event_name == 'workflow_dispatch'", contract.fetch("if")
+    script = contract.fetch("steps").fetch(0).fetch("run")
+    assert_includes script, "verify_step and only cannot be combined"
+  end
+end

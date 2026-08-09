@@ -77,10 +77,16 @@ C ツールチェイン**を gem として提供し、Ruby さえあれば C 拡
   型幅(off_t, time_t 等)・構造体レイアウトはターゲット別に切り替える。
   ライセンス上クリーンルームで書くか、MIT の musl から派生させる(要ライセンス表記)。
 
-- **R9. ABI 完全互換**
-  生成コードは System V AMD64 ABI / AArch64 AAPCS64 に厳密準拠すること。
-  構造体の値渡し・返し、可変長引数(`rb_funcall` は variadic)、アラインメント、
-  ビットフィールドを含む。ここのバグは即クラッシュに直結するため最重要要件とする。
+- **R9. ABI 互換（対応範囲を明示）**
+  生成コードは、対応する入力について System V AMD64 ABI / AArch64 AAPCS64 に厳密準拠すること。
+  固定引数の構造体の値渡し・返し、スカラー・ポインタ・`double` の可変長引数、
+  アラインメント、ビットフィールドを含む。ここのバグは即クラッシュに直結するため
+  最重要要件とする。
+
+  現行の明示的な制限として、構造体・unionを `...` に渡すこと、および
+  `va_arg(ap, struct T)` / `va_arg(ap, union T)`（typedef経由を含む）は、
+  ABIのsilent mismatchを避けるため診断エラーとする。したがってこの2項目は
+  「ABI完全互換」の検証対象に含めず、対応範囲外であることをテストと文書で固定する。
 
 - **R10. 「ほとんど」の定量化**
   - 対象コーパス: rubygems.org ダウンロード上位の C 拡張 gem のうち、
@@ -217,7 +223,9 @@ rubycc(gem)
 - **浮動小数点**: double は Ruby Float と IEEE754 で一致。float(32bit)演算は
   `[x].pack('f').unpack1('f')` で丸めて再現。
 - **可変長引数**: SysV の va_list(reg_save_area 方式)/AAPCS64 の va_list を
-  呼び出し側・定義側とも完全実装(rb_funcall / rb_raise が variadic のため必須)。
+  呼び出し側・定義側とも、スカラー・ポインタ・`double`について実装する
+  (rb_funcall / rb_raise が variadic のため必須)。構造体・unionの可変部渡しと
+  struct `va_arg`は、現行版では上記R9の暫定制限として診断する。
 - **並列化**: TU 単位で `Process.fork`(Linux 前提なので使用可)により並列コンパイル。
   rmake の -j 相当を実装。
 - **VLA**: alloca への脱糖で対応(スコープ寿命の差異は既知の制限として文書化)。
