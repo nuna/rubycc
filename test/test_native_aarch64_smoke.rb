@@ -72,7 +72,7 @@ class TestNativeAArch64Smoke < Minitest::Test
     AcceptanceResultReporter.with_result("native-aarch64-aggregate-variadic", **native_context) do
       skip_unless_native_aarch64
 
-      in_tmpdir do |dir|
+      Dir.mktmpdir("rubycc-native-aarch64") do |dir|
         rubycc_object = File.join(dir, "rubycc.o")
         gcc_object = File.join(dir, "gcc.o")
         compile_native_target(AGGREGATE_AND_VARIADIC, rubycc_object)
