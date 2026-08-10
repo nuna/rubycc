@@ -9,7 +9,7 @@ rubycc の継続的検証は、通常の回帰、週次の追加検証、リリ�
 | 層 | ワークフロー | トリガ | 対象 | 設定上限 |
 |---|---|---|---|---|
 | Tier A | `test.yml` | master への push、pull request、手動、reusable workflow 呼び出し | Ruby 3.3 / 4.0 の全 Minitest スイート | 60 分 / Ruby 1 本 |
-| Tier B | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)、手動 | census、決定的fixture、受入れ、スループット、Ruby 3.4、musl、musl/aarch64 | 25〜90 分 / ジョブ |
+| Tier B | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)、手動 | census、決定的fixture、受入れ、スループット、native aarch64 smoke、Ruby 3.4、musl、musl/aarch64 | 20〜90 分 / ジョブ |
 | Tier C | `release.yml` | `v*` タグの push、手動 | Tier A の再実行と gem の再現ビルド | test 60 分 + package 30 分 |
 
 Tier A の push 実行は、テスト結果に影響しない文書・参照資料・ライセンス・既存ベンチ
@@ -31,9 +31,14 @@ Tier C の test ジョブは `test.yml` をそのまま再利用する。
 native aarch64 は `weekly.yml` の `aarch64` ジョブから
 `test.yml` を再利用する。手動実行で `only: aarch64` を選んだ場合だけ、
 `ubuntu-24.04-arm` 上で Ruby 3.3 / 4.0 の全スイートを実行する。
-同じ手動実行では `native-aarch64-smoke` も実行し、AArch64 Ruby上の
-native loader/libc、Fiddleによるshared object、aggregate・variadic ABIを
-小さな専用テストで確認する。x86_64上のQEMU実行結果をnative integrationの
+`native-aarch64-smoke` は全スイートより軽いため、手動実行だけでなく
+**週次スケジュールでも実行する**。AArch64 Ruby上の native loader/libc、
+Fiddleによるshared object、aggregate・variadic ABIを小さな専用テストで確認する。
+このリポジトリの native 機構(preflight、`native-aarch64` skip baseline、
+`test.yml` のアーキテクチャ検証)はいずれもAArch64 runner上でしか何も報告しない。
+全部を `only: aarch64` の後ろに置くとスケジュール実行がnativeを一切再確認しないため、
+保証の鮮度が「最後に誰かがdispatchした時点」で止まる。
+x86_64上のQEMU実行結果をnative integrationの
 代用にはしない。native smoke jobは `uname` だけでなく、Rubyの
 `RbConfig::CONFIG["host_cpu"]` と `arch` も検証し、誤ったRubyが2件のskipだけで
 greenになることを防ぐ。job冒頭の `tools/native_aarch64_preflight.rb` は
@@ -118,10 +123,25 @@ R10のmachine-gate境界は `pg-native-source` と
 
 ### acceptance-fixture
 
-`acceptance-fixture` はネットワークを使わない必須の製品シグナルである。
-コミット済みのmkmf/rmake fixtureを専用profileで実行し、
-`mkmf-fixture-probes` と `rmake-fixture-build` の両方を構造化結果に記録する。
-このjobが通らない場合、live networkの結果が成功しても製品の受入れ成功とは扱わない。
+`acceptance-fixture` は、コミット済みのmkmf/rmake fixtureを
+`acceptance-fixture` profileで実行し、`mkmf-fixture-probes` と
+`rmake-fixture-build` を構造化結果へ記録する **Tier B のネットワークフリーjob**
+である。live acceptanceが外部要因で落ちても、この2件が実行されたこと自体は
+結果JSONから確認できる。
+
+**このjobはPRの必須判定ではない。** Tier Bに属し、週次スケジュールと
+`only: acceptance` の手動実行でだけ動く。実行しているテスト本体
+(`test_conftest_probe_api_matches_gcc_truth` /
+`test_tools_substitution_builds_loadable_so_sequential`)はTier Aの
+`rake test` に含まれるので、PRごとの回帰検出はTier Aが担う。このjobが
+足しているのは、専用profileでの実行と、必須IDが本当に実行されたことを
+`ci_check_acceptance.rb` が検証する点だけである。
+
+**live acceptanceの代替にはならない。** gemの取得・unpack・extconf・
+拡張ビルド・gem本体テストという、実際にskipが発生していた経路は
+依然としてネットワークを必要とする。これらをfixture化する作業
+(TEST-PLANの2B-1)は未実施であり、`acceptance-fixture` がgreenでも
+live経路が未実行なら受入れは成立していない。
 
 ### acceptance
 
@@ -199,12 +219,12 @@ stdio のリンクに関する Gap P である。
 
 | 入力 | 実行対象 |
 |---|---|
-| スケジュール | census、acceptance、throughput、musl、musl/aarch64、Ruby 3.4 |
-| 入力なしの手動実行 | 上記 6 ジョブ |
+| スケジュール | census、acceptance-fixture、acceptance、throughput、native-aarch64-smoke、musl、musl/aarch64、Ruby 3.4 |
+| 入力なしの手動実行 | 上記 8 ジョブ |
 | `verify_step` 指定 | musl の更新モード |
 | `only: musl-aarch64` | musl/aarch64 のみ |
 | `only: acceptance` | 決定的 fixture と live acceptance のみ |
-| `only: aarch64` | native aarch64 の Tier A 全スイート |
+| `only: aarch64` | native aarch64 の Tier A 全スイートと native-aarch64-smoke |
 
 ## リリース配布物
 

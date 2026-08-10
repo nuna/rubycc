@@ -297,9 +297,14 @@ fetch helper 9 / 33、scanner 8 / 44、rmake golden 7 / 24、c-suite対象4 / 23
 | live network acceptanceの実環境実行 | [acceptance-only run 31345720437](https://github.com/nuna/rubycc/actions/runs/31345720437)で実測完了。fixture、preflight、live stable ID、M2、strict required-result checkerがpass | manifest URL・expected/actual SHA-256・bytes・report、live/M2結果ID、未実行IDのないことを再確認し、期限付き証拠として管理する |
 | native AArch64の実測 | `uname`だけでなくRubyの`RbConfig`を検証するnative smoke workflowを追加済み。[weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)で実測完了 | AArch64 runner上で対象smokeがskipされずpassし、ログにnative contextが残ることを確認済み |
 | R10全対象gemの手動分類 | scannerのc-testsuite実測と、M2で取得できたjson/msgpackのartifact走査まで。macro展開・生成コードを含む全gemの手動分類は未完了 | R10対象gemごとに「実使用・誤検出・要追加確認」を分類し、struct `va_arg`の実装要否を決定する |
+| native/live実測がtipより前のcommit | native実測は`7d903c4`、live実測は`d36a39d`で取得したもので、いずれもtip `94786cf` ではない。以降に`260af8e`がRakefile・`tools/verify_gem_tests.rb`・テスト2本を追加している | tipで再実行するか、実測が有効な範囲をcommit単位で明示する |
+| **2B-1 fixtureの作成が未実施** | `acceptance-fixture` jobは既存のmkmf/rmakeテスト2件を専用profileで再実行しているだけで、gem archive・checksum・期待結果のfixture化は行っていない。実際にskipが発生していたfetch/unpack/extconf/build経路はnetwork必須のまま | 2B-1の完了条件どおりarchiveと期待結果をfixture化し、network遮断環境（2B-4）で当該経路が実行されることを確認する |
+| **2B-3 required job化が未実施** | fixture jobは`weekly.yml`にあり、`test.yml`（PR必須）には無い | fixtureがliveの代替として成立してから、PR必須にするかTier Aで足りるかを判断する |
 
-未実施をgreenとして扱わない。fixture acceptanceはnetwork-freeの必須経路として独立している。
-live/nativeは後述の実runner結果で確認済みだが、R10手動分類の未確認範囲は受入れ判定から区別する。
+未実施をgreenとして扱わない。`acceptance-fixture`はnetwork-freeのTier B jobであり、
+PRの必須判定ではなく、liveの代替でもない（上表2B-1・2B-3、および[`CI.md`](CI.md)を参照）。
+live/nativeは後述の実runner結果で確認済みだが、実測commitがtipより前である点と、
+R10手動分類の未確認範囲は受入れ判定から区別する。
 
 ## 次段階の実装計画（R10手動分類を除く、2026-08-10）
 

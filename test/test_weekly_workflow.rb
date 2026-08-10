@@ -28,6 +28,22 @@ class TestWeeklyWorkflow < Minitest::Test
     end
   end
 
+  # Every native AArch64 mechanism in this repository only reports on an AArch64
+  # runner, so a native guarantee that exists solely behind a manual dispatch is
+  # not a guarantee. The focused smoke therefore runs on the weekly schedule
+  # (where `only` is empty), while the expensive full native suite stays
+  # dispatch-only. Both halves are pinned so neither can drift into the other.
+  def test_native_aarch64_smoke_runs_on_the_weekly_schedule
+    smoke = @jobs.fetch("native-aarch64-smoke")
+    assert_equal "inputs.verify_step == '' && (inputs.only == '' || inputs.only == 'aarch64')",
+                 smoke.fetch("if")
+    assert_equal "ubuntu-24.04-arm", smoke.fetch("runs-on")
+
+    assert_equal "inputs.verify_step == '' && inputs.only == 'aarch64'",
+                 @jobs.fetch("aarch64").fetch("if"),
+                 "the full native suite stays dispatch-only; only the smoke is scheduled"
+  end
+
   def test_invalid_manual_input_has_an_explicit_failing_contract
     contract = @jobs.fetch("dispatch-contract")
     assert_equal "github.event_name == 'workflow_dispatch'", contract.fetch("if")

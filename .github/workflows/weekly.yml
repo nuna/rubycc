@@ -474,8 +474,17 @@ jobs:
   # making the full-suite result the only evidence. The full native suite above
   # remains available for manual acceptance; this smoke is the focused contract
   # for Ruby/loader/libc/Fiddle and representative AArch64 ABI behaviour.
+  #
+  # It runs on the weekly schedule, unlike the full native suite above. Every
+  # native mechanism in this repository -- the preflight, the native-aarch64
+  # skip baseline, test.yml's architecture assertion -- only reports anything on
+  # an AArch64 runner. Gating all of them behind `only: aarch64` means the
+  # scheduled run re-checks nothing native, so the guarantee is only as fresh as
+  # the last time somebody remembered to dispatch. This is the cheap half of the
+  # pair: a 20-minute ceiling on one arm runner, against the full suite's two
+  # Rubies, so the schedule can carry it.
   native-aarch64-smoke:
-    if: inputs.verify_step == '' && inputs.only == 'aarch64'
+    if: inputs.verify_step == '' && (inputs.only == '' || inputs.only == 'aarch64')
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     steps:
