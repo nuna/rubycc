@@ -71,17 +71,19 @@ module ExecutionHelper
     output_path
   end
 
-  # `pic:` compiles with -fPIC, matching AArch64ExecutionHelper#compile_with_cross_gcc's
-  # kwarg of the same name and default (false), so a caller building the gcc
-  # side of a differential case can pick its PIC-ness the same way on either
-  # machine's oracle. Defaulted so every existing call site is unaffected.
+  # `pic:` selects the complete code-generation mode for the gcc oracle:
+  # -fPIC for a PIC object, and -fno-pie for the ordinary non-PIC object. The
+  # latter is explicit because Debian's gcc defaults to PIE on both x86-64 and
+  # AArch64; leaving it implicit makes BuildProfile(pic: false) compare a
+  # non-PIC rubycc object with a PIE gcc object. The keyword and default match
+  # AArch64ExecutionHelper#compile_with_cross_gcc, so a differential case can
+  # choose the same mode on either machine.
   def compile_with_gcc(c_source, output_path, pic: false)
     dir = File.dirname(output_path)
     source_path = File.join(dir, "#{File.basename(output_path, ".*")}.c")
     File.write(source_path, c_source)
 
-    args = ["gcc", "-c"]
-    args << "-fPIC" if pic
+    args = ["gcc", "-c", pic ? "-fPIC" : "-fno-pie"]
     stdout_and_stderr, status = Open3.capture2e(*args, "-o", output_path, source_path)
     unless status.success?
       raise "gcc failed to compile source (exit #{status.exitstatus}):\n#{stdout_and_stderr}"

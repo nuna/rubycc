@@ -104,8 +104,10 @@ module AArch64ExecutionHelper
     source_path = File.join(dir, "#{File.basename(object_path, ".*")}.c")
     File.write(source_path, c_source)
 
-    args = [AArch64ExecutionHelper::CROSS_GCC, "-c"]
-    args << "-fPIC" if pic
+    # The cross compiler may also default to PIE. Make the BuildProfile's
+    # non-PIC mode explicit so the gcc oracle and rubycc receive the same
+    # relocation policy on the AArch64 path.
+    args = [AArch64ExecutionHelper::CROSS_GCC, "-c", pic ? "-fPIC" : "-fno-pie"]
     stdout_and_stderr, status = Open3.capture2e(*args, "-o", object_path, source_path)
     unless status.success?
       raise "#{AArch64ExecutionHelper::CROSS_GCC} failed to compile source " \

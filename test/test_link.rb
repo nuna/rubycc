@@ -272,7 +272,10 @@ class TestLink < Minitest::Test
   # gcc-links a single object and runs it, returning [exit, stdout].
   def run_linked(dir, object_path)
     exe = File.join(dir, "exe.out")
-    out, status = Open3.capture2e("gcc", "-o", exe, object_path)
+    # compile_with_gcc uses -fno-pie for its non-PIC oracle object. Keep the
+    # final link in the same ordinary non-PIE mode; otherwise Debian gcc's
+    # default PIE link rejects the merged R_X86_64_32 relocations.
+    out, status = Open3.capture2e("gcc", "-no-pie", "-o", exe, object_path)
     raise "gcc failed to link merged object:\n#{out}" unless status.success?
 
     stdout, run_status = Open3.capture2(exe)

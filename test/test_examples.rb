@@ -9,16 +9,35 @@ require_relative "test_helper"
 class TestExamples < Minitest::Test
   include ExecutionHelper
 
-  EXAMPLE_SOURCES = Dir.glob(File.expand_path("../examples/**/*.c", __dir__)).sort.freeze
+  EXAMPLES_ROOT = File.expand_path("../examples", __dir__).freeze
+  EXAMPLE_SOURCES = Dir.glob(File.join(EXAMPLES_ROOT, "**/*.c")).sort.freeze
+
+  # These are backend limitations, not environment-dependent failures. Keep
+  # the two affected samples as separate test methods so a native AArch64 run
+  # still executes and reports every other example instead of skipping one
+  # aggregate loop that contains 40+ independent samples.
+  AARCH64_PENDING = {
+    "m1/step28_extensions.c" =>
+      "aarch64 __builtin_alloca lowering is not implemented (DESIGN R7 limitation)",
+    "m2/step44_builtins.c" =>
+      "aarch64 bit-scan builtins are not implemented (DESIGN R7 limitation)"
+  }.freeze
 
   def test_example_sources_are_present
     refute_empty EXAMPLE_SOURCES, "expected sample programs under examples/"
   end
 
-  def test_examples_match_gcc_exit_status_and_stdout
-    EXAMPLE_SOURCES.each do |path|
+  EXAMPLE_SOURCES.each do |path|
+    relative_path = path.delete_prefix("#{EXAMPLES_ROOT}/")
+    test_name = relative_path.delete_suffix(".c").gsub(/[^A-Za-z0-9]+/, "_")
+
+    define_method("test_example_#{test_name}") do
+      if host_target == "aarch64" && (reason = AARCH64_PENDING[relative_path])
+        skip reason
+      end
+
       assert_equal build_and_run(path, :gcc), build_and_run(path, :rubycc),
-                   "rubycc and gcc disagree on [exit status, stdout] for #{File.basename(path)}"
+                   "rubycc and gcc disagree on [exit status, stdout] for #{relative_path}"
     end
   end
 

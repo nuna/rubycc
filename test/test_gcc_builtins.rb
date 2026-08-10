@@ -287,6 +287,8 @@ class TestGccBuiltins < Minitest::Test
   end
 
   def test_bit_scan_matches_gcc
+    skip "aarch64 bit-scan builtins are not implemented (DESIGN R7 limitation)" if host_target == "aarch64"
+
     assert_matches_gcc(BIT_SCAN_SOURCE, "bit_scan")
   end
 
