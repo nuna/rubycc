@@ -108,7 +108,9 @@ ci_check_skips: OK (skips <= 55, runs >= 2500)
 | 6B live acceptance | ローカルの`bundle exec`環境変数がscratch GEM_HOMEへ漏れると、製品ではなくBundler環境のテストになる。CIツール欠落をsuite開始後まで発見できない。専用GEM_HOMEへinstallしたRSpecをPATH上の別版で実行する余地もあった | `test/test_gem_install.rb`でBUNDLE/RUBYOPT/RUBYLIBを分離し、live preflightを追加した。M2は`Gem.bindir/rspec`を直接実行する。ローカルでpreflightを含む10 required ID、live 30 runs / 2598 assertions、M2 json 603 tests / msgpack 455 examplesをstrict checkerでpass確認した |
 | 6C native AArch64 | OSの`uname`だけでは誤ったRubyやQEMUをnativeと誤認できる。preflightが通常ログだけだと、テスト本体未実行時に原因を追跡できない。同一compiler同士の比較だけではABI差を検出できない。さらに依存導入前のpreflightが`bundle exec`に依存すると、環境確認そのものが先に失敗する | native preflightと各smoke resultへRuby `RbConfig`、gcc machine、Fiddle、headers、loader/libcを記録し、checkerが実測AArch64を要求する。preflight失敗も構造化failとartifactにする。preflightは標準ライブラリだけの`ruby`直接実行にし、rubycc caller/GCC callee、GCC caller/rubycc calleeの両方向を追加した。x86_64でrequired指定した場合はskipではなくfailになることを確認した |
 
-残る外部確認は、GitHub Actions live jobと`ubuntu-24.04-arm` native jobの実runner実測だけである。これらはこの作業でpush/dispatchしていないため、ローカル実測を代用して完了とは扱わない。R10全対象gemのmacro展開・生成コードを含む手動分類も、ユーザー指定どおり未着手である。
+この時点で残る外部確認はなく、GitHub Actions live jobと`ubuntu-24.04-arm` native jobの
+実runner実測を後続runで完了した。R10全対象gemのmacro展開・生成コードを含む手動分類は、
+ユーザー指定どおり未着手である。
 
 なお、不要ファイルの `a.out` は存在しない。実装変更の範囲は上表と
 [`TEST-PLAN.md`](TEST-PLAN.md)の進捗表に記録している。
@@ -292,9 +294,9 @@ native AArch64実測へ進む前に、ホスト依存のtarget漏れ、変換ABI
 | libc path provenance | AArch64のnative pathとcross sysroot pathが同じ候補群にあると、名前だけでhost libcとみなす危険がある | `host_libc_path`はELF64 little-endianとhost machineを検証してから採用する。platform-literalの根拠注記も追加した。native runnerで実際に選ばれたpath/SONAMEはpreflight artifactで別途確認する |
 
 今回のローカル批判レビューで見つかった問題はskip化せず、テストまたはcheckerの失敗として
-修正した。残る外部確認は、同じcommitを使ったGitHub Actionsのacceptance実測とnative
-AArch64 full suiteであり、実測前にprofileの件数を確定扱いしない。R10 34対象gemの
-手動分類も未完了のままである。
+修正した。GitHub Actionsのacceptance実測はrun 31345720437、native AArch64 full
+suiteはrun 31345396123で完了し、実測前に確定扱いしなかったprofileをartifactに基づき
+固定した。R10 34対象gemの手動分類は未完了のままである。
 
 ## 実runner最終結果に対する批判的レビュー（2026-08-10）
 
@@ -307,12 +309,19 @@ checkerだけでなくartifactのログをローカルでもstrict modeで再検
 |---|---|
 | [native AArch64 weekly 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123) | Ruby 3.3/4.0とも `3059 / 9011 / 0 / 0 / 245`。native smoke、preflight、full suite、strict baselineが全件pass |
 | [native x86_64 Tier A 31345396034](https://github.com/nuna/rubycc/actions/runs/31345396034) | Ruby 3.3/4.0とも `3059 / 10079 / 0 / 0 / 42`。strict baselineが全件pass |
+| [acceptance-only 31345720437](https://github.com/nuna/rubycc/actions/runs/31345720437) | fixture 2 ID、live required ID、M2 json/msgpack、dispatch契約がpass。suiteは `3059 / 12610 / 0 / 0 / 33`。x86_64上のAArch64 native smoke 2 IDは対象CPU外の承認済みskip |
 
 AArch64のcontext artifactでは、`uname_machine=aarch64`、Ruby `host_cpu=aarch64`、
 `ruby_arch=aarch64-linux`、Ruby ELF Machine=AArch64、`gcc_machine=aarch64-linux-gnu`、
 AArch64 loader/libc、Fiddle probe、Ruby header probeを確認した。従って、今回のnative
 結果をx86_64上のQEMU実行で代用していない。x86_64側ではAArch64専用テストが理由付きで
 skipされ、AArch64 runner側ではそれらが実行されることもログで確認した。
+
+acceptance artifactでは、json/msgpackのgemとsource tarballの4件について、manifestのURL、
+expected/actual SHA-256、bytes、cache状態を確認した。live結果の未実行・inconclusiveはなく、
+M2 jsonは596 tests / 3390 assertions、msgpackは455 examples / 0 failures（1 pending）だった。
+ネットワーク障害やchecksum不一致をskipへ変換した結果ではないことを、preflight・結果ID・
+artifact checkerの三者で確認した。
 
 ### 批判的レビューと修正確認
 
