@@ -32,6 +32,8 @@
 # Standard library only; no gems, so it runs before/without bundler if needed.
 
 require "json"
+require "date"
+require "digest"
 
 DEFAULT_MAX_SKIPS = 55
 DEFAULT_MIN_RUNS = 2500
@@ -113,6 +115,11 @@ def collect_skip_reasons(lines)
   collect_skip_entries(lines).map(&:reason)
 end
 
+def skip_fingerprint(entries)
+  canonical = entries.map { |entry| [entry.test_name.to_s, normalize_reason(entry.reason)] }
+  Digest::SHA256.hexdigest(canonical.sort.map { |test_name, reason| "#{test_name}\0#{reason}" }.join("\0"))
+end
+
 # Skip reasons often carry a temp path or a pid, which would otherwise split one
 # cause into dozens of histogram rows. Collapse those to placeholders so the
 # histogram groups by cause.
@@ -164,7 +171,7 @@ rescue JSON::ParserError, KeyError => e
   die "invalid or unknown skip profile #{name.inspect}: #{e.message}"
 end
 
-def profile_skip_problems(entries, profile)
+def profile_skip_problems(entries, profile, enforce_baseline: false)
   rules = profile.fetch("allowed_skips").map do |rule|
     {
       test_pattern: Regexp.new(rule.fetch("test_pattern")),
@@ -206,9 +213,16 @@ def profile_skip_problems(entries, profile)
     end
   end
 
-  expected = profile["expected_skips"]
-  if expected && entries.length != expected
-    problems << "profile expected_skips=#{expected}, got #{entries.length}"
+  if enforce_baseline
+    expected = profile["expected_skips"]
+    if expected && entries.length != expected
+      problems << "profile expected_skips=#{expected}, got #{entries.length}"
+    end
+
+    expected_fingerprint = profile["skip_fingerprint"]
+    if expected_fingerprint && skip_fingerprint(entries) != expected_fingerprint
+      problems << "profile skip_fingerprint does not match the measured skip set"
+    end
   end
 
   problems
@@ -275,7 +289,24 @@ def main(argv)
 
   if profile
     entries = collect_skip_entries(lines)
-    problems.concat(profile_skip_problems(entries, profile))
+    enforce_baseline = ENV["CI_ENFORCE_SKIP_BASELINE"] == "1"
+    if enforce_baseline
+      problems << "skip profile is provisional" if profile.fetch("provisional", false)
+      problems << "skip profile source_log is missing" if profile["source_log"].to_s.empty?
+      problems << "skip profile measured_at is missing" if profile["measured_at"].to_s.empty?
+      problems << "skip profile expires is missing" if profile["expires"].to_s.empty?
+      problems << "skip profile owner is missing" if profile["owner"].to_s.empty?
+
+      begin
+        measured_at = Date.iso8601(profile.fetch("measured_at"))
+        expires = Date.iso8601(profile.fetch("expires"))
+        problems << "skip profile expires before measured_at" if expires < measured_at
+        problems << "skip profile is expired" if expires < Date.today
+      rescue Date::Error, KeyError
+        problems << "skip profile measured_at/expires must be ISO dates"
+      end
+    end
+    problems.concat(profile_skip_problems(entries, profile, enforce_baseline: enforce_baseline))
     problems << "only #{entries.length}/#{summary.skips} skip details were parsed" if entries.length != summary.skips
   end
 

@@ -66,6 +66,8 @@ C ツールチェイン**を gem として提供し、Ruby さえあれば C 拡
   - それでも必要な最小限の拡張:
     - `__attribute__((...))` の構文受理(aligned / packed のみ意味を実装、他は無視)
     - `__builtin_expect`, `__builtin_alloca`, `__builtin_va_*`, 主要な `__builtin_*`
+      (AArch64 backendの`:alloca`/`:bit_scan`はターゲット別の実装範囲を
+      [`docs/IR.md` §6.5](IR.md#65-ターゲット別の実装範囲)に定める)。
     - `__has_attribute` / `__has_builtin` / `__has_include`(プリプロセッサ)
     - 空テンプレートのインラインアセンブリ(`__asm__ volatile("" ::: "memory")` を
       コンパイラバリアとして受理)。**実体のあるインラインasmは非対応**。

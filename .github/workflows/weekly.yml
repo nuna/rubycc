@@ -616,6 +616,7 @@ jobs:
       - name: Guard against runaway skips
         env:
           CI_SKIP_PROFILE: native-x86
+          CI_ENFORCE_SKIP_BASELINE: "1"
         run: ruby tools/ci_check_skips.rb tmp/ci/test-ruby3.4.log
 
       - name: Upload the test log

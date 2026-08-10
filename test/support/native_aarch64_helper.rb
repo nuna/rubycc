@@ -62,8 +62,9 @@ module NativeAArch64Helper
     dir = File.dirname(object_path)
     source_path = File.join(dir, "#{File.basename(object_path, ".*")}.c")
     File.write(source_path, source)
-    args = ["gcc", "-c"]
-    args << "-fPIC" if pic
+    # Native Debian GCC also defaults to PIE. Keep the non-PIC native oracle
+    # explicit, matching ExecutionHelper's ordinary differential path.
+    args = ["gcc", "-c", pic ? "-fPIC" : "-fno-pie"]
     output, status = Open3.capture2e(*args, "-o", object_path, source_path)
     raise "native gcc failed (exit #{status.exitstatus}):\n#{output}" unless status.success?
 
@@ -73,7 +74,7 @@ module NativeAArch64Helper
   def link_and_run_native(object_path)
     dir = File.dirname(object_path)
     executable = File.join(dir, "#{File.basename(object_path, ".*")}.out")
-    output, status = Open3.capture2e("gcc", "-o", executable, object_path)
+    output, status = Open3.capture2e("gcc", "-no-pie", "-o", executable, object_path)
     raise "native gcc link failed (exit #{status.exitstatus}):\n#{output}" unless status.success?
 
     stdout, run_status = Open3.capture2(executable, chdir: dir)
@@ -81,7 +82,7 @@ module NativeAArch64Helper
   end
 
   def link_objects_and_run_native(object_paths, executable_path)
-    output, status = Open3.capture2e("gcc", "-o", executable_path, *object_paths)
+    output, status = Open3.capture2e("gcc", "-no-pie", "-o", executable_path, *object_paths)
     raise "native gcc link failed (exit #{status.exitstatus}):\n#{output}" unless status.success?
 
     stdout, run_status = Open3.capture2e(executable_path, chdir: File.dirname(executable_path))

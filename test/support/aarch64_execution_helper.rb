@@ -125,7 +125,10 @@ module AArch64ExecutionHelper
     dir = File.dirname(object_path)
     exe_path = File.join(dir, "#{File.basename(object_path, ".*")}.out")
 
-    stdout_and_stderr, status = Open3.capture2e(AArch64ExecutionHelper::CROSS_GCC, "-static",
+    # This helper is the ordinary hosted/non-PIE path. PIE has a dedicated
+    # regression test (TestAbiHarnessPieLink), so do not leave the result to
+    # the cross compiler's distro-specific default.
+    stdout_and_stderr, status = Open3.capture2e(AArch64ExecutionHelper::CROSS_GCC, "-static", "-no-pie",
                                                 "-o", exe_path, object_path)
     unless status.success?
       raise "#{AArch64ExecutionHelper::CROSS_GCC} failed to link object file " \
@@ -236,7 +239,7 @@ module AArch64ExecutionHelper
       end
 
       exe_path = File.join(dir, "exe")
-      stdout_and_stderr, status = Open3.capture2e(AArch64ExecutionHelper::CROSS_GCC, "-static",
+      stdout_and_stderr, status = Open3.capture2e(AArch64ExecutionHelper::CROSS_GCC, "-static", "-no-pie",
                                                   "-o", exe_path, *object_paths)
       unless status.success?
         raise "#{AArch64ExecutionHelper::CROSS_GCC} failed to link object files " \

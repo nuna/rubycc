@@ -36,6 +36,21 @@ class TestCiCheckSkips < Minitest::Test
     assert_includes stderr, "unapproved skip"
   end
 
+  def test_strict_profile_rejects_a_new_test_with_an_existing_reason
+    log = <<~LOG
+      1) Skipped:
+      TestSharedObject#test_new_accidental_skip [test/test_shared_object.rb:1]:
+      x86_64 shared-object coverage is not valid on "aarch64"
+
+      2500 runs, 1 assertions, 0 failures, 0 errors, 1 skips
+    LOG
+
+    _stdout, stderr, status = run_checker(log, "native-aarch64",
+                                           "CI_ENFORCE_SKIP_BASELINE" => "1")
+    refute status.success?
+    assert_includes stderr, "skip_fingerprint"
+  end
+
   def test_native_profile_cannot_be_loosened_by_environment_override
     log = <<~LOG
       1) Skipped:
@@ -62,11 +77,11 @@ class TestCiCheckSkips < Minitest::Test
     log = "#{skips}2500 runs, 1 assertions, 0 failures, 0 errors, 60 skips\n"
 
     _stdout, stderr, status = run_checker(log, "native-aarch64")
-    assert status.success?, "native profile must use max_skips=220, not x86 max=55: #{stderr}"
+    assert status.success?, "native profile must use max_skips=245, not x86 max=55: #{stderr}"
   end
 
   def test_native_profile_budget_cannot_be_loosened_by_environment_override
-    skips = Array.new(221) do |index|
+    skips = Array.new(246) do |index|
       <<~SKIP
         #{index + 1}) Skipped:
         TestSharedObject#test_#{index} [test/test_shared_object.rb:1]:
@@ -74,11 +89,11 @@ class TestCiCheckSkips < Minitest::Test
 
       SKIP
     end.join
-    log = "#{skips}2500 runs, 1 assertions, 0 failures, 0 errors, 221 skips\n"
+    log = "#{skips}2500 runs, 1 assertions, 0 failures, 0 errors, 246 skips\n"
 
     _stdout, stderr, status = run_checker(log, "native-aarch64", "CI_MAX_SKIPS" => "9999")
     refute status.success?
-    assert_includes stderr, "skips exceeds CI_MAX_SKIPS=220"
+    assert_includes stderr, "skips exceeds CI_MAX_SKIPS=245"
   end
 
   def test_rejects_concatenated_or_retried_summaries

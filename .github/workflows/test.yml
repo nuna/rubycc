@@ -185,6 +185,7 @@ jobs:
       - name: Guard against runaway skips
         env:
           CI_SKIP_PROFILE: ${{ inputs.runner == 'ubuntu-24.04-arm' && 'native-aarch64' || 'native-x86' }}
+          CI_ENFORCE_SKIP_BASELINE: "1"
         run: ruby tools/ci_check_skips.rb "tmp/ci/test-ruby${{ matrix.ruby }}.log"
 
       - name: Upload the test log

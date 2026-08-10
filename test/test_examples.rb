@@ -18,9 +18,9 @@ class TestExamples < Minitest::Test
   # aggregate loop that contains 40+ independent samples.
   AARCH64_PENDING = {
     "m1/step28_extensions.c" =>
-      "aarch64 __builtin_alloca lowering is not implemented (DESIGN R7 limitation)",
+      "aarch64 __builtin_alloca lowering is not implemented (IR 6.5 target limitation)",
     "m2/step44_builtins.c" =>
-      "aarch64 bit-scan builtins are not implemented (DESIGN R7 limitation)"
+      "aarch64 bit-scan builtins are not implemented (IR 6.5 target limitation)"
   }.freeze
 
   def test_example_sources_are_present
@@ -60,7 +60,7 @@ class TestExamples < Minitest::Test
     when :rubycc
       Rubycc::Compiler.compile_file(path, object_path, target: host_target)
     when :gcc
-      stdout_and_stderr, status = Open3.capture2e("gcc", "-c", "-o", object_path, path)
+      stdout_and_stderr, status = Open3.capture2e("gcc", "-c", "-fno-pie", "-o", object_path, path)
       unless status.success?
         raise "gcc failed to compile #{path} (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
       end
