@@ -1,0 +1,192 @@
+{
+  "schema_version": 2,
+  "artifact_kind": "r10-gem-verification-summary",
+  "batch": "R10-M4C-RBS",
+  "environment": "glibc x86_64 / ruby 3.4.5",
+  "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+  "architecture": "x86_64",
+  "aarch64_evidence": false,
+  "work_dir": "<VERIFY_WORK>",
+  "comparison": "inconclusive: control and rubycc have identical suite result; extension build/load passed in both",
+  "control": [
+    {
+      "name": "rbs",
+      "version": "3.10.0",
+      "mode": "control",
+      "status": "fail",
+      "reason": "22 failures / 7 errors",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "files": 54,
+      "summary": {
+        "line": "707 tests, 5400 assertions, 22 failures, 7 errors, 0 pendings, 10 omissions, 0 notifications",
+        "tests": 707,
+        "assertions": 5400,
+        "failures": 22,
+        "errors": 7,
+        "other": {
+          "omissions": 10
+        }
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "fail",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/rbs-3.10.0.gem",
+        "gem_sha256": "e75b5f1313c71c9ee0fcea68bf97d3e5fe8ec7a641d4b5cd18bbc28c94ddf298",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/rbs/archive/refs/tags/v3.10.0.tar.gz",
+        "source_sha256": "ab404bf2c4c6bb619ee489d2fe9e39fb46e0c5485dd471ec633296a0c873a4dd",
+        "source_relative_path": "r10-rbs-control/rbs-3.10.0-src.tar.gz"
+      },
+      "recipe": {
+        "name": "rbs",
+        "version": "3.10.0",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/rbs/archive/refs/tags/v3.10.0.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/*_test.rb",
+        "exclude": [
+          "test/stdlib/**/*"
+        ],
+        "load_paths": [
+          "test",
+          "lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/rbs_extension.so",
+            "to": "lib/rbs_extension.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "json-schema"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "rbs"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "887e082c61193be868211d398052c289cea1fca44fb3993edb1e5125e43e599c"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    }
+  ],
+  "rubycc": [
+    {
+      "name": "rbs",
+      "version": "3.10.0",
+      "mode": "rubycc",
+      "status": "fail",
+      "reason": "22 failures / 7 errors",
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "files": 54,
+      "summary": {
+        "line": "707 tests, 5400 assertions, 22 failures, 7 errors, 0 pendings, 10 omissions, 0 notifications",
+        "tests": 707,
+        "assertions": 5400,
+        "failures": 22,
+        "errors": 7,
+        "other": {
+          "omissions": 10
+        }
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "fail",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/rbs-3.10.0.gem",
+        "gem_sha256": "e75b5f1313c71c9ee0fcea68bf97d3e5fe8ec7a641d4b5cd18bbc28c94ddf298",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/rbs/archive/refs/tags/v3.10.0.tar.gz",
+        "source_sha256": "ab404bf2c4c6bb619ee489d2fe9e39fb46e0c5485dd471ec633296a0c873a4dd",
+        "source_relative_path": "r10-rbs-control/rbs-3.10.0-src.tar.gz"
+      },
+      "recipe": {
+        "name": "rbs",
+        "version": "3.10.0",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/rbs/archive/refs/tags/v3.10.0.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/*_test.rb",
+        "exclude": [
+          "test/stdlib/**/*"
+        ],
+        "load_paths": [
+          "test",
+          "lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/rbs_extension.so",
+            "to": "lib/rbs_extension.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "json-schema"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "rbs"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "887e082c61193be868211d398052c289cea1fca44fb3993edb1e5125e43e599c"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    }
+  ],
+  "execution_context": {
+    "environment": "glibc x86_64 / ruby 3.4.5",
+    "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+    "host_cpu": "x86_64",
+    "ruby_arch": "x86_64-linux",
+    "cc": null,
+    "make": null,
+    "pkg_config": null
+  },
+  "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+  "rubycc_worktree_dirty": true
+}

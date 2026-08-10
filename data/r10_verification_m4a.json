@@ -1,0 +1,1531 @@
+{
+  "schema_version": 2,
+  "artifact_kind": "r10-gem-verification-summary",
+  "batch": "R10-M4A",
+  "environment": "glibc x86_64 / ruby 3.4.5",
+  "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+  "architecture": "x86_64",
+  "aarch64_evidence": false,
+  "work_dir": "<VERIFY_WORK>",
+  "run_ids": {
+    "control": "local-r10-m4a-control-2026-08-10",
+    "rubycc": "local-r10-m4a-rubycc-2026-08-10"
+  },
+  "review_note": "The control and rubycc runs used the same Ruby, source versions, test dependencies, and suite files. nkf's suite error was identical in both modes; it is retained as inconclusive for compiler comparison, not skipped.",
+  "control": [
+    {
+      "name": "json",
+      "version": "2.21.1",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "603 tests, 3425 assertions, 0 failures, 0 errors",
+        "tests": 603,
+        "assertions": 3425,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "mode": "control",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/json-2.21.1.gem",
+        "gem_sha256": "13a43df75d95641443f5702dff350f237164a9d811ff0f2c2800d4d980220583",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/json/archive/refs/tags/v2.21.1.tar.gz",
+        "source_sha256": "b7b12ee6d17468d90ed86dc29bbd75a8af7820dcad6fe5e1b01b5182ea892de3",
+        "source_relative_path": "r10-m4a/json-2.21.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "json",
+        "version": "2.21.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/json/archive/refs/tags/v2.21.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/json/*_test.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/json/ext/parser.so",
+            "to": "lib/json/ext/parser.so"
+          },
+          {
+            "from": "lib/json/ext/generator.so",
+            "to": "lib/json/ext/generator.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "json"
+          ],
+          "expression": "JSON.parser.to_s == \"JSON::Ext::Parser\""
+        },
+        "recipe_fingerprint": "d9b03a4d5a88474a8c2bd4be12504f5ebe9198c59834ddfc9c5618c83108def3"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "msgpack",
+      "version": "1.8.3",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "455 examples, 0 failures, 1 pending",
+        "tests": 455,
+        "assertions": null,
+        "failures": 0,
+        "errors": 0,
+        "other": {
+          "pendings": 1
+        }
+      },
+      "mode": "control",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/msgpack-1.8.3.gem",
+        "gem_sha256": "8bda4a6428d3244e50d6bd55854d354edbada88a4e1f4f5731a39a0f86bee6a1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/msgpack/msgpack-ruby/archive/refs/tags/v1.8.3.tar.gz",
+        "source_sha256": "2b8a119620d49ccad3164aaf5bc7311627960a58ee3b2b60f04d1cf19021f1b5",
+        "source_relative_path": "r10-m4a/msgpack-1.8.3-src.tar.gz"
+      },
+      "recipe": {
+        "name": "msgpack",
+        "version": "1.8.3",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/msgpack/msgpack-ruby/archive/refs/tags/v1.8.3.tar.gz",
+        "runner": "rspec",
+        "test_glob": "spec/**/*_spec.rb",
+        "exclude": [
+          "spec/jruby/**/*"
+        ],
+        "load_paths": [
+          "lib",
+          "spec"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/msgpack/msgpack.so",
+            "to": "lib/msgpack/msgpack.so"
+          }
+        ],
+        "test_deps": [
+          "rspec"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "msgpack"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "be34de5febc88c980c5212dd59acbc78937d81462c43fceb91ddf3e2b2209148"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "bigdecimal",
+      "version": "4.1.2",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "265 tests, 8267 assertions, 0 failures, 0 errors, 11 omissions",
+        "tests": 265,
+        "assertions": 8267,
+        "failures": 0,
+        "errors": 0,
+        "other": {
+          "omissions": 11
+        }
+      },
+      "mode": "control",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/bigdecimal-4.1.2.gem",
+        "gem_sha256": "53d217666027eab4280346fba98e7d5b66baaae1b9c3c1c0ffe89d48188a3fbd",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/bigdecimal/archive/refs/tags/v4.1.2.tar.gz",
+        "source_sha256": "2a2f61355a348d576360576405fd16ec9830c28a88894b325035464f44fb9c17",
+        "source_relative_path": "r10-m4a/bigdecimal-4.1.2-src.tar.gz"
+      },
+      "recipe": {
+        "name": "bigdecimal",
+        "version": "4.1.2",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/bigdecimal/archive/refs/tags/v4.1.2.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/bigdecimal/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/bigdecimal.so",
+            "to": "lib/bigdecimal.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "bigdecimal"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "c459860476646f3ad0174347cb685c41b717d5d3e513f70c5a41676f5aa77773"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "date",
+      "version": "3.5.1",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "143 tests, 162593 assertions, 0 failures, 0 errors",
+        "tests": 143,
+        "assertions": 162593,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "mode": "control",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/date-3.5.1.gem",
+        "gem_sha256": "750d06384d7b9c15d562c76291407d89e368dda4d4fff957eb94962d325a0dc0",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/date/archive/refs/tags/v3.5.1.tar.gz",
+        "source_sha256": "a942710d42da8a0003ca0ba45e87bf70c66a5ae612b9fe34812028dd88443cbf",
+        "source_relative_path": "r10-m4a/date-3.5.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "date",
+        "version": "3.5.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/date/archive/refs/tags/v3.5.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/date_core.so",
+            "to": "lib/date_core.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "date"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "4b452f866ba4547d6b883541d8ec54966bafc804a163638f22171c4919a66521"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "redcarpet",
+      "version": "3.6.1",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "136 tests, 206 assertions, 0 failures, 0 errors",
+        "tests": 136,
+        "assertions": 206,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "mode": "control",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/redcarpet-3.6.1.gem",
+        "gem_sha256": "d444910e6aa55480c6bcdc0cdb057626e8a32c054c29e793fa642ba2f155f445",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/vmg/redcarpet/archive/refs/tags/v3.6.1.tar.gz",
+        "source_sha256": "9f1a4ed476f2a3df54d08c4c052123290f2629a2e99367c6d3fb17dda6b751ec",
+        "source_relative_path": "r10-m4a/redcarpet-3.6.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "redcarpet",
+        "version": "3.6.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/vmg/redcarpet/archive/refs/tags/v3.6.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/*_test.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/redcarpet.so",
+            "to": "lib/redcarpet.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "redcarpet"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "f80445cfc924d14712ea65e6fbe449023498f3fa801f1a24d36705aa5f71f2e8"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "racc",
+      "version": "1.8.1",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "71 tests, 319 assertions, 0 failures, 0 errors",
+        "tests": 71,
+        "assertions": 319,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "mode": "control",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/racc-1.8.1.gem",
+        "gem_sha256": "4a7f6929691dbec8b5209a0b373bc2614882b55fc5d2e447a21aaa691303d62f",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/racc/archive/refs/tags/v1.8.1.tar.gz",
+        "source_sha256": "affc4397e1f90ed8baf9eeaf30aeba1b9f25ac7e22e4bacb644415fe7886cacc",
+        "source_relative_path": "r10-m4a/racc-1.8.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "racc",
+        "version": "1.8.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/racc/archive/refs/tags/v1.8.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/racc/cparse.so",
+            "to": "lib/racc/cparse.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {
+          "test-unit": "3.6.1",
+          "test-unit-ruby-core": "1.0.5"
+        },
+        "sanity": {
+          "requires": [
+            "racc/parser"
+          ],
+          "expression": "Racc::Parser::Racc_Runtime_Type == \"c\""
+        },
+        "recipe_fingerprint": "4d8047d195e8d8ed5906fad8fc37a1df28d3284bb74e2ee3710a4a5d318b4ac0"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "stackprof",
+      "version": "0.2.28",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "31 runs, 184 assertions, 0 failures, 0 errors",
+        "tests": 31,
+        "assertions": 184,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "mode": "control",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/stackprof-0.2.28.gem",
+        "gem_sha256": "4ec2ace02f386012b40ca20ef80c030ad711831f59511da12e83b34efb0f9a04",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/tmm1/stackprof/archive/refs/tags/v0.2.28.tar.gz",
+        "source_sha256": "8b9a5fa0b143f0aacee617233644b5bbcfabdfdb94631f3bea945895972e49b8",
+        "source_relative_path": "r10-m4a/stackprof-0.2.28-src.tar.gz"
+      },
+      "recipe": {
+        "name": "stackprof",
+        "version": "0.2.28",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/tmm1/stackprof/archive/refs/tags/v0.2.28.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/stackprof/stackprof.so",
+            "to": "lib/stackprof/stackprof.so"
+          }
+        ],
+        "test_deps": [
+          "minitest"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "stackprof"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "7902149d9373f4f177be3a4e9df2d558faeafc01434dcc1bf1f52c2a52d4b9d4"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "nkf",
+      "version": "0.3.0",
+      "status": "fail",
+      "comparison": "inconclusive",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "8 tests, 44 assertions, 0 failures, 1 error",
+        "tests": 8,
+        "assertions": 44,
+        "failures": 0,
+        "errors": 1,
+        "other": {}
+      },
+      "reason": "test-unit-ruby-core-1.0.5 calls Ractor#value; the same NoMethodError occurred in control and rubycc",
+      "mode": "control",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "fail",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/nkf-0.3.0.gem",
+        "gem_sha256": "357a8dbeba38b727b75930f665146546076a394a1c243faf634ff176e3588895",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/nkf/archive/refs/tags/v0.3.0.tar.gz",
+        "source_sha256": "eeafd34ec8b9a7cfa4791d931ecb3a6e42293ec4675ce5d8e5a164e174121a16",
+        "source_relative_path": "r10-m4a/nkf-0.3.0-src.tar.gz"
+      },
+      "recipe": {
+        "name": "nkf",
+        "version": "0.3.0",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/nkf/archive/refs/tags/v0.3.0.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/nkf.so",
+            "to": "lib/nkf.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "nkf"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "d9f9d9657e60fdef49aa90e78b73b4cb08de01adc7f49d923c276499a16ee256"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "strscan",
+      "version": "3.1.6",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "150 tests, 1047 assertions, 0 failures, 0 errors",
+        "tests": 150,
+        "assertions": 1047,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "mode": "control",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/strscan-3.1.6.gem",
+        "gem_sha256": "ebd56df0b0468b00a1f2004b4078c34df58c3506b2bba939e7531892aece81f3",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/strscan/archive/refs/tags/v3.1.6.tar.gz",
+        "source_sha256": "444fc94d8ebcb9fcf20d9d63212dbc42d4460ace429bc33f82080d2708442a5d",
+        "source_relative_path": "r10-m4a/strscan-3.1.6-src.tar.gz"
+      },
+      "recipe": {
+        "name": "strscan",
+        "version": "3.1.6",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/strscan/archive/refs/tags/v3.1.6.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/strscan.so",
+            "to": "lib/strscan.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "strscan"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "b678487a20e60dd27d82305c29bb3a2e50d3e8fa81e17ab3955f5d1e319db047"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "stringio",
+      "version": "3.2.0",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "103 tests, 626 assertions, 0 failures, 0 errors",
+        "tests": 103,
+        "assertions": 626,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "mode": "control",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/stringio-3.2.0.gem",
+        "gem_sha256": "c37cb2e58b4ffbd33fe5cd948c05934af997b36e0b6ca6fdf43afa234cf222e1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/stringio/archive/refs/tags/v3.2.0.tar.gz",
+        "source_sha256": "c8363b991c7cb46835530e984a69327d2e3cfceed37555208c59a6742a6e6966",
+        "source_relative_path": "r10-m4a/stringio-3.2.0-src.tar.gz"
+      },
+      "recipe": {
+        "name": "stringio",
+        "version": "3.2.0",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/stringio/archive/refs/tags/v3.2.0.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/stringio.so",
+            "to": "lib/stringio.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "stringio"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "f84d284ce6b0375aaba07c45027916cc7c06d5298433e94ac4368f62bb03596b"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    }
+  ],
+  "rubycc": [
+    {
+      "name": "json",
+      "version": "2.21.1",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "summary": {
+        "line": "603 tests, 3425 assertions, 0 failures, 0 errors",
+        "tests": 603,
+        "assertions": 3425,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "mode": "rubycc",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/json-2.21.1.gem",
+        "gem_sha256": "13a43df75d95641443f5702dff350f237164a9d811ff0f2c2800d4d980220583",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/json/archive/refs/tags/v2.21.1.tar.gz",
+        "source_sha256": "b7b12ee6d17468d90ed86dc29bbd75a8af7820dcad6fe5e1b01b5182ea892de3",
+        "source_relative_path": "r10-m4a/json-2.21.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "json",
+        "version": "2.21.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/json/archive/refs/tags/v2.21.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/json/*_test.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/json/ext/parser.so",
+            "to": "lib/json/ext/parser.so"
+          },
+          {
+            "from": "lib/json/ext/generator.so",
+            "to": "lib/json/ext/generator.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "json"
+          ],
+          "expression": "JSON.parser.to_s == \"JSON::Ext::Parser\""
+        },
+        "recipe_fingerprint": "d9b03a4d5a88474a8c2bd4be12504f5ebe9198c59834ddfc9c5618c83108def3"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "msgpack",
+      "version": "1.8.3",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "summary": {
+        "line": "455 examples, 0 failures, 1 pending",
+        "tests": 455,
+        "assertions": null,
+        "failures": 0,
+        "errors": 0,
+        "other": {
+          "pendings": 1
+        }
+      },
+      "mode": "rubycc",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/msgpack-1.8.3.gem",
+        "gem_sha256": "8bda4a6428d3244e50d6bd55854d354edbada88a4e1f4f5731a39a0f86bee6a1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/msgpack/msgpack-ruby/archive/refs/tags/v1.8.3.tar.gz",
+        "source_sha256": "2b8a119620d49ccad3164aaf5bc7311627960a58ee3b2b60f04d1cf19021f1b5",
+        "source_relative_path": "r10-m4a/msgpack-1.8.3-src.tar.gz"
+      },
+      "recipe": {
+        "name": "msgpack",
+        "version": "1.8.3",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/msgpack/msgpack-ruby/archive/refs/tags/v1.8.3.tar.gz",
+        "runner": "rspec",
+        "test_glob": "spec/**/*_spec.rb",
+        "exclude": [
+          "spec/jruby/**/*"
+        ],
+        "load_paths": [
+          "lib",
+          "spec"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/msgpack/msgpack.so",
+            "to": "lib/msgpack/msgpack.so"
+          }
+        ],
+        "test_deps": [
+          "rspec"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "msgpack"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "be34de5febc88c980c5212dd59acbc78937d81462c43fceb91ddf3e2b2209148"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "bigdecimal",
+      "version": "4.1.2",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "summary": {
+        "line": "265 tests, 8267 assertions, 0 failures, 0 errors, 11 omissions",
+        "tests": 265,
+        "assertions": 8267,
+        "failures": 0,
+        "errors": 0,
+        "other": {
+          "omissions": 11
+        }
+      },
+      "mode": "rubycc",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/bigdecimal-4.1.2.gem",
+        "gem_sha256": "53d217666027eab4280346fba98e7d5b66baaae1b9c3c1c0ffe89d48188a3fbd",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/bigdecimal/archive/refs/tags/v4.1.2.tar.gz",
+        "source_sha256": "2a2f61355a348d576360576405fd16ec9830c28a88894b325035464f44fb9c17",
+        "source_relative_path": "r10-m4a/bigdecimal-4.1.2-src.tar.gz"
+      },
+      "recipe": {
+        "name": "bigdecimal",
+        "version": "4.1.2",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/bigdecimal/archive/refs/tags/v4.1.2.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/bigdecimal/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/bigdecimal.so",
+            "to": "lib/bigdecimal.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "bigdecimal"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "c459860476646f3ad0174347cb685c41b717d5d3e513f70c5a41676f5aa77773"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "date",
+      "version": "3.5.1",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "summary": {
+        "line": "143 tests, 162593 assertions, 0 failures, 0 errors",
+        "tests": 143,
+        "assertions": 162593,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "mode": "rubycc",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/date-3.5.1.gem",
+        "gem_sha256": "750d06384d7b9c15d562c76291407d89e368dda4d4fff957eb94962d325a0dc0",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/date/archive/refs/tags/v3.5.1.tar.gz",
+        "source_sha256": "a942710d42da8a0003ca0ba45e87bf70c66a5ae612b9fe34812028dd88443cbf",
+        "source_relative_path": "r10-m4a/date-3.5.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "date",
+        "version": "3.5.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/date/archive/refs/tags/v3.5.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/date_core.so",
+            "to": "lib/date_core.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "date"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "4b452f866ba4547d6b883541d8ec54966bafc804a163638f22171c4919a66521"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "redcarpet",
+      "version": "3.6.1",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc"
+      ],
+      "summary": {
+        "line": "136 tests, 206 assertions, 0 failures, 0 errors",
+        "tests": 136,
+        "assertions": 206,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "mode": "rubycc",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/redcarpet-3.6.1.gem",
+        "gem_sha256": "d444910e6aa55480c6bcdc0cdb057626e8a32c054c29e793fa642ba2f155f445",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/vmg/redcarpet/archive/refs/tags/v3.6.1.tar.gz",
+        "source_sha256": "9f1a4ed476f2a3df54d08c4c052123290f2629a2e99367c6d3fb17dda6b751ec",
+        "source_relative_path": "r10-m4a/redcarpet-3.6.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "redcarpet",
+        "version": "3.6.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/vmg/redcarpet/archive/refs/tags/v3.6.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/*_test.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/redcarpet.so",
+            "to": "lib/redcarpet.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "redcarpet"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "f80445cfc924d14712ea65e6fbe449023498f3fa801f1a24d36705aa5f71f2e8"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "racc",
+      "version": "1.8.1",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc"
+      ],
+      "summary": {
+        "line": "71 tests, 319 assertions, 0 failures, 0 errors",
+        "tests": 71,
+        "assertions": 319,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "mode": "rubycc",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/racc-1.8.1.gem",
+        "gem_sha256": "4a7f6929691dbec8b5209a0b373bc2614882b55fc5d2e447a21aaa691303d62f",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/racc/archive/refs/tags/v1.8.1.tar.gz",
+        "source_sha256": "affc4397e1f90ed8baf9eeaf30aeba1b9f25ac7e22e4bacb644415fe7886cacc",
+        "source_relative_path": "r10-m4a/racc-1.8.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "racc",
+        "version": "1.8.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/racc/archive/refs/tags/v1.8.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/racc/cparse.so",
+            "to": "lib/racc/cparse.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {
+          "test-unit": "3.6.1",
+          "test-unit-ruby-core": "1.0.5"
+        },
+        "sanity": {
+          "requires": [
+            "racc/parser"
+          ],
+          "expression": "Racc::Parser::Racc_Runtime_Type == \"c\""
+        },
+        "recipe_fingerprint": "4d8047d195e8d8ed5906fad8fc37a1df28d3284bb74e2ee3710a4a5d318b4ac0"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "stackprof",
+      "version": "0.2.28",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "summary": {
+        "line": "31 runs, 184 assertions, 0 failures, 0 errors",
+        "tests": 31,
+        "assertions": 184,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "mode": "rubycc",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/stackprof-0.2.28.gem",
+        "gem_sha256": "4ec2ace02f386012b40ca20ef80c030ad711831f59511da12e83b34efb0f9a04",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/tmm1/stackprof/archive/refs/tags/v0.2.28.tar.gz",
+        "source_sha256": "8b9a5fa0b143f0aacee617233644b5bbcfabdfdb94631f3bea945895972e49b8",
+        "source_relative_path": "r10-m4a/stackprof-0.2.28-src.tar.gz"
+      },
+      "recipe": {
+        "name": "stackprof",
+        "version": "0.2.28",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/tmm1/stackprof/archive/refs/tags/v0.2.28.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/stackprof/stackprof.so",
+            "to": "lib/stackprof/stackprof.so"
+          }
+        ],
+        "test_deps": [
+          "minitest"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "stackprof"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "7902149d9373f4f177be3a4e9df2d558faeafc01434dcc1bf1f52c2a52d4b9d4"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "nkf",
+      "version": "0.3.0",
+      "status": "fail",
+      "comparison": "inconclusive",
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc"
+      ],
+      "summary": {
+        "line": "8 tests, 44 assertions, 0 failures, 1 error",
+        "tests": 8,
+        "assertions": 44,
+        "failures": 0,
+        "errors": 1,
+        "other": {}
+      },
+      "reason": "test-unit-ruby-core-1.0.5 calls Ractor#value; the same NoMethodError occurred in control and rubycc",
+      "mode": "rubycc",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "fail",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/nkf-0.3.0.gem",
+        "gem_sha256": "357a8dbeba38b727b75930f665146546076a394a1c243faf634ff176e3588895",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/nkf/archive/refs/tags/v0.3.0.tar.gz",
+        "source_sha256": "eeafd34ec8b9a7cfa4791d931ecb3a6e42293ec4675ce5d8e5a164e174121a16",
+        "source_relative_path": "r10-m4a/nkf-0.3.0-src.tar.gz"
+      },
+      "recipe": {
+        "name": "nkf",
+        "version": "0.3.0",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/nkf/archive/refs/tags/v0.3.0.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/nkf.so",
+            "to": "lib/nkf.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "nkf"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "d9f9d9657e60fdef49aa90e78b73b4cb08de01adc7f49d923c276499a16ee256"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "strscan",
+      "version": "3.1.6",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "summary": {
+        "line": "150 tests, 1047 assertions, 0 failures, 0 errors",
+        "tests": 150,
+        "assertions": 1047,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "mode": "rubycc",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/strscan-3.1.6.gem",
+        "gem_sha256": "ebd56df0b0468b00a1f2004b4078c34df58c3506b2bba939e7531892aece81f3",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/strscan/archive/refs/tags/v3.1.6.tar.gz",
+        "source_sha256": "444fc94d8ebcb9fcf20d9d63212dbc42d4460ace429bc33f82080d2708442a5d",
+        "source_relative_path": "r10-m4a/strscan-3.1.6-src.tar.gz"
+      },
+      "recipe": {
+        "name": "strscan",
+        "version": "3.1.6",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/strscan/archive/refs/tags/v3.1.6.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/strscan.so",
+            "to": "lib/strscan.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "strscan"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "b678487a20e60dd27d82305c29bb3a2e50d3e8fa81e17ab3955f5d1e319db047"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "stringio",
+      "version": "3.2.0",
+      "status": "pass",
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "summary": {
+        "line": "103 tests, 626 assertions, 0 failures, 0 errors",
+        "tests": 103,
+        "assertions": 626,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "mode": "rubycc",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/stringio-3.2.0.gem",
+        "gem_sha256": "c37cb2e58b4ffbd33fe5cd948c05934af997b36e0b6ca6fdf43afa234cf222e1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/stringio/archive/refs/tags/v3.2.0.tar.gz",
+        "source_sha256": "c8363b991c7cb46835530e984a69327d2e3cfceed37555208c59a6742a6e6966",
+        "source_relative_path": "r10-m4a/stringio-3.2.0-src.tar.gz"
+      },
+      "recipe": {
+        "name": "stringio",
+        "version": "3.2.0",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/stringio/archive/refs/tags/v3.2.0.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/stringio.so",
+            "to": "lib/stringio.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "stringio"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "f84d284ce6b0375aaba07c45027916cc7c06d5298433e94ac4368f62bb03596b"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    }
+  ],
+  "execution_context": {
+    "environment": "glibc x86_64 / ruby 3.4.5",
+    "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+    "host_cpu": "x86_64",
+    "ruby_arch": "x86_64-linux",
+    "cc": null,
+    "make": null,
+    "pkg_config": null
+  },
+  "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+  "rubycc_worktree_dirty": true
+}

@@ -1,0 +1,1818 @@
+{
+  "schema_version": 2,
+  "artifact_kind": "r10-gem-verification-summary",
+  "batch": "R10-M4B",
+  "environment": "glibc x86_64 / ruby 3.4.5",
+  "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+  "architecture": "x86_64",
+  "aarch64_evidence": false,
+  "work_dir": "<VERIFY_WORK>",
+  "control": [
+    {
+      "name": "etc",
+      "version": "1.4.6",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "files": 1,
+      "summary": {
+        "line": "18 tests, 589 assertions, 0 failures, 0 errors, 0 pendings, 2 omissions, 0 notifications",
+        "tests": 18,
+        "assertions": 589,
+        "failures": 0,
+        "errors": 0,
+        "other": {
+          "omissions": 2
+        }
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/etc-1.4.6.gem",
+        "gem_sha256": "0f7e9e7842ea5e3c3bd9bc81746ebb8c65ea29e4c42a93520a0d638129c7de01",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/etc/archive/refs/tags/v1.4.6.tar.gz",
+        "source_sha256": "6c27f946d6fa149a25d5368d987ad215c998d1dd005e114082cfc9ed08613966",
+        "source_relative_path": "r10-m4b/etc-1.4.6-src.tar.gz"
+      },
+      "recipe": {
+        "name": "etc",
+        "version": "1.4.6",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/etc/archive/refs/tags/v1.4.6.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/etc.so",
+            "to": "lib/etc.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "etc"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "03aecfb644e4d1488481d11998b0f104f0ce70885cb2f25261c95abf6db5d510"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "io-nonblock",
+      "version": "0.3.2",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "files": 1,
+      "summary": {
+        "line": "2 tests, 8 assertions, 0 failures, 0 errors, 0 pendings, 0 omissions, 0 notifications",
+        "tests": 2,
+        "assertions": 8,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/io-nonblock-0.3.2.gem",
+        "gem_sha256": "2014636edae4e32e893a3b9e6bac9d1c5b8d3af41b8cd5bcb2279a78fbef937d",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/io-nonblock/archive/refs/tags/v0.3.2.tar.gz",
+        "source_sha256": "dcdd60b58aca00a3a59beded015f22c4173e351a099502f292d64e651d0014b6",
+        "source_relative_path": "r10-m4b/io-nonblock-0.3.2-src.tar.gz"
+      },
+      "recipe": {
+        "name": "io-nonblock",
+        "version": "0.3.2",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/io-nonblock/archive/refs/tags/v0.3.2.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/io/nonblock.so",
+            "to": "lib/io/nonblock.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "io/nonblock"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "73a562742e67099133dfe87115e903c136cb1e2cd8cf694f81ade2eaa5de2553"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "io-wait",
+      "version": "0.4.0",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "files": 3,
+      "summary": {
+        "line": "26 tests, 41 assertions, 0 failures, 0 errors, 0 pendings, 1 omissions, 0 notifications",
+        "tests": 26,
+        "assertions": 41,
+        "failures": 0,
+        "errors": 0,
+        "other": {
+          "omissions": 1
+        }
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/io-wait-0.4.0.gem",
+        "gem_sha256": "872c703066ae5371bf19f441b4d4991cf4f259ada548c717cadce26b256e9309",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/io-wait/archive/refs/tags/v0.4.0.tar.gz",
+        "source_sha256": "965254ebbafaf71cef557a2fb99a3b45edcc5ff823286d7abb920c4f4295c58c",
+        "source_relative_path": "r10-m4b/io-wait-0.4.0-src.tar.gz"
+      },
+      "recipe": {
+        "name": "io-wait",
+        "version": "0.4.0",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/io-wait/archive/refs/tags/v0.4.0.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/io/wait.so",
+            "to": "lib/io/wait.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "io/wait"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "f3d046cfa19e66fb63fa50bd4c07257c19b53327f988d8955b4cf4163773e7e3"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "erb",
+      "version": "6.0.1.1",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "files": 3,
+      "summary": {
+        "line": "48 tests, 143 assertions, 0 failures, 0 errors, 0 pendings, 0 omissions, 0 notifications",
+        "tests": 48,
+        "assertions": 143,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/erb-6.0.1.1.gem",
+        "gem_sha256": "ce5357460652a9a94667c5769eaffc551eea2b14a8531ac7c7b1d77b860758b9",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/erb/archive/refs/tags/v6.0.1.1.tar.gz",
+        "source_sha256": "ca52997eb3a6a54a1d7f76b29a10e26745a75f19503949478bfcd3816d473547",
+        "source_relative_path": "r10-m4b/erb-6.0.1.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "erb",
+        "version": "6.0.1.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/erb/archive/refs/tags/v6.0.1.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/erb/escape.so",
+            "to": "lib/erb/escape.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "erb"
+          ],
+          "expression": "injected_so_loaded? && ERB::Escape.instance_method(:html_escape).source_location.nil?"
+        },
+        "recipe_fingerprint": "eee715fad1abdccc97f0cdfed7b0f2facd4782478e78825b1bfbec1002e4c16d"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "io-console",
+      "version": "0.8.2",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "files": 2,
+      "summary": {
+        "line": "28 tests, 109 assertions, 0 failures, 0 errors, 0 pendings, 0 omissions, 0 notifications",
+        "tests": 28,
+        "assertions": 109,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/io-console-0.8.2.gem",
+        "gem_sha256": "d6e3ae7a7cc7574f4b8893b4fca2162e57a825b223a177b7afa236c5ef9814cc",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/io-console/archive/refs/tags/v0.8.2.tar.gz",
+        "source_sha256": "3b810de791a28d7de14cfad2890bdff0e6607f09d2da8b943fde8c6cf557536f",
+        "source_relative_path": "r10-m4b/io-console-0.8.2-src.tar.gz"
+      },
+      "recipe": {
+        "name": "io-console",
+        "version": "0.8.2",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/io-console/archive/refs/tags/v0.8.2.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/io/console.so",
+            "to": "lib/io/console.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "io/console"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "d87dd9fa824ab3084a908ceaa463d5b0167103049eb9ea5b5ccb18c1e151ec07"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "digest",
+      "version": "3.2.1",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "files": 3,
+      "summary": {
+        "line": "98 tests, 215 assertions, 0 failures, 0 errors, 0 pendings, 0 omissions, 0 notifications",
+        "tests": 98,
+        "assertions": 215,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/digest-3.2.1.gem",
+        "gem_sha256": "ab3312b4e272d7d5dc41c564c86a25861a1f34ac5153374199a0b74861395947",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/digest/archive/refs/tags/v3.2.1.tar.gz",
+        "source_sha256": "637c9bfac0a9e9afebf4a1e168250c2e3f8c42878ee2d3d3f17c8a66d8108df4",
+        "source_relative_path": "r10-m4b/digest-3.2.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "digest",
+        "version": "3.2.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/digest/archive/refs/tags/v3.2.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "test",
+          "test/lib",
+          "lib",
+          "ext/digest/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/digest.so",
+            "to": "lib/digest.so"
+          },
+          {
+            "from": "lib/digest/bubblebabble.so",
+            "to": "lib/digest/bubblebabble.so"
+          },
+          {
+            "from": "lib/digest/md5.so",
+            "to": "lib/digest/md5.so"
+          },
+          {
+            "from": "lib/digest/rmd160.so",
+            "to": "lib/digest/rmd160.so"
+          },
+          {
+            "from": "lib/digest/sha1.so",
+            "to": "lib/digest/sha1.so"
+          },
+          {
+            "from": "lib/digest/sha2.so",
+            "to": "lib/digest/sha2.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "digest",
+            "digest/bubblebabble",
+            "digest/md5",
+            "digest/rmd160",
+            "digest/sha1",
+            "digest/sha2"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "b089844782edb95aae78885fc534d17c131f2298f97ace9093c9f664c995469c"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "zlib",
+      "version": "3.2.3",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "files": 1,
+      "summary": {
+        "line": "97 tests, 540 assertions, 0 failures, 0 errors, 0 pendings, 0 omissions, 0 notifications",
+        "tests": 97,
+        "assertions": 540,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/zlib-3.2.3.gem",
+        "gem_sha256": "5bd316698b32f31a64ab910a8b6c282442ca1626a81bbd6a1674e8522e319c20",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/zlib/archive/refs/tags/v3.2.3.tar.gz",
+        "source_sha256": "f084546dfb04345d0bc601ba8e2d634c8738a45478c9d794588a7aa413ef1b32",
+        "source_relative_path": "r10-m4b/zlib-3.2.3-src.tar.gz"
+      },
+      "recipe": {
+        "name": "zlib",
+        "version": "3.2.3",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/zlib/archive/refs/tags/v3.2.3.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/zlib.so",
+            "to": "lib/zlib.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "zlib"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "a04ad4299270f1259683dd48df9883670db432263322679fef1b419692269b1e"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "psych",
+      "version": "5.3.1",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "files": 48,
+      "summary": {
+        "line": "633 tests, 1598 assertions, 0 failures, 0 errors, 0 pendings, 0 omissions, 0 notifications",
+        "tests": 633,
+        "assertions": 1598,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/psych-5.3.1.gem",
+        "gem_sha256": "eb7a57cef10c9d70173ff74e739d843ac3b2c019a003de48447b2963d81b1974",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/psych/archive/refs/tags/v5.3.1.tar.gz",
+        "source_sha256": "513c61962045e72c7a4e53e4437701374f6f9336b98a28c28e06d58bb5e8c17d",
+        "source_relative_path": "r10-m4b/psych-5.3.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "psych",
+        "version": "5.3.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/psych/archive/refs/tags/v5.3.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/psych.so",
+            "to": "lib/psych.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "psych"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "5a35ced11ac74e29038649138960e978ea60f91b9c9a4dc6f53211a76e5b6e2c"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "syslog",
+      "version": "0.3.0",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "files": 2,
+      "summary": {
+        "line": "32 tests, 234 assertions, 0 failures, 0 errors, 0 pendings, 0 omissions, 0 notifications",
+        "tests": 32,
+        "assertions": 234,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/syslog-0.3.0.gem",
+        "gem_sha256": "4dfe6e7bd5adb6383706bb4ad5a05da1f3a09917a507e8f913c73287085c7408",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/syslog/archive/refs/tags/v0.3.0.tar.gz",
+        "source_sha256": "d7e2862d99326e1a5908a203a57e57425a7a3cc20d0a4b4bc2d0e52085aa4d9b",
+        "source_relative_path": "r10-m4b/syslog-0.3.0-src.tar.gz"
+      },
+      "recipe": {
+        "name": "syslog",
+        "version": "0.3.0",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/syslog/archive/refs/tags/v0.3.0.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/syslog_ext.so",
+            "to": "lib/syslog_ext.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "syslog"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "b1de836e4fef8f3460c35a4c1c0139e31df16d6a9d13fe2639fc4f6b191a4eec"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "http_parser.rb",
+      "version": "0.8.1",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "files": 1,
+      "summary": {
+        "line": "72 examples, 0 failures",
+        "tests": 72,
+        "assertions": null,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/http_parser.rb-0.8.1.gem",
+        "gem_sha256": "9ae8df145b39aa5398b2f90090d651c67bd8e2ebfe4507c966579f641e11097a",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/tmm1/http_parser.rb/archive/refs/tags/v0.8.1.tar.gz",
+        "source_sha256": "3ba6e0949d540dd915d5b9fb62bd06668c8ecd2a799785b192256fc117f937ae",
+        "source_relative_path": "r10-m4b/http_parser.rb-0.8.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "http_parser.rb",
+        "version": "0.8.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/tmm1/http_parser.rb/archive/refs/tags/v0.8.1.tar.gz",
+        "runner": "rspec",
+        "test_glob": "spec/**/*_spec.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "spec"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/ruby_http_parser.so",
+            "to": "lib/ruby_http_parser.so"
+          }
+        ],
+        "test_deps": [
+          "rspec"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "http_parser"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "05d3dc56da07767ed2af5f7d40c2cb55002989b8787fe788dd9a54dbc537fe29"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "websocket-driver",
+      "version": "0.8.2",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "files": 4,
+      "summary": {
+        "line": "196 examples, 0 failures",
+        "tests": 196,
+        "assertions": null,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/websocket-driver-0.8.2.gem",
+        "gem_sha256": "97c556b019bf3410b4961002ac501621e9322d3f8a7bc02161a09301cc4c4146",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/faye/websocket-driver-ruby/archive/refs/tags/0.8.2.tar.gz",
+        "source_sha256": "0ee8ed7d59f838bb5b6f3dfb7a606a64e32172b614dab1e325f6df9bdf943772",
+        "source_relative_path": "r10-m4b/websocket-driver-0.8.2-src.tar.gz"
+      },
+      "recipe": {
+        "name": "websocket-driver",
+        "version": "0.8.2",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/faye/websocket-driver-ruby/archive/refs/tags/0.8.2.tar.gz",
+        "runner": "rspec",
+        "test_glob": "spec/**/*_spec.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "spec"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/websocket_mask.so",
+            "to": "lib/websocket_mask.so"
+          }
+        ],
+        "test_deps": [
+          "rspec"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "websocket/driver"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "6ce2b3c9430fd592954c83e39d394ea1625d00134939b92516698b5fa5dcfb80"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    }
+  ],
+  "rubycc": [
+    {
+      "name": "etc",
+      "version": "1.4.6",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "files": 1,
+      "summary": {
+        "line": "18 tests, 589 assertions, 0 failures, 0 errors, 0 pendings, 2 omissions, 0 notifications",
+        "tests": 18,
+        "assertions": 589,
+        "failures": 0,
+        "errors": 0,
+        "other": {
+          "omissions": 2
+        }
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/etc-1.4.6.gem",
+        "gem_sha256": "0f7e9e7842ea5e3c3bd9bc81746ebb8c65ea29e4c42a93520a0d638129c7de01",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/etc/archive/refs/tags/v1.4.6.tar.gz",
+        "source_sha256": "6c27f946d6fa149a25d5368d987ad215c998d1dd005e114082cfc9ed08613966",
+        "source_relative_path": "r10-m4b/etc-1.4.6-src.tar.gz"
+      },
+      "recipe": {
+        "name": "etc",
+        "version": "1.4.6",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/etc/archive/refs/tags/v1.4.6.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/etc.so",
+            "to": "lib/etc.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "etc"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "03aecfb644e4d1488481d11998b0f104f0ce70885cb2f25261c95abf6db5d510"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "io-nonblock",
+      "version": "0.3.2",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "files": 1,
+      "summary": {
+        "line": "2 tests, 8 assertions, 0 failures, 0 errors, 0 pendings, 0 omissions, 0 notifications",
+        "tests": 2,
+        "assertions": 8,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/io-nonblock-0.3.2.gem",
+        "gem_sha256": "2014636edae4e32e893a3b9e6bac9d1c5b8d3af41b8cd5bcb2279a78fbef937d",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/io-nonblock/archive/refs/tags/v0.3.2.tar.gz",
+        "source_sha256": "dcdd60b58aca00a3a59beded015f22c4173e351a099502f292d64e651d0014b6",
+        "source_relative_path": "r10-m4b/io-nonblock-0.3.2-src.tar.gz"
+      },
+      "recipe": {
+        "name": "io-nonblock",
+        "version": "0.3.2",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/io-nonblock/archive/refs/tags/v0.3.2.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/io/nonblock.so",
+            "to": "lib/io/nonblock.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "io/nonblock"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "73a562742e67099133dfe87115e903c136cb1e2cd8cf694f81ade2eaa5de2553"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "io-wait",
+      "version": "0.4.0",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc"
+      ],
+      "files": 3,
+      "summary": {
+        "line": "26 tests, 41 assertions, 0 failures, 0 errors, 0 pendings, 1 omissions, 0 notifications",
+        "tests": 26,
+        "assertions": 41,
+        "failures": 0,
+        "errors": 0,
+        "other": {
+          "omissions": 1
+        }
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/io-wait-0.4.0.gem",
+        "gem_sha256": "872c703066ae5371bf19f441b4d4991cf4f259ada548c717cadce26b256e9309",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/io-wait/archive/refs/tags/v0.4.0.tar.gz",
+        "source_sha256": "965254ebbafaf71cef557a2fb99a3b45edcc5ff823286d7abb920c4f4295c58c",
+        "source_relative_path": "r10-m4b/io-wait-0.4.0-src.tar.gz"
+      },
+      "recipe": {
+        "name": "io-wait",
+        "version": "0.4.0",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/io-wait/archive/refs/tags/v0.4.0.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/io/wait.so",
+            "to": "lib/io/wait.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "io/wait"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "f3d046cfa19e66fb63fa50bd4c07257c19b53327f988d8955b4cf4163773e7e3"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "erb",
+      "version": "6.0.1.1",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "files": 3,
+      "summary": {
+        "line": "48 tests, 143 assertions, 0 failures, 0 errors, 0 pendings, 0 omissions, 0 notifications",
+        "tests": 48,
+        "assertions": 143,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/erb-6.0.1.1.gem",
+        "gem_sha256": "ce5357460652a9a94667c5769eaffc551eea2b14a8531ac7c7b1d77b860758b9",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/erb/archive/refs/tags/v6.0.1.1.tar.gz",
+        "source_sha256": "ca52997eb3a6a54a1d7f76b29a10e26745a75f19503949478bfcd3816d473547",
+        "source_relative_path": "r10-m4b/erb-6.0.1.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "erb",
+        "version": "6.0.1.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/erb/archive/refs/tags/v6.0.1.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/erb/escape.so",
+            "to": "lib/erb/escape.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "erb"
+          ],
+          "expression": "injected_so_loaded? && ERB::Escape.instance_method(:html_escape).source_location.nil?"
+        },
+        "recipe_fingerprint": "eee715fad1abdccc97f0cdfed7b0f2facd4782478e78825b1bfbec1002e4c16d"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "io-console",
+      "version": "0.8.2",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "files": 2,
+      "summary": {
+        "line": "28 tests, 109 assertions, 0 failures, 0 errors, 0 pendings, 0 omissions, 0 notifications",
+        "tests": 28,
+        "assertions": 109,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/io-console-0.8.2.gem",
+        "gem_sha256": "d6e3ae7a7cc7574f4b8893b4fca2162e57a825b223a177b7afa236c5ef9814cc",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/io-console/archive/refs/tags/v0.8.2.tar.gz",
+        "source_sha256": "3b810de791a28d7de14cfad2890bdff0e6607f09d2da8b943fde8c6cf557536f",
+        "source_relative_path": "r10-m4b/io-console-0.8.2-src.tar.gz"
+      },
+      "recipe": {
+        "name": "io-console",
+        "version": "0.8.2",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/io-console/archive/refs/tags/v0.8.2.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/io/console.so",
+            "to": "lib/io/console.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "io/console"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "d87dd9fa824ab3084a908ceaa463d5b0167103049eb9ea5b5ccb18c1e151ec07"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "digest",
+      "version": "3.2.1",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "files": 3,
+      "summary": {
+        "line": "98 tests, 215 assertions, 0 failures, 0 errors, 0 pendings, 0 omissions, 0 notifications",
+        "tests": 98,
+        "assertions": 215,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/digest-3.2.1.gem",
+        "gem_sha256": "ab3312b4e272d7d5dc41c564c86a25861a1f34ac5153374199a0b74861395947",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/digest/archive/refs/tags/v3.2.1.tar.gz",
+        "source_sha256": "637c9bfac0a9e9afebf4a1e168250c2e3f8c42878ee2d3d3f17c8a66d8108df4",
+        "source_relative_path": "r10-m4b/digest-3.2.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "digest",
+        "version": "3.2.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/digest/archive/refs/tags/v3.2.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "test",
+          "test/lib",
+          "lib",
+          "ext/digest/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/digest.so",
+            "to": "lib/digest.so"
+          },
+          {
+            "from": "lib/digest/bubblebabble.so",
+            "to": "lib/digest/bubblebabble.so"
+          },
+          {
+            "from": "lib/digest/md5.so",
+            "to": "lib/digest/md5.so"
+          },
+          {
+            "from": "lib/digest/rmd160.so",
+            "to": "lib/digest/rmd160.so"
+          },
+          {
+            "from": "lib/digest/sha1.so",
+            "to": "lib/digest/sha1.so"
+          },
+          {
+            "from": "lib/digest/sha2.so",
+            "to": "lib/digest/sha2.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "digest",
+            "digest/bubblebabble",
+            "digest/md5",
+            "digest/rmd160",
+            "digest/sha1",
+            "digest/sha2"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "b089844782edb95aae78885fc534d17c131f2298f97ace9093c9f664c995469c"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "zlib",
+      "version": "3.2.3",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "files": 1,
+      "summary": {
+        "line": "97 tests, 540 assertions, 0 failures, 0 errors, 0 pendings, 0 omissions, 0 notifications",
+        "tests": 97,
+        "assertions": 540,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/zlib-3.2.3.gem",
+        "gem_sha256": "5bd316698b32f31a64ab910a8b6c282442ca1626a81bbd6a1674e8522e319c20",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/zlib/archive/refs/tags/v3.2.3.tar.gz",
+        "source_sha256": "f084546dfb04345d0bc601ba8e2d634c8738a45478c9d794588a7aa413ef1b32",
+        "source_relative_path": "r10-m4b/zlib-3.2.3-src.tar.gz"
+      },
+      "recipe": {
+        "name": "zlib",
+        "version": "3.2.3",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/zlib/archive/refs/tags/v3.2.3.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/zlib.so",
+            "to": "lib/zlib.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "zlib"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "a04ad4299270f1259683dd48df9883670db432263322679fef1b419692269b1e"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "psych",
+      "version": "5.3.1",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "files": 48,
+      "summary": {
+        "line": "633 tests, 1598 assertions, 0 failures, 0 errors, 0 pendings, 0 omissions, 0 notifications",
+        "tests": 633,
+        "assertions": 1598,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/psych-5.3.1.gem",
+        "gem_sha256": "eb7a57cef10c9d70173ff74e739d843ac3b2c019a003de48447b2963d81b1974",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/psych/archive/refs/tags/v5.3.1.tar.gz",
+        "source_sha256": "513c61962045e72c7a4e53e4437701374f6f9336b98a28c28e06d58bb5e8c17d",
+        "source_relative_path": "r10-m4b/psych-5.3.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "psych",
+        "version": "5.3.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/psych/archive/refs/tags/v5.3.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/psych.so",
+            "to": "lib/psych.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "psych"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "5a35ced11ac74e29038649138960e978ea60f91b9c9a4dc6f53211a76e5b6e2c"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "syslog",
+      "version": "0.3.0",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "files": 2,
+      "summary": {
+        "line": "32 tests, 234 assertions, 0 failures, 0 errors, 0 pendings, 0 omissions, 0 notifications",
+        "tests": 32,
+        "assertions": 234,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/syslog-0.3.0.gem",
+        "gem_sha256": "4dfe6e7bd5adb6383706bb4ad5a05da1f3a09917a507e8f913c73287085c7408",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/syslog/archive/refs/tags/v0.3.0.tar.gz",
+        "source_sha256": "d7e2862d99326e1a5908a203a57e57425a7a3cc20d0a4b4bc2d0e52085aa4d9b",
+        "source_relative_path": "r10-m4b/syslog-0.3.0-src.tar.gz"
+      },
+      "recipe": {
+        "name": "syslog",
+        "version": "0.3.0",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/syslog/archive/refs/tags/v0.3.0.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/syslog_ext.so",
+            "to": "lib/syslog_ext.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "syslog"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "b1de836e4fef8f3460c35a4c1c0139e31df16d6a9d13fe2639fc4f6b191a4eec"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "http_parser.rb",
+      "version": "0.8.1",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc"
+      ],
+      "files": 1,
+      "summary": {
+        "line": "72 examples, 0 failures",
+        "tests": 72,
+        "assertions": null,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/http_parser.rb-0.8.1.gem",
+        "gem_sha256": "9ae8df145b39aa5398b2f90090d651c67bd8e2ebfe4507c966579f641e11097a",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/tmm1/http_parser.rb/archive/refs/tags/v0.8.1.tar.gz",
+        "source_sha256": "3ba6e0949d540dd915d5b9fb62bd06668c8ecd2a799785b192256fc117f937ae",
+        "source_relative_path": "r10-m4b/http_parser.rb-0.8.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "http_parser.rb",
+        "version": "0.8.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/tmm1/http_parser.rb/archive/refs/tags/v0.8.1.tar.gz",
+        "runner": "rspec",
+        "test_glob": "spec/**/*_spec.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "spec"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/ruby_http_parser.so",
+            "to": "lib/ruby_http_parser.so"
+          }
+        ],
+        "test_deps": [
+          "rspec"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "http_parser"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "05d3dc56da07767ed2af5f7d40c2cb55002989b8787fe788dd9a54dbc537fe29"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "websocket-driver",
+      "version": "0.8.2",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc"
+      ],
+      "files": 4,
+      "summary": {
+        "line": "196 examples, 0 failures",
+        "tests": 196,
+        "assertions": null,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "environment": "glibc x86_64 / ruby 3.4.5",
+      "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+      "work_dir": "<VERIFY_WORK>",
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/websocket-driver-0.8.2.gem",
+        "gem_sha256": "97c556b019bf3410b4961002ac501621e9322d3f8a7bc02161a09301cc4c4146",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/faye/websocket-driver-ruby/archive/refs/tags/0.8.2.tar.gz",
+        "source_sha256": "0ee8ed7d59f838bb5b6f3dfb7a606a64e32172b614dab1e325f6df9bdf943772",
+        "source_relative_path": "r10-m4b/websocket-driver-0.8.2-src.tar.gz"
+      },
+      "recipe": {
+        "name": "websocket-driver",
+        "version": "0.8.2",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/faye/websocket-driver-ruby/archive/refs/tags/0.8.2.tar.gz",
+        "runner": "rspec",
+        "test_glob": "spec/**/*_spec.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "spec"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/websocket_mask.so",
+            "to": "lib/websocket_mask.so"
+          }
+        ],
+        "test_deps": [
+          "rspec"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "websocket/driver"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "6ce2b3c9430fd592954c83e39d394ea1625d00134939b92516698b5fa5dcfb80"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    }
+  ],
+  "execution_context": {
+    "environment": "glibc x86_64 / ruby 3.4.5",
+    "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+    "host_cpu": "x86_64",
+    "ruby_arch": "x86_64-linux",
+    "cc": null,
+    "make": null,
+    "pkg_config": null
+  },
+  "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+  "rubycc_worktree_dirty": true
+}

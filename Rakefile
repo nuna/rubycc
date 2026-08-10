@@ -40,4 +40,9 @@ namespace :corpus do
 
     ruby "tools/r10_corpus_scan.rb", "--cache", cache
   end
+
+  desc "Validate and render the reviewed R10 classification ledger (cache-free; not part of `rake test`)"
+  task :r10_manual_validate do
+    ruby "tools/r10_manual_classification.rb", "--render"
+  end
 end

@@ -490,7 +490,8 @@ R10-0の境界確定前に34件の分類を開始しない。
 | ARM-1/ARM-3 native preflight | 実runner実測完了 | Ruby ELF/dynamic dependency、Fiddle loader、Ruby header compileを実測するcontext/resultへ強化。`test/test_native_aarch64_preflight.rb` 1 run / 8 assertions、x86_64ではstructured failを確認し、AArch64 run 31345396123のartifactで全項目passを確認 |
 | R10-0〜R10-6 計画 | 批判レビュー・改善完了、R10-0〜2実装済み | 34件の母集団、pg/sqlite3境界、証拠フィールド、macro/生成コード、control/rubycc、architecture profile、`要追加確認`の期限、全件レビュー条件を文書化 |
 | LIVE-3/ARM-2 外部実測 | 完了（R10手動分類を除く） | acceptance-onlyはrun 31345720437、native AArch64はrun 31345396123、x86 Tier Aはrun 31345396034で実測。各runのhead SHA、job集合、artifact、strict checkerを照合済み |
-| R10-7 手動分類実測 | 未実施 | ユーザー指定のR10全対象gem手動分類は、境界確定後に別工程として実施する |
+| R10-3 手動分類（ソース・選択経路） | 進行中 | 34件の台帳形式を実装し、候補128件を一対一でレビュー。候補5 gemはfalse positive、zero findingはa0=20 / b0=1 / c=8へ分離した。cは未完了でありpassへ数えない |
+| R10-4〜R10-7 control/rubycc・実測・完了性レビュー | 未着手 | source selectionの実Makefile/preprocessor確認、extension load、upstream suite、第三者完了性レビュー、指摘後の再実測が残る |
 
 R10-0〜R10-2のcacheを使う機械的な範囲は、`ruby tools/r10_corpus_scan.rb --cache DIR`
 （または`R10_CORPUS_CACHE=DIR rake corpus:r10_scan`）で実行できる。これはcensusと同じ
@@ -501,8 +502,9 @@ scannerのfindings/file:line/kind/confidenceを
 [`docs/R10-CORPUS-SCAN.md`](R10-CORPUS-SCAN.md)へ保存する。現状は39候補、34対象、5除外、
 29 existing verification records、scanner候補128件である。
 
-generated source、手動分類、control/rubycc、extension load、upstream suiteは34件
-すべて`pending`/`not-run-by-this-scan`であり、既存recordも再実行済みとは扱わない。
+初期scan artifactの生成時点では、generated source、手動分類、control/rubycc、extension load、
+upstream suiteは34件すべて`pending`/`not-run-by-this-scan`であり、既存recordも再実行済みとは
+扱わなかった。後続M4実測の状態は本節末尾のartifactと台帳を正とする。
 scannerの空結果も不在証明にしない。このartifactはR10-3手動分類の入力であって、
 R10合否を更新しない。`pg`/`sqlite3` profileもmachine-gate境界を定めるだけで、
 verification recordへ昇格させない。
@@ -558,3 +560,92 @@ passした。4件の取得artifactはexpected/actual SHA-256とbytesが一致し
 39候補・34対象・5除外、scanner 128 findings、既存 verification record 29件は分類の
 入力であり、手動分類・control/rubycc・extension load・upstream suiteの完了証拠ではない。
 したがって、R10の手動分類を完了した、またはR10の90%要件を満たしたとは判定しない。
+
+### R10手動分類の実装継続・批判レビュー結果（2026-08-10）
+
+#### タスク分解と結果
+
+| タスク | 状態 | 成果物・確認 |
+|---|---|---|
+| R10-M0 母集団・provenance確認 | 完了 | 34件、`.gem` SHA、相対unpack path、profile、scanner 128件を既存machine artifactと照合。source tarball SHAは未収集であることを明記 |
+| R10-M1 分類台帳・validator | 完了 | [`tools/r10_manual_classification.rb`](../tools/r10_manual_classification.rb)、[`data/r10_manual_classification.json`](../data/r10_manual_classification.json)、Rake task、12 tests / 386 assertions / 0 failures / 0 skips |
+| R10-M2A zero-finding 29件 | source分類完了・受入れ未完了 | a0=`scoped_no_candidate` 20件、b0=`non_target_variadic_wrapper` 1件、c=`needs_more_evidence` 8件。cは次アクション・owner・期限を持ち、passにはしていない |
+| R10-M2B candidate 5 gem | 完了（source分類） | date 2、google-protobuf 41、oj 60、http_parser.rb 23、nkf 2の計128件をfinding key単位で一対一に分類。すべてfalse positiveだが、control/rubycc等は未実行 |
+| R10-M3 独立批判レビューと修正 | 完了 | 3視点のレビューで、root `src`、textual include、generated source、vendor test、profile/外部ABIの見落としを検出。selected unit、`PERL_XS`、generated provenance、zero assessmentを修正し、validator/testを再実行 |
+| R10-M4〜M5 実ビルド・CPU別確認 | M4実測を部分完了、M5未完了 | M4A/M4B/M4C/RBSをx86_64で実測し、build/load/suiteを分離記録。失敗・timeout・外部依存はfail/inconclusive、AArch64固有経路・sqlite3/pg profile・M5完了性レビューは残る |
+
+#### 批判レビューで採用した修正とトレードオフ
+
+初稿は、zero findingを一律`no_candidate`とし、ext配下のCファイル一覧を実ビルド選択単位のように記録していた。このままでは、`prism`/`rbs`のroot `src`、`nio4r`のtextual include、`http_parser.rb`のvendor test、`nkf`の前処理非選択、生成C/header、`pg`/`sqlite3`/外部ライブラリprofileを誤ってpassへ流用できる。
+
+そこで、machine scanの`no_candidate`と、source/profileに限定した補助分類（a0/b0/c）を分離した。`source_tree_sha256`、selected build path、非選択source、preprocessor制約、generated sourceの状態、cのfollow-upを台帳へ追加し、validatorが未実行を検証済みへ変換できないようにした。
+
+この修正のprosは、候補の網羅性と「何をまだ証明していないか」の追跡性が上がり、scannerの空結果や既存`verified_gems`をR10 passへ誤昇格しにくくなる点である。consは、34件のsource inventoryを保守し、profileごとの実ビルド証拠を別途取得する必要があり、分類完了までの時間とartifact量が増える点である。目的に対しては、保守コストを受け入れてfalse passを避ける方が妥当と判断した。
+
+現時点で [`docs/R10-MANUAL-CLASSIFICATION.md`](R10-MANUAL-CLASSIFICATION.md) はsource分類の成果物であり、control/rubycc、extension load、upstream suite、CPU固有実行の完了証拠ではない。`rake corpus:r10_manual_validate` が台帳とmachine scanの整合性を検査するが、これ自体も実コンパイラ検証の代用ではない。
+
+#### M4実測の追加結果と批判レビュー
+
+M4Aの10件は9件が両経路pass、`nkf`は両経路で同じ`Ractor#value`のsuite errorとなった。
+M4Bの11件は両経路11/11 passで、omissionはsummaryへ残した。RBSは追加recipeで
+control/rubyccのbuild・sanity loadを通したが、upstream suiteは両経路とも22 failures / 7
+errorsとなったためinconclusiveである。いずれも失敗をskipへ変換していない。
+
+批判レビューでは、(1) controlとrubyccのbuild traceが相互に混ざっていないか、(2) sanityが
+実際の注入`.so`をloadしたか、(3) suiteのfailure/error/omission/pendingを要約だけで隠して
+いないか、(4) x86_64の結果をAArch64へ拡張していないか、(5)初回cache権限障害を成功扱い
+していないかを確認した。結果として、cache障害はscratch cacheへ切り替えて再実行し、
+nkf/RBSはinconclusiveを維持した。
+
+control/rubyccの二重実行は、単独のrubycc passより環境由来の失敗を切り分けられる利点が
+ある。一方で実行時間と依存取得量が増え、外部ABI・DB・生成ツールの差を完全には消せない。
+そのためM4は「x86_64でのプロファイル実測」として記録し、AArch64固有経路の完了条件は
+native runner実測へ残す。成果物は[`data/r10_verification_m4a.json`](../data/r10_verification_m4a.json)、
+[`data/r10_verification_m4b.json`](../data/r10_verification_m4b.json)、
+[`data/r10_verification_rbs.json`](../data/r10_verification_rbs.json)である。
+
+#### M4Cの実測結果
+
+M4Cはopenssl、nio4r、prism、fiddle、bootsnap、oj、puma、google-protobuf、mysql2、
+yajl-rubyを測定した。prism/fiddle/google-protobuf/yajl-rubyは両経路でbuild・sanity・
+suite pass。bootsnapは両経路でsummaryなし、pumaはcontrol timeout・rubycc summaryなしのため
+strict validatorでsuite inconclusiveへ訂正した。opensslはrubycc suiteがsummaryなし、nio4rはcontrolで`ev_loop_new`
+のsymbol lookup error、ojは両経路でfailure/error、pumaはcontrolが900秒timeout、
+mysql2はMariaDB Docker停止でsuite未実行となった。これらをpassへ変換せず、台帳ではfailまたは
+inconclusiveとした。yajl-rubyはGitHubの不存在tagを使わず、正確な1.4.3 gem data archive
+をsource/test treeに用いるrecipeを追加した。
+
+M4Cの証跡は[`data/r10_verification_m4c.json`](../data/r10_verification_m4c.json)である。
+RBSは別recipeで[`data/r10_verification_rbs.json`](../data/r10_verification_rbs.json)へ保存した。
+
+M4Dではsqlite3/pgをcontrol・rubycc双方で試行したが、hostにsqlite3.h/libsqlite3開発物、
+pg_config/pkg-config/libpq-fe.hがなくextconfで停止した。これは外部profileのinconclusiveで
+あり、suite/loadをnot_runとして記録した。bundled sqlite3/cross-build pgを代替実行したり、
+この結果をskip/passへ変換したりしていない。証跡は
+[`data/r10_verification_m4d.json`](../data/r10_verification_m4d.json)である。
+
+#### M4 strict artifact validator後の状態
+
+独立批判レビューで、summary欠落のbootsnap/pumaをpassとしていた手動artifactの不整合を検出した。
+artifactをschema 2へ正規化し、build/load/suiteを別フィールドへ分離した。summaryがない、または
+実行テスト数が0の結果はpassにできず、bootsnap/pumaのsuiteはinconclusiveとなった。台帳validatorは
+artifactの対象名・version・mode、machine scanのgem SHA、source SHA、recipe fingerprint、
+実行環境、Rubycc revision、dirty-state、control/rubycc比較を再導出する。
+
+現時点のupstream suite集計は、pass 24、fail 2、inconclusive 6、not_run 2（34対象）である。
+control/rubyccのbuild stateは各32 pass・2 inconclusive、extension loadは32 pass・2 not_runである。
+これはglibc/x86_64・Ruby 3.4.5のローカル証拠であり、AArch64/muslの証拠やR10 90%達成を意味しない。
+依存不足・summary欠落・suite failureはskipへ置換せず、再実測対象として残す。
+
+#### M4 strict validator再レビュー後の追加条件
+
+修正後の独立再レビューで、run_idだけを持つ欠落artifact、明示stateの過信、verify toolで再現できないsummary表記が
+fail-openになる経路を検出した。現在は、測定済み状態のartifact/resultを必須化し、build/load/suite stateを
+sanity・build evidence・status・summaryから再導出する。summary.lineはverify_gem_tests.rbのparserへ再入力し、
+recipe全体は現行RECIPESから再生成して突合する。したがって、台帳の状態だけの改変、summary欠落、古いrecipeの
+流用はvalidatorを通らない。
+
+この厳格化はfalse passを減らす一方、recipe/parser変更や手作業artifactの表記差でinconclusiveが増え、証跡を
+再生成・更新する保守コストが増える。受入れ目的を優先し、曖昧なgreenより再実測を要求する方を採用した。
+再確認は、R10 validator 12 tests / 386 assertions、verify tool CLI 4 tests / 36 assertions、validator
+34 targets passである。全体回帰も最終修正後に再実行し、最新結果を本節へ記録する。
