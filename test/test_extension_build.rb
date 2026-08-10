@@ -15,11 +15,7 @@ require "open3"
 # and hands it to a *separate* Ruby process's `require` so the resolution
 # genuinely happens against a live interpreter rather than this test's own.
 class TestExtensionBuild < Minitest::Test
-  HOST_TARGET = case RbConfig::CONFIG["host_cpu"].to_s
-                when /\A(?:x86_64|amd64)\z/i then "x86_64"
-                when /\A(?:aarch64|arm64)\z/i then "aarch64"
-                else RbConfig::CONFIG["host_cpu"].to_s
-                end
+  HOST_TARGET = HostTarget.name
 
   # CRuby's own public headers, discovered at runtime from the interpreter
   # running the suite (rather than pinned), matching TestRubySmoke.

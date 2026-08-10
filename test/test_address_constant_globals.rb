@@ -163,6 +163,7 @@ class TestAddressConstantGlobals < Minitest::Test
   # Drives Rubycc::Link::ExecutableLinker on an "&arr[i]" global, then runs the
   # ET_EXEC, so the R_X86_64_64 addend is resolved by our own executable linker.
   def test_executable_linker_applies_the_addend
+    skip_unless_x86_64_host
     skip_unless_runnable
 
     src = <<~C
@@ -172,7 +173,7 @@ class TestAddressConstantGlobals < Minitest::Test
     C
     Dir.mktmpdir("rubycc-addr-exe") do |dir|
       obj = File.join(dir, "u.o")
-      File.binwrite(obj, Rubycc::Compiler.new.compile(src, filename: "u.c"))
+      File.binwrite(obj, Rubycc::Compiler.new.compile(src, filename: "u.c", target: "x86_64"))
       exe = File.join(dir, "a.out")
       ExecLinker.link_to([obj], exe)
       File.chmod(0o755, exe)
@@ -185,6 +186,7 @@ class TestAddressConstantGlobals < Minitest::Test
   # result and reads it back, so the addend rides through our shared-object path
   # (and its R_X86_64_RELATIVE rebasing) too.
   def test_shared_linker_applies_the_addend
+    skip_unless_x86_64_host
     skip "not a Linux host" unless RUBY_PLATFORM.include?("linux")
 
     src = <<~C
@@ -194,7 +196,7 @@ class TestAddressConstantGlobals < Minitest::Test
     C
     Dir.mktmpdir("rubycc-addr-so") do |dir|
       obj = File.join(dir, "u.o")
-      File.binwrite(obj, Rubycc::Compiler.new.compile(src, filename: "u.c"))
+      File.binwrite(obj, Rubycc::Compiler.new.compile(src, filename: "u.c", target: "x86_64"))
       so = File.join(dir, "libaddr.so")
       SharedLinker.link_to([obj], so)
       lib = Fiddle.dlopen(so)
@@ -246,15 +248,13 @@ class TestAddressConstantGlobals < Minitest::Test
 
   def assert_unsupported_initializer(src)
     error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(src, filename: "foo.c")
+      Rubycc::Compiler.new.compile(src, filename: "foo.c", target: host_target)
     end
     assert_match(/unsupported initializer for global variable/, error.message)
   end
 
   def skip_unless_runnable
     skip "not a Linux host" unless RUBY_PLATFORM.include?("linux")
-    interp = ["/lib64/ld-linux-x86-64.so.2", "/lib/ld-musl-x86_64.so.1"].any? { |p| File.exist?(p) }
-    libc = ExecLinker::DEFAULT_LIBC_PATHS.any? { |p| File.exist?(p) }
-    skip "no dynamic loader / libc on host" unless interp && libc
+    skip "no dynamic loader / libc on host" unless host_linkable?
   end
 end

@@ -25,6 +25,8 @@ Tier C の test ジョブは `test.yml` をそのまま再利用する。
 3. Ruby をセットアップして依存 gem をインストールする。
 4. `bundle exec rake test TESTOPTS="--verbose"` を実行する。
 5. `tools/ci_check_skips.rb` で実行件数と skip 数を確認し、ログを artifact に保存する。
+   x86_64 は `native-x86`、native AArch64 は `native-aarch64` の名前付きprofileを
+   使用する。profileはテスト名と正規化済みskip理由の組を許可リストとして検査する。
 
 native aarch64 は `weekly.yml` の `aarch64` ジョブから
 `test.yml` を再利用する。手動実行で `only: aarch64` を選んだ場合だけ、
@@ -70,7 +72,18 @@ Tier A と Ruby 3.4 のジョブは、ツールチェーンの存在を先に確
 | runs が `CI_MIN_RUNS` 未満 | 2500 | スイートの途中終了またはロード漏れ |
 
 skip 理由は絶対パスと数値を正規化したヒストグラムとして出力する。
-`CI_MAX_SKIPS` と `CI_MIN_RUNS` は環境変数で上書きできる。
+`CI_MAX_SKIPS` と `CI_MIN_RUNS` は環境変数で上書きできるが、名前付きprofileの
+上限・下限を緩めることはできない。名前付きprofileでは、未許可のテスト名・理由、
+複数ルールへの重複、ルールごとの件数超過、Minitestサマリの欠落または複数出現も失敗とする。
+したがって、既知の制限を理由にskipするケースは明示的にprofileへ登録する必要があり、
+テストを広くskipしてgreenにする経路にはならない。profileの
+`expected_skips` はnative CIの実測値を固定した段階でnullから厳密な値へ更新する。
+
+`native-aarch64` で許可されるのは、x86_64専用のELF/実行検査、AArch64上で未実装の
+`alloca`、既知のA4/C-suite制限、native-only補助テストの対象外、または明示された
+外部ツール・ネットワーク条件だけである。AArch64用テストはx86_64上でskipするが、
+専用のAArch64 runnerでは実行する。全体suiteの開始前にRubyのCPU/ELF、`gcc -dumpmachine`
+も確認するため、wrong-architectureなRubyやgccでskipを積み上げることはできない。
 
 ## Tier B のジョブ
 

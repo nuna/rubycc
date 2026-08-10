@@ -5,6 +5,23 @@ require "tmpdir"
 require "open3"
 
 class TestElfWriter < Minitest::Test
+  include ExecutionHelper
+
+  # Most fixtures assert x86_64 machine/relocation encodings. The explicit
+  # AArch64 constructor case remains useful on x86_64 as a target-object test,
+  # but this x86-focused file is not a host-generic execution suite; avoid
+  # running its x86 assertions on a native AArch64 runner. The one explicit
+  # AArch64 relocation case is kept runnable on that host instead of being
+  # hidden by the file-level guard.
+  def setup
+    if name == "test_aarch64_slot_relocation_is_abs64"
+      skip "AArch64 relocation coverage requires an AArch64 host" unless host_target == "aarch64"
+      return
+    end
+
+    skip_unless_x86_64_host
+  end
+
   # A tiny but valid "main" body: mov eax, 42; leave; ret.
   MAIN_CODE = [0xB8, 0x2A, 0x00, 0x00, 0x00, 0xC9, 0xC3].pack("C*")
 

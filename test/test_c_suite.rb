@@ -24,12 +24,10 @@ class TestCSuite < Minitest::Test
   # The host profile is derived from Ruby's actual architecture. The host suite
   # must never compile x86 objects and link them with a native AArch64 gcc (or
   # read x86 libc headers on an ARM runner).
-  HOST_TARGET = case [RbConfig::CONFIG["host_cpu"], RbConfig::CONFIG["arch"], RUBY_PLATFORM].join(" ")
-                when /(?:aarch64|arm64)/i then "aarch64"
-                when /(?:x86_64|amd64)/i then "x86_64"
-                else
-                  raise "c-testsuite host profile does not support this CPU: #{RbConfig::CONFIG["host_cpu"]}"
-                end
+  HOST_TARGET = HostTarget.name
+  unless Rubycc::Compiler::TARGETS.key?(HOST_TARGET)
+    raise "c-testsuite host profile does not support this CPU: #{HOST_TARGET.inspect}"
+  end
 
   # The libc header directories on this host. gcc's private include directory
   # (/usr/lib/gcc/.../include, home to stdarg.h and the other compiler-supplied

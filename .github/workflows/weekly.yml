@@ -614,6 +614,8 @@ jobs:
           bundle exec rake test TESTOPTS="--verbose" 2>&1 | tee tmp/ci/test-ruby3.4.log
 
       - name: Guard against runaway skips
+        env:
+          CI_SKIP_PROFILE: native-x86
         run: ruby tools/ci_check_skips.rb tmp/ci/test-ruby3.4.log
 
       - name: Upload the test log

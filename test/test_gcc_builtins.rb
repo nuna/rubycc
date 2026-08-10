@@ -320,7 +320,7 @@ class TestGccBuiltins < Minitest::Test
       }
     C
     error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(source, filename: "overflow_arity.c")
+      Rubycc::Compiler.new.compile(source, filename: "overflow_arity.c", target: host_target)
     end
     assert_match(/__builtin_add_overflow' expects 3 arguments, have 2/, error.message)
   end
@@ -335,7 +335,7 @@ class TestGccBuiltins < Minitest::Test
       }
     C
     error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(source, filename: "overflow_dest.c")
+      Rubycc::Compiler.new.compile(source, filename: "overflow_dest.c", target: host_target)
     end
     assert_match(/last argument to '__builtin_mul_overflow' is not a pointer to an integer/,
                  error.message)
@@ -351,7 +351,7 @@ class TestGccBuiltins < Minitest::Test
       }
     C
     error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(source, filename: "overflow_operand.c")
+      Rubycc::Compiler.new.compile(source, filename: "overflow_operand.c", target: host_target)
     end
     assert_match(/argument to '__builtin_sub_overflow' is not of integer type/, error.message)
   end
@@ -367,7 +367,7 @@ class TestGccBuiltins < Minitest::Test
       }
     C
     error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(source, filename: "overflow_wide.c")
+      Rubycc::Compiler.new.compile(source, filename: "overflow_wide.c", target: host_target)
     end
     assert_match(/'__builtin_add_overflow' does not support 128-bit operands/, error.message)
   end
@@ -381,7 +381,7 @@ class TestGccBuiltins < Minitest::Test
       }
     C
     error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(source, filename: "overflow_wide_dest.c")
+      Rubycc::Compiler.new.compile(source, filename: "overflow_wide_dest.c", target: host_target)
     end
     assert_match(/'__builtin_mul_overflow' does not support a 128-bit result type/, error.message)
   end
@@ -412,7 +412,7 @@ class TestGccBuiltins < Minitest::Test
       }
     C
     error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(source, filename: "choose.c")
+      Rubycc::Compiler.new.compile(source, filename: "choose.c", target: host_target)
     end
     assert_match(/__builtin_choose_expr.*not a constant/, error.message)
   end
@@ -441,7 +441,7 @@ class TestGccBuiltins < Minitest::Test
       int main(void) { return 0b; }
     C
     error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(source, filename: "bin.c")
+      Rubycc::Compiler.new.compile(source, filename: "bin.c", target: host_target)
     end
     assert_match(/binary constant/, error.message)
   end
@@ -449,7 +449,7 @@ class TestGccBuiltins < Minitest::Test
   def assert_matches_gcc(source, name)
     in_tmpdir do |dir|
       rubycc_obj = File.join(dir, "#{name}_rubycc.o")
-      binary = Rubycc::Compiler.new.compile(source, filename: "#{name}.c")
+      binary = Rubycc::Compiler.new.compile(source, filename: "#{name}.c", target: host_target)
       File.binwrite(rubycc_obj, binary)
       rubycc_status, rubycc_out = link_and_run(rubycc_obj)
 

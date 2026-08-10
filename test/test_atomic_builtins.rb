@@ -952,7 +952,7 @@ class TestAtomicBuiltins < Minitest::Test
   private
 
   def compile(source)
-    Rubycc::Compiler.new.compile(source, filename: "atomic.c")
+    Rubycc::Compiler.new.compile(source, filename: "atomic.c", target: host_target)
   end
 
   def run_source(source, compiler)

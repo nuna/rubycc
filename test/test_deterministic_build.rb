@@ -20,6 +20,7 @@ require "stringio"
 # ordering (symbol table, relocations, hash iteration) would show up as a
 # mismatch rather than being masked by a nearly-empty object.
 class TestDeterministicBuild < Minitest::Test
+  include ExecutionHelper
   include LibcHelper
 
   ArWriter = Rubycc::ObjFile::ArWriter
@@ -135,7 +136,7 @@ class TestDeterministicBuild < Minitest::Test
   end
 
   def test_link_with_constructors_is_byte_identical
-    obj = Rubycc::Compiler.new.compile(CONSTRUCTOR_UNIT, filename: "c.c")
+    obj = Rubycc::Compiler.new.compile(CONSTRUCTOR_UNIT, filename: "c.c", target: host_target)
     assert_bytes_equal SharedLinker.link([obj]), SharedLinker.link([obj]),
                        "a shared object with initializer arrays must be byte-identical"
   end
@@ -342,7 +343,7 @@ class TestDeterministicBuild < Minitest::Test
     object_name
   end
 
-  def objects_for(sources, dir, pic: false, target: "x86_64")
+  def objects_for(sources, dir, pic: false, target: host_target)
     sources.each_with_index.map do |src, i|
       path = File.join(dir, "u#{i}.o")
       File.binwrite(path, Rubycc::Compiler.new.compile(src, filename: "u#{i}.c", pic: pic, target: target))
@@ -370,8 +371,7 @@ class TestDeterministicBuild < Minitest::Test
   end
 
   def executable_linkable?
-    interp = ["/lib64/ld-linux-x86-64.so.2", "/lib/ld-musl-x86_64.so.1"].any? { |p| File.exist?(p) }
-    interp && !!libc_path
+    host_linkable? && !!libc_path
   end
 
   # Asserts two byte strings are identical, and — unlike a bare `assert_equal`,

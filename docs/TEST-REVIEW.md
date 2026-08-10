@@ -278,3 +278,20 @@ control/rubycc、extension load、upstream suiteはこのscanで実行したこ�
 prosは対象数と根拠の追跡性が上がること、consはprofileとverification recipeの二重管理が
 残り、手動分類・install/suite実測を別途完了する必要があることである。したがって現時点の
 R10 pass rateは34分母/29記録/85.3%であり、90%達成とは記載しない。
+
+## 継続実装分の批判的レビューと修正（2026-08-10）
+
+native AArch64実測へ進む前に、ホスト依存のtarget漏れ、変換ABI、skip profileを再レビューした。
+
+| 対象 | 批判的な指摘 | 修正・再確認 |
+|---|---|---|
+| host target propagation | `Compiler#compile`の既定値がx86_64のため、native AArch64で直接compileするテストがx86_64 objectを生成し得る。各テストが個別にCPU判定すると漏れとpath差が増える | `HostTarget`を追加し、ExecutionHelper、driver/c-suite、ELF/link/executable/PIC/deterministic、ABI harness、header/ruby smokeなどのhost compileとloader/libc判定を集中化した。x86専用ELF実行は明示guard、AArch64専用relocationケースはAArch64上でのみ実行する構造へ修正した |
+| ordinary GCC link | DebianのPIE既定値が非PICのrubycc objectとAArch64で衝突し、通常のGCC比較がlink errorになった。全てのlink helperへ無条件にPIE方針を混ぜると、PIE検証を隠す | ordinary execution differentialだけに`-no-pie`を適用し、PIE policy専用テストは既存の明示的な`-pie`経路へ分離した。これはlink modeを確認するテストではなく、hosted codeの意味比較であることをhelperコメントへ記録した |
+| float→integer conversion | 32-bit unsigned destinationをIRで8 bytesへ拡張するとAArch64のunsigned W-formを失う。さらに境界値`4294967295u`のfloat round-tripはCの未定義動作になり得る | IRはCの宛先幅 `[width, signed?]`を保持し、x86だけunsigned intでREX.W、AArch64はW/Xを直接選ぶよう修正した。範囲内へ丸められる値へテストを修正し、IR生成、x86 opcode、AArch64 W/X opcode、x86実行差分を個別に再検証した |
+| native skip policy | named profileの広い上限や`expected_skips: null`は、既知reasonを別testへ付け替えた欠落を検知できない。AArch64上で必須の`TestElfWriter`ケースをskip許可に残すと目的に反する | AArch64 profileから同ケースを許可リストごと削除し、skipをunapprovedとしてfailさせる。x86 profileでは対象外skipとしてのみ許可する。x86/AArch64ともprofileをworkflowへ接続し、Ruby CPU/arch、Ruby ELF、gcc target、runner CPUをprofileと整合確認する。実AArch64ログ取得後にID単位の厳密baselineへ更新するまではprofileをprovisionalと明記する |
+| libc path provenance | AArch64のnative pathとcross sysroot pathが同じ候補群にあると、名前だけでhost libcとみなす危険がある | `host_libc_path`はELF64 little-endianとhost machineを検証してから採用する。platform-literalの根拠注記も追加した。native runnerで実際に選ばれたpath/SONAMEはpreflight artifactで別途確認する |
+
+今回のローカル批判レビューで見つかった問題はskip化せず、テストまたはcheckerの失敗として
+修正した。残る外部確認は、同じcommitを使ったGitHub Actionsのacceptance実測とnative
+AArch64 full suiteであり、実測前にprofileの件数を確定扱いしない。R10 34対象gemの
+手動分類も未完了のままである。

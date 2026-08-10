@@ -26,13 +26,16 @@
 # guard because their run/skip shape is intentionally different.
 #
 # Usage:
-#   ruby tools/ci_check_skips.rb <logfile>
+#   ruby tools/ci_check_skips.rb <logfile> [profile]
 #
 # The log is expected to be the output of `rake test TESTOPTS="--verbose"`.
 # Standard library only; no gems, so it runs before/without bundler if needed.
 
+require "json"
+
 DEFAULT_MAX_SKIPS = 55
 DEFAULT_MIN_RUNS = 2500
+SKIP_PROFILE_PATH = File.expand_path("../config/ci/skip-baseline.json", __dir__).freeze
 
 # The Minitest summary line, e.g.
 #   2531 runs, 9204 assertions, 0 failures, 0 errors, 47 skips
@@ -47,6 +50,7 @@ SKIP_HEADER_PATTERN = /^\s*\d+\)\s+Skipped:\s*$/.freeze
 SKIP_LOCATION_PATTERN = /^\s*\S.*\[[^\]]+\]:\s*$/.freeze
 
 Summary = Struct.new(:runs, :assertions, :failures, :errors, :skips)
+SkipEntry = Struct.new(:test_name, :reason)
 
 def die(message)
   warn "ci_check_skips: #{message}"
@@ -63,24 +67,20 @@ def positive_env(name, default)
   value
 end
 
-# The last summary line wins: `rake test` prints one summary per run, and a
-# retried or multi-process invocation would leave earlier ones in the log.
+# Exactly one summary is expected: accepting the last one would let a retry or
+# a concatenated partial run hide failures/skips from the earlier run.
 def find_summary(lines)
-  match = nil
-  lines.each do |line|
-    found = SUMMARY_PATTERN.match(line)
-    match = found if found
-  end
-  return nil if match.nil?
+  matches = lines.filter_map { |line| SUMMARY_PATTERN.match(line) }
+  return nil unless matches.one?
 
-  Summary.new(*match.captures.map { |capture| Integer(capture, 10) })
+  Summary.new(*matches.first.captures.map { |capture| Integer(capture, 10) })
 end
 
 # Collects the reason text of every "N) Skipped:" block. The block is three
 # parts: the header, a "Class#test [location]:" line, then the reason, which
 # runs until a blank line (Minitest wraps long reasons onto several lines).
-def collect_skip_reasons(lines)
-  reasons = []
+def collect_skip_entries(lines)
+  entries = []
   index = 0
 
   while index < lines.length
@@ -91,7 +91,11 @@ def collect_skip_reasons(lines)
 
     index += 1
     # Tolerate a missing location line rather than losing the whole block.
-    index += 1 if index < lines.length && SKIP_LOCATION_PATTERN.match?(lines[index])
+    location = nil
+    if index < lines.length && SKIP_LOCATION_PATTERN.match?(lines[index])
+      location = lines[index].strip.sub(/\s+\[[^\]]+\]:\z/, "")
+      index += 1
+    end
 
     reason = []
     while index < lines.length && !lines[index].strip.empty? && !SKIP_HEADER_PATTERN.match?(lines[index])
@@ -99,10 +103,14 @@ def collect_skip_reasons(lines)
       index += 1
     end
 
-    reasons << reason.join(" ") unless reason.empty?
+    entries << SkipEntry.new(location, reason.join(" ")) unless reason.empty?
   end
 
-  reasons
+  entries
+end
+
+def collect_skip_reasons(lines)
+  collect_skip_entries(lines).map(&:reason)
 end
 
 # Skip reasons often carry a temp path or a pid, which would otherwise split one
@@ -143,14 +151,79 @@ def print_histogram(histogram, total_skips)
   end
 end
 
+def read_skip_profile(name)
+  return nil if name.nil? || name.empty? || name == "default"
+
+  unless File.file?(SKIP_PROFILE_PATH)
+    die "skip profile #{name.inspect} requested but #{SKIP_PROFILE_PATH} is missing"
+  end
+
+  profiles = JSON.parse(File.read(SKIP_PROFILE_PATH)).fetch("profiles")
+  profiles.fetch(name)
+rescue JSON::ParserError, KeyError => e
+  die "invalid or unknown skip profile #{name.inspect}: #{e.message}"
+end
+
+def profile_skip_problems(entries, profile)
+  rules = profile.fetch("allowed_skips").map do |rule|
+    {
+      test_pattern: Regexp.new(rule.fetch("test_pattern")),
+      reason: rule.fetch("reason"),
+      max_count: Integer(rule.fetch("max_count")),
+      min_count: Integer(rule.fetch("min_count", 0))
+    }
+  rescue RegexpError, ArgumentError, KeyError => e
+    die "invalid skip profile rule: #{e.message}"
+  end
+
+  counts = Array.new(rules.length, 0)
+  problems = []
+  entries.each do |entry|
+    matches = rules.each_index.select do |index|
+      rule = rules[index]
+      rule[:test_pattern].match?(entry.test_name.to_s) && normalize_reason(entry.reason) == rule[:reason]
+    end
+
+    if matches.empty?
+      problems << "unapproved skip #{entry.test_name.inspect}: #{normalize_reason(entry.reason).inspect}"
+      next
+    end
+
+    if matches.length > 1
+      problems << "skip manifest rules overlap for #{entry.test_name.inspect}: #{matches.inspect}"
+      next
+    end
+
+    counts[matches.fetch(0)] += 1
+  end
+
+  rules.each_with_index do |rule, index|
+    count = counts[index]
+    if count < rule[:min_count]
+      problems << "skip rule #{index} matched #{count} times, below min_count=#{rule[:min_count]}"
+    elsif count > rule[:max_count]
+      problems << "skip rule #{index} matched #{count} times, above max_count=#{rule[:max_count]}"
+    end
+  end
+
+  expected = profile["expected_skips"]
+  if expected && entries.length != expected
+    problems << "profile expected_skips=#{expected}, got #{entries.length}"
+  end
+
+  problems
+end
+
 def main(argv)
   # Keep the report and the failure lines in order when CI merges the two streams.
   $stdout.sync = true
   $stderr.sync = true
 
-  die "usage: ruby tools/ci_check_skips.rb <logfile>" unless argv.length == 1
+  die "usage: ruby tools/ci_check_skips.rb <logfile> [profile]" unless (1..2).cover?(argv.length)
 
   path = argv[0]
+  profile_name = argv[1] || ENV.fetch("CI_SKIP_PROFILE", "default")
+  profile = read_skip_profile(profile_name)
   die "cannot read log file: #{path}" unless File.file?(path) && File.readable?(path)
 
   # CI logs mix tool output of unknown encoding; read as binary and scrub so a
@@ -159,14 +232,35 @@ def main(argv)
 
   summary = find_summary(lines)
   if summary.nil?
-    die "no Minitest summary line found in #{path} " \
-        "(the run probably died before finishing; check the log tail)"
+    die "expected exactly one Minitest summary line in #{path} " \
+        "(the run probably died, was retried, or was concatenated; check the log)"
   end
 
-  max_skips = positive_env("CI_MAX_SKIPS", DEFAULT_MAX_SKIPS)
-  min_runs = positive_env("CI_MIN_RUNS", DEFAULT_MIN_RUNS)
+  configured_max_skips = positive_env("CI_MAX_SKIPS", DEFAULT_MAX_SKIPS)
+  configured_min_runs = positive_env("CI_MIN_RUNS", DEFAULT_MIN_RUNS)
+  # A named profile is the checked-in contract for that runner. An explicit
+  # environment override may tighten it for a local/CI diagnostic, but an
+  # unset (or empty) override must not accidentally replace the profile with
+  # the x86 default. In particular, the native profile legitimately contains
+  # more than the default x86-only skip budget because it records exact
+  # architecture-specific fixtures.
+  max_skips = if profile
+                profile_max = Integer(profile.fetch("max_skips"))
+                raw = ENV["CI_MAX_SKIPS"]
+                raw.nil? || raw.empty? ? profile_max : [configured_max_skips, profile_max].min
+              else
+                configured_max_skips
+              end
+  min_runs = if profile
+               profile_min = Integer(profile.fetch("min_runs"))
+               raw = ENV["CI_MIN_RUNS"]
+               raw.nil? || raw.empty? ? profile_min : [configured_min_runs, profile_min].max
+             else
+               configured_min_runs
+             end
 
   puts "log: #{path}"
+  puts "skip profile: #{profile_name}"
   puts "summary: #{summary.runs} runs, #{summary.assertions} assertions, " \
        "#{summary.failures} failures, #{summary.errors} errors, #{summary.skips} skips"
   print_histogram(build_histogram(collect_skip_reasons(lines)), summary.skips)
@@ -179,6 +273,12 @@ def main(argv)
   problems << "#{summary.runs} runs is below CI_MIN_RUNS=#{min_runs}; " \
               "the suite did not load or finish completely" if summary.runs < min_runs
 
+  if profile
+    entries = collect_skip_entries(lines)
+    problems.concat(profile_skip_problems(entries, profile))
+    problems << "only #{entries.length}/#{summary.skips} skip details were parsed" if entries.length != summary.skips
+  end
+
   unless problems.empty?
     puts
     problems.each { |problem| warn "ci_check_skips: FAIL: #{problem}" }
@@ -186,7 +286,7 @@ def main(argv)
   end
 
   puts
-  puts "ci_check_skips: OK (skips <= #{max_skips}, runs >= #{min_runs})"
+  puts "ci_check_skips: OK (profile=#{profile_name}, skips <= #{max_skips}, runs >= #{min_runs})"
   exit 0
 end
 

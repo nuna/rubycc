@@ -226,7 +226,7 @@ class TestCompoundLiteral < Minitest::Test
   def test_file_scope_compound_literal_is_diagnosed
     src = "int *p = (int[]){1, 2, 3};\nint main(void) { return p[0]; }"
     error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(src, filename: "fs.c")
+      Rubycc::Compiler.new.compile(src, filename: "fs.c", target: host_target)
     end
     assert_match(/compound literal at file scope is not supported yet/, error.description)
   end
@@ -234,7 +234,7 @@ class TestCompoundLiteral < Minitest::Test
   def test_file_scope_addressed_compound_literal_is_diagnosed
     src = "typedef struct { int a; } S;\nS *g = &(S){ .a = 1 };\nint main(void) { return g->a; }"
     error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(src, filename: "fs.c")
+      Rubycc::Compiler.new.compile(src, filename: "fs.c", target: host_target)
     end
     assert_match(/compound literal at file scope is not supported yet/, error.description)
   end

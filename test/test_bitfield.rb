@@ -180,7 +180,7 @@ class TestBitfield < Minitest::Test
       }
     C
     error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(source, filename: "bf.c")
+      Rubycc::Compiler.new.compile(source, filename: "bf.c", target: host_target)
     end
     assert_match(/cannot take address of bit-field 'a'/, error.message)
   end
@@ -188,7 +188,7 @@ class TestBitfield < Minitest::Test
   def assert_matches_gcc(source, name)
     in_tmpdir do |dir|
       rubycc_obj = File.join(dir, "#{name}_rubycc.o")
-      binary = Rubycc::Compiler.new.compile(source, filename: "#{name}.c")
+      binary = Rubycc::Compiler.new.compile(source, filename: "#{name}.c", target: host_target)
       File.binwrite(rubycc_obj, binary)
       rubycc_status, rubycc_out = link_and_run(rubycc_obj)
 

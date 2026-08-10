@@ -18,11 +18,7 @@ require "tmpdir"
 # extension's real entry points are resolved by the Ruby runtime, which this
 # harness does not stand up. Producing a non-empty object is the success signal.
 class TestRubySmoke < Minitest::Test
-  HOST_TARGET = case RbConfig::CONFIG["host_cpu"].to_s
-                when /\A(?:x86_64|amd64)\z/i then "x86_64"
-                when /\A(?:aarch64|arm64)\z/i then "aarch64"
-                else RbConfig::CONFIG["host_cpu"].to_s
-                end
+  HOST_TARGET = HostTarget.name
 
   # CRuby's own public headers, discovered at runtime from the interpreter
   # running the suite (rather than pinned) so the test tracks whatever Ruby

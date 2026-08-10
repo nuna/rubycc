@@ -5,7 +5,8 @@
    are measured (math_errhandling is the one the two C libraries differ on, so
    both values are carried under __RUBYCC_LIBC_MUSL__; see the preprocessor's
    LIBCS). Common layer: nothing here is arch specific beyond the (universal on
-   this target) IEEE 754 model. */
+   the hosted targets' IEEE 754 model; the two target libc ABIs select their
+   distinct FP_ILOGB* values below. */
 
 #ifndef _RUBYCC_MATH_H
 #define _RUBYCC_MATH_H
@@ -27,8 +28,17 @@
 #define FP_SUBNORMAL 3
 #define FP_NORMAL    4
 
+/* glibc's AArch64 math ABI uses -2147483647 for FP_ILOGB0 and INT_MAX for
+   FP_ILOGBNAN; x86-64 uses INT_MIN for both. These are header ABI values, not
+   compiler implementation details, so select them from the target macro just
+   as float.h and the arch libc headers do. */
+#if defined(__aarch64__)
+#define FP_ILOGB0   (-2147483647)
+#define FP_ILOGBNAN (2147483647)
+#else
 #define FP_ILOGB0   (-2147483647-1)
 #define FP_ILOGBNAN (-2147483647-1)
+#endif
 
 #define MATH_ERRNO     1
 #define MATH_ERREXCEPT 2
@@ -37,7 +47,7 @@
    does not promise errno) where glibc reports 3 (both). Measured with the ABI
    harness, glibc's on this host and musl's on the CI musl run (docs/STEPS.md
    Step 193); MATH_ERRNO, MATH_ERREXCEPT, the FP_* codes and FP_ILOGB* are
-   probed too and measured identical on both. */
+   probed too; the FP_ILOGB* values are target-specific as documented above. */
 #if defined(__RUBYCC_LIBC_MUSL__)
 #define math_errhandling (MATH_ERREXCEPT)
 #else

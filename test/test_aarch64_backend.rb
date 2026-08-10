@@ -814,6 +814,7 @@ class TestAArch64Backend < Minitest::Test
     {
       [4, true] => [0, method(:scvtf)],
       [8, true] => [1, method(:scvtf)],
+      [4, false] => [0, method(:ucvtf)],
       [1, false] => [0, method(:ucvtf)],
       [8, false] => [1, method(:ucvtf)]
     }.each do |desc, (sf, expected)|
@@ -832,6 +833,7 @@ class TestAArch64Backend < Minitest::Test
   def test_floating_to_integer_truncates_toward_zero
     {
       [4, true] => [0, method(:fcvtzs)],
+      [4, false] => [0, method(:fcvtzu)],
       [8, true] => [1, method(:fcvtzs)],
       [8, false] => [1, method(:fcvtzu)]
     }.each do |desc, (sf, expected)|

@@ -20,6 +20,13 @@ require "open3"
 class TestLink < Minitest::Test
   include ExecutionHelper
 
+  # The synthetic writer/linker fixtures below pin x86_64 ELF machine and
+  # relocation numbers. They are an x86_64 target contract, not host-generic
+  # language tests; the AArch64 linker/backend has its own target suite.
+  def setup
+    skip_unless_x86_64_host
+  end
+
   Reader = Rubycc::ObjFile::ELFReader
   Writer = Rubycc::ObjFile::RelocatableWriter
   Linker = Rubycc::Link::PartialLinker
@@ -197,7 +204,7 @@ class TestLink < Minitest::Test
   # --- archive lazy extraction -------------------------------------------
 
   def compile(src, name)
-    Rubycc::Compiler.new.compile(src, filename: name)
+    Rubycc::Compiler.new.compile(src, filename: name, target: host_target)
   end
 
   # Builds an ar archive from [name, bytes] members.

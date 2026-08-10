@@ -163,7 +163,7 @@ class TestOffsetof < Minitest::Test
       int main(void) { return (int)sizeof(probe); }
     C
     error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(source, filename: "runtime_index_constant.c")
+      Rubycc::Compiler.new.compile(source, filename: "runtime_index_constant.c", target: host_target)
     end
     assert_match(/array size must be an integer constant/, error.message)
   end
@@ -190,7 +190,7 @@ class TestOffsetof < Minitest::Test
       }
     C
     error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(source, filename: "bitfield.c")
+      Rubycc::Compiler.new.compile(source, filename: "bitfield.c", target: host_target)
     end
     assert_match(/bit-field/, error.message)
   end
@@ -204,7 +204,7 @@ class TestOffsetof < Minitest::Test
       }
     C
     error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(source, filename: "unknown.c")
+      Rubycc::Compiler.new.compile(source, filename: "unknown.c", target: host_target)
     end
     assert_match(/no member named 'z'/, error.message)
   end
@@ -212,7 +212,7 @@ class TestOffsetof < Minitest::Test
   def assert_matches_gcc(source, name)
     in_tmpdir do |dir|
       rubycc_obj = File.join(dir, "#{name}_rubycc.o")
-      binary = Rubycc::Compiler.new.compile(source, filename: "#{name}.c")
+      binary = Rubycc::Compiler.new.compile(source, filename: "#{name}.c", target: host_target)
       File.binwrite(rubycc_obj, binary)
       rubycc_status, rubycc_out = link_and_run(rubycc_obj)
 

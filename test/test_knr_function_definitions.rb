@@ -414,7 +414,7 @@ class TestKnrFunctionDefinitions < Minitest::Test
   private
 
   def compile(source)
-    Rubycc::Compiler.new.compile(source, filename: "knr.c")
+    Rubycc::Compiler.new.compile(source, filename: "knr.c", target: host_target)
   end
 
   def run_source(source, compiler)

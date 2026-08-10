@@ -24,10 +24,10 @@ class TestSharedObject < Minitest::Test
   include LibcHelper
 
   def setup
-    host_cpu = RbConfig::CONFIG["host_cpu"].to_s
-    return if host_cpu.match?(/\A(?:x86_64|amd64)\z/i)
+    host_target = HostTarget.name
+    return if host_target == "x86_64"
 
-    skip "x86_64 shared-object coverage is not valid on #{host_cpu.inspect}"
+    skip "x86_64 shared-object coverage is not valid on #{host_target.inspect}"
   end
 
   Reader = Rubycc::ObjFile::ELFReader

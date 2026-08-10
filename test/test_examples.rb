@@ -39,7 +39,7 @@ class TestExamples < Minitest::Test
   def compile_example(path, object_path, compiler)
     case compiler
     when :rubycc
-      Rubycc::Compiler.compile_file(path, object_path)
+      Rubycc::Compiler.compile_file(path, object_path, target: host_target)
     when :gcc
       stdout_and_stderr, status = Open3.capture2e("gcc", "-c", "-o", object_path, path)
       unless status.success?

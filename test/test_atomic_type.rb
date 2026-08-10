@@ -439,7 +439,7 @@ class TestAtomicType < Minitest::Test
   private
 
   def compile(source)
-    Rubycc::Compiler.new.compile(source, filename: "atomic_type.c")
+    Rubycc::Compiler.new.compile(source, filename: "atomic_type.c", target: host_target)
   end
 
   def run_source(source, compiler)

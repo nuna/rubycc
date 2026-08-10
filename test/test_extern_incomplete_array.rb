@@ -47,7 +47,7 @@ class TestExternIncompleteArray < Minitest::Test
   end
 
   def compile(source, filename: "foo.c")
-    Rubycc::Compiler.new.compile(source, filename: filename)
+    Rubycc::Compiler.new.compile(source, filename: filename, target: host_target)
   end
 
   # A non-extern unbounded array at block scope has no initializer and no

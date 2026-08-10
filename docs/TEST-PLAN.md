@@ -510,3 +510,19 @@ verification recordへ昇格させない。
 0 errors / 42 skips` で、`tools/ci_check_skips.rb`も `skips <= 55`、`runs >= 2500`
 を満たした。skip 42件は従来の許可された理由であり、native smoke 2件はx86_64上で
 意図どおりskipされている。これはnative実runner実測の代用ではない。
+
+### 継続実装のタスク分解・批判レビュー結果（2026-08-10）
+
+| タスク | 実施内容 | レビュー結果・修正 |
+|---|---|---|
+| HOST-1 target/helper集約 | `HostTarget`、host loader/libc、host linkabilityを共通化し、直接compileするテストへhost targetを伝播 | x86_64既定値の漏れとAArch64 nativeでのx86 object生成を検出。x86専用テストは明示guard、AArch64専用relocationケースはnativeで実行するよう修正 |
+| HOST-2 link/ABI差分 | ordinary GCC linkを`-no-pie`へ固定し、AArch64のPIE/alloca/math/unsigned conversionを個別に扱う | PIE専用テストを隠していないこと、AArch64 allocaは既知制限としてだけskipすることを再確認。float→unsigned intのC UB値は範囲内テストへ置換 |
+| HOST-3 conversion contract | IRのC幅保持、x86 REX.W、AArch64 W/Xを実装 | generator IR、x86 opcode、AArch64 opcode、x86 GCC差分のテストを追加。unsigned longの合成経路とunsigned intの通常経路を分離 |
+| SKIP-1 named profiles | `native-x86`/`native-aarch64`、test+理由のallowlist、profile固有上限、summary厳密性をworkflowへ接続 | AArch64上で実行必須のElfWriterケースを許可対象から除外。profileは実測値確定までprovisionalで、環境変数による上限緩和不可 |
+| SKIP-2 architecture preflight | runner CPU、Ruby `RbConfig`/ELF、gcc machineをprofileと照合 | runner labelだけに依存せず、x86/AArch64双方でwrong architectureをsuite開始前にfailさせる経路へ修正。weekly Ruby 3.4にもx86 profileを適用 |
+| LIBC-1 provenance | AArch64 glibc候補のplatform literal根拠とELF machine検証を追加 | cross sysrootを名前だけでhost libcと扱わないことを確認。native実測pathはpreflight artifactで追跡する |
+
+この段階のローカル完了条件は、追加テストを含む全体回帰、named checker、workflow YAML、
+platform literal検査がすべてpassすることとした。GitHub Actions acceptance/nativeの実runner
+結果でないものは、引き続き実runner未実測として記録する。R10手動分類34件はこの計画の
+残課題であり、scanner artifactを分類完了やR10合格率へ流用しない。

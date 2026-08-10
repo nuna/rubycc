@@ -23,12 +23,14 @@ require "rubycc/rmake/rmake"
 # the old one needed) so the assertion means "still not quadratic" rather than
 # "this machine is fast".
 class TestDosResilience < Minitest::Test
+  include ExecutionHelper
+
   Compiler = Rubycc::Compiler
   Preprocessor = Rubycc::Preprocess::Preprocessor
   CompileError = Rubycc::CompileError
 
   def compile(source, filename: "dos.c")
-    Compiler.new.compile(source, filename: filename)
+    Compiler.new.compile(source, filename: filename, target: host_target)
   end
 
   def preprocess(source, filename: "dos.c")

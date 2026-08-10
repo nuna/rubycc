@@ -5221,8 +5221,10 @@ module Rubycc
       # are signed-only, a 64-bit *unsigned* integer on either side cannot ride
       # the plain :itof/:ftoi (whose top bit the hardware reads as a sign), so it
       # is synthesized branchwise from the signed primitives by
-      # #u64_to_floating / #floating_to_u64. An `unsigned int` (32-bit) source is
-      # already handled by :itof/:ftoi, whose 64-bit form covers its full range.
+      # #u64_to_floating / #floating_to_u64. A 32-bit unsigned value remains a
+      # normal conversion: each backend chooses the instruction view needed to
+      # cover its full range (the x86 backend uses its 64-bit signed form, while
+      # AArch64 has a native unsigned W-form).
       def convert_floating(vreg, from, to, token)
         if from.float? && to.float?
           dst = new_vreg
@@ -5231,13 +5233,12 @@ module Rubycc
         elsif from.float?
           return floating_to_u64(vreg, from) if unsigned_long?(to)
 
-          # cvttss2si/cvttsd2si is signed, so a 32-bit *unsigned* destination
-          # whose value falls in (INT_MAX, UINT_MAX] would overflow a 32-bit
-          # truncation. Truncating at 64 bits is exact across the whole 0..2^32-1
-          # range, and the destination keeps only its low bytes.
-          width = to.unsigned? && to.size < 8 ? 8 : to.size
           dst = new_vreg
-          emit(:ftoi, dst: dst, a: vreg, b: [width, to.signed?], size: from.size)
+          # Keep the C destination width in the IR. A backend may select a wider
+          # machine instruction when its ISA needs one (x86's signed-only
+          # conversion is the example); widening the descriptor here would make
+          # an AArch64 backend lose its unsigned W-form at the 2^32 boundary.
+          emit(:ftoi, dst: dst, a: vreg, b: [to.size, to.signed?], size: from.size)
           return dst if to.size >= 4
 
           narrowed = new_vreg

@@ -12,6 +12,8 @@ require "fiddle"
 # one-shot compile+link path are checked end to end. Host-dependent cases (a
 # runnable executable, real -lz) are skip-guarded.
 class TestDriver < Minitest::Test
+  include ExecutionHelper
+
   EXE_PATH = File.expand_path("../exe/rubycc", __dir__)
   LIB_DIR  = File.expand_path("../lib", __dir__)
 
@@ -353,16 +355,17 @@ class TestDriver < Minitest::Test
 
   # --- target selection (-target / --target) ------------------------------
 
-  # The default target is the host CPU, so an ordinary -c on an x86_64 host
-  # compiles without a -target flag (the object's e_machine is EM_X86_64=62).
+  # The default target is the host CPU, so an ordinary -c without -target
+  # produces an object the host linker can consume. This must be checked on
+  # every native backend rather than asserting the historical x86_64 default.
   def test_default_target_compiles_on_host
-    skip "not an x86_64 host" unless RbConfig::CONFIG["host_cpu"] == "x86_64"
-
     in_tmpdir do |dir|
       File.write(File.join(dir, "u.c"), "int main(void){ return 0; }")
       _out, err, status = rubycc("-c", "u.c", "-o", "u.o", dir: dir)
       assert_equal 0, status.exitstatus, err
-      assert_equal 62, File.binread(File.join(dir, "u.o"), 2, 18).unpack1("S<")
+      machine = Reader.read_file(File.join(dir, "u.o")).machine
+      expected = host_target == "aarch64" ? Reader::EM_AARCH64 : Reader::EM_X86_64
+      assert_equal expected, machine
     end
   end
 
@@ -448,9 +451,7 @@ class TestDriver < Minitest::Test
   end
 
   def linkable?
-    interp = ["/lib64/ld-linux-x86-64.so.2", "/lib/ld-musl-x86_64.so.1"].any? { |p| File.exist?(p) }
-    libc = Rubycc::Link::ExecutableLinker::DEFAULT_LIBC_PATHS.any? { |p| File.exist?(p) }
-    interp && libc
+    host_linkable?
   end
 
   def skip_unless_linux

@@ -3,8 +3,10 @@
 require_relative "test_helper"
 
 class TestDiagnostics < Minitest::Test
+  include ExecutionHelper
+
   def compile(source, filename: "foo.c")
-    Rubycc::Compiler.new.compile(source, filename: filename)
+    Rubycc::Compiler.new.compile(source, filename: filename, target: host_target)
   end
 
   def test_missing_semicolon_message_has_full_diagnostic
