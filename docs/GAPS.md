@@ -14,6 +14,8 @@
 
 | **T** | **配列の要素数をパーサが数える文脈で、struct を返す式が単一式初期化子として読めない** | `pt b[] = { {1,2}, fp(), {5,6} };` が `excess elements in scalar initializer` になる(gcc は 3 要素)。パーサは `[]` の長さをここで確定させる必要があるが、型表を持たないので `fp()` の型が分からない | **実測**(2026-08-08) | struct を直接初期化する形は通る(atomic-type-13)。解消にはパーサ側に型を引く手段が要る |
 
+| **U** | **既定のシステム include 探索パスが x86-64 の multiarch ディレクトリ決め打ち** | `LIBC_SYSTEM_INCLUDE_PATHS` が `/usr/include/x86_64-linux-gnu` を無条件に持つ(`lib/rubycc/preprocess/preprocessor.rb`)。target にもホスト CPU にも依存しないので、**aarch64 ホストで `rubycc` を素で使うと存在しないディレクトリを探し、`/usr/include/aarch64-linux-gnu` を探さない**。同梱 libc ヘッダが先に当たるため多くの場合は表面化しないが、同梱に無いヘッダがホストの multiarch 側 `bits/` を引く経路で崩れる | **実測**(`test-ci-implementation-2` の作業中に判明)。`test/support/host_target.rb` のコメントが「`Compiler#compile` の既定 target はホストの検出ではない」と明記しているとおり、テスト側は機種対応済みだが**製品側は未対応** | native smoke は `system_includes: false` で既定パスを迂回するため、**この死角を検出できない**。解消には `LIBC_SYSTEM_INCLUDE_PATHS` を target 別にする(`float.h`・`math.h` と同じ per-target 化)必要がある |
+
 ## 2. 未解消の負債
 
 | 負債 | 影響 | 優先 | 詳細 |
@@ -28,7 +30,7 @@
 | 未測定 | 詳細 |
 |---|---|
 | ~~**musl** での全検証~~ | **測定した(Step 175)**。結果は緑ではなく、ギャップ G・H・I として §1 に移した。`data/verified_gems.json` に musl の記録が 1 件も無いのは変わらないが、それは**環境が無いからではなく通っていないから**になった |
-| ~~**aarch64 での gem install 実走**~~ | **限定測定済み(Step 208)**。qemu 上の glibc / aarch64 Ruby 4.0.6 で `io-wait` と `stringio` の gem install・gem 自身のテストが通った。`json` / `msgpack` と全スイートは M4 受け入れとして未完了 |
+| ~~**aarch64 での gem install 実走**~~ | **限定測定済み(Step 208)**。qemu 上の glibc / aarch64 Ruby 4.0.6 で `io-wait` と `stringio` の gem install・gem 自身のテストが通った。**全スイートは `test-ci-implementation-4` で解消**([weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)、native `ubuntu-24.04-arm` 上の Ruby 3.3 / 4.0 が success)。`json` / `msgpack` の aarch64 上 `gem install` だけが未完了 |
 | ~~真の distroless コンテナ検証~~ | **測定済み(Step 202)**。glibc / musl の `ruby:4.0` distroless相当で json / msgpack / sqlite3 / pg のビルドとrequireに成功 |
 
 ## 4. 方針として受け入れたもの(ギャップではない)

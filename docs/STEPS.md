@@ -9732,3 +9732,187 @@ toolchain の導入、Ruby 3.3 / 4.0 matrix、全スイート、skip guard、art
 
 専用 `arm-ci.yml` は削除し、CI の構成説明を `docs/CI.md` と `docs/ROADMAP.md` に反映した。
 これは workflow と文書だけの変更なので、C の examples は追加していない。
+
+---
+
+## test-ci-implementation-1 — 受入れの合否を「ログの見た目」から外す(M5 H6)
+
+対応コミット: `fa317a8`、`8a37123`、`5e28d99`。
+
+### 何が問題だったか
+
+受入れテストは「ネットワークが死んでいたら skip」で書かれていた。skip は Minitest の
+サマリでは緑と区別がつかないので、**受入れが一件も実行されないまま weekly が緑になる**
+経路が実在した。Tier A の `ci_check_skips.rb` は総数しか見ないうえ、受入れ実行では
+run/skip の形が変わるため、weekly acceptance ではそもそも適用されていなかった。
+
+### 設計
+
+判定の入力を Minitest のログから**構造化結果**へ移した。
+
+- `tools/ci_result.rb` — `pass` / `fail` / `skipped` / `inconclusive` の 4 状態と、
+  profile・host・target・runner・libc・network を持つ結果ドキュメント。
+- `config/ci/acceptance_manifest.json` — 安定 ID(`mkmf-json-extconf`、`m2-json-suite` 等)、
+  profile、`allowed_states`、owner、`expires`、および取得物の HTTPS URL と SHA-256。
+- `tools/ci_check_acceptance.rb` — 必須 ID が**実行されたか**を判定する。未実行・
+  strict 時の skip・`inconclusive`・profile 不一致・artifact の digest 不一致を落とす。
+
+**ログ解析を二重に持たせない**ことを制約にした。`ci_check_skips.rb` は Tier A の
+総量ガードとして残し、受入れは構造化結果を主入力にする。両者が同じログ形式を
+別々に解釈し始めると、片方だけが壊れたときに気づけない。
+
+`inconclusive` は「外部サービスの都合で判定できなかった」を製品の緑に混ぜないための
+状態である。**strict では `--allow-inconclusive` を指定しても失敗する**。診断レポート用の
+逃げ道が required job の緑に化けるのを防ぐため、この一方通行は意図的に作った。
+
+### 捨てた選択肢
+
+skip 理由の許可リストで受入れを守る案は採らなかった。理由文字列は実装の都合で変わるので、
+**「何が実行されたか」を ID で持つ方が、理由文を正規表現で追いかけるより寿命が長い**。
+
+### 同時に片付けたもの
+
+- **c-testsuite `00130` / `00151`**: 上流のオラクルは `main` の終了コードだけで、
+  `00151` は初期化子を全部捨ててもゼロ同士で一致して通る。`test/support/c_suite_oracle.rb`
+  に**値を stdout へ出す観測**を足し、GCC 版と突き合わせた。初期化子を捨てる変異を
+  ソースレベルで作り、オラクルがそれを確実に落とすことも試験にした。上流ファイルは
+  書き換えていない。根拠が揃ったのでこの 2 件の skip を外した。
+- **rmake golden の絶対パス依存**: fixture が収集マシンの Ruby ヘッダパスを埋め込んでいて、
+  別環境では `make -n` が失敗して skip になっていた。論理パスへの override に変え、
+  prerequisite の stub は**fixture が宣言済みのものだけ**に限定した(未知の欠落を
+  勝手に合成すると、fixture の誤りが緑になる)。CI では skip ではなく失敗にする。
+- **DESIGN R9 の表現**: 「ABI 完全互換」と、struct を `...` へ渡す/`va_arg(ap, struct T)` を
+  診断拒否している実装が矛盾していた。ROADMAP §3 には既に「診断エラーにして先送り」と
+  記録があったので、DESIGN 側の反映漏れとして対応範囲を明示した。typedef 経由の
+  `va_arg` も同じ診断になることを試験に追加した。
+
+## test-ci-implementation-2 — ホスト機種の思い込みをテストから追い出したら、実バグが出た(M4 / M5 H6)
+
+対応コミット: `3a0481f`、`3745ae4`、`c555bee`、`a8de000`。
+
+### 動機
+
+native aarch64 の受入れを作る前段として、テストが「ホストは x86_64」を暗黙に仮定して
+いる箇所を洗い出した。`Compiler#compile` の既定 target は `x86_64` だが、これは
+**互換のための既定であってホストの検出ではない**。aarch64 ホストでこの既定のまま
+コンパイルすれば、x86_64 のオブジェクトを native gcc に渡すことになる。
+
+`test/support/host_target.rb` を置き、MRI の `host_cpu` からバックエンド名への変換を
+一箇所にした。libc の SONAME と multiarch パスも `LibcHelper` 経由で機種別に解決する。
+
+### 出てきた実バグ — `float` → `unsigned int`
+
+IR ジェネレータが、変換先が unsigned かつ 8 バイト未満なら**幅を一律 8 に広げて**
+`:ftoi` を出していた。コメントは「64 ビットで切り捨てれば 0..2^32-1 を網羅できる」と
+説明していたが、これは **x86 の事情を機種非依存であるはずの IR に埋め込んだもの**だった。
+
+境界で食い違う。`fcvtzu X` は 2^32 に丸まる値に対して `0x1_0000_0000` を返し、下位
+32 ビットは 0 になる。一方 aarch64 の gcc は `fcvtzu W` を使い UINT_MAX に飽和する。
+
+修正は、**IR には C の変換先の幅をそのまま持たせ、必要な命令幅は各バックエンドが選ぶ**
+形にした。x86_64 は `unsigned int` のときも REX.W を立てて 64 ビットの符号付き変換を
+使い(32 ビットの符号付き形では 0..2^32-1 が入らない)、aarch64 は ISA が持つ
+unsigned の W 形式を使う。回帰は `test/test_float_integer_ir.rb`。
+
+これは M4 A1(バックエンド抽象化)の趣旨そのものである。**機種非依存の層に一機種の
+都合が残っていると、もう一機種を足したときに silent mismatch になる。**
+A2 の「関数間パディングの NOP」「CPU 識別マクロ」、A3 の「名前なしビットフィールドの
+整列規則」に続いて、同じ形の見落としが 4 件目である。
+
+### 同じ形のもう 1 件 — `FP_ILOGB*`
+
+`include/libc/math.h` の `FP_ILOGB0` / `FP_ILOGBNAN` を全機種で `INT_MIN` にしていた。
+glibc は x86-64 が両方 `INT_MIN`、aarch64 が `-2147483647` と `INT_MAX` である。
+`__aarch64__` で分岐した。Step 201 の `float.h` と同じ「freestanding 層は機種に依らない」
+という思い込みで、**同梱ヘッダは共通層でも ABI 値を持ちうる**。
+
+なお aarch64 側の値は glibc の定義に合わせたもので、**ABI ハーネスでの実測ではない**。
+native aarch64 で harness を回した時点で測り直すこと。
+
+### CI 側
+
+`test.yml` に「全スイートが runner のネイティブアーキで走っているか」を確かめる段を
+足した。`uname -m`、Ruby の `RbConfig` の `host_cpu` と `arch`、`gcc -dumpmachine`、
+`readelf -h $(command -v ruby)` の 4 点を照合する。**1 つでも外れたら失敗させる** —
+誤った Ruby が数件の skip だけで緑になる形を塞ぐため。
+
+## test-ci-implementation-3 — skip を「数」ではなく「集合」で固定する(M5 H6)
+
+対応コミット: `63200dd`、`7d903c4`。
+
+`ci_check_skips.rb` は総 skip 数の上限しか見ていなかった。これでは
+**既知の skip が別の skip に置き換わっても気づけない**。ツールが 1 つ消えて 6 件
+skip が増え、同時に 6 件が実装されて減れば、総数は動かない。
+
+`config/ci/skip-baseline.json` に runner 別 profile(`native-x86` / `native-aarch64`)を置き、
+テスト名と正規化済み skip 理由の組を許可リストとして検査する。さらに `expected_skips` と
+`skip_fingerprint` で**集合そのもの**を固定する。CI は `CI_SKIP_PROFILE` と
+`CI_ENFORCE_SKIP_BASELINE=1` で強制し、ローカルの既定 profile は従来どおり総量ガードだけ
+にしてある(開発中に基線が邪魔をしないため)。
+
+aarch64 の未対応由来の skip 理由は綴りが揺れていたので、`ci_check_skips.rb` の正規化が
+1 件に畳めるよう文言を統一した。基線の差分を読むときに、同じ原因が複数行に散らない。
+
+## test-ci-implementation-4 — struct `va_arg` の需要調査と、実 runner での受入れ(M5 H6)
+
+対応コミット: `d36a39d`、`f875f77`、`260af8e`、`94786cf`。
+
+### struct `va_arg` を実装するかどうか
+
+ROADMAP §3 は「実害が出た時点で」としていたが、**実害の有無を測る手段が無かった**。
+`tools/scan_corpus_variadics.rb` で候補を字句的に集め、`tools/r10_manual_classification.rb`
+で R10 対象 34 件・候補 128 件を分類した。
+
+**128 件はすべて誤検出だった。** `snprintf(buf, "...", c, FIX2INT(y) - s)` のように、
+scanner が引数を struct と見なしただけでスカラーだった、という形が大半である。
+
+分類の設計で重要な点が 2 つある。
+
+- **候補ゼロを「無い」と読まない。** 候補が出なかった対象には `zero_finding_review` を
+  付け、「この profile の選択されたソースには候補が無い」までしか主張しない。生成コード・
+  platform 分岐・マクロ展開は別物として残す。
+- **決められないものを pass にしない。** 10 件は `needs_more_evidence` とし、
+  次の確認・担当・期限(2026-08-24)を持たせた。openssl・prism・psych・fiddle・rbs・
+  puma・nio4r・pg など、生成コードや外部ライブラリの ABI が絡むものである。
+  **fiddle は libffi の variadic/struct 呼び出しそのものなので、この問いに最も近い。**
+
+したがって現時点の結論は「**24/34 の範囲では実需要が見つかっていない**」であって、
+「需要が無い」ではない。DESIGN R9 の制限を暫定から正式へ格上げするのは、この 10 件が
+閉じてからにすること。scanner を不在証明にも合否判定にも使わないという 4B の原則は、
+ここでも守っている。
+
+### 実 runner での受入れ
+
+- native aarch64: [weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)
+  (`7d903c4`)。`ubuntu-24.04-arm` 上で `native-aarch64-smoke` と Ruby 3.3 / 4.0 の
+  全スイートが success。**M4 受入れの「aarch64 上の全テストスイート」が実走で埋まった。**
+- live acceptance: [weekly run 31345720437](https://github.com/nuna/rubycc/actions/runs/31345720437)
+  (`d36a39d`)。fixture と live の両方が success。
+
+どちらも tip ではない commit での実測である点は `docs/TEST-PLAN.md` の残課題に残した。
+
+## test-ci-implementation-5 — native smoke を週次に載せる(M5 H6)
+
+対応コミット: `c48cdf6`。
+
+`native-aarch64-smoke` は full suite と同じ `only: aarch64` ゲートに置かれていて、
+**週次スケジュールでは発火しなかった**。このリポジトリの native 機構 — preflight、
+`native-aarch64` skip baseline、`test.yml` のアーキテクチャ検証 — はいずれも
+AArch64 runner 上でしか何も報告しない。全部を手動 dispatch の後ろに置くと、
+スケジュール実行が native を一切再確認せず、保証の鮮度が
+「最後に誰かが dispatch した時点」で止まる。
+
+Step `codex/arm-ci-m4-20260808-1` は「週次 schedule には含めない」と決めていた。
+その判断は **2 matrix の full suite が hosted runner の無料枠を大きく消費する**ことが
+理由なので、20 分・単一 job の smoke には当てはまらない。**smoke だけを週次に載せ、
+full suite は dispatch 専用のまま残す**という分け方にした。両方の条件を
+`test/test_weekly_workflow.rb` で固定してあるので、どちらかが他方に寄ることはない。
+
+あわせて `docs/CI.md` の `acceptance-fixture` の説明を実態に直した。「ネットワークを
+使わない必須の製品シグナル」と書かれていたが、実際は Tier B の週次 job で PR の必須判定
+ではなく、実行しているテスト 2 本は Tier A の `rake test` に含まれる。そして
+**live acceptance の代替にはならない** — gem の取得・unpack・extconf・ビルドという、
+実際に skip が発生していた経路は依然ネットワークを必要とする。TEST-PLAN の 2B-1
+(archive の fixture 化)が未実施であることを残課題に明記した。
+
+これは workflow と文書だけの変更なので、C の examples は追加していない。

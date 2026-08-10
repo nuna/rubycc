@@ -38,7 +38,7 @@ QEMU で実行した結果**であり、aarch64 Ruby 自身で `rake test` や `
 
 | M4受入れ項目 | 確認結果 | 未完了の原因 |
 |---|---|---|
-| aarch64 上の全テストスイート | クロス経路は green。native job を設計・追加(実走待ち) | ローカルに aarch64 Ruby が無い。`weekly.yml` の `only: aarch64` を手動実行して確認する。 |
+| ~~aarch64 上の全テストスイート~~ | **完了(`test-ci-implementation-4`)**。[weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)(`7d903c4`)で `ubuntu-24.04-arm` 上の Ruby 3.3 / 4.0 全スイートと `native-aarch64-smoke` が success | ~~ローカルに aarch64 Ruby が無い~~ **解消**。以後 `native-aarch64-smoke` は週次スケジュールでも走る(`test-ci-implementation-5`)。full suite は引き続き `only: aarch64` の手動実行 |
 | ABI ファジングハーネスの機種パラメタ化 | **実装済み(本ブランチ)** | `TestCrossAbi` が同じ決定論的な 40 レイアウトを x86_64 と aarch64 で実行する。aarch64 は既存のクロスgcc + QEMU経路を使うため aarch64 Ruby は不要。 |
 | aarch64 の json / msgpack `gem install` | 未実施 | ネットワーク受入れテストは `RMAKE_ACCEPTANCE=1` 未指定のため 44 skips に含まれる。aarch64 Ruby が必要で、Docker daemon も `/var/run/docker.sock` の permission denied で利用できない。 |
 | aarch64 musl の全受入れ | 未実施 | `musl-gcc` / `aarch64-linux-musl-gcc` が無く、Docker daemon も利用できない。今回の musl 3件は bundled header の分岐値を glibc cross linker + QEMU で確認したもので、musl libc/Ruby の実走ではない。 |
@@ -154,7 +154,7 @@ musl全スイートとaarch64 Ruby上のM4全面受入れ。
 | 項目 | 内容 | 解消予定 |
 |---|---|---|
 | 不完全型 struct の param/return | 未呼び出しプロトタイプでも宣言時に診断エラー(分類にレイアウトが要るための簡略化) | 実害が出た時点 |
-| 可変長部への struct 渡し・va_arg(struct) | 診断エラーにして先送り | 実害が出た時点 |
+| 可変長部への struct 渡し・va_arg(struct) | 診断エラーにして先送り。DESIGN R9 に対応範囲外として明記済み(`test-ci-implementation-1`)。R10 対象 34 件のうち 24 件を分類し、候補 128 件はすべて誤検出だった(`test-ci-implementation-4`、`docs/R10-MANUAL-CLASSIFICATION.md`) | **残り 10 件の `needs_more_evidence`(期限 2026-08-24、特に fiddle = libffi の variadic/struct 呼び出し)が閉じた時点**。それまでは「需要が無い」ではなく「24/34 では見つかっていない」として扱い、暫定制限を正式な非対応範囲へ格上げしない |
 | 内側スコープの `struct S;` 再宣言 | C 6.7.2.3p7 に従わず外側タグを参照 | 実害が出た時点 |
 | ~~ブロックスコープの関数宣言~~ | **解消(Step 168)**: 6.2.2p5 の外部リンケージとしてファイルスコープの宣言と同じ署名テーブルへ合流させ、ローカルスロットは取らない。`static` は 6.7.1p7 の制約違反として診断、入れ子関数定義(GNU 拡張)は引き続き拒否。io-console が `ruby/ractor.h` 経由で実害を出した。c-testsuite 00078 の skip も外れた | ~~実害が出た時点~~ **完了** |
 | ~~`&arr[i]` 等の計算アドレス定数~~ | **解消(Step 45、b4be1fe)**: 初期化子を「基点シンボル/文字列 + 定数変位 + pointee」へ畳む walker を追加し、キャスト・`&arr[i]`・`arr ± n`・`&rec.member` を R_X86_64_64 の addend に乗せる。json jeaiii-ltoa の「文字列リテラルを struct ポインタにキャストした桁テーブル」が通る | ~~実害が出た時点~~ **完了** |
