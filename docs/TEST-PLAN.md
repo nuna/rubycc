@@ -279,7 +279,7 @@ x86_64とAArch64のELF・ABI固有期待値は共通化せず、GCC・ELF仕様�
 | 2A fetch helper | 完了 | retry分類、実子プロセスtimeout、manifest URL直取得、atomic download、SHA-256検証、checksum/unpack分類、strict typed failure |
 | 2B fixture job | 完了 | mkmf/rmakeのnetwork-free required profileとmanifestをworkflowへ接続 |
 | 2C live/M2 | 実装・ローカル実測完了 | live stable ID、M2結果ID、`inconclusive` policy、manifest artifact report、pinned URL/digest、variadic scan artifactを接続。x86_64ローカルでlive対象30 runs / 2598 assertionsとM2 json 603 tests / msgpack 455 examplesを実測pass |
-| 3 native AArch64 smoke | 実装完了・実runner未実測 | native RubyのCPU/arch、gcc machine、Fiddle、Ruby headers、loader/libc preflight、skip防止、ABI/Fiddle/cross-compiler smokeを接続。現在のx86_64環境ではnative AArch64実測は未実行 |
+| 3 native AArch64 smoke | 実runner実測完了 | native RubyのCPU/arch、gcc machine、Fiddle、Ruby headers、loader/libc preflight、skip防止、ABI/Fiddle/cross-compiler smokeを接続。[weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)でrequired ID全件pass |
 | 4A struct `va_arg` | 完了 | DESIGNの対応範囲を修正し、struct caller・直接/typedef `va_arg`の診断を固定 |
 | 4B scanner | 部分完了 | lexical scanner、typedef検出、c-testsuite実測記録、M2 json/msgpack artifact接続。R10全gemの手動分類は未完了 |
 
@@ -295,7 +295,7 @@ fetch helper 9 / 33、scanner 8 / 44、rmake golden 7 / 24、c-suite対象4 / 23
 | 残課題 | 現状 | 次の確認・完了条件 |
 |---|---|---|
 | live network acceptanceの実環境実行 | workflow、stable ID、strict checker、M2結果記録は実装済み。外部ネットワークを使うjob自体はこの環境では未実行 | GitHub Actions上でlive jobを実行し、fetch/unpack、gem install、M2の全必須IDとartifactを確認する |
-| native AArch64の実測 | `uname`だけでなくRubyの`RbConfig`を検証するnative smoke workflowを追加済み。現在のx86_64環境ではnative AArch64は未実行 | AArch64 runner上で対象smokeがskipされずpassし、ログにnative contextが残ることを確認する |
+| native AArch64の実測 | `uname`だけでなくRubyの`RbConfig`を検証するnative smoke workflowを追加済み。[weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)で実測完了 | AArch64 runner上で対象smokeがskipされずpassし、ログにnative contextが残ることを確認済み |
 | R10全対象gemの手動分類 | scannerのc-testsuite実測と、M2で取得できたjson/msgpackのartifact走査まで。macro展開・生成コードを含む全gemの手動分類は未完了 | R10対象gemごとに「実使用・誤検出・要追加確認」を分類し、struct `va_arg`の実装要否を決定する |
 
 これらは未実施をgreenとして扱わない。fixture acceptanceはnetwork-freeの必須経路として独立しており、live/native/R10の未確認範囲は上表の状態のまま受入れ判定から区別する。
@@ -350,12 +350,12 @@ fetch helper 9 / 33、scanner 8 / 44、rmake golden 7 / 24、c-suite対象4 / 23
 |---|---|---|
 | 6A manifest/checksum接続 | 完了 | manifest URL・実SHA-256・期限・gem/source metadata、HTTPS直取得、atomic download、cache検証、artifact report、checker照合を接続。レビューで見つかったURL未使用、未知profileの空判定、非atomic cache、M2依存の未固定を修正した |
 | 6B-1 live preflight | 完了 | `tools/live_acceptance_preflight.rb`でRuby/RubyGems/curl/rmake/rubycc、strict/profile/network、CPU、結果・artifact pathを実測してfail/passを記録。外部ツールを隠した異常系でexit 1とfail artifactを確認した |
-| 6B-2〜4 live/M2/artifact判定 | ローカル実測完了・GitHub Actions未実測 | x86_64でpreflightを含むlive必須ID 10件、30 runs / 2598 assertions、M2 json 603 tests / msgpack 455 examplesを実測し、SHA-256付きartifactとstrict checkerがpass。レビューでBundler環境漏れと専用GEM_HOMEのRSpec bin参照を修正した |
+| 6B-2〜4 live/M2/artifact判定 | ローカル実測完了・acceptance-only実runner実測完了 | x86_64でpreflightを含むlive必須ID 10件、30 runs / 2598 assertions、M2 json 603 tests / msgpack 455 examplesを実測。acceptance-only [run 31344761893](https://github.com/nuna/rubycc/actions/runs/31344761893)でもfixture/liveのrequired jobとdispatch契約がpassした。最終commitでの再実測有無は後述の注記に従う |
 | 6B-5 live批判レビュー | 完了 | 外部障害を`inconclusive`へ分離し、strictでは失敗、fetch checksum不一致・compile/link・gem test失敗はpass/skipに変換しないことを確認した |
-| 6C-1〜3,5 native契約・preflight・workflow・レビュー | 実装完了・実runner未実測 | native contextを`uname`だけでなくRuby/gcc/Fiddle/headers/loader/libcから構成し、preflight fail、required ID、context JSONを含むartifact upload、cross-compiler ABI smokeを接続。レビューでpreflightの非構造化失敗と同一compilerだけのABI確認を修正した |
-| 6C-4 GitHub Actions AArch64実測 | 未実施 | `ubuntu-24.04-arm`でpreflightを含む全native IDがpass、skip 0、contextがAArch64であることを確認する |
+| 6C-1〜3,5 native契約・preflight・workflow・レビュー | 実装・批判レビュー完了 | native contextを`uname`だけでなくRuby/gcc/Fiddle/headers/loader/libcから構成し、preflight fail、required ID、context JSONを含むartifact upload、cross-compiler ABI smokeを接続。レビューでpreflightの非構造化失敗と同一compilerだけのABI確認を修正した |
+| 6C-4 GitHub Actions AArch64実測 | 完了 | [weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)で`ubuntu-24.04-arm`のRuby 3.3/4.0 full suite、preflight、native smoke、strict baselineがpass |
 
-R10全対象gemの手動分類は、この段階の対象外であり未完了のまま残す。GitHub Actionsのlive/native実runner実測も、push・dispatchを伴う外部操作をこの作業では行っていないため、実装完了とは別に未実施として管理する。
+R10全対象gemの手動分類は、この段階の対象外であり未完了のまま残す。GitHub Actionsのlive/native実runner実測については、後述の最終状態でnativeを完了と記録する。live acceptanceは実runnerの証拠を残すが、最終commitとの差分がある場合はその旨を明記し、実測範囲を過大に主張しない。
 
 ## 残課題の実施計画とタスク分解（2026-08-10）
 
@@ -476,9 +476,9 @@ R10-0の境界確定前に34件の分類を開始しない。
 4. source、結果JSON、context、artifact、commit SHAが相互に追跡可能か。
 5. 指摘を修正した後、同じ完了条件を再実行しているか。
 
-この計画自体のレビュー完了後も、push/dispatchが必要なLIVE-3/ARM-2と、手動分類を
-実施していないR10は未完了として残す。ローカルのfixture/live相当、x86_64上のforced
-native failure、既存scanner結果を、これらの実測の代用にはしない。
+この計画自体のレビュー完了後も、手動分類を実施していないR10は未完了として残す。
+ローカルのfixture/live相当、x86_64上のforced native failure、既存scanner結果を、
+実runner実測の代用にはしない。
 
 ### 残課題計画のローカル実装・批判レビュー後の進捗（2026-08-10）
 
@@ -486,9 +486,9 @@ native failure、既存scanner結果を、これらの実測の代用にはし�
 |---|---|---|
 | LIVE-1 acceptance-only入口 | ローカル完了 | `workflow_dispatch.only=acceptance`、fixture/liveの条件、入力組み合わせ検証、workflow静的テストを追加。`test/test_weekly_workflow.rb` 3 runs / 21 assertionsで確認 |
 | LIVE-2 preflight順序 | ローカル完了 | live preflightを`bundle install`前へ移動し、依存導入失敗時にも結果JSONを残す契約へ修正。YAML、manifest、checker、preflightを再確認 |
-| ARM-1/ARM-3 native preflight | ローカル完了・実runner未実測 | Ruby ELF/dynamic dependency、Fiddle loader、Ruby header compileを実測するcontext/resultへ強化。`test/test_native_aarch64_preflight.rb` 1 run / 8 assertions、x86_64ではstructured failを確認 |
+| ARM-1/ARM-3 native preflight | 実runner実測完了 | Ruby ELF/dynamic dependency、Fiddle loader、Ruby header compileを実測するcontext/resultへ強化。`test/test_native_aarch64_preflight.rb` 1 run / 8 assertions、x86_64ではstructured failを確認し、AArch64 run 31345396123のartifactで全項目passを確認 |
 | R10-0〜R10-6 計画 | 批判レビュー・改善完了、R10-0〜2実装済み | 34件の母集団、pg/sqlite3境界、証拠フィールド、macro/生成コード、control/rubycc、architecture profile、`要追加確認`の期限、全件レビュー条件を文書化 |
-| LIVE-3/ARM-2 外部実測 | 未実施 | commit SHAを固定してpush/dispatchする外部操作が必要。未実施をpassへ扱わない |
+| LIVE-3/ARM-2 外部実測 | 完了（R10手動分類を除く） | acceptance-onlyはrun 31344761893、native AArch64はrun 31345396123、x86 Tier Aはrun 31345396034で実測。各runのhead SHA、job集合、artifact、strict checkerを照合済み |
 | R10-7 手動分類実測 | 未実施 | ユーザー指定のR10全対象gem手動分類は、境界確定後に別工程として実施する |
 
 R10-0〜R10-2のcacheを使う機械的な範囲は、`ruby tools/r10_corpus_scan.rb --cache DIR`
@@ -524,5 +524,33 @@ verification recordへ昇格させない。
 
 この段階のローカル完了条件は、追加テストを含む全体回帰、named checker、workflow YAML、
 platform literal検査がすべてpassすることとした。GitHub Actions acceptance/nativeの実runner
-結果でないものは、引き続き実runner未実測として記録する。R10手動分類34件はこの計画の
-残課題であり、scanner artifactを分類完了やR10合格率へ流用しない。
+結果でないものは、実runner実測の証拠として扱わない。R10手動分類34件はこの計画の
+残課題であり、scanner artifactを分類完了やR10合格率へ流用しない。nativeについては
+直後の「実runner実測後の最終状態」がこの事前計画の記述を上書きする。
+
+### 実runner実測後の最終状態（2026-08-10）
+
+ARM-2〜ARM-6を、branch `codex/test-ci-implementation` の commit
+`7d903c47334844b3a5bc51b5290cef3e669fdef8` で実施した。過去の失敗runを成功扱いせず、
+最終runのartifactを取得してログを再度 `CI_ENFORCE_SKIP_BASELINE=1` で検査した。
+
+| 実測 | 結果 | 実測値・証拠 |
+|---|---|---|
+| native AArch64 full suite | 完了 | [weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)、Ruby 3.3/4.0各 `3059 runs / 9011 assertions / 0 failures / 0 errors / 245 skips`、両方strict checker pass |
+| native AArch64 smoke/preflight | 完了 | 同runの`native-aarch64-smoke`がrequired ID全件pass。`uname=aarch64`、Ruby `host_cpu=aarch64`、Ruby ELF Machine=AArch64、`gcc-aarch64-linux-gnu`、AArch64 loader/libc、Fiddle、Ruby header probeをartifactで確認 |
+| native x86_64 full suite | 完了 | [Tier A run 31345396034](https://github.com/nuna/rubycc/actions/runs/31345396034)、Ruby 3.3/4.0各 `3059 runs / 10079 assertions / 0 failures / 0 errors / 42 skips`、両方strict checker pass |
+| named skip baseline | 固定 | `native-aarch64`: 245 skips / fingerprint `33d93347…`、`native-x86`: 42 skips / fingerprint `8471545c…`。完全値は`config/ci/skip-baseline.json`とartifactログを参照 |
+
+これにより、AArch64固有のテストはnative AArch64 runnerで実行し、x86_64専用のテストは
+理由付きskipとして扱うことを実runnerで確認できた。skip総数だけでなく、test名・正規化理由・
+件数のfingerprintを固定したため、既知skipを別テストへ付け替えるだけのgreen化も検出する。
+profileの期限は2026-09-10であり、期限前に両profileを再測定する。
+
+LIVE-3〜LIVE-6は、acceptance-onlyの実runner実測（[run 31344761893](https://github.com/nuna/rubycc/actions/runs/31344761893)）まで完了している。なお、このrunはnative baseline
+固定前のcommitであり、native結果の証拠には使わない。最終commitでのacceptance再実測を
+行った場合は、そのrun URLをここへ追記する。
+
+残るR10-3〜R10-7は、R10全対象gemの手動分類である。`data/r10_corpus_scan.json`の
+39候補・34対象・5除外、scanner 128 findings、既存 verification record 29件は分類の
+入力であり、手動分類・control/rubycc・extension load・upstream suiteの完了証拠ではない。
+したがって、R10の手動分類を完了した、またはR10の90%要件を満たしたとは判定しない。

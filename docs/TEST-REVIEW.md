@@ -295,3 +295,37 @@ native AArch64実測へ進む前に、ホスト依存のtarget漏れ、変換ABI
 修正した。残る外部確認は、同じcommitを使ったGitHub Actionsのacceptance実測とnative
 AArch64 full suiteであり、実測前にprofileの件数を確定扱いしない。R10 34対象gemの
 手動分類も未完了のままである。
+
+## 実runner最終結果に対する批判的レビュー（2026-08-10）
+
+### 実測結果
+
+commit `7d903c47334844b3a5bc51b5290cef3e669fdef8` について、次のrunを取得し、CI上の
+checkerだけでなくartifactのログをローカルでもstrict modeで再検査した。
+
+| profile / run | 結果 |
+|---|---|
+| [native AArch64 weekly 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123) | Ruby 3.3/4.0とも `3059 / 9011 / 0 / 0 / 245`。native smoke、preflight、full suite、strict baselineが全件pass |
+| [native x86_64 Tier A 31345396034](https://github.com/nuna/rubycc/actions/runs/31345396034) | Ruby 3.3/4.0とも `3059 / 10079 / 0 / 0 / 42`。strict baselineが全件pass |
+
+AArch64のcontext artifactでは、`uname_machine=aarch64`、Ruby `host_cpu=aarch64`、
+`ruby_arch=aarch64-linux`、Ruby ELF Machine=AArch64、`gcc_machine=aarch64-linux-gnu`、
+AArch64 loader/libc、Fiddle probe、Ruby header probeを確認した。従って、今回のnative
+結果をx86_64上のQEMU実行で代用していない。x86_64側ではAArch64専用テストが理由付きで
+skipされ、AArch64 runner側ではそれらが実行されることもログで確認した。
+
+### 批判的レビューと修正確認
+
+| 観点 | 残り得る弱点 | 判定・対応 |
+|---|---|---|
+| DESIGN仕様・制限 | skip理由を「実装未完了」とだけ書くと、仕様上の制限と単なる未実装を混同する | `alloca`/bit-scanは`docs/IR.md` §6.5のターゲット別実装範囲へ合わせ、`DESIGN.md` R7から参照する。struct `va_arg`は既存のout-of-scope判断を維持し、今回のnative実測を対応済みとは解釈しない |
+| CI再現性 | runner labelやOSだけを信頼すると、誤ったRuby/gccやcross sysrootでgreenになり得る | preflightでCPU、Ruby設定/ELF、gcc target、loader/libc、Fiddle、headersを相互確認し、context artifactを保存した。AArch64実測で全項目passを確認した |
+| CPU依存テスト | x86_64上でAArch64 native証拠を作る、またはAArch64上でx86専用検査を無条件実行する危険 | host targetを共通化し、x86専用検査はAArch64でskip、AArch64専用ケースはnative runnerで実行する。AArch64 full suiteでは無条件skipの追加を確認しなかった |
+| skipによるgreen化 | 広いallowlistと総数上限だけでは、既知理由を別testへ付け替えた欠落を見逃す | profileを`provisional=false`、実測件数、期限、owner、test+理由のallowlist、SHA-256 fingerprintで固定した。245/42の件数とfingerprintがRuby 3.3/4.0で一致し、strict checkerも再実行passした |
+| 実装の副作用 | ordinary GCC linkへ`-no-pie`を一律適用すると、PIE検証を隠す可能性がある | ordinary execution differentialだけに適用し、PIE専用テストは明示`-pie`経路へ分離した。AArch64のdirect compiler/link pathも`-fno-pie`/`-no-pie`を統一した |
+
+このレビューの結論は、実runner上のnative/x86 CI経路とskip監視は完了とするが、
+「すべてのAArch64制限が解消した」「R10の90%要件を満たした」とはしないことである。
+R10全34対象gemの手動分類、macro/生成コードの実使用確認、control/rubycc、extension load、
+upstream suiteはscanner artifactの存在だけでは完了にならず、明示的な残課題として残す。
+不要ファイル`a.out`は存在しない。

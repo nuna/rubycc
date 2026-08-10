@@ -2,7 +2,7 @@
   "profiles": {
     "native-aarch64": {
       "provisional": false,
-      "source_log": "https://github.com/nuna/rubycc/actions/runs/31345031372",
+      "source_log": "https://github.com/nuna/rubycc/actions/runs/31345396123",
       "measured_at": "2026-08-10",
       "expires": "2026-09-10",
       "owner": "test-maintainers",
@@ -44,7 +44,7 @@
     },
     "native-x86": {
       "provisional": false,
-      "source_log": "https://github.com/nuna/rubycc/actions/runs/31345031347",
+      "source_log": "https://github.com/nuna/rubycc/actions/runs/31345396034",
       "measured_at": "2026-08-10",
       "expires": "2026-09-10",
       "owner": "test-maintainers",

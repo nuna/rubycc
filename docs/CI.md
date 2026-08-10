@@ -76,8 +76,24 @@ skip 理由は絶対パスと数値を正規化したヒストグラムとして
 上限・下限を緩めることはできない。名前付きprofileでは、未許可のテスト名・理由、
 複数ルールへの重複、ルールごとの件数超過、Minitestサマリの欠落または複数出現も失敗とする。
 したがって、既知の制限を理由にskipするケースは明示的にprofileへ登録する必要があり、
-テストを広くskipしてgreenにする経路にはならない。profileの
-`expected_skips` はnative CIの実測値を固定した段階でnullから厳密な値へ更新する。
+テストを広くskipしてgreenにする経路にはならない。さらに
+`CI_ENFORCE_SKIP_BASELINE=1`（Tier A と weekly の Ruby 3.4 で設定）では、profileの
+`provisional` がfalseであること、実測ログ・測定日・期限・ownerがあること、
+`expected_skips` とskip理由のSHA-256 fingerprintが実測値と一致することまで要求する。
+期限切れ、件数の変化、理由を別テストへ付け替えた場合はskipではなくjob failureになる。
+
+2026-08-10時点の実runner実測baselineは次のとおりである。これは継続保証ではなく、
+profileの期限（2026-09-10）までの監視値であり、期限前に同じ手順で再測定する。
+
+| profile | runner / Ruby | runs | skips | fingerprint | 実測ログ |
+|---|---|---:|---:|---|---|
+| `native-x86` | x86_64 / 3.3・4.0 | 3059 | 42 | `8471545c89cb6cb8d0e2ee94883c1b07c8a02fd15b88f8a51f7c29a87daae603` | [run 31345396034](https://github.com/nuna/rubycc/actions/runs/31345396034) |
+| `native-aarch64` | AArch64 / 3.3・4.0 | 3059 | 245 | `33d93347cb15b30a7e8e938cebe43241d0a173f53fb94a6634df8735a31b689c` | [run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123) |
+
+上記のskip数は許可リストの上限ではなく、`expected_skips` と fingerprintで固定した
+実測値である。AArch64の `alloca` / bit-scan の理由は、実装未完了を隠す一般的な理由ではなく、
+[`docs/IR.md` §6.5](IR.md#65-ターゲット別の実装範囲)に記載したターゲット別実装範囲として
+記録する。
 
 `native-aarch64` で許可されるのは、x86_64専用のELF/実行検査、AArch64上で未実装の
 `alloca`、既知のA4/C-suite制限、native-only補助テストの対象外、または明示された
