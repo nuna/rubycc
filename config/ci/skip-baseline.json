@@ -1,10 +1,10 @@
 {
   "profiles": {
     "native-aarch64": {
-      "provisional": true,
-      "source_log": null,
-      "measured_at": null,
-      "expires": null,
+      "provisional": false,
+      "source_log": "https://github.com/nuna/rubycc/actions/runs/31345031372",
+      "measured_at": "2026-08-10",
+      "expires": "2026-09-10",
       "owner": "test-maintainers",
       "max_skips": 245,
       "min_runs": 2500,
@@ -43,14 +43,15 @@
       ]
     },
     "native-x86": {
-      "provisional": true,
-      "source_log": null,
-      "measured_at": null,
-      "expires": null,
+      "provisional": false,
+      "source_log": "https://github.com/nuna/rubycc/actions/runs/31345031347",
+      "measured_at": "2026-08-10",
+      "expires": "2026-09-10",
       "owner": "test-maintainers",
-      "max_skips": 55,
+      "max_skips": 42,
       "min_runs": 2500,
-      "expected_skips": null,
+      "expected_skips": 42,
+      "skip_fingerprint": "8471545c89cb6cb8d0e2ee94883c1b07c8a02fd15b88f8a51f7c29a87daae603",
       "allowed_skips": [
         {"test_pattern": "\\ATestExamplesAArch64#test_example_aarch64_step28_extensions\\z", "reason": "aarch<n> __builtin_alloca lowering is not implemented (IR <n>.<n> target limitation)", "min_count": 0, "max_count": 1},
         {"test_pattern": "\\ATestExamplesAArch64#test_example_aarch64_step44_builtins\\z", "reason": "aarch<n> bit-scan builtins are not implemented (IR <n>.<n> target limitation)", "min_count": 0, "max_count": 1},
