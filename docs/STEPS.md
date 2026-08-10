@@ -9876,10 +9876,10 @@ scanner が引数を struct と見なしただけでスカラーだった、と�
   puma・nio4r・pg など、生成コードや外部ライブラリの ABI が絡むものである。
   **fiddle は libffi の variadic/struct 呼び出しそのものなので、この問いに最も近い。**
 
-したがって現時点の結論は「**24/34 の範囲では実需要が見つかっていない**」であって、
-「需要が無い」ではない。DESIGN R9 の制限を暫定から正式へ格上げするのは、この 10 件が
-閉じてからにすること。scanner を不在証明にも合否判定にも使わないという 4B の原則は、
-ここでも守っている。
+この 8 件の扱いは `test-ci-implementation-7` で見直した。台帳の
+`needs_more_evidence` は**ソース分類**の状態であり、同じ台帳の `verification.rubycc` が
+別に記録している**ビルド通過**のほうが、この問いに対しては強い証拠だった。
+scanner を不在証明にも合否判定にも使わないという 4B の原則は、ここでも守っている。
 
 ### 実 runner での受入れ
 
@@ -9916,3 +9916,53 @@ full suite は dispatch 専用のまま残す**という分け方にした。両
 (archive の fixture 化)が未実施であることを残課題に明記した。
 
 これは workflow と文書だけの変更なので、C の examples は追加していない。
+
+## test-ci-implementation-7 — struct `va_arg` の需要は、コンパイラ自身が既に答えていた(M5 H6)
+
+`test-ci-implementation-4` の分類では 8 件(openssl・prism・psych・fiddle・rbs・puma・
+nio4r・pg)が `needs_more_evidence` のまま残り、「実需要が無い」とは言えない状態だった。
+follow-up は「同一 profile で control/rubycc をビルドし、選択された前処理済み単位を
+再 scan する」ことを求めていた。
+
+### 見落としていた証拠
+
+**rubycc は両形式をハードエラーで拒否する。** 実測:
+
+```text
+error: passing a struct to a variadic function is not supported yet
+error: second argument to 'va_arg' has type 'struct P', which va_arg cannot yield
+```
+
+いずれも終了コード 1 である(`test/test_diagnostics.rb` が両方を固定している。
+c-testsuite の `00140` / `00204` が skip なのも同じ理由)。
+
+したがって **rubycc が拡張の全 TU をコンパイルできたなら、その構成で選択された
+コードに当該操作は無い**。これは前処理・マクロ展開・生成コードをすべて経た後の
+判定なので、字句 scanner が原理的に届かない範囲をそのまま覆う。
+
+そして台帳は既にそれを持っていた。`data/r10_manual_classification.json` の
+`verification.rubycc` は、**34 件中 33 件で `pass`** である(`gem_make.out:rmake`、
+`Makefile:CC=rubycc`、`mkmf.log:rubycc` の痕跡付き)。`needs_more_evidence` だった
+8 件のうち 7 件もここでは `pass` だった。残る 1 件は `pg` で、libpq が無く
+**ビルド自体が未達**(`inconclusive`)である。
+
+### なぜ食い違っていたか
+
+台帳は設計上、**ソース分類**(このソースに当該操作が書かれているか)と
+**検証**(control/rubycc のビルド・ロード・上流スイート)を分けている。
+分離自体は正しい — 別の問いだからである。だが「struct `va_arg` を実装する必要が
+あるか」という問いに対しては、**ソース分類より検証のほうが強い**。
+分離を保ったまま、両者を突き合わせる段が無かった。
+
+`upstream_suite` の fail / inconclusive はこの問いとは独立である。あれは R10 の
+90% 基準の話であって、rubycc が当該構文をコンパイルする必要があるかどうかとは関係ない。
+
+### 主張の範囲
+
+証明は「**glibc x86_64 上で、その probe 結果によって選択された分岐**」に限られる。
+未選択の `#if` 分岐、他の libc、他の CPU は含まない。台帳の `profile_scope` が
+元から書いていた限定と同じである。「全構成で不要」とまでは言えないので、
+DESIGN R9 の暫定制限は暫定のまま残す。
+
+ROADMAP §3 の再検討条件は「残り 8 件が閉じた時点」から「**`pg` のビルドが通った時点**」
+へ絞った。

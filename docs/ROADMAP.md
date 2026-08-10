@@ -154,7 +154,7 @@ musl全スイートとaarch64 Ruby上のM4全面受入れ。
 | 項目 | 内容 | 解消予定 |
 |---|---|---|
 | 不完全型 struct の param/return | 未呼び出しプロトタイプでも宣言時に診断エラー(分類にレイアウトが要るための簡略化) | 実害が出た時点 |
-| 可変長部への struct 渡し・va_arg(struct) | 診断エラーにして先送り。DESIGN R9 に対応範囲外として明記済み(`test-ci-implementation-1`)。R10 対象 34 件のうち 24 件を分類し、候補 128 件はすべて誤検出だった(`test-ci-implementation-4`、`docs/R10-MANUAL-CLASSIFICATION.md`) | **残り 10 件の `needs_more_evidence`(期限 2026-08-24、特に fiddle = libffi の variadic/struct 呼び出し)が閉じた時点**。それまでは「需要が無い」ではなく「24/34 では見つかっていない」として扱い、暫定制限を正式な非対応範囲へ格上げしない |
+| 可変長部への struct 渡し・va_arg(struct) | 診断エラーにして先送り。DESIGN R9 に対応範囲外として明記済み(`test-ci-implementation-1`)。**R10 対象 34 件中 33 件で、rubycc が全 TU のコンパイルに成功している**(`data/r10_manual_classification.json` の `verification.rubycc`)。rubycc は両形式をハードエラーで拒否するので、これは前処理・マクロ展開・生成コードを経た後に当該操作が無いことの証明である。字句 scan の候補 128 件がすべて誤検出だったことと整合する(`test-ci-implementation-7`) | **`pg` の 1 件**(`verification.rubycc` が `inconclusive` = libpq が無くビルド自体が未達)**でビルドが通った時点**。ただし証明の範囲は「glibc x86_64 上で、その probe 結果で選択された分岐」に限られる。未選択の `#if` 分岐・他 libc・他 CPU は対象外なので、暫定制限を「全構成で不要」とまでは格上げしない |
 | 内側スコープの `struct S;` 再宣言 | C 6.7.2.3p7 に従わず外側タグを参照 | 実害が出た時点 |
 | ~~ブロックスコープの関数宣言~~ | **解消(Step 168)**: 6.2.2p5 の外部リンケージとしてファイルスコープの宣言と同じ署名テーブルへ合流させ、ローカルスロットは取らない。`static` は 6.7.1p7 の制約違反として診断、入れ子関数定義(GNU 拡張)は引き続き拒否。io-console が `ruby/ractor.h` 経由で実害を出した。c-testsuite 00078 の skip も外れた | ~~実害が出た時点~~ **完了** |
 | ~~`&arr[i]` 等の計算アドレス定数~~ | **解消(Step 45、b4be1fe)**: 初期化子を「基点シンボル/文字列 + 定数変位 + pointee」へ畳む walker を追加し、キャスト・`&arr[i]`・`arr ± n`・`&rec.member` を R_X86_64_64 の addend に乗せる。json jeaiii-ltoa の「文字列リテラルを struct ポインタにキャストした桁テーブル」が通る | ~~実害が出た時点~~ **完了** |
