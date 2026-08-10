@@ -486,4 +486,9 @@ R10の90%達成、8件のc分類、sqlite3/pgの開発依存を備えた再実�
     ruby tools/r10_manual_classification.rb --validate
     r10_manual_classification: OK (34 targets)
 
+全体回帰:
+
+    rake test
+    3075 runs, 10501 assertions, 0 failures, 0 errors, 43 skips
+
 この修正後もartifactはglibc/x86_64・Ruby 3.4.5のローカル実測であり、GitHub Actions runnerやAArch64/muslの証拠ではない。R10 90%達成、8件のc分類、sqlite3/pgの開発依存を備えた再実測、全34件の完了性レビューは引き続き残課題である。

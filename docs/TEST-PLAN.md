@@ -648,4 +648,7 @@ recipe全体は現行RECIPESから再生成して突合する。したがって�
 この厳格化はfalse passを減らす一方、recipe/parser変更や手作業artifactの表記差でinconclusiveが増え、証跡を
 再生成・更新する保守コストが増える。受入れ目的を優先し、曖昧なgreenより再実測を要求する方を採用した。
 再確認は、R10 validator 12 tests / 386 assertions、verify tool CLI 4 tests / 36 assertions、validator
-34 targets passである。全体回帰も最終修正後に再実行し、最新結果を本節へ記録する。
+34 targets passである。全体回帰は最終修正後に
+3075 runs / 10501 assertions / 0 failures / 0 errors / 43 skipsで完了した。43 skipsは既存の
+network acceptance、依存不足、明示的なout-of-scope、native AArch64限定、AArch64実装制限であり、
+テストをgreenにするための新規skipではない。
