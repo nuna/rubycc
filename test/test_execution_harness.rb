@@ -1433,8 +1433,6 @@ class TestExecutionHarness < Minitest::Test
   ].freeze
 
   def test_builtin_alloca_matches_gcc_exit_codes
-    skip "aarch64 __builtin_alloca lowering is not implemented (IR 6.5 target limitation)" if host_target == "aarch64"
-
     BUILTIN_ALLOCA_DIFFERENTIAL_SOURCES.each do |source|
       assert_equal run_source(source, compiler: :gcc),
                    run_source(source, compiler: :rubycc),

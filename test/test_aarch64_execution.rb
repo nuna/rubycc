@@ -19,10 +19,12 @@ require_relative "test_helper"
 # pulled from a header. And only the low 8 bits of main's return value survive
 # into the exit status, so anything wider is reported one character at a time.
 #
-# Scope follows what the A2 core lowers: control flow, integer arithmetic,
-# locals, pointers to locals and direct calls. Globals, string literals,
-# floating point, structs by value, varargs and indirect calls belong to A3/A4
-# and are covered by the "raises UnsupportedError" tests in the encoding suite.
+# Scope started at what the A2 core lowered — control flow, integer arithmetic,
+# locals, pointers to locals and direct calls — and grew with the backend as
+# A3/A4 added globals, string literals, floating point, structs by value,
+# varargs, indirect calls and dynamic stack allocation. Aggregates, floating
+# point, arguments and varargs have suites of their own alongside this one; what
+# stays here is the core plus the pieces too small to warrant a file.
 class TestAArch64Execution < Minitest::Test
   include ExecutionHelper
   include AArch64ExecutionHelper
@@ -817,6 +819,46 @@ class TestAArch64Execution < Minitest::Test
     end
   end
 
+  # --- bit-scan builtins --------------------------------------------------
+
+  # __builtin_ctz / clz / ctzll / clzll on aarch64: a leading-zero count is a
+  # bare CLZ and a trailing-zero count an RBIT ahead of it. The operands travel
+  # through an array and a function parameter so each count is computed at run
+  # time on a value in a register, not folded from a literal.
+  #
+  # What the cases are chosen to separate is the operand *width*. 0x80000000 has
+  # a 32-bit clz of 0 but a 64-bit one of 32, and 1 has a 32-bit clz of 31
+  # against 63; a scan that ran on the X view of a 4-byte operand (or on the W
+  # view of an 8-byte one) would disagree with gcc on every such line. The
+  # all-ones and single-bit-at-either-end values pin the ends of both ranges,
+  # and 0x100000000 is the value whose two halves are only told apart by width.
+  def test_bit_scan_builtins
+    assert_aarch64_matches_gcc(source(<<~C))
+      int ctz32(unsigned x) { return __builtin_ctz(x); }
+      int clz32(unsigned x) { return __builtin_clz(x); }
+      int ctz64(unsigned long x) { return __builtin_ctzll(x); }
+      int clz64(unsigned long x) { return __builtin_clzll(x); }
+      int main(void) {
+        unsigned narrow[6];
+        unsigned long wide[6];
+        int i;
+        narrow[0] = 1u; narrow[1] = 2u; narrow[2] = 0x8000u;
+        narrow[3] = 0x80000000u; narrow[4] = 0xFFFFFFFFu; narrow[5] = 0x00F0F000u;
+        wide[0] = 1ul; wide[1] = 0xFF00ul; wide[2] = 1ul << 40;
+        wide[3] = 1ul << 63; wide[4] = 0xFFFFFFFFFFFFFFFFul; wide[5] = 0x100000000ul;
+        for (i = 0; i < 6; i = i + 1) {
+          put_long(ctz32(narrow[i]));
+          put_long(clz32(narrow[i]));
+        }
+        for (i = 0; i < 6; i = i + 1) {
+          put_long(ctz64(wide[i]));
+          put_long(clz64(wide[i]));
+        }
+        return 0;
+      }
+    C
+  end
+
   # A deduced-size array of function pointers dispatched by index (Step 98): the
   # "[]" bound is inferred from the initializer even though it sits inside the
   # parenthesized declarator "int (*ops[])(int)", and each ops[i](10) is an
@@ -866,6 +908,161 @@ class TestAArch64Execution < Minitest::Test
     C
   end
 
+  # --- dynamic stack allocation -------------------------------------------
+
+  # __builtin_alloca on aarch64: sp moves during the body while x29 anchors the
+  # fixed frame, so every slot and stack object stays addressable across the
+  # move. The straightforward part is checked first — the block is writable, its
+  # contents survive an intervening call, two blocks do not overlap, and the
+  # base is 16-byte aligned as gcc promises.
+  def test_alloca_basics
+    assert_aarch64_matches_gcc(source(<<~C))
+      long touch(long v) { return v * 2; }
+      int main(void) {
+        unsigned char *p = (unsigned char *)__builtin_alloca(10);
+        unsigned char *q = (unsigned char *)__builtin_alloca(24);
+        long total = 0;
+        int i;
+        for (i = 0; i < 10; i = i + 1) { p[i] = (unsigned char)(i * 7 + 1); }
+        for (i = 0; i < 24; i = i + 1) { q[i] = (unsigned char)(200 - i); }
+        put_long(touch(41));
+        for (i = 0; i < 10; i = i + 1) { total = total + p[i]; }
+        for (i = 0; i < 24; i = i + 1) { total = total + q[i]; }
+        put_long(total);
+        /* The blocks are distinct and both 16-aligned. */
+        put_long((long)(p != q));
+        put_long((long)(((unsigned long)p) & 15));
+        put_long((long)(((unsigned long)q) & 15));
+        /* A size that is not already a multiple of 16 still rounds up. */
+        put_long((long)(((unsigned long)__builtin_alloca(3)) & 15));
+        put_long((long)(((unsigned long)__builtin_alloca(17)) & 15));
+        return 0;
+      }
+    C
+  end
+
+  # The interaction the design is really about: a call that passes arguments on
+  # the stack, made from a function that has already moved sp. The static
+  # outgoing area an ordinary function reserves in its frame is unreachable
+  # there, so the area is carved out per call *below* the allocated blocks and
+  # given back afterwards. Ten long arguments put two of them on the stack under
+  # AAPCS64's eight-register rule, and the callee reads back what the caller
+  # wrote only if both agree about where sp was at the `bl`.
+  def test_alloca_with_stack_arguments
+    assert_aarch64_matches_gcc(source(<<~C))
+      long ten(long a, long b, long c, long d, long e,
+               long f, long g, long h, long i, long j) {
+        return a + b * 2 + c * 3 + d * 4 + e * 5
+             + f * 6 + g * 7 + h * 8 + i * 9 + j * 10;
+      }
+      long work(int n) {
+        char *p = (char *)__builtin_alloca(n);
+        long total = 0;
+        int k;
+        for (k = 0; k < n; k = k + 1) { p[k] = (char)(k + 1); }
+        total = ten(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9]);
+        /* The block must be intact after the call took the stack below it. */
+        for (k = 0; k < n; k = k + 1) { total = total + p[k]; }
+        return total;
+      }
+      int main(void) {
+        put_long(work(20));
+        put_long(work(10));
+        return 0;
+      }
+    C
+  end
+
+  # alloca inside a loop, which is where the two halves of the design are most
+  # easily got wrong in opposite directions. The blocks must *accumulate* —
+  # C frees alloca'd storage when the function returns, not at the end of the
+  # scope — so each iteration's pointer differs from the last, and every block
+  # written earlier is still readable at the end. The per-call outgoing area
+  # must *not* accumulate: the call inside the loop gives its area back, or the
+  # stack walks down by one area per iteration on top of the blocks.
+  def test_alloca_in_a_loop
+    assert_aarch64_matches_gcc(source(<<~C))
+      long ten(long a, long b, long c, long d, long e,
+               long f, long g, long h, long i, long j) {
+        return a + b + c + d + e + f + g + h + i + j;
+      }
+      int main(void) {
+        long *kept[8];
+        long total = 0;
+        int distinct = 1;
+        int k;
+        for (k = 0; k < 8; k = k + 1) {
+          long *block = (long *)__builtin_alloca(48);
+          block[0] = k;
+          block[5] = k * 100;
+          kept[k] = block;
+          total = total + ten(1, 2, 3, 4, 5, 6, 7, 8, 9, (long)k);
+        }
+        for (k = 0; k < 8; k = k + 1) {
+          total = total + kept[k][0] + kept[k][5];
+          if (k > 0 && kept[k] == kept[k - 1]) { distinct = 0; }
+        }
+        put_long(total);
+        put_long((long)distinct);
+        return 0;
+      }
+    C
+  end
+
+  # alloca in a variadic function. The register-save area the prologue lays down
+  # sits at the top of the fixed frame and __gr_top / __vr_top / __stack are all
+  # seeded from the frame base, so va_arg keeps walking the right memory only if
+  # the anchor in x29 is what those addresses were formed against — sp having
+  # moved by then. The scratch the walk fills is itself alloca'd, so both
+  # mechanisms are live at once.
+  def test_alloca_in_a_variadic_function
+    assert_aarch64_matches_gcc(source(<<~C))
+      long weighted(int count, ...) {
+        __builtin_va_list ap;
+        long *scratch = (long *)__builtin_alloca((unsigned long)count * sizeof(long));
+        long total = 0;
+        int k;
+        __builtin_va_start(ap, count);
+        for (k = 0; k < count; k = k + 1) { scratch[k] = __builtin_va_arg(ap, long); }
+        __builtin_va_end(ap);
+        for (k = 0; k < count; k = k + 1) { total = total + scratch[k] * (k + 1); }
+        return total;
+      }
+      int main(void) {
+        put_long(weighted(3, 10L, 20L, 30L));
+        /* Past the eighth argument the variable part spills onto the stack, so
+           the walk crosses from the save area into the caller's frame. */
+        put_long(weighted(11, 1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L));
+        return 0;
+      }
+    C
+  end
+
+  # alloca in a function whose fixed frame is large enough to leave the scaled
+  # load/store immediate behind, so slots and stack objects are reached through
+  # an address composed into a scratch register. That composition is built from
+  # the frame base too, which is the path a naive "just swap sp for x29 in the
+  # common case" change would miss. 9000 longs overruns both the 12-bit
+  # add-immediate (4095) and the scaled 64-bit ldr offset (32760).
+  def test_alloca_with_a_large_fixed_frame
+    assert_aarch64_matches_gcc(source(<<~C))
+      int main(void) {
+        long big[9000];
+        char *p = (char *)__builtin_alloca(40);
+        long total = 0;
+        int k;
+        for (k = 0; k < 9000; k = k + 1) { big[k] = k * 3; }
+        for (k = 0; k < 40; k = k + 1) { p[k] = (char)(k & 7); }
+        for (k = 0; k < 9000; k = k + 901) { total = total + big[k]; }
+        for (k = 0; k < 40; k = k + 1) { total = total + p[k]; }
+        put_long(total);
+        put_long(big[8999]);
+        put_long((long)(((unsigned long)p) & 15));
+        return 0;
+      }
+    C
+  end
+
   # --- disassembly sanity -------------------------------------------------
 
   # Every word the backend emits must decode to a real A64 instruction. objdump
@@ -907,6 +1104,30 @@ class TestAArch64Execution < Minitest::Test
         put_long(x);
         put_long(y);
         return x & 255;
+      }
+    C
+  end
+
+  # The dynamic-allocation sequence brings in two encodings nothing else emits:
+  # the AND with a bitmask immediate that rounds the size to 16, and the
+  # extended-register sub that lowers sp by a register. Both are easy to get
+  # subtly wrong in a way that still runs (a different mask, a different
+  # extension option), so put them in front of a real disassembler.
+  def test_disassembly_of_dynamic_allocation_is_decodable
+    assert_disassembles_cleanly(source(<<~C))
+      long consume(long a, long b, long c, long d, long e,
+                   long f, long g, long h, long i, long j) {
+        return a + b + c + d + e + f + g + h + i + j;
+      }
+      int main(void) {
+        char *p = (char *)__builtin_alloca(37);
+        long total = 0;
+        int k;
+        for (k = 0; k < 37; k = k + 1) { p[k] = (char)k; }
+        for (k = 0; k < 37; k = k + 1) { total = total + p[k]; }
+        total = total + consume(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+        put_long(total);
+        return 0;
       }
     C
   end

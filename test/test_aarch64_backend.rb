@@ -22,9 +22,10 @@ require "tmpdir"
 #      the repository's own ELF reader and its machine and relocation types
 #      checked.
 #
-# Alongside these, the constructs the backend deliberately does not lower yet
-# (structs by value, varargs) are asserted to raise rather than to produce
-# quietly wrong code.
+# There is no longer a fourth layer asserting that some construct is refused:
+# the backend lowers every IR op the generator can hand it. When a future target
+# gap reappears it belongs back here as an assertion that it raises
+# Backend::UnsupportedError, rather than that it produces quietly wrong code.
 class TestAArch64Backend < Minitest::Test
   Backend = Rubycc::Backend::AArch64
   IR = Rubycc::IR
@@ -112,6 +113,19 @@ class TestAArch64Backend < Minitest::Test
     (1 << 31) | (0b11011 << 24) | (0b110 << 21) | (rm << 16) | (0b11111 << 10) | (rn << 5) | rd
   end
 
+  # "Data-processing (1 source)":
+  #   sf(31) 1(30) S(29)=0 11010110(28:21) opcode2(20:16)=00000
+  #   opcode(15:10) Rn(9:5) Rd(4:0)
+  # opcode = 000000 RBIT (reverse the bit order), 000100 CLZ (count leading
+  # zeros). Note bit 30 is 1 here, which is what separates this family from the
+  # two-source one below that shares the 11010110 field.
+  def dp1(opcode, sf, rd, rn)
+    (sf << 31) | (1 << 30) | (0b11010110 << 21) | (opcode << 10) | (rn << 5) | rd
+  end
+
+  def rbit(sf, rd, rn) = dp1(0b000000, sf, rd, rn)
+  def clz(sf, rd, rn)  = dp1(0b000100, sf, rd, rn)
+
   # "Data-processing (2 source)":
   #   sf(31) 0(30) S(29)=0 11010110(28:21) Rm(20:16) opcode(15:10)
   #   Rn(9:5) Rd(4:0)
@@ -184,6 +198,11 @@ class TestAArch64Backend < Minitest::Test
   def ldr_slot(rt, vreg) = ldr_x(rt, SP, slot(vreg))
   def str_slot(rt, vreg) = str_x(rt, SP, slot(vreg))
 
+  # The same access in a function containing alloca, where sp moves during the
+  # body and the fixed frame is anchored in x29 instead.
+  def ldr_anchored_slot(rt, vreg) = ldr_x(rt, FP, slot(vreg))
+  def str_anchored_slot(rt, vreg) = str_x(rt, FP, slot(vreg))
+
   # "Load/store register pair (signed offset)":
   #   opc(31:30) 101(29:27) V(26)=0 010(25:23) L(22) imm7(21:15) Rt2(14:10)
   #   Rn(9:5) Rt(4:0)
@@ -208,6 +227,33 @@ class TestAArch64Backend < Minitest::Test
 
   def add_imm(rd, rn, imm12, shift12: false) = addsub_imm(0, 1, rd, rn, imm12, shift12)
   def sub_imm(rd, rn, imm12, shift12: false) = addsub_imm(1, 1, rd, rn, imm12, shift12)
+
+  # "Add/subtract (extended register)", 64-bit with option = 011 (UXTX, the
+  # identity extension of an X operand) and no shift:
+  #   sf(31)=1 op(30) S(29)=0 01011(28:24) opt(23:22)=00 1(21) Rm(20:16)
+  #   option(15:13) imm3(12:10)=000 Rn(9:5) Rd(4:0)
+  # Unlike the shifted-register form, a register field of 31 names sp here, so
+  # this is the family a register-sized stack adjustment has to use.
+  def addsub_ext_uxtx(op, rd, rn, rm)
+    (1 << 31) | (op << 30) | (0b01011 << 24) | (1 << 21) | (rm << 16) |
+      (0b011 << 13) | (rn << 5) | rd
+  end
+
+  def sub_ext_uxtx(rd, rn, rm) = addsub_ext_uxtx(1, rd, rn, rm)
+
+  # "Logical (immediate)":
+  #   sf(31) opc(30:29) 100100(28:23) N(22) immr(21:16) imms(15:10)
+  #   Rn(9:5) Rd(4:0)
+  # opc = 00 is AND. The immediate is a bitmask pattern rather than a plain
+  # number: with N = 1 (a 64-bit element) imms is the length of a run of ones
+  # minus one and immr the right rotation applied to it.
+  def and_imm(sf, rd, rn, n, immr, imms)
+    (sf << 31) | (0b100100 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd
+  end
+
+  # and Xd, Xn, #-16 — 60 ones (imms = 59) rotated right by 60, which puts the
+  # four-zero gap at the bottom of the word.
+  def and_not15(rd, rn) = and_imm(1, rd, rn, 1, 60, 59)
 
   # The flag-setting subtract (S = 1), which is what lets a loop counter be
   # tested by the branch that follows it.
@@ -520,6 +566,22 @@ class TestAArch64Backend < Minitest::Test
   def test_mulhi_is_umulh
     assert_words [ldr_slot(A, 0), ldr_slot(B, 1), umulh(A, A, B), str_slot(A, 2)],
                  body_of(:mulhi, dst: 2, a: 0, b: 1, size: 8)
+  end
+
+  # :bit_scan — a leading-zero count is CLZ on its own, since the instruction
+  # already *is* the answer (unlike x86-64's bsr, which needs the xor that turns
+  # a bit index into a count). A trailing-zero count is the same CLZ applied to
+  # the bit-reversed operand, so RBIT comes first. The IR size picks the W or X
+  # form, which is what confines the count to the operand's own width.
+  def test_bit_scan_is_clz_with_rbit_ahead_of_the_forward_direction
+    assert_words [ldr_slot(A, 0), clz(0, A, A), str_slot(A, 2)],
+                 body_of(:bit_scan, dst: 2, a: 0, b: :reverse, size: 4)
+    assert_words [ldr_slot(A, 0), rbit(0, A, A), clz(0, A, A), str_slot(A, 2)],
+                 body_of(:bit_scan, dst: 2, a: 0, b: :forward, size: 4)
+    assert_words [ldr_slot(A, 0), clz(1, A, A), str_slot(A, 2)],
+                 body_of(:bit_scan, dst: 2, a: 0, b: :reverse, size: 8)
+    assert_words [ldr_slot(A, 0), rbit(1, A, A), clz(1, A, A), str_slot(A, 2)],
+                 body_of(:bit_scan, dst: 2, a: 0, b: :forward, size: 8)
   end
 
   # Negation is a subtraction from the zero register.
@@ -1123,20 +1185,86 @@ class TestAArch64Backend < Minitest::Test
     assert_equal movz(0, B, 0, 0), all[start + 7]    # __gr_offs = 0 (file spent)
   end
 
-  # --- refusals ------------------------------------------------------------
+  # --- dynamic stack allocation --------------------------------------------
 
-  # The IR ops that belong to A4 are refused by name rather than lowered to
-  # something plausible-looking.
-  def test_later_milestone_ops_are_refused
-    {
-      inst(:alloca, dst: 0, a: 1) => /alloca/,
-      inst(:bit_scan, dst: 0, a: 1, b: :forward, size: 4) => /bit-scan builtins/
-    }.each do |instruction, pattern|
-      error = assert_raises(Rubycc::Backend::UnsupportedError, instruction.op.to_s) do
-        compile(func([instruction], vregs: 4))
-      end
-      assert_match pattern, error.message
-    end
+  # :alloca rounds the requested count up to a multiple of 16 (add 15, then an
+  # AND with the bitmask immediate -16), lowers sp by it with the extended-
+  # register sub — the only add/sub form that reads register 31 as sp — and
+  # hands back the resulting sp, the block's base address since the stack grows
+  # down. Rounding to 16 is what keeps sp legally aligned and gives the block
+  # the alignment __builtin_alloca promises.
+  def test_alloca_rounds_the_size_up_and_lowers_sp
+    fn = func([inst(:alloca, dst: 0, a: 1), inst(:ret)], vregs: 2)
+    body = words(fn).drop(words(fn).index(add_imm(FP, SP, 0)) + 1)
+    assert_words [ldr_anchored_slot(A, 1), add_imm(A, A, 15), and_not15(A, A),
+                  sub_ext_uxtx(SP, SP, A), add_imm(A, SP, 0), str_anchored_slot(A, 0)],
+                 body.first(6)
+  end
+
+  # A function containing alloca anchors its fixed frame in x29: the prologue
+  # copies sp there once the frame is set up (after the caller's x29 has reached
+  # the saved record, and before any parameter spill, which already reads the
+  # anchor), and every fixed-frame access names x29 from then on. The epilogue
+  # brings sp back from x29 before reloading the record, which is what releases
+  # every block the body allocated — and what stops a moved sp from turning the
+  # record's address into garbage.
+  def test_alloca_anchors_the_fixed_frame_in_x29
+    fn = func([inst(:alloca, dst: 0, a: 1), inst(:ret, a: 0)], vregs: 2, params: 1)
+    all = words(fn)
+    # 2 vregs -> 16 bytes; 16 (record) + 16 = 32.
+    assert_words [sub_imm(SP, SP, 32), stp_x(FP, LR, SP, 0), add_imm(FP, SP, 0),
+                  str_anchored_slot(0, 0)],
+                 all.first(4)
+    assert_words [ldr_anchored_slot(0, 0), add_imm(SP, FP, 0), ldp_x(FP, LR, FP, 0),
+                  add_imm(SP, SP, 32), ret_x30],
+                 all.last(5)
+  end
+
+  # A function *without* alloca is untouched by any of it: sp remains the frame
+  # base, no x29 copy is emitted, and the words are exactly what they were.
+  def test_a_function_without_alloca_keeps_the_sp_relative_frame
+    fn = func([inst(:copy, dst: 0, a: 1), inst(:ret, a: 0)], vregs: 2)
+    assert_words [sub_imm(SP, SP, 32), stp_x(FP, LR, SP, 0),
+                  ldr_slot(A, 1), str_slot(A, 0), ldr_slot(0, 0),
+                  ldp_x(FP, LR, SP, 0), add_imm(SP, SP, 32), ret_x30],
+                 words(fn)
+  end
+
+  # A call with stack arguments made from an alloca function cannot use a fixed
+  # outgoing area: sp no longer names the bottom of the frame, and AAPCS64 has
+  # the callee read its stack arguments from the sp the `bl` ran with. So the
+  # area is carved out per call, below whatever the body has allocated, written
+  # sp-relative, and given back afterwards — which is also what keeps a call in
+  # a loop from walking the stack down one area per iteration.
+  def test_alloca_function_reserves_its_outgoing_area_around_each_call
+    args = [[0, :gp], [1, :mem], [2, :mem]]
+    fn = func([inst(:alloca, dst: 3, a: 0), inst(:call, dst: 4, a: "g", b: args, size: [3, nil])],
+              vregs: 5)
+    all = words(fn)
+    start = all.index(sub_imm(SP, SP, 16)) # two eightbytes, rounded to 16
+    refute_nil start, "the call reserves its own outgoing area"
+    assert_words [sub_imm(SP, SP, 16),
+                  ldr_anchored_slot(A, 1), str_x(A, SP, 0),
+                  ldr_anchored_slot(A, 2), str_x(A, SP, 8),
+                  ldr_anchored_slot(0, 0),
+                  bl_imm(0),
+                  str_anchored_slot(0, 4),
+                  add_imm(SP, SP, 16)],
+                 all[start, 9]
+  end
+
+  # The fixed frame of an alloca function reserves no outgoing area at all, the
+  # static one being unreachable once sp has moved. The saved record therefore
+  # sits at offset 0 and the slots directly above it, however wide the widest
+  # call is.
+  def test_alloca_function_reserves_no_static_outgoing_area
+    args = [[0, :mem], [1, :mem], [2, :mem], [3, :mem]]
+    plain = func([inst(:call, dst: nil, a: "g", b: args, size: [4, nil])], vregs: 4)
+    with_alloca = func([inst(:alloca, dst: 0, a: 1),
+                        inst(:call, dst: nil, a: "g", b: args, size: [4, nil])], vregs: 4)
+    # 4 stack arguments -> a 32-byte area in the plain function's frame.
+    assert_equal stp_x(FP, LR, SP, 32), words(plain)[1]
+    assert_equal stp_x(FP, LR, SP, 0), words(with_alloca)[1]
   end
 
   # --- aggregates ----------------------------------------------------------
@@ -1219,18 +1347,6 @@ class TestAArch64Backend < Minitest::Test
                   add_imm(B, B, 8), add_imm(A, A, 8),
                   subs_imm(C, C, 1), b_cond(COND_NE, -5)],
                  emitted.drop(3)
-  end
-
-  # The same refusals seen from the front of the compiler: valid C that uses an
-  # A4 feature stops with a clear error instead of producing an object.
-  def test_unsupported_c_constructs_are_refused_end_to_end
-    {
-      "void *f(int n){ return __builtin_alloca(n); }" => /alloca/,
-      "int f(unsigned x){ return __builtin_ctz(x); }" => /bit-scan builtins/
-    }.each do |source, pattern|
-      error = assert_raises(Rubycc::Backend::UnsupportedError, source) { compile_c(source) }
-      assert_match pattern, error.message, source
-    end
   end
 
   # --- object-file integration --------------------------------------------

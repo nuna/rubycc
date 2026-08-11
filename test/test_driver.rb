@@ -3,6 +3,7 @@
 require_relative "test_helper"
 require "tmpdir"
 require "open3"
+require "stringio"
 require "fiddle"
 
 # Exercises the gcc-compatible command-line driver (Rubycc::Driver): the piece
@@ -396,21 +397,55 @@ class TestDriver < Minitest::Test
     end
   end
 
-  # A construct the aarch64 backend does not lower yet (alloca, part of what is
-  # left of A4) fails as a driver diagnostic with a non-zero exit, never as a
-  # silently wrong object. This diagnostic's example has moved three times as the
-  # backend grew: string-literal and global-variable references before A3
-  # (Step 72) added the memory-access layer, then indirect calls until A4's first
-  # half lowered them, then whole-struct assignment until aggregates by value
-  # arrived with the target-dependent classification.
-  def test_aarch64_unsupported_construct_is_diagnosed
+  # A backend that cannot lower some construct reports it as a driver
+  # diagnostic with a non-zero exit, never as a Ruby crash and never as a
+  # silently wrong object.
+  #
+  # This used to be driven by naming a construct the aarch64 backend had not
+  # reached yet, and the example moved four times as the backend grew: string
+  # literals and globals before A3 (Step 72) added the memory-access layer, then
+  # indirect calls until A4's first half lowered them, then whole-struct
+  # assignment until aggregates by value arrived, then alloca until
+  # m4/aarch64-alloca-bitscan-2. There is no fifth example — both backends now
+  # lower everything the generator emits — so the failure is injected instead.
+  #
+  # Injecting the refusal is against this suite's grain (everything else here
+  # runs the real driver end to end, and a test that fakes what it is checking
+  # checks nothing). It is the right tool for exactly this case: the subject is
+  # the driver's *handling* of a backend refusal, the backend is not under test
+  # at all, and the alternative is to delete the coverage of a rescue clause the
+  # next target will depend on. The driver runs for real, in-process so its
+  # streams can be captured; only the refusal is manufactured.
+  def test_backend_unsupported_construct_is_diagnosed
     in_tmpdir do |dir|
-      File.write(File.join(dir, "u.c"), "void *f(int n){ return __builtin_alloca(n); }")
-      _out, err, status = rubycc("-c", "u.c", "-target", "aarch64", "-o", "u.o", dir: dir)
-      assert_equal 1, status.exitstatus
-      assert_match(/aarch64: not yet supported: alloca/, err)
-      refute File.exist?(File.join(dir, "u.o")), "no object is written for a refused compilation"
+      source = File.join(dir, "u.c")
+      object = File.join(dir, "u.o")
+      File.write(source, "int f(int n){ return n + 1; }")
+      err = StringIO.new
+
+      status = with_refusing_backend("aarch64: not yet supported: widgets") do
+        Rubycc::Driver.run(["-c", source, "-target", "aarch64", "-o", object], stderr: err)
+      end
+
+      assert_equal 1, status
+      assert_match(/rubycc: error: aarch64: not yet supported: widgets/, err.string)
+      refute File.exist?(object), "no object is written for a refused compilation"
     end
+  end
+
+  # Runs the block with the aarch64 backend refusing every function, then puts
+  # the class back. Done by hand rather than with a mocking library because
+  # minitest 6 no longer ships one, and a gem dependency for a single injection
+  # point is not worth it. Removing the singleton method restores Class#new,
+  # which is where the class inherited it from to begin with.
+  def with_refusing_backend(message)
+    backend = Rubycc::Backend::AArch64
+    backend.define_singleton_method(:new) do |*|
+      raise Rubycc::Backend::UnsupportedError, message
+    end
+    yield
+  ensure
+    backend.singleton_class.send(:remove_method, :new)
   end
 
   # An entirely unknown target is rejected as unsupported.

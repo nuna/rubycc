@@ -12,8 +12,9 @@ require_relative "test_c_suite_aarch64"
 # ordinary programs written against the libc rubycc ships headers for, rather
 # than minimal conformance probes), so running them here covers ground the suite
 # does not, at a fraction of its cost. As there, a sample the aarch64 backend
-# cannot lower yet is named in PENDING with the construct that stops it, so the
-# list is a work item rather than a silent gap.
+# cannot lower yet would be named in PENDING with the construct that stops it,
+# so the list is a work item rather than a silent gap — it is empty as of
+# m4/aarch64-alloca-bitscan-2, every sample running on both targets.
 #
 # The whole file skips on a host without the cross toolchain.
 class TestExamplesAArch64 < Minitest::Test

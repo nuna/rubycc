@@ -1,7 +1,8 @@
 {
   "profiles": {
     "native-aarch64": {
-      "provisional": false,
+      "provisional": true,
+      "note": "Stale, and knowingly kept: the alloca and bit-scan skips this profile counted disappeared in m4/aarch64-alloca-bitscan, so expected_skips and skip_fingerprint below describe a suite that no longer exists. They are retained as the last real measurement (source_log) rather than replaced by a guess, because the fingerprint is a hash of the exact test-name/reason set and cannot be derived without a native run. provisional: true is the flag that says do not trust them; it is itself an enforced failure, so the next `only: aarch64` dispatch stops and re-measures.",
       "source_log": "https://github.com/nuna/rubycc/actions/runs/31345396123",
       "measured_at": "2026-08-10",
       "expires": "2026-09-10",
@@ -13,13 +14,6 @@
       "allowed_skips": [
         {"test_pattern": "\\ATestSharedObject#.*\\z", "reason": "x<n>_<n> shared-object coverage is not valid on \"aarch<n>\"", "min_count": 0, "max_count": 61},
         {"test_pattern": "\\A(?!TestElfWriter#test_aarch64_slot_relocation_is_abs64\\z)(?:TestAddressConstantGlobals|TestAtomicBuiltins|TestAtomicType|TestBlockScopeFunctionDecl|TestCrossAbi|TestElfReader|TestElfWriter|TestExecutable|TestInt128Abi|TestLink|TestPic|TestPlainCharSignedness|TestUnnamedBitfieldAlignment)#.*\\z", "reason": "x<n>_<n> host execution is not valid on aarch<n>", "min_count": 0, "max_count": 180},
-        {"test_pattern": "\\ATestExecutionHarness#test_builtin_alloca_matches_gcc_exit_codes\\z", "reason": "aarch<n> __builtin_alloca lowering is not implemented (IR <n>.<n> target limitation)", "min_count": 0, "max_count": 1},
-        {"test_pattern": "\\ATestHeaderAbi#test_alloca_abi_matches_gcc\\z", "reason": "aarch<n> alloca lowering is not implemented (IR <n>.<n> target limitation)", "min_count": 0, "max_count": 1},
-        {"test_pattern": "\\ATestExamples#test_example_m1_step28_extensions\\z", "reason": "aarch<n> __builtin_alloca lowering is not implemented (IR <n>.<n> target limitation)", "min_count": 0, "max_count": 1},
-        {"test_pattern": "\\ATestExamples#test_example_m2_step44_builtins\\z", "reason": "aarch<n> bit-scan builtins are not implemented (IR <n>.<n> target limitation)", "min_count": 0, "max_count": 1},
-        {"test_pattern": "\\ATestGccBuiltins#test_bit_scan_matches_gcc\\z", "reason": "aarch<n> bit-scan builtins are not implemented (IR <n>.<n> target limitation)", "min_count": 0, "max_count": 1},
-        {"test_pattern": "\\ATestExamplesAArch64#test_example_aarch64_step28_extensions\\z", "reason": "aarch<n> __builtin_alloca lowering is not implemented (IR <n>.<n> target limitation)", "min_count": 0, "max_count": 1},
-        {"test_pattern": "\\ATestExamplesAArch64#test_example_aarch64_step44_builtins\\z", "reason": "aarch<n> bit-scan builtins are not implemented (IR <n>.<n> target limitation)", "min_count": 0, "max_count": 1},
         {"test_pattern": "\\ATestMuslBundledHeaderValues#.*\\z", "reason": "the expected columns are x<n>-<n> measurements; this host is aarch<n>", "min_count": 0, "max_count": 3},
         {"test_pattern": "\\ATestPkgconf#.*\\z", "reason": "no multiarch libdir on this host; it is not a system directory here", "min_count": 0, "max_count": 3},
         {"test_pattern": "\\ATestCSuite(?:AArch64)?#.*\\z", "reason": "#line directive (accept-only planned)", "min_count": 0, "max_count": 2},
@@ -44,17 +38,15 @@
     },
     "native-x86": {
       "provisional": false,
-      "source_log": "https://github.com/nuna/rubycc/actions/runs/31345396034",
-      "measured_at": "2026-08-10",
-      "expires": "2026-09-10",
+      "source_log": "https://github.com/nuna/rubycc/actions/runs/31470622580",
+      "measured_at": "2026-08-11",
+      "expires": "2026-09-11",
       "owner": "test-maintainers",
-      "max_skips": 42,
+      "max_skips": 40,
       "min_runs": 2500,
-      "expected_skips": 42,
-      "skip_fingerprint": "8471545c89cb6cb8d0e2ee94883c1b07c8a02fd15b88f8a51f7c29a87daae603",
+      "expected_skips": 40,
+      "skip_fingerprint": "f7818060889e11d7add3f189037b8fecdea0e25e08ba4b68fe52bca53800b6e1",
       "allowed_skips": [
-        {"test_pattern": "\\ATestExamplesAArch64#test_example_aarch64_step28_extensions\\z", "reason": "aarch<n> __builtin_alloca lowering is not implemented (IR <n>.<n> target limitation)", "min_count": 0, "max_count": 1},
-        {"test_pattern": "\\ATestExamplesAArch64#test_example_aarch64_step44_builtins\\z", "reason": "aarch<n> bit-scan builtins are not implemented (IR <n>.<n> target limitation)", "min_count": 0, "max_count": 1},
         {"test_pattern": "\\ATestElfWriter#test_aarch64_slot_relocation_is_abs64\\z", "reason": "AArch<n> relocation coverage requires an AArch<n> host", "min_count": 0, "max_count": 1},
         {"test_pattern": "\\ATestNativeAArch64Smoke#.*\\z", "reason": "native AArch<n> smoke runs only on an AArch<n> Ruby runner", "min_count": 0, "max_count": 2},
         {"test_pattern": "\\ATestCSuite(?:AArch64)?#.*\\z", "reason": "#line directive (accept-only planned)", "min_count": 0, "max_count": 2},
