@@ -240,6 +240,59 @@ module R10ManualClassification
     recipe_evidence(name, RECIPES.fetch(name))
   end
 
+  # The per-target `reviewer` field records one agent's judgement. A ledger whose
+  # every target names the same reviewer -- the same system that wrote the
+  # scanner -- has no independent check on it, so the cross review is a required
+  # second layer: a different agent must re-derive the conclusion by its own
+  # route. It is validated, not merely stored, so it cannot drift into a stamp:
+  # the reviewer must actually differ from the target reviewers, the scope must
+  # name real targets, and a `confirmed` verdict must account for every finding
+  # those targets carry.
+  CROSS_REVIEW_VERDICTS = %w[confirmed disputed partial].freeze
+
+  def validate_cross_review(errors, ledger)
+    review = ledger["cross_review"]
+    if review.nil?
+      errors << "cross_review is missing; a single-reviewer ledger has no independent check"
+      return
+    end
+
+    reviewer = review["reviewer"].to_s
+    errors << "cross_review: reviewer is missing" if reviewer.empty?
+    target_reviewers = ledger.fetch("targets", []).map { |t| t["reviewer"].to_s }.uniq
+    if target_reviewers.include?(reviewer)
+      errors << "cross_review: reviewer #{reviewer.inspect} also classified targets; it is not independent"
+    end
+    errors << "cross_review: reviewed_at must be an ISO date" unless
+      review["reviewed_at"].to_s.match?(/\A\d{4}-\d{2}-\d{2}\z/)
+    errors << "cross_review: verdict must be one of #{CROSS_REVIEW_VERDICTS.join(", ")}" unless
+      CROSS_REVIEW_VERDICTS.include?(review["verdict"])
+    errors << "cross_review: method must list the steps taken" unless
+      review["method"].is_a?(Array) && !review["method"].empty?
+
+    names = ledger.fetch("targets", []).map { |t| t["name"] }
+    scoped = Array(review.dig("scope", "targets"))
+    unknown = scoped - names
+    errors << "cross_review: scope names unknown targets: #{unknown.inspect}" unless unknown.empty?
+
+    with_findings = ledger.fetch("targets", []).reject { |t| Array(t["candidate_reviews"]).empty? }
+    if review["verdict"] == "confirmed"
+      uncovered = with_findings.map { |t| t["name"] } - scoped
+      errors << "cross_review: verdict is confirmed but these targets with findings were not in scope: #{uncovered.inspect}" unless
+        uncovered.empty?
+      covered = with_findings.sum { |t| Array(t["candidate_reviews"]).length }
+      unless review.dig("scope", "findings_covered") == covered
+        errors << "cross_review: scope.findings_covered is #{review.dig("scope", "findings_covered").inspect}, but the scoped targets carry #{covered}"
+      end
+    end
+
+    Array(review["issues_raised"]).each_with_index do |issue, index|
+      %w[issue detail impact].each do |key|
+        errors << "cross_review: issues_raised[#{index}] is missing #{key}" if issue[key].to_s.empty?
+      end
+    end
+  end
+
   def validate_result_metadata(errors, name, target, scan_target, artifact, result, mode, expected_state)
     if result.nil?
       errors << "#{name}: #{mode} artifact has no result"
@@ -411,6 +464,7 @@ module R10ManualClassification
     errors << "schema_version must be #{SCHEMA_VERSION}" unless ledger["schema_version"] == SCHEMA_VERSION
     errors << "tool must be #{TOOL_NAME}" unless ledger["tool"] == TOOL_NAME
     errors << "review_policy is incomplete" unless POLICY.keys.all? { |key| ledger.dig("review_policy", key) == POLICY[key] }
+    validate_cross_review(errors, ledger)
 
     expected = scan_targets(scan)
     actual = ledger.fetch("targets", [])
@@ -552,6 +606,36 @@ module R10ManualClassification
     lines << ""
     lines << "`no_candidate` means the selected extension source had no lexical candidate. It is not an absence proof for generated code or unselected platform branches. `source_tree_sha256` identifies the reviewed unpacked snapshot; `source_tarball_sha256` is null because it was not separately collected. Verification fields remain explicit when not run."
     lines << ""
+    if (review = ledger["cross_review"])
+      lines << "## Cross review"
+      lines << ""
+      lines << "Every target below was classified by `#{ledger.fetch("targets").map { |t| t["reviewer"] }.uniq.join(", ")}`. #{review.fetch("why")}"
+      lines << ""
+      lines << "| reviewer | date | verdict | scope | findings covered |"
+      lines << "|---|---|---|---|---:|"
+      lines << "| #{review.fetch("reviewer")} | #{review.fetch("reviewed_at")} | **#{review.fetch("verdict")}** | #{Array(review.dig("scope", "targets")).join(", ")} | #{review.dig("scope", "findings_covered")} |"
+      lines << ""
+      lines << review.fetch("verdict_note") if review["verdict_note"]
+      lines << ""
+      lines << "Method:"
+      lines << ""
+      Array(review["method"]).each { |step| lines << "- #{step}" }
+      lines << ""
+      lines << "Results:"
+      lines << ""
+      Array(review["results"]).each { |key, value| lines << "- `#{key}`: #{value}" }
+      lines << ""
+      issues = Array(review["issues_raised"])
+      if issues.empty?
+        lines << "The cross review raised no issues."
+      else
+        lines << "Issues the cross review raised (none change a classification):"
+        lines << ""
+        issues.each { |i| lines << "- **#{i.fetch("issue")}** #{i.fetch("detail")} _Impact:_ #{i.fetch("impact")}" }
+      end
+      lines << ""
+    end
+
     lines << "## Critical review and integration"
     lines << ""
     lines << "Three independent source reviews were integrated. They found that the first draft overclaimed the zero-result set and listed inventory files as compiler-selected units. The ledger now separates declared source selection from compiler verification, includes root-source/textual-include/generated-source boundaries, records nkf preprocessor exclusion and http_parser.rb vendor exclusions, and keeps external-library/profile risks unresolved."

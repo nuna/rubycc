@@ -12,6 +12,37 @@ Zero-finding scoped assessments: `a0`=20, `b0`=1, `c`=8. These labels do not rep
 
 `no_candidate` means the selected extension source had no lexical candidate. It is not an absence proof for generated code or unselected platform branches. `source_tree_sha256` identifies the reviewed unpacked snapshot; `source_tarball_sha256` is null because it was not separately collected. Verification fields remain explicit when not run.
 
+## Cross review
+
+Every target below was classified by `Codex`. Every target in this ledger was classified by a single agent (reviewer=Codex), which is the same system that wrote the scanner. A second agent re-derives the conclusion by its own route so the result does not rest on one reviewer.
+
+| reviewer | date | verdict | scope | findings covered |
+|---|---|---|---|---:|
+| Claude Opus 5 | 2026-08-11 | **confirmed** | date, google-protobuf, oj, http_parser.rb, nkf | 128 |
+
+The false_positive classification of all 128 findings is confirmed by an independent route. No candidate was reclassified.
+
+Method:
+
+- Fetch each gem from the provenance URL recorded in this ledger and verify the pinned SHA-256 before reading anything.
+- Resolve every finding_key file:line against the unpacked source and confirm the line exists.
+- Read the va_arg_struct_or_union findings directly, since those are the only category that would be an actual use if correct.
+- Check each finding path against selected_build_path.translation_units.
+- Cross-check verification.rubycc, because rubycc rejects both target operations with a hard error.
+
+Results:
+
+- `digests_verified`: 5/5 matched the pinned gem_sha256
+- `findings_resolved`: 128/128 resolved to an existing line
+- `va_arg_candidates`: All 4 are va_arg(ap, struct message *) -- a pointer to struct, not a struct value -- in ruby_http_parser/vendor/http-parser*/test.c.
+- `build_path`: No vendored or test source appears in any of the five targets selected translation_units.
+- `compiler_evidence`: verification.rubycc is pass for all five, so the built path compiled under a compiler that hard-errors on both operations.
+
+Issues the cross review raised (none change a classification):
+
+- **Rationales are group-level, not per-finding.** Each of the five targets carries one shared rationale covering all of its candidates, while finding_key is per-finding. The ledger therefore implies a per-finding review it does not contain. _Impact:_ No classification changes; the group-level reasoning holds for every finding checked.
+- **Scanner line attribution is imprecise.** Two of the four va_arg_struct_or_union findings cite lines that do not contain a va_arg call (test.c:1988 is assert(len > slen + dlen); test.c:2012 is an opening brace). The other two cite the va_arg line exactly. _Impact:_ Does not affect the classification, but a finding_key line cannot be treated as an exact source location.
+
 ## Critical review and integration
 
 Three independent source reviews were integrated. They found that the first draft overclaimed the zero-result set and listed inventory files as compiler-selected units. The ledger now separates declared source selection from compiler verification, includes root-source/textual-include/generated-source boundaries, records nkf preprocessor exclusion and http_parser.rb vendor exclusions, and keeps external-library/profile risks unresolved.

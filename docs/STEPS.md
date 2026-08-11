@@ -9966,3 +9966,44 @@ DESIGN R9 の暫定制限は暫定のまま残す。
 
 ROADMAP §3 の再検討条件は「残り 8 件が閉じた時点」から「**`pg` のビルドが通った時点**」
 へ絞った。
+
+## test-ci-implementation-8 — 単独レビュアの台帳に、別系統のクロスレビューを乗せる(M5 H6)
+
+R10 の手動分類は 34 件すべてが `reviewer: "Codex"` で、**scanner を書いたのと同じ系が
+単独で全件を判断していた**。「手動分類」という語が示唆する独立性が無い状態である。
+
+人手のレビュアを立てる代わりに、**別エージェントによるクロスレビュー**を層として追加した。
+記録者と検証者が別系統であることを台帳の構造で保証する。
+
+### やったこと
+
+Claude(Codex とは別系統)が、自分の経路で結論を再導出した。
+
+1. 台帳が固定している provenance URL から 5 gem を取得し、**読む前に SHA-256 を照合**した(5/5 一致)。
+2. 全 128 件の `finding_key` の `file:line` を展開後のソースへ解決した(128/128 が実在行)。
+3. 誤りなら実使用になる唯一のカテゴリ `va_arg_struct_or_union` 4 件を直接読んだ。
+4. 各 finding のパスを `selected_build_path.translation_units` と突き合わせた。
+5. `verification.rubycc` を確認した。
+
+結果は **confirmed** で、再分類はゼロ。`va_arg` 候補 4 件はいずれも
+`va_arg(ap, struct message *)` — **構造体へのポインタであって構造体値ではない** — で、
+しかも `vendor/http-parser*/test.c` にあり、5 件のどの選択 TU にも vendored/test は
+入っていない。
+
+### クロスレビューが出した指摘(分類は変わらない)
+
+- **rationale が finding 単位ではなく gem 単位**。`finding_key` は 1 件ずつあるのに、
+  根拠は gem ごとに 1 本を共有している。台帳は per-finding のレビューを示唆するが、
+  実際にはそれを持っていない。
+- **scanner の行の当て方が不正確**。`va_arg` 候補 4 件のうち 2 件は、示された行に
+  `va_arg` が無い(`assert(len > slen + dlen);` と開き波括弧)。`finding_key` の行は
+  厳密なソース位置として扱えない。
+
+### スタンプにしない
+
+`cross_review` はデータとして持つだけでなく**検証する**。`reviewer` が
+target を分類した者と一致してはならず、`confirmed` なら finding を持つ target を
+全部 scope に含み、`findings_covered` が実数と一致していなければならない。
+`test/test_r10_manual_classification.rb` が 6 種類の変異
+(独立でない reviewer、scope 漏れ、件数不一致、cross_review 削除、未知の verdict、
+impact 空)をすべて拒否することを固定している。

@@ -147,4 +147,42 @@ class TestR10ManualClassification < Minitest::Test
     malformed.fetch("summary")["line"].sub!("603 tests", "603, tests")
     refute R10ManualClassification.summary_matches_verify_tool?(malformed)
   end
+  # The per-target reviewer is a single agent, and the same one that wrote the
+  # scanner. The cross review is the independent layer, so it has to be a real
+  # check rather than a stamp: each of these mutations must be rejected.
+  def test_cross_review_must_be_independent_and_account_for_every_finding
+    assert_empty R10ManualClassification.validate(@ledger, @scan)
+
+    mutations = {
+      "a reviewer who also classified targets" =>
+        ->(l) { l["cross_review"]["reviewer"] = l["targets"].first["reviewer"] },
+      "a target with findings left out of scope" =>
+        ->(l) { l["cross_review"]["scope"]["targets"] -= ["oj"] },
+      "a findings_covered count that does not match" =>
+        ->(l) { l["cross_review"]["scope"]["findings_covered"] -= 1 },
+      "no cross review at all" =>
+        ->(l) { l.delete("cross_review") },
+      "an unsupported verdict" =>
+        ->(l) { l["cross_review"]["verdict"] = "looks fine" },
+      "an issue with no impact recorded" =>
+        ->(l) { l["cross_review"]["issues_raised"].first["impact"] = "" }
+    }
+
+    mutations.each do |description, mutate|
+      ledger = Marshal.load(Marshal.dump(@ledger))
+      mutate.call(ledger)
+      errors = R10ManualClassification.validate(ledger, @scan).grep(/cross_review/)
+      refute_empty errors, "the cross review accepted #{description}"
+    end
+  end
+
+  def test_cross_review_scope_covers_every_target_that_carries_findings
+    scoped = @ledger.fetch("cross_review").fetch("scope").fetch("targets")
+    with_findings = @ledger.fetch("targets").reject { |t| Array(t["candidate_reviews"]).empty? }
+
+    assert_equal with_findings.map { |t| t.fetch("name") }.sort, scoped.sort
+    assert_equal with_findings.sum { |t| t.fetch("candidate_reviews").length },
+                 @ledger.fetch("cross_review").fetch("scope").fetch("findings_covered")
+  end
+
 end
