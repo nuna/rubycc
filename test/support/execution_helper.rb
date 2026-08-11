@@ -2,6 +2,8 @@
 
 require "tmpdir"
 require "open3"
+require "rbconfig"
+require_relative "host_target"
 
 # ExecutionHelper provides the scaffolding shared by execution tests:
 # compile a C source string down to an object file, link it into an
@@ -11,6 +13,51 @@ require "open3"
 # exists purely to validate the harness itself. `compiler: :rubycc` drives the
 # Almost Pure Ruby toolchain (Rubycc::Compiler).
 module ExecutionHelper
+  # The generic execution tests compare a rubycc object with the host gcc and
+  # then execute the result. Compile for the host ABI here; Compiler#compile's
+  # library default remains x86_64 so callers that intentionally test a
+  # specific backend still have to say so explicitly.
+  def host_target
+    target = HostTarget.name
+    return target if Rubycc::Compiler::TARGETS.key?(target)
+
+    raise "unsupported host CPU for execution tests: #{RbConfig::CONFIG["host_cpu"].inspect}"
+  end
+
+  def skip_unless_x86_64_host
+    return if host_target == "x86_64"
+
+    skip "x86_64 host execution is not valid on #{host_target}"
+  end
+
+  # The executable linker and the host-dependent tests must make the same
+  # loader/libc availability decision. Keep the target-specific path lists
+  # here instead of letting each test invent a slightly different ARM layout.
+  # The AArch64 linker currently supports the glibc cross/native layout; musl
+  # remains a separate linker capability rather than a false-positive probe.
+  def host_interpreter_paths
+    if host_target == "aarch64"
+      ["/lib/ld-linux-aarch64.so.1",
+       "/usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1"]
+    else
+      [Rubycc::Link::ExecutableLinker::GLIBC_INTERP,
+       Rubycc::Link::ExecutableLinker::MUSL_INTERP]
+    end
+  end
+
+  def host_libc_paths
+    if host_target == "aarch64"
+      Rubycc::Link::ExecutableLinker::AARCH64_LIBC_PATHS
+    else
+      Rubycc::Link::ExecutableLinker::DEFAULT_LIBC_PATHS
+    end
+  end
+
+  def host_linkable?
+    host_interpreter_paths.any? { |path| File.exist?(path) } &&
+      host_libc_paths.any? { |path| File.exist?(path) }
+  end
+
   def in_tmpdir
     Dir.mktmpdir("rubycc-test") do |dir|
       yield dir
@@ -19,22 +66,24 @@ module ExecutionHelper
 
   def compile_with_rubycc(c_source, output_path)
     filename = "#{File.basename(output_path, ".*")}.c"
-    binary = Rubycc::Compiler.new.compile(c_source, filename: filename)
+    binary = Rubycc::Compiler.new.compile(c_source, filename: filename, target: host_target)
     File.binwrite(output_path, binary)
     output_path
   end
 
-  # `pic:` compiles with -fPIC, matching AArch64ExecutionHelper#compile_with_cross_gcc's
-  # kwarg of the same name and default (false), so a caller building the gcc
-  # side of a differential case can pick its PIC-ness the same way on either
-  # machine's oracle. Defaulted so every existing call site is unaffected.
+  # `pic:` selects the complete code-generation mode for the gcc oracle:
+  # -fPIC for a PIC object, and -fno-pie for the ordinary non-PIC object. The
+  # latter is explicit because Debian's gcc defaults to PIE on both x86-64 and
+  # AArch64; leaving it implicit makes BuildProfile(pic: false) compare a
+  # non-PIC rubycc object with a PIE gcc object. The keyword and default match
+  # AArch64ExecutionHelper#compile_with_cross_gcc, so a differential case can
+  # choose the same mode on either machine.
   def compile_with_gcc(c_source, output_path, pic: false)
     dir = File.dirname(output_path)
     source_path = File.join(dir, "#{File.basename(output_path, ".*")}.c")
     File.write(source_path, c_source)
 
-    args = ["gcc", "-c"]
-    args << "-fPIC" if pic
+    args = ["gcc", "-c", pic ? "-fPIC" : "-fno-pie"]
     stdout_and_stderr, status = Open3.capture2e(*args, "-o", output_path, source_path)
     unless status.success?
       raise "gcc failed to compile source (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
@@ -64,7 +113,12 @@ module ExecutionHelper
     dir = File.dirname(object_path)
     exe_path = File.join(dir, "#{File.basename(object_path, ".*")}.out")
 
-    stdout_and_stderr, status = Open3.capture2e("gcc", "-o", exe_path, object_path)
+    # Rubycc emits non-PIC relocatable objects for the ordinary execution
+    # differential. Debian's native GCC defaults to PIE on both x86_64 and
+    # AArch64; AArch64's linker rejects a non-PIC ADRP relocation against an
+    # external data symbol in that mode. These tests compare ordinary hosted
+    # code, not PIE policy, so make the oracle link mode explicit and portable.
+    stdout_and_stderr, status = Open3.capture2e("gcc", "-no-pie", "-o", exe_path, object_path)
     unless status.success?
       raise "gcc failed to link object file (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
     end
@@ -82,7 +136,7 @@ module ExecutionHelper
     dir = File.dirname(object_path)
     exe_path = File.join(dir, "#{File.basename(object_path, ".*")}.out")
 
-    stdout_and_stderr, status = Open3.capture2e("gcc", "-o", exe_path, object_path, "-lm")
+    stdout_and_stderr, status = Open3.capture2e("gcc", "-no-pie", "-o", exe_path, object_path, "-lm")
     unless status.success?
       raise "gcc failed to link object file (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
     end
@@ -100,7 +154,7 @@ module ExecutionHelper
   def link_stderr(object_path)
     dir = File.dirname(object_path)
     exe_path = File.join(dir, "#{File.basename(object_path, ".*")}.out")
-    _stdout, stderr, _status = Open3.capture3("gcc", "-o", exe_path, object_path)
+    _stdout, stderr, _status = Open3.capture3("gcc", "-no-pie", "-o", exe_path, object_path)
     stderr
   end
 
@@ -117,7 +171,7 @@ module ExecutionHelper
       end
 
       exe_path = File.join(dir, "exe")
-      stdout_and_stderr, status = Open3.capture2e("gcc", "-o", exe_path, *object_paths)
+      stdout_and_stderr, status = Open3.capture2e("gcc", "-no-pie", "-o", exe_path, *object_paths)
       unless status.success?
         raise "gcc failed to link object files (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
       end

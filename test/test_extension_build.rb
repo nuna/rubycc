@@ -15,22 +15,27 @@ require "open3"
 # and hands it to a *separate* Ruby process's `require` so the resolution
 # genuinely happens against a live interpreter rather than this test's own.
 class TestExtensionBuild < Minitest::Test
+  HOST_TARGET = HostTarget.name
+
   # CRuby's own public headers, discovered at runtime from the interpreter
   # running the suite (rather than pinned), matching TestRubySmoke.
   RUBY_HDR_DIR = RbConfig::CONFIG["rubyhdrdir"]
   RUBY_ARCH_HDR_DIR = RbConfig::CONFIG["rubyarchhdrdir"]
 
-  # The libc header directories on this host, matching TestRubySmoke /
-  # TestCSuite. gcc's private include directory is deliberately absent: rubycc
-  # supplies the compiler-provided headers itself and injects them as its
-  # default system search path (Step 41), so the build never reads /usr/lib/gcc.
-  SYSTEM_INCLUDE_PATHS = [
-    "/usr/local/include",
-    "/usr/include/x86_64-linux-gnu",
-    "/usr/include"
-  ].freeze
+  BUNDLED_INCLUDE = File.expand_path("../include", __dir__)
+  BUNDLED_LIBC_ARCH_INCLUDE = File.expand_path("../include/libc/glibc/#{HOST_TARGET}", __dir__)
+  BUNDLED_LIBC_INCLUDE = File.expand_path("../include/libc", __dir__)
 
-  INCLUDE_PATHS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR, *SYSTEM_INCLUDE_PATHS].freeze
+  # Only the Ruby headers, matching TestRubySmoke / TestCSuite. The compiler
+  # appends its own default system search path -- its compiler-supplied headers,
+  # the bundled libc layers, then the host libc directories for this target
+  # (Step 41, per-target since `test-ci-implementation-9`) -- after these, which
+  # is the order a real extension build sees. Passing the bundled layers as
+  # `-I` here instead would move them ahead of the caller's own directories and
+  # ahead of the host libc, i.e. test an order no build uses. gcc's private
+  # include directory stays absent from that default path, so the build still
+  # reads nothing under /usr/lib/gcc.
+  INCLUDE_PATHS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR].freeze
   INCLUDE_FLAGS = INCLUDE_PATHS.map { |p| "-I#{p}" }.freeze
 
   # For the freestanding-header acceptance (Step 41): only the CRuby header
@@ -125,6 +130,7 @@ class TestExtensionBuild < Minitest::Test
   C
 
   def setup
+    skip "host CPU #{HOST_TARGET.inspect} is not a rubycc target" unless Rubycc::Compiler::TARGETS.key?(HOST_TARGET)
     unless RUBY_HDR_DIR && File.directory?(RUBY_HDR_DIR)
       skip "CRuby public headers (rubyhdrdir) not found: #{RUBY_HDR_DIR.inspect}"
     end

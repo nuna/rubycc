@@ -18,6 +18,8 @@ require "tmpdir"
 # extension's real entry points are resolved by the Ruby runtime, which this
 # harness does not stand up. Producing a non-empty object is the success signal.
 class TestRubySmoke < Minitest::Test
+  HOST_TARGET = HostTarget.name
+
   # CRuby's own public headers, discovered at runtime from the interpreter
   # running the suite (rather than pinned) so the test tracks whatever Ruby
   # built it: "rubyhdrdir" holds ruby.h and the ruby/ tree, "rubyarchhdrdir"
@@ -25,27 +27,21 @@ class TestRubySmoke < Minitest::Test
   RUBY_HDR_DIR = RbConfig::CONFIG["rubyhdrdir"]
   RUBY_ARCH_HDR_DIR = RbConfig::CONFIG["rubyarchhdrdir"]
 
-  # The libc header directories on this host. gcc's private include directory
-  # (/usr/lib/gcc/.../include, where stdarg.h and kin live) is deliberately
-  # absent: rubycc now ships those compiler-supplied headers itself and injects
-  # them (with the libc directories) as its default system search path (Step 41),
-  # so this test relies on nothing under /usr/lib/gcc.
-  SYSTEM_INCLUDE_PATHS = [
-    "/usr/local/include",
-    "/usr/include/x86_64-linux-gnu",
-    "/usr/include"
-  ].freeze
-
-  # The Ruby headers first (so <ruby.h> and its arch "ruby/config.h" resolve),
-  # then the libc set; rubycc's bundled freestanding headers are appended
-  # automatically as part of the default system search path.
-  INCLUDE_PATHS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR, *SYSTEM_INCLUDE_PATHS].freeze
-
-  # The bundled header directories, resolved from the gem checkout: the
-  # freestanding layer, then the two bundled-libc layers (arch before common).
   BUNDLED_INCLUDE = File.expand_path("../include", __dir__)
-  BUNDLED_LIBC_ARCH_INCLUDE = File.expand_path("../include/libc/glibc/x86_64", __dir__)
+  BUNDLED_LIBC_ARCH_INCLUDE = File.expand_path("../include/libc/glibc/#{HOST_TARGET}", __dir__)
   BUNDLED_LIBC_INCLUDE = File.expand_path("../include/libc", __dir__)
+
+  # Only the Ruby headers, so <ruby.h> and its arch "ruby/config.h" resolve.
+  # Everything else -- rubycc's compiler-supplied headers, the bundled libc
+  # layers, and the host libc directories for this target -- is the compiler's
+  # own default system search path (Step 41, per-target since
+  # `test-ci-implementation-9`), appended after these. That is the order a real
+  # extension build uses, so this test must not hand-roll its own: the bundled
+  # layers belong *after* the caller's -I and *before* the host libc, and
+  # spelling the list out here silently changed both (GAPS U survived that way).
+  # gcc's private include directory (/usr/lib/gcc/.../include) is absent from
+  # that default path, so this test still relies on nothing under /usr/lib/gcc.
+  INCLUDE_PATHS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR].freeze
 
   # The distroless include path (Step 63 acceptance 2): the bundled freestanding
   # and libc layers plus the CRuby header dirs, with NO host /usr/include on it.
@@ -129,6 +125,7 @@ class TestRubySmoke < Minitest::Test
   HAVE_STDCKDINT_H_DEFINE = [[:define, "HAVE_STDCKDINT_H"]].freeze
 
   def setup
+    skip "host CPU #{HOST_TARGET.inspect} is not a rubycc target" unless Rubycc::Compiler::TARGETS.key?(HOST_TARGET)
     # Non-Linux or dev-header-less environments (no CRuby headers installed, or
     # no libc headers under /usr/include) cannot exercise this path; skip with a
     # clear reason rather than fail.
@@ -179,7 +176,7 @@ class TestRubySmoke < Minitest::Test
       object = Dir.mktmpdir("rubycc-distroless") do |dir|
         obj = Rubycc::Compiler.new.compile(
           source, filename: filename,
-          include_paths: DISTROLESS_INCLUDE_PATHS, system_includes: false
+          include_paths: DISTROLESS_INCLUDE_PATHS, system_includes: false, target: HOST_TARGET
         )
         File.binwrite(File.join(dir, "#{File.basename(filename, ".c")}.o"), obj)
         obj
@@ -197,8 +194,10 @@ class TestRubySmoke < Minitest::Test
   # regression names exactly which construct in the CRuby headers broke.
   def compile_extension(source, filename, defines: [])
     Dir.mktmpdir("rubycc-ruby-smoke") do |dir|
-      object = Rubycc::Compiler.new.compile(source, filename: filename, include_paths: INCLUDE_PATHS,
-                                                     defines: defines)
+      object = Rubycc::Compiler.new.compile(
+        source, filename: filename, include_paths: INCLUDE_PATHS, defines: defines,
+        target: HOST_TARGET
+      )
       object_path = File.join(dir, "#{File.basename(filename, ".c")}.o")
       File.binwrite(object_path, object)
       assert File.size?(object_path), "expected #{object_path} to be written and non-empty"

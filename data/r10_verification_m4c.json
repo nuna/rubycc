@@ -1,0 +1,1489 @@
+{
+  "schema_version": 2,
+  "artifact_kind": "r10-gem-verification-summary",
+  "batch": "R10-M4C",
+  "environment": "glibc x86_64 / ruby 3.4.5",
+  "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+  "architecture": "x86_64",
+  "aarch64_evidence": false,
+  "work_dir": "<VERIFY_WORK>",
+  "source_notes": [
+    "M4C progress was measured with isolated scratch GEM_SPEC_CACHE after host-cache EROFS; initial batch abort due missing RBS recipe is not a result.",
+    "yajl-ruby uses the exact 1.4.3 .gem data archive because GitHub has no 1.4.3 tag."
+  ],
+  "control": [
+    {
+      "name": "openssl",
+      "version": "4.0.2",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "592 tests, 4370 assertions, 0 failures, 0 errors, 2 omissions",
+        "tests": 592,
+        "assertions": 4370,
+        "failures": 0,
+        "errors": 0,
+        "other": {
+          "omissions": 2
+        }
+      },
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/openssl-4.0.2.gem",
+        "gem_sha256": "1037ad2868ae58df9ad917891c0c0f9815a1172f6846d4bcdd508e4c2ee747c2",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/openssl/archive/refs/tags/v4.0.2.tar.gz",
+        "source_sha256": "605b4d9109cf55ab64c5a4eba7b06d1df65b267777a732f392147591fe45efbb",
+        "source_relative_path": "r10-m4c/openssl-4.0.2-src.tar.gz"
+      },
+      "recipe": {
+        "name": "openssl",
+        "version": "4.0.2",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/openssl/archive/refs/tags/v4.0.2.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/openssl.so",
+            "to": "lib/openssl.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "openssl"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "c947202774f66c12d2ea8cb34637290e4ce75c8bb054e2beafd1187a77c4372c"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "nio4r",
+      "version": "2.7.5",
+      "mode": "control",
+      "status": "unparsable",
+      "reason": "suite child exited non-zero without an RSpec summary: symbol lookup error, undefined symbol ev_loop_new",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": null,
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "inconclusive",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/nio4r-2.7.5.gem",
+        "gem_sha256": "6c90168e48fb5f8e768419c93abb94ba2b892a1d0602cb06eef16d8b7df1dca1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/socketry/nio4r/archive/refs/tags/v2.7.5.tar.gz",
+        "source_sha256": "6b17580f7a84903b5c76a97bb926098cfeb012fd6189a0481f417df6d944d93f",
+        "source_relative_path": "r10-m4c/nio4r-2.7.5-src.tar.gz"
+      },
+      "recipe": {
+        "name": "nio4r",
+        "version": "2.7.5",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/socketry/nio4r/archive/refs/tags/v2.7.5.tar.gz",
+        "runner": "rspec",
+        "test_glob": "spec/**/*_spec.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "spec"
+        ],
+        "extconf_args": [
+          "--with-cflags=-fPIC -DEV_API_STATIC"
+        ],
+        "sos": [
+          {
+            "from": "lib/nio4r_ext.so",
+            "to": "lib/nio4r_ext.so"
+          }
+        ],
+        "test_deps": [
+          "rspec"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "nio"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "0f3ebdf05c3f6f6bc98dad42ca265d6b568a8b46f9dffdd24996cdd2ed79e2bc"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "prism",
+      "version": "1.8.1",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "17306 tests, 1762400 assertions, 0 failures, 0 errors, 3 omissions",
+        "tests": 17306,
+        "assertions": 1762400,
+        "failures": 0,
+        "errors": 0,
+        "other": {
+          "omissions": 3
+        }
+      },
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/prism-1.8.1.gem",
+        "gem_sha256": "b260c1844ee0c7ead9c938f7fd63b95888c87cc054dfb64043204eccff8116ac",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/prism/archive/refs/tags/v1.8.1.tar.gz",
+        "source_sha256": "3e162b1d76eb02e817d306fb966d74613d17bc9ed153915e99b5849d27f3b658",
+        "source_relative_path": "r10-m4c/prism-1.8.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "prism",
+        "version": "1.8.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/prism/archive/refs/tags/v1.8.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/prism/**/*_test.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/prism"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/prism/prism.so",
+            "to": "lib/prism/prism.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "prism"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "584c2c0ad6b64bcb0a3926e436b63801f1a46d16503be6db8f73d40561bb7c66"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "fiddle",
+      "version": "1.1.8",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "227 tests, 615 assertions, 0 failures, 0 errors",
+        "tests": 227,
+        "assertions": 615,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/fiddle-1.1.8.gem",
+        "gem_sha256": "7fa8ee3627271497f3add5503acdbc3f40b32f610fc1cf49634f083ef3f32eee",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/fiddle/archive/refs/tags/v1.1.8.tar.gz",
+        "source_sha256": "c74a1117bef7fbcc52f51863b84bfb9b2a3b30be2457858217fa2f18afb6d29c",
+        "source_relative_path": "r10-m4c/fiddle-1.1.8-src.tar.gz"
+      },
+      "recipe": {
+        "name": "fiddle",
+        "version": "1.1.8",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/fiddle/archive/refs/tags/v1.1.8.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/fiddle/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/fiddle"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/fiddle.so",
+            "to": "lib/fiddle.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "fiddle"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "2da6152e5f8f3ad0389ff1fe7bdeffb0bd03c55b9d560681fa2cae0795e853c6"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "bootsnap",
+      "version": "1.24.6",
+      "mode": "control",
+      "status": "unparsable",
+      "reason": "suite exited without a parseable summary; status was not promoted to pass",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": null,
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "inconclusive",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/bootsnap-1.24.6.gem",
+        "gem_sha256": "c60bab88c70332290f0a2636a288f675299eb4f804a02a3c085b42eca9da164a",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/Shopify/bootsnap/archive/refs/tags/v1.24.6.tar.gz",
+        "source_sha256": "002ec58747f174cce445802d5256f8b84f59af917fbfbad54619ff06888300e7",
+        "source_relative_path": "r10-m4c/bootsnap-1.24.6-src.tar.gz"
+      },
+      "recipe": {
+        "name": "bootsnap",
+        "version": "1.24.6",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/Shopify/bootsnap/archive/refs/tags/v1.24.6.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/*_test.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/bootsnap/bootsnap.so",
+            "to": "lib/bootsnap/bootsnap.so"
+          }
+        ],
+        "test_deps": [
+          "minitest",
+          "mocha"
+        ],
+        "test_dep_versions": {
+          "minitest": "5.25.5"
+        },
+        "sanity": {
+          "requires": [
+            "bootsnap/compile_cache",
+            "bootsnap/bootsnap"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "0fc66f9b35d8ebfafe6834db1d2b74ff69459aeb45161915d0b13de6ceb6eb6d"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "oj",
+      "version": "3.17.4",
+      "mode": "control",
+      "status": "fail",
+      "reason": "7 failures / 8 errors",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "627 tests, 9566 assertions, 7 failures, 8 errors",
+        "tests": 627,
+        "assertions": 9566,
+        "failures": 7,
+        "errors": 8,
+        "other": {}
+      },
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "fail",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/oj-3.17.4.gem",
+        "gem_sha256": "733fe3bcb7a5d985bd2e943620b7bea1bffb2809318af7021c841b833a6858e1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ohler55/oj/archive/refs/tags/v3.17.4.tar.gz",
+        "source_sha256": "23826ff9508afe722ae127bca3517c1fef50c08efd44678bd3906bde9b3ee1de",
+        "source_relative_path": "r10-m4c/oj-3.17.4-src.tar.gz"
+      },
+      "recipe": {
+        "name": "oj",
+        "version": "3.17.4",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ohler55/oj/archive/refs/tags/v3.17.4.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test",
+          "ext"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/oj/oj.so",
+            "to": "lib/oj/oj.so"
+          }
+        ],
+        "test_deps": [
+          "minitest"
+        ],
+        "test_dep_versions": {
+          "minitest": "5.25.5"
+        },
+        "sanity": {
+          "requires": [
+            "oj"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "212e2731f0e896e3df4d700f661edbc72d4a4f6b15899641429cdc41d76aaed3"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "puma",
+      "version": "8.0.2",
+      "mode": "control",
+      "status": "unparsable",
+      "reason": "suite timed out after 900s without a test_unit summary; not converted to skip",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": null,
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "inconclusive",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/puma-8.0.2.gem",
+        "gem_sha256": "c8ed871dfbbe66448ea9ffd46692342d9804d4071522b52b5331b7b6e7b686fb",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/puma/puma/archive/refs/tags/v8.0.2.tar.gz",
+        "source_sha256": "accfcaeaa04407e5f015fe1a0d1e4179950fe2c5ef968f45568453fee811561b",
+        "source_relative_path": "r10-m4c/puma-8.0.2-src.tar.gz"
+      },
+      "recipe": {
+        "name": "puma",
+        "version": "8.0.2",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/puma/puma/archive/refs/tags/v8.0.2.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/puma/puma_http11.so",
+            "to": "lib/puma/puma_http11.so"
+          }
+        ],
+        "test_deps": [],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "puma"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "4c2d270f8226eb2f1bbd48d43640e84da1c4eeb8a49b30c42ee4a2492005cf8d"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "google-protobuf",
+      "version": "4.35.1",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "328 tests, 532032 assertions, 0 failures, 0 errors, 2 omissions",
+        "tests": 328,
+        "assertions": 532032,
+        "failures": 0,
+        "errors": 0,
+        "other": {
+          "omissions": 2
+        }
+      },
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/google-protobuf-4.35.1.gem",
+        "gem_sha256": "a3a6471331d918f58dfa4d014a8f6286f0af2cf4840216bde52fcf2ea3fe3726",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/protocolbuffers/protobuf/archive/refs/tags/v35.1.tar.gz",
+        "source_sha256": "22775f9376938295efa2d59a59bde4cd075a42df5a9b4d27aa9b99fa6a413bd2",
+        "source_relative_path": "r10-m4c/google-protobuf-4.35.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "google-protobuf",
+        "version": "4.35.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/protocolbuffers/protobuf/archive/refs/tags/v35.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "ruby/tests/*.rb",
+        "exclude": [
+          "ruby/tests/gc_test.rb",
+          "ruby/tests/common_tests.rb",
+          "ruby/tests/*_pb.rb"
+        ],
+        "load_paths": [
+          "ruby/lib",
+          "ruby/tests"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/google/protobuf_c.so",
+            "to": "ruby/lib/google/protobuf_c.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "google/protobuf"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "2d7780f5c991ef47462f16eac580674b4ddc85dac30ff10a5f007a981be62547"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "mysql2",
+      "version": "0.5.7",
+      "mode": "control",
+      "status": "inconclusive",
+      "reason": "suite_exec requires Docker container rubycc-mariadb; docker inspect reported it is not running",
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": null,
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "inconclusive",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/mysql2-0.5.7.gem",
+        "gem_sha256": "ba09ede515a0ae8a7192040a1b778c0fb0f025fa5877e9be895cd325fa5e9d7b",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/brianmario/mysql2/archive/refs/tags/0.5.7.tar.gz",
+        "source_sha256": "8a70979ec650c3399891e6c05f2e65ada7a4b1da7ba14aeba14ab8317c5b506b",
+        "source_relative_path": "r10-m4c/mysql2-0.5.7-src.tar.gz"
+      },
+      "recipe": {
+        "name": "mysql2",
+        "version": "0.5.7",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/brianmario/mysql2/archive/refs/tags/0.5.7.tar.gz",
+        "runner": "rspec",
+        "test_glob": "spec/**/*_spec.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "spec"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/mysql2/mysql2.so",
+            "to": "lib/mysql2/mysql2.so"
+          }
+        ],
+        "test_deps": [
+          "rspec"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "mysql2"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "962014bbfe35d2762f1a57985b12a3fdc2ceceb870775d95863ef002751c9f27"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "yajl-ruby",
+      "version": "1.4.3",
+      "mode": "control",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "no rubycc traces (host cc)"
+      ],
+      "summary": {
+        "line": "416 examples, 0 failures",
+        "tests": 416,
+        "assertions": null,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/yajl-ruby-1.4.3.gem",
+        "gem_sha256": "8c974d9c11ae07b0a3b6d26efea8407269b02e4138118fbe3ef0d2ec9724d1d2",
+        "source_kind": "gem_data_archive",
+        "source_url": "https://rubygems.org/downloads/yajl-ruby-1.4.3.gem",
+        "source_sha256": "8c974d9c11ae07b0a3b6d26efea8407269b02e4138118fbe3ef0d2ec9724d1d2",
+        "source_relative_path": "r10-census-cache/yajl-ruby-1.4.3.gem"
+      },
+      "recipe": {
+        "name": "yajl-ruby",
+        "version": "1.4.3",
+        "source_kind": "gem_data_archive",
+        "source_url": "https://rubygems.org/downloads/yajl-ruby-1.4.3.gem",
+        "runner": "rspec",
+        "test_glob": "spec/**/*_spec.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "spec"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/yajl/yajl.so",
+            "to": "lib/yajl/yajl.so"
+          }
+        ],
+        "test_deps": [
+          "rspec"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "yajl"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "1c2a40e2241115a51dc050aaa9ea2dbcb960138259ff1aa8a8791ee090ed4ce4"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    }
+  ],
+  "rubycc": [
+    {
+      "name": "openssl",
+      "version": "4.0.2",
+      "mode": "rubycc",
+      "status": "unparsable",
+      "reason": "suite child exited non-zero without a test_unit summary; captured output ended in a process memory map, so the exact crash cause is not established",
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "summary": null,
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "inconclusive",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/openssl-4.0.2.gem",
+        "gem_sha256": "1037ad2868ae58df9ad917891c0c0f9815a1172f6846d4bcdd508e4c2ee747c2",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/openssl/archive/refs/tags/v4.0.2.tar.gz",
+        "source_sha256": "605b4d9109cf55ab64c5a4eba7b06d1df65b267777a732f392147591fe45efbb",
+        "source_relative_path": "r10-m4c/openssl-4.0.2-src.tar.gz"
+      },
+      "recipe": {
+        "name": "openssl",
+        "version": "4.0.2",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/openssl/archive/refs/tags/v4.0.2.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/openssl.so",
+            "to": "lib/openssl.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "openssl"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "c947202774f66c12d2ea8cb34637290e4ce75c8bb054e2beafd1187a77c4372c"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "nio4r",
+      "version": "2.7.5",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "summary": {
+        "line": "112 examples, 0 failures, 0 errors, 2 pending",
+        "tests": 112,
+        "assertions": null,
+        "failures": 0,
+        "errors": 0,
+        "other": {
+          "pendings": 2
+        }
+      },
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/nio4r-2.7.5.gem",
+        "gem_sha256": "6c90168e48fb5f8e768419c93abb94ba2b892a1d0602cb06eef16d8b7df1dca1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/socketry/nio4r/archive/refs/tags/v2.7.5.tar.gz",
+        "source_sha256": "6b17580f7a84903b5c76a97bb926098cfeb012fd6189a0481f417df6d944d93f",
+        "source_relative_path": "r10-m4c/nio4r-2.7.5-src.tar.gz"
+      },
+      "recipe": {
+        "name": "nio4r",
+        "version": "2.7.5",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/socketry/nio4r/archive/refs/tags/v2.7.5.tar.gz",
+        "runner": "rspec",
+        "test_glob": "spec/**/*_spec.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "spec"
+        ],
+        "extconf_args": [
+          "--with-cflags=-fPIC -DEV_API_STATIC"
+        ],
+        "sos": [
+          {
+            "from": "lib/nio4r_ext.so",
+            "to": "lib/nio4r_ext.so"
+          }
+        ],
+        "test_deps": [
+          "rspec"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "nio"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "0f3ebdf05c3f6f6bc98dad42ca265d6b568a8b46f9dffdd24996cdd2ed79e2bc"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "prism",
+      "version": "1.8.1",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "summary": {
+        "line": "17306 tests, 1762400 assertions, 0 failures, 0 errors, 3 omissions",
+        "tests": 17306,
+        "assertions": 1762400,
+        "failures": 0,
+        "errors": 0,
+        "other": {
+          "omissions": 3
+        }
+      },
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/prism-1.8.1.gem",
+        "gem_sha256": "b260c1844ee0c7ead9c938f7fd63b95888c87cc054dfb64043204eccff8116ac",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/prism/archive/refs/tags/v1.8.1.tar.gz",
+        "source_sha256": "3e162b1d76eb02e817d306fb966d74613d17bc9ed153915e99b5849d27f3b658",
+        "source_relative_path": "r10-m4c/prism-1.8.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "prism",
+        "version": "1.8.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/prism/archive/refs/tags/v1.8.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/prism/**/*_test.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/prism"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/prism/prism.so",
+            "to": "lib/prism/prism.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "prism"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "584c2c0ad6b64bcb0a3926e436b63801f1a46d16503be6db8f73d40561bb7c66"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "fiddle",
+      "version": "1.1.8",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "summary": {
+        "line": "227 tests, 615 assertions, 0 failures, 0 errors",
+        "tests": 227,
+        "assertions": 615,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/fiddle-1.1.8.gem",
+        "gem_sha256": "7fa8ee3627271497f3add5503acdbc3f40b32f610fc1cf49634f083ef3f32eee",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/fiddle/archive/refs/tags/v1.1.8.tar.gz",
+        "source_sha256": "c74a1117bef7fbcc52f51863b84bfb9b2a3b30be2457858217fa2f18afb6d29c",
+        "source_relative_path": "r10-m4c/fiddle-1.1.8-src.tar.gz"
+      },
+      "recipe": {
+        "name": "fiddle",
+        "version": "1.1.8",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ruby/fiddle/archive/refs/tags/v1.1.8.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/fiddle/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test/fiddle"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/fiddle.so",
+            "to": "lib/fiddle.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit",
+          "test-unit-ruby-core"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "fiddle"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "2da6152e5f8f3ad0389ff1fe7bdeffb0bd03c55b9d560681fa2cae0795e853c6"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "bootsnap",
+      "version": "1.24.6",
+      "mode": "rubycc",
+      "status": "unparsable",
+      "reason": "suite exited without a parseable summary; status was not promoted to pass",
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "summary": null,
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "inconclusive",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/bootsnap-1.24.6.gem",
+        "gem_sha256": "c60bab88c70332290f0a2636a288f675299eb4f804a02a3c085b42eca9da164a",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/Shopify/bootsnap/archive/refs/tags/v1.24.6.tar.gz",
+        "source_sha256": "002ec58747f174cce445802d5256f8b84f59af917fbfbad54619ff06888300e7",
+        "source_relative_path": "r10-m4c/bootsnap-1.24.6-src.tar.gz"
+      },
+      "recipe": {
+        "name": "bootsnap",
+        "version": "1.24.6",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/Shopify/bootsnap/archive/refs/tags/v1.24.6.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/*_test.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/bootsnap/bootsnap.so",
+            "to": "lib/bootsnap/bootsnap.so"
+          }
+        ],
+        "test_deps": [
+          "minitest",
+          "mocha"
+        ],
+        "test_dep_versions": {
+          "minitest": "5.25.5"
+        },
+        "sanity": {
+          "requires": [
+            "bootsnap/compile_cache",
+            "bootsnap/bootsnap"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "0fc66f9b35d8ebfafe6834db1d2b74ff69459aeb45161915d0b13de6ceb6eb6d"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "oj",
+      "version": "3.17.4",
+      "mode": "rubycc",
+      "status": "fail",
+      "reason": "1 failure / 3 errors",
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc"
+      ],
+      "summary": {
+        "line": "627 tests, 9584 assertions, 1 failures, 3 errors",
+        "tests": 627,
+        "assertions": 9584,
+        "failures": 1,
+        "errors": 3,
+        "other": {}
+      },
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "fail",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/oj-3.17.4.gem",
+        "gem_sha256": "733fe3bcb7a5d985bd2e943620b7bea1bffb2809318af7021c841b833a6858e1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ohler55/oj/archive/refs/tags/v3.17.4.tar.gz",
+        "source_sha256": "23826ff9508afe722ae127bca3517c1fef50c08efd44678bd3906bde9b3ee1de",
+        "source_relative_path": "r10-m4c/oj-3.17.4-src.tar.gz"
+      },
+      "recipe": {
+        "name": "oj",
+        "version": "3.17.4",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ohler55/oj/archive/refs/tags/v3.17.4.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test",
+          "ext"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/oj/oj.so",
+            "to": "lib/oj/oj.so"
+          }
+        ],
+        "test_deps": [
+          "minitest"
+        ],
+        "test_dep_versions": {
+          "minitest": "5.25.5"
+        },
+        "sanity": {
+          "requires": [
+            "oj"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "212e2731f0e896e3df4d700f661edbc72d4a4f6b15899641429cdc41d76aaed3"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "puma",
+      "version": "8.0.2",
+      "mode": "rubycc",
+      "status": "unparsable",
+      "reason": "suite exited without a parseable summary; status was not promoted to pass",
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc",
+        "mkmf.log:rubycc"
+      ],
+      "summary": null,
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "inconclusive",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/puma-8.0.2.gem",
+        "gem_sha256": "c8ed871dfbbe66448ea9ffd46692342d9804d4071522b52b5331b7b6e7b686fb",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/puma/puma/archive/refs/tags/v8.0.2.tar.gz",
+        "source_sha256": "accfcaeaa04407e5f015fe1a0d1e4179950fe2c5ef968f45568453fee811561b",
+        "source_relative_path": "r10-m4c/puma-8.0.2-src.tar.gz"
+      },
+      "recipe": {
+        "name": "puma",
+        "version": "8.0.2",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/puma/puma/archive/refs/tags/v8.0.2.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "test"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/puma/puma_http11.so",
+            "to": "lib/puma/puma_http11.so"
+          }
+        ],
+        "test_deps": [],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "puma"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "4c2d270f8226eb2f1bbd48d43640e84da1c4eeb8a49b30c42ee4a2492005cf8d"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "google-protobuf",
+      "version": "4.35.1",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake (overwritten by later extension; recipe-specific exception)",
+        "Makefile:CC=rubycc"
+      ],
+      "summary": {
+        "line": "328 tests, 577046 assertions, 0 failures, 0 errors, 2 omissions",
+        "tests": 328,
+        "assertions": 577046,
+        "failures": 0,
+        "errors": 0,
+        "other": {
+          "omissions": 2
+        }
+      },
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/google-protobuf-4.35.1.gem",
+        "gem_sha256": "a3a6471331d918f58dfa4d014a8f6286f0af2cf4840216bde52fcf2ea3fe3726",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/protocolbuffers/protobuf/archive/refs/tags/v35.1.tar.gz",
+        "source_sha256": "22775f9376938295efa2d59a59bde4cd075a42df5a9b4d27aa9b99fa6a413bd2",
+        "source_relative_path": "r10-m4c/google-protobuf-4.35.1-src.tar.gz"
+      },
+      "recipe": {
+        "name": "google-protobuf",
+        "version": "4.35.1",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/protocolbuffers/protobuf/archive/refs/tags/v35.1.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "ruby/tests/*.rb",
+        "exclude": [
+          "ruby/tests/gc_test.rb",
+          "ruby/tests/common_tests.rb",
+          "ruby/tests/*_pb.rb"
+        ],
+        "load_paths": [
+          "ruby/lib",
+          "ruby/tests"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/google/protobuf_c.so",
+            "to": "ruby/lib/google/protobuf_c.so"
+          }
+        ],
+        "test_deps": [
+          "test-unit"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "google/protobuf"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "2d7780f5c991ef47462f16eac580674b4ddc85dac30ff10a5f007a981be62547"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "mysql2",
+      "version": "0.5.7",
+      "mode": "rubycc",
+      "status": "inconclusive",
+      "reason": "suite_exec requires Docker container rubycc-mariadb; docker inspect reported it is not running",
+      "sanity": true,
+      "evidence": [
+        "rubycc build completed; suite precondition stopped before final table"
+      ],
+      "summary": null,
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "inconclusive",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/mysql2-0.5.7.gem",
+        "gem_sha256": "ba09ede515a0ae8a7192040a1b778c0fb0f025fa5877e9be895cd325fa5e9d7b",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/brianmario/mysql2/archive/refs/tags/0.5.7.tar.gz",
+        "source_sha256": "8a70979ec650c3399891e6c05f2e65ada7a4b1da7ba14aeba14ab8317c5b506b",
+        "source_relative_path": "r10-m4c/mysql2-0.5.7-src.tar.gz"
+      },
+      "recipe": {
+        "name": "mysql2",
+        "version": "0.5.7",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/brianmario/mysql2/archive/refs/tags/0.5.7.tar.gz",
+        "runner": "rspec",
+        "test_glob": "spec/**/*_spec.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "spec"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/mysql2/mysql2.so",
+            "to": "lib/mysql2/mysql2.so"
+          }
+        ],
+        "test_deps": [
+          "rspec"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "mysql2"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "962014bbfe35d2762f1a57985b12a3fdc2ceceb870775d95863ef002751c9f27"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "yajl-ruby",
+      "version": "1.4.3",
+      "mode": "rubycc",
+      "status": "pass",
+      "reason": null,
+      "sanity": true,
+      "evidence": [
+        "gem_make.out:rmake",
+        "Makefile:CC=rubycc"
+      ],
+      "summary": {
+        "line": "416 examples, 0 failures",
+        "tests": 416,
+        "assertions": null,
+        "failures": 0,
+        "errors": 0,
+        "other": {}
+      },
+      "build_state": "pass",
+      "extension_load_state": "pass",
+      "suite_state": "pass",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/yajl-ruby-1.4.3.gem",
+        "gem_sha256": "8c974d9c11ae07b0a3b6d26efea8407269b02e4138118fbe3ef0d2ec9724d1d2",
+        "source_kind": "gem_data_archive",
+        "source_url": "https://rubygems.org/downloads/yajl-ruby-1.4.3.gem",
+        "source_sha256": "8c974d9c11ae07b0a3b6d26efea8407269b02e4138118fbe3ef0d2ec9724d1d2",
+        "source_relative_path": "r10-census-cache/yajl-ruby-1.4.3.gem"
+      },
+      "recipe": {
+        "name": "yajl-ruby",
+        "version": "1.4.3",
+        "source_kind": "gem_data_archive",
+        "source_url": "https://rubygems.org/downloads/yajl-ruby-1.4.3.gem",
+        "runner": "rspec",
+        "test_glob": "spec/**/*_spec.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "spec"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/yajl/yajl.so",
+            "to": "lib/yajl/yajl.so"
+          }
+        ],
+        "test_deps": [
+          "rspec"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "yajl"
+          ],
+          "expression": "injected_so_loaded?"
+        },
+        "recipe_fingerprint": "1c2a40e2241115a51dc050aaa9ea2dbcb960138259ff1aa8a8791ee090ed4ce4"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    }
+  ],
+  "additional_artifact": "data/r10_verification_rbs.json",
+  "execution_context": {
+    "environment": "glibc x86_64 / ruby 3.4.5",
+    "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+    "host_cpu": "x86_64",
+    "ruby_arch": "x86_64-linux",
+    "cc": null,
+    "make": null,
+    "pkg_config": null
+  },
+  "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+  "rubycc_worktree_dirty": true
+}

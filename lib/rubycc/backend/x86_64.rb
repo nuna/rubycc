@@ -1145,14 +1145,17 @@ module Rubycc
       # :ftoi — cvttss2si/cvttsd2si truncates a floating value in xmm0 toward
       # zero to a signed integer in a GP register, stored back to `dst`. The
       # mandatory prefix follows the *source* float width (F3 from float, F2 from
-      # double); REX.W produces a 64-bit result for a `long` destination. A
-      # destination narrower than the 32-bit result is re-ranged by the generator
-      # afterwards. (An `unsigned long` destination is rejected upstream.)
+      # double); REX.W produces a 64-bit result for a `long` destination and for
+      # an `unsigned int`, whose full 0..2^32-1 range does not fit the signed
+      # 32-bit form. A destination narrower than the 32-bit result is re-ranged
+      # by the generator afterwards. (An `unsigned long` destination is rejected
+      # upstream.)
       def emit_ftoi(dst, src_vreg, int_desc, float_size)
-        int_width, = int_desc
+        int_width, signed = int_desc
         load_xmm(XMM0, src_vreg, float_size)
         emit(float_size == 8 ? 0xF2 : 0xF3)
-        emit(0x48) if int_width == 8    # REX.W: 64-bit integer destination
+        wide = int_width == 8 || (int_width == 4 && !signed)
+        emit(0x48) if wide             # REX.W: 64-bit signed conversion
         emit(0x0F, 0x2C)
         emit(modrm_reg(EAX, XMM0))      # cvttss2si/cvttsd2si eax/rax, xmm0
         store_reg(EAX, dst)

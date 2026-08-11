@@ -9,7 +9,7 @@ rubycc の継続的検証は、通常の回帰、週次の追加検証、リリ�
 | 層 | ワークフロー | トリガ | 対象 | 設定上限 |
 |---|---|---|---|---|
 | Tier A | `test.yml` | master への push、pull request、手動、reusable workflow 呼び出し | Ruby 3.3 / 4.0 の全 Minitest スイート | 60 分 / Ruby 1 本 |
-| Tier B | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)、手動 | census、受入れ、スループット、Ruby 3.4、musl、musl/aarch64 | 45〜90 分 / ジョブ |
+| Tier B | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)、手動 | census、決定的 fixture、受入れ、スループット、native aarch64 smoke、Ruby 3.4、musl、musl/aarch64 | 20〜90 分 / ジョブ |
 | Tier C | `release.yml` | `v*` タグの push、手動 | Tier A の再実行と gem の再現ビルド | test 60 分 + package 30 分 |
 
 Tier A の push 実行は、テスト結果に影響しない文書・参照資料・ライセンス・既存ベンチ
@@ -25,10 +25,22 @@ Tier C の test ジョブは `test.yml` をそのまま再利用する。
 3. Ruby をセットアップして依存 gem をインストールする。
 4. `bundle exec rake test TESTOPTS="--verbose"` を実行する。
 5. `tools/ci_check_skips.rb` で実行件数と skip 数を確認し、ログを artifact に保存する。
+   profile は x86_64 が `native-x86`、native AArch64 が `native-aarch64`。
+
+全スイートの前に、runner が本当にそのアーキテクチャかを `uname -m`、Ruby の
+`RbConfig` の `host_cpu` / `arch`、`gcc -dumpmachine`、`readelf -h $(command -v ruby)`
+の 4 点で検証する。1 つでも外れたら失敗させる — 誤った Ruby で全体が skip に化けて
+green になるのを防ぐため。
 
 native aarch64 は `weekly.yml` の `aarch64` ジョブから
 `test.yml` を再利用する。手動実行で `only: aarch64` を選んだ場合だけ、
 `ubuntu-24.04-arm` 上で Ruby 3.3 / 4.0 の全スイートを実行する。
+より軽い `native-aarch64-smoke` は**週次スケジュールでも実行する**。native の機構は
+どれも AArch64 runner 上でしか何も報告しないので、全部を手動 dispatch の後ろに置くと
+保証の鮮度が「最後に誰かが dispatch した時点」で止まる。job 冒頭の
+`tools/native_aarch64_preflight.rb` が Ruby・`gcc -dumpmachine`・Fiddle・Ruby headers・
+loader・libc を実測し、必須 ID として結果 JSON へ記録する。x86_64 上の QEMU 実行を
+native integration の代用にはしない。
 
 ## 参照用ツールチェーン
 
@@ -60,7 +72,14 @@ Tier A と Ruby 3.4 のジョブは、ツールチェーンの存在を先に確
 | runs が `CI_MIN_RUNS` 未満 | 2500 | スイートの途中終了またはロード漏れ |
 
 skip 理由は絶対パスと数値を正規化したヒストグラムとして出力する。
-`CI_MAX_SKIPS` と `CI_MIN_RUNS` は環境変数で上書きできる。
+`CI_MAX_SKIPS` と `CI_MIN_RUNS` は環境変数で上書きできるが、名前付き profile の
+上限・下限は緩められない。
+
+profile は総数ではなく **skip の集合**を固定する
+([`../config/ci/skip-baseline.json`](../config/ci/skip-baseline.json))。テスト名と
+正規化済み理由の組を許可リストとして検査し、`CI_ENFORCE_SKIP_BASELINE=1`(Tier A と
+weekly の Ruby 3.4)では `expected_skips` と理由の SHA-256 fingerprint の一致まで
+要求する。総数だけを見ていると、既知の skip が別の skip に置き換わっても気づけない。
 
 ## Tier B のジョブ
 
@@ -70,6 +89,25 @@ skip 理由は絶対パスと数値を正規化したヒストグラムとして
 `bundle exec rake corpus:census` を実行し、
 `test/corpus/include-census.md` と生成ログを artifact に保存する。
 コミット済み census と差分がある場合はジョブを失敗させる。
+R10 の machine gate は `pg-native-source` と `sqlite3-system-libraries` の明示的な
+profile を含む。profile は census に記録されるが、`data/verified_gems.json` の
+install・extension load・upstream suite の証拠を代用しない。
+
+### acceptance-fixture
+
+コミット済みの mkmf/rmake fixture を `acceptance-fixture` profile で実行し、
+`mkmf-fixture-probes` と `rmake-fixture-build` を構造化結果へ記録する
+**ネットワークフリーの job** である。
+
+**PR の必須判定ではない。** 実行しているテスト本体は Tier A の `rake test` に
+含まれるので、PR ごとの回帰検出は Tier A が担う。この job が足しているのは、
+専用 profile での実行と、必須 ID が本当に実行されたことを
+`ci_check_acceptance.rb` が検証する点だけである。
+
+**live acceptance の代替にはならない。** gem の取得・unpack・extconf・ビルドという、
+実際に skip が発生していた経路は依然ネットワークを必要とする。fixture 化
+(TEST-PLAN の 2B-1)は未実施で、この job が green でも live 経路が未実行なら
+受入れは成立していない。
 
 ### acceptance
 
@@ -77,6 +115,13 @@ skip 理由は絶対パスと数値を正規化したヒストグラムとして
 必要とする受入れテストを実行し、続けて
 `ruby tools/m2_acceptance.rb` で M2 の受入れを実行する。
 通常の Tier A と実行件数が異なるため、Tier A の skip 閾値は適用しない。
+代わりに strict acceptance(`RMAKE_ACCEPTANCE_STRICT=1`、`CI_PROFILE=acceptance-live`)
+で安定 ID ごとの構造化結果を出力し、`tools/ci_check_acceptance.rb` が
+[`../config/ci/acceptance_manifest.json`](../config/ci/acceptance_manifest.json)の
+必須 ID・未実行・skip・`inconclusive` を検査する。fetch/unpack 失敗を skip に
+変換しない。取得対象は manifest に固定した HTTPS URL と SHA-256 を使い、digest 確認後に
+atomic rename する。`--allow-inconclusive` は非 strict の診断用で、strict では
+指定しても失敗する。
 
 ### throughput
 
@@ -118,11 +163,12 @@ stdio のリンクに関する Gap P である。
 
 | 入力 | 実行対象 |
 |---|---|
-| スケジュール | census、acceptance、throughput、musl、musl/aarch64、Ruby 3.4 |
-| 入力なしの手動実行 | 上記 6 ジョブ |
+| スケジュール | census、acceptance-fixture、acceptance、throughput、native-aarch64-smoke、musl、musl/aarch64、Ruby 3.4 |
+| 入力なしの手動実行 | 上記 8 ジョブ |
 | `verify_step` 指定 | musl の更新モード |
 | `only: musl-aarch64` | musl/aarch64 のみ |
-| `only: aarch64` | native aarch64 の Tier A 全スイート |
+| `only: acceptance` | 決定的 fixture と live acceptance のみ |
+| `only: aarch64` | native aarch64 の Tier A 全スイートと native-aarch64-smoke |
 
 ## リリース配布物
 

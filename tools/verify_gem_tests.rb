@@ -39,6 +39,7 @@
 #   ruby tools/verify_gem_tests.rb --update --step ID --notes TEXT <gem>
 #   ruby tools/verify_gem_tests.rb --data /tmp/copy.json --update --step ID <gem>
 #   ruby tools/verify_gem_tests.rb --control <gem>...             # same suite, host cc
+#   ruby tools/verify_gem_tests.rb --json /tmp/result.json <gem>  # machine-readable run evidence
 #   VERIFY_WORK=/path/to/work ruby tools/verify_gem_tests.rb ...
 #
 # Options:
@@ -47,6 +48,7 @@
 #   --step ID          the step ID quoted in the generated evidence (--update only)
 #   --notes TEXT       notes for a *new* entry (existing entries keep their notes)
 #   --data PATH        database file to read/update (default: data/verified_gems.json)
+#   --json PATH        write machine-readable run evidence; does not update the verification database
 #   --list             print the recipe table and exit
 #   --control          run the same recipe against the host cc instead of rubycc,
 #                      in a separate scratch GEM_HOME (refuses --update: a control
@@ -57,9 +59,11 @@
 # which is what makes a re-run cheap. Delete it by hand to start clean.
 
 require "fileutils"
+require "digest"
 require "json"
 require "open3"
 require "rbconfig"
+require "rubygems/package"
 require "timeout"
 require "tmpdir"
 
@@ -104,6 +108,9 @@ CLEARED_ENV = {
 # Fields:
 #   version       the version to verify (must match the database entry)
 #   tarball       upstream tag tarball (the .gem has no tests)
+#   source_from_gem  use the exact versioned .gem's data archive as the source
+#                    tree when the upstream tag omits the released version but
+#                    the package itself carries its test suite
 #   sos           installed-gem .so path => destination inside the upstream tree
 #   extra_copies  non-.so files to copy the same way (generated sources that the
 #                 gem's rakelib would build; the upstream tarball lacks them)
@@ -927,7 +934,10 @@ RECIPES = {
 
   "yajl-ruby" => {
     version: "1.4.3",
-    tarball: "https://github.com/brianmario/yajl-ruby/archive/refs/tags/1.4.3.tar.gz",
+    # The repository has tags through 1.4.1 but no 1.4.3 tag. The exact 1.4.3
+    # .gem does carry its upstream specs, so use that package rather than
+    # silently testing a different source revision.
+    source_from_gem: true,
     sos: { "lib/yajl/yajl.so" => "lib/yajl/yajl.so" },
     test_deps: %w[rspec],
     runner: :rspec,
@@ -1162,8 +1172,70 @@ RECIPES = {
       # winning the require -- exactly what the injected-.so check rules out.
       expr: "injected_so_loaded?"
     }
+  },
+
+  "rbs" => {
+    version: "3.10.0",
+    tarball: "https://github.com/ruby/rbs/archive/refs/tags/v3.10.0.tar.gz",
+    sos: { "lib/rbs_extension.so" => "lib/rbs_extension.so" },
+    # RBS's Rakefile runs the same test/**/*_test.rb set and explicitly omits
+    # test/stdlib. The source tarball contains test/test_skip.rb, so no
+    # development-only gem is needed for that helper; test-unit is the runner.
+    # schema_test.rb also requires json-schema, which is an upstream Gemfile
+    # test dependency and must be installed explicitly in the isolated home.
+    test_deps: %w[test-unit json-schema],
+    runner: :test_unit,
+    load_paths: %w[test lib],
+    test_glob: "test/**/*_test.rb",
+    exclude: ["test/stdlib/**/*"],
+    sanity: {
+      requires: %w[rbs],
+      expr: "injected_so_loaded?"
+    }
   }
 }.freeze
+
+# The two R10 profiles below are intentionally explicit rather than being
+# inferred from the gem name. sqlite3's default MiniPortile/configure path is
+# outside R10; pg's cross-build path is likewise a different profile. The
+# extconf arguments below are part of the evidence and must be used in both
+# control and rubycc runs.
+
+BASE_RECIPES = RECIPES
+Object.send(:remove_const, :RECIPES)
+RECIPES = BASE_RECIPES.merge(
+  "sqlite3" => {
+    version: "2.9.5",
+    tarball: "https://github.com/sparklemotion/sqlite3-ruby/archive/refs/tags/v2.9.5.tar.gz",
+    sos: { "lib/sqlite3/sqlite3_native.so" => "lib/sqlite3/sqlite3_native.so" },
+    force_ruby_platform: true,
+    extconf_args: ["--enable-system-libraries"],
+    test_deps: %w[minitest],
+    test_dep_versions: { "minitest" => "6.0.6" },
+    runner: :test_unit,
+    load_paths: %w[test lib],
+    test_glob: "test/**/test_*.rb",
+    sanity: {
+      requires: %w[sqlite3],
+      expr: "injected_so_loaded? && SQLite3::SQLITE_PACKAGED_LIBRARIES == false"
+    }
+  },
+
+  "pg" => {
+    version: "1.6.3",
+    tarball: "https://github.com/ged/ruby-pg/archive/refs/tags/v1.6.3.tar.gz",
+    sos: { "lib/pg_ext.so" => "lib/pg_ext.so" },
+    force_ruby_platform: true,
+    test_deps: %w[rspec],
+    runner: :rspec,
+    load_paths: %w[lib spec],
+    test_glob: "spec/**/*_spec.rb",
+    sanity: {
+      requires: %w[pg],
+      expr: "injected_so_loaded? && PG::IS_BINARY_GEM == false"
+    }
+  }
+).freeze
 
 # fcntl (a corpus gem, and a default gem like the three above) has no recipe on
 # purpose: ruby/fcntl ships no tests. Measured at tag v1.3.0 and on master --
@@ -1175,8 +1247,9 @@ RECIPES = {
 
 # --- CLI --------------------------------------------------------------------
 
+if $PROGRAM_NAME == __FILE__
 options = { gems: [], all: false, update: false, step: nil, notes: nil,
-            data: Rubycc::Doctor::VerifiedGems::DEFAULT_PATH, list: false, control: false }
+            data: Rubycc::Doctor::VerifiedGems::DEFAULT_PATH, json: nil, list: false, control: false }
 
 args = ARGV.dup
 until args.empty?
@@ -1189,6 +1262,7 @@ until args.empty?
   when "--step"    then options[:step] = (args.shift || abort("--step needs a step number"))
   when "--notes"   then options[:notes] = (args.shift || abort("--notes needs text"))
   when "--data"    then options[:data] = (args.shift || abort("--data needs a path"))
+  when "--json"    then options[:json] = (args.shift || abort("--json needs a path"))
   when "-h", "--help"
     # The file's own header comment is the usage text: skip the shebang and the
     # magic comment, then print the comment block that follows.
@@ -1198,6 +1272,8 @@ until args.empty?
   when /\A-/ then abort "unknown option #{arg.inspect} (see --help)"
   else options[:gems] << arg
   end
+end
+
 end
 
 def step(msg)
@@ -1519,12 +1595,22 @@ def fetch_source(name, recipe)
   end
 
   step "fetching upstream #{name} #{version}"
-  tarball = File.join(WORK_DIR, "#{name}-#{version}-src.tar.gz")
-  download(recipe.fetch(:tarball), tarball)
-
   FileUtils.rm_rf(dir)
   FileUtils.mkdir_p(dir)
-  run!("tar", "xzf", tarball, "--strip-components=1", "-C", dir)
+  if recipe[:source_from_gem]
+    package = cached_gem_path(name, version)
+    unless package
+      package = File.join(WORK_DIR, "packages", "#{name}-#{version}.gem")
+      FileUtils.mkdir_p(File.dirname(package))
+      download("https://rubygems.org/downloads/#{name}-#{version}.gem", package)
+    end
+    step "unpacking exact gem source/test tree from #{File.basename(package)}"
+    Gem::Package.new(package).extract_files(dir)
+  else
+    tarball = File.join(WORK_DIR, "#{name}-#{version}-src.tar.gz")
+    download(recipe.fetch(:tarball), tarball)
+    run!("tar", "xzf", tarball, "--strip-components=1", "-C", dir)
+  end
   FileUtils.touch(sentinel)
   dir
 end
@@ -1712,6 +1798,12 @@ def verify_recipe!(name, recipe)
   abort "#{name}: recipe has no :sanity expression -- refusing to run (see verify_recipe!)" if sanity.nil?
   abort "#{name}: :sanity needs an :expr" if sanity[:expr].to_s.strip.empty?
   abort "#{name}: :sanity needs :requires" if Array(sanity[:requires]).empty?
+  if recipe[:source_from_gem] && recipe[:tarball]
+    abort "#{name}: source_from_gem and tarball are mutually exclusive"
+  end
+  if !recipe[:source_from_gem] && recipe[:tarball].to_s.empty?
+    abort "#{name}: recipe needs :tarball or :source_from_gem"
+  end
   abort "#{name}: unknown runner #{recipe[:runner].inspect}" unless
     %i[test_unit rspec ruby_files].include?(recipe[:runner])
   # Opposite features (a synthetic Gemfile vs. resolving the real one for
@@ -1978,16 +2070,102 @@ def parse_summary(output, runner)
   }
 end
 
+def usable_summary?(summary)
+  summary.is_a?(Hash) &&
+    summary[:tests].is_a?(Integer) && summary[:tests].positive? &&
+    summary[:failures].is_a?(Integer) && summary[:errors].is_a?(Integer) &&
+    summary[:other].is_a?(Hash)
+end
+
+def recipe_evidence(name, recipe)
+  source_from_gem = recipe[:source_from_gem] == true
+  source_url = if source_from_gem
+                 "https://rubygems.org/downloads/#{name}-#{recipe.fetch(:version)}.gem"
+               else
+                 recipe.fetch(:tarball)
+               end
+  base = {
+    "name" => name,
+    "version" => recipe.fetch(:version),
+    "source_kind" => source_from_gem ? "gem_data_archive" : "source_tarball",
+    "source_url" => source_url,
+    "runner" => recipe.fetch(:runner).to_s,
+    "test_glob" => recipe.fetch(:test_glob),
+    "exclude" => Array(recipe[:exclude]),
+    "load_paths" => Array(recipe[:load_paths]),
+    "extconf_args" => Array(recipe[:extconf_args]),
+    "sos" => recipe.fetch(:sos).map { |from, to| { "from" => from, "to" => to } },
+    "test_deps" => Array(recipe[:test_deps]),
+    "test_dep_versions" => recipe.fetch(:test_dep_versions, {}),
+    "sanity" => {
+      "requires" => Array(recipe.dig(:sanity, :requires)),
+      "expression" => recipe.dig(:sanity, :expr)
+    }
+  }
+  base["recipe_fingerprint"] = Digest::SHA256.hexdigest(JSON.generate(base))
+  base
+end
+
+def source_provenance(name, recipe)
+  version = recipe.fetch(:version)
+  package = cached_gem_path(name, version)
+  source_path = if recipe[:source_from_gem]
+                  package
+                else
+                  File.join(WORK_DIR, "#{name}-#{version}-src.tar.gz")
+                end
+  {
+    "gem_url" => "https://rubygems.org/downloads/#{name}-#{version}.gem",
+    "gem_sha256" => package && Digest::SHA256.file(package).hexdigest,
+    "source_kind" => recipe[:source_from_gem] ? "gem_data_archive" : "source_tarball",
+    "source_url" => recipe[:source_from_gem] ?
+      "https://rubygems.org/downloads/#{name}-#{version}.gem" : recipe.fetch(:tarball),
+    "source_sha256" => source_path && File.file?(source_path) ? Digest::SHA256.file(source_path).hexdigest : nil,
+    "source_relative_path" => source_path&.delete_prefix(WORK_DIR + "/")
+  }
+end
+
+def execution_context
+  {
+    "environment" => environment_string,
+    "ruby" => RUBY_DESCRIPTION,
+    "host_cpu" => RbConfig::CONFIG["host_cpu"],
+    "ruby_arch" => RbConfig::CONFIG["arch"],
+    "cc" => ENV["CC"].to_s.empty? ? nil : File.basename(ENV.fetch("CC")),
+    "make" => ENV["MAKE"].to_s.empty? ? nil : File.basename(ENV.fetch("MAKE")),
+    "pkg_config" => ENV["PKG_CONFIG"].to_s.empty? ? nil : File.basename(ENV.fetch("PKG_CONFIG")),
+    "set_build_flags" => %w[CPPFLAGS CFLAGS CXXFLAGS LDFLAGS].select { |key| !ENV[key].to_s.empty? },
+    "rubycc_mode" => ($control_mode ? "control" : "rubycc")
+  }
+end
+
+def rubycc_revision
+  output, status = Open3.capture2("git", "-C", RUBYCC_ROOT, "rev-parse", "HEAD")
+  status.success? ? output.strip : nil
+rescue SystemCallError
+  nil
+end
+
+def rubycc_worktree_dirty?
+  output, status = Open3.capture2("git", "-C", RUBYCC_ROOT, "status", "--porcelain")
+  status.success? ? !output.empty? : nil
+rescue SystemCallError
+  nil
+end
+
 # --- one gem end to end ------------------------------------------------------
 
 def verify_gem(name, recipe)
   version = recipe.fetch(:version)
   result = { name: name, version: version, runner: recipe.fetch(:runner),
-             status: nil, reason: nil, summary: nil, sanity: nil, evidence: [], output: nil }
+             status: nil, reason: nil, summary: nil, sanity: nil, evidence: [], output: nil,
+             build_state: nil, extension_load_state: nil, suite_state: :not_run,
+             provenance: nil, recipe: recipe_evidence(name, recipe) }
 
   install_out, install_ok =
     $control_mode ? install_through_control(name, version) : install_through_rubycc(name, version)
   unless install_ok
+    result[:build_state] = :fail
     result[:status] = :fail
     result[:reason] = "gem install failed"
     result[:output] = install_out
@@ -2001,6 +2179,7 @@ def verify_gem(name, recipe)
       # The install "succeeded" but is not the control it claims to be -- a
       # silent rubycc build here would make the whole comparison meaningless,
       # so it is a failure rather than a pass with a caveat.
+      result[:build_state] = :fail
       result[:status] = :fail
       result[:reason] = "not a control run: found rubycc traces: #{traces.join('; ')}"
       return result
@@ -2011,17 +2190,21 @@ def verify_gem(name, recipe)
     unless missing.empty?
       # The install "succeeded" but not through rubycc -- recording that as verified
       # would be the same lie the sanity check guards against, so it is a failure.
+      result[:build_state] = :fail
       result[:status] = :fail
       result[:reason] = "no proof the build used rubycc: missing #{missing.join('; ')}"
       return result
     end
   end
 
+  result[:build_state] = :pass
+
   test_dep_versions = recipe.fetch(:test_dep_versions, {})
   Array(recipe[:test_deps]).each { |dep| ensure_test_dep(dep, test_dep_versions[dep]) }
   extra_load_paths = Array(recipe[:dep_load_paths]).map { |dep| dep_lib_dir(dep) }
 
   src_dir = fetch_source(name, recipe)
+  result[:provenance] = source_provenance(name, recipe)
   run_bundle_install(name, recipe, src_dir)
   run_generate_steps(name, recipe, src_dir)
   copy_generated_files(name, recipe, src_dir)
@@ -2029,6 +2212,7 @@ def verify_gem(name, recipe)
 
   sanity_ok, sanity_out = check_sanity(name, recipe, src_dir, injected, extra_load_paths)
   result[:sanity] = sanity_ok
+  result[:extension_load_state] = sanity_ok ? :pass : :fail
   unless sanity_ok
     # Do not run the suite: a suite that passes without the extension loaded is
     # exactly the false evidence this tool exists to prevent.
@@ -2043,18 +2227,24 @@ def verify_gem(name, recipe)
   result[:output] = out
   summary = parse_summary(out, recipe.fetch(:runner))
 
-  if summary.nil?
+  if !usable_summary?(summary)
     # Never call this a pass on the strength of the exit status alone, and never
-    # call it a failure either: the honest report is that the output could not be
-    # read.
+    # call a zero-test summary a pass: the honest report is that the suite did
+    # not produce an admissible result.
+    result[:suite_state] = :inconclusive
     result[:status] = :unparsable
-    result[:reason] = "no #{recipe.fetch(:runner)} summary line found " \
-                      "(child exited #{exit_ok ? 'successfully' : 'non-zero'})"
+    result[:reason] = if summary.nil?
+                        "no #{recipe.fetch(:runner)} summary line found " \
+                          "(child exited #{exit_ok ? 'successfully' : 'non-zero'})"
+                      else
+                        "#{recipe.fetch(:runner)} summary reported no executed tests"
+                      end
     return result
   end
 
   result[:summary] = summary
   if !summary[:failures].zero? || !summary[:errors].zero?
+    result[:suite_state] = :fail
     result[:status] = :fail
     result[:reason] = "#{summary[:failures]} failures / #{summary[:errors]} errors"
   elsif !exit_ok
@@ -2062,9 +2252,11 @@ def verify_gem(name, recipe)
     # outside the framework's accounting went wrong (a crash on the way out, an
     # explicit abort). Believing the summary over the exit status here would
     # record a verification the run did not actually earn.
+    result[:suite_state] = :fail
     result[:status] = :fail
     result[:reason] = "summary reports no failures but the child exited non-zero"
   else
+    result[:suite_state] = :pass
     result[:status] = :pass
   end
   result
@@ -2345,6 +2537,73 @@ def update_database(results, path, step_number, cli_notes)
   check_doctor_allowlist(db)
 end
 
+def portable_evidence_output(output)
+  output.to_s.lines.last(40).map(&:chomp).map do |line|
+    [
+      [WORK_DIR, "<VERIFY_WORK>"],
+      [RUBYCC_ROOT, "<RUBYCC_ROOT>"],
+      [RbConfig::CONFIG["prefix"], "<RUBY_PREFIX>"],
+      [Dir.home, "<HOME>"]
+    ].reject { |source, _replacement| source.to_s.empty? }.reduce(line) do |portable, (source, replacement)|
+      portable.gsub(source, replacement)
+    end
+  end
+end
+
+def json_evidence(result, recipe)
+  summary = result[:summary]
+  {
+    "name" => result[:name],
+    "version" => result[:version],
+    "mode" => $control_mode ? "control" : "rubycc",
+    "status" => result[:status].to_s,
+    "reason" => result[:reason],
+    "build_state" => result[:build_state]&.to_s,
+    "extension_load_state" => result[:extension_load_state]&.to_s,
+    "suite_state" => result[:suite_state].to_s,
+    "sanity" => result[:sanity],
+    "evidence" => result[:evidence],
+    "files" => result[:files],
+    "summary" => summary && {
+      "line" => summary[:line],
+      "tests" => summary[:tests],
+      "assertions" => summary[:assertions],
+      "failures" => summary[:failures],
+      "errors" => summary[:errors],
+      "other" => summary[:other]
+    },
+    "environment" => environment_string,
+    "ruby" => RUBY_DESCRIPTION,
+    "execution_context" => execution_context,
+    "test_dependency_versions" => Array(recipe[:test_deps]).to_h do |dependency|
+      [dependency, installed_versions(dependency).map(&:to_s)]
+    end,
+    "rubycc_revision" => rubycc_revision,
+    "rubycc_worktree_dirty" => rubycc_worktree_dirty?,
+    "provenance" => result[:provenance],
+    "recipe" => result[:recipe] || recipe_evidence(result[:name], recipe),
+    # A committed evidence file must be usable outside the machine that ran it.
+    # Keep only a logical marker here; the full scratch path is an execution
+    # detail, not evidence of the build or test result.
+    "work_dir" => "<VERIFY_WORK>",
+    "output_tail" => portable_evidence_output(result[:output])
+  }
+end
+
+def write_json_evidence(results, path)
+  payload = {
+    "schema_version" => 1,
+    "tool" => "verify_gem_tests",
+    "mode" => $control_mode ? "control" : "rubycc",
+    "environment" => environment_string,
+    "ruby" => RUBY_DESCRIPTION,
+    "work_dir" => "<VERIFY_WORK>",
+    "results" => results.map { |result| json_evidence(result, RECIPES.fetch(result[:name])) }
+  }
+  File.write(path, JSON.pretty_generate(payload) + "\n")
+  puts "wrote #{path}"
+end
+
 # test/test_doctor.rb pins the exact set of gems the database may contain. That
 # gate is deliberate -- adding a gem must be a conscious edit -- so the tool only
 # prints the replacement line and never edits the test.
@@ -2397,6 +2656,8 @@ end
 
 # --- main --------------------------------------------------------------------
 
+if $PROGRAM_NAME == __FILE__
+
 # Read by gem_home and every install/evidence function below that has to tell
 # the rubycc path from the control path apart. A CLI-parsed value rather than a
 # parameter because both paths already share every function down to gem_home
@@ -2447,4 +2708,7 @@ if options[:update]
   update_database(results, options[:data], options[:step], options[:notes])
 end
 
+write_json_evidence(results, options[:json]) if options[:json]
+
 exit(results.all? { |r| r[:status] == :pass } ? 0 : 1)
+end

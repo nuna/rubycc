@@ -4,6 +4,9 @@ require_relative "test_helper"
 require "tmpdir"
 require "fileutils"
 require "open3"
+require_relative "support/acceptance_fetch_helper"
+require_relative "support/acceptance_manifest_helper"
+require_relative "support/acceptance_result_reporter"
 require "rbconfig"
 
 # Step 61 (M3 / ROADMAP §6 B6): the rubygems_plugin that makes a plain
@@ -154,23 +157,27 @@ class TestGemInstall < Minitest::Test
   # and prove: it succeeded, an extension `.so` was produced, the built gem
   # actually works, and the build genuinely ran through exe/rmake + rubycc.
   def test_gem_install_json_builds_through_rubycc
-    acceptance_gem_install("json", "2.21.1") do |gem_home|
-      out = child_ruby(gem_home, <<~RUBY)
-        gem "json"; require "json"
-        print JSON.parse(JSON.generate({"a" => [1, 2, 3]}))["a"].sum
-      RUBY
-      assert_equal "6", out, "json round-trip must work in the built gem"
+    AcceptanceResultReporter.with_result("gem-install-json") do
+      acceptance_gem_install("json", "2.21.1") do |gem_home|
+        out = child_ruby(gem_home, <<~RUBY)
+          gem "json"; require "json"
+          print JSON.parse(JSON.generate({"a" => [1, 2, 3]}))["a"].sum
+        RUBY
+        assert_equal "6", out, "json round-trip must work in the built gem"
+      end
     end
   end
 
   def test_gem_install_msgpack_builds_through_rubycc
-    acceptance_gem_install("msgpack", "1.8.3") do |gem_home|
-      out = child_ruby(gem_home, <<~RUBY)
-        gem "msgpack"; require "msgpack"
-        packed = MessagePack::Packer.new.write([1, "x", true]).to_s
-        print MessagePack::Unpacker.new.feed(packed).read.inspect
-      RUBY
-      assert_equal '[1, "x", true]', out, "msgpack pack/unpack round-trip must work"
+    AcceptanceResultReporter.with_result("gem-install-msgpack") do
+      acceptance_gem_install("msgpack", "1.8.3") do |gem_home|
+        out = child_ruby(gem_home, <<~RUBY)
+          gem "msgpack"; require "msgpack"
+          packed = MessagePack::Packer.new.write([1, "x", true]).to_s
+          print MessagePack::Unpacker.new.feed(packed).read.inspect
+        RUBY
+        assert_equal '[1, "x", true]', out, "msgpack pack/unpack round-trip must work"
+      end
     end
   end
 
@@ -187,23 +194,27 @@ class TestGemInstall < Minitest::Test
   # headers, per DESIGN 4.2 -- so that is expected and not asserted against.)
 
   def test_gem_install_json_hermetic_headers
-    acceptance_gem_install("json", "2.21.1", hermetic: true) do |gem_home|
-      out = child_ruby(gem_home, <<~RUBY)
-        gem "json"; require "json"
-        print JSON.parse(JSON.generate({"a" => [1, 2, 3]}))["a"].sum
-      RUBY
-      assert_equal "6", out, "json round-trip must work in the hermetically built gem"
+    AcceptanceResultReporter.with_result("gem-install-json-hermetic") do
+      acceptance_gem_install("json", "2.21.1", hermetic: true) do |gem_home|
+        out = child_ruby(gem_home, <<~RUBY)
+          gem "json"; require "json"
+          print JSON.parse(JSON.generate({"a" => [1, 2, 3]}))["a"].sum
+        RUBY
+        assert_equal "6", out, "json round-trip must work in the hermetically built gem"
+      end
     end
   end
 
   def test_gem_install_msgpack_hermetic_headers
-    acceptance_gem_install("msgpack", "1.8.3", hermetic: true) do |gem_home|
-      out = child_ruby(gem_home, <<~RUBY)
-        gem "msgpack"; require "msgpack"
-        packed = MessagePack::Packer.new.write([1, "x", true]).to_s
-        print MessagePack::Unpacker.new.feed(packed).read.inspect
-      RUBY
-      assert_equal '[1, "x", true]', out, "msgpack round-trip must work in the hermetically built gem"
+    AcceptanceResultReporter.with_result("gem-install-msgpack-hermetic") do
+      acceptance_gem_install("msgpack", "1.8.3", hermetic: true) do |gem_home|
+        out = child_ruby(gem_home, <<~RUBY)
+          gem "msgpack"; require "msgpack"
+          packed = MessagePack::Packer.new.write([1, "x", true]).to_s
+          print MessagePack::Unpacker.new.feed(packed).read.inspect
+        RUBY
+        assert_equal '[1, "x", true]', out, "msgpack round-trip must work in the hermetically built gem"
+      end
     end
   end
 
@@ -214,15 +225,28 @@ class TestGemInstall < Minitest::Test
   # went through exe/rmake and rubycc (gem_make.out evidence), and yield the
   # GEM_HOME so the caller can require and drive the built gem.
   def acceptance_gem_install(name, version, hermetic: false)
-    skip "set RMAKE_ACCEPTANCE=1 to run the networked gem-install acceptance" unless ENV["RMAKE_ACCEPTANCE"] == "1"
+    unless ENV["RMAKE_ACCEPTANCE"] == "1" || AcceptanceFetchHelper.strict?
+      skip "set RMAKE_ACCEPTANCE=1 to run the networked gem-install acceptance"
+    end
 
     Dir.mktmpdir("rubycc-gem-install") do |gem_home|
+      artifact_id = "gem-#{name}-#{version}-ruby"
+      artifact = AcceptanceManifestHelper.artifact(artifact_id)
+      gem_file = AcceptanceFetchHelper::Fetcher.new(
+        work_dir: File.join(gem_home, "pinned-artifact")
+      ).fetch_gem_file(
+        gem_name: name, version: version,
+        expected_sha256: artifact.fetch("sha256"), artifact_id: artifact_id,
+        artifact_url: artifact.fetch("url")
+      )
       install_rubycc_into(gem_home)
 
-      env = { "RUBYCC" => "1", "GEM_HOME" => gem_home, "GEM_PATH" => gem_home }
+      env = isolated_gem_env(gem_home).merge("RUBYCC" => "1")
       env["RUBYCC_HERMETIC_HEADERS"] = "1" if hermetic
-      out, status = Open3.capture2e(env, "gem", "install", name, "--version", version,
-                                    "--install-dir", gem_home, "--no-document")
+      out, status = AcceptanceFetchHelper.capture2e(
+        ["gem", "install", gem_file, "--install-dir", gem_home, "--local", "--no-document"],
+        env: env, chdir: REPO_ROOT
+      )
       assert status.success?, "gem install #{name} failed:\n#{out}"
 
       sos = Dir.glob(File.join(gem_home, "gems", "#{name}-#{version}", "**", "*.so"))
@@ -238,13 +262,16 @@ class TestGemInstall < Minitest::Test
   # rubygems_plugin is discovered when the next `gem install` runs there.
   def install_rubycc_into(gem_home)
     gem_file = File.join(gem_home, "rubycc.gem")
-    out, status = Open3.capture2e({ "GEM_HOME" => gem_home }, "gem", "build", "rubycc.gemspec",
-                                  "--output", gem_file, chdir: REPO_ROOT)
+    out, status = AcceptanceFetchHelper.capture2e(
+      ["gem", "build", "rubycc.gemspec", "--output", gem_file],
+      env: isolated_gem_env(gem_home), chdir: REPO_ROOT
+    )
     assert status.success?, "gem build rubycc failed:\n#{out}"
 
-    out, status = Open3.capture2e({ "GEM_HOME" => gem_home, "GEM_PATH" => gem_home },
-                                  "gem", "install", gem_file, "--install-dir", gem_home,
-                                  "--local", "--no-document")
+    out, status = AcceptanceFetchHelper.capture2e(
+      ["gem", "install", gem_file, "--install-dir", gem_home, "--local", "--no-document"],
+      env: isolated_gem_env(gem_home), chdir: REPO_ROOT
+    )
     assert status.success?, "installing rubycc into the scratch GEM_HOME failed:\n#{out}"
   end
 
@@ -301,9 +328,23 @@ class TestGemInstall < Minitest::Test
   # Run a one-liner in a child Ruby with the scratch GEM_HOME active, returning
   # its stdout. Fails the test if the child does not exit cleanly.
   def child_ruby(gem_home, script)
-    env = { "GEM_HOME" => gem_home, "GEM_PATH" => gem_home }
-    out, status = Open3.capture2e(env, RbConfig.ruby, "-e", script)
+    out, status = Open3.capture2e(isolated_gem_env(gem_home), RbConfig.ruby, "-e", script)
     assert status.success?, "child Ruby using the built gem failed:\n#{out}"
     out
+  end
+
+  # `bundle exec` exports RUBYOPT/BUNDLE_* into this test process. They must be
+  # removed from the isolated gem-install subprocesses, otherwise RubyGems
+  # tries to activate the repository's development bundle from the scratch
+  # GEM_HOME and the acceptance result becomes a Bundler environment check.
+  def isolated_gem_env(gem_home)
+    env = {
+      "GEM_HOME" => gem_home,
+      "GEM_PATH" => gem_home,
+      "RUBYOPT" => nil,
+      "RUBYLIB" => nil
+    }
+    ENV.keys.grep(/\A(?:BUNDLE|BUNDLER)_/).each { |key| env[key] = nil }
+    env
   end
 end

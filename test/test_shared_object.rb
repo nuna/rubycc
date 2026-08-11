@@ -4,6 +4,7 @@ require_relative "test_helper"
 require "tmpdir"
 require "open3"
 require "fiddle"
+require "rbconfig"
 require "set"
 
 # Exercises the shared-object writer (Rubycc::Link::SharedLinker), the first
@@ -21,6 +22,13 @@ require "set"
 # (readelf, eu-elflint, gcc -shared interop) are skip-guarded.
 class TestSharedObject < Minitest::Test
   include LibcHelper
+
+  def setup
+    host_target = HostTarget.name
+    return if host_target == "x86_64"
+
+    skip "x86_64 shared-object coverage is not valid on #{host_target.inspect}"
+  end
 
   Reader = Rubycc::ObjFile::ELFReader
   Linker = Rubycc::Link::SharedLinker

@@ -73,6 +73,19 @@
 #                     must already appear in docs/OUT-OF-SCOPE-GEMS.md with its
 #                     basis, so this field points at a decision rather than
 #                     making one.
+#   :r10_profile — an explicit DESIGN-compatible install path when the raw
+#                  extconf contains an unselected configure/mini_portile branch.
+#                  It is required to be one of the profiles understood by
+#                  census.rb; unknown profiles fail closed and remain excluded.
+#                  The profile is part of the R10 identity and is recorded in
+#                  the generated census and R10 candidate artifact. It is not
+#                  itself an install or suite verification claim; a verification
+#                  recipe must independently declare the same arguments before
+#                  data/verified_gems.json can be updated.
+#   :r10_extconf_args — exact arguments passed to extconf.rb for :r10_profile.
+#                       An empty array means no extra argument. This is metadata,
+#                       not a request to bypass the machine gate: census.rb checks
+#                       both the arguments and the expected branch markers.
 module Corpus
   module Gems
     LIST = [
@@ -292,11 +305,13 @@ module Corpus
       {
         name: "sqlite3",
         version: "2.9.5",
-        note: "Single ext dir (ext/sqlite3). By default builds the bundled " \
-              "sqlite3 amalgamation itself via mini_portile2; " \
-              "`--enable-system-libraries` switches to the system " \
-              "libsqlite3 instead. No C++ either way (the amalgamation is " \
-              ".c) and no configure is run. DESIGN §3.1 names " \
+        r10_profile: "sqlite3-system-libraries",
+        r10_extconf_args: ["--enable-system-libraries"],
+        note: "Single ext dir (ext/sqlite3). The default builds the bundled " \
+              "sqlite3 amalgamation through mini_portile2 and configure; the " \
+              "R10 profile explicitly uses `--enable-system-libraries` to " \
+              "select system libsqlite3 instead. No C++ either way (the " \
+              "amalgamation is .c). DESIGN §3.1 names " \
               "\"sqlite3 (when using the system library)\" as expected in " \
               "scope. rubycc already compiles the sqlite3 amalgamation " \
               "(261,463 lines) standalone (docs/STEPS.md, Step 116), making " \
@@ -356,6 +371,8 @@ module Corpus
       {
         name: "pg",
         version: "1.6.3",
+        r10_profile: "pg-native-source",
+        r10_extconf_args: [],
         note: "458,822,794 downloads. Single ext dir (ext/); C 22 files / H 3 " \
               "files. Important note: extconf.rb references mini_portile2 " \
               "and `./configure`, but only inside the `--with-cross-build` " \
@@ -363,11 +380,10 @@ module Corpus
               "with_config(\"cross-build\")`), which is only taken when " \
               "building pre-built cross-platform binary gems. A normal " \
               "source install locates the system libpq via pg_config / " \
-              "pkg-config instead. DESIGN R10 names pg as in scope. " \
-              "Because census.rb's mechanical check only looks for a " \
-              "mini_portile reference anywhere in extconf.rb, it may judge " \
-              "pg as excluded even though the mini_portile path is unused " \
-              "on a normal build."
+              "pkg-config instead. DESIGN R10 names pg as in scope. The " \
+              "census profile selects this native source path, requires no " \
+              "cross-build argument, and fails closed if the native branch " \
+              "loses its pg_config/system-library markers."
       },
       {
         name: "mysql2",

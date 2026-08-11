@@ -1,0 +1,179 @@
+{
+  "version": 1,
+  "profile_context": {
+    "acceptance-fixture": { "network": "fixture" },
+    "acceptance-live": { "network": "live" },
+    "native-aarch64-smoke": { "network": "none", "runner": "native-aarch64" }
+  },
+  "artifacts": [
+    {
+      "id": "gem-json-2.21.1-ruby",
+      "kind": "rubygems-gem",
+      "name": "json",
+      "version": "2.21.1",
+      "platform": "ruby",
+      "url": "https://rubygems.org/downloads/json-2.21.1.gem",
+      "sha256": "13a43df75d95641443f5702dff350f237164a9d811ff0f2c2800d4d980220583",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "gem-msgpack-1.8.3-ruby",
+      "kind": "rubygems-gem",
+      "name": "msgpack",
+      "version": "1.8.3",
+      "platform": "ruby",
+      "url": "https://rubygems.org/downloads/msgpack-1.8.3.gem",
+      "sha256": "8bda4a6428d3244e50d6bd55854d354edbada88a4e1f4f5731a39a0f86bee6a1",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "source-json-2.21.1-github",
+      "kind": "github-source-tarball",
+      "name": "json",
+      "version": "2.21.1",
+      "url": "https://github.com/ruby/json/archive/refs/tags/v2.21.1.tar.gz",
+      "sha256": "b7b12ee6d17468d90ed86dc29bbd75a8af7820dcad6fe5e1b01b5182ea892de3",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "source-msgpack-1.8.3-github",
+      "kind": "github-source-tarball",
+      "name": "msgpack",
+      "version": "1.8.3",
+      "url": "https://github.com/msgpack/msgpack-ruby/archive/refs/tags/v1.8.3.tar.gz",
+      "sha256": "2b8a119620d49ccad3164aaf5bc7311627960a58ee3b2b60f04d1cf19021f1b5",
+      "expires": "2026-12-31"
+    }
+  ],
+  "required": [
+    {
+      "id": "mkmf-fixture-probes",
+      "description": "offline mkmf probes build and report against the committed fixture environment",
+      "profiles": ["acceptance-fixture"],
+      "allowed_states": ["pass"],
+      "owner": "rubycc-maintainers",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "rmake-fixture-build",
+      "description": "offline rmake fixture builds and loads a deterministic shared object",
+      "profiles": ["acceptance-fixture"],
+      "allowed_states": ["pass"],
+      "owner": "rubycc-maintainers",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "acceptance-live-preflight",
+      "description": "live acceptance tools, profile and artifact reporting are available",
+      "profiles": ["acceptance-live"],
+      "allowed_states": ["pass"],
+      "owner": "rubycc-maintainers",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "mkmf-msgpack-extconf",
+      "description": "msgpack extconf probe set matches the committed fixture",
+      "profiles": ["acceptance-live"],
+      "artifacts": ["gem-msgpack-1.8.3-ruby"],
+      "allowed_states": ["pass"],
+      "owner": "rubycc-maintainers",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "mkmf-json-extconf",
+      "description": "json extconf SIMD probe agrees with the committed fixture",
+      "profiles": ["acceptance-live"],
+      "artifacts": ["gem-json-2.21.1-ruby"],
+      "allowed_states": ["pass"],
+      "owner": "rubycc-maintainers",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "rmake-json-parser",
+      "description": "rmake builds and loads the json parser extension",
+      "profiles": ["acceptance-live"],
+      "artifacts": ["gem-json-2.21.1-ruby"],
+      "allowed_states": ["pass"],
+      "owner": "rubycc-maintainers",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "gem-install-json",
+      "description": "json installs and passes its rubycc-built smoke test",
+      "profiles": ["acceptance-live"],
+      "artifacts": ["gem-json-2.21.1-ruby"],
+      "allowed_states": ["pass"],
+      "owner": "rubycc-maintainers",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "gem-install-msgpack",
+      "description": "msgpack installs and passes its rubycc-built smoke test",
+      "profiles": ["acceptance-live"],
+      "artifacts": ["gem-msgpack-1.8.3-ruby"],
+      "allowed_states": ["pass"],
+      "owner": "rubycc-maintainers",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "gem-install-json-hermetic",
+      "description": "json installs and passes the bundled-header-only smoke test",
+      "profiles": ["acceptance-live"],
+      "artifacts": ["gem-json-2.21.1-ruby"],
+      "allowed_states": ["pass"],
+      "owner": "rubycc-maintainers",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "gem-install-msgpack-hermetic",
+      "description": "msgpack installs and passes the bundled-header-only smoke test",
+      "profiles": ["acceptance-live"],
+      "artifacts": ["gem-msgpack-1.8.3-ruby"],
+      "allowed_states": ["pass"],
+      "owner": "rubycc-maintainers",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "m2-json-suite",
+      "description": "M2 json extension and gem test suite pass",
+      "profiles": ["acceptance-live"],
+      "artifacts": ["gem-json-2.21.1-ruby", "source-json-2.21.1-github"],
+      "allowed_states": ["pass"],
+      "owner": "rubycc-maintainers",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "m2-msgpack-suite",
+      "description": "M2 msgpack extension and gem test suite pass",
+      "profiles": ["acceptance-live"],
+      "artifacts": ["gem-msgpack-1.8.3-ruby", "source-msgpack-1.8.3-github"],
+      "allowed_states": ["pass"],
+      "owner": "rubycc-maintainers",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "native-aarch64-preflight",
+      "description": "native AArch64 runner, Ruby, compiler, loader and headers are usable",
+      "profiles": ["native-aarch64-smoke"],
+      "allowed_states": ["pass"],
+      "owner": "rubycc-maintainers",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "native-aarch64-aggregate-variadic",
+      "description": "native AArch64 Ruby executes aggregate and scalar variadic ABI smoke",
+      "profiles": ["native-aarch64-smoke"],
+      "allowed_states": ["pass"],
+      "owner": "rubycc-maintainers",
+      "expires": "2026-12-31"
+    },
+    {
+      "id": "native-aarch64-loader-fiddle",
+      "description": "native AArch64 loader and Fiddle consume a rubycc shared object",
+      "profiles": ["native-aarch64-smoke"],
+      "allowed_states": ["pass"],
+      "owner": "rubycc-maintainers",
+      "expires": "2026-12-31"
+    }
+  ]
+}

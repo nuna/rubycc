@@ -3,6 +3,8 @@
 require_relative "test_helper"
 
 class TestParser < Minitest::Test
+  include ExecutionHelper
+
   AST = Rubycc::Front::AST
   Type = Rubycc::Type
 
@@ -2481,7 +2483,7 @@ class TestParser < Minitest::Test
       void should_compile(struct S2 *s) { s->f2 = it_real_fn; }
       enum efoo it_real_fn(void) { return TWO; }
     C
-    assert Rubycc::Compiler.new.compile(source, filename: "test.c")
+    assert Rubycc::Compiler.new.compile(source, filename: "test.c", target: host_target)
   end
 
   def test_attribute_after_a_struct_member_declarator_is_accepted

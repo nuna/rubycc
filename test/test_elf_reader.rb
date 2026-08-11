@@ -14,6 +14,13 @@ class TestElfReader < Minitest::Test
   include ExecutionHelper
   include LibcHelper
 
+  # This file's hand-built bytes and relocation assertions are explicitly
+  # x86_64 ELF contracts. Do not let an AArch64 host execute them against its
+  # host profile or accidentally retain the compiler's x86 default.
+  def setup
+    skip_unless_x86_64_host
+  end
+
   Reader = Rubycc::ObjFile::ELFReader
   Writer = Rubycc::ObjFile::ELFWriter
 

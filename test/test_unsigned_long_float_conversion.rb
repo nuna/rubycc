@@ -120,13 +120,16 @@ class TestUnsignedLongFloatConversion < Minitest::Test
   end
 
   # The 32-bit unsigned side was already meant to work; confirm it still does,
-  # including the (INT_MAX, UINT_MAX] range whose float->unsigned truncation
-  # needs a 64-bit conversion to stay exact.
+  # including the (INT_MAX, UINT_MAX] range. x86 uses its 64-bit signed
+  # conversion for that range, while AArch64 uses the native unsigned W-form.
   def test_unsigned_int_and_float_still_work
     src = <<~C
       #include <stdio.h>
       int main(void) {
-        unsigned int us[] = {0u, 1u, 2147483648u, 4000000000u, 4294967295u};
+        // Keep every float round-trip inside UINT_MAX. 4294967295.0f rounds
+        // to 2^32, which is outside the destination type and therefore would
+        // make the comparison depend on undefined C behavior.
+        unsigned int us[] = {0u, 1u, 2147483648u, 4000000000u, 4294967040u};
         for (int i = 0; i < 5; i++) {
           double d = (double)us[i];
           float f = (float)us[i];

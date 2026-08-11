@@ -1,0 +1,4082 @@
+{
+  "schema_version": 1,
+  "tool": "r10_corpus_scan",
+  "machine_gate": {
+    "candidate_count": 39,
+    "status_ok_count": 34,
+    "excluded_count": 5,
+    "skipped_count": 0,
+    "verified_record_count": 29,
+    "manual_classification_pending_count": 34,
+    "scanner_findings_count": 128
+  },
+  "limitations": [
+    "The corpus census is a machine gate, not a gem install or upstream-suite result.",
+    "The variadic scanner is lexical and heuristic; no finding or empty result proves presence or absence.",
+    "Macro expansion, generated-source selection, preprocessor conditions, and platform gates remain for manual review.",
+    "This artifact records gem .gem SHA-256 provenance; upstream source-tarball SHA-256 is not collected here.",
+    "Existing data/verified_gems.json records are referenced but are not re-executed by this scan."
+  ],
+  "targets": [
+    {
+      "name": "json",
+      "version": "2.21.1",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 3,
+        "ext_h_files": 5
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/json-2.21.1.gem",
+        "gem_sha256": "13a43df75d95641443f5702dff350f237164a9d811ff0f2c2800d4d980220583",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "json-2.21.1.gem",
+        "unpacked_relative_path": "unpacked/json-2.21.1"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 8,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "msgpack",
+      "version": "1.8.3",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 12,
+        "ext_h_files": 15
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/msgpack-1.8.3.gem",
+        "gem_sha256": "8bda4a6428d3244e50d6bd55854d354edbada88a4e1f4f5731a39a0f86bee6a1",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "msgpack-1.8.3.gem",
+        "unpacked_relative_path": "unpacked/msgpack-1.8.3"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 27,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "bigdecimal",
+      "version": "4.1.2",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 3,
+        "ext_h_files": 7
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/bigdecimal-4.1.2.gem",
+        "gem_sha256": "53d217666027eab4280346fba98e7d5b66baaae1b9c3c1c0ffe89d48188a3fbd",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "bigdecimal-4.1.2.gem",
+        "unpacked_relative_path": "unpacked/bigdecimal-4.1.2"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 10,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "date",
+      "version": "3.5.1",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 4,
+        "ext_h_files": 2
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/date-3.5.1.gem",
+        "gem_sha256": "750d06384d7b9c15d562c76291407d89e368dda4d4fff957eb94962d325a0dc0",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "date-3.5.1.gem",
+        "unpacked_relative_path": "unpacked/date-3.5.1"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 6,
+        "summary": {
+          "total_findings": 2,
+          "by_kind": {
+            "struct_argument_to_variadic_candidate": 2
+          }
+        },
+        "findings": [
+          {
+            "root_index": 0,
+            "path": "date/date_core.c",
+            "line": 7397,
+            "column": 43,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "snprintf(fmt, size, , c, FIX2INT(y) - s)",
+            "details": {
+              "callee": "snprintf",
+              "argument_index": 3,
+              "fixed_parameter_count": 3,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "date/date_core.c",
+            "line": 7397,
+            "column": 46,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "snprintf(fmt, size, , c, FIX2INT(y) - s)",
+            "details": {
+              "callee": "snprintf",
+              "argument_index": 4,
+              "fixed_parameter_count": 3,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          }
+        ],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "racc",
+      "version": "1.8.1",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 1,
+        "ext_h_files": 0
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/racc-1.8.1.gem",
+        "gem_sha256": "4a7f6929691dbec8b5209a0b373bc2614882b55fc5d2e447a21aaa691303d62f",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "racc-1.8.1.gem",
+        "unpacked_relative_path": "unpacked/racc-1.8.1"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 1,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "redcarpet",
+      "version": "3.6.1",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 10,
+        "ext_h_files": 8
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/redcarpet-3.6.1.gem",
+        "gem_sha256": "d444910e6aa55480c6bcdc0cdb057626e8a32c054c29e793fa642ba2f155f445",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "redcarpet-3.6.1.gem",
+        "unpacked_relative_path": "unpacked/redcarpet-3.6.1"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 18,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "digest",
+      "version": "3.2.1",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 10,
+        "ext_h_files": 9
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/digest-3.2.1.gem",
+        "gem_sha256": "ab3312b4e272d7d5dc41c564c86a25861a1f34ac5153374199a0b74861395947",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "digest-3.2.1.gem",
+        "unpacked_relative_path": "unpacked/digest-3.2.1"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 19,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "erb",
+      "version": "6.0.1.1",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 1,
+        "ext_h_files": 0
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/erb-6.0.1.1.gem",
+        "gem_sha256": "ce5357460652a9a94667c5769eaffc551eea2b14a8531ac7c7b1d77b860758b9",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "erb-6.0.1.1.gem",
+        "unpacked_relative_path": "unpacked/erb-6.0.1.1"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 1,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "etc",
+      "version": "1.4.6",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 1,
+        "ext_h_files": 1
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/etc-1.4.6.gem",
+        "gem_sha256": "0f7e9e7842ea5e3c3bd9bc81746ebb8c65ea29e4c42a93520a0d638129c7de01",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "etc-1.4.6.gem",
+        "unpacked_relative_path": "unpacked/etc-1.4.6"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 2,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "io-console",
+      "version": "0.8.2",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 1,
+        "ext_h_files": 0
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/io-console-0.8.2.gem",
+        "gem_sha256": "d6e3ae7a7cc7574f4b8893b4fca2162e57a825b223a177b7afa236c5ef9814cc",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "io-console-0.8.2.gem",
+        "unpacked_relative_path": "unpacked/io-console-0.8.2"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 2,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "io-nonblock",
+      "version": "0.3.2",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 1,
+        "ext_h_files": 0
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/io-nonblock-0.3.2.gem",
+        "gem_sha256": "2014636edae4e32e893a3b9e6bac9d1c5b8d3af41b8cd5bcb2279a78fbef937d",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "io-nonblock-0.3.2.gem",
+        "unpacked_relative_path": "unpacked/io-nonblock-0.3.2"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 1,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "io-wait",
+      "version": "0.4.0",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 1,
+        "ext_h_files": 0
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/io-wait-0.4.0.gem",
+        "gem_sha256": "872c703066ae5371bf19f441b4d4991cf4f259ada548c717cadce26b256e9309",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "io-wait-0.4.0.gem",
+        "unpacked_relative_path": "unpacked/io-wait-0.4.0"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 1,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "openssl",
+      "version": "4.0.2",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 33,
+        "ext_h_files": 21
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/openssl-4.0.2.gem",
+        "gem_sha256": "1037ad2868ae58df9ad917891c0c0f9815a1172f6846d4bcdd508e4c2ee747c2",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "openssl-4.0.2.gem",
+        "unpacked_relative_path": "unpacked/openssl-4.0.2"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 54,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": false,
+        "record_path": null,
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "not-run-by-this-scan",
+        "upstream_suite": "not-run-by-this-scan"
+      }
+    },
+    {
+      "name": "prism",
+      "version": "1.8.1",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 3,
+        "ext_h_files": 1
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/prism-1.8.1.gem",
+        "gem_sha256": "b260c1844ee0c7ead9c938f7fd63b95888c87cc054dfb64043204eccff8116ac",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "prism-1.8.1.gem",
+        "unpacked_relative_path": "unpacked/prism-1.8.1"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 4,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "psych",
+      "version": "5.3.1",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 5,
+        "ext_h_files": 5
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/psych-5.3.1.gem",
+        "gem_sha256": "eb7a57cef10c9d70173ff74e739d843ac3b2c019a003de48447b2963d81b1974",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "psych-5.3.1.gem",
+        "unpacked_relative_path": "unpacked/psych-5.3.1"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 10,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "stringio",
+      "version": "3.2.0",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 1,
+        "ext_h_files": 0
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/stringio-3.2.0.gem",
+        "gem_sha256": "c37cb2e58b4ffbd33fe5cd948c05934af997b36e0b6ca6fdf43afa234cf222e1",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "stringio-3.2.0.gem",
+        "unpacked_relative_path": "unpacked/stringio-3.2.0"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 1,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "strscan",
+      "version": "3.1.6",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 1,
+        "ext_h_files": 0
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/strscan-3.1.6.gem",
+        "gem_sha256": "ebd56df0b0468b00a1f2004b4078c34df58c3506b2bba939e7531892aece81f3",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "strscan-3.1.6.gem",
+        "unpacked_relative_path": "unpacked/strscan-3.1.6"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 1,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "zlib",
+      "version": "3.2.3",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 1,
+        "ext_h_files": 0
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/zlib-3.2.3.gem",
+        "gem_sha256": "5bd316698b32f31a64ab910a8b6c282442ca1626a81bbd6a1674e8522e319c20",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "zlib-3.2.3.gem",
+        "unpacked_relative_path": "unpacked/zlib-3.2.3"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 1,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "fiddle",
+      "version": "1.1.8",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 8,
+        "ext_h_files": 4
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/fiddle-1.1.8.gem",
+        "gem_sha256": "7fa8ee3627271497f3add5503acdbc3f40b32f610fc1cf49634f083ef3f32eee",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "fiddle-1.1.8.gem",
+        "unpacked_relative_path": "unpacked/fiddle-1.1.8"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 12,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "rbs",
+      "version": "3.10.0",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 5,
+        "ext_h_files": 6
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/rbs-3.10.0.gem",
+        "gem_sha256": "e75b5f1313c71c9ee0fcea68bf97d3e5fe8ec7a641d4b5cd18bbc28c94ddf298",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "rbs-3.10.0.gem",
+        "unpacked_relative_path": "unpacked/rbs-3.10.0"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 11,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": false,
+        "record_path": null,
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "not-run-by-this-scan",
+        "upstream_suite": "not-run-by-this-scan"
+      }
+    },
+    {
+      "name": "syslog",
+      "version": "0.3.0",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 1,
+        "ext_h_files": 0
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/syslog-0.3.0.gem",
+        "gem_sha256": "4dfe6e7bd5adb6383706bb4ad5a05da1f3a09917a507e8f913c73287085c7408",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "syslog-0.3.0.gem",
+        "unpacked_relative_path": "unpacked/syslog-0.3.0"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 1,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "websocket-driver",
+      "version": "0.8.2",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 1,
+        "ext_h_files": 0
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/websocket-driver-0.8.2.gem",
+        "gem_sha256": "97c556b019bf3410b4961002ac501621e9322d3f8a7bc02161a09301cc4c4146",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "websocket-driver-0.8.2.gem",
+        "unpacked_relative_path": "unpacked/websocket-driver-0.8.2"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 1,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "puma",
+      "version": "8.0.2",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 3,
+        "ext_h_files": 1
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/puma-8.0.2.gem",
+        "gem_sha256": "c8ed871dfbbe66448ea9ffd46692342d9804d4071522b52b5331b7b6e7b686fb",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "puma-8.0.2.gem",
+        "unpacked_relative_path": "unpacked/puma-8.0.2"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 4,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "google-protobuf",
+      "version": "4.35.1",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 11,
+        "ext_h_files": 10
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/google-protobuf-4.35.1.gem",
+        "gem_sha256": "a3a6471331d918f58dfa4d014a8f6286f0af2cf4840216bde52fcf2ea3fe3726",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "google-protobuf-4.35.1.gem",
+        "unpacked_relative_path": "unpacked/google-protobuf-4.35.1"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 23,
+        "summary": {
+          "total_findings": 41,
+          "by_kind": {
+            "struct_argument_to_variadic_candidate": 36,
+            "va_list_wrapper": 5
+          }
+        },
+        "findings": [
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 2268,
+            "column": 6,
+            "kind": "va_list_wrapper",
+            "confidence": "medium",
+            "evidence": "upb_Status_VSetErrorFormat(upb_Status* status, const char* fmt, va_list args)",
+            "details": {
+              "role": "function_parameter_or_call"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 2276,
+            "column": 6,
+            "kind": "va_list_wrapper",
+            "confidence": "medium",
+            "evidence": "upb_Status_VAppendErrorFormat(upb_Status* status, const char* fmt, va_list args)",
+            "details": {
+              "role": "function_parameter_or_call"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 3414,
+            "column": 72,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "upb_Status_SetErrorFormat(d->status, , d->line, (int)(d->ptr - d->line_begin), msg)",
+            "details": {
+              "callee": "upb_Status_SetErrorFormat",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 2261,
+                "column": 6,
+                "name": "upb_Status_SetErrorFormat",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 3414,
+            "column": 81,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "upb_Status_SetErrorFormat(d->status, , d->line, (int)(d->ptr - d->line_begin), msg)",
+            "details": {
+              "callee": "upb_Status_SetErrorFormat",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 2261,
+                "column": 6,
+                "name": "upb_Status_SetErrorFormat",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 3415,
+            "column": 59,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "upb_Status_SetErrorFormat(d->status, , d->line, (int)(d->ptr - d->line_begin), msg)",
+            "details": {
+              "callee": "upb_Status_SetErrorFormat",
+              "argument_index": 4,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 2261,
+                "column": 6,
+                "name": "upb_Status_SetErrorFormat",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 3426,
+            "column": 70,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "upb_Status_SetErrorFormat(d->status, , d->line, (int)(d->ptr - d->line_begin))",
+            "details": {
+              "callee": "upb_Status_SetErrorFormat",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 2261,
+                "column": 6,
+                "name": "upb_Status_SetErrorFormat",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 3426,
+            "column": 79,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "upb_Status_SetErrorFormat(d->status, , d->line, (int)(d->ptr - d->line_begin))",
+            "details": {
+              "callee": "upb_Status_SetErrorFormat",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 2261,
+                "column": 6,
+                "name": "upb_Status_SetErrorFormat",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 4024,
+            "column": 81,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "jsondec_errf(d, PRId64 , dbl, val.int64_val)",
+            "details": {
+              "callee": "jsondec_errf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 3424,
+                "column": 26,
+                "name": "jsondec_errf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 4062,
+            "column": 81,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "jsondec_errf(d, PRIu64 , dbl, val.uint64_val)",
+            "details": {
+              "callee": "jsondec_errf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 3424,
+                "column": 26,
+                "name": "jsondec_errf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 4159,
+            "column": 77,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "jsondec_errf(d, UPB_STRINGVIEW_FORMAT , UPB_STRINGVIEW_ARGS(str))",
+            "details": {
+              "callee": "jsondec_errf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 3424,
+                "column": 26,
+                "name": "jsondec_errf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 5100,
+            "column": 36,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "jsonenc_printf(e, PRId32, val)",
+            "details": {
+              "callee": "jsonenc_printf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 4979,
+                "column": 13,
+                "name": "jsonenc_printf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 5483,
+            "column": 36,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "jsonenc_printf(e, PRId32, val.int32_val)",
+            "details": {
+              "callee": "jsonenc_printf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 4979,
+                "column": 13,
+                "name": "jsonenc_printf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 5486,
+            "column": 36,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "jsonenc_printf(e, PRIu32, val.uint32_val)",
+            "details": {
+              "callee": "jsonenc_printf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 4979,
+                "column": 13,
+                "name": "jsonenc_printf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 5489,
+            "column": 43,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "jsonenc_printf(e, PRId64 , val.int64_val)",
+            "details": {
+              "callee": "jsonenc_printf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 4979,
+                "column": 13,
+                "name": "jsonenc_printf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 5492,
+            "column": 43,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "jsonenc_printf(e, PRIu64 , val.uint64_val)",
+            "details": {
+              "callee": "jsonenc_printf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 4979,
+                "column": 13,
+                "name": "jsonenc_printf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 5518,
+            "column": 36,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "jsonenc_printf(e, PRId32, val.int32_val)",
+            "details": {
+              "callee": "jsonenc_printf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 4979,
+                "column": 13,
+                "name": "jsonenc_printf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 5521,
+            "column": 36,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "jsonenc_printf(e, PRIu32, val.uint32_val)",
+            "details": {
+              "callee": "jsonenc_printf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 4979,
+                "column": 13,
+                "name": "jsonenc_printf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 5524,
+            "column": 36,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "jsonenc_printf(e, PRId64, val.int64_val)",
+            "details": {
+              "callee": "jsonenc_printf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 4979,
+                "column": 13,
+                "name": "jsonenc_printf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 5527,
+            "column": 36,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "jsonenc_printf(e, PRIu64, val.uint64_val)",
+            "details": {
+              "callee": "jsonenc_printf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 4979,
+                "column": 13,
+                "name": "jsonenc_printf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 5743,
+            "column": 39,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "snprintf(buf, size, , DBL_DIG, val)",
+            "details": {
+              "callee": "snprintf",
+              "argument_index": 4,
+              "fixed_parameter_count": 3,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 5745,
+            "column": 45,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "snprintf(buf, size, , DBL_DIG + 2, val)",
+            "details": {
+              "callee": "snprintf",
+              "argument_index": 4,
+              "fixed_parameter_count": 3,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 5757,
+            "column": 39,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "snprintf(buf, size, , FLT_DIG, val)",
+            "details": {
+              "callee": "snprintf",
+              "argument_index": 4,
+              "fixed_parameter_count": 3,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 5759,
+            "column": 45,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "snprintf(buf, size, , FLT_DIG + 3, val)",
+            "details": {
+              "callee": "snprintf",
+              "argument_index": 4,
+              "fixed_parameter_count": 3,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 10770,
+            "column": 63,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "upb_Status_SetErrorFormat(status, , sym.data)",
+            "details": {
+              "callee": "upb_Status_SetErrorFormat",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 2261,
+                "column": 6,
+                "name": "upb_Status_SetErrorFormat",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 11404,
+            "column": 67,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "_upb_DefBuilder_Errf(ctx, , status.msg)",
+            "details": {
+              "callee": "_upb_DefBuilder_Errf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 13248,
+                "column": 6,
+                "name": "_upb_DefBuilder_Errf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 11445,
+            "column": 76,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "_upb_DefBuilder_Errf(ctx, , e->full_name)",
+            "details": {
+              "callee": "_upb_DefBuilder_Errf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 13248,
+                "column": 6,
+                "name": "_upb_DefBuilder_Errf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 11460,
+            "column": 78,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "_upb_DefBuilder_Errf(ctx, , upb_EnumDef_FullName(e))",
+            "details": {
+              "callee": "_upb_DefBuilder_Errf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 13248,
+                "column": 6,
+                "name": "_upb_DefBuilder_Errf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 11561,
+            "column": 49,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "_upb_DefBuilder_Errf(ctx, , (int)start, (int)end, upb_EnumDef_FullName(e))",
+            "details": {
+              "callee": "_upb_DefBuilder_Errf",
+              "argument_index": 4,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 13248,
+                "column": 6,
+                "name": "_upb_DefBuilder_Errf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 12155,
+            "column": 70,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "_upb_DefBuilder_Errf(ctx, , (int)len, str)",
+            "details": {
+              "callee": "_upb_DefBuilder_Errf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 13248,
+                "column": 6,
+                "name": "_upb_DefBuilder_Errf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 12250,
+            "column": 33,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "_upb_DefBuilder_Errf(ctx, , (int)len, str, upb_FieldDef_FullName(f), (int)upb_FieldDef_Type(f))",
+            "details": {
+              "callee": "_upb_DefBuilder_Errf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 13248,
+                "column": 6,
+                "name": "_upb_DefBuilder_Errf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 12282,
+            "column": 43,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "_upb_DefBuilder_Errf(ctx, , f->full_name, upb_EnumDef_FullName(f->sub.enumdef))",
+            "details": {
+              "callee": "_upb_DefBuilder_Errf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 13248,
+                "column": 6,
+                "name": "_upb_DefBuilder_Errf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 13119,
+            "column": 60,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "_upb_DefBuilder_Errf(ctx, UPB_STRINGVIEW_FORMAT , UPB_STRINGVIEW_ARGS(str))",
+            "details": {
+              "callee": "_upb_DefBuilder_Errf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 13248,
+                "column": 6,
+                "name": "_upb_DefBuilder_Errf",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 15249,
+            "column": 41,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "printf_dup(ctx, PRId64, d.int64_val)",
+            "details": {
+              "callee": "printf_dup",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 15153,
+                "column": 23,
+                "name": "printf_dup",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 15251,
+            "column": 41,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "printf_dup(ctx, PRIu64, d.uint64_val)",
+            "details": {
+              "callee": "printf_dup",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 15153,
+                "column": 23,
+                "name": "printf_dup",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 15253,
+            "column": 41,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "printf_dup(ctx, PRId32, d.int32_val)",
+            "details": {
+              "callee": "printf_dup",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 15153,
+                "column": 23,
+                "name": "printf_dup",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 15255,
+            "column": 41,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "printf_dup(ctx, PRIu32, d.uint32_val)",
+            "details": {
+              "callee": "printf_dup",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 15153,
+                "column": 23,
+                "name": "printf_dup",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 15257,
+            "column": 37,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "printf_dup(ctx, , d.float_val)",
+            "details": {
+              "callee": "printf_dup",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 15153,
+                "column": 23,
+                "name": "printf_dup",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.c",
+            "line": 15259,
+            "column": 38,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "high",
+            "evidence": "printf_dup(ctx, , d.double_val)",
+            "details": {
+              "callee": "printf_dup",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "scanned_declaration",
+              "declaration": {
+                "root_index": 0,
+                "path": "google/protobuf_c/ruby-upb.c",
+                "line": 15153,
+                "column": 23,
+                "name": "printf_dup",
+                "fixed_parameter_count": 2,
+                "form": "function_or_declaration"
+              }
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.h",
+            "line": 5502,
+            "column": 6,
+            "kind": "va_list_wrapper",
+            "confidence": "medium",
+            "evidence": "upb_Status_VSetErrorFormat(upb_Status* status, const char* fmt, va_list args)",
+            "details": {
+              "role": "function_parameter_or_call"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.h",
+            "line": 5504,
+            "column": 6,
+            "kind": "va_list_wrapper",
+            "confidence": "medium",
+            "evidence": "upb_Status_VAppendErrorFormat(upb_Status* status, const char* fmt, va_list args)",
+            "details": {
+              "role": "function_parameter_or_call"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "google/protobuf_c/ruby-upb.h",
+            "line": 15144,
+            "column": 16,
+            "kind": "va_list_wrapper",
+            "confidence": "medium",
+            "evidence": "_upb_vsnprintf(char* buf, size_t size, const char* fmt, va_list ap)",
+            "details": {
+              "role": "function_parameter_or_call"
+            }
+          }
+        ],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "bootsnap",
+      "version": "1.24.6",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 1,
+        "ext_h_files": 0
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/bootsnap-1.24.6.gem",
+        "gem_sha256": "c60bab88c70332290f0a2636a288f675299eb4f804a02a3c085b42eca9da164a",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "bootsnap-1.24.6.gem",
+        "unpacked_relative_path": "unpacked/bootsnap-1.24.6"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 1,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "oj",
+      "version": "3.17.4",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 41,
+        "ext_h_files": 25
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/oj-3.17.4.gem",
+        "gem_sha256": "733fe3bcb7a5d985bd2e943620b7bea1bffb2809318af7021c841b833a6858e1",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "oj-3.17.4.gem",
+        "unpacked_relative_path": "unpacked/oj-3.17.4"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 66,
+        "summary": {
+          "total_findings": 60,
+          "by_kind": {
+            "struct_argument_to_variadic_candidate": 60
+          }
+        },
+        "findings": [
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 759,
+            "column": 69,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 759,
+            "column": 78,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 759,
+            "column": 86,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 4,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 759,
+            "column": 94,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 5,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 759,
+            "column": 103,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 6,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 759,
+            "column": 111,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 7,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 763,
+            "column": 74,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 764,
+            "column": 39,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 765,
+            "column": 38,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 4,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 766,
+            "column": 38,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 5,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 767,
+            "column": 39,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 6,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 768,
+            "column": 38,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 7,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 782,
+            "column": 35,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 782,
+            "column": 44,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 782,
+            "column": 52,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 4,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 782,
+            "column": 60,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 5,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 782,
+            "column": 69,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 6,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 782,
+            "column": 77,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 7,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 791,
+            "column": 35,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 791,
+            "column": 44,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 791,
+            "column": 52,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 4,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 791,
+            "column": 60,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 5,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 791,
+            "column": 69,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 6,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/dump.c",
+            "line": 791,
+            "column": 77,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 7,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 254,
+            "column": 66,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 255,
+            "column": 31,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 256,
+            "column": 30,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 4,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 257,
+            "column": 30,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 5,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 258,
+            "column": 31,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 6,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 259,
+            "column": 30,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 7,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 266,
+            "column": 65,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 266,
+            "column": 74,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 266,
+            "column": 82,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 4,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 266,
+            "column": 90,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 5,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 266,
+            "column": 99,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 6,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 266,
+            "column": 107,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 7,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 269,
+            "column": 70,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 270,
+            "column": 35,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 271,
+            "column": 34,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 4,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 272,
+            "column": 34,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 5,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 273,
+            "column": 35,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 6,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 274,
+            "column": 34,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 7,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 288,
+            "column": 35,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 288,
+            "column": 44,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 288,
+            "column": 52,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 4,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 288,
+            "column": 60,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 5,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 288,
+            "column": 69,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 6,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 288,
+            "column": 77,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 7,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 297,
+            "column": 35,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, nsec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 297,
+            "column": 44,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, nsec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 297,
+            "column": 52,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, nsec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 4,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 297,
+            "column": 60,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, nsec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 5,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 297,
+            "column": 69,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, nsec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 6,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/rails.c",
+            "line": 297,
+            "column": 77,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, format, ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, nsec, tzsign, tzhour, tzmin)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 7,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/wab.c",
+            "line": 211,
+            "column": 58,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/wab.c",
+            "line": 212,
+            "column": 27,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/wab.c",
+            "line": 213,
+            "column": 26,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 4,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/wab.c",
+            "line": 214,
+            "column": 26,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 5,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/wab.c",
+            "line": 215,
+            "column": 27,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 6,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "oj/wab.c",
+            "line": 216,
+            "column": 26,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "sprintf(buf, , ti.year, ti.mon, ti.day, ti.hour, ti.min, ti.sec, (long)nsec)",
+            "details": {
+              "callee": "sprintf",
+              "argument_index": 7,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          }
+        ],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": false,
+        "record_path": null,
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "not-run-by-this-scan",
+        "upstream_suite": "not-run-by-this-scan"
+      }
+    },
+    {
+      "name": "sqlite3",
+      "version": "2.9.5",
+      "r10_profile": "sqlite3-system-libraries",
+      "r10_extconf_args": [
+        "--enable-system-libraries"
+      ],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 6,
+        "ext_h_files": 7
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/sqlite3-2.9.5.gem",
+        "gem_sha256": "04572973a3f943ad50a8adfffc8dd752a5f06e4c3db2026f71838fed8a982606",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "sqlite3-2.9.5.gem",
+        "unpacked_relative_path": "unpacked/sqlite3-2.9.5"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 13,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": false,
+        "record_path": null,
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "not-run-by-this-scan",
+        "upstream_suite": "not-run-by-this-scan"
+      }
+    },
+    {
+      "name": "nio4r",
+      "version": "2.7.5",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 13,
+        "ext_h_files": 5
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/nio4r-2.7.5.gem",
+        "gem_sha256": "6c90168e48fb5f8e768419c93abb94ba2b892a1d0602cb06eef16d8b7df1dca1",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "nio4r-2.7.5.gem",
+        "unpacked_relative_path": "unpacked/nio4r-2.7.5"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 18,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "pg",
+      "version": "1.6.3",
+      "r10_profile": "pg-native-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 22,
+        "ext_h_files": 3
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/pg-1.6.3.gem",
+        "gem_sha256": "1388d0563e13d2758c1089e35e973a3249e955c659592d10e5b77c468f628a99",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "pg-1.6.3.gem",
+        "unpacked_relative_path": "unpacked/pg-1.6.3"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 25,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": false,
+        "record_path": null,
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "not-run-by-this-scan",
+        "upstream_suite": "not-run-by-this-scan"
+      }
+    },
+    {
+      "name": "mysql2",
+      "version": "0.5.7",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 5,
+        "ext_h_files": 8
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/mysql2-0.5.7.gem",
+        "gem_sha256": "ba09ede515a0ae8a7192040a1b778c0fb0f025fa5877e9be895cd325fa5e9d7b",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "mysql2-0.5.7.gem",
+        "unpacked_relative_path": "unpacked/mysql2-0.5.7"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 13,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "http_parser.rb",
+      "version": "0.8.1",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 8,
+        "ext_h_files": 3
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/http_parser.rb-0.8.1.gem",
+        "gem_sha256": "9ae8df145b39aa5398b2f90090d651c67bd8e2ebfe4507c966579f641e11097a",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "http_parser.rb-0.8.1.gem",
+        "unpacked_relative_path": "unpacked/http_parser.rb-0.8.1"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 11,
+        "summary": {
+          "total_findings": 23,
+          "by_kind": {
+            "struct_argument_to_variadic_candidate": 19,
+            "va_arg_struct_or_union": 4
+          }
+        },
+        "findings": [
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser-java/test.c",
+            "line": 1988,
+            "column": 35,
+            "kind": "va_arg_struct_or_union",
+            "confidence": "high",
+            "evidence": "va_arg(ap, struct message *)",
+            "details": {
+              "type": "struct message *",
+              "type_form": "struct_or_union_specifier",
+              "builtin": false
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser-java/test.c",
+            "line": 2012,
+            "column": 35,
+            "kind": "va_arg_struct_or_union",
+            "confidence": "high",
+            "evidence": "va_arg(ap, struct message *)",
+            "details": {
+              "type": "struct message *",
+              "type_form": "struct_or_union_specifier",
+              "builtin": false
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser-java/test.c",
+            "line": 2590,
+            "column": 42,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , u->field_set, u->port)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 1,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser-java/test.c",
+            "line": 2590,
+            "column": 56,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , u->field_set, u->port)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 2,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser-java/test.c",
+            "line": 2598,
+            "column": 14,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , i, u->field_data[i].off, u->field_data[i].len, u->field_data[i].len, url + u->field_data[i].off)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 2,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser-java/test.c",
+            "line": 2599,
+            "column": 33,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , i, u->field_data[i].off, u->field_data[i].len, u->field_data[i].len, url + u->field_data[i].off)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 3,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser-java/test.c",
+            "line": 2600,
+            "column": 33,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , i, u->field_data[i].off, u->field_data[i].len, u->field_data[i].len, url + u->field_data[i].off)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 4,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser-java/test.c",
+            "line": 2601,
+            "column": 33,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , i, u->field_data[i].off, u->field_data[i].len, u->field_data[i].len, url + u->field_data[i].off)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 5,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser/contrib/url_parser.c",
+            "line": 10,
+            "column": 42,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , u->field_set, u->port)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 1,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser/contrib/url_parser.c",
+            "line": 10,
+            "column": 56,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , u->field_set, u->port)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 2,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser/contrib/url_parser.c",
+            "line": 18,
+            "column": 14,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , i, u->field_data[i].off, u->field_data[i].len, u->field_data[i].len, url + u->field_data[i].off)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 2,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser/contrib/url_parser.c",
+            "line": 19,
+            "column": 33,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , i, u->field_data[i].off, u->field_data[i].len, u->field_data[i].len, url + u->field_data[i].off)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 3,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser/contrib/url_parser.c",
+            "line": 20,
+            "column": 33,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , i, u->field_data[i].off, u->field_data[i].len, u->field_data[i].len, url + u->field_data[i].off)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 4,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser/contrib/url_parser.c",
+            "line": 21,
+            "column": 33,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , i, u->field_data[i].off, u->field_data[i].len, u->field_data[i].len, url + u->field_data[i].off)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 5,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser/test.c",
+            "line": 2668,
+            "column": 35,
+            "kind": "va_arg_struct_or_union",
+            "confidence": "high",
+            "evidence": "va_arg(ap, struct message *)",
+            "details": {
+              "type": "struct message *",
+              "type_form": "struct_or_union_specifier",
+              "builtin": false
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser/test.c",
+            "line": 2692,
+            "column": 35,
+            "kind": "va_arg_struct_or_union",
+            "confidence": "high",
+            "evidence": "va_arg(ap, struct message *)",
+            "details": {
+              "type": "struct message *",
+              "type_form": "struct_or_union_specifier",
+              "builtin": false
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser/test.c",
+            "line": 3322,
+            "column": 42,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , u->field_set, u->port)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 1,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser/test.c",
+            "line": 3322,
+            "column": 56,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , u->field_set, u->port)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 2,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser/test.c",
+            "line": 3330,
+            "column": 14,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , i, u->field_data[i].off, u->field_data[i].len, u->field_data[i].len, url + u->field_data[i].off)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 2,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser/test.c",
+            "line": 3331,
+            "column": 33,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , i, u->field_data[i].off, u->field_data[i].len, u->field_data[i].len, url + u->field_data[i].off)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 3,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser/test.c",
+            "line": 3332,
+            "column": 33,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , i, u->field_data[i].off, u->field_data[i].len, u->field_data[i].len, url + u->field_data[i].off)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 4,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser/test.c",
+            "line": 3333,
+            "column": 33,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "printf( , i, u->field_data[i].off, u->field_data[i].len, u->field_data[i].len, url + u->field_data[i].off)",
+            "details": {
+              "callee": "printf",
+              "argument_index": 5,
+              "fixed_parameter_count": 1,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "ruby_http_parser/vendor/http-parser/test.c",
+            "line": 3689,
+            "column": 73,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "fprintf(stderr, , u.port)",
+            "details": {
+              "callee": "fprintf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          }
+        ],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "stackprof",
+      "version": "0.2.28",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 1,
+        "ext_h_files": 0
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/stackprof-0.2.28.gem",
+        "gem_sha256": "4ec2ace02f386012b40ca20ef80c030ad711831f59511da12e83b34efb0f9a04",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "stackprof-0.2.28.gem",
+        "unpacked_relative_path": "unpacked/stackprof-0.2.28"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 1,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "yajl-ruby",
+      "version": "1.4.3",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 9,
+        "ext_h_files": 11
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/yajl-ruby-1.4.3.gem",
+        "gem_sha256": "8c974d9c11ae07b0a3b6d26efea8407269b02e4138118fbe3ef0d2ec9724d1d2",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "yajl-ruby-1.4.3.gem",
+        "unpacked_relative_path": "unpacked/yajl-ruby-1.4.3"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 20,
+        "summary": {
+          "total_findings": 0,
+          "by_kind": {}
+        },
+        "findings": [],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    },
+    {
+      "name": "nkf",
+      "version": "0.3.0",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "machine_gate": {
+        "status": "ok",
+        "ext_c_files": 3,
+        "ext_h_files": 3
+      },
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/nkf-0.3.0.gem",
+        "gem_sha256": "357a8dbeba38b727b75930f665146546076a394a1c243faf634ff176e3588895",
+        "source_tarball_sha256": null,
+        "cache_relative_path": "nkf-0.3.0.gem",
+        "unpacked_relative_path": "unpacked/nkf-0.3.0"
+      },
+      "generated_source": {
+        "status": "not-reviewed",
+        "commands": null,
+        "note": "R10-3 manual review must inspect extconf/Rake/generated translation units."
+      },
+      "scanner": {
+        "files_scanned": 6,
+        "summary": {
+          "total_findings": 2,
+          "by_kind": {
+            "struct_argument_to_variadic_candidate": 2
+          }
+        },
+        "findings": [
+          {
+            "root_index": 0,
+            "path": "nkf/nkf-utf8/nkf.c",
+            "line": 1169,
+            "column": 22,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "fprintf(HELP_OUTPUT, #ifdef DEFAULT_CODE_LOCALE , nkf_enc_name(nkf_default_encoding()) #elif defined(DEFAULT_ENCIDX) , nkf_enc_name(nkf_default_encoding()) #else #endif )",
+            "details": {
+              "callee": "fprintf",
+              "argument_index": 3,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          },
+          {
+            "root_index": 0,
+            "path": "nkf/nkf-utf8/nkf.c",
+            "line": 6794,
+            "column": 53,
+            "kind": "struct_argument_to_variadic_candidate",
+            "confidence": "medium",
+            "evidence": "fprintf(stderr, , long_option[i].name)",
+            "details": {
+              "callee": "fprintf",
+              "argument_index": 2,
+              "fixed_parameter_count": 2,
+              "argument_shape": "known_struct_or_union_variable",
+              "api_source": "known_variadic_api"
+            }
+          }
+        ],
+        "errors": [],
+        "not_proof": true,
+        "not_acceptance_gate": true
+      },
+      "classification": {
+        "manual": "pending",
+        "pending_reason": "R10-3 manual review is not complete; scanner output is a candidate list only.",
+        "reviewer": null,
+        "reviewed_at": null,
+        "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
+      },
+      "verification": {
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
+        "control": "not-run-by-this-scan",
+        "rubycc": "not-run-by-this-scan",
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
+      }
+    }
+  ],
+  "excluded": [
+    {
+      "name": "fcntl",
+      "version": "1.3.0",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "status": "excluded",
+      "reason": "upstream ships no test suite — R10's \"gem's own tests passed\" evidence (verification level (d)) is impossible to obtain (docs/OUT-OF-SCOPE-GEMS.md basis D)",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/fcntl-1.3.0.gem",
+        "gem_sha256": "6b8d5f1496d9990a9172756cf128ba8b3cfbaccd54da7050ec6d5e7f3b167e41",
+        "cache_relative_path": "fcntl-1.3.0.gem"
+      }
+    },
+    {
+      "name": "byebug",
+      "version": "13.0.0",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "status": "excluded",
+      "reason": "upstream suite does not pass with the reference compiler either (measured with tools/verify_gem_tests.rb --control) — no compiler can earn R10's verification level (d) here",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/byebug-13.0.0.gem",
+        "gem_sha256": "d2263efe751941ca520fa29744b71972d39cbc41839496706f5d9b22e92ae05d",
+        "cache_relative_path": "byebug-13.0.0.gem"
+      }
+    },
+    {
+      "name": "thin",
+      "version": "2.0.1",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "status": "excluded",
+      "reason": "`gem install` requires eventmachine (C++ extension — docs/OUT-OF-SCOPE-GEMS.md basis A), which R10 already excludes — this gem's own sources pass the machine gate, but the install cannot complete without building an out-of-scope extension",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/thin-2.0.1.gem",
+        "gem_sha256": "5bbde5648377f5c3864b5da7cd89a23b5c2d8d8bb9435719f6db49644bcdade9",
+        "cache_relative_path": "thin-2.0.1.gem"
+      }
+    },
+    {
+      "name": "unicorn",
+      "version": "6.1.0",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "status": "excluded",
+      "reason": "upstream suite does not pass with the reference compiler either (measured with tools/verify_gem_tests.rb --control) — no compiler can earn R10's verification level (d) here",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/unicorn-6.1.0.gem",
+        "gem_sha256": "45dd987add4c2b084c1880a68373af42797a704ad7441faff9b14b4982aa0fc0",
+        "cache_relative_path": "unicorn-6.1.0.gem"
+      }
+    },
+    {
+      "name": "debug",
+      "version": "1.11.1",
+      "r10_profile": "default-source",
+      "r10_extconf_args": [],
+      "status": "excluded",
+      "reason": "upstream suite does not pass with the reference compiler either (measured with tools/verify_gem_tests.rb --control) — no compiler can earn R10's verification level (d) here",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/debug-1.11.1.gem",
+        "gem_sha256": "2e0b0ac6119f2207a6f8ac7d4a73ca8eb4e440f64da0a3136c30343146e952b6",
+        "cache_relative_path": "debug-1.11.1.gem"
+      }
+    }
+  ]
+}

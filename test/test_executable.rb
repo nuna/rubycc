@@ -20,7 +20,12 @@ require "open3"
 # and actually run, its exit status and stdout checked — including a gcc-built
 # counterpart for cross-verification. The run and gcc cases are skip-guarded.
 class TestExecutable < Minitest::Test
+  include ExecutionHelper
   include LibcHelper
+
+  def setup
+    skip_unless_x86_64_host
+  end
 
   Reader = Rubycc::ObjFile::ELFReader
   Linker = Rubycc::Link::ExecutableLinker
@@ -689,9 +694,7 @@ class TestExecutable < Minitest::Test
   end
 
   def linkable?
-    interp = ["/lib64/ld-linux-x86-64.so.2", "/lib/ld-musl-x86_64.so.1"].any? { |p| File.exist?(p) }
-    libc = Rubycc::Link::ExecutableLinker::DEFAULT_LIBC_PATHS.any? { |p| File.exist?(p) }
-    interp && libc
+    host_linkable?
   end
 
   # Parses the ELF program header table straight from the image bytes.

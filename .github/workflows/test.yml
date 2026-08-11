@@ -129,6 +129,49 @@ jobs:
         if: inputs.runner == 'ubuntu-24.04-arm'
         run: ruby -rrbconfig -e 'puts RbConfig::CONFIG.values_at("arch", "host", "target")'
 
+      - name: Verify the full suite uses the runner's native architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          profile="${{ inputs.runner == 'ubuntu-24.04-arm' && 'native-aarch64' || 'native-x86' }}"
+          case "$profile" in
+            native-aarch64)
+              test "$(uname -m)" = aarch64
+              ruby -rrbconfig -e '
+                cpu = RbConfig::CONFIG.fetch("host_cpu")
+                arch = RbConfig::CONFIG.fetch("arch")
+                abort "Ruby is not AArch64: host_cpu=#{cpu.inspect}, arch=#{arch.inspect}" unless
+                  cpu.match?(/\A(?:aarch64|arm64)\z/i) && arch.match?(/aarch64|arm64/i)
+              '
+              case "$(gcc -dumpmachine)" in
+                aarch64*) ;;
+                *) echo "gcc is not an AArch64 compiler: $(gcc -dumpmachine)" >&2; exit 1 ;;
+              esac
+              readelf -h "$(command -v ruby)" | grep -Eq 'AArch64|ARM aarch64'
+              ;;
+            native-x86)
+              case "$(uname -m)" in
+                x86_64|amd64) ;;
+                *) echo "runner is not x86_64: $(uname -m)" >&2; exit 1 ;;
+              esac
+              ruby -rrbconfig -e '
+                cpu = RbConfig::CONFIG.fetch("host_cpu")
+                arch = RbConfig::CONFIG.fetch("arch")
+                abort "Ruby is not x86_64: host_cpu=#{cpu.inspect}, arch=#{arch.inspect}" unless
+                  cpu.match?(/\A(?:x86_64|amd64)\z/i) && arch.match?(/x86_64|amd64/i)
+              '
+              case "$(gcc -dumpmachine)" in
+                x86_64*|amd64*) ;;
+                *) echo "gcc is not an x86_64 compiler: $(gcc -dumpmachine)" >&2; exit 1 ;;
+              esac
+              readelf -h "$(command -v ruby)" | grep -Eq 'X86-64|Advanced Micro Devices X86-64'
+              ;;
+            *)
+              echo "unknown CI architecture profile: $profile" >&2
+              exit 1
+              ;;
+          esac
+
       - name: bundle install
         run: bundle install --jobs 4 --retry 3
 
@@ -140,6 +183,9 @@ jobs:
           bundle exec rake test TESTOPTS="--verbose" 2>&1 | tee "tmp/ci/test-ruby${{ matrix.ruby }}.log"
 
       - name: Guard against runaway skips
+        env:
+          CI_SKIP_PROFILE: ${{ inputs.runner == 'ubuntu-24.04-arm' && 'native-aarch64' || 'native-x86' }}
+          CI_ENFORCE_SKIP_BASELINE: "1"
         run: ruby tools/ci_check_skips.rb "tmp/ci/test-ruby${{ matrix.ruby }}.log"
 
       - name: Upload the test log

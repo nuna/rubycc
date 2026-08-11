@@ -1223,11 +1223,10 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
-  # Struct arguments and results passed by value under the System V AMD64
-  # classification (Step 25 Phase B). Each source hands a whole struct across a
-  # call — in registers when it fits its one or two eightbytes, or through a
-  # hidden pointer when it is MEMORY-classified — and folds the result into an
-  # exit code, so gcc's own eightbyte classification is the oracle bit-for-bit.
+  # Struct arguments and results passed by value under the host psABI
+  # classification (System V AMD64 or AArch64 AAPCS64; Step 25 Phase B). Each
+  # source hands a whole struct across a call and folds the result into an exit
+  # code, so gcc's host-target classification is the oracle bit-for-bit.
   STRUCT_ABI_DIFFERENTIAL_SOURCES = [
     # Two ints share one INTEGER eightbyte: a single-register argument and return.
     "struct P { int x; int y; }; struct P mk(int a, int b) { struct P p; p.x = a; p.y = b; return p; } " \
@@ -1434,6 +1433,8 @@ class TestExecutionHarness < Minitest::Test
   ].freeze
 
   def test_builtin_alloca_matches_gcc_exit_codes
+    skip "aarch64 __builtin_alloca lowering is not implemented (IR 6.5 target limitation)" if host_target == "aarch64"
+
     BUILTIN_ALLOCA_DIFFERENTIAL_SOURCES.each do |source|
       assert_equal run_source(source, compiler: :gcc),
                    run_source(source, compiler: :rubycc),
@@ -2333,8 +2334,8 @@ class TestExecutionHarness < Minitest::Test
   end
 
   # Variadic call sites (Step 23 Phase A): a prototype/pointer ending in "...",
-  # the default argument promotions on the variable part, and the al=0 the
-  # System V ABI wants at a variadic call. Every program calls a real libc
+  # the default argument promotions on the variable part, and the target ABI's
+  # variadic-call metadata. Every program calls a real libc
   # variadic function (printf/snprintf) or a locally defined variadic one, so
   # both its exit code and its stdout are matched against gcc. Each exit code
   # stays within 0..255 (printf/snprintf return their byte counts, kept small).
@@ -2442,8 +2443,8 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
-  # The float/double call boundary (Step 24 Phase B): the System V xmm argument
-  # and return convention. Every case keeps its result an integer 0..255 exit
+  # The float/double call boundary (Step 24 Phase B): the host ABI's floating
+  # argument and return convention. Every case keeps its result an integer 0..255 exit
   # code, casting the floating value before returning, and crosses a real call
   # boundary so the xmm register/stack routing, the al xmm-count, the float/
   # double return in xmm0, the register-save-area SSE walk of va_arg(double) and

@@ -13,12 +13,12 @@ NULLCMD = :
 #### Start of system configuration section. ####
 
 srcdir = .
-topdir = /home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0
+topdir = /rubycc-fixture/ruby-4.0.6/include/ruby-4.0.6
 hdrdir = $(topdir)
-arch_hdrdir = /home/nuna/.rbenv/versions/3.4.5/include/ruby-3.4.0/x86_64-linux
+arch_hdrdir = /rubycc-fixture/ruby-4.0.6/include/ruby-4.0.6/x86_64-linux
 PATH_SEPARATOR = :
 VPATH = $(srcdir):$(arch_hdrdir)/ruby:$(hdrdir)/ruby
-prefix = $(DESTDIR)/home/nuna/.rbenv/versions/3.4.5
+prefix = $(DESTDIR)/rubycc-fixture/ruby-4.0.6
 rubysitearchprefix = $(rubylibprefix)/$(sitearch)
 rubyarchprefix = $(rubylibprefix)/$(arch)
 rubylibprefix = $(libdir)/$(RUBY_BASE_NAME)
@@ -111,7 +111,7 @@ RUBY_BASE_NAME = ruby
 
 arch = x86_64-linux
 sitearch = $(arch)
-ruby_version = 3.4.0
+ruby_version = 4.0.6
 ruby = $(bindir)/$(RUBY_BASE_NAME)
 RUBY = $(ruby)
 BUILTRUBY = $(bindir)/$(RUBY_BASE_NAME)

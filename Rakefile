@@ -32,4 +32,17 @@ namespace :corpus do
     path = Corpus::Census.run_and_write_report
     puts "wrote #{path}"
   end
+
+  desc "Scan cached R10 corpus provenance and variadic candidates (cache required; no network; not part of `rake test`)"
+  task :r10_scan do
+    cache = ENV["R10_CORPUS_CACHE"] || ENV["RUBYCC_CORPUS_CACHE"]
+    abort "set R10_CORPUS_CACHE or RUBYCC_CORPUS_CACHE to an existing corpus cache" if cache.to_s.empty?
+
+    ruby "tools/r10_corpus_scan.rb", "--cache", cache
+  end
+
+  desc "Validate and render the reviewed R10 classification ledger (cache-free; not part of `rake test`)"
+  task :r10_manual_validate do
+    ruby "tools/r10_manual_classification.rb", "--render"
+  end
 end

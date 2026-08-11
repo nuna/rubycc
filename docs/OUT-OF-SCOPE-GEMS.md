@@ -56,11 +56,24 @@ R10の分母は `test/corpus/census.rb` の機械判定を通過した gem で�
 | gem | 現在の扱い | 理由 |
 |---|---|---|
 | `byebug` / `unicorn` / `debug` | R10分母から除外 | 上流テストが基準コンパイラでも合格せず、R10の検証証拠を得られない |
-| `pg` | censusでは除外されるが対象内 | mini_portile と `configure` の参照は `--with-cross-build` 経路だけで、通常のソースインストールは `pg_config` / pkg-config でシステムの libpq を使う。機械判定の偽陽性である |
+| `pg` | **分母に含む**(`pg-native-source` profile) | mini_portile と `configure` の参照は `--with-cross-build` 経路だけで、通常のソースインストールは `pg_config` / pkg-config でシステムの libpq を使う。raw 判定の偽陽性だったものを profile で上書きしている |
 | `thin` | censusでは除外 | 自身は純Cだが、インストール時に対象外の `eventmachine` を必要とする |
 
-`fcntl` は §2 の基準Dによる分母除外、`sqlite3` は既定経路が基準Cによる
-分母除外である。システムライブラリ利用経路は対象内である。
+`fcntl` は §2 の基準Dによる分母除外である。`sqlite3` は既定経路が基準Cに当たるが、
+`sqlite3-system-libraries` profile を宣言して**分母に含めている**。
+
+### raw 判定と profile 判定
+
+`census.rb` の通常判定は「extconf.rb のどこかに `mini_portile` という文字列があるか」
+を含む保守的な raw チェックで、`pg` と `sqlite3` を同じ `excluded` にしていた。
+現在は DESIGN が名指しする実行経路を profile として明示し、`pg-native-source` と
+`sqlite3-system-libraries` の 2 つだけが、宣言された extconf 引数と実ソース中の
+branch marker を両方満たしたときに raw 判定を上書きする。未知の profile も条件不足も
+fail-closed で除外のままである。
+
+profile は**対象範囲の宣言であって検証記録ではない**。install・extension load・
+upstream suite の証拠は `data/verified_gems.json` が持つもので、profile がそれを
+代用することはない。この 2 件を分母に入れた結果、R10 の分母は 32 から 34 になった。
 
 ## 4. 対象内である境界例
 

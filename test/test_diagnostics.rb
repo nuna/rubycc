@@ -3,8 +3,10 @@
 require_relative "test_helper"
 
 class TestDiagnostics < Minitest::Test
+  include ExecutionHelper
+
   def compile(source, filename: "foo.c")
-    Rubycc::Compiler.new.compile(source, filename: filename)
+    Rubycc::Compiler.new.compile(source, filename: filename, target: host_target)
   end
 
   def test_missing_semicolon_message_has_full_diagnostic
@@ -251,6 +253,15 @@ class TestDiagnostics < Minitest::Test
   def test_va_arg_of_struct_type_is_rejected
     source = "struct p { int x; }; int f(int a, ...) { __builtin_va_list ap; " \
              "__builtin_va_start(ap, a); struct p s = __builtin_va_arg(ap, struct p); return s.x; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/second argument to 'va_arg' has type 'struct p', which va_arg cannot yield/, error.description)
+  end
+
+  # The same restriction applies after a struct tag is hidden behind a typedef;
+  # the diagnostic must not depend on spelling the type with `struct` directly.
+  def test_va_arg_of_typedef_struct_type_is_rejected
+    source = "typedef struct p { int x; } p_t; int f(int a, ...) { __builtin_va_list ap; " \
+             "__builtin_va_start(ap, a); p_t s = __builtin_va_arg(ap, p_t); return s.x; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/second argument to 'va_arg' has type 'struct p', which va_arg cannot yield/, error.description)
   end

@@ -2,6 +2,7 @@
 
 require "rbconfig"
 require "rubycc"
+require_relative "../support/host_target"
 
 # The ABI-verification harness (M5 H1, built ahead of the bundled libc headers).
 #
@@ -126,12 +127,12 @@ module HeaderAbiHarness
   # On x86-64 this is "x86_64" -- the default -- so nothing about the existing
   # runs changes.
   #
-  # No alias folding (the driver's #normalize_target does that for the triples
-  # a user may type on the command line): a host_cpu spelling that is not a
-  # TARGETS key is a machine this harness has never run on, and
+  # HostTarget folds the common MRI aliases to TARGETS names; a host_cpu
+  # spelling that is not a TARGETS key is a machine this harness has never run
+  # on, and
   # #skip_unless_host_target_supported says so rather than guessing at one.
   def host_target
-    RbConfig::CONFIG["host_cpu"].to_s
+    HostTarget.name
   end
 
   # Skips the calling test on a machine rubycc has no backend for. Compiling

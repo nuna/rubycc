@@ -24,13 +24,10 @@ class TestExamplesAArch64 < Minitest::Test
 
   CROSS_SYSTEM_INCLUDE_PATHS = TestCSuiteAArch64::CROSS_SYSTEM_INCLUDE_PATHS
 
-  # Samples resting on an M4 A4 feature the aarch64 backend has yet to grow.
-  # Each builds and runs on x86-64 today; the reason is the backend's own
-  # UnsupportedError message.
-  PENDING = {
-    "step28_extensions" => "A4: alloca",
-    "step44_builtins" => "A4: bit-scan builtins"
-  }.freeze
+  # Samples resting on an IR 6.5 target-specific limitation. Keep the source
+  # paths and reasons shared with TestExamples so the native-host and
+  # cross-runner paths cannot silently drift apart.
+  PENDING = TestExamples::AARCH64_PENDING
 
   EXAMPLE_SOURCES.each do |path|
     basename = File.basename(path, ".c")
@@ -43,7 +40,8 @@ class TestExamplesAArch64 < Minitest::Test
   private
 
   def run_example(path, basename)
-    if (reason = PENDING[basename])
+    relative_path = path.delete_prefix("#{TestExamples::EXAMPLES_ROOT}/")
+    if (reason = PENDING[relative_path])
       skip reason
       return
     end
@@ -76,7 +74,7 @@ class TestExamplesAArch64 < Minitest::Test
     in_tmpdir do |dir|
       object_path = File.join(dir, "example.o")
       stdout_and_stderr, status = Open3.capture2e(AArch64ExecutionHelper::CROSS_GCC, "-c",
-                                                  "-o", object_path, path)
+                                                  "-fno-pie", "-o", object_path, path)
       unless status.success?
         raise "#{AArch64ExecutionHelper::CROSS_GCC} failed to compile #{path} " \
               "(exit #{status.exitstatus}):\n#{stdout_and_stderr}"

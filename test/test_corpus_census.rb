@@ -50,6 +50,20 @@ class TestCorpusCensus < Minitest::Test
         refute_empty entry[:out_of_scope_dependency],
                      "gem entry #{entry[:name]} declares a blank out_of_scope_dependency"
       end
+      if entry.key?(:r10_profile)
+        assert_kind_of String, entry[:r10_profile]
+        refute_empty entry[:r10_profile],
+                     "gem entry #{entry[:name]} declares a blank r10_profile"
+        assert entry.key?(:r10_extconf_args),
+               "gem entry #{entry[:name]} declares r10_profile without r10_extconf_args"
+      end
+      if entry.key?(:r10_extconf_args)
+        assert entry.key?(:r10_profile),
+               "gem entry #{entry[:name]} declares r10_extconf_args without r10_profile"
+        assert_kind_of Array, entry[:r10_extconf_args]
+        assert entry[:r10_extconf_args].all? { |arg| arg.is_a?(String) && !arg.empty? },
+               "gem entry #{entry[:name]} has invalid r10_extconf_args"
+      end
     end
 
     names = list.map { |e| e[:name] }
@@ -162,6 +176,64 @@ class TestCorpusCensus < Minitest::Test
     assert CENSUS.configure_dependency?("`sh configure`")
     refute CENSUS.configure_dependency?("create_makefile('json/ext/parser')")
     refute CENSUS.configure_dependency?("have_header('ruby.h')\nhave_func('rb_str_new')")
+  end
+
+  def test_configure_dependency_profile_is_fail_closed
+    pg = Corpus::Gems::LIST.find { |entry| entry[:name] == "pg" }
+    sqlite3 = Corpus::Gems::LIST.find { |entry| entry[:name] == "sqlite3" }
+
+    pg_extconf = <<~RUBY
+      if gem_platform=with_config("cross-build")
+        require "mini_portile2"
+      else
+        # Native build
+        pgconfig = with_config("pg-config") || find_executable("pg_config")
+      end
+    RUBY
+    sqlite_extconf = <<~RUBY
+      def system_libraries?
+        enable_config("system-libraries")
+      end
+      def configure_system_libraries; end
+      def configure_packaged_libraries
+        require "mini_portile2"
+      end
+    RUBY
+
+    refute CENSUS.configure_dependency_for_profile?(pg, pg_extconf),
+           "pg native profile must ignore only its unselected cross-build branch"
+    assert CENSUS.configure_dependency_for_profile?(pg, pg_extconf.sub("find_executable(\"pg_config\")", "find_executable(\"other_config\")")),
+           "pg profile must not rely on a comment-only native marker"
+    assert CENSUS.configure_dependency_for_profile?(pg, pg_extconf.sub("# Native build", "# Native build\nrequire 'mini_portile2'")),
+           "pg must fail closed if the selected native branch gains a configure dependency"
+    assert CENSUS.configure_dependency_for_profile?(pg.merge(r10_extconf_args: ["--with-cross-build"]), pg_extconf),
+           "pg must fail closed when cross-build is selected"
+    refute CENSUS.configure_dependency_for_profile?(sqlite3, sqlite_extconf),
+           "sqlite3 system profile must ignore only its unselected packaged branch"
+    assert CENSUS.configure_dependency_for_profile?(
+      sqlite3,
+      sqlite_extconf.sub(
+        "def configure_system_libraries; end",
+        "def configure_system_libraries\n        require 'mini_portile2'\n      end"
+      )
+    ), "sqlite3 must fail closed if the selected system branch gains a configure dependency"
+    assert CENSUS.configure_dependency_for_profile?(sqlite3.merge(r10_extconf_args: []), sqlite_extconf),
+           "sqlite3 must fail closed without the explicit system-library argument"
+    assert CENSUS.configure_dependency_for_profile?({ name: "unknown", r10_profile: "unknown" }, "create_makefile('x')"),
+           "unknown profiles must retain the conservative exclusion"
+  end
+
+  def test_render_report_preserves_r10_profile_and_extconf_arguments
+    result = {
+      name: "sqlite3", requested_version: "2.9.5", version: "2.9.5",
+      r10_profile: "sqlite3-system-libraries",
+      r10_extconf_args: ["--enable-system-libraries"],
+      status: :ok, note: "system-library profile", includes: {}, ruby_self: [],
+      ext_c_files: 1, ext_h_files: 1
+    }
+    report = CENSUS.render_report([result], Set.new, Set.new)
+    assert_includes report, "| sqlite3 | sqlite3-system-libraries | --enable-system-libraries |"
+    assert_includes report, "| 1 | 0 | 0.0% | 1 |"
   end
 
   def test_excluded_by_upstream_tests_detection

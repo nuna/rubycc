@@ -43,6 +43,7 @@ class TestCrossAbi < Minitest::Test
   # parameter rather than a second copy of this test, so adding another
   # machine keeps the generated ABI cases shared across all backends.
   def assert_callee_compatibility(target)
+    skip_unless_x86_64_host if target == :x86_64
     skip_unless_aarch64_toolchain if target == :aarch64
 
     oracle = link_units_and_run_for(target, [[callee_source, :gcc], [caller_source, :gcc]])
@@ -51,6 +52,7 @@ class TestCrossAbi < Minitest::Test
   end
 
   def assert_caller_compatibility(target)
+    skip_unless_x86_64_host if target == :x86_64
     skip_unless_aarch64_toolchain if target == :aarch64
 
     oracle = link_units_and_run_for(target, [[callee_source, :gcc], [caller_source, :gcc]])

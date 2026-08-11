@@ -1206,14 +1206,16 @@ module Rubycc
       # :ftoi — a floating value truncated toward zero into an integer slot.
       # `size` is the *source* float width and `int_desc` the destination
       # [width, signed?]; rmode 11 is the round-toward-zero mode the C cast
-      # requires, and the descriptor picks `fcvtzs` or `fcvtzu`. A width-8
-      # descriptor produces an X result, which is also how the generator asks for
-      # an unsigned 32-bit destination — truncating at 64 bits is exact across
-      # the whole 0..2^32-1 range, and only the low bytes are kept afterwards.
+      # requires, and the descriptor picks `fcvtzs` or `fcvtzu`. Unlike x86, the
+      # ISA has a native unsigned W-form, which is important at the rounded
+      # 2^32 boundary: fcvtzu X yields 0x1_0000_0000 whose low 32 bits are zero,
+      # while fcvtzu W saturates to UINT_MAX as gcc does. Use the C destination
+      # width directly, so only a real 64-bit destination selects the X form.
       def emit_ftoi(dst, src_vreg, int_desc, float_size)
         int_width, signed = int_desc
         load_fp(FA, src_vreg, float_size)
-        emit_word(fp_int_convert(int_width == 8 ? 1 : 0, float_size,
+        sf = int_width == 8 ? 1 : 0
+        emit_word(fp_int_convert(sf, float_size,
                                  0b11, signed ? 0b000 : 0b001, FA, A))
         store_reg(A, dst)
       end

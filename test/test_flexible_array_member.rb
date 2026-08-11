@@ -311,7 +311,9 @@ class TestFlexibleArrayMember < Minitest::Test
   def test_object_sizes_match_gcc
     in_tmpdir do |dir|
       rubycc_obj = File.join(dir, "fam_sizes_rubycc.o")
-      File.binwrite(rubycc_obj, Rubycc::Compiler.new.compile(OBJECT_SIZE_SOURCE, filename: "fam_sizes.c"))
+      File.binwrite(rubycc_obj, Rubycc::Compiler.new.compile(OBJECT_SIZE_SOURCE,
+                                                             filename: "fam_sizes.c",
+                                                             target: host_target))
       gcc_obj = compile_with_gcc(OBJECT_SIZE_SOURCE, File.join(dir, "fam_sizes_gcc.o"))
       assert_equal object_symbol_sizes(gcc_obj), object_symbol_sizes(rubycc_obj),
                    "object sizes differ from gcc"
@@ -332,7 +334,7 @@ class TestFlexibleArrayMember < Minitest::Test
 
   def assert_compile_error(source, pattern)
     error = assert_raises(Rubycc::CompileError) do
-      Rubycc::Compiler.new.compile(source, filename: "fam.c")
+      Rubycc::Compiler.new.compile(source, filename: "fam.c", target: host_target)
     end
     assert_match(pattern, error.message)
   end
@@ -340,7 +342,7 @@ class TestFlexibleArrayMember < Minitest::Test
   def assert_matches_gcc(source, name)
     in_tmpdir do |dir|
       rubycc_obj = File.join(dir, "#{name}_rubycc.o")
-      binary = Rubycc::Compiler.new.compile(source, filename: "#{name}.c")
+      binary = Rubycc::Compiler.new.compile(source, filename: "#{name}.c", target: host_target)
       File.binwrite(rubycc_obj, binary)
       rubycc_status, rubycc_out = link_and_run(rubycc_obj)
 

@@ -35,7 +35,15 @@ class TestAbiHarnessBuildProfile < Minitest::Test
   include HeaderAbiHarness
 
   Reader = Rubycc::ObjFile::ELFReader
-  GOT_RELOCS = %i[R_X86_64_GOTPCREL R_X86_64_GOTPCRELX R_X86_64_REX_GOTPCRELX].freeze
+  GOT_RELOCS = {
+    "x86_64" => %i[R_X86_64_GOTPCREL R_X86_64_GOTPCRELX R_X86_64_REX_GOTPCRELX],
+    # AArch64 materializes an external data address with an ADRP page
+    # relocation followed by an ADD/LD relocation. The page relocation is the
+    # stable discriminator for this probe; checking only x86's GOTPCREL family
+    # would make a correct native AArch64 run look like a harness failure.
+    "aarch64" => %i[R_AARCH64_ADR_GOT_PAGE R_AARCH64_LDST32_GOT_LO12_NC
+                     R_AARCH64_LDST64_GOT_LO12_NC]
+  }.freeze
 
   # A reference to data this translation unit does not define: the shape
   # test_pic.rb's own PIC-discrimination tests use, because a *call* is
@@ -101,6 +109,6 @@ class TestAbiHarnessBuildProfile < Minitest::Test
       r.symbol&.name == "probe_external"
     end
     refute_nil reloc, "expected a relocation against probe_external in #{object_path}"
-    GOT_RELOCS.include?(reloc.type_name)
+    GOT_RELOCS.fetch(host_target).include?(reloc.type_name)
   end
 end

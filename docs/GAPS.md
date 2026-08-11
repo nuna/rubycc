@@ -28,7 +28,7 @@
 | 未測定 | 詳細 |
 |---|---|
 | ~~**musl** での全検証~~ | **測定した(Step 175)**。結果は緑ではなく、ギャップ G・H・I として §1 に移した。`data/verified_gems.json` に musl の記録が 1 件も無いのは変わらないが、それは**環境が無いからではなく通っていないから**になった |
-| ~~**aarch64 での gem install 実走**~~ | **限定測定済み(Step 208)**。qemu 上の glibc / aarch64 Ruby 4.0.6 で `io-wait` と `stringio` の gem install・gem 自身のテストが通った。`json` / `msgpack` と全スイートは M4 受け入れとして未完了 |
+| ~~**aarch64 での gem install 実走**~~ | **限定測定済み(Step 208)**。qemu 上の glibc / aarch64 Ruby 4.0.6 で `io-wait` と `stringio` の gem install・gem 自身のテストが通った。**全スイートは `test-ci-implementation-4` で解消**([weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)、native `ubuntu-24.04-arm` 上の Ruby 3.3 / 4.0 が success)。`json` / `msgpack` の aarch64 上 `gem install` だけが未完了 |
 | ~~真の distroless コンテナ検証~~ | **測定済み(Step 202)**。glibc / musl の `ruby:4.0` distroless相当で json / msgpack / sqlite3 / pg のビルドとrequireに成功 |
 
 ## 4. 方針として受け入れたもの(ギャップではない)
@@ -84,5 +84,11 @@
   cc / gcc / clang / make / sh と libc 開発ヘッダを除いた状態で、4 gem の
   `--platform ruby` ビルドと実行に成功した。**musl 全スイートと aarch64 の
   `json` / `msgpack` を含む M4 全面受入れは未完了**。
+
+- **ギャップ U**(既定のシステム include 探索パスが x86-64 の multiarch 決め打ち):
+  `test-ci-implementation-9` で解消。Debian の multiarch ディレクトリは target ごとに
+  名前が違う(`bits/` の中身が別物)ので、同梱 arch 層とまったく同じく `libc_arch` に
+  従わせた。**`float.h`(Step 201)・`math.h`(`test-ci-implementation-2`)に続いて
+  3 件目の「freestanding/共通層は機種に依らない」という思い込み**である。
 
 いずれも設計判断は STEPS.md の各ステップに記録がある。

@@ -111,6 +111,8 @@ class TestBlockScopeFunctionDecl < Minitest::Test
   # --- x86-64 execution ---------------------------------------------------
 
   def test_calls_a_definition_in_another_translation_unit
+    skip_unless_x86_64_host
+
     rubycc = link_units_and_run([[CROSS_UNIT_MAIN, :rubycc], [CROSS_UNIT_HELPER, :gcc]])
     gcc = link_units_and_run([[CROSS_UNIT_MAIN, :gcc], [CROSS_UNIT_HELPER, :gcc]])
 
@@ -119,6 +121,8 @@ class TestBlockScopeFunctionDecl < Minitest::Test
   end
 
   def test_calls_a_definition_further_down_the_same_translation_unit
+    skip_unless_x86_64_host
+
     rubycc = run_source(SAME_UNIT_SOURCE, :rubycc)
     gcc = run_source(SAME_UNIT_SOURCE, :gcc)
 
@@ -135,6 +139,8 @@ class TestBlockScopeFunctionDecl < Minitest::Test
   # directly. That is strictly stronger than reading the prologue's frame size
   # out of a disassembly, and it needs no external tool.
   def test_block_scope_declaration_costs_no_stack_slot_on_x86_64
+    skip_unless_x86_64_host
+
     assert_equal function_code(FILE_SCOPE_PROTOTYPE_SOURCE, "probe"),
                  function_code(BLOCK_SCOPE_PROTOTYPE_SOURCE, "probe"),
                  "moving the prototype into the block changed probe's code"

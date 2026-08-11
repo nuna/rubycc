@@ -404,6 +404,8 @@ class TestAtomicType < Minitest::Test
   # above, so it is asserted on the instruction stream, as TestAtomicBuiltins
   # does.
   def test_x86_64_generic_macros_emit_locked_instructions
+    skip_unless_x86_64_host
+
     skip "objdump unavailable" unless tool?("objdump")
 
     listing = in_tmpdir do |dir|
@@ -437,7 +439,7 @@ class TestAtomicType < Minitest::Test
   private
 
   def compile(source)
-    Rubycc::Compiler.new.compile(source, filename: "atomic_type.c")
+    Rubycc::Compiler.new.compile(source, filename: "atomic_type.c", target: host_target)
   end
 
   def run_source(source, compiler)

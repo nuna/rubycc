@@ -32,7 +32,7 @@ class TestFreestandingHeaders < Minitest::Test
   # out here rather than shared, the same way VA_LIST_TYPE_NAME below spells out
   # #host_libc's. On x86-64 it is "x86_64", which is Compiler#compile's own
   # default, so nothing about the existing runs changes.
-  HOST_TARGET = RbConfig::CONFIG["host_cpu"].to_s
+  HOST_TARGET = HostTarget.name
 
   # <stdarg.h>: variable arguments via __builtin_va_*.
   STDARG_SOURCE = <<~C

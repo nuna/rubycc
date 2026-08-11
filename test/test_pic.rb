@@ -13,6 +13,12 @@ require "fiddle"
 # string literal keep the PC-relative form, and a call stays PLT32. Without the
 # flag the output is byte-for-byte the non-PIC one.
 class TestPic < Minitest::Test
+  include ExecutionHelper
+
+  def setup
+    skip_unless_x86_64_host
+  end
+
   Reader = Rubycc::ObjFile::ELFReader
 
   # 48 8B 05 <disp32>: the "mov rax, [rip + disp32]" the GOT load emits.
@@ -182,7 +188,7 @@ class TestPic < Minitest::Test
   private
 
   def compile(src, pic:, filename: "a.c")
-    Rubycc::Compiler.new.compile(src, filename: filename, pic: pic)
+    Rubycc::Compiler.new.compile(src, filename: filename, pic: pic, target: host_target)
   end
 
   def text_relocs_raw(src, pic:)

@@ -1,0 +1,318 @@
+{
+  "schema_version": 2,
+  "artifact_kind": "r10-gem-verification-summary",
+  "batch": "R10-M4D",
+  "environment": "glibc x86_64 / ruby 3.4.5",
+  "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+  "architecture": "x86_64",
+  "aarch64_evidence": false,
+  "work_dir": "<VERIFY_WORK>",
+  "profile": {
+    "sqlite3": "sqlite3-system-libraries / --enable-system-libraries",
+    "pg": "pg-native-source / system libpq"
+  },
+  "precondition": "The host lacks sqlite3.h/libsqlite3 development files and pg_config/pkg-config/libpq-fe.h; both profiles stop during extconf in control and rubycc.",
+  "control": [
+    {
+      "name": "sqlite3",
+      "version": "2.9.5",
+      "status": "fail",
+      "profile_state": "inconclusive",
+      "suite_state": "not_run",
+      "sanity": null,
+      "evidence": [
+        "gem install failed during extconf",
+        "mkmf.log: sqlite3.h not found",
+        "mkmf.log: pkg-config for sqlite3 not found"
+      ],
+      "summary": null,
+      "reason": "system-library profile cannot build without sqlite3 development headers/library",
+      "mode": "control",
+      "build_state": "inconclusive",
+      "extension_load_state": "not_run",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/sqlite3-2.9.5.gem",
+        "gem_sha256": "04572973a3f943ad50a8adfffc8dd752a5f06e4c3db2026f71838fed8a982606",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/sparklemotion/sqlite3-ruby/archive/refs/tags/v2.9.5.tar.gz",
+        "source_sha256": "693cdb52695cc56e1d3e76986b5835629ac269572e9d4535d3b87b687d3b84ce",
+        "source_relative_path": "r10-sqlite-src.Q8UyDu/sqlite3.tar.gz"
+      },
+      "recipe": {
+        "name": "sqlite3",
+        "version": "2.9.5",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/sparklemotion/sqlite3-ruby/archive/refs/tags/v2.9.5.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "test",
+          "lib"
+        ],
+        "extconf_args": [
+          "--enable-system-libraries"
+        ],
+        "sos": [
+          {
+            "from": "lib/sqlite3/sqlite3_native.so",
+            "to": "lib/sqlite3/sqlite3_native.so"
+          }
+        ],
+        "test_deps": [
+          "minitest"
+        ],
+        "test_dep_versions": {
+          "minitest": "6.0.6"
+        },
+        "sanity": {
+          "requires": [
+            "sqlite3"
+          ],
+          "expression": "injected_so_loaded? && SQLite3::SQLITE_PACKAGED_LIBRARIES == false"
+        },
+        "recipe_fingerprint": "fa13005f379ad13ffe3ed740d869decc7305c06ae9a32c11af5d46694b003059"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "pg",
+      "version": "1.6.3",
+      "status": "fail",
+      "profile_state": "inconclusive",
+      "suite_state": "not_run",
+      "sanity": null,
+      "evidence": [
+        "gem install failed during extconf",
+        "mkmf.log: pg_config not found",
+        "mkmf.log: pkg-config for libpq not found",
+        "mkmf.log: libpq-fe.h not found"
+      ],
+      "summary": null,
+      "reason": "native-source profile cannot build without system libpq development files",
+      "mode": "control",
+      "build_state": "inconclusive",
+      "extension_load_state": "not_run",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/pg-1.6.3.gem",
+        "gem_sha256": "1388d0563e13d2758c1089e35e973a3249e955c659592d10e5b77c468f628a99",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ged/ruby-pg/archive/refs/tags/v1.6.3.tar.gz",
+        "source_sha256": "b8018cb91daca6396d7de17d33645d00c7f3d7fe0ad8b9fa248bb24f2ec7efe8",
+        "source_relative_path": "r10-pg-src.l8kfiV/pg.tar.gz"
+      },
+      "recipe": {
+        "name": "pg",
+        "version": "1.6.3",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ged/ruby-pg/archive/refs/tags/v1.6.3.tar.gz",
+        "runner": "rspec",
+        "test_glob": "spec/**/*_spec.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "spec"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/pg_ext.so",
+            "to": "lib/pg_ext.so"
+          }
+        ],
+        "test_deps": [
+          "rspec"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "pg"
+          ],
+          "expression": "injected_so_loaded? && PG::IS_BINARY_GEM == false"
+        },
+        "recipe_fingerprint": "50df7414d3292cd32182534121b121a9ddac7fbe1a093cb6ae4d3e68c2cd9cfb"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "control"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    }
+  ],
+  "rubycc": [
+    {
+      "name": "sqlite3",
+      "version": "2.9.5",
+      "status": "fail",
+      "profile_state": "inconclusive",
+      "suite_state": "not_run",
+      "sanity": null,
+      "evidence": [
+        "RUBYCC=1 gem install failed during extconf",
+        "mkmf.log: sqlite3.h not found",
+        "mkmf.log: pkg-config for sqlite3 not found"
+      ],
+      "summary": null,
+      "reason": "system-library profile cannot build without sqlite3 development headers/library",
+      "mode": "rubycc",
+      "build_state": "inconclusive",
+      "extension_load_state": "not_run",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/sqlite3-2.9.5.gem",
+        "gem_sha256": "04572973a3f943ad50a8adfffc8dd752a5f06e4c3db2026f71838fed8a982606",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/sparklemotion/sqlite3-ruby/archive/refs/tags/v2.9.5.tar.gz",
+        "source_sha256": "693cdb52695cc56e1d3e76986b5835629ac269572e9d4535d3b87b687d3b84ce",
+        "source_relative_path": "r10-sqlite-src.Q8UyDu/sqlite3.tar.gz"
+      },
+      "recipe": {
+        "name": "sqlite3",
+        "version": "2.9.5",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/sparklemotion/sqlite3-ruby/archive/refs/tags/v2.9.5.tar.gz",
+        "runner": "test_unit",
+        "test_glob": "test/**/test_*.rb",
+        "exclude": [],
+        "load_paths": [
+          "test",
+          "lib"
+        ],
+        "extconf_args": [
+          "--enable-system-libraries"
+        ],
+        "sos": [
+          {
+            "from": "lib/sqlite3/sqlite3_native.so",
+            "to": "lib/sqlite3/sqlite3_native.so"
+          }
+        ],
+        "test_deps": [
+          "minitest"
+        ],
+        "test_dep_versions": {
+          "minitest": "6.0.6"
+        },
+        "sanity": {
+          "requires": [
+            "sqlite3"
+          ],
+          "expression": "injected_so_loaded? && SQLite3::SQLITE_PACKAGED_LIBRARIES == false"
+        },
+        "recipe_fingerprint": "fa13005f379ad13ffe3ed740d869decc7305c06ae9a32c11af5d46694b003059"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    },
+    {
+      "name": "pg",
+      "version": "1.6.3",
+      "status": "fail",
+      "profile_state": "inconclusive",
+      "suite_state": "not_run",
+      "sanity": null,
+      "evidence": [
+        "RUBYCC=1 gem install failed during extconf",
+        "mkmf.log: pg_config not found",
+        "mkmf.log: pkg-config for libpq not found",
+        "mkmf.log: libpq-fe.h not found"
+      ],
+      "summary": null,
+      "reason": "native-source profile cannot build without system libpq development files",
+      "mode": "rubycc",
+      "build_state": "inconclusive",
+      "extension_load_state": "not_run",
+      "provenance": {
+        "gem_url": "https://rubygems.org/downloads/pg-1.6.3.gem",
+        "gem_sha256": "1388d0563e13d2758c1089e35e973a3249e955c659592d10e5b77c468f628a99",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ged/ruby-pg/archive/refs/tags/v1.6.3.tar.gz",
+        "source_sha256": "b8018cb91daca6396d7de17d33645d00c7f3d7fe0ad8b9fa248bb24f2ec7efe8",
+        "source_relative_path": "r10-pg-src.l8kfiV/pg.tar.gz"
+      },
+      "recipe": {
+        "name": "pg",
+        "version": "1.6.3",
+        "source_kind": "source_tarball",
+        "source_url": "https://github.com/ged/ruby-pg/archive/refs/tags/v1.6.3.tar.gz",
+        "runner": "rspec",
+        "test_glob": "spec/**/*_spec.rb",
+        "exclude": [],
+        "load_paths": [
+          "lib",
+          "spec"
+        ],
+        "extconf_args": [],
+        "sos": [
+          {
+            "from": "lib/pg_ext.so",
+            "to": "lib/pg_ext.so"
+          }
+        ],
+        "test_deps": [
+          "rspec"
+        ],
+        "test_dep_versions": {},
+        "sanity": {
+          "requires": [
+            "pg"
+          ],
+          "expression": "injected_so_loaded? && PG::IS_BINARY_GEM == false"
+        },
+        "recipe_fingerprint": "50df7414d3292cd32182534121b121a9ddac7fbe1a093cb6ae4d3e68c2cd9cfb"
+      },
+      "execution_context": {
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+        "host_cpu": "x86_64",
+        "ruby_arch": "x86_64-linux",
+        "cc": null,
+        "make": null,
+        "pkg_config": null,
+        "rubycc_mode": "rubycc"
+      },
+      "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+      "rubycc_worktree_dirty": true
+    }
+  ],
+  "suite_state": "not_run",
+  "review_note": "This is an explicit external-profile inconclusive result, not a skip or a pass. The bundled sqlite3 and pg cross-build profiles remain different profiles.",
+  "execution_context": {
+    "environment": "glibc x86_64 / ruby 3.4.5",
+    "ruby": "ruby 3.4.5 (2025-07-16 revision 20cda200d3) +PRISM [x86_64-linux]",
+    "host_cpu": "x86_64",
+    "ruby_arch": "x86_64-linux",
+    "cc": null,
+    "make": null,
+    "pkg_config": null
+  },
+  "rubycc_revision": "8a371237d5813d63d2795fe7777f0a666b238031",
+  "rubycc_worktree_dirty": true
+}

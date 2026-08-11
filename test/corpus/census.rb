@@ -129,6 +129,74 @@ module Corpus
       false
     end
 
+    KNOWN_R10_PROFILES = %w[pg-native-source sqlite3-system-libraries].freeze
+
+    # The raw text check above intentionally fails closed. Two DESIGN-listed
+    # gems have an explicit, reproducible profile whose extconf contains an
+    # unselected configure/mini_portile path:
+    #
+    #   pg      — no --with-cross-build: native source path uses system libpq
+    #   sqlite3 — --enable-system-libraries: system libsqlite3 path
+    #
+    # This helper does not infer a profile from a gem name. The profile and its
+    # exact extconf arguments must be declared in gems.rb, and the expected
+    # branch markers must be present in the fetched source. Any missing or
+    # unknown declaration remains excluded by configure_dependency?.
+    def configure_dependency_for_profile?(spec, text)
+      profile = spec[:r10_profile]
+      args = Array(spec[:r10_extconf_args])
+
+      # No profile means the ordinary conservative rule. An explicit profile
+      # (or arguments without one) is a contract, so an unknown/incomplete
+      # declaration is excluded rather than accidentally widening the corpus.
+      return true if spec.key?(:r10_extconf_args) && profile.nil?
+      return configure_dependency?(text) if profile.nil?
+      return true unless KNOWN_R10_PROFILES.include?(profile)
+
+      case profile
+      when "pg-native-source"
+        return true unless spec[:name] == "pg"
+        return true unless args.empty?
+        cross = text.match(/if\s+gem_platform\s*=\s*with_config\(\s*["']cross-build["']\s*\)/)
+        native = text.match(/\n\s*else\s*\n\s*#\s*Native build\b/)
+        return true unless cross && native && native.begin(0) > cross.begin(0)
+
+        native_branch = text.byteslice(native.begin(0), text.bytesize - native.begin(0))
+        return true unless native_branch.match?(/\bpgconfig\s*=\s*with_config\(/)
+        return true unless native_branch.match?(/find_executable\(\s*["']pg_config["']\s*\)/)
+        return true if configure_dependency?(native_branch)
+
+        false
+      when "sqlite3-system-libraries"
+        return true unless spec[:name] == "sqlite3"
+        return true unless args == ["--enable-system-libraries"]
+        return true unless text.match?(/def\s+system_libraries\?/) &&
+                          text.match?(/enable_config\(\s*["']system-libraries["']\s*\)/)
+        system_method = method_body(text, "configure_system_libraries")
+        return true unless system_method && text.match?(/def\s+configure_packaged_libraries/)
+        # The profile selects the system-library method. A method-name marker
+        # alone is not enough: if the selected method itself starts invoking
+        # mini_portile/configure, the profile must fall back to exclusion.
+        return true if configure_dependency?(system_method)
+
+        false
+      else
+        configure_dependency?(text)
+      end
+    end
+
+    # Return the source slice for a simple Ruby method up to the next method
+    # declaration. This is intentionally a conservative structural check, not
+    # a Ruby parser; it is used only to ensure a selected profile's method does
+    # not contain the dependency marker that excludes the ordinary path.
+    def method_body(text, name)
+      start = text.match(/^[ \t]*def\s+#{Regexp.escape(name)}\b/)&.begin(0)
+      return nil unless start
+
+      following = text.match(/^[ \t]*def\s+[A-Za-z_][A-Za-z0-9_!?=]*/, start + 1)
+      text.byteslice(start, (following ? following.begin(0) : text.bytesize) - start)
+    end
+
     # Headers that only appear behind a SIMD / CPU-feature #ifdef. Bundled or not,
     # these are annotated so a gap does not imply a real portability requirement.
     SIMD_HEADERS = %w[
@@ -253,6 +321,8 @@ module Corpus
       requested = spec[:version]
       result = {
         name: name, requested_version: requested, note: spec[:note],
+        r10_profile: spec[:r10_profile] || "default-source",
+        r10_extconf_args: Array(spec[:r10_extconf_args]),
         status: nil, reason: nil, version: nil,
         includes: {}, ruby_self: [], ext_c_files: 0, ext_h_files: 0
       }
@@ -300,7 +370,7 @@ module Corpus
         return result
       end
 
-      if configure_dependency?(read_extconf(source_root))
+      if configure_dependency_for_profile?(spec, read_extconf(source_root))
         result[:status] = :excluded
         result[:reason] = "configure / mini_portile dependency in extconf.rb — R10 excludes configure-dependent gems"
         return result
@@ -456,12 +526,14 @@ module Corpus
 
     def render_corpus_table(results)
       out = +"## Corpus gems\n\n"
-      out << "| gem | requested | resolved | status | ext .c/.h | note |\n"
-      out << "|-----|-----------|----------|--------|-----------|------|\n"
+      out << "| gem | R10 profile | extconf args | requested | resolved | status | ext .c/.h | note |\n"
+      out << "|-----|-------------|---------------|-----------|----------|--------|-----------|------|\n"
       results.each do |r|
         out << format(
-          "| %s | %s | %s | %s | %s | %s |\n",
+          "| %s | %s | %s | %s | %s | %s | %s | %s |\n",
           r[:name],
+          r[:r10_profile] || "default-source",
+          Array(r[:r10_extconf_args]).empty? ? "—" : Array(r[:r10_extconf_args]).join(" "),
           r[:requested_version] || "latest",
           r[:version] || "—",
           r[:status],

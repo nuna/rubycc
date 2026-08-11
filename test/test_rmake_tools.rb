@@ -6,6 +6,10 @@ require "tmpdir"
 require "fileutils"
 require "stringio"
 require "fiddle"
+require "rbconfig"
+require_relative "support/acceptance_fetch_helper"
+require_relative "support/acceptance_manifest_helper"
+require_relative "support/acceptance_result_reporter"
 
 # Step 58 (M3 / ROADMAP §6 B3): in-process tool substitution and the `-j`
 # parallel scheduler for rmake. Where B2 (test_rmake_executor / _replay) pins the
@@ -85,21 +89,23 @@ class TestRmakeTools < Minitest::Test
   # --- tool substitution builds a working shared object ---------------------
 
   def test_tools_substitution_builds_loadable_so_sequential
-    with_dir do |dir|
-      write_mkmf_like_sources(dir)
-      mk = Makefile.parse(File.read(path(dir, "Makefile")), dir: dir)
-      mk.run("all", out: StringIO.new, tools: :rubycc, jobs: 1)
+    AcceptanceResultReporter.with_result("rmake-fixture-build") do
+      with_dir do |dir|
+        write_mkmf_like_sources(dir)
+        mk = Makefile.parse(File.read(path(dir, "Makefile")), dir: dir)
+        mk.run("all", out: StringIO.new, tools: :rubycc, jobs: 1)
 
-      so = path(dir, "mylib.so")
-      assert File.exist?(so), "rmake+rubycc should produce mylib.so"
-      assert File.exist?(path(dir, "a.o")), "the a.o compile ran through the Driver"
-      assert File.exist?(path(dir, "b.o")), "the b.o compile ran through the Driver"
+        so = path(dir, "mylib.so")
+        assert File.exist?(so), "rmake+rubycc should produce mylib.so"
+        assert File.exist?(path(dir, "a.o")), "the a.o compile ran through the Driver"
+        assert File.exist?(path(dir, "b.o")), "the b.o compile ran through the Driver"
 
-      lib = Fiddle.dlopen(so)
-      assert_equal 11, call(lib, "a_val", [], Fiddle::TYPE_INT).call
-      assert_equal 31, call(lib, "b_val", [], Fiddle::TYPE_INT).call
-    ensure
-      lib&.close
+        lib = Fiddle.dlopen(so)
+        assert_equal 11, call(lib, "a_val", [], Fiddle::TYPE_INT).call
+        assert_equal 31, call(lib, "b_val", [], Fiddle::TYPE_INT).call
+      ensure
+        lib&.close
+      end
     end
   end
 
@@ -281,6 +287,26 @@ class TestRmakeTools < Minitest::Test
     end
   end
 
+  def test_json_parser_makefile_template_is_portable
+    fixture = File.join(FIXTURES_ROOT, "json-2.21.1/parser/Makefile")
+    raw = File.read(fixture)
+    assert_equal 1, raw.lines.count { |line| line == "topdir = /rubycc-fixture/ruby-4.0.6/include/ruby-4.0.6\n" }
+    assert_equal 1, raw.lines.count { |line| line == "arch_hdrdir = /rubycc-fixture/ruby-4.0.6/include/ruby-4.0.6/x86_64-linux\n" }
+    assert_equal 1, raw.lines.count { |line| line == "prefix = $(DESTDIR)/rubycc-fixture/ruby-4.0.6\n" }
+    assert_equal 1, raw.lines.count { |line| line == "arch = x86_64-linux\n" }
+    assert_equal 1, raw.lines.count { |line| line == "ruby_version = 4.0.6\n" }
+
+    text = portable_json_parser_makefile(raw)
+
+    refute_match(/__RUBY_[A-Z]+__/, text)
+    refute_includes text, "/rubycc-fixture/ruby-4.0.6"
+    assert_equal 1, text.lines.count { |line| line == "topdir = #{RbConfig::CONFIG.fetch('rubyhdrdir')}\n" }
+    assert_equal 1, text.lines.count { |line| line == "arch_hdrdir = #{RbConfig::CONFIG.fetch('rubyarchhdrdir')}\n" }
+    assert_equal 1, text.lines.count { |line| line == "prefix = $(DESTDIR)#{RbConfig::CONFIG.fetch('prefix')}\n" }
+    assert_equal 1, text.lines.count { |line| line == "arch = #{RbConfig::CONFIG.fetch('arch')}\n" }
+    assert_equal 1, text.lines.count { |line| line == "ruby_version = #{RbConfig::CONFIG.fetch('ruby_version')}\n" }
+  end
+
   # --- optional real json acceptance (network) ------------------------------
 
   # The ROADMAP B3 acceptance: drive the real fixture parser Makefile to
@@ -288,49 +314,70 @@ class TestRmakeTools < Minitest::Test
   # gem source, so it is opt-in (RMAKE_ACCEPTANCE=1) to keep the offline suite
   # network-free.
   def test_real_json_parser_makefile_builds_so
-    skip "set RMAKE_ACCEPTANCE=1 to run the networked json acceptance" unless ENV["RMAKE_ACCEPTANCE"] == "1"
+    AcceptanceResultReporter.with_result("rmake-json-parser") do
+      unless ENV["RMAKE_ACCEPTANCE"] == "1" || AcceptanceFetchHelper.strict?
+        skip "set RMAKE_ACCEPTANCE=1 to run the networked json acceptance"
+      end
 
-    src_parser = fetch_json_parser_src
-    with_dir do |dir|
-      fixture = File.join(FIXTURES_ROOT, "json-2.21.1/parser/Makefile")
-      text = File.read(fixture)
-      # Point srcdir/VPATH at the fetched source (fixtures stay untouched).
-      text = text.sub(/^srcdir = .*$/, "srcdir = #{src_parser}")
-      text = text.sub(/^VPATH = .*$/, "VPATH = #{src_parser}")
-      File.write(path(dir, "Makefile"), text)
+      src_parser = fetch_json_parser_src
+      with_dir do |dir|
+        fixture = File.join(FIXTURES_ROOT, "json-2.21.1/parser/Makefile")
+        text = portable_json_parser_makefile(File.read(fixture))
+        # Point srcdir/VPATH at the fetched source (fixtures stay untouched).
+        text = text.sub(/^srcdir = .*$/, "srcdir = #{src_parser}")
+        text = text.sub(/^VPATH = .*$/, "VPATH = #{src_parser}")
+        File.write(path(dir, "Makefile"), text)
 
-      mk = Makefile.parse(text, dir: dir)
-      mk.run("all", out: StringIO.new, err: StringIO.new, tools: :rubycc, jobs: 2)
+        mk = Makefile.parse(text, dir: dir)
+        mk.run("all", out: StringIO.new, err: StringIO.new, tools: :rubycc, jobs: 2)
 
-      so = path(dir, "parser.so")
-      assert File.exist?(so), "rmake should build parser.so"
+        so = path(dir, "parser.so")
+        assert File.exist?(so), "rmake should build parser.so"
 
-      lib = Fiddle.dlopen(so)
-      refute_nil lib["Init_parser"], "parser.so must export Init_parser"
-    ensure
-      lib&.close
+        lib = Fiddle.dlopen(so)
+        refute_nil lib["Init_parser"], "parser.so must export Init_parser"
+      ensure
+        lib&.close
+      end
     end
   end
 
-  # Fetch and unpack json 2.21.1, returning its ext/json/ext/parser dir. Skips
-  # (rather than fails) when the network or gem tooling is unavailable.
-  def fetch_json_parser_src
-    require "open3"
-    work = File.join(Dir.tmpdir, "rmake_json_acceptance")
-    FileUtils.mkdir_p(work)
-    unpacked = File.join(work, "json-2.21.1")
-    parser = File.join(unpacked, "ext/json/ext/parser")
-    return parser if File.exist?(File.join(parser, "parser.c"))
+  # The committed Makefile is a source fixture, not a snapshot of the machine
+  # that generated it. Resolve the Ruby installation paths at test time so the
+  # same acceptance runs on a developer checkout and on a GitHub Actions Ruby
+  # installation with a different prefix, architecture, or Ruby ABI version.
+  def portable_json_parser_makefile(text)
+    assignments = {
+      /^topdir = .*$/ => "topdir = #{RbConfig::CONFIG.fetch('rubyhdrdir')}",
+      /^arch_hdrdir = .*$/ => "arch_hdrdir = #{RbConfig::CONFIG.fetch('rubyarchhdrdir')}",
+      /^prefix = \$\(DESTDIR\).*$/ => "prefix = \$(DESTDIR)#{RbConfig::CONFIG.fetch('prefix')}",
+      /^arch = .*$/ => "arch = #{RbConfig::CONFIG.fetch('arch')}",
+      /^ruby_version = .*$/ => "ruby_version = #{RbConfig::CONFIG.fetch('ruby_version')}"
+    }
+    assignments.each do |pattern, replacement|
+      count = text.scan(pattern).size
+      raise "portable JSON fixture expected one #{pattern.inspect} assignment, got #{count}" unless count == 1
 
-    gem_file = File.join(work, "json-2.21.1.gem")
-    unless File.exist?(gem_file)
-      _out, status = Open3.capture2e("gem", "fetch", "json", "--version", "2.21.1",
-                                     "--platform", "ruby", chdir: work)
-      skip "could not fetch json gem (offline?)" unless status.success?
+      text = text.sub(pattern, replacement)
     end
-    FileUtils.rm_rf(unpacked)
-    _out, status = Open3.capture2e("gem", "unpack", gem_file, chdir: work)
-    skip "could not unpack json gem" unless status.success?
-    parser
+    text
+  end
+
+  # Fetch and unpack json 2.21.1, returning its ext/json/ext/parser dir. Normal
+  # development runs preserve the opt-in skip behaviour; strict acceptance
+  # turns a typed fetch failure into a test failure.
+  def fetch_json_parser_src
+    work = File.join(Dir.tmpdir, "rmake_json_acceptance")
+    artifact = AcceptanceManifestHelper.artifact("gem-json-2.21.1-ruby")
+    AcceptanceFetchHelper::Fetcher.new(work_dir: work).fetch_gem(
+      gem_name: "json", version: "2.21.1", extension_subdir: "ext/json/ext/parser",
+      required_file: "parser.c",
+      expected_sha256: artifact.fetch("sha256"), artifact_id: artifact.fetch("id"),
+      artifact_url: artifact.fetch("url")
+    )
+  rescue AcceptanceFetchHelper::Failure => e
+    raise e if AcceptanceFetchHelper.strict?
+
+    skip "could not prepare json-2.21.1: #{e.message}"
   end
 end

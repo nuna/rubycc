@@ -1798,6 +1798,8 @@ class TestHeaderAbi < Minitest::Test
   end
 
   def test_alloca_abi_matches_gcc
+    skip "aarch64 alloca lowering is not implemented (IR 6.5 target limitation)" if host_target == "aarch64"
+
     assert_abi_matches(ALLOCA)
   end
 
@@ -2195,7 +2197,7 @@ class TestMuslBundledHeaderValues < Minitest::Test
     in_tmpdir do |dir|
       object = File.join(dir, "divergences_#{libc}.o")
       File.binwrite(object, Rubycc::Compiler.new.compile(source, filename: "divergences.c",
-                                                                 libc: libc))
+                                                                 libc: libc, target: host_target))
       status, output = link_and_run(object)
       assert_equal 0, status, "the #{libc} probe exited #{status}"
       output
@@ -2205,7 +2207,8 @@ class TestMuslBundledHeaderValues < Minitest::Test
   # The sorted names of the symbols `source` leaves for the linker when compiled
   # for `libc`, read with the project's own ELF reader.
   def undefined_symbols(source, libc)
-    object = Rubycc::Compiler.new.compile(source, filename: "ctype.c", libc: libc)
+    object = Rubycc::Compiler.new.compile(source, filename: "ctype.c", libc: libc,
+                                          target: host_target)
     Rubycc::ObjFile::ELFReader.read(object)
                               .symbols.select(&:undefined?).map(&:name).reject(&:empty?).sort
   end

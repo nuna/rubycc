@@ -107,6 +107,42 @@ class TestCSuiteAArch64 < Minitest::Test
       status, output = link_and_run_aarch64_with_libm(object_path)
       assert_equal 0, status, "#{basename} exited #{status}, output:\n#{output}"
       assert_equal expected, output, "#{basename} output mismatch"
+
+      run_aarch64_c_suite_oracle_case(c_path, basename) if CTestSuiteOracle.supported_case?(basename)
+    end
+  end
+
+  # The host-side suite and this target-side suite use the same project-owned
+  # oracle source. Only the compile/link/run machinery differs: this path keeps
+  # the existing aarch64 cross GCC and qemu-user conditions intact.
+  def run_aarch64_c_suite_oracle_case(c_path, basename)
+    source = CTestSuiteOracle.source(c_path, basename)
+    expected = CTestSuiteOracle.expected_output(basename)
+
+    in_tmpdir do |dir|
+      rubycc_object_path = File.join(dir, "#{basename}-oracle-rubycc.o")
+      gcc_object_path = File.join(dir, "#{basename}-oracle-gcc.o")
+
+      begin
+        binary = Rubycc::Compiler.new.compile(
+          source, filename: "#{basename}-oracle.c", target: "aarch64",
+          include_paths: CROSS_SYSTEM_INCLUDE_PATHS, system_includes: false
+        )
+      rescue Rubycc::CompileError => e
+        flunk "rubycc failed to compile #{basename}.c oracle for aarch64: #{e.message}"
+      end
+      File.binwrite(rubycc_object_path, binary)
+      compile_with_cross_gcc(source, gcc_object_path)
+
+      rubycc_status, rubycc_output = link_and_run_aarch64_with_libm(rubycc_object_path)
+      gcc_status, gcc_output = link_and_run_aarch64_with_libm(gcc_object_path)
+
+      assert_equal 0, gcc_status, "GCC oracle for #{basename} exited #{gcc_status}, output:\n#{gcc_output}"
+      assert_equal 0, rubycc_status, "rubycc oracle for #{basename} exited #{rubycc_status}, output:\n#{rubycc_output}"
+      assert_equal expected, gcc_output, "GCC oracle output mismatch for #{basename}"
+      assert_equal gcc_status, rubycc_status,
+                   "#{basename} oracle exit status mismatch (GCC vs rubycc)"
+      assert_equal gcc_output, rubycc_output, "#{basename} oracle stdout mismatch (GCC vs rubycc)"
     end
   end
 

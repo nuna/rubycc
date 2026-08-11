@@ -19,6 +19,8 @@ require "fiddle"
 # is expanded to reach libc, and the DT_NEEDED result is cross-checked against
 # gcc's own `-shared` output. Every host-dependent case is skip-guarded.
 class TestLibraryResolution < Minitest::Test
+  include ExecutionHelper
+
   Resolver = Rubycc::Link::LibraryResolver
   Script = Rubycc::Link::LinkerScript
   LinkError = Rubycc::Link::LinkError
@@ -379,7 +381,7 @@ class TestLibraryResolution < Minitest::Test
 
   # Compiles one C source with rubycc under -fPIC into an object image.
   def compile(src, name)
-    Rubycc::Compiler.new.compile(src, filename: name, pic: true)
+    Rubycc::Compiler.new.compile(src, filename: name, pic: true, target: host_target)
   end
 
   # Compiles `src`, resolves `libraries`, links a shared object to disk and yields

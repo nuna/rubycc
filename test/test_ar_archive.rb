@@ -11,6 +11,8 @@ require "open3"
 # in both directions. The interop and CLI cases are skip-guarded when their
 # external tools are missing so the suite still runs on a bare host.
 class TestArArchive < Minitest::Test
+  include ExecutionHelper
+
   Reader = Rubycc::ObjFile::ArReader
   Writer = Rubycc::ObjFile::ArWriter
 
@@ -26,7 +28,7 @@ class TestArArchive < Minitest::Test
           "int undefined_ref(void); int caller(void) { return undefined_ref(); }"
 
   def compile_object(source, filename)
-    Rubycc::Compiler.new.compile(source, filename: filename)
+    Rubycc::Compiler.new.compile(source, filename: filename, target: host_target)
   end
 
   def ar_available?
