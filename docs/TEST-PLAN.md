@@ -550,9 +550,12 @@ ARM-2〜ARM-6を、branch `codex/test-ci-implementation` の commit
 | named skip baseline | 固定 | `native-aarch64`: 245 skips / fingerprint `33d93347…`、`native-x86`: 42 skips / fingerprint `8471545c…`。完全値は`config/ci/skip-baseline.json`とartifactログを参照 |
 
 これにより、AArch64固有のテストはnative AArch64 runnerで実行し、x86_64専用のテストは
-理由付きskipとして扱うことを実runnerで確認できた。skip総数だけでなく、test名・正規化理由・
-件数のfingerprintを固定したため、既知skipを別テストへ付け替えるだけのgreen化も検出する。
-profileの期限は2026-09-10であり、期限前に両profileを再測定する。
+理由付きskipとして扱うことを実runnerで確認できた。
+
+上表の fingerprint と `expires` は**この時点の記録であり、現在は検査されない**。
+`ci/simplify-skip-baseline-1` で `expected_skips` / `skip_fingerprint` / `expires` を
+廃止し、`max_skips`・`min_runs` と `allowed_skips`(テスト名 + 正規化理由 + 件数上下限)の
+2層に整理した。判断の経緯は `docs/STEPS.md`、現行仕様は `docs/CI.md` の「skip ガード」を参照。
 
 LIVE-3〜LIVE-6は、最終commit `d36a39d71ea5f9c213e8d9996aa9be93a66b9ae6` の
 acceptance-only実runner実測（[run 31345720437](https://github.com/nuna/rubycc/actions/runs/31345720437)）まで完了している。fixtureの`mkmf-fixture-probes`/`rmake-fixture-build`、

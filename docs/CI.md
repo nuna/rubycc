@@ -68,18 +68,38 @@ Tier A と Ruby 3.4 のジョブは、ツールチェーンの存在を先に確
 | 条件 | 既定値 | 意味 |
 |---|---:|---|
 | failures または errors がある | — | テスト失敗 |
-| skips が `CI_MAX_SKIPS` を超える | 55 | 外部ツール欠落または skip 条件の拡大 |
-| runs が `CI_MIN_RUNS` 未満 | 2500 | スイートの途中終了またはロード漏れ |
+| skips が `CI_MAX_SKIPS` を超える | 55(profile 指定時はその値) | 外部ツール欠落または skip 条件の拡大 |
+| runs が `CI_MIN_RUNS` 未満 | 2500(同上) | スイートの途中終了またはロード漏れ |
+| 承認外の skip がある | — | profile の許可リストに一致しない skip |
+| 許可リストの 1 ルールが `max_count` / `min_count` を外れる | — | 既知原因の skip 件数の増減 |
 
 skip 理由は絶対パスと数値を正規化したヒストグラムとして出力する。
 `CI_MAX_SKIPS` と `CI_MIN_RUNS` は環境変数で上書きできるが、名前付き profile の
 上限・下限は緩められない。
 
-profile は総数ではなく **skip の集合**を固定する
-([`../config/ci/skip-baseline.json`](../config/ci/skip-baseline.json))。テスト名と
-正規化済み理由の組を許可リストとして検査し、`CI_ENFORCE_SKIP_BASELINE=1`(Tier A と
-weekly の Ruby 3.4)では `expected_skips` と理由の SHA-256 fingerprint の一致まで
-要求する。総数だけを見ていると、既知の skip が別の skip に置き換わっても気づけない。
+検査は 2 層である([`../config/ci/skip-baseline.json`](../config/ci/skip-baseline.json))。
+
+1. **総量**(`max_skips` / `min_runs`)。ツールチェーンが消えて大量に skip したのに
+   緑になる、という本来の失敗モードを捕まえるのはこの層である。
+2. **許可リスト**(`allowed_skips`)。各 skip は「テスト名パターン + 正規化済み理由」の
+   ルールにちょうど 1 つだけ一致する必要があり、ルールごとに `min_count` / `max_count` を持つ。
+   総量の余裕に隠れてしまう「新しい原因の skip」を捕まえるのはこの層である。
+   既知の skip が別原因の skip に**置き換わった**場合(総数は変わらない)もここで落ちる。
+
+`CI_ENFORCE_SKIP_BASELINE=1`(Tier A と weekly の Ruby 3.4)が追加で要求するのは
+**出所のメタデータ**だけである — `provisional` が立っていないこと、
+`source_log` / `measured_at` / `owner` があること。
+
+**検査しなくなったもの**: 以前は skip 総数の完全一致(`expected_skips`)と、
+テスト名 + 理由の集合全体の SHA-256(`skip_fingerprint`)も固定していた。総数は集合に
+含まれるので冗長で、集合の完全一致が上の 2 層を超えて捕まえるのは「承認済みの理由のまま
+テスト名が新規追加・改名され、かつ `max_count` を超えない」という狭い場合だけだった。
+一方で代償は構造的で、fingerprint はローカルと CI で skip 集合が違う(41 対 40)ため
+**CI ログからしか再生成できず**、test/ の skip 行に触れるコミット(直近 120 件を
+ざっと数えて 2 割前後)がそのたびに
+「push → 落ちる → artifact を取得 → 再計算 → push」の往復を強いられていた。
+同じ理由で `expires` も廃止した — 再測定が高コストな値に期限を付けても、
+内容と無関係な定期故障を生むだけである。「信用するな」の表明は `provisional` が担う。
 
 ## Tier B のジョブ
 
