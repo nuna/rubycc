@@ -9,7 +9,7 @@ rubycc の継続的検証は、通常の回帰、週次の追加検証、リリ�
 | 層 | ワークフロー | トリガ | 対象 | 設定上限 |
 |---|---|---|---|---|
 | Tier A | `test.yml` | master への push、pull request、手動、reusable workflow 呼び出し | Ruby 3.3 / 4.0 の全 Minitest スイート | 60 分 / Ruby 1 本 |
-| Tier B | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)、手動 | census、決定的fixture、受入れ、スループット、native aarch64 smoke、Ruby 3.4、musl、musl/aarch64 | 20〜90 分 / ジョブ |
+| Tier B | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)、手動 | census、決定的 fixture、受入れ、スループット、native aarch64 smoke、Ruby 3.4、musl、musl/aarch64 | 20〜90 分 / ジョブ |
 | Tier C | `release.yml` | `v*` タグの push、手動 | Tier A の再実行と gem の再現ビルド | test 60 分 + package 30 分 |
 
 Tier A の push 実行は、テスト結果に影響しない文書・参照資料・ライセンス・既存ベンチ
@@ -25,27 +25,22 @@ Tier C の test ジョブは `test.yml` をそのまま再利用する。
 3. Ruby をセットアップして依存 gem をインストールする。
 4. `bundle exec rake test TESTOPTS="--verbose"` を実行する。
 5. `tools/ci_check_skips.rb` で実行件数と skip 数を確認し、ログを artifact に保存する。
-   x86_64 は `native-x86`、native AArch64 は `native-aarch64` の名前付きprofileを
-   使用する。profileはテスト名と正規化済みskip理由の組を許可リストとして検査する。
+   profile は x86_64 が `native-x86`、native AArch64 が `native-aarch64`。
+
+全スイートの前に、runner が本当にそのアーキテクチャかを `uname -m`、Ruby の
+`RbConfig` の `host_cpu` / `arch`、`gcc -dumpmachine`、`readelf -h $(command -v ruby)`
+の 4 点で検証する。1 つでも外れたら失敗させる — 誤った Ruby で全体が skip に化けて
+green になるのを防ぐため。
 
 native aarch64 は `weekly.yml` の `aarch64` ジョブから
 `test.yml` を再利用する。手動実行で `only: aarch64` を選んだ場合だけ、
 `ubuntu-24.04-arm` 上で Ruby 3.3 / 4.0 の全スイートを実行する。
-`native-aarch64-smoke` は全スイートより軽いため、手動実行だけでなく
-**週次スケジュールでも実行する**。AArch64 Ruby上の native loader/libc、
-Fiddleによるshared object、aggregate・variadic ABIを小さな専用テストで確認する。
-このリポジトリの native 機構(preflight、`native-aarch64` skip baseline、
-`test.yml` のアーキテクチャ検証)はいずれもAArch64 runner上でしか何も報告しない。
-全部を `only: aarch64` の後ろに置くとスケジュール実行がnativeを一切再確認しないため、
-保証の鮮度が「最後に誰かがdispatchした時点」で止まる。
-x86_64上のQEMU実行結果をnative integrationの
-代用にはしない。native smoke jobは `uname` だけでなく、Rubyの
-`RbConfig::CONFIG["host_cpu"]` と `arch` も検証し、誤ったRubyが2件のskipだけで
-greenになることを防ぐ。job冒頭の `tools/native_aarch64_preflight.rb` は
-`uname`、Ruby、`gcc -dumpmachine`、Fiddle、Ruby headers、dynamic loader、libcを
-実測し、`native-aarch64-preflight` として結果JSON・context artifactへ記録する。
-preflightを含むrequired IDがすべて `pass` で、native contextの実測値がAArch64に
-一致しない限りjobはgreenにならない。
+より軽い `native-aarch64-smoke` は**週次スケジュールでも実行する**。native の機構は
+どれも AArch64 runner 上でしか何も報告しないので、全部を手動 dispatch の後ろに置くと
+保証の鮮度が「最後に誰かが dispatch した時点」で止まる。job 冒頭の
+`tools/native_aarch64_preflight.rb` が Ruby・`gcc -dumpmachine`・Fiddle・Ruby headers・
+loader・libc を実測し、必須 ID として結果 JSON へ記録する。x86_64 上の QEMU 実行を
+native integration の代用にはしない。
 
 ## 参照用ツールチェーン
 
@@ -77,34 +72,14 @@ Tier A と Ruby 3.4 のジョブは、ツールチェーンの存在を先に確
 | runs が `CI_MIN_RUNS` 未満 | 2500 | スイートの途中終了またはロード漏れ |
 
 skip 理由は絶対パスと数値を正規化したヒストグラムとして出力する。
-`CI_MAX_SKIPS` と `CI_MIN_RUNS` は環境変数で上書きできるが、名前付きprofileの
-上限・下限を緩めることはできない。名前付きprofileでは、未許可のテスト名・理由、
-複数ルールへの重複、ルールごとの件数超過、Minitestサマリの欠落または複数出現も失敗とする。
-したがって、既知の制限を理由にskipするケースは明示的にprofileへ登録する必要があり、
-テストを広くskipしてgreenにする経路にはならない。さらに
-`CI_ENFORCE_SKIP_BASELINE=1`（Tier A と weekly の Ruby 3.4 で設定）では、profileの
-`provisional` がfalseであること、実測ログ・測定日・期限・ownerがあること、
-`expected_skips` とskip理由のSHA-256 fingerprintが実測値と一致することまで要求する。
-期限切れ、件数の変化、理由を別テストへ付け替えた場合はskipではなくjob failureになる。
+`CI_MAX_SKIPS` と `CI_MIN_RUNS` は環境変数で上書きできるが、名前付き profile の
+上限・下限は緩められない。
 
-2026-08-10時点の実runner実測baselineは次のとおりである。これは継続保証ではなく、
-profileの期限（2026-09-10）までの監視値であり、期限前に同じ手順で再測定する。
-
-| profile | runner / Ruby | runs | skips | fingerprint | 実測ログ |
-|---|---|---:|---:|---|---|
-| `native-x86` | x86_64 / 3.3・4.0 | 3059 | 42 | `8471545c89cb6cb8d0e2ee94883c1b07c8a02fd15b88f8a51f7c29a87daae603` | [run 31345396034](https://github.com/nuna/rubycc/actions/runs/31345396034) |
-| `native-aarch64` | AArch64 / 3.3・4.0 | 3059 | 245 | `33d93347cb15b30a7e8e938cebe43241d0a173f53fb94a6634df8735a31b689c` | [run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123) |
-
-上記のskip数は許可リストの上限ではなく、`expected_skips` と fingerprintで固定した
-実測値である。AArch64の `alloca` / bit-scan の理由は、実装未完了を隠す一般的な理由ではなく、
-[`docs/IR.md` §6.5](IR.md#65-ターゲット別の実装範囲)に記載したターゲット別実装範囲として
-記録する。
-
-`native-aarch64` で許可されるのは、x86_64専用のELF/実行検査、AArch64上で未実装の
-`alloca`、既知のA4/C-suite制限、native-only補助テストの対象外、または明示された
-外部ツール・ネットワーク条件だけである。AArch64用テストはx86_64上でskipするが、
-専用のAArch64 runnerでは実行する。全体suiteの開始前にRubyのCPU/ELF、`gcc -dumpmachine`
-も確認するため、wrong-architectureなRubyやgccでskipを積み上げることはできない。
+profile は総数ではなく **skip の集合**を固定する
+([`../config/ci/skip-baseline.json`](../config/ci/skip-baseline.json))。テスト名と
+正規化済み理由の組を許可リストとして検査し、`CI_ENFORCE_SKIP_BASELINE=1`(Tier A と
+weekly の Ruby 3.4)では `expected_skips` と理由の SHA-256 fingerprint の一致まで
+要求する。総数だけを見ていると、既知の skip が別の skip に置き換わっても気づけない。
 
 ## Tier B のジョブ
 
@@ -114,34 +89,25 @@ profileの期限（2026-09-10）までの監視値であり、期限前に同じ
 `bundle exec rake corpus:census` を実行し、
 `test/corpus/include-census.md` と生成ログを artifact に保存する。
 コミット済み census と差分がある場合はジョブを失敗させる。
-R10のmachine-gate境界は `pg-native-source` と
-`sqlite3-system-libraries` の明示的なprofileを含む。profileの引数はcensusへ記録
-されるが、`data/verified_gems.json`のinstall・extension load・upstream suite証拠を
-代用しない。手元のcacheから候補抽出とgem SHAを残す場合は
-`R10_CORPUS_CACHE=... rake corpus:r10_scan`を使い、
-`data/r10_corpus_scan.json` / `docs/R10-CORPUS-SCAN.md`を更新する。
+R10 の machine gate は `pg-native-source` と `sqlite3-system-libraries` の明示的な
+profile を含む。profile は census に記録されるが、`data/verified_gems.json` の
+install・extension load・upstream suite の証拠を代用しない。
 
 ### acceptance-fixture
 
-`acceptance-fixture` は、コミット済みのmkmf/rmake fixtureを
-`acceptance-fixture` profileで実行し、`mkmf-fixture-probes` と
-`rmake-fixture-build` を構造化結果へ記録する **Tier B のネットワークフリーjob**
-である。live acceptanceが外部要因で落ちても、この2件が実行されたこと自体は
-結果JSONから確認できる。
+コミット済みの mkmf/rmake fixture を `acceptance-fixture` profile で実行し、
+`mkmf-fixture-probes` と `rmake-fixture-build` を構造化結果へ記録する
+**ネットワークフリーの job** である。
 
-**このjobはPRの必須判定ではない。** Tier Bに属し、週次スケジュールと
-`only: acceptance` の手動実行でだけ動く。実行しているテスト本体
-(`test_conftest_probe_api_matches_gcc_truth` /
-`test_tools_substitution_builds_loadable_so_sequential`)はTier Aの
-`rake test` に含まれるので、PRごとの回帰検出はTier Aが担う。このjobが
-足しているのは、専用profileでの実行と、必須IDが本当に実行されたことを
+**PR の必須判定ではない。** 実行しているテスト本体は Tier A の `rake test` に
+含まれるので、PR ごとの回帰検出は Tier A が担う。この job が足しているのは、
+専用 profile での実行と、必須 ID が本当に実行されたことを
 `ci_check_acceptance.rb` が検証する点だけである。
 
-**live acceptanceの代替にはならない。** gemの取得・unpack・extconf・
-拡張ビルド・gem本体テストという、実際にskipが発生していた経路は
-依然としてネットワークを必要とする。これらをfixture化する作業
-(TEST-PLANの2B-1)は未実施であり、`acceptance-fixture` がgreenでも
-live経路が未実行なら受入れは成立していない。
+**live acceptance の代替にはならない。** gem の取得・unpack・extconf・ビルドという、
+実際に skip が発生していた経路は依然ネットワークを必要とする。fixture 化
+(TEST-PLAN の 2B-1)は未実施で、この job が green でも live 経路が未実行なら
+受入れは成立していない。
 
 ### acceptance
 
@@ -149,32 +115,13 @@ live経路が未実行なら受入れは成立していない。
 必要とする受入れテストを実行し、続けて
 `ruby tools/m2_acceptance.rb` で M2 の受入れを実行する。
 通常の Tier A と実行件数が異なるため、Tier A の skip 閾値は適用しない。
-
-strict acceptanceでは `RMAKE_ACCEPTANCE_STRICT=1`、`CI_PROFILE=acceptance-live`、
-`CI_RESULT_PATH=tmp/ci/acceptance-results.json` を設定する。受入れテストは
-stable IDごとの構造化結果を出力し、`tools/ci_check_acceptance.rb` が
-[`config/ci/acceptance_manifest.json`](../config/ci/acceptance_manifest.json)の必須ID、
-未実行、skip、`inconclusive`を確認する。fetch/unpack失敗はstrict経路でskipに変換しない。
-テスト開始前に `tools/live_acceptance_preflight.rb` が Ruby、RubyGems、curl、rmake、rubycc、
-strict/profile/network設定、実行CPU、結果・artifactパスを確認し、
-`acceptance-live-preflight`として構造化結果へ記録する。preflight失敗は必須IDのfailとなり、
-suiteの未実行をpassへ変換しない。
-ネットワークやRubyGemsなど外部要因による判定不能は製品のpassにはせず、live受入れ運用で
-`inconclusive`として分類する。`--allow-inconclusive` は非strictの診断レポートに
-限られ、strict required jobでは指定しても失敗する。M2のjson/msgpack自身の
-テスト結果もstable IDとして同じファイルに追加する。
-
-live対象のgemとsource tarballはmanifestに固定したHTTPS URLとSHA-256を使う。
-`test/support/acceptance_fetch_helper.rb` は取得を一時ファイルへ行い、digest確認後に
-atomic renameする。取得結果にはexpected/actual digest、bytes、cache hit/missを
-`acceptance-artifacts.json`へ記録し、checkerもlive required IDごとにartifactの存在、
-URL一致、digest一致を検証する。キャッシュのchecksum不一致は自動でpassへ変換せず、
-upstream変更またはmanifest更新が必要な明示的失敗とする。M2のtest-unit、
-test-unit-ruby-core、rspecもバージョンを固定し、CIでは専用GEM_HOME/GEM_PATHを使う。
-
-M2の実行後には、取得したjson/msgpackのextツリーを
-`tools/scan_corpus_variadics.rb`で走査し、候補抽出結果をartifactに保存する。
-scannerは候補調査用であり、struct利用の不在証明や合否判定には使わない。
+代わりに strict acceptance(`RMAKE_ACCEPTANCE_STRICT=1`、`CI_PROFILE=acceptance-live`)
+で安定 ID ごとの構造化結果を出力し、`tools/ci_check_acceptance.rb` が
+[`../config/ci/acceptance_manifest.json`](../config/ci/acceptance_manifest.json)の
+必須 ID・未実行・skip・`inconclusive` を検査する。fetch/unpack 失敗を skip に
+変換しない。取得対象は manifest に固定した HTTPS URL と SHA-256 を使い、digest 確認後に
+atomic rename する。`--allow-inconclusive` は非 strict の診断用で、strict では
+指定しても失敗する。
 
 ### throughput
 
@@ -213,9 +160,6 @@ skip は想定される。Tier A の skip ガードはこのジョブには適�
 stdio のリンクに関する Gap P である。
 
 ## 手動実行の選択
-
-手動実行では最初に`dispatch-contract`が入力の組み合わせを検証する。
-`verify_step`と`only`を同時に指定した場合は全jobをskipせず、このvalidation jobがfailする。
 
 | 入力 | 実行対象 |
 |---|---|

@@ -1,126 +1,107 @@
 # スコープ外の gem
 
-rubycc が **対応しないと判断済み**の gem を、理由と根拠つきで並べる。
+rubycc が **対応しないと判断している** gem と、対象内との境界を理由つきで示す。
 
-DESIGN の R10 は目標を「コーパスの 90% 以上」と定量化しており、**残りの 10% を
-どこに置くかを決めているのがこの文書**である。「まだ通らない」と「通す気がない」は
-別物で、前者は `docs/GAPS.md`、後者はここに書く。
+DESIGN の R10 は、gem のインストール成功と gem 自身のテスト合格を
+コーパスの 90% 以上で満たすことを目標にする。ここでは、rubycc の設計上
+対応しないものと、R10 の分母から除外されるだけでスコープ外ではないものを
+分けて記載する。
 
-**この一覧は網羅ではない。** 人気ランキングを全走査した結果ではなく、
-コーパス拡張(`.claude/skills/corpus-expansion/SKILL.md`)の過程で実際に当たったものと、
-DESIGN が設計時に名指ししたものを集めたものである。
-根拠の種類(実測か、設計時の判断か)を各行に明記する。
+**この一覧は網羅ではない。** `test/corpus/gems.rb` の候補と DESIGN が
+明示する対象を中心に、現在の判断に必要な例を載せている。
 
-## 1. 判断基準(DESIGN §3.3 / R10)
+## 1. 対象外とR10分母除外の基準(DESIGN §3.3 / R10)
 
-| # | 基準 | なぜ対象外か |
+| # | 基準 | 理由・扱い |
 |---|---|---|
-| **A** | **C++ を使う** | rubycc は C コンパイラである。C++ フロントエンドは v1.0 のスコープに無い |
-| **B** | **実体のあるアセンブリ(`.S` / インライン asm)を含む** | rubycc にアセンブラは無い。ELF を直接書き出す設計で、`.S` を受け取る経路そのものが無い |
-| **C** | **autoconf の `configure` を実行する vendored ビルド**(mini_portile 系) | `configure` は POSIX シェルを必要とする。**シェルへの非依存は rubycc の存在理由そのもの**(R1)であり、ここを緩めると要件が崩れる |
-| **D** | **上流にテストスイートが無い** | 検証済みと言えるのは「gem 自身のテストが rubycc がビルドした `.so` に対して通った」ときだけ(証拠水準 (d))。スイートが無いと**原理的にその証拠が得られない** |
+| **A** | **C++ を使う** | rubycc は C コンパイラであり、C++ フロントエンドは対象外である |
+| **B** | **実体のあるアセンブリ(`.S` / インライン asm)を含む** | rubycc にアセンブラはなく、`.S` を受け取る経路もない |
+| **C** | **autoconf の `configure` を実行する vendored ビルド**(mini_portile 系) | `configure` は POSIX シェルを必要とし、シェル非依存という要件に反する |
+| **D** | **上流にテストスイートがない** | gem 自身のテスト合格というR10の検証証拠を得られないため、R10の分母から除外する |
 
-**C には重要な例外がある** — `--use-system-libraries` などでシステムライブラリを使う
-モードがあるなら、**そのモードは対象内**である。DESIGN R10 は
-「sqlite3(システムライブラリ利用時)」を**想定内の例**として名指ししている。
+Cには例外がある。`--use-system-libraries` や `--enable-system-libraries` など、
+gemが提供するシステムライブラリ利用モードは対象内である。DESIGN R10が
+「sqlite3(システムライブラリ利用時)」を対象内の例としているのもこのためである。
 
-## 2. 対象外と判断した gem
+## 2. 対象外の経路とR10分母から除外する gem
 
 | gem | 基準 | 理由 | 根拠 |
 |---|---|---|---|
-| **ffi** | B | `ext/ffi_c/libffi` に **`.S` を 48 本**同梱する | **実測**(STEPS.md Step 139 のコーパス走査)。候補中でダウンロード最多(10.6 億)だった |
-| **bcrypt** | B | `ext/mri/extconf.rb` が `$objs` に **`x86.o` を明示列挙**しており、これは同梱の `x86.S` から作られる | **実測**(同上)。**C ソースだけ見ると通りそうに見える**のが要点で、「C++ ファイルがあるか」しか見ない機械判定では捕まらない |
-| **nokogiri** | C | vendored ビルドが mini_portile 経由で `configure` を実行する | **実測**(STEPS.md Step 143、人気ランク 1〜20 の走査)。ただし**システムライブラリ利用モードなら基準 C の例外に当たる**ので、将来そのモード限定で対象化する余地はある |
-| **grpc** | A | C++ | **設計時の判断**(DESIGN §3.3 が名指し)。実測はしていない |
-| **rice** | A | C++ 拡張を書くためのライブラリそのもの | **設計時の判断**(DESIGN §3.3) |
-| **eventmachine** | A | C++ 拡張 | **観測**(`test/corpus/include-census.md` の thin の注記。thin 自身の拡張は純 C だが、実行時依存の eventmachine が C++ なので `gem install thin` は結局 C++ を要求する) |
-| **fcntl** | D | 上流にテストスイートが無い | **実測**(STEPS.md Step 157)。**同梱ヘッダの穴埋め対象からも外している** — 埋めても検証済み gem は増えないため(GAPS.md の E がその記録) |
-| **sqlite3(既定のインストール)** | C | 既定では `MiniPortile` が上流 sqlite3 の `configure` を実行する | **実測**(STEPS.md Step 186)。**`--enable-system-libraries` を付けた経路は対象内**。詳細は §3 |
+| **ffi** | B | `ext/ffi_c/libffi` に `.S` アセンブリを含む | gem の ext ソースとビルド対象の確認 |
+| **bcrypt** | B | `ext/mri/extconf.rb` が `$objs` に `x86.o` を列挙し、同梱の `x86.S` から生成する | gem の extconf とソースの確認 |
+| **nokogiri の vendored ビルド** | C | mini_portile 経由で libxml2 等の `configure` を実行する | gem の extconf とインストール経路の確認 |
+| **grpc** | A | C++ 拡張 | DESIGN §3.3 |
+| **rice** | A | C++ 拡張を作るためのライブラリ | DESIGN §3.3 |
+| **eventmachine** | A | C++ 拡張であり、これに依存する `thin` の通常インストールも止まる | `test/corpus/gems.rb` の依存情報と census 結果 |
+| **fcntl** | D | 上流にテストスイートがなく、R10の検証証拠を得られないため分母から除外する | `test/corpus/gems.rb` の `upstream_tests: false` |
+| **sqlite3 の既定インストール** | C | bundled sqlite3 のビルドで mini_portile と上流 `configure` を使う | `ext/sqlite3/extconf.rb` の経路確認 |
 
-### thin の扱いに注意
+`nokogiri --use-system-libraries` と `sqlite3 --enable-system-libraries` は、
+それぞれシステムライブラリを使う対象内の経路である。
 
-**thin 自身の C 拡張は純 C で、対象内**である(センサスも `ok` と判定している)。
-対象外なのは**実行時依存の eventmachine** の方で、
-`gem install thin` を丸ごと通すには C++ が要る。
-**「gem が対象内か」と「その gem を install できるか」は別の問い**であり、
-この一覧は前者を扱う。unicorn も同じ形(依存の kgio / raindrops が C 拡張)だが、
-そちらは C なので対象内である。
+### thin の扱い
 
-## 3. censusのraw判定とprofile判定が分かれる2件 — **中身は別物**
+`thin` 自身の拡張は純Cであり、ソースだけなら対象内である。ただし通常の
+`gem install thin` はC++拡張の `eventmachine` もビルドするため、インストール
+全体は対象外となる。`unicorn` の依存である `kgio` と `raindrops` はC拡張なので、
+この理由では対象外にならない。
 
-`test/corpus/census.rb` の通常判定は
-**「extconf.rb のどこかに `mini_portile` という文字列があるか」**を含む保守的な
-rawチェックである。現在はDESIGNとextconfの実行経路を明示したprofileを追加し、
-`pg-native-source` と `sqlite3-system-libraries` だけが、指定引数・branch markerを
-満たした場合にraw判定を上書きする。未知profileや条件不足はfail-closedである。
-**実物のextconfを読まないまま対象件数を確定してはいけない**(Step 186で実測)。
+## 3. R10の分母から除外される境界例
 
-### sqlite3 — 既定の経路は**本当に対象外**。判定は正しい
+R10の分母は `test/corpus/census.rb` の機械判定を通過した gem である。
+この判定には、対象外基準A〜Cに加えて、テスト証拠の有無、基準コンパイラでの
+上流テスト結果、対象外依存の有無が含まれる。したがって、`excluded` は常に
+「rubyccがそのgemをビルドできない」という意味ではない。
 
-`ext/sqlite3/extconf.rb` は `system_libraries?`
-(`--enable-system-libraries` か sqlcipher 系オプション)で経路を分ける。
-
-| 経路 | 中身 | R10 |
+| gem | 現在の扱い | 理由 |
 |---|---|---|
-| **既定**(`configure_packaged_libraries`) | `MiniPortile` を使い、`recipe.configure_options += [...]` で**上流 sqlite3 の `configure` を実行する** | **対象外**(基準 C) |
-| `--enable-system-libraries` | システムの libsqlite3 を探す | **対象内** |
+| `byebug` / `unicorn` / `debug` | R10分母から除外 | 上流テストが基準コンパイラでも合格せず、R10の検証証拠を得られない |
+| `pg` | **分母に含む**(`pg-native-source` profile) | mini_portile と `configure` の参照は `--with-cross-build` 経路だけで、通常のソースインストールは `pg_config` / pkg-config でシステムの libpq を使う。raw 判定の偽陽性だったものを profile で上書きしている |
+| `thin` | censusでは除外 | 自身は純Cだが、インストール時に対象外の `eventmachine` を必要とする |
 
-**DESIGN R10 が「sqlite3(システムライブラリ利用時)」と括弧書きしているのは、
-まさにこの区別**である。**既定の `gem install sqlite3` は対象外で正しい。**
+`fcntl` は §2 の基準Dによる分母除外である。`sqlite3` は既定経路が基準Cに当たるが、
+`sqlite3-system-libraries` profile を宣言して**分母に含めている**。
 
-(なお rubycc は **sqlite3 amalgamation 26 万行を単体でコンパイル済み**である
-(STEPS.md Step 116)。ただしそれは「amalgamation をコンパイルできる」話であって、
-「既定の `gem install` が通る」話ではない。**混同しないこと。**)
+### raw 判定と profile 判定
 
-### pg — `pg-native-source` profileで対象内
+`census.rb` の通常判定は「extconf.rb のどこかに `mini_portile` という文字列があるか」
+を含む保守的な raw チェックで、`pg` と `sqlite3` を同じ `excluded` にしていた。
+現在は DESIGN が名指しする実行経路を profile として明示し、`pg-native-source` と
+`sqlite3-system-libraries` の 2 つだけが、宣言された extconf 引数と実ソース中の
+branch marker を両方満たしたときに raw 判定を上書きする。未知の profile も条件不足も
+fail-closed で除外のままである。
 
-`ext/extconf.rb` の mini_portile 参照は **26 行目の
-`if gem_platform = with_config("cross-build")` ブロックの中に丸ごと入っている**。
-これは**事前ビルド済みバイナリ gem を作るときだけ**通る経路で、
-通常のソースインストールは `pg_config` / pkg-config でシステムの libpq を探す。
+profile は**対象範囲の宣言であって検証記録ではない**。install・extension load・
+upstream suite の証拠は `data/verified_gems.json` が持つもので、profile がそれを
+代用することはない。この 2 件を分母に入れた結果、R10 の分母は 32 から 34 になった。
 
-**DESIGN R10 は pg をスコープ内として名指ししている。**
-`gems.rb`の`pg-native-source` profileはcross-build引数を許可せず、native branchの
-`pg_config`/system-library markerを要求する。これで通常のsource installの境界を
-machine gateへ反映する。ただし、このprofileはinstall・extension load・upstream suite
-のverification recordそのものではなく、`data/r10_corpus_scan.json`でも手動/control/
-rubycc証拠はpendingとしている。
-
-## 4. 対象内である境界例(念のため)
+## 4. 対象内である境界例
 
 **システムライブラリに依存すること自体は対象外の理由にならない。**
-むしろ R10 が想定内として名指しする形である。
+システムライブラリ利用はR10が想定する対象内の形である。
 
 | gem | 依存先 | 状態 |
 |---|---|---|
-| zlib | ホストの libz | **検証済み**(STEPS.md Step 171) |
-| psych | ホストの libyaml | **検証済み**(Step 172) |
-| openssl | ホストの OpenSSL | 未検証(対象内) |
-| mysql2 | ホストの libmysqlclient / libmariadb | 未検証(対象内) |
+| `zlib` | ホストの libz | 検証済み |
+| `psych` | ホストの libyaml | 検証済み |
+| `mysql2` | ホストの libmysqlclient / libmariadb | 検証済み |
+| `openssl` | ホストの OpenSSL | 対象内・未検証 |
 
 ## 5. この一覧の限界
 
-- **網羅ではない。** 「人気上位 N 位を全部調べた」という主張はできない。
-  ランキングは日次で動くうえ、外部ランキングサイトは単一障害点になる
-  (STEPS.md Step 143 で実際に片方がダウンしていた)。
-- **基準 A・B は機械判定では取りこぼす。** bcrypt がその実例で、
-  C++ ファイルの有無だけを見ると通りそうに見えるのに、
-  extconf を読むと `.S` 由来のオブジェクトを要求している。
-  **「対象外である」は extconf を読んで初めて確定することがある。**
-- **grpc と rice は実測していない。** DESIGN の設計時の判断をそのまま載せている。
-  実測したら別の理由が出る可能性はあるが、C++ であること自体は動かないので
-  結論は変わらないと見ている。
-- 対象外の判断は**永久ではない**。基準 C は「システムライブラリ利用モードなら対象内」という
-  例外を持ち、nokogiri と sqlite3 はその余地がある。
-- **この文書の初版(Step 185)は sqlite3 について誤りを書いていた** —
-  「既定の経路でも `configure` は走らない」としていたが、実物の extconf を読むと
-  既定は `MiniPortile` 経由で上流の `configure` を実行する(Step 186 で訂正)。
-  **DESIGN の記述だけを根拠に書き、extconf を読まなかったのが原因**である。
-  この文書に載せる判断は、**その gem の extconf を実際に読んでから**書くこと。
+- **網羅ではない。** 対象外の判断は `test/corpus/gems.rb` と DESIGN の対象に
+  基づくもので、人気ランキング全体を意味しない。
+- **基準A・Bはextconfの確認が必要な場合がある。** C++ファイルの有無だけでは
+  bcryptのようなアセンブリ由来のオブジェクトを検出できない。
+- **R10の分母除外とスコープ外は別である。** upstreamテストの不合格や
+  censusの保守的な偽陽性は、直ちにrubyccの対応対象外を意味しない。
+- **システムライブラリ利用経路は対象内である。** vendoredビルドと
+  system-librariesオプションの経路を分けて判断する。
 
 ## 参照
 
-- `docs/DESIGN.md` §3.1(R10 の定量化)・§3.3(スコープ外の明示)
-- `docs/GAPS.md` — **通す気はあるがまだ通らない**もの。この文書とは別物
-- `test/corpus/include-census.md` — センサスの機械判定結果
-- `docs/STEPS.md` Step 139(ffi / bcrypt)・Step 143(nokogiri)・Step 157(fcntl)
+- `docs/DESIGN.md` §3.1(R10の定量化)・§3.3(スコープ外の明示)
+- `docs/GAPS.md` — 通す対象だが未達のギャップ
+- `test/corpus/gems.rb` — 候補、依存、R10分母除外の宣言
+- `test/corpus/census.rb` — 現在の機械判定
+- `test/corpus/include-census.md` — 生成された現在の判定結果

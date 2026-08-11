@@ -36,10 +36,9 @@ The bundled headers match the ABI of the supported environments on both architec
 and both C libraries.
 
 The current corpus census has 39 candidates, 34 gems in the R10 machine-gate denominator,
-and 29 verified gems: **85.3%**. The 90% target is not yet reached; two additional
-machine-gate targets need verification records. `pg` and `sqlite3` are included through
-explicit DESIGN-compatible profiles, while manual variadic classification remains pending.
-See
+and 29 verified gems: **85.3%**. `pg` and `sqlite3` are now in the denominator through
+explicit DESIGN-compatible profiles, so the rate is measured against a larger corpus than
+the 90.6% reported before; reaching 90% needs verification records for those two. See
 [`test/corpus/include-census.md`](test/corpus/include-census.md) for the generated report.
 
 It also compiles the SQLite amalgamation — a single 261,463-line translation unit — in
