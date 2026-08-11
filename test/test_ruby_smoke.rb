@@ -38,7 +38,7 @@ class TestRubySmoke < Minitest::Test
   # `test-ci-implementation-9`), appended after these. That is the order a real
   # extension build uses, so this test must not hand-roll its own: the bundled
   # layers belong *after* the caller's -I and *before* the host libc, and
-  # spelling the list out here silently changed both (GAPS U survived that way).
+  # spelling the list out here silently changed both (GAPS V survived that way).
   # gcc's private include directory (/usr/lib/gcc/.../include) is absent from
   # that default path, so this test still relies on nothing under /usr/lib/gcc.
   INCLUDE_PATHS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR].freeze

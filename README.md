@@ -122,6 +122,17 @@ rubycc --target=aarch64 -c foo.c -o foo.o
 - **`__GNUC__` is deliberately not defined.** Headers take their non-GNU fallback path.
 - **128-bit integers**: passing, returning and shifting work; division, remainder, bitwise
   `& | ^` and variadic passing do not.
+- **`long double` is 8 bytes** — it is compiled as `double`, where the x86-64 psABI gives
+  it 80-bit x87 extended precision in 16 bytes (and AArch64 gives it IEEE binary128).
+  Arithmetic therefore carries double's 53-bit significand, `sizeof(long double)` is 8,
+  and a `long double` handed to a variadic function does not match what the C library
+  reads back: `printf("%Lg", x)` prints a wrong number, because glibc's `printf` reads
+  16 bytes where rubycc pushed 8. This is measured, not theoretical — it is the one
+  difference between rubycc and the reference compiler in the `oj` gem's suite, whose
+  `usual.c` formats a `long double` that way. Code that only stores and computes with
+  `long double` gets double's range and precision; code that passes it across the libc
+  boundary gets wrong values. Full support needs x87 (and binary128) arithmetic and is
+  not in this release.
 - **Out of scope**: C++ input is rejected with a diagnostic (the compiler accepts C only),
   so gems needing a C++ compiler (grpc) are out of scope. Gems that run `configure` through
   mini_portile (nokogiri's vendored build; `--use-system-libraries` is fine), or that ship

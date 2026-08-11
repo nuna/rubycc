@@ -71,6 +71,11 @@ module Rubycc
       SHT_DYNAMIC  = 6
       SHT_NOBITS   = 8
       SHT_DYNSYM   = 11
+      # The version-definition table (.gnu.version_d): the symbol versions this
+      # object defines. Its type lives in the gABI's OS-specific range
+      # (SHT_LOOS = 0x60000000 upwards), which is why the number looks nothing
+      # like the ones above.
+      SHT_GNU_VERDEF = 0x6FFFFFFD
 
       # Reserved section indices that a symbol's st_shndx may carry instead of a
       # real section number: an undefined (imported) symbol, an absolute value,
@@ -84,6 +89,22 @@ module Rubycc
       SYM_ENTSIZE  = 24
       RELA_ENTSIZE = 24
       DYN_ENTSIZE  = 16
+
+      # An Elf64_Verdef record and the Elf64_Verdaux records behind it. Neither
+      # is an array element: each carries its own byte distance to the next one
+      # (vd_next / vda_next), so these sizes bound a single record rather than
+      # stride a table (see #parse_version_definitions).
+      VERDEF_SIZE  = 20
+      VERDAUX_SIZE = 8
+
+      # The only vd_version (VER_DEF_CURRENT) this layout is defined for; a
+      # record announcing another revision is not the structure decoded below.
+      VER_DEF_CURRENT = 1
+
+      # vd_flags bits: the definition that names the object itself rather than a
+      # version its symbols can bind to, and one whose version holds no symbols.
+      VER_FLG_BASE = 0x1
+      VER_FLG_WEAK = 0x2
 
       # Symbol binding (st_info >> 4) and type (st_info & 0xF), mapped to symbols
       # for readable queries; an unrecognized value passes through as its integer.
@@ -177,6 +198,18 @@ module Rubycc
         :offset, :type, :type_name, :symbol, :addend, keyword_init: true
       )
 
+      # One version this object defines (an Elf64_Verdef with its Elf64_Verdaux
+      # chain resolved). `name` is the version's own name — the first aux record
+      # — and `parents` the names of the versions it inherits from, in the order
+      # the chain lists them. `index` is vd_ndx, the number a .gnu.version entry
+      # carries to bind a symbol to this definition, and `flags` the raw
+      # vd_flags, of which VER_FLG_BASE marks the file's own pseudo-version
+      # (whose `name` is the SONAME, not a version a symbol can carry).
+      VersionDefinition = Struct.new(:index, :flags, :name, :parents, keyword_init: true) do
+        def base? = (flags & VER_FLG_BASE) != 0
+        def weak? = (flags & VER_FLG_WEAK) != 0
+      end
+
       # One SHT_RELA table: the relocations it holds and the Section they patch
       # (its sh_info target, e.g. .text for .rela.text). Grouping by target is
       # what the linker walks when applying fixups section by section.
@@ -197,7 +230,7 @@ module Rubycc
 
       attr_reader :type, :machine, :entry, :sections, :symbols,
                   :relocation_sections, :dynamic_symbols, :dynamic_entries,
-                  :soname, :needed
+                  :soname, :needed, :version_definitions
 
       def initialize(bytes)
         @data = bytes.b
@@ -208,6 +241,7 @@ module Rubycc
         @dynamic_entries = []
         @needed = []
         @soname = nil
+        @version_definitions = []
       end
 
       def parse!
@@ -217,6 +251,7 @@ module Rubycc
         parse_relocations
         parse_dynamic_symbols
         parse_dynamic
+        parse_version_definitions
         self
       end
 
@@ -498,6 +533,68 @@ module Rubycc
       # One .dynamic array element: its raw d_tag and d_un value. String tags'
       # values are byte offsets into .dynstr (resolved into #soname / #needed).
       DynamicEntry = Struct.new(:tag, :value, keyword_init: true)
+
+      # --- symbol versions (.gnu.version_d) ----------------------------------
+
+      # Reads the version-definition table into VersionDefinition records. It is
+      # the answer to "which versions does this shared object define" — the
+      # question a glibc image answers with its GLIBC_2.<n> names, which is how
+      # the preprocessor measures the C library it is compiling against
+      # (Preprocess::GlibcVersion) instead of naming a version in a header.
+      #
+      # The table is a linked list, not an array: every Elf64_Verdef holds
+      # vd_next, the byte distance from itself to the next record (zero ends the
+      # list), and vd_aux, the distance from itself to its first Elf64_Verdaux,
+      # which chains on in the same way through vda_next. The records therefore
+      # need not be adjacent and cannot be strided over, so the walk follows the
+      # links. sh_info states how many definitions there are, which bounds the
+      # walk independently of the links: a self-referential or otherwise corrupt
+      # chain stops after that many steps rather than spinning. Names resolve
+      # through the string table sh_link names (.dynstr for this allocated
+      # table), exactly like a symbol table's.
+      def parse_version_definitions
+        sec = @sections.find { |s| s.type == SHT_GNU_VERDEF }
+        return unless sec
+
+        strtab = string_table_for(sec)
+        offset = sec.offset
+        sec.info.times do
+          require_range(offset, VERDEF_SIZE, "version definition in #{sec.name}")
+          version = u16(offset)
+          unless version == VER_DEF_CURRENT
+            raise ELFFormatError, "unsupported version definition revision #{version} in #{sec.name}"
+          end
+
+          # The aux chain is the definition's own name followed by the names of
+          # the versions it inherits from; vd_cnt counts both together.
+          names = read_verdaux_names(offset + u32(offset + 12), u16(offset + 6), strtab, sec)
+          @version_definitions << VersionDefinition.new(
+            index: u16(offset + 4), flags: u16(offset + 2),
+            name: names.first, parents: names.drop(1)
+          )
+
+          vd_next = u32(offset + 16)
+          break if vd_next.zero?
+
+          offset += vd_next
+        end
+      end
+
+      # Walks one definition's Elf64_Verdaux chain from `offset`, returning at
+      # most `count` names in chain order. Like the Verdef list the chain is
+      # bounded by both its own zero terminator and the stated count.
+      def read_verdaux_names(offset, count, strtab, sec)
+        names = []
+        count.times do
+          require_range(offset, VERDAUX_SIZE, "version definition name in #{sec.name}")
+          names << read_string(strtab, u32(offset))
+          vda_next = u32(offset + 4)
+          break if vda_next.zero?
+
+          offset += vda_next
+        end
+        names
+      end
 
       # --- primitive reads (all bounds-checked against the image) -------------
 

@@ -10,11 +10,8 @@
 
 | # | 何が足りないか | 誰が困るか | 確からしさ | 詳細 |
 |---|---|---|---|---|
-| **S** | **`long double` が 8 バイト**(`double` として扱う。DESIGN 3.3 の既知の制限) | **oj**。`usual.c` が `sprintf(buf, "%Lg", (long double)x)` を使い、glibc は 16 バイトを読むので値が壊れる(`BigDecimal(): "-nan"`)。**対照と食い違う唯一のテスト** `UsualTest#test_decimal` の原因 | **実測**(2026-08-08)。最小再現: gcc `[1.23457]` / rubycc `[7.46537e-4948]` | ROADMAP §3 の負債に**初めて実害が出た**。解消には x87 80 ビット対応が要り、1 ステップの仕事ではない |
-
-| **T** | **配列の要素数をパーサが数える文脈で、struct を返す式が単一式初期化子として読めない** | `pt b[] = { {1,2}, fp(), {5,6} };` が `excess elements in scalar initializer` になる(gcc は 3 要素)。パーサは `[]` の長さをここで確定させる必要があるが、型表を持たないので `fp()` の型が分からない | **実測**(2026-08-08) | struct を直接初期化する形は通る(atomic-type-13)。解消にはパーサ側に型を引く手段が要る |
-
-| **U** | **同梱 `features.h` の `__GLIBC_MINOR__` が 39 固定**(`include/libc/features.h:163`)。単一のヘッダ一式を配る以上、ホストの glibc 版に追従しない | **glibc 2.39 以外のホスト**。`#if __GLIBC_PREREQ(2, 38)` のような条件が rubycc とホスト gcc で**別の枝を取る**(bookworm = 2.36 で食い違う)。`test_header_abi.rb` の `__GLIBC_MINOR__` 検査が差分テストの失敗として顕在化させる。CI は ubuntu-24.04(2.39)なので現れない | **実測**(2026-08-08、ブランチ `m4/aarch64-glibc-acceptance` のレビュー時に顕在化) | **ヘッダ側では直せない** — 単一ヘッダを配るという設計そのものに由来する。当該ブランチは検査を削除して回避したが、それでは x86 側の検査も同時に失われるため master は検査を残している。解消にはヘッダをホストの glibc 版で条件化する仕組みが要る |
+| **S** | **`long double` が 8 バイト**(`double` として扱う。DESIGN 3.3 の既知の制限) | **oj**。`usual.c` が `sprintf(buf, "%Lg", (long double)x)` を使い、glibc は 16 バイトを読むので値が壊れる(`BigDecimal(): "-nan"`)。**対照と食い違う唯一のテスト** `UsualTest#test_decimal` の原因 | **実測**(2026-08-08)。最小再現: gcc `[1.23457]` / rubycc `[7.46537e-4948]` | **v1.0 では挙動を変えず、README / CHANGELOG の既知の制限に明記した**(`gaps-s-t-u-3`)。**解消は v1.0 直後に最優先**(段取りは ROADMAP §3 の該当行。第 1 段 = 可変長引数に渡すときだけ 80 ビット / binary128 に変換、第 2 段 = 演算本体) |
+| **T** | **配列の要素数をパーサが数える文脈で、struct を返す式が単一式初期化子として読めない** | `pt b[] = { {1,2}, fp(), {5,6} };` が gcc では 3 要素になるのに rubycc は拒否する。パーサは `[]` の長さをここで確定させる必要があるが、型表を持たないので `fp()` の型が分からない | **実測**(2026-08-08) | struct を直接初期化する形は通る(atomic-type-13)。**`gaps-s-t-u-2` で診断だけ正直にした**(以前は `excess elements in scalar initializer` という的外れな文言だった)。解消にはパーサ側に型を引く手段が要る |
 
 ## 2. 未解消の負債
 
@@ -87,8 +84,10 @@
   `--platform ruby` ビルドと実行に成功した。**musl 全スイートと aarch64 の
   `json` / `msgpack` を含む M4 全面受入れは未完了**。
 
-- **ギャップ U**(既定のシステム include 探索パスが x86-64 の multiarch 決め打ち):
-  `test-ci-implementation-9` で解消。Debian の multiarch ディレクトリは target ごとに
+- **ギャップ V**(既定のシステム include 探索パスが x86-64 の multiarch 決め打ち):
+  `test-ci-implementation-9` で解消。**当初 U と採番したが、§1 の U(`__GLIBC_MINOR__`)と
+  衝突していたので、閉じた側をここで V に振り直した**(開いている側の記号を動かすと
+  参照が壊れるため)。Debian の multiarch ディレクトリは target ごとに
   名前が違う(`bits/` の中身が別物)ので、同梱 arch 層とまったく同じく `libc_arch` に
   従わせた。**`float.h`(Step 201)・`math.h`(`test-ci-implementation-2`)に続いて
   3 件目の「freestanding/共通層は機種に依らない」という思い込み**である。

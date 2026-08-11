@@ -121,6 +121,9 @@ module Rubycc
         @static_storage = static_storage
         @type_of = type_of
         @flexible_bytes = 0
+        # The first expression this run could not type against a struct
+        # subobject, if any; #excess_elements_error reports against it.
+        @untyped_struct_item = nil
         # Only the object's *own* trailing flexible array member may be
         # initialized; one reached through a nested struct is rejected, so
         # remember which struct owns the one initializer this run may fill.
@@ -172,7 +175,7 @@ module Rubycc
         cursor = Cursor.new(list.items)
         final = fill_aggregate(type, base, cursor)
         unless cursor.eof?
-          error(item_token(cursor.peek), "excess elements in initializer")
+          excess_elements_error(item_token(cursor.peek), "excess elements in initializer")
         end
         final
       end
@@ -189,10 +192,34 @@ module Rubycc
           error(first.value.token, "too many braces around scalar initializer")
         end
         if list.items.size > 1
-          error(item_token(list.items[1]), "excess elements in scalar initializer")
+          excess_elements_error(item_token(list.items[1]), "excess elements in scalar initializer")
         end
         @entries << ScalarInit.new(base, type, first.value)
         type
+      end
+
+      # Raises the excess-element diagnostic `message`, unless this run already
+      # met an expression it could not type against a struct subobject -- in
+      # which case that expression, not the leftover item, is what the report has
+      # to name.
+      #
+      # The two are the same event seen from different ends. Without a `type_of`
+      # hook (the parser completing a declaration's type, docs/GAPS.md gap T) an
+      # expression standing at a struct subobject cannot be told from the start
+      # of an elided brace group, so the walk assumes elision, descends into the
+      # struct's members, consumes the following items to fill them, and runs off
+      # the end of the list. The overrun is a *consequence*: reporting it names
+      # an item that is entirely well-formed ("{5,6}" in
+      # `pt b[] = { {1,2}, fp(), {5,6} };`) and says "scalar", which sends the
+      # reader looking for a scalar that is not there. The generator re-resolves
+      # the same initializer with the hook and gets this right, so the message
+      # below is only ever what the type-completion pass produces.
+      def excess_elements_error(token, message)
+        return error(token, message) unless @untyped_struct_item
+
+        error(@untyped_struct_item.token,
+              "unsupported initializer: rubycc cannot tell whether this expression initializes " \
+              "a whole struct element, because its type is not known while the declaration is parsed")
       end
 
       # Dispatches an aggregate to its kind-specific fill, returning the (possibly
@@ -519,7 +546,14 @@ module Rubycc
         return false unless sub_type.struct?
 
         value_type = expression_type(value)
-        return designated if value_type.nil?
+        if value_type.nil?
+          # Remember the first expression this run had to guess about, so a
+          # later overrun can name it instead of the item it stopped on (see
+          # #excess_elements_error). Only the guess that assumes brace elision
+          # can overrun; a designated one fills the subobject outright.
+          @untyped_struct_item ||= value unless designated
+          return designated
+        end
 
         value_type.struct? && value_type == sub_type
       end

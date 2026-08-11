@@ -362,6 +362,51 @@ class TestElfReader < Minitest::Test
     host_libc_path
   end
 
+  # The version-definition table is what Preprocess::GlibcVersion measures the
+  # C library's release from, so the reader has to get the *shape* right on the
+  # real thing: a linked list of Verdef records, each with its own Verdaux
+  # chain, not an array. The assertions below therefore check the structure
+  # (a base definition naming the file, ordinary definitions carrying distinct
+  # indices and names) rather than any particular version number, which differs
+  # per host and is exactly what must not be written into a test.
+  def test_reads_version_definitions_from_the_host_libc
+    skip "host libc is not glibc" unless Rubycc::Preprocess::Preprocessor.host_libc == "glibc"
+    path = libc_path
+    skip "host libc not found" unless path && File.exist?(path)
+
+    definitions = Reader.read_file(path).version_definitions
+    refute_empty definitions, "glibc's libc defines symbol versions"
+
+    base = definitions.select(&:base?)
+    assert_equal 1, base.size, "exactly one definition carries VER_FLG_BASE"
+    # The base definition names the object itself, which is why it is not a
+    # version a symbol can bind to.
+    assert_equal host_libc_soname, base.first.name
+
+    versions = definitions.reject(&:base?)
+    refute_empty versions
+    versions.each do |v|
+      refute_nil v.name
+      refute_empty v.name
+      assert_kind_of Array, v.parents
+    end
+    indices = definitions.map(&:index)
+    assert_equal indices.uniq, indices, "vd_ndx is what a .gnu.version entry binds to, so it is unique"
+  end
+
+  # The counterpart: an object with no .gnu.version_d at all reads as "no
+  # versions", not as an error. Every relocatable object is that case, and it is
+  # also what a musl libc looks like -- which is why GlibcVersion treats an
+  # empty result as "cannot measure" rather than "version zero".
+  def test_object_without_version_definitions_reads_as_empty
+    obj = read_writer do |w|
+      w.add_text_section(MAIN_CODE)
+      w.add_global_func("main", 0, MAIN_CODE.bytesize)
+    end
+
+    assert_empty obj.version_definitions
+  end
+
   def test_reads_libc_dynamic_symbols_and_soname
     path = libc_path
     skip "host libc not found" unless path && File.exist?(path)
