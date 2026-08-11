@@ -38,7 +38,12 @@ Listed in full, with measurements, in the README. The ones most likely to matter
 
 - Compile throughput is 69% of the 20,000 lines/sec target.
 - Generated code is unoptimized; up to 7.65x slower than `gcc -O2` on tight loops.
-- `_Atomic` is not implemented, so `<stdatomic.h>` is not bundled.
+- C11 atomics are partial: `_Atomic` compiles to the unqualified type's layout and ABI
+  for scalars of 1, 2, 4 and 8 bytes, and the bundled `<stdatomic.h>` carries the fences
+  and the generic macros; `atomic_fetch_or`/`_and`/`_xor`, `atomic_flag` and the implicit
+  sequential consistency of a plain access are missing.
+- `long double` is compiled as `double` (8 bytes, not the ABI's 80-bit x87 in 16), so it
+  loses precision and a value passed to `printf("%Lg", …)` reads back wrong.
 - Shared objects bind their own global symbols directly (`ld -Bsymbolic` semantics),
   with no switch to turn it off.
 - 128-bit integers: passing, returning and shifting work; division, remainder, bitwise
