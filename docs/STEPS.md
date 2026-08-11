@@ -10258,3 +10258,61 @@ minitest 6 は mock を同梱しないため、特異メソッドの差し替え
 x86-64 側は 1 バイトも変わっていない(examples 44 本 + c-testsuite 220 本 =
 実際にコンパイルできた 264 ファイルの `.o` を、分岐元 e7406b0 と SHA-256 で
 突き合わせて確認)。
+
+## m4/aarch64-alloca-bitscan-3 — 機能を消したら、それを数えていた台帳も消す(M4 A4)
+
+前 2 ステップで alloca とビットスキャンが通るようになった結果、
+「未実装だから skip」が消えた。CI はこれを **失敗として報告した** —
+`tools/ci_check_skips.rb` の skip ベースライン検査が
+`expected_skips=42, got 40` と `skip_fingerprint` 不一致で落ちた。
+テストは 0 failures / 0 errors で通っており、**落ちたのは台帳の側**である。
+
+この検査は「外部ツールの欠落で大量に skip されるのを検出する」ためのものなので、
+skip が**減った**ときにも落ちるのは設計どおりの挙動である。減った分を台帳から
+消し込むまでがステップの範囲だった。
+
+### x86 ホストでは見えなかった skip が 2 件あった
+
+`test_gcc_builtins.rb` の skip は前ステップで消したが、同種のものが残っていた:
+
+- `test_execution_harness.rb` の `test_builtin_alloca_matches_gcc_exit_codes`
+- `test_header_abi.rb` の `test_alloca_abi_matches_gcc`
+
+どちらも `if host_target == "aarch64"` で守られており、**x86 ホストでは発火しない**。
+ローカルの全スイートでも PR の CI(ubuntu-24.04)でも観測されないまま、
+alloca が実装済みになった後も「未実装だから skip」と主張し続けていた。
+ターゲット条件付きの skip は、そのターゲットで走らせるまで嘘に気づけない。
+
+### aarch64 プロファイルは数えずに provisional にした
+
+`config/ci/skip-baseline.json` は 2 プロファイルを持ち、
+`test.yml` がランナーに応じて選ぶ(ARM なら `native-aarch64`)。
+
+- **`native-x86`**: PR の実測ログ(run 31470622580)から再測定。42 → 40、
+  フィンガープリントも算出し直した。Ruby 3.3 と 4.0 で同一値になることを確認済み
+- **`native-aarch64`**: **再測定できない**。このプロファイルが走るのは
+  `only: aarch64` の手動 dispatch だけで、手元に aarch64 ランナーが無い。
+  フィンガープリントはテスト名と理由の SHA-256 なので、**推測で埋められない**。
+  `provisional: true` を立て、`expected_skips` と `skip_fingerprint` は
+  **最後の実測値としてそのまま残した**
+
+最初は古い値を削除したが、それは誤りだった。`test_ci_check_skips.rb` の
+`test_strict_profile_rejects_a_new_test_with_an_existing_reason` が、
+**このプロファイルのフィンガープリントを使って**「理由は既知だがテスト名が新しい
+skip」を弾けることを検証している。値を消すとその検査自体が消え、
+単体テストは「`skip_fingerprint` が理由に挙がること」を確認できずに落ちた。
+台帳のデータは台帳だけのものではなく、**機構の検証がそれに依存していた**。
+
+残した形の方が意味も正しい。`provisional` は「この値を信用するな」という印であって、
+値が無いことではない。`source_log` が指す実測は確かに行われたので、
+古い測定値 + 暫定フラグは、キャッシュを dirty と印すのと同じ形になる。
+
+`provisional` は強制時にそれ自体が失敗になる(`ci_check_skips.rb:294`)。
+問題は短絡せず全て蓄積されるので、次の native dispatch は
+「暫定である」と「件数・フィンガープリントが合わない」の両方を報告する。
+再測定の必要と、ずれの中身が同時に分かる。
+
+なお発生し得なくなった `allowed_skips` ルール 9 件(両プロファイル計)も削除した。
+残しても `min_count: 0` なので落ちないが、**起こり得ない skip の許可**は
+次に読む人を誤らせる。消したことで、万一これらが再び skip されれば
+「未承認の skip」として落ちる — 望ましい向きである。

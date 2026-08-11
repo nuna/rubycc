@@ -1798,8 +1798,6 @@ class TestHeaderAbi < Minitest::Test
   end
 
   def test_alloca_abi_matches_gcc
-    skip "aarch64 alloca lowering is not implemented (IR 6.5 target limitation)" if host_target == "aarch64"
-
     assert_abi_matches(ALLOCA)
   end
 
