@@ -156,11 +156,27 @@
 # define __USE_FORTIFY_LEVEL 0
 #endif
 
-/* rubycc presents the glibc x86-64 ABI; report the reference platform's version
-   so version-gated header code takes the same branch it does under glibc. */
+/* rubycc presents the glibc ABI; report a version so version-gated header code
+   takes the same branch it does under glibc. Which version that is cannot be
+   written into a header set shipped to every host: on a host whose glibc is
+   older than the number below, a gate like "#if __GLIBC_PREREQ (2, 38)" would
+   select a branch whose symbols the local C library does not have (docs/GAPS.md
+   gap U). rubycc therefore measures the version from the C library the compile
+   will link against and predefines __GLIBC__ / __GLIBC_MINOR__ itself
+   (Preprocess::GlibcVersion), which is why each is defined here only when it is
+   absent. The values below are the fallback for the cases where no measurement
+   reached this header: the reference platform this header set was measured on
+   (glibc 2.39), a musl target (where the whole file is glibc's surface anyway,
+   and where these macros keep the values they have always had here), and a read
+   of this header by some other compiler. __GLIBC_PREREQ is not measured and not
+   guarded: it is a pure function of the two macros above. */
 #define __GNU_LIBRARY__ 6
-#define __GLIBC__       2
-#define __GLIBC_MINOR__ 39
+#ifndef __GLIBC__
+# define __GLIBC__       2
+#endif
+#ifndef __GLIBC_MINOR__
+# define __GLIBC_MINOR__ 39
+#endif
 #define __GLIBC_PREREQ(maj, min) \
   ((__GLIBC__ << 16) + __GLIBC_MINOR__ >= ((maj) << 16) + (min))
 

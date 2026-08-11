@@ -36,7 +36,7 @@ class TestCSuite < Minitest::Test
   # that path is the point: a suite that hand-rolls the list and passes
   # `system_includes: false` stops exercising the search order real builds use,
   # which is exactly how the x86-only multiarch directory survived unnoticed
-  # (GAPS U). `/usr/lib/gcc/.../include` stays absent either way.
+  # (GAPS V). `/usr/lib/gcc/.../include` stays absent either way.
   SYSTEM_INCLUDE_PATHS = [].freeze
 
   # Cases the current rubycc subset cannot build or run correctly yet, each

@@ -4,6 +4,7 @@ require "rbconfig"
 require_relative "scanner"
 require_relative "token_converter"
 require_relative "constant_expression"
+require_relative "glibc_version"
 require_relative "../front/constant_evaluator"
 require_relative "../compile_error"
 
@@ -98,7 +99,7 @@ module Rubycc
       # LIBC_SYSTEM_INCLUDE_PATHS_FOR, which #libc_system_include_paths uses per
       # instance. Naming one target here unconditionally was a real defect: an
       # AArch64 host searched a directory that does not exist and never looked in
-      # its own (GAPS U).
+      # its own (GAPS V).
       LIBC_MULTIARCH_INCLUDE_DIRS = {
         "x86_64" => "/usr/include/x86_64-linux-gnu",
         "aarch64" => "/usr/include/aarch64-linux-gnu"
@@ -368,6 +369,29 @@ module Rubycc
         RbConfig::CONFIG["arch"].to_s.include?("musl") ? "musl" : "glibc"
       end
 
+      # The glibc version macros, predefined on a glibc target so the bundled
+      # <features.h> does not have to name a version it cannot know. __GLIBC__
+      # is a constant (glibc's major has been 2 since 1997); the minor is
+      # measured from the C library the compile will link against, because a
+      # single shipped header set otherwise reports one host's version on every
+      # host, and a version gate then selects a branch the local libc may not be
+      # able to back (docs/GAPS.md gap U).
+      GLIBC_MAJOR_MACRO = "__GLIBC__"
+      GLIBC_MINOR_MACRO = "__GLIBC_MINOR__"
+      GLIBC_MAJOR = 2
+
+      # The measured glibc minor version for the `libc_arch` target, or nil when
+      # this host offers nothing to measure (see GlibcVersion). nil is not an
+      # error and not a substitute value: the two macros are then left
+      # undefined, and the bundled <features.h> supplies its own fallback pair
+      # -- the reference platform's 2.39 -- exactly as it did before this was
+      # measured at all. Keeping the fallback in the header rather than
+      # repeating the number here also keeps a header read outside rubycc (or
+      # under -nostdinc with the host's own headers) on the same value.
+      def self.host_glibc_minor(libc_arch = "x86_64")
+        GlibcVersion.minor_for(libc_arch)
+      end
+
       # `char_unsigned` says whether plain `char` is unsigned on the target being
       # compiled for (it is under AAPCS64, and is not under the x86-64 System V
       # psABI, hence the default). When it is, __CHAR_UNSIGNED__ joins the
@@ -386,13 +410,27 @@ module Rubycc
       # ("glibc" or "musl", see LIBCS); it defaults to the host's own (see
       # .host_libc), and on "musl" it predefines LIBC_MUSL_MACRO so the headers
       # take their musl branches.
+      # `glibc_minor` is the glibc minor version the version macros are to
+      # report on a glibc target; it defaults to the one measured from the C
+      # library that target links against (see .host_glibc_minor), and nil --
+      # which is also what an unmeasurable host yields -- leaves both macros
+      # undefined for the bundled <features.h> to fall back on. It is a keyword
+      # so a caller can pin a version deliberately (a cross compile against a
+      # sysroot this host cannot search, and the tests' fallback case). The
+      # default measures only on a glibc target: on "musl" the value is unused,
+      # and reading a C library to answer a question nobody asks would cost
+      # every musl translation unit a megabyte-scale read for nothing.
       def initialize(char_unsigned: false, arch_macros: X86_64_ARCH_MACROS, libc_arch: "x86_64",
-                     libc: Preprocessor.host_libc)
+                     libc: Preprocessor.host_libc,
+                     glibc_minor: (libc == "glibc" ? Preprocessor.host_glibc_minor(libc_arch) : nil))
         unless LIBC_ARCHS.include?(libc_arch)
           raise ArgumentError, "unsupported libc arch: #{libc_arch.inspect} (expected one of #{LIBC_ARCHS.join(", ")})"
         end
         unless LIBCS.include?(libc)
           raise ArgumentError, "unsupported libc: #{libc.inspect} (expected one of #{LIBCS.join(", ")})"
+        end
+        unless glibc_minor.nil? || (glibc_minor.is_a?(Integer) && !glibc_minor.negative?)
+          raise ArgumentError, "glibc minor version must be a non-negative Integer or nil: #{glibc_minor.inspect}"
         end
 
         # The bundled libc arch layer this instance searches (see
@@ -401,7 +439,7 @@ module Rubycc
         @libc_arch_include_dir = File.expand_path("../../../include/libc/glibc/#{libc_arch}", __dir__)
         # The host libc directories this instance searches. The multiarch slot
         # follows the same `libc_arch` as the bundled layer above, so a compile
-        # never looks for another target's `bits/` (GAPS U).
+        # never looks for another target's `bits/` (GAPS V).
         @libc_system_include_paths = self.class.libc_system_include_paths_for(libc_arch)
         # name (String) => Macro.
         @macros = {}
@@ -409,6 +447,18 @@ module Rubycc
         @macros["__CHAR_UNSIGNED__"] = predefined_target_macro if char_unsigned
         @macros[LIBC_MUSL_MACRO] = predefined_target_macro if libc == "musl"
         PREDEFINED_NUMERIC_MACROS.each { |name, text| @macros[name] = predefined_numeric_macro(text) }
+        # The glibc version pair, defined only on a glibc target and only when
+        # the version could be measured. They are ordinary numeric macros like
+        # the ones above (a translation unit may #undef or redefine them), and
+        # the bundled <features.h> defines each only when it is absent, so this
+        # is what makes a version gate agree with the host's own headers. On
+        # musl, and when nothing could be measured, nothing is defined here and
+        # <features.h> keeps supplying the reference platform's pair, which is
+        # what every compile did before the measurement existed.
+        if libc == "glibc" && glibc_minor
+          @macros[GLIBC_MAJOR_MACRO] = predefined_numeric_macro(GLIBC_MAJOR.to_s)
+          @macros[GLIBC_MINOR_MACRO] = predefined_numeric_macro(glibc_minor.to_s)
+        end
         @include_depth = 0
         # Absolute paths of files that asked (via "#pragma once") to be read at
         # most once; a later #include resolving to one of them is skipped.

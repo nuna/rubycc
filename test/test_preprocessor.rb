@@ -1309,7 +1309,7 @@ class TestPreprocessor < Minitest::Test
   # and the AArch64 one live in different directories -- so it belongs to
   # `libc_arch` exactly like the bundled arch layer. It used to be a constant
   # naming x86-64 unconditionally, which meant an AArch64 host searched a
-  # directory that does not exist and never looked in its own (GAPS U).
+  # directory that does not exist and never looked in its own (GAPS V).
   def test_host_libc_search_path_follows_the_target_not_the_build_host
     pp = Rubycc::Preprocess::Preprocessor
     x86 = pp.new(libc_arch: "x86_64").send(:default_system_include_paths)
@@ -1614,6 +1614,75 @@ class TestPreprocessor < Minitest::Test
     tokens = pp("__signed__ char c = -1;").reject(&:eof?)
     assert_equal %i[keyword keyword ident punct punct num punct], tokens.map(&:type)
     assert_equal ["signed", "char", "c", "=", "-", 1, ";"], tokens.map(&:value)
+  end
+
+  # --- the glibc version macros (GAPS U) ------------------------------------
+  #
+  # The bundled headers ship to every host, so the version they report cannot be
+  # a constant: on a host older than that constant, a version gate selects a
+  # branch whose symbols the local C library does not have. The value is
+  # measured from the C library the compile links against, and these tests pin
+  # the four states that measurement can be in.
+
+  # platform-literal: this whole block is about glibc's own version macros, so
+  # naming them is the subject matter rather than an assumption about the host;
+  # every assertion below reads the expected value from the host rather than
+  # spelling one out.
+  GLIBC_VERSION_PROBE = "#include <features.h>\nV __GLIBC__ __GLIBC_MINOR__\n"
+
+  # platform-literal: the version gate itself is what these tests are about --
+  # the macro whose branch selection went wrong on a host older than the number
+  # the bundled header carried. The gate's *result* is never asserted against a
+  # hard-coded host version; only the substituted number is checked, and that
+  # number is the one the test pinned.
+  GLIBC_PREREQ_PROBE = "#include <features.h>\nV __GLIBC_PREREQ(2, 38)\n"
+
+  # The two macro values a preprocessor built with `options` reports.
+  def glibc_version_pair(**options)
+    tokens = Rubycc::Preprocess::Preprocessor.new(**options).run(GLIBC_VERSION_PROBE, filename: "t.c")
+    values = tokens.reject(&:eof?).map(&:value)
+    values.drop(values.index("V") + 1).first(2)
+  end
+
+  def test_glibc_version_macros_are_measured_from_the_host_libc
+    skip "host libc is not glibc" unless Rubycc::Preprocess::Preprocessor.host_libc == "glibc"
+    measured = Rubycc::Preprocess::Preprocessor.host_glibc_minor
+    skip "no glibc image to measure on this host" if measured.nil?
+
+    assert_equal [2, measured], glibc_version_pair
+  end
+
+  # A pinned version reaches the macros unchanged -- the cross-compilation case,
+  # and the reason a gate can now come out false on an older target.
+  def test_glibc_minor_can_be_pinned_and_reaches_the_version_gate
+    assert_equal [2, 34], glibc_version_pair(glibc_minor: 34)
+
+    gate = Rubycc::Preprocess::Preprocessor.new(glibc_minor: 34)
+                                           .run(GLIBC_PREREQ_PROBE, filename: "t.c")
+                                           .reject(&:eof?).map(&:value)
+    # The expression is left for the compiler to fold, so what is asserted here
+    # is that the *measured* number is what got substituted into it.
+    assert_includes gate, 34
+    refute_includes gate, 39
+  end
+
+  # Nothing measurable is not an error and not a substituted zero: the bundled
+  # <features.h> supplies the reference platform's pair, which is what every
+  # compile did before the measurement existed.
+  def test_unmeasurable_host_falls_back_to_the_bundled_header_pair
+    assert_equal [2, 39], glibc_version_pair(glibc_minor: nil)
+  end
+
+  # musl defines no version nodes and none of these macros are its own, so a
+  # musl target must be byte-identical to what it was before the measurement.
+  def test_musl_target_is_unchanged_by_the_measurement
+    assert_equal [2, 39], glibc_version_pair(libc: "musl")
+  end
+
+  def test_glibc_minor_rejects_a_value_that_is_not_a_version
+    err = assert_raises(ArgumentError) { Rubycc::Preprocess::Preprocessor.new(glibc_minor: "39") }
+    assert_match(/glibc minor version/, err.message)
+    assert_raises(ArgumentError) { Rubycc::Preprocess::Preprocessor.new(glibc_minor: -1) }
   end
 
   private
