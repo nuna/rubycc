@@ -94,6 +94,7 @@ M4(aarch64 バックエンド)のステップは**新しい C 言語機能を足
 | ファイル | 実演するステップと機能 |
 |---|---|
 | `aarch64_alloca_bitscan_1_bit_scan.c` | Step m4/aarch64-alloca-bitscan-1: ビットスキャン組み込み(`__builtin_ctz`/`clz`/`ctzll`/`clzll`)の aarch64 対応。言語機能自体は Step 44 からあり、本サンプルが示すのは**同じ答えに別の命令列で到達する第二バックエンド**である — x86-64 は「最上位セットビットの位置」を返す `bsr` を幅から引いて clz を作るが、aarch64 の `clz` は答えそのもので、ctz は `rbit` でビット順を反転してから同じ `clz` に掛ける。ケースはほぼすべて**カウントの幅**を分離するために選んである(`0x80000000` の clz は unsigned int で 0・unsigned long で 32)。オペランドは配列と関数引数を通して実行時の値にし、0 は未定義動作なので意図的に外した。`test_examples.rb` が gcc 差分で、`test_examples_aarch64.rb` がクロス gcc + qemu 差分で検証する |
+| `aarch64_alloca_bitscan_2_alloca.c` | Step m4/aarch64-alloca-bitscan-2: `__builtin_alloca` の aarch64 対応。x86-64 では全スロットが rbp 基準なので rsp を下げるだけで済むが、aarch64 は sp 基準のフレーム(ldr/str の即値が上方向に 32 KiB・下方向に 256 バイトしか届かないための設計)なので、alloca を含む関数だけフレームを x29 で固定する。実演するのはその帰結 4 つ — **記憶域はスコープではなく関数の終わりまで生きる**(ループ内 alloca は毎周 別のブロックを返し、先に書いた内容が最後まで読める)・**スタック引数を持つ呼び出しは alloca ブロックの下に領域を取り直す**(AAPCS64 は callee が `bl` 時点の sp から読むため。10 引数で 2 個がスタックに載る)・**可変長関数の va_arg 走査も固定フレーム基準**・**確保サイズによらず 16 バイト整列**。番地そのものは印字せず関係(相異・整列・非重複)だけを見る。`test_examples.rb` が gcc 差分で、`test_examples_aarch64.rb` がクロス gcc + qemu 差分で検証する |
 
 ## m5 のサンプル一覧
 

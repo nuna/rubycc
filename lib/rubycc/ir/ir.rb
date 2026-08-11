@@ -202,12 +202,15 @@ module Rubycc
     #                               base address of that many bytes of automatic
     #                               storage carved from the stack (__builtin_alloca).
     #                               The backend rounds the count up to a 16-byte
-    #                               multiple and subtracts it from rsp, so rsp stays
-    #                               16-aligned and the block is 16-byte aligned; the
-    #                               storage is reclaimed wholesale when the function
-    #                               returns (its epilogue restores rsp from rbp), not
-    #                               at end of scope. Every other value is rbp-relative,
-    #                               so the moving rsp is safe
+    #                               multiple and subtracts it from the stack pointer,
+    #                               so that stays 16-aligned and the block is 16-byte
+    #                               aligned; the storage is reclaimed wholesale when
+    #                               the function returns, not at end of scope. What
+    #                               makes the moving stack pointer safe differs by
+    #                               target: x86-64 addresses every other value from
+    #                               rbp already, while aarch64 is sp-relative and so
+    #                               anchors the frame of an alloca-using function in
+    #                               x29 for the duration (see backend/aarch64.rb)
     #   :bit_scan dst <- scan(a)    counts the zero bits of the integer in vreg a,
     #                               for __builtin_ctz/clz (and their "ll" forms).
     #                               b is the direction — :forward for a trailing

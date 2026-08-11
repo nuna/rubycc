@@ -9,6 +9,13 @@ module Rubycc
     # It is a user-facing error rather than an internal one: the program is
     # valid C, this target simply cannot compile it yet, so the driver reports
     # it as a diagnostic instead of letting it surface as a Ruby crash.
+    #
+    # No backend raises it at the moment — the AArch64 one lowered its last gap
+    # (alloca) in m4/aarch64-alloca-bitscan-2. The class and the driver's
+    # handling of it stay because this is the contract a *new* target is written
+    # against: a backend under construction refuses what it cannot yet lower
+    # with `raise UnsupportedError, "<target>: not yet supported: <feature>"`
+    # rather than emitting something plausible-looking.
     class UnsupportedError < Rubycc::Error; end
 
     # AArch64 (ARM64) code generator, the second backend behind the same
@@ -19,17 +26,24 @@ module Rubycc
     # entirely different: fixed-length 32-bit instructions, a flat register
     # file, and load/store addressing that shapes the frame layout.
     #
-    # Frame layout (sp-relative, positive offsets). Unlike x86_64's rbp-negative
-    # displacements, every slot is addressed as [sp + off] with a non-negative
-    # off, because AArch64's ldr/str unsigned-offset form scales a 12-bit
-    # immediate by the access size (reaching 0..32760 for a 64-bit load) while
-    # the fp-relative signed form is only a 9-bit unscaled window (-256..255)
-    # that a modest frame overruns at once. From sp upward the frame holds the
+    # Frame layout (frame-base-relative, positive offsets). Unlike x86_64's
+    # rbp-negative displacements, every slot is addressed as [base + off] with a
+    # non-negative off, because AArch64's ldr/str unsigned-offset form scales a
+    # 12-bit immediate by the access size (reaching 0..32760 for a 64-bit load)
+    # while the signed form is only a 9-bit unscaled window (-256..255) that a
+    # modest frame overruns at once. From the base upward the frame holds the
     # outgoing argument area, the saved frame record (x29/x30), the vreg slots
     # and the stack objects. A slot whose offset still overflows the scaled
     # immediate is reached by composing its address into a scratch register with
     # add-immediate(s) — the path is built in from the start rather than bolted
     # on for large frames.
+    #
+    # The frame base is sp itself in an ordinary function, which costs nothing
+    # and leaves x29 free. It is x29 in a function containing :alloca, because
+    # there sp moves during the body and a slot named against it would change
+    # address under the program's feet: the prologue copies sp into x29 once the
+    # frame is set up and every fixed-frame access goes through
+    # #frame_base_register from then on (see #emit_alloca).
     #
     # The outgoing argument area sits at the very bottom because AAPCS64 places
     # a call's stack arguments starting at the caller's sp, and it is reserved
@@ -42,6 +56,14 @@ module Rubycc
     # area's size is rounded to 16, and AAPCS64 requires sp 16-aligned at a
     # public interface), and costs nothing at run time. A function that makes no
     # call with stack arguments reserves nothing, so its frame is unchanged.
+    #
+    # A function containing :alloca is the exception, and it is the exception in
+    # both directions: it reserves no static area (sp no longer names the bottom
+    # of the fixed frame once a block has been allocated, so the area would be
+    # unreachable) and instead lowers sp around each call, below the allocated
+    # blocks. That is affordable precisely because the objection above no longer
+    # applies — the slots are named against x29 there, so moving sp disturbs
+    # nothing.
     #
     # Value representation is identical to the x86_64 backend's slot discipline
     # (see backend/x86_64.rb): a slot is always read and written 64 bits at a
@@ -103,10 +125,10 @@ module Rubycc
     # synthesized 128-bit multiply needs, and the bit-scan builtins (`clz`, and
     # `rbit` before it for the trailing-zero direction). The atomic ops are
     # covered too, built from the armv8-a baseline load-acquire / store-release
-    # exclusive pair (see the atomics section below). The one feature the
-    # generator can still hand it that belongs to the rest of A4 (alloca) is
-    # refused with an explicit "not yet supported" error rather than
-    # miscompiled.
+    # exclusive pair (see the atomics section below), and dynamic stack
+    # allocation, which moves sp below the fixed frame while x29 keeps that
+    # frame addressable (see #emit_alloca). Every IR op the generator can hand
+    # this backend is now lowered; there is nothing left it refuses.
     class AArch64
       # Result of compiling one function, the same shape the x86_64 backend
       # returns: `bytes` the machine code, `symbols` an array of
@@ -265,9 +287,20 @@ module Rubycc
       # function passes an argument on the stack), the 16-byte saved record,
       # the vreg slots (8 bytes each, the region rounded to 16 so the objects
       # stay 16-aligned), then each stack object at a 16-byte-aligned size above
-      # the previous. All offsets are non-negative displacements from sp.
+      # the previous. All offsets are non-negative displacements from the frame
+      # base, which this method also decides (see #frame_base_register).
       def layout_frame(vreg_count, stack_objects, insts, variadic)
-        @outgoing_size = outgoing_argument_bytes(insts)
+        # Whether this function allocates dynamically decides two things at
+        # once: which register names the fixed frame (see #frame_base_register)
+        # and whether a static outgoing argument area is worth reserving. It is
+        # a property of the whole function, not of a path through it, because a
+        # slot's address must not depend on which branch reached it.
+        @uses_alloca = insts.any? { |inst| inst.op == :alloca }
+        # An alloca function reserves no static outgoing area: sp stops naming
+        # the bottom of the fixed frame the moment a block is allocated, so the
+        # area would be unreachable at the one moment it is needed. Each call
+        # lowers sp for its own area instead (see #place_arguments).
+        @outgoing_size = @uses_alloca ? 0 : outgoing_argument_bytes(insts)
         @save_offset = @outgoing_size
         vreg_region = align16(vreg_count * 8)
         running = @save_offset + SAVE_AREA_SIZE + vreg_region
@@ -328,13 +361,22 @@ module Rubycc
 
       # Lowers sp by the frame size, saves x29/x30 into the record just above
       # the outgoing argument area, and spills the incoming arguments to their
-      # parameter slots. x29 is not used as a frame pointer (every slot is
-      # sp-relative), but the pair is saved and restored so the callee-saved x29
-      # and the return address in x30 round-trip across any call this function
-      # makes.
+      # parameter slots. In an ordinary function x29 is not used as a frame
+      # pointer (every slot is sp-relative), but the pair is saved and restored
+      # so the callee-saved x29 and the return address in x30 round-trip across
+      # any call this function makes.
+      #
+      # An alloca function additionally anchors the fixed frame in x29. The
+      # order matters and is forced: the caller's x29 has to reach the saved
+      # record before it is overwritten, and the copy has to happen before the
+      # parameters are spilled, since those stores already go through the frame
+      # base. The record itself is therefore stored against sp explicitly rather
+      # than through #frame_base_register, which at that instant would name a
+      # register holding the caller's value.
       def emit_prologue(param_kinds, variadic)
         adjust_sp(@frame_size, sub: true)
-        emit_save_record(store: true)
+        emit_save_record(store: true, base: SP)
+        emit_add_imm(FP, SP, 0, shift12: false) if @uses_alloca # mov x29, sp
         spill_parameters(param_kinds)
         save_argument_registers if variadic
       end
@@ -352,7 +394,7 @@ module Rubycc
       # how many arguments the fixed part named.
       def save_argument_registers
         ARG_REGISTERS.each_with_index do |reg, i|
-          store_at(reg, @gr_save_offset + 8 * i)
+          store_frame_at(reg, @gr_save_offset + 8 * i)
         end
         FP_ARG_REGISTERS.each_with_index do |reg, i|
           emit_fp_slot_access(reg, @vr_save_offset + 16 * i, 8, load: false)
@@ -397,22 +439,33 @@ module Rubycc
       end
 
       # Restores x29/x30, raises sp back, and returns. Emitted at every :ret.
+      #
+      # In an alloca function sp is wherever the last allocation left it, so it
+      # is first brought back to the fixed frame from the anchor in x29. That
+      # single instruction releases every block allocated in the body at once —
+      # the storage lives until the function returns, as C requires, not until
+      # the end of the scope that allocated it. The record is then reloaded and
+      # the fixed frame released exactly as in an ordinary function (sp and x29
+      # are equal by then, so the reload needs no special base).
       def emit_epilogue
+        emit_add_imm(SP, FP, 0, shift12: false) if @uses_alloca # mov sp, x29
         emit_save_record(store: false)
         adjust_sp(@frame_size, sub: false)
         emit_word(0xD65F03C0) # ret (branch to x30)
       end
 
-      # Stores or reloads the x29/x30 pair at [sp + @save_offset]. The stp/ldp
-      # immediate is a 7-bit signed field scaled by 8, so it reaches 504 bytes;
-      # an outgoing argument area wider than that (a call with 64 or more stack
-      # arguments) is addressed through the ADDR scratch instead, which holds no
-      # live value in either the prologue or the epilogue.
-      def emit_save_record(store:)
+      # Stores or reloads the x29/x30 pair at [base + @save_offset], `base`
+      # defaulting to the frame base. The stp/ldp immediate is a 7-bit signed
+      # field scaled by 8, so it reaches 504 bytes; an outgoing argument area
+      # wider than that (a call with 64 or more stack arguments) is addressed
+      # through the ADDR scratch instead, which holds no live value in either
+      # the prologue or the epilogue.
+      def emit_save_record(store:, base: nil)
+        base ||= frame_base_register
         if @save_offset <= MAX_PAIR_OFFSET
-          store ? emit_stp(FP, LR, SP, @save_offset) : emit_ldp(FP, LR, SP, @save_offset)
+          store ? emit_stp(FP, LR, base, @save_offset) : emit_ldp(FP, LR, base, @save_offset)
         else
-          emit_slot_address(ADDR, @save_offset)
+          emit_base_address(ADDR, base, @save_offset)
           store ? emit_stp(FP, LR, ADDR, 0) : emit_ldp(FP, LR, ADDR, 0)
         end
       end
@@ -438,7 +491,7 @@ module Rubycc
             store_reg(ARG_REGISTERS[next_gp], i)
             next_gp += 1
           when :mem
-            load_at(A, incoming_stack_offset(next_stack))
+            load_frame_at(A, incoming_stack_offset(next_stack))
             store_reg(A, i)
             next_stack += 1
           when :pad
@@ -521,9 +574,7 @@ module Rubycc
         when :atomic_cas then emit_atomic_cas(inst.dst, inst.a, inst.b[0], inst.b[1], inst.size)
         when :atomic_fence then emit_atomic_fence
         when :va_start then emit_va_start(inst.a)
-        # The one op left of A4. It is refused explicitly so a program using it
-        # fails loudly instead of silently.
-        when :alloca then unsupported("alloca")
+        when :alloca then emit_alloca(inst.dst, inst.a)
         else
           raise "aarch64: unsupported IR op: #{inst.op}"
         end
@@ -604,6 +655,38 @@ module Rubycc
         load_reg(A, src_vreg)
         emit_word(RBIT[w] | (A << 5) | A) if direction == :forward
         emit_word(CLZ[w] | (A << 5) | A)
+        store_reg(A, dst)
+      end
+
+      # :alloca — dynamic stack allocation (__builtin_alloca). The requested
+      # byte count is rounded up to a multiple of 16 (add 15, then clear the low
+      # four bits), sp is lowered by that much, and the resulting sp — the
+      # lowest address of the block, the stack growing down — is the value the
+      # destination slot receives.
+      #
+      # Rounding to 16 is what keeps sp 16-aligned, which AAPCS64 requires of it
+      # at every public interface and which incidentally gives the block the
+      # 16-byte alignment gcc's __builtin_alloca promises. The mask is a single
+      # AND (immediate): 0xFFFF_FFFF_FFFF_FFF0 is a run of 60 ones, so it is
+      # expressible as a bitmask immediate (N = 1, immr = 60, imms = 59) rather
+      # than needing the four-instruction movz/movk sequence a general 64-bit
+      # constant costs.
+      #
+      # The subtraction has to be the *extended-register* form: the ordinary
+      # shifted-register sub reads register 31 as the zero register, and only
+      # the extended form (and add/sub-immediate) reads it as sp.
+      #
+      # Nothing else in the function has to change position for this to be safe,
+      # because #layout_frame has already switched every fixed-frame access to
+      # x29 (see #frame_base_register) and every call to reserving its outgoing
+      # argument area below the allocated blocks (see #place_arguments). The
+      # blocks are released wholesale by the epilogue's "mov sp, x29".
+      def emit_alloca(dst, size_vreg)
+        load_reg(A, size_vreg)                        # A = requested byte count
+        emit_add_imm(A, A, 15, shift12: false)        # add A, A, #15
+        emit_word(AND_NOT15 | (A << 5) | A)           # and A, A, #-16
+        emit_word(SUB_EXTENDED | (A << 16) | (SP << 5) | SP) # sub sp, sp, A
+        emit_add_imm(A, SP, 0, shift12: false)        # mov A, sp (the block base)
         store_reg(A, dst)
       end
 
@@ -729,13 +812,15 @@ module Rubycc
       # :call — a direct call. Arguments are placed in x0..x7 / v0..v7, then `bl`
       # (its 26-bit immediate left zero and recorded as an R_AARCH64_CALL26
       # relocation the linker resolves), and the result is stored back from x0 or
-      # v0. A struct result is a later milestone and is refused.
+      # v0 — or, for an aggregate returned in registers, scattered into the
+      # caller's buffer (see #store_call_result).
       def emit_call(dst, name, args, size)
         _fixed, ret = size || [nil, nil]
-        place_arguments(args)
+        stack_bytes = place_arguments(args)
         @relocations << { kind: :call, offset: @code.bytesize, symbol: name }
         emit_word(0x94000000) # bl <patched by R_AARCH64_CALL26>
         store_call_result(dst, ret)
+        release_dynamic_argument_area(stack_bytes)
       end
 
       # :call_indirect — the same sequence through a computed target. The
@@ -747,10 +832,11 @@ module Rubycc
       # no relocation, the address being an ordinary run-time value.
       def emit_call_indirect(dst, target_vreg, args, size)
         _fixed, ret = size || [nil, nil]
-        place_arguments(args)
+        stack_bytes = place_arguments(args)
         load_reg(A, target_vreg)
         emit_word(0xD63F0000 | (A << 5)) # blr A
         store_call_result(dst, ret)
+        release_dynamic_argument_area(stack_bytes)
       end
 
       # Parks a call's result in its destination slot. An in-register aggregate
@@ -817,7 +903,17 @@ module Rubycc
       # happens to interleave. Each load then writes only its own destination
       # and reads sp, so placing a later argument never clobbers an earlier one,
       # and the integer and vector register files never collide.
+      #
+      # In an alloca function there is no static area to write into, so this
+      # call's own is carved out here by lowering sp — below every block the
+      # body has allocated, which is exactly where the callee's arguments belong
+      # and where they disturb nothing. #release_dynamic_argument_area gives the
+      # space back once the call has returned. The byte count is returned so the
+      # two halves cannot disagree about how much moved.
       def place_arguments(args)
+        stack_bytes = align16(args.count { |_vreg, kind| kind == :mem || kind == :pad_stack } * 8)
+        adjust_sp(stack_bytes, sub: true) if @uses_alloca && stack_bytes.positive?
+
         next_stack = 0
         args.each do |vreg, kind|
           # :pad_stack reserves one stack eightbyte to 16-align the aggregate
@@ -826,7 +922,7 @@ module Rubycc
           next unless kind == :mem
 
           load_reg(A, vreg)
-          store_at(A, 8 * next_stack)
+          store_outgoing_at(A, 8 * next_stack)
           next_stack += 1
         end
 
@@ -856,6 +952,18 @@ module Rubycc
             raise "unknown call argument kind #{kind.inspect}"
           end
         end
+
+        stack_bytes
+      end
+
+      # Gives back the outgoing argument area #place_arguments carved out of the
+      # stack for a call in an alloca function, once the call has returned and
+      # its result has been parked. Raising sp again is what keeps a call inside
+      # a loop from walking the stack down one area per iteration. In an
+      # ordinary function the area is part of the fixed frame and nothing moved,
+      # so there is nothing to give back.
+      def release_dynamic_argument_area(stack_bytes)
+        adjust_sp(stack_bytes, sub: false) if @uses_alloca && stack_bytes.positive?
       end
 
       # :ret — loads the return value into its result register and runs the
@@ -1124,33 +1232,51 @@ module Rubycc
       # produced. Reaches the slot through the scaled immediate when it fits,
       # otherwise through a composed address in the ADDR scratch.
       def load_reg(reg, vreg)
-        load_at(reg, slot_offset(vreg))
+        load_frame_at(reg, slot_offset(vreg))
       end
 
       # str X{reg}, [slot]. The counterpart of #load_reg.
       def store_reg(reg, vreg)
-        store_at(reg, slot_offset(vreg))
+        store_frame_at(reg, slot_offset(vreg))
       end
 
-      # ldr X{reg}, [sp + offset] for any frame offset, not just a vreg slot's:
-      # the outgoing argument area and the caller's incoming one are addressed
-      # this way too. Reaches the address through the scaled immediate when it
-      # fits, otherwise through a composed address in the ADDR scratch.
-      def load_at(reg, offset)
+      # ldr X{reg}, [frame base + offset] for any fixed-frame offset, not just a
+      # vreg slot's: the variadic register-save area and the caller's incoming
+      # argument area are addressed this way too. Reaches the address through
+      # the scaled immediate when it fits, otherwise through a composed address
+      # in the ADDR scratch. The base is sp or x29 as #frame_base_register says
+      # — every offset that reaches here names a place in the fixed frame, which
+      # is what makes the substitution safe.
+      def load_frame_at(reg, offset)
         if offset <= MAX_SCALED_OFFSET
-          emit_word(0xF9400000 | ((offset / 8) << 10) | (SP << 5) | reg) # ldr x, [sp, #off]
+          emit_word(0xF9400000 | ((offset / 8) << 10) | (frame_base_register << 5) | reg)
         else
           emit_slot_address(ADDR, offset)
           emit_word(0xF9400000 | (ADDR << 5) | reg) # ldr x, [ADDR]
         end
       end
 
-      # str X{reg}, [sp + offset]. The counterpart of #load_at.
-      def store_at(reg, offset)
+      # str X{reg}, [frame base + offset]. The counterpart of #load_frame_at.
+      def store_frame_at(reg, offset)
+        if offset <= MAX_SCALED_OFFSET
+          emit_word(0xF9000000 | ((offset / 8) << 10) | (frame_base_register << 5) | reg)
+        else
+          emit_slot_address(ADDR, offset)
+          emit_word(0xF9000000 | (ADDR << 5) | reg) # str x, [ADDR]
+        end
+      end
+
+      # str X{reg}, [sp + offset] for a call's outgoing argument area. This one
+      # is sp-relative on purpose and in every function: AAPCS64 has the callee
+      # read its stack arguments from the sp the `bl` was executed with, so the
+      # area is defined against sp and not against the fixed frame. In an
+      # ordinary function the two coincide; in an alloca function they do not,
+      # and the area is the block #place_arguments has just lowered sp over.
+      def store_outgoing_at(reg, offset)
         if offset <= MAX_SCALED_OFFSET
           emit_word(0xF9000000 | ((offset / 8) << 10) | (SP << 5) | reg) # str x, [sp, #off]
         else
-          emit_slot_address(ADDR, offset)
+          emit_base_address(ADDR, SP, offset)
           emit_word(0xF9000000 | (ADDR << 5) | reg) # str x, [ADDR]
         end
       end
@@ -1184,7 +1310,7 @@ module Rubycc
       def emit_fp_slot_access(reg, offset, size, load:)
         base = FP_LDST.fetch(size)[load ? :load : :store]
         if offset <= 4095 * size
-          emit_word(base | ((offset / size) << 10) | (SP << 5) | reg)
+          emit_word(base | ((offset / size) << 10) | (frame_base_register << 5) | reg)
         else
           emit_slot_address(ADDR, offset)
           emit_word(base | (ADDR << 5) | reg)
@@ -1319,22 +1445,38 @@ module Rubycc
         store_reg(A, dst)
       end
 
-      # Places sp + offset (offset >= 0) into `reg`. Small offsets are one
+      # Places (frame base) + offset (offset >= 0) into `reg`, the address of a
+      # place in the fixed frame.
+      def emit_slot_address(reg, offset)
+        emit_base_address(reg, frame_base_register, offset)
+      end
+
+      # Places base + offset (offset >= 0) into `reg`. Small offsets are one
       # add-immediate; offsets past the 12-bit field are split into a shifted
       # high part plus a low part (two adds cover up to ~16 MB); anything larger
       # is materialized and added with the extended-register form (which, unlike
-      # the shifted-register add, accepts sp as its base).
-      def emit_slot_address(reg, offset)
+      # the shifted-register add, accepts sp as its base — the reason the
+      # fallback is written this way even though x29 would not need it).
+      def emit_base_address(reg, base, offset)
         if offset <= 0xFFF
-          emit_add_imm(reg, SP, offset, shift12: false)
+          emit_add_imm(reg, base, offset, shift12: false)
         elsif offset <= 0xFFFFFF
-          emit_add_imm(reg, SP, offset >> 12, shift12: true)
+          emit_add_imm(reg, base, offset >> 12, shift12: true)
           low = offset & 0xFFF
           emit_add_imm(reg, reg, low, shift12: false) if low.positive?
         else
           materialize(reg, offset, 64)
-          emit_word(0x8B206000 | (reg << 16) | (SP << 5) | reg) # add reg, sp, reg, uxtx
+          emit_word(ADD_EXTENDED | (reg << 16) | (base << 5) | reg) # add reg, base, reg, uxtx
         end
+      end
+
+      # Which register names the fixed frame. sp in an ordinary function, where
+      # it never moves after the prologue; x29 in one containing :alloca, where
+      # it does. Every fixed-frame access asks here rather than naming sp, so
+      # the two cases cannot drift apart — and an ordinary function's output is
+      # unchanged, since the answer is still sp.
+      def frame_base_register
+        @uses_alloca ? FP : SP
       end
 
       # add Rd, Rn, #imm12 (optionally << 12). Rn = 31 addresses sp here.
@@ -1355,7 +1497,7 @@ module Rubycc
           emit_word(base | ((low & 0xFFF) << 10) | (SP << 5) | SP) if low.positive?
         else
           materialize(ADDR, amount, 64)
-          ext = sub ? 0xCB206000 : 0x8B206000
+          ext = sub ? SUB_EXTENDED : ADD_EXTENDED
           emit_word(ext | (ADDR << 16) | (SP << 5) | SP) # add/sub sp, sp, ADDR, uxtx
         end
       end
@@ -1476,6 +1618,28 @@ module Rubycc
       RBIT = { 32 => 0x5AC00000, 64 => 0xDAC00000 }.freeze
       CLZ  = { 32 => 0x5AC01000, 64 => 0xDAC01000 }.freeze
 
+      # "Add/subtract (extended register)", 64-bit, with option = 011 (UXTX, the
+      # identity extension of an X operand) and no shift:
+      #   sf(31)=1 op(30) S(29)=0 01011(28:24) opt(23:22)=00 1(21) Rm(20:16)
+      #   option(15:13)=011 imm3(12:10)=000 Rn(9:5) Rd(4:0)
+      # This family, not the shifted-register one, is what a register-sized
+      # stack adjustment must use: here a register field of 31 reads as sp,
+      # while in the shifted-register add/sub the same 31 reads as the zero
+      # register (which is why "sub sp, sp, x9" has no shifted-register form).
+      ADD_EXTENDED = 0x8B206000
+      SUB_EXTENDED = 0xCB206000
+
+      # "Logical (immediate)", 64-bit AND with the bitmask immediate
+      # 0xFFFF_FFFF_FFFF_FFF0:
+      #   sf(31)=1 opc(30:29)=00 100100(28:23) N(22)=1 immr(21:16) imms(15:10)
+      #   Rn(9:5) Rd(4:0)
+      # The mask is a run of 60 ones, so it is one of the patterns this encoding
+      # can name: imms = 59 gives the run length (ones minus one) and immr = 60
+      # the right rotation that moves the run's four-zero gap to the bottom.
+      # Rounding an alloca size up to 16 therefore costs one instruction rather
+      # than the four a movz/movk of an arbitrary 64-bit constant would.
+      AND_NOT15 = 0x927CEC00
+
       # The flag-setting subtract, in the same shifted-register family. With the
       # zero register as its destination it is the `cmp` both a comparison and an
       # atomic compare-exchange leave their answer in.
@@ -1554,10 +1718,6 @@ module Rubycc
       # little-endian and every instruction is exactly four bytes).
       def emit_word(word)
         @code << [word & 0xFFFFFFFF].pack("L<")
-      end
-
-      def unsupported(feature)
-        raise UnsupportedError, "aarch64: not yet supported: #{feature}"
       end
     end
   end

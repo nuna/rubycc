@@ -12,14 +12,20 @@ class TestExamples < Minitest::Test
   EXAMPLES_ROOT = File.expand_path("../examples", __dir__).freeze
   EXAMPLE_SOURCES = Dir.glob(File.join(EXAMPLES_ROOT, "**/*.c")).sort.freeze
 
-  # These are backend limitations, not environment-dependent failures. Keep
-  # each affected sample as a separate test method so a native AArch64 run
-  # still executes and reports every other example instead of skipping one
-  # aggregate loop that contains 40+ independent samples.
-  AARCH64_PENDING = {
-    "m1/step28_extensions.c" =>
-      "aarch64 __builtin_alloca lowering is not implemented (IR 6.5 target limitation)"
-  }.freeze
+  # Samples the AArch64 backend cannot lower yet, by relative path, with the
+  # construct that stops each one. These would be backend limitations, not
+  # environment-dependent failures, which is why they are named here rather than
+  # skipped in bulk: each sample stays a test method of its own, so a native
+  # AArch64 run still executes and reports every other example instead of
+  # skipping one aggregate loop that contains 40+ independent samples.
+  #
+  # The list is **empty**: the last two entries (m2/step44_builtins.c for the
+  # bit-scan builtins, m1/step28_extensions.c for __builtin_alloca) came off in
+  # m4/aarch64-alloca-bitscan-1 and -2. It is kept rather than deleted because
+  # it is also the mechanism a *new* gap is recorded in, and because
+  # TestExamplesAArch64 shares it so the native and cross runners cannot
+  # disagree about what is pending.
+  AARCH64_PENDING = {}.freeze
 
   def test_example_sources_are_present
     refute_empty EXAMPLE_SOURCES, "expected sample programs under examples/"
