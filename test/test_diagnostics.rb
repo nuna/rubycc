@@ -1096,6 +1096,37 @@ class TestDiagnostics < Minitest::Test
     assert_match(/excess elements in scalar initializer/, error.description)
   end
 
+  # docs/GAPS.md gap T: a call returning a struct, sitting in a brace-elided
+  # initializer, is a form gcc accepts and rubycc does not -- the declaration's
+  # type is completed by the parser, which has no type table to tell the call's
+  # type from. What is pinned here is the *report*: it must name the expression
+  # that could not be typed, not the well-formed item the overrun stopped on,
+  # and it must not claim a scalar is involved. The limitation itself stays.
+  def test_untypeable_struct_expression_in_an_elided_initializer_reports_its_own_cause
+    source = "typedef struct { int x, y; } pt; pt fp(void); " \
+             "int main(void) { pt b[] = { {1,2}, fp(), {5,6} }; return b[0].x; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+
+    assert_match(/cannot tell whether this expression initializes a whole struct element/,
+                 error.description)
+    refute_match(/scalar/, error.description)
+    # The caret belongs on the call the compiler could not type, not on
+    # "{5,6}", which is nothing but the place the walk ran out of items. A call
+    # expression carries its argument-list token, so the column is that "(":
+    # inside the offending element either way, which is the point.
+    assert_equal source.index("(), {5,6}") + 1, error.column
+  end
+
+  # The same diagnostic must not swallow the ordinary excess-element reports,
+  # which are about a real surplus and are what gcc says too. An array with a
+  # genuine extra item has nothing untypeable in it, so the message stands.
+  def test_excess_elements_report_is_unchanged_for_a_real_surplus
+    source = "struct p { int x; int y; }; " \
+             "int main(void) { struct p a[1] = { {1,2}, {3,4} }; return a[0].x; }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/excess elements in initializer/, error.description)
+  end
+
   def test_unknown_member_designator_is_rejected
     source = "struct p { int x; int y; }; int main(void) { struct p a = {.z = 1}; return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
