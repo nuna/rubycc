@@ -112,6 +112,19 @@ class TestAArch64Backend < Minitest::Test
     (1 << 31) | (0b11011 << 24) | (0b110 << 21) | (rm << 16) | (0b11111 << 10) | (rn << 5) | rd
   end
 
+  # "Data-processing (1 source)":
+  #   sf(31) 1(30) S(29)=0 11010110(28:21) opcode2(20:16)=00000
+  #   opcode(15:10) Rn(9:5) Rd(4:0)
+  # opcode = 000000 RBIT (reverse the bit order), 000100 CLZ (count leading
+  # zeros). Note bit 30 is 1 here, which is what separates this family from the
+  # two-source one below that shares the 11010110 field.
+  def dp1(opcode, sf, rd, rn)
+    (sf << 31) | (1 << 30) | (0b11010110 << 21) | (opcode << 10) | (rn << 5) | rd
+  end
+
+  def rbit(sf, rd, rn) = dp1(0b000000, sf, rd, rn)
+  def clz(sf, rd, rn)  = dp1(0b000100, sf, rd, rn)
+
   # "Data-processing (2 source)":
   #   sf(31) 0(30) S(29)=0 11010110(28:21) Rm(20:16) opcode(15:10)
   #   Rn(9:5) Rd(4:0)
@@ -520,6 +533,22 @@ class TestAArch64Backend < Minitest::Test
   def test_mulhi_is_umulh
     assert_words [ldr_slot(A, 0), ldr_slot(B, 1), umulh(A, A, B), str_slot(A, 2)],
                  body_of(:mulhi, dst: 2, a: 0, b: 1, size: 8)
+  end
+
+  # :bit_scan — a leading-zero count is CLZ on its own, since the instruction
+  # already *is* the answer (unlike x86-64's bsr, which needs the xor that turns
+  # a bit index into a count). A trailing-zero count is the same CLZ applied to
+  # the bit-reversed operand, so RBIT comes first. The IR size picks the W or X
+  # form, which is what confines the count to the operand's own width.
+  def test_bit_scan_is_clz_with_rbit_ahead_of_the_forward_direction
+    assert_words [ldr_slot(A, 0), clz(0, A, A), str_slot(A, 2)],
+                 body_of(:bit_scan, dst: 2, a: 0, b: :reverse, size: 4)
+    assert_words [ldr_slot(A, 0), rbit(0, A, A), clz(0, A, A), str_slot(A, 2)],
+                 body_of(:bit_scan, dst: 2, a: 0, b: :forward, size: 4)
+    assert_words [ldr_slot(A, 0), clz(1, A, A), str_slot(A, 2)],
+                 body_of(:bit_scan, dst: 2, a: 0, b: :reverse, size: 8)
+    assert_words [ldr_slot(A, 0), rbit(1, A, A), clz(1, A, A), str_slot(A, 2)],
+                 body_of(:bit_scan, dst: 2, a: 0, b: :forward, size: 8)
   end
 
   # Negation is a subtraction from the zero register.
@@ -1125,18 +1154,13 @@ class TestAArch64Backend < Minitest::Test
 
   # --- refusals ------------------------------------------------------------
 
-  # The IR ops that belong to A4 are refused by name rather than lowered to
-  # something plausible-looking.
+  # The one IR op that still belongs to A4 is refused by name rather than
+  # lowered to something plausible-looking.
   def test_later_milestone_ops_are_refused
-    {
-      inst(:alloca, dst: 0, a: 1) => /alloca/,
-      inst(:bit_scan, dst: 0, a: 1, b: :forward, size: 4) => /bit-scan builtins/
-    }.each do |instruction, pattern|
-      error = assert_raises(Rubycc::Backend::UnsupportedError, instruction.op.to_s) do
-        compile(func([instruction], vregs: 4))
-      end
-      assert_match pattern, error.message
+    error = assert_raises(Rubycc::Backend::UnsupportedError) do
+      compile(func([inst(:alloca, dst: 0, a: 1)], vregs: 4))
     end
+    assert_match(/alloca/, error.message)
   end
 
   # --- aggregates ----------------------------------------------------------
@@ -1221,16 +1245,12 @@ class TestAArch64Backend < Minitest::Test
                  emitted.drop(3)
   end
 
-  # The same refusals seen from the front of the compiler: valid C that uses an
-  # A4 feature stops with a clear error instead of producing an object.
+  # The same refusal seen from the front of the compiler: valid C that uses the
+  # remaining A4 feature stops with a clear error instead of producing an object.
   def test_unsupported_c_constructs_are_refused_end_to_end
-    {
-      "void *f(int n){ return __builtin_alloca(n); }" => /alloca/,
-      "int f(unsigned x){ return __builtin_ctz(x); }" => /bit-scan builtins/
-    }.each do |source, pattern|
-      error = assert_raises(Rubycc::Backend::UnsupportedError, source) { compile_c(source) }
-      assert_match pattern, error.message, source
-    end
+    source = "void *f(int n){ return __builtin_alloca(n); }"
+    error = assert_raises(Rubycc::Backend::UnsupportedError, source) { compile_c(source) }
+    assert_match(/alloca/, error.message, source)
   end
 
   # --- object-file integration --------------------------------------------

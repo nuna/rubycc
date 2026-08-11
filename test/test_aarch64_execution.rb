@@ -817,6 +817,46 @@ class TestAArch64Execution < Minitest::Test
     end
   end
 
+  # --- bit-scan builtins --------------------------------------------------
+
+  # __builtin_ctz / clz / ctzll / clzll on aarch64: a leading-zero count is a
+  # bare CLZ and a trailing-zero count an RBIT ahead of it. The operands travel
+  # through an array and a function parameter so each count is computed at run
+  # time on a value in a register, not folded from a literal.
+  #
+  # What the cases are chosen to separate is the operand *width*. 0x80000000 has
+  # a 32-bit clz of 0 but a 64-bit one of 32, and 1 has a 32-bit clz of 31
+  # against 63; a scan that ran on the X view of a 4-byte operand (or on the W
+  # view of an 8-byte one) would disagree with gcc on every such line. The
+  # all-ones and single-bit-at-either-end values pin the ends of both ranges,
+  # and 0x100000000 is the value whose two halves are only told apart by width.
+  def test_bit_scan_builtins
+    assert_aarch64_matches_gcc(source(<<~C))
+      int ctz32(unsigned x) { return __builtin_ctz(x); }
+      int clz32(unsigned x) { return __builtin_clz(x); }
+      int ctz64(unsigned long x) { return __builtin_ctzll(x); }
+      int clz64(unsigned long x) { return __builtin_clzll(x); }
+      int main(void) {
+        unsigned narrow[6];
+        unsigned long wide[6];
+        int i;
+        narrow[0] = 1u; narrow[1] = 2u; narrow[2] = 0x8000u;
+        narrow[3] = 0x80000000u; narrow[4] = 0xFFFFFFFFu; narrow[5] = 0x00F0F000u;
+        wide[0] = 1ul; wide[1] = 0xFF00ul; wide[2] = 1ul << 40;
+        wide[3] = 1ul << 63; wide[4] = 0xFFFFFFFFFFFFFFFFul; wide[5] = 0x100000000ul;
+        for (i = 0; i < 6; i = i + 1) {
+          put_long(ctz32(narrow[i]));
+          put_long(clz32(narrow[i]));
+        }
+        for (i = 0; i < 6; i = i + 1) {
+          put_long(ctz64(wide[i]));
+          put_long(clz64(wide[i]));
+        }
+        return 0;
+      }
+    C
+  end
+
   # A deduced-size array of function pointers dispatched by index (Step 98): the
   # "[]" bound is inferred from the initializer even though it sits inside the
   # parenthesized declarator "int (*ops[])(int)", and each ops[i](10) is an

@@ -13,14 +13,12 @@ class TestExamples < Minitest::Test
   EXAMPLE_SOURCES = Dir.glob(File.join(EXAMPLES_ROOT, "**/*.c")).sort.freeze
 
   # These are backend limitations, not environment-dependent failures. Keep
-  # the two affected samples as separate test methods so a native AArch64 run
+  # each affected sample as a separate test method so a native AArch64 run
   # still executes and reports every other example instead of skipping one
   # aggregate loop that contains 40+ independent samples.
   AARCH64_PENDING = {
     "m1/step28_extensions.c" =>
-      "aarch64 __builtin_alloca lowering is not implemented (IR 6.5 target limitation)",
-    "m2/step44_builtins.c" =>
-      "aarch64 bit-scan builtins are not implemented (IR 6.5 target limitation)"
+      "aarch64 __builtin_alloca lowering is not implemented (IR 6.5 target limitation)"
   }.freeze
 
   def test_example_sources_are_present

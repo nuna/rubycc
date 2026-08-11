@@ -10083,3 +10083,59 @@ multiarch を手で分岐する理由はもう無い。
 
 実測: c-testsuite 223 runs / 433 assertions / 0 failures / 0 errors / 14 skips、
 ruby smoke 6 runs、extension build 4 runs、freestanding 10 runs がいずれも 0 失敗。
+
+## m4/aarch64-alloca-bitscan-1 — ビットスキャンは、命令が答えそのものだった(M4 A4)
+
+aarch64 バックエンドに残っていた 2 命令(`:alloca` / `:bit_scan`)のうち、
+依存が無く単独で閉じる `:bit_scan` を先に塞いだ。
+
+### 降ろし方と、その根拠
+
+ARM DDI 0487 の "Data-processing (1 source)"(C4.1.2)は
+
+```
+sf(31) 1(30) S(29)=0 11010110(28:21) opcode2(20:16)=00000 opcode(15:10) Rn(9:5) Rd(4:0)
+```
+
+で、`opcode` が `000000` なら RBIT、`000100` なら CLZ である。したがってベースは
+W 形式 `0x5AC00000` / X 形式 `0xDAC00000` で、CLZ はそこに `4 << 10 = 0x1000` を
+足したものになる(クロス as で実測確認: `rbit w9,w9` = `0x5AC00129`、
+`clz x9,x9` = `0xDAC01129`)。
+
+- `:reverse`(clz)は **CLZ 1 命令**。x86-64 の `bsr` が「最上位セットビットの位置」を
+  返すため `(幅−1)` との `xor` を要したのと違い、A64 の CLZ は**求める答えそのもの**を
+  返す。後続命令は無い。
+- `:forward`(ctz)は **RBIT → CLZ**。RBIT がレジスタ内のビット順を反転するので、
+  元の値の最下位セットビットが反転値の最上位に来る。反転値の先頭 0 の個数は、
+  元の値の末尾 0 の個数に等しい。
+
+`size` 4 は W 形式、8 は X 形式。ここを取り違えると**自己整合的で、もっともらしく、
+間違った値**が出る(`0x80000000` の clz は unsigned int なら 0、unsigned long なら 32)。
+実行差分テストのケースはこの一点を分離するために選んだ。
+
+### 先行実装から変えた点
+
+`m4/aarch64-glibc-acceptance`(b4b17da)に同じ機能の実装があり、エンコーディングの
+結論は同じだった。変えたのは**読み方**である。先行実装は
+
+```ruby
+emit_word(base | ...) if direction == :forward
+emit_word((base + 0x1000) | ...)
+```
+
+と書いており、`base` と `base + 0x1000` のどちらが RBIT でどちらが CLZ か、
+またなぜ片方だけ条件付きなのかがコードから読み取れない。`RBIT` / `CLZ` の
+名前付きテーブルに分け、他のオペコード表と同じく `width(size)` をキーにした。
+
+### 検証
+
+- エンコーディング: `test_aarch64_backend.rb` に `dp1` ビルダを追加し、
+  4 方向 × 2 幅を ARM ARM のビット位置から組み立てた期待値と突き合わせる。
+- 実行差分: `test_aarch64_execution.rb` の `test_bit_scan_builtins` が
+  ctz/clz/ctzll/clzll を 12 個の値でクロス gcc + qemu と突き合わせる。
+- サンプル: `examples/m4/aarch64_alloca_bitscan_1_bit_scan.c`(両機種で差分実行)。
+- `AARCH64_PENDING` から `m2/step44_builtins.c` が外れ、`test_gcc_builtins.rb` の
+  aarch64 skip も消えた。
+
+x86-64 側は 1 バイトも変わっていない(examples 45 本の `.o` を HEAD と
+SHA-256 で突き合わせて確認)。

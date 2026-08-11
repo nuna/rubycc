@@ -265,7 +265,7 @@ Instruction(op, dst:, a:, b:, size:)
 
 | 命令 | 形 | 意味 |
 |---|---|---|
-| :bit_scan | dst ← scan(a)。b = 方向、size = 4/8 | 整数 a の 0 ビット数を数える(__builtin_ctz/clz とその ll 形)。b = `:forward` は末尾 0 の個数(ctz)で `bsf` に、`:reverse` は先頭 0 の個数(clz)で `bsr` の後 (size*8−1) との `xor`(= (幅−1) − 最上位セットビット位置)に降ろす。size 8 は REX.W 付き。オペランド 0 は未定義(gcc 準拠)なのでゼロ処理は出さない。結果は int。x86-64 が実装し、AArch64 では `UnsupportedError` になる |
+| :bit_scan | dst ← scan(a)。b = 方向、size = 4/8 | 整数 a の 0 ビット数を数える(__builtin_ctz/clz とその ll 形)。b = `:forward` は末尾 0 の個数(ctz)、`:reverse` は先頭 0 の個数(clz)。x86-64 は `:forward` を `bsf`、`:reverse` を `bsr` の後 (size*8−1) との `xor`(= (幅−1) − 最上位セットビット位置)に降ろす(size 8 は REX.W 付き)。AArch64 は `:reverse` を `clz` 単体、`:forward` を `rbit` + `clz` に降ろす(size 4 は W レジスタ形式、size 8 は X レジスタ形式)。オペランド 0 は未定義(gcc 準拠)なのでゼロ処理は出さない。結果は int |
 
 ### アトミック操作
 
@@ -370,9 +370,8 @@ addend bias `−4` を使う。AArch64 のアドレス形成は `adrp` と `add`
 
 ### 6.5 ターゲット別の実装範囲
 
-§5 の命令のうち、`:alloca` と `:bit_scan` は x86-64 が実装する。
-AArch64 はこの 2 命令を `UnsupportedError` として明示的に拒否し、それ以外の
-列挙された命令を実装する。
+§5 の命令のうち、`:alloca` は x86-64 が実装する。AArch64 はこの 1 命令を
+`UnsupportedError` として明示的に拒否し、それ以外の列挙された命令を実装する。
 
 ## 7. 不変条件チェックリスト(命令を追加・変更するとき)
 

@@ -213,10 +213,12 @@ module Rubycc
     #                               b is the direction — :forward for a trailing
     #                               count (ctz), :reverse for a leading count
     #                               (clz) — and `size` the operand width (4 or 8).
-    #                               The backend lowers :forward to `bsf` and
-    #                               :reverse to `bsr` followed by `xor` with
-    #                               (size*8 - 1), so clz = (width-1) - bsr; a
-    #                               size-8 scan takes a REX.W prefix. A zero
+    #                               x86-64 lowers :forward to `bsf` and :reverse
+    #                               to `bsr` followed by `xor` with (size*8 - 1),
+    #                               so clz = (width-1) - bsr; a size-8 scan takes
+    #                               a REX.W prefix. AArch64 lowers :reverse to a
+    #                               bare `clz` and :forward to `rbit` ahead of
+    #                               one, at the W or X width `size` names. A zero
     #                               operand is undefined (as in gcc), so no zero
     #                               case is emitted. The result is an int
     #

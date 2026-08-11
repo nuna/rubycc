@@ -100,11 +100,13 @@ module Rubycc
     # returned by value, and variadic function definitions (a register-save-area
     # prologue and the AAPCS64 :va_start seed __builtin_va_arg walks), plus the
     # unsigned 64x64->128 multiply's high half (a single `umulh`) that a
-    # synthesized 128-bit multiply needs. The atomic ops are covered too, built
-    # from the armv8-a baseline load-acquire / store-release exclusive pair (see
-    # the atomics section below). Features the generator can still hand it that
-    # belong to the rest of A4 (alloca, the bit-scan builtins) are refused with
-    # an explicit "not yet supported" error rather than miscompiled.
+    # synthesized 128-bit multiply needs, and the bit-scan builtins (`clz`, and
+    # `rbit` before it for the trailing-zero direction). The atomic ops are
+    # covered too, built from the armv8-a baseline load-acquire / store-release
+    # exclusive pair (see the atomics section below). The one feature the
+    # generator can still hand it that belongs to the rest of A4 (alloca) is
+    # refused with an explicit "not yet supported" error rather than
+    # miscompiled.
     class AArch64
       # Result of compiling one function, the same shape the x86_64 backend
       # returns: `bytes` the machine code, `symbols` an array of
@@ -507,8 +509,7 @@ module Rubycc
         when :ftof then emit_ftof(inst.dst, inst.a, inst.size)
         when :call_indirect then emit_call_indirect(inst.dst, inst.a, inst.b, inst.size)
         when :mulhi then emit_mulhi(inst.dst, inst.a, inst.b)
-        # The remaining ops belong to the rest of A4. They are refused
-        # explicitly so a program using them fails loudly instead of silently.
+        when :bit_scan then emit_bit_scan(inst.dst, inst.a, inst.b, inst.size)
         when :string_addr then emit_symbol_address(inst.dst, kind: :string, string_id: inst.a)
         when :global_addr then emit_symbol_address(inst.dst, kind: :global, symbol: inst.a)
         when :func_addr then emit_symbol_address(inst.dst, kind: :func, symbol: inst.a)
@@ -520,8 +521,9 @@ module Rubycc
         when :atomic_cas then emit_atomic_cas(inst.dst, inst.a, inst.b[0], inst.b[1], inst.size)
         when :atomic_fence then emit_atomic_fence
         when :va_start then emit_va_start(inst.a)
+        # The one op left of A4. It is refused explicitly so a program using it
+        # fails loudly instead of silently.
         when :alloca then unsupported("alloca")
-        when :bit_scan then unsupported("bit-scan builtins")
         else
           raise "aarch64: unsupported IR op: #{inst.op}"
         end
@@ -573,6 +575,35 @@ module Rubycc
         load_reg(A, a)
         load_reg(B, b)
         emit_word(UMULH | (B << 16) | (A << 5) | A)
+        store_reg(A, dst)
+      end
+
+      # :bit_scan — count the zero bits of a's value (__builtin_ctz/clz and
+      # their "ll" forms). AArch64 has a count-leading-zeros instruction but no
+      # trailing-zeros one, which decides the shape of both directions:
+      #
+      #   :reverse (clz) is CLZ on its own — the instruction *is* the leading
+      #     zero count, so unlike x86-64 (where `bsr` yields the index of the
+      #     highest set bit and the count is recovered by xor-ing with width-1)
+      #     nothing follows it.
+      #   :forward (ctz) is RBIT then CLZ. RBIT reverses the bit order within
+      #     the register, so the operand's lowest set bit becomes the reversal's
+      #     highest: the leading zeros of the reversed value are exactly the
+      #     trailing zeros of the original.
+      #
+      # Both are "Data-processing (1 source)" instructions (ARM DDI 0487,
+      # C4.1.2) differing only in their opcode field, and both come in a 32-bit
+      # (W) and a 64-bit (X) form selected by sf — which is what makes the IR's
+      # size 4 count within `unsigned int` and size 8 within `unsigned long`
+      # rather than over a slot's indeterminate high half. A zero operand is
+      # undefined behavior (as in gcc), so no guard is emitted; note that the
+      # hardware would define it (CLZ of zero is the register width) but the IR
+      # promises nothing there and the x86-64 backend cannot match it anyway.
+      def emit_bit_scan(dst, src_vreg, direction, size)
+        w = width(size)
+        load_reg(A, src_vreg)
+        emit_word(RBIT[w] | (A << 5) | A) if direction == :forward
+        emit_word(CLZ[w] | (A << 5) | A)
         store_reg(A, dst)
       end
 
@@ -1434,6 +1465,16 @@ module Rubycc
       # variant and Ra fixed to xzr (31) in bits [14:10]. Only the 64-bit (sf=1)
       # encoding exists; there is no 32-bit counterpart to pick between.
       UMULH = 0x9BC07C00
+
+      # "Data-processing (1 source)":
+      #   sf(31) 1(30) S(29)=0 11010110(28:21) opcode2(20:16)=00000
+      #   opcode(15:10) Rn(9:5) Rd(4:0)
+      # opcode 000000 is RBIT (reverse the bit order in the register) and
+      # 000100 is CLZ (count leading zeros), so the two differ by 4 in that
+      # field — 0x1000 once shifted into place. Both exist at either operand
+      # width, sf choosing the W or X view.
+      RBIT = { 32 => 0x5AC00000, 64 => 0xDAC00000 }.freeze
+      CLZ  = { 32 => 0x5AC01000, 64 => 0xDAC01000 }.freeze
 
       # The flag-setting subtract, in the same shifted-register family. With the
       # zero register as its destination it is the `cmp` both a comparison and an

@@ -80,6 +80,21 @@ Step 37(L7)から M2 のサンプルを追加する。
 | `step52_unsigned_float.c` | Step 52(M2 追補): 実行時の unsigned long ⇔ float/double 変換(§3 負債の本体を解消)。x86-64 の cvt 命令は符号付きのみのため、符号ビット両側の分岐合成(u64→double は「半分+sticky ビット → 変換 → 2 倍」、double→u64 は「2^63 未満は直行 / 以上は 2^63 引いて変換後に最上位ビットを戻す」)を実演。json jeaiii の「double 式 × 実行時値を unsigned long に切り捨てる」形も含む。`test_examples.rb` が gcc 差分で検証する |
 | `step53_compound_literals.c` | Step 53(M2 追補): 複合リテラル(ISO C 6.5.2.5)— json の最後の壁。無名の自動記憶域オブジェクトを式中で生成・初期化する: 指示付き初期化子で struct を**値渡し**(json parser のスタックフレーム push の形)・未指定メンバのゼロ埋め・`&(T){...}` のアドレス渡し・配列複合リテラルの decay・スカラー形・ループ毎の再初期化を実演。`test_examples.rb` が gcc 差分で検証する |
 
+## m4 のサンプル一覧
+
+M4(aarch64 バックエンド)のステップは**新しい C 言語機能を足さない** — 同じ
+言語を第二の機種で実現するマイルストーンなので、Step 68〜80 はサンプルを持たない
+(検証は `test_c_suite_aarch64.rb` と `test_examples_aarch64.rb` が、既存の全
+サンプルをクロス gcc + qemu で差分実行することで担う)。
+
+サンプルを置くのは、**x86-64 では通っていた機能が aarch64 では通らず、
+`test_examples.rb` の `AARCH64_PENDING` に載っていた**ステップだけである。
+その穴を塞いだ証拠として、両機種で実行される形で残す。
+
+| ファイル | 実演するステップと機能 |
+|---|---|
+| `aarch64_alloca_bitscan_1_bit_scan.c` | Step m4/aarch64-alloca-bitscan-1: ビットスキャン組み込み(`__builtin_ctz`/`clz`/`ctzll`/`clzll`)の aarch64 対応。言語機能自体は Step 44 からあり、本サンプルが示すのは**同じ答えに別の命令列で到達する第二バックエンド**である — x86-64 は「最上位セットビットの位置」を返す `bsr` を幅から引いて clz を作るが、aarch64 の `clz` は答えそのもので、ctz は `rbit` でビット順を反転してから同じ `clz` に掛ける。ケースはほぼすべて**カウントの幅**を分離するために選んである(`0x80000000` の clz は unsigned int で 0・unsigned long で 32)。オペランドは配列と関数引数を通して実行時の値にし、0 は未定義動作なので意図的に外した。`test_examples.rb` が gcc 差分で、`test_examples_aarch64.rb` がクロス gcc + qemu 差分で検証する |
+
 ## m5 のサンプル一覧
 
 M3〜M5 のステップ(同梱ヘッダ・ドライバ・mkmf/rmake・コーパス検証)は
