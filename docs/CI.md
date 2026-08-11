@@ -42,6 +42,31 @@ native aarch64 は `weekly.yml` の `aarch64` ジョブから
 loader・libc を実測し、必須 ID として結果 JSON へ記録する。x86_64 上の QEMU 実行を
 native integration の代用にはしない。
 
+### dispatch する前に、変更が触るテストだけ QEMU で通す
+
+native の全スイートは手動 dispatch なので、**x86-64 でしか動かしていない変更を投げると
+往復が発生する**。実例: `gaps-s-t-u-1` は x86-64 で緑だったが、native では
+skip ガードが落ちた(テストがホストではなくコンパイラ既定の x86-64 で libc を測っていた。
+スイート自体は 3,109 runs / 0 failures だった)。この往復は手元で潰せる:
+
+```sh
+rake test:qemu_aarch64 FILES="test/test_preprocessor.rb test/test_elf_reader.rb"
+```
+
+arm64 コンテナ(`ruby:4.0`)で、**AArch64 の Ruby と AArch64 の gcc** を使って指定
+ファイルだけを走らせる。前提は Docker と、**F フラグ付きの arm64 binfmt ハンドラ**:
+
+```sh
+docker run --privileged --rm tonistiigi/binfmt --install arm64
+```
+
+ホストの qemu-user の登録(Debian は `PO`)だけでは足りない — interpreter のパスが
+コンテナのマウント名前空間に無いため、`exec ...: no such file or directory` で落ちる。
+
+**全スイートをここで回さない。** native ARM ランナー比で **約 23 倍**遅い
+(weekly run 31500900897 と同一テスト名で突き合わせた中央値 22.8x。2 分半 → 1 時間)。
+**これはゲートではなく往復の削減であり、native の代用でもない** — 上の方針は変わらない。
+
 ## 参照用ツールチェーン
 
 差分テストと生成物検査に使用する apt パッケージは次のとおり。
