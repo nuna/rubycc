@@ -14,8 +14,6 @@
 
 | **T** | **配列の要素数をパーサが数える文脈で、struct を返す式が単一式初期化子として読めない** | `pt b[] = { {1,2}, fp(), {5,6} };` が `excess elements in scalar initializer` になる(gcc は 3 要素)。パーサは `[]` の長さをここで確定させる必要があるが、型表を持たないので `fp()` の型が分からない | **実測**(2026-08-08) | struct を直接初期化する形は通る(atomic-type-13)。解消にはパーサ側に型を引く手段が要る |
 
-| **U** | **既定のシステム include 探索パスが x86-64 の multiarch ディレクトリ決め打ち** | `LIBC_SYSTEM_INCLUDE_PATHS` が `/usr/include/x86_64-linux-gnu` を無条件に持つ(`lib/rubycc/preprocess/preprocessor.rb`)。target にもホスト CPU にも依存しないので、**aarch64 ホストで `rubycc` を素で使うと存在しないディレクトリを探し、`/usr/include/aarch64-linux-gnu` を探さない**。同梱 libc ヘッダが先に当たるため多くの場合は表面化しないが、同梱に無いヘッダがホストの multiarch 側 `bits/` を引く経路で崩れる | **実測**(`test-ci-implementation-2` の作業中に判明)。`test/support/host_target.rb` のコメントが「`Compiler#compile` の既定 target はホストの検出ではない」と明記しているとおり、テスト側は機種対応済みだが**製品側は未対応** | native smoke は `system_includes: false` で既定パスを迂回するため、**この死角を検出できない**。解消には `LIBC_SYSTEM_INCLUDE_PATHS` を target 別にする(`float.h`・`math.h` と同じ per-target 化)必要がある |
-
 ## 2. 未解消の負債
 
 | 負債 | 影響 | 優先 | 詳細 |
@@ -86,5 +84,11 @@
   cc / gcc / clang / make / sh と libc 開発ヘッダを除いた状態で、4 gem の
   `--platform ruby` ビルドと実行に成功した。**musl 全スイートと aarch64 の
   `json` / `msgpack` を含む M4 全面受入れは未完了**。
+
+- **ギャップ U**(既定のシステム include 探索パスが x86-64 の multiarch 決め打ち):
+  `test-ci-implementation-9` で解消。Debian の multiarch ディレクトリは target ごとに
+  名前が違う(`bits/` の中身が別物)ので、同梱 arch 層とまったく同じく `libc_arch` に
+  従わせた。**`float.h`(Step 201)・`math.h`(`test-ci-implementation-2`)に続いて
+  3 件目の「freestanding/共通層は機種に依らない」という思い込み**である。
 
 いずれも設計判断は STEPS.md の各ステップに記録がある。

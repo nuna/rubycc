@@ -10007,3 +10007,41 @@ target を分類した者と一致してはならず、`confirmed` なら findin
 `test/test_r10_manual_classification.rb` が 6 種類の変異
 (独立でない reviewer、scope 漏れ、件数不一致、cross_review 削除、未知の verdict、
 impact 空)をすべて拒否することを固定している。
+
+## test-ci-implementation-9 — システム include 探索パスをターゲットに従わせる(M4 / M5 H6)
+
+`test-ci-implementation-2` でテスト側のホスト機種依存を追い出した際に見つかった、
+**製品側**の同じ形の欠陥である(GAPS U)。
+
+```ruby
+LIBC_SYSTEM_INCLUDE_PATHS = %w[/usr/include/x86_64-linux-gnu /usr/include].freeze
+```
+
+target にもホスト CPU にも依存しない定数だった。Debian の multiarch ディレクトリは
+**target ごとに名前が違い、中の `bits/` は別物**である。したがって aarch64 では、
+存在しないディレクトリを探し、自分のものを探さない。
+
+同梱 libc ヘッダが先に当たるので多くの場合は表面化しない。崩れるのは、同梱に無い
+ヘッダがホスト側の `bits/` を引く経路である。
+
+### 修正
+
+同梱 arch 層(`@libc_arch_include_dir`)がすでに `libc_arch` から組み立てられていたので、
+**同じ仕組みをホスト側にも適用した**。`libc_system_include_paths_for(libc_arch)` が
+multiarch スロットを埋め、インスタンスごとに `@libc_system_include_paths` を持つ。
+未知の arch は `ArgumentError` で落とす(黙って x86 を返すと同じ欠陥が戻る)。
+
+`LIBC_SYSTEM_INCLUDE_PATHS` は x86-64 のベースラインとして残した。
+`DEFAULT_SYSTEM_INCLUDE_PATHS` と同じ扱いで、「全インスタンスがこの形を取り、
+multiarch スロットだけが自分の arch になる」ことを示す定数である。既定 target の
+探索パスは以前と 1 バイトも変わらない(`test_deterministic_build.rb` で確認)。
+
+### 検出できなかった理由
+
+native smoke も c-suite も `system_includes: false` で既定パスを迂回して、
+明示した include パスを渡している。**製品の既定経路を通らないので、この死角は
+テストからは見えなかった。** レビュー項目 F(テストの探索順が製品と乖離している)と
+同じ根で、F を直せばここも守られる。
+
+`float.h`(Step 201)・`math.h`(`test-ci-implementation-2`)に続いて、
+「freestanding / 共通層は機種に依らない」という思い込みの 3 件目である。

@@ -1305,6 +1305,38 @@ class TestPreprocessor < Minitest::Test
     assert_operator order.index(pp::BUNDLED_LIBC_INCLUDE_DIR), :<, first_system
   end
 
+  # Debian's multiarch directory is named after the target -- the x86-64 `bits/`
+  # and the AArch64 one live in different directories -- so it belongs to
+  # `libc_arch` exactly like the bundled arch layer. It used to be a constant
+  # naming x86-64 unconditionally, which meant an AArch64 host searched a
+  # directory that does not exist and never looked in its own (GAPS U).
+  def test_host_libc_search_path_follows_the_target_not_the_build_host
+    pp = Rubycc::Preprocess::Preprocessor
+    x86 = pp.new(libc_arch: "x86_64").send(:default_system_include_paths)
+    arm = pp.new(libc_arch: "aarch64").send(:default_system_include_paths)
+
+    assert_includes x86, "/usr/include/x86_64-linux-gnu"
+    refute_includes x86, "/usr/include/aarch64-linux-gnu"
+    assert_includes arm, "/usr/include/aarch64-linux-gnu"
+    refute_includes arm, "/usr/include/x86_64-linux-gnu"
+
+    # /usr/include stays last on both, after the target's own multiarch dir.
+    [x86, arm].each do |order|
+      assert_equal "/usr/include", order.last
+      assert_operator order.index(order[-2]), :<, order.index("/usr/include")
+    end
+
+    # The x86-64 baseline constant still describes the x86-64 instance exactly,
+    # so the default target's search path is unchanged.
+    assert_equal pp::LIBC_SYSTEM_INCLUDE_PATHS, x86.last(2)
+  end
+
+  def test_unknown_libc_arch_has_no_host_search_path
+    assert_raises(ArgumentError) do
+      Rubycc::Preprocess::Preprocessor.libc_system_include_paths_for("riscv64")
+    end
+  end
+
   # --- #error ----------------------------------------------------------------
 
   def test_error_directive_reports_its_message_and_line

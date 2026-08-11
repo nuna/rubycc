@@ -86,11 +86,35 @@ module Rubycc
       # for the other.
       LIBC_MUSL_MACRO = "__RUBYCC_LIBC_MUSL__"
 
-      # The libc system header directories on this x86-64 Linux host, in the order
-      # gcc reports them for angled includes. Only the C library's own directories
-      # are listed; the compiler's private include directory is deliberately
-      # absent, because BUNDLED_INCLUDE_DIR supplies those headers instead.
-      LIBC_SYSTEM_INCLUDE_PATHS = %w[/usr/include/x86_64-linux-gnu /usr/include].freeze
+      # The libc system header directories, in the order gcc reports them for
+      # angled includes. Only the C library's own directories are listed; the
+      # compiler's private include directory is deliberately absent, because
+      # BUNDLED_INCLUDE_DIR supplies those headers instead.
+      #
+      # The first entry is Debian's multiarch directory, which is named after the
+      # target: `/usr/include/x86_64-linux-gnu` holds the x86-64 `bits/`, and its
+      # AArch64 counterpart holds a different one. It therefore belongs to
+      # `libc_arch` exactly like the bundled arch layer does -- see
+      # LIBC_SYSTEM_INCLUDE_PATHS_FOR, which #libc_system_include_paths uses per
+      # instance. Naming one target here unconditionally was a real defect: an
+      # AArch64 host searched a directory that does not exist and never looked in
+      # its own (GAPS U).
+      LIBC_MULTIARCH_INCLUDE_DIRS = {
+        "x86_64" => "/usr/include/x86_64-linux-gnu",
+        "aarch64" => "/usr/include/aarch64-linux-gnu"
+      }.freeze
+
+      def self.libc_system_include_paths_for(libc_arch)
+        multiarch = LIBC_MULTIARCH_INCLUDE_DIRS.fetch(libc_arch) do
+          raise ArgumentError, "unsupported libc arch: #{libc_arch.inspect}"
+        end
+        [multiarch, "/usr/include"].freeze
+      end
+
+      # The x86-64 baseline, kept as a constant for the same reason
+      # DEFAULT_SYSTEM_INCLUDE_PATHS is: it is the shape every per-instance list
+      # takes, with its own arch in the multiarch slot.
+      LIBC_SYSTEM_INCLUDE_PATHS = libc_system_include_paths_for("x86_64")
 
       # The default system include search path: the bundled freestanding headers
       # first (so rubycc's stdarg.h/stddef.h win over any same-named file further
@@ -375,6 +399,10 @@ module Rubycc
         # BUNDLED_LIBC_ARCH_INCLUDE_DIR). For the x86-64 default it equals that
         # constant, so the default search path is identical to before.
         @libc_arch_include_dir = File.expand_path("../../../include/libc/glibc/#{libc_arch}", __dir__)
+        # The host libc directories this instance searches. The multiarch slot
+        # follows the same `libc_arch` as the bundled layer above, so a compile
+        # never looks for another target's `bits/` (GAPS U).
+        @libc_system_include_paths = self.class.libc_system_include_paths_for(libc_arch)
         # name (String) => Macro.
         @macros = {}
         (arch_macros + PREDEFINED_PLATFORM_MACROS).each { |name| @macros[name] = predefined_target_macro }
@@ -472,7 +500,7 @@ module Rubycc
         bundled = [BUNDLED_INCLUDE_DIR, @libc_arch_include_dir, BUNDLED_LIBC_INCLUDE_DIR]
         return bundled if hermetic_headers?
 
-        [*bundled, *LIBC_SYSTEM_INCLUDE_PATHS]
+        [*bundled, *@libc_system_include_paths]
       end
 
       def hermetic_headers?
