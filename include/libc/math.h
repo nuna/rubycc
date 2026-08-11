@@ -29,10 +29,21 @@
 #define FP_NORMAL    4
 
 /* glibc's AArch64 math ABI uses -2147483647 for FP_ILOGB0 and INT_MAX for
-   FP_ILOGBNAN; x86-64 uses INT_MIN for both. These are header ABI values, not
-   compiler implementation details, so select them from the target macro just
-   as float.h and the arch libc headers do. */
-#if defined(__aarch64__)
+   FP_ILOGBNAN; glibc's x86-64 uses INT_MIN for both. These are header ABI
+   values, not compiler implementation details, so select them from the target
+   macro just as float.h and the arch libc headers do.
+
+   musl uses INT_MIN for both on *every* machine, so the C library has to be
+   part of the selection and not only the architecture. Branching on the machine
+   alone was wrong exactly where the two disagree -- AArch64 musl, where this
+   header claimed glibc's pair (measured against Alpine's own gcc on an arm64
+   container, 2026-08-12, the first time the suite ran there). x86-64 musl agreed
+   with glibc by coincidence, which is why the x86-64 musl runs never caught
+   it. */
+#if defined(__RUBYCC_LIBC_MUSL__)
+#define FP_ILOGB0   (-2147483647-1)
+#define FP_ILOGBNAN (-2147483647-1)
+#elif defined(__aarch64__)
 #define FP_ILOGB0   (-2147483647)
 #define FP_ILOGBNAN (2147483647)
 #else
