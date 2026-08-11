@@ -16,7 +16,9 @@ class TestR10CorpusScan < Minitest::Test
     assert_equal 34, gate.fetch("status_ok_count")
     assert_equal 5, gate.fetch("excluded_count")
     assert_equal 0, gate.fetch("skipped_count")
-    assert_equal 29, gate.fetch("verified_record_count")
+    # 31 of the 34: sqlite3 and pg joined the recorded set in
+    # corpus-sqlite3-pg-1/-2, which is what took the R10 rate past its 90% gate.
+    assert_equal 31, gate.fetch("verified_record_count")
     assert_equal 34, gate.fetch("manual_classification_pending_count")
   end
 

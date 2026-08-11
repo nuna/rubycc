@@ -737,7 +737,11 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
 - **`__GNUC__` 非定義方針(R7)の影響をここで実測**する: fallback パスが無くて落ちる
   gem が合格率を有意に下げるなら、「GCC 擬態モード」(M6 予定)の前倒しを判断する。
   判断材料(落ちた gem と原因マクロ)をレポートに残すこと。
-- **受け入れ**: コーパス 90% が「install 成功 + gem テスト合格」(R10)。
+- ~~**受け入れ**: コーパス 90% が「install 成功 + gem テスト合格」(R10)。~~
+  **完了(`corpus-sqlite3-pg-1` / `-2`)**: 31/34 = 91.2%。`sqlite3` は
+  `--enable-system-libraries`、`pg` は native-source という**明示プロファイルで
+  分母に入れたうえで**超えた。一次情報は `test/corpus/include-census.md` の
+  「R10 pass rate」節(`data/verified_gems.json` から生成)。
 
 ### H5 — 性能(N1: 20,000 行/秒)
 - ~~まず**測定を整備**~~ **完了(Step 105)**: `rake bench:throughput`
@@ -898,22 +902,31 @@ tarball は `https://github.com/ruby/<name>/archive/refs/tags/v<version>.tar.gz`
 **M5 のコーパスが本当に通るかを決める形**で、R10 が名指しで想定している類型でもある。
 1〜4 が順調なら、そこで得た足場を 5〜7 に投入する。
 
-#### 現在の R10 実測値(Steps 209〜213)
+#### 現在の R10 実測値(**達成**: `corpus-sqlite3-pg-2` 時点)
 
-2026-08-06 の glibc x86_64 / Ruby 3.4.5 で、R10 ゲートを通過した 37 gem を同じ
-`RUBYCC=1 gem install` → sanity → 上流テストの手順で再確認した。`websocket-driver`
-0.8.2、`bootsnap` 1.24.6、`yajl-ruby` 1.4.3、`prism` 1.8.1、`fiddle` 1.1.8 の
-5 件が PASS となり、**25/37 = 67.6%** になった。R10 の 90% は 34/37 件なので、
-この時点ではまだ受入れ条件を満たしていない。
+**31/34 = 91.2%(90% までの残り 0)。DESIGN R10 の受入れ条件を満たした。**
+分母・分子・合格率は `test/corpus/include-census.md` の「R10 pass rate」節が
+`data/verified_gems.json` から生成するので、**この段落ではなくそちらが一次情報**である。
 
-残り 12 件の内訳も確定している。`nio4r` は rubycc ビルド・sanity までは通ったが、
-上流 112 examples のうち 44 件が sandbox の socket `EPERM` で失敗し、gcc ビルドの
-対照も同じ結果だった。`byebug`/`debug`/`openssl` も PTY/socket 制約または実行時
-クラッシュ、`puma` は上流テストの未同梱依存、`oj` は rubycc/gcc 対照とも上流側の
-失敗、`google-protobuf` は `_Atomic` 言語機能、`rbs` は designated initializer、
-`mysql2`/`thin`/`unicorn` は依存または上流テスト取得条件、`fcntl` は上流テストなしで
-ある。これらを PASS として水増しせず、34/37 に届くには依存関係と実行環境を整えた
-再実走が必要である。
+到達の経緯は 3 段階だった。(1) Steps 209〜213 の時点では 25/37 = 67.6% で、
+分母には「どの実装で建てても (d) 水準の証拠が取れない gem」が混ざっていた。
+(2) `atomic-type-*` 〜 `corpus-ninety-2` で、それらを**実測に基づいて**分母から外し
+(上流にテストが無い 1 件・対照でも通らない 3 件・C++ 依存 1 件)、残りを潰して
+29/32 = 90.6% に到達した。(3) その後 `pg` と `sqlite3` を明示プロファイルで
+分母に入れ直したため 29/34 = 85.3% に下がり、両者の記録を取って **31/34 = 91.2%** で
+再び超えた。**分母を大きくしてから超えた**ので、(2) の 90.6% より強い。
+
+残る 3 件は分母に残したままである。`oj` は GAPS S(`long double` が 8 バイト)で
+`UsualTest#test_decimal` の 1 件だけが対照と食い違う。`openssl` は PTY / socket 制約と
+KDF テストの実行時クラッシュ。`rbs` は上流の純 Ruby 側がホスト Ruby 3.4 同梱の
+RDoc と非互換で、`RDocPluginParserTest` が落ちる(`corpus-sqlite3-pg-2` で実測。
+`RDoc::TokenStream#collect_tokens` の引数不一致)。**`rbs` は gcc 対照も
+707 tests / 18 failures / 7 errors / 10 omissions と桁まで一致した**ので、
+`byebug` / `unicorn` / `debug` に適用した除外基準(どの実装でも (d) 水準の証拠が
+取れない)を満たす。**それでも分母から外していない** — 除外しなくても 90% を
+超えており、**分母を小さくして達成するのは避けたい**からである。外すかどうかは
+別ステップの判断とし、外す場合は `test/corpus/gems.rb` に理由を宣言する。
+**これらを PASS として水増ししない**方針は変わらない。
 
 `include/stdatomic.h` は `_Atomic` 自体ではなく `atomic_thread_fence` だけを提供する
 部分実装であり、`nio4r` のビルドを前進させた。`include/libc/link.h`、`regex.h` と
