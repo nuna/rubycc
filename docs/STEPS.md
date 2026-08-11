@@ -10677,3 +10677,58 @@ GAPS T は「**配列の要素数をパーサが数える文脈で**」と書い
 同じ「既知の制限」節に **`_Atomic` は未実装、`<stdatomic.h>` は同梱していない**と
 書かれていたが、`atomic-type-*` の一連のステップで**部分実装済み**になっている。
 出荷物に載る記述なので、README と同じ粒度に揃えた。
+
+---
+
+## qemu-aarch64-toolchain-1 — 道具が「静かに緑」になるのを塞ぐ(CI / M4)
+
+`glibc-minor-host-arch-2` で入れた `rake test:qemu_aarch64` を、素の `ruby:4.0` で
+全スイートに当てて確かめた。**結果は 7 failures / 4 errors / 742 skips** で、
+このうち **rubycc の欠陥は 1 件も無かった**。内訳がそのまま道具の欠陥を指していた。
+
+### 742 skips のうち 467 件は「ツールが無い」だった
+
+最多の skip 理由は
+`aarch64 execution toolchain (qemu-aarch64, aarch64-linux-gnu-gcc) is not installed`。
+native ランナーは apt で参照ツールチェーンを入れているが、素のイメージには無い。
+**差分テストはツールが無いと失敗ではなく skip する**ので、道具としては
+**何も検査していない緑**を返しうる状態だった — このリポジトリが
+`tools/ci_check_skips.rb` を持っている理由そのものである。
+
+Tier A と同じ apt 一式を入れたイメージを 1 度だけ構築して使い回す形にした。
+効果は `test/test_aarch64_execution.rb` で確認できる: **全件 skip → 46 runs /
+0 failures / 0 skips**。
+
+### bundler の版ずれが stderr を汚し、4 件を落としていた
+
+`TestPkgconf` / `TestDriver` / `TestVerifyGemTestsCli` の 4 件は
+「コマンドが stderr に何も書かないこと」を検査する。落ちていたのは
+`already initialized constant Gem::Platform::X64_LINUX` という**警告**で、
+チェックアウトを mount している以上、**ホストの Ruby が書いた `Gemfile.lock` の
+`BUNDLED WITH`** にコンテナ側が引きずられ、rubygems と bundler の版が食い違うためだった。
+
+**スイートは bundler を必要としていない。** 必要なのは Gemfile の development 群
+(minitest / rake / fiddle)だけなので、それをイメージに焼いて素の `ruby -Ilib -Itest`
+で走らせる形に変えた。検証: 該当 2 ファイルが **72 runs / 0 failures**、
+警告の出現回数 0。
+
+### 残り 3 件は対照が新しすぎた — ギャップ W として記録した
+
+`TestExamples#test_example_m5_atomic_type_10_knr_definitions` /
+`TestHeaderAbi#test_pthread_abi_matches_gcc` /
+`TestAtomicType#test_declaration_spellings_match_gcc` は、**gcc がコンパイルに失敗**して
+いた。イメージは Debian trixie の **gcc 14.2**、CI は Ubuntu 24.04 の gcc 13 である。
+gcc 14 は `-Wimplicit-int` / `-Wimplicit-function-declaration` /
+`-Wincompatible-pointer-types` を**既定でエラー**に格上げした。
+
+**rubycc の欠陥ではないが、無視してよい話でもない** — runner の gcc が上がれば CI で
+必ず出る。`docs/GAPS.md` にギャップ W として、3 件の名前と原因、
+取りうる解消(対照の呼び出しに `-std=` を明示する / プローブを C23 でも通る形に直す)
+とともに残した。**エミュレーション環境が、まだ来ていない CI の未来を先に見せた**形である。
+
+### 分かったことの一般形
+
+**道具を入れたら、その道具自身を全開で回して確かめる。** 今回の 11 件は、
+1 件も rubycc の欠陥ではなかった代わりに、**3 種類とも道具か記録の欠陥**だった
+(ツール不足で静かに skip・環境由来の stderr 雑音・対照の版差)。
+`FILES` を絞った運用だけを試していたら、467 件の skip は見えなかった。

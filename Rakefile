@@ -66,6 +66,52 @@ end
 # The host's own qemu-user registration is not enough on its own (Debian's
 # handler is registered "PO", and its interpreter path does not exist inside the
 # container image), which fails as a bare "exec ...: no such file or directory".
+# The apt packages the image needs beyond a Ruby: the same reference toolchain
+# .github/workflows/test.yml installs, for the same reason. Without them the
+# differential tests do not fail -- they *skip*, which is the failure mode this
+# repository guards against everywhere else (tools/ci_check_skips.rb exists
+# because a silent skip is a green run that checked nothing). Measured on a bare
+# ruby:4.0 image: 467 of the 742 skips were "aarch64 execution toolchain is not
+# installed", against 241 skips on the native runner.
+QEMU_AARCH64_PACKAGES = %w[
+  build-essential binutils pkg-config
+  gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
+].freeze
+
+# The suite's own dependencies (Gemfile's development group), installed into the
+# image rather than resolved by Bundler at run time. Bundler is deliberately not
+# used here: the checkout is mounted, so its Gemfile.lock -- written by whatever
+# Bundler the *host* Ruby carries -- would make the container fetch and switch to
+# that version, and the resulting rubygems/bundler skew prints "already
+# initialized constant Gem::Platform::..." on stderr. Four tests assert that a
+# command writes nothing to stderr, so that noise failed them (measured on the
+# full emulated run, 2026-08-12). Nothing in the suite needs Bundler itself.
+QEMU_AARCH64_GEMS = %w[minitest rake fiddle].freeze
+
+# The derived image is built once and reused; the tag carries the base image so
+# switching QEMU_IMAGE rebuilds instead of silently reusing another base's
+# toolchain.
+def qemu_aarch64_image(base)
+  tag = "rubycc-qemu-aarch64:#{base.tr(":/", "--")}"
+  exists = system("docker", "image", "inspect", tag, out: File::NULL, err: File::NULL)
+  return tag if exists && ENV["QEMU_REBUILD"].to_s.empty?
+
+  puts "==> building #{tag} from #{base} (installs the reference toolchain; slow under emulation)"
+  dockerfile = <<~DOCKERFILE
+    FROM #{base}
+    RUN apt-get update \\
+     && apt-get install -y --no-install-recommends #{QEMU_AARCH64_PACKAGES.join(" ")} \\
+     && rm -rf /var/lib/apt/lists/*
+    RUN gem install --no-document #{QEMU_AARCH64_GEMS.join(" ")}
+  DOCKERFILE
+  IO.popen(["docker", "build", "--platform", "linux/arm64", "-t", tag, "-"], "w") do |io|
+    io.write(dockerfile)
+  end
+  raise "docker build failed for #{tag}" unless $?.success?
+
+  tag
+end
+
 namespace :test do
   desc "Run FILES (test paths) on AArch64 in an emulated arm64 container (Docker + binfmt required; not part of `rake test`)"
   task :qemu_aarch64 do
@@ -79,20 +125,24 @@ namespace :test do
     # tests compare against a native compiler rather than a cross one. The
     # checkout is mounted, and bundler is pointed at a directory inside it so the
     # arm64 gems never mix with the host's.
-    image = ENV.fetch("QEMU_IMAGE", "ruby:4.0")
+    #
+    # That gcc is *newer* than the one CI compares against (Debian trixie's 14.2
+    # against Ubuntu 24.04's 13), and gcc 14 turns several former warnings into
+    # errors, so a handful of differential cases fail here with the *control*
+    # compiler failing rather than rubycc (docs/GAPS.md gap W). Read a failure
+    # against that list before treating it as an AArch64 defect.
+    image = qemu_aarch64_image(ENV.fetch("QEMU_IMAGE", "ruby:4.0"))
     root = File.expand_path(__dir__)
-    command = "bundle install --quiet && bundle exec ruby -Itest -e '" \
+    command = "ruby -Ilib -Itest -e '" \
               "ARGV.each { |f| require File.expand_path(f) }' -- #{files.join(" ")}"
     # Everything the container writes lands in the checkout through the mount,
-    # so it runs as the invoking user: a root-owned tmp/ and .bundle would
-    # otherwise be left behind for the host to trip over. HOME follows for the
-    # same reason (bundler and rubygems both write under it), and tmp/ is
-    # already git-ignored.
+    # so it runs as the invoking user: a root-owned tmp/ would otherwise be left
+    # behind for the host to trip over. HOME follows for the same reason
+    # (rubygems writes under it), and tmp/ is already git-ignored.
     sh "docker", "run", "--rm", "--platform", "linux/arm64",
        "--user", "#{Process.uid}:#{Process.gid}",
        "-v", "#{root}:/w", "-w", "/w",
        "-e", "HOME=/w/tmp/qemu-aarch64-home",
-       "-e", "BUNDLE_PATH=/w/tmp/qemu-aarch64-bundle",
        "-e", "CI_SKIP_PROFILE=native-aarch64",
        image, "bash", "-lc", command
   end
