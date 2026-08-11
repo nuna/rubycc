@@ -10045,3 +10045,41 @@ native smoke も c-suite も `system_includes: false` で既定パスを迂回�
 
 `float.h`(Step 201)・`math.h`(`test-ci-implementation-2`)に続いて、
 「freestanding / 共通層は機種に依らない」という思い込みの 3 件目である。
+
+## test-ci-implementation-10 — テストを製品と同じ探索順に戻す(M5 H6)
+
+`test-ci-implementation-2` でホスト機種対応を入れた際、`test_c_suite.rb` /
+`test_ruby_smoke.rb` / `test_extension_build.rb` は **`system_includes: false` を渡し、
+探索パスを自前で組み立てる**形になっていた。移植性のためには `target:` を渡すだけで
+足りたので、これは必要以上の変更だった。
+
+副作用が 2 つあった。
+
+- **探索順が製品と食い違った。** 製品はユーザの `-I` の**後ろ**に既定システムパスを
+  足す(同梱層 → ホスト libc の順)。自前の一覧は同梱層をユーザ指定として**前**に
+  置いたので、ホスト libc より先になった。順序依存の回帰をこの 3 本は捕まえられない。
+- **既定パスそのものを一度も通らなくなった。** `test-ci-implementation-9` で直した
+  multiarch の x86 決め打ち(GAPS U)が誰にも見つからなかったのは、これが理由である。
+  c-testsuite 220 本という最大の実ヘッダ検証面が、製品の既定経路を迂回していた。
+
+### 修正
+
+3 本とも `system_includes` の既定(true)に戻し、`include_paths` は**そのテストが
+本当にユーザとして渡すもの**だけにした。c-testsuite は空、Ruby 拡張の 2 本は
+CRuby のヘッダディレクトリ 2 つだけである。残りはコンパイラが組み立てる。
+
+`test-ci-implementation-9` で既定パスが target 別になったので、テスト側が
+multiarch を手で分岐する理由はもう無い。
+
+コメントも直した。3 本とも「rubycc が既定システムパスとして注入するので
+`/usr/lib/gcc` に触らない」と書いてありながら、その注入を無効化していた。
+
+### 触っていないもの
+
+`test_c_suite_aarch64.rb` の `CROSS_SYSTEM_INCLUDE_PATHS` はそのまま残した。
+あれはクロスツールチェーンの sysroot を明示的に指す**本物のクロスコンパイル**で、
+ホストの `/usr/include` を見せてはいけない。既定パスを使うのが正しい host 側とは
+事情が違う。
+
+実測: c-testsuite 223 runs / 433 assertions / 0 failures / 0 errors / 14 skips、
+ruby smoke 6 runs、extension build 4 runs、freestanding 10 runs がいずれも 0 失敗。

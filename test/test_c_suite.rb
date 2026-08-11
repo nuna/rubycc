@@ -29,17 +29,15 @@ class TestCSuite < Minitest::Test
     raise "c-testsuite host profile does not support this CPU: #{HOST_TARGET.inspect}"
   end
 
-  # The libc header directories on this host. gcc's private include directory
-  # (/usr/lib/gcc/.../include, home to stdarg.h and the other compiler-supplied
-  # headers) is deliberately absent: rubycc ships those itself and injects them,
-  # together with the libc directories, as its default system search path
-  # (Step 41), so this suite compiles without touching /usr/lib/gcc.
-  SYSTEM_INCLUDE_PATHS = [
-    Rubycc::Preprocess::Preprocessor::BUNDLED_INCLUDE_DIR,
-    "/usr/local/include",
-    (HOST_TARGET == "aarch64" ? "/usr/include/aarch64-linux-gnu" : "/usr/include/x86_64-linux-gnu"),
-    "/usr/include"
-  ].freeze
+  # Nothing is passed as a system directory on purpose. rubycc ships the
+  # compiler-supplied headers itself and injects them, together with the libc
+  # directories for the target, as its *default* system search path (Step 41,
+  # and per-target since `test-ci-implementation-9`). Letting the compiler build
+  # that path is the point: a suite that hand-rolls the list and passes
+  # `system_includes: false` stops exercising the search order real builds use,
+  # which is exactly how the x86-only multiarch directory survived unnoticed
+  # (GAPS U). `/usr/lib/gcc/.../include` stays absent either way.
+  SYSTEM_INCLUDE_PATHS = [].freeze
 
   # Cases the current rubycc subset cannot build or run correctly yet, each
   # with a one-line reason. Kept here (not silently dropped from the vendored
@@ -123,7 +121,7 @@ class TestCSuite < Minitest::Test
       begin
         binary = Rubycc::Compiler.new.compile(
           File.read(c_path), filename: File.basename(c_path), target: HOST_TARGET,
-          include_paths: SYSTEM_INCLUDE_PATHS, system_includes: false
+          include_paths: SYSTEM_INCLUDE_PATHS
         )
       rescue Rubycc::CompileError => e
         flunk "rubycc failed to compile #{basename}.c: #{e.message}"
@@ -163,8 +161,7 @@ class TestCSuite < Minitest::Test
 
   def compile_c_suite_oracle_with_rubycc(source, object_path, filename)
     binary = Rubycc::Compiler.new.compile(
-      source, filename: filename, target: HOST_TARGET, include_paths: SYSTEM_INCLUDE_PATHS,
-      system_includes: false
+      source, filename: filename, target: HOST_TARGET, include_paths: SYSTEM_INCLUDE_PATHS
     )
     File.binwrite(object_path, binary)
   rescue Rubycc::CompileError => e

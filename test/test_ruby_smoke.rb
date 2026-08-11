@@ -27,27 +27,21 @@ class TestRubySmoke < Minitest::Test
   RUBY_HDR_DIR = RbConfig::CONFIG["rubyhdrdir"]
   RUBY_ARCH_HDR_DIR = RbConfig::CONFIG["rubyarchhdrdir"]
 
-  # The libc header directories on this host. gcc's private include directory
-  # (/usr/lib/gcc/.../include, where stdarg.h and kin live) is deliberately
-  # absent: rubycc now ships those compiler-supplied headers itself and injects
-  # them (with the libc directories) as its default system search path (Step 41),
-  # so this test relies on nothing under /usr/lib/gcc.
-  SYSTEM_INCLUDE_PATHS = [
-    "/usr/local/include",
-    (HOST_TARGET == "aarch64" ? "/usr/include/aarch64-linux-gnu" : "/usr/include/x86_64-linux-gnu"),
-    "/usr/include"
-  ].freeze
-
   BUNDLED_INCLUDE = File.expand_path("../include", __dir__)
   BUNDLED_LIBC_ARCH_INCLUDE = File.expand_path("../include/libc/glibc/#{HOST_TARGET}", __dir__)
   BUNDLED_LIBC_INCLUDE = File.expand_path("../include/libc", __dir__)
 
-  # The Ruby headers first (so <ruby.h> and its arch "ruby/config.h" resolve),
-  # then the libc set; rubycc's bundled freestanding headers are appended
-  # automatically as part of the default system search path.
-  INCLUDE_PATHS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR, BUNDLED_INCLUDE,
-                   BUNDLED_LIBC_ARCH_INCLUDE, BUNDLED_LIBC_INCLUDE,
-                   *SYSTEM_INCLUDE_PATHS].freeze
+  # Only the Ruby headers, so <ruby.h> and its arch "ruby/config.h" resolve.
+  # Everything else -- rubycc's compiler-supplied headers, the bundled libc
+  # layers, and the host libc directories for this target -- is the compiler's
+  # own default system search path (Step 41, per-target since
+  # `test-ci-implementation-9`), appended after these. That is the order a real
+  # extension build uses, so this test must not hand-roll its own: the bundled
+  # layers belong *after* the caller's -I and *before* the host libc, and
+  # spelling the list out here silently changed both (GAPS U survived that way).
+  # gcc's private include directory (/usr/lib/gcc/.../include) is absent from
+  # that default path, so this test still relies on nothing under /usr/lib/gcc.
+  INCLUDE_PATHS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR].freeze
 
   # The distroless include path (Step 63 acceptance 2): the bundled freestanding
   # and libc layers plus the CRuby header dirs, with NO host /usr/include on it.
@@ -202,7 +196,7 @@ class TestRubySmoke < Minitest::Test
     Dir.mktmpdir("rubycc-ruby-smoke") do |dir|
       object = Rubycc::Compiler.new.compile(
         source, filename: filename, include_paths: INCLUDE_PATHS, defines: defines,
-        system_includes: false, target: HOST_TARGET
+        target: HOST_TARGET
       )
       object_path = File.join(dir, "#{File.basename(filename, ".c")}.o")
       File.binwrite(object_path, object)

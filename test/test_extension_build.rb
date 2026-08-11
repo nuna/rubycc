@@ -22,22 +22,20 @@ class TestExtensionBuild < Minitest::Test
   RUBY_HDR_DIR = RbConfig::CONFIG["rubyhdrdir"]
   RUBY_ARCH_HDR_DIR = RbConfig::CONFIG["rubyarchhdrdir"]
 
-  # The libc header directories on this host, matching TestRubySmoke /
-  # TestCSuite. gcc's private include directory is deliberately absent: rubycc
-  # supplies the compiler-provided headers itself and injects them as its
-  # default system search path (Step 41), so the build never reads /usr/lib/gcc.
-  SYSTEM_INCLUDE_PATHS = [
-    "/usr/local/include",
-    (HOST_TARGET == "aarch64" ? "/usr/include/aarch64-linux-gnu" : "/usr/include/x86_64-linux-gnu"),
-    "/usr/include"
-  ].freeze
-
   BUNDLED_INCLUDE = File.expand_path("../include", __dir__)
   BUNDLED_LIBC_ARCH_INCLUDE = File.expand_path("../include/libc/glibc/#{HOST_TARGET}", __dir__)
   BUNDLED_LIBC_INCLUDE = File.expand_path("../include/libc", __dir__)
-  INCLUDE_PATHS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR, BUNDLED_INCLUDE,
-                   BUNDLED_LIBC_ARCH_INCLUDE, BUNDLED_LIBC_INCLUDE,
-                   *SYSTEM_INCLUDE_PATHS].freeze
+
+  # Only the Ruby headers, matching TestRubySmoke / TestCSuite. The compiler
+  # appends its own default system search path -- its compiler-supplied headers,
+  # the bundled libc layers, then the host libc directories for this target
+  # (Step 41, per-target since `test-ci-implementation-9`) -- after these, which
+  # is the order a real extension build sees. Passing the bundled layers as
+  # `-I` here instead would move them ahead of the caller's own directories and
+  # ahead of the host libc, i.e. test an order no build uses. gcc's private
+  # include directory stays absent from that default path, so the build still
+  # reads nothing under /usr/lib/gcc.
+  INCLUDE_PATHS = [RUBY_HDR_DIR, RUBY_ARCH_HDR_DIR].freeze
   INCLUDE_FLAGS = INCLUDE_PATHS.map { |p| "-I#{p}" }.freeze
 
   # For the freestanding-header acceptance (Step 41): only the CRuby header
