@@ -1644,12 +1644,20 @@ class TestPreprocessor < Minitest::Test
     values.drop(values.index("V") + 1).first(2)
   end
 
+  # The measurement is about the *target* being compiled for, so the version to
+  # ask for is the one whose libc this host actually has: HostTarget.name, not
+  # Preprocessor's x86-64 compatibility default. Asking for the default on an
+  # AArch64 host measures an x86-64 libc that is not installed there, comes back
+  # nil, and turns this test into a skip -- which is exactly what it did on the
+  # native ARM runner (weekly run 31500900897), where the suite itself was green
+  # and only the skip guard failed.
   def test_glibc_version_macros_are_measured_from_the_host_libc
     skip "host libc is not glibc" unless Rubycc::Preprocess::Preprocessor.host_libc == "glibc"
-    measured = Rubycc::Preprocess::Preprocessor.host_glibc_minor
-    skip "no glibc image to measure on this host" if measured.nil?
+    host = HostTarget.name
+    measured = Rubycc::Preprocess::Preprocessor.host_glibc_minor(host)
+    refute_nil measured, "a glibc host must be able to measure its own C library"
 
-    assert_equal [2, measured], glibc_version_pair
+    assert_equal [2, measured], glibc_version_pair(libc_arch: host)
   end
 
   # A pinned version reaches the macros unchanged -- the cross-compilation case,
