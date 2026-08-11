@@ -77,8 +77,26 @@ WORK_DIR = File.expand_path(ENV["VERIFY_WORK"] || File.join(Dir.tmpdir, "rubycc_
 
 # Generous ceilings: the slowest suite here (bigdecimal) takes about 25s and the
 # slowest build about 30s, so these only catch a genuine hang.
-TEST_TIMEOUT = 900
-BUILD_TIMEOUT = 900
+#
+# Both are overridable, because "a genuine hang" is a statement about the machine
+# and one machine here is not like the others: under the emulated AArch64
+# container an extconf's probes run tens of times slower, and Step 208 hit this
+# ceiling on msgpack -- a timeout that measured qemu, not the gem. Raising it for
+# such a run keeps the default honest for every ordinary one; a bad value aborts
+# rather than silently reverting to the default, since a mistyped ceiling would
+# otherwise look like the tool ignoring the caller.
+def self.timeout_from_env(name, default)
+  raw = ENV[name]
+  return default if raw.nil? || raw.empty?
+
+  seconds = Integer(raw, exception: false)
+  abort "#{name} must be a positive whole number of seconds: #{raw.inspect}" if seconds.nil? || seconds <= 0
+
+  seconds
+end
+
+TEST_TIMEOUT = timeout_from_env("VERIFY_TEST_TIMEOUT", 900)
+BUILD_TIMEOUT = timeout_from_env("VERIFY_BUILD_TIMEOUT", 900)
 
 # Environment variables that must not leak from *this* process into the children.
 # The tool normally runs under `bundle exec` inside the rubycc checkout, whose
