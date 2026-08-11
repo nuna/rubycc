@@ -1,6 +1,6 @@
 # test/fixtures/mkmf — mkmf 生成物コーパス
 
-M3(rmake / rubygems_plugin / pkg-config / conftest、docs/ROADMAP.md §6)の一次資料。
+M3(rmake / rubygems_plugin / pkg-config / conftest、docs/development/ROADMAP.md §6)の一次資料。
 「実物の mkmf が生成した Makefile と conftest」を先に採取し、そこから逆算で
 B1(rmake の Makefile サブセット)・B5(conftest 対応)の機能セットを決める。
 仕様書(POSIX make)からの演繹はしない — mkmf が生成しないものは作らない、という方針。

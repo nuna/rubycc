@@ -67,7 +67,7 @@ C ツールチェイン**を gem として提供し、Ruby さえあれば C 拡
     - `__attribute__((...))` の構文受理(aligned / packed のみ意味を実装、他は無視)
     - `__builtin_expect`, `__builtin_alloca`, `__builtin_va_*`, 主要な `__builtin_*`
       (AArch64 backendの`:alloca`/`:bit_scan`はターゲット別の実装範囲を
-      [`docs/IR.md` §6.5](IR.md#65-ターゲット別の実装範囲)に定める)。
+      [`docs/development/IR.md` §6.5](IR.md#65-ターゲット別の実装範囲)に定める)。
     - `__has_attribute` / `__has_builtin` / `__has_include`(プリプロセッサ)
     - 空テンプレートのインラインアセンブリ(`__asm__ volatile("" ::: "memory")` を
       コンパイラバリアとして受理)。**実体のあるインラインasmは非対応**。
@@ -133,7 +133,7 @@ C ツールチェイン**を gem として提供し、Ruby さえあれば C 拡
   グローバルシンボルは、GOT/PLT を経由せず直接束縛する(`ld -Bsymbolic` 相当)。
   **R9 が列挙する ABI(呼び出し規約・構造体・可変長引数・アラインメント)には影響しない** —
   逸脱するのは ELF の動的リンク時のシンボル解決である。v1 では**切り替えを提供しない**。
-  判断の経緯と再検討の条件は docs/STEPS.md(Step 195 とその決定)
+  判断の経緯と再検討の条件は docs/development/STEPS.md(Step 195 とその決定)
 
 ## 4. ターゲット環境の選定
 
@@ -266,7 +266,7 @@ rubycc(gem)
 
 ## 9. 参考資料
 
-本書および docs/ROADMAP.md の計画立案にあたって参照した資料。なお計画は
+本書および docs/development/ROADMAP.md の計画立案にあたって参照した資料。なお計画は
 これらの資料の内容に関する一般知識に基づいて立案したものであり、実装・
 レビューで仕様の詳細が問題になった箇所では必ず原典を確認すること。
 

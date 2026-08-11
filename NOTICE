@@ -19,7 +19,7 @@ musl's COPYRIGHT grants permission for its public header files to omit the
 copyright and permission notices the MIT license would otherwise require, so
 retaining the musl notice below is not an obligation for the derived headers;
 rubycc keeps it as an acknowledgement of provenance. The full per-file
-provenance ledger and the licensing analysis are in docs/HEADER-LICENSING.md.
+provenance ledger and the licensing analysis are in docs/reference/HEADER-LICENSING.md.
 
 No source was copied from glibc (which is LGPL) or from the Linux kernel UAPI
 headers (which are GPL); only observable ABI facts (sizeof/_Alignof, offsetof,

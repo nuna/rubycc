@@ -2,7 +2,7 @@
 
 require_relative "test_helper"
 
-# Step 55 (M3 着手前作業、docs/ROADMAP.md §6 冒頭): test/fixtures/mkmf/ に
+# Step 55 (M3 着手前作業、docs/development/ROADMAP.md §6 冒頭): test/fixtures/mkmf/ に
 # 採取した実物 mkmf 生成物(Makefile / mkmf.log)の基本形を検証する軽量テスト。
 # コーパスそのものの再生成は tools/collect_mkmf_corpus.rb が行う
 # (test/fixtures/mkmf/README.md 参照)。このテストは fixtures の欠落・破損の

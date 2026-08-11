@@ -1096,7 +1096,7 @@ class TestDiagnostics < Minitest::Test
     assert_match(/excess elements in scalar initializer/, error.description)
   end
 
-  # docs/GAPS.md gap T: a call returning a struct, sitting in a brace-elided
+  # docs/development/GAPS.md gap T: a call returning a struct, sitting in a brace-elided
   # initializer, is a form gcc accepts and rubycc does not -- the declaration's
   # type is completed by the parser, which has no type table to tell the call's
   # type from. What is pinned here is the *report*: it must name the expression

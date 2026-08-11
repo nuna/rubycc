@@ -1,5 +1,5 @@
 # Tier B: the weekly jobs that are too slow or too network-hungry to run on
-# every push. None of them is part of `rake test`. See docs/CI.md.
+# every push. None of them is part of `rake test`. See docs/development/CI.md.
 name: weekly
 
 # Quoted so YAML parsers cannot read the key as the boolean `on`.
@@ -56,7 +56,7 @@ jobs:
   # from upstream drift: it means rubycc's own header coverage changed, which is
   # information worth committing.
   census:
-    # A dispatch that sets verify_step is a musl *recording* run (docs/CI.md):
+    # A dispatch that sets verify_step is a musl *recording* run (docs/development/CI.md):
     # only the musl job has anything to do, and the free-tier minute budget
     # is tight enough that dragging the other six along would cost more than
     # the run itself. Everything else is unchanged for the weekly schedule.
@@ -289,7 +289,7 @@ jobs:
 
   # Throughput (requirement N1) as a trend line only.
   throughput:
-    # A dispatch that sets verify_step is a musl *recording* run (docs/CI.md):
+    # A dispatch that sets verify_step is a musl *recording* run (docs/development/CI.md):
     # only the musl job has anything to do, and the free-tier minute budget
     # is tight enough that dragging the other six along would cost more than
     # the run itself. Everything else is unchanged for the weekly schedule.
@@ -323,7 +323,7 @@ jobs:
       - name: Measure compile throughput
         # Deliberately no pass/fail threshold on the numbers. Hosted runners are
         # shared and their throughput drifts far more than the differences these
-        # measurements are meant to detect; docs/THROUGHPUT.md records that a
+        # measurements are meant to detect; docs/development/THROUGHPUT.md records that a
         # performance verdict is only meaningful from a paired HEAD -> change
         # measurement on one machine in one session. This job exists to keep the
         # harness itself exercised and to leave a trend artifact.
@@ -339,7 +339,7 @@ jobs:
       - name: Upload the throughput results
         # Artifact only -- the results are never committed. Numbers from a
         # hosted runner would pollute the measurement record in
-        # benchmark/results/, which docs/THROUGHPUT.md reads as same-machine data.
+        # benchmark/results/, which docs/development/THROUGHPUT.md reads as same-machine data.
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -420,7 +420,7 @@ jobs:
   # cannot execute on Alpine, so the actions stay on glibc/x86-64 and only
   # rubycc runs on musl/aarch64.
   musl-aarch64:
-    # A dispatch that sets verify_step is a musl *recording* run (docs/CI.md),
+    # A dispatch that sets verify_step is a musl *recording* run (docs/development/CI.md),
     # and this job records nothing: it writes no verified_gems.json entry and
     # its logs are read by hand. Emulated minutes are the most expensive kind on
     # the free tier, so a recording dispatch does not pay for them. It is also
@@ -563,7 +563,7 @@ jobs:
   # push by test.yml, so a version-specific break is caught within the week
   # unless it is 3.4-specific.
   ruby-3-4:
-    # A dispatch that sets verify_step is a musl *recording* run (docs/CI.md):
+    # A dispatch that sets verify_step is a musl *recording* run (docs/development/CI.md):
     # only the musl job has anything to do, and the free-tier minute budget
     # is tight enough that dragging the other six along would cost more than
     # the run itself. Everything else is unchanged for the weekly schedule.

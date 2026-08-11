@@ -1181,7 +1181,7 @@ Step 29/30 と同じ理由で対象外。
 **内容**: 悪意ある入力(仕込まれた C ソース/ヘッダ/ELF/ar)による資源枯渇 DoS を、
 生の `SystemStackError`・無限ループ・指数膨張ではなく、明確なエラーで拒否する
 横断的フェイルセーフ。攻撃 PoC で脆弱性を実証してから対策(詳細な独立記録は
-docs/security-dos-review.md)。heavy-implementer 1 フェーズ。
+docs/development/security-dos-review.md)。heavy-implementer 1 フェーズ。
 
 **設計判断**:
 - **脅威の性質に応じてガードを使い分ける**: スタック再帰は深さカウンタ、
@@ -2320,11 +2320,11 @@ heavy-implementer へ移譲・レビューして確定。
 
 M3 完了後成果物の 2 件(2026-07-17 指示)。implementer へ移譲・レビューして確定。
 
-- docs/C11-COVERAGE.md: N1570 章立てで 4 値判定(133 表行)。条番号は原典 PDF を
+- docs/reference/C11-COVERAGE.md: N1570 章立てで 4 値判定(133 表行)。条番号は原典 PDF を
   取得して TOC 裏取りし、指示文の例示ミス(freestanding ヘッダの本数・7.17 の
   誤り)も原典側に合わせて訂正された。判定は負債表・スキップ表・STEPS.md・
   lib/ grep の実測のみから起こし推測なし。
-- docs/GCC-EXTENSIONS.md: 29 拡張を実装方式 3 分類(正確対応 / 受理して実体なし /
+- docs/reference/GCC-EXTENSIONS.md: 29 拡張を実装方式 3 分類(正確対応 / 受理して実体なし /
   正直に非対応と答えてフォールバック誘導)で一覧化。
 
 ---
@@ -2335,7 +2335,7 @@ M3 完了後成果物(2026-07-18 指示)。heavy-implementer へ移譲(上限中
 完遂、ドキュメントはユーザ指示により日本語で作成)・レビューして確定。
 
 - benchmark/ にコード一式(C カーネル 5 本 + json/msgpack 実ワークロード +
-  3-way ハーネス)、docs/BENCHMARKS.md に実測・考察。
+  3-way ハーネス)、docs/development/BENCHMARKS.md に実測・考察。
 - **劣位ケースを含む実測**(指示要件): 最大は json の gcc-O2 比 7.65x・
   arrayscan 7.41x(tight loop、レジスタ割付/ベクトル化の不在)。gcc-O0 比では
   全ケース 1.1〜2.9x で、非最適化コード同士では十分競合。分岐・VM 律速では
@@ -2375,7 +2375,7 @@ M4 の初手。heavy-implementer へ移譲・レビューして確定。**挙動
   RbConfig::CONFIG["host_cpu"]、amd64/x64 → x86_64・arm64 → aarch64 の正規化と
   triple の先頭要素採用)。aarch64 は「not implemented yet」、未知は
   「unsupported target」の UsageError。
-- 契約の明文化は docs/IR.md §6 に追記(バックエンドとの契約の一部のため、IR 例外
+- 契約の明文化は docs/development/IR.md §6 に追記(バックエンドとの契約の一部のため、IR 例外
   ルールの範囲)。aarch64 のコードは一行も書いていない。
 
 ---
@@ -2656,7 +2656,7 @@ Step 75 の実測で「残る最大のボトルネックは struct 値渡しで�
 - **x86_64 は 254 ファイル(examples 全件 + c-testsuite 本体)でバイト一致**。
 - **成果: c-testsuite の aarch64 保留リストが空になった**(220 件中 203 件通過、
   残り 17 件はターゲット非依存の既知債務)。examples の保留も 9 → 8 件。
-- IR 契約を変更したため、`ir.rb` のコメントと `docs/IR.md`(§2 param_kinds、§5 :call、
+- IR 契約を変更したため、`ir.rb` のコメントと `docs/development/IR.md`(§2 param_kinds、§5 :call、
   §8.2 出典表に AAPCS64 §6.4.2)の両方を更新した。x86_64 が観測する kind 集合は不変。
 - **判明した既存の silent miscompile**: `struct { float a, b; }` の**値渡し**は本変更
   以前から誤っている。System V は 2 つの float を 1 eightbyte にまとめて d0 へ、
@@ -2696,7 +2696,7 @@ System V は 2 つの float を 1 eightbyte にまとめて d0 へ渡すが、**
   - 16 バイト整列の集約は**偶数番 x レジスタから**
   - 溢れた HFA はメンバごとではなく **eightbyte 単位**で積む
 - aarch64 backend に x8 間接結果・参照渡し・HFA の v レジスタ配置・`:memcpy` を実装。
-- **IR 契約の変更 2 点**(`ir.rb` と `docs/IR.md` の両方を更新):
+- **IR 契約の変更 2 点**(`ir.rb` と `docs/development/IR.md` の両方を更新):
   1. **`:indirect` タグを削除**。参照渡しされる集約は、ジェネレータが「呼び出し側コピーへの
      通常の `:gp` ポインタ」に縮約する。backend 側に専用規則が要らなくなり、未使用タグを
      残すより契約が正直になる。`:indirect_result`(x8)は専用レジスタが要るので残す。
@@ -2830,7 +2830,7 @@ A2〜A4 の aarch64 実行検証はすべて**クロス gcc でリンク**して
 ## Step 81 — musl 派生ヘッダのライセンスゲート(H0、ユーザ指示)
 
 M4 完了後・M5(互換ヘッダの大量拡充)着手前の必須ゲート(ユーザ指示、2026-07-19)。
-成果物は docs/HEADER-LICENSING.md。コード生成ではなくライセンス整理のステップ。
+成果物は docs/reference/HEADER-LICENSING.md。コード生成ではなくライセンス整理のステップ。
 
 - **musl COPYRIGHT を原典で確認したことが最大の収穫**。ROADMAP の H0 論点 1 が前提に
   していた「musl は『ヘッダの大部分は著作権性が薄い』と述べている」という文言は、
@@ -3950,7 +3950,7 @@ bigdecimal が使用)。同梱ヘッダは 53 → 56 本。
 - 検証: ABI ハーネスに SETJMP / LOCALE の Spec を追加し、x86_64 と aarch64 の
   両クラスに登録。gcc + システムヘッダと rubycc + 同梱ヘッダで型サイズ・
   `LC_*` の値・`struct lconv` の代表メンバのオフセットが一致することを機械検証する。
-- 由来台帳(docs/HEADER-LICENSING.md §3.3 / §3.4)を更新(clean-room 23 → 26 本、
+- 由来台帳(docs/reference/HEADER-LICENSING.md §3.3 / §3.4)を更新(clean-room 23 → 26 本、
   合計 53 → 56 本)。§6 のワークフローが定める必須手順に従った。
 
 ## Step 123 — POSIX ヘッダ 7 本の同梱(M5 H2、センサス駆動の続き)
@@ -4494,7 +4494,7 @@ x86_64・aarch64 の両方で不一致 0 件**を確認した。`WCOREDUMP` が�
   `multi-character character constant` になった。**`-E` は通ってしまい**(TokenConverter を
   走らせないため)、ABI ハーネスで初めて露見した。C の仕様どおりの挙動で gcc も同じなので
   rubycc のバグではないが、**`-E` が通ることは「正しい」の証明にならない**という実例。
-- `docs/HEADER-LICENSING.md` の §3 / §3.2 / §3.3 の見出し本数が**元から §3.4 の集計と
+- `docs/reference/HEADER-LICENSING.md` の §3 / §3.2 / §3.3 の見出し本数が**元から §3.4 の集計と
   ずれていた**(56 / 15 / 26 対 68)。台帳更新のついでに表の行数と一致するよう是正した。
 - `waitid` の `siginfo_t` は複製せず `#include <signal.h>` にした(約 40 行の union を
   複製するとドリフト源になる。`string.h` → `strings.h` の前例と同じ)。
@@ -4569,7 +4569,7 @@ statfs エントリに届いたことを意味する。
 
 Step 119・139 のコーパス拡張は「人気ランキングを辿って `.gem` を落として中を見る」を
 毎回手作業でやっており、手順が残っていなかった。それを `tools/scan_popular_gems.rb`
-として道具にした。日本語の使い方は [`test/corpus/README.md`](../test/corpus/README.md)。
+として道具にした。日本語の使い方は [`test/corpus/README.md`](../../test/corpus/README.md)。
 
 ### R10 ゲートは再実装せず census.rb に委譲した
 
@@ -4756,7 +4756,7 @@ Step 143(スキャナ)と Step 144(テスト実走・DB 更新)で道具は揃�
   明記。あわせて「`rubycc -E` が通ることは正しさの証明にならない」も
 
 書かなかったのは、道具の man page 的な説明(それは `test/corpus/README.md` と
-`data/README.md` の担当)と、R8 の全文(`docs/HEADER-LICENSING.md` §6 が正典で、
+`data/README.md` の担当)と、R8 の全文(`docs/reference/HEADER-LICENSING.md` §6 が正典で、
 スキルは「§6 をプロンプトに要約して渡せ」と指すだけ)。**同じ内容を 2 箇所に書けば
 必ず片方が腐る**ので、スキルは判断だけを持ち、事実は既存文書を指す。
 
@@ -4776,7 +4776,7 @@ Step 144 の道具でコーパス中最小級の 2 gem を検証しようとし�
 その否定的結果そのもので、**最小再現の付いた 6 つの実在するギャップ**が出た。
 6 件はそれぞれ Steps 147〜152 で解消しており、各ステップの記録が
 「Step 146 のギャップ表の N 番」として個別の詳細を持つ
-(未解消のギャップの一覧は docs/GAPS.md)。
+(未解消のギャップの一覧は docs/development/GAPS.md)。
 
 ### 「rubycc が悪いのか環境が悪いのか」を先に切り分けた
 
@@ -5590,7 +5590,7 @@ gemspec の `summary` / `description`、README の見出し行、DESIGN のタ�
 
 - `benchmark/README.md` の「ハーネス(Pure Ruby)」— ベンチマークスクリプト
   `run.rb` 自体の説明であって、プロジェクトの主張ではない
-- `docs/DESIGN.md` の「同機能の Pure Ruby 実装よりは十分速い」(N2)—
+- `docs/development/DESIGN.md` の「同機能の Pure Ruby 実装よりは十分速い」(N2)—
   **比較対象である他の実装**を指しており、rubycc の主張ではない
 - `tools/verify_gem_tests.rb` と `lib/rubycc/pkgconf` の "pure-Ruby" —
   前者は**検証対象 gem のフォールバック**、後者は `.pc` パーサという
@@ -5717,7 +5717,7 @@ Step 155 の「警告チャネルの無い処理系では『警告して続行�
 - **オーダごとに降ろし分ける** —— rubycc は最適化を行わず -O0 相当の列を出すので、
   緩いオーダで得られるはずの余地はそもそも存在しない。複雑さだけが増える。
 
-その結果 **IR はメモリオーダを一切運ばない**(`docs/IR.md` §5 のアトミック節)。
+その結果 **IR はメモリオーダを一切運ばない**(`docs/development/IR.md` §5 のアトミック節)。
 オーダ引数は「捨てる」のであって「無視する」のではなく、
 **普通の関数引数として評価はする**(副作用がありうる)うえで整数型であることは検査する。
 
@@ -6209,7 +6209,7 @@ C11 6.2.2p5: ブロックスコープで宣言された関数識別子は、記�
   「nested function definitions are not supported」と名指しするようにした。
   **宣言は通るのに定義は通らない**という区別を、利用者に分かる言葉で伝えるため
 
-`docs/GCC-EXTENSIONS.md` には入れ子関数定義の側だけを「未実装」として載せ、
+`docs/reference/GCC-EXTENSIONS.md` には入れ子関数定義の側だけを「未実装」として載せ、
 **標準 C のブロックスコープ関数宣言とは別物**であることを明記した(混同されやすい)。
 
 ### `ruby/ractor.h` は単体でコンパイルできない
@@ -6396,7 +6396,7 @@ POSIX は `MAKE` を組み込みで定義することを要求している。
 **psych の合否には影響していない**。だが同じ Makefile の 282 行目
 `cd libyaml && $(MAKE)` は**同梱 libyaml を実際にビルドする規則**で、
 そこでは `cd libyaml &&` に潰れて**黙って no-op になる**。
-横断の決まりごと「ギャップの修正は別ステップ」に従い、docs/GAPS.md の F として残した。
+横断の決まりごと「ギャップの修正は別ステップ」に従い、docs/development/GAPS.md の F として残した。
 
 ---
 
@@ -6610,7 +6610,7 @@ rake の失敗直後に落とし、**終了ステータスを書き出す `echo`
 
 ## Step 176 — コーパスの `version: nil` 4 件を固定する(M5 H6)
 
-`docs/GAPS.md` §2 の負債。`test/corpus/gems.rb` の bigdecimal / date / racc / redcarpet が
+`docs/development/GAPS.md` §2 の負債。`test/corpus/gems.rb` の bigdecimal / date / racc / redcarpet が
 `version: nil` = 最新追従のままだった。
 
 固定先は `data/verified_gems.json` が保証しているバージョン
@@ -6731,7 +6731,7 @@ rubycc でも `include/libc/` ではなく `include/`(`stdarg.h`・`stdbool.h` �
 中身は Step 177 の組み込み関数への 3 行のマクロにした。
 台帳の freestanding は 8 → 9 本、合計 77 → 78 本。
 
-`docs/HEADER-LICENSING.md` には **Step 135 の時点で「`stdckdint.h` は
+`docs/reference/HEADER-LICENSING.md` には **Step 135 の時点で「`stdckdint.h` は
 `__builtin_add_overflow` が無いのでスコープ外」と書いてあった**。
 その見送り理由が Step 177 で消えたので、同じ場所に消し込みを書いた。
 
@@ -6796,7 +6796,7 @@ musl では 13 ケースで**参照実装である gcc の方が先にコンパ�
 
 前者は `skip` にするが、**理由を必ずメッセージに書く**
 (`<features.h> exists only on glibc; this host's libc is musl`)。
-`docs/CI.md` が繰り返し書いているとおり、**静かに通る skip がこのプロジェクトの敵**である。
+`docs/development/CI.md` が繰り返し書いているとおり、**静かに通る skip がこのプロジェクトの敵**である。
 
 ### glibc 側のプローブは 1 バイトも変えない、を不変条件にした
 
@@ -7059,7 +7059,7 @@ enum 値・ビットフィールド幅・配列長)と IR 生成経路(グロー
 
 ## Step 185 — 対応しない gem を 1 つの文書にまとめる(M5 H6)
 
-ユーザ依頼。**`docs/OUT-OF-SCOPE-GEMS.md` を新設**した。
+ユーザ依頼。**`docs/reference/OUT-OF-SCOPE-GEMS.md` を新設**した。
 
 ### なぜ GAPS.md と分けたか
 
@@ -9050,7 +9050,7 @@ atomic-type-9 で実走して確かめてある — rubycc は eventmachine の 
 そこでビルドが止まる。
 
 **これは新しい除外規則ではない。** R10 は C++ 拡張を対象外と明示しており、
-eventmachine は既に `docs/OUT-OF-SCOPE-GEMS.md` に**基準 A** で記載済みである。
+eventmachine は既に `docs/reference/OUT-OF-SCOPE-GEMS.md` に**基準 A** で記載済みである。
 **その規則が 1 段外側まで届いただけ**である。
 
 ### 機械判定に見えないものを、宣言で見えるようにした
@@ -9062,7 +9062,7 @@ C++ の**依存**は原理的に見えない。そこで `:out_of_scope_dependen
 ### 「決定を指すだけ」であることをテストで固定した
 
 この欄が**新しい除外を発明する**場所になっては困る。そこで、
-**ここで名指しした gem が `docs/OUT-OF-SCOPE-GEMS.md` に実際に記載されていること**を
+**ここで名指しした gem が `docs/reference/OUT-OF-SCOPE-GEMS.md` に実際に記載されていること**を
 検査するテストを足した。どこにも書かれていない名前を書けば落ちる。
 
 R10 通過率 **28/33 = 84.8% → 28/32 = 87.5%**(90% には 29 件、**あと 1 件**)。
@@ -9173,7 +9173,7 @@ GAPS R。R10/DESIGN §3.3 では C++ を対象外としているため、C++を�
 - `test/test_corpus_census.rb`: **27 runs / 351 assertions / 0 failures**
 - `rake test`: **2,957 runs / 9,456 assertions / 0 failures / 0 errors / 44 skips**
 
-この対応でRは解消し、`docs/GAPS.md` には残さない。censusのコードとスナップショットは
+この対応でRは解消し、`docs/development/GAPS.md` には残さない。censusのコードとスナップショットは
 変更していない。
 
 ---
@@ -9236,7 +9236,7 @@ Step 207 の続き。提示した 4 つの対策のうち **4 番(レビュー�
 
 ### 4 番 — 規約に「1 問」を足した
 
-`docs/ROADMAP.md` §2「実装規約と不変条件」(**違反はレビューで差し戻す**)に、
+`docs/development/ROADMAP.md` §2「実装規約と不変条件」(**違反はレビューで差し戻す**)に、
 差分テストを書く・直すときの問いを 1 つ足した:
 
 > **この行は、libc が違ったら / 機種が違ったら / ツールチェインの既定が違ったら、
@@ -9395,7 +9395,7 @@ Ruby 拡張の実運用ではいずれも稀である:
 3. 同じサードパーティ C ライブラリを 2 つの gem が同梱している場合(2 と同型)
 
 **「実在の gem で実害が出たら再検討する」**(ユーザ判断、2026-08-06)。
-**永久の決定ではない**ので、再検討の条件を `docs/GAPS.md` §4 に条件つきで書いた。
+**永久の決定ではない**ので、再検討の条件を `docs/development/GAPS.md` §4 に条件つきで書いた。
 
 ### 正規の構成との唯一の違い
 
@@ -9457,7 +9457,7 @@ mkmf の `pkg_config` が実際に渡すのは
 
 ## codex/gaps-debt-20260808-1 — racc のテスト依存を上流の固定版に揃える(M5 H6)
 
-`docs/GAPS.md` §2 に残っていた、racc の assertion 数が Step 99 の 319 から
+`docs/development/GAPS.md` §2 に残っていた、racc の assertion 数が Step 99 の 319 から
 `tools/verify_gem_tests.rb` の 320 に増える差異を調査した。
 
 ### 原因
@@ -9730,7 +9730,7 @@ toolchain の導入、Ruby 3.3 / 4.0 matrix、全スイート、skip guard、art
 
 ### 結果
 
-専用 `arm-ci.yml` は削除し、CI の構成説明を `docs/CI.md` と `docs/ROADMAP.md` に反映した。
+専用 `arm-ci.yml` は削除し、CI の構成説明を `docs/development/CI.md` と `docs/development/ROADMAP.md` に反映した。
 これは workflow と文書だけの変更なので、C の examples は追加していない。
 
 ---
@@ -9889,7 +9889,7 @@ scanner を不在証明にも合否判定にも使わないという 4B の原�
 - live acceptance: [weekly run 31345720437](https://github.com/nuna/rubycc/actions/runs/31345720437)
   (`d36a39d`)。fixture と live の両方が success。
 
-どちらも tip ではない commit での実測である点は `docs/TEST-PLAN.md` の残課題に残した。
+どちらも tip ではない commit での実測である点は `docs/development/TEST-PLAN.md` の残課題に残した。
 
 ## test-ci-implementation-5 — native smoke を週次に載せる(M5 H6)
 
@@ -9908,7 +9908,7 @@ Step `codex/arm-ci-m4-20260808-1` は「週次 schedule には含めない」と
 full suite は dispatch 専用のまま残す**という分け方にした。両方の条件を
 `test/test_weekly_workflow.rb` で固定してあるので、どちらかが他方に寄ることはない。
 
-あわせて `docs/CI.md` の `acceptance-fixture` の説明を実態に直した。「ネットワークを
+あわせて `docs/development/CI.md` の `acceptance-fixture` の説明を実態に直した。「ネットワークを
 使わない必須の製品シグナル」と書かれていたが、実際は Tier B の週次 job で PR の必須判定
 ではなく、実行しているテスト 2 本は Tier A の `rake test` に含まれる。そして
 **live acceptance の代替にはならない** — gem の取得・unpack・extconf・ビルドという、
@@ -10722,7 +10722,7 @@ gcc 14 は `-Wimplicit-int` / `-Wimplicit-function-declaration` /
 `-Wincompatible-pointer-types` を**既定でエラー**に格上げした。
 
 **rubycc の欠陥ではないが、無視してよい話でもない** — runner の gcc が上がれば CI で
-必ず出る。`docs/GAPS.md` にギャップ W として、3 件の名前と原因、
+必ず出る。`docs/development/GAPS.md` にギャップ W として、3 件の名前と原因、
 取りうる解消(対照の呼び出しに `-std=` を明示する / プローブを C23 でも通る形に直す)
 とともに残した。**エミュレーション環境が、まだ来ていない CI の未来を先に見せた**形である。
 
@@ -10764,7 +10764,7 @@ rubycc            : FP_ILOGB0 = -2147483647   FP_ILOGBNAN =  2147483647
 libc も選択に入れる形に直した。
 
 **x86-64 musl では偶然 glibc と同じ値**だったので、これまでの musl 実走
-(Steps 175・191・205)では捕まらなかった。`docs/CI.md` が
+(Steps 175・191・205)では捕まらなかった。`docs/development/CI.md` が
 「aarch64 層は glibc 値のまま、aarch64 musl の実走が測るまでそのまま」と
 書いていた、まさにその箇所である。**予告どおりに出た**。
 
@@ -10879,3 +10879,50 @@ mkmf がそう報告していただけだった。**測って分けた 14 件の
 修正後、musl/aarch64 で `have_header` / `try_link` / **`try_run`** / `have_func` が
 すべて通る(`try_run` まで通るのは、ローダのパスも正しく書けている証拠)。
 該当 3 ファイルは 52 runs / 0 failures。x86-64 側は 4 ファイルとも不変である。
+
+---
+
+## docs-audience-split-1 — 読み手で分け、事実と判断を分ける(ドキュメント)
+
+19 個の文書が `docs/` に平置きされ、利用者向けの仕様と開発者向けの作業ログが混ざっていた。
+**混ざっていることの実害**が測れる形で出ていたので、そこから直した。
+
+### 現在値が 3 か所に書き写され、2 か所が古かった
+
+R10 の合格率は `test/corpus/include-census.md`(`data/verified_gems.json` から生成)が
+一次情報なのに、同じ数字が `RELEASE-CHECKLIST.md`・`TEST-REVIEW.md`・`ROADMAP.md` にも
+散文で書かれていた。**生成物が 91.2% を出している一方、散文の 2 か所は 85.3% のまま**だった。
+
+同種の食い違いを他にも 3 件是正した。うち 1 件は
+**同じ文書の中での矛盾**である(`RELEASE-CHECKLIST.md` が N5 の節で「実機検証は完了」と
+書きながら、既知の制限の節では「進行中」と書いていた)。
+
+### `ROADMAP.md` の「現在地」は 4,778 文字の 1 段落になっていた
+
+M2 の頃から書き足され続け、日付入りの追記が 4 ブロック積み上がり、**M4 完了後も
+「残る M4 受け入れ」を掲げたまま**だった。計画文書に作業ログが溜まった形である。
+現在地は**事実だけの表**に置き換え、経緯は STEPS(=作業ログの本体)に委ねた。
+
+### 採った基準
+
+`docs/README.md` に明文化した。判断規則は 1 問で足りる:
+
+> **その文書は「いま何ができるか」を答えるか、「どうやってそこに至ったか」を答えるか。**
+
+前者が `reference/`(利用者向け。**古くなったら直す**)、後者が `development/`
+(開発者向け。**古くなったら日付を添えて残す**)。TEST-REVIEW の 85.3% は後者なので
+**書き換えず**、時点と現在値の在処を添えた — レビュー当時の判断の記録として意味がある。
+
+事実と判断の分離も同じ文書に書いた。**事実にはいつ・どこで測ったかを添える**。
+「速い」「十分」のような評価語は、根拠の数値と併記されない限り判断として扱う。
+
+### 基準は書いただけでは守られないので、検査を足した
+
+`test/test_doc_links.rb` を新設し、(1) ローカルの markdown リンクが解決すること、
+(2) `docs/` 直下に索引以外を置かないこと、(3) 索引が全文書を挙げていること、を検査する。
+
+**入れた直後に効いた** — 1 階層深くなったことで `../test/...` 形式のリンクが 6 文書で
+壊れており、それを検出した。人手で追える量ではなかった。
+
+なお、地の文の `[fixed, ret](§4)` や `(*fp)(x)` を最初はリンクとして拾ってしまった。
+**ファイルを指すリンクだけを見る**(区切りか拡張子を持つものに限る)よう締めてある。

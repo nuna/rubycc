@@ -49,7 +49,7 @@ end
 
 # M4 acceptance support: run named test files on AArch64 without an AArch64
 # machine, in an arm64 container the host's binfmt handler emulates. This is
-# NOT a substitute for the native runner (docs/CI.md is explicit that QEMU does
+# NOT a substitute for the native runner (docs/development/CI.md is explicit that QEMU does
 # not stand in for native integration) and NOT a gate on the whole suite: the
 # emulation costs about 23x the native ARM runner's time per test (measured
 # against weekly run 31500900897), so a full suite is an hour where the runner
@@ -129,7 +129,7 @@ namespace :test do
     # That gcc is *newer* than the one CI compares against (Debian trixie's 14.2
     # against Ubuntu 24.04's 13), and gcc 14 turns several former warnings into
     # errors, so a handful of differential cases fail here with the *control*
-    # compiler failing rather than rubycc (docs/GAPS.md gap W). Read a failure
+    # compiler failing rather than rubycc (docs/development/GAPS.md gap W). Read a failure
     # against that list before treating it as an AArch64 defect.
     image = qemu_aarch64_image(ENV.fetch("QEMU_IMAGE", "ruby:4.0"))
     root = File.expand_path(__dir__)

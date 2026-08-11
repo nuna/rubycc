@@ -13,28 +13,30 @@
 - **M5**: glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース。
 - **M6 以降**: macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード。
 
-現在地: **M2 完了判定を達成(Step 54、glibc 環境)**: json 2.21.1 = rubycc ビルドの C 拡張で **606 tests / 100% passed**、msgpack 1.8.3 = **455 examples / 0 failures**(手順は tools/m2_acceptance.rb で再現可能)。残項目: musl コンテナでの確認(M3 のコンテナマトリクス整備時)、L5 第三段(.gnu.hash・RELRO、適合性磨き込み)。**M3 進行中**: コーパス化 = Step 55、B1(rmake コア)= Step 56、B2(シェルレス実行器)= Step 57、B3(in-process ツール置換 + -j 並列)= Step 58 完了。**実物 mkmf Makefile → rmake → rubycc 製 .so の柱が通った**(json parser.so dlopen 確認、msgpack フル 12 TU を jobs:4 で約 30 秒完走)。B4 = Step 59、B5(conftest 完全対応)= Step 60 完了(RbConfig 4 キー差し替えの mkmf_shim。実測で have_func 偽陽性(実行ファイルリンカの未解決検査)と check_sizeof(sizeof 式のリゾルバ注入畳み込み)を修正。msgpack extconf の probe が gcc fixture と一致、json の SIMD probe は自然に偽化して JSON_DISABLE_SIMD 不要に)。**M3 完了(Step 64)**: distroless 姿勢(libc 開発ヘッダ不使用 = RUBYCC_HERMETIC_HEADERS・cc/make/sh 不使用)での `gem install json / msgpack` が成功・動作。同梱 libc ヘッダは 22 本で足りた(不足は arpa/inet 1 本のみ、実測駆動)。残項目: 真の distroless / musl コンテナ検証(環境なし、CI 整備時)・sqlite3/pg(dev ライブラリ導入後)。**M3 完了後のユーザ指示成果物 4 件も完了**(Step 65 = C11-COVERAGE.md + GCC-EXTENSIONS.md、Step 66 = ベンチマーク(benchmark/ + docs/BENCHMARKS.md、劣位ケース実測込み)、Step 67 = rubycc-doctor + data/verified_gems.json)。**M4 進行中**: A1(バックエンド抽象化リファクタ)= Step 68 完了(機種非依存リロケーション語彙 6 種・MachineDescription 注入・`Compiler::TARGETS`・`-target`。リファクタ前後で .o バイト一致 3/3 = 挙動変更ゼロを実証)。A2(aarch64 コーデジェン・コア)= Step 70 完了(sp 正オフセットのフレーム・MOVZ/MOVK・CSET・B/CBZ バックパッチ・AAPCS64 x0-x7。副産物として x86_64 の暗黙仮定 2 件 = 関数間パディングの NOP と ELF リーダのアーキ固定を是正)。Step 71 で **qemu-user + クロス gcc を導入し、aarch64 の実行オラクル検証を達成**(差分実行テスト 34 件、実バグ検出なし)。A3(メモリアクセスとリロケーション)= Step 72 完了(ADRP+ADD / ADRP+LDR のペア・リロケーション。x86_64 は 68 サンプルでバイト一致)。素の char の符号性のターゲット化 = Step 73 完了(文字型を 4 実体に分離。x86_64 は 12 サンプルでバイト一致)。**A3 完了(Step 72 + 73 + 74)**: c-testsuite 220 中 191 件・examples 36 中 26 本が aarch64 で通過し、残りはすべて A4 の未対応機能に由来。この過程で x86_64 の暗黙仮定に由来する実バグ 2 件(名前なしビットフィールドの整列規則、CPU 識別マクロ)を検出・修正した。**A4 進行中**: 浮動小数・間接呼び出し = Step 75、スカラ引数分類の per-target 化 = Step 76 完了(**c-testsuite の aarch64 保留が空に。220 件中 203 件通過**、examples は 36 中 28 本)。集約分類のターゲット化 = Step 77、可変長関数の定義 = Step 78 完了で **A4(ABI 完全化)が完了**(c-testsuite 220 中 203 件・examples 36 中 33 件が aarch64 で通過。残りはすべて aarch64 固有ではない既存の未実装機能)。**A5 進行中**: 実行ファイルリンカ + crt = Step 79、共有ライブラリリンカ = Step 80 完了(**自作リンカだけで aarch64 の実行ファイルと .so を生成し qemu 実行・dlopen**。クロス gcc 不要。x86_64 は実行ファイル・.so ともバイト一致)。**M4 のコード生成・ABI・自作リンクは揃った**。**残っていたコード生成ギャップ 2 件も解消**(`m4/aarch64-alloca-bitscan-1` = `:bit_scan` を `clz` / `rbit`+`clz` に、`-2` = `:alloca` を「alloca を含む関数だけ x29 でフレーム固定 + per-call の outgoing 領域」で実装)。**これで `Backend::UnsupportedError` を投げるバックエンドは存在しなくなり、`AARCH64_PENDING` が空になった**。**残る M4 受け入れ: aarch64 で全スイート + gem install の実走**(qemu 上で動く aarch64 版 Ruby が必要で、コンテナ/CI マトリクス整備時に対応)。並行して float binary32 丸めバグを解消(Step 69、§3 の債務消し込み)。残項目(随時): ABI ファジングハーネスの機種化・musl/distroless コンテナ検証・sqlite3/pg コーパス。
+## 現在地(2026-08-12)
 
----
+この節は**現時点の事実だけ**を置く。到達までの経緯・判断・実測の履歴は
+[STEPS.md](STEPS.md) にステップ単位で記録してあり、ここでは繰り返さない
+(この節はかつて 4,000 字を超える 1 段落と日付入りの追記 4 ブロックに膨らみ、
+M4 完了後も「残項目」を掲げたままになっていた)。
 
-**最新追記(Step 208)**: aarch64 glibc の Ruby 4.0.6 上で、qemu-user を介した実際の
-`gem install` を完了。`io-wait` と `stringio` の C 拡張を `rubycc` でビルドし、各 gem の
-テストも成功した。`LibraryResolver` の x86_64 multiarch path 固定という実走時の不具合を
-修正し、aarch64 用の回帰テストを追加した。残る環境検証は musl全スイートと、aarch64 の
-`json` / `msgpack` を含む M4 全面受入れである。
+| マイルストーン | 状態 |
+|---|---|
+| M1 プリプロセッサ + C11 サブセット + x86-64 `.o` | 完了(Step 28) |
+| M2 リンカ・ar(json / msgpack を手動ビルド) | 完了(Step 54) |
+| M3 ビルド統合(rmake / plugin / pkg-config / conftest) | 完了(Step 64)。distroless 相当も完了(Step 202) |
+| M4 aarch64 バックエンド | **完了(`m4-aarch64-acceptance-4`)**。受け入れ 4 項目は下表 |
+| M5 互換ヘッダ・コーパス 90%・v1.0 | **R10 は達成(31/34 = 91.2%)**。残るはリリース操作(タグ・`gem push`) |
+| M6 以降 | 未着手(macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード) |
 
-**M4最終受入れ確認記録(2026-08-07)**: ローカルで `bundle exec rake test` を再実行した。
-ホスト Ruby 3.4.5(x86_64)に aarch64-linux-gnu-gcc と qemu-aarch64 を組み合わせる
-クロス検証では、**2,902 runs / 9,059 assertions / 0 failures / 0 errors / 44 skips**。
-`ci_check_skips.rb` も `OK`(skips <= 55、runs >= 2500)だった。aarch64 固有部分も
-バックエンド 76、実行 39、集約 11、引数 13、浮動小数 24、globals 23、self-link 18、
-shared object 23、variadic 9、header ABI 47、c-testsuite 205 pass + 16 skip、
-examples 37 pass + 2 skip が全て成功した。`test_header_abi.rb` 単体も 121 runs /
-358 assertions / 0 failures で、musl 分岐の値検査 3 件も含めて成功した。
+検証済み gem は glibc x86-64 が 31 件、musl x86-64 が 3 件、glibc aarch64 が 6 件
+(一次情報は `data/verified_gems.json`。R10 の分母・分子・合格率は
+`test/corpus/include-census.md` の「R10 pass rate」節が同ファイルから生成する)。
 
-ただし、これは**ホスト Ruby から aarch64 のコードをクロスコンパイルし、静的 probe を
-QEMU で実行した結果**であり、aarch64 Ruby 自身で `rake test` や `gem install` を走らせた
-結果ではない。M4 の残項目は次の通りである。
+未解消のギャップは **S(`long double` が 8 バイト)のみ**で、v1.0 では文書化に留め、
+解消は直後に最優先で着手する(§3 の負債表)。
+
+### M4 の受け入れ項目
 
 | M4受入れ項目 | 確認結果 | 未完了の原因 |
 |---|---|---|
@@ -43,23 +45,6 @@ QEMU で実行した結果**であり、aarch64 Ruby 自身で `rake test` や `
 | ~~aarch64 の json / msgpack `gem install`~~ | **完了(`m4-aarch64-acceptance-2`)**。arm64 コンテナの aarch64 Ruby 4.0.6 で `json` 596 tests / `msgpack` 455 examples がいずれも 0 failures。**さらに risk ベースで 2 件足した** — `bigdecimal`(128 ビットの値渡し・シフトが AAPCS64 の偶数レジスタペアと 16 バイト整列を踏む)と `zlib`(`-lz` と aarch64 の multiarch ライブラリ探索。Step 208 で壊れていた層)。4 件とも `data/verified_gems.json` に記録済み | ~~aarch64 Ruby / Docker が無い~~ **解消**。Step 208 で 900 秒制限に当たっていた msgpack は、`VERIFY_*_TIMEOUT`(`m4-aarch64-acceptance-1`)で上げたら 1 分 58 秒で完走した |
 | ~~aarch64 musl の全受入れ~~ | **完了(`m4-aarch64-acceptance-2` / `-3`)**。arm64 の Alpine コンテナで全スイートを実走(3,109 runs)。**rubycc の欠陥は 1 件のみ**で、同梱 `math.h` が `FP_ILOGB0` / `FP_ILOGBNAN` を機種だけで分岐していた件(修正済み) | ~~`aarch64-linux-musl-gcc` が無い~~ **解消** — arm64 コンテナの中では musl gcc がネイティブなので、クロスツールチェーンの不在は問題にならない。残る失敗は環境由来(エミュレーションの壁時計 3 件、コンテナの mkmf 開発ツール不足ほか) |
 
-このブランチで実施したABI作業では、`TestCrossAbi` を target-aware にし、x86_64用と
-aarch64用の gcc caller / rubycc callee、gcc callee / rubycc caller の両方向を追加した。
-各ケースは最大8個の先行整数引数を生成し、System V AMD64の6レジスタ境界とAAPCS64の
-8レジスタ境界の双方をまたぐ。単体テストは **4 runs / 4 assertions / 0 failures**、
-全スイートは **2,904 runs / 9,061 assertions / 0 failures / 0 errors / 44 skips** だった。
-
-なお、先行実行で出た `TestDoctor#test_verified_gems_json_holds_only_confirmed_gems` の
-1 failure は、実行中に `nio4r` の検証記録を `data/verified_gems.json` に追加した一方で、
-テスト側の期待キーがまだ古かったデータ・期待値の不整合だった。両方を同期した後の
-Doctor 単体は **21 runs / 638 assertions / 0 failures / 0 errors / 2 skips**、上記の
-全スイート再実行も green になった。したがって、今回の未完了はこの失敗の再発ではなく、
-実 ARM Ruby / musl 実行環境が無いことによる測定未完了である。
-
-（以前の追記(Step 193)）: 真のdistroless相当検証を完了。glibc / musl のRuby 4.0
-コンテナで、cc / gcc / clang / make / sh と libc開発ヘッダを除いた状態の
-`json` / `msgpack` / `sqlite3` / `pg` のビルド・実行に成功した。残る環境検証は
-musl全スイートとaarch64 Ruby上のM4全面受入れ。
 
 ## 1. 開発ワークフロー(1 ステップのサイクル)
 
@@ -188,7 +173,7 @@ musl全スイートとaarch64 Ruby上のM4全面受入れ。
 | 同梱 `stddef.h`/`stdint.h` の `wchar_t` typedef が `int` 固定 | aarch64 gcc の `wchar_t` は `unsigned int`(`__WCHAR_MAX__` = `0xffffffffU`)。Step 82 で aarch64 の `stdint.h` は `WCHAR_MIN`/`WCHAR_MAX` マクロだけ unsigned に合わせたが、`wchar_t` typedef 自体は freestanding `stddef.h` と共有ガード `_RUBYCC_WCHAR_T` を使うため `int` のまま(符号を変えると include 順で不整合)。ワイド文字リテラルは意図的な診断で拒否しており、ABI ハーネスも符号性は検査しないため観測可能な誤りには至っていない。予定: H4(ワイド文字を扱う gem がコーパスで顕在化した時点)。stddef.h を per-target 化するか、freestanding 層に符号を持ち込む設計判断を伴う | ワイド文字を扱う時点(H4 / A4 以降) |
 | ~~float リテラルの binary32 丸め~~ | **解消(Step 69)**: `pack("e")` が FLT_MAX 超を +inf へ飽和させていた。double のビット界から 23 ビットへ最近接・偶数丸めで縮約する変換に置き換え、ABI ハーネスの FLT_MAX 検査を通常の assert へ復帰 | ~~早期~~ **完了** |
 | long double = double 扱い(GAPS S) | rubycc は long double を 8 バイト double として扱う(DESIGN 3.3 の既知制限)ため max_align_t が 16/8(glibc は 32/16)。x87 80bit 対応まで ABI ハーネスの該当検査は非 assert。**実害は測定済み** — `printf("%Lg", x)` に 8 バイトを積むのに glibc は 16 バイト読むので値が壊れ、oj の `UsualTest#test_decimal` が対照と食い違う唯一の差になっている | **v1.0 直後に最優先で着手**(ユーザ判断、2026-08-11)。v1.0 では挙動を変えず README / CHANGELOG の既知の制限に明記するに留めた(いま診断エラーにすると、今ビルドできている gem がビルドできなくなる副作用の方が広いため)。着手時は 2 段階を検討する: **(1) 可変長引数に渡すときだけ double を 80 ビット拡張形式(aarch64 は binary128)に変換して積む** — double は両形式の部分集合なので変換は無損失で、観測されている実害はこれで閉じる。ただし `sizeof(long double)` の食い違いは残る。**(2) x87 / binary128 の演算そのもの** — パーサ・定数畳み込み・ABI 分類・va_arg に及ぶマイルストーン規模 |
-| DoS フェイルセーフの上限値 | パーサ再帰深さ 500・#if 式 500・マクロ展開 100 万トークン等(Step 32)は実行環境のスタックサイズ(本環境 ~330 括弧段)前提。極端に浅いスタックの環境では再評価が必要。詳細は docs/security-dos-review.md | コーパス(R10)実測で再調整 |
+| DoS フェイルセーフの上限値 | パーサ再帰深さ 500・#if 式 500・マクロ展開 100 万トークン等(Step 32)は実行環境のスタックサイズ(本環境 ~330 括弧段)前提。極端に浅いスタックの環境では再評価が必要。詳細は docs/development/security-dos-review.md | コーパス(R10)実測で再調整 |
 | -fPIC で定義済みエクスポートグローバルを PC32 参照 | Step 33 は TU 内定義グローバルを PC32(interpose 非対応の -Bsymbolic 相当)。rubycc の SharedLinker は S+A−P で正しく解決するが、GNU ld は preemptible シンボルへの PC32 を共有オブジェクト規則違反として拒否(gcc -shared 相互リンク不可)。実行は正しい | 真の interpose 対応(エクスポート定義グローバルも GOT 経由)を M2 終盤か PIC 改善で。実 gem がグローバル変数をエクスポートするか R10 コーパスで判定 |
 
 ### 3.1 開いた負債の後続 STEP への割り当て(明示スケジュール)
@@ -205,7 +190,7 @@ musl全スイートとaarch64 Ruby上のM4全面受入れ。
 | ~~スタック引数の 16 バイト整列(x86_64/aarch64 共通)~~ **解消(Step 94)**、-fPIC の PC32 参照 | 16 バイト整列は Step 94 で解消(`:pad_stack` 機構 + クロス TU 実行オラクル)。-fPIC PC32 は **H4**(ABI バグ → 最優先修正 + ABI ファジングに再発防止ケース追加) | ABI 不一致は SEGV 直結の最重要リスク(DESIGN 7 章)。ファジング(下記)で網羅的に炙り出す |
 | `wchar_t` typedef 符号性 | **feature-gated**(ワイド文字対応時) | 該当機能を意図的に未対応(診断で拒否)としているため、着手するまで観測不能 |
 | long double = double(GAPS S) | ~~feature-gated~~ → **v1.0 直後に最優先**(§3 の該当行に段取りを記載) | 「当該機能に着手するまで観測不能」という当初の見立ては**外れた**。H4 で oj が実害を出し(`%Lg` に 8 バイトを積む)、対照と食い違う唯一のテストになっている。v1.0 は文書化で通し、直後に着手する |
-| DoS フェイルセーフ上限値の再調整 | **H4**(コーパス R10 実測で再調整) | docs/security-dos-review.md 記載。極浅スタック環境の実測が入手できた時点 |
+| DoS フェイルセーフ上限値の再調整 | **H4**(コーパス R10 実測で再調整) | docs/development/security-dos-review.md 記載。極浅スタック環境の実測が入手できた時点 |
 | ABI ファジングハーネス(Step 25/62)の機種パラメタ化、aarch64 全スイート + gem install 実走、musl/distroless コンテナ検証、sqlite3/pg コーパス | ~~**H3**(QEMU の Docker マトリクス整備と併せて)~~ → **H6 の default gem 検証(§8)の後ろに再割り当て**(§8 の「環境が無くて測れていないことの解消」)。**H3 に割り当てたまま実施されず H6 まで来た**ので、期限を持たせ直した。musl → distroless → aarch64 の順に分けて片付ける | §8 M4 受け入れ参照。現環境に Docker/aarch64 Ruby が無いため、CI マトリクス整備が前提。ネットワーク/コンテナ依存はこの相に閉じる |
 
 ## 4. M1 実行計画 — **完了**
@@ -419,7 +404,7 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   1. **C11 カバレッジ**: **N1570(ISO/IEC 9899:201x Committee Draft、DESIGN §9.1 に
      原典 URL 記載)の章番号・見出しをベース**に、各条項の「実装済み / 部分実装
      (制限内容)/ 非対応(診断)/ スコープ外」を一覧化。配置先は
-     docs/C11-COVERAGE.md(新規)を想定。
+     docs/reference/C11-COVERAGE.md(新規)を想定。
   2. **gcc 拡張カバレッジ**: 実装した gcc 拡張(文式・名前付き可変長マクロ・
      カンマ削除・`__builtin_*` 群・`__has_*`・`__attribute__`・別名キーワード・
      2進リテラル・`__asm__` バリア・`case` 範囲等)を、**実装の仕方を含めて**
@@ -427,7 +412,7 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
      「受理するが実体は何もしない」(例: `__builtin_unreachable` の無コード、
      x86intrin.h 空スタブ、多くの `__attribute__`)/「正直に非対応と答えて
      フォールバックへ誘導」(例: `__has_builtin` の 0)の別を明記。配置先は
-     docs/GCC-EXTENSIONS.md(新規)を想定。
+     docs/reference/GCC-EXTENSIONS.md(新規)を想定。
   §3 の負債表・test_c_suite.rb のスキップ表・STEPS.md の設計記録が原資料。
 - **M3 完了後のツール(ユーザ指示、2026-07-17)**: Ruby アプリケーション開発者が
   **rubycc を採用できるかを確認できるコマンド**(仮称 `rubycc doctor`)を作る。
@@ -577,17 +562,17 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
 リズムではなく、失敗 gem を潰す小さなコミットの束)になる点が他のマイルストーンと違う。
 
 ### H0 — musl 派生ヘッダのライセンス課題の整理(**M5 着手前の必須ゲート。ユーザ指示、2026-07-19**)【済: Step 81】
-- **完了(Step 81)**: 成果物 docs/HEADER-LICENSING.md を作成。musl COPYRIGHT を原典確認し、
+- **完了(Step 81)**: 成果物 docs/reference/HEADER-LICENSING.md を作成。musl COPYRIGHT を原典確認し、
   下記論点 1 の前提(「著作権性が薄い」)は現行版で削除済みと判明 → 公開ヘッダの
   **omit 許可**(表示義務の免除)というより確実な根拠に依拠。30 ヘッダの由来台帳
   (freestanding 8・musl-derived 15・clean-room 7)、glibc/UAPI の ABI 事実が
   非著作権であることの整理、今後のワークフローを文書化。是正 3 点(gemspec に NOTICE 追加=
   gem build で同梱を実地確認、errno.h/sys/stat.h の由来明記、NOTICE 本文の更新)も実施。
-  以下の当初論点はすべて docs/HEADER-LICENSING.md で解決済み。
+  以下の当初論点はすべて docs/reference/HEADER-LICENSING.md で解決済み。
 - M4 完了後・M5(ヘッダ大量拡充)着手前に、**H1 の「musl からの派生」のライセンス上の
   課題をクリアにする**。Step 63/64 で既に少数の musl 派生ヘッダを NOTICE 付きで同梱して
   いるが、M5 で対象が大きく広がる前に体制を確定させる。
-- 整理すべき論点(成果物: docs/HEADER-LICENSING.md + 必要なら NOTICE/LICENSE/gemspec の是正):
+- 整理すべき論点(成果物: docs/reference/HEADER-LICENSING.md + 必要なら NOTICE/LICENSE/gemspec の是正):
   1. musl の MIT ライセンス条文の義務(著作権表示とライセンス文の保持)を、gem 配布物
      (gem パッケージ・リポジトリ)の中でどう満たすか — NOTICE 方式で足りるか、
      LICENSE ファイルへの併記や各ヘッダ冒頭表記の要否。musl の COPYRIGHT ファイルが
@@ -948,7 +933,7 @@ RDoc と非互換で、`RDocPluginParserTest` が落ちる(`corpus-sqlite3-pg-2`
 
 ### 環境が無くて測れていないことの解消(上の 7 件計画の後、3 ステップ)
 
-`docs/GAPS.md` §3 の 3 件。**§3.1 の負債表は H3 に割り当てていたが実施されないまま
+`docs/development/GAPS.md` §3 の 3 件。**§3.1 の負債表は H3 に割り当てていたが実施されないまま
 H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker マトリクス整備」として
 一括りにされていたが、**必要なものが違うので分けて順に片付ける**。
 
@@ -973,7 +958,7 @@ H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker 
 3 は動かせるが、**手元でしか再現しない検証は CI で腐る**。1 と 2 が CI の足場を作るので、
 3 はその上に乗せる(この順にした理由でもある)。
 
-- **検証が露出したギャップは `docs/GAPS.md` に分離した**(未解消のものだけを置く方針)。
+- **検証が露出したギャップは `docs/development/GAPS.md` に分離した**(未解消のものだけを置く方針)。
   Step 146(stackprof / nkf)の 6 件は Steps 147〜152 で、
   Step 157(etc)の A〜D は Steps 158〜161 で全て解消し、
   **残るは E(fcntl の `F_GETPIPE_SZ` / `F_SETPIPE_SZ`)のみ**。
@@ -988,11 +973,11 @@ H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker 
   ~~(2) フロントエンドの `__attribute__((constructor))` / `((destructor))`~~
   **完了(Step 155)**、~~(3) `__cxa_finalize(__dso_handle)` の合成~~ **完了(Step 156)**。
   **これで Step 152 の「供給しなかった半分」が埋まった**(設計判断は STEPS.md)。
-- **対応しないと判断済みの gem は `docs/OUT-OF-SCOPE-GEMS.md` に分離した**(Step 185)。
+- **対応しないと判断済みの gem は `docs/reference/OUT-OF-SCOPE-GEMS.md` に分離した**(Step 185)。
   R10 は目標を「コーパスの 90% 以上」と定量化しているので、**残る 10% をどこに置くかを
   決める文書**が要る。「まだ通らない」(GAPS.md)と「通す気がない」を混ぜると、
   90% の分母が何なのかが読めなくなる。
-- **未解消の負債と未測定事項も `docs/GAPS.md` に集約した**
+- **未解消の負債と未測定事項も `docs/development/GAPS.md` に集約した**
   (`test/corpus/gems.rb` の `version: nil` 4 件、musl 全スイート /
   aarch64 M4全面受入れの未測定)。真のdistroless相当の4 gem受入れは
   Step 193で完了した。

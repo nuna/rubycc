@@ -74,7 +74,7 @@ class TestCorpusCensus < Minitest::Test
     fcntl = Corpus::Gems::LIST.find { |e| e[:name] == "fcntl" }
     refute_nil fcntl, "fcntl entry missing from corpus list"
     assert_equal false, fcntl[:upstream_tests],
-                 "fcntl must declare upstream_tests: false (docs/STEPS.md Step 157: " \
+                 "fcntl must declare upstream_tests: false (docs/development/STEPS.md Step 157: " \
                  "upstream ships no test suite)"
   end
 
@@ -250,15 +250,15 @@ class TestCorpusCensus < Minitest::Test
 
   # The point of the field is that it *points at* an existing decision rather
   # than making a new one, so every gem it names must already be recorded in
-  # docs/OUT-OF-SCOPE-GEMS.md. A name that appears nowhere else would be an
+  # docs/reference/OUT-OF-SCOPE-GEMS.md. A name that appears nowhere else would be an
   # exclusion invented here, which is what this test exists to prevent.
   def test_out_of_scope_dependencies_are_already_recorded_as_out_of_scope
-    doc = File.read(File.expand_path("../docs/OUT-OF-SCOPE-GEMS.md", __dir__))
+    doc = File.read(File.expand_path("../docs/reference/OUT-OF-SCOPE-GEMS.md", __dir__))
     Corpus::Gems::LIST.filter_map { |e| [e[:name], e[:out_of_scope_dependency]] if e[:out_of_scope_dependency] }
                       .each do |name, blocker|
       gem_name = blocker[/\A[a-z0-9_.-]+/]
       assert_includes doc, "**#{gem_name}**",
-                      "#{name} is excluded because of #{gem_name}, but docs/OUT-OF-SCOPE-GEMS.md " \
+                      "#{name} is excluded because of #{gem_name}, but docs/reference/OUT-OF-SCOPE-GEMS.md " \
                       "does not record #{gem_name} as out of scope"
     end
   end

@@ -1,6 +1,6 @@
 # Tier C: what runs when a version tag is pushed. It re-runs Tier A and then
 # builds the gem twice to prove the artifact is reproducible. It does NOT
-# publish anything. See docs/CI.md.
+# publish anything. See docs/development/CI.md.
 name: release
 
 # Quoted so YAML parsers cannot read the key as the boolean `on`.

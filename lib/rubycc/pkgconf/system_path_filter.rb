@@ -30,7 +30,7 @@ module Rubycc
       # one (Alpine, measured in CI) the real pkg-config keeps a `-L` naming it,
       # since there it is an ordinary directory rather than one the linker
       # already searches. Dropping it there made this shim emit `-lz` where the
-      # real tool emitted `-L/usr/lib/x86_64-linux-gnu -lz` (docs/STEPS.md Step
+      # real tool emitted `-L/usr/lib/x86_64-linux-gnu -lz` (docs/development/STEPS.md Step
       # 196).
       #
       # /usr/lib, /lib and /usr/lib64 are unconditional: they are system libdirs

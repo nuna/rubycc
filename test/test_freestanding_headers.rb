@@ -133,7 +133,7 @@ class TestFreestandingHeaders < Minitest::Test
 
   # Expected output of STDCKDINT_SOURCE, computed by hand from the type widths
   # involved (matching the table used to verify __builtin_*_overflow itself in
-  # Step 177's docs/STEPS.md entry): SIZE_MAX * SIZE_MAX overflows size_t and
+  # Step 177's docs/development/STEPS.md entry): SIZE_MAX * SIZE_MAX overflows size_t and
   # (per the builtin's truncation contract) leaves 1 in *r; 6 * 7 does not
   # overflow and stores 42; INT_MAX + 1 overflows int and wraps to INT_MIN;
   # INT_MIN - 1 overflows int and wraps to INT_MAX; and

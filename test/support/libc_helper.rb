@@ -8,7 +8,7 @@ require_relative "host_target"
 # tests need, so a hard-coded assumption about which C library a host runs
 # does not silently leak into individual test files again. This project has
 # already lost differential discipline on exactly this axis four times
-# (docs/GAPS.md gap I; docs/STEPS.md Steps 194, 197, 206): a probe that
+# (docs/development/GAPS.md gap I; docs/development/STEPS.md Steps 194, 197, 206): a probe that
 # printed a glibc-only version macro (which musl's own gcc cannot even
 # compile), and assertions that hard-coded glibc's SONAME where musl's is
 # spelled differently.
@@ -25,7 +25,7 @@ require_relative "host_target"
 # machinery against, not a claim about which C library the host has, and they
 # skip cleanly when the search finds nothing.
 module LibcHelper
-  # The canonical host-to-SONAME mapping (docs/STEPS.md Step 194); the sole place
+  # The canonical host-to-SONAME mapping (docs/development/STEPS.md Step 194); the sole place
   # in the suite allowed to name either spelling -- everything else calls this.
   def host_libc_soname
     musl_host? ? "libc.musl-#{libc_host_target}.so.1" : "libc.so.6" # platform-literal: see method doc above

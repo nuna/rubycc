@@ -7,9 +7,9 @@
 **定量化**し、DESIGN 要件 **N2**(「gcc -O2 比 2〜5 倍遅を許容」)に照らして
 評価することにある。
 
-ベンチのコードとハーネスは [`../benchmark/`](../benchmark/) にある。本ファイルは
+ベンチのコードとハーネスは [`../benchmark/`](../../benchmark/) にある。本ファイルは
 1 回分の実測結果と考察を記録する。再現は `ruby benchmark/run.rb`
-([`benchmark/README.md`](../benchmark/README.md) 参照)。
+([`benchmark/README.md`](../../benchmark/README.md) 参照)。
 
 ## 実行環境
 
@@ -130,6 +130,6 @@ BENCH_ONLY=ruby ruby benchmark/run.rb     # json/msgpack のみ
 
 ハーネスは本 Markdown を標準出力に出すと同時に、タイムスタンプ付きコピーと
 全サンプルの生 JSON を `benchmark/results/` に保存する。ビルドフローとオプションは
-[`benchmark/README.md`](../benchmark/README.md) を参照。他の負荷をかけていない
+[`benchmark/README.md`](../../benchmark/README.md) を参照。他の負荷をかけていない
 マシンで実行すること。Ruby ワークロードは Ruby の開発ヘッダと、json/msgpack を
 一度 `gem fetch` するためのネットワークアクセスを要する。

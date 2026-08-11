@@ -119,27 +119,27 @@ ci_check_skips: OK (skips <= 55, runs >= 2500)
 
 ### 1. [高] AArch64固有の実行テストがx86_64上で実行される
 
-[`AArch64ExecutionHelper`](../test/support/aarch64_execution_helper.rb#L43) はホストCPUを確認せず、QEMUとcross gccの有無だけでテストを実行する。
+[`AArch64ExecutionHelper`](../../test/support/aarch64_execution_helper.rb#L43) はホストCPUを確認せず、QEMUとcross gccの有無だけでテストを実行する。
 
-通常のGitHub Actionsジョブもx86_64ランナー上でAArch64ツールチェーンをインストールする([`test.yml`](../.github/workflows/test.yml#L81))。テスト本体は生成したAArch64コードをQEMUで実行する([`aarch64_execution_helper.rb`](../test/support/aarch64_execution_helper.rb#L197))ため、物理的な実行環境はAArch64ではない。
+通常のGitHub Actionsジョブもx86_64ランナー上でAArch64ツールチェーンをインストールする([`test.yml`](../../.github/workflows/test.yml#L81))。テスト本体は生成したAArch64コードをQEMUで実行する([`aarch64_execution_helper.rb`](../../test/support/aarch64_execution_helper.rb#L197))ため、物理的な実行環境はAArch64ではない。
 
 提示された「CPUアーキテクチャ特有のテストは、そのアーキテクチャ上で実行したときだけ実施する」という条件には適合しない。
 
-ネイティブAArch64ジョブは存在するが、`weekly.yml`の手動選択時だけである([`weekly.yml`](../.github/workflows/weekly.yml#L334))。
+ネイティブAArch64ジョブは存在するが、`weekly.yml`の手動選択時だけである([`weekly.yml`](../../.github/workflows/weekly.yml#L334))。
 
 ### 2. [高] ネイティブAArch64ランナーでの同一動作が保証されない
 
-共有オブジェクトテストはx86_64用のELF machine・relocation定数を使用し、`Compiler#compile`の既定ターゲットもx86_64である([`test_shared_object.rb`](../test/test_shared_object.rb#L29)、[`test_shared_object.rb`](../test/test_shared_object.rb#L1388)、[`compiler.rb`](../lib/rubycc/compiler.rb#L62))。
+共有オブジェクトテストはx86_64用のELF machine・relocation定数を使用し、`Compiler#compile`の既定ターゲットもx86_64である([`test_shared_object.rb`](../../test/test_shared_object.rb#L29)、[`test_shared_object.rb`](../../test/test_shared_object.rb#L1388)、[`compiler.rb`](../../lib/rubycc/compiler.rb#L62))。
 
 その生成物をFiddleでロードするテストにホストアーキテクチャの判定がない。ネイティブAArch64上では、x86_64用 `.so` のロードを試みることになる。
 
-一方、実行ファイルテストはx86_64用dynamic loaderのパスだけを確認する([`test_executable.rb`](../test/test_executable.rb#L685))。AArch64では実行テストがskipされ、greenでも実行範囲が狭くなる可能性がある。
+一方、実行ファイルテストはx86_64用dynamic loaderのパスだけを確認する([`test_executable.rb`](../../test/test_executable.rb#L685))。AArch64では実行テストがskipされ、greenでも実行範囲が狭くなる可能性がある。
 
-また、rmakeのgolden fixtureは収集元PCの絶対Rubyヘッダーパスに依存し、別環境ではskipする設計になっている([`test_rmake_golden.rb`](../test/test_rmake_golden.rb#L22))。
+また、rmakeのgolden fixtureは収集元PCの絶対Rubyヘッダーパスに依存し、別環境ではskipする設計になっている([`test_rmake_golden.rb`](../../test/test_rmake_golden.rb#L22))。
 
 ### 3. [高] `00130` と `00151` のskipは現在の実装と整合しない
 
-[`test_c_suite.rb`](../test/test_c_suite.rb#L36) は、`00130`と`00151`を「multidimensional arrays (known debt)」として無条件にskipする。AArch64側もこのskipリストを共有している([`test_c_suite_aarch64.rb`](../test/test_c_suite_aarch64.rb#L55))。
+[`test_c_suite.rb`](../../test/test_c_suite.rb#L36) は、`00130`と`00151`を「multidimensional arrays (known debt)」として無条件にskipする。AArch64側もこのskipリストを共有している([`test_c_suite_aarch64.rb`](../../test/test_c_suite_aarch64.rb#L55))。
 
 しかし、テスト本体と同じRubyccコンパイル、gccリンク、実行の経路で個別確認した結果は次のとおりだった。
 
@@ -160,15 +160,15 @@ ci_check_skips: OK (skips <= 55, runs >= 2500)
 
 - `00140`: 構造体をvariadic関数へ渡すケースをskip
 - `00204`: struct-by-value、HFA、struct `va_arg`をまとめてskip
-- `test_va_arg_of_struct_type_is_rejected`: struct `va_arg`をコンパイルエラーとして検証([`test_diagnostics.rb`](../test/test_diagnostics.rb#L250))
+- `test_va_arg_of_struct_type_is_rejected`: struct `va_arg`をコンパイルエラーとして検証([`test_diagnostics.rb`](../../test/test_diagnostics.rb#L250))
 
 整数・doubleのvariadic引数や固定引数のHFAは別テストで確認されているが、要求されるstruct `va_arg`の成功ケースは確認できない。未対応を仕様とするならDESIGN.mdに制限を追記し、対応予定ならskipではなく失敗するテストとして扱う必要がある。
 
 ### 5. [高] 受入れテストのfetch/unpack失敗がskipになり、greenになり得る
 
-weekly acceptance jobは、受入れテストで実行形状が変わることを理由に[`ci_check_skips.rb`](../tools/ci_check_skips.rb)を実行していない([`weekly.yml`](../.github/workflows/weekly.yml#L136))。
+weekly acceptance jobは、受入れテストで実行形状が変わることを理由に[`ci_check_skips.rb`](../../tools/ci_check_skips.rb)を実行していない([`weekly.yml`](../../.github/workflows/weekly.yml#L136))。
 
-さらに、ネットワークやgemのunpack失敗をskipしている([`test_mkmf_conftest.rb`](../test/test_mkmf_conftest.rb#L221)、[`test_rmake_tools.rb`](../test/test_rmake_tools.rb#L315))。
+さらに、ネットワークやgemのunpack失敗をskipしている([`test_mkmf_conftest.rb`](../../test/test_mkmf_conftest.rb#L221)、[`test_rmake_tools.rb`](../../test/test_rmake_tools.rb#L315))。
 
 そのため、受入れテストが外部要因で実質未実行でも、ジョブがgreenになる可能性がある。少なくともCIでは、ネットワーク障害とテスト対象の未実行を区別し、期待するskip理由・件数を検証する必要がある。
 
@@ -178,14 +178,14 @@ R10は対象コーパスの90%以上について、gem installと各gem自身の
 
 現状のCIでは、musl上で検証するgemは `io-wait`、`stringio`、`json` の3件に限定されている([`CI.md`](CI.md#L90))。通常の `rake test`にもコーパス検証は含まれない。
 
-N1の20,000行/秒も、ベンチマーク結果をartifactに保存するだけで、CIの合否閾値はない([`weekly.yml`](../.github/workflows/weekly.yml#L164))。リリースチェックリストでは実測値13,854行/秒で未達だが許容と記録されているため、厳密な要件充足ではなく、明示的な許容判断として扱う必要がある。
+N1の20,000行/秒も、ベンチマーク結果をartifactに保存するだけで、CIの合否閾値はない([`weekly.yml`](../../.github/workflows/weekly.yml#L164))。リリースチェックリストでは実測値13,854行/秒で未達だが許容と記録されているため、厳密な要件充足ではなく、明示的な許容判断として扱う必要がある。
 
 ## 確認できた良い点
 
-- [`Rakefile`](../Rakefile#L5) は `test/**/test_*.rb` をまとめて実行する。
-- Tier Aではツールチェーンの事前確認とskip数・run数のガードを行っている([`test.yml`](../.github/workflows/test.yml#L99)、[`ci_check_skips.rb`](../tools/ci_check_skips.rb#L175))。
+- [`Rakefile`](../../Rakefile#L5) は `test/**/test_*.rb` をまとめて実行する。
+- Tier Aではツールチェーンの事前確認とskip数・run数のガードを行っている([`test.yml`](../../.github/workflows/test.yml#L99)、[`ci_check_skips.rb`](../../tools/ci_check_skips.rb#L175))。
 - AArch64テストにはgccとの差分比較、AAPCS64 aggregate、variadic、ヘッダーABIのテストがある。
-- AArch64の未対応例は`PENDING`に名前と理由を持たせて管理している([`test_examples_aarch64.rb`](../test/test_examples_aarch64.rb#L27))。
+- AArch64の未対応例は`PENDING`に名前と理由を持たせて管理している([`test_examples_aarch64.rb`](../../test/test_examples_aarch64.rb#L27))。
 
 ## 今後の検証条件
 
@@ -198,7 +198,7 @@ N1の20,000行/秒も、ベンチマーク結果をartifactに保存するだけ
 
 ## 残課題の計画に対する批判的レビューと修正（2026-08-10）
 
-`docs/TEST-PLAN.md`の残課題計画を、目的適合性、CI再現性、外部障害、skipによるgreen化、
+`docs/development/TEST-PLAN.md`の残課題計画を、目的適合性、CI再現性、外部障害、skipによるgreen化、
 R10分類の証拠強度の観点からレビューした。レビューで見つかった問題と反映した修正は
 次のとおりである。
 
@@ -275,11 +275,17 @@ sqlite3の`--enable-system-libraries`を要求し、未知・引数不足・mark
 した。`tools/r10_corpus_scan.rb`と`data/r10_corpus_scan.json`では39候補/34対象/5除外、
 既存record 29件、scanner候補128件、34件すべてmanual classification pendingを記録する。
 control/rubycc、extension load、upstream suiteはこのscanで実行したことにせず、既存recordも
-再実行済みとはしない。`docs/R10-CORPUS-SCAN.md`はこの境界を明記する。
+再実行済みとはしない。`docs/development/R10-CORPUS-SCAN.md`はこの境界を明記する。
 
 prosは対象数と根拠の追跡性が上がること、consはprofileとverification recipeの二重管理が
 残り、手動分類・install/suite実測を別途完了する必要があることである。したがって現時点の
 R10 pass rateは34分母/29記録/85.3%であり、90%達成とは記載しない。
+
+> **この数値は 2026-08-10 時点のものである。** その後 `sqlite3` と `pg` の記録が
+> 加わり、2026-08-12 時点では 31/34 = 91.2%(`corpus-sqlite3-pg-1` / `-2`)。
+> **現在値はこの文書ではなく `test/corpus/include-census.md` の「R10 pass rate」節**
+> を見ること — あちらは `data/verified_gems.json` から生成されるので古くならない。
+> このレビュー記録自体は当時の判断の記録として残す。
 
 ## 継続実装分の批判的レビューと修正（2026-08-10）
 
@@ -327,7 +333,7 @@ artifact checkerの三者で確認した。
 
 | 観点 | 残り得る弱点 | 判定・対応 |
 |---|---|---|
-| DESIGN仕様・制限 | skip理由を「実装未完了」とだけ書くと、仕様上の制限と単なる未実装を混同する | `alloca`/bit-scanは`docs/IR.md` §6.5のターゲット別実装範囲へ合わせ、`DESIGN.md` R7から参照する。struct `va_arg`は既存のout-of-scope判断を維持し、今回のnative実測を対応済みとは解釈しない |
+| DESIGN仕様・制限 | skip理由を「実装未完了」とだけ書くと、仕様上の制限と単なる未実装を混同する | `alloca`/bit-scanは`docs/development/IR.md` §6.5のターゲット別実装範囲へ合わせ、`DESIGN.md` R7から参照する。struct `va_arg`は既存のout-of-scope判断を維持し、今回のnative実測を対応済みとは解釈しない |
 | CI再現性 | runner labelやOSだけを信頼すると、誤ったRuby/gccやcross sysrootでgreenになり得る | preflightでCPU、Ruby設定/ELF、gcc target、loader/libc、Fiddle、headersを相互確認し、context artifactを保存した。AArch64実測で全項目passを確認した |
 | CPU依存テスト | x86_64上でAArch64 native証拠を作る、またはAArch64上でx86専用検査を無条件実行する危険 | host targetを共通化し、x86専用検査はAArch64でskip、AArch64専用ケースはnative runnerで実行する。AArch64 full suiteでは無条件skipの追加を確認しなかった |
 | skipによるgreen化 | 広いallowlistと総数上限だけでは、既知理由を別testへ付け替えた欠落を見逃す | profileを`provisional=false`、実測件数、期限、owner、test+理由のallowlist、SHA-256 fingerprintで固定した。245/42の件数とfingerprintがRuby 3.3/4.0で一致し、strict checkerも再実行passした |
@@ -382,12 +388,12 @@ r10_manual_classification: OK (34 targets)
 | M4C generated/external ABI | 実測完了（pass/fail/inconclusiveを分離） | prism/fiddle/google-protobuf/yajl-rubyは両経路pass。bootsnapは両経路ともsummary欠落、pumaはcontrol timeout・rubycc summary欠落のためstrict validatorでinconclusiveへ訂正。openssl/nio4r/ojは比較失敗、mysql2はDocker停止でinconclusive。未実行をskipへ変換していない |
 | M4D sqlite3/pg profiles | 実測試行、外部依存inconclusive | system-library/native-sourceの両control/rubyccがextconfで停止。sqlite3.h/libsqlite3、pg_config/pkg-config/libpq-fe.h不足を記録し、load/suiteはnot_run。 |
 
-詳細は[`data/r10_verification_m4a.json`](../data/r10_verification_m4a.json)、
-[`data/r10_verification_m4b.json`](../data/r10_verification_m4b.json)、
-[`data/r10_verification_m4c.json`](../data/r10_verification_m4c.json)、
-[`data/r10_verification_rbs.json`](../data/r10_verification_rbs.json)に保存した。
+詳細は[`data/r10_verification_m4a.json`](../../data/r10_verification_m4a.json)、
+[`data/r10_verification_m4b.json`](../../data/r10_verification_m4b.json)、
+[`data/r10_verification_m4c.json`](../../data/r10_verification_m4c.json)、
+[`data/r10_verification_rbs.json`](../../data/r10_verification_rbs.json)に保存した。
 各artifactはx86_64 / Ruby 3.4.5のローカル実測であり、AArch64証拠を含まない。
-M4Dのsqlite3/pg外部profile試行は[`data/r10_verification_m4d.json`](../data/r10_verification_m4d.json)
+M4Dのsqlite3/pg外部profile試行は[`data/r10_verification_m4d.json`](../../data/r10_verification_m4d.json)
 に分離し、extconf停止をsuite skipとして扱っていない。
 
 ### 批判レビューと修正

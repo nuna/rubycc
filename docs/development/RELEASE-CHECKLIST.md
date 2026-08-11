@@ -20,6 +20,14 @@ N5(gemspec 宣言の確認・静的スキャン・rbenv の状況)と N7(代表�
 | **N6** メモリ | 1 TU あたり 1GB 以内 | **達成**(最大 467MB) |
 | **N7** テスト容易性 | 各コンポーネントを独立にテスト可能 | **達成** |
 
+機能要件のうち v1.0 の関門になっていた 2 つも、2026-08-12 時点で満たしている
+(いずれも本チェックリストの範囲外だが、リリース判断には必要なので併記する)。
+
+| 要件 | 判定 | 根拠 |
+|---|---|---|
+| **R10** コーパスの 90% が gem 自身のテストに合格 | **達成** — 31/34 = **91.2%** | `test/corpus/include-census.md` の「R10 pass rate」節が `data/verified_gems.json` から生成する |
+| **M4** aarch64 バックエンドの受け入れ | **達成** — 4 項目すべて完了 | `ROADMAP.md` §7 の M4 受け入れ表 |
+
 ## 2. 各要件の詳細
 
 ### N1. コンパイル速度 — 未達だが許容
@@ -81,7 +89,7 @@ N5(gemspec 宣言の確認・静的スキャン・rbenv の状況)と N7(代表�
     `Range#overlap?`(3.3+)・パターンマッチ・rightward assignment は**使用なし**。
   - `Set` を使う 4 ファイルはすべて `require "set"` を持つ(Step 118/120 の対応)。
   - 全ファイルに `frozen_string_literal: true`。`RUBY_VERSION` による分岐は皆無。
-- **環境**: Ruby 3.3 系での実機検証を実施中(結果は本チェックリストへ別途反映)。
+- **環境**: Ruby 3.3 系での実機検証は**完了**(下記「実機検証(Step 133)」)。
 - **CI(Step 135 で構築)**: GitHub Actions で、push / PR ごとに **Ruby 3.3 / 4.0 の
   両端**のマトリクスで全スイートを実行し(`.github/workflows/test.yml`)、中間の
   **3.4 は週次**(`.github/workflows/weekly.yml` の `ruby-3-4` ジョブ)で全スイートを
@@ -140,7 +148,9 @@ N5(gemspec 宣言の確認・静的スキャン・rbenv の状況)と N7(代表�
    (`ROADMAP.md` §3)。値渡し・値返し(Step 94)とシフト(Step 95)は解消済み。
 8. **C++ / configure / mini_portile 依存の gem は対象外(R10)**: grpc(C++)、
    nokogiri の vendored ビルド、ffi。nokogiri は `--use-system-libraries` なら対象内。
-9. **Ruby 3.3 での実機検証は進行中**(N5 参照)。
+9. **`long double` は 8 バイト**(`double` として扱う)。`printf("%Lg", x)` に渡すと
+   libc は 16 バイトを読むので値が壊れる(GAPS S)。v1.0 では文書化に留め、
+   解消は直後に着手する(`ROADMAP.md` §3)。
 
 より広範な言語機能の欠落一覧は `C11-COVERAGE.md` と `ROADMAP.md` §3 に整理済みなので、
 README では要約に留めそちらへリンクする。
@@ -162,12 +172,12 @@ README では要約に留めそちらへリンクする。
 |---|---|
 | `lib/rubycc/version.rb` を `1.0.0` に | **済** |
 | `CHANGELOG.md` の 1.0.0 エントリ | **済**(gemspec の `files` にも追加済み) |
-| README の実績を実測値に更新 | **済**(検証済み 18 gem / musl 3 / aarch64 2) |
-| `bundle exec rake test` | **済** — 2,839 runs / 8,438 assertions / 0 failures / 0 errors / 44 skips |
+| README の実績を実測値に更新 | **済**(2026-08-12 時点: 検証済み gem は glibc x86-64 31 / musl x86-64 3 / glibc aarch64 6。R10 通過率 31/34 = 91.2%) |
+| `bundle exec rake test` | **済** — 3,109 runs / 10,848 assertions / 0 failures / 0 errors / 41 skips(2026-08-12、`m4-aarch64-acceptance` 時点) |
 | gem の再現ビルド | **済** — `SOURCE_DATE_EPOCH` 固定で 2 回ビルドし**バイト一致**(474,112 bytes) |
 | 同梱物の確認 | **済** — `LICENSE.txt` / `NOTICE` / `README.md` / `CHANGELOG.md` / `data/verified_gems.json` / ヘッダ 78 本 |
 | **タグ `v1.0.0` を打つ** | **未実施**。打つと Tier C(`release.yml`)が走り、タグと `Rubycc::VERSION` の一致・再現ビルドを検証する |
-| **`gem push`** | **未実施**。自動化しない方針(docs/CI.md) |
+| **`gem push`** | **未実施**。自動化しない方針(docs/development/CI.md) |
 
 ### 準備中に見つけて直したもの
 

@@ -1,14 +1,14 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# M2 受け入れ(docs/ROADMAP.md §5)を再現するツール。
+# M2 受け入れ(docs/development/ROADMAP.md §5)を再現するツール。
 #
 # extconf.rb が生成した Makefile のビルドコマンドを手動で rubycc に置き換えて
 # json / msgpack をビルドし、それぞれの gem 自身のテストスイートに合格することを
 # 確認する。ネットワーク(rubygems.org・GitHub)と Ruby ヘッダが必要(mkmf の probe
 # 自体は環境の gcc で行ってよい — M2 の前提)。ネットワーク・rspec 等の外部依存を
 # 持つため常設テストスイートには含めない、手動/CI 実行用のツール。
-# 実測合格の記録は docs/STEPS.md の Step 54。
+# 実測合格の記録は docs/development/STEPS.md の Step 54。
 #
 # Usage(`ruby` を省かないこと。tools/ は実行ビット無しで追跡しているので、
 # `bundle exec tools/...` は "not executable" で拒否される):
@@ -248,7 +248,7 @@ def build_json(unpack_dir)
   parser_dir = File.join(unpack_dir, "ext/json/ext/parser")
   generator_dir = File.join(unpack_dir, "ext/json/ext/generator")
 
-  # rubycc has no SSE intrinsics / inline-asm support (docs/STEPS.md Step 44:
+  # rubycc has no SSE intrinsics / inline-asm support (docs/development/STEPS.md Step 44:
   # x86intrin.h is stubbed empty on the assumption every real intrinsic use is
   # behind a feature macro rubycc never defines). json's own simd/conf.rb
   # probes gcc for a genuinely usable SSE2+cpuid.h path and, when found,

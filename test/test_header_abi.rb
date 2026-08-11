@@ -1894,7 +1894,7 @@ class TestHeaderAbi < Minitest::Test
   # here, and says so: on the other libc the oracle itself does not compile, so
   # the case would report the harness's assumption as a rubycc failure. The skip
   # is deliberately loud about which header and which libc -- a silently passing
-  # case is the failure mode docs/CI.md's skip guard exists to catch.
+  # case is the failure mode docs/development/CI.md's skip guard exists to catch.
   def assert_abi_matches(spec)
     unless spec_applies_to?(spec)
       skip "<#{spec.header}> exists only on #{spec.libc}; this host's libc is #{host_libc}"
@@ -2084,7 +2084,7 @@ class TestMuslBundledHeaderValues < Minitest::Test
            "WIFSTOPPED(0x137f)", "WIFSTOPPED(0xffff)"]
   )
 
-  # The measured musl column (docs/STEPS.md Step 193). The four fast-type sizes
+  # The measured musl column (docs/development/STEPS.md Step 193). The four fast-type sizes
   # and the two INT_FAST*_MIN / UINT_FAST*_MAX pairs are what the 32-bit types
   # imply, which is the point: the widths were measured and the limits follow
   # them, rather than each limit being asserted on its own. WIFSTOPPED is
@@ -2527,7 +2527,7 @@ class TestAarch64MuslBundledHeaderValues < Minitest::Test
              UINT_FAST16_MAX UINT_FAST32_MAX]
   )
 
-  # The measured aarch64 musl column (docs/STEPS.md Step 202).
+  # The measured aarch64 musl column (docs/development/STEPS.md Step 202).
   MUSL_EXPECTED = <<~OUT
     sizeof(int_fast16_t) = 4, _Alignof(int_fast16_t) = 4
     sizeof(int_fast32_t) = 4, _Alignof(int_fast32_t) = 4

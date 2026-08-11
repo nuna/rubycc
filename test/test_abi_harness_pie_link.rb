@@ -9,7 +9,7 @@ require_relative "support/aarch64_execution_helper"
 # side with the same PIC-ness gcc, its oracle, defaults to; if it does not, the
 # object it hands to the aarch64 cross gcc fails a PIE link with "unresolvable
 # R_AARCH64_ADR_PREL_PG_HI21" against any symbol the object references as
-# external data (docs/STEPS.md Step 206). That defect is invisible on x86-64
+# external data (docs/development/STEPS.md Step 206). That defect is invisible on x86-64
 # (the linker absorbs a non-PIC reference to external data with a copy
 # relocation) and invisible through HeaderAbiHarness#run_abi_case_aarch64
 # (that path links -static, which a PIE link never needs), so it can only be

@@ -196,8 +196,8 @@ Phase 1〜4で実際の重複・失敗原因が確認できた箇所だけを抽
 |---|---|---|---|
 | **5-1 依存要因の観測** | 抽象化する根拠を集める | host CPU、target ABI、ELF machine、relocation、Ruby header、loader、Fiddle、libc SONAME/path、runnerの差分を記録する | 各差分が実際の失敗・重複・skipのどれに関係するか説明できる |
 | **5-2 実行コンテキスト境界の設計** | host/target/libc/runnerを分離する | 小さなprofileまたはhelperの責務と入力を定義する | 一つのprofileが複数の異なる保証を隠さない |
-| **5-3 libc解決の整理** | PC固有のSONAME/path依存を解消する | [`test/support/libc_helper.rb`](../test/support/libc_helper.rb)をAArch64を含む解決方式へ整理する | glibc/muslとtargetのpathがrunner環境に応じて解決される |
-| **5-4 実行形式テストの整理** | x86_64固有oracleとnative統合を分離する | [`test/support/execution_helper.rb`](../test/support/execution_helper.rb)、[`test/support/aarch64_execution_helper.rb`](../test/support/aarch64_execution_helper.rb)、`test_shared_object.rb`、`test_executable.rb`を整理する | ELF・relocation固有期待値はtarget別に残り、native loader/Fiddle確認はnative profileで実行される |
+| **5-3 libc解決の整理** | PC固有のSONAME/path依存を解消する | [`test/support/libc_helper.rb`](../../test/support/libc_helper.rb)をAArch64を含む解決方式へ整理する | glibc/muslとtargetのpathがrunner環境に応じて解決される |
+| **5-4 実行形式テストの整理** | x86_64固有oracleとnative統合を分離する | [`test/support/execution_helper.rb`](../../test/support/execution_helper.rb)、[`test/support/aarch64_execution_helper.rb`](../../test/support/aarch64_execution_helper.rb)、`test_shared_object.rb`、`test_executable.rb`を整理する | ELF・relocation固有期待値はtarget別に残り、native loader/Fiddle確認はnative profileで実行される |
 | **5-5 Ruby header/includeの整理** | host Rubyとtarget C環境を混同しない | `test_ruby_smoke.rb`、`test_extension_build.rb`等のinclude path取得を整理する | Ruby headerとlibc headerの出所がCIでも明示され、PC絶対pathに依存しない |
 | **5-6 profile taskの再評価** | 抽象化の保守費用を判断する | 実行対象、時間、成功指標が安定した後にRake profile taskの必要性を再評価する | task追加が有効な場合だけ導入し、テスト選択の複雑化が効果を上回る場合は導入しない |
 
@@ -210,7 +210,7 @@ x86_64とAArch64のELF・ABI固有期待値は共通化せず、GCC・ELF仕様�
 | タスク | 意味単位 | 主な作業・成果物 | 完了条件 |
 |---|---|---|---|
 | **F-1 CI結果とartifactの確認** | 結果を追跡可能にする | profile、stable ID、状態、runner、target、libc、network条件をartifactへ残す | 失敗したタスクをジョブログだけでなくIDから追跡できる |
-| **F-2 ドキュメント整合** | 実装と説明を一致させる | `docs/CI.md`、`DESIGN.md`、`README.md`、`ROADMAP.md`、`STEPS.md`、本計画を更新する | skip、required、native/QEMU、struct `va_arg`の説明が実装と一致する |
+| **F-2 ドキュメント整合** | 実装と説明を一致させる | `docs/development/CI.md`、`DESIGN.md`、`README.md`、`ROADMAP.md`、`STEPS.md`、本計画を更新する | skip、required、native/QEMU、struct `va_arg`の説明が実装と一致する |
 | **F-3 代表経路の最終検証** | 計画全体の受入れを行う | Tier A、AArch64/QEMU、native AArch64 smoke、fixture acceptance、live acceptanceを実行する | 各経路のpass/fail/skipped/inconclusiveが契約通りで、許可されない未実行がない |
 | **F-4 運用判断** | 維持可能性を確認する | 実行時間、費用、外部障害率、skip数、保守負担をレビューする | 継続、縮小、撤回、次期実装の判断と根拠が記録される |
 
@@ -503,8 +503,8 @@ R10-0〜R10-2のcacheを使う機械的な範囲は、`ruby tools/r10_corpus_sca
 machine gateを再利用し、各status:ok対象についてversion、rubygems URL、`.gem`
 SHA-256、cache/unpack相対パス、R10 profile、extconf args、ext file数、variadic
 scannerのfindings/file:line/kind/confidenceを
-[`data/r10_corpus_scan.json`](../data/r10_corpus_scan.json)と
-[`docs/R10-CORPUS-SCAN.md`](R10-CORPUS-SCAN.md)へ保存する。現状は39候補、34対象、5除外、
+[`data/r10_corpus_scan.json`](../../data/r10_corpus_scan.json)と
+[`docs/development/R10-CORPUS-SCAN.md`](R10-CORPUS-SCAN.md)へ保存する。現状は39候補、34対象、5除外、
 29 existing verification records、scanner候補128件である。
 
 初期scan artifactの生成時点では、generated source、手動分類、control/rubycc、extension load、
@@ -555,7 +555,7 @@ ARM-2〜ARM-6を、branch `codex/test-ci-implementation` の commit
 上表の fingerprint と `expires` は**この時点の記録であり、現在は検査されない**。
 `ci/simplify-skip-baseline-1` で `expected_skips` / `skip_fingerprint` / `expires` を
 廃止し、`max_skips`・`min_runs` と `allowed_skips`(テスト名 + 正規化理由 + 件数上下限)の
-2層に整理した。判断の経緯は `docs/STEPS.md`、現行仕様は `docs/CI.md` の「skip ガード」を参照。
+2層に整理した。判断の経緯は `docs/development/STEPS.md`、現行仕様は `docs/development/CI.md` の「skip ガード」を参照。
 
 LIVE-3〜LIVE-6は、最終commit `d36a39d71ea5f9c213e8d9996aa9be93a66b9ae6` の
 acceptance-only実runner実測（[run 31345720437](https://github.com/nuna/rubycc/actions/runs/31345720437)）まで完了している。fixtureの`mkmf-fixture-probes`/`rmake-fixture-build`、
@@ -576,7 +576,7 @@ passした。4件の取得artifactはexpected/actual SHA-256とbytesが一致し
 | タスク | 状態 | 成果物・確認 |
 |---|---|---|
 | R10-M0 母集団・provenance確認 | 完了 | 34件、`.gem` SHA、相対unpack path、profile、scanner 128件を既存machine artifactと照合。source tarball SHAは未収集であることを明記 |
-| R10-M1 分類台帳・validator | 完了 | [`tools/r10_manual_classification.rb`](../tools/r10_manual_classification.rb)、[`data/r10_manual_classification.json`](../data/r10_manual_classification.json)、Rake task、12 tests / 386 assertions / 0 failures / 0 skips |
+| R10-M1 分類台帳・validator | 完了 | [`tools/r10_manual_classification.rb`](../../tools/r10_manual_classification.rb)、[`data/r10_manual_classification.json`](../../data/r10_manual_classification.json)、Rake task、12 tests / 386 assertions / 0 failures / 0 skips |
 | R10-M2A zero-finding 29件 | source分類完了・受入れ未完了 | a0=`scoped_no_candidate` 20件、b0=`non_target_variadic_wrapper` 1件、c=`needs_more_evidence` 8件。cは次アクション・owner・期限を持ち、passにはしていない |
 | R10-M2B candidate 5 gem | 完了（source分類） | date 2、google-protobuf 41、oj 60、http_parser.rb 23、nkf 2の計128件をfinding key単位で一対一に分類。すべてfalse positiveだが、control/rubycc等は未実行 |
 | R10-M3 独立批判レビューと修正 | 完了 | 3視点のレビューで、root `src`、textual include、generated source、vendor test、profile/外部ABIの見落としを検出。selected unit、`PERL_XS`、generated provenance、zero assessmentを修正し、validator/testを再実行 |
@@ -590,7 +590,7 @@ passした。4件の取得artifactはexpected/actual SHA-256とbytesが一致し
 
 この修正のprosは、候補の網羅性と「何をまだ証明していないか」の追跡性が上がり、scannerの空結果や既存`verified_gems`をR10 passへ誤昇格しにくくなる点である。consは、34件のsource inventoryを保守し、profileごとの実ビルド証拠を別途取得する必要があり、分類完了までの時間とartifact量が増える点である。目的に対しては、保守コストを受け入れてfalse passを避ける方が妥当と判断した。
 
-現時点で [`docs/R10-MANUAL-CLASSIFICATION.md`](R10-MANUAL-CLASSIFICATION.md) はsource分類の成果物であり、control/rubycc、extension load、upstream suite、CPU固有実行の完了証拠ではない。`rake corpus:r10_manual_validate` が台帳とmachine scanの整合性を検査するが、これ自体も実コンパイラ検証の代用ではない。
+現時点で [`docs/development/R10-MANUAL-CLASSIFICATION.md`](R10-MANUAL-CLASSIFICATION.md) はsource分類の成果物であり、control/rubycc、extension load、upstream suite、CPU固有実行の完了証拠ではない。`rake corpus:r10_manual_validate` が台帳とmachine scanの整合性を検査するが、これ自体も実コンパイラ検証の代用ではない。
 
 #### M4実測の追加結果と批判レビュー
 
@@ -608,9 +608,9 @@ nkf/RBSはinconclusiveを維持した。
 control/rubyccの二重実行は、単独のrubycc passより環境由来の失敗を切り分けられる利点が
 ある。一方で実行時間と依存取得量が増え、外部ABI・DB・生成ツールの差を完全には消せない。
 そのためM4は「x86_64でのプロファイル実測」として記録し、AArch64固有経路の完了条件は
-native runner実測へ残す。成果物は[`data/r10_verification_m4a.json`](../data/r10_verification_m4a.json)、
-[`data/r10_verification_m4b.json`](../data/r10_verification_m4b.json)、
-[`data/r10_verification_rbs.json`](../data/r10_verification_rbs.json)である。
+native runner実測へ残す。成果物は[`data/r10_verification_m4a.json`](../../data/r10_verification_m4a.json)、
+[`data/r10_verification_m4b.json`](../../data/r10_verification_m4b.json)、
+[`data/r10_verification_rbs.json`](../../data/r10_verification_rbs.json)である。
 
 #### M4Cの実測結果
 
@@ -623,14 +623,14 @@ mysql2はMariaDB Docker停止でsuite未実行となった。これらをpassへ
 inconclusiveとした。yajl-rubyはGitHubの不存在tagを使わず、正確な1.4.3 gem data archive
 をsource/test treeに用いるrecipeを追加した。
 
-M4Cの証跡は[`data/r10_verification_m4c.json`](../data/r10_verification_m4c.json)である。
-RBSは別recipeで[`data/r10_verification_rbs.json`](../data/r10_verification_rbs.json)へ保存した。
+M4Cの証跡は[`data/r10_verification_m4c.json`](../../data/r10_verification_m4c.json)である。
+RBSは別recipeで[`data/r10_verification_rbs.json`](../../data/r10_verification_rbs.json)へ保存した。
 
 M4Dではsqlite3/pgをcontrol・rubycc双方で試行したが、hostにsqlite3.h/libsqlite3開発物、
 pg_config/pkg-config/libpq-fe.hがなくextconfで停止した。これは外部profileのinconclusiveで
 あり、suite/loadをnot_runとして記録した。bundled sqlite3/cross-build pgを代替実行したり、
 この結果をskip/passへ変換したりしていない。証跡は
-[`data/r10_verification_m4d.json`](../data/r10_verification_m4d.json)である。
+[`data/r10_verification_m4d.json`](../../data/r10_verification_m4d.json)である。
 
 #### M4 strict artifact validator後の状態
 

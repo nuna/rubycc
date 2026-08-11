@@ -17,7 +17,7 @@ module Rubycc
     # own gcc does, and in the over-reporting direction — claiming 2.39 on a
     # 2.34 host — the selected branch can reach for a symbol that libc does not
     # have, which surfaces as an undefined symbol at link or dlopen time
-    # (docs/GAPS.md gap U). The value therefore has to be measured, and the only
+    # (docs/development/GAPS.md gap U). The value therefore has to be measured, and the only
     # honest place to measure it is the C library itself: not the host's
     # /usr/include (a distroless target has none, which is the whole reason the
     # bundled headers exist) and not the host's gcc (rubycc must work without

@@ -212,8 +212,8 @@ The following are scanner candidates for R10-3 review; they are not implementati
 
 | gem | version | status | reason |
 |---|---|---|---|
-| fcntl | 1.3.0 | excluded | upstream ships no test suite — R10's "gem's own tests passed" evidence (verification level (d)) is impossible to obtain (docs/OUT-OF-SCOPE-GEMS.md basis D) |
+| fcntl | 1.3.0 | excluded | upstream ships no test suite — R10's "gem's own tests passed" evidence (verification level (d)) is impossible to obtain (docs/reference/OUT-OF-SCOPE-GEMS.md basis D) |
 | byebug | 13.0.0 | excluded | upstream suite does not pass with the reference compiler either (measured with tools/verify_gem_tests.rb --control) — no compiler can earn R10's verification level (d) here |
-| thin | 2.0.1 | excluded | `gem install` requires eventmachine (C++ extension — docs/OUT-OF-SCOPE-GEMS.md basis A), which R10 already excludes — this gem's own sources pass the machine gate, but the install cannot complete without building an out-of-scope extension |
+| thin | 2.0.1 | excluded | `gem install` requires eventmachine (C++ extension — docs/reference/OUT-OF-SCOPE-GEMS.md basis A), which R10 already excludes — this gem's own sources pass the machine gate, but the install cannot complete without building an out-of-scope extension |
 | unicorn | 6.1.0 | excluded | upstream suite does not pass with the reference compiler either (measured with tools/verify_gem_tests.rb --control) — no compiler can earn R10's verification level (d) here |
 | debug | 1.11.1 | excluded | upstream suite does not pass with the reference compiler either (measured with tools/verify_gem_tests.rb --control) — no compiler can earn R10's verification level (d) here |

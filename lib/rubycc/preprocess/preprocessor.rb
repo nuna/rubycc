@@ -375,7 +375,7 @@ module Rubycc
       # measured from the C library the compile will link against, because a
       # single shipped header set otherwise reports one host's version on every
       # host, and a version gate then selects a branch the local libc may not be
-      # able to back (docs/GAPS.md gap U).
+      # able to back (docs/development/GAPS.md gap U).
       GLIBC_MAJOR_MACRO = "__GLIBC__"
       GLIBC_MINOR_MACRO = "__GLIBC_MINOR__"
       GLIBC_MAJOR = 2
