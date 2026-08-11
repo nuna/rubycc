@@ -17,13 +17,42 @@
 # what you actually want when the numbers move -- it names the missing tool
 # instead of leaving you to diff two 3,000-line logs.
 #
-# Thresholds: the current host measurement is 2,986 runs / 42 skips. The
-# rmake-golden path is now logical-path based, so the old CI-only header-path
-# skip gap is no longer an expected difference. The values below retain a
-# small operational margin while still catching missing toolchains or a
-# truncated suite. Re-tighten them whenever the suite's size changes
-# meaningfully; acceptance profiles use stable IDs instead of this aggregate
-# guard because their run/skip shape is intentionally different.
+# Two layers of checking, and deliberately only two:
+#
+#   1. Aggregate bounds (max_skips / min_runs). This is the layer that catches
+#      the failure mode described above: a vanished toolchain turning hundreds
+#      of tests into skips, or a suite that never finished loading.
+#   2. A per-skip allow list (`allowed_skips` in config/ci/skip-baseline.json).
+#      Every skip must match exactly one rule of "test-name pattern +
+#      normalized reason", and each rule carries its own min_count/max_count.
+#      This is the layer that catches a genuinely new cause, which the
+#      aggregate bound would otherwise hide inside its margin.
+#
+# What this guard deliberately no longer checks: earlier versions also pinned
+# the exact skip total (`expected_skips`) and a SHA-256 over the whole
+# test-name/reason set (`skip_fingerprint`). The total is implied by the set,
+# and the set added detection for exactly one narrow case -- an already
+# approved reason showing up under a new or renamed test name without pushing
+# its rule past max_count. The price for that was structural rather than
+# occasional: about one commit in six touches a skip line under test/ (19 of
+# the last 120 at the time of writing), and the local and CI skip sets
+# legitimately differ (41 vs 40), so the fingerprint could only ever be
+# regenerated from a CI log. Every such commit therefore cost a
+# push -> fail -> download the artifact -> recompute -> push round trip. Layers 1 and 2 already achieve what this guard
+# exists for, so the exact-set match was dropped instead of being paid for.
+# For the same reason there is no `expires` field: putting a one-month clock on
+# a value that is expensive to re-measure only produces scheduled breakage
+# unrelated to the code. `provisional` remains for the case where a recorded
+# baseline is known to be untrustworthy.
+#
+# Thresholds: the current CI x86 measurement is 3,097 runs / 40 skips (a local
+# host sees 41; that gap is environment, not regression). The profile values in
+# config/ci/skip-baseline.json keep a small operational margin over that while
+# still catching a missing toolchain or a truncated suite, and the profile-less
+# defaults below are the looser fallback for local runs. Re-tighten them
+# whenever the suite's size changes meaningfully; acceptance profiles use
+# stable IDs instead of this aggregate guard because their run/skip shape is
+# intentionally different.
 #
 # Usage:
 #   ruby tools/ci_check_skips.rb <logfile> [profile]
@@ -32,8 +61,6 @@
 # Standard library only; no gems, so it runs before/without bundler if needed.
 
 require "json"
-require "date"
-require "digest"
 
 DEFAULT_MAX_SKIPS = 55
 DEFAULT_MIN_RUNS = 2500
@@ -115,11 +142,6 @@ def collect_skip_reasons(lines)
   collect_skip_entries(lines).map(&:reason)
 end
 
-def skip_fingerprint(entries)
-  canonical = entries.map { |entry| [entry.test_name.to_s, normalize_reason(entry.reason)] }
-  Digest::SHA256.hexdigest(canonical.sort.map { |test_name, reason| "#{test_name}\0#{reason}" }.join("\0"))
-end
-
 # Skip reasons often carry a temp path or a pid, which would otherwise split one
 # cause into dozens of histogram rows. Collapse those to placeholders so the
 # histogram groups by cause.
@@ -171,7 +193,7 @@ rescue JSON::ParserError, KeyError => e
   die "invalid or unknown skip profile #{name.inspect}: #{e.message}"
 end
 
-def profile_skip_problems(entries, profile, enforce_baseline: false)
+def profile_skip_problems(entries, profile)
   rules = profile.fetch("allowed_skips").map do |rule|
     {
       test_pattern: Regexp.new(rule.fetch("test_pattern")),
@@ -210,18 +232,6 @@ def profile_skip_problems(entries, profile, enforce_baseline: false)
       problems << "skip rule #{index} matched #{count} times, below min_count=#{rule[:min_count]}"
     elsif count > rule[:max_count]
       problems << "skip rule #{index} matched #{count} times, above max_count=#{rule[:max_count]}"
-    end
-  end
-
-  if enforce_baseline
-    expected = profile["expected_skips"]
-    if expected && entries.length != expected
-      problems << "profile expected_skips=#{expected}, got #{entries.length}"
-    end
-
-    expected_fingerprint = profile["skip_fingerprint"]
-    if expected_fingerprint && skip_fingerprint(entries) != expected_fingerprint
-      problems << "profile skip_fingerprint does not match the measured skip set"
     end
   end
 
@@ -289,24 +299,17 @@ def main(argv)
 
   if profile
     entries = collect_skip_entries(lines)
-    enforce_baseline = ENV["CI_ENFORCE_SKIP_BASELINE"] == "1"
-    if enforce_baseline
+    # CI_ENFORCE_SKIP_BASELINE only governs the provenance metadata: a local
+    # run should not be blocked by a profile whose recorded measurement is
+    # stale, but a CI job that claims to enforce the baseline must be reading a
+    # baseline someone actually measured and owns.
+    if ENV["CI_ENFORCE_SKIP_BASELINE"] == "1"
       problems << "skip profile is provisional" if profile.fetch("provisional", false)
       problems << "skip profile source_log is missing" if profile["source_log"].to_s.empty?
       problems << "skip profile measured_at is missing" if profile["measured_at"].to_s.empty?
-      problems << "skip profile expires is missing" if profile["expires"].to_s.empty?
       problems << "skip profile owner is missing" if profile["owner"].to_s.empty?
-
-      begin
-        measured_at = Date.iso8601(profile.fetch("measured_at"))
-        expires = Date.iso8601(profile.fetch("expires"))
-        problems << "skip profile expires before measured_at" if expires < measured_at
-        problems << "skip profile is expired" if expires < Date.today
-      rescue Date::Error, KeyError
-        problems << "skip profile measured_at/expires must be ISO dates"
-      end
     end
-    problems.concat(profile_skip_problems(entries, profile, enforce_baseline: enforce_baseline))
+    problems.concat(profile_skip_problems(entries, profile))
     problems << "only #{entries.length}/#{summary.skips} skip details were parsed" if entries.length != summary.skips
   end
 
