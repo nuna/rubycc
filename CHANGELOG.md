@@ -16,11 +16,14 @@ shim and preprocessor, written in Ruby.
 
 ### What works
 
-- **18 gems verified**: bigdecimal, date, digest, erb, etc, io-console, io-nonblock,
-  io-wait, json, msgpack, nkf, psych, racc, redcarpet, stackprof, stringio, strscan,
-  zlib. "Verified" means the gem's own test suite passed against the `.so` that a
-  `RUBYCC=1 gem install` produced — the record is `data/verified_gems.json`, written
-  only by `tools/verify_gem_tests.rb`, never by hand.
+- **31 gems verified**: bigdecimal, bootsnap, date, digest, erb, etc, fiddle,
+  google-protobuf, http_parser.rb, io-console, io-nonblock, io-wait, json, msgpack,
+  mysql2, nio4r, nkf, pg, prism, psych, puma, racc, redcarpet, sqlite3, stackprof,
+  stringio, strscan, syslog, websocket-driver, yajl-ruby, zlib. "Verified" means the
+  gem's own test suite passed against the `.so` that a `RUBYCC=1 gem install` produced
+  — the record is `data/verified_gems.json`, written only by
+  `tools/verify_gem_tests.rb`, never by hand. That is 31 of the 34 gems in the corpus
+  denominator (**91.2%**), meeting the 90% the design sets as its acceptance criterion.
 - **Two machines**: x86-64 and aarch64, each with its own backend and ABI.
 - **Two C libraries**: glibc and musl. The bundled headers carry both where they differ,
   and every difference was measured against that environment's own gcc rather than

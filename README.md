@@ -16,19 +16,19 @@ Successfully installed msgpack-1.8.3
 ## Status
 
 Working. The toolchain compiles and links real gems, and the gems' own test suites pass
-against the resulting binaries. **29 gems are verified this way**, each by running the
+against the resulting binaries. **31 gems are verified this way**, each by running the
 gem's own suite against the `.so` a `RUBYCC=1 gem install` produced — never by inspection:
 
     bigdecimal  bootsnap  date  digest  erb  etc  fiddle  google-protobuf  http_parser.rb
-    io-console  io-nonblock  io-wait  json  msgpack  mysql2  nio4r  nkf  prism  psych
-    puma  racc  redcarpet  stackprof  strscan  stringio  syslog  websocket-driver
+    io-console  io-nonblock  io-wait  json  msgpack  mysql2  nio4r  nkf  pg  prism  psych
+    puma  racc  redcarpet  sqlite3  stackprof  strscan  stringio  syslog  websocket-driver
     yajl-ruby  zlib
 
 The verified environments are:
 
 | environment | verified gems |
 |---|---|
-| glibc x86-64 | 29 |
+| glibc x86-64 | 31 |
 | musl x86-64 (Alpine) | 3 |
 | glibc aarch64 | 2 |
 
@@ -36,9 +36,10 @@ The bundled headers match the ABI of the supported environments on both architec
 and both C libraries.
 
 The current corpus census has 39 candidates, 34 gems in the R10 machine-gate denominator,
-and 29 verified gems: **85.3%**. `pg` and `sqlite3` are now in the denominator through
-explicit DESIGN-compatible profiles, so the rate is measured against a larger corpus than
-the 90.6% reported before; reaching 90% needs verification records for those two. See
+and 31 verified gems: **91.2%**, which meets the 90% the design requires. `pg` and
+`sqlite3` are in that denominator through explicit DESIGN-compatible profiles (pg's
+native-source path, sqlite3 with `--enable-system-libraries`), so the rate is measured
+against a larger corpus than the 90.6% reported before those two were added. See
 [`test/corpus/include-census.md`](test/corpus/include-census.md) for the generated report.
 
 It also compiles the SQLite amalgamation — a single 261,463-line translation unit — in

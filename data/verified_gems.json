@@ -358,5 +358,16 @@
       }
     ],
     "notes": "Installed with --enable-system-libraries, the R10 profile test/corpus/gems.rb declares for this gem: the default path builds the bundled amalgamation through mini_portile2 and configure, which R10 excludes. The sanity expression asserts SQLite3::SQLITE_PACKAGED_LIBRARIES == false, so the record is evidence about the system-library build and no other. The run reported 5 skips (not failures); 3 of them are test/test_database_uri.rb's own `skip(\"system libraries may not allow URIs\") unless SQLite3::SQLITE_PACKAGED_LIBRARIES`, i.e. a consequence of that same profile rather than of rubycc."
+  },
+  "pg": {
+    "verifications": [
+      {
+        "versions": ["1.6.3"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-08-11",
+        "evidence": "RUBYCC=1 gem install pg succeeded (pg_ext.so built through rmake); the gem's own RSpec suite passed 1,040 examples / 0 failures (Step corpus-sqlite3-pg-2)."
+      }
+    ],
+    "notes": "The suite starts its own PostgreSQL server from `pg_config --bindir`, so the host needs the server package and not only libpq; the socket directory it uses must also stay under the 107-byte sun_path limit, which a long work directory silently breaks (the server then refuses to start and no example runs at all). The run reported 4 pendings (not failures): two are upstream's own `skip` when port 5432 is already taken (spec/pg/connection_spec.rb:840), which is the case whenever a normal PostgreSQL install is running, and two apply to native binary gems only. A dozen specs assert on wall-clock durations read from Time.now, so a host that steps its clock fails them at random: measured here at 2/40 runs for rubycc and 3/40 for the gcc control, while the underlying connection took 2.003-2.010 s on both sides in all 80 measurements (Step corpus-sqlite3-pg-2). The recorded run was made with the clock stepping stopped."
   }
 }

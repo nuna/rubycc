@@ -8,7 +8,7 @@ This document records the machine-gate boundary, `.gem` provenance, and the heur
 
 | candidate gems | machine-gate `ok` | excluded | verified records | scanner findings | manual classifications pending |
 |---:|---:|---:|---:|---:|---:|
-| 39 | 34 | 5 | 29 | 128 | 34 |
+| 39 | 34 | 5 | 31 | 128 | 34 |
 
 `status: ok` is only the census machine gate. The 29 existing `data/verified_gems.json` records are evidence from earlier install/extension-load/upstream-suite runs; this scan does not rerun them. A missing record is not converted to skip or pass.
 
@@ -52,9 +52,9 @@ The manual classification column is intentionally `pending` for all targets, inc
 | google-protobuf | 4.35.1 | default-source | — | `a3a6471331d918f58dfa4d014a8f6286f0af2cf4840216bde52fcf2ea3fe3726` | 23 | 41 | struct_argument_to_variadic_candidate, va_list_wrapper | pending | recorded; not rerun | Review selected build path, macros/generated source, and each scanner candidate. |
 | bootsnap | 1.24.6 | default-source | — | `c60bab88c70332290f0a2636a288f675299eb4f804a02a3c085b42eca9da164a` | 1 | 0 | — | pending | recorded; not rerun | Review selected build path, macros/generated source, and each scanner candidate. |
 | oj | 3.17.4 | default-source | — | `733fe3bcb7a5d985bd2e943620b7bea1bffb2809318af7021c841b833a6858e1` | 66 | 60 | struct_argument_to_variadic_candidate | pending | not run | Review selected build path, macros/generated source, and each scanner candidate. |
-| sqlite3 | 2.9.5 | sqlite3-system-libraries | --enable-system-libraries | `04572973a3f943ad50a8adfffc8dd752a5f06e4c3db2026f71838fed8a982606` | 13 | 0 | — | pending | not run | Review selected build path, macros/generated source, and each scanner candidate. |
+| sqlite3 | 2.9.5 | sqlite3-system-libraries | --enable-system-libraries | `04572973a3f943ad50a8adfffc8dd752a5f06e4c3db2026f71838fed8a982606` | 13 | 0 | — | pending | recorded; not rerun | Review selected build path, macros/generated source, and each scanner candidate. |
 | nio4r | 2.7.5 | default-source | — | `6c90168e48fb5f8e768419c93abb94ba2b892a1d0602cb06eef16d8b7df1dca1` | 18 | 0 | — | pending | recorded; not rerun | Review selected build path, macros/generated source, and each scanner candidate. |
-| pg | 1.6.3 | pg-native-source | — | `1388d0563e13d2758c1089e35e973a3249e955c659592d10e5b77c468f628a99` | 25 | 0 | — | pending | not run | Review selected build path, macros/generated source, and each scanner candidate. |
+| pg | 1.6.3 | pg-native-source | — | `1388d0563e13d2758c1089e35e973a3249e955c659592d10e5b77c468f628a99` | 25 | 0 | — | pending | recorded; not rerun | Review selected build path, macros/generated source, and each scanner candidate. |
 | mysql2 | 0.5.7 | default-source | — | `ba09ede515a0ae8a7192040a1b778c0fb0f025fa5877e9be895cd325fa5e9d7b` | 13 | 0 | — | pending | recorded; not rerun | Review selected build path, macros/generated source, and each scanner candidate. |
 | http_parser.rb | 0.8.1 | default-source | — | `9ae8df145b39aa5398b2f90090d651c67bd8e2ebfe4507c966579f641e11097a` | 11 | 23 | struct_argument_to_variadic_candidate, va_arg_struct_or_union | pending | recorded; not rerun | Review selected build path, macros/generated source, and each scanner candidate. |
 | stackprof | 0.2.28 | default-source | — | `4ec2ace02f386012b40ca20ef80c030ad711831f59511da12e83b34efb0f9a04` | 1 | 0 | — | pending | recorded; not rerun | Review selected build path, macros/generated source, and each scanner candidate. |

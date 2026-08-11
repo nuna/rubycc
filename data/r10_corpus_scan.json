@@ -6,7 +6,7 @@
     "status_ok_count": 34,
     "excluded_count": 5,
     "skipped_count": 0,
-    "verified_record_count": 29,
+    "verified_record_count": 31,
     "manual_classification_pending_count": 34,
     "scanner_findings_count": 128
   },
@@ -3261,12 +3261,12 @@
         "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
       },
       "verification": {
-        "recorded_in_data_verified_gems": false,
-        "record_path": null,
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
         "control": "not-run-by-this-scan",
         "rubycc": "not-run-by-this-scan",
-        "extension_load": "not-run-by-this-scan",
-        "upstream_suite": "not-run-by-this-scan"
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
       }
     },
     {
@@ -3359,12 +3359,12 @@
         "next_action": "Review selected build path, macros/generated source, and each scanner candidate."
       },
       "verification": {
-        "recorded_in_data_verified_gems": false,
-        "record_path": null,
+        "recorded_in_data_verified_gems": true,
+        "record_path": "data/verified_gems.json",
         "control": "not-run-by-this-scan",
         "rubycc": "not-run-by-this-scan",
-        "extension_load": "not-run-by-this-scan",
-        "upstream_suite": "not-run-by-this-scan"
+        "extension_load": "recorded in data/verified_gems.json; not re-run",
+        "upstream_suite": "recorded in data/verified_gems.json; not re-run"
       }
     },
     {

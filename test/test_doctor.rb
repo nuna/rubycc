@@ -58,7 +58,7 @@ class TestDoctor < Minitest::Test
   def test_verified_gems_json_holds_only_confirmed_gems
     raw = JSON.parse(File.read(DATA))
     assert_equal %w[bigdecimal bootsnap date digest erb etc fiddle google-protobuf http_parser.rb io-console io-nonblock
-                    io-wait json msgpack mysql2 nio4r nkf prism psych puma racc redcarpet sqlite3 stackprof stringio
+                    io-wait json msgpack mysql2 nio4r nkf pg prism psych puma racc redcarpet sqlite3 stackprof stringio
                     strscan syslog websocket-driver yajl-ruby zlib],
                  raw.keys.sort
 
@@ -85,11 +85,13 @@ class TestDoctor < Minitest::Test
     assert_includes all_versions["digest"], "3.2.1"
     assert_includes all_versions["zlib"], "3.2.3"
     assert_includes all_versions["psych"], "5.3.1"
-    # sqlite3 is in the R10 denominator only through an explicit profile
-    # (--enable-system-libraries; its default mini_portile2/configure path is
-    # excluded), so the version a record names is the version that profile was
-    # measured at -- see test/corpus/gems.rb for the profile itself.
+    # These two are in the R10 denominator only through an explicit profile
+    # (sqlite3 with --enable-system-libraries, pg through its native-source
+    # path; both defaults run configure and are excluded), so the version a
+    # record names is the version that profile was measured at -- see
+    # test/corpus/gems.rb for the profiles themselves.
     assert_includes all_versions["sqlite3"], "2.9.5"
+    assert_includes all_versions["pg"], "1.6.3"
 
     # Records from a libc other than glibc. The first arrived in Step 183 and
     # the set grew to three in Step 192, once the linker learned where musl
