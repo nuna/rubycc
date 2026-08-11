@@ -67,6 +67,18 @@ docker run --privileged --rm tonistiigi/binfmt --install arm64
 (weekly run 31500900897 と同一テスト名で突き合わせた中央値 22.8x。2 分半 → 1 時間)。
 **これはゲートではなく往復の削減であり、native の代用でもない** — 上の方針は変わらない。
 
+タスクは基底イメージに **Tier A と同じ参照ツールチェーン**(`gcc-aarch64-linux-gnu` /
+`binutils-aarch64-linux-gnu` / `libc6-dev-arm64-cross` / `qemu-user` ほか)を入れた
+イメージを 1 度だけ構築して使い回す。**素のイメージで回してはいけない** — 差分テストは
+ツールが無いと失敗ではなく **skip** するので、何も検査していない緑になる
+(実測: 素の `ruby:4.0` で 742 skips、うち 467 件が
+「aarch64 execution toolchain is not installed」。native ランナーは 241 skips)。
+
+**このイメージの gcc は CI より新しい**(Debian trixie の 14.2 対 Ubuntu 24.04 の 13)。
+gcc 14 は従来の警告のいくつかを既定でエラーにするので、**対照側が落ちる**差分テストが
+3 件ある(`docs/GAPS.md` ギャップ W)。ここでの失敗は、まずその 3 件かどうかを見てから
+AArch64 の欠陥として扱うこと。
+
 ## 参照用ツールチェーン
 
 差分テストと生成物検査に使用する apt パッケージは次のとおり。
