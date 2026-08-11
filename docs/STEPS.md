@@ -10826,3 +10826,56 @@ io-console などが今も出す)。対照が拒否すると**比較そのもの
 gcc 14.2 の環境で 3 件とも消えることを実測(76 runs / 0 failures / 0 errors)。
 x86-64(gcc 13)側は 5 ファイルとも件数・結果が不変で、
 **CI の既定と同じ言語版を明示しただけ**であることを確かめた。
+
+---
+
+## m4-aarch64-acceptance-4 — 2 年前の修正が、片方の機種にしか写っていなかった(M4 受け入れ)
+
+`-2` / `-3` の修正後に musl/aarch64 の全スイートを回し直したところ、
+`TestMkmfConftest` の 2 件が残った。**環境のせいだと片づけかけた** —
+コンテナの mkmf が「開発ツールを入れろ」と言っていたからである。
+
+**確かめたら違った。** コンテナ内で素の mkmf に `have_header` / `have_func` を
+やらせると通る。落ちているのは `mkmf_shim` 経由、つまり**コンパイラが rubycc の側**だった。
+
+```
+rubycc: error: cannot locate the C library; pass libc: with its path
+```
+
+### Step 190 の修正が x86-64 のリストにしか入っていなかった
+
+```ruby
+DEFAULT_LIBC_PATHS = [..., "/lib/ld-musl-x86_64.so.1", "/usr/lib/libc.so"]  # musl 対応済み
+AARCH64_LIBC_PATHS = [glibc の 3 パスのみ]                                   # musl が無い
+```
+
+musl は C ライブラリと program interpreter を 1 つのファイルで配るので `libc.so.6` が無い。
+Step 190 はそれを x86-64 のリストに教えたが、**aarch64 のリストには写らなかった**。
+**musl の aarch64 を走らせる手段が無かったので、2 年間見えなかった。**
+
+### ローダの選択にも同型の誤りがあった
+
+```ruby
+# aarch64 is cross-linked from an x86_64 host, so the target loader is not
+# present locally; use its canonical on-target path unconditionally.
+return AARCH64_INTERP if aarch64?
+```
+
+コメントの前提は正しかった — **aarch64 がホストになるまでは**。Alpine arm64 では
+musl のローダが実在し、glibc の名前を書いた実行ファイルは起動できない。
+**musl のローダが実在するときだけ**それを選ぶ形にした(実在しうるのは musl aarch64
+ホストだけなので、クロスリンクの挙動は変わらない)。
+
+### 「環境のせい」と言う前に、もう一段だけ掘る
+
+この 2 件は、最初の分類で**「コンテナ環境」に入れていた**ものである。
+エラーメッセージ(`You have to install development tools first`)が
+環境の話をしていたからで、実際には rubycc が libc を見つけられずに
+mkmf がそう報告していただけだった。**測って分けた 14 件のうち、
+分類を間違えていたのが 2 件あった**ことになる。
+
+区別は簡単だった — **同じことを素の mkmf にやらせてみる**。通れば環境ではない。
+
+修正後、musl/aarch64 で `have_header` / `try_link` / **`try_run`** / `have_func` が
+すべて通る(`try_run` まで通るのは、ローダのパスも正しく書けている証拠)。
+該当 3 ファイルは 52 runs / 0 failures。x86-64 側は 4 ファイルとも不変である。

@@ -40,8 +40,8 @@ QEMU で実行した結果**であり、aarch64 Ruby 自身で `rake test` や `
 |---|---|---|
 | ~~aarch64 上の全テストスイート~~ | **完了(`test-ci-implementation-4`)**。[weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)(`7d903c4`)で `ubuntu-24.04-arm` 上の Ruby 3.3 / 4.0 全スイートと `native-aarch64-smoke` が success | ~~ローカルに aarch64 Ruby が無い~~ **解消**。以後 `native-aarch64-smoke` は週次スケジュールでも走る(`test-ci-implementation-5`)。full suite は引き続き `only: aarch64` の手動実行 |
 | ABI ファジングハーネスの機種パラメタ化 | **実装済み(本ブランチ)** | `TestCrossAbi` が同じ決定論的な 40 レイアウトを x86_64 と aarch64 で実行する。aarch64 は既存のクロスgcc + QEMU経路を使うため aarch64 Ruby は不要。 |
-| aarch64 の json / msgpack `gem install` | 未実施 | ネットワーク受入れテストは `RMAKE_ACCEPTANCE=1` 未指定のため 44 skips に含まれる。aarch64 Ruby が必要で、Docker daemon も `/var/run/docker.sock` の permission denied で利用できない。 |
-| aarch64 musl の全受入れ | 未実施 | `musl-gcc` / `aarch64-linux-musl-gcc` が無く、Docker daemon も利用できない。今回の musl 3件は bundled header の分岐値を glibc cross linker + QEMU で確認したもので、musl libc/Ruby の実走ではない。 |
+| ~~aarch64 の json / msgpack `gem install`~~ | **完了(`m4-aarch64-acceptance-2`)**。arm64 コンテナの aarch64 Ruby 4.0.6 で `json` 596 tests / `msgpack` 455 examples がいずれも 0 failures。**さらに risk ベースで 2 件足した** — `bigdecimal`(128 ビットの値渡し・シフトが AAPCS64 の偶数レジスタペアと 16 バイト整列を踏む)と `zlib`(`-lz` と aarch64 の multiarch ライブラリ探索。Step 208 で壊れていた層)。4 件とも `data/verified_gems.json` に記録済み | ~~aarch64 Ruby / Docker が無い~~ **解消**。Step 208 で 900 秒制限に当たっていた msgpack は、`VERIFY_*_TIMEOUT`(`m4-aarch64-acceptance-1`)で上げたら 1 分 58 秒で完走した |
+| ~~aarch64 musl の全受入れ~~ | **完了(`m4-aarch64-acceptance-2` / `-3`)**。arm64 の Alpine コンテナで全スイートを実走(3,109 runs)。**rubycc の欠陥は 1 件のみ**で、同梱 `math.h` が `FP_ILOGB0` / `FP_ILOGBNAN` を機種だけで分岐していた件(修正済み) | ~~`aarch64-linux-musl-gcc` が無い~~ **解消** — arm64 コンテナの中では musl gcc がネイティブなので、クロスツールチェーンの不在は問題にならない。残る失敗は環境由来(エミュレーションの壁時計 3 件、コンテナの mkmf 開発ツール不足ほか) |
 
 このブランチで実施したABI作業では、`TestCrossAbi` を target-aware にし、x86_64用と
 aarch64用の gcc caller / rubycc callee、gcc callee / rubycc caller の両方向を追加した。

@@ -105,6 +105,17 @@ class TestDoctor < Minitest::Test
       envs = raw.fetch(name)["verifications"].map { |v| v["environment"] }
       assert_includes envs, musl, "#{name} should carry a musl verification"
     end
+
+    # The AArch64 records M4's acceptance rests on. json and msgpack are the two
+    # the milestone names; bigdecimal and zlib were added because the pair it
+    # names exercises neither the 128-bit ABI paths (AAPCS64's even-register
+    # pairs) nor a host system library, which are the two things that have
+    # actually broken on that machine.
+    aarch64 = "glibc aarch64 / ruby 4.0.6"
+    %w[json msgpack bigdecimal zlib].each do |name|
+      envs = raw.fetch(name)["verifications"].map { |v| v["environment"] }
+      assert_includes envs, aarch64, "#{name} should carry an AArch64 verification"
+    end
   end
 
   # --- gemspec packaging ----------------------------------------------------

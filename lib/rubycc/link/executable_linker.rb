@@ -54,11 +54,18 @@ module Rubycc
       GLIBC_INTERP = "/lib64/ld-linux-x86-64.so.2"
       MUSL_INTERP  = "/lib/ld-musl-x86_64.so.1"
 
-      # The aarch64 dynamic loader path. When cross-linking on an x86_64 host the
+      # The aarch64 dynamic loader paths. When cross-linking on an x86_64 host the
       # target loader is not present locally, so — unlike the x86_64 case — the
-      # path is used as the canonical on-target location without a host existence
-      # check (the emulator/target resolves it through its own sysroot).
+      # glibc path is used as the canonical on-target location without a host
+      # existence check (the emulator/target resolves it through its own sysroot).
+      #
+      # That reasoning stops holding the moment aarch64 is the *host*: on Alpine
+      # arm64 the loader is musl's, and naming glibc's would produce an executable
+      # nothing can start. So the musl loader is preferred when it is actually
+      # present, which can only be true on a musl aarch64 host, and the glibc name
+      # remains the answer everywhere else including every cross link.
       AARCH64_INTERP = "/lib/ld-linux-aarch64.so.1"
+      AARCH64_MUSL_INTERP = "/lib/ld-musl-aarch64.so.1"
 
       # The usual filesystem locations of the C library, consulted (in order) to
       # add libc as a default dependency. Only the SONAME the chosen file carries
@@ -84,10 +91,25 @@ module Rubycc
 
       # The aarch64 C library locations, including the cross-toolchain sysroot the
       # linker reads the dependency's exports (and SONAME) from when cross-linking.
+      # The musl entries mirror what Step 190 added to the x86-64 list above, for
+      # the same reason and one architecture later: musl ships its C library and
+      # its program interpreter as one file, so there is no libc.so.6 to find and
+      # every extconf probe that links an executable failed on Alpine arm64 with
+      # "cannot locate the C library" until this list learned the names. That
+      # only surfaced once an aarch64 musl suite could be run at all
+      # (m4-aarch64-acceptance-4); the x86-64 list had carried its musl entry
+      # since Step 190, and nothing copied it across.
+      #
+      # The libc.musl-* spelling comes before the loader's own name because it is
+      # the stable library name in Alpine images, matching LibraryResolver's
+      # preference; both resolve to the same ELF.
       AARCH64_LIBC_PATHS = [
         "/lib/aarch64-linux-gnu/libc.so.6",
         "/usr/lib/aarch64-linux-gnu/libc.so.6",
-        "/usr/aarch64-linux-gnu/lib/libc.so.6"
+        "/usr/aarch64-linux-gnu/lib/libc.so.6",
+        "/lib/libc.musl-aarch64.so.1",
+        "/usr/lib/libc.musl-aarch64.so.1",
+        "/lib/ld-musl-aarch64.so.1"
       ].freeze
 
       # The synthesized _start, assembled from the System V x86-64 process-startup
@@ -342,8 +364,11 @@ module Rubycc
       # a silent guess, since the resulting executable would not run.
       def choose_interpreter(explicit)
         return explicit if explicit
-        # aarch64 is cross-linked from an x86_64 host, so the target loader is not
-        # present locally; use its canonical on-target path unconditionally.
+        # aarch64 is usually cross-linked from an x86_64 host, where the target
+        # loader is not present locally, so its canonical on-target path is used
+        # without a host check. A musl aarch64 *host* is the exception: there the
+        # musl loader is the one that exists, and it is the one that must be named.
+        return AARCH64_MUSL_INTERP if aarch64? && File.exist?(AARCH64_MUSL_INTERP)
         return AARCH64_INTERP if aarch64?
         return GLIBC_INTERP if File.exist?(GLIBC_INTERP)
         return MUSL_INTERP if File.exist?(MUSL_INTERP)
