@@ -3,6 +3,7 @@
 require "rbconfig"
 require "tmpdir"
 require "open3"
+require_relative "execution_helper"
 
 # Helpers for guarantees that require the Ruby process, dynamic loader and libc
 # themselves to be AArch64. QEMU target execution is intentionally not used
@@ -64,7 +65,7 @@ module NativeAArch64Helper
     File.write(source_path, source)
     # Native Debian GCC also defaults to PIE. Keep the non-PIC native oracle
     # explicit, matching ExecutionHelper's ordinary differential path.
-    args = ["gcc", "-c", pic ? "-fPIC" : "-fno-pie"]
+    args = ["gcc", "-c", ExecutionHelper::REFERENCE_STD_FLAG, pic ? "-fPIC" : "-fno-pie"]
     output, status = Open3.capture2e(*args, "-o", object_path, source_path)
     raise "native gcc failed (exit #{status.exitstatus}):\n#{output}" unless status.success?
 

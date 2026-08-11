@@ -30,7 +30,7 @@ The verified environments are:
 |---|---|
 | glibc x86-64 | 31 |
 | musl x86-64 (Alpine) | 3 |
-| glibc aarch64 | 2 |
+| glibc aarch64 | 6 |
 
 The bundled headers match the ABI of the supported environments on both architectures
 and both C libraries.

@@ -13,6 +13,23 @@ require_relative "host_target"
 # exists purely to validate the harness itself. `compiler: :rubycc` drives the
 # Almost Pure Ruby toolchain (Rubycc::Compiler).
 module ExecutionHelper
+  # gcc's default language standard tracks the *compiler's own* release, not
+  # the source it is fed: gcc 13 (this project's CI host) defaults to gnu17,
+  # but gcc 14 defaults to gnu23. C23 removed implicit int, made an empty
+  # parameter list `()` mean "no arguments" instead of "unspecified
+  # arguments", and turned several former warnings (implicit function
+  # declaration, incompatible pointer types) into hard errors. rubycc
+  # implements a C11/C17 subset plus GNU extensions (K&R definitions,
+  # statement expressions, ...), so every gcc invocation that *translates* C
+  # source for the differential oracle must pin the standard explicitly —
+  # otherwise the oracle silently drifts to whatever the host's default gcc
+  # happens to be, and comparisons fail for reasons that have nothing to do
+  # with rubycc. gnu17, not c17, so the GNU extensions stay available on the
+  # oracle side too. This is the single place that value is spelled; every
+  # gcc compile call (here and in the aarch64/native helpers) reads it from
+  # here rather than repeating the flag.
+  REFERENCE_STD_FLAG = "-std=gnu17"
+
   # The generic execution tests compare a rubycc object with the host gcc and
   # then execute the result. Compile for the host ABI here; Compiler#compile's
   # library default remains x86_64 so callers that intentionally test a
@@ -78,12 +95,25 @@ module ExecutionHelper
   # non-PIC rubycc object with a PIE gcc object. The keyword and default match
   # AArch64ExecutionHelper#compile_with_cross_gcc, so a differential case can
   # choose the same mode on either machine.
-  def compile_with_gcc(c_source, output_path, pic: false)
+  #
+  # `obsolete:` is for the handful of cases that deliberately feed the oracle a
+  # construct C99 removed -- a K&R definition whose parameters have no types, so
+  # they default to int. rubycc accepts those on purpose (Step atomic-type-10:
+  # io-console and kin still ship them), which means the oracle has to accept
+  # them too or the two cannot be compared at all. gcc 13 warned; gcc 14 rejects
+  # them by default in *every* language mode, so -std alone does not settle it
+  # and the diagnostics have to be downgraded explicitly. Kept opt-in rather
+  # than global: for every other source, gcc refusing to compile is a signal
+  # about the test's own C that should not be silenced (docs/GAPS.md gap W).
+  OBSOLETE_C_FLAGS = ["-fpermissive"].freeze
+
+  def compile_with_gcc(c_source, output_path, pic: false, obsolete: false)
     dir = File.dirname(output_path)
     source_path = File.join(dir, "#{File.basename(output_path, ".*")}.c")
     File.write(source_path, c_source)
 
-    args = ["gcc", "-c", pic ? "-fPIC" : "-fno-pie"]
+    args = ["gcc", "-c", REFERENCE_STD_FLAG, pic ? "-fPIC" : "-fno-pie"]
+    args.concat(OBSOLETE_C_FLAGS) if obsolete
     stdout_and_stderr, status = Open3.capture2e(*args, "-o", output_path, source_path)
     unless status.success?
       raise "gcc failed to compile source (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
@@ -100,7 +130,7 @@ module ExecutionHelper
     in_tmpdir do |dir|
       source_path = File.join(dir, "input.c")
       File.write(source_path, c_source)
-      stdout, stderr, status = Open3.capture3("gcc", "-E", "-P", source_path)
+      stdout, stderr, status = Open3.capture3("gcc", "-E", "-P", REFERENCE_STD_FLAG, source_path)
       raise "gcc failed to preprocess source (exit #{status.exitstatus}):\n#{stderr}" unless status.success?
 
       stdout
@@ -182,12 +212,12 @@ module ExecutionHelper
   end
 
   # Compiles `c_source` to `object_path` with the requested compiler.
-  def compile_source(c_source, object_path, compiler)
+  def compile_source(c_source, object_path, compiler, obsolete: false)
     case compiler
     when :rubycc
       compile_with_rubycc(c_source, object_path)
     when :gcc
-      compile_with_gcc(c_source, object_path)
+      compile_with_gcc(c_source, object_path, obsolete: obsolete)
     else
       raise ArgumentError, "unknown compiler: #{compiler.inspect}"
     end

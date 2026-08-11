@@ -417,10 +417,14 @@ class TestKnrFunctionDefinitions < Minitest::Test
     Rubycc::Compiler.new.compile(source, filename: "knr.c", target: host_target)
   end
 
+  # Every source in this file is a K&R definition whose parameters carry no
+  # types, which C99 removed and gcc 14 rejects by default. That is the very
+  # construct under test, so the oracle is asked to tolerate it (see
+  # ExecutionHelper::OBSOLETE_C_FLAGS); rubycc's own build is untouched.
   def run_source(source, compiler)
     in_tmpdir do |dir|
       object_path = File.join(dir, "knr.o")
-      compile_source(source, object_path, compiler)
+      compile_source(source, object_path, compiler, obsolete: true)
       link_and_run(object_path)
     end
   end

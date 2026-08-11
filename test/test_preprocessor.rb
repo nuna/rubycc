@@ -1662,10 +1662,17 @@ class TestPreprocessor < Minitest::Test
 
   # A pinned version reaches the macros unchanged -- the cross-compilation case,
   # and the reason a gate can now come out false on an older target.
+  #
+  # `libc:` is named rather than left to the host, because the macros are only
+  # defined for a glibc target: on a musl host the default would be "musl", the
+  # pin would go unused, and the bundled header's fallback pair would answer
+  # instead. That is the correct behaviour, and asserting the pin without
+  # naming the target measured the host rather than the pin -- which is how
+  # this test failed on the emulated AArch64 musl run.
   def test_glibc_minor_can_be_pinned_and_reaches_the_version_gate
-    assert_equal [2, 34], glibc_version_pair(glibc_minor: 34)
+    assert_equal [2, 34], glibc_version_pair(libc: "glibc", glibc_minor: 34)
 
-    gate = Rubycc::Preprocess::Preprocessor.new(glibc_minor: 34)
+    gate = Rubycc::Preprocess::Preprocessor.new(libc: "glibc", glibc_minor: 34)
                                            .run(GLIBC_PREREQ_PROBE, filename: "t.c")
                                            .reject(&:eof?).map(&:value)
     # The expression is left for the compiler to fold, so what is asserted here
