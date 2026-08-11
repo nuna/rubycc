@@ -59,7 +59,13 @@ class TestAtomicType < Minitest::Test
       atomic_long_alias a = 55;
       atomic_ulong_alias b = 66;
       _Atomic int local = 77;
-      int * _Atomic qualified_pointer = &local;
+      /* `int * _Atomic` is an atomic pointer to a plain int, which is a
+         different type from `_Atomic int *` (an ordinary pointer to an atomic
+         int) -- so it is initialized from a plain int's address. Pointing it at
+         `local` compiled here for years because gcc 13 only warned about the
+         mismatch; gcc 14 rejects it, correctly. */
+      int plain_target = 77;
+      int * _Atomic qualified_pointer = &plain_target;
       const _Atomic int folded = 88;
       struct holder h;
 

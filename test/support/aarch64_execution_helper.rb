@@ -2,6 +2,7 @@
 
 require "tmpdir"
 require "open3"
+require_relative "execution_helper"
 
 # AArch64ExecutionHelper is the aarch64 counterpart of ExecutionHelper: it
 # compiles a C source string for the aarch64 target, links it with the cross
@@ -107,7 +108,7 @@ module AArch64ExecutionHelper
     # The cross compiler may also default to PIE. Make the BuildProfile's
     # non-PIC mode explicit so the gcc oracle and rubycc receive the same
     # relocation policy on the AArch64 path.
-    args = [AArch64ExecutionHelper::CROSS_GCC, "-c", pic ? "-fPIC" : "-fno-pie"]
+    args = [AArch64ExecutionHelper::CROSS_GCC, "-c", ExecutionHelper::REFERENCE_STD_FLAG, pic ? "-fPIC" : "-fno-pie"]
     stdout_and_stderr, status = Open3.capture2e(*args, "-o", object_path, source_path)
     unless status.success?
       raise "#{AArch64ExecutionHelper::CROSS_GCC} failed to compile source " \
@@ -286,7 +287,7 @@ module AArch64ExecutionHelper
     lib = File.basename(so_path).sub(/\Alib/, "").sub(/\.so\z/, "")
 
     out, status = Open3.capture2e(
-      AArch64ExecutionHelper::CROSS_GCC, consumer_c, "-o", exe,
+      AArch64ExecutionHelper::CROSS_GCC, ExecutionHelper::REFERENCE_STD_FLAG, consumer_c, "-o", exe,
       "-L", dir, "-l#{lib}", "-Wl,-rpath,#{dir}",
       "-Wl,--dynamic-linker=#{AArch64ExecutionHelper::TARGET_INTERP}"
     )

@@ -59,12 +59,23 @@ class TestExamples < Minitest::Test
     end
   end
 
+  # Samples whose whole subject is a construct C99 removed, so the oracle has to
+  # be told to tolerate what gcc 14 rejects by default (see
+  # ExecutionHelper::OBSOLETE_C_FLAGS). Named one by one rather than applied to
+  # every sample: for the rest, gcc refusing to compile means the sample is
+  # wrong, which is exactly what these tests are for.
+  OBSOLETE_C_EXAMPLES = ["m5/atomic_type_10_knr_definitions.c"].freeze
+
   def compile_example(path, object_path, compiler)
     case compiler
     when :rubycc
       Rubycc::Compiler.compile_file(path, object_path, target: host_target)
     when :gcc
-      stdout_and_stderr, status = Open3.capture2e("gcc", "-c", "-fno-pie", "-o", object_path, path)
+      relative_path = path.delete_prefix("#{EXAMPLES_ROOT}/")
+      args = ["gcc", "-c", ExecutionHelper::REFERENCE_STD_FLAG, "-fno-pie"]
+      args.concat(ExecutionHelper::OBSOLETE_C_FLAGS) if OBSOLETE_C_EXAMPLES.include?(relative_path)
+      stdout_and_stderr, status = Open3.capture2e(*args,
+                                                  "-o", object_path, path)
       unless status.success?
         raise "gcc failed to compile #{path} (exit #{status.exitstatus}):\n#{stdout_and_stderr}"
       end

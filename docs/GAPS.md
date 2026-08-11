@@ -12,7 +12,6 @@
 |---|---|---|---|---|
 | **S** | **`long double` が 8 バイト**(`double` として扱う。DESIGN 3.3 の既知の制限) | **oj**。`usual.c` が `sprintf(buf, "%Lg", (long double)x)` を使い、glibc は 16 バイトを読むので値が壊れる(`BigDecimal(): "-nan"`)。**対照と食い違う唯一のテスト** `UsualTest#test_decimal` の原因 | **実測**(2026-08-08)。最小再現: gcc `[1.23457]` / rubycc `[7.46537e-4948]` | **v1.0 では挙動を変えず、README / CHANGELOG の既知の制限に明記した**(`gaps-s-t-u-3`)。**解消は v1.0 直後に最優先**(段取りは ROADMAP §3 の該当行。第 1 段 = 可変長引数に渡すときだけ 80 ビット / binary128 に変換、第 2 段 = 演算本体) |
 | **T** | **配列の要素数をパーサが数える文脈で、struct を返す式が単一式初期化子として読めない** | `pt b[] = { {1,2}, fp(), {5,6} };` が gcc では 3 要素になるのに rubycc は拒否する。パーサは `[]` の長さをここで確定させる必要があるが、型表を持たないので `fp()` の型が分からない | **実測**(2026-08-08) | struct を直接初期化する形は通る(atomic-type-13)。**`gaps-s-t-u-2` で診断だけ正直にした**(以前は `excess elements in scalar initializer` という的外れな文言だった)。解消にはパーサ側に型を引く手段が要る |
-| **W** | **差分テストの一部が「gcc 13 ではこれは警告」という前提で書かれている** | **gcc 14 以降のホスト**。**対照側(gcc)がコンパイルに失敗**するので、rubycc の正否と無関係にテストがエラーになる。CI は Ubuntu 24.04(gcc 13)なので現れないが、runner が上がった時点で必ず出る | **実測**(2026-08-12、Debian trixie / gcc 14.2 の arm64 コンテナで全スイートを実行)。3 件: `TestExamples#test_example_m5_atomic_type_10_knr_definitions`(K&R 定義の implicit int)・`TestHeaderAbi#test_pthread_abi_matches_gcc`(`pthread_kill` の暗黙宣言)・`TestAtomicType#test_declaration_spellings_match_gcc`(`_Atomic int *` と `int * _Atomic` の非互換ポインタ) | 3 件とも **gcc 14 が従来の警告をエラーに格上げした**もの(`-Wimplicit-int` / `-Wimplicit-function-declaration` / `-Wincompatible-pointer-types` が既定でエラー)。**rubycc の欠陥ではない** — 対照の呼び出し側が言語版を固定していないことに由来する。解消は「対照のコンパイルに `-std=` を明示する」か「プローブ本体を C23 でも通る形に直す」のどちらか。**runner の gcc が上がる前に決める**必要がある |
 
 ## 2. 未解消の負債
 
@@ -41,6 +40,16 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ W**(差分テストが「gcc 13 ではこれは警告」を前提にしていた):
+  `m4-aarch64-acceptance-3` で解消。**3 種類に分かれた**のが要点である。
+  (1) 対照 gcc に `-std=gnu17` を明示(rubycc が実装しているのは C11/C17 で、
+  gcc の既定は版で変わる)。(2) `TestAtomicType` は**テストのソースが誤っていた** —
+  `int * _Atomic` に `_Atomic int *` を代入しており、gcc 13 が警告で見逃していただけ
+  なので直した。(3) K&R の 2 件は rubycc が**意図的に受理している旧構文**(implicit int、
+  C99 で削除)なので、対照にだけ `-fpermissive` をオプトインで渡す。
+  **全体に適用しなかった**のは、他のテストでは「gcc が拒否すること」自体が
+  テスト側の C の誤りを知らせる信号だからである(実際 (2) はその形で見つかった)。
+  gcc 14.2 の環境で 3 件とも消えることを実測(76 runs / 0 failures)。
 - **GAPS Q**(K&R 旧形式の関数定義): Step `atomic-type-10` で実装。
   mysql2 の別の最後のブロッカーも Step `atomic-type-11` で解消し、
   Step `atomic-type-15` で上流 spec が `340 examples / 0 failures / 6 pending` となったため閉じた。
