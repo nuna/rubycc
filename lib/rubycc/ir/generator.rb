@@ -2838,6 +2838,15 @@ module Rubycc
         if type.float? && type.size == 4
           error_at(token, "second argument to 'va_arg' is of promotable type '#{type}'")
         end
+        # A `long double` argument is passed in the target's own long-double
+        # format, in a 16-byte slot (see #lower_variadic_long_double). Reading
+        # it back would mean the reverse conversion and a walk that steps over
+        # sixteen bytes rather than eight; until that exists, fetching one is
+        # refused rather than silently read as the `double` this type shares its
+        # width with.
+        if type == Type::LongDouble
+          error_at(token, "fetching a 'long double' with 'va_arg' is not supported yet")
+        end
         return if (type.integer? && type.size >= 4) || type.pointer? || (type.float? && type.size == 8)
 
         error_at(token, "second argument to 'va_arg' has type '#{type}', which va_arg cannot yield")
@@ -4179,7 +4188,7 @@ module Rubycc
             if i < fixed
               lower_fixed_argument(node, i, arg, vreg, arg_type, param_types[i], name, placer)
             else
-              [place_scalar_argument(*promote_variadic_argument(vreg, arg_type, node.token), placer)]
+              lower_variadic_argument(vreg, arg_type, placer, node.token)
             end
           )
         end
@@ -4258,6 +4267,17 @@ module Rubycc
         end
       end
 
+      # Lowers one argument in a variadic call's variable part to its [vreg,
+      # kind] ABI slot pairs. Every type but `long double` takes the default
+      # argument promotions and lands in a single slot; a `long double` is the
+      # one argument whose value has to change shape on the way out, so it takes
+      # a path of its own and may occupy more than one slot.
+      def lower_variadic_argument(vreg, arg_type, placer, token)
+        return lower_variadic_long_double(vreg, placer) if arg_type == Type::LongDouble
+
+        [place_scalar_argument(*promote_variadic_argument(vreg, arg_type, token), placer)]
+      end
+
       # The default argument promotions applied to an argument in a variadic
       # call's variable part (6.5.2.2p6), returning the [vreg, kind] pair the
       # call lowering wants: an integer narrower than int (char, short and their
@@ -4282,6 +4302,256 @@ module Rubycc
         return [vreg, :gp] unless arg_type.integer?
 
         [convert(vreg, from: arg_type, to: integer_promote(arg_type)), :gp]
+      end
+
+      # --- variadic `long double` --------------------------------------------
+      #
+      # rubycc computes in `long double` at a double's width and precision (see
+      # Type::LongDouble), which every part of a translation unit it compiles
+      # agrees on. A variadic callee does not: printf and its kin were built by
+      # the platform's compiler and read the argument in the target's own
+      # long-double format, from the position that format's ABI class puts it
+      # in. Converting at that boundary is what this section does, and it is the
+      # only place a `long double` differs from a `double` at all.
+      #
+      # The conversion is exact in this direction. binary64 is a subset of both
+      # x87's 80-bit extended format and IEEE binary128: each has a strictly
+      # wider exponent range (15 bits against 11) and a strictly wider
+      # significand (64 and 113 bits against 53), so every finite double —
+      # subnormal ones included, which the wider exponent range makes normal —
+      # has an exact image, and the infinities and NaNs map across by
+      # construction. That is why the values can be rebuilt from the bits rather
+      # than converted by a floating instruction: there is no rounding to get
+      # right, and no x87 encoder to write.
+
+      # The byte width of every target's `long double` argument image. Both the
+      # x87 80-bit format (which occupies the low ten bytes of it) and binary128
+      # (which fills it) travel in sixteen bytes.
+      LONG_DOUBLE_IMAGE_SIZE = 16
+
+      # binary64's fraction field is 52 bits wide, with the leading significand
+      # bit implicit; 6.2.5 leaves the format to the implementation, but both
+      # targets are IEEE 754 binary64 (measured through <float.h> against gcc).
+      DOUBLE_FRACTION_BITS = 52
+
+      # binary64's all-ones 11-bit exponent, which names an infinity or a NaN.
+      DOUBLE_EXPONENT_MAX = 0x7FF
+
+      # Both wide formats bias a 15-bit exponent by 16383 where binary64 biases
+      # an 11-bit one by 1023, so a normal double's stored exponent shifts by
+      # exactly this much and needs no unbiasing.
+      LONG_DOUBLE_EXPONENT_BIAS_DELTA = 16383 - 1023
+
+      # The all-ones 15-bit exponent, which names an infinity or a NaN in both
+      # wide formats just as an all-ones 11-bit one does in binary64.
+      LONG_DOUBLE_EXPONENT_MAX = 0x7FFF
+
+      # The biased exponent a subnormal double takes once normalized, before the
+      # normalization shift is subtracted. A subnormal is fraction * 2^-1074;
+      # shifting its fraction left by z = clz64(fraction) puts the leading one
+      # in bit 63, so the value is (fraction << z) * 2^(-1074 - z), which is the
+      # significand-times-2^(e-63) form the wide formats use with an unbiased
+      # exponent of -1011 - z. Biased by 16383 that is 15372 - z.
+      SUBNORMAL_EXPONENT_BASE = 16383 - 1011
+
+      # Lowers a `long double` in a variadic call's variable part: builds the
+      # target's 16-byte image of the value and returns the [vreg, kind] slot
+      # pairs that carry it, in the place the target's convention gives it
+      # (see CallConvention#long_double_plan).
+      #
+      # An :sse16 slot carries the image's *address*, not its value — a whole
+      # 16-byte quad has no 8-byte virtual-register slot it could live in, so
+      # the backend loads it from memory into the vector register. Every other
+      # slot is an ordinary eightbyte read out of the image.
+      def lower_variadic_long_double(vreg, placer)
+        base = emit_long_double_image(vreg)
+        plan = @convention.long_double_plan
+        eightbytes = LONG_DOUBLE_IMAGE_SIZE / 8
+        placement = placer.place(ArgumentRequest.new(kinds: plan.pieces.map(&:kind),
+                                                     align16: plan.align16,
+                                                     mem_eightbytes: eightbytes))
+        pieces = placement == :stack ? CallConvention.memory_pieces(LONG_DOUBLE_IMAGE_SIZE) : plan.pieces
+        pieces = [PAD_STACK_PIECE] + pieces if placer.pad_stack.positive?
+        pieces.map do |piece|
+          next [nil, piece.kind] if pad_piece?(piece.kind)
+          next [base, piece.kind] if piece.kind == :sse16
+
+          value = new_vreg
+          emit(:load, dst: value, a: piece_address(base, piece.offset), size: piece.size)
+          [value, piece.kind]
+        end
+      end
+
+      # Builds the target's 16-byte `long double` image of the double in `vreg`
+      # in a fresh stack object and returns a vreg holding its address.
+      def emit_long_double_image(vreg)
+        sign, exponent, significand = decompose_double(vreg)
+        base = new_vreg
+        emit(:object_addr, dst: base, a: new_object(LONG_DOUBLE_IMAGE_SIZE))
+        case @convention.long_double_format
+        when :x87_extended80 then store_x87_extended80(base, sign, exponent, significand)
+        when :binary128 then store_binary128(base, sign, exponent, significand)
+        else raise "unknown long double format #{@convention.long_double_format.inspect}"
+        end
+        base
+      end
+
+      # Takes the double in `vreg` apart into the three fields both wide formats
+      # are then assembled from: its sign bit, its biased 15-bit exponent, and a
+      # 64-bit significand whose leading bit is explicit (bit 63 set for every
+      # value but a zero) — the x87 layout, which binary128 reaches by dropping
+      # that leading bit again.
+      #
+      # The four cases are the four a binary64 encoding distinguishes, and each
+      # needs its own arm:
+      #
+      #  * an all-ones exponent is an infinity (fraction zero) or a NaN, and
+      #    stays one: the exponent saturates to all-ones in the wider field too,
+      #    and the fraction is shifted up so that binary64's quiet bit — its
+      #    most significant fraction bit — lands on the wide format's, carrying
+      #    the payload with it (see #quieted_significand for the one bit a
+      #    format conversion is required to change);
+      #  * a normal value only re-biases its exponent and restores the implicit
+      #    leading one;
+      #  * a subnormal has no implicit one, and no counterpart in the wide
+      #    formats, whose exponent range is large enough to hold every one of
+      #    them as a *normal* value: the fraction is shifted left until its
+      #    leading one reaches bit 63 and the exponent is lowered to match;
+      #  * a zero (of either sign) has an all-zero significand and exponent,
+      #    which the normal arm's implicit leading one would wrongly supply.
+      #
+      # The sign rides along untouched throughout, so a negative zero stays one.
+      def decompose_double(vreg)
+        bits = double_bit_pattern(vreg)
+        sign = wide_op(:shr, bits, wide_const(63))
+        biased = wide_op(:and, wide_op(:shr, bits, wide_const(DOUBLE_FRACTION_BITS)),
+                         wide_const(DOUBLE_EXPONENT_MAX))
+        fraction = wide_op(:and, bits, wide_const((1 << DOUBLE_FRACTION_BITS) - 1))
+
+        exponent = new_vreg
+        significand = new_vreg
+        finite_label = new_label
+        small_label = new_label
+        zero_label = new_label
+        end_label = new_label
+
+        # Infinity or NaN.
+        emit(:jump_if_zero, a: wide_op(:eq, biased, wide_const(DOUBLE_EXPONENT_MAX)), b: finite_label)
+        emit_const_copy(exponent, LONG_DOUBLE_EXPONENT_MAX)
+        emit(:copy, dst: significand, a: quieted_significand(fraction))
+        emit(:jump, a: end_label)
+
+        # A normal value.
+        emit(:label, a: finite_label)
+        emit(:jump_if_zero, a: wide_op(:ne, biased, wide_const(0)), b: small_label)
+        emit(:copy, dst: exponent, a: wide_op(:add, biased, wide_const(LONG_DOUBLE_EXPONENT_BIAS_DELTA)))
+        emit(:copy, dst: significand, a: explicit_significand(fraction))
+        emit(:jump, a: end_label)
+
+        # A subnormal value: normalize it into the wider exponent range.
+        emit(:label, a: small_label)
+        emit(:jump_if_zero, a: wide_op(:ne, fraction, wide_const(0)), b: zero_label)
+        shift = new_vreg
+        emit(:bit_scan, dst: shift, a: fraction, b: :reverse, size: 8)
+        emit(:copy, dst: exponent, a: wide_op(:sub, wide_const(SUBNORMAL_EXPONENT_BASE), shift))
+        emit(:copy, dst: significand, a: wide_op(:shl, fraction, shift))
+        emit(:jump, a: end_label)
+
+        # A zero, positive or negative.
+        emit(:label, a: zero_label)
+        emit_const_copy(exponent, 0)
+        emit_const_copy(significand, 0)
+
+        emit(:label, a: end_label)
+        [sign, exponent, significand]
+      end
+
+      # The 64-bit explicit-leading-bit significand of a double whose exponent
+      # field is not zero: its implicit leading one restored at bit 52 and the
+      # whole moved up to bit 63. An infinity and a NaN take the same expression
+      # (through #quieted_significand), their leading bit being set in the wide
+      # formats too — x87 reads a cleared one as an unsupported encoding rather
+      # than as an infinity, and binary128 drops the bit again on the way in.
+      def explicit_significand(fraction)
+        with_leading_one = wide_op(:or, fraction, wide_const(1 << DOUBLE_FRACTION_BITS))
+        wide_op(:shl, with_leading_one, wide_const(63 - DOUBLE_FRACTION_BITS))
+      end
+
+      # The significand of an infinity or a NaN, which is #explicit_significand
+      # plus one correction: a *signalling* NaN becomes quiet. IEEE 754-2019
+      # 6.2 has a conversion to another format raise the invalid operation
+      # exception and deliver a quiet NaN, leaving the payload alone, and both
+      # targets' hardware conversions do exactly that (measured: gcc's x86-64
+      # `fldl` and its aarch64 `fcvt` both come back with the quiet bit set from
+      # a signalling double, payload intact). The quiet bit is the significand's
+      # bit 62 — the most significant *fraction* bit, just under the explicit
+      # leading one — in the x87 layout, and the shift into binary128 carries it
+      # to that format's own quiet bit at 111. Only a NaN gets it: an infinity's
+      # fraction is zero, and setting the bit there would make one a NaN.
+      def quieted_significand(fraction)
+        is_nan = wide_op(:ne, fraction, wide_const(0))
+        wide_op(:or, explicit_significand(fraction), wide_op(:shl, is_nan, wide_const(62)))
+      end
+
+      # The x87 80-bit extended image, whose sixteen bytes are what the psABI's
+      # scalar table (3.1.2) gives `long double`: the 64-bit significand in
+      # bytes 0..7, then the sign in bit 15 of the halfword at byte 8 with the
+      # biased exponent below it. The remaining six bytes are
+      # padding the psABI leaves unspecified — gcc pushes whatever the stack
+      # held there — and are written as zero here so the image a given value
+      # produces is always the same.
+      def store_x87_extended80(base, sign, exponent, significand)
+        emit(:store, a: base, b: significand, size: 8)
+        high = wide_op(:or, wide_op(:shl, sign, wide_const(15)), exponent)
+        emit(:store, a: piece_address(base, 8), b: high, size: 8)
+      end
+
+      # The IEEE binary128 image: a 112-bit fraction in bits 0..111, the biased
+      # exponent in bits 112..126 and the sign in bit 127. binary128 keeps its
+      # leading significand bit implicit like binary64 does, so the explicit one
+      # at bit 63 is shifted out and the 63 bits below it become the top of the
+      # fraction field — the remaining 49 low bits are zero, this significand
+      # having come from a 53-bit one.
+      def store_binary128(base, sign, exponent, significand)
+        low = wide_op(:shl, significand, wide_const(49))
+        # (significand << 1) >> 16 drops the leading bit and lands the 63
+        # fraction bits at 0..47, the top of the fraction field's high half.
+        fraction_high = wide_op(:shr, wide_op(:shl, significand, wide_const(1)), wide_const(16))
+        high = wide_op(:or, wide_op(:or, wide_op(:shl, sign, wide_const(63)),
+                                    wide_op(:shl, exponent, wide_const(48))),
+                       fraction_high)
+        emit(:store, a: base, b: low, size: 8)
+        emit(:store, a: piece_address(base, 8), b: high, size: 8)
+      end
+
+      # The double in `vreg` reinterpreted as the 64-bit integer of its bits.
+      # The IR has no bit-cast op, and needs none: a slot holds a double as the
+      # eight bytes of its encoding, so storing it to memory and reading those
+      # bytes back as an integer moves the value between the two views without
+      # converting it.
+      def double_bit_pattern(vreg)
+        address = new_vreg
+        emit(:object_addr, dst: address, a: new_object(8))
+        emit(:store, a: address, b: vreg, size: 8)
+        bits = new_vreg
+        emit(:load, dst: bits, a: address, size: 8)
+        bits
+      end
+
+      # A 64-bit integer constant in a fresh vreg, and a 64-bit binary integer
+      # op over two of them. The long-double conversion is all 64-bit bit
+      # manipulation, so both spell out the size the rest of the generator
+      # passes case by case.
+      def wide_const(value)
+        dst = new_vreg
+        emit(:const, dst: dst, a: value, size: 8)
+        dst
+      end
+
+      def wide_op(op, lhs, rhs)
+        dst = new_vreg
+        emit(op, dst: dst, a: lhs, b: rhs, size: 8)
+        dst
       end
 
       # "lhs && rhs": short-circuit, so rhs is only evaluated when lhs is
@@ -4757,6 +5027,18 @@ module Rubycc
       # long covers unsigned int, so "long + unsigned int" is long).
       def common_arithmetic_type(lhs_type, rhs_type)
         if lhs_type.float? || rhs_type.float?
+          # 6.3.1.8's first floating case: if either operand is `long double`,
+          # the result is `long double`. rubycc computes it with double's range
+          # and precision (Type::LongDouble is 8 bytes here), so nothing about
+          # the arithmetic changes -- but the *name* has to survive, because a
+          # variadic call site converts by static type and a libc callee reads
+          # back the wide format. Deciding on size alone dropped the name, and
+          # `printf("%Lg", a + b)` then pushed 8 bytes where the callee read 16:
+          # correct for `a` and wrong for `a + b`, which is the worst shape a
+          # defect can take (docs/development/STEPS.md, long-double-varargs-1).
+          long_double = lhs_type == Type::LongDouble || rhs_type == Type::LongDouble
+          return Type::LongDouble if long_double
+
           double = (lhs_type.float? && lhs_type.size == 8) || (rhs_type.float? && rhs_type.size == 8)
           return double ? Type::Double : Type::Float
         end
@@ -5227,6 +5509,13 @@ module Rubycc
       # AArch64 has a native unsigned W-form).
       def convert_floating(vreg, from, to, token)
         if from.float? && to.float?
+          # `double` and `long double` are two names over one representation
+          # (see Type::LongDouble), so a conversion between them changes no bit
+          # and emits nothing. Only float<->double actually changes format, and
+          # :ftof reads `size` as the source width to pick a direction — which
+          # a same-width pair would misread as a narrowing to `float`.
+          return vreg if from.size == to.size
+
           dst = new_vreg
           emit(:ftof, dst: dst, a: vreg, size: from.size)
           dst

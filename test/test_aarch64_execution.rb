@@ -1063,6 +1063,185 @@ class TestAArch64Execution < Minitest::Test
     C
   end
 
+  # --- variadic long double -----------------------------------------------
+
+  # A `long double` in a variadic call's variable part. rubycc computes in it at
+  # a double's width and precision, but a callee built by the platform compiler
+  # reads it as AAPCS64's own long double: IEEE 754 binary128, in a whole
+  # 16-byte vector register (measured: gcc 13 puts one in q0, and in q7 behind
+  # seven doubles, in the variable part just as in the named one). The generator
+  # converts the value at that boundary, and these cases decide whether it is
+  # right -- against the same libc printf the x86-64 suite compares to, but with
+  # a completely different format and a completely different ABI class on the
+  # other side of the call.
+  #
+  # printf declared by hand rather than through <stdio.h>, and every value built
+  # from a *double* rather than written "1.5L": the two compilers parse a
+  # long-double constant to different precisions, which "%LA" would report as a
+  # mismatch of the constant rather than of the conversion under test.
+  LONG_DOUBLE_PRELUDE = <<~C
+    int printf(const char *, ...);
+    double zero = 0.0, one = 1.0;
+  C
+
+  # Both zeros, both infinities, a NaN, the subnormals (which the wider exponent
+  # range turns into normal values, so the conversion has to normalize them),
+  # the extremes of the normal range and an ordinary value -- then a subnormal
+  # walked through all 52 normalization distances, each a different shift.
+  def test_variadic_long_double_values
+    assert_aarch64_matches_gcc(LONG_DOUBLE_PRELUDE + <<~C)
+      int main(void) {
+        double values[11];
+        double d;
+        int i;
+        values[0] = 0.0;
+        values[1] = -0.0;
+        values[2] = 1.0;
+        values[3] = -1.0;
+        values[4] = 1.234567;
+        values[5] = 1.7976931348623157e308;
+        values[6] = 2.2250738585072014e-308;
+        values[7] = 4.9406564584124654e-324;
+        values[8] = one / zero;
+        values[9] = -one / zero;
+        values[10] = zero / zero;
+        for (i = 0; i < 11; i = i + 1) {
+          printf("%d [%Lg] [%Le] [%LA]\\n", i, (long double)values[i],
+                 (long double)values[i], (long double)values[i]);
+        }
+        d = 4.9406564584124654e-324;
+        for (i = 0; i < 52; i = i + 1) {
+          printf("s%d [%LA]\\n", i, (long double)d);
+          d = d * 2.0;
+        }
+        return 0;
+      }
+    C
+  end
+
+  # Where the argument lands. A quad takes one vector register, so line "c"
+  # arrives with v0..v7 already spoken for and spills; line "d" spills behind a
+  # stacked double, which puts it on an odd stack offset that AAPCS64 6.4.2
+  # stage C.13 rounds up to the type's 16-byte alignment. Line "a" checks that
+  # a full integer file does not disturb it, and the last two pass several in
+  # one call.
+  def test_variadic_long_double_placement
+    assert_aarch64_matches_gcc(LONG_DOUBLE_PRELUDE + <<~C)
+      int main(void) {
+        printf("a %d %d %d %d %d %d %Lg %d\\n", 1, 2, 3, 4, 5, 6, 2.5L, 7);
+        printf("b %f %f %f %f %f %f %f %Lg %d\\n",
+               1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 3.5L, 8);
+        printf("c %f %f %f %f %f %f %f %f %Lg %d\\n",
+               1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 4.5L, 9);
+        printf("d %f %f %f %f %f %f %f %f %f %Lg %d\\n",
+               1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 5.5L, 10);
+        printf("e %Lg %Lg %Lg %Lg\\n", 1.5L, 2.5L, 3.5L, 4.5L);
+        printf("f %d %Lg %d %Lg %d\\n", 1, 6.5L, 2, 7.5L, 3);
+        return 0;
+      }
+    C
+  end
+
+  # Two padded stack arguments in one call, which is what sizes the outgoing
+  # argument area rather than where an argument goes. The area is reserved once
+  # per function from the widest call in it, and a pad eightbyte occupies it
+  # exactly as a value does: nine doubles fill v0..v7 and start the stack area,
+  # the first quad is padded up to 16 from an odd offset, a tenth double follows
+  # (the vector file being exhausted) and the second quad is padded again. Eight
+  # eightbytes are needed and six carry values, so an area sized from the values
+  # alone is 16 bytes short and the call writes past it -- measured as a
+  # segmentation fault before the count was corrected.
+  def test_variadic_long_double_pads_are_counted_in_the_outgoing_area
+    assert_aarch64_matches_gcc(LONG_DOUBLE_PRELUDE + <<~C)
+      int main(void) {
+        printf("%f %f %f %f %f %f %f %f %f %Lg %f %Lg %d\\n",
+               1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 2.5L, 10.0, 3.5L, 11);
+        return 0;
+      }
+    C
+  end
+
+  # printf tells the value apart but not the encoding: glibc prints every NaN as
+  # "nan" whatever its payload. So the image is read back by a *gcc-built*
+  # callee that va_arg's the argument and dumps its sixteen bytes, and the same
+  # caller is then built by gcc for comparison -- rubycc's bit-level conversion
+  # has to agree with gcc's hardware one down to the NaN payload and the quiet
+  # bit (a signalling NaN becomes quiet under any conversion between formats,
+  # IEEE 754 6.2).
+  LONG_DOUBLE_IMAGE_SINK = <<~C
+    #include <stdarg.h>
+    #include <stdio.h>
+    #include <string.h>
+    void sink(int count, ...) {
+      va_list ap;
+      int i, j;
+      va_start(ap, count);
+      for (i = 0; i < count; i++) {
+        long double v = va_arg(ap, long double);
+        unsigned char raw[sizeof(long double)];
+        memcpy(raw, &v, sizeof(long double));
+        printf("%d:", i);
+        for (j = 0; j < 16; j++) printf(" %02x", raw[j]);
+        printf("\\n");
+      }
+      va_end(ap);
+    }
+  C
+
+  LONG_DOUBLE_IMAGE_CALLER = <<~C
+    void sink(int, ...);
+    typedef unsigned long u64;
+    union bits { u64 u; double d; };
+    static u64 patterns[12] = {
+      0x0000000000000000UL, 0x8000000000000000UL,
+      0x3FF0000000000000UL, 0xBFF0000000000000UL,
+      0x7FF0000000000000UL, 0xFFF0000000000000UL,
+      0x7FF8000000000000UL, 0xFFF8000000000000UL,
+      0x7FF8000000012345UL, 0x7FF0000000000001UL,
+      0x000FFFFFFFFFFFFFUL, 0x0000000000000001UL
+    };
+    int main(void) {
+      union bits b;
+      int i;
+      for (i = 0; i < 12; i = i + 1) { b.u = patterns[i]; sink(1, (long double)b.d); }
+      b.u = 0x3FF0000000000000UL;
+      sink(3, (long double)b.d, (long double)(b.d * 2.0), (long double)(b.d * 4.0));
+      return 0;
+    }
+  C
+
+  def test_variadic_long_double_image_matches_gcc
+    skip_unless_aarch64_toolchain
+
+    gcc = link_units_and_run_aarch64([[LONG_DOUBLE_IMAGE_SINK, :gcc],
+                                      [LONG_DOUBLE_IMAGE_CALLER, :gcc]])
+    rubycc = link_units_and_run_aarch64([[LONG_DOUBLE_IMAGE_SINK, :gcc],
+                                         [LONG_DOUBLE_IMAGE_CALLER, :rubycc]])
+
+    assert_equal gcc, rubycc,
+                 "a gcc callee reads a different long double image from a rubycc caller"
+  end
+
+  # The width stays eight bytes on this target too -- the same boundary the
+  # x86-64 suite writes down, checked here because the two targets disagree
+  # about what a real long double is and a later widening would have to move
+  # both. gcc's own sizeof is 16, so this is rubycc's answer alone.
+  def test_long_double_width_is_still_a_double_s
+    skip_unless_aarch64_toolchain
+
+    status, stdout = run_aarch64(LONG_DOUBLE_PRELUDE + <<~C, compiler: :rubycc)
+      struct S { double a; long double b; char c; };
+      int main(void) {
+        printf("%d %d %d\\n", (int)sizeof(long double), (int)_Alignof(long double),
+               (int)sizeof(struct S));
+        return 0;
+      }
+    C
+
+    assert_equal 0, status
+    assert_equal "8 8 24\n", stdout
+  end
+
   # --- disassembly sanity -------------------------------------------------
 
   # Every word the backend emits must decode to a real A64 instruction. objdump

@@ -118,7 +118,16 @@ module Rubycc
     #                           aggregate AAPCS64 passes by reference is reduced by
     #                           the generator to a single :gp pointer to a
     #                           caller-made copy, so no backend needs a rule of its
-    #                           own for it. A call whose struct result comes back
+    #                           own for it. One further kind appears only in a
+    #                           variadic call's variable part: :sse16 takes the next
+    #                           vector register as a whole 16-byte value (AAPCS64's
+    #                           quad-precision `long double`), and its pair's vreg
+    #                           carries the *address* of that value rather than the
+    #                           value, no 8-byte slot being able to hold one — the
+    #                           backend loads the register from there. The same
+    #                           argument on System V is X87/X87UP-classed and so
+    #                           travels as two ordinary :mem eightbytes instead, and
+    #                           :sse16 never reaches that backend. A call whose struct result comes back
     #                           through a hidden pointer also prepends that
     #                           [vreg, kind] pointer as the first argument. `size` is nil, or a
     #                           [fixed, ret] pair when either half is non-nil:

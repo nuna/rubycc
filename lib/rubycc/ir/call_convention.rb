@@ -7,8 +7,8 @@ module Rubycc
     # One piece of a by-value aggregate as its convention moves it: the byte
     # `offset` within the aggregate the piece is read from (and written back to
     # at the far end), the `size` of that access, and the `kind` of place it
-    # travels in (:gp an integer register, :sse4/:sse8 a vector one, :mem a
-    # stack eightbyte).
+    # travels in (:gp an integer register, :sse4/:sse8/:sse16 a vector one, :mem
+    # a stack eightbyte).
     #
     # An aggregate is never moved as a whole — the generator takes it apart into
     # these pieces, loads each into a virtual register and hands the backend one
@@ -21,6 +21,14 @@ module Rubycc
     # just an index: struct { float a, b; } is one eightbyte on x86-64 and two
     # single-precision registers on aarch64.
     AbiPiece = Data.define(:offset, :size, :kind)
+
+    # The piece kinds that consume a vector register, so that a placer counting
+    # a request's demand on the vector file names them in one place. :sse4 and
+    # :sse8 carry a single and a double; :sse16 carries a whole 16-byte value in
+    # one register (AAPCS64's quad-precision `long double`) and, unlike the
+    # other two, names the *address* of that value rather than the value itself,
+    # since no 8-byte virtual-register slot could hold it.
+    FP_KINDS = %i[sse4 sse8 sse16].freeze
 
     # How a convention passes one aggregate by value:
     #   :registers    — `pieces` names each register-borne piece;
@@ -120,6 +128,28 @@ module Rubycc
         raise NotImplementedError
       end
 
+      # The target's `long double` format, which decides the 16-byte image the
+      # generator builds for a variadic `long double` argument:
+      # :x87_extended80 (an explicit-integer-bit 64-bit significand plus a
+      # sign/15-bit-exponent halfword, occupying the low ten of sixteen bytes)
+      # or :binary128 (IEEE 754 quadruple precision). Both are supersets of
+      # binary64, so the conversion from the double rubycc actually holds is
+      # exact; see IR::Generator#emit_long_double_image.
+      def long_double_format
+        raise NotImplementedError
+      end
+
+      # How that 16-byte image travels in a variadic call's variable part, as an
+      # AggregatePlan over the image (not over Type::LongDouble, whose #size is
+      # the 8 bytes rubycc computes in). The two targets disagree completely:
+      # System V gives `long double` the X87/X87UP classes, which no register
+      # can carry, so the image goes in the stack argument area; AAPCS64 makes
+      # it an ordinary quad-precision value that rides one whole vector
+      # register. Both align its stack slot to 16 bytes, hence align16.
+      def long_double_plan
+        raise NotImplementedError
+      end
+
       # A fresh running placement of one argument list (see the Placer classes).
       def placer
         raise NotImplementedError
@@ -172,6 +202,20 @@ module Rubycc
 
       def placer
         Placer.new(self)
+      end
+
+      # psABI 3.2.3: `long double` is the 80-bit x87 extended format, classified
+      # X87 (its low eightbyte) and X87UP (its high one). Neither class has a
+      # register to be handed out in an argument list, so the value always
+      # passes in memory, in a 16-byte slot the psABI aligns to 16 (measured:
+      # gcc 13 reserves a pad eightbyte ahead of it when the stack argument
+      # area has reached an odd offset).
+      def long_double_format
+        :x87_extended80
+      end
+
+      def long_double_plan
+        AggregatePlan.new(mode: :memory, pieces: CallConvention.memory_pieces(16), align16: true)
       end
 
       private
@@ -285,7 +329,7 @@ module Rubycc
         def place(request)
           @pad_stack = 0
           need_gp = request.kinds.count(:gp)
-          need_sse = request.kinds.count { |kind| kind == :sse4 || kind == :sse8 }
+          need_sse = request.kinds.count { |kind| FP_KINDS.include?(kind) }
           spills = request.kinds.all?(:mem) ||
                    !(@next_gp + need_gp <= @convention.gp_registers &&
                      @next_sse + need_sse <= @convention.fp_registers)
@@ -354,6 +398,24 @@ module Rubycc
 
       def placer
         Placer.new(self)
+      end
+
+      # AAPCS64 6.4.2: `long double` is IEEE 754 binary128, a Quad-precision
+      # Floating-point type, and stage C.1 gives one to the next free SIMD&FP
+      # register whole — v[NSRN], read as a 16-byte q register. The rule is the
+      # same in the variable part of a variadic call on this ABI (measured:
+      # gcc 13 puts the ninth argument of "printf(fmt, 1.0..7.0, ld, 9)" in q7),
+      # unlike the Apple variant, which stacks every anonymous argument.
+      # An overflowing quad spills to an NSAA the standard rounds up to the
+      # type's 16-byte natural alignment (stage C.13), hence align16.
+      def long_double_format
+        :binary128
+      end
+
+      def long_double_plan
+        AggregatePlan.new(mode: :registers,
+                          pieces: [AbiPiece.new(offset: 0, size: 16, kind: :sse16)],
+                          align16: true)
       end
 
       private
@@ -438,8 +500,8 @@ module Rubycc
         def place(request)
           @pad_gp = 0
           @pad_stack = 0
-          need_fp = request.kinds.count { |kind| kind == :sse4 || kind == :sse8 }
-          return place_fp(need_fp, request.mem_eightbytes) if need_fp.positive?
+          need_fp = request.kinds.count { |kind| FP_KINDS.include?(kind) }
+          return place_fp(need_fp, request.align16, request.mem_eightbytes) if need_fp.positive?
 
           need_gp = request.kinds.count(:gp)
           return place_gp(need_gp, request.align16, request.mem_eightbytes) if need_gp.positive?
@@ -451,13 +513,18 @@ module Rubycc
 
         private
 
-        def place_fp(count, mem_eightbytes)
+        # A spilled vector argument aligns NSAA to its own natural alignment the
+        # way an integer-register aggregate does; only a quad ever asks for 16
+        # (align16), since a single or a double is 8-aligned and a stack slot
+        # already is.
+        def place_fp(count, align16, mem_eightbytes)
           if @nsrn + count <= @convention.fp_registers
             @nsrn += count
             :registers
           else
             @nsrn = @convention.fp_registers
-            @nsaa += mem_eightbytes
+            @pad_stack = 1 if align16 && @nsaa.odd?
+            @nsaa += @pad_stack + mem_eightbytes
             :stack
           end
         end

@@ -78,7 +78,8 @@ module Rubycc
     # floating arguments arrive in v0..v7, allocated from a counter of their
     # own, and a floating result comes back in v0. The two sequences are
     # independent, exactly as System V's integer and xmm sequences are, which is
-    # why the IR's :gp/:sse4/:sse8 tags carry over unchanged. The generator
+    # why the IR's :gp/:sse4/:sse8 tags carry over unchanged (:sse16, a whole
+    # 16-byte value in one vector register, is this target's alone). The generator
     # classifies against this target's register budget (IR::CallConvention),
     # so a :gp tag really does mean one of the eight and a :mem tag really does
     # mean the stack — no seventh integer argument is spilled here that AAPCS64
@@ -333,12 +334,18 @@ module Rubycc
       # so the saved record above it — and sp itself at every call — stays
       # 16-aligned. Sizing it for the widest call lets every call share the one
       # area, since only one call is in flight at a time.
+      #
+      # A :pad_stack slot occupies an eightbyte of the area exactly as a :mem
+      # one does — it is the gap that 16-aligns the argument behind it — so it
+      # is counted here on the same footing. #place_arguments counts the two
+      # together as well, and the two counts have to agree or a call would write
+      # past the area the frame reserved for it.
       def outgoing_argument_bytes(insts)
         widest = 0
         insts.each do |inst|
           next unless inst.op == :call || inst.op == :call_indirect
 
-          count = inst.b.count { |_vreg, kind| kind == :mem }
+          count = inst.b.count { |_vreg, kind| kind == :mem || kind == :pad_stack }
           widest = count if count > widest
         end
         align16(widest * 8)
@@ -943,6 +950,17 @@ module Rubycc
             raise "call argument #{kind} overruns the vector registers" if next_fp >= FP_ARG_REGISTERS.size
 
             load_fp(FP_ARG_REGISTERS[next_fp], vreg, kind == :sse8 ? 8 : 4)
+            next_fp += 1
+          when :sse16
+            raise "call argument #{kind} overruns the vector registers" if next_fp >= FP_ARG_REGISTERS.size
+
+            # A quad-precision argument (AAPCS64's `long double`) fills a whole
+            # vector register, which no eightbyte slot could have held: its
+            # vreg carries the *address* of the 16-byte value instead, and the
+            # register is loaded from there. A is free here — the stack pass
+            # above has finished with it and no argument register is A.
+            load_reg(A, vreg)
+            emit_word(LDR_Q | (A << 5) | FP_ARG_REGISTERS[next_fp]) # ldr q, [A]
             next_fp += 1
           when :indirect_result
             # The result buffer's address goes in x8, outside both argument
@@ -1697,6 +1715,13 @@ module Rubycc
         4 => { load: 0xBD400000, store: 0xBD000000 },
         8 => { load: 0xFD400000, store: 0xFD000000 }
       }.freeze
+
+      # The same form at the 128-bit width, which the encoding reaches through
+      # the opc field rather than the size field: size = 00 with opc = 11 is
+      # "ldr q, [Xn]". Only the zero-offset load is needed — a quad-precision
+      # argument is read once from the object the generator built it in — so
+      # this is the bare instruction with an empty imm12.
+      LDR_Q = 0x3DC00000
 
       # The same form with V = 0, the general-purpose register file, at each of
       # the four access widths. The narrow loads are the zero-extending ones
