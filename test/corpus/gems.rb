@@ -4,7 +4,7 @@
 # to `rake corpus:census`. This list is committed on purpose for reproducibility:
 # re-running the census against the same names yields a comparable snapshot even
 # as rubygems.org drifts. The initial members are the pure-C candidates named by
-# docs/ROADMAP.md (§8, H3) and already exercised by tools/collect_mkmf_corpus.rb.
+# docs/development/ROADMAP.md (§8, H3) and already exercised by tools/collect_mkmf_corpus.rb.
 #
 # Membership here is a *candidate* list, not a claim of R10 conformance. The real
 # R10 gate (C++ usage / configure / mini_portile) is decided mechanically by
@@ -69,8 +69,8 @@
 #                     sources, so it cannot see this -- thin's parser is pure C
 #                     and passes the machine gate while `gem install thin` still
 #                     stops on eventmachine's .cpp files (measured,
-#                     docs/STEPS.md atomic-type-9). The dependency named here
-#                     must already appear in docs/OUT-OF-SCOPE-GEMS.md with its
+#                     docs/development/STEPS.md atomic-type-9). The dependency named here
+#                     must already appear in docs/reference/OUT-OF-SCOPE-GEMS.md with its
 #                     basis, so this field points at a decision rather than
 #                     making one.
 #   :r10_profile — an explicit DESIGN-compatible install path when the raw
@@ -169,7 +169,7 @@ module Corpus
         upstream_tests: false,
         note: "Small single-file ext (ext/fcntl). Upstream ruby/fcntl carries no " \
               "test/ directory, no test task in its Rakefile, and no test step in " \
-              "its CI (measured against v1.3.0 and master, docs/STEPS.md Step 157); " \
+              "its CI (measured against v1.3.0 and master, docs/development/STEPS.md Step 157); " \
               "excluded from the R10 denominator because \"gem's own tests passed\" " \
               "evidence is impossible to obtain, not because rubycc fails it."
       },
@@ -314,7 +314,7 @@ module Corpus
               "amalgamation is .c). DESIGN §3.1 names " \
               "\"sqlite3 (when using the system library)\" as expected in " \
               "scope. rubycc already compiles the sqlite3 amalgamation " \
-              "(261,463 lines) standalone (docs/STEPS.md, Step 116), making " \
+              "(261,463 lines) standalone (docs/development/STEPS.md, Step 116), making " \
               "this gem a promising corpus candidate."
       },
 
@@ -366,7 +366,7 @@ module Corpus
               "with the reference compiler either. Measured on 2026-08-07 with " \
               "tools/verify_gem_tests.rb, control and rubycc runs reporting the " \
               "same numbers to the digit — 535 runs, 776 assertions, 22 " \
-              "failures, 6 errors, 2 skips (docs/STEPS.md atomic-type-8)."
+              "failures, 6 errors, 2 skips (docs/development/STEPS.md atomic-type-8)."
       },
       {
         name: "pg",
@@ -398,14 +398,14 @@ module Corpus
         name: "thin",
         version: "2.0.1",
         out_of_scope_dependency: "eventmachine (C++ extension — " \
-                                 "docs/OUT-OF-SCOPE-GEMS.md basis A)",
+                                 "docs/reference/OUT-OF-SCOPE-GEMS.md basis A)",
         note: "207,539,292 downloads. Single ext dir (ext/thin_parser), a " \
               "Ragel-generated parser: C 2 files / H 2 files. thin's own " \
               "extension is pure C and passes the machine gate, but its " \
               "runtime dependency eventmachine is a C++ extension, so " \
               "`gem install thin` cannot complete without building one. " \
               "Measured on 2026-08-08: rubycc reaches eventmachine's nine " \
-              ".cpp files and the build stops there (docs/STEPS.md " \
+              ".cpp files and the build stops there (docs/development/STEPS.md " \
               "atomic-type-9). Out of the R10 denominator by R10's own C++ " \
               "exclusion, reaching one level past thin's own sources."
       },
@@ -442,7 +442,7 @@ module Corpus
               "test_util.rb 3 failures. unicorn 6.1.0 is the newest release and " \
               "announces at load that it was only tested up to MRI 3.0; the " \
               "failures are Ruby 3.4 incompatibilities in its Ruby code " \
-              "(docs/STEPS.md atomic-type-7)."
+              "(docs/development/STEPS.md atomic-type-7)."
       },
       {
         name: "debug",
@@ -454,7 +454,7 @@ module Corpus
               "not pass with the reference compiler either. Measured on " \
               "2026-08-07 with tools/verify_gem_tests.rb, control and rubycc " \
               "runs reporting the same numbers to the digit — 305 tests, 571 " \
-              "assertions, 1 failure, 1 omission (docs/STEPS.md atomic-type-8)."
+              "assertions, 1 failure, 1 omission (docs/development/STEPS.md atomic-type-8)."
       },
       {
         name: "yajl-ruby",

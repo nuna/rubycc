@@ -18,7 +18,7 @@
 set -eu
 
 # build-base brings gcc, make and musl-dev. The differential tests call gcc
-# unconditionally (docs/CI.md), and on Alpine that gcc targets musl, which is
+# unconditionally (docs/internals/CI.md), and on Alpine that gcc targets musl, which is
 # the entire point of this job: the reference implementation the suite compares
 # rubycc against is a musl toolchain rather than a glibc one. libffi-dev is for
 # the fiddle gem the tests dlopen generated .so files with. zlib-dev and
@@ -79,7 +79,7 @@ suite_status=$(cat tmp/ci/rake-status 2>/dev/null || echo "no-status")
 # toolchain works at all on musl, and that is answered by the first gem. The
 # other two are there because they exercise different shapes (io-wait has no
 # extconf probes at all, stringio and json do), and because data/verified_gems.json
-# has never held a musl record for any gem -- docs/GAPS.md section 3.
+# has never held a musl record for any gem -- docs/development/GAPS.md section 3.
 #
 # VERIFY_STEP decides whether this is a recording run or a regression run,
 # because the tool requires --step N with --update (the number goes into the

@@ -4711,7 +4711,7 @@ module Rubycc
       # channel, so nothing is emitted). The three 1-byte character types are
       # also mutually compatible, including plain char vs signed char which share
       # a signedness -- this is the char*/signed char* debt Step 73 opened
-      # (docs/ROADMAP.md), which the character family carries no representation
+      # (docs/development/ROADMAP.md), which the character family carries no representation
       # difference to justify. A different-size pointee mismatch (e.g. int* vs
       # char*, int* vs long*) stays a hard error, stricter than gcc's
       # warn-and-accept.

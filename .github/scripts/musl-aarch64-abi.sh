@@ -3,7 +3,7 @@
 # Invoked as `sh <this file>` from the workflow, not by its own shebang: the
 # repository has core.filemode=false, so a local `chmod +x` never reaches git
 # and the file lands in the container mode 644. That cost a whole weekly run
-# once already (docs/STEPS.md Step 198) -- calling the interpreter explicitly
+# once already (docs/development/STEPS.md Step 198) -- calling the interpreter explicitly
 # takes the exec bit out of the equation for good.
 # Container entry point for the `musl-aarch64` job in
 # .github/workflows/weekly.yml. Invoked as
@@ -27,7 +27,7 @@
 # rather than to go green.
 #
 # Deliberately NOT the whole suite. Everything here runs under qemu user-mode
-# emulation, where the suite takes hours (docs/ROADMAP.md rules it out), and the
+# emulation, where the suite takes hours (docs/development/ROADMAP.md rules it out), and the
 # rest of the suite would only re-measure what the x86-64 musl job and the
 # aarch64 cross job already cover. Only the two files that probe header ABI run.
 set -eu

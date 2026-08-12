@@ -4,7 +4,7 @@
 # Run a corpus gem's *own* test suite against the .so a `RUBYCC=1 gem install`
 # built, and (with --update) record the outcome in data/verified_gems.json.
 #
-# This is the procedure docs/STEPS.md Steps 93-104 performed by hand, made
+# This is the procedure docs/development/STEPS.md Steps 93-104 performed by hand, made
 # repeatable. None of the corpus gems ships its tests inside the .gem, so a run
 # is always the same seven moves:
 #

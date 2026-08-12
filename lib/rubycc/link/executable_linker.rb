@@ -78,7 +78,7 @@ module Rubycc
       # program interpreter (Alpine's /usr/lib/libc.so is a symlink to it). There
       # is no libc.so.6 on such a host, which is why every extconf probe that
       # links an executable failed there until this list learned the musl name
-      # (measured on Alpine in CI, docs/STEPS.md Step 190).
+      # (measured on Alpine in CI, docs/development/STEPS.md Step 190).
       DEFAULT_LIBC_PATHS = [
         "/lib/x86_64-linux-gnu/libc.so.6",
         "/lib64/libc.so.6",

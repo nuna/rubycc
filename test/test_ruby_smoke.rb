@@ -115,7 +115,7 @@ class TestRubySmoke < Minitest::Test
   # branch whenever its own HAVE_STDCKDINT_H is defined -- and that macro comes
   # from *the Ruby that built this test's headers' config.h*, baked in by
   # whatever compiler configured that Ruby, not decided by rubycc. On a musl +
-  # Ruby 4.0 host config.h defines it (Step 175's docs/STEPS.md entry), and
+  # Ruby 4.0 host config.h defines it (Step 175's docs/development/STEPS.md entry), and
   # before rubycc shipped include/stdckdint.h that branch's
   # "#include <stdckdint.h>" failed outright: "stdckdint.h: No such file or
   # directory". This host's own config.h may or may not define the macro, so

@@ -113,7 +113,7 @@ rubycc --target=aarch64 -c foo.c -o foo.o
   `atomic_is_lock_free`, and the implicit sequential consistency C11 gives a plain
   read or write of an `_Atomic` object (such an access compiles to an ordinary,
   still-indivisible, instruction — use the macros where the ordering matters).
-  See `docs/C11-COVERAGE.md`.
+  See `docs/reference/C11-COVERAGE.md`.
 - **C23 checked arithmetic is partial.** The bundled `<stdckdint.h>` maps `ckd_add`,
   `ckd_sub`, and `ckd_mul` to rubycc's overflow builtins; the rest of C23 is not implemented.
 - **`<regex.h>` is a minimal ABI header.** It provides the glibc-compatible `regex_t`/
@@ -174,8 +174,8 @@ Semantic versioning, with one project-specific rule:
   and runtime performance are tracked (`rake bench:throughput`, `benchmark/run.rb`) and
   regressions are treated as bugs.
 
-The full picture is in [docs/C11-COVERAGE.md](docs/C11-COVERAGE.md) (clause-by-clause C11
-conformance) and [docs/ROADMAP.md](docs/ROADMAP.md) §3 (known limitations).
+The full picture is in [docs/reference/C11-COVERAGE.md](docs/reference/C11-COVERAGE.md) (clause-by-clause C11
+conformance) and [docs/development/ROADMAP.md](docs/development/ROADMAP.md) §3 (known limitations).
 
 ## How it works
 
@@ -183,10 +183,10 @@ Source → preprocessor (translation phases 1–4) → parser → typed AST → 
 ELF writer. The linker resolves symbols, merges sections and emits `.so`/executables. No
 stage shells out; no stage writes assembly text.
 
-- [docs/DESIGN.md](docs/DESIGN.md) — requirements, architecture decisions, scope
-- [docs/IR.md](docs/IR.md) — the intermediate representation
-- [docs/RELEASE-CHECKLIST.md](docs/RELEASE-CHECKLIST.md) — non-functional requirement status
-- [docs/HEADER-LICENSING.md](docs/HEADER-LICENSING.md) — provenance of every bundled header
+- [docs/development/DESIGN.md](docs/development/DESIGN.md) — requirements, architecture decisions, scope
+- [docs/internals/IR.md](docs/internals/IR.md) — the intermediate representation
+- [docs/development/RELEASE-CHECKLIST.md](docs/development/RELEASE-CHECKLIST.md) — non-functional requirement status
+- [docs/reference/HEADER-LICENSING.md](docs/reference/HEADER-LICENSING.md) — provenance of every bundled header
 
 ## Development
 
@@ -205,4 +205,4 @@ c-testsuite. gcc is a development-time dependency only — it is never required 
 ## License
 
 MIT. See [LICENSE.txt](LICENSE.txt) and [NOTICE](NOTICE) — the bundled headers' provenance
-is documented in [docs/HEADER-LICENSING.md](docs/HEADER-LICENSING.md).
+is documented in [docs/reference/HEADER-LICENSING.md](docs/reference/HEADER-LICENSING.md).

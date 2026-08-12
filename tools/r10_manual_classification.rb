@@ -709,7 +709,7 @@ if $PROGRAM_NAME == __FILE__
   options = {
     artifact: File.join(ROOT, "data", "r10_manual_classification.json"),
     scan: File.join(ROOT, "data", "r10_corpus_scan.json"),
-    markdown: File.join(ROOT, "docs", "R10-MANUAL-CLASSIFICATION.md")
+    markdown: File.join(ROOT, "docs", "development", "R10-MANUAL-CLASSIFICATION.md")
   }
   parser = OptionParser.new do |opts|
     opts.banner = "Usage: ruby tools/r10_manual_classification.rb [options]"

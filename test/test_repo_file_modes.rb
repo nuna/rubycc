@@ -20,7 +20,7 @@ require_relative "test_helper"
 #
 # tools/ deliberately sits in the second group: `bundle exec tools/x.rb` fails
 # with "not executable", so those files document `ruby tools/x.rb` instead
-# (see the Usage headers there and docs/STEPS.md atomic-type-3).
+# (see the Usage headers there and docs/development/STEPS.md atomic-type-3).
 class TestRepoFileModes < Minitest::Test
   REPO_ROOT = File.expand_path("..", __dir__)
   EXECUTABLE_DIRS = ["exe/", ".github/scripts/"].freeze

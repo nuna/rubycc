@@ -245,7 +245,7 @@ if $PROGRAM_NAME == __FILE__
     repo_root: ROOT,
     cache_dir: ENV["R10_CORPUS_CACHE"] || ENV["RUBYCC_CORPUS_CACHE"],
     json_path: File.join(ROOT, "data", "r10_corpus_scan.json"),
-    markdown_path: File.join(ROOT, "docs", "R10-CORPUS-SCAN.md")
+    markdown_path: File.join(ROOT, "docs", "development", "R10-CORPUS-SCAN.md")
   }
   parser = OptionParser.new do |opts|
     opts.banner = "Usage: ruby tools/r10_corpus_scan.rb --cache DIR [options]"

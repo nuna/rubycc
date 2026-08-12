@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# M3 着手前作業(docs/ROADMAP.md §6 冒頭)。
+# M3 着手前作業(docs/development/ROADMAP.md §6 冒頭)。
 #
 # rmake / conftest 対応の一次資料は「実物の mkmf が生成した Makefile と conftest」。
 # 仕様書(POSIX make)から演繹せず、代表 gem の extconf.rb を実際に実行して生成物
@@ -49,7 +49,7 @@ GEMS = {
       "parser" => "ext/json/ext/parser",
       "generator" => "ext/json/ext/generator"
     },
-    # rubycc has no SSE intrinsics / inline-asm support (docs/STEPS.md Step 44):
+    # rubycc has no SSE intrinsics / inline-asm support (docs/development/STEPS.md Step 44):
     # json's simd/conf.rb probes gcc for a usable SSE2+cpuid.h path and, when found,
     # generator.c/parser.c unconditionally use _mm_* intrinsics, which real gcc-built
     # mkmf output would reflect but which is irrelevant to the Makefile/conftest shape

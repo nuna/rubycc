@@ -13,7 +13,7 @@ require_relative "test_helper"
 # The form reaches rubycc through a libc whose <stddef.h> defines offsetof this
 # way: CRuby's <ruby/internal/core/rtypeddata.h> asserts that struct RData and
 # struct RTypedData agree on their "data" offset, and that one assertion stopped
-# <ruby.h> from being preprocessed at all (docs/GAPS.md gap K).
+# <ruby.h> from being preprocessed at all (docs/development/GAPS.md gap K).
 #
 # These tests cross-check the folded values against gcc and pin the cases that
 # must *not* fold — a base that is not a constant, a bit-field, an unknown

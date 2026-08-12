@@ -282,6 +282,6 @@ libc 互換ヘッダを追加・変更するときは、由来の記録と NOTIC
 ## 参考
 
 - musl `COPYRIGHT`: https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT
-- 同梱ヘッダの設計方針: `docs/DESIGN.md`
+- 同梱ヘッダの設計方針: `docs/development/DESIGN.md`
 - 派生禁止ルール(R11): `CLAUDE.md`
 - gem 配布物の謝辞: リポジトリルート `NOTICE`

@@ -1,7 +1,7 @@
 # Changelog
 
 Notable changes per release. The per-step design record — why each decision was made,
-and what was measured to justify it — is in [docs/STEPS.md](docs/STEPS.md); this file is
+and what was measured to justify it — is in [docs/development/STEPS.md](docs/development/STEPS.md); this file is
 the summary a consumer of the gem needs.
 
 Versioning follows semver with one project-specific rule: **a regression in the corpus
@@ -53,4 +53,4 @@ Listed in full, with measurements, in the README. The ones most likely to matter
 
 C++ (grpc), gems that run `configure` through mini_portile (nokogiri's vendored build —
 `--use-system-libraries` is fine), and gems that ship assembly (ffi). The full list with
-reasons is [docs/OUT-OF-SCOPE-GEMS.md](docs/OUT-OF-SCOPE-GEMS.md).
+reasons is [docs/reference/OUT-OF-SCOPE-GEMS.md](docs/reference/OUT-OF-SCOPE-GEMS.md).

@@ -5,8 +5,8 @@ require_relative "test_helper"
 # Guards against a specific, recurring shape of losing differential
 # discipline: hard-coding the name of a piece of the *current* host's
 # environment as if it were true of every host, instead of asking the host.
-# This project has fallen into exactly this trap four times (docs/GAPS.md
-# gap I; docs/STEPS.md Steps 194, 197, 206) -- two of which were "an
+# This project has fallen into exactly this trap four times (docs/development/GAPS.md
+# gap I; docs/development/STEPS.md Steps 194, 197, 206) -- two of which were "an
 # environment-specific name was written into the test source": a probe that
 # printed a glibc-only version macro (which musl's own gcc cannot even
 # compile), and assertions that hard-coded glibc's libc SONAME where musl's
@@ -55,7 +55,7 @@ class TestPlatformLiterals < Minitest::Test
 
     assert_empty violations,
                  "host-specific libc identity literals must be read from the host, not " \
-                 "hard-coded (docs/GAPS.md gap I; docs/STEPS.md Steps 194/197/206), or " \
+                 "hard-coded (docs/development/GAPS.md gap I; docs/development/STEPS.md Steps 194/197/206), or " \
                  "annotated with a non-empty '# platform-literal: <reason>' comment on the " \
                  "same line or in the comment block above it:\n#{violations.join("\n")}"
   end

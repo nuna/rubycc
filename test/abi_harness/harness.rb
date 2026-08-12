@@ -105,7 +105,7 @@ module HeaderAbiHarness
   # off it, so there is one place that decides "what are the two sides
   # supposed to agree on" instead of each call site picking its own default.
   # That "each side picks its own default" is the mistake this harness made
-  # four separate times (docs/STEPS.md Steps 194, 197, 206): a BuildProfile
+  # four separate times (docs/development/STEPS.md Steps 194, 197, 206): a BuildProfile
   # cannot be half-applied the way two independent keyword lists can.
   BuildProfile = Struct.new(:target, :libc, :pic, keyword_init: true)
 
@@ -229,7 +229,7 @@ module HeaderAbiHarness
   # R_AARCH64_ADR_PREL_PG_HI21". That is not a rubycc defect -- gcc's own
   # -fno-pie object fails the same link with the same message (both measured
   # locally) -- it is this harness handing the two sides different flags.
-  # Found on aarch64 musl, reproduced on glibc (docs/STEPS.md Step 206).
+  # Found on aarch64 musl, reproduced on glibc (docs/development/STEPS.md Step 206).
   def host_build_profile
     BuildProfile.new(target: host_target, libc: host_libc, pic: true)
   end
@@ -250,7 +250,7 @@ module HeaderAbiHarness
   # Rubycc::Compiler#compile for `profile`. Kept in one place so a test that
   # wants to prove "the harness still builds its rubycc side the same way it
   # links against the oracle" asks this method rather than copying the keyword
-  # list -- a copy would only ever check itself, not the harness (docs/STEPS.md
+  # list -- a copy would only ever check itself, not the harness (docs/development/STEPS.md
   # Step 206).
   #
   # `libc: profile.libc.to_s`: BuildProfile (like #host_libc and the rest of

@@ -100,8 +100,8 @@ upstream suite の証拠は `data/verified_gems.json` が持つもので、profi
 
 ## 参照
 
-- `docs/DESIGN.md` §3.1(R10の定量化)・§3.3(スコープ外の明示)
-- `docs/GAPS.md` — 通す対象だが未達のギャップ
+- `docs/development/DESIGN.md` §3.1(R10の定量化)・§3.3(スコープ外の明示)
+- `docs/development/GAPS.md` — 通す対象だが未達のギャップ
 - `test/corpus/gems.rb` — 候補、依存、R10分母除外の宣言
 - `test/corpus/census.rb` — 現在の機械判定
 - `test/corpus/include-census.md` — 生成された現在の判定結果

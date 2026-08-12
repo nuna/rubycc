@@ -121,7 +121,7 @@ module Rubycc
       # twice where the real tool emitted it once. It went unnoticed because the
       # system-path filter happened to remove both copies on Debian; measured on
       # Alpine, where that directory is not a system directory and neither copy
-      # is removed (docs/STEPS.md Step 199).
+      # is removed (docs/development/STEPS.md Step 199).
       #
       # Only search paths are collapsed. `-l` is deliberately left alone: a
       # repeated library can matter to a static link's resolution order, and no

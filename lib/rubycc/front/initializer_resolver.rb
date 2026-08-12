@@ -204,7 +204,7 @@ module Rubycc
       # to name.
       #
       # The two are the same event seen from different ends. Without a `type_of`
-      # hook (the parser completing a declaration's type, docs/GAPS.md gap T) an
+      # hook (the parser completing a declaration's type, docs/development/GAPS.md gap T) an
       # expression standing at a struct subobject cannot be told from the start
       # of an elided brace group, so the walk assumes elision, descends into the
       # struct's members, consumes the following items to fill them, and runs off

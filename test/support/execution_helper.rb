@@ -104,7 +104,7 @@ module ExecutionHelper
   # them by default in *every* language mode, so -std alone does not settle it
   # and the diagnostics have to be downgraded explicitly. Kept opt-in rather
   # than global: for every other source, gcc refusing to compile is a signal
-  # about the test's own C that should not be silenced (docs/GAPS.md gap W).
+  # about the test's own C that should not be silenced (docs/development/GAPS.md gap W).
   OBSOLETE_C_FLAGS = ["-fpermissive"].freeze
 
   def compile_with_gcc(c_source, output_path, pic: false, obsolete: false)

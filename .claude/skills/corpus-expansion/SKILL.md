@@ -11,8 +11,8 @@ rubycc が「実際の gem をビルドできる」ことを広げ、その事�
 
 ## 着手前に必ず読む
 
-- `docs/ROADMAP.md` — 1 ステップのサイクル、実装規約と不変条件、H6 の残作業
-- `docs/STEPS.md` — 直近のステップ(特に Step 139〜144)の設計判断
+- `docs/development/ROADMAP.md` — 1 ステップのサイクル、実装規約と不変条件、H6 の残作業
+- `docs/development/STEPS.md` — 直近のステップ(特に Step 139〜144)の設計判断
 - `test/corpus/README.md` — センサスとスキャナの使い方
 - `data/README.md` — `verified_gems.json` のスキーマと更新規約
 
@@ -21,7 +21,7 @@ rubycc が「実際の gem をビルドできる」ことを広げ、その事�
 - **ユーザへの出力は日本語**。コード内コメントは英語、ドキュメントは日本語
 - **1 ステップ = 1 コミット**。`<英語サマリ> (Step N)` + 日本語箇条書き本文 +
   `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`
-- **ステップ完了時に `docs/STEPS.md` へ設計記録を追記し、`docs/ROADMAP.md` の計画を消し込む**。
+- **ステップ完了時に `docs/development/STEPS.md` へ設計記録を追記し、`docs/development/ROADMAP.md` の計画を消し込む**。
   STEPS.md はメインセッションが書く(判断の記録なので移譲しない)
 - **実装の移譲は `references/role-based-model-selection.md` の役割表に従う**。
   テスト・ベンチ・検証コマンドの実行は **必ず test-runner に委譲**(メインで直接 Bash しない)
@@ -94,7 +94,7 @@ Gap candidate は全部埋めるものではない。実測した分類:
 
 ### 1-5. ヘッダを追加する(R8 規律)
 
-`docs/HEADER-LICENSING.md` §6 が必須手順。**移譲する場合はこの §6 をプロンプトに要約して渡す**。
+`docs/reference/HEADER-LICENSING.md` §6 が必須手順。**移譲する場合はこの §6 をプロンプトに要約して渡す**。
 
 1. **冒頭 provenance コメント**を書く(freestanding / musl-derived / clean-room のどれか)
 2. **ABI 値は実測でのみ取得**。glibc / UAPI のヘッダテキストを写経しない。
@@ -190,7 +190,7 @@ tools/verify_gem_tests.rb --update --step N <gem>
 
 ### 2-5. 手順が破綻したときの一次資料
 
-`gem` 固有のつまずきは `docs/STEPS.md` の Step 93〜99・144 に実測が残っている。
+`gem` 固有のつまずきは `docs/development/STEPS.md` の Step 93〜99・144 に実測が残っている。
 既知の注意点:
 
 - **`.gem` にテストは同梱されていない**。上流タグの tarball が必ず要る
@@ -206,7 +206,7 @@ tools/verify_gem_tests.rb --update --step N <gem>
 ## ステップの締め
 
 1. `rake test` の全数を確認(test-runner に委譲)
-2. `docs/STEPS.md` に設計記録を追記 — **判断と、予想を覆した実測を書く**。
+2. `docs/development/STEPS.md` に設計記録を追記 — **判断と、予想を覆した実測を書く**。
    数値の羅列ではなく「なぜそうしたか」「何が想定と違ったか」
-3. `docs/ROADMAP.md` の該当項目を消し込む(`~~取り消し線~~` + **完了(Step N)** の形式)
+3. `docs/development/ROADMAP.md` の該当項目を消し込む(`~~取り消し線~~` + **完了(Step N)** の形式)
 4. 1 コミットにまとめる

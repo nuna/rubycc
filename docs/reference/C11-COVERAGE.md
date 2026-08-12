@@ -212,5 +212,5 @@ rubycc は libc の実装ではないため、第 7 章はコンパイラが供�
 ## 出典
 
 - ISO/IEC 9899:201x Committee Draft — N1570
-- docs/DESIGN.md §3.3(スコープ外の明示)・§9.1(規格資料)
-- docs/ROADMAP.md §3(既知の制限)
+- docs/development/DESIGN.md §3.3(スコープ外の明示)・§9.1(規格資料)
+- docs/development/ROADMAP.md §3(既知の制限)

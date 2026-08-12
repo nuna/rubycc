@@ -2,7 +2,7 @@
 
 rubycc の継続的検証は、通常の回帰、週次の追加検証、リリース配布物の検証に分かれる。
 ワークフローは `.github/workflows/`、skip ガードは
-[`../tools/ci_check_skips.rb`](../tools/ci_check_skips.rb) に定義する。
+[`../tools/ci_check_skips.rb`](../../tools/ci_check_skips.rb) に定義する。
 
 ## 実行層
 
@@ -76,7 +76,7 @@ docker run --privileged --rm tonistiigi/binfmt --install arm64
 
 **このイメージの gcc は CI より新しい**(Debian trixie の 14.2 対 Ubuntu 24.04 の 13)。
 gcc 14 は従来の警告のいくつかを既定でエラーにするので、**対照側が落ちる**差分テストが
-3 件ある(`docs/GAPS.md` ギャップ W)。ここでの失敗は、まずその 3 件かどうかを見てから
+3 件ある(`docs/development/GAPS.md` ギャップ W)。ここでの失敗は、まずその 3 件かどうかを見てから
 AArch64 の欠陥として扱うこと。
 
 ## 参照用ツールチェーン
@@ -114,7 +114,7 @@ skip 理由は絶対パスと数値を正規化したヒストグラムとして
 `CI_MAX_SKIPS` と `CI_MIN_RUNS` は環境変数で上書きできるが、名前付き profile の
 上限・下限は緩められない。
 
-検査は 2 層である([`../config/ci/skip-baseline.json`](../config/ci/skip-baseline.json))。
+検査は 2 層である([`../config/ci/skip-baseline.json`](../../config/ci/skip-baseline.json))。
 
 1. **総量**(`max_skips` / `min_runs`)。ツールチェーンが消えて大量に skip したのに
    緑になる、という本来の失敗モードを捕まえるのはこの層である。
@@ -174,7 +174,7 @@ install・extension load・upstream suite の証拠を代用しない。
 通常の Tier A と実行件数が異なるため、Tier A の skip 閾値は適用しない。
 代わりに strict acceptance(`RMAKE_ACCEPTANCE_STRICT=1`、`CI_PROFILE=acceptance-live`)
 で安定 ID ごとの構造化結果を出力し、`tools/ci_check_acceptance.rb` が
-[`../config/ci/acceptance_manifest.json`](../config/ci/acceptance_manifest.json)の
+[`../config/ci/acceptance_manifest.json`](../../config/ci/acceptance_manifest.json)の
 必須 ID・未実行・skip・`inconclusive` を検査する。fetch/unpack 失敗を skip に
 変換しない。取得対象は manifest に固定した HTTPS URL と SHA-256 を使い、digest 確認後に
 atomic rename する。`--allow-inconclusive` は非 strict の診断用で、strict では

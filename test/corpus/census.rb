@@ -9,7 +9,7 @@ require "tmpdir"
 
 require_relative "gems"
 
-# Step 92 (M5 H3, docs/ROADMAP.md §8): census of system (angle-bracket) #includes
+# Step 92 (M5 H3, docs/development/ROADMAP.md §8): census of system (angle-bracket) #includes
 # used by the C extensions of a curated gem corpus, classified against the headers
 # rubycc bundles under include/. It answers "which not-yet-bundled headers does real
 # gem code reach for?" so header work in H2/H4 is driven by measurement, not guessing.
@@ -340,7 +340,7 @@ module Corpus
         result[:status] = :excluded
         result[:reason] = "upstream ships no test suite — R10's \"gem's own tests passed\" " \
                            "evidence (verification level (d)) is impossible to obtain " \
-                           "(docs/OUT-OF-SCOPE-GEMS.md basis D)"
+                           "(docs/reference/OUT-OF-SCOPE-GEMS.md basis D)"
         return result
       end
 

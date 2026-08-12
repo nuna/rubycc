@@ -28,7 +28,7 @@
 -O0 相当のコード(レジスタ割付なし・全値スピル)を出すため、本スイートはその差を
 *定量化*することを目的とし、rubycc が明確に遅いケースも含める。DESIGN 要件 N2 は
 「gcc -O2 比 2〜5 倍遅を許容」を掲げており、その許容範囲に対する評価と結果は
-[`../docs/BENCHMARKS.md`](../docs/BENCHMARKS.md) に記録している。
+[`../docs/development/BENCHMARKS.md`](../docs/development/BENCHMARKS.md) に記録している。
 
 本スイートは `rake test` には**含めない**(数分かかり、gcc とネットワークに
 依存するため)。
@@ -78,5 +78,5 @@ Ruby ワークロードは Ruby の開発ヘッダとネットワークアクセ
 ## 記録済み結果の再現
 
 他の負荷をかけていない**アイドル状態のマシン**で実行すること(結果は wall time)。
-`docs/BENCHMARKS.md` の数値には `BENCH_RUNS=7` を使用した。各実行は
+`docs/development/BENCHMARKS.md` の数値には `BENCH_RUNS=7` を使用した。各実行は
 `results/bench-<stamp>.md` と `.json` をタイムスタンプ付きで残すので差分を取れる。

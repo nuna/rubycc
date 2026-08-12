@@ -5,7 +5,7 @@ DESIGN 要件 **N1**(「YJIT 有効時に目安 20,000 行/秒以上(前処理�
 ≒ 25 万行)は『動くが遅い』を許容し上限を設けない」)に対する、M5 H5 の最適化と
 その結果・**未達に対する v1.0 の判断**の記録。
 
-ハーネスは [`../benchmark/throughput.rb`](../benchmark/throughput.rb)
+ハーネスは [`../benchmark/throughput.rb`](../../benchmark/throughput.rb)
 (`rake bench:throughput`)。各実行は `benchmark/results/throughput-<stamp>.{md,json}`
 を残す。個々の最適化の設計判断は [`STEPS.md`](STEPS.md) の Step 105〜116 にある。
 
