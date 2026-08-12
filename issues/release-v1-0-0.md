@@ -1,9 +1,9 @@
 ---
-status: open
+status: in-progress
 kind: infra
 opened: 2026-08-12
 closed:
-branch:
+branch: release-v1-0-0
 pr:
 steps: []
 ---
@@ -50,8 +50,14 @@ steps: []
 `docs/development/RELEASE-CHECKLIST.md` から移設。
 
 **この 2 操作は意図的に自動化しない**(アカウント保有者の操作である。`docs/internals/CI.md`)。
-したがって完了時の `pr:` は `none` になる。
+
+タグを打つ直前の確認で、**`CHANGELOG.md` の見出しが `## 1.0.0 (unreleased)` のまま**
+だったことが分かった。CHANGELOG は gemspec の `files` に入る**同梱物**なので、
+この状態でタグを打つと「未リリース」と書かれた成果物を配ることになる。
+日付に直してからタグを打つ(この issue の `pr:` はその PR を指す)。
+
+`gem push` は認証がこのセッションから行えないため、リポジトリ所有者の操作として残る。
 
 ## 決着
 
-(未実施)
+(タグ push と Tier C の結果を記入する。`gem push` の完了もここに書く。)

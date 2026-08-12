@@ -8,7 +8,7 @@ Versioning follows semver with one project-specific rule: **a regression in the 
 pass rate is a breaking change**, whatever the code change looked like. See the
 Versioning section of the README.
 
-## 1.0.0 (unreleased)
+## 1.0.0 (2026-08-12)
 
 First release. rubycc builds Ruby C extensions with no gcc, no binutils, no make and no
 shell — it is a C compiler, assembler-free ELF writer, linker, `ar`, `make`, `pkg-config`
