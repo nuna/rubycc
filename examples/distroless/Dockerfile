@@ -45,11 +45,17 @@ WORKDIR /src
 
 # Copy only the files needed to build the rubycc gem. This keeps application
 # source and development-only files out of the builder input.
+#
+# The file list has to match rubycc.gemspec's `files` exactly: `gem build`
+# rejects a specification naming a file that is not there ("[...] are not
+# files", a Gem::InvalidSpecificationException, not a warning). That is how
+# this sample broke -- CHANGELOG.md joined the gemspec during release
+# preparation and this list did not follow.
 COPY lib ./lib
 COPY include ./include
 COPY exe ./exe
 COPY data ./data
-COPY rubycc.gemspec LICENSE.txt NOTICE README.md ./
+COPY rubycc.gemspec LICENSE.txt NOTICE README.md CHANGELOG.md ./
 
 RUN set -eux; \
     mkdir -p "$RUBYCC_HOME" "$GEM_HOME"; \
