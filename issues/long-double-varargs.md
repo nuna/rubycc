@@ -59,6 +59,12 @@ R10 では `oj` が唯一の未通過要因として残っている(コーパス
   観測されている実害はこれで閉じる。`sizeof(long double)` が 8 のままである食い違いは残る
 - **第 2 段**: x87 / binary128 の演算そのもの。パーサ・定数畳み込み・ABI 分類・`va_arg` に及ぶ
 
+**第 2 段はこの課題では扱わない。** `sizeof(long double)` を 8 から 16 へ動かすので、
+他の ABI 逸脱(enum の底型、`wchar_t` の符号性)とまとめて 1 つの major で閉じる
+([platform-abi-alignment](platform-abi-alignment.md)、ユーザ判断 2026-08-13)。
+**第 1 段は `sizeof` を動かさないので 1.x で出せる** — 版は oj が通るかで決まる
+(通れば合格率が上がるので minor、変わらなければ patch)。
+
 v1.0 では挙動を変えず、README と CHANGELOG の既知の制限に明記する判断を取った
 (`gaps-s-t-u-3`)。理由: 実害が測定済みで oj の 1 テストに限定される一方、
 可変長引数の `long double` を診断エラーにすると**今ビルドできている gem が

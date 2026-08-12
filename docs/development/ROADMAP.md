@@ -176,16 +176,16 @@ M4 完了後も「残項目」を掲げたままになっていた)。
 | ~~ビットフィールドのアクセス~~ | **解消(Step 48、d1da0bf)**: 読み・書き・複合代入・++/-- を格納単位の load → shift/mask → read-modify-write store で実装(符号付きは符号拡張、代入式の値は切り詰め後の読み直し)。& は 6.5.3.2p1 の診断。00218 は enum 符号性(00170 と同根)で残置 | ~~M2~~ **完了** |
 | マクロ再展開の hide-set 交差 | `CAT(A,B)(x)` の CAT2 経由再展開が gcc と相違(c-testsuite 00201 で実証)。修正方針記録済み: 置換 paint を「呼び出し名の suppress ∩ 閉じ括弧の suppress + 自名」へ | M2 |
 | 128 ビット整数の演算残り | 乗算・加減算・比較・変換に加え、**値渡し/返しを Step 94**(16 バイト 2-INTEGER 集約として既存の構造体 ABI 経路)、**シフト `<<`/`>>` を Step 95**(二重ワードシフト合成)で実装。いずれも両ターゲットの gcc 差分実行オラクルで検証。残りは除算・剰余・ビット演算(`& | ^`)・可変長渡しが診断エラー。**corpus 実害**: bigdecimal が `bits.h` で値渡し(Step 93 検出)と `x >> 64`(Step 94 後に検出)を使い落ちていた → Step 94/95 で解消 | **値渡し/返し(Step 94)・シフト(Step 95)解消。残りの演算は H4** |
-| enum の unsigned 底型 | 全 enum を int へ写像(gcc は全非負 enum を unsigned int に)。c-testsuite 00170 のポインタ符号不一致で顕在 | 実害が出た時点 |
+| enum の unsigned 底型([issue](../../issues/platform-abi-alignment.md)) | 全 enum を int へ写像(gcc は全非負 enum を unsigned int に)。c-testsuite 00170 のポインタ符号不一致で顕在 | 実害が出た時点 |
 | compound literal / VLA / _Generic / ワイド文字列 / #pragma push_macro / K&R `int ()` 型 | 各々診断エラー(c-testsuite スキップ表に理由記録) | 実害が出た時点 |
 | ~~素の `char` の符号性がターゲット依存~~ | **解消(Step 73)**: 文字型を 4 実体に分離し(素の char の符号あり/なし + ターゲット非依存の signed/unsigned char)、`Compiler::TARGETS` の `char_signed` からプリプロセッサ・パーサ・IR ジェネレータの 3 段へ配る。同梱 limits.h も `__CHAR_UNSIGNED__` で分岐 | ~~A3~~ **完了** |
 | ~~`char *` と `signed char *` の非互換化(受理範囲の縮小)~~ | **解消(Step 98)**: redcarpet の html_smartypants.c が `uint8_t*` を `strncmp(const char*)` に渡して落ちたのを機に、`compatible_types?` の `pointer_sign_compatible?` で同サイズ・逆符号の整数指し先(gcc の -Wpointer-sign 相当)と 1 バイト文字型3種の相互ポインタ互換を受理。異サイズ・文字族以外の別型は硬いエラーを維持 | ~~M5 コーパスで実害が出た時点~~ **完了(Step 98)** |
 | ~~aarch64 ターゲットでも `__x86_64__`/`__amd64__` を定義~~ | **解消(Step 74)**: CPU 識別マクロを共通部(`PREDEFINED_PLATFORM_MACROS`)と per-target(`X86_64_ARCH_MACROS`/`AARCH64_ARCH_MACROS`)に分割し `TARGETS` から供給。target を無視していた `-E` 経路も是正 | ~~A4/A5~~ **完了** |
 | ~~`struct { float a, b; }` の値渡しが aarch64 で silent miscompile~~ | **解消(Step 77)**: 集約分類を `IR::CallConvention` の 2 実装に分け、`AbiPiece` にオフセットと幅を持たせて HFA を s0/s1 に配置。IR レベルの分岐と実行結果の両方で確認 | ~~A4~~ **完了** |
 | ~~スタック引数の 16 バイト整列が未対応~~ | **解消(Step 94)**: 16 バイト整列の集約(`__int128` 等)がスタックに溢れる場合、両規約とも NSAA を奇数境界で 1 eightbyte パディングして 16 バイト境界に載せる `:pad_stack` スロット機構を実装。AAPCS64 のレジスタ偶数ペア規則(`:pad`)も同時にバックエンドへ配線。x86_64・aarch64 双方のクロス TU 実行オラクルで確認 | ~~実害が出た時点~~ **完了(Step 94)** |
-| 同梱 `stddef.h`/`stdint.h` の `wchar_t` typedef が `int` 固定 | aarch64 gcc の `wchar_t` は `unsigned int`(`__WCHAR_MAX__` = `0xffffffffU`)。Step 82 で aarch64 の `stdint.h` は `WCHAR_MIN`/`WCHAR_MAX` マクロだけ unsigned に合わせたが、`wchar_t` typedef 自体は freestanding `stddef.h` と共有ガード `_RUBYCC_WCHAR_T` を使うため `int` のまま(符号を変えると include 順で不整合)。ワイド文字リテラルは意図的な診断で拒否しており、ABI ハーネスも符号性は検査しないため観測可能な誤りには至っていない。予定: H4(ワイド文字を扱う gem がコーパスで顕在化した時点)。stddef.h を per-target 化するか、freestanding 層に符号を持ち込む設計判断を伴う | ワイド文字を扱う時点(H4 / A4 以降) |
+| 同梱 `stddef.h`/`stdint.h` の `wchar_t` typedef が `int` 固定([issue](../../issues/platform-abi-alignment.md)) | aarch64 gcc の `wchar_t` は `unsigned int`(`__WCHAR_MAX__` = `0xffffffffU`)。Step 82 で aarch64 の `stdint.h` は `WCHAR_MIN`/`WCHAR_MAX` マクロだけ unsigned に合わせたが、`wchar_t` typedef 自体は freestanding `stddef.h` と共有ガード `_RUBYCC_WCHAR_T` を使うため `int` のまま(符号を変えると include 順で不整合)。ワイド文字リテラルは意図的な診断で拒否しており、ABI ハーネスも符号性は検査しないため観測可能な誤りには至っていない。予定: H4(ワイド文字を扱う gem がコーパスで顕在化した時点)。stddef.h を per-target 化するか、freestanding 層に符号を持ち込む設計判断を伴う | ワイド文字を扱う時点(H4 / A4 以降) |
 | ~~float リテラルの binary32 丸め~~ | **解消(Step 69)**: `pack("e")` が FLT_MAX 超を +inf へ飽和させていた。double のビット界から 23 ビットへ最近接・偶数丸めで縮約する変換に置き換え、ABI ハーネスの FLT_MAX 検査を通常の assert へ復帰 | ~~早期~~ **完了** |
-| long double = double 扱い(GAPS S) | rubycc は long double を 8 バイト double として扱う(DESIGN 3.3 の既知制限)ため max_align_t が 16/8(glibc は 32/16)。x87 80bit 対応まで ABI ハーネスの該当検査は非 assert。**実害は測定済み** — `printf("%Lg", x)` に 8 バイトを積むのに glibc は 16 バイト読むので値が壊れ、oj の `UsualTest#test_decimal` が対照と食い違う唯一の差になっている | **v1.0 直後に最優先で着手**(ユーザ判断、2026-08-11)。v1.0 では挙動を変えず README / CHANGELOG の既知の制限に明記するに留めた(いま診断エラーにすると、今ビルドできている gem がビルドできなくなる副作用の方が広いため)。着手時は 2 段階を検討する: **(1) 可変長引数に渡すときだけ double を 80 ビット拡張形式(aarch64 は binary128)に変換して積む** — double は両形式の部分集合なので変換は無損失で、観測されている実害はこれで閉じる。ただし `sizeof(long double)` の食い違いは残る。**(2) x87 / binary128 の演算そのもの** — パーサ・定数畳み込み・ABI 分類・va_arg に及ぶマイルストーン規模 |
+| long double = double 扱い(GAPS S。[第 1 段](../../issues/long-double-varargs.md) / [第 2 段](../../issues/platform-abi-alignment.md)) | rubycc は long double を 8 バイト double として扱う(DESIGN 3.3 の既知制限)ため max_align_t が 16/8(glibc は 32/16)。x87 80bit 対応まで ABI ハーネスの該当検査は非 assert。**実害は測定済み** — `printf("%Lg", x)` に 8 バイトを積むのに glibc は 16 バイト読むので値が壊れ、oj の `UsualTest#test_decimal` が対照と食い違う唯一の差になっている | **v1.0 直後に最優先で着手**(ユーザ判断、2026-08-11)。v1.0 では挙動を変えず README / CHANGELOG の既知の制限に明記するに留めた(いま診断エラーにすると、今ビルドできている gem がビルドできなくなる副作用の方が広いため)。着手時は 2 段階を検討する: **(1) 可変長引数に渡すときだけ double を 80 ビット拡張形式(aarch64 は binary128)に変換して積む** — double は両形式の部分集合なので変換は無損失で、観測されている実害はこれで閉じる。ただし `sizeof(long double)` の食い違いは残る。**(2) x87 / binary128 の演算そのもの** — パーサ・定数畳み込み・ABI 分類・va_arg に及ぶマイルストーン規模 |
 | DoS フェイルセーフの上限値 | パーサ再帰深さ 500・#if 式 500・マクロ展開 100 万トークン等(Step 32)は実行環境のスタックサイズ(本環境 ~330 括弧段)前提。極端に浅いスタックの環境では再評価が必要。詳細は docs/development/security-dos-review.md | コーパス(R10)実測で再調整 |
 | -fPIC で定義済みエクスポートグローバルを PC32 参照 | Step 33 は TU 内定義グローバルを PC32(interpose 非対応の -Bsymbolic 相当)。rubycc の SharedLinker は S+A−P で正しく解決するが、GNU ld は preemptible シンボルへの PC32 を共有オブジェクト規則違反として拒否(gcc -shared 相互リンク不可)。実行は正しい | 真の interpose 対応(エクスポート定義グローバルも GOT 経由)を M2 終盤か PIC 改善で。実 gem がグローバル変数をエクスポートするか R10 コーパスで判定 |
 
@@ -1002,5 +1002,27 @@ H6 に来ている**ので、ここで期限を持たせる。3 件は「Docker 
   全バックエンド変更の回帰テストとして常時 CI で回す。
 - **gcc 差分テストの限界**: gcc は開発 CI のみの依存(R2)。差分テストが使えない環境の
   ために、期待値を焼き込んだ golden テストも必ず併設する(現状の実行テストは両対応済み)。
-- **`__GNUC__` 非定義の方針**(R7)は M5 のコーパスで初めて本当の影響が測れる。
-  ビルド失敗の主因になるようなら「GCC 擬態モード」(M6)の前倒しを検討する。
+- ~~**`__GNUC__` 非定義の方針**(R7)は M5 のコーパスで初めて本当の影響が測れる。
+  ビルド失敗の主因になるようなら「GCC 擬態モード」(M6)の前倒しを検討する。~~
+  **測った結果、前倒しの条件は発火しなかった**(2026-08-13)。R10 は 31/34 = 91.2% に
+  到達し、未通過 3 件の原因は `long double`(oj)・PTY/socket と実行時クラッシュ
+  (openssl)・ホスト RDoc との非互換(rbs)で、**`__GNUC__` 由来は 1 件も無い**。
+  加えて Step 105 の実測では `-D__GNUC__` を定義すると **glibc 全域が gcc 経路へ切り替わり
+  即座に別の壁に当たる**(爆発半径が大きすぎる)。**GCC 擬態モードは着手しない** —
+  再検討の条件は「`__GNUC__` を見て落ちる gem がコーパスに現れたとき」である。
+
+## 10. M6 以降の扱い(v1.0 後)
+
+M6 の当初記載は「macOS(Mach-O)、基本最適化(レジスタ割付・簡単な CSE)、
+行番号デバッグ情報、GCC 擬態モード」(DESIGN §8)。v1.0 到達時点の実測で仕分けた。
+
+| 項目 | 判断 | 根拠 |
+|---|---|---|
+| 基本最適化(レジスタ割付) | **着手する**([issue](../../issues/register-allocation.md)) | **N2 が条件付き達成のまま** — gcc -O2 比で最大 7.65x(目標 2〜5 倍)。原因は spill-everything と特定・定量化済みで、gcc -O0 比なら 1.1〜2.9x |
+| プロセス横断のヘッダトークンキャッシュ | **着手する**([issue](../../issues/cross-process-header-cache.md)) | **N1 が未達** — 13,854 行/秒 = 目標の 69.3%。残ボトルネックはユニークヘッダの初回字句解析に収斂し、TU 内のレバーは 2〜4% 級。`THROUGHPUT.md` からの申し送り(当初の M6 記載には無い項目) |
+| GCC 擬態モード | **着手しない** | 上記のとおり前倒し条件が発火せず、実測でも爆発半径が大きい |
+| macOS(Mach-O) | **保留** | Mach-O ライタ・dyld・別 ABI と M2〜M4 規模だが、**利用者からの要求もコーパスからの圧力も記録が無い**。着手するなら「なぜ今か」を先に作る |
+| 行番号デバッグ情報(DWARF) | **保留** | 拡張の実行時クラッシュを追う場面で効くが、実害の記録がまだ無い。`.debug_line` に限れば範囲は限定的なので、要求が出た時点で起票する |
+
+**着手順は `long-double-varargs`(GAPS S)が先**である。あちらは値が壊れる正しさの問題で、
+上の 2 件は速度の問題だからである。
