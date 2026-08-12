@@ -11081,3 +11081,39 @@ Dockerfile の COPY リストが**別の場所で同じことを言っている*
 
 **`gem push` は未実施**で、リポジトリ所有者の操作として残る(認証を持たないため。方針としても
 自動化しない)。`issues/release-v1-0-0.md` は**それが完了するまで閉じない**。
+
+---
+
+## release-close-1 — v1.0.0 を公開し、M5 を閉じた(v1.0.0)
+
+リポジトリ所有者が `gem push` を実施し(2026-08-13)、rubygems.org の API で公開を確認した。
+
+| 項目 | 値 |
+|---|---|
+| gem | `rubycc 1.0.0` |
+| ライセンス | MIT |
+| `.gem` の SHA-256 | `7d8fa901…c38e593` |
+| メタデータ | `source_code_uri` / `changelog_uri` / `bug_tracker_uri` / `documentation_uri` / `rubygems_mfa_required` |
+
+description が本文として登録されていることも確認できた。**公開前に潰した 2 つの警告
+(summary と description が同一、複数キーに同一 URI)の効果は、ここで初めて観測できる** —
+警告の時点では「rubygems.org の表示がどうなるか」は推測でしかなかった。
+
+### M5 = v1.0 リリースの完了
+
+ROADMAP の M5 は「glibc/musl 互換ヘッダ拡充、コーパス 90% 達成、v1.0 リリース」であり、
+**3 つとも満たした**:
+
+- 互換ヘッダ: glibc / musl × x86-64 / aarch64 の 4 通りを ABI ハーネスで実測
+  (最後の 1 通り = aarch64 musl は `m4-aarch64-acceptance-2` で初めて走らせ、欠陥 1 件を修正)
+- コーパス: **31/34 = 91.2%**(`corpus-sqlite3-pg-1` / `-2`)
+- v1.0 リリース: タグ `v1.0.0`(`dca836f`)+ `gem push`
+
+### チェックリストの「済」は、配るものの正しさを意味しない
+
+`RELEASE-CHECKLIST.md` §5 は全行が「済」だった。**それでも、実際にタグを打つ前に
+`gem build` と `examples/distroless/Dockerfile` を走らせたら 3 件の不具合が出た**
+(`release-tag-record-1`)。この経験を §5 の前文に書き足した —
+**次のリリースでも、配るものを作って動かすまでは「済」を信じない。**
+
+残る作業は `issues/` にある 5 件で、最優先は `long-double-varargs`(GAPS S)である。
