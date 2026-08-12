@@ -168,6 +168,16 @@ Semantic versioning, with one project-specific rule:
   identity; they do not by themselves count as an upstream-suite verification.
   If a release stops building a gem that the previous release built, that is major-version
   territory, not a patch — regardless of how small the code change was.
+- **A change to the generated code's ABI is a breaking change too**, even when the corpus
+  pass rate goes up. Type sizes, alignments and struct layouts are what object files agree
+  on: an object compiled by one major cannot be linked against one compiled by another if
+  those move. `long double`'s width, `enum`'s underlying type and `wchar_t`'s signedness
+  are the three known deviations from the platform ABI still open, and closing any of them
+  moves exactly those values.
+- **Known ABI deviations are closed together, not one at a time.** Each one alone would
+  justify a major release, and shipping three majors would make every consumer rebuild
+  three times for what is, from their side, one change: "rubycc now matches the platform
+  ABI". They are batched into a single major for that reason.
 - **Minor** releases add language or header coverage, new targets, or new gems that build.
 - **Patch** releases fix bugs and improve performance without changing what builds.
 - The generated code's *speed* is not part of the compatibility contract, but throughput
