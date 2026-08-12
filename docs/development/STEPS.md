@@ -11039,3 +11039,45 @@ issue を作る。
 
 `DESIGN.md` は要件(現行の契約)と選定の経緯(記録)が混在するが、**主体は経緯**なので
 `development/` に残した。分割する価値が出たら、そのとき分ける。
+
+---
+
+## release-tag-record-1 — タグを打つ前に、配るものを実際に作って動かす(v1.0.0)
+
+タグ `v1.0.0` を確定させた(`dca836f`、内容は master の `99dad94`)。Tier C は全ジョブ
+success([run 31610051259](https://github.com/nuna/rubycc/actions/runs/31610051259))で、
+`package` ジョブが**タグと `Rubycc::VERSION` の一致**と
+**`SOURCE_DATE_EPOCH` 固定での再現ビルド(バイト一致)**を検証している。
+
+### タグ前の確認が 3 件の不具合を出した
+
+**準備は「済」と記録されていた**(`RELEASE-CHECKLIST.md` §5 の全行が済)。それでも、
+実際に配るものを作って動かしたら 3 件出た。
+
+| 見つかったもの | 性質 |
+|---|---|
+| `CHANGELOG.md` の見出しが `## 1.0.0 (unreleased)` のまま | gemspec の `files` に入る**同梱物**。未リリースと書かれた成果物を配ることになっていた |
+| `examples/distroless/Dockerfile` の `gem build` が**失敗** | `["CHANGELOG.md"] are not files`。README が新規利用者に案内する経路で、**CI では検出できない**(Docker が要る) |
+| `gem build` の警告 2 件 | summary と description が同一、`homepage_uri` と `source_code_uri` が同一 URI。**`gem push` 後は差し替えられない** |
+
+3 件目は「表示の質」の問題で、放っておいても動く。**にも関わらず公開前に直す価値がある**のは、
+同じバージョンを後から差し替えられないという一点による。
+
+2 件目には再発防止を入れた(`test/test_distroless_example.rb`)。gemspec の `files` と
+Dockerfile の COPY リストが**別の場所で同じことを言っている**構造で、片方だけ変わると壊れる。
+**照合はテキストだけでできる**ので、Docker を要さずに `rake test` に載せた。
+
+### タグを 3 回打ち、2 回削除した
+
+1 回目の削除は上記 3 件目のためで妥当だが、**2 回目は避けられた** — summary / description を
+日本語にした後で英語に戻す判断が入った。**同梱物の文面を確定させてからタグを打つべきだった。**
+タグはコミットに紐づくので、README・CHANGELOG・gemspec のいずれかを直すたびに打ち直しになる。
+
+さらに 2 回目の削除は **Tier C の実行中に行った**ため、`actions/checkout` がタグを取得できず
+`fatal: couldn't find remote ref refs/tags/v1.0.0` で赤い実行履歴が 1 件残った。
+内容の問題ではないが、**実行の完了を待ってから削除すべきだった**。
+
+### 残っているもの
+
+**`gem push` は未実施**で、リポジトリ所有者の操作として残る(認証を持たないため。方針としても
+自動化しない)。`issues/release-v1-0-0.md` は**それが完了するまで閉じない**。
