@@ -165,8 +165,13 @@ README では要約に留めそちらへリンクする。
 
 ## 5. リリース手順(v1.0.0)
 
-**準備は済んでいる。以下は未実施**(タグ push と `gem push` は**意図的に自動化しない** —
-アカウント保有者の操作である)。
+**v1.0.0 は 2026-08-13 に公開した。** 以下は全行が済である(タグ push と `gem push` は
+**意図的に自動化しない** — アカウント保有者の操作である)。
+
+この表を「済」で埋めても**配るものが正しいとは限らなかった**。実際にタグを打つ前に
+`gem build` と `examples/distroless/Dockerfile` を走らせたところ 3 件の不具合が出ている
+(経緯は `STEPS.md` の `release-tag-record-1`)。**次のリリースでも、配るものを作って
+動かすまでは「済」を信じない。**
 
 | | 状態 |
 |---|---|
@@ -176,8 +181,8 @@ README では要約に留めそちらへリンクする。
 | `bundle exec rake test` | **済** — 3,109 runs / 10,848 assertions / 0 failures / 0 errors / 41 skips(2026-08-12、`m4-aarch64-acceptance` 時点) |
 | gem の再現ビルド | **済** — `SOURCE_DATE_EPOCH` 固定で 2 回ビルドし**バイト一致**(474,112 bytes) |
 | 同梱物の確認 | **済** — `LICENSE.txt` / `NOTICE` / `README.md` / `CHANGELOG.md` / `data/verified_gems.json` / ヘッダ 78 本 |
-| **タグ `v1.0.0` を打つ** | **未実施**([issue](../../issues/release-v1-0-0.md))。打つと Tier C(`release.yml`)が走り、タグと `Rubycc::VERSION` の一致・再現ビルドを検証する |
-| **`gem push`** | **未実施**(同 issue)。自動化しない方針(docs/internals/CI.md) |
+| **タグ `v1.0.0` を打つ** | **済**(2026-08-12、`dca836f`。[issue](../../issues/release-v1-0-0.md))。Tier C は全ジョブ success([run 31610051259](https://github.com/nuna/rubycc/actions/runs/31610051259))で、タグと `Rubycc::VERSION` の一致・`SOURCE_DATE_EPOCH` 固定の再現ビルドを検証した |
+| **`gem push`** | **済**(2026-08-13、リポジトリ所有者が実施。同 issue)。rubygems.org で `rubycc 1.0.0` の公開を確認済み。自動化しない方針は変わらない(docs/internals/CI.md) |
 
 ### 準備中に見つけて直したもの
 

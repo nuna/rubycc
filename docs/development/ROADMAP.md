@@ -26,7 +26,7 @@ M4 完了後も「残項目」を掲げたままになっていた)。
 | M2 リンカ・ar(json / msgpack を手動ビルド) | 完了(Step 54) |
 | M3 ビルド統合(rmake / plugin / pkg-config / conftest) | 完了(Step 64)。distroless 相当も完了(Step 202) |
 | M4 aarch64 バックエンド | **完了(`m4-aarch64-acceptance-4`)**。受け入れ 4 項目は下表 |
-| M5 互換ヘッダ・コーパス 90%・v1.0 | **R10 は達成(31/34 = 91.2%)**。残るはリリース操作(タグ・`gem push`) |
+| M5 互換ヘッダ・コーパス 90%・v1.0 | **完了(`release-close-1`)**。R10 は 31/34 = 91.2%、タグ `v1.0.0`(`dca836f`)、`gem push` は 2026-08-13 |
 | M6 以降 | 未着手(macOS、基本最適化、行番号デバッグ情報、GCC 擬態モード) |
 
 検証済み gem は glibc x86-64 が 31 件、musl x86-64 が 3 件、glibc aarch64 が 6 件

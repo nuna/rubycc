@@ -1,11 +1,11 @@
 ---
-status: in-progress
+status: done
 kind: infra
 opened: 2026-08-12
-closed:
+closed: 2026-08-13
 branch: release-v1-0-0
-pr:
-steps: []
+pr: none
+steps: [release-tag-record-1, release-close-1]
 ---
 
 # v1.0.0 をタグ付けして公開する
@@ -88,8 +88,15 @@ Ruby 3.3 / 4.0 の全スイートに加えて、`package` ジョブが
 **タグと `Rubycc::VERSION` の一致**と **`SOURCE_DATE_EPOCH` 固定での再現ビルド
 (バイト一致)** を検証している。
 
-**`gem push` は未実施**で、リポジトリ所有者の操作として残る(認証を持たないため。
-方針としても自動化しない)。**これが完了するまでこの issue は閉じない。**
+**`gem push` はリポジトリ所有者が実施した(2026-08-13)。** rubygems.org の API で
+公開を確認した — `rubycc 1.0.0`、ライセンス MIT、`.gem` の SHA-256 は
+`7d8fa901...c38e593`、メタデータは `source_code_uri` / `changelog_uri` /
+`bug_tracker_uri` / `documentation_uri` / `rubygems_mfa_required` の 5 キーが登録され、
+description も本文として入っている(公開前に潰した 2 つの警告の効果がここで確認できる)。
+
+`pr:` が `none` なのは、タグ push と `gem push` が**リポジトリを変更しない操作**だから
+である(規約どおり)。この issue に紐づく PR は #40 / #41 / #42 / #43 / #44 で、
+いずれも公開前の準備を直したものである。
 
 タグに至るまでに 3 回打ち、2 回削除した。経緯は上の作業ログにあるが、要点は
 **「同梱物の文面はタグを打つ前に確定させる」**である。タグはコミットに紐づくので、
