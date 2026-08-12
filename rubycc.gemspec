@@ -11,17 +11,21 @@ Gem::Specification.new do |spec|
   # summary は一覧・検索結果に、description は gem ページ本文に出る。同じ文字列を
   # 両方に置くと `gem build` が "description and summary are identical" を警告し、
   # ページ本文が一行要約のままになるので、役割どおりに書き分ける。
-  spec.summary = "gcc・binutils なしで Ruby の C 拡張をビルドする、ほぼ純 Ruby の C ツールチェイン"
+  # 文面は英語 — rubygems.org の読み手と README に合わせる。
+  spec.summary = "Almost Pure Ruby C toolchain for building Ruby native extensions " \
+                 "without gcc/binutils"
   spec.description = <<~DESCRIPTION
-    rubycc は、gcc も binutils も make もシェルも無いマシンで Ruby の C 拡張をビルドします。
-    C11 サブセットのコンパイラ、アセンブラを介さない ELF ライタ、リンカ、ar、make、
-    pkg-config シム、プリプロセッサを Ruby で実装し、ビルドに必要な libc ヘッダも同梱するので、
-    libc の開発パッケージを持たない distroless イメージでも ruby.h をコンパイルできます。
+    rubycc builds Ruby C extensions on a machine that has no gcc, no binutils, no make
+    and no shell. It is a C11-subset compiler, an assembler-free ELF writer, a linker,
+    an ar, a make, a pkg-config shim and a preprocessor, written in Ruby, plus the libc
+    headers a build needs -- so a distroless image with no libc development package
+    still compiles ruby.h.
 
-    対象は x86-64 と AArch64 の Linux(ELF64)で、glibc と musl の両方に対応します。
-    生成コードは最適化しません。目的は「拡張がビルドでき、その gem 自身のテストが通る」ことで、
-    data/verified_gems.json に記録された gem はすべてその水準で検証されています。
-    検証済み gem の一覧・実測した制限・対象外の範囲は README を参照してください。
+    Targets x86-64 and AArch64 Linux (ELF64) against glibc and musl. Generated code is
+    unoptimized: the point is that the extension builds and its own test suite passes,
+    which is the level at which every gem recorded in data/verified_gems.json was
+    verified. See the README for the verified gems, the measured limits, and what is
+    out of scope.
   DESCRIPTION
   spec.homepage = "https://github.com/nuna/rubycc"
   spec.license = "MIT"
