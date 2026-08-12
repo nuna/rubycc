@@ -10,6 +10,15 @@
 | [`reference/`](reference/) | **利用者**(rubycc でビルドする人) | **現時点**の仕様・対応範囲・制限・由来 | **直す**。過去の記述は残さない |
 | [`development/`](development/) | **開発者**(この処理系を作る人) | 作業ログ・調査記録・計画・レビュー | **残す**。日付を添えて、現在値の在処を指す |
 
+**未消化の作業はこの 2 つのどちらでもなく、リポジトリ直下の
+[`issues/`](../issues/README.md) に置く。** 文書の散文に「今後の課題」を書くと、
+終わっても消し込まれずに残るためである(実際 4 文書がその状態だった)。
+未消化の一覧は 1 コマンドで出る:
+
+```sh
+grep -l "^status: open" issues/*.md | grep -vE "(README|TEMPLATE)\.md"
+```
+
 判断に迷ったら、次の問いで分ける。
 
 > **その文書は「いま何ができるか」を答えるか、「どうやってそこに至ったか」を答えるか。**
@@ -72,7 +81,6 @@ R10 の合格率は 3 つの文書に書き写されていて、そのうち 2 �
 | [RELEASE-CHECKLIST.md](development/RELEASE-CHECKLIST.md) | v1.0 の非機能要件チェックリストとリリース手順 |
 | [R10-CORPUS-SCAN.md](development/R10-CORPUS-SCAN.md) | **生成物**。コーパスの機械ゲートと provenance |
 | [R10-MANUAL-CLASSIFICATION.md](development/R10-MANUAL-CLASSIFICATION.md) | **生成物**。R10 の手動分類台帳 |
-| [VARIADIC-SCAN.md](development/VARIADIC-SCAN.md) | 可変長引数の候補スキャンの記録 |
 | [security-dos-review.md](development/security-dos-review.md) | DoS フェイルセーフの設計と上限値の根拠 |
 
 ベンチマークを `development/` に置いているのは、**方法論と再現手順が主**で、利用者が知りたい

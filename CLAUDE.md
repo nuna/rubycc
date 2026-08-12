@@ -13,6 +13,34 @@
 **事実と判断を同じ段落に混ぜない** — 事実にはいつ・どこで測ったかを添える。
 文書を足すときは `docs/README.md` の索引にも 1 行足す(`test/test_doc_links.rb` が検査する)。
 
+# 未消化の作業の残し方・出し方
+
+**未消化の作業は `issues/` に置く。他の文書の散文に書かない。**
+規約の詳細は `issues/README.md`、雛形は `issues/TEMPLATE.md`。
+
+## 出し方(まずこれを見る)
+
+```sh
+grep -l "^status: open" issues/*.md | grep -vE "(README|TEMPLATE)\.md"   # 未着手
+grep -l "^status: in-progress" issues/*.md                               # 着手中(branch あり)
+```
+
+## 残し方
+
+1. **作業中に別の課題を見つけたら、その場で直さずに issue を立てる**。
+   `issues/<着手するブランチ名>.md` を `TEMPLATE.md` から作る(**連番は使わない** —
+   並行作業で衝突した実績があるため)
+2. 課題節は**事実を先に**書く(測定値・最小再現・エラー出力と、いつ・どこで測ったか)。
+   受け入れ条件は**検証可能な形**で書く(「テストが通る」ではなく「`test/x.rb` が
+   0 failures で gcc 対照と一致する」)
+3. 着手したら `status: in-progress` と `branch:`、完了したら `status: done` と
+   `closed:` / `pr:` / `steps:` を埋める。**PR を伴わない作業(タグ push 等)は `pr: none`**
+4. **設計判断の本文は `docs/development/STEPS.md` が本体**。issue の「決着」節はそこを指すだけ
+5. 完了しても**削除しない**。作業ログとして残す(未解消の索引である `GAPS.md` からは消す)
+
+`test/test_issue_docs.rb` が front matter の語彙と状態の整合を検査する
+(`done` なのに `pr` が無い、など)。
+
 - `docs/development/DESIGN.md` — 要件(R1〜R11)・アーキテクチャ選定・マイルストーン定義・
   参考資料(参照した規格・仕様の一覧)
 - `docs/development/ROADMAP.md` — 開発ワークフロー(1 ステップのサイクル)・実装規約と不変条件・

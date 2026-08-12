@@ -298,8 +298,8 @@ fetch helper 9 / 33、scanner 8 / 44、rmake golden 7 / 24、c-suite対象4 / 23
 | native AArch64の実測 | `uname`だけでなくRubyの`RbConfig`を検証するnative smoke workflowを追加済み。[weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)で実測完了 | AArch64 runner上で対象smokeがskipされずpassし、ログにnative contextが残ることを確認済み |
 | R10全対象gemの手動分類 | scannerのc-testsuite実測と、M2で取得できたjson/msgpackのartifact走査まで。macro展開・生成コードを含む全gemの手動分類は未完了 | R10対象gemごとに「実使用・誤検出・要追加確認」を分類し、struct `va_arg`の実装要否を決定する |
 | native/live実測がtipより前のcommit | native実測は`7d903c4`、live実測は`d36a39d`で取得したもので、いずれもtip `94786cf` ではない。以降に`260af8e`がRakefile・`tools/verify_gem_tests.rb`・テスト2本を追加している | tipで再実行するか、実測が有効な範囲をcommit単位で明示する |
-| **2B-1 fixtureの作成が未実施** | `acceptance-fixture` jobは既存のmkmf/rmakeテスト2件を専用profileで再実行しているだけで、gem archive・checksum・期待結果のfixture化は行っていない。実際にskipが発生していたfetch/unpack/extconf/build経路はnetwork必須のまま | 2B-1の完了条件どおりarchiveと期待結果をfixture化し、network遮断環境（2B-4）で当該経路が実行されることを確認する |
-| **2B-3 required job化が未実施** | fixture jobは`weekly.yml`にあり、`test.yml`（PR必須）には無い | fixtureがliveの代替として成立してから、PR必須にするかTier Aで足りるかを判断する |
+| **2B-1 fixtureの作成が未実施**([issue](../../issues/acceptance-fixture-offline.md)) | `acceptance-fixture` jobは既存のmkmf/rmakeテスト2件を専用profileで再実行しているだけで、gem archive・checksum・期待結果のfixture化は行っていない。実際にskipが発生していたfetch/unpack/extconf/build経路はnetwork必須のまま | 2B-1の完了条件どおりarchiveと期待結果をfixture化し、network遮断環境（2B-4）で当該経路が実行されることを確認する |
+| **2B-3 required job化が未実施**([issue](../../issues/acceptance-fixture-required-job.md)) | fixture jobは`weekly.yml`にあり、`test.yml`（PR必須）には無い | fixtureがliveの代替として成立してから、PR必須にするかTier Aで足りるかを判断する |
 
 未実施をgreenとして扱わない。`acceptance-fixture`はnetwork-freeのTier B jobであり、
 PRの必須判定ではなく、liveの代替でもない（上表2B-1・2B-3、および[`CI.md`](CI.md)を参照）。
@@ -496,7 +496,7 @@ R10-0の境界確定前に34件の分類を開始しない。
 | R10-0〜R10-6 計画 | 批判レビュー・改善完了、R10-0〜2実装済み | 34件の母集団、pg/sqlite3境界、証拠フィールド、macro/生成コード、control/rubycc、architecture profile、`要追加確認`の期限、全件レビュー条件を文書化 |
 | LIVE-3/ARM-2 外部実測 | 完了（R10手動分類を除く） | acceptance-onlyはrun 31345720437、native AArch64はrun 31345396123、x86 Tier Aはrun 31345396034で実測。各runのhead SHA、job集合、artifact、strict checkerを照合済み |
 | R10-3 手動分類（ソース・選択経路） | 進行中 | 34件の台帳形式を実装し、候補128件を一対一でレビュー。候補5 gemはfalse positive、zero findingはa0=20 / b0=1 / c=8へ分離した。cは未完了でありpassへ数えない |
-| R10-4〜R10-7 control/rubycc・実測・完了性レビュー | 未着手 | source selectionの実Makefile/preprocessor確認、extension load、upstream suite、第三者完了性レビュー、指摘後の再実測が残る |
+| R10-4〜R10-7 control/rubycc・実測・完了性レビュー([issue](../../issues/r10-verification-completeness.md)) | 未着手 | source selectionの実Makefile/preprocessor確認、extension load、upstream suite、第三者完了性レビュー、指摘後の再実測が残る |
 
 R10-0〜R10-2のcacheを使う機械的な範囲は、`ruby tools/r10_corpus_scan.rb --cache DIR`
 （または`R10_CORPUS_CACHE=DIR rake corpus:r10_scan`）で実行できる。これはcensusと同じ

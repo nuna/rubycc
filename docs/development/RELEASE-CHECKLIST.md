@@ -176,8 +176,8 @@ README では要約に留めそちらへリンクする。
 | `bundle exec rake test` | **済** — 3,109 runs / 10,848 assertions / 0 failures / 0 errors / 41 skips(2026-08-12、`m4-aarch64-acceptance` 時点) |
 | gem の再現ビルド | **済** — `SOURCE_DATE_EPOCH` 固定で 2 回ビルドし**バイト一致**(474,112 bytes) |
 | 同梱物の確認 | **済** — `LICENSE.txt` / `NOTICE` / `README.md` / `CHANGELOG.md` / `data/verified_gems.json` / ヘッダ 78 本 |
-| **タグ `v1.0.0` を打つ** | **未実施**。打つと Tier C(`release.yml`)が走り、タグと `Rubycc::VERSION` の一致・再現ビルドを検証する |
-| **`gem push`** | **未実施**。自動化しない方針(docs/development/CI.md) |
+| **タグ `v1.0.0` を打つ** | **未実施**([issue](../../issues/release-v1-0-0.md))。打つと Tier C(`release.yml`)が走り、タグと `Rubycc::VERSION` の一致・再現ビルドを検証する |
+| **`gem push`** | **未実施**(同 issue)。自動化しない方針(docs/development/CI.md) |
 
 ### 準備中に見つけて直したもの
 
