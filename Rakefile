@@ -49,7 +49,7 @@ end
 
 # M4 acceptance support: run named test files on AArch64 without an AArch64
 # machine, in an arm64 container the host's binfmt handler emulates. This is
-# NOT a substitute for the native runner (docs/development/CI.md is explicit that QEMU does
+# NOT a substitute for the native runner (docs/internals/CI.md is explicit that QEMU does
 # not stand in for native integration) and NOT a gate on the whole suite: the
 # emulation costs about 23x the native ARM runner's time per test (measured
 # against weekly run 31500900897), so a full suite is an hour where the runner

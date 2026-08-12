@@ -1894,7 +1894,7 @@ class TestHeaderAbi < Minitest::Test
   # here, and says so: on the other libc the oracle itself does not compile, so
   # the case would report the harness's assumption as a rubycc failure. The skip
   # is deliberately loud about which header and which libc -- a silently passing
-  # case is the failure mode docs/development/CI.md's skip guard exists to catch.
+  # case is the failure mode docs/internals/CI.md's skip guard exists to catch.
   def assert_abi_matches(spec)
     unless spec_applies_to?(spec)
       skip "<#{spec.header}> exists only on #{spec.libc}; this host's libc is #{host_libc}"

@@ -333,7 +333,7 @@ artifact checkerの三者で確認した。
 
 | 観点 | 残り得る弱点 | 判定・対応 |
 |---|---|---|
-| DESIGN仕様・制限 | skip理由を「実装未完了」とだけ書くと、仕様上の制限と単なる未実装を混同する | `alloca`/bit-scanは`docs/development/IR.md` §6.5のターゲット別実装範囲へ合わせ、`DESIGN.md` R7から参照する。struct `va_arg`は既存のout-of-scope判断を維持し、今回のnative実測を対応済みとは解釈しない |
+| DESIGN仕様・制限 | skip理由を「実装未完了」とだけ書くと、仕様上の制限と単なる未実装を混同する | `alloca`/bit-scanは`docs/internals/IR.md` §6.5のターゲット別実装範囲へ合わせ、`DESIGN.md` R7から参照する。struct `va_arg`は既存のout-of-scope判断を維持し、今回のnative実測を対応済みとは解釈しない |
 | CI再現性 | runner labelやOSだけを信頼すると、誤ったRuby/gccやcross sysrootでgreenになり得る | preflightでCPU、Ruby設定/ELF、gcc target、loader/libc、Fiddle、headersを相互確認し、context artifactを保存した。AArch64実測で全項目passを確認した |
 | CPU依存テスト | x86_64上でAArch64 native証拠を作る、またはAArch64上でx86専用検査を無条件実行する危険 | host targetを共通化し、x86専用検査はAArch64でskip、AArch64専用ケースはnative runnerで実行する。AArch64 full suiteでは無条件skipの追加を確認しなかった |
 | skipによるgreen化 | 広いallowlistと総数上限だけでは、既知理由を別testへ付け替えた欠落を見逃す | profileを`provisional=false`、実測件数、期限、owner、test+理由のallowlist、SHA-256 fingerprintで固定した。245/42の件数とfingerprintがRuby 3.3/4.0で一致し、strict checkerも再実行passした |

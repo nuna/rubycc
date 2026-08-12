@@ -18,7 +18,7 @@
 set -eu
 
 # build-base brings gcc, make and musl-dev. The differential tests call gcc
-# unconditionally (docs/development/CI.md), and on Alpine that gcc targets musl, which is
+# unconditionally (docs/internals/CI.md), and on Alpine that gcc targets musl, which is
 # the entire point of this job: the reference implementation the suite compares
 # rubycc against is a musl toolchain rather than a glibc one. libffi-dev is for
 # the fiddle gem the tests dlopen generated .so files with. zlib-dev and

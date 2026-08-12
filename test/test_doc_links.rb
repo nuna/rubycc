@@ -55,13 +55,15 @@ class TestDocLinks < Minitest::Test
     assert_empty broken, "these markdown links do not resolve:\n  #{broken.join("\n  ")}"
   end
 
-  # The two directories are the whole point of the split, so a new document
-  # landing directly in docs/ (where it belongs to neither audience) is caught
-  # here rather than by a reader wondering which kind of file it is.
+  # The three directories are the whole point of the split, so a new document
+  # landing directly in docs/ (where it belongs to none of them) is caught here
+  # rather than by a reader wondering which kind of file it is. The split is by
+  # two axes -- reader and kind -- because one axis alone leaves the
+  # developer-facing *specifications* (IR.md, CI.md) with nowhere to go.
   def test_docs_root_holds_only_the_index
     entries = Dir.children(DOCS).sort
-    assert_equal %w[README.md development reference], entries,
-                 "docs/ holds the index and the two audience directories; " \
+    assert_equal %w[README.md development internals reference], entries,
+                 "docs/ holds the index and the three directories; " \
                  "a new document belongs in one of them (see docs/README.md)"
   end
 
@@ -71,7 +73,7 @@ class TestDocLinks < Minitest::Test
     listed = File.read(File.join(DOCS, "README.md")).scan(LINK).flatten
     listed = listed.map { |t| t.split("#", 2).first }.compact
 
-    %w[reference development].each do |dir|
+    %w[reference internals development].each do |dir|
       Dir.children(File.join(DOCS, dir)).sort.each do |name|
         assert_includes listed, "#{dir}/#{name}",
                         "docs/README.md should list docs/#{dir}/#{name}"

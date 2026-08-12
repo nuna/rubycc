@@ -184,7 +184,7 @@ ELF writer. The linker resolves symbols, merges sections and emits `.so`/executa
 stage shells out; no stage writes assembly text.
 
 - [docs/development/DESIGN.md](docs/development/DESIGN.md) — requirements, architecture decisions, scope
-- [docs/development/IR.md](docs/development/IR.md) — the intermediate representation
+- [docs/internals/IR.md](docs/internals/IR.md) — the intermediate representation
 - [docs/development/RELEASE-CHECKLIST.md](docs/development/RELEASE-CHECKLIST.md) — non-functional requirement status
 - [docs/reference/HEADER-LICENSING.md](docs/reference/HEADER-LICENSING.md) — provenance of every bundled header
 

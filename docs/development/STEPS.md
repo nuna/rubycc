@@ -2375,7 +2375,7 @@ M4 の初手。heavy-implementer へ移譲・レビューして確定。**挙動
   RbConfig::CONFIG["host_cpu"]、amd64/x64 → x86_64・arm64 → aarch64 の正規化と
   triple の先頭要素採用)。aarch64 は「not implemented yet」、未知は
   「unsupported target」の UsageError。
-- 契約の明文化は docs/development/IR.md §6 に追記(バックエンドとの契約の一部のため、IR 例外
+- 契約の明文化は docs/internals/IR.md §6 に追記(バックエンドとの契約の一部のため、IR 例外
   ルールの範囲)。aarch64 のコードは一行も書いていない。
 
 ---
@@ -2656,7 +2656,7 @@ Step 75 の実測で「残る最大のボトルネックは struct 値渡しで�
 - **x86_64 は 254 ファイル(examples 全件 + c-testsuite 本体)でバイト一致**。
 - **成果: c-testsuite の aarch64 保留リストが空になった**(220 件中 203 件通過、
   残り 17 件はターゲット非依存の既知債務)。examples の保留も 9 → 8 件。
-- IR 契約を変更したため、`ir.rb` のコメントと `docs/development/IR.md`(§2 param_kinds、§5 :call、
+- IR 契約を変更したため、`ir.rb` のコメントと `docs/internals/IR.md`(§2 param_kinds、§5 :call、
   §8.2 出典表に AAPCS64 §6.4.2)の両方を更新した。x86_64 が観測する kind 集合は不変。
 - **判明した既存の silent miscompile**: `struct { float a, b; }` の**値渡し**は本変更
   以前から誤っている。System V は 2 つの float を 1 eightbyte にまとめて d0 へ、
@@ -2696,7 +2696,7 @@ System V は 2 つの float を 1 eightbyte にまとめて d0 へ渡すが、**
   - 16 バイト整列の集約は**偶数番 x レジスタから**
   - 溢れた HFA はメンバごとではなく **eightbyte 単位**で積む
 - aarch64 backend に x8 間接結果・参照渡し・HFA の v レジスタ配置・`:memcpy` を実装。
-- **IR 契約の変更 2 点**(`ir.rb` と `docs/development/IR.md` の両方を更新):
+- **IR 契約の変更 2 点**(`ir.rb` と `docs/internals/IR.md` の両方を更新):
   1. **`:indirect` タグを削除**。参照渡しされる集約は、ジェネレータが「呼び出し側コピーへの
      通常の `:gp` ポインタ」に縮約する。backend 側に専用規則が要らなくなり、未使用タグを
      残すより契約が正直になる。`:indirect_result`(x8)は専用レジスタが要るので残す。
@@ -4181,7 +4181,7 @@ Step 133 が「サポートを宣言するバージョンは実際に回すべ�
 Step 127 のチェックリストが N5 を「CI 未整備」と正直に判定していた債務の解消。
 `.github/` は本ステップまで**存在しなかった**ため、CI は完全な新規構築である。
 
-- **3 層に分けた**([`CI.md`](CI.md) に構成表)。分割の基準は
+- **3 層に分けた**([`CI.md`](../internals/CI.md) に構成表)。分割の基準は
   **「push ごとに払ってよいコストか」**。
   - **Tier A**(`test.yml`、push / PR): Ruby 3.3 / 3.4 / 4.0 のマトリクスで全スイート。
   - **Tier B**(`nightly.yml`、夜間): ネットワークと時間を食うもの =
@@ -5717,7 +5717,7 @@ Step 155 の「警告チャネルの無い処理系では『警告して続行�
 - **オーダごとに降ろし分ける** —— rubycc は最適化を行わず -O0 相当の列を出すので、
   緩いオーダで得られるはずの余地はそもそも存在しない。複雑さだけが増える。
 
-その結果 **IR はメモリオーダを一切運ばない**(`docs/development/IR.md` §5 のアトミック節)。
+その結果 **IR はメモリオーダを一切運ばない**(`docs/internals/IR.md` §5 のアトミック節)。
 オーダ引数は「捨てる」のであって「無視する」のではなく、
 **普通の関数引数として評価はする**(副作用がありうる)うえで整数型であることは検査する。
 
@@ -6796,7 +6796,7 @@ musl では 13 ケースで**参照実装である gcc の方が先にコンパ�
 
 前者は `skip` にするが、**理由を必ずメッセージに書く**
 (`<features.h> exists only on glibc; this host's libc is musl`)。
-`docs/development/CI.md` が繰り返し書いているとおり、**静かに通る skip がこのプロジェクトの敵**である。
+`docs/internals/CI.md` が繰り返し書いているとおり、**静かに通る skip がこのプロジェクトの敵**である。
 
 ### glibc 側のプローブは 1 バイトも変えない、を不変条件にした
 
@@ -9730,7 +9730,7 @@ toolchain の導入、Ruby 3.3 / 4.0 matrix、全スイート、skip guard、art
 
 ### 結果
 
-専用 `arm-ci.yml` は削除し、CI の構成説明を `docs/development/CI.md` と `docs/development/ROADMAP.md` に反映した。
+専用 `arm-ci.yml` は削除し、CI の構成説明を `docs/internals/CI.md` と `docs/development/ROADMAP.md` に反映した。
 これは workflow と文書だけの変更なので、C の examples は追加していない。
 
 ---
@@ -9908,7 +9908,7 @@ Step `codex/arm-ci-m4-20260808-1` は「週次 schedule には含めない」と
 full suite は dispatch 専用のまま残す**という分け方にした。両方の条件を
 `test/test_weekly_workflow.rb` で固定してあるので、どちらかが他方に寄ることはない。
 
-あわせて `docs/development/CI.md` の `acceptance-fixture` の説明を実態に直した。「ネットワークを
+あわせて `docs/internals/CI.md` の `acceptance-fixture` の説明を実態に直した。「ネットワークを
 使わない必須の製品シグナル」と書かれていたが、実際は Tier B の週次 job で PR の必須判定
 ではなく、実行しているテスト 2 本は Tier A の `rake test` に含まれる。そして
 **live acceptance の代替にはならない** — gem の取得・unpack・extconf・ビルドという、
@@ -10764,7 +10764,7 @@ rubycc            : FP_ILOGB0 = -2147483647   FP_ILOGBNAN =  2147483647
 libc も選択に入れる形に直した。
 
 **x86-64 musl では偶然 glibc と同じ値**だったので、これまでの musl 実走
-(Steps 175・191・205)では捕まらなかった。`docs/development/CI.md` が
+(Steps 175・191・205)では捕まらなかった。`docs/internals/CI.md` が
 「aarch64 層は glibc 値のまま、aarch64 musl の実走が測るまでそのまま」と
 書いていた、まさにその箇所である。**予告どおりに出た**。
 
@@ -11017,3 +11017,25 @@ ruby tools/scan_corpus_variadics.rb --root test/external/c-testsuite --format js
 `ROADMAP.md` §3 の負債表は移していない。あちらは「**実害が出た時点**で着手する」という
 条件付きの項目で、いま着手できる作業ではないためである。条件が満たされた時点で
 issue を作る。
+
+### 分類が 1 軸では足りないことが、レビューで露見した
+
+読み手(利用者 / 開発者)だけで分けた結果、**`IR.md` と `CI.md` が記録の側に落ちた**。
+どちらも作業ログではなく**仕様**で、実装を変えたら直すべき文書である
+(CLAUDE.md は「IR 命令の追加・変更時は `ir.rb` のコメントと両方を更新すること」と
+定めている)。`development/` の維持規則は「古くなったら日付を添えて残す」なので、
+**規則と実物が食い違っていた**。
+
+原因は軸を 1 つに畳んだことだった。実際には 2 軸ある。
+
+| | 仕様(古くなったら直す) | 記録(日付を添えて残す) |
+|---|---|---|
+| 利用者向け | `reference/` | — |
+| 開発者向け | **`internals/`** | `development/` |
+
+`internals/` を足して `IR.md` と `CI.md` を移した。**維持の規則は種別で決まり、
+置き場は読み手で分かれる** — この 2 つを取り違えると、直すべき文書に日付だけ足して
+放置することになる。
+
+`DESIGN.md` は要件(現行の契約)と選定の経緯(記録)が混在するが、**主体は経緯**なので
+`development/` に残した。分割する価値が出たら、そのとき分ける。

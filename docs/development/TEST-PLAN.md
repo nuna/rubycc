@@ -210,7 +210,7 @@ x86_64とAArch64のELF・ABI固有期待値は共通化せず、GCC・ELF仕様�
 | タスク | 意味単位 | 主な作業・成果物 | 完了条件 |
 |---|---|---|---|
 | **F-1 CI結果とartifactの確認** | 結果を追跡可能にする | profile、stable ID、状態、runner、target、libc、network条件をartifactへ残す | 失敗したタスクをジョブログだけでなくIDから追跡できる |
-| **F-2 ドキュメント整合** | 実装と説明を一致させる | `docs/development/CI.md`、`DESIGN.md`、`README.md`、`ROADMAP.md`、`STEPS.md`、本計画を更新する | skip、required、native/QEMU、struct `va_arg`の説明が実装と一致する |
+| **F-2 ドキュメント整合** | 実装と説明を一致させる | `docs/internals/CI.md`、`DESIGN.md`、`README.md`、`ROADMAP.md`、`STEPS.md`、本計画を更新する | skip、required、native/QEMU、struct `va_arg`の説明が実装と一致する |
 | **F-3 代表経路の最終検証** | 計画全体の受入れを行う | Tier A、AArch64/QEMU、native AArch64 smoke、fixture acceptance、live acceptanceを実行する | 各経路のpass/fail/skipped/inconclusiveが契約通りで、許可されない未実行がない |
 | **F-4 運用判断** | 維持可能性を確認する | 実行時間、費用、外部障害率、skip数、保守負担をレビューする | 継続、縮小、撤回、次期実装の判断と根拠が記録される |
 
@@ -302,7 +302,7 @@ fetch helper 9 / 33、scanner 8 / 44、rmake golden 7 / 24、c-suite対象4 / 23
 | **2B-3 required job化が未実施**([issue](../../issues/acceptance-fixture-required-job.md)) | fixture jobは`weekly.yml`にあり、`test.yml`（PR必須）には無い | fixtureがliveの代替として成立してから、PR必須にするかTier Aで足りるかを判断する |
 
 未実施をgreenとして扱わない。`acceptance-fixture`はnetwork-freeのTier B jobであり、
-PRの必須判定ではなく、liveの代替でもない（上表2B-1・2B-3、および[`CI.md`](CI.md)を参照）。
+PRの必須判定ではなく、liveの代替でもない（上表2B-1・2B-3、および[`CI.md`](../internals/CI.md)を参照）。
 live/nativeは後述の実runner結果で確認済みだが、実測commitがtipより前である点と、
 R10手動分類の未確認範囲は受入れ判定から区別する。
 
@@ -555,7 +555,7 @@ ARM-2〜ARM-6を、branch `codex/test-ci-implementation` の commit
 上表の fingerprint と `expires` は**この時点の記録であり、現在は検査されない**。
 `ci/simplify-skip-baseline-1` で `expected_skips` / `skip_fingerprint` / `expires` を
 廃止し、`max_skips`・`min_runs` と `allowed_skips`(テスト名 + 正規化理由 + 件数上下限)の
-2層に整理した。判断の経緯は `docs/development/STEPS.md`、現行仕様は `docs/development/CI.md` の「skip ガード」を参照。
+2層に整理した。判断の経緯は `docs/development/STEPS.md`、現行仕様は `docs/internals/CI.md` の「skip ガード」を参照。
 
 LIVE-3〜LIVE-6は、最終commit `d36a39d71ea5f9c213e8d9996aa9be93a66b9ae6` の
 acceptance-only実runner実測（[run 31345720437](https://github.com/nuna/rubycc/actions/runs/31345720437)）まで完了している。fixtureの`mkmf-fixture-probes`/`rmake-fixture-build`、

@@ -96,7 +96,7 @@ N5(gemspec 宣言の確認・静的スキャン・rbenv の状況)と N7(代表�
   実行する。差分テストの相手となるツールチェイン(gcc・binutils・aarch64 クロス・
   qemu-user)を apt で導入し、欠けていたらその場で失敗させたうえで、
   `tools/ci_check_skips.rb` が skip 数・runs 数の逸脱も検出する(skip は静かに
-  緑になるため)。構成の詳細は [`CI.md`](CI.md)。
+  緑になるため)。構成の詳細は [`CI.md`](../internals/CI.md)。
 - **実機検証(Step 133)**: Ruby 3.3.12 を導入して全スイートを実行したところ、
   **1 件失敗した** — `String#to_f` が「`.` の直後に小数部の数字が無く指数が続く」形
   (`1.e5`)で指数を落とす 3.3 のバグにより、浮動小数点定数がサイレントに誤変換されていた。
@@ -177,7 +177,7 @@ README では要約に留めそちらへリンクする。
 | gem の再現ビルド | **済** — `SOURCE_DATE_EPOCH` 固定で 2 回ビルドし**バイト一致**(474,112 bytes) |
 | 同梱物の確認 | **済** — `LICENSE.txt` / `NOTICE` / `README.md` / `CHANGELOG.md` / `data/verified_gems.json` / ヘッダ 78 本 |
 | **タグ `v1.0.0` を打つ** | **未実施**([issue](../../issues/release-v1-0-0.md))。打つと Tier C(`release.yml`)が走り、タグと `Rubycc::VERSION` の一致・再現ビルドを検証する |
-| **`gem push`** | **未実施**(同 issue)。自動化しない方針(docs/development/CI.md) |
+| **`gem push`** | **未実施**(同 issue)。自動化しない方針(docs/internals/CI.md) |
 
 ### 準備中に見つけて直したもの
 

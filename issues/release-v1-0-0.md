@@ -49,7 +49,7 @@ steps: []
 
 `docs/development/RELEASE-CHECKLIST.md` から移設。
 
-**この 2 操作は意図的に自動化しない**(アカウント保有者の操作である。`docs/development/CI.md`)。
+**この 2 操作は意図的に自動化しない**(アカウント保有者の操作である。`docs/internals/CI.md`)。
 したがって完了時の `pr:` は `none` になる。
 
 ## 決着

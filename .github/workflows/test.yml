@@ -2,7 +2,7 @@
 #
 # The suite is largely differential -- it compares rubycc's output against the
 # system gcc, the aarch64 cross toolchain and qemu -- so the runner needs a real
-# toolchain installed before the tests mean anything. See docs/development/CI.md.
+# toolchain installed before the tests mean anything. See docs/internals/CI.md.
 name: test
 
 # Quoted so YAML parsers cannot read the key as the boolean `on` (YAML 1.1
