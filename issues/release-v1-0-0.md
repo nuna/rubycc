@@ -58,6 +58,23 @@ steps: []
 
 `gem push` は認証がこのセッションから行えないため、リポジトリ所有者の操作として残る。
 
+タグを打つ前に **`examples/distroless/Dockerfile` のビルドを確認**したところ、
+`gem build` が `["CHANGELOG.md"] are not files` で**失敗した**。README が新規利用者に
+案内する経路であり、CI では検出できない(Docker を要する)。PR #41 で修正し、
+再発防止の検査も入れた。修正後はビルド完走・`rubycc distroless sample: PASS`。
+
+**タグ `v1.0.0`(`a9e04bf`)を一度打ち、Tier C は全ジョブ success だった**
+([run 31607452987](https://github.com/nuna/rubycc/actions/runs/31607452987):
+Ruby 3.3 / 4.0 の全スイートと、タグ・`Rubycc::VERSION` の一致、`SOURCE_DATE_EPOCH`
+固定の再現ビルド)。
+
+そのビルドで `gem build` が**警告 2 件**を出していた —
+`description and summary are identical` と、`homepage_uri` / `source_code_uri` に
+同じ URI を与えたことによる `Only the first one will be shown on rubygems.org`。
+どちらも gem の動作ではなく **rubygems.org の表示**の問題だが、
+**`gem push` 後は同じバージョンを差し替えられない**ので、公開前に直すことにした。
+**タグは削除した**(内容に紐づくため、修正後に打ち直す)。
+
 ## 決着
 
 (タグ push と Tier C の結果を記入する。`gem push` の完了もここに書く。)
