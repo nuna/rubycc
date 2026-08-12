@@ -215,16 +215,28 @@ module Rubycc
       end
     end
 
-    # A floating type: `float` (4 bytes, IEEE754 single precision) or `double`
-    # (8 bytes, IEEE754 double precision). A single shared instance stands for
-    # each (Type::Float, Type::Double); being a Data, identity and value
-    # comparison coincide, so two `double`s name the very same type. `long
-    # double` normalizes to `double` at parse time (same width here), so no
-    # separate instance exists. #arithmetic? is true — a floating type mixes with
+    # A floating type: `float` (4 bytes, IEEE754 single precision), `double`
+    # (8 bytes, IEEE754 double precision) or `long double`. A single shared
+    # instance stands for each (Type::Float, Type::Double, Type::LongDouble);
+    # being a Data, identity and value comparison coincide, so two `double`s name
+    # the very same type. #arithmetic? is true — a floating type mixes with
     # the integer types under the usual arithmetic conversions — while #integer?
     # is false and #float? true, which is how the generator tells a floating
     # operand apart to emit the f-prefixed IR (:fadd, :flt, ...) and the
     # integer/float conversions (:itof / :ftoi / :ftof).
+    #
+    # `long double` is a distinct *name* over the same 8-byte representation a
+    # `double` has: every value it holds is a double, every operation on it is a
+    # double's, and #size stays 8 (widening it would move sizeof, struct layouts
+    # and max_align_t, which belongs to a whole-ABI change and not here). The
+    # separate instance exists for one reason — a variadic call has to know a
+    # `long double` argument was written as one, because the callee reads it in
+    # the target's own long-double format (x87 80-bit extended on x86-64, IEEE
+    # binary128 on aarch64) and at the target's own ABI position, both of which
+    # differ from a `double`'s. The generator converts the value at that one
+    # boundary (see IR::Generator#lower_variadic_long_double); everywhere else
+    # the two types behave alike, which is why the usual arithmetic conversions
+    # settle on `double` (Type::LongDouble's own width) rather than on it.
     #
     # Value representation (see Backend::X86_64): a `float` value lives in its
     # virtual-register slot's low 4 bytes as an IEEE754 single-precision bit
@@ -328,9 +340,13 @@ module Rubycc
     Int128 = IntegerType.new("__int128", 16, true)
     UInt128 = IntegerType.new("unsigned __int128", 16, false)
 
-    # The shared floating-type instances (Type::Float, Type::Double).
+    # The shared floating-type instances (Type::Float, Type::Double,
+    # Type::LongDouble). `long double` deliberately reports the same 8-byte
+    # width `double` does — see FloatType's comment for what that models and
+    # what it does not.
     Float = FloatType.new("float", 4)
     Double = FloatType.new("double", 8)
+    LongDouble = FloatType.new("long double", 8)
 
     # The lone `void`. Referred to everywhere as Type::Void.
     Void = VoidType.new

@@ -1282,15 +1282,19 @@ module Rubycc
         return normalize_standalone(Type::Void, "void", specs, tok) if counts["void"].positive?
         return normalize_standalone(Type::Bool, "_Bool", specs, tok) if counts["_Bool"].positive?
         return normalize_standalone(Type::Float, "float", specs, tok) if counts["float"].positive?
-        # `double` stands alone or pairs with a single `long` ("long double",
-        # treated as `double` here); any other keyword, a second `double` or a
-        # second `long` is an ill-formed combination.
+        # `double` stands alone or pairs with a single `long` ("long double");
+        # any other keyword, a second `double` or a second `long` is an
+        # ill-formed combination. The two are separate types here even though
+        # they share a representation: a `long double` handed to a variadic
+        # function must be converted to the target's own long-double format, and
+        # the only way the generator can know to do that is for the name to
+        # survive the declaration (see Type::LongDouble).
         if counts["double"].positive?
           non_long = specs.reject { |s| s == "long" }
           unless non_long == ["double"] && counts["long"] <= 1
             error_at(tok, "cannot combine 'double' with other type specifiers")
           end
-          return Type::Double
+          return counts["long"].positive? ? Type::LongDouble : Type::Double
         end
 
         # `__int128` (a GNU keyword) stands alone or pairs with a single
@@ -3837,8 +3841,16 @@ module Rubycc
         elsif tok.type == :float
           advance
           # The suffix (from the lexer) fixes the constant's type: "f"/"F" is
-          # float, everything else (plain, or "l"/"L" long double) is double.
-          type = tok.suffix == "f" ? Type::Float : Type::Double
+          # float, "l"/"L" long double, and no suffix double. A long-double
+          # constant carries only a double's value and precision (that is what
+          # Type::LongDouble models), but it must keep the name so that
+          # "printf(\"%Lg\", 1.5L)" passes the argument in the long-double form
+          # the callee reads.
+          type = case tok.suffix
+                 when "f" then Type::Float
+                 when "l" then Type::LongDouble
+                 else Type::Double
+                 end
           AST::FloatLit.new(tok.value, type, tok)
         elsif tok.type == :string
           advance

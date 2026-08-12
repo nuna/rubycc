@@ -2390,10 +2390,13 @@ class TestParser < Minitest::Test
     assert_equal Type::Float, expr.type
   end
 
-  def test_long_double_suffixed_literal_is_double
+  # An l/L-suffixed constant is a `long double`, a type of its own even though
+  # it shares `double`'s representation and width: the name has to survive so a
+  # variadic call can convert the argument to the target's long-double format.
+  def test_long_double_suffixed_literal_is_long_double
     expr = parse_expr("1.5L")
     assert_kind_of AST::FloatLit, expr
-    assert_equal Type::Double, expr.type
+    assert_equal Type::LongDouble, expr.type
   end
 
   def test_float_declaration_type
@@ -2406,9 +2409,17 @@ class TestParser < Minitest::Test
     assert_equal Type::Double, decl.type
   end
 
-  def test_long_double_declaration_is_double
+  def test_long_double_declaration_is_long_double
     decl = parse_decl("long double x;")
-    assert_equal Type::Double, decl.type
+    assert_equal Type::LongDouble, decl.type
+  end
+
+  # ... and it is still eight bytes wide. Widening it would move sizeof, every
+  # struct layout that has one in it and max_align_t at once, which is a
+  # whole-ABI change and not this one.
+  def test_long_double_is_eight_bytes_wide
+    assert_equal 8, parse_decl("long double x;").type.size
+    assert_equal 8, Type::LongDouble.alignment
   end
 
   def test_pointer_to_double_declaration

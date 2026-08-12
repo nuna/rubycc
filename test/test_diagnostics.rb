@@ -249,6 +249,18 @@ class TestDiagnostics < Minitest::Test
     assert_match(/second argument to 'va_arg' is of promotable type 'char'/, error.description)
   end
 
+  # va_arg of a `long double` is refused rather than silently read as the
+  # `double` it shares a width with: a caller passes one in the target's own
+  # long-double format and in a 16-byte slot (see the generator's variadic
+  # long-double lowering), so an 8-byte read of the argument slot would produce
+  # a plausible wrong number instead of an error.
+  def test_va_arg_of_long_double_is_rejected
+    source = "double f(int a, ...) { __builtin_va_list ap; __builtin_va_start(ap, a); " \
+             "return (double)__builtin_va_arg(ap, long double); }"
+    error = assert_raises(Rubycc::CompileError) { compile(source) }
+    assert_match(/fetching a 'long double' with 'va_arg' is not supported yet/, error.description)
+  end
+
   # va_arg of a struct has no scalar argument slot to read here.
   def test_va_arg_of_struct_type_is_rejected
     source = "struct p { int x; }; int f(int a, ...) { __builtin_va_list ap; " \

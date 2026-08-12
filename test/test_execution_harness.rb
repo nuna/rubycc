@@ -2376,6 +2376,170 @@ class TestExecutionHarness < Minitest::Test
     end
   end
 
+  # A `long double` in a variadic call's variable part. rubycc computes in it at
+  # a double's width and precision, but the callee here is glibc's printf, built
+  # by the platform compiler and reading the argument as the target's own long
+  # double -- x87 80-bit extended on x86-64, in a 16-byte-aligned stack slot.
+  # The generator converts the value at that boundary, and this is what says the
+  # conversion is right.
+  #
+  # Every value is built from a *double*, not written as a long-double constant:
+  # "1.234567L" is a different number to the two compilers (gcc parses it into
+  # an 80-bit significand, rubycc into a 53-bit one), which "%LA" would report
+  # as a mismatch of the constant rather than of the conversion under test.
+  # Within a double, the conversion is exact, and "%LA" prints the whole
+  # significand, so any bit set wrong shows up.
+  #
+  # The values cover every case a binary64 encoding distinguishes: both zeros,
+  # both infinities, a NaN, the subnormals (whose conversion has to normalize
+  # them into the wider exponent range), the extremes of the normal range and an
+  # ordinary value. The second loop then walks a subnormal through all 52
+  # normalization distances, since each one takes a different shift.
+  LONG_DOUBLE_VALUE_PROGRAM =
+    "int printf(const char *, ...); " \
+    "double zero = 0.0, one = 1.0; " \
+    "int main(void) { " \
+    "  double values[11]; " \
+    "  double d; " \
+    "  int i; " \
+    "  values[0] = 0.0; " \
+    "  values[1] = -0.0; " \
+    "  values[2] = 1.0; " \
+    "  values[3] = -1.0; " \
+    "  values[4] = 1.234567; " \
+    "  values[5] = 1.7976931348623157e308; " \
+    "  values[6] = 2.2250738585072014e-308; " \
+    "  values[7] = 4.9406564584124654e-324; " \
+    "  values[8] = one / zero; " \
+    "  values[9] = -one / zero; " \
+    "  values[10] = zero / zero; " \
+    "  for (i = 0; i < 11; i = i + 1) { " \
+    "    printf(\"%d [%Lg] [%Le] [%LA]\\n\", i, (long double)values[i], " \
+    "           (long double)values[i], (long double)values[i]); } " \
+    "  d = 4.9406564584124654e-324; " \
+    "  for (i = 0; i < 52; i = i + 1) { " \
+    "    printf(\"s%d [%LA]\\n\", i, (long double)d); d = d * 2.0; } " \
+    "  return 0; }"
+
+  def test_variadic_long_double_values_match_gcc_stdout
+    assert_equal program_output(LONG_DOUBLE_VALUE_PROGRAM, compiler: :gcc),
+                 program_output(LONG_DOUBLE_VALUE_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on a long double passed to printf"
+  end
+
+  # Where the argument lands, which is the other half of the ABI. On System V a
+  # long double is X87/X87UP-classed and so always travels in the stack argument
+  # area, in a slot aligned to 16 -- which means an odd number of eightbytes
+  # ahead of it has to be padded (line "a" below, whose six integer arguments
+  # push one onto the stack first). The remaining lines vary how full the
+  # integer and vector files are when it arrives, and pass several in one call,
+  # so a mistake in the running placement shows as a wrong number rather than a
+  # crash.
+  LONG_DOUBLE_PLACEMENT_PROGRAM =
+    "int printf(const char *, ...); " \
+    "int main(void) { " \
+    "  printf(\"a %d %d %d %d %d %d %Lg %d\\n\", 1, 2, 3, 4, 5, 6, 2.5L, 7); " \
+    "  printf(\"b %f %f %f %f %f %f %f %Lg %d\\n\", " \
+    "         1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 3.5L, 8); " \
+    "  printf(\"c %f %f %f %f %f %f %f %f %Lg %d\\n\", " \
+    "         1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 4.5L, 9); " \
+    "  printf(\"d %f %f %f %f %f %f %f %f %f %Lg %d\\n\", " \
+    "         1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 5.5L, 10); " \
+    "  printf(\"e %Lg %Lg %Lg %Lg\\n\", 1.5L, 2.5L, 3.5L, 4.5L); " \
+    "  printf(\"f %d %Lg %d %Lg %d\\n\", 1, 6.5L, 2, 7.5L, 3); " \
+    "  return 0; }"
+
+  def test_variadic_long_double_placement_matches_gcc_stdout
+    assert_equal program_output(LONG_DOUBLE_PLACEMENT_PROGRAM, compiler: :gcc),
+                 program_output(LONG_DOUBLE_PLACEMENT_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on where a variadic long double is placed"
+  end
+
+  # printf tells the value apart but not the encoding: glibc prints every NaN as
+  # "nan" whatever its payload, and the psABI leaves six of the sixteen bytes an
+  # x87 long double occupies unspecified. So the image itself is read back by a
+  # *gcc-built* callee, which va_arg's the argument and dumps the ten bytes that
+  # carry it. The same caller is then built by gcc, and the two dumps compared:
+  # rubycc's bit-level conversion has to agree with gcc's hardware one down to
+  # the NaN payload and the quiet bit (a signalling NaN becomes quiet under any
+  # conversion between formats, IEEE 754 6.2).
+  LONG_DOUBLE_IMAGE_SINK =
+    "#include <stdarg.h>\n" \
+    "#include <stdio.h>\n" \
+    "#include <string.h>\n" \
+    "void sink(int count, ...) { " \
+    "  va_list ap; int i, j; " \
+    "  va_start(ap, count); " \
+    "  for (i = 0; i < count; i++) { " \
+    "    long double v = va_arg(ap, long double); " \
+    "    unsigned char raw[sizeof(long double)]; " \
+    "    memcpy(raw, &v, sizeof(long double)); " \
+    "    printf(\"%d:\", i); " \
+    "    for (j = 0; j < 10; j++) printf(\" %02x\", raw[j]); " \
+    "    printf(\"\\n\"); } " \
+    "  va_end(ap); }"
+
+  LONG_DOUBLE_IMAGE_CALLER =
+    "void sink(int, ...); " \
+    "typedef unsigned long u64; " \
+    "union bits { u64 u; double d; }; " \
+    "static u64 patterns[12] = { " \
+    "  0x0000000000000000UL, 0x8000000000000000UL, " \
+    "  0x3FF0000000000000UL, 0xBFF0000000000000UL, " \
+    "  0x7FF0000000000000UL, 0xFFF0000000000000UL, " \
+    "  0x7FF8000000000000UL, 0xFFF8000000000000UL, " \
+    "  0x7FF8000000012345UL, 0x7FF0000000000001UL, " \
+    "  0x000FFFFFFFFFFFFFUL, 0x0000000000000001UL }; " \
+    "int main(void) { " \
+    "  union bits b; int i; " \
+    "  for (i = 0; i < 12; i = i + 1) { b.u = patterns[i]; sink(1, (long double)b.d); } " \
+    "  b.u = 0x3FF0000000000000UL; " \
+    "  sink(3, (long double)b.d, (long double)(b.d * 2.0), (long double)(b.d * 4.0)); " \
+    "  return 0; }"
+
+  def test_variadic_long_double_image_matches_gcc
+    gcc = link_units_and_run([[LONG_DOUBLE_IMAGE_SINK, :gcc], [LONG_DOUBLE_IMAGE_CALLER, :gcc]])
+    rubycc = link_units_and_run([[LONG_DOUBLE_IMAGE_SINK, :gcc], [LONG_DOUBLE_IMAGE_CALLER, :rubycc]])
+
+    assert_equal gcc, rubycc,
+                 "a gcc callee reads a different long double image from a rubycc caller"
+  end
+
+  # The width stays eight bytes. Passing a long double correctly is deliberately
+  # not the same as modelling one: widening it would move sizeof, the layout of
+  # every struct holding one and max_align_t at once, which belongs to a
+  # whole-ABI change. This is where that boundary is written down, so a later
+  # step that moves it has to move this too. (No gcc comparison: gcc's own
+  # sizeof is 16 here, which is exactly the gap being bounded.)
+  def test_long_double_width_is_still_a_double_s
+    assert_c_exit_status(8, "int main(void) { return (int)sizeof(long double); }")
+    assert_c_exit_status(8, "int main(void) { return (int)_Alignof(long double); }")
+    assert_c_exit_status(24, "struct S { double a; long double b; char c; }; " \
+                             "int main(void) { return (int)sizeof(struct S); }")
+  end
+
+  # A long double arithmetic expression is a double's, and keeps working as one
+  # -- the point of the change being that the *name* survives to the call, not
+  # that the arithmetic changed. Compared against gcc through "%g" (a double
+  # conversion), since the two compilers really do compute at different
+  # precisions and "%Lg" of a computed value would report that instead.
+  LONG_DOUBLE_ARITHMETIC_PROGRAM =
+    "int printf(const char *, ...); " \
+    "int main(void) { " \
+    "  long double a = 1.5L, b = 0.25L; " \
+    "  double d = 2.0; " \
+    "  int n = 3; " \
+    "  printf(\"%g %g %g %g\\n\", (double)(a + b), (double)(a * d), " \
+    "         (double)(a - n), (double)(a / b)); " \
+    "  printf(\"%d %d %d\\n\", a > b, a == 1.5L, (int)(a + 0.5L)); " \
+    "  return 0; }"
+
+  def test_long_double_arithmetic_matches_gcc_stdout
+    assert_equal program_output(LONG_DOUBLE_ARITHMETIC_PROGRAM, compiler: :gcc),
+                 program_output(LONG_DOUBLE_ARITHMETIC_PROGRAM, compiler: :rubycc),
+                 "rubycc and gcc disagree on long double arithmetic at double precision"
+  end
+
   # Variadic function definitions (Step 23 Phase B): __builtin_va_list, the
   # __builtin_va_start / __builtin_va_arg / __builtin_va_end trio and the
   # register-save-area prologue. gcc understands the same builtins, so each
