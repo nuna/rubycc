@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require_relative "../ir/ir"
+require_relative "../ir/simplify"
+require_relative "slot_residency"
 
 module Rubycc
   module Backend
@@ -47,6 +49,13 @@ module Rubycc
     # argument registers into a 176-byte register-save area so __builtin_va_arg
     # can reach the variable part.
     class X86_64
+      # Every slot access goes through #load_reg / #store_reg, which use this to
+      # skip a reload of a value the previous instruction has just left in a
+      # register. See slot_residency.rb for why "nothing has been emitted since"
+      # is a sufficient safety condition, and #emit_instruction's :label case
+      # for the one state change it cannot see.
+      include SlotResidency
+
       # Result of compiling one function: `bytes` is the machine code (an
       # ASCII-8BIT String), `symbols` is an array of
       # { name:, offset:, size: } describing the emitted function symbols, and
@@ -133,6 +142,13 @@ module Rubycc
 
       def compile(ir_func)
         @code = +"".b
+        reset_slot_residency
+        # Slots this function never has to write: an expression temporary whose
+        # one reader is the instruction right behind its producer stays in the
+        # register it was computed in (see IR::Simplify#transient_vregs and
+        # #store_reg). The set is a property of the instruction list, so it is
+        # computed once here rather than rediscovered per instruction.
+        @transient = IR::Simplify.transient_vregs(ir_func.insts, ir_func.param_count)
         # Control-flow bookkeeping: `@labels` maps a label id to its resolved
         # code offset; `@fixups` collects [patch_offset, label_id] pairs whose
         # rel32 field is overwritten once every label offset is known.
@@ -274,13 +290,21 @@ module Rubycc
           load_reg(EAX, inst.a)
           store_reg(EAX, inst.dst)
         when :add
-          emit_binary(inst.dst, inst.a, inst.b, [0x01, 0xC8], inst.size) # add eax, ecx
+          # 03 /r is "add r32, r/m32" — the same addition as 01 /r's "add
+          # r/m32, r32" with the operands the other way round, which is what
+          # lets the second one be a slot. Every entry below pairs the two
+          # directions the same way (the group's low opcode plus two).
+          emit_binary(inst.dst, inst.a, inst.b, [0x01, 0xC8], inst.size,
+                      memory_bytes: [0x03], commutative: true)
         when :scaled_add
           emit_scaled_add(inst.dst, inst.a, inst.b, inst.size)
         when :sub
-          emit_binary(inst.dst, inst.a, inst.b, [0x29, 0xC8], inst.size) # sub eax, ecx
+          emit_binary(inst.dst, inst.a, inst.b, [0x29, 0xC8], inst.size, memory_bytes: [0x2B])
         when :mul
-          emit_binary(inst.dst, inst.a, inst.b, [0x0F, 0xAF, 0xC1], inst.size) # imul eax, ecx
+          # imul (0F AF /r) is already a "r32, r/m32" form, so its register and
+          # memory encodings share the same opcode.
+          emit_binary(inst.dst, inst.a, inst.b, [0x0F, 0xAF, 0xC1], inst.size,
+                      memory_bytes: [0x0F, 0xAF], commutative: true)
         when :mulhi
           emit_mulhi(inst.dst, inst.a, inst.b) # high 64 bits of an unsigned 64x64 product
         when :div
@@ -292,11 +316,14 @@ module Rubycc
         when :umod
           emit_udivmod(inst.dst, inst.a, inst.b, EDX, inst.size) # remainder in edx
         when :and
-          emit_binary(inst.dst, inst.a, inst.b, [0x21, 0xC8], inst.size) # and eax, ecx
+          emit_binary(inst.dst, inst.a, inst.b, [0x21, 0xC8], inst.size,
+                      memory_bytes: [0x23], commutative: true)
         when :or
-          emit_binary(inst.dst, inst.a, inst.b, [0x09, 0xC8], inst.size)  # or eax, ecx
+          emit_binary(inst.dst, inst.a, inst.b, [0x09, 0xC8], inst.size,
+                      memory_bytes: [0x0B], commutative: true)
         when :xor
-          emit_binary(inst.dst, inst.a, inst.b, [0x31, 0xC8], inst.size)  # xor eax, ecx
+          emit_binary(inst.dst, inst.a, inst.b, [0x31, 0xC8], inst.size,
+                      memory_bytes: [0x33], commutative: true)
         when :shl
           # shl eax, cl (D3 /4): the count comes from cl, which #emit_binary
           # loads into ecx alongside the value in eax. A size-8 operand takes a
@@ -313,7 +340,8 @@ module Rubycc
           # unsigned counterpart of :sar.
           emit_binary(inst.dst, inst.a, inst.b, [0xD3, 0xE8], inst.size)
         when :eq, :ne, :lt, :le, :gt, :ge, :ult, :ule, :ugt, :uge
-          emit_comparison(inst.dst, inst.a, inst.b, SETCC_OPCODES.fetch(inst.op), inst.size)
+          emit_comparison(inst.dst, inst.a, inst.b, SETCC_OPCODES.fetch(inst.op), inst.size,
+                          commutative: inst.op == :eq || inst.op == :ne)
         when :fadd
           emit_float_binary(inst.dst, inst.a, inst.b, inst.size, 0x58) # addss/addsd
         when :fsub
@@ -346,6 +374,11 @@ module Rubycc
         when :got_addr
           emit_got_addr(inst.dst, inst.a)
         when :label
+          # The one place a register's meaning changes without an instruction
+          # being emitted: control may arrive here from a branch whose registers
+          # hold something else entirely, so nothing may be assumed resident
+          # past a label (see SlotResidency).
+          forget_slot_residency
           @labels[inst.a] = @code.bytesize
         when :jump
           emit_jump(inst.a)
@@ -789,8 +822,7 @@ module Rubycc
       # implicitly locked, is also the full barrier a seq_cst store needs; a mov
       # followed by an mfence would be equivalent and longer.
       def emit_atomic_store(ptr_vreg, value_vreg, size)
-        load_reg(EAX, ptr_vreg)         # rax = destination address
-        load_reg(ECX, value_vreg)       # rcx = value
+        load_binary_operands(ptr_vreg, value_vreg) # rax = destination address, rcx = value
         emit(0x48) if size == 8         # REX.W
         emit(0x87, 0x08)                # xchg [rax], ecx/rcx
       end
@@ -812,8 +844,7 @@ module Rubycc
       def emit_atomic_rmw(dst, ptr_vreg, value_vreg, kind, size)
         return emit_atomic_or_fetch(dst, ptr_vreg, value_vreg, size) if kind == :or_fetch
 
-        load_reg(EAX, ptr_vreg)         # rax = address
-        load_reg(ECX, value_vreg)       # rcx = operand
+        load_binary_operands(ptr_vreg, value_vreg) # rax = address, rcx = operand
         negate = kind == :fetch_sub || kind == :sub_fetch
         keep = kind == :add_fetch || kind == :sub_fetch
         if negate
@@ -959,8 +990,7 @@ module Rubycc
       # a 1-byte store writes just the low byte (mov [rax], cl). The narrower
       # writes are exactly the truncation a narrow lvalue needs.
       def emit_store(ptr_vreg, value_vreg, size)
-        load_reg(EAX, ptr_vreg)         # rax = destination address
-        load_reg(ECX, value_vreg)       # rcx = value
+        load_binary_operands(ptr_vreg, value_vreg) # rax = destination address, rcx = value
         case size
         when 8
           emit(0x48, 0x89, 0x08)        # mov [rax], rcx
@@ -1045,31 +1075,71 @@ module Rubycc
         store_reg(RSP, dst)                 # dst = rsp (block base address)
       end
 
-      # A size of 8 compares full 64-bit pointer values (REX.W cmp rax, rcx);
-      # otherwise the 32-bit int compare is used. The signed setcc still suits
-      # pointer ordering here, since stack addresses stay within the positive
-      # half of the 64-bit range.
-      def emit_comparison(dst, a, b, setcc_opcode, size = nil)
-        load_reg(EAX, a)
-        load_reg(ECX, b)
-        emit(0x48) if size == 8         # REX.W widens the following cmp
-        emit(0x39, 0xC8)                # cmp eax, ecx  (rax, rcx when REX.W)
+      # A size of 8 compares full 64-bit pointer values (REX.W); otherwise the
+      # 32-bit int compare is used. The signed setcc still suits pointer
+      # ordering here, since stack addresses stay within the positive half of
+      # the 64-bit range. The second operand is named in its slot (3B /r, "cmp
+      # r32, r/m32") wherever it can be, as in #emit_binary.
+      #
+      # An equality test is the one comparison whose operands may be exchanged
+      # without changing its setcc: "a == b" and "b == a" leave the same ZF,
+      # while every ordering test would need its condition mirrored as well.
+      def emit_comparison(dst, a, b, setcc_opcode, size = nil, commutative: false)
+        refresh_slot_residency
+        a, b = b, a if commutative && prefer_swapped_operands?(a, b)
+        if slot_written?(b)
+          load_reg(EAX, a)
+          emit_slot_rm([0x3B], b, rex_w: size == 8) # cmp eax, [rbp+disp] (rax when REX.W)
+        else
+          load_binary_operands(a, b, commutative: commutative)
+          emit(0x48) if size == 8       # REX.W widens the following cmp
+          emit(0x39, 0xC8)              # cmp eax, ecx  (rax, rcx when REX.W)
+        end
         emit(0x0F, setcc_opcode, 0xC0)  # setcc al
         emit(0x0F, 0xB6, 0xC0)          # movzx eax, al
         store_reg(EAX, dst)
       end
 
-      # A floating binary op (:fadd/:fsub/:fmul/:fdiv). The operands are loaded
-      # into xmm0/xmm1 from their slots, combined in place, and stored back. The
-      # mandatory prefix selects the scalar-single (F3, size 4) or scalar-double
-      # (F2, size 8) form of the shared 0F <opcode> encoding.
+      # A floating binary op (:fadd/:fsub/:fmul/:fdiv). The first operand is
+      # loaded into xmm0, the second read straight out of its slot, and the
+      # result stored back. The mandatory prefix selects the scalar-single (F3,
+      # size 4) or scalar-double (F2, size 8) form of the shared 0F <opcode>
+      # encoding, and all four take an "xmm, xmm/m" operand pair — so the memory
+      # form is the same instruction with a different ModR/M, one shorter than
+      # staging the operand through xmm1 would be.
+      #
+      # The operands are never exchanged the way a commutative integer op's are:
+      # SSE arithmetic takes a NaN result's payload from a particular source
+      # operand, so the two orders are not interchangeable even where the
+      # arithmetic itself is.
       def emit_float_binary(dst, a, b, size, opcode)
-        load_xmm(XMM0, a, size)
-        load_xmm(XMM1, b, size)
+        load_float_operands(a, b, size)
         emit(size == 8 ? 0xF2 : 0xF3)
         emit(0x0F, opcode)
-        emit(modrm_reg(XMM0, XMM1))     # op xmm0, xmm1
+        emit_float_rm(b)
         store_xmm(XMM0, dst, size)
+      end
+
+      # Stages a floating instruction's operands: the first into xmm0, and the
+      # second into xmm1 only when its slot was never written (a transient left
+      # in a register, which no memory operand can name). The rescue happens
+      # *before* xmm0 is filled, because the value being rescued is the one
+      # sitting in xmm0 — this is the vector-file version of the ordering rule
+      # #load_binary_operands follows.
+      def load_float_operands(a, b, size)
+        refresh_slot_residency
+        load_xmm(XMM1, b, size) unless slot_written?(b)
+        load_xmm(XMM0, a, size)
+      end
+
+      # The r/m half of a floating instruction whose reg half is xmm0: b's slot
+      # when it was written, xmm1 when #load_float_operands had to stage it.
+      def emit_float_rm(b)
+        if slot_written?(b)
+          emit_modrm_rbp_disp(XMM0, slot_disp(b))
+        else
+          emit(modrm_reg(XMM0, XMM1))
+        end
       end
 
       # A floating comparison (:feq..:fge), materialized into eax as an int 0/1
@@ -1116,15 +1186,15 @@ module Rubycc
         store_reg(EAX, dst)
       end
 
-      # ucomiss xmm0, xmm1 (size 4) / ucomisd (size 8, a 66 prefix), the ordered
-      # scalar compare that sets ZF/PF/CF for the setcc that follows. The two
-      # operands are loaded into xmm0/xmm1 from their slots first.
+      # ucomiss xmm0, xmm/m32 (size 4) / ucomisd (size 8, a 66 prefix), the
+      # ordered scalar compare that sets ZF/PF/CF for the setcc that follows.
+      # The first operand is loaded into xmm0 and the second named where it
+      # lives, exactly as #emit_float_binary does.
       def emit_ucomis(a, b, size)
-        load_xmm(XMM0, a, size)
-        load_xmm(XMM1, b, size)
+        load_float_operands(a, b, size)
         emit(0x66) if size == 8         # ucomisd operand-size prefix
         emit(0x0F, 0x2E)                # ucomiss/ucomisd
-        emit(modrm_reg(XMM0, XMM1))
+        emit_float_rm(b)
       end
 
       # :itof — cvtsi2ss/cvtsi2sd converts a signed integer in a GP register to
@@ -1184,18 +1254,41 @@ module Rubycc
       # single/double form; the rbp-relative ModR/M reuses the integer helper,
       # the xmm number sitting in its reg field (0..7 for the scratch pair and the
       # eight argument registers alike, all within the 3-bit field, so no REX.R).
+      #
+      # As with #load_reg, the move disappears when `xmm` already holds this
+      # slot at this width and becomes a register-to-register move when another
+      # vector register does. The register form is `movaps` (0F 28 /r), which
+      # copies all 128 bits: that is exactly what a reload would have produced,
+      # since a movss/movsd *from memory* zeroes the bits above the value it
+      # loads, so the source register's upper half is already what the
+      # destination's would be.
       def load_xmm(xmm, vreg, size)
-        emit(size == 8 ? 0xF2 : 0xF3)
-        emit(0x0F, 0x10)
-        emit_modrm_rbp_disp(xmm, slot_disp(vreg))
+        refresh_slot_residency
+        return if slot_resident_in_vector?(xmm, vreg, size)
+
+        source = vector_register_holding_slot(vreg, size)
+        if source
+          emit(0x0F, 0x28, modrm_reg(xmm, source)) # movaps xmm, xmm_source
+        else
+          emit(size == 8 ? 0xF2 : 0xF3)
+          emit(0x0F, 0x10)
+          emit_modrm_rbp_disp(xmm, slot_disp(vreg))
+        end
+        note_slot_loaded_to_vector(xmm, vreg, size)
       end
 
       # movss/movsd [rbp + disp], xmm: stores an xmm register into a slot, the
       # counterpart of #load_xmm (opcode 0x11 writes memory from the register).
       def store_xmm(xmm, vreg, size)
+        refresh_slot_residency
+        if @transient.include?(vreg)
+          note_slot_loaded_to_vector(xmm, vreg, size)
+          return
+        end
         emit(size == 8 ? 0xF2 : 0xF3)
         emit(0x0F, 0x11)
         emit_modrm_rbp_disp(xmm, slot_disp(vreg))
+        note_slot_stored_from_vector(xmm, vreg, size)
       end
 
       # Emits "jmp rel32" with a zero placeholder and records a fixup so the
@@ -1205,9 +1298,19 @@ module Rubycc
         record_fixup(label_id)
       end
 
+      # The condition is tested where it lives unless it is already in eax: a
+      # "cmp dword [rbp+disp], 0" reads the same low four bytes "test eax, eax"
+      # would have, and saves the load. (The 83 /7 form takes a sign-extended
+      # imm8, which is all a comparison against zero needs.)
       def emit_jump_if_zero(cond, label_id)
-        load_reg(EAX, cond)
-        emit(0x85, 0xC0)                # test eax, eax
+        refresh_slot_residency
+        if slot_written?(cond) && !slot_resident_in?(EAX, cond)
+          emit_slot_rm([0x83], cond, reg: 7)
+          emit(0x00)                    # cmp dword [rbp+disp], 0
+        else
+          load_reg(EAX, cond)
+          emit(0x85, 0xC0)              # test eax, eax
+        end
         emit(0x0F, 0x84)                # je rel32
         record_fixup(label_id)
       end
@@ -1248,14 +1351,47 @@ module Rubycc
       end
 
       # A size of 8 prefixes REX.W so the operation runs on the full 64-bit
-      # rax/rcx (pointer arithmetic and index scaling); otherwise it stays a
-      # 32-bit int operation. The opcode bytes are identical either way.
-      def emit_binary(dst, a, b, opcode_bytes, size = nil)
-        load_reg(EAX, a)
-        load_reg(ECX, b)
-        emit(0x48) if size == 8
-        opcode_bytes.each { |byte| emit(byte) }
+      # rax (pointer arithmetic and index scaling); otherwise it stays a 32-bit
+      # int operation. The opcode bytes are identical either way.
+      #
+      # `memory_bytes`, when the op has such a form, is the opcode of its
+      # "register, r/m" direction, which #emit_slot_rm then points at b's own
+      # slot — so only `a` is ever loaded and the whole instruction costs one
+      # load plus itself. `opcode_bytes` is the fallback "eax, ecx" encoding,
+      # used by the shifts, whose count has to reach cl and cannot be a memory
+      # operand at all. `commutative` lets the two be exchanged, which is worth
+      # doing when it makes the one remaining load free.
+      def emit_binary(dst, a, b, opcode_bytes, size = nil, memory_bytes: nil, commutative: false)
+        refresh_slot_residency
+        a, b = b, a if commutative && prefer_swapped_operands?(a, b)
+        if memory_bytes && slot_written?(b)
+          load_reg(EAX, a)
+          emit_slot_rm(memory_bytes, b, rex_w: size == 8)
+        else
+          load_binary_operands(a, b, commutative: commutative)
+          emit(0x48) if size == 8
+          opcode_bytes.each { |byte| emit(byte) }
+        end
         store_reg(EAX, dst)
+      end
+
+      # Emits an instruction whose r/m operand is `vreg`'s stack slot: an
+      # optional REX.W, the opcode bytes, then a ModR/M whose reg field is `reg`
+      # — a register number in a two-operand form, an opcode extension in a
+      # group instruction — and whose r/m field addresses [rbp + slot].
+      #
+      # Reading an operand straight out of its slot is as correct as loading it
+      # into a register first and is one instruction shorter. The slot is where
+      # the spill-everything discipline keeps the value; nothing is emitted
+      # between the load of the first operand and this that could write memory;
+      # and the width the instruction reads (4 bytes, or 8 under REX.W) is
+      # exactly the width the register form's arithmetic would have used, so the
+      # value representation is honored unchanged — a narrow value's
+      # indeterminate high half is never looked at either way.
+      def emit_slot_rm(opcode_bytes, vreg, reg: EAX, rex_w: false)
+        emit(0x48) if rex_w
+        opcode_bytes.each { |byte| emit(byte) }
+        emit_modrm_rbp_disp(reg, slot_disp(vreg))
       end
 
       # :scaled_add — dst <- base + index * element_size, the address a
@@ -1268,58 +1404,99 @@ module Rubycc
       # two scratch registers are eax/ecx), so the "no base register" special
       # case that encoding reserves for rbp cannot be hit.
       def emit_scaled_add(dst, base_vreg, index_vreg, element_size)
-        load_reg(EAX, base_vreg)
-        load_reg(ECX, index_vreg)
-        emit(0x48, 0x8D)                        # REX.W lea rax, [rax + rcx*scale]
+        base, index = load_address_operands(base_vreg, index_vreg)
+        emit(0x48, 0x8D)                        # REX.W lea rax, [base + index*scale]
         emit(0x04 | (EAX << 3))                 # mod=00, reg=eax, rm=100 (SIB follows)
-        emit((SIB_SCALES.fetch(element_size) << 6) | (ECX << 3) | EAX)
+        emit((SIB_SCALES.fetch(element_size) << 6) | (index << 3) | base)
         store_reg(EAX, dst)
+      end
+
+      # Puts a scaled address's base and index into the two scratch registers
+      # and reports which took which. Unlike an arithmetic opcode, `lea` names
+      # its base and index independently, so either assignment encodes — which
+      # lets whichever operand is already resident keep the register it is in.
+      def load_address_operands(base_vreg, index_vreg)
+        refresh_slot_residency
+        if slot_resident_in?(EAX, index_vreg) && !slot_resident_in?(EAX, base_vreg)
+          load_reg(ECX, base_vreg)
+          load_reg(EAX, index_vreg)
+          [ECX, EAX]
+        else
+          load_reg(EAX, base_vreg)
+          load_reg(ECX, index_vreg)
+          [EAX, ECX]
+        end
       end
 
       # :mulhi — the unsigned high 64 bits of a 64x64 product, the piece a
       # synthesized __int128 multiply needs beyond the low 64 that :mul gives.
-      # `mul rcx` (REX.W F7 /4) multiplies rax by rcx into rdx:rax; the high half
-      # lands in rdx, which is stored to the destination. The one-operand `mul`
-      # is the unsigned multiply, so this is the unsigned high product regardless
-      # of the operands' declared signedness (the low 64 bits, and hence a full
-      # 128-bit low result, are identical for signed and unsigned).
+      # `mul` (REX.W F7 /4) multiplies rax by its one operand — b's slot, or rcx
+      # when that slot was never written — into rdx:rax; the high half lands in
+      # rdx, which is stored to the destination. The one-operand `mul` is the
+      # unsigned multiply, so this is the unsigned high product regardless of the
+      # operands' declared signedness (the low 64 bits, and hence a full 128-bit
+      # low result, are identical for signed and unsigned).
       def emit_mulhi(dst, a, b)
-        load_reg(EAX, a)                # rax = a
-        load_reg(ECX, b)                # rcx = b
-        emit(0x48, 0xF7, 0xE1)          # mul rcx  -> rdx:rax = rax * rcx
+        refresh_slot_residency
+        a, b = b, a if prefer_swapped_operands?(a, b)
+        if slot_written?(b)
+          load_reg(EAX, a)
+          emit_slot_rm([0xF7], b, reg: 4, rex_w: true) # mul qword [rbp+disp]  (/4)
+        else
+          load_binary_operands(a, b, commutative: true)
+          emit(0x48, 0xF7, 0xE1)        # mul rcx  -> rdx:rax = rax * rcx
+        end
         store_reg(EDX, dst)             # dst = high 64 bits
       end
 
-      # A size of 8 does a 64-bit signed division (REX.W cqo + REX.W idiv rcx),
-      # used for pointer differences; otherwise the 32-bit int division.
+      # A size of 8 does a 64-bit signed division (REX.W cqo + REX.W idiv), used
+      # for pointer differences; otherwise the 32-bit int division. The divisor
+      # is the one-operand `idiv`'s r/m, which is b's slot wherever it can be.
       def emit_divmod(dst, a, b, result_reg, size = nil)
-        load_reg(EAX, a)
-        load_reg(ECX, b)
-        if size == 8
-          emit(0x48, 0x99)          # cqo: sign-extend rax into rdx:rax
-          emit(0x48, 0xF7, 0xF9)    # idiv rcx
-        else
-          emit(0x99)                # cdq: sign-extend eax into edx:eax
-          emit(0xF7, 0xF9)          # idiv ecx
-        end
+        divisor_in_register = load_dividend_and_divisor(a, b)
+        emit(0x48) if size == 8    # REX.W turns cdq into cqo
+        emit(0x99)                 # cdq/cqo: sign-extend eax/rax into edx:eax / rdx:rax
+        emit_divisor_operand(divisor_in_register, b, 7, size) # idiv (/7)
         store_reg(result_reg, dst)
       end
 
       # Unsigned division/remainder. Unlike the signed form, the high half of
       # the dividend is zeroed (xor edx, edx, which also clears the upper 32
       # bits of rdx for the 64-bit case) rather than sign-extended, and the
-      # unsigned `div` opcode is used. size 8 divides the full 64-bit rax by
-      # rcx; otherwise the 32-bit division. Quotient in eax, remainder in edx.
+      # unsigned `div` opcode is used. size 8 divides the full 64-bit rax by the
+      # divisor; otherwise the 32-bit division. Quotient in eax, remainder in edx.
       def emit_udivmod(dst, a, b, result_reg, size = nil)
-        load_reg(EAX, a)
-        load_reg(ECX, b)
+        divisor_in_register = load_dividend_and_divisor(a, b)
         emit(0x31, 0xD2)            # xor edx, edx
-        if size == 8
-          emit(0x48, 0xF7, 0xF1)    # div rcx
-        else
-          emit(0xF7, 0xF1)          # div ecx
-        end
+        emit_divisor_operand(divisor_in_register, b, 6, size) # div (/6)
         store_reg(result_reg, dst)
+      end
+
+      # Stages a division's operands: the dividend always into eax, the divisor
+      # into ecx only when its slot was never written (a transient), in which
+      # case the one-operand `div`/`idiv` has to name a register. Returns true
+      # when the divisor is in ecx. Both loads happen before the sign-extension
+      # step that follows, which writes edx and must not be undone.
+      def load_dividend_and_divisor(a, b)
+        if slot_written?(b)
+          load_reg(EAX, a)
+          false
+        else
+          load_binary_operands(a, b)
+          true
+        end
+      end
+
+      # The r/m operand of the one-operand `div`/`idiv` group (F7 /6 unsigned,
+      # /7 signed): ecx when #load_dividend_and_divisor put it there, b's slot
+      # otherwise.
+      def emit_divisor_operand(in_register, b, extension, size)
+        if in_register
+          emit(0x48) if size == 8
+          emit(0xF7, 0xC0 | (extension << 3) | ECX)
+        else
+          emit_slot_rm([0xF7], b, reg: extension, rex_w: size == 8)
+        end
       end
 
       # mov r64, [rbp + disp]: slots are always moved 64 bits at a time so a
@@ -1328,17 +1505,100 @@ module Rubycc
       # zero the upper 32 bits of rax, so the slot's high half is already zero.
       # The REX prefix carries W (64-bit operand) plus R for r8/r9 (>= 8), whose
       # low 3 bits go into the ModR/M reg field.
+      #
+      # The load disappears when `reg` already holds this slot's value and
+      # becomes a register-to-register move when another scratch register does
+      # (SlotResidency decides both). Either way `reg` ends up with the same 64
+      # bits the memory form would have fetched — the slot was written 64 bits
+      # at a time and it is those bits being reused — so the value
+      # representation above is untouched, and a narrow value's high half is as
+      # indeterminate (or as zero) as it was before.
       def load_reg(reg, vreg)
-        emit(0x48 | (reg >= 8 ? 0x04 : 0)) # REX.W (+ REX.R for r8/r9)
-        emit(0x8B)
-        emit_modrm_rbp_disp(reg & 7, slot_disp(vreg))
+        refresh_slot_residency
+        return if slot_resident_in?(reg, vreg)
+
+        source = register_holding_slot(vreg)
+        if source
+          emit_reg_move(reg, source)
+        else
+          emit(0x48 | (reg >= 8 ? 0x04 : 0)) # REX.W (+ REX.R for r8/r9)
+          emit(0x8B)
+          emit_modrm_rbp_disp(reg & 7, slot_disp(vreg))
+        end
+        note_slot_loaded(reg, vreg)
       end
 
       # mov [rbp + disp], r64. See load_reg for the 64-bit and REX rationale.
+      # The store itself is never skipped: the slot is the value's home, and
+      # nothing here knows whether a later branch reaches a reader by a path
+      # that goes nowhere near this register.
       def store_reg(reg, vreg)
+        refresh_slot_residency
+        if @transient.include?(vreg)
+          # The value's only reader is the next instruction, which will find it
+          # here; the slot itself is never named again, so nothing is written.
+          note_slot_loaded(reg, vreg)
+          return
+        end
         emit(0x48 | (reg >= 8 ? 0x04 : 0)) # REX.W (+ REX.R for r8/r9)
         emit(0x89)
         emit_modrm_rbp_disp(reg & 7, slot_disp(vreg))
+        note_slot_stored(reg, vreg)
+      end
+
+      # Whether `vreg`'s slot may be named as an instruction's memory operand.
+      # It may not when the value never reached it: a transient is left in the
+      # register its producer computed it in, so its one reader has to take a
+      # register form. The test is on the set, not on what happens to be
+      # resident, so it does not depend on how far into an instruction it is
+      # asked.
+      def slot_written?(vreg)
+        !@transient.include?(vreg)
+      end
+
+      # mov r64, r64 — the register-to-register form of #load_reg's mov, for a
+      # value that is already in another scratch register. REX.W widens it,
+      # REX.R extends the source (the ModR/M reg field) and REX.B the
+      # destination (the rm field), so r8/r9 work on either side.
+      def emit_reg_move(dst, src)
+        emit(0x48 | (src >= 8 ? 0x04 : 0) | (dst >= 8 ? 0x01 : 0))
+        emit(0x89, 0xC0 | ((src & 7) << 3) | (dst & 7))
+      end
+
+      # Loads a two-operand instruction's operands into eax and ecx.
+      #
+      # Which one is fetched first stops being arbitrary once #load_reg can
+      # reuse a resident value: if `b` is the value sitting in eax, loading `a`
+      # there first would throw it away and force `b` to be re-read from memory.
+      # Fetching ecx first instead keeps it, as a register move. A `commutative`
+      # op can do better still — swapping the two makes the resident operand
+      # eax's, so nothing is moved at all — and is safe to swap precisely
+      # because the opcode's two operands are interchangeable (this is not true
+      # of :sub or of the shifts, whose count must reach cl).
+      def load_binary_operands(a, b, commutative: false)
+        refresh_slot_residency
+        if commutative && prefer_swapped_operands?(a, b)
+          a, b = b, a
+        elsif slot_resident_in?(EAX, b) && !slot_resident_in?(EAX, a)
+          # Fetch ecx first: eax is where b is, and loading a would lose it —
+          # which for a transient b would lose it for good, its slot never
+          # having been written.
+          load_reg(ECX, b)
+        end
+        load_reg(EAX, a)
+        load_reg(ECX, b)
+      end
+
+      # Whether a commutative op is better off with its operands exchanged.
+      # Two cases want it, and they are one case seen twice: whichever operand
+      # is already in eax should be the one taken from a register, leaving the
+      # other free to be read out of its slot. An operand that was never written
+      # to its slot (a transient) has to be that one, since no memory operand
+      # can name it.
+      def prefer_swapped_operands?(a, b)
+        return false unless slot_written?(a)
+
+        !slot_written?(b) || (slot_resident_in?(EAX, b) && !slot_resident_in?(EAX, a))
       end
 
       def slot_disp(vreg)

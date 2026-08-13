@@ -4,8 +4,8 @@ kind: feature
 opened: 2026-08-13
 closed:
 branch: spill-traffic-cleanup
-pr:
-steps: [spill-traffic-cleanup-1]
+pr: 48, 49
+steps: [spill-traffic-cleanup-1, spill-traffic-cleanup-2]
 ---
 
 # 書いた直後に読み戻すのをやめ、gcc -O0 に並ぶ
@@ -83,6 +83,35 @@ IR 層で入れたのは生成器とバックエンドの間に置く `IR::Simpl
 記録に残るためである。設計判断は `docs/development/STEPS.md` の
 `spill-traffic-cleanup-1` にある。
 
+### 2026-08-13(第 2 段: バックエンド層 — `spill-traffic-cleanup-2`)
+
+`Backend::SlotResidency` を両バックエンドに入れ、直後の読み戻し省略・第 2 オペランドの
+スロット直接参照・単一使用一時値のストア省略を実装した。安全条件は
+**「記録してから 1 バイトも emit されていない間だけ信じる」**という粗いもので、
+例外は `:label`(合流点)1 つだけ。設計判断は `docs/development/STEPS.md` の
+`spill-traffic-cleanup-2`。
+
+**PR は 2 本**。#48(第 1 段 / ブランチ `spill-traffic-cleanup`)と
+#49(第 2 段 / ブランチ `spill-traffic-cleanup-backend`、base は #48 の積み PR)。
+**master に入った時点で `status: done` と `closed:` を埋める。**
+
 ## 決着
 
-(第 2 段の実装中)
+**受け入れ条件は 5 つとも満たした**(2026-08-13、glibc x86-64 / Ruby 3.4.5)。
+
+| 条件 | 結果 |
+|---|---|
+| gcc -O0 比が全カーネルで 1.2 倍以内 | **0.67〜1.02x**(5/5。うち 3 件は -O0 より速い) |
+| 全スイート 0 failures | **3160 runs / 11156 assertions / 0 failures / 0 errors / 41 skips** |
+| x86-64 と AArch64 の差分実行が gcc と一致 | `test_examples.rb` ほか AArch64 実行系を含めて 0 failures |
+| 決定的ビルド(N4)を壊さない | `test_deterministic_build.rb` が 0 failures |
+| 前後の実測を BENCHMARKS.md に追記 | 追記済み(ペア計測・単調時計) |
+
+**副次的に DESIGN N2(gcc -O2 比 2〜5 倍)が C カーネル 5 件すべてで成立した**
+(4.84〜7.41x → 1.08〜3.24x)。設計判断の本体は `docs/development/STEPS.md` の
+`spill-traffic-cleanup-1` / `-2`。
+
+**コーパス合格率(31/34)は未再測**である。gem 本体テストの実走を伴う重い検証で、
+このステップは C 機能を足しておらず全スイートと gcc 差分が通っているため、
+**第 2 段(レジスタ割付)の受け入れとまとめて 1 回測る**。
+[register-allocation](register-allocation.md) に申し送った。
