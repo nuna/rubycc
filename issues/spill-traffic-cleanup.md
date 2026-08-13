@@ -4,8 +4,8 @@ kind: feature
 opened: 2026-08-13
 closed:
 branch: spill-traffic-cleanup
-pr:
-steps: [spill-traffic-cleanup-1]
+pr: 48, 49
+steps: [spill-traffic-cleanup-1, spill-traffic-cleanup-2]
 ---
 
 # 書いた直後に読み戻すのをやめ、gcc -O0 に並ぶ
@@ -90,6 +90,10 @@ IR 層で入れたのは生成器とバックエンドの間に置く `IR::Simpl
 **「記録してから 1 バイトも emit されていない間だけ信じる」**という粗いもので、
 例外は `:label`(合流点)1 つだけ。設計判断は `docs/development/STEPS.md` の
 `spill-traffic-cleanup-2`。
+
+**PR は 2 本**。#48(第 1 段 / ブランチ `spill-traffic-cleanup`)と
+#49(第 2 段 / ブランチ `spill-traffic-cleanup-backend`、base は #48 の積み PR)。
+**master に入った時点で `status: done` と `closed:` を埋める。**
 
 ## 決着
 
