@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "set"
 require_relative "ir"
 
 module Rubycc
@@ -163,7 +164,10 @@ module Rubycc
       # [that constant's value, the index of the instruction that sets it].
       # A register written more than once, or written by anything else, is
       # absent — as is one whose slot address is taken, since a store through
-      # that address can replace the value the :const put there.
+      # that address can replace the value the :const put there. That last
+      # exclusion is the same aliasing rule the backends' residency tracking
+      # obeys, applied at instruction granularity because here there is no
+      # emitted-nothing test to lean on.
       def constant_definitions(insts)
         constants = {}
         rejected = {}
@@ -277,6 +281,102 @@ module Rubycc
         return [a_const[0], mul.b] if a_const && a_const[1] < index
 
         [nil, nil]
+      end
+
+      # --- transient values --------------------------------------------------
+      #
+      # A virtual register whose slot never has to be written at all: the value
+      # is produced by one instruction, read by the very next one, and read
+      # nowhere else, so it can simply stay in the register its producer left it
+      # in. Every intermediate result of an expression is of this shape, which is
+      # why a spill-everything backend writes so many slots nobody ever reads —
+      # in "b[i] += scale * a[i]" nine of the twelve stores in the loop are these.
+      #
+      # This is deliberately *not* a liveness computation. Four conditions, all
+      # decided from the flat list, make the answer sound without one:
+      #
+      #   * exactly one instruction writes the register and exactly one reads it,
+      #     so there is no other definition to reach a reader and no other reader
+      #     to reach;
+      #   * the reader is the instruction immediately after the writer. Nothing
+      #     can be interposed, and because every branch target in this IR is a
+      #     :label — which is never a reader — control cannot enter between them
+      #     or reach the reader without having run the writer;
+      #   * the register is not one of the parameter slots, which the prologue
+      #     writes before any instruction runs;
+      #   * producer and consumer agree on which register file the value lives
+      #     in, and at which width (see #vector_result_width). A double computed
+      #     into a vector register is no use to a reader that expects it in a
+      #     general-purpose one.
+      #
+      # The last gate is the whitelist below. An op only qualifies as a producer
+      # if its final act is to store its result, and only as a consumer if it
+      # reads its operands before disturbing anything — which is why a call is
+      # neither: staging its arguments overwrites the very register the value
+      # would be waiting in.
+      PRODUCER_OPS = %i[
+        const copy add sub mul mulhi and or xor shl sar shr neg
+        eq ne lt le gt ge ult ule ugt uge
+        fadd fsub fmul fdiv feq fne flt fle fgt fge itof ftoi ftof
+        sext zext bit_scan scaled_add load uload
+        div mod udiv umod alloca
+        addr_of object_addr string_addr global_addr func_addr got_addr
+      ].freeze
+
+      CONSUMER_OPS = %i[
+        copy add sub mul mulhi and or xor shl sar shr neg
+        eq ne lt le gt ge ult ule ugt uge
+        fadd fsub fmul fdiv feq fne flt fle fgt fge itof ftoi ftof
+        sext zext bit_scan scaled_add load uload store memcpy
+        div mod udiv umod alloca jump_if_zero ret
+      ].freeze
+
+      # The virtual registers a backend may leave in a register instead of
+      # writing out. `param_count` names the leading slots the prologue fills.
+      def transient_vregs(insts, param_count)
+        return [].to_set unless insts.all? { |inst| known_op?(inst.op) }
+
+        reads = read_counts(insts)
+        writes = write_counts(insts)
+        transient = Set.new
+        insts.each_with_index do |inst, index|
+          vreg = inst.dst
+          next if vreg.nil? || vreg < param_count
+          next unless reads[vreg] == 1 && writes[vreg] == 1
+          next unless PRODUCER_OPS.include?(inst.op)
+
+          reader = insts[index + 1]
+          next unless reader && CONSUMER_OPS.include?(reader.op)
+          next unless operand_vregs(reader).include?(vreg)
+          next unless vector_result_width(inst) == vector_operand_width(reader, vreg)
+
+          transient << vreg
+        end
+        transient
+      end
+
+      # The width at which `inst` leaves its result in a vector register, or nil
+      # when the result goes to a general-purpose one. :ftof is the one op whose
+      # `size` names its *source*, so its destination is the other width.
+      def vector_result_width(inst)
+        case inst.op
+        when :fadd, :fsub, :fmul, :fdiv, :itof then inst.size
+        when :ftof then inst.size == 8 ? 4 : 8
+        end
+      end
+
+      # The width at which `inst` reads `vreg` out of a vector register, or nil
+      # when it reads it into a general-purpose one. A float comparison's result
+      # is an int but its operands are floats; :itof is the mirror image, and
+      # :ret carries the width in `size` only when returning a float or double
+      # (an integer return leaves it nil, a struct return an array of pieces).
+      def vector_operand_width(inst, _vreg)
+        case inst.op
+        when :fadd, :fsub, :fmul, :fdiv, :feq, :fne, :flt, :fle, :fgt, :fge, :ftoi, :ftof
+          inst.size
+        when :ret
+          inst.size if inst.size.is_a?(Integer)
+        end
       end
 
       # Drops every pure instruction whose result nothing reads, repeating until

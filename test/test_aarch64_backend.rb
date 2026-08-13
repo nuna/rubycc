@@ -198,6 +198,11 @@ class TestAArch64Backend < Minitest::Test
   def ldrsb_w(rt, rn, off = 0) = ldst_uimm(0b00, 0b11, rt, rn, off)
   def strb(rt, rn, off = 0)   = ldst_uimm(0b00, 0b00, rt, rn, off)
 
+  # "mov Xd, Xn", which the architecture spells as an ORR with the zero
+  # register. The backend emits one in place of a slot load when the value
+  # wanted is already in another scratch register (Backend::SlotResidency).
+  def mov_reg(rd, rn) = orr_reg(1, rd, XZR, rn)
+
   # A vreg slot access: always the 64-bit form, sp-relative.
   def ldr_slot(rt, vreg) = ldr_x(rt, SP, slot(vreg))
   def str_slot(rt, vreg) = str_x(rt, SP, slot(vreg))
@@ -1219,19 +1224,59 @@ class TestAArch64Backend < Minitest::Test
     assert_words [sub_imm(SP, SP, 32), stp_x(FP, LR, SP, 0), add_imm(FP, SP, 0),
                   str_anchored_slot(0, 0)],
                  all.first(4)
-    assert_words [ldr_anchored_slot(0, 0), add_imm(SP, FP, 0), ldp_x(FP, LR, FP, 0),
+    # The return value is not read back out of the slot the instruction before
+    # it wrote: it is still in A, so the load is a register move (see
+    # #test_a_value_just_stored_is_not_read_back).
+    assert_words [mov_reg(0, A), add_imm(SP, FP, 0), ldp_x(FP, LR, FP, 0),
                   add_imm(SP, SP, 32), ret_x30],
                  all.last(5)
   end
 
   # A function *without* alloca is untouched by any of it: sp remains the frame
-  # base, no x29 copy is emitted, and the words are exactly what they were.
+  # base and no x29 copy is emitted. Slot 0 is not written here at all — its
+  # value is read by the very next instruction and by nothing else, so it stays
+  # in A (see #test_a_single_use_temporary_is_never_written_to_its_slot).
   def test_a_function_without_alloca_keeps_the_sp_relative_frame
     fn = func([inst(:copy, dst: 0, a: 1), inst(:ret, a: 0)], vregs: 2)
     assert_words [sub_imm(SP, SP, 32), stp_x(FP, LR, SP, 0),
-                  ldr_slot(A, 1), str_slot(A, 0), ldr_slot(0, 0),
+                  ldr_slot(A, 1), mov_reg(0, A),
                   ldp_x(FP, LR, SP, 0), add_imm(SP, SP, 32), ret_x30],
                  words(fn)
+  end
+
+  # --- spill traffic -------------------------------------------------------
+
+  # A value written to its slot and then read straight back is not re-read: the
+  # register the store took it from still holds it, and nothing between the two
+  # can have changed either. Here vreg 2 has two readers, so its store stays and
+  # only the *load* goes.
+  def test_a_value_just_stored_is_not_read_back
+    # The two stores at the end give vregs 2 and 3 a second reader each, so
+    # neither qualifies as a transient and both keep their store; what this
+    # measures is only the *load* the second instruction does not need.
+    fn = func([inst(:add, dst: 2, a: 0, b: 1),
+               inst(:sub, dst: 3, a: 2, b: 0),
+               inst(:store, a: 3, b: 2, size: 8),
+               inst(:store, a: 3, b: 2, size: 8)],
+              vregs: 4)
+    body = words(fn).drop(2)
+    assert_words [ldr_slot(A, 0), ldr_slot(B, 1), add_reg(0, A, A, B), str_slot(A, 2),
+                  ldr_slot(B, 0), sub_reg(0, A, A, B), str_slot(A, 3)],
+                 body.first(7)
+  end
+
+  # A temporary produced by one instruction and consumed by the next, with no
+  # other reader, is never written to its slot at all: it simply stays in A.
+  # Here vreg 2's only reader is the :store right behind it.
+  def test_a_single_use_temporary_is_never_written_to_its_slot
+    fn = func([inst(:add, dst: 2, a: 0, b: 1), inst(:store, a: 3, b: 2, size: 8)],
+              vregs: 4)
+    body = words(fn).drop(2)
+    # The store's value operand is rescued into B before A is refilled with the
+    # destination address, which is the only way it can still be reached.
+    assert_words [ldr_slot(A, 0), ldr_slot(B, 1), add_reg(0, A, A, B),
+                  mov_reg(B, A), ldr_slot(A, 3), str_x(B, A, 0)],
+                 body.first(6)
   end
 
   # A subscript's "index * element size" and the add of it to the base are one
@@ -1240,12 +1285,13 @@ class TestAArch64Backend < Minitest::Test
   # `size` is that width (IR::Simplify).
   def test_a_scaled_add_is_one_shifted_register_add
     fn = func([inst(:scaled_add, dst: 4, a: 0, b: 1, size: 4),
-               inst(:scaled_add, dst: 5, a: 0, b: 1, size: 8)],
+               inst(:store, a: 4, b: 2, size: 8),
+               inst(:scaled_add, dst: 5, a: 0, b: 1, size: 8),
+               inst(:store, a: 5, b: 2, size: 8)],
               vregs: 6)
     body = words(fn).drop(2)
-    assert_words [ldr_slot(A, 0), ldr_slot(B, 1), add_shifted_lsl(1, A, A, B, 2), str_slot(A, 4),
-                  ldr_slot(A, 0), ldr_slot(B, 1), add_shifted_lsl(1, A, A, B, 3), str_slot(A, 5)],
-                 body.first(8)
+    assert_equal add_shifted_lsl(1, A, A, B, 2), body[2]
+    assert_equal add_shifted_lsl(1, A, A, B, 3), body[7]
   end
 
   # A call with stack arguments made from an alloca function cannot use a fixed

@@ -2,6 +2,8 @@
 
 require_relative "../compile_error"
 require_relative "../ir/ir"
+require_relative "../ir/simplify"
+require_relative "slot_residency"
 
 module Rubycc
   module Backend
@@ -131,6 +133,13 @@ module Rubycc
     # frame addressable (see #emit_alloca). Every IR op the generator can hand
     # this backend is now lowered; there is nothing left it refuses.
     class AArch64
+      # Every slot access goes through #load_reg / #store_reg, which use this to
+      # skip a reload of a value the previous instruction has just left in a
+      # register. See slot_residency.rb for why "nothing has been emitted since"
+      # is a sufficient safety condition, and #emit_instruction's :label case
+      # for the one state change it cannot see.
+      include SlotResidency
+
       # Result of compiling one function, the same shape the x86_64 backend
       # returns: `bytes` the machine code, `symbols` an array of
       # { name:, offset:, size: }, and `relocations` an array of kind-tagged
@@ -258,6 +267,13 @@ module Rubycc
 
       def compile(ir_func)
         @code = +"".b
+        reset_slot_residency
+        # Slots this function never has to write: an expression temporary whose
+        # one reader is the instruction right behind its producer stays in the
+        # register it was computed in (see IR::Simplify#transient_vregs and
+        # #store_reg). The set is a property of the instruction list, so it is
+        # computed once here rather than rediscovered per instruction.
+        @transient = IR::Simplify.transient_vregs(ir_func.insts, ir_func.param_count)
         # @labels maps a label id to its resolved byte offset; @fixups collects
         # [patch_offset, label_id, kind] for each forward/backward branch whose
         # immediate is written once every label offset is known.
@@ -530,12 +546,12 @@ module Rubycc
         case inst.op
         when :const then emit_const(inst.dst, inst.a, inst.size)
         when :copy then emit_copy(inst.dst, inst.a)
-        when :add then emit_arith(inst, ADD_SHIFTED)
+        when :add then emit_arith(inst, ADD_SHIFTED, commutative: true)
         when :scaled_add then emit_scaled_add(inst.dst, inst.a, inst.b, inst.size)
         when :sub then emit_arith(inst, SUB_SHIFTED)
-        when :and then emit_arith(inst, AND_SHIFTED)
-        when :or then emit_arith(inst, ORR_SHIFTED)
-        when :xor then emit_arith(inst, EOR_SHIFTED)
+        when :and then emit_arith(inst, AND_SHIFTED, commutative: true)
+        when :or then emit_arith(inst, ORR_SHIFTED, commutative: true)
+        when :xor then emit_arith(inst, EOR_SHIFTED, commutative: true)
         when :mul then emit_mul(inst.dst, inst.a, inst.b, inst.size)
         when :div then emit_divmod(inst.dst, inst.a, inst.b, inst.size, signed: true, remainder: false)
         when :mod then emit_divmod(inst.dst, inst.a, inst.b, inst.size, signed: true, remainder: true)
@@ -546,10 +562,17 @@ module Rubycc
         when :shr then emit_shift(inst.dst, inst.a, inst.b, inst.size, LSRV)
         when :neg then emit_neg(inst.dst, inst.a, inst.size)
         when :eq, :ne, :lt, :le, :gt, :ge, :ult, :ule, :ugt, :uge
-          emit_comparison(inst.dst, inst.a, inst.b, CONDITIONS.fetch(inst.op), inst.size)
+          emit_comparison(inst.dst, inst.a, inst.b, CONDITIONS.fetch(inst.op), inst.size,
+                          commutative: inst.op == :eq || inst.op == :ne)
         when :sext then emit_sext(inst.dst, inst.a, inst.size)
         when :zext then emit_zext(inst.dst, inst.a, inst.size)
-        when :label then @labels[inst.a] = @code.bytesize
+        when :label
+          # The one place a register's meaning changes without an instruction
+          # being emitted: control may arrive here from a branch whose registers
+          # hold something else entirely, so nothing may be assumed resident
+          # past a label (see SlotResidency).
+          forget_slot_residency
+          @labels[inst.a] = @code.bytesize
         when :jump then emit_b(inst.a)
         when :jump_if_zero then emit_jump_if_zero(inst.a, inst.b)
         when :call then emit_call(inst.dst, inst.a, inst.b, inst.size)
@@ -607,9 +630,8 @@ module Rubycc
       # combined with a shifted-register instruction whose width follows the IR
       # size (64-bit for size 8, otherwise a 32-bit W-register op whose upper
       # half is zeroed for free).
-      def emit_arith(inst, base_table)
-        load_reg(A, inst.a)
-        load_reg(B, inst.b)
+      def emit_arith(inst, base_table, commutative: false)
+        load_binary_operands(inst.a, inst.b, commutative: commutative)
         emit_word(base_table[width(inst.size)] | (B << 16) | (A << 5) | A)
         store_reg(A, inst.dst)
       end
@@ -620,8 +642,7 @@ module Rubycc
       # multiply and the add to the base are one instruction. It is always the
       # 64-bit (X) form: the value being computed is a pointer.
       def emit_scaled_add(dst, base_vreg, index_vreg, element_size)
-        load_reg(A, base_vreg)
-        load_reg(B, index_vreg)
+        load_binary_operands(base_vreg, index_vreg)
         shift = SHIFTED_SCALES.fetch(element_size)
         emit_word(ADD_SHIFTED[64] | (B << 16) | (shift << 10) | (A << 5) | A)
         store_reg(A, dst)
@@ -629,8 +650,7 @@ module Rubycc
 
       # :mul — Rd = Rn * Rm, encoded as `madd Rd, Rn, Rm, xzr`.
       def emit_mul(dst, a, b, size)
-        load_reg(A, a)
-        load_reg(B, b)
+        load_binary_operands(a, b, commutative: true)
         base = size == 8 ? 0x9B007C00 : 0x1B007C00 # madd with Ra = xzr
         emit_word(base | (B << 16) | (A << 5) | A)
         store_reg(A, dst)
@@ -644,8 +664,7 @@ module Rubycc
       # of-a-32x32-product need for it here), so this always runs on the X
       # registers regardless of the IR size.
       def emit_mulhi(dst, a, b)
-        load_reg(A, a)
-        load_reg(B, b)
+        load_binary_operands(a, b, commutative: true)
         emit_word(UMULH | (B << 16) | (A << 5) | A)
         store_reg(A, dst)
       end
@@ -715,8 +734,7 @@ module Rubycc
       # remainder is then A - quotient*B via `msub`, since AArch64 has no direct
       # remainder instruction. The signed/unsigned split mirrors the IR's own.
       def emit_divmod(dst, a, b, size, signed:, remainder:)
-        load_reg(A, a)
-        load_reg(B, b)
+        load_binary_operands(a, b)
         w = width(size)
         div_base = signed ? (w == 64 ? 0x9AC00C00 : 0x1AC00C00) : (w == 64 ? 0x9AC00800 : 0x1AC00800)
         emit_word(div_base | (B << 16) | (A << 5) | C) # sdiv/udiv C, A, B
@@ -732,8 +750,7 @@ module Rubycc
       # :shl/:sar/:shr — a variable shift by B's low bits (masked to 5 bits for
       # a 32-bit operand, 6 for a 64-bit one by the hardware, matching C).
       def emit_shift(dst, a, b, size, base_table)
-        load_reg(A, a)
-        load_reg(B, b)
+        load_binary_operands(a, b)
         emit_word(base_table[width(size)] | (B << 16) | (A << 5) | A)
         store_reg(A, dst)
       end
@@ -749,9 +766,8 @@ module Rubycc
       # sets the flags; `cset` then writes 1 when the condition holds. A size-8
       # comparison uses the 64-bit X view (full pointer values), otherwise the
       # 32-bit W view.
-      def emit_comparison(dst, a, b, condition, size)
-        load_reg(A, a)
-        load_reg(B, b)
+      def emit_comparison(dst, a, b, condition, size, commutative: false)
+        load_binary_operands(a, b, commutative: commutative)
         emit_word(SUBS_SHIFTED[width(size)] | (B << 16) | (A << 5) | XZR) # cmp A, B (subs xzr, A, B)
         emit_cset(A, condition)
         store_reg(A, dst)
@@ -808,8 +824,7 @@ module Rubycc
       # narrower stores (strb/strh/str-w) are exactly the truncation a narrow
       # lvalue needs.
       def emit_store(ptr, value, size)
-        load_reg(A, ptr)   # A = destination address
-        load_reg(B, value) # B = value
+        load_binary_operands(ptr, value) # A = destination address, B = value
         word =
           case size
           when 8 then 0xF9000000 # str  x, [x]
@@ -1056,8 +1071,10 @@ module Rubycc
       # flight. None is an argument register, so a copy made while a call's
       # arguments are being prepared never disturbs one already placed.
       def emit_memcpy(dest_vreg, src_vreg, byte_count)
-        load_reg(A, dest_vreg) # A = destination address
-        load_reg(B, src_vreg)  # B = source address
+        # Through #load_binary_operands rather than two bare loads: the source
+        # address may be a transient waiting in A, which filling A with the
+        # destination would destroy for good (its slot was never written).
+        load_binary_operands(dest_vreg, src_vreg) # A = destination, B = source
         chunks = byte_count / 8
         if chunks > MEMCPY_UNROLL_LIMIT
           emit_memcpy_loop(chunks)
@@ -1263,13 +1280,63 @@ module Rubycc
       # is never truncated; a 32-bit value's high half was zeroed when it was
       # produced. Reaches the slot through the scaled immediate when it fits,
       # otherwise through a composed address in the ADDR scratch.
+      #
+      # The load disappears when `reg` already holds this slot's value and
+      # becomes a register move when another scratch register does (see
+      # SlotResidency). ADDR is never tracked, so the address composition the
+      # distant-slot path performs in it cannot leave a stale claim behind: it
+      # is a scratch this method writes and reads within one instruction and
+      # #load_reg is never asked to fill it.
       def load_reg(reg, vreg)
-        load_frame_at(reg, slot_offset(vreg))
+        refresh_slot_residency
+        return if slot_resident_in?(reg, vreg)
+
+        source = register_holding_slot(vreg)
+        if source
+          emit_word(ORR_SHIFTED[64] | (source << 16) | (XZR << 5) | reg) # mov Xreg, Xsource
+        else
+          load_frame_at(reg, slot_offset(vreg))
+        end
+        note_slot_loaded(reg, vreg)
       end
 
-      # str X{reg}, [slot]. The counterpart of #load_reg.
+      # str X{reg}, [slot]. The counterpart of #load_reg. The store itself is
+      # never skipped: the slot is the value's home, and nothing here knows
+      # whether a later branch reaches a reader by a path that goes nowhere near
+      # this register.
       def store_reg(reg, vreg)
+        refresh_slot_residency
+        if @transient.include?(vreg)
+          # The value's only reader is the next instruction, which will find it
+          # here; the slot itself is never named again, so nothing is written.
+          note_slot_loaded(reg, vreg)
+          return
+        end
         store_frame_at(reg, slot_offset(vreg))
+        note_slot_stored(reg, vreg)
+      end
+
+      # Loads a two-operand instruction's operands into A and B.
+      #
+      # Which one is fetched first stops being arbitrary once #load_reg can
+      # reuse a resident value: if `b` is the value sitting in A, loading `a`
+      # there first would throw it away and force `b` back out of memory.
+      # Fetching B first instead keeps it, as a register move. A `commutative`
+      # op can do better still — swapping the two makes the resident operand A's,
+      # so nothing is moved at all — and is safe to swap precisely because the
+      # instruction's two register operands are interchangeable (which is not
+      # true of :sub, of the shifts, or of an ordering comparison).
+      def load_binary_operands(a, b, commutative: false)
+        refresh_slot_residency
+        if slot_resident_in?(A, b) && !slot_resident_in?(A, a)
+          if commutative
+            a, b = b, a
+          else
+            load_reg(B, b)
+          end
+        end
+        load_reg(A, a)
+        load_reg(B, b)
       end
 
       # ldr X{reg}, [frame base + offset] for any fixed-frame offset, not just a
@@ -1326,13 +1393,45 @@ module Rubycc
       # extra instructions per operand and buy nothing, since ldr/str address a
       # V register with the same sp-relative form the X registers use — the sole
       # difference being the V bit that selects the register file.
+      #
+      # As with #load_reg, the move disappears when `reg` already holds this
+      # slot at this width and becomes a register-to-register `fmov` when
+      # another vector register does — which copies exactly the bits a reload
+      # would have produced at that width.
       def load_fp(reg, vreg, size)
-        emit_fp_slot_access(reg, slot_offset(vreg), size, load: true)
+        refresh_slot_residency
+        return if slot_resident_in_vector?(reg, vreg, size)
+
+        source = vector_register_holding_slot(vreg, size)
+        if source
+          emit_word(FMOV_REG.fetch(size) | (source << 5) | reg)
+        else
+          emit_fp_slot_access(reg, slot_offset(vreg), size, load: true)
+        end
+        note_slot_loaded_to_vector(reg, vreg, size)
+      end
+
+      # Stages a floating instruction's operands into FA and FB. When the second
+      # was never written to its slot (a transient waiting in FA), it is rescued
+      # into FB before the first operand lands on top of it — the vector-file
+      # version of the ordering rule #load_binary_operands follows.
+      def load_float_operands(a, b, size)
+        refresh_slot_residency
+        load_fp(FB, b, size) if slot_resident_in_vector?(FA, b, size) &&
+                                !slot_resident_in_vector?(FA, a, size)
+        load_fp(FA, a, size)
+        load_fp(FB, b, size)
       end
 
       # str S{reg}/D{reg}, [slot]. The counterpart of #load_fp.
       def store_fp(reg, vreg, size)
+        refresh_slot_residency
+        if @transient.include?(vreg)
+          note_slot_loaded_to_vector(reg, vreg, size)
+          return
+        end
         emit_fp_slot_access(reg, slot_offset(vreg), size, load: false)
+        note_slot_stored_from_vector(reg, vreg, size)
       end
 
       # The shared body of #load_fp / #store_fp. The unsigned-offset immediate is
@@ -1358,8 +1457,7 @@ module Rubycc
       # sign bit with an integer :xor, which the integer path already lowers.
       def emit_float_binary(inst, base_table)
         size = inst.size
-        load_fp(FA, inst.a, size)
-        load_fp(FB, inst.b, size)
+        load_float_operands(inst.a, inst.b, size)
         emit_word(base_table.fetch(size) | (FB << 16) | (FA << 5) | FA)
         store_fp(FA, inst.dst, size)
       end
@@ -1370,8 +1468,7 @@ module Rubycc
       # FLOAT_CONDITIONS). The `cset` is the 32-bit form, so the slot gets a
       # clean int with its upper half zeroed.
       def emit_float_comparison(dst, a, b, condition, size)
-        load_fp(FA, a, size)
-        load_fp(FB, b, size)
+        load_float_operands(a, b, size)
         emit_word(FCMP.fetch(size) | (FB << 16) | (FA << 5)) # fcmp FA, FB
         emit_cset(A, condition)
         store_reg(A, dst)
@@ -1742,6 +1839,12 @@ module Rubycc
       # argument is read once from the object the generator built it in — so
       # this is the bare instruction with an empty imm12.
       LDR_Q = 0x3DC00000
+
+      # "fmov Sd, Sn" / "fmov Dd, Dn", the vector-file register move, keyed by
+      # the value's width — which is also the encoding's type field (00 single,
+      # 01 double). Used where a floating value wanted in one scratch register
+      # is already in the other.
+      FMOV_REG = { 4 => 0x1E204000, 8 => 0x1E604000 }.freeze
 
       # The same form with V = 0, the general-purpose register file, at each of
       # the four access widths. The narrow loads are the zero-extending ones
