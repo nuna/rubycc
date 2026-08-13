@@ -1,8 +1,8 @@
 ---
-status: in-progress
+status: done
 kind: feature
 opened: 2026-08-13
-closed:
+closed: 2026-08-13
 branch: spill-traffic-cleanup
 pr: 48, 49
 steps: [spill-traffic-cleanup-1, spill-traffic-cleanup-2]
@@ -93,7 +93,7 @@ IR 層で入れたのは生成器とバックエンドの間に置く `IR::Simpl
 
 **PR は 2 本**。#48(第 1 段 / ブランチ `spill-traffic-cleanup`)と
 #49(第 2 段 / ブランチ `spill-traffic-cleanup-backend`、base は #48 の積み PR)。
-**master に入った時点で `status: done` と `closed:` を埋める。**
+**2026-08-13 に両方とも master へマージした**(CI は Ruby 3.3 / 4.0 の両ジョブが pass)。
 
 ## 決着
 
