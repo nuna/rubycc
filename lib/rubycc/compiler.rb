@@ -5,6 +5,7 @@ require_relative "compile_error"
 require_relative "preprocess/preprocessor"
 require_relative "front/parser"
 require_relative "ir/generator"
+require_relative "ir/simplify"
 require_relative "backend/x86_64"
 require_relative "backend/aarch64"
 require_relative "objfile/elf_writer"
@@ -148,7 +149,13 @@ module Rubycc
       defined_names = Set.new
       relocations = []
       ir_program.functions.each do |ir_func|
-        result = backend.compile(ir_func)
+        # The local rewrites (IR::Simplify) sit here, between the generator and
+        # the backend, rather than inside either: the generator's output stays
+        # the plain lowering of the source, which is what makes it readable and
+        # testable, and a backend keeps receiving one well-defined IR rather
+        # than having to run the pass itself. Both backends lower everything the
+        # pass can produce, so the seam needs no per-target condition.
+        result = backend.compile(IR::Simplify.run(ir_func))
         # Align each function to 16 bytes with the target's NOP filler, keeping
         # the output deterministic and every entry point aligned.
         pad_to_alignment(text, 16, entry[:machine].text_padding)

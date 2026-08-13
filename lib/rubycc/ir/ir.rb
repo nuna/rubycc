@@ -9,6 +9,22 @@ module Rubycc
     #                               constant, otherwise a 32-bit one)
     #   :copy   dst <- a
     #   :add/:sub/:mul             dst <- a op b
+    #   :scaled_add dst <- a + b*size   the address a subscript forms: the
+    #                               pointer in a offset by the index in b, that
+    #                               index scaled by `size` — the element width,
+    #                               which is 1, 2, 4 or 8 and nothing else. The
+    #                               computation is always 64-bit, a pointer
+    #                               being what it produces, so `size` here names
+    #                               the scale rather than the operand width (the
+    #                               same reading it has on :load/:store, where
+    #                               it is the access width rather than the
+    #                               register's). No generator emits it: it is
+    #                               what IR::Simplify folds a ":mul index by a
+    #                               constant element size" plus the ":add" of
+    #                               that to a base into, and both targets have a
+    #                               single instruction for it (x86-64's `lea`
+    #                               with a SIB scale, AArch64's add with a
+    #                               shifted register operand)
     #   :div/:mod                  dst <- a op b   (signed division/remainder)
     #   :udiv/:umod                dst <- a op b   (unsigned division/remainder;
     #                               the backend zeroes edx and uses `div`)

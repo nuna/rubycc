@@ -108,6 +108,11 @@ module Rubycc
       GP_RETURN_REGISTERS = [EAX, EDX].freeze
       SSE_RETURN_REGISTERS = [XMM0, XMM1].freeze
 
+      # :scaled_add's element size -> the SIB byte's two-bit scale field. The
+      # four sizes are the only ones the encoding can name, which is exactly the
+      # set IR::Simplify fuses a subscript for.
+      SIB_SCALES = { 1 => 0, 2 => 1, 4 => 2, 8 => 3 }.freeze
+
       # IR comparison op -> setcc opcode (second byte of the 0F 9x encoding).
       # The result is materialized into eax as an int 0/1 by movzx. The signed
       # forms (setl/setle/setg/setge) test the sign/overflow flags; the unsigned
@@ -270,6 +275,8 @@ module Rubycc
           store_reg(EAX, inst.dst)
         when :add
           emit_binary(inst.dst, inst.a, inst.b, [0x01, 0xC8], inst.size) # add eax, ecx
+        when :scaled_add
+          emit_scaled_add(inst.dst, inst.a, inst.b, inst.size)
         when :sub
           emit_binary(inst.dst, inst.a, inst.b, [0x29, 0xC8], inst.size) # sub eax, ecx
         when :mul
@@ -1248,6 +1255,24 @@ module Rubycc
         load_reg(ECX, b)
         emit(0x48) if size == 8
         opcode_bytes.each { |byte| emit(byte) }
+        store_reg(EAX, dst)
+      end
+
+      # :scaled_add — dst <- base + index * element_size, the address a
+      # subscript forms. `lea` (8D /r) computes an address rather than loading
+      # from it, and its SIB byte carries the scale as a two-bit shift, so the
+      # element-size multiply and the add to the base become one instruction
+      # that touches no flags. REX.W makes it a 64-bit computation, which is
+      # what a pointer needs; the ModR/M's mod=00 with rm=100 selects the SIB
+      # form with no displacement, and the base field there is never rbp (the
+      # two scratch registers are eax/ecx), so the "no base register" special
+      # case that encoding reserves for rbp cannot be hit.
+      def emit_scaled_add(dst, base_vreg, index_vreg, element_size)
+        load_reg(EAX, base_vreg)
+        load_reg(ECX, index_vreg)
+        emit(0x48, 0x8D)                        # REX.W lea rax, [rax + rcx*scale]
+        emit(0x04 | (EAX << 3))                 # mod=00, reg=eax, rm=100 (SIB follows)
+        emit((SIB_SCALES.fetch(element_size) << 6) | (ECX << 3) | EAX)
         store_reg(EAX, dst)
       end
 
