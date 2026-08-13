@@ -78,6 +78,10 @@ class TestAArch64Backend < Minitest::Test
   end
 
   def add_reg(sf, rd, rn, rm)  = addsub_shifted(0, 0, sf, rd, rn, rm)
+
+  # The same ADD with a non-zero imm6, which shifts Rm left before adding: the
+  # form a scaled subscript address uses (shift(23:22) stays 00, LSL).
+  def add_shifted_lsl(sf, rd, rn, rm, amount) = add_reg(sf, rd, rn, rm) | (amount << 10)
   def sub_reg(sf, rd, rn, rm)  = addsub_shifted(1, 0, sf, rd, rn, rm)
   def subs_reg(sf, rd, rn, rm) = addsub_shifted(1, 1, sf, rd, rn, rm)
 
@@ -1228,6 +1232,20 @@ class TestAArch64Backend < Minitest::Test
                   ldr_slot(A, 1), str_slot(A, 0), ldr_slot(0, 0),
                   ldp_x(FP, LR, SP, 0), add_imm(SP, SP, 32), ret_x30],
                  words(fn)
+  end
+
+  # A subscript's "index * element size" and the add of it to the base are one
+  # instruction here: the shifted-register add scales its second operand by the
+  # element width. The IR pass hands the backend a single :scaled_add whose
+  # `size` is that width (IR::Simplify).
+  def test_a_scaled_add_is_one_shifted_register_add
+    fn = func([inst(:scaled_add, dst: 4, a: 0, b: 1, size: 4),
+               inst(:scaled_add, dst: 5, a: 0, b: 1, size: 8)],
+              vregs: 6)
+    body = words(fn).drop(2)
+    assert_words [ldr_slot(A, 0), ldr_slot(B, 1), add_shifted_lsl(1, A, A, B, 2), str_slot(A, 4),
+                  ldr_slot(A, 0), ldr_slot(B, 1), add_shifted_lsl(1, A, A, B, 3), str_slot(A, 5)],
+                 body.first(8)
   end
 
   # A call with stack arguments made from an alloca function cannot use a fixed

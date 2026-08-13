@@ -165,6 +165,7 @@ Instruction(op, dst:, a:, b:, size:)
 | 命令 | 形 | 意味 |
 |---|---|---|
 | :add / :sub / :mul | dst ← a op b | |
+| :scaled_add | dst ← a + b × size | 添字が作るアドレス。a = ベースポインタ、b = 添字、`size` = 要素幅(1/2/4/8 のみ)。計算は常に 64 bit(結果がポインタのため)で、`size` はオペランド幅ではなくスケールを表す(:load/:store で `size` がアクセス幅を表すのと同じ読み)。**ジェネレータは出さない** — `IR::Simplify` が「定数要素幅との :mul」+「ベースへの :add」を融合して生成する。x86-64 は SIB の scale 付き `lea`、AArch64 はシフト付きレジスタの `add` に 1 命令で下りる |
 | :mulhi | dst ← hi64(a × b) | 64 bit unsigned 乗算の上位 64 bit。`size` は常に 8。`__int128` の乗算を合成するために使い、x86-64 は `mul`、AArch64 は `umulh` へ下ろす |
 | :div / :mod | dst ← a op b | 符号付き除算・剰余 |
 | :udiv / :umod | dst ← a op b | 符号無し除算・剰余(バックエンドは edx をゼロにして `div`) |

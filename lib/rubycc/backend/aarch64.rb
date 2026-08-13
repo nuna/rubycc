@@ -531,6 +531,7 @@ module Rubycc
         when :const then emit_const(inst.dst, inst.a, inst.size)
         when :copy then emit_copy(inst.dst, inst.a)
         when :add then emit_arith(inst, ADD_SHIFTED)
+        when :scaled_add then emit_scaled_add(inst.dst, inst.a, inst.b, inst.size)
         when :sub then emit_arith(inst, SUB_SHIFTED)
         when :and then emit_arith(inst, AND_SHIFTED)
         when :or then emit_arith(inst, ORR_SHIFTED)
@@ -611,6 +612,19 @@ module Rubycc
         load_reg(B, inst.b)
         emit_word(base_table[width(inst.size)] | (B << 16) | (A << 5) | A)
         store_reg(A, inst.dst)
+      end
+
+      # :scaled_add — dst <- base + index * element_size, the address a
+      # subscript forms. The shifted-register add carries the scale in its imm6
+      # field as a left shift of the second operand, so the element-size
+      # multiply and the add to the base are one instruction. It is always the
+      # 64-bit (X) form: the value being computed is a pointer.
+      def emit_scaled_add(dst, base_vreg, index_vreg, element_size)
+        load_reg(A, base_vreg)
+        load_reg(B, index_vreg)
+        shift = SHIFTED_SCALES.fetch(element_size)
+        emit_word(ADD_SHIFTED[64] | (B << 16) | (shift << 10) | (A << 5) | A)
+        store_reg(A, dst)
       end
 
       # :mul — Rd = Rn * Rm, encoded as `madd Rd, Rn, Rm, xzr`.
@@ -1619,6 +1633,12 @@ module Rubycc
       LSLV = { 32 => 0x1AC02000, 64 => 0x9AC02000 }.freeze
       LSRV = { 32 => 0x1AC02400, 64 => 0x9AC02400 }.freeze
       ASRV = { 32 => 0x1AC02800, 64 => 0x9AC02800 }.freeze
+
+      # :scaled_add's element size -> the imm6 shift amount the shifted-register
+      # add above applies to its second operand (the shift type field stays 00,
+      # LSL). These four powers of two are exactly the set IR::Simplify fuses a
+      # subscript for.
+      SHIFTED_SCALES = { 1 => 0, 2 => 1, 4 => 2, 8 => 3 }.freeze
 
       # umulh Rd, Rn, Rm — a "data-processing (3 source)" instruction in the
       # same family as madd/msub, with op31 = 110 selecting the unsigned-high
