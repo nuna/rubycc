@@ -132,6 +132,32 @@ module Rubycc
         @resident_at = @code.bytesize
       end
 
+      # Records that the bytes just emitted wrote `reg`, and no slot and no
+      # other register. Two shapes take it: a move out of a promoted register
+      # (whose value lives in a register of its own rather than in a slot, so no
+      # residency ever names it), and an instruction that computes its result
+      # straight into a promoted one — where the delete is what drops any claim
+      # the staging load recorded against that same register a moment earlier.
+      #
+      # This and #note_slots_undisturbed are the two ways of keeping a residency
+      # alive across an emission without claiming anything new. Both are sound
+      # under one condition, in two parts: the table must have been true
+      # immediately before those bytes — which #refresh_slot_residency
+      # establishes, and so does any note that ran with nothing emitted since —
+      # and those bytes must have written nothing the table names beyond what is
+      # being dropped here.
+      def note_register_clobbered(reg)
+        @resident.delete(reg)
+        @resident_at = @code.bytesize
+      end
+
+      # Records that the bytes just emitted disturbed nothing the table
+      # describes at all — a move *into* a promoted register, which no residency
+      # can name (see #note_register_clobbered for when this is sound).
+      def note_slots_undisturbed
+        @resident_at = @code.bytesize
+      end
+
       # Forgets every claim on `vreg`'s slot in both files, for a store about to
       # replace what that slot holds.
       def drop_claims_on(vreg)
