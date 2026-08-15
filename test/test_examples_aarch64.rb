@@ -38,6 +38,13 @@ class TestExamplesAArch64 < Minitest::Test
     end
   end
 
+  def test_aarch64_obsolete_example_uses_compatibility_flag
+    flags = cross_gcc_compile_args("m5/atomic_type_10_knr_definitions.c")
+    assert_includes flags, ExecutionHelper::OBSOLETE_C_FLAGS.first
+    refute_includes cross_gcc_compile_args("m5/ordinary_example.c"),
+                    ExecutionHelper::OBSOLETE_C_FLAGS.first
+  end
+
   private
 
   def run_example(path, basename)
@@ -74,8 +81,9 @@ class TestExamplesAArch64 < Minitest::Test
   def build_and_run_with_cross_gcc(path)
     in_tmpdir do |dir|
       object_path = File.join(dir, "example.o")
-      stdout_and_stderr, status = Open3.capture2e(AArch64ExecutionHelper::CROSS_GCC, "-c",
-                                                  "-fno-pie", "-o", object_path, path)
+      relative_path = path.delete_prefix("#{TestExamples::EXAMPLES_ROOT}/")
+      stdout_and_stderr, status = Open3.capture2e(*cross_gcc_compile_args(relative_path),
+                                                  "-o", object_path, path)
       unless status.success?
         raise "#{AArch64ExecutionHelper::CROSS_GCC} failed to compile #{path} " \
               "(exit #{status.exitstatus}):\n#{stdout_and_stderr}"
@@ -83,5 +91,11 @@ class TestExamplesAArch64 < Minitest::Test
 
       link_and_run_aarch64(object_path)
     end
+  end
+
+  def cross_gcc_compile_args(relative_path)
+    args = [AArch64ExecutionHelper::CROSS_GCC, "-c", ExecutionHelper::REFERENCE_STD_FLAG, "-fno-pie"]
+    args.concat(ExecutionHelper::OBSOLETE_C_FLAGS) if obsolete_c_example?(relative_path)
+    args
   end
 end
