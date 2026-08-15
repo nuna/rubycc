@@ -11723,3 +11723,31 @@ mysql2 は docker コンテナ `rubycc-mariadb` を要求し、停止してい�
 issue は **DESIGN N2 の達成をもって閉じ**、残差は
 `issues/promoted-register-addressing.md` へ申し送った。**閉じる判断そのものより、
 「条件が指す分母を測ったか」を確かめる方が先だった**というのがこのステップの教訓である。
+
+## corpus-candidate-discovery-1 — scanner を library / CLI 境界へ分離する
+
+ARGV 解釈、HTTP 通信、sleep、出力、cache を `CorpusCandidateScan` の設定・依存注入へ移し、
+require 時の副作用をなくした。既存 rank source の位置引数、環境変数、終了 status、分類欄は
+維持した。fixture と偽 HTTP client を使うテストを追加した。
+
+## corpus-candidate-discovery-2 — timeframe source と release 選択を実装する
+
+`/api/v1/timeframe_versions.json` の UTC 期間・全 page 走査と pagination guard を追加した。
+prerelease / yanked / native-platform-only を除外し、v2 の `platform=ruby` と version 固定 fetch、
+gemspec の name / version / platform 照合を行う。API schema、重複、異常系を hermetic fixture で
+検証した。
+
+## corpus-candidate-discovery-3 — live scan で経路と運用条件を検証する
+
+対象期間 `2026-08-15T00:00:00Z` ～ `2026-08-16T00:00:00Z` の live scan は終了 status 0。
+153 version、重複排除後 114 gem、timeframe 7 page、gem fetch 109/109 成功、分類は `[1]` 8、
+`[1b]` 0、`[2]` 0、`[3]` 0、`[E]` 5、`[0]` 0、直接 API request は 121
+(timeframe 7 + v2 114) だった。候補は `atomic-ruby`, `classifier`, `hx_ruby`, `ironpress`,
+`page_print`, `pgn2`, `udb`, `wreq`。初回の read-only HOME による RubyGems spec cache 失敗を
+受け、cache を `SCAN_WORK/gem_spec_cache` に固定して再実行した。これは候補経路の smoke test
+であり、corpus への正式追加や発見方法の有効性を証明するものではない。
+
+検証結果: `ruby -Itest test/test_scan_popular_gems.rb` は 11 runs / 46 assertions、
+`ruby -Itest -Ilib test/test_issue_docs.rb` は 5 / 332、`ruby -Itest test/test_corpus_census.rb`
+は 29 / 377、`rake test` は 3232 runs / 11492 assertions / 41 skips。いずれも failures 0、
+errors 0。

@@ -39,7 +39,17 @@ rubycc が「実際の gem をビルドできる」ことを広げ、その事�
 tools/scan_popular_gems.rb <first_page> <last_page>     # 1 ページ = 10 ランク
 SCAN_SOURCE=bestgems tools/scan_popular_gems.rb 12 20   # ランク 100 超
 SCAN_VERBOSE=1 ...                                      # C 拡張なしの gem も一覧
+tools/scan_popular_gems.rb --source timeframe \
+  --from 2026-08-15T00:00:00Z --to 2026-08-16T00:00:00Z # 完了済みUTC期間
 ```
+
+`timeframe` は rubygems.org の `/api/v1/timeframe_versions.json` を全 page 取得する。`from` /
+`to` は ISO 8601 の UTC 境界で、期間は最大 7 日。prerelease と yanked を除き、v2 version API
+で `platform=ruby` の source gem を確認してから version 固定で検査する。`[1]` は候補であり、
+`test/corpus/gems.rb` への正式追加ではない。source gem を選べない version は理由付きで `[E]`
+に残す。
+RubyGems の spec cache は `SCAN_WORK/gem_spec_cache` に置かれるため、HOME が read-only な
+実行環境でも writable な `SCAN_WORK` を使う。
 
 出力グループの扱い:
 

@@ -839,6 +839,10 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   **完了(Step 143)**: `tools/scan_popular_gems.rb`。R10 の判定は `census.rb` に委譲し
   再実装しない。R10 が原理的に見ない**アセンブラ要否**はスキャナ側で 2 系統
   (`.S`/`.s` 走査 + `$objs` の未対応エントリ)検査し、`[1b]` に分類する。
+- **RubyGems 更新履歴を期間 source として候補発見に使う。** **完了(corpus-candidate-discovery-3)**:
+  `tools/scan_popular_gems.rb --source timeframe` を追加し、UTC 1 日の live scan で 153 version /
+  114 gem / 109 fetch 成功 / `[1]` 8 / `[E]` 5 を実測。候補を `test/corpus/gems.rb` へ自動追加せず、
+  複数 window と既存 source の増分価値を判定する評価は後続 issue に残した。
 - ~~`data/verified_gems.json` を手編集ではなく実走結果から生成/拡張する
   (data/README.md が当初から述べていた意図)。~~ **完了(Step 144)**:
   `tools/verify_gem_tests.rb`。`RUBYCC=1 gem install` → rubycc が使われた痕跡の確認 →

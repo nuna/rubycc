@@ -5,7 +5,10 @@ opened: 2026-08-16
 closed:
 branch: corpus-candidate-discovery
 pr:
-steps: []
+steps:
+  - corpus-candidate-discovery-1
+  - corpus-candidate-discovery-2
+  - corpus-candidate-discovery-3
 ---
 
 # RubyGems の更新履歴から、census 候補になる C 拡張 gem を発見する
@@ -147,6 +150,38 @@ reverse dependencies、実アプリの lockfile を比較した。
 - <https://guides.rubygems.org/rubygems-org-api/>
 - <https://guides.rubygems.org/rubygems-org-rate-limits/>
 
+#### `corpus-candidate-discovery-1`
+
+scanner を require 可能な library / CLI 境界へ分離した。HTTP client、sleep、出力先、
+cache を注入でき、従来の rank source と終了 status は維持した。
+
+#### `corpus-candidate-discovery-2`
+
+timeframe source、全 page 走査、同一 page の反復検出、prerelease / yanked / native-platform-only
+の除外、v2 の `platform=ruby` 確認、version 固定 fetch と gemspec 照合を実装した。
+fixture を使う hermetic test で API schema、pagination、release 選択、不一致を検証した。
+
+#### `corpus-candidate-discovery-3`
+
+対象期間 `2026-08-15T00:00:00Z` ～ `2026-08-16T00:00:00Z` を live scan した。
+
+- timeframe API: 7 page、153 version
+- 重複排除後: 114 gem
+- gem fetch: 109 試行 / 109 成功
+- 分類: `[1]` 8、`[1b]` 0、`[2]` 0、`[3]` 0、`[E]` 5、`[0]` 0
+- `[1]`候補: `atomic-ruby`, `classifier`, `hx_ruby`, `ironpress`, `page_print`, `pgn2`, `udb`, `wreq`
+- 直接 API request: timeframe 7 + v2 114 = 121
+
+初回実行では、RubyGems が read-only な HOME 配下の compact-index cache を使おうとして
+全 fetch が失敗した。この環境依存を再現可能な失敗として扱い、`Corpus::Census.fetch_gem`
+が `SCAN_WORK/gem_spec_cache` を `GEM_SPEC_CACHE` に設定するよう修正した。再実行では
+指定した writable work directory 内に spec cache 110 ファイルと `.gem` 109 ファイルが
+生成され、終了 status 0 になった。候補を `test/corpus/gems.rb` へ自動追加していないため、
+この smoke test は「候補経路が走査・分類できる」ことのみを示し、corpus を適切に増やせる
+ことの証明や正式追加の決定とはしない。
+
 ## 決着
 
-(未着手)
+実装ブランチで A1〜A3 と live smoke test まで完了。PR 作成後、planning issue の
+`corpus-candidate-issues` への積み上げレビュー待ち。PR が master に取り込まれるまでは
+issue を `done` にしない。

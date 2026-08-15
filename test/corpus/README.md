@@ -88,15 +88,27 @@ Fetch failures skip that gem (with the reason recorded) without stopping the run
 
 ```sh
 tools/scan_popular_gems.rb [first_page] [last_page]   # デフォルト 11 20
+tools/scan_popular_gems.rb --source timeframe \
+  --from 2026-08-15T00:00:00Z --to 2026-08-16T00:00:00Z
 ```
 
 1 ページ = 10 ランク(rubygems.org 側のページングに合わせている)。例えば
 `tools/scan_popular_gems.rb 1 10` はランク 1〜100 を走査する。
 
+`timeframe` は rubygems.org の `/api/v1/timeframe_versions.json` を使い、指定した UTC の
+期間に作成された version を全 page 取得する。`from` / `to` は ISO 8601 で、期間は最大 7 日。
+同じ gem は prerelease と yanked を除いて 1 version に畳み、v2 version API で
+`platform=ruby` の source gem を確認してから、version 固定で検査する。source gem を選べない
+場合は `[E]` に理由を出し、候補として黙って捨てない。候補が `[1]` に出ても、
+`test/corpus/gems.rb` への正式追加は手動で行う。
+
 環境変数:
 
 - `SCAN_WORK` — ダウンロードした `.gem` / API レスポンスのキャッシュ先(既定値は tmpdir 配下)。
-- `SCAN_SOURCE` — `auto`(既定)/ `rubygems` / `bestgems`。ランキングの取得元を選ぶ。
+- RubyGems の spec cache も `SCAN_WORK/gem_spec_cache` に置くため、HOME が read-only でも
+  writable な `SCAN_WORK` を指定すれば実行できる。
+- `SCAN_SOURCE` — `auto`(既定)/ `rubygems` / `bestgems` / `timeframe`。ランキングまたは期間sourceを選ぶ。
+- `SCAN_FROM` / `SCAN_TO` — `timeframe`を環境変数で実行する場合のISO 8601 UTC境界。
 - `SCAN_VERBOSE` — `1` を設定すると、C 拡張を持たない gem も `[0]` として一覧表示する。
 
 ### ランキングソース

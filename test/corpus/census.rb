@@ -257,7 +257,13 @@ module Corpus
 
       cmd = ["gem", "fetch", name, "--platform=ruby"]
       cmd += ["--version", version] if version
-      out, status = Open3.capture2e(*cmd, chdir: cache_dir)
+      # Keep RubyGems' compact-index cache beside the requested gem cache. A
+      # read-only HOME is common in CI and sandboxed scans; relying on the
+      # process user's default ~/.cache/gem would make an otherwise writable
+      # corpus cache unusable.
+      spec_cache = File.join(cache_dir, "gem_spec_cache")
+      FileUtils.mkdir_p(spec_cache)
+      out, status = Open3.capture2e({ "GEM_SPEC_CACHE" => spec_cache }, *cmd, chdir: cache_dir)
       unless status.success?
         return [nil, out.strip]
       end
