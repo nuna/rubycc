@@ -18,7 +18,9 @@
 require "fileutils"
 require "json"
 require "net/http"
+require "optparse"
 require "rubygems/package"
+require "time"
 require "tmpdir"
 require "uri"
 
@@ -37,42 +39,106 @@ module CorpusCandidateScan
   # from ARGV at load time. This is the boundary that makes the scanner
   # require-able from hermetic tests and from the future timeframe source.
   class Configuration
-    attr_reader :first_page, :last_page, :work_dir, :source_choice, :verbose
+    attr_reader :first_page, :last_page, :work_dir, :source_choice, :verbose,
+                :from_time, :to_time
 
     def initialize(first_page: 11, last_page: 20, work_dir: DEFAULT_WORK_DIR,
-                   source_choice: "auto", verbose: false)
+                   source_choice: "auto", verbose: false, from_time: nil, to_time: nil)
       @first_page = Integer(first_page)
       @last_page = Integer(last_page)
       @work_dir = File.expand_path(work_dir)
       @source_choice = source_choice.to_s.downcase
       @verbose = verbose
+      @from_time = from_time && parse_time(from_time, "from")
+      @to_time = to_time && parse_time(to_time, "to")
       validate!
     end
 
     def self.from_env(argv = ARGV, env = ENV)
       args = Array(argv)
-      raise ArgumentError, "expected at most first_page and last_page" if args.size > 2
+      options = {
+        source_choice: env.fetch("SCAN_SOURCE", "auto"),
+        from_time: env["SCAN_FROM"],
+        to_time: env["SCAN_TO"]
+      }
+      parser = OptionParser.new do |opts|
+        opts.on("--source SOURCE", "ranking source or timeframe") { |value| options[:source_choice] = value }
+        opts.on("--from ISO8601", "timeframe start") { |value| options[:from_time] = value }
+        opts.on("--to ISO8601", "timeframe end") { |value| options[:to_time] = value }
+      end
+      begin
+        remaining = parser.parse(args)
+      rescue OptionParser::ParseError => e
+        raise ArgumentError, e.message
+      end
+
+      if options[:source_choice].to_s.downcase == "timeframe"
+        raise ArgumentError, "timeframe source does not accept rank arguments" unless remaining.empty?
+        return new(
+          first_page: 1,
+          last_page: 1,
+          work_dir: env.fetch("SCAN_WORK", DEFAULT_WORK_DIR),
+          source_choice: options[:source_choice],
+          verbose: !env.fetch("SCAN_VERBOSE", "").empty?,
+          from_time: options[:from_time],
+          to_time: options[:to_time]
+        )
+      end
+
+      raise ArgumentError, "expected at most first_page and last_page" if remaining.size > 2
+      if options[:from_time] || options[:to_time]
+        raise ArgumentError, "--from/--to require --source timeframe"
+      end
 
       new(
-        first_page: args[0] || 11,
-        last_page: args[1] || 20,
+        first_page: remaining[0] || 11,
+        last_page: remaining[1] || 20,
         work_dir: env.fetch("SCAN_WORK", DEFAULT_WORK_DIR),
-        source_choice: env.fetch("SCAN_SOURCE", "auto"),
+        source_choice: options[:source_choice],
         verbose: !env.fetch("SCAN_VERBOSE", "").empty?
       )
     end
 
+    def timeframe?
+      source_choice == "timeframe"
+    end
+
+    def timeframe_bounds
+      [from_time, to_time]
+    end
+
     private
+
+    def parse_time(value, name)
+      text = value.to_s
+      if text.match?(/\A\d{4}-\d{2}-\d{2}\z/)
+        Time.strptime(text, "%Y-%m-%d").utc
+      else
+        Time.iso8601(text).utc
+      end
+    rescue ArgumentError
+      raise ArgumentError, "#{name} must be an ISO 8601 timestamp: #{value.inspect}"
+    end
 
     def validate!
       raise ArgumentError, "first_page must be >= 1" if @first_page < 1
       if @last_page < @first_page
         raise ArgumentError, "last_page (#{@last_page}) must be >= first_page (#{@first_page})"
       end
-      return if %w[auto rubygems bestgems].include?(@source_choice)
+      unless %w[auto rubygems bestgems timeframe].include?(@source_choice)
+        raise ArgumentError,
+              "unknown SCAN_SOURCE=#{@source_choice.inspect} (expected auto, rubygems, bestgems or timeframe)"
+      end
 
-      raise ArgumentError,
-            "unknown SCAN_SOURCE=#{@source_choice.inspect} (expected auto, rubygems or bestgems)"
+      if timeframe?
+        raise ArgumentError, "timeframe source requires --from and --to" unless @from_time && @to_time
+        raise ArgumentError, "timeframe requires from < to" unless @from_time < @to_time
+        if @to_time - @from_time > 7 * 24 * 60 * 60
+          raise ArgumentError, "timeframe cannot exceed 7 days"
+        end
+      elsif @from_time || @to_time
+        raise ArgumentError, "--from/--to require --source timeframe"
+      end
     end
   end
 
@@ -182,6 +248,53 @@ module CorpusCandidateScan
     end
   end
 
+  module TimeframeVersions
+    PAGE_SIZE = 30
+    LABEL = "rubygems.org /api/v1/timeframe_versions"
+    REQUIRED_KEYS = %w[name version platform created_at prerelease sha downloads version_downloads].freeze
+
+    module_function
+
+    def url(from_time, to_time, page)
+      query = URI.encode_www_form(
+        from: from_time.utc.iso8601,
+        to: to_time.utc.iso8601,
+        page: page
+      )
+      "https://rubygems.org/api/v1/timeframe_versions.json?#{query}"
+    end
+
+    def fetch_page(http, from_time, to_time, page)
+      response = JSON.parse(http.get(url(from_time, to_time, page)))
+      raise "#{url(from_time, to_time, page)}: response must be an array" unless response.is_a?(Array)
+      return [] if response.empty?
+
+      response.map.with_index do |entry, index|
+        validate_entry(entry, page, index)
+      end
+    rescue JSON::ParserError => e
+      raise "#{url(from_time, to_time, page)}: invalid JSON: #{e.message}"
+    end
+
+    def validate_entry(entry, page, index)
+      unless entry.is_a?(Hash)
+        raise "timeframe page #{page} entry #{index}: expected an object"
+      end
+      missing = REQUIRED_KEYS.reject { |key| entry.key?(key) }
+      unless missing.empty?
+        raise "timeframe page #{page} entry #{index}: missing #{missing.join(', ')}"
+      end
+      raise "timeframe page #{page} entry #{index}: prerelease must be boolean" unless [true, false].include?(entry["prerelease"])
+
+      created_at = Time.iso8601(entry["created_at"].to_s).utc
+      raise "timeframe page #{page} entry #{index}: invalid created_at" unless created_at
+
+      entry.merge("created_at_time" => created_at)
+    rescue ArgumentError
+      raise "timeframe page #{page} entry #{index}: invalid created_at #{entry["created_at"].inspect}"
+    end
+  end
+
   # --- assembler detection -------------------------------------------------
 
   OBJS_VALUE_RE = /(?:%[wW][(\[{][^)\]}]*[)\]}]|\[[^\]]*\]|"[^"]*"|'[^']*')/m
@@ -216,6 +329,15 @@ module CorpusCandidateScan
         { base: base, asm: !Dir.glob(File.join(root, "**", "#{base}.{S,s}")).empty? }
       end
     end
+
+    def validate_fetched_spec(spec, requested_version, requested_platform)
+      if requested_version && spec.version.to_s != requested_version
+        raise ArgumentError, "fetched version #{spec.version} does not match requested #{requested_version}"
+      end
+      return unless requested_platform && spec.platform.to_s != requested_platform
+
+      raise ArgumentError, "fetched platform #{spec.platform} does not match requested #{requested_platform}"
+    end
   end
 
   class Scanner
@@ -234,6 +356,15 @@ module CorpusCandidateScan
     end
 
     def run
+      if config.timeframe?
+        selected, rejected = collect_timeframe
+        results = rejected + selected.map do |entry|
+          step "inspecting #{entry[:name]} #{entry[:version]} (platform=#{entry[:platform]})"
+          inspect_gem(entry)
+        end
+        return report(results, TimeframeVersions, config.from_time, config.to_time)
+      end
+
       first_rank = ((config.first_page - 1) * RANKS_PER_PAGE) + 1
       last_rank = config.last_page * RANKS_PER_PAGE
       step "scanning popularity ranks #{first_rank}-#{last_rank}"
@@ -269,6 +400,142 @@ module CorpusCandidateScan
           BestgemsTotal
         end
       end
+    end
+
+    def collect_timeframe
+      records = []
+      page = 1
+      seen_pages = Set.new
+      loop do
+        step "timeframe: #{TimeframeVersions.url(config.from_time, config.to_time, page)}"
+        entries = TimeframeVersions.fetch_page(@http, config.from_time, config.to_time, page)
+        break if entries.empty?
+        raise "timeframe page #{page} returned more than #{TimeframeVersions::PAGE_SIZE} entries" if entries.size > TimeframeVersions::PAGE_SIZE
+
+        fingerprint = JSON.generate(entries.map { |entry| entry.reject { |key, _| key == "created_at_time" } })
+        raise "timeframe page #{page} repeats a previous page" unless seen_pages.add?(fingerprint)
+
+        entries.each do |entry|
+          unless entry["created_at_time"] >= config.from_time && entry["created_at_time"] < config.to_time
+            raise "timeframe page #{page} entry #{entry["name"]} #{entry["version"]} is outside the requested interval"
+          end
+        end
+        records.concat(entries)
+        page += 1
+      end
+
+      select_timeframe_releases(records)
+    end
+
+    def select_timeframe_releases(records)
+      selected = []
+      rejected = []
+
+      records.group_by { |entry| entry["name"] }.sort_by { |name, _| name }.each do |name, entries|
+        candidates = entries.group_by { |entry| entry["version"] }.values.map do |versions|
+          versions.max_by { |entry| [entry["platform"] == "ruby" ? 1 : 0, entry["created_at_time"].to_f] }
+        end
+        candidates.sort! do |left, right|
+          by_time = right["created_at_time"] <=> left["created_at_time"]
+          next by_time unless by_time.zero?
+
+          by_version = Gem::Version.new(right["version"]) <=> Gem::Version.new(left["version"])
+          next by_version unless by_version.zero?
+
+          (right["platform"] == "ruby" ? 1 : 0) <=> (left["platform"] == "ruby" ? 1 : 0)
+        end
+
+        discarded = []
+        chosen = nil
+        candidates.each do |candidate|
+          if candidate["prerelease"]
+            discarded << "#{candidate["version"]}: prerelease"
+            next
+          end
+
+          details = timeframe_version_details(candidate["name"], candidate["version"])
+          if details[:error]
+            discarded << "#{candidate["version"]}: #{details[:error]}"
+            next
+          end
+          unless details["name"] == candidate["name"] && details["version"] == candidate["version"]
+            discarded << "#{candidate["version"]}: v2 name/version mismatch"
+            next
+          end
+          unless details["platform"] == "ruby"
+            discarded << "#{candidate["version"]}: source platform unavailable (#{details["platform"]})"
+            next
+          end
+          if details["yanked"]
+            discarded << "#{candidate["version"]}: yanked"
+            next
+          end
+
+          chosen = candidate.merge(
+            "v2" => details,
+            "platform" => "ruby",
+            "selection_note" => selection_note(candidates, discarded, candidate)
+          )
+          break
+        rescue ArgumentError
+          discarded << "#{candidate["version"]}: invalid version"
+        end
+
+        if chosen
+          selected << {
+            source: :timeframe,
+            name: chosen["name"],
+            version: chosen["version"],
+            platform: chosen["platform"],
+            created_at: chosen["created_at"],
+            downloads: chosen["v2"]["downloads"] || chosen["downloads"],
+            version_downloads: chosen["v2"]["version_downloads"] || chosen["version_downloads"],
+            sha: chosen["v2"]["sha"] || chosen["sha"],
+            selection_note: chosen["selection_note"]
+          }
+        else
+          rejected << rejected_timeframe_result(name, discarded)
+        end
+      end
+
+      [selected, rejected]
+    end
+
+    def selection_note(candidates, discarded, chosen)
+      versions = candidates.map { |entry| entry["version"] }.join(", ")
+      note = "timeframe releases considered: #{versions}; selected #{chosen["version"]}"
+      discarded.empty? ? note : "#{note}; discarded: #{discarded.join('; ')}"
+    end
+
+    def rejected_timeframe_result(name, reasons)
+      {
+        rank: nil, name: name, version: nil, downloads: nil, extensions: [],
+        status: :error, reason: "no non-prerelease, non-yanked ruby source release: #{reasons.join('; ')}",
+        c_files: 0, h_files: 0, notes: [], in_corpus: @corpus_names.include?(name)
+      }
+    end
+
+    def timeframe_version_details(name, version)
+      @timeframe_version_cache ||= {}
+      key = [name, version]
+      return @timeframe_version_cache[key] if @timeframe_version_cache.key?(key)
+
+      encoded_name = URI.encode_www_form_component(name)
+      encoded_version = URI.encode_www_form_component(version)
+      url = "https://rubygems.org/api/v2/rubygems/#{encoded_name}/versions/#{encoded_version}.json?platform=ruby"
+      details = JSON.parse(@http.get(url))
+      required = %w[name version platform yanked sha]
+      missing = required.reject { |field| details.is_a?(Hash) && details.key?(field) }
+      raise "v2 response missing #{missing.join(', ')}" unless missing.empty?
+      unless [true, false].include?(details["yanked"])
+        raise "v2 response yanked must be boolean"
+      end
+
+      @timeframe_version_cache[key] = details
+    rescue JSON::ParserError => e
+      @timeframe_version_cache[key] = { error: "invalid v2 JSON: #{e.message}" }
+    rescue StandardError => e
+      @timeframe_version_cache[key] = { error: "v2 lookup failed: #{e.message}" }
     end
 
     def collect_ranking(source, first_rank, last_rank)
@@ -325,7 +592,8 @@ module CorpusCandidateScan
         in_corpus: @corpus_names.include?(name)
       }
 
-      gem_path, fetch_error = Corpus::Census.fetch_gem(name, nil, config.work_dir)
+      requested_version = entry[:version]
+      gem_path, fetch_error = Corpus::Census.fetch_gem(name, requested_version, config.work_dir)
       unless gem_path
         result[:status] = :error
         result[:reason] = "gem fetch failed: #{fetch_error.to_s.lines.map(&:strip).reject(&:empty?).last}"
@@ -335,12 +603,14 @@ module CorpusCandidateScan
       spec = Gem::Package.new(gem_path).spec
       result[:version] = spec.version.to_s
       result[:extensions] = spec.extensions.to_a
+      InspectionHelpers.validate_fetched_spec(spec, requested_version, entry[:platform])
       if result[:extensions].empty?
         result[:status] = :no_ext
         return result
       end
 
-      result[:downloads] = gem_downloads(name)
+      result[:downloads] = entry.key?(:downloads) ? entry[:downloads] : gem_downloads(name)
+      result[:notes] << entry[:selection_note] if entry[:selection_note]
       mini_portile = spec.dependencies.select { |dependency| dependency.name.to_s.include?("mini_portile") }
       unless mini_portile.empty?
         result[:notes] << "gemspec depends on #{mini_portile.map { |d| "#{d.name} #{d.requirement}" }.join(', ')}"
@@ -448,7 +718,11 @@ module CorpusCandidateScan
       @out.puts "=" * 100
       @out.puts "popular-gem C-extension scan"
       @out.puts "  ranking source : #{source::LABEL}"
-      @out.puts "  rank range     : #{first_rank}-#{last_rank} (pages #{config.first_page}-#{config.last_page} x #{RANKS_PER_PAGE} ranks)"
+      if config.timeframe?
+        @out.puts "  timeframe      : #{first_rank.iso8601} - #{last_rank.iso8601} (UTC)"
+      else
+        @out.puts "  rank range     : #{first_rank}-#{last_rank} (pages #{config.first_page}-#{config.last_page} x #{RANKS_PER_PAGE} ranks)"
+      end
       @out.puts "  work dir       : #{config.work_dir}"
       @out.puts "  scanned at     : #{Time.now.utc.strftime('%Y-%m-%dT%H:%M:%SZ')}"
       @out.puts "=" * 100
@@ -510,7 +784,8 @@ module CorpusCandidateScan
       @out.puts
       @out.puts "-" * 100
       @out.puts "summary"
-      @out.puts "  scanned                     : #{results.size} gems (ranks #{first_rank}-#{last_rank})"
+      scanned_label = config.timeframe? ? "timeframe #{first_rank.iso8601} - #{last_rank.iso8601}" : "ranks #{first_rank}-#{last_rank}"
+      @out.puts "  scanned                     : #{results.size} gems (#{scanned_label})"
       @out.puts "  with a C extension          : #{with_ext.size}"
       @out.puts "    add candidates       [1]  : #{candidates.size}#{candidates.empty? ? '' : "  (#{candidates.map { |r| r[:name] }.join(', ')})"}"
       @out.puts "    needs review         [1b] : #{needs_review.size}#{needs_review.empty? ? '' : "  (#{needs_review.map { |r| r[:name] }.join(', ')})"}"
