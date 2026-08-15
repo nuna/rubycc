@@ -67,8 +67,9 @@ docker run --privileged --rm tonistiigi/binfmt --install arm64
 ホストの qemu-user の登録(Debian は `PO`)だけでは足りない — interpreter のパスが
 コンテナのマウント名前空間に無いためである。既存の binfmt エントリがある環境では
 `tonistiigi/binfmt --install arm64` が no-op になることもあるので、F フラグ付きで既存
-エントリを再登録するか、タスクが示す bind-mount 手順を使う。ホスト設定の変更はこの
-リポジトリから自動では行わない。
+エントリを再登録してからタスクを再実行する。ホスト設定の変更はこのリポジトリから
+自動では行わない。下記の bind-mount 例は、Rake タスクに自動適用するものではなく、
+同じ起動経路を手動で確認するためのものである。
 
 このホストで実証した bind-mount の最小例(ホスト側に全パスが存在する場合)は次のとおり。
 これは同じ arm64 起動経路を手動で確認するための例であり、ホストの qemu やライブラリを

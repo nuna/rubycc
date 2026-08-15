@@ -70,8 +70,8 @@ module Rubycc
           state: :binfmt,
           message: <<~MESSAGE.strip,
             Docker の linux/arm64 コンテナを起動できません。Docker ホストの
-            binfmt_misc に F フラグ付きの AArch64 ハンドラを登録するか、
-            docs/internals/CI.md に記載した qemu の bind-mount 手順を使ってください。
+            binfmt_misc に F フラグ付きの AArch64 ハンドラを登録してから再実行してください。
+            docs/internals/CI.md の bind-mount 例は、同じ経路を手動で確認するためのものです。
             クライアント側の参考情報: #{diagnostic}
           MESSAGE
           daemon_architecture: architecture,
