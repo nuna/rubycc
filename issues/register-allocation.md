@@ -1,11 +1,11 @@
 ---
-status: in-progress
+status: done
 kind: feature
 opened: 2026-08-13
-closed:
+closed: 2026-08-15
 branch: register-allocation
-pr:
-steps: []
+pr: 51, 52, 53
+steps: [register-allocation-1, register-allocation-2, register-allocation-3, corpus-reverify-1]
 ---
 
 # レジスタ割付を入れて、gcc -O2 比の超過を N2 の範囲に戻す
@@ -214,17 +214,41 @@ saxpy の内側ループ(`aarch64-linux-gnu-objdump` で計測):
 4 件とも PASS に戻り、rubycc が無関係であることを直接確認した。harness 側の課題として
 [verify-gem-test-deps-unpinned](verify-gem-test-deps-unpinned.md) に切り出した。
 
+### 2026-08-15(Ruby ワークロードを測った — 内部目標は json だけ未達)
+
+C カーネルしか測っていなかったので、`BENCH_ONLY=ruby BENCH_RUNS=7` で json / msgpack を
+測り直した(Ruby 3.4.5、`JSON_DISABLE_SIMD=1`、7 回中央値)。
+
+| ワークロード | v1.0 | 現在 | gcc -O0 比 |
+|---|---|---|---|
+| json | 7.65x | **4.98x** | 2.90x → 1.78x |
+| msgpack | 2.60x | **2.26x** | 1.59x → 1.35x |
+
+**DESIGN N2(gcc -O2 比 2〜5 倍)は満たした**が、**この issue が自分で引いた 3.0x は
+json だけ未達**である(4.98x)。C カーネルが 7.41x → 1.89x と大きく戻ったのに json が
+残ったのは、パーサ/ジェネレータが**バイト単位のポインタ操作とメモリアクセスに密**で、
+今回見送った「昇格レジスタをメモリオペランドのベースにする」拡張がまさに効く領域だから
+**と見ているが、切り分けはしていない**。残差は
+[promoted-register-addressing](promoted-register-addressing.md) へ申し送った。
+
 ## 決着
 
-**受け入れ条件を 5 つとも満たした**(2026-08-14〜15)。
+**DESIGN N2 は両ターゲットで成立した。受け入れ条件は 5 つ中 4 つを満たし、
+1 つ(3.0x 以内)は json のみ未達**である(2026-08-14〜15)。
 
 | 条件 | 結果 |
 |---|---|
-| `benchmark/run.rb` の全ケースで gcc -O2 比 3.0x 以内 | **1.09〜2.78x**(C カーネル 5 件) |
+| `benchmark/run.rb` の全ケースで gcc -O2 比 3.0x 以内 | C カーネル 5 件は **1.09〜2.78x**。**json は 4.98x で未達**(msgpack 2.26x)。DESIGN N2 の 2〜5 倍には収まる |
 | コーパスの合格率が下がらない(31/34) | **31/31 PASS**(`corpus-reverify-1`) |
 | 全スイート 0 failures。x86-64 と AArch64 の両方で gcc 差分一致 | 0 failures(AArch64 は qemu-user + クロス gcc の差分実行を含む) |
 | 決定的ビルド(N4)を壊さない | `test_deterministic_build.rb` が 0 failures |
-| 変更前後の実測を BENCHMARKS.md に追記 | 追記済み(インターリーブ計測) |
+| 変更前後の実測を BENCHMARKS.md に追記 | 追記済み(C カーネルはインターリーブ計測、Ruby ワークロードは 7 回中央値) |
+
+**閉じる判断の根拠**: 3.0x は着手時に自分で引いた内部目標であり、**この issue が直そうと
+した要件は DESIGN N2**(gcc -O2 比 2〜5 倍)である。それは両ターゲット・全ケースで
+成立した。json の残り 4.98x は**さらに縮める作業**であって、追跡先
+([promoted-register-addressing](promoted-register-addressing.md))が明確なので、
+本 issue に留め置くより移した方が実態に合う。
 
 設計判断の本体は `docs/development/STEPS.md` の `register-allocation-1` / `-2` / `-3` と
 `corpus-reverify-1`。**`-O` レベルの実装は決定 2 で対象から外した**ので、必要になった
