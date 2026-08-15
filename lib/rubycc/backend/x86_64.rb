@@ -861,7 +861,8 @@ module Rubycc
         end
         target = result_register(dst)
         emit_register_rm(opcode_bytes, source, reg: target, rex_w: rex_w)
-        store_result(target, dst)
+        # One "reg, r/m" instruction: its reg field is the only thing written.
+        store_result(target, dst, only_wrote: target)
       end
 
       # :bit_scan — count the zero bits of a's value (__builtin_ctz/clz). The
@@ -1091,7 +1092,9 @@ module Rubycc
         emit_rex(rex_w: rex_w, reg: target)
         opcode_bytes.each { |byte| emit(byte) }
         emit((target & 7) << 3)         # mod=00, rm=000: [rax]
-        store_result(target, dst)
+        # The read through [rax] writes its reg field and nothing else; rax
+        # itself was written by the load above, which accounted for itself.
+        store_result(target, dst, only_wrote: target)
       end
 
       # "*p = v": rax holds the destination address, rcx the value, then rcx is
@@ -1477,7 +1480,8 @@ module Rubycc
           emit(0xB8 | (target & 7))                           # mov r32, imm32
           emit_bytes([value & 0xFFFFFFFF].pack("L<"))
         end
-        store_result(target, dst)
+        # Either form is one "mov r, imm" writing the opcode's own register.
+        store_result(target, dst, only_wrote: target)
       end
 
       # A size of 8 prefixes REX.W so the operation runs on the full 64-bit
@@ -1617,15 +1621,38 @@ module Rubycc
         @promoted[dst] || EAX
       end
 
-      # Completes such an instruction. A promoted `dst` *is* `reg`, so the
-      # value is already home and only the residency table has to be told that
-      # `reg` was written; any other destination still needs the store to its
-      # slot.
-      def store_result(reg, dst)
-        if @promoted.key?(dst)
+      # Completes such an instruction. A destination that lives in a slot still
+      # needs the store; a promoted `dst` *is* `reg`, so the value is already
+      # home and all that is left is telling the residency table what the bytes
+      # just emitted did to it.
+      #
+      # **The default answer is to throw the table away.** Bytes have been
+      # emitted since it was last known true — the caller's own instruction —
+      # and nothing here can see which registers they wrote. Keeping the table
+      # alive across them is #note_register_clobbered's exception, sound only
+      # when those bytes wrote `reg` and nothing else the table can name; that
+      # is a fact about one lowering's encoding, so the lowering is what states
+      # it, by passing `only_wrote: reg`. Anything that says nothing gets the
+      # safe reading, which costs an optimization and never correctness — and a
+      # lowering that later grows a second scratch write has to come back to its
+      # own claim rather than silently reviving a stale residency. All four
+      # callers here claim the fast path today; the aarch64 backend, whose
+      # #emit_alloca rounds its size in rax's counterpart and whose remainder
+      # takes a scratch for the quotient, has two that cannot.
+      #
+      # "Nothing else the table can name" means none of rax, rcx, rdx, rsi, rdi,
+      # r10, the argument registers or a promoted one — the registers #load_reg
+      # is ever asked to fill, and so the only ones an entry can be keyed by.
+      def store_result(reg, dst, only_wrote: nil)
+        unless @promoted.key?(dst)
+          store_reg(reg, dst) # which discards a stale table itself, before anything else
+          return
+        end
+
+        if only_wrote == reg
           note_register_clobbered(reg)
         else
-          store_reg(reg, dst)
+          refresh_slot_residency
         end
       end
 
@@ -1665,7 +1692,9 @@ module Rubycc
         else
           emit(0x04 | ((target & 7) << 3), sib)       # mod=00, rm=100 (SIB follows)
         end
-        store_result(target, dst)
+        # `lea` writes its reg field; base and index are read (#address_operands
+        # loaded them and accounted for that itself).
+        store_result(target, dst, only_wrote: target)
       end
 
       # Reports which register holds a scaled address's base and which its
