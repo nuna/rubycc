@@ -250,6 +250,26 @@ arrayscan は **+7.0% 遅くなった** — メモリオペランド 1 命令が
 double の依存鎖(store-to-load forwarding)が律速で割付が触れない部分であり、
 **コードレイアウト由来と読んでいるが、そこまでは切り分けていない**。
 
+## 結果 — C 拡張を使う Ruby ワークロード(2026-08-15、7 回中央値)
+
+上の C カーネルとは別実行。Step 66 と同じハーネス・同じ条件(Ruby 3.4.5、
+全バリアントに `JSON_DISABLE_SIMD=1`)で、**v1.0 の記録と直接比較できる**。
+
+| ワークロード | gcc -O2 | gcc -O0 | rubycc | v1.0 の rubycc / -O2 | **現在の rubycc / -O2** | 現在の / -O0 |
+|---|---|---|---|---|---|---|
+| json 2.21.1 | 1.591 | 4.463 | 7.922 | 7.65x | **4.98x** | 1.78x |
+| msgpack 1.8.3 | 2.623 | 4.396 | 5.938 | 2.60x | **2.26x** | 1.35x |
+
+**DESIGN N2(gcc -O2 比 2〜5 倍)は Ruby ワークロードでも成立した**が、json は 4.98x と
+**上限ぎりぎり**で、`issues/register-allocation.md` が自分で引いた 3.0x の内部目標には
+届いていない。
+
+**C カーネルが 7.41x → 1.89x と大きく戻ったのに json が 4.98x に留まった。**
+json のパーサ/ジェネレータはバイト単位のポインタ操作とメモリアクセスに密で、
+x86-64 で見送った「昇格レジスタをメモリオペランドのベースにする」拡張
+([`issues/promoted-register-addressing.md`](../../issues/promoted-register-addressing.md))が
+効く領域だと見ているが、**切り分けはしていない**。
+
 ## 命令数(参考)
 
 `void saxpy(int *b, const int *a, int scale, int n) { for (int i=0;i<n;i++) b[i] += scale*a[i]; }`
