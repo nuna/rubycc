@@ -432,11 +432,61 @@ class TestAArch64Backend < Minitest::Test
 
   def inst(op, **fields) = IR::Instruction.new(op, **fields)
 
+  # Builds an IR::Function, pinning every one of its values in its stack slot
+  # unless told otherwise.
+  #
+  # The pinning matters because whole-function promotion (IR::Promotion,
+  # Backend#promotion_assignment) would otherwise take over the bodies below
+  # entirely: ten callee-saved registers are more than enough to hold every
+  # value a function this small has, so nothing would ever be named as a slot
+  # and the spill-everything encodings these tests are about would stop being
+  # emitted at all. Both paths are live in real code — a function with more
+  # than ten hot values, or one whose values are refused promotion, still runs
+  # on the slot path — so both are tested: the tests under "whole-function
+  # promotion" pass `pin: []` (or a subset) and the rest keep the default.
+  #
+  # A pin is `&v`, which is exactly what makes a value ineligible in real code
+  # too: a value whose address has been handed out has to be in memory. It also
+  # gives the value a second write, so a pinned value is never a transient
+  # either, which is the other thing that would change these encodings.
   def func(insts, vregs:, params: 0, param_kinds: nil, objects: [], name: "f", linkage: :external,
-           variadic: false)
-    IR::Function.new(name, insts, vregs, params, objects, linkage, variadic,
-                     param_kinds || Array.new(params, :gp))
+           variadic: false, pin: :all)
+    pinned = pin == :all ? (0...vregs).to_a : pin
+    pins = pin_instructions(pinned)
+    fn = IR::Function.new(name, pins + insts, vregs, params, objects, linkage,
+                          variadic, param_kinds || Array.new(params, :gp))
+    sentinelled[fn] = !pins.empty?
+    fn
   end
+
+  # Which functions #func put a sentinel in front of, keyed by the function
+  # object itself.
+  #
+  # #body cannot work this out from the word stream. The sentinel's DMB is a
+  # word a body may emit on its own account (:atomic_fence emits exactly it), so
+  # searching for the word would make a test of that instruction cut away its
+  # own subject — and an unpinned function has no sentinel to find at all. What
+  # decides it is whether anything was pinned, which only #func knows.
+  def sentinelled
+    @sentinelled ||= {}.compare_by_identity
+  end
+
+  # The instructions that pin `vregs`, followed by a sentinel #body uses to
+  # find where they end. A memory barrier is the sentinel because it is one
+  # word and needs no vreg, and because it ends every register residency the
+  # pins left behind (SlotResidency believes a residency only while nothing has
+  # been emitted since), so the body starts from the same clean state it would
+  # have without any pin at all. It is not a word only the pins can emit —
+  # :atomic_fence emits it too — which is why #body is told whether a sentinel
+  # exists rather than left to search for one (see #sentinelled).
+  def pin_instructions(vregs)
+    return [] if vregs.empty?
+
+    vregs.map { |vreg| inst(:addr_of, dst: vreg, a: vreg) } + [inst(:atomic_fence)]
+  end
+
+  # DMB ISH, the word :atomic_fence emits.
+  DMB_ISH = 0xD5033BBF
 
   def compile(fn) = Backend.new.compile(fn)
 
@@ -447,16 +497,41 @@ class TestAArch64Backend < Minitest::Test
   # The instruction words of a compiled function.
   def words(fn) = compile(fn).bytes.unpack("L<*")
 
-  # The words after the prologue. The prologue is one or two sp adjustments
-  # followed by the frame-record store, so the body starts just past that stp.
+  # The words after the prologue and past whatever the pins cost: the body
+  # under test on its own. With no pins there is no sentinel, and the body
+  # starts just past the prologue's frame-record store; with pins, the first DMB
+  # after that point is the sentinel, the pins being the first instructions the
+  # function has.
   def body(fn)
+    all = words(fn)
+    start = all.index(stp_x(FP, LR, SP, outgoing)) + 1
+    return all.drop(start) unless sentinelled[fn]
+
+    all.drop(start + all.drop(start).index(DMB_ISH) + 1)
+  end
+
+  # The words after the prologue's frame-record store, pins and all — which is
+  # where the parameter spilling this prologue does is visible.
+  def frame_body(fn)
     all = words(fn)
     all.drop(all.index(stp_x(FP, LR, SP, outgoing)) + 1)
   end
 
+  # The body of a function whose values are promoted: past the prologue and
+  # past the one `str` each promoted register's save costs.
+  #
+  # `promoted` is the expected candidate order, asserted rather than assumed —
+  # which value takes which register is IR::Promotion's ranking, and a test
+  # that reads "x20 holds the index" has to say where that came from. The
+  # registers are handed out in that order, x19 first.
+  def promoted_body(fn, promoted)
+    assert_equal promoted, IR::Promotion.candidates(fn)
+    frame_body(fn).drop([promoted.size, Backend::PROMOTION_REGISTERS.size].min)
+  end
+
   # Compiles a single instruction between `vregs` slots and returns the body.
-  def body_of(op, vregs: 3, **fields)
-    body(func([inst(op, **fields)], vregs: vregs))
+  def body_of(op, vregs: 3, pin: :all, **fields)
+    body(func([inst(op, **fields)], vregs: vregs, pin: pin))
   end
 
   def assert_words(expected, actual, message = nil)
@@ -470,11 +545,10 @@ class TestAArch64Backend < Minitest::Test
   # [sp, #0]; the epilogue reloads it, raises sp back and returns through x30.
   # The frame is 16 (the saved record) + the vreg slots rounded to 16.
   def test_prologue_and_epilogue_frame_record
-    fn = func([inst(:ret, a: 0)], vregs: 3)
+    fn = func([inst(:ret, a: 0)], vregs: 3, pin: [0])
     # 3 vregs -> 24 bytes rounded to 32; 16 + 32 = 48.
-    assert_words [sub_imm(SP, SP, 48), stp_x(FP, LR, SP, 0),
-                  ldr_slot(0, 0), ldp_x(FP, LR, SP, 0), add_imm(SP, SP, 48), ret_x30],
-                 words(fn)
+    assert_words [sub_imm(SP, SP, 48), stp_x(FP, LR, SP, 0)], words(fn).first(2)
+    assert_words [ldr_slot(0, 0), ldp_x(FP, LR, SP, 0), add_imm(SP, SP, 48), ret_x30], body(fn)
   end
 
   # A void return loads nothing into x0; it is the bare epilogue.
@@ -487,7 +561,7 @@ class TestAArch64Backend < Minitest::Test
   # AAPCS64 order (x0 first), so they read back like any other value.
   def test_parameters_are_spilled_from_the_aapcs64_registers
     fn = func([inst(:ret, a: 0)], vregs: 3, params: 3)
-    assert_words [str_slot(0, 0), str_slot(1, 1), str_slot(2, 2)], body(fn).first(3)
+    assert_words [str_slot(0, 0), str_slot(1, 1), str_slot(2, 2)], frame_body(fn).first(3)
   end
 
   # A frame wider than the 12-bit add/sub immediate is adjusted in two steps:
@@ -682,6 +756,48 @@ class TestAArch64Backend < Minitest::Test
     end
   end
 
+  # The two tests above name the same register on both ends, which no encoding
+  # of Rd and Rn can tell apart — the two fields swapped would produce the same
+  # word. Here the source is read out of B while the result is computed into A,
+  # so each field is pinned to a register of its own.
+  #
+  # B holds it because the addition in front left it there: its second operand
+  # was vreg 1, and the extension reads that same value, which #operand_register
+  # finds where it already is rather than moving it into A.
+  # Rd and Rn are separate fields in every extension, and a promoted source is
+  # read where it lives while the result goes to the scratch its slot-bound
+  # destination is stored from. Naming both ends in one instruction is what
+  # makes a transposed encoding visible: the two registers differ, so writing
+  # the source or reading the destination would show.
+  def test_an_extension_names_a_promoted_source_and_a_scratch_destination
+    {
+      [:sext, 1] => sxtb(A, 19), [:sext, 2] => sxth(A, 19), [:sext, 4] => sxtw(A, 19),
+      [:zext, 1] => uxtb(A, 19), [:zext, 2] => uxth(A, 19), [:zext, 4] => ubfx_low32(A, 19)
+    }.each do |(op, size), expected|
+      # Pinning the destination keeps it in a slot, so the source is the only
+      # candidate and takes the first promotion register.
+      fn = func([inst(op, dst: 3, a: 0, size: size)], vregs: 4, pin: [3])
+      assert_equal [0], IR::Promotion.candidates(fn), "#{op} size #{size}"
+      assert_words [expected, str_slot(A, 3)], body(fn), "#{op} size #{size}"
+    end
+  end
+
+  # And with both ends promoted, each field names a callee-saved register
+  # directly: the widening reads vreg 0 where it lives and writes vreg 2 where
+  # it lives, with no slot traffic on either side. vreg 2 and vreg 3 take
+  # different registers, so a swapped Rd/Rn would show here as well.
+  def test_a_promoted_extension_names_both_of_its_registers_in_place
+    fn = func([inst(:sext, dst: 2, a: 0, size: 4),
+               inst(:zext, dst: 3, a: 0, size: 4),
+               inst(:store, a: 2, b: 3, size: 8),
+               inst(:store, a: 3, b: 2, size: 8)],
+              vregs: 4, pin: [])
+    assert_words [sxtw(19, 21),        # sxtw x19, w21   (vreg 2 <- vreg 0)
+                  ubfx_low32(20, 21),  # ubfx x20, x21   (vreg 3 <- vreg 0)
+                  str_x(20, 19), str_x(19, 20)],
+                 promoted_body(fn, [2, 3, 0])
+  end
+
   # --- memory --------------------------------------------------------------
 
   # A load reads through the pointer with the width the access asks for; the
@@ -800,10 +916,12 @@ class TestAArch64Backend < Minitest::Test
   # the object writer can turn it into an R_AARCH64_CALL26 against the callee.
   def test_direct_call_records_a_relocation_at_the_branch
     fn = func([inst(:call, dst: 1, a: "g", b: [[0, :gp]])], vregs: 2)
-    result = compile(fn)
-    # sub sp ; stp ; ldr x0 ; bl -> the branch is the fourth word.
-    assert_equal [{ kind: :call, offset: 12, symbol: "g" }], result.relocations
-    assert_equal bl_imm(0), result.bytes.unpack("L<*")[3]
+    all = words(fn)
+    # The body is "ldr x0, [slot] ; bl", so the branch is its second word;
+    # where that falls in the whole function is what the relocation must name.
+    branch = all.size - body(fn).size + 1
+    assert_equal bl_imm(0), all[branch]
+    assert_equal [{ kind: :call, offset: 4 * branch, symbol: "g" }], compile(fn).relocations
   end
 
   # A call with no result stores nothing after the branch.
@@ -943,7 +1061,7 @@ class TestAArch64Backend < Minitest::Test
     kinds = [:gp, :sse8, :gp, :sse4]
     fn = func([inst(:ret)], vregs: 4, params: 4, param_kinds: kinds)
     assert_words [str_slot(0, 0), str_fp_slot(0, 1, 8), str_slot(1, 2), str_fp_slot(1, 3, 4)],
-                 body(fn).first(4)
+                 frame_body(fn).first(4)
   end
 
   # The same independence at a call site, and the result of a floating call
@@ -1039,7 +1157,7 @@ class TestAArch64Backend < Minitest::Test
     frame = SAVE_AREA_SIZE + 80 # 16 record + align16(9*8)
     assert_words (0..7).map { |i| str_slot(i, i) } +
                  [ldr_x(A, SP, frame), str_slot(A, 8)],
-                 body(fn).first(10)
+                 frame_body(fn).first(10)
   end
 
   # A floating return loads v0 at the value's width and then runs the ordinary
@@ -1086,13 +1204,17 @@ class TestAArch64Backend < Minitest::Test
   # single machine-independent item.
   def test_symbol_addresses_record_one_relocation_at_the_adrp
     {
-      inst(:global_addr, dst: 0, a: "g") => { kind: :global, offset: 8, symbol: "g" },
-      inst(:func_addr, dst: 0, a: "g") => { kind: :func, offset: 8, symbol: "g" },
-      inst(:got_addr, dst: 0, a: "g") => { kind: :got, offset: 8, symbol: "g" },
-      inst(:string_addr, dst: 0, a: 3) => { kind: :string, offset: 8, string_id: 3 }
+      inst(:global_addr, dst: 0, a: "g") => { kind: :global, symbol: "g" },
+      inst(:func_addr, dst: 0, a: "g") => { kind: :func, symbol: "g" },
+      inst(:got_addr, dst: 0, a: "g") => { kind: :got, symbol: "g" },
+      inst(:string_addr, dst: 0, a: 3) => { kind: :string, string_id: 3 }
     }.each do |instruction, expected|
-      result = compile(func([instruction], vregs: 1))
-      assert_equal [expected], result.relocations, instruction.op.to_s
+      fn = func([instruction], vregs: 1)
+      # The adrp is the body's first word; where that falls in the whole
+      # function is the offset the single record has to carry.
+      adrp_offset = 4 * (words(fn).size - body(fn).size)
+      assert_equal [expected.merge(offset: adrp_offset)], compile(fn).relocations,
+                   instruction.op.to_s
     end
   end
 
@@ -1204,10 +1326,9 @@ class TestAArch64Backend < Minitest::Test
   # the alignment __builtin_alloca promises.
   def test_alloca_rounds_the_size_up_and_lowers_sp
     fn = func([inst(:alloca, dst: 0, a: 1), inst(:ret)], vregs: 2)
-    body = words(fn).drop(words(fn).index(add_imm(FP, SP, 0)) + 1)
     assert_words [ldr_anchored_slot(A, 1), add_imm(A, A, 15), and_not15(A, A),
                   sub_ext_uxtx(SP, SP, A), add_imm(A, SP, 0), str_anchored_slot(A, 0)],
-                 body.first(6)
+                 body(fn).first(6)
   end
 
   # A function containing alloca anchors its fixed frame in x29: the prologue
@@ -1237,11 +1358,12 @@ class TestAArch64Backend < Minitest::Test
   # value is read by the very next instruction and by nothing else, so it stays
   # in A (see #test_a_single_use_temporary_is_never_written_to_its_slot).
   def test_a_function_without_alloca_keeps_the_sp_relative_frame
-    fn = func([inst(:copy, dst: 0, a: 1), inst(:ret, a: 0)], vregs: 2)
-    assert_words [sub_imm(SP, SP, 32), stp_x(FP, LR, SP, 0),
-                  ldr_slot(A, 1), mov_reg(0, A),
+    fn = func([inst(:copy, dst: 0, a: 1), inst(:ret, a: 0)], vregs: 2, pin: [1])
+    assert_words [sub_imm(SP, SP, 32), stp_x(FP, LR, SP, 0)], words(fn).first(2)
+    assert_words [ldr_slot(A, 1), mov_reg(0, A),
                   ldp_x(FP, LR, SP, 0), add_imm(SP, SP, 32), ret_x30],
-                 words(fn)
+                 body(fn)
+    refute_includes words(fn), add_imm(FP, SP, 0), "no frame-pointer copy without alloca"
   end
 
   # --- spill traffic -------------------------------------------------------
@@ -1259,24 +1381,24 @@ class TestAArch64Backend < Minitest::Test
                inst(:store, a: 3, b: 2, size: 8),
                inst(:store, a: 3, b: 2, size: 8)],
               vregs: 4)
-    body = words(fn).drop(2)
     assert_words [ldr_slot(A, 0), ldr_slot(B, 1), add_reg(0, A, A, B), str_slot(A, 2),
                   ldr_slot(B, 0), sub_reg(0, A, A, B), str_slot(A, 3)],
-                 body.first(7)
+                 body(fn).first(7)
   end
 
   # A temporary produced by one instruction and consumed by the next, with no
   # other reader, is never written to its slot at all: it simply stays in A.
   # Here vreg 2's only reader is the :store right behind it.
   def test_a_single_use_temporary_is_never_written_to_its_slot
+    # vreg 2 is left unpinned on purpose: pinning it would give it a second
+    # write and a second reader, which is exactly what a transient is not.
     fn = func([inst(:add, dst: 2, a: 0, b: 1), inst(:store, a: 3, b: 2, size: 8)],
-              vregs: 4)
-    body = words(fn).drop(2)
+              vregs: 4, pin: [0, 1, 3])
     # The store's value operand is rescued into B before A is refilled with the
     # destination address, which is the only way it can still be reached.
     assert_words [ldr_slot(A, 0), ldr_slot(B, 1), add_reg(0, A, A, B),
                   mov_reg(B, A), ldr_slot(A, 3), str_x(B, A, 0)],
-                 body.first(6)
+                 body(fn).first(6)
   end
 
   # A subscript's "index * element size" and the add of it to the base are one
@@ -1288,10 +1410,326 @@ class TestAArch64Backend < Minitest::Test
                inst(:store, a: 4, b: 2, size: 8),
                inst(:scaled_add, dst: 5, a: 0, b: 1, size: 8),
                inst(:store, a: 5, b: 2, size: 8)],
-              vregs: 6)
-    body = words(fn).drop(2)
+              vregs: 6, pin: [0, 1, 2])
+    body = body(fn)
     assert_equal add_shifted_lsl(1, A, A, B, 2), body[2]
     assert_equal add_shifted_lsl(1, A, A, B, 3), body[7]
+  end
+
+  # --- whole-function promotion --------------------------------------------
+  #
+  # These are the tests that leave `pin` empty (see #func): the values are
+  # meant to be taken out of their slots and held in callee-saved registers for
+  # the function's length. The registers are x19..x28 in IR::Promotion's
+  # ranking order, and #promoted_body asserts that ranking rather than
+  # assuming it.
+
+  # A promoted value has no slot at all: it is read out of the callee-saved
+  # register it lives in, written back into that same register, and nothing
+  # ever names [sp + its slot]. Here vreg 2 is the hottest value (three
+  # occurrences) and takes x19, vreg 0 (two) x20 and vreg 1 (one) x21; vreg 3
+  # is a transient, which promotion leaves alone because its value never
+  # reaches a slot to begin with.
+  #
+  # Every one of the three instructions is a single word, which is the whole
+  # point of doing this on a three-address machine: Rd, Rn and Rm are separate
+  # fields, so the addition's result goes straight to x19 and the store's
+  # address and value are named where they already are.
+  def test_a_promoted_value_is_computed_in_its_register_and_never_named_in_a_slot
+    fn = func([inst(:add, dst: 2, a: 0, b: 1),
+               inst(:sub, dst: 3, a: 2, b: 0),
+               inst(:store, a: 3, b: 2, size: 8)],
+              vregs: 4, pin: [])
+    assert_words [add_reg(0, 19, 20, 21), # add w19, w20, w21   (vreg 2 = vreg 0 + vreg 1)
+                  sub_reg(0, A, 19, 20),  # sub w9, w19, w20    (vreg 3, a transient)
+                  str_x(19, A, 0)],       # str x19, [x9]
+                 promoted_body(fn, [2, 0, 1])
+  end
+
+  # All ten registers at once: ten stores in the prologue and ten loads in the
+  # epilogue, in assignment order. The save slots sit above the vreg slots — 20
+  # vregs is a 160-byte region, and 16 (the record) + 160 puts the first save at
+  # 176 — and the ten of them bring the frame to 256.
+  #
+  # vreg 11..19 are each read by the instruction right behind their producer, so
+  # IR::Simplify makes every one of them a transient and IR::Promotion's
+  # occurrence count never sees them; vreg 0..9 are each touched once, so the
+  # tie is broken by vreg number and all ten are promoted in order.
+  def test_all_ten_promotion_registers_are_saved_and_restored
+    insts = (1..9).map { |i| inst(:add, dst: 10 + i, a: i == 1 ? 0 : 9 + i, b: i) }
+    fn = func(insts + [inst(:ret, a: 19)], vregs: 20, pin: [])
+    assert_equal (0..9).to_a, IR::Promotion.candidates(fn)
+    all = words(fn)
+    assert_words [sub_imm(SP, SP, 256)], all.first(1)
+    assert_words (0..9).map { |i| str_x(19 + i, SP, 176 + 8 * i) }, all[2, 10]
+    assert_words (0..9).map { |i| ldr_x(19 + i, SP, 176 + 8 * i) } +
+                 [ldp_x(FP, LR, SP, 0), add_imm(SP, SP, 256), ret_x30],
+                 all.last(13)
+  end
+
+  # A promoted parameter is moved straight out of the register AAPCS64 handed
+  # it to this function in, never through its slot, and every promoted register
+  # is saved before that first write can happen.
+  def test_a_promoted_parameter_is_taken_from_its_argument_register_and_given_back
+    fn = func([inst(:add, dst: 2, a: 0, b: 1),
+               inst(:add, dst: 3, a: 2, b: 0),
+               inst(:ret, a: 3)],
+              vregs: 4, params: 2, pin: [])
+    assert_equal [0, 1], IR::Promotion.candidates(fn)
+    # 4 vregs -> 32 bytes; 16 (record) + 32 puts the two saves at 48 and 56.
+    assert_words [str_x(19, SP, 48), str_x(20, SP, 56), # save, before anything writes them
+                  mov_reg(19, 0), mov_reg(20, 1)],      # mov x19, x0 ; mov x20, x1
+                 frame_body(fn).first(4)
+    assert_words [ldr_x(19, SP, 48), ldr_x(20, SP, 56), # restore, after x0 is loaded
+                  ldp_x(FP, LR, SP, 0), add_imm(SP, SP, 64), ret_x30],
+                 words(fn).last(5)
+  end
+
+  # A stack-passed parameter (`param_kinds` naming :mem) arrives above the
+  # frame at [sp + frame size + 8*k]. When its vreg is promoted the copy down
+  # goes straight into the register it will live in — the load's destination
+  # being a free field, there is nothing to gain by staging it through A first.
+  # The second :mem parameter shows the "+8k" indexing.
+  #
+  # Its own save slots are part of the frame the offset is measured from, which
+  # is why the incoming area starts at 64 here rather than at 48.
+  def test_a_promoted_stack_parameter_is_loaded_straight_from_the_callers_area
+    fn = func([inst(:add, dst: 2, a: 0, b: 1), inst(:ret, a: 2)],
+              vregs: 3, params: 2, param_kinds: %i[mem mem], pin: [])
+    assert_equal [0, 1], IR::Promotion.candidates(fn)
+    assert_words [str_x(19, SP, 48), str_x(20, SP, 56),
+                  ldr_x(19, SP, 64), ldr_x(20, SP, 72)],
+                 frame_body(fn).first(4)
+  end
+
+  # A promoted register's save slot goes above a function's stack objects,
+  # never inside them: the frame is laid out record, vreg slots, stack objects,
+  # save slots (#layout_frame), so the two regions cannot alias however the
+  # object is sized. Here a 24-byte object rounds up to 32 and occupies
+  # [sp+48, sp+80); the two save slots at 80 and 88 fall entirely above it.
+  def test_promoted_save_slots_sit_above_a_functions_stack_objects
+    fn = func([inst(:add, dst: 2, a: 0, b: 1),
+               inst(:add, dst: 3, a: 2, b: 0),
+               inst(:ret, a: 3)],
+              vregs: 4, objects: [24], pin: [])
+    assert_equal [0, 1], IR::Promotion.candidates(fn)
+    assert_words [str_x(19, SP, 80), str_x(20, SP, 88)], frame_body(fn).first(2)
+  end
+
+  # An odd number of promoted registers leaves a 16-aligned frame just as an
+  # even one does: the save region is 8 bytes per register with no rounding of
+  # its own, and the single align16 that decides the frame size absorbs the
+  # parity. AAPCS64 requires sp 16-aligned at every public interface, so this
+  # is not a tidiness question.
+  def test_an_odd_promoted_register_count_still_leaves_a_16aligned_frame
+    [1, 3, 5, 7, 9].each do |count|
+      insts = (0...count).map { |vreg| inst(:store, a: vreg, b: vreg, size: 8) }
+      fn = func(insts, vregs: count, pin: [])
+      assert_equal count, IR::Promotion.candidates(fn).size, "#{count} candidates"
+      # The prologue's "sub sp, sp, #imm12" is the first word.
+      frame = (words(fn).first >> 10) & 0xFFF
+      assert_equal 0, frame % 16, "#{count} promoted registers -> frame #{frame}"
+    end
+  end
+
+  # In an alloca function the restore waits for "mov sp, x29". The saves are
+  # x29-relative, so they are reachable either way; what the order buys is that
+  # the same sequence reads correctly however the frame is addressed. The
+  # return value is loaded before all of it, since it comes out of x19 here.
+  def test_promoted_registers_are_restored_after_sp_comes_back_from_x29
+    fn = func([inst(:add, dst: 2, a: 0, b: 1),
+               inst(:alloca, dst: 3, a: 2),
+               inst(:store, a: 3, b: 2, size: 8),
+               inst(:ret, a: 2)],
+              vregs: 4, params: 2, pin: [])
+    assert_equal [2, 0, 1], IR::Promotion.candidates(fn)
+    # The saves are stored through x29 too, the anchor being set up first.
+    assert_words [add_imm(FP, SP, 0), str_x(19, FP, 48)], words(fn)[2, 2]
+    assert_words [mov_reg(0, 19),       # the return value, out of a promoted register
+                  add_imm(SP, FP, 0),   # mov sp, x29 — the blocks are released here
+                  ldr_x(19, FP, 48), ldr_x(20, FP, 56), ldr_x(21, FP, 64),
+                  ldp_x(FP, LR, FP, 0), add_imm(SP, SP, 80), ret_x30],
+                 words(fn).last(8)
+  end
+
+  # The base register of a load or a store is an ordinary five-bit field, so a
+  # promoted pointer addresses memory where it stands. This is the extension
+  # the x86_64 backend deferred (its ModR/M and SIB have special encodings for
+  # exactly the registers promotion hands out); here the three instructions
+  # below are the entire function body.
+  def test_a_promoted_pointer_is_the_base_of_its_loads_and_stores
+    fn = func([inst(:load, dst: 2, a: 0, size: 4),
+               inst(:store, a: 1, b: 2, size: 4),
+               inst(:store, a: 0, b: 2, size: 4)],
+              vregs: 3, pin: [])
+    assert_words [ldr_w(19, 20),  # ldr w19, [x20]   (vreg 2 <- *vreg 0)
+                  str_w(19, 21),  # str w19, [x21]
+                  str_w(19, 20)], # str w19, [x20]
+                 promoted_body(fn, [2, 0, 1])
+  end
+
+  # CBZ names the register it tests in a free field too, so a promoted loop
+  # condition is branched on where it stands and the test costs one
+  # instruction with no load in front of it.
+  def test_a_promoted_condition_is_tested_by_cbz_where_it_stands
+    fn = func([inst(:jump_if_zero, a: 0, b: 1),
+               inst(:add, dst: 2, a: 0, b: 0),
+               inst(:label, a: 1),
+               inst(:ret, a: 2)],
+              vregs: 3, pin: [])
+    assert_words [cbz_w(19, 2), add_reg(0, 20, 19, 19), mov_reg(0, 20)],
+                 promoted_body(fn, [0, 2]).first(3)
+  end
+
+  # The instructions x86-64 has to leave alone because they demand fixed
+  # registers — the shifts (a count that must reach cl), the divisions
+  # (quotient in rax, remainder in rdx) and a comparison's setcc result (al) —
+  # have no such requirement here, so every one of them names promoted
+  # registers throughout. Only the remainder still borrows a scratch, for the
+  # quotient it needs on the way.
+  def test_the_operands_x86_has_to_fix_in_registers_are_free_here
+    fn = func([inst(:shl, dst: 2, a: 0, b: 1, size: 4),
+               inst(:div, dst: 3, a: 0, b: 1, size: 4),
+               inst(:mod, dst: 4, a: 0, b: 1, size: 4),
+               inst(:lt, dst: 5, a: 0, b: 1, size: 4),
+               inst(:neg, dst: 6, a: 0, size: 4),
+               inst(:store, a: 2, b: 3, size: 8),
+               inst(:store, a: 4, b: 5, size: 8),
+               inst(:store, a: 6, b: 6, size: 8)],
+              vregs: 7, pin: [])
+    # vregs 0 and 1 are read five and four times; vreg 6 twice; the rest once.
+    body = promoted_body(fn, [0, 1, 6, 2, 3, 4, 5])
+    assert_words [lslv(0, 22, 19, 20),      # lsl w22, w19, w20   (the count is a plain Rm)
+                  sdiv(0, 23, 19, 20),      # sdiv w23, w19, w20
+                  sdiv(0, C, 19, 20),       # sdiv w11, w19, w20  (the quotient a remainder needs)
+                  msub(0, 24, C, 20, 19),   # msub w24, w11, w20, w19
+                  subs_reg(0, XZR, 19, 20), # cmp w19, w20
+                  cset(0, 25, COND_LT),
+                  sub_reg(0, 21, XZR, 19)], # neg w21, w19
+                 body.first(7)
+  end
+
+  # SlotResidency believes a residency only while nothing has been emitted
+  # since — and #note_register_clobbered is what tells it that an instruction
+  # writing straight into a promoted register disturbed nothing else. The
+  # invariant that makes this sound is that no residency is ever keyed by a
+  # promotion register, which #load_reg upholds from the other side.
+  #
+  # vregs 0 and 1 are pinned into their slots and loaded into A and B; the
+  # addition's result goes to x19 without touching either. The subtraction that
+  # follows must therefore reuse A and B rather than reloading them.
+  #
+  # The store at the end is the other half of the same bookkeeping: its value
+  # operand is a transient, and it is read out of the register its producer
+  # left it in rather than moved into B first. #load_binary_operands makes that
+  # move only because the *other* operand is on its way into A; here the other
+  # operand is promoted and nothing is on its way anywhere.
+  def test_a_residency_survives_an_instruction_that_writes_only_a_promoted_register
+    fn = func([inst(:add, dst: 3, a: 0, b: 1, size: 4),
+               inst(:sub, dst: 4, a: 0, b: 1, size: 4),
+               inst(:store, a: 3, b: 4, size: 8)],
+              vregs: 5, pin: [0, 1])
+    assert_equal [3], IR::Promotion.candidates(fn)
+    assert_words [ldr_slot(A, 0), ldr_slot(B, 1),
+                  add_reg(0, 19, A, B), # add w19, w9, w10   (writes only the promoted register)
+                  sub_reg(0, A, A, B),  # sub w9, w9, w10    (no reload: A and B still hold them)
+                  str_x(A, 19, 0)],     # str x9, [x19]      (a promoted base, and the transient
+                                        #   read where its producer left it)
+                 body(fn)
+  end
+
+  # The other half of the invariant above: #store_result must throw the table
+  # away when the bytes it is completing wrote more than `reg` alone.
+  # #emit_alloca is exactly that shape — `load_reg(A, size_vreg)` claims A
+  # holds the requested count, and the rounding that follows ("add A, A, #15"
+  # ; "and A, A, #-16") overwrites A without telling SlotResidency anything,
+  # so the claim is stale by the time the promoted destination is written.
+  # #store_result passes no `only_wrote:` here for exactly that reason (see
+  # its comment), which is what makes the table refresh rather than revive.
+  #
+  # size_vreg (vreg 1) is pinned so it keeps an ordinary slot, and dst (vreg 0)
+  # is promoted so the store right after alloca reaches #store_result's
+  # promoted-`dst` branch, the one place `only_wrote:` could have been passed.
+  # If the table had been revived instead of refreshed, the store's read of
+  # size_vreg would come back as a `mov` from A — the rounded byte count, not
+  # the value the program actually asked for — rather than a slot reload.
+  def test_alloca_does_not_revive_a_stale_claim_on_its_size_scratch
+    fn = func([inst(:alloca, dst: 0, a: 1), inst(:store, a: 2, b: 1, size: 8)],
+              vregs: 3, pin: [1, 2])
+    assert_equal [0], IR::Promotion.candidates(fn)
+    # The function contains :alloca, so every fixed-frame slot — size_vreg's
+    # and vreg 2's alike — is x29-anchored rather than sp-relative (see
+    # #frame_base_register); only alloca's own "mov target, sp" names sp
+    # directly, sp being what it actually moved.
+    assert_words [ldr_anchored_slot(A, 1), add_imm(A, A, 15), and_not15(A, A),
+                  sub_ext_uxtx(SP, SP, A), add_imm(19, SP, 0),
+                  ldr_anchored_slot(A, 2),
+                  ldr_anchored_slot(B, 1), # the read of size_vreg — a slot reload,
+                                            #   not a mov from A
+                  str_x(B, A, 0)],
+                 body(fn)
+  end
+
+  # The same shape again, this time around the C scratch #emit_divmod's
+  # remainder path writes. A plain (quotient-only) division can leave a
+  # legitimate claim on C — `result_register(dst, C)` puts the quotient there
+  # directly, and when `dst` is not promoted #store_result's ordinary
+  # (non-promoted) branch always calls #store_reg, which stores it and records
+  # C as C's true, current owner. A remainder that runs afterward overwrites C
+  # twice more (the `sdiv` for its own quotient, then the `msub`) without
+  # telling SlotResidency either time, so that earlier claim is stale by the
+  # time its own promoted destination is written — the same shape #emit_alloca
+  # was caught in, which is why its #store_result passes no `only_wrote:`.
+  #
+  # vreg 2 is the quotient-only division's destination, pinned so it is a real
+  # slot; vregs 0, 1, 3, 4 and 6 are pinned operands and an address, all
+  # unrelated to vreg 2 on purpose, so the remainder's own inputs cannot be
+  # confused with the value under test; vreg 5 (the remainder's destination) is
+  # promoted, which is what reaches the vulnerable branch. If the table had
+  # been revived rather than refreshed there, the closing store's read of
+  # vreg 2 would come back as a `mov` from C — the remainder's own quotient,
+  # not the value the earlier division actually computed — rather than a slot
+  # reload.
+  def test_remainder_does_not_revive_a_stale_claim_on_its_quotient_scratch
+    fn = func([inst(:div, dst: 2, a: 0, b: 1, size: 4),
+               inst(:mod, dst: 5, a: 3, b: 4, size: 4),
+               inst(:store, a: 6, b: 2, size: 8)],
+              vregs: 7, pin: [0, 1, 2, 3, 4, 6])
+    assert_equal [5], IR::Promotion.candidates(fn)
+    assert_words [ldr_slot(A, 0), ldr_slot(B, 1), sdiv(0, C, A, B), str_slot(C, 2),
+                  ldr_slot(A, 3), ldr_slot(B, 4), sdiv(0, C, A, B), msub(0, 19, C, B, A),
+                  ldr_slot(A, 6), ldr_slot(B, 2), # the read of vreg 2 — a slot reload,
+                                                   #   not a mov from C
+                  str_x(B, A, 0)],
+                 body(fn)
+  end
+
+  # A promoted register is restored at every exit a function has, not just its
+  # last: each `:ret` runs the whole epilogue on its own (#emit_epilogue),
+  # independently of every other one, so a function with two returns gives
+  # x19 back on both paths rather than only the one the generator happened to
+  # emit last.
+  #
+  # vreg 0 is the sole promoted candidate (a parameter, read by the branch
+  # condition and by both returns); CBZ names it directly, with no load in
+  # front, exactly as #test_a_promoted_condition_is_tested_by_cbz_where_it_stands
+  # shows for a single-exit function.
+  def test_promoted_registers_are_restored_at_every_exit_of_a_multi_return_function
+    fn = func([inst(:jump_if_zero, a: 0, b: 1),
+               inst(:ret, a: 0),
+               inst(:label, a: 1),
+               inst(:ret, a: 0)],
+              vregs: 1, params: 1, pin: [])
+    assert_equal [0], IR::Promotion.candidates(fn)
+    # 1 vreg -> 16 bytes; 16 (record) + 16 = 32, plus one 8-byte save slot at
+    # 32 brings the frame to align16(40) = 48.
+    assert_words [str_x(19, SP, 32), mov_reg(19, 0)], frame_body(fn).first(2)
+    epilogue = [mov_reg(0, 19),               # the return value, out of x19
+                ldr_x(19, SP, 32),            # restored
+                ldp_x(FP, LR, SP, 0), add_imm(SP, SP, 48), ret_x30]
+    # cbz ; <first epilogue, 5 words> ; <second epilogue, 5 words> — the label
+    # falls right after the first epilogue, 6 words past the branch.
+    assert_words [cbz_w(19, 6)] + epilogue + epilogue, frame_body(fn).drop(2)
   end
 
   # A call with stack arguments made from an alloca function cannot use a fixed
@@ -1340,7 +1778,7 @@ class TestAArch64Backend < Minitest::Test
   # because x8 is caller-saved and would not survive the function's first call.
   def test_indirect_result_pointer_is_spilled_from_x8
     fn = func([inst(:ret)], vregs: 3, params: 3, param_kinds: [:indirect_result, :gp, :gp])
-    assert_words [str_slot(8, 0), str_slot(0, 1), str_slot(1, 2)], body(fn).first(3)
+    assert_words [str_slot(8, 0), str_slot(0, 1), str_slot(1, 2)], frame_body(fn).first(3)
   end
 
   # The same register on the calling side: the buffer address goes to x8 while

@@ -2,6 +2,7 @@
 
 require_relative "../compile_error"
 require_relative "../ir/ir"
+require_relative "../ir/promotion"
 require_relative "../ir/simplify"
 require_relative "slot_residency"
 
@@ -22,11 +23,12 @@ module Rubycc
 
     # AArch64 (ARM64) code generator, the second backend behind the same
     # IR::Function -> Result contract the x86_64 one honors. It keeps the
-    # spill-everything strategy — every virtual register owns an 8-byte stack
-    # slot and each IR instruction loads its operands into scratch registers,
-    # computes, and stores the result back — but the machine underneath is
-    # entirely different: fixed-length 32-bit instructions, a flat register
-    # file, and load/store addressing that shapes the frame layout.
+    # spill-everything strategy for every value but the promoted one — each
+    # virtual register owns an 8-byte stack slot and each IR instruction loads
+    # its operands into scratch registers, computes, and stores the result back
+    # — but the machine underneath is entirely different: fixed-length 32-bit
+    # instructions, a flat register file, and load/store addressing that shapes
+    # the frame layout.
     #
     # Frame layout (frame-base-relative, positive offsets). Unlike x86_64's
     # rbp-negative displacements, every slot is addressed as [base + off] with a
@@ -34,11 +36,11 @@ module Rubycc
     # 12-bit immediate by the access size (reaching 0..32760 for a 64-bit load)
     # while the signed form is only a 9-bit unscaled window (-256..255) that a
     # modest frame overruns at once. From the base upward the frame holds the
-    # outgoing argument area, the saved frame record (x29/x30), the vreg slots
-    # and the stack objects. A slot whose offset still overflows the scaled
-    # immediate is reached by composing its address into a scratch register with
-    # add-immediate(s) — the path is built in from the start rather than bolted
-    # on for large frames.
+    # outgoing argument area, the saved frame record (x29/x30), the vreg slots,
+    # the stack objects and the promoted registers' save slots. A slot whose
+    # offset still overflows the scaled immediate is reached by composing its
+    # address into a scratch register with add-immediate(s) — the path is built
+    # in from the start rather than bolted on for large frames.
     #
     # The frame base is sp itself in an ordinary function, which costs nothing
     # and leaves x29 free. It is x29 in a function containing :alloca, because
@@ -211,6 +213,29 @@ module Rubycc
       FA = 16
       FB = 17
 
+      # The registers whole-function promotion hands out, in the order it hands
+      # them out (see IR::Promotion and #promotion_assignment). All ten are
+      # callee-saved under AAPCS64 (5.1.1: x19..x28 are preserved across a
+      # call), which is what lets a promoted value stay put across one, and all
+      # ten are clear of everything else this backend names: the scratch
+      # registers x9..x15, the argument/result registers x0..x8, the frame
+      # pointer x29 and the link register x30.
+      #
+      # The three callee-saved-looking registers left out are left out on
+      # purpose. x18 is the platform register, reserved by AAPCS64 5.1.1 for
+      # whatever the running platform ABI wants it for, so no compiler may use
+      # it as a general one. x16 and x17 (IP0/IP1) are corruptible by any
+      # branch: the linker is free to insert a veneer at a `bl` site, and a
+      # veneer clobbers them.
+      #
+      # Being disjoint from every register the residency table is keyed by is
+      # what lets an instruction that writes a promoted register leave that
+      # table standing (see SlotResidency#note_register_clobbered), and #load_reg
+      # keeps the disjointness true from the other side by never recording a
+      # residency against one.
+      PROMOTION_REGISTERS = (19..28).to_a.freeze
+      PROMOTION_REGISTER_SET = PROMOTION_REGISTERS.to_set.freeze
+
       # Special register numbers. In the load/store, add/sub-immediate and
       # stp/ldp encodings a register field of 31 denotes the stack pointer; in
       # the data-processing (arithmetic/logical shifted-register) encodings the
@@ -274,6 +299,12 @@ module Rubycc
         # #store_reg). The set is a property of the instruction list, so it is
         # computed once here rather than rediscovered per instruction.
         @transient = IR::Simplify.transient_vregs(ir_func.insts, ir_func.param_count)
+        # Slots this function does not have at all: a promoted value lives in
+        # one callee-saved register from the prologue to the epilogue, so its
+        # slot is never read, written or named (see #promotion_assignment,
+        # #load_reg and #store_reg). Like @transient this is a property of the
+        # instruction list, decided once here.
+        @promoted = promotion_assignment(ir_func)
         # @labels maps a label id to its resolved byte offset; @fixups collects
         # [patch_offset, label_id, kind] for each forward/backward branch whose
         # immediate is written once every label offset is known.
@@ -299,13 +330,25 @@ module Rubycc
 
       private
 
+      # Binds the best promotion candidates to PROMOTION_REGISTERS in order,
+      # returning the vreg -> register map the whole backend consults. Taking
+      # the first few of an ordered list is the entire allocation: one register
+      # each, held for the function's length, so there is no interference to
+      # resolve and nothing to undo when the registers run out — the candidates
+      # past the tenth simply keep their slots.
+      def promotion_assignment(ir_func)
+        vregs = IR::Promotion.candidates(ir_func).first(PROMOTION_REGISTERS.size)
+        vregs.each_with_index.to_h { |vreg, index| [vreg, PROMOTION_REGISTERS[index]] }
+      end
+
       # Computes the frame's size and every object's base offset. From sp
       # upward: the outgoing argument area (empty unless some call in this
       # function passes an argument on the stack), the 16-byte saved record,
       # the vreg slots (8 bytes each, the region rounded to 16 so the objects
       # stay 16-aligned), then each stack object at a 16-byte-aligned size above
-      # the previous. All offsets are non-negative displacements from the frame
-      # base, which this method also decides (see #frame_base_register).
+      # the previous, then one 8-byte save slot per promoted register. All
+      # offsets are non-negative displacements from the frame base, which this
+      # method also decides (see #frame_base_register).
       def layout_frame(vreg_count, stack_objects, insts, variadic)
         # Whether this function allocates dynamically decides two things at
         # once: which register names the fixed frame (see #frame_base_register)
@@ -325,6 +368,28 @@ module Rubycc
         stack_objects.each do |object_size|
           @object_offsets << running
           running += align16(object_size)
+        end
+        # One save slot per promoted register, above every object. The
+        # registers are callee-saved, so a function that takes one over has to
+        # give it back exactly as it found it. This end of the frame is the one
+        # place a new region can go without moving anything: the outgoing
+        # argument area has to stay at the bottom (AAPCS64 has the callee read
+        # its stack arguments from the sp of the `bl`), the saved record and the
+        # vreg slots are what every offset in the body is measured against, and
+        # the objects sit between. Putting the saves last therefore leaves every
+        # other offset exactly what it would have been without promotion. Their
+        # number is odd as often as not, but nothing above them cares: the one
+        # region that has to end exactly at the frame's top is the variadic
+        # register-save area, and a variadic function has no promoted register
+        # at all (IR::Promotion refuses one), so the two never meet. The single
+        # align16 below is what fixes the frame size, so sp stays 16-aligned
+        # whatever the count. They are laid out in assignment order,
+        # a function of the instruction list, so the frame stays deterministic
+        # (N4).
+        @promoted_saves = @promoted.values.map do |reg|
+          offset = running
+          running += 8
+          [reg, offset]
         end
         # A variadic function reserves the argument register-save area at the
         # very top of the frame — just below the caller's sp, exactly where the
@@ -400,8 +465,30 @@ module Rubycc
         adjust_sp(@frame_size, sub: true)
         emit_save_record(store: true, base: SP)
         emit_add_imm(FP, SP, 0, shift12: false) if @uses_alloca # mov x29, sp
+        # Before anything writes a promoted register — which the parameter
+        # spilling right below is the first thing to do, a promoted parameter
+        # being moved straight from the register it arrived in — and after the
+        # frame base is established, since the saves are addressed against it.
+        emit_save_promoted_registers
         spill_parameters(param_kinds)
         save_argument_registers if variadic
+      end
+
+      # Saves the promoted registers into their frame slots, one "str Xn,
+      # [base + off]" apiece. A store into the frame rather than a push (or an
+      # stp pair) keeps sp's 16-byte alignment a property of the single frame
+      # adjustment in the prologue instead of the parity of the register count.
+      def emit_save_promoted_registers
+        @promoted_saves.each { |reg, offset| store_frame_at(reg, offset) }
+      end
+
+      # Puts the caller's values back, the exact inverse of
+      # #emit_save_promoted_registers. #emit_epilogue carries it, and an
+      # epilogue is emitted at every :ret rather than once per function, so a
+      # function with several returns restores on each of them and no path
+      # leaves with a callee-saved register holding this function's value.
+      def emit_restore_promoted_registers
+        @promoted_saves.each { |reg, offset| load_frame_at(reg, offset) }
       end
 
       # Spills every argument register into the variadic save area so a later
@@ -470,8 +557,16 @@ module Rubycc
       # the end of the scope that allocated it. The record is then reloaded and
       # the fixed frame released exactly as in an ordinary function (sp and x29
       # are equal by then, so the reload needs no special base).
+      #
+      # The promoted registers are given back here, after the return value has
+      # been loaded (it may itself come out of one) and — in an alloca function
+      # — after sp has been brought back to the fixed frame, which is the
+      # moment the save slots become addressable again through sp. They are in
+      # fact reached through x29 there, so the order is not what makes this
+      # correct; it is what keeps the two cases reading the same way.
       def emit_epilogue
         emit_add_imm(SP, FP, 0, shift12: false) if @uses_alloca # mov sp, x29
+        emit_restore_promoted_registers
         emit_save_record(store: false)
         adjust_sp(@frame_size, sub: false)
         emit_word(0xD65F03C0) # ret (branch to x30)
@@ -493,12 +588,14 @@ module Rubycc
         end
       end
 
-      # Brings each incoming argument into its parameter slot so it reads back
-      # like any other vreg. Integer/pointer parameters come out of x0..x7 and
-      # floating ones out of v0..v7, each sequence advancing its own counter; a
-      # :mem parameter is copied down from the caller's stack argument area
-      # (through the A scratch, which is not an argument register, so the copies
-      # never disturb an argument still to be spilled) as a whole eightbyte,
+      # Brings each incoming argument into its home — its parameter slot, or
+      # the callee-saved register it was promoted into, which #store_reg
+      # decides — so it reads back like any other vreg. Integer/pointer
+      # parameters come out of x0..x7 and floating ones out of v0..v7, each
+      # sequence advancing its own counter; a :mem parameter is copied down
+      # from the caller's stack argument area (through the A scratch, which is
+      # not an argument register, so the copies never disturb an argument still
+      # to be spilled, or through its promoted register) as a whole eightbyte,
       # which is right for a narrow or floating value too since the slot
       # discipline only promises its low bytes. A kind that would overrun its
       # register file is a generator contract violation and raises.
@@ -514,8 +611,14 @@ module Rubycc
             store_reg(ARG_REGISTERS[next_gp], i)
             next_gp += 1
           when :mem
-            load_frame_at(A, incoming_stack_offset(next_stack))
-            store_reg(A, i)
+            # Straight into the register a promoted parameter lives in: the
+            # copy down from the caller's area is a load like any other, and
+            # its destination is a free field, so nothing is gained by routing
+            # it through A first. #store_reg then emits nothing at all, the
+            # value being already home.
+            target = @promoted[i] || A
+            load_frame_at(target, incoming_stack_offset(next_stack))
+            store_reg(target, i)
             next_stack += 1
           when :pad
             # An even-pair alignment pad consumes one integer register but binds
@@ -543,6 +646,14 @@ module Rubycc
       end
 
       def emit_instruction(inst)
+        # Once, at the top, rather than in each lowering that consults the
+        # table. An instruction whose operands are all promoted loads nothing,
+        # so it can reach #store_result — which revalidates the table — without
+        # any of the loads that would otherwise have discarded a stale one
+        # first. Refreshing here means the table is either true or empty by the
+        # time any lowering touches it, whatever the instruction turns out to
+        # be.
+        refresh_slot_residency
         case inst.op
         when :const then emit_const(inst.dst, inst.a, inst.size)
         when :copy then emit_copy(inst.dst, inst.a)
@@ -616,24 +727,31 @@ module Rubycc
       # 32-bit value whose W-register move zeroes the slot's high half, matching
       # the x86_64 backend's "mov eax, imm32" behavior.
       def emit_const(dst, value, size)
-        materialize(A, value, size == 8 ? 64 : 32)
-        store_reg(A, dst)
+        target = result_register(dst)
+        materialize(target, value, size == 8 ? 64 : 32)
+        store_result(target, dst, only_wrote: target) # movz/movk write target alone
       end
 
-      # :copy — a 64-bit slot-to-slot transfer.
+      # :copy — a 64-bit transfer between the two values' homes, whichever
+      # those are: slot to slot, slot to register, register to slot, or one
+      # `mov` between two promoted registers.
       def emit_copy(dst, src)
-        load_reg(A, src)
-        store_reg(A, dst)
+        target = result_register(dst)
+        load_reg(target, src)
+        store_result(target, dst, only_wrote: target) # the load wrote target, or nothing
       end
 
-      # An arithmetic/logical binary op. The operands are loaded into A/B and
-      # combined with a shifted-register instruction whose width follows the IR
-      # size (64-bit for size 8, otherwise a 32-bit W-register op whose upper
-      # half is zeroed for free).
+      # An arithmetic/logical binary op, combined with a shifted-register
+      # instruction whose width follows the IR size (64-bit for size 8,
+      # otherwise a 32-bit W-register op whose upper half is zeroed for free).
+      # All three of Rd, Rn and Rm are free fields, so each end is named
+      # wherever it lives: a promoted destination and two promoted operands
+      # make the whole instruction one word with no traffic around it.
       def emit_arith(inst, base_table, commutative: false)
-        load_binary_operands(inst.a, inst.b, commutative: commutative)
-        emit_word(base_table[width(inst.size)] | (B << 16) | (A << 5) | A)
-        store_reg(A, inst.dst)
+        rn, rm = binary_operand_registers(inst.a, inst.b, commutative: commutative)
+        rd = result_register(inst.dst)
+        emit_word(base_table[width(inst.size)] | (rm << 16) | (rn << 5) | rd)
+        store_result(rd, inst.dst, only_wrote: rd) # one word, Rd its only written field
       end
 
       # :scaled_add — dst <- base + index * element_size, the address a
@@ -642,18 +760,20 @@ module Rubycc
       # multiply and the add to the base are one instruction. It is always the
       # 64-bit (X) form: the value being computed is a pointer.
       def emit_scaled_add(dst, base_vreg, index_vreg, element_size)
-        load_binary_operands(base_vreg, index_vreg)
+        rn, rm = binary_operand_registers(base_vreg, index_vreg)
+        rd = result_register(dst)
         shift = SHIFTED_SCALES.fetch(element_size)
-        emit_word(ADD_SHIFTED[64] | (B << 16) | (shift << 10) | (A << 5) | A)
-        store_reg(A, dst)
+        emit_word(ADD_SHIFTED[64] | (rm << 16) | (shift << 10) | (rn << 5) | rd)
+        store_result(rd, dst, only_wrote: rd) # one word, Rd its only written field
       end
 
       # :mul — Rd = Rn * Rm, encoded as `madd Rd, Rn, Rm, xzr`.
       def emit_mul(dst, a, b, size)
-        load_binary_operands(a, b, commutative: true)
+        rn, rm = binary_operand_registers(a, b, commutative: true)
+        rd = result_register(dst)
         base = size == 8 ? 0x9B007C00 : 0x1B007C00 # madd with Ra = xzr
-        emit_word(base | (B << 16) | (A << 5) | A)
-        store_reg(A, dst)
+        emit_word(base | (rm << 16) | (rn << 5) | rd)
+        store_result(rd, dst, only_wrote: rd) # one word, Rd its only written field
       end
 
       # :mulhi — the unsigned high 64 bits of a 64x64 product, encoded as
@@ -664,9 +784,10 @@ module Rubycc
       # of-a-32x32-product need for it here), so this always runs on the X
       # registers regardless of the IR size.
       def emit_mulhi(dst, a, b)
-        load_binary_operands(a, b, commutative: true)
-        emit_word(UMULH | (B << 16) | (A << 5) | A)
-        store_reg(A, dst)
+        rn, rm = binary_operand_registers(a, b, commutative: true)
+        rd = result_register(dst)
+        emit_word(UMULH | (rm << 16) | (rn << 5) | rd)
+        store_result(rd, dst, only_wrote: rd) # one word, Rd its only written field
       end
 
       # :bit_scan — count the zero bits of a's value (__builtin_ctz/clz and
@@ -692,10 +813,14 @@ module Rubycc
       # promises nothing there and the x86-64 backend cannot match it anyway.
       def emit_bit_scan(dst, src_vreg, direction, size)
         w = width(size)
-        load_reg(A, src_vreg)
-        emit_word(RBIT[w] | (A << 5) | A) if direction == :forward
-        emit_word(CLZ[w] | (A << 5) | A)
-        store_reg(A, dst)
+        rn = operand_register(src_vreg, A)
+        rd = result_register(dst)
+        if direction == :forward
+          emit_word(RBIT[w] | (rn << 5) | rd)
+          rn = rd # the reversal is what CLZ counts, wherever it landed
+        end
+        emit_word(CLZ[w] | (rn << 5) | rd)
+        store_result(rd, dst, only_wrote: rd) # RBIT and CLZ both write rd and nothing else
       end
 
       # :alloca — dynamic stack allocation (__builtin_alloca). The requested
@@ -726,89 +851,126 @@ module Rubycc
         emit_add_imm(A, A, 15, shift12: false)        # add A, A, #15
         emit_word(AND_NOT15 | (A << 5) | A)           # and A, A, #-16
         emit_word(SUB_EXTENDED | (A << 16) | (SP << 5) | SP) # sub sp, sp, A
-        emit_add_imm(A, SP, 0, shift12: false)        # mov A, sp (the block base)
-        store_reg(A, dst)
+        # The rounded count in A is dead once sp has moved, so the block's base
+        # address goes straight to wherever the destination lives.
+        target = result_register(dst)
+        emit_add_imm(target, SP, 0, shift12: false)    # mov target, sp
+        # No `only_wrote:`: the rounding above overwrote A, which the load a
+        # line earlier left holding the *requested* count and which any
+        # residency in flight may name. Claiming otherwise would leave a reader
+        # of the size value believing A still held it (see #store_result).
+        store_result(target, dst)
       end
 
-      # :div/:mod/:udiv/:umod. The quotient is `sdiv`/`udiv` of A by B; a
-      # remainder is then A - quotient*B via `msub`, since AArch64 has no direct
-      # remainder instruction. The signed/unsigned split mirrors the IR's own.
+      # :div/:mod/:udiv/:umod. The quotient is `sdiv`/`udiv` of the dividend by
+      # the divisor; a remainder is then dividend - quotient*divisor via
+      # `msub`, since AArch64 has no direct remainder instruction. The
+      # signed/unsigned split mirrors the IR's own.
+      #
+      # A remainder needs the quotient as well as the result, so that one keeps
+      # the C scratch for it; C is never a promotion register, so the divisor
+      # and dividend it is read alongside can be named in place regardless.
       def emit_divmod(dst, a, b, size, signed:, remainder:)
-        load_binary_operands(a, b)
+        rn, rm = binary_operand_registers(a, b)
         w = width(size)
         div_base = signed ? (w == 64 ? 0x9AC00C00 : 0x1AC00C00) : (w == 64 ? 0x9AC00800 : 0x1AC00800)
-        emit_word(div_base | (B << 16) | (A << 5) | C) # sdiv/udiv C, A, B
         if remainder
+          rd = result_register(dst)
+          emit_word(div_base | (rm << 16) | (rn << 5) | C)            # sdiv/udiv C, a, b
           msub_base = w == 64 ? 0x9B008000 : 0x1B008000
-          emit_word(msub_base | (B << 16) | (A << 10) | (C << 5) | A) # msub A, C, B, A
-          store_reg(A, dst)
+          emit_word(msub_base | (rm << 16) | (rn << 10) | (C << 5) | rd) # msub rd, C, b, a
+          # No `only_wrote:`: the quotient went to C, which is a scratch a
+          # residency may name — the quotient path right below computes into it
+          # whenever its destination lives in a slot (see #store_result).
+          store_result(rd, dst)
         else
-          store_reg(C, dst)
+          rd = result_register(dst, C)
+          emit_word(div_base | (rm << 16) | (rn << 5) | rd)           # sdiv/udiv rd, a, b
+          store_result(rd, dst, only_wrote: rd) # one word, Rd its only written field
         end
       end
 
-      # :shl/:sar/:shr — a variable shift by B's low bits (masked to 5 bits for
-      # a 32-bit operand, 6 for a 64-bit one by the hardware, matching C).
+      # :shl/:sar/:shr — a variable shift by the second operand's low bits
+      # (masked to 5 bits for a 32-bit operand, 6 for a 64-bit one by the
+      # hardware, matching C). The shift amount is an ordinary Rm here, not the
+      # one fixed register x86 makes of it, so a promoted count needs no move.
       def emit_shift(dst, a, b, size, base_table)
-        load_binary_operands(a, b)
-        emit_word(base_table[width(size)] | (B << 16) | (A << 5) | A)
-        store_reg(A, dst)
+        rn, rm = binary_operand_registers(a, b)
+        rd = result_register(dst)
+        emit_word(base_table[width(size)] | (rm << 16) | (rn << 5) | rd)
+        store_result(rd, dst, only_wrote: rd) # one word, Rd its only written field
       end
 
       # :neg — Rd = -a, encoded as `sub Rd, xzr, a`.
       def emit_neg(dst, src, size)
-        load_reg(A, src)
-        emit_word(SUB_SHIFTED[width(size)] | (A << 16) | (XZR << 5) | A)
-        store_reg(A, dst)
+        rn = operand_register(src, A)
+        rd = result_register(dst)
+        emit_word(SUB_SHIFTED[width(size)] | (rn << 16) | (XZR << 5) | rd)
+        store_result(rd, dst, only_wrote: rd) # one word, Rd its only written field
       end
 
       # A comparison materialized into the destination as an int 0/1. `cmp`
       # sets the flags; `cset` then writes 1 when the condition holds. A size-8
       # comparison uses the 64-bit X view (full pointer values), otherwise the
       # 32-bit W view.
+      #
+      # Both ends are read-only fields and `cset`'s destination is free, so a
+      # comparison between two promoted values that lands in a third is three
+      # registers named in place and no traffic at all.
       def emit_comparison(dst, a, b, condition, size, commutative: false)
-        load_binary_operands(a, b, commutative: commutative)
-        emit_word(SUBS_SHIFTED[width(size)] | (B << 16) | (A << 5) | XZR) # cmp A, B (subs xzr, A, B)
-        emit_cset(A, condition)
-        store_reg(A, dst)
+        rn, rm = binary_operand_registers(a, b, commutative: commutative)
+        rd = result_register(dst)
+        emit_word(SUBS_SHIFTED[width(size)] | (rm << 16) | (rn << 5) | XZR) # cmp rn, rm
+        emit_cset(rd, condition)
+        # The `cmp` writes the flags and register 31, which is xzr here and no
+        # register at all; the `cset` writes rd. Nothing the table names.
+        store_result(rd, dst, only_wrote: rd)
       end
 
       # :sext — sign-extend a's low `size` bytes to the full 64-bit register,
       # so a subsequent 64-bit use (pointer-offset scaling) sees a correct,
       # possibly negative, value.
       def emit_sext(dst, src, size)
-        load_reg(A, src)
+        rn = operand_register(src, A)
+        rd = result_register(dst)
         word =
           case size
           when 1 then 0x93401C00 # sxtb x, w
           when 2 then 0x93403C00 # sxth x, w
           else 0x93407C00        # sxtw x, w  (size 4)
           end
-        emit_word(word | (A << 5) | A)
-        store_reg(A, dst)
+        emit_word(word | (rn << 5) | rd)
+        store_result(rd, dst, only_wrote: rd) # one word, Rd its only written field
       end
 
       # :zext — zero-extend a's low `size` bytes. The 1/2-byte forms are 32-bit
       # uxtb/uxth (which zero the upper 32 bits too); size 4 is a 64-bit ubfx of
       # the low 32 bits, matching x86's "mov eax, eax".
       def emit_zext(dst, src, size)
-        load_reg(A, src)
+        rn = operand_register(src, A)
+        rd = result_register(dst)
         word =
           case size
           when 1 then 0x53001C00 # uxtb w, w
           when 2 then 0x53003C00 # uxth w, w
           else 0xD3407C00        # ubfx x, x, #0, #32  (size 4)
           end
-        emit_word(word | (A << 5) | A)
-        store_reg(A, dst)
+        emit_word(word | (rn << 5) | rd)
+        store_result(rd, dst, only_wrote: rd) # one word, Rd its only written field
       end
 
       # :load / :uload — read `size` bytes through the pointer in a's slot. A
       # signed load sign-extends a byte/halfword (ldrsb/ldrsh), the unsigned
       # form zero-extends (ldrb/ldrh); a 4-byte load is a plain W load (upper
       # half zeroed) and an 8-byte load a full X load, both sign-agnostic.
+      #
+      # The base register Rn is an ordinary five-bit field, so a promoted
+      # pointer addresses memory where it stands — the extension x86_64's
+      # ModR/M and SIB special cases made worth deferring there and which costs
+      # nothing here.
       def emit_load(dst, ptr, size, signed:)
-        load_reg(A, ptr) # A = pointer value
+        rn = operand_register(ptr, A)
+        rd = result_register(dst)
         word =
           case size
           when 8 then 0xF9400000                  # ldr  x, [x]
@@ -816,15 +978,16 @@ module Rubycc
           when 1 then signed ? 0x39C00000 : 0x39400000 # ldrsb/ldrb w, [x]
           else 0xB9400000                         # ldr  w, [x]  (size 4)
           end
-        emit_word(word | (A << 5) | A)
-        store_reg(A, dst)
+        emit_word(word | (rn << 5) | rd)
+        store_result(rd, dst, only_wrote: rd) # the load writes Rt; its base is read only
       end
 
       # :store — write value b's low `size` bytes through the pointer in a. The
       # narrower stores (strb/strh/str-w) are exactly the truncation a narrow
-      # lvalue needs.
+      # lvalue needs. Base and source register are both free fields, so a
+      # promoted pointer and a promoted value make this one instruction.
       def emit_store(ptr, value, size)
-        load_binary_operands(ptr, value) # A = destination address, B = value
+        rn, rt = binary_operand_registers(ptr, value)
         word =
           case size
           when 8 then 0xF9000000 # str  x, [x]
@@ -832,17 +995,21 @@ module Rubycc
           when 1 then 0x39000000 # strb w, [x]
           else 0xB9000000        # str  w, [x]  (size 4)
           end
-        emit_word(word | (A << 5) | B)
+        emit_word(word | (rn << 5) | rt)
       end
 
       # :jump_if_zero — branch when a's low 32 bits are zero. Testing the W view
       # (cbz w) mirrors the x86_64 backend's 32-bit "test eax, eax": the
       # condition is an int 0/1 or a truthiness test the generator has already
       # reduced.
+      #
+      # CBZ names the register it tests in a free field, so a promoted
+      # condition is branched on where it lives and the loop's test costs one
+      # instruction.
       def emit_jump_if_zero(cond, label_id)
-        load_reg(A, cond)
+        rt = operand_register(cond, A)
         @fixups << [@code.bytesize, label_id, :cbz]
-        emit_word(0x34000000 | A) # cbz w{A}, <patched>
+        emit_word(0x34000000 | rt) # cbz w{rt}, <patched>
       end
 
       # :call — a direct call. Arguments are placed in x0..x7 / v0..v7, then `bl`
@@ -1289,15 +1456,43 @@ module Rubycc
       # #load_reg is never asked to fill it.
       def load_reg(reg, vreg)
         refresh_slot_residency
+        promoted = @promoted[vreg]
+        if promoted
+          # There is no slot to read: this value has been in `promoted` since
+          # the prologue and stays there until the function returns, so the
+          # load is a register move — or nothing at all when the caller wants
+          # it where it already is. Either way only `reg` is written, which is
+          # what the residency table has to be told.
+          emit_move_register(reg, promoted) unless reg == promoted
+          note_register_clobbered(reg)
+          return
+        end
         return if slot_resident_in?(reg, vreg)
 
         source = register_holding_slot(vreg)
         if source
-          emit_word(ORR_SHIFTED[64] | (source << 16) | (XZR << 5) | reg) # mov Xreg, Xsource
+          emit_move_register(reg, source)
         else
           load_frame_at(reg, slot_offset(vreg))
         end
-        note_slot_loaded(reg, vreg)
+        if PROMOTION_REGISTER_SET.include?(reg)
+          # Filling a promoted register from some *other* value's slot happens
+          # where that register is a result destination and the value is on its
+          # way in (#emit_copy, a stack parameter). Recording a residency
+          # against it would break the invariant every note_register_clobbered
+          # in this backend rests on — that no entry in the table is keyed by a
+          # promotion register — and would be short-lived anyway, the result
+          # being written over it in the next instruction.
+          note_register_clobbered(reg)
+        else
+          note_slot_loaded(reg, vreg)
+        end
+      end
+
+      # mov Xd, Xn, which the architecture spells as an ORR with the zero
+      # register.
+      def emit_move_register(dst, src)
+        emit_word(ORR_SHIFTED[64] | (src << 16) | (XZR << 5) | dst)
       end
 
       # str X{reg}, [slot]. The counterpart of #load_reg. The store itself is
@@ -1306,6 +1501,16 @@ module Rubycc
       # this register.
       def store_reg(reg, vreg)
         refresh_slot_residency
+        promoted = @promoted[vreg]
+        if promoted
+          # The value's home is a register, so the store is a move into it —
+          # and nothing at all when the value was computed there. No slot is
+          # written and no residency can name a promotion register, so every
+          # entry in the table is still true.
+          emit_move_register(promoted, reg) unless reg == promoted
+          note_slots_undisturbed
+          return
+        end
         if @transient.include?(vreg)
           # The value's only reader is the next instruction, which will find it
           # here; the slot itself is never named again, so nothing is written.
@@ -1337,6 +1542,121 @@ module Rubycc
         end
         load_reg(A, a)
         load_reg(B, b)
+      end
+
+      # --- naming promoted registers in place -------------------------------
+      #
+      # AArch64's data-processing instructions are three-address — Rd, Rn and
+      # Rm are independent five-bit fields naming any of the 31 general
+      # registers — and its loads and stores name their base register just as
+      # freely. So a promoted value is used *where it lives*, both as an
+      # operand and as a destination, and a promoted addition really is one
+      # instruction: `add x19, x19, x20`.
+      #
+      # That is the whole difference from the x86_64 backend, where the same
+      # step had to be split in two (put the value in a register, then teach
+      # each encoding to name it) because a two-address machine with one
+      # memory operand cannot express the second half for free. The measured
+      # consequence there was that promotion *alone* made code slower: every
+      # memory operand it removed became two register instructions. There is no
+      # such half-way state here.
+      #
+      # What is deliberately not widened is everything the ABI pins down: a
+      # call's arguments (x0..x7, v0..v7), its result (x0/v0), the atomic
+      # sequences' exclusive pair and the whole-object copy, whose loop
+      # advances the addresses it was handed and so must be given scratch
+      # registers of its own.
+
+      # The register an instruction should read `vreg` out of: the callee-saved
+      # register it was promoted into, a scratch register that already holds
+      # the value, or `scratch` with the value loaded into it.
+      #
+      # The middle case is what keeps a transient free. #load_binary_operands
+      # has to move one out of A when the *other* operand is on its way in
+      # there; where the other operand is promoted nothing is on its way in at
+      # all, so the value is read where its producer left it.
+      #
+      # Only A and B answer, though a residency may name any scratch register:
+      # those two are the ones nothing writes between the operands being named
+      # and the last instruction that reads them, while C is written in the
+      # middle of a remainder (it takes the quotient) and could equally be
+      # holding one of the values that remainder is about to read.
+      def operand_register(vreg, scratch)
+        promoted = @promoted[vreg]
+        return promoted if promoted
+
+        refresh_slot_residency
+        return A if slot_resident_in?(A, vreg)
+        return B if slot_resident_in?(B, vreg)
+
+        load_reg(scratch, vreg)
+        scratch
+      end
+
+      # The pair of registers a two-operand instruction should read, one per
+      # operand. A promoted operand is named where it is; the rest go through
+      # A and B as before, and when neither operand is promoted this is exactly
+      # #load_binary_operands — including its rescue of an operand still
+      # sitting in A, which only arises when something has to be loaded there.
+      #
+      # `commutative` is passed on for that rescue's sake alone. Nothing here
+      # needs the two exchanged the way the x86_64 backend does to reach an
+      # in-place form: this machine's destination field is free, so
+      # `sub x19, x20, x19` and `sub x19, x19, x20` cost the same one
+      # instruction and neither reads a register the other has overwritten —
+      # every source is read before Rd is written.
+      def binary_operand_registers(a, b, commutative: false)
+        promoted_a = @promoted[a]
+        promoted_b = @promoted[b]
+        return [promoted_a, promoted_b] if promoted_a && promoted_b
+        return [promoted_a, operand_register(b, B)] if promoted_a
+        return [operand_register(a, A), promoted_b] if promoted_b
+
+        load_binary_operands(a, b, commutative: commutative)
+        [A, B]
+      end
+
+      # Where an instruction that computes a general-register result should put
+      # it: the callee-saved register `dst` was promoted into, so the value is
+      # written home directly, or `scratch` for a value that lives in a slot.
+      def result_register(dst, scratch = A)
+        @promoted[dst] || scratch
+      end
+
+      # Completes such an instruction. A destination that lives in a slot still
+      # needs the store; a promoted `dst` *is* `reg`, so the value is already
+      # home and all that is left is telling the residency table what the bytes
+      # just emitted did to it.
+      #
+      # **The default answer is to throw the table away.** Bytes have been
+      # emitted since it was last known true — the caller's own instruction —
+      # and nothing here can see which registers they wrote. Keeping the table
+      # alive across them is #note_register_clobbered's exception, sound only
+      # when those bytes wrote `reg` and nothing else the table can name; that
+      # is a fact about one lowering's encoding, so the lowering is what states
+      # it, by passing `only_wrote: reg`. Anything that says nothing gets the
+      # safe reading, which costs an optimization and never correctness — and a
+      # lowering that later grows a second scratch write has to come back to its
+      # own claim rather than silently reviving a stale residency. That is the
+      # shape #emit_alloca and #emit_divmod were caught in: both wrote A or C on
+      # the way to the result and both revalidated the table on the way out.
+      #
+      # "Nothing else the table can name" means none of A, B, C or x0..x8, which
+      # are the registers #load_reg is ever asked to fill and so the only ones an
+      # entry can be keyed by. Writing sp, ADDR, x13..x15 or a promotion register
+      # does not disturb the table (see PROMOTION_REGISTERS and #load_reg), so it
+      # does not stop a caller from claiming the fast path.
+      def store_result(reg, dst, only_wrote: nil)
+        unless @promoted.key?(dst)
+          store_reg(reg, dst) # which discards a stale table itself, before anything else
+          return
+        end
+
+        if only_wrote == reg
+          note_register_clobbered(reg)
+        else
+          refresh_slot_residency
+        end
       end
 
       # ldr X{reg}, [frame base + offset] for any fixed-frame offset, not just a
@@ -1398,6 +1718,10 @@ module Rubycc
       # slot at this width and becomes a register-to-register `fmov` when
       # another vector register does — which copies exactly the bits a reload
       # would have produced at that width.
+      #
+      # Unlike #load_reg this asks nothing about promotion: a value the vector
+      # register file touches is refused promotion outright (IR::Promotion's
+      # VECTOR_OPS and VECTOR_KINDS), so every vreg reaching here has a slot.
       def load_fp(reg, vreg, size)
         refresh_slot_residency
         return if slot_resident_in_vector?(reg, vreg, size)
@@ -1545,10 +1869,11 @@ module Rubycc
       # finally loaded — but it does bind the symbol at link time, which is what
       # separates it from the GOT path below.
       def emit_symbol_address(dst, reloc)
+        target = result_register(dst)
         @relocations << reloc.merge(offset: @code.bytesize)
-        emit_word(0x90000000 | A)              # adrp A, <page of sym>
-        emit_add_imm(A, A, 0, shift12: false)  # add  A, A, #:lo12:sym
-        store_reg(A, dst)
+        emit_word(0x90000000 | target)              # adrp target, <page of sym>
+        emit_add_imm(target, target, 0, shift12: false) # add target, target, #:lo12:sym
+        store_result(target, dst, only_wrote: target) # the pair writes target alone
       end
 
       # :got_addr — the PIC form of the above. Under -fPIC a symbol this unit
@@ -1561,17 +1886,21 @@ module Rubycc
       # value that lands in the destination slot is a usable pointer either way
       # and every load or store through it is unchanged.
       def emit_got_address(dst, symbol)
+        target = result_register(dst)
         @relocations << { kind: :got, offset: @code.bytesize, symbol: symbol }
-        emit_word(0x90000000 | A)             # adrp A, <page of sym's GOT slot>
-        emit_word(0xF9400000 | (A << 5) | A)  # ldr  A, [A, #:got_lo12:sym]
-        store_reg(A, dst)
+        emit_word(0x90000000 | target)                       # adrp target, <page of GOT slot>
+        emit_word(0xF9400000 | (target << 5) | target)       # ldr  target, [target, #:got_lo12:]
+        store_result(target, dst, only_wrote: target) # the pair writes target alone
       end
 
       # :addr_of / :object_addr — compute a frame address (sp + offset) into a
       # scratch register and park it in the destination slot as a pointer value.
       def emit_slot_address_to(dst, offset)
-        emit_slot_address(A, offset)
-        store_reg(A, dst)
+        target = result_register(dst)
+        emit_slot_address(target, offset)
+        # However far the offset reaches, the composition builds it in target
+        # and reads only the frame base (#emit_base_address).
+        store_result(target, dst, only_wrote: target)
       end
 
       # Places (frame base) + offset (offset >= 0) into `reg`, the address of a
