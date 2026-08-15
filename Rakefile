@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rake/testtask"
+require_relative "tools/qemu_aarch64_preflight"
 
 Rake::TestTask.new(:test) do |t|
   t.libs << "lib" << "test"
@@ -121,6 +122,10 @@ namespace :test do
     missing = files.reject { |path| File.file?(path) }
     abort "no such test file: #{missing.join(", ")}" unless missing.empty?
 
+    base_image = ENV.fetch("QEMU_IMAGE", "ruby:4.0")
+    preflight = Rubycc::QemuAArch64Preflight.check(base_image)
+    abort preflight.message unless preflight.success?
+
     # The image carries an AArch64 Ruby and an AArch64 gcc, so the differential
     # tests compare against a native compiler rather than a cross one. The
     # checkout is mounted, and bundler is pointed at a directory inside it so the
@@ -131,7 +136,7 @@ namespace :test do
     # errors, so a handful of differential cases fail here with the *control*
     # compiler failing rather than rubycc (docs/development/GAPS.md gap W). Read a failure
     # against that list before treating it as an AArch64 defect.
-    image = qemu_aarch64_image(ENV.fetch("QEMU_IMAGE", "ruby:4.0"))
+    image = qemu_aarch64_image(base_image)
     root = File.expand_path(__dir__)
     command = "ruby -Ilib -Itest -e '" \
               "ARGV.each { |f| require File.expand_path(f) }' -- #{files.join(" ")}"
