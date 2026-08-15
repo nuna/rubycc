@@ -1,9 +1,9 @@
 ---
-status: open
+status: in-progress
 kind: infra
 opened: 2026-08-15
 closed:
-branch:
+branch: qemu-aarch64-binfmt-flag
 pr:
 steps: []
 ---
@@ -59,6 +59,15 @@ exec /usr/bin/bash: exec format error
 
 `register-allocation-3` の検証中に判明。回避策で AArch64 の差分実行は実施し、
 既知のギャップ W 由来の 1 件を除いて 0 failures だった。
+
+### 2026-08-15(実装)
+
+- Docker デーモンの architecture を確認し、native AArch64 以外では同じ基底イメージの
+  `/bin/true` を `--platform linux/arm64` で実行する preflight を追加した。
+- preflight は `qemu_aarch64_image` の build より前に実行し、binfmt 由来の失敗には
+  F フラグ付きハンドラまたは bind-mount の復旧手順を案内する。
+- Docker クライアント側の `/proc` は判定の正にせず、失敗時の診断情報としてだけ使う。
+- preflight の単体テスト 6 runs / 22 assertions と、現在の環境での早期終了を確認した。
 
 ## 決着
 
