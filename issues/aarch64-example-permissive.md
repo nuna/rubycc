@@ -62,7 +62,8 @@ x86-64 側の同じ問題を扱っており、そこに AArch64 が抜けてい�
 - `bundle exec rake test` を実行し、3215 runs / 11379 assertions / 0 failures / 0 errors /
   41 skips を確認した。
 - PR 前の批判的レビューで、allowlist の重複・過剰適用・テスト不足を確認し、追加の修正は不要と判断した。
+- PR #55 を作成した。master への取り込み後に issue を `done` へ更新する。
 
 ## 決着
 
-(実装・検証済み。PR の master 取り込み後に `closed` / `pr` を記入する)
+(実装・検証済み。PR #55 の master 取り込み後に `closed` / `pr` を記入する)
