@@ -42,11 +42,11 @@ module CorpusCandidateScan
   # require-able from hermetic tests and from the future timeframe source.
   class Configuration
     attr_reader :first_page, :last_page, :work_dir, :source_choice, :verbose,
-                :from_time, :to_time, :artifact_path
+                :from_time, :to_time, :artifact_path, :selection_only
 
     def initialize(first_page: 11, last_page: 20, work_dir: DEFAULT_WORK_DIR,
                    source_choice: "auto", verbose: false, from_time: nil, to_time: nil,
-                   artifact_path: nil)
+                   artifact_path: nil, selection_only: false)
       @first_page = Integer(first_page)
       @last_page = Integer(last_page)
       @work_dir = File.expand_path(work_dir)
@@ -55,6 +55,7 @@ module CorpusCandidateScan
       @from_time = from_time && parse_time(from_time, "from")
       @to_time = to_time && parse_time(to_time, "to")
       @artifact_path = artifact_path && File.expand_path(artifact_path)
+      @selection_only = !!selection_only
       validate!
     end
 
@@ -64,13 +65,15 @@ module CorpusCandidateScan
         source_choice: env.fetch("SCAN_SOURCE", "auto"),
         from_time: env["SCAN_FROM"],
         to_time: env["SCAN_TO"],
-        artifact_path: env["SCAN_ARTIFACT"]
+        artifact_path: env["SCAN_ARTIFACT"],
+        selection_only: !env.fetch("SCAN_SELECTION_ONLY", "").empty?
       }
       parser = OptionParser.new do |opts|
         opts.on("--source SOURCE", "ranking source or timeframe") { |value| options[:source_choice] = value }
         opts.on("--from ISO8601", "timeframe start") { |value| options[:from_time] = value }
         opts.on("--to ISO8601", "timeframe end") { |value| options[:to_time] = value }
         opts.on("--artifact PATH", "write a deterministic JSON artifact") { |value| options[:artifact_path] = value }
+        opts.on("--selection-only", "select releases without fetching gems") { options[:selection_only] = true }
       end
       begin
         remaining = parser.parse(args)
@@ -88,7 +91,8 @@ module CorpusCandidateScan
           verbose: !env.fetch("SCAN_VERBOSE", "").empty?,
           from_time: options[:from_time],
           to_time: options[:to_time],
-          artifact_path: options[:artifact_path]
+          artifact_path: options[:artifact_path],
+          selection_only: options[:selection_only]
         )
       end
 
@@ -103,7 +107,8 @@ module CorpusCandidateScan
         work_dir: env.fetch("SCAN_WORK", DEFAULT_WORK_DIR),
         source_choice: options[:source_choice],
         verbose: !env.fetch("SCAN_VERBOSE", "").empty?,
-        artifact_path: options[:artifact_path]
+        artifact_path: options[:artifact_path],
+        selection_only: options[:selection_only]
       )
     end
 
@@ -125,6 +130,7 @@ module CorpusCandidateScan
       else
         input.merge!("first_page" => first_page, "last_page" => last_page)
       end
+      input["selection_only"] = true if selection_only
       input
     end
 
@@ -161,6 +167,9 @@ module CorpusCandidateScan
         end
       elsif @from_time || @to_time
         raise ArgumentError, "--from/--to require --source timeframe"
+      end
+      if selection_only && !timeframe?
+        raise ArgumentError, "--selection-only requires --source timeframe"
       end
     end
   end
@@ -429,6 +438,13 @@ module CorpusCandidateScan
 
       raise ArgumentError, "fetched platform #{spec.platform} does not match requested #{requested_platform}"
     end
+
+    def validate_gem_sha!(actual, expected)
+      return "not_provided" if expected.nil? || expected.to_s.empty?
+      return "match" if actual.to_s.casecmp?(expected.to_s)
+
+      raise ArgumentError, "gem_sha256_mismatch: API=#{expected} fetched=#{actual}"
+    end
   end
 
   # A review artifact is intentionally a separate output from the human table.
@@ -532,6 +548,10 @@ module CorpusCandidateScan
     def run
       if config.timeframe?
         selected, rejected = collect_timeframe
+        if config.selection_only
+          results = rejected + selected.map { |entry| selection_only_result(entry) }
+          return finish_selection(results, TimeframeVersions, config.from_time, config.to_time)
+        end
         results = rejected + selected.map do |entry|
           step "inspecting #{entry[:name]} #{entry[:version]} (platform=#{entry[:platform]})"
           inspect_gem(entry)
@@ -568,6 +588,18 @@ module CorpusCandidateScan
                        requests: @http.requests, results: results)
       end
       ok
+    end
+
+    def finish_selection(results, source, from_time, to_time)
+      if config.artifact_path
+        Artifact.write(config.artifact_path, config: config, source: source,
+                       requests: @http.requests, results: results)
+      end
+      @out.puts "selection-only: #{results.count { |result| result[:status] == :uninspected }} selected gems"
+      @out.puts "  timeframe: #{from_time.iso8601} - #{to_time.iso8601} (UTC)"
+      @out.puts "  v2 source/yanked verification: deferred to the static sample"
+      @out.puts "  errors: #{results.count { |result| result[:status] == :error }}"
+      true
     end
 
     def select_source(first_rank, last_rank)
@@ -611,6 +643,8 @@ module CorpusCandidateScan
     end
 
     def select_timeframe_releases(records)
+      return select_timeframe_collection(records) if config.selection_only
+
       selected = []
       rejected = []
 
@@ -686,6 +720,45 @@ module CorpusCandidateScan
       [selected, rejected]
     end
 
+    # Evaluation mode measures the complete release stream before spending
+    # network and build time on a small, predeclared sample. The timeframe
+    # payload still provides deterministic prerelease/platform ordering; v2
+    # yanked/source verification is intentionally deferred and never counted
+    # as a static [1] result.
+    def select_timeframe_collection(records)
+      selected = []
+      rejected = []
+
+      records.group_by { |entry| entry["name"] }.sort_by { |name, _| name }.each do |name, entries|
+        candidates = entries.group_by { |entry| entry["version"] }.values.map do |versions|
+          versions.max_by { |entry| [entry["platform"] == "ruby" ? 1 : 0, entry["created_at_time"].to_f] }
+        end
+        candidates.sort_by! do |entry|
+          [-entry["created_at_time"].to_f, Gem::Version.new(entry["version"])]
+        rescue ArgumentError
+          [Float::INFINITY, Gem::Version.new("0")]
+        end
+        discarded = candidates.drop(1).map { |entry| "#{entry["version"]}: duplicate release" }
+        chosen = candidates.find { |entry| !entry["prerelease"] }
+        if chosen
+          selected << {
+            source: :timeframe, name: chosen["name"], version: chosen["version"],
+            platform: chosen["platform"], created_at: chosen["created_at"],
+            downloads: chosen["downloads"], version_downloads: chosen["version_downloads"],
+            sha: chosen["sha"], api_sha: nil,
+            selection_note: "selection-only: v2 source/yanked verification deferred; " \
+                            "releases considered: #{candidates.map { |entry| entry["version"] }.join(', ')}; " \
+                            "selected #{chosen["version"]}",
+            selection_rejections: discarded + candidates.select { |entry| entry["prerelease"] }.map { |entry| "#{entry["version"]}: prerelease" }
+          }
+        else
+          rejected << rejected_timeframe_result(name, candidates.map { |entry| "#{entry["version"]}: prerelease" })
+        end
+      end
+
+      [selected, rejected]
+    end
+
     def selection_note(candidates, discarded, chosen)
       versions = candidates.map { |entry| entry["version"] }.join(", ")
       note = "timeframe releases considered: #{versions}; selected #{chosen["version"]}"
@@ -699,6 +772,20 @@ module CorpusCandidateScan
         status: :error, reason: "no non-prerelease, non-yanked ruby source release: #{reasons.join('; ')}",
         selection_rejections: reasons, c_files: 0, h_files: 0, notes: [],
         in_corpus: @corpus_names.include?(name)
+      }
+    end
+
+    def selection_only_result(entry)
+      {
+        rank: nil, name: entry[:name], version: entry[:version], platform: entry[:platform],
+        created_at: entry[:created_at], downloads: entry[:downloads],
+        version_downloads: entry[:version_downloads], selection_note: entry[:selection_note],
+        selection_rejections: Array(entry[:selection_rejections]),
+        gem_sha256: nil, api_sha256: entry[:api_sha], sha256_match: "not_fetched",
+        extensions: [], extension_directories: [], native_source_files: [], extconf_files: [],
+        review_reasons: [], status: :uninspected,
+        reason: "selection-only: static archive inspection deferred to the sample stage",
+        c_files: 0, h_files: 0, notes: [], in_corpus: @corpus_names.include?(entry[:name])
       }
     end
 
@@ -757,9 +844,16 @@ module CorpusCandidateScan
 
     def gem_downloads(name)
       FileUtils.mkdir_p(@api_cache_dir)
+      url = "https://rubygems.org/api/v1/gems/#{URI.encode_www_form_component(name)}.json"
       path = File.join(@api_cache_dir, "#{name}.json")
-      unless File.file?(path)
-        body = @http.get("https://rubygems.org/api/v1/gems/#{URI.encode_www_form_component(name)}.json")
+      if config.artifact_path
+        # Artifact mode must record the request on every replay. RecordingHttpClient
+        # then serves the body from raw_responses/ instead of making the second
+        # artifact silently omit a request just because api/ already exists.
+        body = @http.get(url)
+        File.write(path, body)
+      elsif !File.file?(path)
+        body = @http.get(url)
         File.write(path, body)
         @sleeper.call(API_DELAY)
       end
@@ -793,14 +887,7 @@ module CorpusCandidateScan
       end
 
       result[:gem_sha256] = Digest::SHA256.file(gem_path).hexdigest
-      if result[:api_sha256]
-        result[:sha256_match] = result[:gem_sha256].casecmp?(result[:api_sha256].to_s) ? "match" : "mismatch"
-        unless result[:sha256_match] == "match"
-          result[:status] = :error
-          result[:reason] = "gem_sha256_mismatch: API=#{result[:api_sha256]} fetched=#{result[:gem_sha256]}"
-          return result
-        end
-      end
+      result[:sha256_match] = InspectionHelpers.validate_gem_sha!(result[:gem_sha256], result[:api_sha256])
 
       spec = Gem::Package.new(gem_path).spec
       result[:version] = spec.version.to_s

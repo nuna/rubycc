@@ -51,6 +51,12 @@ tools/scan_popular_gems.rb --source timeframe \
 RubyGems の spec cache は `SCAN_WORK/gem_spec_cache` に置かれるため、HOME が read-only な
 実行環境でも writable な `SCAN_WORK` を使う。
 
+比較可能な記録が必要なときは `--artifact PATH` を付ける。schema version、normalized input、
+raw response / `.gem` SHA-256、release 選択理由、Census header 分類を保存し、同じ
+`SCAN_WORK` の raw response と gem cache を再利用できる。`[R]` は未宣言 native source または
+`ext/` 外 extension の review bucket、`[1b]` は assembly 専用である。artifact は候補資料で、
+`test/corpus/gems.rb` への正式追加や `data/verified_gems.json` の更新を自動では行わない。
+
 出力グループの扱い:
 
 | | 意味 | どうするか |

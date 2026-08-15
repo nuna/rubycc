@@ -843,6 +843,11 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   `tools/scan_popular_gems.rb --source timeframe` を追加し、UTC 1 日の live scan で 153 version /
   114 gem / 109 fetch 成功 / `[1]` 8 / `[E]` 5 を実測。候補を `test/corpus/gems.rb` へ自動追加せず、
   複数 window と既存 source の増分価値を判定する評価は後続 issue に残した。
+- **候補 scan の provenance と静的 review 診断を artifact に保存する。** **完了(corpus-candidate-artifact-3)**:
+  schema version 1 の決定的 JSON、raw response / `.gem` SHA-256、`undeclared_native_source` と
+  `extension_outside_census_root` の `[R]` 分類、Census 共通 include helper を実装した。artifact は
+  調査材料に限定し、corpus と verified gem DB は自動更新しない。候補源の増分価値の判定は
+  `corpus-candidate-evaluation` に残す。
 - ~~`data/verified_gems.json` を手編集ではなく実走結果から生成/拡張する
   (data/README.md が当初から述べていた意図)。~~ **完了(Step 144)**:
   `tools/verify_gem_tests.rb`。`RUBYCC=1 gem install` → rubycc が使われた痕跡の確認 →

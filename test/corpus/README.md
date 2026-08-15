@@ -102,6 +102,23 @@ tools/scan_popular_gems.rb --source timeframe \
 場合は `[E]` に理由を出し、候補として黙って捨てない。候補が `[1]` に出ても、
 `test/corpus/gems.rb` への正式追加は手動で行う。
 
+JSON review artifact を保存する場合は `--artifact` または `SCAN_ARTIFACT` を指定する。
+同じ `SCAN_WORK` を使う再実行では `raw_responses/` の保存済み API response と `.gem` cache を
+再利用できる。artifact には schema version、正規化した入力、request / response SHA-256、
+`.gem` SHA-256、選択理由、Census の status と header 分類が入る。時刻と絶対 path は入らない
+ため、保存済み入力の再生結果を byte 単位で比較できる。
+
+```sh
+SCAN_WORK=/tmp/rubycc_scan \
+tools/scan_popular_gems.rb --source timeframe \
+  --from 2026-08-15T00:00:00Z --to 2026-08-16T00:00:00Z \
+  --artifact /tmp/rubycc_scan/timeframe.json
+```
+
+`[R]` は未宣言 native source または `ext/` 外 extension など、人手 review が必要で通常の
+`[1]` 候補にしていない記録である。`[1b]` は従来どおり assembly 専用。artifact は調査材料
+であり、`test/corpus/gems.rb` や `data/verified_gems.json` を自動更新しない。
+
 環境変数:
 
 - `SCAN_WORK` — ダウンロードした `.gem` / API レスポンスのキャッシュ先(既定値は tmpdir 配下)。
@@ -109,6 +126,8 @@ tools/scan_popular_gems.rb --source timeframe \
   writable な `SCAN_WORK` を指定すれば実行できる。
 - `SCAN_SOURCE` — `auto`(既定)/ `rubygems` / `bestgems` / `timeframe`。ランキングまたは期間sourceを選ぶ。
 - `SCAN_FROM` / `SCAN_TO` — `timeframe`を環境変数で実行する場合のISO 8601 UTC境界。
+- `SCAN_ARTIFACT` — review artifact の出力先。指定時は API response を `SCAN_WORK/raw_responses/`
+  に cache する。
 - `SCAN_VERBOSE` — `1` を設定すると、C 拡張を持たない gem も `[0]` として一覧表示する。
 
 ### ランキングソース

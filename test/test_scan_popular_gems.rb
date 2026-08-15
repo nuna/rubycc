@@ -134,6 +134,24 @@ class TestScanPopularGems < Minitest::Test
     end
   end
 
+  def test_artifact_schema_names_all_scan_sources_consistently
+    config = CorpusCandidateScan::Configuration.new(first_page: 1, last_page: 1, work_dir: Dir.tmpdir)
+
+    assert_equal "rubygems", CorpusCandidateScan::Artifact.source_name(
+      config, CorpusCandidateScan::RubygemsPopular
+    )
+    assert_equal "bestgems", CorpusCandidateScan::Artifact.source_name(
+      config, CorpusCandidateScan::BestgemsTotal
+    )
+
+    timeframe = CorpusCandidateScan::Configuration.new(
+      source_choice: "timeframe", from_time: "2026-08-01", to_time: "2026-08-02", work_dir: Dir.tmpdir
+    )
+    assert_equal "timeframe", CorpusCandidateScan::Artifact.source_name(
+      timeframe, CorpusCandidateScan::TimeframeVersions
+    )
+  end
+
   def test_timeframe_source_paginates_to_an_empty_page_and_selects_source_release
     config = CorpusCandidateScan::Configuration.from_env(
       ["--source", "timeframe", "--from", "2026-08-01T00:00:00Z", "--to", "2026-08-02T00:00:00Z"], {}
@@ -163,6 +181,32 @@ class TestScanPopularGems < Minitest::Test
       selection_rejections: []
     }], selected
     assert_equal 3, http.urls.size
+  end
+
+  def test_selection_only_records_release_selection_without_fetching_a_gem
+    Dir.mktmpdir do |work_dir|
+      config = CorpusCandidateScan::Configuration.from_env(
+        ["--source", "timeframe", "--from", "2026-08-01", "--to", "2026-08-02", "--selection-only"],
+        "SCAN_WORK" => work_dir
+      )
+      record = {
+        "name" => "example-gem", "version" => "1.0.0", "platform" => "ruby",
+        "created_at" => "2026-08-01T12:00:00Z", "prerelease" => false, "sha" => "feed",
+        "downloads" => 100, "version_downloads" => 10
+      }
+      responses = {
+        CorpusCandidateScan::TimeframeVersions.url(config.from_time, config.to_time, 1) => JSON.generate([record]),
+        CorpusCandidateScan::TimeframeVersions.url(config.from_time, config.to_time, 2) => JSON.generate([]),
+        "https://rubygems.org/api/v2/rubygems/example-gem/versions/1.0.0.json?platform=ruby" => JSON.generate(record.merge("yanked" => false))
+      }
+      output = StringIO.new
+      scanner = CorpusCandidateScan::Scanner.new(config: config, http_client: FakeHttp.new(responses),
+                                                 sleeper: ->(_seconds) {}, out: output)
+
+      assert scanner.run
+      assert_includes output.string, "selection-only"
+      refute Dir.glob(File.join(config.work_dir, "*.gem")).any?
+    end
   end
 
   def test_timeframe_source_rejects_repeated_nonempty_pages
@@ -248,6 +292,16 @@ class TestScanPopularGems < Minitest::Test
       CorpusCandidateScan::InspectionHelpers.validate_fetched_spec(spec, "2.0.0", "ruby")
     end
     assert_includes error.message, "does not match requested 2.0.0"
+  end
+
+  def test_gem_sha_mismatch_is_a_hard_error
+    assert_equal "not_provided", CorpusCandidateScan::InspectionHelpers.validate_gem_sha!("a" * 64, nil)
+    assert_equal "match", CorpusCandidateScan::InspectionHelpers.validate_gem_sha!("a" * 64, "A" * 64)
+
+    error = assert_raises(ArgumentError) do
+      CorpusCandidateScan::InspectionHelpers.validate_gem_sha!("a" * 64, "b" * 64)
+    end
+    assert_includes error.message, "gem_sha256_mismatch"
   end
 
   def test_rubygems_page_parser_uses_injected_http_client

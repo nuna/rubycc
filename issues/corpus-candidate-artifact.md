@@ -1,11 +1,14 @@
 ---
-status: open
+status: in-progress
 kind: infra
 opened: 2026-08-16
 closed:
-branch:
+branch: corpus-candidate-artifact
 pr:
-steps: []
+steps:
+  - corpus-candidate-artifact-1
+  - corpus-candidate-artifact-2
+  - corpus-candidate-artifact-3
 ---
 
 # census 候補スキャンを再現可能な artifact として保存し、静的診断を強化する
@@ -129,6 +132,35 @@ artifact 自体の正しさと、発見方法が corpus を適切に増やせる
 `corpus-candidate-evaluation.md` へ分け、固定した複数 window、popular baseline、試験ビルドで
 採用・条件付き採用・不採用を決める計画にした。
 
+#### `corpus-candidate-artifact-1`
+
+schema version 1 の JSON artifact、normalized input、source request と raw response hash、
+raw response cache、取得 `.gem` の SHA-256 照合欄を追加した。絶対 path・実行時刻・cache hit
+状態を artifact から除外し、record / key の順序を固定した。保存済み response を再生する
+fixture と golden JSON を2回処理し、byte 単位の一致を検証した。
+
+#### `corpus-candidate-artifact-2`
+
+`Corpus::Census.classify_source_files` を抽出し、scanner と Census が同じ include / C/H 集計を
+使うようにした。archive 内の未宣言 native source は `undeclared_native_source`、gemspec の
+`ext/` 外 extension は `extension_outside_census_root` として `[R]` review bucket へ分離した。
+既存の `[1b]` は assembly 専用のまま維持し、R10 の判定規則は複製していない。
+
+#### `corpus-candidate-artifact-3`
+
+全 source で同じ artifact schema を使う source naming fixture と、利用手順・review 境界を
+追加した。artifact は調査材料であり、`test/corpus/gems.rb` と `data/verified_gems.json` は
+変更していない。
+
+test-runner の結果:
+
+- `ruby -Itest test/test_scan_popular_gems.rb`: 17 runs / 78 assertions
+- `ruby -Itest test/test_corpus_census.rb`: 30 runs / 383 assertions
+- `ruby -Itest -Ilib test/test_issue_docs.rb`: 5 runs / 336 assertions
+- `rake test` (直前の同一実装状態): 3238 runs / 11528 assertions / 41 skips
+- failures / errors: 0 / 0
+
 ## 決着
 
-(未着手)
+artifact-1〜3、回帰確認、利用手順の更新まで完了。PR 作成後、
+`corpus-candidate-discovery` PR に積み上げてレビュー待ち。merge 前は issue を `done` にしない。

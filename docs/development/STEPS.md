@@ -11751,3 +11751,25 @@ gemspec の name / version / platform 照合を行う。API schema、重複、�
 `ruby -Itest -Ilib test/test_issue_docs.rb` は 5 / 332、`ruby -Itest test/test_corpus_census.rb`
 は 29 / 377、`rake test` は 3232 runs / 11492 assertions / 41 skips。いずれも failures 0、
 errors 0。
+
+## corpus-candidate-artifact-1 — scan artifact の schema と provenance を固定する
+
+schema version 1 の JSON artifact、normalized input、source request / raw response SHA-256、
+raw response cache、取得 `.gem` の SHA-256 欄を追加した。absolute path、実行時刻、cache hit
+状態は artifact に入れない。保存済み response を再生する fixture と golden JSON で byte 単位の
+決定性を検証した。
+
+## corpus-candidate-artifact-2 — 静的 review 診断を Census と共有する
+
+`Corpus::Census.classify_source_files` を抽出し、scanner の C/H 数と system / gap header 集計を
+Census と共通化した。archive 内の `undeclared_native_source` と、gemspec の
+`extension_outside_census_root` を `[R]` review bucket に分離した。`[1b]` は assembly 専用の
+まま維持し、R10 gate は複製していない。
+
+## corpus-candidate-artifact-3 — source 共通 schema と再生手順を確定する
+
+popular / bestgems / timeframe の source naming fixture、SHA mismatch hard error、利用手順、
+issue / skill の review 境界を追加した。最終 targeted test は scanner 17 runs / 78 assertions、
+Census 30 / 383、issue docs 5 / 336、いずれも failures / errors 0。直前の全体 `rake test` は
+3238 runs / 11528 assertions / 41 skips / failures 0 / errors 0。artifact は正式 corpus 追加を
+行わず、後続 evaluation issue が候補源の増分価値を判定する。
