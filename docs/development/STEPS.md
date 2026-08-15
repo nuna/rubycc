@@ -11619,3 +11619,69 @@ sha256 で確認している。
 
 x86-64 の出力は**同じ入力で 1 バイトも変わらない**ことを確認した(ベンチ 5 本 +
 examples/m6 の 4 本 + saxpy を `-c` でコンパイルし、オブジェクトを sha256 比較)。
+
+## corpus-reverify-1 — 合格率は落ちていない。落ちたのは harness の再現性だった
+
+`register-allocation` の受け入れ条件の最後の 1 つ、**コーパス合格率の再測**である。
+最適化 2 段(spill-traffic-cleanup と register-allocation)を入れた後の rubycc で、
+`data/verified_gems.json` の 31 gem すべてについて**上流のテストスイートを実走**した。
+
+**結果は 31/31 PASS。合格率(31/34 = 91.2%)は維持された。**
+
+### 15 分で終わった — 見積もりを外した理由
+
+着手前に「数時間規模」と見積もったが、実際は **15 分**だった。スクラッチ作業ディレクトリが
+前回の検証時のものを再利用し(`work dir: ... (kept and reused)`)、gem の取得・rubycc での
+ビルド・GEM_HOME への配置が済んでいたためで、走ったのは**スイート本体だけ**である。
+初回はこの見積もりで合っていたはずで、**再利用の有無を確認せずに時間を言った**のが誤り。
+
+### 同じコードで 2 回の結果が違った
+
+記録のために `--update` で 2 回目を回すと、**date / etc / nkf / psych が FAIL** した。
+1 回目は全件 PASS である。同一ホスト・同一 Ruby 3.4.5・同一 gem 版で結果が変わった。
+
+4 件とも落ち方が同じだった:
+
+```
+Error: test_ractor(TestNKF): NoMethodError: undefined method 'value' for an instance of Ractor
+  gemhome/gems/test-unit-ruby-core-1.0.5/lib/core_assertions.rb:373:in 'assert_ractor'
+```
+
+**落ちているのは gem の C 拡張ではなくテストヘルパ**で、`Ractor#value`(Ruby 3.5 で
+入ったメソッド)を 3.4.5 で呼んでいる。
+
+### 対照との比較では決着しなかった
+
+このリポジトリが byebug / unicorn / debug に適用してきた除外基準は「**対照 gcc も同じ
+数字で落ちる**」である。対照を回すと 4 件とも PASS した — **だがこれは決め手にならない**。
+`--control` は別の GEM_HOME(`gemhome-control`)を使い、そこには helper の **1.0.15** が
+残っていた。**比較しているつもりの「コンパイラの違い」に、helper の版差が混ざっていた。**
+
+決着させたのは、**コンパイラを変えずに版だけ戻す**実験である。rubycc 側の GEM_HOME を
+1.0.15 に戻して同じ 4 件を rubycc モードで回すと、**4 件とも PASS に戻った**。
+コンパイラは無関係と直接示せた。
+
+### 犯人は racc のレシピの版固定だった
+
+`racc` は `test_dep_versions` で `test-unit-ruby-core` を **1.0.5 に固定**している
+(racc の Gemfile がそう pin しているため)。**スクラッチ GEM_HOME は全 gem で共有**なので、
+racc が走った時点で**後続の gem も 1.0.5 を使う**。1 回目は 4 件が racc より先に走って
+1.0.15 で通り、racc が 1.0.5 を残し、2 回目は全 gem がそれを使って落ちた。
+
+**順序と前回の残留だけで合否が変わる。** 台帳は「その gem のスイートが rubycc ビルドの
+`.so` に対して合格した」という証拠なので、これは台帳が測っているものを曖昧にする。
+`issues/verify-gem-test-deps-unpinned.md` に切り出した。
+
+### puma は別件で、時間切れだった
+
+puma は 2 回目で `UNPARSABLE`(ツール既定の 900 秒タイムアウト)。記録実行と並走させた
+負荷が原因とみて単独・`VERIFY_TEST_TIMEOUT=2400` で回すと **PASS**(840 runs / 0 failures)。
+**判定不能を合格とも不合格とも数えない**というツールの設計がここでも効いている。
+
+### mysql2 は環境要件で、拒否されるのが正しい
+
+mysql2 は docker コンテナ `rubycc-mariadb` を要求し、停止していたのでツールが**実行を
+拒否**した(偽の PASS を出さない)。STEPS の記録どおり起動して回すと
+340 examples / 0 failures / 6 pending で、レシピのコメントが記録している
+「rubycc・gcc 双方で同じ」という値と一致した。**終了後はコンテナを停止し、
+ホストを元の状態に戻している。**

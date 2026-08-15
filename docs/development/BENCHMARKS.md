@@ -212,3 +212,67 @@ ruby benchmark/run.rb        # 上の Step 66 と同じハーネス
 ペア計測は「変更前ツリーの worktree を切って、カーネルごとに前・後を交互に測る」
 使い捨てスクリプトで行った(ハーネスは 1 ツリー分しか測れないため)。
 **単調時計を使うこと**。
+
+---
+
+# 追記: レジスタ割付の前後(register-allocation-1 / -2 / -3)
+
+上のスピルトラフィック削減に続く第 2 段。**適格な vreg が 1 本の callee-saved
+レジスタを関数の全区間占有する**方式で、経緯と設計判断は
+[`docs/development/STEPS.md`](STEPS.md) の同名 3 節、課題は
+[`issues/register-allocation.md`](../../issues/register-allocation.md)。
+
+## 実行環境
+
+- **日付**: 2026-08-14
+- **CPU / カーネル / gcc**: 上の Step 66 と同一ホスト(Ryzen 5 4500U、WSL2、gcc 13.3.0)
+- **サンプリング**: **同一プロセスで 1 ラウンドごとに全変種を 1 回ずつ回すインターリーブ**、
+  warmup 1 + **9 ラウンド中央値**、`CLOCK_MONOTONIC`
+
+## 結果 — C カーネル(秒)
+
+`base` = レジスタ割付なし(spill-traffic-cleanup 完了時点)、`promote` = 昇格のみ
+(第 1 段)、`operands` = 昇格レジスタをオペランドとして名指した後(第 2 段)。
+
+| カーネル | base | promote | **operands** | gcc -O2 | **operands / gcc -O2** |
+|---|---|---|---|---|---|
+| arrayscan  | 1.088 | 1.164 | **0.805** | 0.426 | **1.89x** |
+| mandelbrot | 1.441 | 1.445 | 1.473 | 0.530 | **2.78x** |
+| sieve      | 1.598 | 1.334 | **1.071** | 0.493 | **2.17x** |
+| strproc    | 3.145 | 3.018 | **2.806** | 1.062 | **2.64x** |
+| treesum    | 1.567 | 1.588 | 1.585 | 1.461 | **1.09x** |
+
+**`promote` 列が示すのは、値をレジスタに置いただけでは速くならないこと**である。
+arrayscan は **+7.0% 遅くなった** — メモリオペランド 1 命令がレジスタ 2 命令に
+置き換わり、命令が消えないためで、これが第 2 段を分けた理由である。
+
+**mandelbrot だけ最終段でも +2.0%** だが、命令数は減っている(内側 26 → 24)。
+double の依存鎖(store-to-load forwarding)が律速で割付が触れない部分であり、
+**コードレイアウト由来と読んでいるが、そこまでは切り分けていない**。
+
+## 命令数(参考)
+
+`void saxpy(int *b, const int *a, int scale, int n) { for (int i=0;i<n;i++) b[i] += scale*a[i]; }`
+の**内側ループ**(ループ先頭ラベルから back edge の分岐まで):
+
+| | x86-64 | AArch64 |
+|---|---|---|
+| 割付なし | 27 | 31 |
+| 昇格のみ | 32 | — |
+| **割付後** | **20** | **15** |
+| gcc -O1 | 6 | 7 |
+
+AArch64 は**ループ内のスロット往復が 0** になった。x86-64 に残る 2 か所は、
+昇格レジスタをメモリオペランドの**ベース**にする拡張で消える見込みで、
+[`issues/promoted-register-addressing.md`](../../issues/promoted-register-addressing.md) に切り出してある。
+
+## 再現方法
+
+```sh
+ruby benchmark/run.rb        # 上の Step 66 と同じハーネス
+```
+
+3 点(base / promote / operands)の比較は、**同一プロセスで変種を交互に回す**
+使い捨てスクリプトで行った。ハーネス自体は 1 ツリー分しか測れない。
+AArch64 の数字は `aarch64-linux-gnu-objdump` で数えた命令数であり、**時間ではない**
+(このホストに AArch64 実機が無いため)。

@@ -202,6 +202,34 @@ saxpy の内側ループ(`aarch64-linux-gnu-objdump` で計測):
 
 **残りはコーパス再測と、両ターゲットでのベンチ再測**である。
 
+### 2026-08-15(コーパス再測 — 受け入れ条件が揃った)
+
+`corpus-reverify-1`。最適化 2 段を入れた後の rubycc で、`data/verified_gems.json` の
+**31 gem すべての上流テストスイートを実走**した。**31/31 PASS で、合格率は維持**。
+経緯は `docs/development/STEPS.md` の同名節。
+
+途中で 4 件(date / etc / nkf / psych)が 2 回目の実行だけ FAIL したが、原因は
+**`racc` のレシピが `test-unit-ruby-core` を 1.0.5 に固定し、共有 GEM_HOME 越しに
+後続の gem を巻き戻すこと**だった。コンパイラを変えずに版だけ 1.0.15 へ戻すと
+4 件とも PASS に戻り、rubycc が無関係であることを直接確認した。harness 側の課題として
+[verify-gem-test-deps-unpinned](verify-gem-test-deps-unpinned.md) に切り出した。
+
 ## 決着
 
-(第 3 段 = AArch64 まで実装。受け入れ条件のうちコーパス再測が未了)
+**受け入れ条件を 5 つとも満たした**(2026-08-14〜15)。
+
+| 条件 | 結果 |
+|---|---|
+| `benchmark/run.rb` の全ケースで gcc -O2 比 3.0x 以内 | **1.09〜2.78x**(C カーネル 5 件) |
+| コーパスの合格率が下がらない(31/34) | **31/31 PASS**(`corpus-reverify-1`) |
+| 全スイート 0 failures。x86-64 と AArch64 の両方で gcc 差分一致 | 0 failures(AArch64 は qemu-user + クロス gcc の差分実行を含む) |
+| 決定的ビルド(N4)を壊さない | `test_deterministic_build.rb` が 0 failures |
+| 変更前後の実測を BENCHMARKS.md に追記 | 追記済み(インターリーブ計測) |
+
+設計判断の本体は `docs/development/STEPS.md` の `register-allocation-1` / `-2` / `-3` と
+`corpus-reverify-1`。**`-O` レベルの実装は決定 2 で対象から外した**ので、必要になった
+時点で別 issue に切る。
+
+派生した課題: [promoted-register-addressing](promoted-register-addressing.md)(x86-64 で
+昇格レジスタをメモリオペランドのベースにする)、
+[verify-gem-test-deps-unpinned](verify-gem-test-deps-unpinned.md)(harness の再現性)。
