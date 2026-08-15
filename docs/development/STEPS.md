@@ -10733,6 +10733,26 @@ gcc 14 は `-Wimplicit-int` / `-Wimplicit-function-declaration` /
 (ツール不足で静かに skip・環境由来の stderr 雑音・対照の版差)。
 `FILES` を絞った運用だけを試していたら、467 件の skip は見えなかった。
 
+## qemu-aarch64-binfmt-flag-1 — Docker が arm64 を起動できるかを先に測る(M4 開発経路)
+
+`rake test:qemu_aarch64` は、arm64 の受入れイメージを build してからテストを走らせる。
+しかし x86-64 の Docker ホストで binfmt の interpreter がコンテナの mount namespace
+から見えないと、build または起動時に `exec format error` だけを残して止まる。
+**その失敗をイメージ build の前に、同じ基底イメージの `/bin/true` を実行する probe で
+確かめる**ことにした。判定の正は Docker クライアントの `/proc` ではなく Docker
+デーモン上の実行結果である。Docker Desktop やリモートデーモンでも、実際に使う実行経路
+を測れるからである。native AArch64 のデーモンは probe を省略する。
+
+probe が interpreter 不在や実行形式の失敗を返した場合は、F フラグ付き binfmt の再登録
+または qemu の bind-mount を案内して終了する。ホストの binfmt を自動で変更したり、
+特権付きの再登録を実行したりはしない — それは利用者の環境を変更する操作であり、
+Docker の接続先によって手順も異なるためである。その他の Docker エラーは binfmt と
+決めつけず、元の出力を診断に残す。
+
+この preflight は `tools/qemu_aarch64_preflight.rb` に置き、gem の実行時コードには含めない。
+native デーモン、probe 成功、binfmt 由来の失敗、一般 Docker 失敗を単体テストで固定し、
+このホストではイメージ build より前に案内付きで終了することを確認した。
+
 ---
 
 ## m4-aarch64-acceptance-2 — musl の aarch64 を初めて走らせた(M4 受け入れ)

@@ -54,14 +54,21 @@ rake test:qemu_aarch64 FILES="test/test_preprocessor.rb test/test_elf_reader.rb"
 ```
 
 arm64 コンテナ(`ruby:4.0`)で、**AArch64 の Ruby と AArch64 の gcc** を使って指定
-ファイルだけを走らせる。前提は Docker と、**F フラグ付きの arm64 binfmt ハンドラ**:
+ファイルだけを走らせる。Docker が x86-64 の場合は、タスクが最初に同じ基底イメージの
+`/bin/true` を `--platform linux/arm64` で実行して、Docker デーモン自身が arm64 を
+起動できることを確認する。native AArch64 の Docker デーモンでは binfmt は要らない。
+この probe は Docker Desktop やリモートデーモンでもクライアント側の `/proc` と混同せず、
+失敗時はイメージ構築前に復旧手順を表示して終了する。
 
 ```sh
 docker run --privileged --rm tonistiigi/binfmt --install arm64
 ```
 
 ホストの qemu-user の登録(Debian は `PO`)だけでは足りない — interpreter のパスが
-コンテナのマウント名前空間に無いため、`exec ...: no such file or directory` で落ちる。
+コンテナのマウント名前空間に無いためである。既存の binfmt エントリがある環境では
+`tonistiigi/binfmt --install arm64` が no-op になることもあるので、F フラグ付きで既存
+エントリを再登録するか、タスクが示す bind-mount 手順を使う。ホスト設定の変更はこの
+リポジトリから自動では行わない。
 
 **全スイートをここで回さない。** native ARM ランナー比で **約 23 倍**遅い
 (weekly run 31500900897 と同一テスト名で突き合わせた中央値 22.8x。2 分半 → 1 時間)。
