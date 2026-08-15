@@ -53,4 +53,17 @@ class TestSummarizeCorpusCandidateArtifacts < Minitest::Test
       assert_equal 2, summary["version_entries"]
     end
   end
+
+  def test_selection_only_is_not_reported_as_a_static_candidate
+    Dir.mktmpdir do |root|
+      path = File.join(root, "selection.json")
+      File.write(path, JSON.generate(artifact(status: "uninspected")))
+
+      summary = CorpusCandidateEvaluation.summarize(path)
+
+      assert_equal 1, summary.dig("counts", "uninspected")
+      assert_equal 0, summary.dig("counts", "candidate")
+      assert_equal ["example-gem"], summary["selected_names"]
+    end
+  end
 end

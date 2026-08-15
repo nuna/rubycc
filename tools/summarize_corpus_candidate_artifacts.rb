@@ -18,6 +18,7 @@ module CorpusCandidateEvaluation
       "unique_gems" => records.size,
       "corpus" => 0,
       "candidate" => 0,
+      "uninspected" => 0,
       "assembly_review" => 0,
       "excluded" => 0,
       "review" => 0,
@@ -34,6 +35,9 @@ module CorpusCandidateEvaluation
         counts["corpus"] += 1
       elsif status == "candidate"
         counts["candidate"] += 1
+        candidate_names << record.fetch("name")
+      elsif status == "uninspected"
+        counts["uninspected"] += 1
         candidate_names << record.fetch("name")
       elsif status == "needs_review"
         counts["assembly_review"] += 1
@@ -71,6 +75,7 @@ module CorpusCandidateEvaluation
       "selection_rejections" => rejection_counts.sort.to_h,
       "api_requests" => Array(artifact["source_requests"]).size,
       "candidate_names" => candidate_names.sort,
+      "selected_names" => records.filter_map { |record| record["name"] if record.dig("corpus", "status") == "uninspected" }.sort,
       "review_gems" => counts["review"] + counts["assembly_review"]
     }
   end

@@ -48,6 +48,9 @@ review 負荷、既存 corpus への増分価値を分けて判断できる。
 
 - 実験結果を見る前に、実行日直前までに完了した UTC 7 日 window を新しい順に 4 個固定し、
   exact `from` / `to`、CLI、scanner revision を作業ログへ記録する
+- 4 window の全 release 選択は `--selection-only` で網羅し、`.gem` の静的検査と試験ビルドは
+  事前規則で選んだ最大 3 gem に限定する。1,000 gem 超を4 window分ダウンロードすることを
+  「適切な評価」と取り違えず、全体の増分性と代表候補の適格性・実用性を分けて測る
 - 同じ scanner revision で次を取得し、`corpus-candidate-artifact` の JSON と response hash を残す
   - 固定した 4 個の timeframe window
   - 比較対照となる rubygems.org popular 上位 100
@@ -159,6 +162,11 @@ SCAN_WORK=/path/to/popular-work \
 
 保存した artifact を `tools/summarize_corpus_candidate_artifacts.rb` で集計し、version entry 数、
 unique gem 数、既存 corpus、分類、選択除外理由、API request 数を記録する。
+
+4 window は各々 1,000 gem を超える規模になり得るため、全 release の pagination / v2 source
+選択を `--selection-only` で走査し、gem archive の取得は静的検査・試験ビルドの最大3件へ
+限定する。この二段階化は測定前に決めた資源上の境界であり、selection-only の `uninspected` を
+`[1]` 候補と数えない。
 
 ## 決着
 
