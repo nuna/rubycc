@@ -12,10 +12,12 @@
 # Usage:
 #   tools/scan_popular_gems.rb [first_page] [last_page]
 #   SCAN_WORK=/path/to/work tools/scan_popular_gems.rb
-#   SCAN_SOURCE=auto|rubygems|bestgems tools/scan_popular_gems.rb
+#   SCAN_SOURCE=auto|rubygems|bestgems|timeframe tools/scan_popular_gems.rb
+#   SCAN_ARTIFACT=/path/to/scan.json tools/scan_popular_gems.rb
 #   SCAN_VERBOSE=1 tools/scan_popular_gems.rb
 
 require "fileutils"
+require "digest"
 require "json"
 require "net/http"
 require "optparse"
@@ -40,10 +42,11 @@ module CorpusCandidateScan
   # require-able from hermetic tests and from the future timeframe source.
   class Configuration
     attr_reader :first_page, :last_page, :work_dir, :source_choice, :verbose,
-                :from_time, :to_time
+                :from_time, :to_time, :artifact_path
 
     def initialize(first_page: 11, last_page: 20, work_dir: DEFAULT_WORK_DIR,
-                   source_choice: "auto", verbose: false, from_time: nil, to_time: nil)
+                   source_choice: "auto", verbose: false, from_time: nil, to_time: nil,
+                   artifact_path: nil)
       @first_page = Integer(first_page)
       @last_page = Integer(last_page)
       @work_dir = File.expand_path(work_dir)
@@ -51,6 +54,7 @@ module CorpusCandidateScan
       @verbose = verbose
       @from_time = from_time && parse_time(from_time, "from")
       @to_time = to_time && parse_time(to_time, "to")
+      @artifact_path = artifact_path && File.expand_path(artifact_path)
       validate!
     end
 
@@ -59,12 +63,14 @@ module CorpusCandidateScan
       options = {
         source_choice: env.fetch("SCAN_SOURCE", "auto"),
         from_time: env["SCAN_FROM"],
-        to_time: env["SCAN_TO"]
+        to_time: env["SCAN_TO"],
+        artifact_path: env["SCAN_ARTIFACT"]
       }
       parser = OptionParser.new do |opts|
         opts.on("--source SOURCE", "ranking source or timeframe") { |value| options[:source_choice] = value }
         opts.on("--from ISO8601", "timeframe start") { |value| options[:from_time] = value }
         opts.on("--to ISO8601", "timeframe end") { |value| options[:to_time] = value }
+        opts.on("--artifact PATH", "write a deterministic JSON artifact") { |value| options[:artifact_path] = value }
       end
       begin
         remaining = parser.parse(args)
@@ -81,7 +87,8 @@ module CorpusCandidateScan
           source_choice: options[:source_choice],
           verbose: !env.fetch("SCAN_VERBOSE", "").empty?,
           from_time: options[:from_time],
-          to_time: options[:to_time]
+          to_time: options[:to_time],
+          artifact_path: options[:artifact_path]
         )
       end
 
@@ -95,7 +102,8 @@ module CorpusCandidateScan
         last_page: remaining[1] || 20,
         work_dir: env.fetch("SCAN_WORK", DEFAULT_WORK_DIR),
         source_choice: options[:source_choice],
-        verbose: !env.fetch("SCAN_VERBOSE", "").empty?
+        verbose: !env.fetch("SCAN_VERBOSE", "").empty?,
+        artifact_path: options[:artifact_path]
       )
     end
 
@@ -107,9 +115,24 @@ module CorpusCandidateScan
       [from_time, to_time]
     end
 
+    # Deliberately excludes work_dir and artifact_path: both are execution
+    # locations, not scan inputs, and absolute paths would make the artifact
+    # change between machines.
+    def normalized_input
+      input = { "source" => source_choice, "verbose" => verbose }
+      if timeframe?
+        input.merge!("from" => from_time.iso8601, "to" => to_time.iso8601)
+      else
+        input.merge!("first_page" => first_page, "last_page" => last_page)
+      end
+      input
+    end
+
     private
 
     def parse_time(value, name)
+      return value.utc if value.is_a?(Time)
+
       text = value.to_s
       if text.match?(/\A\d{4}-\d{2}-\d{2}\z/)
         Time.strptime(text, "%Y-%m-%d").utc
@@ -163,6 +186,60 @@ module CorpusCandidateScan
       else
         raise "GET #{url} failed: #{response.code} #{response.message}"
       end
+    end
+  end
+
+  # Stores raw HTTP response bodies by the deterministic SHA-256 of their
+  # request URL. The cache is intentionally content-agnostic: response hashes
+  # in the artifact make changes to a cached response visible without treating
+  # a cache hit as a different scan input.
+  class ResponseCache
+    def initialize(directory)
+      @directory = File.expand_path(directory)
+      FileUtils.mkdir_p(@directory)
+    end
+
+    def fetch(url)
+      cache_key = Digest::SHA256.hexdigest(url)
+      path = File.join(@directory, cache_key)
+      body = if File.file?(path)
+               File.binread(path)
+             else
+               fetched = yield
+               File.binwrite(path, fetched)
+               fetched
+             end
+      {
+        body: body,
+        cache_key: cache_key,
+        response_sha256: Digest::SHA256.hexdigest(body)
+      }
+    end
+  end
+
+  # Keeps source request provenance while preserving the small `get(url)`
+  # interface used by the source parsers and hermetic fake clients.
+  class RecordingHttpClient
+    def initialize(client, cache: nil)
+      @client = client
+      @cache = cache
+      @request_records = {}
+    end
+
+    def get(url)
+      response = if @cache
+                   @cache.fetch(url) { @client.get(url) }
+                 else
+                   body = @client.get(url)
+                   { body: body, cache_key: Digest::SHA256.hexdigest(url),
+                     response_sha256: Digest::SHA256.hexdigest(body) }
+                 end
+      @request_records[url] = response.merge(url: url)
+      response[:body]
+    end
+
+    def requests
+      @request_records.values.sort_by { |record| record[:url] }
     end
   end
 
@@ -340,6 +417,85 @@ module CorpusCandidateScan
     end
   end
 
+  # A review artifact is intentionally a separate output from the human table.
+  # It contains only normalized inputs and observed content hashes; run time,
+  # absolute paths, cache-hit state, and interpreter details are not part of it.
+  class Artifact
+    SCHEMA_VERSION = 1
+
+    class << self
+      def write(path, config:, source:, requests:, results:)
+        payload = {
+          "schema_version" => SCHEMA_VERSION,
+          "source" => source_name(config, source),
+          "input" => config.normalized_input,
+          "source_requests" => requests.sort_by { |request| request[:url] }.map do |request|
+            {
+              "url" => request[:url],
+              "cache_key" => request[:cache_key],
+              "response_sha256" => request[:response_sha256]
+            }
+          end,
+          "records" => results.sort_by { |result| record_sort_key(result) }.map { |result| record(result) }
+        }
+        FileUtils.mkdir_p(File.dirname(path))
+        File.binwrite(path, JSON.pretty_generate(payload) + "\n")
+      end
+
+      def source_name(config, source)
+        return "timeframe" if config.timeframe?
+        return "rubygems" if source == RubygemsPopular
+        return "bestgems" if source == BestgemsTotal
+
+        source::LABEL
+      end
+
+      def record_sort_key(result)
+        [result[:name].to_s, result[:version].to_s, result[:platform].to_s, result[:rank].to_i]
+      end
+
+      def record(result)
+        includes = result[:includes] || {}
+        {
+          "rank" => result[:rank],
+          "name" => result[:name],
+          "version" => result[:version],
+          "platform" => result[:platform],
+          "created_at" => result[:created_at],
+          "downloads" => result[:downloads],
+          "version_downloads" => result[:version_downloads],
+          "selection" => {
+            "note" => result[:selection_note],
+            "rejections" => Array(result[:selection_rejections])
+          },
+          "gem" => {
+            "sha256" => result[:gem_sha256],
+            "api_sha256" => result[:api_sha256],
+            "sha256_match" => result[:sha256_match]
+          },
+          "gemspec" => {
+            "extensions" => Array(result[:extensions]).map(&:to_s).sort,
+            "extension_directories" => Array(result[:extension_directories]).map(&:to_s).sort,
+            "native_source_files" => Array(result[:native_source_files]).map(&:to_s).sort
+          },
+          "corpus" => {
+            "included" => !!result[:in_corpus],
+            "status" => result[:status].to_s,
+            "reason" => result[:reason],
+            "review_reasons" => Array(result[:review_reasons]),
+            "c_files" => result[:c_files].to_i,
+            "h_files" => result[:h_files].to_i
+          },
+          "headers" => {
+            "bundled" => includes.select { |_, category| category.to_sym == :bundled }.keys.sort,
+            "gap" => includes.select { |_, category| category.to_sym == :gap }.keys.sort,
+            "ruby_or_self" => Array(result[:ruby_self]).map(&:to_s).sort
+          }
+        }
+      end
+    end
+  end
+
   class Scanner
     attr_reader :config
 
@@ -347,7 +503,8 @@ module CorpusCandidateScan
                    out: $stdout, err: $stderr,
                    corpus_names: Corpus::Gems::LIST.map { |gem| gem[:name] })
       @config = config
-      @http = http_client
+      response_cache = config.artifact_path && ResponseCache.new(File.join(config.work_dir, "raw_responses"))
+      @http = RecordingHttpClient.new(http_client, cache: response_cache)
       @sleeper = sleeper
       @out = out
       @err = err
@@ -362,7 +519,7 @@ module CorpusCandidateScan
           step "inspecting #{entry[:name]} #{entry[:version]} (platform=#{entry[:platform]})"
           inspect_gem(entry)
         end
-        return report(results, TimeframeVersions, config.from_time, config.to_time)
+        return finish_report(results, TimeframeVersions, config.from_time, config.to_time)
       end
 
       first_rank = ((config.first_page - 1) * RANKS_PER_PAGE) + 1
@@ -378,13 +535,22 @@ module CorpusCandidateScan
         inspect_gem(entry)
       end
 
-      report(results, source, first_rank, last_rank)
+      finish_report(results, source, first_rank, last_rank)
     end
 
     private
 
     def step(message)
       @err.puts "==> #{message}"
+    end
+
+    def finish_report(results, source, first_rank, last_rank)
+      ok = report(results, source, first_rank, last_rank)
+      if config.artifact_path
+        Artifact.write(config.artifact_path, config: config, source: source,
+                       requests: @http.requests, results: results)
+      end
+      ok
     end
 
     def select_source(first_rank, last_rank)
@@ -491,7 +657,9 @@ module CorpusCandidateScan
             downloads: chosen["v2"]["downloads"] || chosen["downloads"],
             version_downloads: chosen["v2"]["version_downloads"] || chosen["version_downloads"],
             sha: chosen["v2"]["sha"] || chosen["sha"],
-            selection_note: chosen["selection_note"]
+            api_sha: chosen["v2"]["sha"],
+            selection_note: chosen["selection_note"],
+            selection_rejections: discarded
           }
         else
           rejected << rejected_timeframe_result(name, discarded)
@@ -509,9 +677,11 @@ module CorpusCandidateScan
 
     def rejected_timeframe_result(name, reasons)
       {
-        rank: nil, name: name, version: nil, downloads: nil, extensions: [],
+        rank: nil, name: name, version: nil, platform: nil, created_at: nil,
+        downloads: nil, version_downloads: nil, extensions: [],
         status: :error, reason: "no non-prerelease, non-yanked ruby source release: #{reasons.join('; ')}",
-        c_files: 0, h_files: 0, notes: [], in_corpus: @corpus_names.include?(name)
+        selection_rejections: reasons, c_files: 0, h_files: 0, notes: [],
+        in_corpus: @corpus_names.include?(name)
       }
     end
 
@@ -587,7 +757,12 @@ module CorpusCandidateScan
     def inspect_gem(entry)
       name = entry[:name]
       result = {
-        rank: entry[:rank], name: name, version: nil, downloads: nil, extensions: [],
+        rank: entry[:rank], name: name, version: nil, platform: entry[:platform],
+        created_at: entry[:created_at], downloads: nil, version_downloads: entry[:version_downloads],
+        extensions: [], selection_note: entry[:selection_note],
+        selection_rejections: Array(entry[:selection_rejections]),
+        gem_sha256: nil, api_sha256: entry[:api_sha], sha256_match: "not_provided",
+        extension_directories: [], native_source_files: [],
         status: nil, reason: nil, c_files: 0, h_files: 0, notes: [],
         in_corpus: @corpus_names.include?(name)
       }
@@ -600,9 +775,21 @@ module CorpusCandidateScan
         return result
       end
 
+      result[:gem_sha256] = Digest::SHA256.file(gem_path).hexdigest
+      if result[:api_sha256]
+        result[:sha256_match] = result[:gem_sha256].casecmp?(result[:api_sha256].to_s) ? "match" : "mismatch"
+        unless result[:sha256_match] == "match"
+          result[:status] = :error
+          result[:reason] = "gem_sha256_mismatch: API=#{result[:api_sha256]} fetched=#{result[:gem_sha256]}"
+          return result
+        end
+      end
+
       spec = Gem::Package.new(gem_path).spec
       result[:version] = spec.version.to_s
+      result[:platform] = spec.platform.to_s
       result[:extensions] = spec.extensions.to_a
+      result[:extension_directories] = InspectionHelpers.non_ext_extension_dirs(result[:extensions])
       InspectionHelpers.validate_fetched_spec(spec, requested_version, entry[:platform])
       if result[:extensions].empty?
         result[:status] = :no_ext

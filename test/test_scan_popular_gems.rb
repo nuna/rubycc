@@ -79,6 +79,60 @@ class TestScanPopularGems < Minitest::Test
     assert_includes error.message, "cannot exceed 7 days"
   end
 
+  def test_artifact_records_provenance_and_replays_raw_response_deterministically
+    Dir.mktmpdir do |work_dir|
+      from = Time.utc(2026, 8, 1)
+      to = Time.utc(2026, 8, 2)
+      url = CorpusCandidateScan::TimeframeVersions.url(from, to, 1)
+      body = '[{"name":"example-gem","version":"1.0.0"}]'
+      cache = CorpusCandidateScan::ResponseCache.new(File.join(work_dir, "raw_responses"))
+      first_client = CorpusCandidateScan::RecordingHttpClient.new(FakeHttp.new(url => body), cache: cache)
+
+      assert_equal body, first_client.get(url)
+      record = {
+        rank: nil, name: "example-gem", version: "1.0.0", platform: "ruby",
+        created_at: "2026-08-01T12:00:00Z", downloads: 100, version_downloads: 10,
+        selection_note: "selected 1.0.0", selection_rejections: [],
+        gem_sha256: "a" * 64, api_sha256: "a" * 64, sha256_match: "match",
+        extensions: ["ext/example/extconf.rb"], extension_directories: [], native_source_files: [],
+        status: :candidate, reason: nil, review_reasons: [], c_files: 1, h_files: 0,
+        in_corpus: false, includes: { "stdio.h" => :bundled, "cpuid.h" => :gap },
+        ruby_self: ["ruby.h"]
+      }
+      config = CorpusCandidateScan::Configuration.new(
+        source_choice: "timeframe", from_time: from, to_time: to,
+        work_dir: work_dir, artifact_path: File.join(work_dir, "artifact.json")
+      )
+      CorpusCandidateScan::Artifact.write(
+        config.artifact_path, config: config, source: CorpusCandidateScan::TimeframeVersions,
+        requests: first_client.requests, results: [record]
+      )
+      first = File.binread(config.artifact_path)
+
+      unavailable = Object.new
+      def unavailable.get(_url)
+        raise "network should not be called during raw-response replay"
+      end
+      replay_client = CorpusCandidateScan::RecordingHttpClient.new(unavailable, cache: cache)
+      assert_equal body, replay_client.get(url)
+      CorpusCandidateScan::Artifact.write(
+        config.artifact_path, config: config, source: CorpusCandidateScan::TimeframeVersions,
+        requests: replay_client.requests, results: [record]
+      )
+
+      assert_equal first, File.binread(config.artifact_path)
+      golden = File.read(File.expand_path("fixtures/corpus_candidate_artifact.json", __dir__))
+      assert_equal golden, first
+      artifact = JSON.parse(first)
+      assert_equal 1, artifact.fetch("schema_version")
+      assert_equal({ "from" => "2026-08-01T00:00:00Z", "source" => "timeframe",
+                     "to" => "2026-08-02T00:00:00Z", "verbose" => false }, artifact.fetch("input"))
+      assert_equal url, artifact.fetch("source_requests").fetch(0).fetch("url")
+      assert_equal 64, artifact.fetch("source_requests").fetch(0).fetch("response_sha256").length
+      assert_equal "cpuid.h", artifact.fetch("records").fetch(0).fetch("headers").fetch("gap").fetch(0)
+    end
+  end
+
   def test_timeframe_source_paginates_to_an_empty_page_and_selects_source_release
     config = CorpusCandidateScan::Configuration.from_env(
       ["--source", "timeframe", "--from", "2026-08-01T00:00:00Z", "--to", "2026-08-02T00:00:00Z"], {}
@@ -104,7 +158,8 @@ class TestScanPopularGems < Minitest::Test
     assert_equal [{
       source: :timeframe, name: "example-gem", version: "1.0.0", platform: "ruby",
       created_at: "2026-08-01T12:00:00Z", downloads: 100, version_downloads: 10,
-      sha: "feed", selection_note: "timeframe releases considered: 1.0.0; selected 1.0.0"
+      sha: "feed", api_sha: "feed", selection_note: "timeframe releases considered: 1.0.0; selected 1.0.0",
+      selection_rejections: []
     }], selected
     assert_equal 3, http.urls.size
   end
