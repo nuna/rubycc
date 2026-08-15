@@ -1,11 +1,14 @@
 ---
-status: open
+status: in-progress
 kind: infra
 opened: 2026-08-16
 closed:
-branch:
+branch: corpus-candidate-evaluation
 pr:
-steps: []
+steps:
+  - corpus-candidate-evaluation-1
+  - corpus-candidate-evaluation-2
+  - corpus-candidate-evaluation-3
 ---
 
 # RubyGems 更新履歴による候補発見が corpus を適切に増やせるか検証する
@@ -131,6 +134,31 @@ review 負荷、既存 corpus への増分価値を分けて判断できる。
 試験ビルドが 1 PR に混在する。artifact が無い段階では入力差分と判定差分も区別できないため、
 先行 2 issue の完了を依存条件とする独立 issue にした。評価は候補件数ではなく、増分性・適格性・
 実用性の 3 軸で行い、結果が不採用でも測定と決着が完了していればこの issue は完了とする。
+
+#### `corpus-candidate-evaluation-1`
+
+実験結果を見る前に、対象期間を次の UTC 7 日 window へ固定した。いずれも半開区間で、同じ
+scanner revision `corpus-candidate-artifact-3`（commit `2beaf384e8dc5b3e6aff2553f987e9dbed5c7dc3`）を
+使う。比較対照は rubygems.org popular rank 1〜100 (`tools/scan_popular_gems.rb 1 10`) とする。
+
+1. `2026-08-09T00:00:00Z` — `2026-08-16T00:00:00Z`
+2. `2026-08-02T00:00:00Z` — `2026-08-09T00:00:00Z`
+3. `2026-07-26T00:00:00Z` — `2026-08-02T00:00:00Z`
+4. `2026-07-19T00:00:00Z` — `2026-07-26T00:00:00Z`
+
+各 window は次の形で実行し、同じ `SCAN_WORK` の raw response / gem cache と artifact path を
+保存する。結果を見る前に期間、対照範囲、候補選択順を変更しない。
+
+```sh
+SCAN_WORK=/path/to/window-work \
+  ruby tools/scan_popular_gems.rb --source timeframe \
+  --from FROM --to TO --artifact /path/to/artifact.json
+SCAN_WORK=/path/to/popular-work \
+  ruby tools/scan_popular_gems.rb 1 10 --artifact /path/to/popular.json
+```
+
+保存した artifact を `tools/summarize_corpus_candidate_artifacts.rb` で集計し、version entry 数、
+unique gem 数、既存 corpus、分類、選択除外理由、API request 数を記録する。
 
 ## 決着
 
