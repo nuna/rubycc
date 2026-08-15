@@ -72,7 +72,7 @@ module Rubycc
             Docker の linux/arm64 コンテナを起動できません。Docker ホストの
             binfmt_misc に F フラグ付きの AArch64 ハンドラを登録するか、
             docs/internals/CI.md に記載した qemu の bind-mount 手順を使ってください。
-            検出結果: #{diagnostic}
+            クライアント側の参考情報: #{diagnostic}
           MESSAGE
           daemon_architecture: architecture,
           probe_output: probe_output.to_s,

@@ -70,6 +70,20 @@ docker run --privileged --rm tonistiigi/binfmt --install arm64
 エントリを再登録するか、タスクが示す bind-mount 手順を使う。ホスト設定の変更はこの
 リポジトリから自動では行わない。
 
+このホストで実証した bind-mount の最小例(ホスト側に全パスが存在する場合)は次のとおり。
+これは同じ arm64 起動経路を手動で確認するための例であり、ホストの qemu やライブラリを
+コンテナへ書き込まず read-only で渡す。ディストリビューションによってパスが異なるため、
+存在を確認してから使う:
+
+```sh
+docker run --rm --platform linux/arm64 \
+  -v /usr/libexec/qemu-binfmt:/usr/libexec/qemu-binfmt:ro \
+  -v /usr/bin/qemu-aarch64:/usr/bin/qemu-aarch64:ro \
+  -v /lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:ro \
+  -v /lib64:/lib64:ro \
+  --entrypoint /bin/true ruby:4.0
+```
+
 **全スイートをここで回さない。** native ARM ランナー比で **約 23 倍**遅い
 (weekly run 31500900897 と同一テスト名で突き合わせた中央値 22.8x。2 分半 → 1 時間)。
 **これはゲートではなく往復の削減であり、native の代用でもない** — 上の方針は変わらない。
