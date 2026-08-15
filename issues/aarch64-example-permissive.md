@@ -1,11 +1,11 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-15
-closed:
+closed: 2026-08-15
 branch: aarch64-example-permissive
-pr:
-steps: []
+pr: 55
+steps: [m4-aarch64-acceptance-3]
 ---
 
 # AArch64 のサンプル差分テストに `-fpermissive` の仕組みが無い
@@ -64,6 +64,13 @@ x86-64 側の同じ問題を扱っており、そこに AArch64 が抜けてい�
 - PR 前の批判的レビューで、allowlist の重複・過剰適用・テスト不足を確認し、追加の修正は不要と判断した。
 - PR #55 を作成した。master への取り込み後に issue を `done` へ更新する。
 
+### 2026-08-15(決着)
+
+PR #55 を master にマージした(merge commit: `c4ce62b5fe0e142444cc2a2efb2b2b1b5891ef63`)。
+受け入れ条件をすべて満たしたため、issue を `done` とする。
+
 ## 決着
 
-(実装・検証済み。PR #55 の master 取り込み後に `closed` / `pr` を記入する)
+**解消した**。PR #55 で master に取り込んだ。設計判断の本体は
+[`docs/development/STEPS.md`](../docs/development/STEPS.md) の
+`m4-aarch64-acceptance-3` にある。
