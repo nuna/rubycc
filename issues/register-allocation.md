@@ -1,11 +1,11 @@
 ---
-status: in-progress
+status: done
 kind: feature
 opened: 2026-08-13
-closed:
+closed: 2026-08-15
 branch: register-allocation
-pr:
-steps: []
+pr: 51, 52, 53
+steps: [register-allocation-1, register-allocation-2, register-allocation-3, corpus-reverify-1]
 ---
 
 # レジスタ割付を入れて、gcc -O2 比の超過を N2 の範囲に戻す
