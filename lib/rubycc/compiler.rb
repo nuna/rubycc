@@ -5,6 +5,7 @@ require_relative "compile_error"
 require_relative "preprocess/preprocessor"
 require_relative "front/parser"
 require_relative "ir/generator"
+require_relative "ir/analysis"
 require_relative "ir/simplify"
 require_relative "backend/x86_64"
 require_relative "backend/aarch64"
@@ -155,7 +156,13 @@ module Rubycc
         # testable, and a backend keeps receiving one well-defined IR rather
         # than having to run the pass itself. Both backends lower everything the
         # pass can produce, so the seam needs no per-target condition.
-        result = backend.compile(IR::Simplify.run(ir_func))
+        #
+        # The census the pass took on its way through travels with the function
+        # (IR::Analysis), because the backend needs the same counts — the
+        # transient set, and through IR::Promotion the occurrence weights — and
+        # counting the list again is the one thing this seam can save it.
+        analysis = IR::Analysis.simplified(ir_func)
+        result = backend.compile(analysis.function, analysis)
         # Align each function to 16 bytes with the target's NOP filler, keeping
         # the output deterministic and every entry point aligned.
         pad_to_alignment(text, 16, entry[:machine].text_padding)

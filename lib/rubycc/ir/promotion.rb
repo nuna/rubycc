@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-require "set"
 require_relative "ir"
 require_relative "simplify"
+require_relative "analysis"
 
 module Rubycc
   module IR
@@ -62,10 +62,20 @@ module Rubycc
       # it is only caution — but caution costs one entry here.
       VECTOR_KINDS = %i[sse4 sse8 sse16].freeze
 
+      # The same two lists as lookup tables; the arrays above are what the rules
+      # are read and argued from, these are what the scan below asks per
+      # instruction.
+      VECTOR_OP = VECTOR_OPS.to_h { |op| [op, true] }.freeze
+      VECTOR_KIND = VECTOR_KINDS.to_h { |kind| [kind, true] }.freeze
+
       # The virtual registers worth promoting in `function`, best first. A
       # backend takes as many as it has registers for; the tail is left in slots
       # and costs nothing.
-      def candidates(function)
+      #
+      # `analysis` is the census of `function`'s instruction list, which the
+      # caller has usually taken already (the backend needs the transient set
+      # for itself, and the transient set is one of the two exclusions here).
+      def candidates(function, analysis = Analysis.of(function))
         insts = function.insts
         # A variadic function's prologue spills all six integer argument
         # registers into a register-save area __builtin_va_arg reads back, an
@@ -75,36 +85,60 @@ module Rubycc
         # The read enumeration below has to be exhaustive — a missed read would
         # leave a value in a slot nobody ever writes — and an unrecognized op
         # means it is not. Same fail-safe as IR::Simplify#run.
-        return [] unless insts.all? { |inst| Simplify.known_op?(inst.op) }
+        return [] unless analysis.known?
 
-        excluded = ineligible_vregs(insts, function.param_kinds) |
-                   Simplify.transient_vregs(insts, function.param_count)
-        weighted_occurrences(insts)
-          .reject { |vreg, _weight| excluded.include?(vreg) }
-          .sort_by { |vreg, weight| [-weight, vreg] }
-          .map(&:first)
+        blocked = ineligible_vregs(insts, function.param_kinds, function.vreg_count)
+        transient = analysis.transient
+        counts = weighted_occurrences(insts, function.vreg_count)
+        chosen = []
+        vreg = 0
+        limit = counts.size
+        while vreg < limit
+          weight = counts[vreg]
+          # An unmentioned register has no occurrences to weigh and is no
+          # candidate: promoting one would spend a register, and a save and a
+          # restore, on a value that is never named.
+          chosen << vreg unless weight.nil? || weight.zero? || blocked[vreg] || transient[vreg]
+          vreg += 1
+        end
+        # Heaviest first, ties broken by register number. The order is a total
+        # one — no two candidates share a number — so it does not depend on the
+        # sort being stable, and the same source keeps producing the same bytes
+        # (N4). Comparing the two numbers in place is what a sort_by on
+        # [-weight, vreg] would do, without the pair it would have built (and
+        # then compared element by element) for every candidate.
+        chosen.sort! do |left, right|
+          by_weight = counts[right] <=> counts[left]
+          by_weight.zero? ? left <=> right : by_weight
+        end
+        chosen
       end
 
-      # The vregs that must stay in their slots whatever their use count.
+      # The vregs that must stay in their slots whatever their use count, as an
+      # array indexed by register number holding true for a blocked one.
       #
       # Besides the vector cases, one exclusion is about payoff rather than
-      # correctness: a *transient* (IR::Simplify#transient_vregs) never reaches
+      # correctness: a *transient* (IR::Simplify#transient_flags) never reaches
       # its slot at all, its one reader being the instruction right behind its
       # producer. Promoting one would replace two instructions that do not exist
       # with two register moves that do, and spend a register doing it, so the
       # occurrence count — which cannot tell a slot round trip from a value that
-      # simply stayed in eax — is corrected here instead.
-      def ineligible_vregs(insts, param_kinds)
-        blocked = Set.new
-        param_kinds&.each_with_index { |kind, slot| blocked << slot if VECTOR_KINDS.include?(kind) }
-        insts.each do |inst|
+      # simply stayed in eax — is corrected in #candidates instead.
+      def ineligible_vregs(insts, param_kinds, vreg_count = 0)
+        blocked = Array.new(vreg_count)
+        param_kinds&.each_with_index { |kind, slot| blocked[slot] = true if VECTOR_KIND[kind] }
+        index = 0
+        size = insts.size
+        while index < size
+          inst = insts[index]
+          index += 1
           block_vector_uses(blocked, inst)
           # "&v" hands out the address of v's slot, and every later read through
           # that pointer expects to find the value there. A promoted value is
           # not there.
-          blocked << inst.a if inst.op == :addr_of
+          blocked[inst.a] = true if inst.op == :addr_of
         end
-        blocked.delete(nil)
+        blocked
       end
 
       # Adds whatever of `inst` travels through the vector register file. Both
@@ -113,40 +147,65 @@ module Rubycc
       # :ftoi writes one), because refusing the pair costs one candidate and
       # saves a rule per op.
       def block_vector_uses(blocked, inst)
-        if VECTOR_OPS.include?(inst.op)
-          blocked << inst.dst
-          Simplify.operand_vregs(inst).each { |vreg| blocked << vreg }
+        op = inst.op
+        if VECTOR_OP[op]
+          blocked[inst.dst] = true unless inst.dst.nil?
+          Simplify.each_operand_vreg(inst) { |vreg| blocked[vreg] = true }
         end
-        case inst.op
+        case op
         when :call, :call_indirect
-          inst.b.each { |vreg, kind| blocked << vreg if VECTOR_KINDS.include?(kind) }
+          inst.b.each { |vreg, kind| blocked[vreg] = true if vreg && VECTOR_KIND[kind] }
           # `size` is the [fixed, ret] descriptor; a :sse4/:sse8 result comes
           # back in xmm0 and is written to dst's slot with movss/movsd.
-          blocked << inst.dst if VECTOR_KINDS.include?(inst.size&.last)
+          blocked[inst.dst] = true if !inst.dst.nil? && VECTOR_KIND[inst.size&.last]
         when :ret
           # An integer return's `size` is nil and a struct's an AbiPiece array;
           # only a float/double return carries a width, and that one is read out
           # of its slot into xmm0.
-          blocked << inst.a if inst.size.is_a?(Integer)
+          blocked[inst.a] = true if inst.size.is_a?(Integer)
         end
       end
 
-      # How much each vreg's occurrences are worth: one point per read and one
-      # per write, multiplied by the loop weight of the instruction it appears
-      # in. Reads and writes count the same because both are one slot access in
-      # a spill-everything backend, which is exactly what promotion removes.
-      def weighted_occurrences(insts)
-        weights = loop_weights(insts)
-        counts = Hash.new(0)
-        insts.each_with_index do |inst, index|
-          weight = weights[index]
-          counts[inst.dst] += weight unless inst.dst.nil?
-          Simplify.operand_vregs(inst).each { |vreg| counts[vreg] += weight unless vreg.nil? }
+      # How much each vreg's occurrences are worth, as an array indexed by
+      # register number: one point per read and one per write, multiplied by the
+      # loop weight of the instruction it appears in. Reads and writes count the
+      # same because both are one slot access in a spill-everything backend,
+      # which is exactly what promotion removes.
+      #
+      # The depth the weight comes from is accumulated over the same pass that
+      # counts the occurrences — one running sum of #loop_deltas — rather than
+      # materialized as a weight per instruction first.
+      def weighted_occurrences(insts, vreg_count = 0)
+        deltas = loop_deltas(insts)
+        counts = Array.new(vreg_count, 0)
+        depth = 0
+        weight = 1
+        index = 0
+        size = insts.size
+        while index < size
+          inst = insts[index]
+          delta = deltas[index]
+          index += 1
+          unless delta.zero?
+            depth += delta
+            weight = LOOP_WEIGHT**depth
+          end
+          dst = inst.dst
+          unless dst.nil?
+            count = counts[dst]
+            counts[dst] = count ? count + weight : weight
+          end
+          Simplify.each_operand_vreg(inst) do |vreg|
+            count = counts[vreg]
+            counts[vreg] = count ? count + weight : weight
+          end
         end
         counts
       end
 
-      # LOOP_WEIGHT ** (loop depth) for each instruction position.
+      # A difference list over instruction positions: +1 where a loop body
+      # begins, -1 just past where it ends, so nested spans accumulate into a
+      # depth by one running sum (LOOP_WEIGHT ** depth being the weight).
       #
       # The loops are found without a control-flow graph: a branch to a label
       # that lies *behind* it can only be a loop's back edge, and everything
@@ -155,24 +214,31 @@ module Rubycc
       # such a span (only one of them runs per iteration) and misses a loop
       # written with the branch out of line — but the answer only orders
       # candidates, so being approximate costs a worse choice, never a wrong one.
-      def loop_weights(insts)
-        labels = {}
-        insts.each_with_index { |inst, index| labels[inst.a] = index if inst.op == :label }
-        # A difference list: +1 where a body begins, -1 just past where it ends,
-        # so nested spans accumulate into a depth by one running sum.
-        deltas = Array.new(insts.size + 1, 0)
-        insts.each_with_index do |inst, index|
-          start = labels[branch_target(inst)]
-          next if start.nil? || start > index
-
-          deltas[start] += 1
-          deltas[index + 1] -= 1
+      #
+      # One pass is enough to find the back edges: a label is recorded as it is
+      # passed, so a branch finds its target in the table exactly when that
+      # target lies behind it, and a forward branch — which is not a back edge —
+      # finds nothing.
+      def loop_deltas(insts)
+        labels = nil
+        size = insts.size
+        deltas = Array.new(size + 1, 0)
+        index = 0
+        while index < size
+          inst = insts[index]
+          op = inst.op
+          if op == :label
+            (labels ||= {})[inst.a] = index
+          elsif labels && (op == :jump || op == :jump_if_zero)
+            start = labels[op == :jump ? inst.a : inst.b]
+            unless start.nil?
+              deltas[start] += 1
+              deltas[index + 1] -= 1
+            end
+          end
+          index += 1
         end
-        depth = 0
-        insts.each_index.map do |index|
-          depth += deltas[index]
-          LOOP_WEIGHT**depth
-        end
+        deltas
       end
 
       # The label id `inst` may branch to, or nil when it is not a branch. The
