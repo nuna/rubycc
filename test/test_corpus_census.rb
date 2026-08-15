@@ -160,6 +160,26 @@ class TestCorpusCensus < Minitest::Test
     refute CENSUS.ruby_or_self?("cpuid.h", own)
   end
 
+  def test_classify_source_files_is_the_shared_include_analysis
+    Dir.mktmpdir do |root|
+      c_path = File.join(root, "example.c")
+      h_path = File.join(root, "example.h")
+      File.write(c_path, "#include <stdio.h>\n#include <example.h>\n#include <cpuid.h>\n")
+      File.write(h_path, "#include <ruby.h>\n")
+      bundled = Set.new(["stdio.h"])
+
+      first = CENSUS.classify_source_files([c_path, h_path], bundled)
+      second = CENSUS.classify_source_files([h_path, c_path], bundled)
+
+      assert_equal first, second, "source order must not affect the pure analysis result"
+      assert_equal 1, first[:ext_c_files]
+      assert_equal 1, first[:ext_h_files]
+      assert_equal :bundled, first[:includes]["stdio.h"]
+      assert_equal :gap, first[:includes]["cpuid.h"]
+      assert_equal ["example.h", "ruby.h"], first[:ruby_self]
+    end
+  end
+
   # ---- R10 machine gate helpers ----
 
   def test_cpp_source_detection

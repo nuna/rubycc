@@ -94,7 +94,8 @@ class TestScanPopularGems < Minitest::Test
         created_at: "2026-08-01T12:00:00Z", downloads: 100, version_downloads: 10,
         selection_note: "selected 1.0.0", selection_rejections: [],
         gem_sha256: "a" * 64, api_sha256: "a" * 64, sha256_match: "match",
-        extensions: ["ext/example/extconf.rb"], extension_directories: [], native_source_files: [],
+        extensions: ["ext/example/extconf.rb"], extension_directories: ["ext/example"],
+        native_source_files: [], extconf_files: [],
         status: :candidate, reason: nil, review_reasons: [], c_files: 1, h_files: 0,
         in_corpus: false, includes: { "stdio.h" => :bundled, "cpuid.h" => :gap },
         ruby_self: ["ruby.h"]
@@ -278,5 +279,41 @@ class TestScanPopularGems < Minitest::Test
     result = scanner.send(:collect_ranking, CorpusCandidateScan::RubygemsPopular, 1, 1)
 
     assert_equal [{ rank: 1, name: "example-gem" }], result
+  end
+
+  def test_native_archive_and_extension_outside_diagnostics_are_explicit
+    Dir.mktmpdir do |root|
+      FileUtils.mkdir_p(File.join(root, "lib"))
+      FileUtils.mkdir_p(File.join(root, "ext", "example"))
+      File.write(File.join(root, "lib", "native.c"), "")
+      File.write(File.join(root, "lib", "extconf.rb"), "")
+
+      native = CorpusCandidateScan::InspectionHelpers.archive_native_sources(root)
+
+      assert_equal ["lib/native.c"], native[:source_files]
+      assert_equal ["lib/extconf.rb"], native[:extconf_files]
+      assert_equal ["lib/native"], CorpusCandidateScan::InspectionHelpers.non_ext_extension_dirs(["lib/native/extconf.rb"])
+    end
+  end
+
+  def test_review_report_has_a_separate_bucket_from_assembly_review
+    config = CorpusCandidateScan::Configuration.new(first_page: 1, last_page: 1, work_dir: Dir.tmpdir)
+    output = StringIO.new
+    scanner = CorpusCandidateScan::Scanner.new(config: config, out: output, sleeper: ->(_seconds) {})
+    common = {
+      rank: 1, name: "review-gem", version: "1.0.0", platform: "ruby", downloads: 1,
+      extensions: ["lib/native/extconf.rb"], c_files: 1, h_files: 0, notes: [],
+      in_corpus: false, includes: {}, ruby_self: [], review_reasons: []
+    }
+    review = common.merge(status: :review, reason: "extension_outside_census_root: lib/native")
+    assembly = common.merge(name: "assembly-gem", status: :needs_review,
+                            reason: "1 assembly source bundled (ext/asm.S)")
+
+    scanner.send(:report, [review, assembly], CorpusCandidateScan::RubygemsPopular, 1, 2)
+
+    assert_includes output.string, "[R] review required"
+    assert_includes output.string, "[1b] C extension"
+    assert_includes output.string, "review-gem"
+    assert_includes output.string, "assembly-gem"
   end
 end

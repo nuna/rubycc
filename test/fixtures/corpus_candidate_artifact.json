@@ -36,8 +36,11 @@
         "extensions": [
           "ext/example/extconf.rb"
         ],
-        "extension_directories": [],
-        "native_source_files": []
+        "extension_directories": [
+          "ext/example"
+        ],
+        "native_source_files": [],
+        "extconf_files": []
       },
       "corpus": {
         "included": false,

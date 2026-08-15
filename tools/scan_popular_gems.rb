@@ -382,10 +382,24 @@ module CorpusCandidateScan
   module InspectionHelpers
     module_function
 
+    def extension_dirs(extensions)
+      extensions.map { |extension| File.dirname(extension.to_s) }.uniq.sort
+    end
+
     def non_ext_extension_dirs(extensions)
-      extensions.map { |extension| File.dirname(extension.to_s) }
-                 .reject { |dir| dir == "ext" || dir.start_with?("ext/") }
-                 .uniq
+      extension_dirs(extensions).reject { |dir| dir == "ext" || dir.start_with?("ext/") }
+    end
+
+    def archive_native_sources(root)
+      files = Dir.glob(File.join(root, "**", "*")).select { |path| File.file?(path) }
+      native = files.select do |path|
+        %w[.c .h .cpp .cc .cxx .c++ .hpp .hxx .hh].include?(File.extname(path).downcase)
+      end
+      relative = lambda { |path| path.sub(%r{\A#{Regexp.escape(root)}/}, "") }
+      {
+        source_files: native.map(&relative).sort,
+        extconf_files: files.select { |path| File.basename(path) == "extconf.rb" }.map(&relative).sort
+      }
     end
 
     def assembly_source_files(root, dirs)
@@ -476,7 +490,8 @@ module CorpusCandidateScan
           "gemspec" => {
             "extensions" => Array(result[:extensions]).map(&:to_s).sort,
             "extension_directories" => Array(result[:extension_directories]).map(&:to_s).sort,
-            "native_source_files" => Array(result[:native_source_files]).map(&:to_s).sort
+            "native_source_files" => Array(result[:native_source_files]).map(&:to_s).sort,
+            "extconf_files" => Array(result[:extconf_files]).map(&:to_s).sort
           },
           "corpus" => {
             "included" => !!result[:in_corpus],
@@ -501,7 +516,8 @@ module CorpusCandidateScan
 
     def initialize(config:, http_client: HttpClient.new, sleeper: Kernel.method(:sleep),
                    out: $stdout, err: $stderr,
-                   corpus_names: Corpus::Gems::LIST.map { |gem| gem[:name] })
+                   corpus_names: Corpus::Gems::LIST.map { |gem| gem[:name] },
+                   bundled_headers: nil)
       @config = config
       response_cache = config.artifact_path && ResponseCache.new(File.join(config.work_dir, "raw_responses"))
       @http = RecordingHttpClient.new(http_client, cache: response_cache)
@@ -509,6 +525,7 @@ module CorpusCandidateScan
       @out = out
       @err = err
       @corpus_names = corpus_names.to_set
+      @bundled_headers = bundled_headers || Corpus::Census.bundled_headers(File.join(RUBYCC_ROOT, "include"))
       @api_cache_dir = File.join(config.work_dir, "api")
     end
 
@@ -762,7 +779,7 @@ module CorpusCandidateScan
         extensions: [], selection_note: entry[:selection_note],
         selection_rejections: Array(entry[:selection_rejections]),
         gem_sha256: nil, api_sha256: entry[:api_sha], sha256_match: "not_provided",
-        extension_directories: [], native_source_files: [],
+        extension_directories: [], native_source_files: [], extconf_files: [], review_reasons: [],
         status: nil, reason: nil, c_files: 0, h_files: 0, notes: [],
         in_corpus: @corpus_names.include?(name)
       }
@@ -789,13 +806,8 @@ module CorpusCandidateScan
       result[:version] = spec.version.to_s
       result[:platform] = spec.platform.to_s
       result[:extensions] = spec.extensions.to_a
-      result[:extension_directories] = InspectionHelpers.non_ext_extension_dirs(result[:extensions])
+      result[:extension_directories] = InspectionHelpers.extension_dirs(result[:extensions])
       InspectionHelpers.validate_fetched_spec(spec, requested_version, entry[:platform])
-      if result[:extensions].empty?
-        result[:status] = :no_ext
-        return result
-      end
-
       result[:downloads] = entry.key?(:downloads) ? entry[:downloads] : gem_downloads(name)
       result[:notes] << entry[:selection_note] if entry[:selection_note]
       mini_portile = spec.dependencies.select { |dependency| dependency.name.to_s.include?("mini_portile") }
@@ -804,9 +816,26 @@ module CorpusCandidateScan
       end
 
       root = Corpus::Census.unpack_gem(gem_path, config.work_dir)
+      native = InspectionHelpers.archive_native_sources(root)
+      result[:native_source_files] = native[:source_files]
+      result[:extconf_files] = native[:extconf_files]
+      if result[:extensions].empty?
+        if result[:native_source_files].any? || result[:extconf_files].any?
+          result[:review_reasons] << "undeclared_native_source: archive contains " \
+                                     "#{result[:native_source_files].size} native source(s) and " \
+                                     "#{result[:extconf_files].size} extconf.rb file(s)"
+          result[:status] = :review
+          result[:reason] = result[:review_reasons].join("; ")
+        else
+          result[:status] = :no_ext
+        end
+        return result
+      end
+
       outside = InspectionHelpers.non_ext_extension_dirs(result[:extensions])
       unless outside.empty?
         extra = outside.sum { |dir| Dir.glob(File.join(root, dir, "**", "*.{c,h,cc,cpp,cxx}")).size }
+        result[:review_reasons] << "extension_outside_census_root: #{outside.join(', ')}"
         result[:notes] << "extension(s) outside ext/: #{outside.join(', ')} " \
                           "(#{extra} C/C++ files there are not covered by the census helpers)"
       end
@@ -828,9 +857,11 @@ module CorpusCandidateScan
         return result
       end
 
-      Corpus::Census.ext_source_files(root).each do |path|
-        path.end_with?(".h") ? (result[:h_files] += 1) : (result[:c_files] += 1)
-      end
+      analysis = Corpus::Census.classify_source_files(Corpus::Census.ext_source_files(root), @bundled_headers)
+      result[:includes] = analysis[:includes]
+      result[:ruby_self] = analysis[:ruby_self]
+      result[:c_files] = analysis[:ext_c_files]
+      result[:h_files] = analysis[:ext_h_files]
 
       findings = []
       asm_files = InspectionHelpers.assembly_source_files(root, outside)
@@ -851,8 +882,20 @@ module CorpusCandidateScan
       end
 
       unless findings.empty?
-        result[:status] = :needs_review
-        result[:reason] = findings.join("; ")
+        if result[:review_reasons].empty?
+          result[:status] = :needs_review
+          result[:reason] = findings.join("; ")
+        else
+          result[:review_reasons].concat(findings)
+          result[:status] = :review
+          result[:reason] = result[:review_reasons].join("; ")
+        end
+        return result
+      end
+
+      unless result[:review_reasons].empty?
+        result[:status] = :review
+        result[:reason] = result[:review_reasons].join("; ")
         return result
       end
 
@@ -894,10 +937,11 @@ module CorpusCandidateScan
     end
 
     def report(results, source, first_rank, last_rank)
-      with_ext = results.reject { |result| %i[no_ext error].include?(result[:status]) }
+      with_ext = results.reject { |result| %i[no_ext review error].include?(result[:status]) }
       candidates = with_ext.select { |result| result[:status] == :candidate && !result[:in_corpus] }
       needs_review = with_ext.select { |result| result[:status] == :needs_review && !result[:in_corpus] }
-      in_corpus = with_ext.select { |result| result[:in_corpus] }
+      reviews = results.select { |result| result[:status] == :review && !result[:in_corpus] }
+      in_corpus = results.select { |result| result[:in_corpus] && !%i[no_ext error].include?(result[:status]) }
       excluded = with_ext.select { |result| result[:status] == :excluded && !result[:in_corpus] }
       no_ext = results.select { |result| result[:status] == :no_ext }
       errors = results.select { |result| result[:status] == :error }
@@ -933,6 +977,14 @@ module CorpusCandidateScan
       )
 
       print_table(
+        "[R] review required (not a normal candidate; inspect the recorded reason)",
+        %w[rank gem version downloads reason],
+        reviews.sort_by { |result| [result[:rank].to_i, result[:name]] }.map do |result|
+          [result[:rank], result[:name], result[:version], humanize(result[:downloads]), result[:reason]]
+        end
+      )
+
+      print_table(
         "[2] C extension, excluded by the R10 machine gate",
         %w[rank gem version downloads reason],
         excluded.sort_by { |result| result[:rank] }.map do |result|
@@ -947,9 +999,10 @@ module CorpusCandidateScan
           gate = case result[:status]
                  when :candidate then "ok"
                  when :needs_review then "needs assembler: #{result[:reason]}"
+                 when :review then "review: #{result[:reason]}"
                  else "excluded: #{result[:reason]}"
                  end
-          counts = %i[candidate needs_review].include?(result[:status]) ? "#{result[:c_files]}/#{result[:h_files]}" : "—"
+          counts = %i[candidate needs_review review].include?(result[:status]) ? "#{result[:c_files]}/#{result[:h_files]}" : "—"
           [result[:rank], result[:name], result[:version], humanize(result[:downloads]), gate, counts]
         end
       )
@@ -976,6 +1029,7 @@ module CorpusCandidateScan
       @out.puts "  with a C extension          : #{with_ext.size}"
       @out.puts "    add candidates       [1]  : #{candidates.size}#{candidates.empty? ? '' : "  (#{candidates.map { |r| r[:name] }.join(', ')})"}"
       @out.puts "    needs review         [1b] : #{needs_review.size}#{needs_review.empty? ? '' : "  (#{needs_review.map { |r| r[:name] }.join(', ')})"}"
+      @out.puts "    review required      [R]  : #{reviews.size}#{reviews.empty? ? '' : "  (#{reviews.map { |r| r[:name] }.join(', ')})"}"
       @out.puts "    R10-excluded         [2]  : #{excluded.size}#{excluded.empty? ? '' : "  (#{excluded.map { |r| r[:name] }.join(', ')})"}"
       @out.puts "    already in corpus    [3]  : #{in_corpus.size}#{in_corpus.empty? ? '' : "  (#{in_corpus.map { |r| r[:name] }.join(', ')})"}"
       @out.puts "  without a C extension       : #{no_ext.size}#{config.verbose ? '' : '  (run with SCAN_VERBOSE=1 to list)'}"
