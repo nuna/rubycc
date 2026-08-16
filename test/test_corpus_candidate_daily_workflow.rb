@@ -43,6 +43,7 @@ class TestCorpusCandidateDailyWorkflow < Minitest::Test
     script = window.fetch("run")
     assert_includes script, "GITHUB_EVENT_NAME"
     assert_includes script, "Time.now.utc"
+    assert_includes script, "].join(\" \")"
     assert_includes script, "Time.iso8601"
     assert_includes script, "to - from == 86_400"
   end

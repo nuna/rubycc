@@ -57,8 +57,8 @@ jobs:
               now = Time.now.utc
               to = Time.utc(now.year, now.month, now.day)
               from = to - 86_400
-              puts from.strftime("%Y-%m-%dT00:00:00Z")
-              puts to.strftime("%Y-%m-%dT00:00:00Z")
+              puts [from.strftime("%Y-%m-%dT00:00:00Z"),
+                    to.strftime("%Y-%m-%dT00:00:00Z")].join(" ")
             ')
           fi
 
