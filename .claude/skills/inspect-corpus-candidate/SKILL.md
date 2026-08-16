@@ -48,11 +48,11 @@ description: 固定されたcorpus候補gemを一件ずつローカル検査し�
 既存scannerのartifactまたは同じ固定入力で再生成したartifactを使い、次を記録する。
 
 - gemspecのextensionとR10判定
-- native source、未宣言native source、extension rootの妥当性
+- native source、未宣言native source、extension rootの妥当性。scannerのC/C++一覧だけを信頼せず、extension directory以下の`.go`、`.rs`、`.m`、`.mm`、`.swift`、`.S`、`.asm`などと`go.mod`、`Cargo.toml`などのbuild manifestも棚卸しする
 - C/H file数とbundled、system、gap、ruby/self headerの分類
 - `candidate`、`no_ext`、`excluded`、`review`、`error`などのscanner status
 
-`no_ext`、R10除外、未宣言native source、extension root不正、取得エラーは実行phaseへ進む停止条件とする。R10を手作業で再実装しない。静的結果だけで`verified`とは呼ばない。
+`no_ext`、R10除外、未宣言native source、extension root不正、未知のnative build形態、取得エラーは実行phaseへ進む停止条件とする。R10を手作業で再実装しない。静的結果だけで`verified`とは呼ばない。
 
 ### 3. 増分価値を人手reviewする
 
@@ -80,7 +80,7 @@ description: 固定されたcorpus候補gemを一件ずつローカル検査し�
   "schema_version": 1,
   "input": {"name": "...", "version": "...", "platform": "...", "expected_sha256": "...", "source_artifact": "..."},
   "identity": {"archive_sha256": "...", "gemspec": {"name": "...", "version": "...", "platform": "..."}},
-  "static": {"status": "...", "r10": "...", "native_sources": [], "extension_root": "...", "headers": {"system": [], "gap": []}},
+  "static": {"status": "...", "r10": "...", "native_sources": [], "additional_native_sources": [], "build_manifests": [], "extension_root": "...", "headers": {"system": [], "gap": []}},
   "incremental_review": {"in_corpus": false, "in_popular": false, "new_headers": [], "decision": "..."},
   "build_load": {"status": "not_requested", "ruby": "...", "sanity": "not_run"},
   "upstream_tests": {"status": "not_run"},
