@@ -85,7 +85,7 @@ module CorpusCandidateValidation
   end
 
   class CommandRunner
-    Result = Struct.new(:output, :success, :status, keyword_init: true)
+    Result = Struct.new(:output, :success, :status, :timed_out, keyword_init: true)
 
     def initialize(work_dir:)
       @work_dir = work_dir
@@ -109,12 +109,12 @@ module CorpusCandidateValidation
           end
           wait_thread.join(1)
           return Result.new(output: "#{output}\ncommand timed out after #{timeout_seconds}s", success: false,
-                            status: nil)
+                            status: nil, timed_out: true)
         end
       end
-      Result.new(output: output, success: status&.success? || false, status: status)
+      Result.new(output: output, success: status&.success? || false, status: status, timed_out: false)
     rescue SystemCallError => e
-      Result.new(output: "#{e.class}: #{e.message}", success: false, status: nil)
+      Result.new(output: "#{e.class}: #{e.message}", success: false, status: nil, timed_out: false)
     end
   end
 
@@ -404,7 +404,8 @@ module CorpusCandidateValidation
         gem_command("install", rubycc_package, "--install-dir", gem_home, "--local", "--no-document"),
         env: env, timeout_seconds: 900
       )
-      install_rubycc = CommandRunner::Result.new(output: "not run", success: false, status: nil) unless build.success
+      install_rubycc = CommandRunner::Result.new(output: "not run", success: false, status: nil,
+                                                  timed_out: false) unless build.success
 
       candidate_env = env.merge("RUBYCC" => "1")
       archive = File.join(@work_dir, "packages", "#{@input.name}-#{@input.version}.gem")
@@ -415,17 +416,20 @@ module CorpusCandidateValidation
                               env: candidate_env, timeout_seconds: 1_800
                             )
                           else
-                            CommandRunner::Result.new(output: "not run", success: false, status: nil)
+                            CommandRunner::Result.new(output: "not run", success: false, status: nil,
+                                                      timed_out: false)
                           end
 
       outputs = [build.output, install_rubycc.output, install_candidate.output].compact.join("\n")
       result["execution"]["build_output_tail"] = portable(outputs).lines.last(40).map(&:chomp)
       unless build.success && install_rubycc.success && install_candidate.success
-        result["status"] = "build_failed"
-        result["gate_status"] = "build_failed"
+        timed_out = [build, install_rubycc, install_candidate].any?(&:timed_out)
+        result["status"] = timed_out ? "timeout" : "build_failed"
+        result["gate_status"] = result["status"]
         result["execution"]["build_load"] = "build_failed"
         result["exit_code"] = 1
-        result["reason"] = "rubycc or candidate gem installation failed"
+        result["reason"] = timed_out ? "rubycc or candidate gem installation timed out" :
+                              "rubycc or candidate gem installation failed"
         result["next_action"] = "Review the structured build log; do not treat this as a corpus addition."
         return
       end
@@ -479,12 +483,15 @@ module CorpusCandidateValidation
         result["execution"]["sanity"] = "all_shared_objects_loaded"
         result["next_action"] = "Review the report and run upstream mode only when a reviewed recipe exists."
       else
-        result["status"] = "fallback_or_not_loaded"
-        result["gate_status"] = "fallback_or_not_loaded"
+        result["status"] = loaded.timed_out ? "timeout" : "fallback_or_not_loaded"
+        result["gate_status"] = result["status"]
         result["execution"]["build_load"] = "fallback_or_not_loaded"
         result["execution"]["sanity"] = "load_failed"
-        result["reason"] = "one or more built shared objects could not be proven loaded"
-        result["next_action"] = "Investigate the load/sanity failure; do not call the build verified."
+        result["reason"] = loaded.timed_out ? "shared object load sanity timed out" :
+                              "one or more built shared objects could not be proven loaded"
+        result["next_action"] = loaded.timed_out ?
+                                  "Retry with the runner environment or investigate the timeout." :
+                                  "Investigate the load/sanity failure; do not call the build verified."
       end
       result["exit_code"] = loaded.success ? 0 : 1
     end
