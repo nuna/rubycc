@@ -1,9 +1,9 @@
 ---
-status: open
+status: in-progress
 kind: infra
 opened: 2026-08-16
 closed:
-branch:
+branch: corpus-candidate-daily-workflow
 pr:
 steps:
   - corpus-candidate-daily-workflow-1
