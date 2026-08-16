@@ -16,7 +16,13 @@ require_relative "../test/corpus/gems"
 module CorpusCandidatePilotV2
   module_function
 
-  STATUSES = %w[candidate error excluded needs_review no_ext review].freeze
+  STATUSES = %w[
+    candidate error excluded needs_review no_ext review
+    stale_release v2_metadata_404 rate_limited network_failure archive_sha_mismatch
+  ].freeze
+  SOURCE_ERROR_STATUSES = %w[
+    stale_release v2_metadata_404 rate_limited network_failure archive_sha_mismatch
+  ].freeze
   KNOWN_BUILD_SHAPES = %w[single-extconf multi-extconf].freeze
   DEFAULT_EVALUATION_ROOT = File.expand_path("../docs/development/corpus-candidate-evaluation", __dir__)
   DEFAULT_MANIFEST = File.join(DEFAULT_EVALUATION_ROOT, "pilot-v2-manifest.json")
@@ -101,6 +107,15 @@ module CorpusCandidatePilotV2
            .sort.to_h
   end
 
+  def source_error_status?(status)
+    SOURCE_ERROR_STATUSES.include?(status.to_s)
+  end
+
+  def source_error_counts(records)
+    records.filter_map { |record| record.dig("corpus", "status").to_s if source_error_status?(record.dig("corpus", "status")) }
+           .tally.sort.to_h
+  end
+
   def percentile(values, fraction)
     sorted = values.map(&:to_f).sort
     return nil if sorted.empty?
@@ -169,8 +184,15 @@ module CorpusCandidatePilotV2
   def read_windows(manifest, registry, evaluation_root)
     registry_windows = registry.fetch("windows").to_h { |window| [window.fetch("id"), window] }
     manifest.fetch("windows").map do |window|
-      run = registry_windows.fetch(window.fetch("id"))
-      raise "run #{window.fetch("id")} did not complete successfully" unless run["conclusion"] == "success"
+      run = registry_windows[window.fetch("id")]
+      if run.nil? || run["conclusion"] != "success"
+        next {
+          "manifest" => window,
+          "run" => run,
+          "failed" => true,
+          "failure_reason" => run ? run["failure_reason"] || run["conclusion"] : "missing run registry entry"
+        }
+      end
       raise "run #{window.fetch("id")} has a different scanner revision" unless
         run.fetch("scanner_revision") == manifest.fetch("scanner_revision")
 
@@ -187,7 +209,8 @@ module CorpusCandidatePilotV2
         "classification" => classification,
         "summary" => summary,
         "classification_path" => window.fetch("classification"),
-        "summary_path" => window.fetch("summary")
+        "summary_path" => window.fetch("summary"),
+        "failed" => false
       }
     end
   end
@@ -199,16 +222,44 @@ module CorpusCandidatePilotV2
     corpus_names = Corpus::Gems::LIST.map { |gem| gem.fetch(:name) }.to_set
     popular = load_json(popular_path)
     popular_names = popular.fetch("records").map { |record| record["name"] }.compact.to_set
-    windows = read_windows(manifest, registry, evaluation_root)
+    window_entries = read_windows(manifest, registry, evaluation_root)
+    windows = window_entries.reject { |window| window.fetch("failed") }
     all_records = windows.flat_map { |window| window.fetch("classification").fetch("records") }
     summaries = windows.map { |window| window.fetch("summary") }
 
     candidates = []
     inspectable = []
-    daily = windows.map do |window|
+    daily = window_entries.map do |window|
+      if window.fetch("failed")
+        run = window["run"] || {}
+        next {
+          "id" => window.fetch("manifest").fetch("id"),
+          "from" => window.fetch("manifest").fetch("from"),
+          "to" => window.fetch("manifest").fetch("to"),
+          "run_id" => run["run_id"],
+          "run_url" => run["url"],
+          "status" => "failed",
+          "conclusion" => run["conclusion"],
+          "failure_reason" => window.fetch("failure_reason"),
+          "release_entries" => 0,
+          "pages" => 0,
+          "unique_gems" => 0,
+          "archive" => nil,
+          "status_counts" => {},
+          "source_error_counts" => {},
+          "elapsed_seconds" => nil,
+          "phases_seconds" => {},
+          "peak_work_bytes" => nil,
+          "record_count" => 0,
+          "record_error_count" => 0,
+          "source_error_count" => 0
+        }
+      end
+
       records = window.fetch("classification").fetch("records")
       records.each do |record|
-        inspectable << record unless %w[no_ext error].include?(record.dig("corpus", "status"))
+        inspectable << record unless %w[no_ext error].include?(record.dig("corpus", "status")) ||
+          source_error_status?(record.dig("corpus", "status"))
         next unless record.dig("corpus", "status") == "candidate"
         next if corpus_names.include?(record["name"]) || popular_names.include?(record["name"])
 
@@ -224,16 +275,20 @@ module CorpusCandidatePilotV2
         "to" => window.fetch("manifest").fetch("to"),
         "run_id" => window.fetch("run").fetch("run_id"),
         "run_url" => window.fetch("run").fetch("url"),
+        "status" => "success",
+        "conclusion" => window.fetch("run").fetch("conclusion"),
         "release_entries" => summary.dig("source_stats", "release_entries").to_i,
         "pages" => summary.dig("source_stats", "pages").to_i,
         "unique_gems" => summary.dig("source_stats", "unique_gems").to_i,
         "archive" => summary.fetch("archives"),
         "status_counts" => status_counts(records),
+        "source_error_counts" => source_error_counts(records),
         "elapsed_seconds" => summary.fetch("elapsed_seconds"),
         "phases_seconds" => summary.fetch("phases_seconds"),
         "peak_work_bytes" => summary.dig("execution", "peak_work_bytes").to_i,
         "record_count" => records.length,
-        "record_error_count" => records.count { |record| record.dig("corpus", "status") == "error" }
+        "record_error_count" => records.count { |record| record.dig("corpus", "status") == "error" },
+        "source_error_count" => records.count { |record| source_error_status?(record.dig("corpus", "status")) }
       }
     end
 
@@ -268,8 +323,10 @@ module CorpusCandidatePilotV2
     status_total = status_counts(all_records)
     total_records = all_records.length
     error_records = status_total.fetch("error", 0)
-    elapsed = daily.map { |row| row.fetch("elapsed_seconds") }
-    failed_windows = manifest.fetch("windows").length - windows.length
+    source_error_total = SOURCE_ERROR_STATUSES.sum { |status| status_total.fetch(status, 0) }
+    elapsed = daily.filter_map { |row| row["elapsed_seconds"] }
+    failed_window_entries = window_entries.select { |window| window.fetch("failed") }
+    failed_windows = failed_window_entries.length
     candidate_names = candidates.map { |candidate| candidate.fetch("name") }
     unique_candidate_names = candidate_names.uniq.sort
     duplicate_occurrences = candidate_names.length - unique_candidate_names.length
@@ -284,7 +341,8 @@ module CorpusCandidatePilotV2
       "manifest" => File.basename(manifest_path),
       "scanner_revision" => manifest.fetch("scanner_revision"),
       "run_registry" => File.basename(runs_path),
-      "window_count" => windows.length,
+      "window_count" => manifest.fetch("windows").length,
+      "completed_window_count" => windows.length,
       "daily" => daily,
       "source_total" => aggregate_source_stats(summaries),
       "archive_total" => aggregate_archive_stats(summaries),
@@ -335,12 +393,19 @@ module CorpusCandidatePilotV2
                                           .group_by(&:first)
                                           .transform_values { |rows| rows.sum { |row| row.last.to_f.round(6) } }
                                           .sort.to_h,
-        "peak_work_bytes_max" => daily.map { |row| row.fetch("peak_work_bytes") }.max,
+        "peak_work_bytes_max" => daily.filter_map { |row| row["peak_work_bytes"] }.max,
         "failed_windows" => failed_windows,
         "window_failure_rate" => (failed_windows.to_f / manifest.fetch("windows").length).round(6),
         "record_error_count" => error_records,
-        "record_error_rate" => (error_records.to_f / total_records).round(6),
-        "timeout_windows" => 0,
+        "record_error_rate" => total_records.zero? ? 0.0 : (error_records.to_f / total_records).round(6),
+        "source_error_count" => source_error_total,
+        "source_error_rate" => total_records.zero? ? 0.0 : (source_error_total.to_f / total_records).round(6),
+        "source_error_status_counts" => SOURCE_ERROR_STATUSES.each_with_object({}) do |status, counts|
+          counts[status] = status_total.fetch(status, 0)
+        end,
+        "timeout_windows" => failed_window_entries.count do |window|
+          [window.dig("run", "conclusion"), window.fetch("failure_reason")].compact.join(" ").match?(/timeout/i)
+        end,
         "review_minutes" => {
           "candidate_count" => review_minutes.length,
           "total" => review_minutes.sum,

@@ -11915,3 +11915,23 @@ metricsは[`pilot-v2-metrics.json`](corpus-candidate-evaluation/pilot-v2-metrics
 source error分離は[`issues/corpus-candidate-pilot-v2-source-errors.md`](../../issues/corpus-candidate-pilot-v2-source-errors.md)、
 load sanity recipeは[`issues/corpus-candidate-pilot-v2-load-sanity.md`](../../issues/corpus-candidate-pilot-v2-load-sanity.md)
 へ引き継いだ。validatorの`ext` root誤判定は`07467d2`/`740cafc`で修正した。
+
+## corpus-candidate-pilot-v2-source-errors-1〜2 — source errorを候補分母から分離する
+
+`stale_release`、`v2_metadata_404`、`rate_limited`、`network_failure`、`archive_sha_mismatch`を
+候補・`no_ext`・通常の処理errorとは別statusに分類し、artifactには発生stage、HTTP status、reasonを、
+run summaryにはkind/stage別件数を保存するようにした。summarizerはsource error rateとwindow failure
+rateを別分母で計算し、失敗または欠測windowを成功分母へ混ぜない。fixture付きscanner testは28 runs /
+144 assertions、summary testは4 runs / 25 assertionsでfailures/errors 0。
+
+scanner revision `5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48`で2026-08-02〜08-15の14日を再実行した結果、
+14/14 window成功、window failure 0、timeout 0、wall-time p95 129.751秒だった。4,494 recordsのうち
+source errorは575件 (12.7948%、全件`v2_metadata_404`)、通常の処理errorは134件 (2.9818%)で、旧来の
+`error` 709件 (15.7766%)を再現可能に分離できた。8/15に501件が集中したため、upstream metadata
+availabilityは別途監視対象とした。
+
+固定corpus/popular control後のeligible candidateは251 occurrences / 200 unique names、選定は
+`rbtrace`、`graphql-c_parser`、`roaring`の3件。source error分離後も候補プールが残ることを確認したが、
+候補の正式追加・verified database更新は行っていない。replayのraw artifactは
+`docs/development/corpus-candidate-evaluation/artifacts/`以下に限定し、manifest、run registry、metrics、
+reportのみを追跡対象とした。2日窓の試行とキャンセルrunは日別再現性を優先して集計から除外した。

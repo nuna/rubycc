@@ -132,6 +132,12 @@ tools/scan_popular_gems.rb --source timeframe \
 `[1]` 候補にしていない記録である。`[1b]` は従来どおり assembly 専用。artifact は調査材料
 であり、`test/corpus/gems.rb` や `data/verified_gems.json` を自動更新しない。
 
+timeframe の source 側で release または archive のidentityを確定できない場合は、通常の `[E]` と
+候補を混ぜず、artifactの `corpus.status` に `stale_release`、`v2_metadata_404`、`rate_limited`、
+`network_failure`、`archive_sha_mismatch` のいずれかを記録する。これらは候補・`no_ext`・成功へ
+変換しない。run summaryにはsource errorのkind/stage別件数を記録し、window自体の失敗は集計側で
+source errorと別のfailureとして扱う。
+
 環境変数:
 
 - `SCAN_WORK` — ダウンロードした `.gem` / API レスポンスのキャッシュ先(既定値は tmpdir 配下)。

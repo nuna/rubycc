@@ -79,7 +79,15 @@ class TestSummarizeCorpusCandidatePilotV2 < Minitest::Test
         "corpus" => { "status" => "candidate", "included" => false },
         "headers" => { "bundled" => ["stdio.h"], "gap" => ["new.h"], "ruby_or_self" => [] }
       }
-      write_json(classification_path, { "source" => "timeframe", "records" => [record] })
+      source_error_record = {
+        "name" => "stale-gem", "version" => nil, "platform" => nil,
+        "corpus" => { "status" => "v2_metadata_404", "included" => false,
+                       "reason" => "metadata not found", "review_reasons" => [], "c_files" => 0, "h_files" => 0 },
+        "source_error" => { "kind" => "v2_metadata_404", "stage" => "v2_metadata", "http_status" => 404,
+                             "reason" => "metadata not found" },
+        "headers" => { "bundled" => [], "gap" => [], "ruby_or_self" => [] }
+      }
+      write_json(classification_path, { "source" => "timeframe", "records" => [record, source_error_record] })
       write_json(summary_path, {
         "source" => "timeframe", "elapsed_seconds" => 12.5,
         "source_stats" => { "pages" => 2, "release_entries" => 3, "unique_gems" => 1 },
@@ -87,7 +95,9 @@ class TestSummarizeCorpusCandidatePilotV2 < Minitest::Test
         "archives" => { "inspections" => 1, "fetch_attempts" => 1, "cache_hits" => 0,
                          "successes" => 1, "failures" => 0, "retries" => 0, "bytes" => 10, "unique_urls" => 1 },
         "phases_seconds" => { "archive_fetch" => 1.0 },
-        "results" => { "candidate" => 1 }
+        "results" => { "candidate" => 1, "v2_metadata_404" => 1 },
+        "source_errors" => { "total" => 1, "by_kind" => { "v2_metadata_404" => 1 },
+                              "by_stage" => { "v2_metadata" => 1 } }
       })
       write_json(popular_path, { "records" => [{ "name" => "popular-gem", "corpus" => { "status" => "no_ext" } }] })
 
@@ -103,6 +113,63 @@ class TestSummarizeCorpusCandidatePilotV2 < Minitest::Test
       assert_equal "new-gem", result.fetch("selected_candidates").fetch(0).fetch("name")
       assert_equal 12.5, result.dig("runtime", "elapsed_seconds", "p95")
       assert_equal 0.0, result.dig("runtime", "window_failure_rate")
+      assert_equal({ "v2_metadata_404" => 1 }, result.dig("daily", 0, "source_error_counts"))
+      assert_equal 1, result.dig("runtime", "source_error_count")
+      assert_equal 0.5, result.dig("runtime", "source_error_rate")
+    end
+  end
+
+  def test_failed_window_is_counted_separately_from_source_errors
+    Dir.mktmpdir do |root|
+      evaluation_root = File.join(root, "evaluation")
+      manifest_path = File.join(evaluation_root, "pilot-v2-manifest.json")
+      runs_path = File.join(evaluation_root, "pilot-v2-runs.json")
+      census_path = File.join(root, "include-census.md")
+      popular_path = File.join(evaluation_root, "artifacts/pilot-v2/popular-control.json")
+      classification_path = File.join(evaluation_root, "artifacts/pilot-v2/2026-08-02/classification.json")
+      summary_path = File.join(evaluation_root, "artifacts/pilot-v2/2026-08-02/run-summary.json")
+      File.write(census_path, "| header | class | existing |\n|--------|-------|----------|\n")
+      windows = [
+        ["2026-08-02", "2026-08-02T00:00:00Z", "2026-08-03T00:00:00Z",
+         "artifacts/pilot-v2/2026-08-02/classification.json", "artifacts/pilot-v2/2026-08-02/run-summary.json"],
+        ["2026-08-03", "2026-08-03T00:00:00Z", "2026-08-04T00:00:00Z",
+         "artifacts/pilot-v2/2026-08-03/classification.json", "artifacts/pilot-v2/2026-08-03/run-summary.json"]
+      ]
+      write_json(manifest_path, {
+        "experiment" => "corpus-candidate-pilot-v2", "scanner_revision" => "scanner",
+        "windows" => windows.map do |id, from, to, classification, summary|
+          { "id" => id, "from" => from, "to" => to, "classification" => classification, "summary" => summary }
+        end,
+        "candidate_selection" => { "maximum_unique_gems" => 1 },
+        "operating_targets" => { "daily_wall_time_p95_seconds" => 900, "timeout_rate" => 0,
+                                  "final_failure_rate_less_than" => 0.05 }
+      })
+      write_json(runs_path, { "windows" => [
+        { "id" => "2026-08-02", "run_id" => 1, "url" => "https://example.test/run/1",
+          "conclusion" => "success", "scanner_revision" => "scanner" },
+        { "id" => "2026-08-03", "run_id" => 2, "url" => "https://example.test/run/2",
+          "conclusion" => "failure", "failure_reason" => "runner timeout", "scanner_revision" => "scanner" }
+      ] })
+      write_json(classification_path, { "source" => "timeframe", "records" => [] })
+      write_json(summary_path, {
+        "source" => "timeframe", "elapsed_seconds" => 1.0,
+        "source_stats" => { "pages" => 1, "release_entries" => 0, "unique_gems" => 0 },
+        "execution" => { "peak_work_bytes" => 0 }, "archives" => {}, "phases_seconds" => {}, "results" => {}
+      })
+      write_json(popular_path, { "records" => [] })
+
+      result = CorpusCandidatePilotV2.summarize(
+        manifest_path: manifest_path, runs_path: runs_path, evaluation_root: evaluation_root,
+        popular_path: popular_path, census_path: census_path
+      )
+
+      assert_equal 2, result.fetch("window_count")
+      assert_equal 1, result.fetch("completed_window_count")
+      assert_equal 1, result.dig("runtime", "failed_windows")
+      assert_equal 0.5, result.dig("runtime", "window_failure_rate")
+      assert_equal 1, result.dig("runtime", "timeout_windows")
+      assert_equal "failed", result.dig("daily", 1, "status")
+      assert_equal 0, result.dig("runtime", "source_error_count")
     end
   end
 
