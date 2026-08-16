@@ -42,8 +42,8 @@ sourceの一時的不整合を候補収率や失敗率へ混ぜると、日次sc
 
 ## 作業ログ
 
-未着手。pilot v2の2026-08-15実測で503件のv2 metadata 404を確認したため、source errorの分類と
-候補分母の分離を次の作業対象として固定した。
+pilot v2の2026-08-15実測で503件のv2 metadata 404を確認したため、source errorの分類と候補分母の
+分離を実装対象として固定した。
 
 ### 2026-08-16 — source error taxonomyとsummary schema
 
@@ -54,10 +54,28 @@ error rateとwindow failure rateを別々に扱い、失敗・欠測windowを成
 
 404、rate limit、network failure、archive SHA不一致、yanked releaseのhermetic fixtureを追加し、
 scanner targeted testは28 runs / 144 assertions、pilot summary testは4 runs / 25 assertionsで
-failures 0 / errors 0だった。固定14日replayと実測reportの更新は次の作業に残している。
+failures 0 / errors 0だった。
+
+### 2026-08-16 — 固定14日replayと実測report
+
+scanner revision `5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48`で2026-08-02〜08-15の1日windowを
+14本再実行し、14/14成功、window failure 0、timeout 0、wall-time p95 129.751秒を確認した。
+raw artifactは`docs/development/corpus-candidate-evaluation/artifacts/`以下に限定し、追跡対象は
+replay manifest、run registry、metrics、reportだけとした。途中で試した2日windowとキャンセルrunは
+registryおよび分母から除外した。
+
+4,494 recordのうちsource errorは575件 (12.7948%)で全件`v2_metadata_404`、通常のrecord
+processing errorは134件 (2.9818%)だった。従来の`error` 709件 (15.7766%)をsource errorと処理
+errorに分離でき、source errorをcandidate、`no_ext`、処理errorの成功分母へ混ぜないことを実測で
+確認した。2026-08-15の501件集中はupstream metadata availabilityの監視対象として残した。
+
+固定corpus/popular control適用後は251 eligible occurrences / 200 unique namesとなり、静的選定は
+`rbtrace`、`graphql-c_parser`、`roaring`の3件を得た。候補プールがsource error分離後も維持される
+ことを確認したが、正式追加やverified database更新は行っていない。詳細は
+`docs/development/corpus-candidate-evaluation/source-errors-replay-report.md`に記録した。
 
 ## 決着
 
-未着手。
+完了。source errorを候補分母から分離し、window failureとは別の指標として14日実測を固定した。
 
 このissueでは候補gemの正式追加を行わない。
