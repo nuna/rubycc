@@ -1,10 +1,10 @@
 ---
-status: open
+status: done
 kind: infra
 opened: 2026-08-16
-closed:
-branch:
-pr:
+closed: 2026-08-16
+branch: corpus-candidate-scan-runtime
+pr: 66
 steps:
   - corpus-candidate-scan-runtime-1
   - corpus-candidate-scan-runtime-2
