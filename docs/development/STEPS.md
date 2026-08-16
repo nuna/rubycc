@@ -11787,3 +11787,15 @@ selection-only の実測は 12,829 version entries / 5,647 gem occurrences / 434
 結果確認前に固定した順序で最大3件（DhanHQ 3.4.0、phronomy 0.19.0、security 0.2.0）を静的検査した。3件とも platform=ruby、non-yanked、archive/API SHA 一致、no-ext、C/H 0/0、bundled/gap/review 0。rubycc package の build/install は成功したが、対象 gem の C extension が無いため target build は実行しなかった。検査済みの期間固有 [1]、新規 header/gap、build 成功は 0 件である。
 
 現行 bounded route は corpus の自動・定期拡張として不採用と決着した。未検査 3,881 件がすべて純 Ruby だと推測せず、source/yanked の deferred と selection-only の限界を明記した。次の metadata prefilter または大きな事前固定静的サンプルは別 issue とし、今回の corpus / verified gem DB は変更しない。targeted test は summarizer 3 runs / 13 assertions、scanner 17 / 78、issue docs 5 / 336、いずれも failures / errors / skips 0。最終の全体 rake test は 3,242 runs / 11,549 assertions / 41 skips、failures / errors 0。
+
+## corpus-candidate-issue-close — merge済み候補発見issueを完了にする
+
+PR #60〜#62のmergeを確認し、候補発見の実装・artifact診断・増分評価の3 issueを `done` にした。
+discoveryはtimeframe sourceとlive smoke、artifactは決定的provenanceとreview分類、evaluationは
+4 windowとpopular対照による不採用判断までを完了条件とした。いずれも `test/corpus/gems.rb`、
+header、compiler、`data/verified_gems.json`を変更していない。
+
+PR #64で追加した次段階の5 issue（scan runtime、daily workflow、local inspection skill、手動
+validation workflow、pilot）は未実装のため `open` に残した。各issueへ3タスクの実装計画と依存順を
+追記し、次の実装PRで1 issue = 1 PRとして着手できる状態にした。今回のissue lifecycle更新と
+計画追記はRuby 3.3.12のissue docs testで確認する。

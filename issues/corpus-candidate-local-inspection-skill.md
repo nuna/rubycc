@@ -5,7 +5,10 @@ opened: 2026-08-16
 closed:
 branch:
 pr:
-steps: []
+steps:
+  - corpus-candidate-local-inspection-skill-1
+  - corpus-candidate-local-inspection-skill-2
+  - corpus-candidate-local-inspection-skill-3
 ---
 
 # corpus候補をローカルで一件ずつ検査するrepo-local skillを作る
@@ -62,6 +65,17 @@ name/version/SHAを固定し、静的判定、既存corpusとの差、build/load
   - build/loadまで依頼し、version/SHA固定、隔離、純Ruby fallback防止を守る
 
 このPRでは候補gemの正式追加、header実装、日次Actions、手動Actions workflowを追加しない。
+
+## 実装計画
+
+3タスク、各タスクを1コミットの目安とする。
+
+1. `corpus-candidate-local-inspection-skill-1`: `inspect-corpus-candidate` skillのfront matterと
+   静的検査workflowを作り、既存toolへの参照を定義する
+2. `corpus-candidate-local-inspection-skill-2`: SHA/version固定、隔離実行、build/load、sanity、
+   control/testの停止条件と出力schemaを追加する
+3. `corpus-candidate-local-inspection-skill-3`: CLAUDE.mdへ登録し、静的のみとbuild/loadの2つの
+   fresh-context forward testでrepo非変更と安全境界を確認する
 
 ## 作業ログ
 

@@ -5,7 +5,10 @@ opened: 2026-08-16
 closed:
 branch:
 pr:
-steps: []
+steps:
+  - corpus-candidate-scan-runtime-1
+  - corpus-candidate-scan-runtime-2
+  - corpus-candidate-scan-runtime-3
 ---
 
 # 日次 corpus 候補scanを計測可能にし、archive取得時間を短縮する
@@ -60,6 +63,17 @@ GitHub Actionsのtimeoutを根拠を持って決められない。
 - scannerの利用手順と計測項目を`test/corpus/README.md`へ反映する
 
 このPRでは日次workflow、gemのbuild/test、corpusへの正式追加を行わない。
+
+## 実装計画
+
+3タスク、各タスクを1コミットの目安とする。
+
+1. `corpus-candidate-scan-runtime-1`: scannerのフェーズ別時間、転送量、cache hit、retryを
+   決定的artifactと分離して記録する
+2. `corpus-candidate-scan-runtime-2`: v2の固定gem URIからSHA検証付きで取得し、bounded
+   concurrency、timeout、backoff、途中再開を実装する
+3. `corpus-candidate-scan-runtime-3`: fixtureと固定UTC windowで回帰・比較計測を行い、利用手順と
+   実測値を更新する
 
 ## 作業ログ
 

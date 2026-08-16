@@ -5,7 +5,10 @@ opened: 2026-08-16
 closed:
 branch:
 pr:
-steps: []
+steps:
+  - corpus-candidate-daily-workflow-1
+  - corpus-candidate-daily-workflow-2
+  - corpus-candidate-daily-workflow-3
 ---
 
 # 完了済みUTC日を静的scanする日次GitHub Actionsを追加する
@@ -50,6 +53,17 @@ revisionと環境で揃えにくい。このissueは
 
 このPRでは、過去14〜28日の評価、候補のbuild/test、artifactからの自動issue作成、
 `test/corpus/gems.rb`の変更を行わない。
+
+## 実装計画
+
+3タスク、各タスクを1コミットの目安とする。
+
+1. `corpus-candidate-daily-workflow-1`: exact UTC intervalとmanual replayを受け取る独立workflowを
+   作り、静的scanだけを実行する
+2. `corpus-candidate-daily-workflow-2`: 最小権限、timeout、concurrency、compact artifact upload、
+   retentionを設定する
+3. `corpus-candidate-daily-workflow-3`: YAML/hermetic testとschedule・failure・replayの実測を
+   行い、運用手順を更新する
 
 ## 作業ログ
 
