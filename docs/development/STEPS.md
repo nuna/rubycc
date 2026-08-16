@@ -11852,3 +11852,28 @@ doc links(3 runs / 41 assertions)、PR #69のRuby 3.3/4.0 CIはすべて成功�
 PR #69をmerge commit `8e3a14be23b6e502663b6f286d9227606faa6c09`としてmasterへ取り込んだ。skillは
 候補発見後の安全な比較可能検査を実証したが、未知のGo/cgo候補を自動でcorpusへ追加するものではなく、
 別途recipeと人手reviewが必要な状態で停止する。
+
+## corpus-candidate-validation-workflow-1〜3 — 任意コード実行を手動workflowに隔離する
+
+選択済みcorpus候補を1件ずつ検証する`workflow_dispatch`専用workflowと、検証を担う
+`tools/verify_corpus_candidate.rb`を追加した。archiveを再取得してgem名・version・platform・
+SHA-256を再照合し、build/load smoke、host cc control、review済みrecipeに限定したupstream testを
+別経路で実行する。結果は候補のidentityとstatusを持つ構造化artifactとして14日だけ保存し、
+corpusや`data/verified_gems.json`は変更しない。
+
+日次の静的scan artifactをそのまま実行入力として信頼せず、実行直前にarchiveのidentityを確認する。
+不一致や不正なdispatch入力は候補のコードを実行する前に停止する。`contents: read`、credentialを
+残さないcheckout、secret/cacheなし、候補1件1job、build/load 30分・upstream込み90分のtimeoutに
+限定し、任意コード実行の範囲と保持物を絞った。upstream testはreview済みrecipeに限定し、任意URL・
+任意command・入力scriptを受け付けない。
+
+build/loadの成功、sanity checkの成功、upstream testの結果を別statusとして扱い、成功をそのまま
+`verified`やcorpus追加と解釈しない。input拒否、SHA不一致、recipeなし、環境不足、timeout、
+infrastructure failureなどの停止理由を分け、安全な既知gemとfixtureで境界を検証した。
+`test_corpus_candidate_validation_workflow.rb`、`test_verify_corpus_candidate.rb`、`test_issue_docs.rb`、
+`test_doc_links.rb`を実行し、Ruby 3.3/4.0のCI run 31935030354も成功した。`json 2.21.1`は固定SHAで
+`build_load_pass`、`actionagent 1.2.1`は`no_ext`、`funnel_http 0.5.12`はGo/cgoの`review_required`
+となることを確認した。
+
+手動dispatchとreview済みrecipeを要求するため候補の一括検証や完全自動化はできないが、日次workflowへ
+任意コード実行を持ち込まず、候補ごとに停止理由と再現結果をレビューできる境界を優先した。
