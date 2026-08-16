@@ -14,6 +14,7 @@
 #   SCAN_WORK=/path/to/work tools/scan_popular_gems.rb
 #   SCAN_SOURCE=auto|rubygems|bestgems|timeframe tools/scan_popular_gems.rb
 #   SCAN_ARTIFACT=/path/to/scan.json tools/scan_popular_gems.rb
+#   SCAN_SUMMARY=/path/to/run-summary.json tools/scan_popular_gems.rb
 #   SCAN_VERBOSE=1 tools/scan_popular_gems.rb
 
 require "fileutils"
@@ -24,6 +25,7 @@ require "optparse"
 require "rubygems/package"
 require "time"
 require "tmpdir"
+require "thread"
 require "uri"
 
 RUBYCC_ROOT = File.expand_path("..", __dir__)
@@ -36,17 +38,33 @@ module CorpusCandidateScan
   API_DELAY = 0.2
   RUBYGEMS_POPULAR_CAP = 100
   DEFAULT_WORK_DIR = File.join(Dir.tmpdir, "rubycc_scan_popular")
+  SUMMARY_PHASES = %w[
+    timeframe_pagination
+    release_selection
+    v2_metadata
+    ranking
+    archive_fetch
+    unpack_static
+    artifact_write
+  ].freeze
+  SUMMARY_ARCHIVE_COUNTERS = %i[
+    inspections fetch_attempts cache_hits successes failures retries
+  ].freeze
+  DEFAULT_FETCH_CONCURRENCY = 2
+  MAX_FETCH_CONCURRENCY = 4
 
   # The legacy rank mode is deliberately represented as data rather than read
   # from ARGV at load time. This is the boundary that makes the scanner
   # require-able from hermetic tests and from the future timeframe source.
   class Configuration
     attr_reader :first_page, :last_page, :work_dir, :source_choice, :verbose,
-                :from_time, :to_time, :artifact_path, :selection_only
+                :from_time, :to_time, :artifact_path, :summary_path, :selection_only,
+                :fetch_concurrency
 
     def initialize(first_page: 11, last_page: 20, work_dir: DEFAULT_WORK_DIR,
                    source_choice: "auto", verbose: false, from_time: nil, to_time: nil,
-                   artifact_path: nil, selection_only: false)
+                   artifact_path: nil, summary_path: nil, selection_only: false,
+                   fetch_concurrency: DEFAULT_FETCH_CONCURRENCY)
       @first_page = Integer(first_page)
       @last_page = Integer(last_page)
       @work_dir = File.expand_path(work_dir)
@@ -55,7 +73,9 @@ module CorpusCandidateScan
       @from_time = from_time && parse_time(from_time, "from")
       @to_time = to_time && parse_time(to_time, "to")
       @artifact_path = artifact_path && File.expand_path(artifact_path)
+      @summary_path = summary_path && File.expand_path(summary_path)
       @selection_only = !!selection_only
+      @fetch_concurrency = Integer(fetch_concurrency)
       validate!
     end
 
@@ -66,6 +86,8 @@ module CorpusCandidateScan
         from_time: env["SCAN_FROM"],
         to_time: env["SCAN_TO"],
         artifact_path: env["SCAN_ARTIFACT"],
+        summary_path: env["SCAN_SUMMARY"],
+        fetch_concurrency: env.fetch("SCAN_FETCH_CONCURRENCY", DEFAULT_FETCH_CONCURRENCY),
         selection_only: !env.fetch("SCAN_SELECTION_ONLY", "").empty?
       }
       parser = OptionParser.new do |opts|
@@ -73,6 +95,10 @@ module CorpusCandidateScan
         opts.on("--from ISO8601", "timeframe start") { |value| options[:from_time] = value }
         opts.on("--to ISO8601", "timeframe end") { |value| options[:to_time] = value }
         opts.on("--artifact PATH", "write a deterministic JSON artifact") { |value| options[:artifact_path] = value }
+        opts.on("--summary PATH", "write a run-time summary JSON") { |value| options[:summary_path] = value }
+        opts.on("--fetch-concurrency N", Integer, "archive workers (1-#{MAX_FETCH_CONCURRENCY})") do |value|
+          options[:fetch_concurrency] = value
+        end
         opts.on("--selection-only", "select releases without fetching gems") { options[:selection_only] = true }
       end
       begin
@@ -92,6 +118,8 @@ module CorpusCandidateScan
           from_time: options[:from_time],
           to_time: options[:to_time],
           artifact_path: options[:artifact_path],
+          summary_path: options[:summary_path],
+          fetch_concurrency: options[:fetch_concurrency],
           selection_only: options[:selection_only]
         )
       end
@@ -108,6 +136,8 @@ module CorpusCandidateScan
         source_choice: options[:source_choice],
         verbose: !env.fetch("SCAN_VERBOSE", "").empty?,
         artifact_path: options[:artifact_path],
+        summary_path: options[:summary_path],
+        fetch_concurrency: options[:fetch_concurrency],
         selection_only: options[:selection_only]
       )
     end
@@ -171,30 +201,115 @@ module CorpusCandidateScan
       if selection_only && !timeframe?
         raise ArgumentError, "--selection-only requires --source timeframe"
       end
+      unless @fetch_concurrency.between?(1, MAX_FETCH_CONCURRENCY)
+        raise ArgumentError, "fetch_concurrency must be between 1 and #{MAX_FETCH_CONCURRENCY}"
+      end
     end
   end
 
   class HttpClient
-    def initialize(user_agent: USER_AGENT)
+    RETRYABLE_STATUS_CODES = [408, 429, *500..599].freeze
+    RETRYABLE_ERRORS = [Errno::ECONNRESET, Errno::ETIMEDOUT, IOError, Net::OpenTimeout,
+                        Net::ReadTimeout, SocketError].freeze
+    DEFAULT_MAX_RETRIES = 3
+    DEFAULT_BACKOFF = 1.0
+    MAX_BACKOFF = 30.0
+
+    def initialize(user_agent: USER_AGENT, open_timeout: 15, read_timeout: 60,
+                   max_retries: DEFAULT_MAX_RETRIES, sleeper: Kernel.method(:sleep),
+                   on_retry: nil, requester: nil)
       @user_agent = user_agent
+      @open_timeout = open_timeout
+      @read_timeout = read_timeout
+      @max_retries = max_retries
+      @sleeper = sleeper
+      @on_retry = on_retry
+      @requester = requester
     end
 
     def get(url, redirect_budget = 5)
+      get_bytes(url, redirect_budget: redirect_budget)
+    end
+
+    def get_bytes(url, redirect_budget: 5)
       raise "too many redirects while fetching #{url}" if redirect_budget.negative?
 
       uri = URI.parse(url)
-      response = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https",
-                                 open_timeout: 15, read_timeout: 60) do |http|
-        http.request(Net::HTTP::Get.new(uri, "User-Agent" => @user_agent))
-      end
+      response = request_with_retries(uri)
+      code = response.code.to_i
 
-      case response
-      when Net::HTTPSuccess then response.body
-      when Net::HTTPRedirection
-        get(URI.join(url, response["location"]).to_s, redirect_budget - 1)
+      case code
+      when 200..299 then response.body
+      when 300..399
+        location = response["location"]
+        raise "GET #{url} redirected without a location" if location.to_s.empty?
+
+        get_bytes(URI.join(url, location).to_s, redirect_budget: redirect_budget - 1)
       else
         raise "GET #{url} failed: #{response.code} #{response.message}"
       end
+    end
+
+    private
+
+    def request_with_retries(uri)
+      retry_number = 0
+      loop do
+        response = begin
+          request_once(uri)
+        rescue StandardError => e
+          raise unless RETRYABLE_ERRORS.any? { |error_class| e.is_a?(error_class) }
+
+          retry_request!(uri, retry_number, error: e)
+          retry_number += 1
+          next
+        end
+
+        if RETRYABLE_STATUS_CODES.include?(response.code.to_i)
+          retry_request!(uri, retry_number, response: response)
+          retry_number += 1
+          next
+        end
+
+        return response
+      end
+    end
+
+    def request_once(uri)
+      return @requester.call(uri) if @requester
+
+      Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https",
+                      open_timeout: @open_timeout, read_timeout: @read_timeout) do |http|
+        http.request(Net::HTTP::Get.new(uri, "User-Agent" => @user_agent))
+      end
+    end
+
+    def retry_request!(uri, retry_number, response: nil, error: nil)
+      if retry_number >= @max_retries
+        raise error if error
+
+        raise "GET #{uri} failed after #{@max_retries} retries: #{response.code} #{response.message}"
+      end
+
+      @on_retry&.call
+      @sleeper.call(retry_delay(response, retry_number))
+    end
+
+    def retry_delay(response, retry_number)
+      retry_after = response && response["retry-after"]
+      if retry_after && retry_after.match?(/\A\d+(?:\.\d+)?\z/)
+        return [retry_after.to_f, MAX_BACKOFF].min
+      end
+
+      if retry_after
+        begin
+          return [[Time.httpdate(retry_after) - Time.now, 0.0].max, MAX_BACKOFF].min
+        rescue ArgumentError
+          # Fall through to the bounded exponential delay.
+        end
+      end
+
+      [DEFAULT_BACKOFF * (2**retry_number), MAX_BACKOFF].min
     end
   end
 
@@ -211,7 +326,8 @@ module CorpusCandidateScan
     def fetch(url)
       cache_key = Digest::SHA256.hexdigest(url)
       path = File.join(@directory, cache_key)
-      body = if File.file?(path)
+      cache_hit = File.file?(path)
+      body = if cache_hit
                File.binread(path)
              else
                fetched = yield
@@ -221,7 +337,9 @@ module CorpusCandidateScan
       {
         body: body,
         cache_key: cache_key,
-        response_sha256: Digest::SHA256.hexdigest(body)
+        response_sha256: Digest::SHA256.hexdigest(body),
+        cache_hit: cache_hit,
+        bytes: body.bytesize
       }
     end
   end
@@ -233,22 +351,37 @@ module CorpusCandidateScan
       @client = client
       @cache = cache
       @request_records = {}
+      @attempts = 0
     end
 
     def get(url)
-      response = if @cache
-                   @cache.fetch(url) { @client.get(url) }
-                 else
-                   body = @client.get(url)
-                   { body: body, cache_key: Digest::SHA256.hexdigest(url),
-                     response_sha256: Digest::SHA256.hexdigest(body) }
-                 end
-      @request_records[url] = response.merge(url: url)
-      response[:body]
+      @attempts += 1
+      begin
+        response = if @cache
+                     @cache.fetch(url) { @client.get(url) }
+                   else
+                     body = @client.get(url)
+                     { body: body, cache_key: Digest::SHA256.hexdigest(url),
+                       response_sha256: Digest::SHA256.hexdigest(body),
+                       cache_hit: false, bytes: body.bytesize }
+                   end
+        @request_records[url] = response.merge(url: url)
+        response[:body]
+      rescue StandardError => e
+        @request_records[url] = {
+          url: url, cache_key: Digest::SHA256.hexdigest(url), response_sha256: nil,
+          cache_hit: false, bytes: 0, error: "#{e.class}: #{e.message}"
+        }
+        raise
+      end
     end
 
     def requests
       @request_records.values.sort_by { |record| record[:url] }
+    end
+
+    def attempts
+      @attempts
     end
   end
 
@@ -464,7 +597,9 @@ module CorpusCandidateScan
               "url" => request[:url],
               "cache_key" => request[:cache_key],
               "response_sha256" => request[:response_sha256]
-            }
+            }.tap do |record|
+              record["error"] = request[:error] if request[:error]
+            end
           end,
           "records" => results.sort_by { |result| record_sort_key(result) }.map { |result| record(result) }
         }
@@ -534,34 +669,179 @@ module CorpusCandidateScan
     end
   end
 
+  # Runtime evidence is deliberately separate from Artifact. It contains
+  # elapsed time and cache state, so it cannot be a deterministic replay
+  # artifact. It never contains the absolute work or output paths.
+  class RunSummary
+    SCHEMA_VERSION = 1
+
+    class << self
+      def write(path, config:, source:, started_at:, finished_at:, timings:, counters:, requests:, results:)
+        payload = {
+          "schema_version" => SCHEMA_VERSION,
+          "source" => Artifact.source_name(config, source),
+          "input" => config.normalized_input,
+          "started_at" => started_at.utc.iso8601,
+          "finished_at" => finished_at.utc.iso8601,
+          "elapsed_seconds" => (finished_at - started_at).round(6),
+          "phases_seconds" => SUMMARY_PHASES.to_h { |name| [name, timings.fetch(name, 0.0).round(6)] },
+          "execution" => { "fetch_concurrency" => config.fetch_concurrency },
+          "requests" => {
+            "attempts" => requests.fetch(:attempts) + requests.fetch(:archives, {}).fetch(:attempts, 0),
+            "source_attempts" => requests.fetch(:attempts),
+            "archive_attempts" => requests.fetch(:archives, {}).fetch(:attempts, 0),
+            "unique_urls" => requests.fetch(:records).length + requests.fetch(:archives, {}).fetch(:unique_urls, 0),
+            "cache_hits" => requests.fetch(:records).count { |record| record[:cache_hit] } +
+                             requests.fetch(:archives, {}).fetch(:cache_hits, 0),
+            "bytes" => requests.fetch(:records).sum { |record| record[:bytes].to_i } +
+                       requests.fetch(:archives, {}).fetch(:bytes, 0)
+          },
+          "archives" => SUMMARY_ARCHIVE_COUNTERS.to_h do |name|
+            [name.to_s, counters.fetch(name, 0)]
+          end,
+          "results" => results.group_by { |result| result[:status].to_s }
+                               .transform_values(&:length)
+                               .sort.to_h
+        }
+        FileUtils.mkdir_p(File.dirname(path))
+        File.binwrite(path, JSON.pretty_generate(payload) + "\n")
+      end
+    end
+  end
+
+  # Downloads a source-platform archive from the URI returned by the v2
+  # metadata endpoint. A completed archive is addressable by its exact
+  # name/version path; a temporary `.part` file is never treated as a cache
+  # hit and is removed after a failed or hash-mismatched download.
+  class ArchiveFetcher
+    def initialize(http_client:, work_dir:)
+      @http_client = http_client
+      @work_dir = work_dir
+      @lock = Mutex.new
+      @stats = { attempts: 0, unique_urls: 0, cache_hits: 0, bytes: 0, urls: Set.new }
+    end
+
+    def fetch(name:, version:, platform:, gem_uri:, expected_sha256:)
+      validate_uri!(gem_uri)
+      raise ArgumentError, "direct archive requires the ruby platform" unless platform.to_s == "ruby"
+      raise ArgumentError, "direct archive requires a metadata SHA-256" if expected_sha256.to_s.empty?
+
+      path = Corpus::Census.cached_gem_path(name, version, @work_dir)
+      if path && sha256(path).casecmp?(expected_sha256.to_s)
+        record_request(gem_uri, cache_hit: true, bytes: File.size(path))
+        return { path: path, error: nil, cache_hit: true }
+      end
+
+      record_request(gem_uri, cache_hit: false)
+      FileUtils.mkdir_p(@work_dir)
+      path ||= File.join(@work_dir, "#{name}-#{version}.gem")
+      partial_path = "#{path}.part"
+      begin
+        File.binwrite(partial_path, @http_client.get_bytes(gem_uri))
+        record_bytes(File.size(partial_path))
+        actual_sha256 = sha256(partial_path)
+        unless actual_sha256.casecmp?(expected_sha256.to_s)
+          raise ArgumentError,
+                "gem_sha256_mismatch: API=#{expected_sha256} fetched=#{actual_sha256}"
+        end
+        File.rename(partial_path, path)
+        { path: path, error: nil, cache_hit: false }
+      rescue StandardError => e
+        FileUtils.rm_f(partial_path)
+        { path: nil, error: "#{e.class}: #{e.message}", cache_hit: false }
+      end
+    rescue StandardError => e
+      { path: nil, error: "#{e.class}: #{e.message}", cache_hit: false }
+    end
+
+    def stats
+      @lock.synchronize do
+        @stats.merge(unique_urls: @stats[:urls].length).tap { |copy| copy.delete(:urls) }
+      end
+    end
+
+    private
+
+    def validate_uri!(gem_uri)
+      uri = URI.parse(gem_uri.to_s)
+      return if uri.is_a?(URI::HTTPS) && uri.host && !uri.userinfo && !uri.query && !uri.fragment
+
+      raise ArgumentError, "gem_uri must be an absolute HTTPS URL without query or fragment"
+    rescue URI::InvalidURIError
+      raise ArgumentError, "gem_uri is not a valid URL: #{gem_uri.inspect}"
+    end
+
+    def sha256(path)
+      Digest::SHA256.file(path).hexdigest
+    end
+
+    def record_request(url, cache_hit:, bytes: 0)
+      @lock.synchronize do
+        @stats[:attempts] += 1
+        @stats[:urls] << url
+        @stats[:cache_hits] += 1 if cache_hit
+        @stats[:bytes] += bytes.to_i
+      end
+    end
+
+    def record_bytes(bytes)
+      @lock.synchronize { @stats[:bytes] += bytes.to_i }
+    end
+  end
+
   class Scanner
     attr_reader :config
 
-    def initialize(config:, http_client: HttpClient.new, sleeper: Kernel.method(:sleep),
+    def initialize(config:, http_client: nil, archive_http_client: nil,
+                   sleeper: Kernel.method(:sleep),
                    out: $stdout, err: $stderr,
                    corpus_names: Corpus::Gems::LIST.map { |gem| gem[:name] },
                    bundled_headers: nil)
       @config = config
-      response_cache = config.artifact_path && ResponseCache.new(File.join(config.work_dir, "raw_responses"))
-      @http = RecordingHttpClient.new(http_client, cache: response_cache)
+      @timings = Hash.new(0.0)
+      @counters = Hash.new(0)
+      @counter_lock = Mutex.new
       @sleeper = sleeper
+      @raw_http_client = http_client || HttpClient.new(
+        sleeper: sleeper, on_retry: -> { increment_counter(:retries) }
+      )
+      @archive_http_client = archive_http_client || @raw_http_client
+      response_cache = (config.artifact_path || config.summary_path) &&
+                       ResponseCache.new(File.join(config.work_dir, "raw_responses"))
+      @http = RecordingHttpClient.new(@raw_http_client, cache: response_cache)
+      @archive_fetcher = ArchiveFetcher.new(http_client: @archive_http_client, work_dir: config.work_dir)
       @out = out
       @err = err
       @corpus_names = corpus_names.to_set
       @bundled_headers = bundled_headers || Corpus::Census.bundled_headers(File.join(RUBYCC_ROOT, "include"))
       @api_cache_dir = File.join(config.work_dir, "api")
+      @phase_stack = []
+      @started_at = nil
+      @last_source = nil
+      @last_results = []
     end
 
     def run
+      @started_at = Time.now.utc
+      perform_scan
+    ensure
+      write_summary if config.summary_path && @started_at
+    end
+
+    private
+
+    def perform_scan
       if config.timeframe?
         selected, rejected = collect_timeframe
         if config.selection_only
           results = rejected + selected.map { |entry| selection_only_result(entry) }
           return finish_selection(results, TimeframeVersions, config.from_time, config.to_time)
         end
-        results = rejected + selected.map do |entry|
+        archives = measure_phase("archive_fetch") { fetch_timeframe_archives(selected) }
+        results = rejected + selected.each_with_index.map do |entry, index|
+          archive = archives.fetch(index)
           step "inspecting #{entry[:name]} #{entry[:version]} (platform=#{entry[:platform]})"
-          inspect_gem(entry)
+          inspect_gem(entry, archive: archive)
         end
         return finish_report(results, TimeframeVersions, config.from_time, config.to_time)
       end
@@ -573,7 +853,7 @@ module CorpusCandidateScan
       FileUtils.mkdir_p(config.work_dir)
 
       source = select_source(first_rank, last_rank)
-      ranking = collect_ranking(source, first_rank, last_rank)
+      ranking = measure_phase("ranking") { collect_ranking(source, first_rank, last_rank) }
       results = ranking.map do |entry|
         step "inspecting ##{entry[:rank]} #{entry[:name]}"
         inspect_gem(entry)
@@ -582,7 +862,37 @@ module CorpusCandidateScan
       finish_report(results, source, first_rank, last_rank)
     end
 
-    private
+    def measure_phase(name)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      frame = { child_seconds: 0.0 }
+      @phase_stack << frame
+      yield
+    ensure
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+      @phase_stack.pop
+      @timings[name] += elapsed - frame.fetch(:child_seconds)
+      @phase_stack.last[:child_seconds] += elapsed if @phase_stack.any?
+    end
+
+    def increment_counter(name, amount = 1)
+      @counter_lock.synchronize { @counters[name] += amount }
+    end
+
+    def write_summary
+      finished_at = Time.now.utc
+      source = @last_source || (config.timeframe? ? TimeframeVersions : RubygemsPopular)
+      RunSummary.write(
+        config.summary_path,
+        config: config,
+        source: source,
+        started_at: @started_at,
+        finished_at: finished_at,
+        timings: @timings,
+        counters: @counters,
+        requests: { attempts: @http.attempts, records: @http.requests, archives: @archive_fetcher.stats },
+        results: @last_results
+      )
+    end
 
     def step(message)
       @err.puts "==> #{message}"
@@ -590,17 +900,25 @@ module CorpusCandidateScan
 
     def finish_report(results, source, first_rank, last_rank)
       ok = report(results, source, first_rank, last_rank)
+      @last_source = source
+      @last_results = results
       if config.artifact_path
-        Artifact.write(config.artifact_path, config: config, source: source,
-                       requests: @http.requests, results: results)
+        measure_phase("artifact_write") do
+          Artifact.write(config.artifact_path, config: config, source: source,
+                         requests: @http.requests, results: results)
+        end
       end
       ok
     end
 
     def finish_selection(results, source, from_time, to_time)
+      @last_source = source
+      @last_results = results
       if config.artifact_path
-        Artifact.write(config.artifact_path, config: config, source: source,
-                       requests: @http.requests, results: results)
+        measure_phase("artifact_write") do
+          Artifact.write(config.artifact_path, config: config, source: source,
+                         requests: @http.requests, results: results)
+        end
       end
       @out.puts "selection-only: #{results.count { |result| result[:status] == :uninspected }} selected gems"
       @out.puts "  timeframe: #{from_time.iso8601} - #{to_time.iso8601} (UTC)"
@@ -625,6 +943,11 @@ module CorpusCandidateScan
     end
 
     def collect_timeframe
+      records = measure_phase("timeframe_pagination") { collect_timeframe_pages }
+      measure_phase("release_selection") { select_timeframe_releases(records) }
+    end
+
+    def collect_timeframe_pages
       records = []
       page = 1
       seen_pages = Set.new
@@ -646,7 +969,7 @@ module CorpusCandidateScan
         page += 1
       end
 
-      select_timeframe_releases(records)
+      records
     end
 
     def select_timeframe_releases(records)
@@ -716,6 +1039,7 @@ module CorpusCandidateScan
             version_downloads: chosen["v2"]["version_downloads"] || chosen["version_downloads"],
             sha: chosen["v2"]["sha"] || chosen["sha"],
             api_sha: chosen["v2"]["sha"],
+            gem_uri: chosen["v2"]["gem_uri"],
             selection_note: chosen["selection_note"],
             selection_rejections: discarded
           }
@@ -801,15 +1125,23 @@ module CorpusCandidateScan
       key = [name, version]
       return @timeframe_version_cache[key] if @timeframe_version_cache.key?(key)
 
-      encoded_name = URI.encode_www_form_component(name)
-      encoded_version = URI.encode_www_form_component(version)
-      url = "https://rubygems.org/api/v2/rubygems/#{encoded_name}/versions/#{encoded_version}.json?platform=ruby"
-      details = JSON.parse(@http.get(url))
-      required = %w[name version platform yanked sha]
-      missing = required.reject { |field| details.is_a?(Hash) && details.key?(field) }
-      raise "v2 response missing #{missing.join(', ')}" unless missing.empty?
-      unless [true, false].include?(details["yanked"])
-        raise "v2 response yanked must be boolean"
+      details = measure_phase("v2_metadata") do
+        encoded_name = URI.encode_www_form_component(name)
+        encoded_version = URI.encode_www_form_component(version)
+        url = "https://rubygems.org/api/v2/rubygems/#{encoded_name}/versions/#{encoded_version}.json?platform=ruby"
+        details = JSON.parse(@http.get(url))
+        required = %w[name version platform yanked sha gem_uri]
+        missing = required.reject { |field| details.is_a?(Hash) && details.key?(field) }
+        raise "v2 response missing #{missing.join(', ')}" unless missing.empty?
+        unless [true, false].include?(details["yanked"])
+          raise "v2 response yanked must be boolean"
+        end
+        uri = URI.parse(details["gem_uri"].to_s)
+        unless uri.is_a?(URI::HTTPS) && uri.host && !uri.userinfo && !uri.query && !uri.fragment
+          raise "v2 response gem_uri must be an absolute HTTPS URL without query or fragment"
+        end
+
+        details
       end
 
       @timeframe_version_cache[key] = details
@@ -870,9 +1202,55 @@ module CorpusCandidateScan
       nil
     end
 
+    def fetch_timeframe_archives(entries)
+      return [] if entries.empty?
+
+      queue = Queue.new
+      entries.each_index { |index| queue << index }
+      results = Array.new(entries.length)
+      workers = Array.new([config.fetch_concurrency, entries.length].min) do
+        Thread.new do
+          loop do
+            index = queue.pop(true)
+            entry = entries.fetch(index)
+            results[index] = fetch_gem_for_scan(entry[:name], entry[:version], entry)
+          rescue ThreadError
+            break
+          rescue StandardError => e
+            increment_counter(:failures)
+            results[index] = [nil, "#{e.class}: #{e.message}"] if index
+          end
+        end
+      end
+      workers.each(&:join)
+      results
+    end
+
+    # Timeframe entries use the v2 gem_uri when present. Rank-based scans have
+    # no immutable archive URI, so they retain the legacy gem fetch fallback.
+    def fetch_gem_for_scan(name, version, entry = nil)
+      if entry && entry[:gem_uri]
+        fetched = @archive_fetcher.fetch(
+          name: name, version: version, platform: entry[:platform], gem_uri: entry[:gem_uri],
+          expected_sha256: entry[:api_sha]
+        )
+        increment_counter(:cache_hits) if fetched[:cache_hit]
+        increment_counter(:fetch_attempts) unless fetched[:cache_hit]
+        fetched[:path] ? increment_counter(:successes) : increment_counter(:failures)
+        return [fetched[:path], fetched[:error]]
+      end
+
+      cached = Corpus::Census.cached_gem_path(name, version, config.work_dir)
+      increment_counter(:cache_hits) if cached
+      increment_counter(:fetch_attempts) unless cached
+      gem_path, fetch_error = Corpus::Census.fetch_gem(name, version, config.work_dir)
+      gem_path ? increment_counter(:successes) : increment_counter(:failures)
+      [gem_path, fetch_error]
+    end
+
     # Inspect one gem without executing any code from the gem. extconf.rb is
     # read as text for the assembler check; the R10 helpers own the gate.
-    def inspect_gem(entry)
+    def inspect_gem(entry, archive: nil)
       name = entry[:name]
       result = {
         rank: entry[:rank], name: name, version: nil, platform: entry[:platform],
@@ -886,13 +1264,21 @@ module CorpusCandidateScan
       }
 
       requested_version = entry[:version]
-      gem_path, fetch_error = Corpus::Census.fetch_gem(name, requested_version, config.work_dir)
+      increment_counter(:inspections)
+      gem_path, fetch_error = if archive
+                                archive
+                              else
+                                measure_phase("archive_fetch") do
+                                  fetch_gem_for_scan(name, requested_version, entry)
+                                end
+                              end
       unless gem_path
         result[:status] = :error
         result[:reason] = "gem fetch failed: #{fetch_error.to_s.lines.map(&:strip).reject(&:empty?).last}"
         return result
       end
 
+      measure_phase("unpack_static") do
       result[:gem_sha256] = Digest::SHA256.file(gem_path).hexdigest
       result[:sha256_match] = InspectionHelpers.validate_gem_sha!(result[:gem_sha256], result[:api_sha256])
 
@@ -995,6 +1381,7 @@ module CorpusCandidateScan
 
       result[:status] = :candidate
       result
+      end
     rescue StandardError => e
       result[:status] = :error
       result[:reason] = "#{e.class}: #{e.message}"

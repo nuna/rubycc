@@ -26,6 +26,37 @@ class TestScanPopularGems < Minitest::Test
     end
   end
 
+  class FakeArchiveHttp
+    attr_reader :calls, :max_active
+
+    def initialize(body, delay: 0)
+      @body = body
+      @delay = delay
+      @calls = []
+      @active = 0
+      @max_active = 0
+      @lock = Mutex.new
+    end
+
+    def get_bytes(url)
+      @lock.synchronize do
+        @calls << url
+        @active += 1
+        @max_active = [@max_active, @active].max
+      end
+      sleep @delay if @delay.positive?
+      @body
+    ensure
+      @lock.synchronize { @active -= 1 }
+    end
+  end
+
+  FakeResponse = Struct.new(:code, :message, :body, :headers) do
+    def [](key)
+      headers[key.downcase]
+    end
+  end
+
   def test_require_has_no_network_argv_or_exit_side_effect
     stdout, stderr, status = Open3.capture3(
       RbConfig.ruby, "-I#{File.expand_path("..", __dir__)}", "-e", "require #{SCRIPT.inspect}"
@@ -47,6 +78,21 @@ class TestScanPopularGems < Minitest::Test
     assert_equal File.expand_path("tmp/scan"), config.work_dir
     assert_equal "bestgems", config.source_choice
     assert config.verbose
+
+    summary_config = CorpusCandidateScan::Configuration.from_env(
+      ["--summary", "tmp/summary.json"], "SCAN_WORK" => "tmp/scan"
+    )
+    assert_equal File.expand_path("tmp/summary.json"), summary_config.summary_path
+
+    concurrency_config = CorpusCandidateScan::Configuration.from_env(
+      [], "SCAN_FETCH_CONCURRENCY" => "4"
+    )
+    assert_equal 4, concurrency_config.fetch_concurrency
+
+    error = assert_raises(ArgumentError) do
+      CorpusCandidateScan::Configuration.new(fetch_concurrency: 5)
+    end
+    assert_includes error.message, "between 1 and 4"
   end
 
   def test_configuration_rejects_invalid_legacy_arguments
@@ -152,6 +198,22 @@ class TestScanPopularGems < Minitest::Test
     )
   end
 
+  def test_recording_client_keeps_failed_requests_in_runtime_provenance
+    url = "https://rubygems.org/api/v2/rubygems/missing/versions/1.0.0.json?platform=ruby"
+    unavailable = Object.new
+    def unavailable.get(_url)
+      raise "synthetic 404"
+    end
+    client = CorpusCandidateScan::RecordingHttpClient.new(unavailable)
+
+    assert_raises(RuntimeError) { client.get(url) }
+
+    record = client.requests.fetch(0)
+    assert_equal url, record.fetch(:url)
+    assert_nil record.fetch(:response_sha256)
+    assert_includes record.fetch(:error), "synthetic 404"
+  end
+
   def test_timeframe_source_paginates_to_an_empty_page_and_selects_source_release
     config = CorpusCandidateScan::Configuration.from_env(
       ["--source", "timeframe", "--from", "2026-08-01T00:00:00Z", "--to", "2026-08-02T00:00:00Z"], {}
@@ -161,7 +223,8 @@ class TestScanPopularGems < Minitest::Test
       "created_at" => "2026-08-01T12:00:00Z", "prerelease" => false, "sha" => "feed",
       "downloads" => 100, "version_downloads" => 10
     }
-    v2 = record.merge("platform" => "ruby", "yanked" => false)
+    v2 = record.merge("platform" => "ruby", "yanked" => false,
+                      "gem_uri" => "https://rubygems.org/gems/example-gem-1.0.0.gem")
     responses = {
       CorpusCandidateScan::TimeframeVersions.url(config.from_time, config.to_time, 1) => JSON.generate([record]),
       CorpusCandidateScan::TimeframeVersions.url(config.from_time, config.to_time, 2) => JSON.generate([]),
@@ -177,7 +240,8 @@ class TestScanPopularGems < Minitest::Test
     assert_equal [{
       source: :timeframe, name: "example-gem", version: "1.0.0", platform: "ruby",
       created_at: "2026-08-01T12:00:00Z", downloads: 100, version_downloads: 10,
-      sha: "feed", api_sha: "feed", selection_note: "timeframe releases considered: 1.0.0; selected 1.0.0",
+      sha: "feed", api_sha: "feed", gem_uri: "https://rubygems.org/gems/example-gem-1.0.0.gem",
+      selection_note: "timeframe releases considered: 1.0.0; selected 1.0.0",
       selection_rejections: []
     }], selected
     assert_equal 3, http.urls.size
@@ -206,6 +270,43 @@ class TestScanPopularGems < Minitest::Test
       assert scanner.run
       assert_includes output.string, "selection-only"
       refute Dir.glob(File.join(config.work_dir, "*.gem")).any?
+    end
+  end
+
+  def test_run_summary_records_runtime_phases_without_absolute_paths
+    Dir.mktmpdir do |work_dir|
+      summary_path = File.join(work_dir, "summary.json")
+      config = CorpusCandidateScan::Configuration.from_env(
+        ["--source", "timeframe", "--from", "2026-08-01", "--to", "2026-08-02", "--selection-only"],
+        "SCAN_WORK" => work_dir, "SCAN_SUMMARY" => summary_path
+      )
+      record = {
+        "name" => "example-gem", "version" => "1.0.0", "platform" => "ruby",
+        "created_at" => "2026-08-01T12:00:00Z", "prerelease" => false, "sha" => "feed",
+        "downloads" => 100, "version_downloads" => 10
+      }
+      responses = {
+        CorpusCandidateScan::TimeframeVersions.url(config.from_time, config.to_time, 1) => JSON.generate([record]),
+        CorpusCandidateScan::TimeframeVersions.url(config.from_time, config.to_time, 2) => JSON.generate([])
+      }
+      output = StringIO.new
+      scanner = CorpusCandidateScan::Scanner.new(config: config, http_client: FakeHttp.new(responses),
+                                                 sleeper: ->(_seconds) {}, out: output)
+
+      assert scanner.run
+
+      summary = JSON.parse(File.read(summary_path))
+      assert_equal 1, summary.fetch("schema_version")
+      assert_equal "timeframe", summary.fetch("source")
+      assert_equal 2, summary.fetch("requests").fetch("attempts")
+      assert_equal 2, summary.fetch("requests").fetch("unique_urls")
+      assert_operator summary.fetch("requests").fetch("bytes"), :>, 0
+      assert_equal 0, summary.fetch("archives").fetch("inspections")
+      assert_equal 0, summary.fetch("archives").fetch("fetch_attempts")
+      assert_equal CorpusCandidateScan::SUMMARY_PHASES.to_h { |phase| [phase, 0.0] }.keys.sort,
+                   summary.fetch("phases_seconds").keys.sort
+      assert_equal ["uninspected"], summary.fetch("results").keys
+      refute_includes File.read(summary_path), work_dir
     end
   end
 
@@ -245,6 +346,25 @@ class TestScanPopularGems < Minitest::Test
     assert_includes error.message, "missing platform"
   end
 
+  def test_v2_metadata_requires_a_fixed_https_gem_uri
+    config = CorpusCandidateScan::Configuration.from_env(
+      ["--source", "timeframe", "--from", "2026-08-01", "--to", "2026-08-02"], {}
+    )
+    url = "https://rubygems.org/api/v2/rubygems/example-gem/versions/1.0.0.json?platform=ruby"
+    response = {
+      "name" => "example-gem", "version" => "1.0.0", "platform" => "ruby",
+      "yanked" => false, "sha" => "a" * 64
+    }
+    scanner = CorpusCandidateScan::Scanner.new(
+      config: config, http_client: FakeHttp.new(url => JSON.generate(response)),
+      sleeper: ->(_seconds) {}
+    )
+
+    details = scanner.send(:timeframe_version_details, "example-gem", "1.0.0")
+
+    assert_includes details.fetch(:error), "missing gem_uri"
+  end
+
   def test_timeframe_selection_skips_prerelease_and_yanked_release
     config = CorpusCandidateScan::Configuration.from_env(
       ["--source", "timeframe", "--from", "2026-08-01", "--to", "2026-08-02"], {}
@@ -266,7 +386,10 @@ class TestScanPopularGems < Minitest::Test
     }
     records.each do |record|
       responses["https://rubygems.org/api/v2/rubygems/example-gem/versions/#{record["version"]}.json?platform=ruby"] = JSON.generate(
-        record.merge("yanked" => record["version"] == "1.0.0")
+        record.merge(
+          "yanked" => record["version"] == "1.0.0",
+          "gem_uri" => "https://rubygems.org/gems/example-gem-#{record["version"]}.gem"
+        )
       )
     end
     scanner = CorpusCandidateScan::Scanner.new(config: config, http_client: FakeHttp.new(responses),
@@ -302,6 +425,165 @@ class TestScanPopularGems < Minitest::Test
       CorpusCandidateScan::InspectionHelpers.validate_gem_sha!("a" * 64, "b" * 64)
     end
     assert_includes error.message, "gem_sha256_mismatch"
+  end
+
+  def test_direct_archive_fetch_verifies_sha_and_reuses_only_a_completed_cache
+    Dir.mktmpdir do |work_dir|
+      body = "hermetic gem bytes"
+      url = "https://rubygems.org/gems/example-gem-1.0.0.gem"
+      http = FakeArchiveHttp.new(body)
+      fetcher = CorpusCandidateScan::ArchiveFetcher.new(http_client: http, work_dir: work_dir)
+      expected_sha = Digest::SHA256.hexdigest(body)
+
+      first = fetcher.fetch(
+        name: "example-gem", version: "1.0.0", platform: "ruby", gem_uri: url,
+        expected_sha256: expected_sha
+      )
+      second = fetcher.fetch(
+        name: "example-gem", version: "1.0.0", platform: "ruby", gem_uri: url,
+        expected_sha256: expected_sha
+      )
+
+      assert File.file?(first.fetch(:path))
+      assert_equal first.fetch(:path), second.fetch(:path)
+      assert second.fetch(:cache_hit)
+      assert_equal [url], http.calls
+      assert_empty Dir.glob(File.join(work_dir, "*.part"))
+      assert_equal 2, fetcher.stats.fetch(:attempts)
+      assert_equal 1, fetcher.stats.fetch(:cache_hits)
+    end
+  end
+
+  def test_direct_archive_sha_mismatch_removes_partial_and_keeps_no_completed_archive
+    Dir.mktmpdir do |work_dir|
+      url = "https://rubygems.org/gems/example-gem-1.0.0.gem"
+      fetcher = CorpusCandidateScan::ArchiveFetcher.new(
+        http_client: FakeArchiveHttp.new("partial body"), work_dir: work_dir
+      )
+
+      result = fetcher.fetch(
+        name: "example-gem", version: "1.0.0", platform: "ruby", gem_uri: url,
+        expected_sha256: "0" * 64
+      )
+
+      assert_nil result.fetch(:path)
+      assert_includes result.fetch(:error), "gem_sha256_mismatch"
+      assert_empty Dir.glob(File.join(work_dir, "*.gem"))
+      assert_empty Dir.glob(File.join(work_dir, "*.part"))
+
+      resumed = CorpusCandidateScan::ArchiveFetcher.new(
+        http_client: FakeArchiveHttp.new("partial body"), work_dir: work_dir
+      ).fetch(
+        name: "example-gem", version: "1.0.0", platform: "ruby", gem_uri: url,
+        expected_sha256: Digest::SHA256.hexdigest("partial body")
+      )
+      assert File.file?(resumed.fetch(:path))
+    end
+  end
+
+  def test_http_client_retries_rate_limit_and_timeout_hermetically
+    sleeps = []
+    retries = 0
+    responses = [
+      FakeResponse.new("429", "Too Many Requests", "busy", { "retry-after" => "0" }),
+      FakeResponse.new("200", "OK", "archive", {})
+    ]
+    client = CorpusCandidateScan::HttpClient.new(
+      requester: ->(_uri) { responses.shift }, sleeper: ->(seconds) { sleeps << seconds },
+      on_retry: -> { retries += 1 }
+    )
+
+    assert_equal "archive", client.get_bytes("https://rubygems.org/gems/example.gem")
+    assert_equal 1, retries
+    assert_equal [0.0], sleeps
+
+    timeout_sleeps = []
+    calls = 0
+    timeout_client = CorpusCandidateScan::HttpClient.new(
+      max_retries: 2, requester: ->(_uri) { calls += 1; raise Net::ReadTimeout, "timed out" },
+      sleeper: ->(seconds) { timeout_sleeps << seconds }
+    )
+    assert_raises(Net::ReadTimeout) { timeout_client.get_bytes("https://rubygems.org/gems/example.gem") }
+    assert_equal 3, calls
+    assert_equal [1.0, 2.0], timeout_sleeps
+  end
+
+  def test_timeframe_archive_workers_respect_configured_bound
+    Dir.mktmpdir do |work_dir|
+      body = "same archive body"
+      http = FakeArchiveHttp.new(body, delay: 0.01)
+      config = CorpusCandidateScan::Configuration.new(
+        source_choice: "timeframe", from_time: "2026-08-01", to_time: "2026-08-02",
+        work_dir: work_dir, fetch_concurrency: 2
+      )
+      scanner = CorpusCandidateScan::Scanner.new(
+        config: config, http_client: FakeHttp.new({}), archive_http_client: http,
+        sleeper: ->(_seconds) {}
+      )
+      sha = Digest::SHA256.hexdigest(body)
+      entries = 4.times.map do |index|
+        {
+          name: "example-gem-#{index}", version: "1.0.0", platform: "ruby",
+          gem_uri: "https://rubygems.org/gems/example-gem-#{index}-1.0.0.gem", api_sha: sha
+        }
+      end
+
+      results = scanner.send(:fetch_timeframe_archives, entries)
+
+      assert_equal 4, results.count { |path, error| path && error.nil? }
+      assert_operator http.max_active, :<=, 2
+      assert_equal 4, http.calls.length
+    end
+  end
+
+  def test_direct_and_legacy_fetch_paths_classify_the_same_gem_fixture
+    Dir.mktmpdir do |root|
+      fixture_dir = File.join(root, "fixture")
+      direct_dir = File.join(root, "direct")
+      fallback_dir = File.join(root, "fallback")
+      FileUtils.mkdir_p(fixture_dir)
+      gem_path = build_fixture_gem(fixture_dir)
+      body = File.binread(gem_path)
+      sha = Digest::SHA256.hexdigest(body)
+      gem_uri = "https://rubygems.org/gems/example-gem-1.0.0.gem"
+      entry = {
+        rank: nil, name: "example-gem", version: "1.0.0", platform: "ruby",
+        created_at: "2026-08-01T12:00:00Z", downloads: 1, version_downloads: 1,
+        selection_note: nil, selection_rejections: [], api_sha: sha, gem_uri: gem_uri
+      }
+      direct_config = CorpusCandidateScan::Configuration.new(
+        source_choice: "timeframe", from_time: "2026-08-01", to_time: "2026-08-02",
+        work_dir: direct_dir
+      )
+      direct_fetch = CorpusCandidateScan::ArchiveFetcher.new(
+        http_client: FakeArchiveHttp.new(body), work_dir: direct_dir
+      ).fetch(
+        name: entry[:name], version: entry[:version], platform: entry[:platform],
+        gem_uri: gem_uri, expected_sha256: sha
+      )
+      direct_scanner = CorpusCandidateScan::Scanner.new(
+        config: direct_config, http_client: FakeHttp.new({}), sleeper: ->(_seconds) {}
+      )
+      direct = direct_scanner.send(:inspect_gem, entry, archive: [direct_fetch.fetch(:path), nil])
+
+      FileUtils.mkdir_p(fallback_dir)
+      FileUtils.cp(gem_path, File.join(fallback_dir, "example-gem-1.0.0.gem"))
+      fallback_config = CorpusCandidateScan::Configuration.new(
+        first_page: 1, last_page: 1, work_dir: fallback_dir
+      )
+      fallback_scanner = CorpusCandidateScan::Scanner.new(
+        config: fallback_config, http_client: FakeHttp.new({}), sleeper: ->(_seconds) {}
+      )
+      fallback_entry = entry.reject { |key, _| key == :gem_uri || key == :api_sha }
+      fallback = fallback_scanner.send(:inspect_gem, fallback_entry)
+
+      classification = lambda do |result|
+        result.values_at(:name, :version, :platform, :status, :reason, :extensions,
+                         :extension_directories, :native_source_files, :extconf_files,
+                         :review_reasons, :c_files, :h_files, :includes, :ruby_self)
+      end
+      assert_equal classification.call(fallback), classification.call(direct)
+    end
   end
 
   def test_rubygems_page_parser_uses_injected_http_client
@@ -369,5 +651,31 @@ class TestScanPopularGems < Minitest::Test
     assert_includes output.string, "[1b] C extension"
     assert_includes output.string, "review-gem"
     assert_includes output.string, "assembly-gem"
+  end
+
+  private
+
+  def build_fixture_gem(directory)
+    FileUtils.mkdir_p(File.join(directory, "ext", "example"))
+    FileUtils.mkdir_p(File.join(directory, "lib"))
+    File.write(File.join(directory, "ext", "example", "extconf.rb"),
+               "require 'mkmf'\ncreate_makefile('example')\n")
+    File.write(File.join(directory, "ext", "example", "example.c"),
+               "#include <stdio.h>\nvoid example(void) {}\n")
+    File.write(File.join(directory, "lib", "example.rb"), "module Example; end\n")
+    specification = Gem::Specification.new do |gem|
+      gem.name = "example-gem"
+      gem.version = "1.0.0"
+      gem.summary = "hermetic scanner fixture"
+      gem.authors = ["rubycc"]
+      gem.email = ["rubycc@example.invalid"]
+      gem.licenses = ["MIT"]
+      gem.homepage = "https://example.invalid/rubycc-fixture"
+      gem.required_ruby_version = ">= 3.0"
+      gem.files = ["ext/example/extconf.rb", "ext/example/example.c", "lib/example.rb"]
+      gem.extensions = ["ext/example/extconf.rb"]
+      gem.require_paths = ["lib"]
+    end
+    Dir.chdir(directory) { File.expand_path(Gem::Package.build(specification)) }
   end
 end
