@@ -2,7 +2,7 @@
   "schema_version": 1,
   "experiment": "corpus-candidate-pilot-v2",
   "fixed_on": "2026-08-16",
-  "scanner_revision": "2c053a23434bc94f6ed83c80b0822a3320d14591",
+  "scanner_revision": "66a20d76314e93f342f3618da25e3bcaf62ee3be",
   "scan": {
     "source": "timeframe",
     "interval": "one completed UTC day",
