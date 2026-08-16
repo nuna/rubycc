@@ -11799,3 +11799,32 @@ PR #64で追加した次段階の5 issue（scan runtime、daily workflow、local
 validation workflow、pilot）は未実装のため `open` に残した。各issueへ3タスクの実装計画と依存順を
 追記し、次の実装PRで1 issue = 1 PRとして着手できる状態にした。今回のissue lifecycle更新と
 計画追記はRuby 3.3.12のissue docs testで確認する。
+
+## corpus-candidate-scan-runtime-1〜3 — scanの計測とarchive取得を実装する
+
+決定的なreview artifactに実行時刻・絶対path・cache hit・worker数を混ぜないため、runtime
+evidenceはschema version 1のrun summaryへ分離した。summaryはpagination、release正規化、v2
+metadata、archive取得、unpack/static、artifact書き出しを計測し、nestedなv2計測は親のrelease
+正規化時間から差し引く。source/archive request数、unique URL、byte数、cache hit、archiveの
+success/retry/failureも記録し、失敗したsource URLもprovenanceから落とさない。
+
+timeframeのv2 responseに固定HTTPS `gem_uri`を必須化し、archiveは直接取得して`.part`へ書き込み、
+SHA-256一致後に完成ファイルへatomic renameする。完了済みarchiveは同じname/versionとSHAが一致
+すると再利用し、途中失敗で`.part`をcache hitとは扱わない。既存rank scanは固定URIを持たない
+ため、互換fallbackとして`Corpus::Census.fetch_gem`を残す。timeframe direct fetchのworker数は
+既定2、許容1〜4に制限し、HTTP 408/429/5xxとopen/read timeoutにRetry-After優先の指数backoffを
+適用した。
+
+malformed metadata、SHA不一致、partial、途中再開、429、timeout、worker上限、direct/fallback
+の同一fixture分類をhermetic testで固定した。Ruby 3.3.12のscanner targeted testは25 runs /
+128 assertions、全体`rake test`は3,250 runs / 11,487 assertions / 41 skips、failures/errors 0。
+
+固定UTC window `2026-08-15T00:00:00Z`〜`2026-08-16T00:00:00Z`を専用空cacheで実測した変更後の
+wall timeは399.407秒(6分39.4秒)。入力は826 version entries、v2 candidates 765、archive
+262件(113,236,992 bytes)、work領域424 MB(unpack込み)で、archive success/retry/failureは
+262/1/0だった。フェーズはpagination 1.472秒、release正規化0.035秒、v2 metadata329.371秒、
+archive57.246秒、unpack/static11.227秒、artifact書き出し0.023秒。変更前の同window記録は
+約23分強・109 archive・約50 MB archive・約83 MB workだったが、live APIの内容が153 entries /
+109 archiveから826 entries / 262 archiveへ変動しているため、厳密なA/B速度比ではなく、15分
+目標とフェーズ別の再現可能な証拠として扱う。日次workflow、gem build/test、corpus正式追加は
+このissueでは行わない。

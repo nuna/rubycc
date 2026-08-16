@@ -83,6 +83,44 @@ GitHub Actionsのtimeoutを根拠を持って決められない。
 1日109 archiveという規模に対して、静的解析より直列 `gem fetch` の待ち時間が大きいと判断した。
 並列化だけでなく、フェーズ別計測、SHA検証、再開可能性を同じ変更の受け入れ条件にした。
 
+### 2026-08-16 実装・固定window実測
+
+3タスクを順に実装した。
+
+- `corpus-candidate-scan-runtime-1`: 決定的artifactとは別のrun summaryに、非重複のフェーズ時間、
+  source/archive request、byte数、cache hit、archive success/retry/failureを記録した。
+- `corpus-candidate-scan-runtime-2`: v2のHTTPS `gem_uri`を必須化し、metadata SHA-256検証後に
+  `.part`からatomic renameする直接取得を追加した。timeframeは既定2、設定範囲1〜4のworkerで
+  boundedに取得し、429/408/5xxとtimeoutにRetry-After優先の指数backoffを適用する。rank scanは
+  固定URIを持たないため、互換fallbackとして従来の`gem fetch`を残した。
+- `corpus-candidate-scan-runtime-3`: malformed metadata、SHA不一致、partial、途中再開、429、
+  timeout、worker上限と、直接経路/fallbackの同一fixture分類一致をhermetic testで固定した。
+
+既存の変更前記録は、同じUTC windowの空cache scanが約23分強、109 archive、archive約50 MB、
+work約83 MBだった。変更後は同じ `2026-08-15T00:00:00Z`〜`2026-08-16T00:00:00Z` を、
+専用の空work/cacheと `fetch-concurrency=2` で実行し、次の値になった。
+
+| 指標 | 変更前の記録 | 変更後の実測 |
+| --- | ---: | ---: |
+| wall time | 約23分強 | 399.407秒 (6分39.4秒) |
+| version entries / v2 candidates / archives | 153 / 114 / 109 | 826 / 765 / 262 |
+| archive取得 | 109件 / 約50 MB | 262件 / 113,236,992 bytes (約108.0 MiB) |
+| work領域 | 約83 MB | 約424 MB (unpack込み) |
+| archive success / retry / failure | 未計測 | 262 / 1 / 0 |
+
+変更前後でlive APIの同一UTC windowの内容が変動し、入力規模が153 entries / 109 archiveから
+826 entries / 262 archiveへ増えているため、wall timeの減少率を厳密なA/B効果とは扱わない。
+それでも変更後のwall timeは15分目標を満たし、フェーズ別には pagination 1.472秒、release
+正規化 0.035秒、v2 metadata 329.371秒、archive取得57.246秒、unpack/static11.227秒、
+artifact書き出し0.023秒だった。source request 794、archive request 262、total 1,056、
+cache hit 0、取得byte 114,657,144をsummaryに記録した。503件のv2 404は候補なしへ黙って
+変換せず、[E]として残した。
+
+Ruby 3.3.12でscanner targeted testは25 runs / 128 assertions、`rake test`は3,250 runs /
+11,487 assertions / 41 skips、failures 0 / errors 0だった。日次workflow、gem build/test、
+`test/corpus/gems.rb`の正式追加は行っていない。
+
 ## 決着
 
-(完了時に記入。結果と`docs/development/STEPS.md`の該当エントリへのリンクを残す。)
+実装と固定window実測を完了した。設計判断と実測の要約は
+[`corpus-candidate-scan-runtime-1〜3`](../docs/development/STEPS.md) に記録する。

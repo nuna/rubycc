@@ -356,16 +356,24 @@ module CorpusCandidateScan
 
     def get(url)
       @attempts += 1
-      response = if @cache
-                   @cache.fetch(url) { @client.get(url) }
-                 else
-                   body = @client.get(url)
-                   { body: body, cache_key: Digest::SHA256.hexdigest(url),
-                     response_sha256: Digest::SHA256.hexdigest(body),
-                     cache_hit: false, bytes: body.bytesize }
-                 end
-      @request_records[url] = response.merge(url: url)
-      response[:body]
+      begin
+        response = if @cache
+                     @cache.fetch(url) { @client.get(url) }
+                   else
+                     body = @client.get(url)
+                     { body: body, cache_key: Digest::SHA256.hexdigest(url),
+                       response_sha256: Digest::SHA256.hexdigest(body),
+                       cache_hit: false, bytes: body.bytesize }
+                   end
+        @request_records[url] = response.merge(url: url)
+        response[:body]
+      rescue StandardError => e
+        @request_records[url] = {
+          url: url, cache_key: Digest::SHA256.hexdigest(url), response_sha256: nil,
+          cache_hit: false, bytes: 0, error: "#{e.class}: #{e.message}"
+        }
+        raise
+      end
     end
 
     def requests
@@ -589,7 +597,9 @@ module CorpusCandidateScan
               "url" => request[:url],
               "cache_key" => request[:cache_key],
               "response_sha256" => request[:response_sha256]
-            }
+            }.tap do |record|
+              record["error"] = request[:error] if request[:error]
+            end
           end,
           "records" => results.sort_by { |result| record_sort_key(result) }.map { |result| record(result) }
         }
@@ -805,6 +815,7 @@ module CorpusCandidateScan
       @corpus_names = corpus_names.to_set
       @bundled_headers = bundled_headers || Corpus::Census.bundled_headers(File.join(RUBYCC_ROOT, "include"))
       @api_cache_dir = File.join(config.work_dir, "api")
+      @phase_stack = []
       @started_at = nil
       @last_source = nil
       @last_results = []
@@ -853,9 +864,14 @@ module CorpusCandidateScan
 
     def measure_phase(name)
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      frame = { child_seconds: 0.0 }
+      @phase_stack << frame
       yield
     ensure
-      @timings[name] += Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+      @phase_stack.pop
+      @timings[name] += elapsed - frame.fetch(:child_seconds)
+      @phase_stack.last[:child_seconds] += elapsed if @phase_stack.any?
     end
 
     def increment_counter(name, amount = 1)
