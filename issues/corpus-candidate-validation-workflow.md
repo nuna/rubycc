@@ -5,7 +5,10 @@ opened: 2026-08-16
 closed:
 branch:
 pr:
-steps: []
+steps:
+  - corpus-candidate-validation-workflow-1
+  - corpus-candidate-validation-workflow-2
+  - corpus-candidate-validation-workflow-3
 ---
 
 # 選択済みcorpus候補を隔離して検証する手動GitHub Actionsを追加する
@@ -52,6 +55,17 @@ review evidenceとして残せる。
 - workflowの結果からcorpusを自動変更せず、正式追加は候補ごとの独立issue/PRで行う
 
 このPRでは日次収集、候補選定、header修正、corpus正式追加を行わない。
+
+## 実装計画
+
+3タスク、各タスクを1コミットの目安とする。
+
+1. `corpus-candidate-validation-workflow-1`: workflow_dispatch入力の検証と、archiveの再取得・
+   SHA/name/version/platform照合を実装する
+2. `corpus-candidate-validation-workflow-2`: build/loadとrecipe限定のupstream testを分離し、
+   最小権限、timeout、cache禁止、structured resultを設定する
+3. `corpus-candidate-validation-workflow-3`: input拒否、SHA不一致、sanity失敗、成功、環境不足を
+   fixtureまたは安全な既知gemで検証し、運用手順を更新する
 
 ## 作業ログ
 

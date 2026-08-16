@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: infra
 opened: 2026-08-16
-closed:
+closed: 2026-08-16
 branch: corpus-candidate-discovery
-pr:
+pr: 60
 steps:
   - corpus-candidate-discovery-1
   - corpus-candidate-discovery-2
@@ -182,6 +182,6 @@ fixture を使う hermetic test で API schema、pagination、release 選択、�
 
 ## 決着
 
-実装ブランチで A1〜A3 と live smoke test まで完了。PR 作成後、planning issue の
-`corpus-candidate-issues` への積み上げレビュー待ち。PR が master に取り込まれるまでは
-issue を `done` にしない。
+PR #60 がmasterへmergeされたため完了。timeframe source、release選択、version固定fetch、
+live smoke testまで実装し、候補の正式corpus追加は行わなかった。作業ログは
+[`corpus-candidate-discovery-1〜3`](../docs/development/STEPS.md)に記録した。

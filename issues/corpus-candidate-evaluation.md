@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: infra
 opened: 2026-08-16
-closed:
+closed: 2026-08-16
 branch: corpus-candidate-evaluation
-pr:
+pr: 62
 steps:
   - corpus-candidate-evaluation-1
   - corpus-candidate-evaluation-2
@@ -235,3 +235,4 @@ selection-only のままでは source/yanked と archive の適格性を全件�
 - `test/corpus/gems.rb`、header、compiler gap、`data/verified_gems.json` は変更していない
 - source/yanked の全件検証は deferred であり、未検査 3,881 件の不存在を主張しない
 - 最終 test-runner の `rake test` は 3,242 runs / 11,549 assertions / 41 skips / 0 failures / 0 errors で終了した
+- 作業ログは [`corpus-candidate-evaluation-1〜3`](../docs/development/STEPS.md) に記録した

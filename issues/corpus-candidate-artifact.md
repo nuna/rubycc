@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: infra
 opened: 2026-08-16
-closed:
+closed: 2026-08-16
 branch: corpus-candidate-artifact
-pr:
+pr: 61
 steps:
   - corpus-candidate-artifact-1
   - corpus-candidate-artifact-2
@@ -162,5 +162,6 @@ test-runner の結果:
 
 ## 決着
 
-artifact-1〜3、回帰確認、利用手順の更新まで完了。PR 作成後、
-`corpus-candidate-discovery` PR に積み上げてレビュー待ち。merge 前は issue を `done` にしない。
+PR #61 がmasterへmergeされたため完了。決定的artifact、provenance、review分類、Censusとの
+静的分析共通化、利用手順まで実装した。作業ログは
+[`corpus-candidate-artifact-1〜3`](../docs/development/STEPS.md)に記録した。

@@ -5,7 +5,10 @@ opened: 2026-08-16
 closed:
 branch:
 pr:
-steps: []
+steps:
+  - corpus-candidate-pilot-v2-1
+  - corpus-candidate-pilot-v2-2
+  - corpus-candidate-pilot-v2-3
 ---
 
 # 日次フル静的scanでcorpus候補の収率・増分価値・運用時間を検証する
@@ -70,6 +73,17 @@ windowを欠測なく検査し、静的増分と上位候補の実行結果を�
 - 正式追加に進む候補は1 gem = 1 issueとして新規作成する。この評価PRでは
   `test/corpus/gems.rb`、header、compiler、`data/verified_gems.json`を変更しない
 - report、STEPS、issueへ実測値と決着を記録し、推定値を実測結果として書かない
+
+## 実装計画
+
+3タスク、各タスクを1コミットの目安とする。
+
+1. `corpus-candidate-pilot-v2-1`: 14個のUTC日window、scanner revision、候補選定規則、資源境界を
+   manifestへ事前固定する
+2. `corpus-candidate-pilot-v2-2`: 日次artifactを収集・集計し、上位3候補をlocal skillと手動Actions
+   で検査する
+3. `corpus-candidate-pilot-v2-3`: p50/p95、失敗率、増分header/gap、review負荷を判定し、採用・
+   条件付き採用・不採用とfollow-up issueを記録する
 
 ## 作業ログ
 
