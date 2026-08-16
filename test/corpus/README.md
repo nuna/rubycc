@@ -166,6 +166,29 @@ scanner commit を含む名前で、`classification.json`、`run-summary.json`�
 やrepositoryへは保存しない。同じintervalを別SHAで再実行した場合はartifact名とclassificationの
 normalized input / corpus classificationを比較し、scanner変更と分類差を分けて確認する。
 
+### 手動候補validation GitHub Actions
+
+`.github/workflows/corpus-candidate-validation.yml` は `workflow_dispatch` 専用で、日次scanや通常の
+push / pull requestからは起動しない。候補の `name`、`version`、`platform`、RubyGems archiveの
+SHA-256、`mode=build_load|upstream`を指定する。
+
+```sh
+gh workflow run corpus-candidate-validation.yml \
+  --ref master \
+  -f name=json \
+  -f version=2.21.1 \
+  -f platform=ruby \
+  -f sha256=13a43df75d95641443f5702dff350f237164a9d811ff0f2c2800d4d980220583 \
+  -f mode=build_load
+```
+
+workflowは入力形式を検証してから固定URLのarchiveを再取得し、SHAとgemspecのname/version/platformを
+照合する。不一致、`no_ext`、未宣言native source、未知のnative build形態ではbuild/loadへ進まない。
+`build_load`は単一候補を隔離GEM_HOMEで実行し、rubycc buildの証拠と全shared objectのloadを確認する。
+`upstream`はそのjobとは別に、`tools/verify_gem_tests.rb`のreview済みrecipeをhost controlとrubyccで
+実行する。`--update`、任意URL、dispatch入力のtest command、cache保存は使わず、`data/verified_gems.json`
+とcorpusは変更しない。結果JSONと短いlogだけを14日間artifactへ保存する。
+
 ### ランキングソース
 
 - `rubygems` — `https://rubygems.org/releases/popular` の人気ランキング。1 ページ 10 gem。

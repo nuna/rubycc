@@ -224,6 +224,30 @@ jobs:
           echo "rubycc_status=$rubycc_status" >> "$GITHUB_OUTPUT"
           exit 0
 
+      - name: Summarize host control and rubycc recipe statuses
+        if: always() && steps.recipe_preflight.outputs.ready == 'true'
+        shell: bash
+        env:
+          CONTROL_RESULT: ${{ runner.temp }}/corpus-candidate-validation/upstream/control.json
+          RUBYCC_RESULT: ${{ runner.temp }}/corpus-candidate-validation/upstream/rubycc.json
+          SUMMARY_RESULT: ${{ runner.temp }}/corpus-candidate-validation/upstream/summary.json
+        run: |
+          ruby -rjson -e '
+            paths = {"control" => ENV.fetch("CONTROL_RESULT"), "rubycc" => ENV.fetch("RUBYCC_RESULT")}
+            statuses = paths.to_h do |label, path|
+              next [label, "infrastructure_failure"] unless File.file?(path)
+              payload = JSON.parse(File.read(path))
+              rows = payload.fetch("results")
+              [label, rows.length == 1 ? rows.fetch(0).fetch("status") : "invalid_result"]
+            rescue JSON::ParserError, KeyError
+              [label, "infrastructure_failure"]
+            end
+            summary = {"schema_version" => 1, "statuses" => statuses,
+                       "comparison" => statuses.values.all? { |status| status == "pass" } ? "pass" : "review"}
+            File.write(ENV.fetch("SUMMARY_RESULT"), JSON.pretty_generate(summary) + "\n")
+            abort "upstream validation requires review: #{statuses.inspect}" unless summary.fetch("comparison") == "pass"
+          '
+
       - name: Upload upstream reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -233,6 +257,7 @@ jobs:
             ${{ runner.temp }}/corpus-candidate-validation/upstream/preflight.json
             ${{ runner.temp }}/corpus-candidate-validation/upstream/control.json
             ${{ runner.temp }}/corpus-candidate-validation/upstream/rubycc.json
+            ${{ runner.temp }}/corpus-candidate-validation/upstream/summary.json
             ${{ runner.temp }}/corpus-candidate-validation/upstream/*.log
           retention-days: 14
           if-no-files-found: warn
