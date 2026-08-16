@@ -89,6 +89,15 @@ skill作成指針に従い、名前を動詞始まりにし、本文は既存too
 既存scannerを参照する固定identity・静的分類・増分review・明示依頼時の隔離build/load・recipe限定の
 upstream testを`SKILL.md`へまとめた。作業物はignored artifactsまたは一時directoryに限定する。
 
+fresh-context forward testを固定artifactの`funnel_http 0.5.12`で2回実施した。静的のみの依頼では
+archive SHA/name/version/platformを照合し、C/Hに加えてGo sourceと`go.mod`/`go.sum`を検出して
+`review`で停止した。build/load依頼では同じ停止条件により未知コードを実行せず、`recipe_missing`も
+記録した。両方ともRuby 3.3.12をrbenvから選び、repositoryの変更は無かった。
+
+初回の2検査でGo/cgo sourceの報告が揃わなかったため、scannerのC/C++一覧をそのまま信頼しない
+棚卸し規則とadditional native source/build manifest欄をskillへ追加して再検証した。修正版では
+両方のfresh-context testがGo/cgoを`needs_review`として一致して扱った。
+
 ## 決着
 
 (完了時に記入。結果と`docs/development/STEPS.md`の該当エントリへのリンクを残す。)
