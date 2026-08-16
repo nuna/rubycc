@@ -101,7 +101,7 @@ R10 の合格率は 3 つの文書に書き写されていて、そのうち 2 �
 | [R10-CORPUS-SCAN.md](development/R10-CORPUS-SCAN.md) | **生成物**。コーパスの機械ゲートと provenance |
 | [R10-MANUAL-CLASSIFICATION.md](development/R10-MANUAL-CLASSIFICATION.md) | **生成物**。R10 の手動分類台帳 |
 | [security-dos-review.md](development/security-dos-review.md) | DoS フェイルセーフの設計と上限値の根拠 |
-| [corpus-candidate-evaluation](development/corpus-candidate-evaluation) | corpus 候補発見の固定実験artifact・評価結果 |
+| [corpus-candidate-evaluation](development/corpus-candidate-evaluation) | corpus 候補発見の固定実験manifest・集計・評価結果 |
 
 ベンチマークを `development/` に置いているのは、**方法論と再現手順が主**で、利用者が知りたい
 数値(コンパイル速度・生成コードの速度)は README の「既知の制限」に要約があるためである。

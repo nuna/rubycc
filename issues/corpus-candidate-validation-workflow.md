@@ -1,0 +1,66 @@
+---
+status: open
+kind: infra
+opened: 2026-08-16
+closed:
+branch:
+pr:
+steps: []
+---
+
+# 選択済みcorpus候補を隔離して検証する手動GitHub Actionsを追加する
+
+## 課題
+
+日次scanはarchiveの静的検査までに限定すべきだが、corpusへ進めるにはrubycc build、load smoke、
+可能ならgem自身のtestとhost cc対照が必要である。これらは `extconf.rb`、Makefile、上流testという
+任意コードを実行するため、scheduleで全候補へ自動実行したり、開発者の通常環境で直接実行したり
+するべきではない。
+
+既存 `tools/verify_gem_tests.rb` はrecipeのあるgemを検証できるが、候補検査専用の最小権限な
+手動workflowと、静的artifactから実行検査へ進む入力契約がない。このissueは
+[corpus-candidate-local-inspection-skill](corpus-candidate-local-inspection-skill.md)でローカルに
+recipeと停止条件を確認した候補の再現検証だけを扱う。
+
+## 影響
+
+任意コード実行を静的日次jobから分離すると、候補数が増えてもsecretやcacheを一括して危険へ
+さらさずに済む。また、一時的な開発者環境の成功ではなく、破棄されるrunner上のlogとJSONを
+review evidenceとして残せる。
+
+## 受け入れ条件
+
+- `workflow_dispatch`専用の候補検証workflowを追加し、schedule、push、pull requestでは起動しない
+- 入力はgem名、version、platform、期待SHA-256、検証modeとする。shellへ文字列連結せず、
+  name/version/platformの形式とSHA長を検証してから配列引数または環境変数でtoolへ渡す
+- `permissions: contents: read`、checkout `persist-credentials: false`、repository/environment
+  secretsなし、cacheのrestore/saveなしとする
+- 日次scanのartifactを信頼して実行せず、archiveを再取得してSHA/name/version/platformを
+  再照合する。不一致なら未知コードを実行する前に失敗する
+- build/load smokeとupstream testを別stepまたは別jobにし、前者の成功をverified gemと扱わない
+- upstream modeはrepositoryでreview済みの `tools/verify_gem_tests.rb` recipeがあるgemだけ許可し、
+  任意URL、任意command、dispatch入力中のtest scriptを実行しない
+- rubyccとhost cc controlの結果を区別し、sanity checkで注入した`.so`が実際にloadされたことを
+  証明する。`--update`は使わず、`data/verified_gems.json`を変更しない
+- 1候補1jobを基本とし、build/loadは30分、upstream検証を含むjobは90分以内でtimeoutする。
+  大量候補matrixやRuby/architecture全組合せを作らない
+- 実行後にcacheを保存しない。upload対象はwrapperが生成したstructured resultと必要最小限のlog
+  だけとし、`.gem`、source tree、GEM_HOMEをartifact化しない。retentionは14日とする
+- 成功、既知制限、新規再現gap、環境不足、timeout、infrastructure failureを別statusで出力する
+- input拒否、SHA不一致、build失敗、sanity失敗、recipeなし、成功をfixtureまたは安全な既知gemで
+  検証し、run URLと所要時間を作業ログへ残す
+- workflowの結果からcorpusを自動変更せず、正式追加は候補ごとの独立issue/PRで行う
+
+このPRでは日次収集、候補選定、header修正、corpus正式追加を行わない。
+
+## 作業ログ
+
+### 2026-08-16
+
+静的scanと任意コード実行では必要な権限・保存物・失敗時の意味が異なるため、日次workflowから
+分離した。ローカルskillでrecipeを整えた候補だけを手動再現し、実行後のcacheを次runへ渡さない
+構成を成功条件にした。
+
+## 決着
+
+(完了時に記入。結果と`docs/development/STEPS.md`の該当エントリへのリンクを残す。)
