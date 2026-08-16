@@ -1,10 +1,10 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-08-16
-closed:
-branch:
-pr:
+closed: 2026-08-16
+branch: corpus-candidate-pilot-v2-graphql-c-parser
+pr: 75, 76
 steps:
   - corpus-candidate-pilot-v2-graphql-c-parser-1
   - corpus-candidate-pilot-v2-graphql-c-parser-2
@@ -127,9 +127,22 @@ test commandを許すと、安全境界と再現性を失う。load entrypoint�
 
 ## 作業ログ
 
-未着手。build/install passとgeneric load sanity failureが分かれたため、documented entrypointでの
-再検証を独立issue化した。
+既存のlocal skill artifactで固定archiveのSHAとgemspec identityを再確認した。static statusは
+`candidate`、extension rootは`ext/graphql_c_parser_ext`、new system headerは`alloca.h`、new gap
+headerは`libintl.h`と`malloc.h`だった。
+
+PR #75でname/version/platform/SHAに固定したdata-only recipeを追加し、documented entrypoint
+`graphql/c_parser`、依存`graphql 2.6.8`、`GraphQL::CParser.parse`のsanityを実装した。host/rubyccを
+別GEM_HOMEで実行し、Ruby 3.3.12のローカル検証とActions run 31950250084 (Ruby 4.0.6)の双方で
+native extension install、rubycc build evidence (rubycc側)、documented loadをpassと確認した。
+旧generic `.so` loadの`GraphQL::Language` NameErrorは候補のbuild failureではなく、documented
+entrypointを使わない検査器の誤判定と切り分けた。
+
+`tools/verify_gem_tests.rb --list`にreview済みupstream recipeは無かったため、任意test commandへ
+fallbackせずupstream testは未実行とした。corpus、header、compiler、`data/verified_gems.json`は
+変更していない。
 
 ## 決着
 
-未着手。
+固定entrypointによる再検証は完了し、結果をPR #75へ反映した。候補の正式corpus追加はこの検証の
+成功だけでは行わず、別の人間レビューPRで判断する。
