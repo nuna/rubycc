@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-16
-closed:
+closed: 2026-08-16
 branch: corpus-candidate-pilot-v2-rbtrace
-pr:
+pr: 77
 steps:
   - corpus-candidate-pilot-v2-rbtrace-1
   - corpus-candidate-pilot-v2-rbtrace-2
