@@ -1,10 +1,10 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-08-16
-closed:
-branch:
-pr:
+closed: 2026-08-16
+branch: corpus-candidate-pilot-v2-rbtrace
+pr: 77
 steps:
   - corpus-candidate-pilot-v2-rbtrace-1
   - corpus-candidate-pilot-v2-rbtrace-2
@@ -117,8 +117,31 @@ bundled dependencyの失敗だけで候補を捨てると、`sys/un.h`や新規g
 
 ## 作業ログ
 
-未着手。pilot v2の`build_failed`を候補固有の問題とrubycc gapへ分離するために起票した。
+固定archive `rbtrace 0.5.5` (SHA-256
+`ed0200ffeac4251f3464412e52f36cd64c473673c2739129e0b48c568672fe68`)を、repo-local
+`inspect-corpus-candidate` skillと`verify_corpus_candidate.rb --preflight-only`で再確認した。
+local static statusは`candidate`、extension rootは`ext`、native sourceは`ext/rbtrace.c`だった。
+既存artifactで確認済みのnew system headerは`sys/un.h`、gap headerは`env.h`、`msgpack.h`、`node.h`、
+`st.h`、`sys/ipc.h`、`sys/msg.h`である。
+
+Ruby 3.3.12の隔離GEM_HOMEでhost controlは`build_load_pass`、native extension installは`pass`、
+shared object loadは`all_shared_objects_loaded`だった。同じ固定archiveをrubyccで実行すると、
+bundled msgpackのconfigureとC compile/linkまでは成功したが、Automake/libtoolの
+`install-libLTLIBRARIES` recipeをrmakeが実行できず`build_failed` (exit 1)になった。
+
+GitHub Actions [run 31951987733](https://github.com/nuna/rubycc/actions/runs/31951987733)でも、
+preflightはubuntu-24.04/Ruby 4.0.6でidentity一致・`candidate`、build/loadは同じ`make install`
+段階で`build_failed` (exit 1)だった。`for`/`if`/`done`/brace groupとshell variableを含むrecipeを
+candidate archiveなしの最小`Rubycc::Rmake::Executor`実行でも再現したため、分類は
+`rubycc_gap`（rmake build-executor gap）とする。依存、runner環境、非再現性ではない。
+
+review済みupstream recipeは無かったため`recipe_missing`として停止し、任意test commandとdocumented
+loadは実行していない。詳細は[`pilot-v2-rbtrace-revalidation.md`](../docs/development/corpus-candidate-evaluation/pilot-v2-rbtrace-revalidation.md)
+に記録し、raw JSON/logはignored artifactへ保存した。rmake側の対応は
+[`rmake-automake-shell-recipes.md`](rmake-automake-shell-recipes.md)へ分離した。
+corpus、header、compiler、`data/verified_gems.json`は変更していない。
 
 ## 決着
 
-未着手。
+検証と分類は完了した。rbtraceはこの結果だけではcorpusへ追加せず、rmakeの修正後に固定SHAで再検証
+する。rmake修正後も候補追加は独立PRで人間が判断する。
