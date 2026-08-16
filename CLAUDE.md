@@ -75,6 +75,8 @@ grep -l "^status: in-progress" issues/*.md                               # 着�
 
 # スキル
 
+- `inspect-corpus-candidate` — 固定したcorpus候補gemを一件ずつ検査する。archiveのidentity・SHA、静的分類、既存corpusとの差分を先に確認し、明示依頼時だけ隔離build/load、recipeがある場合だけupstream testへ進む。正式追加や`verified_gems.json`更新は行わない。
+  定義は `.claude/skills/inspect-corpus-candidate/SKILL.md`
 - `corpus-expansion` — コーパス拡張(人気 gem のスキャン → `test/corpus/gems.rb` 追加 →
   `rake corpus:census` → ヘッダギャップ充填)と検証済み gem 追加(gem 本体テストの実走 →
   `data/verified_gems.json` 更新)の一連のワークフロー。

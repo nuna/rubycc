@@ -1,10 +1,10 @@
 ---
-status: open
+status: in-progress
 kind: infra
 opened: 2026-08-16
 closed:
-branch:
-pr:
+branch: corpus-candidate-local-inspection-skill
+pr: 69
 steps:
   - corpus-candidate-local-inspection-skill-1
   - corpus-candidate-local-inspection-skill-2
@@ -84,6 +84,29 @@ name/version/SHAを固定し、静的判定、既存corpusとの差、build/load
 既存`corpus-expansion`は正式追加までを扱うため、候補調査だけを依頼しても変更範囲が広がりやすい。
 skill作成指針に従い、名前を動詞始まりにし、本文は既存toolを再利用する短いworkflowへ限定した。
 静的検査は既定で進め、任意コードを実行するphaseは依頼範囲と隔離を確認してから進める。
+
+`corpus-candidate-local-inspection-skill` branchで実装を開始した。`init_skill.py`でskillを初期化し、
+既存scannerを参照する固定identity・静的分類・増分review・明示依頼時の隔離build/load・recipe限定の
+upstream testを`SKILL.md`へまとめた。作業物はignored artifactsまたは一時directoryに限定する。
+
+fresh-context forward testを固定artifactの`funnel_http 0.5.12`で2回実施した。静的のみの依頼では
+archive SHA/name/version/platformを照合し、C/Hに加えてGo sourceと`go.mod`/`go.sum`を検出して
+`review`で停止した。build/load依頼では同じ停止条件により未知コードを実行せず、`recipe_missing`も
+記録した。両方ともRuby 3.3.12をrbenvから選び、repositoryの変更は無かった。
+
+初回の2検査でGo/cgo sourceの報告が揃わなかったため、scannerのC/C++一覧をそのまま信頼しない
+棚卸し規則とadditional native source/build manifest欄をskillへ追加して再検証した。修正版では
+両方のfresh-context testがGo/cgoを`needs_review`として一致して扱った。
+
+skillの有効性を、同じ固定artifactから取得した3ケースで追加実証した。`funnel_http 0.5.12`は
+期待SHAとarchive SHAが一致した後、scannerの`candidate`だけではなくGo source 2件と
+`go.mod`/`go.sum`を検出し、未知のGo/cgo build形態として`review`で停止した。明示的な
+build/load依頼はこの停止条件により実行していない。`actionagent 1.2.1`はSHA/name/version/platform
+照合後に`no_ext`として停止し、build/loadやupstream testへ進まなかった。さらに同じ
+`funnel_http` archiveへ意図的に不一致SHAを与えたcontrolでは、gemspec確認・unpack・build/loadを
+行わず`checksum_mismatch`で停止した。3件のJSON reportはignoredな
+`docs/development/corpus-candidate-evaluation/artifacts/skill-demo/`に生成され、tracked fileの
+変更は発生しなかった。
 
 ## 決着
 

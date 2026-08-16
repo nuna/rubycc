@@ -1,0 +1,4 @@
+interface:
+  display_name: "Inspect Corpus Candidate"
+  short_description: "Safely inspect fixed corpus gem candidates locally"
+  default_prompt: "Use $inspect-corpus-candidate to inspect a fixed corpus candidate and report whether it is ready for review."
