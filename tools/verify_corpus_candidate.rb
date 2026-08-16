@@ -257,7 +257,7 @@ module CorpusCandidateValidation
                         native_sources.empty? && additional_native_sources.empty? && extconf_files.empty? ?
                           "no_ext" : "review_required"
                       elsif additional_native_sources.any? || extconf_files.empty? ||
-                            extension_roots.any? { |path| extension_root_outside_census?(path) }
+                            extension_roots.any? { |path| CorpusCandidateValidation.extension_root_outside_census?(path) }
                         "review_required"
                       else
                         "candidate"
