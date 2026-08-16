@@ -1,0 +1,263 @@
+# Candidate execution is explicit and isolated from both the daily static scan
+# and the normal push/pull-request test workflows.
+name: corpus-candidate-validation
+
+"on":
+  workflow_dispatch:
+    inputs:
+      name:
+        description: "RubyGems gem name"
+        required: true
+        type: string
+      version:
+        description: "Exact gem version"
+        required: true
+        type: string
+      platform:
+        description: "Exact gem platform; current scanner candidates use ruby"
+        required: true
+        default: "ruby"
+        type: string
+      sha256:
+        description: "Expected SHA-256 of the RubyGems archive"
+        required: true
+        type: string
+      mode:
+        description: "Validation depth"
+        required: true
+        default: build_load
+        type: choice
+        options:
+          - build_load
+          - upstream
+
+permissions:
+  contents: read
+
+concurrency:
+  group: corpus-candidate-validation-${{ inputs.name }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      gate_status: ${{ steps.inspect.outputs.gate_status }}
+      static_status: ${{ steps.inspect.outputs.static_status }}
+      recipe_status: ${{ steps.inspect.outputs.recipe_status }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: false
+
+      - name: Verify input, archive identity, and static execution gate
+        id: inspect
+        shell: bash
+        env:
+          CANDIDATE_NAME: ${{ inputs.name }}
+          CANDIDATE_VERSION: ${{ inputs.version }}
+          CANDIDATE_PLATFORM: ${{ inputs.platform }}
+          CANDIDATE_SHA256: ${{ inputs.sha256 }}
+          CANDIDATE_MODE: ${{ inputs.mode }}
+          CANDIDATE_WORK: ${{ runner.temp }}/corpus-candidate-validation/preflight
+          CANDIDATE_RESULT: ${{ runner.temp }}/corpus-candidate-validation/preflight/result.json
+        run: |
+          set -o pipefail
+          mkdir -p "$(dirname "$CANDIDATE_RESULT")"
+          set +e
+          ruby tools/verify_corpus_candidate.rb \
+            --mode "$CANDIDATE_MODE" \
+            --preflight-only \
+            2>&1 | tee "$(dirname "$CANDIDATE_RESULT")/preflight.log"
+          inspect_status=${PIPESTATUS[0]}
+          set -e
+          if [[ -f "$CANDIDATE_RESULT" ]]; then
+            ruby -rjson -e '
+              result = JSON.parse(File.read(ARGV.fetch(0)))
+              File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |output|
+                output.puts "gate_status=#{result.fetch("gate_status", "unknown")}"
+                output.puts "static_status=#{result.dig("static", "status").to_s}"
+                output.puts "recipe_status=#{result.dig("recipe", "status").to_s}"
+              end
+            ' "$CANDIDATE_RESULT"
+          fi
+          exit "$inspect_status"
+
+      - name: Upload preflight report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: corpus-candidate-validation-preflight-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/corpus-candidate-validation/preflight/result.json
+            ${{ runner.temp }}/corpus-candidate-validation/preflight/preflight.log
+          retention-days: 14
+          if-no-files-found: warn
+
+  build_load:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.gate_status == 'candidate' && (inputs.mode == 'build_load' || inputs.mode == 'upstream') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: false
+
+      - name: Build and load the candidate in an isolated GEM_HOME
+        shell: bash
+        env:
+          CANDIDATE_NAME: ${{ inputs.name }}
+          CANDIDATE_VERSION: ${{ inputs.version }}
+          CANDIDATE_PLATFORM: ${{ inputs.platform }}
+          CANDIDATE_SHA256: ${{ inputs.sha256 }}
+          CANDIDATE_MODE: build_load
+          CANDIDATE_WORK: ${{ runner.temp }}/corpus-candidate-validation/build-load
+          CANDIDATE_RESULT: ${{ runner.temp }}/corpus-candidate-validation/build-load/result.json
+        run: |
+          set -o pipefail
+          mkdir -p "$(dirname "$CANDIDATE_RESULT")"
+          set +e
+          ruby tools/verify_corpus_candidate.rb --mode build_load \
+            2>&1 | tee "$(dirname "$CANDIDATE_RESULT")/build-load.log"
+          validation_status=${PIPESTATUS[0]}
+          set -e
+          exit "$validation_status"
+
+      - name: Upload build/load report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: corpus-candidate-validation-build-load-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/corpus-candidate-validation/build-load/result.json
+            ${{ runner.temp }}/corpus-candidate-validation/build-load/build-load.log
+          retention-days: 14
+          if-no-files-found: warn
+
+  upstream:
+    needs: [preflight, build_load]
+    if: ${{ inputs.mode == 'upstream' && needs.build_load.result == 'success' && needs.preflight.outputs.gate_status == 'candidate' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: false
+
+      - name: Recheck the fixed archive and reviewed recipe
+        id: recipe_preflight
+        shell: bash
+        env:
+          CANDIDATE_NAME: ${{ inputs.name }}
+          CANDIDATE_VERSION: ${{ inputs.version }}
+          CANDIDATE_PLATFORM: ${{ inputs.platform }}
+          CANDIDATE_SHA256: ${{ inputs.sha256 }}
+          CANDIDATE_MODE: upstream
+          CANDIDATE_WORK: ${{ runner.temp }}/corpus-candidate-validation/upstream
+          CANDIDATE_RESULT: ${{ runner.temp }}/corpus-candidate-validation/upstream/preflight.json
+        run: |
+          set -o pipefail
+          mkdir -p "$(dirname "$CANDIDATE_RESULT")"
+          set +e
+          ruby tools/verify_corpus_candidate.rb --mode upstream --preflight-only \
+            2>&1 | tee "$(dirname "$CANDIDATE_RESULT")/preflight.log"
+          preflight_status=${PIPESTATUS[0]}
+          set -e
+          ready=false
+          if [[ -f "$CANDIDATE_RESULT" ]]; then
+            ready="$(ruby -rjson -e '
+              result = JSON.parse(File.read(ARGV.fetch(0)))
+              puts(result.fetch("status") == "ready" ? "true" : "false")
+            ' "$CANDIDATE_RESULT")"
+          fi
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+          exit "$preflight_status"
+
+      - name: Run the host compiler control recipe
+        if: steps.recipe_preflight.outputs.ready == 'true'
+        shell: bash
+        env:
+          CANDIDATE_NAME: ${{ inputs.name }}
+          VERIFY_WORK: ${{ runner.temp }}/corpus-candidate-validation/upstream
+          CONTROL_RESULT: ${{ runner.temp }}/corpus-candidate-validation/upstream/control.json
+        run: |
+          set -o pipefail
+          set +e
+          ruby tools/verify_gem_tests.rb --control --json "$CONTROL_RESULT" "$CANDIDATE_NAME" \
+            2>&1 | tee "${VERIFY_WORK}/control.log"
+          control_status=${PIPESTATUS[0]}
+          set -e
+          echo "control_status=$control_status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Run the rubycc upstream recipe without updating the database
+        if: steps.recipe_preflight.outputs.ready == 'true'
+        shell: bash
+        env:
+          CANDIDATE_NAME: ${{ inputs.name }}
+          VERIFY_WORK: ${{ runner.temp }}/corpus-candidate-validation/upstream
+          RUBYCC_RESULT: ${{ runner.temp }}/corpus-candidate-validation/upstream/rubycc.json
+        run: |
+          set -o pipefail
+          set +e
+          ruby tools/verify_gem_tests.rb --json "$RUBYCC_RESULT" "$CANDIDATE_NAME" \
+            2>&1 | tee "${VERIFY_WORK}/rubycc.log"
+          rubycc_status=${PIPESTATUS[0]}
+          set -e
+          echo "rubycc_status=$rubycc_status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Summarize host control and rubycc recipe statuses
+        if: always() && steps.recipe_preflight.outputs.ready == 'true'
+        shell: bash
+        env:
+          CONTROL_RESULT: ${{ runner.temp }}/corpus-candidate-validation/upstream/control.json
+          RUBYCC_RESULT: ${{ runner.temp }}/corpus-candidate-validation/upstream/rubycc.json
+          SUMMARY_RESULT: ${{ runner.temp }}/corpus-candidate-validation/upstream/summary.json
+        run: |
+          ruby -rjson -e '
+            paths = {"control" => ENV.fetch("CONTROL_RESULT"), "rubycc" => ENV.fetch("RUBYCC_RESULT")}
+            statuses = paths.to_h do |label, path|
+              next [label, "infrastructure_failure"] unless File.file?(path)
+              payload = JSON.parse(File.read(path))
+              rows = payload.fetch("results")
+              [label, rows.length == 1 ? rows.fetch(0).fetch("status") : "invalid_result"]
+            rescue JSON::ParserError, KeyError
+              [label, "infrastructure_failure"]
+            end
+            summary = {"schema_version" => 1, "statuses" => statuses,
+                       "comparison" => statuses.values.all? { |status| status == "pass" } ? "pass" : "review"}
+            File.write(ENV.fetch("SUMMARY_RESULT"), JSON.pretty_generate(summary) + "\n")
+            abort "upstream validation requires review: #{statuses.inspect}" unless summary.fetch("comparison") == "pass"
+          '
+
+      - name: Upload upstream reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: corpus-candidate-validation-upstream-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/corpus-candidate-validation/upstream/preflight.json
+            ${{ runner.temp }}/corpus-candidate-validation/upstream/control.json
+            ${{ runner.temp }}/corpus-candidate-validation/upstream/rubycc.json
+            ${{ runner.temp }}/corpus-candidate-validation/upstream/summary.json
+            ${{ runner.temp }}/corpus-candidate-validation/upstream/*.log
+          retention-days: 14
+          if-no-files-found: warn

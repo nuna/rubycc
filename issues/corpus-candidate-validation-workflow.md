@@ -1,10 +1,10 @@
 ---
-status: open
+status: in-progress
 kind: infra
 opened: 2026-08-16
 closed:
-branch:
-pr:
+branch: corpus-candidate-validation-workflow
+pr: 71
 steps:
   - corpus-candidate-validation-workflow-1
   - corpus-candidate-validation-workflow-2
@@ -74,6 +74,28 @@ review evidenceとして残せる。
 静的scanと任意コード実行では必要な権限・保存物・失敗時の意味が異なるため、日次workflowから
 分離した。ローカルskillでrecipeを整えた候補だけを手動再現し、実行後のcacheを次runへ渡さない
 構成を成功条件にした。
+
+`corpus-candidate-validation-workflow` branchで実装を開始した。workflow_dispatchのname/version/
+platform/SHA/mode入力を環境変数で受け、固定URLのarchiveを再取得してSHA/name/version/platformを
+再照合する`tools/verify_corpus_candidate.rb`を追加した。gemspecとarchive内容を静的に棚卸しし、
+`no_ext`、未宣言native source、Go/Rust等の追加native source、未知のbuild manifestはbuild/load前に
+停止する。作業領域はrunner tempの隔離GEM_HOMEに固定し、通常のHOME、repository、cacheを使わない。
+
+build/load jobは30分、upstream jobは90分で分離し、upstreamは`tools/verify_gem_tests.rb`のrecipeを
+`--control`とrubyccで別々に実行する。`--update`、任意command、repository secret、Actions cacheは
+workflowから排除し、structured resultと短いlogだけを14日保存する。workflow契約テストとtoolの入力
+検証テストを追加した。
+
+ローカルではRuby 3.3.12で`actionagent 1.2.1`を`no_ext`、`funnel_http 0.5.12`をGo/cgoの
+`review_required`として停止し、意図的なSHA不一致を`checksum_mismatch`、shell metacharacterを
+`input_rejected`としてbuild前に拒否した。安全な既知gemを使うremote workflowの成功、失敗、recipe
+なし、環境不足の実測とrun URLはpush後に追記する。
+
+安全な既知gemのbuild/load smokeとして`json 2.21.1`（固定SHA
+`13a43df75d95641443f5702dff350f237164a9d811ff0f2c2800d4d980220583`）をRuby 3.3.12で実行した。
+archive/name/version/platformの照合、rubycc build evidence、2つのshared objectのload sanityが
+すべて成功し、結果は`build_load_pass`になった。これはworkflowの経路確認用であり、upstream testの
+合格や`verified_gems`/corpusへの追加を意味しない。
 
 ## 決着
 
