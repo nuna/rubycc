@@ -4,6 +4,8 @@
 UTC 7 日 window 4 個と rubygems.org popular rank 1〜100 を比較した。timeframe 全体は
 `--selection-only` で pagination と release 選定を測り、archive の静的検査は事前規則で最大3件に
 限定した。各 JSON artifact の `source_requests` に URL、cache key、response SHA-256 がある。
+JSON artifactとraw cacheは再生成可能な作業ファイルなのでcommitせず、固定入力は
+`manifest.json`、集計値は`metrics.json`、結論はこのreportに残す。
 
 ## 結果
 

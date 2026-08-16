@@ -61,5 +61,6 @@
     "observed_header_priority": "unavailable in selection-only mode; created_at/name tie-break applied",
     "artifact": "artifacts/static-sample.json"
   },
-  "raw_cache_policy": "raw response caches are not committed; each committed artifact records request URL, cache key, and response SHA-256"
+  "raw_cache_policy": "raw response caches are not committed; generated artifacts record request URL, cache key, and response SHA-256",
+  "artifact_policy": "paths under artifacts/ identify ignored experiment work; commit manifest.json, metrics.json, and evaluation-report.md instead"
 }

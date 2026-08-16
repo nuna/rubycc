@@ -848,7 +848,7 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   `extension_outside_census_root` の `[R]` 分類、Census 共通 include helper を実装した。artifact は
   調査材料に限定し、corpus と verified gem DB は自動更新しない。候補源の増分価値の判定は
   `corpus-candidate-evaluation` に残す。
-- ~~RubyGems timeframe 候補源の増分価値を検証する~~ 完了(corpus-candidate-evaluation-3; 不採用): 4 個の UTC 7 日 window と popular rank 1〜100 を同一 revision で比較した。timeframe は 12,829 version entries / 5,647 gem occurrences / 新規未検査 3,881、検査済みの新規 [1] は 0。固定静的サンプル3件もすべて no-ext で、新規 header/gap や build 成功を示さなかった。selection-only の source/yanked deferred を含む限界を記録し、自動・定期運用へ進めない。artifact と report は docs/development/corpus-candidate-evaluation/ に保存し、corpus と verified gem DB は変更しない。
+- ~~RubyGems timeframe 候補源の増分価値を検証する~~ 完了(corpus-candidate-evaluation-3; 不採用): 4 個の UTC 7 日 window と popular rank 1〜100 を同一 revision で比較した。timeframe は 12,829 version entries / 5,647 gem occurrences / 新規未検査 3,881、検査済みの新規 [1] は 0。固定静的サンプル3件もすべて no-ext で、新規 header/gap や build 成功を示さなかった。selection-only の source/yanked deferred を含む限界を記録し、自動・定期運用へ進めない。manifest、metrics、report は docs/development/corpus-candidate-evaluation/ に保存し、再生成可能な作業artifact、corpus、verified gem DB はcommitしない。
 - ~~`data/verified_gems.json` を手編集ではなく実走結果から生成/拡張する
   (data/README.md が当初から述べていた意図)。~~ **完了(Step 144)**:
   `tools/verify_gem_tests.rb`。`RUBYCC=1 gem install` → rubycc が使われた痕跡の確認 →
