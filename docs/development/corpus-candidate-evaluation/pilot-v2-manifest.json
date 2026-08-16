@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "experiment": "corpus-candidate-pilot-v2",
+  "fixed_on": "2026-08-16",
+  "scanner_revision": "66a20d76314e93f342f3618da25e3bcaf62ee3be",
+  "scan": {
+    "source": "timeframe",
+    "interval": "one completed UTC day",
+    "selection_only": false,
+    "fetch_concurrency": 2,
+    "workflow": ".github/workflows/corpus-candidate-daily.yml",
+    "runner": "ubuntu-24.04",
+    "ruby": "4.0",
+    "timeout_minutes": 35,
+    "artifact_retention_days": 35
+  },
+  "windows": [
+    {"id": "2026-08-02", "from": "2026-08-02T00:00:00Z", "to": "2026-08-03T00:00:00Z", "classification": "artifacts/pilot-v2/2026-08-02/classification.json", "summary": "artifacts/pilot-v2/2026-08-02/run-summary.json", "log": "artifacts/pilot-v2/2026-08-02/scan.log"},
+    {"id": "2026-08-03", "from": "2026-08-03T00:00:00Z", "to": "2026-08-04T00:00:00Z", "classification": "artifacts/pilot-v2/2026-08-03/classification.json", "summary": "artifacts/pilot-v2/2026-08-03/run-summary.json", "log": "artifacts/pilot-v2/2026-08-03/scan.log"},
+    {"id": "2026-08-04", "from": "2026-08-04T00:00:00Z", "to": "2026-08-05T00:00:00Z", "classification": "artifacts/pilot-v2/2026-08-04/classification.json", "summary": "artifacts/pilot-v2/2026-08-04/run-summary.json", "log": "artifacts/pilot-v2/2026-08-04/scan.log"},
+    {"id": "2026-08-05", "from": "2026-08-05T00:00:00Z", "to": "2026-08-06T00:00:00Z", "classification": "artifacts/pilot-v2/2026-08-05/classification.json", "summary": "artifacts/pilot-v2/2026-08-05/run-summary.json", "log": "artifacts/pilot-v2/2026-08-05/scan.log"},
+    {"id": "2026-08-06", "from": "2026-08-06T00:00:00Z", "to": "2026-08-07T00:00:00Z", "classification": "artifacts/pilot-v2/2026-08-06/classification.json", "summary": "artifacts/pilot-v2/2026-08-06/run-summary.json", "log": "artifacts/pilot-v2/2026-08-06/scan.log"},
+    {"id": "2026-08-07", "from": "2026-08-07T00:00:00Z", "to": "2026-08-08T00:00:00Z", "classification": "artifacts/pilot-v2/2026-08-07/classification.json", "summary": "artifacts/pilot-v2/2026-08-07/run-summary.json", "log": "artifacts/pilot-v2/2026-08-07/scan.log"},
+    {"id": "2026-08-08", "from": "2026-08-08T00:00:00Z", "to": "2026-08-09T00:00:00Z", "classification": "artifacts/pilot-v2/2026-08-08/classification.json", "summary": "artifacts/pilot-v2/2026-08-08/run-summary.json", "log": "artifacts/pilot-v2/2026-08-08/scan.log"},
+    {"id": "2026-08-09", "from": "2026-08-09T00:00:00Z", "to": "2026-08-10T00:00:00Z", "classification": "artifacts/pilot-v2/2026-08-09/classification.json", "summary": "artifacts/pilot-v2/2026-08-09/run-summary.json", "log": "artifacts/pilot-v2/2026-08-09/scan.log"},
+    {"id": "2026-08-10", "from": "2026-08-10T00:00:00Z", "to": "2026-08-11T00:00:00Z", "classification": "artifacts/pilot-v2/2026-08-10/classification.json", "summary": "artifacts/pilot-v2/2026-08-10/run-summary.json", "log": "artifacts/pilot-v2/2026-08-10/scan.log"},
+    {"id": "2026-08-11", "from": "2026-08-11T00:00:00Z", "to": "2026-08-12T00:00:00Z", "classification": "artifacts/pilot-v2/2026-08-11/classification.json", "summary": "artifacts/pilot-v2/2026-08-11/run-summary.json", "log": "artifacts/pilot-v2/2026-08-11/scan.log"},
+    {"id": "2026-08-12", "from": "2026-08-12T00:00:00Z", "to": "2026-08-13T00:00:00Z", "classification": "artifacts/pilot-v2/2026-08-12/classification.json", "summary": "artifacts/pilot-v2/2026-08-12/run-summary.json", "log": "artifacts/pilot-v2/2026-08-12/scan.log"},
+    {"id": "2026-08-13", "from": "2026-08-13T00:00:00Z", "to": "2026-08-14T00:00:00Z", "classification": "artifacts/pilot-v2/2026-08-13/classification.json", "summary": "artifacts/pilot-v2/2026-08-13/run-summary.json", "log": "artifacts/pilot-v2/2026-08-13/scan.log"},
+    {"id": "2026-08-14", "from": "2026-08-14T00:00:00Z", "to": "2026-08-15T00:00:00Z", "classification": "artifacts/pilot-v2/2026-08-14/classification.json", "summary": "artifacts/pilot-v2/2026-08-14/run-summary.json", "log": "artifacts/pilot-v2/2026-08-14/scan.log"},
+    {"id": "2026-08-15", "from": "2026-08-15T00:00:00Z", "to": "2026-08-16T00:00:00Z", "classification": "artifacts/pilot-v2/2026-08-15/classification.json", "summary": "artifacts/pilot-v2/2026-08-15/run-summary.json", "log": "artifacts/pilot-v2/2026-08-15/scan.log"}
+  ],
+  "popular_control": {
+    "source": "rubygems.org popular",
+    "rank_range": "1-100",
+    "command": "ruby tools/scan_popular_gems.rb 1 10 --artifact ARTIFACT",
+    "artifact": "artifacts/pilot-v2/popular-control.json",
+    "fixed_before_candidate_selection": true
+  },
+  "candidate_selection": {
+    "maximum_unique_gems": 3,
+    "identity": "gem name; retain the fixed version/platform/SHA record for inspection",
+    "exclude": [
+      "already in test/corpus/gems.rb",
+      "present in the fixed popular rank 1-100 control",
+      "duplicate gem names across windows"
+    ],
+    "priority": [
+      "new gap header",
+      "new system header",
+      "new extension or build shape",
+      "version_downloads descending",
+      "created_at descending",
+      "gem name ascending"
+    ],
+    "review_boundary": "static evidence selects; inspect-corpus-candidate and manual validation decide next action"
+  },
+  "operating_targets": {
+    "daily_wall_time_p95_seconds": 900,
+    "timeout_rate": 0,
+    "final_failure_rate_less_than": 0.05,
+    "measure": [
+      "phase elapsed seconds",
+      "wall time",
+      "maximum work-space bytes",
+      "review minutes per candidate"
+    ]
+  },
+  "replay_policy": {
+    "failed_window": "replay the exact same from/to interval and scanner revision",
+    "missing_window": "not counted in the denominator until a successful replay exists",
+    "discard_or_replace_window": false,
+    "extend_to_28_days_only_when": "the primary 14 completed windows contain zero eligible candidates"
+  },
+  "artifact_policy": {
+    "ignored_work_prefix": "docs/development/corpus-candidate-evaluation/artifacts/",
+    "commit": [
+      "this manifest",
+      "pilot metrics",
+      "review report",
+      "STEPS summary"
+    ],
+    "never_commit": [
+      "raw responses",
+      "gem archives",
+      "unpack trees",
+      "candidate logs"
+    ],
+    "corpus_or_verified_gems_changes": false
+  },
+  "inspection": {
+    "local_skill": "inspect-corpus-candidate",
+    "maximum_candidates": 3,
+    "manual_validation": true,
+    "build_load_requires_explicit_request": true,
+    "upstream_recipe_required": true
+  }
+}

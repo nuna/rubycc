@@ -60,4 +60,10 @@ class TestVerifyCorpusCandidate < Minitest::Test
     refute_includes source, "data/verified_gems.json"
     refute_includes source, "--update"
   end
+
+  def test_extension_root_gate_allows_ext_and_descendants_only
+    refute CorpusCandidateValidation.extension_root_outside_census?("ext")
+    refute CorpusCandidateValidation.extension_root_outside_census?("ext/native")
+    assert CorpusCandidateValidation.extension_root_outside_census?("lib/native")
+  end
 end

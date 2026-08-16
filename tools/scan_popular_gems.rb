@@ -48,7 +48,7 @@ module CorpusCandidateScan
     artifact_write
   ].freeze
   SUMMARY_ARCHIVE_COUNTERS = %i[
-    inspections fetch_attempts cache_hits successes failures retries
+    inspections fetch_attempts cache_hits successes failures retries bytes unique_urls
   ].freeze
   DEFAULT_FETCH_CONCURRENCY = 2
   MAX_FETCH_CONCURRENCY = 4
@@ -676,7 +676,9 @@ module CorpusCandidateScan
     SCHEMA_VERSION = 1
 
     class << self
-      def write(path, config:, source:, started_at:, finished_at:, timings:, counters:, requests:, results:)
+      def write(path, config:, source:, started_at:, finished_at:, timings:, counters:, requests:, results:,
+                source_stats: {}, peak_work_bytes: nil)
+        archive_stats = requests.fetch(:archives, {})
         payload = {
           "schema_version" => SCHEMA_VERSION,
           "source" => Artifact.source_name(config, source),
@@ -685,7 +687,11 @@ module CorpusCandidateScan
           "finished_at" => finished_at.utc.iso8601,
           "elapsed_seconds" => (finished_at - started_at).round(6),
           "phases_seconds" => SUMMARY_PHASES.to_h { |name| [name, timings.fetch(name, 0.0).round(6)] },
-          "execution" => { "fetch_concurrency" => config.fetch_concurrency },
+          "execution" => {
+            "fetch_concurrency" => config.fetch_concurrency,
+            "peak_work_bytes" => peak_work_bytes
+          },
+          "source_stats" => source_stats,
           "requests" => {
             "attempts" => requests.fetch(:attempts) + requests.fetch(:archives, {}).fetch(:attempts, 0),
             "source_attempts" => requests.fetch(:attempts),
@@ -697,7 +703,12 @@ module CorpusCandidateScan
                        requests.fetch(:archives, {}).fetch(:bytes, 0)
           },
           "archives" => SUMMARY_ARCHIVE_COUNTERS.to_h do |name|
-            [name.to_s, counters.fetch(name, 0)]
+            value = if %i[bytes unique_urls].include?(name)
+                      archive_stats.fetch(name, 0)
+                    else
+                      counters.fetch(name, 0)
+                    end
+            [name.to_s, value]
           end,
           "results" => results.group_by { |result| result[:status].to_s }
                                .transform_values(&:length)
@@ -819,6 +830,8 @@ module CorpusCandidateScan
       @started_at = nil
       @last_source = nil
       @last_results = []
+      @source_stats = { "pages" => 0, "release_entries" => 0 }
+      @peak_work_bytes = 0
     end
 
     def run
@@ -881,6 +894,7 @@ module CorpusCandidateScan
     def write_summary
       finished_at = Time.now.utc
       source = @last_source || (config.timeframe? ? TimeframeVersions : RubygemsPopular)
+      record_work_size
       RunSummary.write(
         config.summary_path,
         config: config,
@@ -890,8 +904,24 @@ module CorpusCandidateScan
         timings: @timings,
         counters: @counters,
         requests: { attempts: @http.attempts, records: @http.requests, archives: @archive_fetcher.stats },
-        results: @last_results
+        results: @last_results,
+        source_stats: @source_stats.merge(
+          "unique_gems" => @last_results.map { |result| result[:name] }.compact.uniq.size
+        ),
+        peak_work_bytes: @peak_work_bytes
       )
+    end
+
+    def record_work_size
+      return unless File.directory?(config.work_dir)
+
+      bytes = Dir.glob(File.join(config.work_dir, "**", "*"), File::FNM_DOTMATCH).sum do |path|
+        File.file?(path) ? File.size(path) : 0
+      end
+      @peak_work_bytes = [@peak_work_bytes, bytes].max
+    rescue SystemCallError
+      # Runtime evidence should not turn a completed static scan into a failed
+      # scan merely because a temporary file disappeared while measuring it.
     end
 
     def step(message)
@@ -954,6 +984,8 @@ module CorpusCandidateScan
       loop do
         step "timeframe: #{TimeframeVersions.url(config.from_time, config.to_time, page)}"
         entries = TimeframeVersions.fetch_page(@http, config.from_time, config.to_time, page)
+        @source_stats["pages"] += 1
+        @source_stats["release_entries"] += entries.size
         break if entries.empty?
         raise "timeframe page #{page} returned more than #{TimeframeVersions::PAGE_SIZE} entries" if entries.size > TimeframeVersions::PAGE_SIZE
 
@@ -1160,6 +1192,9 @@ module CorpusCandidateScan
         expected_first = ((page - 1) * source::PAGE_SIZE) + 1
         step "ranking: #{source.url(page)} (expecting rank #{expected_first}...)"
         result = source.fetch_page(@http, page)
+
+        @source_stats["pages"] += 1
+        @source_stats["release_entries"] += result[:entries].size
 
         if last_rank > result[:total]
           raise "#{source::LABEL} ranks only #{result[:total]} gems; ranks up to #{last_rank} were requested"

@@ -11877,3 +11877,41 @@ infrastructure failureなどの停止理由を分け、安全な既知gemとfixt
 
 手動dispatchとreview済みrecipeを要求するため候補の一括検証や完全自動化はできないが、日次workflowへ
 任意コード実行を持ち込まず、候補ごとに停止理由と再現結果をレビューできる境界を優先した。
+
+## corpus-candidate-pilot-v2-1〜3 — 日次フル静的scanの収率と運用条件を実測する
+
+結果を見る前に、2026-08-02〜08-15の連続UTC 1日window 14個、scanner revision
+`66a20d76314e93f342f3618da25e3bcaf62ee3be`、popular rank 1〜100 control、候補priority、欠測・
+再実行・28日延長条件をmanifestへ固定した。先行runではrelease entry数と作業領域が不足していた
+ため、計測項目を追加したrevisionで14日を同じintervalへ順次replayし、14/14成功・欠測0・timeout0を
+確認した。Actionsのconcurrency groupがpending runを1件に制限するため、並列dispatchせず完了確認後に
+次のwindowを起動した。
+
+正式14日分は6,858 release entries、日別unique gem occurrences 4,494、251 source pages、
+3,786 archive inspections、archive success/retry/failure 3,786/0/0、取得4,107,296,256 bytes。
+classificationはno-ext 3,419、candidate 258、error 709、review/needs_review 79、excluded 29。
+既存corpusとpopular上位100を除くcandidateは251 occurrences / 200 unique names、日跨ぎ重複率
+20.3187%。既存census matrixにないcandidate new system spellingは3、new gap spellingは88、
+既存gemと同一header集合は204 occurrenceだった。build shapeはsingle-extconf 239、multi-extconf 6、
+cargo 2、rake 2、mkrf entrypoint 2で、popular controlの新規candidateは0だった。
+
+日次wall time p50は58.803327秒、p95は99.579438秒、最大作業領域は2,030,391,850 bytes
+(約1.89 GiB)で、15分目標・timeout 0・window final failure 0/14を満たした。ただし8/15にv2
+metadata 404が503件あり、record error率は709/4,494 (15.7766%)。window final failure率とは
+別のsource data-quality指標としてmetricsへ残した。raw response、gem archive、unpack tree、logは
+ignored artifactsに置き、review可能なmanifest、run registry、metrics、reportだけをcommitした。
+
+固定priorityでrbtrace 0.5.5、graphql-c_parser 1.1.4、roaring 0.4.1を選び、repo-local
+`inspect-corpus-candidate` static preflightと、同一name/version/platform/SHAの手動Actions
+`build_load`を実施した。3件ともidentityは一致したが、rbtraceはbundled msgpack configure/install、
+graphql-c_parserはload sanity、roaringは`#warning`のpreprocessor診断で停止した。build/load passは
+0件、upstream recipeは未実行、人手review時間は未計時。roaringの診断は再現可能な新規rubycc gapで、
+発見経路の増分価値は確認できたが、source errorとreview負荷が未解決のため結論は**条件付き採用**とした。
+28日延長は候補0条件に該当しないため行わず、corpus/header/compiler/verified databaseは変更していない。
+
+集計と候補検査の詳細は[`pilot-v2-review.md`](corpus-candidate-evaluation/pilot-v2-review.md)、
+metricsは[`pilot-v2-metrics.json`](corpus-candidate-evaluation/pilot-v2-metrics.json)、候補別の
+固定identityとActions結果は[`pilot-v2-inspections.json`](corpus-candidate-evaluation/pilot-v2-inspections.json)。
+source error分離は[`issues/corpus-candidate-pilot-v2-source-errors.md`](../../issues/corpus-candidate-pilot-v2-source-errors.md)、
+load sanity recipeは[`issues/corpus-candidate-pilot-v2-load-sanity.md`](../../issues/corpus-candidate-pilot-v2-load-sanity.md)
+へ引き継いだ。validatorの`ext` root誤判定は`07467d2`/`740cafc`で修正した。
