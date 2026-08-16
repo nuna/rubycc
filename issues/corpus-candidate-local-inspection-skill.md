@@ -98,6 +98,16 @@ archive SHA/name/version/platformを照合し、C/Hに加えてGo sourceと`go.m
 棚卸し規則とadditional native source/build manifest欄をskillへ追加して再検証した。修正版では
 両方のfresh-context testがGo/cgoを`needs_review`として一致して扱った。
 
+skillの有効性を、同じ固定artifactから取得した3ケースで追加実証した。`funnel_http 0.5.12`は
+期待SHAとarchive SHAが一致した後、scannerの`candidate`だけではなくGo source 2件と
+`go.mod`/`go.sum`を検出し、未知のGo/cgo build形態として`review`で停止した。明示的な
+build/load依頼はこの停止条件により実行していない。`actionagent 1.2.1`はSHA/name/version/platform
+照合後に`no_ext`として停止し、build/loadやupstream testへ進まなかった。さらに同じ
+`funnel_http` archiveへ意図的に不一致SHAを与えたcontrolでは、gemspec確認・unpack・build/loadを
+行わず`checksum_mismatch`で停止した。3件のJSON reportはignoredな
+`docs/development/corpus-candidate-evaluation/artifacts/skill-demo/`に生成され、tracked fileの
+変更は発生しなかった。
+
 ## 決着
 
 (完了時に記入。結果と`docs/development/STEPS.md`の該当エントリへのリンクを残す。)
