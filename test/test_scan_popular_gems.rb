@@ -303,6 +303,10 @@ class TestScanPopularGems < Minitest::Test
       assert_operator summary.fetch("requests").fetch("bytes"), :>, 0
       assert_equal 0, summary.fetch("archives").fetch("inspections")
       assert_equal 0, summary.fetch("archives").fetch("fetch_attempts")
+      assert_equal 2, summary.fetch("source_stats").fetch("pages")
+      assert_equal 1, summary.fetch("source_stats").fetch("release_entries")
+      assert_equal 1, summary.fetch("source_stats").fetch("unique_gems")
+      assert_operator summary.fetch("execution").fetch("peak_work_bytes"), :>=, 0
       assert_equal CorpusCandidateScan::SUMMARY_PHASES.to_h { |phase| [phase, 0.0] }.keys.sort,
                    summary.fetch("phases_seconds").keys.sort
       assert_equal ["uninspected"], summary.fetch("results").keys
