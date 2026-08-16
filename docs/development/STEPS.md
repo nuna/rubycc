@@ -11973,3 +11973,22 @@ documented entrypointを使わない検査器の誤判定と切り分けられ�
 review済みupstream recipeは無かったため、任意test commandへfallbackせずupstream testは未実行とした。
 候補の正式corpus追加、header/compiler、`data/verified_gems.json`更新は行っていない。検査結果の詳細は
 [`pilot-v2-load-sanity.md`](corpus-candidate-evaluation/pilot-v2-load-sanity.md)に記録し、issueを完了にした。
+
+## corpus-candidate-pilot-v2-rbtrace-1〜2 — bundled msgpack failureをrmake gapへ分類する
+
+固定archive `rbtrace 0.5.5` (SHA-256
+`ed0200ffeac4251f3464412e52f36cd64c473673c2739129e0b48c568672fe68`)を、repo-local
+`inspect-corpus-candidate` skillとcandidate verifierのpreflightで再確認した。Ruby 3.3.12の隔離
+GEM_HOMEではhost controlが`build_load_pass`、native extension installが`pass`、shared object loadが
+`all_shared_objects_loaded`だった。同じarchiveのrubycc実行は、bundled msgpackのconfigureとC
+compile/linkまでは進んだが、Automake/libtoolの`install-libLTLIBRARIES` recipeでrmakeが
+`for`/`if`/`done`/brace groupとshell variableを扱えず`build_failed` (exit 1)になった。
+
+GitHub Actions [run 31951987733](https://github.com/nuna/rubycc/actions/runs/31951987733)でも、
+ubuntu-24.04/Ruby 4.0.6のpreflightは固定identity一致・`candidate`、build/loadは同じ`make install`
+段階で`build_failed`だった。candidate archiveを使わない最小Executor実行でも同じ構文エラーを再現
+できたため、分類は`rubycc_gap`（rmake build-executor gap）とした。review済みupstream recipeは無く、
+`recipe_missing`としてupstream test/documented loadは実行していない。候補はcorpusへ追加せず、
+rmakeの対応は[`rmake-automake-shell-recipes.md`](../../issues/rmake-automake-shell-recipes.md)へ分離した。
+詳細は[`pilot-v2-rbtrace-revalidation.md`](corpus-candidate-evaluation/pilot-v2-rbtrace-revalidation.md)。
+corpus、header、compiler、`data/verified_gems.json`は変更していない。
