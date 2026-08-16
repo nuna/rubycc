@@ -1,9 +1,9 @@
 ---
-status: open
+status: in-progress
 kind: infra
 opened: 2026-08-16
 closed:
-branch:
+branch: corpus-candidate-local-inspection-skill
 pr:
 steps:
   - corpus-candidate-local-inspection-skill-1
@@ -84,6 +84,10 @@ name/version/SHAを固定し、静的判定、既存corpusとの差、build/load
 既存`corpus-expansion`は正式追加までを扱うため、候補調査だけを依頼しても変更範囲が広がりやすい。
 skill作成指針に従い、名前を動詞始まりにし、本文は既存toolを再利用する短いworkflowへ限定した。
 静的検査は既定で進め、任意コードを実行するphaseは依頼範囲と隔離を確認してから進める。
+
+`corpus-candidate-local-inspection-skill` branchで実装を開始した。`init_skill.py`でskillを初期化し、
+既存scannerを参照する固定identity・静的分類・増分review・明示依頼時の隔離build/load・recipe限定の
+upstream testを`SKILL.md`へまとめた。作業物はignored artifactsまたは一時directoryに限定する。
 
 ## 決着
 
