@@ -38,6 +38,11 @@ module CorpusCandidateValidation
     "RUBYGEMS_GEMDEPS" => nil
   }.freeze
 
+  def extension_root_outside_census?(path)
+    path != "." && path != "ext" && !path.start_with?("ext/")
+  end
+  module_function :extension_root_outside_census?
+
   Input = Struct.new(:name, :version, :platform, :sha256, :mode, :work_dir, :result_path,
                      keyword_init: true) do
     def self.from_env(env, overrides = {})
@@ -252,7 +257,7 @@ module CorpusCandidateValidation
                         native_sources.empty? && additional_native_sources.empty? && extconf_files.empty? ?
                           "no_ext" : "review_required"
                       elsif additional_native_sources.any? || extconf_files.empty? ||
-                            extension_roots.any? { |path| path != "." && !path.start_with?("ext/") }
+                            extension_roots.any? { |path| extension_root_outside_census?(path) }
                         "review_required"
                       else
                         "candidate"
