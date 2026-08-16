@@ -97,6 +97,44 @@ sample上限を置かず、日次全静的scanを14日継続する。定期実�
 popular上位100の対照、再実行・欠測の扱い、p95/失敗率の運用目標を
 `docs/development/corpus-candidate-evaluation/pilot-v2-manifest.json`へ結果を見る前に固定した。
 
+### 2026-08-16 — 正式14日計測
+
+計測項目を追加したscanner revision `66a20d7`へmanifestを更新し、2026-08-02〜08-15の連続14日を
+同じintervalでGitHub Actionsへ順次dispatchした。14/14 runが成功し、欠測・timeoutは無かった。
+先行計測はrelease entry数とpeak work bytesを持たないため、正式metricsへ混ぜていない。
+
+`release entries 6,858`、日別unique gem occurrences `4,494`、archive inspection `3,786`、
+archive success/failure `3,786/0`、取得byte `4,107,296,256`を得た。statusはno-ext `3,419`、
+candidate `258`、error `709`、review/needs_review `79`、excluded `29`だった。既存corpusとpopular
+上位100を除く候補は251 occurrence / 200 unique names、日跨ぎ重複率20.3187%。既存census matrixに
+ないcandidate new system spellingは3、new gap spellingは88、既存gemと同一header集合は204
+occurrenceだった。
+
+日次wall timeはp50 `58.803327秒`、p95 `99.579438秒`、最大作業領域
+`2,030,391,850 bytes`で、p95 15分・timeout 0・window final failure 5%未満を満たした。一方、
+8/15にv2 metadata 404が503件発生し、record error率は15.7766%だったため、window failure率とは
+分けて記録した。
+
+### 2026-08-16 — 上位候補検査と中間判定
+
+固定priorityで`rbtrace 0.5.5`、`graphql-c_parser 1.1.4`、`roaring 0.4.1`を選び、
+`inspect-corpus-candidate`の固定identity/static preflightと手動Actions `build_load`を実施した。
+3件ともarchive SHAとgemspec identityは一致した。rbtraceはbundled msgpack configure/installで
+build失敗、graphql-c_parserはbuild evidence pass後のload sanityで失敗、roaringは`#warning`の
+preprocessor gapでbuild失敗した。roaringの失敗は再現可能な新規rubycc gapとして記録したが、
+build/load passは0件、upstream recipeは未実行、人手review時間は未計時である。
+
+ローカルpreflightで`ext`直下を誤ってextension root不正にする既存validator bugを発見し、
+`07467d2`/`740cafc`で修正・テスト・pushした。正式な検査結果は
+[`pilot-v2-review.md`](../docs/development/corpus-candidate-evaluation/pilot-v2-review.md)、
+metricsは[`pilot-v2-metrics.json`](../docs/development/corpus-candidate-evaluation/pilot-v2-metrics.json)、
+候補別結果は[`pilot-v2-inspections.json`](../docs/development/corpus-candidate-evaluation/pilot-v2-inspections.json)
+に要約した。follow-upとしてsource error分離と候補ごとのload sanity recipe issueを作成した。
+
 ## 決着
 
-(完了時に記入。結果と`docs/development/STEPS.md`の該当エントリへのリンクを残す。)
+中間判定は **条件付き採用**。日次scanの実行時間・timeout・window final failureと、header/gap・
+build形態の増分検出は条件を満たしたが、source error率、人手review時間、候補のbuild/load成功が
+未達または未計測である。14日でeligible候補が0ではないため28日延長はしない。source errorとload
+sanityのfollow-up完了後に、日次scanをcorpus自動拡張へ昇格させるか再判定する。この評価では
+`test/corpus/gems.rb`、header、compiler、`data/verified_gems.json`を変更していない。

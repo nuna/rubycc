@@ -574,7 +574,7 @@
   "source_total": {
     "pages": 251,
     "release_entries": 6858,
-    "unique_gems": 4494
+    "unique_gem_occurrences": 4494
   },
   "archive_total": {
     "inspections": 3786,
@@ -1491,4 +1491,3 @@
     "corpus_changed": false
   }
 }
-

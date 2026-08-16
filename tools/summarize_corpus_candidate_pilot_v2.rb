@@ -159,8 +159,11 @@ module CorpusCandidatePilotV2
   end
 
   def aggregate_source_stats(summaries)
-    keys = %w[pages release_entries unique_gems]
-    keys.to_h { |key| [key, summaries.sum { |summary| summary.dig("source_stats", key).to_i }] }
+    {
+      "pages" => summaries.sum { |summary| summary.dig("source_stats", "pages").to_i },
+      "release_entries" => summaries.sum { |summary| summary.dig("source_stats", "release_entries").to_i },
+      "unique_gem_occurrences" => summaries.sum { |summary| summary.dig("source_stats", "unique_gems").to_i }
+    }
   end
 
   def read_windows(manifest, registry, evaluation_root)
@@ -234,13 +237,6 @@ module CorpusCandidatePilotV2
       }
     end
 
-    unique_candidates = candidates.group_by { |candidate| candidate.fetch("name") }.map do |name, rows|
-      rows.min_by { |row| priority_key(row.merge("gemspec" => { "extensions" => [],
-                                                                  "extension_directories" => [] }), baseline) }
-    end
-    # The compact candidate has all priority fields except the original
-    # gemspec. Re-rank using the original records below, then expose the
-    # compact identity chosen for each name.
     original_candidates = windows.flat_map do |window|
       window.fetch("classification").fetch("records").filter_map do |record|
         next unless record.dig("corpus", "status") == "candidate"
