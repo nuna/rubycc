@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "experiment": "corpus-candidate-pilot-v2",
+  "inspection_mode": "local inspect-corpus-candidate static preflight plus manual GitHub Actions build_load",
+  "upstream_tests": "not_run; no reviewed recipe was requested or available",
+  "review_time_method": "not_instrumented",
+  "candidates": [
+    {
+      "name": "rbtrace",
+      "version": "0.5.5",
+      "platform": "ruby",
+      "expected_sha256": "ed0200ffeac4251f3464412e52f36cd64c473673c2739129e0b48c568672fe68",
+      "source_artifact": "artifacts/pilot-v2/2026-08-07/classification.json",
+      "local_skill": {
+        "status": "ready",
+        "identity": {
+          "archive_sha256": "ed0200ffeac4251f3464412e52f36cd64c473673c2739129e0b48c568672fe68",
+          "gemspec": {"name": "rbtrace", "version": "0.5.5", "platform": "ruby"},
+          "cache_hit": false
+        },
+        "static": {
+          "status": "candidate",
+          "r10": "not_run",
+          "extension_root": "ext",
+          "native_sources": ["ext/rbtrace.c"],
+          "additional_native_sources": [],
+          "build_manifests": ["Rakefile", "ext/extconf.rb"],
+          "headers": {
+            "system": ["assert.h", "errno.h", "inttypes.h", "signal.h", "stdarg.h", "stdbool.h", "stdint.h", "stdio.h", "stdlib.h", "string.h", "strings.h", "sys/resource.h", "sys/socket.h", "sys/time.h", "sys/types.h", "sys/un.h", "sys/wait.h", "time.h", "unistd.h"],
+            "gap": ["env.h", "msgpack.h", "node.h", "st.h", "sys/ipc.h", "sys/msg.h"]
+          }
+        },
+        "incremental_review": {
+          "in_corpus": false,
+          "in_popular": false,
+          "new_system_headers": ["sys/un.h"],
+          "new_gap_headers": ["env.h", "msgpack.h", "node.h", "st.h", "sys/ipc.h", "sys/msg.h"],
+          "decision": "static candidate; retain for independent review, do not add automatically"
+        }
+      },
+      "manual_actions": {
+        "run_id": 31940359185,
+        "url": "https://github.com/nuna/rubycc/actions/runs/31940359185",
+        "head_sha": "740cafcbd99fbe5fd9652b4afca6b19ee391eb22",
+        "preflight": "ready",
+        "workflow_conclusion": "failure",
+        "build_load": "build_failed",
+        "ruby": "ruby 4.0.6",
+        "rubycc_build_evidence": "not_observed",
+        "reason": "extconf.rb attempted to configure and install bundled msgpack; make install failed before the extension build"
+      },
+      "review_minutes": null,
+      "next_action": "Review the bundled msgpack configure path and host dependency boundary before creating a one-gem issue."
+    },
+    {
+      "name": "graphql-c_parser",
+      "version": "1.1.4",
+      "platform": "ruby",
+      "expected_sha256": "8d3bf769ae935373ada877fe003036892b45be98c2fbcc6731dd82af2c3e0656",
+      "source_artifact": "artifacts/pilot-v2/2026-08-03/classification.json",
+      "local_skill": {
+        "status": "ready",
+        "identity": {
+          "archive_sha256": "8d3bf769ae935373ada877fe003036892b45be98c2fbcc6731dd82af2c3e0656",
+          "gemspec": {"name": "graphql-c_parser", "version": "1.1.4", "platform": "ruby"},
+          "cache_hit": false
+        },
+        "static": {
+          "status": "candidate",
+          "r10": "not_run",
+          "extension_root": "ext/graphql_c_parser_ext",
+          "native_sources": ["ext/graphql_c_parser_ext/graphql_c_parser_ext.c", "ext/graphql_c_parser_ext/graphql_c_parser_ext.h", "ext/graphql_c_parser_ext/lexer.c", "ext/graphql_c_parser_ext/lexer.h", "ext/graphql_c_parser_ext/parser.c", "ext/graphql_c_parser_ext/parser.h"],
+          "additional_native_sources": [],
+          "build_manifests": ["ext/graphql_c_parser_ext/extconf.rb"],
+          "headers": {
+            "system": ["alloca.h", "limits.h", "stddef.h", "stdint.h", "stdio.h", "stdlib.h"],
+            "gap": ["libintl.h", "malloc.h"]
+          }
+        },
+        "incremental_review": {
+          "in_corpus": false,
+          "in_popular": false,
+          "new_system_headers": ["alloca.h"],
+          "new_gap_headers": ["libintl.h", "malloc.h"],
+          "decision": "static candidate; retain for independent review, do not add automatically"
+        }
+      },
+      "manual_actions": {
+        "run_id": 31940399889,
+        "url": "https://github.com/nuna/rubycc/actions/runs/31940399889",
+        "head_sha": "740cafcbd99fbe5fd9652b4afca6b19ee391eb22",
+        "preflight": "ready",
+        "workflow_conclusion": "failure",
+        "build_load": "fallback_or_not_loaded",
+        "ruby": "ruby 4.0.6",
+        "rubycc_build_evidence": "pass",
+        "reason": "native extension installed, but the shared-object load sanity raised NameError: uninitialized constant GraphQL::Language"
+      },
+      "review_minutes": null,
+      "next_action": "Inspect the gem's documented require/load entry point and rerun an explicit sanity check before creating a one-gem issue."
+    },
+    {
+      "name": "roaring",
+      "version": "0.4.1",
+      "platform": "ruby",
+      "expected_sha256": "caf8802c8de04d8567fb8438d226810179f4cbb5f4f1c87d0e73bfcec54cd9e8",
+      "source_artifact": "artifacts/pilot-v2/2026-08-04/classification.json",
+      "local_skill": {
+        "status": "ready",
+        "identity": {
+          "archive_sha256": "caf8802c8de04d8567fb8438d226810179f4cbb5f4f1c87d0e73bfcec54cd9e8",
+          "gemspec": {"name": "roaring", "version": "0.4.1", "platform": "ruby"},
+          "cache_hit": false
+        },
+        "static": {
+          "status": "candidate",
+          "r10": "not_run",
+          "extension_root": "ext/roaring",
+          "native_sources": ["ext/roaring/bitmap32.c", "ext/roaring/bitmap64.c", "ext/roaring/cext.c", "ext/roaring/roaring.c", "ext/roaring/roaring.h", "ext/roaring/roaring_ruby.h"],
+          "additional_native_sources": [],
+          "build_manifests": ["Rakefile", "ext/roaring/extconf.rb"],
+          "headers": {
+            "system": ["assert.h", "endian.h", "inttypes.h", "limits.h", "stdarg.h", "stdatomic.h", "stdbool.h", "stddef.h", "stdint.h", "stdio.h", "stdlib.h", "string.h", "x86intrin.h"],
+            "gap": ["arm_neon.h", "atomic", "avx2intrin.h", "avx512bwintrin.h", "avx512cdintrin.h", "avx512dqintrin.h", "avx512fintrin.h", "avx512vbmi2intrin.h", "avx512vbmiintrin.h", "avx512vlintrin.h", "avx512vpopcntdqintrin.h", "avxintrin.h", "bmiintrin.h", "byteswap.h", "cpuid.h", "immintrin.h", "intrin.h", "libkern/OSByteOrder.h", "lzcntintrin.h", "machine/endian.h", "malloc.h", "smmintrin.h", "sys/byteorder.h", "tmmintrin.h", "type_traits", "wmmintrin.h"]
+          }
+        },
+        "incremental_review": {
+          "in_corpus": false,
+          "in_popular": false,
+          "new_system_headers": ["endian.h"],
+          "new_gap_headers": ["atomic", "avx2intrin.h", "avx512bwintrin.h", "avx512cdintrin.h", "avx512dqintrin.h", "avx512fintrin.h", "avx512vbmi2intrin.h", "avx512vbmiintrin.h", "avx512vlintrin.h", "avx512vpopcntdqintrin.h", "avxintrin.h", "bmiintrin.h", "byteswap.h", "immintrin.h", "libkern/OSByteOrder.h", "lzcntintrin.h", "malloc.h", "smmintrin.h", "sys/byteorder.h", "tmmintrin.h", "type_traits", "wmmintrin.h"],
+          "decision": "static candidate; SIMD/CPU-gated gaps need separate review, do not add automatically"
+        }
+      },
+      "manual_actions": {
+        "run_id": 31940431681,
+        "url": "https://github.com/nuna/rubycc/actions/runs/31940431681",
+        "head_sha": "740cafcbd99fbe5fd9652b4afca6b19ee391eb22",
+        "preflight": "ready",
+        "workflow_conclusion": "failure",
+        "build_load": "build_failed",
+        "ruby": "ruby 4.0.6",
+        "rubycc_build_evidence": "not_observed",
+        "reason": "rubycc rejected the valid preprocessing directive #warning in ext/roaring/roaring.h"
+      },
+      "review_minutes": null,
+      "next_action": "Separate CPU-gated header gaps from the compiler blocker, then create a focused follow-up only if the #warning diagnostic is reproducible."
+    }
+  ]
+}
