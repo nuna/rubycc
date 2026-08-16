@@ -4,7 +4,7 @@ kind: infra
 opened: 2026-08-16
 closed:
 branch: corpus-candidate-local-inspection-skill
-pr:
+pr: 69
 steps:
   - corpus-candidate-local-inspection-skill-1
   - corpus-candidate-local-inspection-skill-2
