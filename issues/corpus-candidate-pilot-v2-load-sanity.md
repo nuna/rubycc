@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: infra
 opened: 2026-08-16
-closed:
+closed: 2026-08-16
 branch: corpus-candidate-pilot-v2-load-sanity
-pr:
+pr: https://github.com/nuna/rubycc/pull/75
 steps:
   - corpus-candidate-pilot-v2-load-sanity-1
   - corpus-candidate-pilot-v2-load-sanity-2
@@ -53,6 +53,6 @@ Ruby 3.3.12で実測し、さらにGitHub Actions Ruby 4.0.6の[run 31950250084]
 
 ## 決着
 
-実装・固定archiveの再検証・Actions比較まで完了した。PR作成後にstatusを`done`へ更新する。
+実装・固定archiveの再検証・Actions比較・Ruby 3.3/4.0 CI確認まで完了した。PR #75で反映した。
 
 このissueでは候補gemを正式corpusへ追加しない。
