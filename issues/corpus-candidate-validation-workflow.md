@@ -4,7 +4,7 @@ kind: infra
 opened: 2026-08-16
 closed:
 branch: corpus-candidate-validation-workflow
-pr:
+pr: 71
 steps:
   - corpus-candidate-validation-workflow-1
   - corpus-candidate-validation-workflow-2
