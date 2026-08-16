@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: infra
 opened: 2026-08-16
-closed:
+closed: 2026-08-16
 branch: corpus-candidate-pilot-v2-source-errors
-pr:
+pr: https://github.com/nuna/rubycc/pull/74
 steps:
   - corpus-candidate-pilot-v2-source-errors-1
   - corpus-candidate-pilot-v2-source-errors-2
