@@ -1,0 +1,101 @@
+# Candidate execution is explicit and isolated from both the daily static scan
+# and the normal push/pull-request test workflows.
+name: corpus-candidate-validation
+
+"on":
+  workflow_dispatch:
+    inputs:
+      name:
+        description: "RubyGems gem name"
+        required: true
+        type: string
+      version:
+        description: "Exact gem version"
+        required: true
+        type: string
+      platform:
+        description: "Exact gem platform; current scanner candidates use ruby"
+        required: true
+        default: "ruby"
+        type: string
+      sha256:
+        description: "Expected SHA-256 of the RubyGems archive"
+        required: true
+        type: string
+      mode:
+        description: "Validation depth"
+        required: true
+        default: build_load
+        type: choice
+        options:
+          - build_load
+          - upstream
+
+permissions:
+  contents: read
+
+concurrency:
+  group: corpus-candidate-validation-${{ inputs.name }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      gate_status: ${{ steps.inspect.outputs.gate_status }}
+      static_status: ${{ steps.inspect.outputs.static_status }}
+      recipe_status: ${{ steps.inspect.outputs.recipe_status }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: false
+
+      - name: Verify input, archive identity, and static execution gate
+        id: inspect
+        shell: bash
+        env:
+          CANDIDATE_NAME: ${{ inputs.name }}
+          CANDIDATE_VERSION: ${{ inputs.version }}
+          CANDIDATE_PLATFORM: ${{ inputs.platform }}
+          CANDIDATE_SHA256: ${{ inputs.sha256 }}
+          CANDIDATE_MODE: ${{ inputs.mode }}
+          CANDIDATE_WORK: ${{ runner.temp }}/corpus-candidate-validation/preflight
+          CANDIDATE_RESULT: ${{ runner.temp }}/corpus-candidate-validation/preflight/result.json
+        run: |
+          set -o pipefail
+          mkdir -p "$(dirname "$CANDIDATE_RESULT")"
+          set +e
+          ruby tools/verify_corpus_candidate.rb \
+            --mode "$CANDIDATE_MODE" \
+            --preflight-only \
+            2>&1 | tee "$(dirname "$CANDIDATE_RESULT")/preflight.log"
+          inspect_status=${PIPESTATUS[0]}
+          set -e
+          if [[ -f "$CANDIDATE_RESULT" ]]; then
+            ruby -rjson -e '
+              result = JSON.parse(File.read(ARGV.fetch(0)))
+              File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |output|
+                output.puts "gate_status=#{result.fetch("gate_status", "unknown")}"
+                output.puts "static_status=#{result.dig("static", "status").to_s}"
+                output.puts "recipe_status=#{result.dig("recipe", "status").to_s}"
+              end
+            ' "$CANDIDATE_RESULT"
+          fi
+          exit "$inspect_status"
+
+      - name: Upload preflight report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: corpus-candidate-validation-preflight-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/corpus-candidate-validation/preflight/result.json
+            ${{ runner.temp }}/corpus-candidate-validation/preflight/preflight.log
+          retention-days: 14
+          if-no-files-found: warn
