@@ -47,6 +47,11 @@ class TestScanPopularGems < Minitest::Test
     assert_equal File.expand_path("tmp/scan"), config.work_dir
     assert_equal "bestgems", config.source_choice
     assert config.verbose
+
+    summary_config = CorpusCandidateScan::Configuration.from_env(
+      ["--summary", "tmp/summary.json"], "SCAN_WORK" => "tmp/scan"
+    )
+    assert_equal File.expand_path("tmp/summary.json"), summary_config.summary_path
   end
 
   def test_configuration_rejects_invalid_legacy_arguments
@@ -206,6 +211,43 @@ class TestScanPopularGems < Minitest::Test
       assert scanner.run
       assert_includes output.string, "selection-only"
       refute Dir.glob(File.join(config.work_dir, "*.gem")).any?
+    end
+  end
+
+  def test_run_summary_records_runtime_phases_without_absolute_paths
+    Dir.mktmpdir do |work_dir|
+      summary_path = File.join(work_dir, "summary.json")
+      config = CorpusCandidateScan::Configuration.from_env(
+        ["--source", "timeframe", "--from", "2026-08-01", "--to", "2026-08-02", "--selection-only"],
+        "SCAN_WORK" => work_dir, "SCAN_SUMMARY" => summary_path
+      )
+      record = {
+        "name" => "example-gem", "version" => "1.0.0", "platform" => "ruby",
+        "created_at" => "2026-08-01T12:00:00Z", "prerelease" => false, "sha" => "feed",
+        "downloads" => 100, "version_downloads" => 10
+      }
+      responses = {
+        CorpusCandidateScan::TimeframeVersions.url(config.from_time, config.to_time, 1) => JSON.generate([record]),
+        CorpusCandidateScan::TimeframeVersions.url(config.from_time, config.to_time, 2) => JSON.generate([])
+      }
+      output = StringIO.new
+      scanner = CorpusCandidateScan::Scanner.new(config: config, http_client: FakeHttp.new(responses),
+                                                 sleeper: ->(_seconds) {}, out: output)
+
+      assert scanner.run
+
+      summary = JSON.parse(File.read(summary_path))
+      assert_equal 1, summary.fetch("schema_version")
+      assert_equal "timeframe", summary.fetch("source")
+      assert_equal 2, summary.fetch("requests").fetch("attempts")
+      assert_equal 2, summary.fetch("requests").fetch("unique_urls")
+      assert_operator summary.fetch("requests").fetch("bytes"), :>, 0
+      assert_equal 0, summary.fetch("archives").fetch("inspections")
+      assert_equal 0, summary.fetch("archives").fetch("fetch_attempts")
+      assert_equal CorpusCandidateScan::SUMMARY_PHASES.to_h { |phase| [phase, 0.0] }.keys.sort,
+                   summary.fetch("phases_seconds").keys.sort
+      assert_equal ["uninspected"], summary.fetch("results").keys
+      refute_includes File.read(summary_path), work_dir
     end
   end
 
