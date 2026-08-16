@@ -1,9 +1,9 @@
 ---
-status: open
+status: in-progress
 kind: infra
 opened: 2026-08-16
 closed:
-branch:
+branch: corpus-candidate-pilot-v2
 pr:
 steps:
   - corpus-candidate-pilot-v2-1
@@ -92,6 +92,10 @@ windowを欠測なく検査し、静的増分と上位候補の実行結果を�
 従来評価の3件sampleに対し、1日全件scanでは109 archive中8候補が得られた。改善後の評価は
 sample上限を置かず、日次全静的scanを14日継続する。定期実行が速いことだけでなく、既存corpusへ
 新しいheader/gapまたはbuild形態を持ち込めることと、候補ごとの実行検査まで成功条件に含めた。
+
+`corpus-candidate-pilot-v2` branchで着手した。まず完了済みUTC日14個、scanner revision、候補選定順、
+popular上位100の対照、再実行・欠測の扱い、p95/失敗率の運用目標を
+`docs/development/corpus-candidate-evaluation/pilot-v2-manifest.json`へ結果を見る前に固定した。
 
 ## 決着
 
