@@ -53,6 +53,76 @@ module CorpusCandidateScan
   DEFAULT_FETCH_CONCURRENCY = 2
   MAX_FETCH_CONCURRENCY = 4
 
+  # Source failures are kept out of the normal candidate/error buckets.  A
+  # source failure means that the scanner could not establish a trustworthy
+  # release or archive identity; it is never evidence that the gem has no
+  # extension and never an eligible candidate.
+  module SourceErrorClassification
+    STATUSES = %w[
+      stale_release
+      v2_metadata_404
+      rate_limited
+      network_failure
+      archive_sha_mismatch
+    ].freeze
+
+    PRIORITY = {
+      "archive_sha_mismatch" => 5,
+      "rate_limited" => 4,
+      "network_failure" => 3,
+      "v2_metadata_404" => 2,
+      "stale_release" => 1
+    }.freeze
+
+    module_function
+
+    def from_message(message, stage:)
+      text = message.to_s
+      kind, http_status = if stage.to_sym == :archive && text.match?(/gem_sha256_mismatch/)
+                            ["archive_sha_mismatch", nil]
+                          elsif stage.to_sym == :v2_metadata &&
+                                text.match?(/(?:failed:|failed after .*:)\s*404\b|\b404\s+Not Found/i)
+                            ["v2_metadata_404", 404]
+                          elsif stage.to_sym == :archive && text.match?(/\b404\s+Not Found/i)
+                            ["network_failure", 404]
+                          elsif text.match?(/\b429\b|Too Many Requests/i)
+                            ["rate_limited", 429]
+                          elsif text.match?(/\b5\d\d\b|Net::|SocketError|timed? ?out|timeout|connection/i)
+                            ["network_failure", text[/\b5\d\d\b/]&.to_i]
+                          end
+      return unless kind
+
+      build(kind, stage, text, http_status: http_status)
+    end
+
+    def stale_release(reasons)
+      return unless Array(reasons).any? do |reason|
+        reason.match?(/source platform unavailable|yanked|v2 name\/version mismatch/)
+      end
+
+      build("stale_release", :release_selection, Array(reasons).join("; "))
+    end
+
+    def choose(errors, reasons)
+      candidates = Array(errors).compact
+      candidates << stale_release(reasons)
+      candidates.compact.max_by { |error| PRIORITY.fetch(error.fetch("kind"), 0) }
+    end
+
+    def status?(status)
+      STATUSES.include?(status.to_s)
+    end
+
+    def build(kind, stage, reason, http_status: nil)
+      {
+        "kind" => kind,
+        "stage" => stage.to_s,
+        "http_status" => http_status,
+        "reason" => reason
+      }.compact
+    end
+  end
+
   # The legacy rank mode is deliberately represented as data rather than read
   # from ARGV at load time. This is the boundary that makes the scanner
   # require-able from hermetic tests and from the future timeframe source.
@@ -664,7 +734,9 @@ module CorpusCandidateScan
             "gap" => includes.select { |_, category| category.to_sym == :gap }.keys.sort,
             "ruby_or_self" => Array(result[:ruby_self]).map(&:to_s).sort
           }
-        }
+        }.tap do |record|
+          record["source_error"] = result[:source_error] if result[:source_error]
+        end
       end
     end
   end
@@ -679,6 +751,7 @@ module CorpusCandidateScan
       def write(path, config:, source:, started_at:, finished_at:, timings:, counters:, requests:, results:,
                 source_stats: {}, peak_work_bytes: nil)
         archive_stats = requests.fetch(:archives, {})
+        source_errors = results.filter_map { |result| result[:source_error] }
         payload = {
           "schema_version" => SCHEMA_VERSION,
           "source" => Artifact.source_name(config, source),
@@ -710,6 +783,13 @@ module CorpusCandidateScan
                     end
             [name.to_s, value]
           end,
+          "source_errors" => {
+            "total" => source_errors.length,
+            "by_kind" => source_errors.group_by { |error| error.fetch("kind") }
+                                            .transform_values(&:length).sort.to_h,
+            "by_stage" => source_errors.group_by { |error| error.fetch("stage") }
+                                             .transform_values(&:length).sort.to_h
+          },
           "results" => results.group_by { |result| result[:status].to_s }
                                .transform_values(&:length)
                                .sort.to_h
@@ -1025,6 +1105,7 @@ module CorpusCandidateScan
         end
 
         discarded = []
+        source_errors = []
         chosen = nil
         candidates.each do |candidate|
           if candidate["prerelease"]
@@ -1035,6 +1116,7 @@ module CorpusCandidateScan
           details = timeframe_version_details(candidate["name"], candidate["version"])
           if details[:error]
             discarded << "#{candidate["version"]}: #{details[:error]}"
+            source_errors << details[:source_error] if details[:source_error]
             next
           end
           unless details["name"] == candidate["name"] && details["version"] == candidate["version"]
@@ -1076,7 +1158,10 @@ module CorpusCandidateScan
             selection_rejections: discarded
           }
         else
-          rejected << rejected_timeframe_result(name, discarded)
+          rejected << rejected_timeframe_result(
+            name, discarded,
+            source_error: SourceErrorClassification.choose(source_errors, discarded)
+          )
         end
       end
 
@@ -1128,11 +1213,13 @@ module CorpusCandidateScan
       discarded.empty? ? note : "#{note}; discarded: #{discarded.join('; ')}"
     end
 
-    def rejected_timeframe_result(name, reasons)
+    def rejected_timeframe_result(name, reasons, source_error: nil)
       {
         rank: nil, name: name, version: nil, platform: nil, created_at: nil,
         downloads: nil, version_downloads: nil, extensions: [],
-        status: :error, reason: "no non-prerelease, non-yanked ruby source release: #{reasons.join('; ')}",
+        status: source_error ? source_error.fetch("kind").to_sym : :error,
+        source_error: source_error,
+        reason: "no non-prerelease, non-yanked ruby source release: #{reasons.join('; ')}",
         selection_rejections: reasons, c_files: 0, h_files: 0, notes: [],
         in_corpus: @corpus_names.include?(name)
       }
@@ -1180,7 +1267,11 @@ module CorpusCandidateScan
     rescue JSON::ParserError => e
       @timeframe_version_cache[key] = { error: "invalid v2 JSON: #{e.message}" }
     rescue StandardError => e
-      @timeframe_version_cache[key] = { error: "v2 lookup failed: #{e.message}" }
+      message = "v2 lookup failed: #{e.message}"
+      @timeframe_version_cache[key] = {
+        error: message,
+        source_error: SourceErrorClassification.from_message(message, stage: :v2_metadata)
+      }
     end
 
     def collect_ranking(source, first_rank, last_rank)
@@ -1308,8 +1399,11 @@ module CorpusCandidateScan
                                 end
                               end
       unless gem_path
-        result[:status] = :error
-        result[:reason] = "gem fetch failed: #{fetch_error.to_s.lines.map(&:strip).reject(&:empty?).last}"
+        source_error = SourceErrorClassification.from_message(fetch_error, stage: :archive)
+        result[:source_error] = source_error
+        result[:status] = source_error ? source_error.fetch("kind").to_sym : :error
+        result[:reason] = source_error ? source_error.fetch("reason") :
+          "gem fetch failed: #{fetch_error.to_s.lines.map(&:strip).reject(&:empty?).last}"
         return result
       end
 
@@ -1418,8 +1512,10 @@ module CorpusCandidateScan
       result
       end
     rescue StandardError => e
-      result[:status] = :error
-      result[:reason] = "#{e.class}: #{e.message}"
+      source_error = SourceErrorClassification.from_message(e.message, stage: :archive)
+      result[:source_error] = source_error
+      result[:status] = source_error ? source_error.fetch("kind").to_sym : :error
+      result[:reason] = source_error ? source_error.fetch("reason") : "#{e.class}: #{e.message}"
       result
     end
 
@@ -1453,7 +1549,9 @@ module CorpusCandidateScan
     end
 
     def report(results, source, first_rank, last_rank)
-      with_ext = results.reject { |result| %i[no_ext review error].include?(result[:status]) }
+      source_errors = results.select { |result| SourceErrorClassification.status?(result[:status]) }
+      non_extension_results = %i[no_ext review error].map(&:to_s) + SourceErrorClassification::STATUSES
+      with_ext = results.reject { |result| non_extension_results.include?(result[:status].to_s) }
       candidates = with_ext.select { |result| result[:status] == :candidate && !result[:in_corpus] }
       needs_review = with_ext.select { |result| result[:status] == :needs_review && !result[:in_corpus] }
       reviews = results.select { |result| result[:status] == :review && !result[:in_corpus] }
@@ -1529,6 +1627,14 @@ module CorpusCandidateScan
         errors.sort_by { |result| result[:rank] }.map { |result| [result[:rank], result[:name], result[:reason]] }
       )
 
+      print_table(
+        "[S] source errors (not candidates; release/archive identity unavailable)",
+        %w[rank gem status stage reason],
+        source_errors.sort_by { |result| [result[:rank].to_i, result[:name].to_s] }.map do |result|
+          [result[:rank], result[:name], result[:status], result.dig(:source_error, "stage"), result[:reason]]
+        end
+      )
+
       if config.verbose
         print_table(
           "[0] no C extension (SCAN_VERBOSE)",
@@ -1550,6 +1656,7 @@ module CorpusCandidateScan
       @out.puts "    already in corpus    [3]  : #{in_corpus.size}#{in_corpus.empty? ? '' : "  (#{in_corpus.map { |r| r[:name] }.join(', ')})"}"
       @out.puts "  without a C extension       : #{no_ext.size}#{config.verbose ? '' : '  (run with SCAN_VERBOSE=1 to list)'}"
       @out.puts "  errors                      : #{errors.size}#{errors.empty? ? '' : "  (#{errors.map { |r| r[:name] }.join(', ')})"}"
+      @out.puts "  source errors               : #{source_errors.size}#{source_errors.empty? ? '' : "  (#{source_errors.map { |r| r[:name] }.join(', ')})"}"
       @out.puts "-" * 100
 
       errors.size < results.size

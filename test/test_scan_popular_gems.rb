@@ -22,7 +22,8 @@ class TestScanPopularGems < Minitest::Test
 
     def get(url)
       @urls << url
-      @responses.fetch(url)
+      response = @responses.fetch(url)
+      response.respond_to?(:call) ? response.call(url) : response
     end
   end
 
@@ -212,6 +213,74 @@ class TestScanPopularGems < Minitest::Test
     assert_equal url, record.fetch(:url)
     assert_nil record.fetch(:response_sha256)
     assert_includes record.fetch(:error), "synthetic 404"
+  end
+
+  def test_source_error_classification_keeps_failure_kinds_distinct
+    assert_equal "v2_metadata_404",
+                 CorpusCandidateScan::SourceErrorClassification
+                   .from_message("GET metadata failed: 404 Not Found", stage: :v2_metadata)
+                   .fetch("kind")
+    assert_equal "rate_limited",
+                 CorpusCandidateScan::SourceErrorClassification
+                   .from_message("GET metadata failed after retries: 429 Too Many Requests", stage: :v2_metadata)
+                   .fetch("kind")
+    assert_equal "network_failure",
+                 CorpusCandidateScan::SourceErrorClassification
+                   .from_message("Net::ReadTimeout: timed out", stage: :v2_metadata)
+                   .fetch("kind")
+    assert_equal "archive_sha_mismatch",
+                 CorpusCandidateScan::SourceErrorClassification
+                   .from_message("ArgumentError: gem_sha256_mismatch: API=x fetched=y", stage: :archive)
+                   .fetch("kind")
+    assert_equal "stale_release",
+                 CorpusCandidateScan::SourceErrorClassification
+                   .stale_release(["1.0.0: yanked"])
+                   .fetch("kind")
+  end
+
+  def test_v2_metadata_404_is_a_source_error_and_not_a_candidate
+    config = CorpusCandidateScan::Configuration.from_env(
+      ["--source", "timeframe", "--from", "2026-08-01T00:00:00Z", "--to", "2026-08-02T00:00:00Z"], {}
+    )
+    release = {
+      "name" => "stale-gem", "version" => "1.0.0", "platform" => "ruby",
+      "created_at" => "2026-08-01T12:00:00Z", "prerelease" => false, "sha" => "feed",
+      "downloads" => 100, "version_downloads" => 10
+    }
+    responses = {
+      CorpusCandidateScan::TimeframeVersions.url(config.from_time, config.to_time, 1) => JSON.generate([release]),
+      CorpusCandidateScan::TimeframeVersions.url(config.from_time, config.to_time, 2) => JSON.generate([]),
+      "https://rubygems.org/api/v2/rubygems/stale-gem/versions/1.0.0.json?platform=ruby" => lambda do |url|
+        raise "GET #{url} failed: 404 Not Found"
+      end
+    }
+    scanner = CorpusCandidateScan::Scanner.new(
+      config: config, http_client: FakeHttp.new(responses), sleeper: ->(_seconds) {}
+    )
+
+    selected, rejected = scanner.send(:collect_timeframe)
+
+    assert_empty selected
+    result = rejected.fetch(0)
+    assert_equal :v2_metadata_404, result.fetch(:status)
+    assert_equal "v2_metadata_404", result.dig(:source_error, "kind")
+    refute_equal :candidate, result.fetch(:status)
+  end
+
+  def test_archive_sha_mismatch_is_a_source_error_and_not_a_candidate
+    config = CorpusCandidateScan::Configuration.new(
+      source_choice: "timeframe", from_time: "2026-08-01", to_time: "2026-08-02", work_dir: Dir.tmpdir
+    )
+    scanner = CorpusCandidateScan::Scanner.new(config: config, http_client: FakeHttp.new({}), sleeper: ->(_seconds) {})
+    entry = {
+      rank: nil, name: "mismatch-gem", version: "1.0.0", platform: "ruby", created_at: "2026-08-01T12:00:00Z",
+      downloads: 1, version_downloads: 1, api_sha: "a" * 64, selection_rejections: [], selection_note: nil
+    }
+
+    result = scanner.send(:inspect_gem, entry, archive: [nil, "ArgumentError: gem_sha256_mismatch: API=a fetched=b"])
+
+    assert_equal :archive_sha_mismatch, result.fetch(:status)
+    assert_equal "archive_sha_mismatch", result.dig(:source_error, "kind")
   end
 
   def test_timeframe_source_paginates_to_an_empty_page_and_selects_source_release

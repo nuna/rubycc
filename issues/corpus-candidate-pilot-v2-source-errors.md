@@ -1,9 +1,9 @@
 ---
-status: open
+status: in-progress
 kind: infra
 opened: 2026-08-16
 closed:
-branch:
+branch: corpus-candidate-pilot-v2-source-errors
 pr:
 steps:
   - corpus-candidate-pilot-v2-source-errors-1
@@ -44,6 +44,17 @@ sourceの一時的不整合を候補収率や失敗率へ混ぜると、日次sc
 
 未着手。pilot v2の2026-08-15実測で503件のv2 metadata 404を確認したため、source errorの分類と
 候補分母の分離を次の作業対象として固定した。
+
+### 2026-08-16 — source error taxonomyとsummary schema
+
+`stale_release`、`v2_metadata_404`、`rate_limited`、`network_failure`、
+`archive_sha_mismatch`を候補・`no_ext`とは別statusとして扱う実装を開始した。artifactにはkind、
+stage、HTTP status、reasonを保存し、run summaryにはkind/stage別件数を保存する。集計toolはsource
+error rateとwindow failure rateを別々に扱い、失敗・欠測windowを成功分母へ混ぜない。
+
+404、rate limit、network failure、archive SHA不一致、yanked releaseのhermetic fixtureを追加し、
+scanner targeted testは28 runs / 144 assertions、pilot summary testは4 runs / 25 assertionsで
+failures 0 / errors 0だった。固定14日replayと実測reportの更新は次の作業に残している。
 
 ## 決着
 
