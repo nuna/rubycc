@@ -16,6 +16,8 @@ require "rbconfig"
 require "rubygems/package"
 require "timeout"
 
+require_relative "corpus_candidate_load_recipes"
+
 module CorpusCandidateValidation
   ROOT = File.expand_path("..", __dir__).freeze
   VERIFY_TOOL = File.join(ROOT, "tools", "verify_gem_tests.rb").freeze
@@ -23,7 +25,8 @@ module CorpusCandidateValidation
   NAME = /\A[a-zA-Z0-9][a-zA-Z0-9_.-]*\z/
   VERSION = /\A[a-zA-Z0-9][a-zA-Z0-9.+~_-]*\z/
   PLATFORM = /\A[a-zA-Z0-9][a-zA-Z0-9_.-]*\z/
-  MODES = %w[build_load upstream].freeze
+  MODES = %w[build_load load_sanity upstream].freeze
+  COMPILERS = %w[rubycc host].freeze
   NATIVE_C_CPP = /\.(?:c|h|cc|cpp|cxx|hh|hpp|hxx)\z/i
   NATIVE_ADDITIONAL = /\.(?:go|rs|m|mm|swift|S|asm)\z|\/(?:go\.mod|go\.sum|Cargo\.toml|Cargo\.lock)\z/i
   BUILD_MANIFEST = %r{(?:^|/)(?:Rakefile|extconf\.rb|go\.mod|go\.sum|Cargo\.toml|Cargo\.lock)$}i
@@ -43,7 +46,7 @@ module CorpusCandidateValidation
   end
   module_function :extension_root_outside_census?
 
-  Input = Struct.new(:name, :version, :platform, :sha256, :mode, :work_dir, :result_path,
+  Input = Struct.new(:name, :version, :platform, :sha256, :mode, :compiler, :work_dir, :result_path,
                      keyword_init: true) do
     def self.from_env(env, overrides = {})
       work_dir = overrides.fetch(:work_dir) { env["CANDIDATE_WORK"] }
@@ -54,6 +57,7 @@ module CorpusCandidateValidation
         platform: env["CANDIDATE_PLATFORM"],
         sha256: env["CANDIDATE_SHA256"],
         mode: overrides.fetch(:mode) { env["CANDIDATE_MODE"] },
+        compiler: overrides.fetch(:compiler) { env["CANDIDATE_COMPILER"] || "rubycc" },
         work_dir: work_dir,
         result_path: result_path
       )
@@ -66,6 +70,7 @@ module CorpusCandidateValidation
       errors << "platform must be ruby" unless platform == "ruby"
       errors << "SHA-256 must be 64 hexadecimal characters" unless sha256.to_s.match?(SHA256)
       errors << "mode must be one of #{MODES.join(', ')}" unless MODES.include?(mode)
+      errors << "compiler must be one of #{COMPILERS.join(', ')}" unless COMPILERS.include?(compiler)
       errors << "work directory must be an absolute path" unless absolute_path?(work_dir)
       errors << "result path must be an absolute path" unless absolute_path?(result_path)
       raise ArgumentError, errors.join("; ") unless errors.empty?
@@ -78,6 +83,7 @@ module CorpusCandidateValidation
         "platform" => platform,
         "expected_sha256" => sha256.to_s.downcase,
         "mode" => mode,
+        "compiler" => compiler,
         "source" => "workflow_dispatch"
       }
     end
@@ -200,12 +206,18 @@ module CorpusCandidateValidation
         "input" => @input.input_json,
         "identity" => nil,
         "static" => nil,
+        "load_recipe" => nil,
         "recipe" => nil,
         "execution" => {
           "ruby" => RUBY_DESCRIPTION,
+          "compiler" => @input.compiler,
           "work_dir" => "<CANDIDATE_WORK>",
           "build_load" => "not_run",
-          "sanity" => "not_run"
+          "native_extension_install" => "not_run",
+          "rubycc_build_evidence" => "not_run",
+          "sanity" => "not_run",
+          "load_recipe_dependencies" => [],
+          "documented_entrypoint" => "not_run"
         },
         "upstream" => { "status" => "not_run" },
         "reason" => nil,
@@ -275,6 +287,24 @@ module CorpusCandidateValidation
         "build_manifests" => build_manifests,
         "headers" => { "system" => [], "gap" => [] }
       }
+
+      load_recipe = CorpusCandidateLoadRecipes.find(
+        name: @input.name,
+        version: @input.version,
+        platform: @input.platform,
+        sha256: @input.sha256
+      )
+      result["load_recipe"] = CorpusCandidateLoadRecipes.public_recipe(load_recipe) ||
+                               {"schema_version" => CorpusCandidateLoadRecipes::SCHEMA_VERSION,
+                                "status" => "missing"}
+      if @input.mode == "load_sanity" && load_recipe.nil?
+        result["status"] = "recipe_missing"
+        result["gate_status"] = "recipe_missing"
+        result["exit_code"] = 1
+        result["reason"] = "no fixed documented load recipe matches the candidate identity"
+        result["next_action"] = "Add and review a fixed load recipe before requesting documented load sanity."
+        return
+      end
 
       result["status"] = static_status
       result["gate_status"] = static_status == "candidate" ? "candidate" : static_status
@@ -402,57 +432,77 @@ module CorpusCandidateValidation
         "GEM_PATH" => gem_home,
         "RUBYCC" => "0"
       }
+      recipe = @input.mode == "load_sanity" ? load_recipe : nil
 
-      build = @commands.call(gem_command("build", "rubycc.gemspec", "--output", rubycc_package),
-                             env: env, timeout_seconds: 900)
-      install_rubycc = build.success && @commands.call(
-        gem_command("install", rubycc_package, "--install-dir", gem_home, "--local", "--no-document"),
-        env: env, timeout_seconds: 900
-      )
-      install_rubycc = CommandRunner::Result.new(output: "not run", success: false, status: nil,
-                                                  timed_out: false) unless build.success
+      build = if @input.compiler == "rubycc"
+                @commands.call(gem_command("build", "rubycc.gemspec", "--output", rubycc_package),
+                               env: env, timeout_seconds: 900)
+              else
+                skipped_result("host control does not build rubycc")
+              end
+      install_rubycc = if @input.compiler == "rubycc" && build.success
+                         @commands.call(
+                           gem_command("install", rubycc_package, "--install-dir", gem_home, "--local", "--no-document"),
+                           env: env, timeout_seconds: 900
+                         )
+                       else
+                         skipped_result("not run")
+                       end
 
-      candidate_env = env.merge("RUBYCC" => "1")
+      candidate_env = env.merge("RUBYCC" => @input.compiler == "rubycc" ? "1" : "0")
+      dependency_ok = install_load_recipe_dependencies!(recipe, gem_home, candidate_env, result)
       archive = File.join(@work_dir, "packages", "#{@input.name}-#{@input.version}.gem")
-      install_candidate = if install_rubycc.success
+      install_candidate = if dependency_ok && (@input.compiler == "host" || install_rubycc.success)
                             @commands.call(
                               gem_command("install", archive, "--install-dir", gem_home, "--local",
                                           "--ignore-dependencies", "--no-document"),
                               env: candidate_env, timeout_seconds: 1_800
                             )
                           else
-                            CommandRunner::Result.new(output: "not run", success: false, status: nil,
-                                                      timed_out: false)
+                            skipped_result("not run")
                           end
 
       outputs = [build.output, install_rubycc.output, install_candidate.output].compact.join("\n")
       result["execution"]["build_output_tail"] = portable(outputs).lines.last(40).map(&:chomp)
-      unless build.success && install_rubycc.success && install_candidate.success
+      unless dependency_ok && install_candidate.success &&
+             (@input.compiler == "host" || (build.success && install_rubycc.success))
         timed_out = [build, install_rubycc, install_candidate].any?(&:timed_out)
-        result["status"] = timed_out ? "timeout" : "build_failed"
+        result["status"] = timed_out ? "timeout" : (dependency_ok ? "build_failed" : "dependency_install_failed")
         result["gate_status"] = result["status"]
-        result["execution"]["build_load"] = "build_failed"
+        result["execution"]["build_load"] = result["status"]
+        result["execution"]["native_extension_install"] = "failed"
         result["exit_code"] = 1
-        result["reason"] = timed_out ? "rubycc or candidate gem installation timed out" :
-                              "rubycc or candidate gem installation failed"
+        result["reason"] = if timed_out
+                             "candidate build or dependency installation timed out"
+                           elsif !dependency_ok
+                             "a fixed load recipe dependency could not be installed"
+                           else
+                             "candidate gem installation failed"
+                           end
         result["next_action"] = "Review the structured build log; do not treat this as a corpus addition."
         return
       end
+      result["execution"]["native_extension_install"] = "pass"
 
       gem_dir = File.join(gem_home, "gems", "#{@input.name}-#{@input.version}")
-      makeouts = Dir.glob(File.join(gem_home, "extensions", "**", "#{@input.name}-#{@input.version}", "gem_make.out"))
-      makefiles = Dir.glob(File.join(gem_dir, "**", "Makefile"))
-      rubycc_trace = makeouts.any? { |path| File.read(path).match?(%r{rubycc-[^/\s]+/exe/rmake}) } &&
-                     makefiles.any? { |path| File.read(path).match?(%r{rubycc-[^/\s]+/exe/rubycc}) }
-      result["execution"]["rubycc_build_evidence"] = rubycc_trace ? "pass" : "missing"
-      unless rubycc_trace
-        result["status"] = "build_failed"
-        result["gate_status"] = "build_failed"
-        result["execution"]["build_load"] = "build_failed"
-        result["exit_code"] = 1
-        result["reason"] = "candidate install succeeded without proving a rubycc build"
-        result["next_action"] = "Discard the result and investigate the missing rubycc build evidence."
-        return
+      if @input.compiler == "host"
+        result["execution"]["rubycc_build_evidence"] = "not_applicable"
+      else
+        makeouts = Dir.glob(File.join(gem_home, "extensions", "**", "#{@input.name}-#{@input.version}", "gem_make.out"))
+        makefiles = Dir.glob(File.join(gem_dir, "**", "Makefile"))
+        rubycc_trace = makeouts.any? { |path| File.read(path).match?(%r{rubycc-[^/\s]+/exe/rmake}) } &&
+                       makefiles.any? { |path| File.read(path).match?(%r{rubycc-[^/\s]+/exe/rubycc}) }
+        result["execution"]["rubycc_build_evidence"] = rubycc_trace ? "pass" : "missing"
+        unless rubycc_trace
+          result["status"] = "build_failed"
+          result["gate_status"] = "build_failed"
+          result["execution"]["build_load"] = "build_failed"
+          result["execution"]["native_extension_install"] = "failed"
+          result["exit_code"] = 1
+          result["reason"] = "candidate install succeeded without proving a rubycc build"
+          result["next_action"] = "Discard the result and investigate the missing rubycc build evidence."
+          return
+        end
       end
 
       shared_objects = Dir.glob(File.join(gem_dir, "**", "*.so")).sort
@@ -466,7 +516,75 @@ module CorpusCandidateValidation
         return
       end
 
-      load_script = <<~'RUBY'
+      load_script = load_script_for(recipe)
+      load_env = candidate_env.merge("RUBYLIB" => File.join(gem_dir, "lib"))
+      if recipe
+        load_env["VERIFY_REQUIRES"] = recipe.fetch("entrypoint").fetch("requires").join(",")
+        load_env["VERIFY_SANITY_KIND"] = recipe.fetch("entrypoint").fetch("sanity_kind")
+      end
+      loaded = @commands.call([RbConfig.ruby, "-e", load_script, *shared_objects],
+                              env: load_env, timeout_seconds: 120)
+      result["execution"]["load_output_tail"] = portable(loaded.output).lines.last(20).map(&:chomp)
+      result["execution"]["documented_entrypoint"] = if recipe
+                                                        loaded.success ? "pass" : "failed"
+                                                      else
+                                                        "not_run"
+                                                      end
+      if loaded.success
+        result["status"] = recipe ? "documented_load_pass" : "build_load_pass"
+        result["gate_status"] = result["status"]
+        result["execution"]["build_load"] = recipe ? "build_pass" : "build_load_pass"
+        result["execution"]["sanity"] = recipe ? "documented_entrypoint" : "all_shared_objects_loaded"
+        result["next_action"] = "Review the report and keep corpus changes in a separate human-reviewed PR."
+      else
+        result["status"] = loaded.timed_out ? "timeout" : (recipe ? "documented_load_failed" : "fallback_or_not_loaded")
+        result["gate_status"] = result["status"]
+        result["execution"]["build_load"] = recipe ? "build_pass" : "fallback_or_not_loaded"
+        result["execution"]["sanity"] = recipe ? "documented_load_failed" : "load_failed"
+        result["reason"] = loaded.timed_out ? "documented load sanity timed out" :
+                              (recipe ? "documented load entrypoint or API sanity failed" :
+                                       "one or more built shared objects could not be proven loaded")
+        result["next_action"] = loaded.timed_out ?
+                                  "Retry with the runner environment or investigate the timeout." :
+                                  "Investigate the load/sanity failure; do not call the build verified."
+      end
+      result["exit_code"] = loaded.success ? 0 : 1
+    end
+
+    def load_recipe
+      CorpusCandidateLoadRecipes.find(
+        name: @input.name,
+        version: @input.version,
+        platform: @input.platform,
+        sha256: @input.sha256
+      )
+    end
+
+    def skipped_result(reason)
+      CommandRunner::Result.new(output: reason, success: false, status: nil, timed_out: false)
+    end
+
+    def install_load_recipe_dependencies!(recipe, gem_home, env, result)
+      return true unless recipe
+
+      recipe.fetch("dependencies").all? do |dependency|
+        install = @commands.call(
+          gem_command("install", dependency.fetch("name"), "--version", dependency.fetch("version"),
+                      "--install-dir", gem_home, "--no-document"),
+          env: env.merge("RUBYCC" => "0"), timeout_seconds: 900
+        )
+        result["execution"]["load_recipe_dependencies"] << {
+          "name" => dependency.fetch("name"),
+          "version" => dependency.fetch("version"),
+          "status" => install.success ? "installed" : "failed",
+          "output_tail" => portable(install.output).lines.last(12).map(&:chomp)
+        }
+        install.success
+      end
+    end
+
+    def load_script_for(recipe)
+      return <<~'RUBY' unless recipe
         paths = ARGV
         abort "no shared objects supplied" if paths.empty?
         paths.each do |path|
@@ -477,28 +595,27 @@ module CorpusCandidateValidation
         end
         puts "loaded=#{paths.length}"
       RUBY
-      load_env = candidate_env.merge("RUBYLIB" => File.join(gem_dir, "lib"))
-      loaded = @commands.call([RbConfig.ruby, "-e", load_script, *shared_objects],
-                              env: load_env, timeout_seconds: 120)
-      result["execution"]["load_output_tail"] = portable(loaded.output).lines.last(20).map(&:chomp)
-      if loaded.success
-        result["status"] = "build_load_pass"
-        result["gate_status"] = "build_load_pass"
-        result["execution"]["build_load"] = "build_load_pass"
-        result["execution"]["sanity"] = "all_shared_objects_loaded"
-        result["next_action"] = "Review the report and run upstream mode only when a reviewed recipe exists."
-      else
-        result["status"] = loaded.timed_out ? "timeout" : "fallback_or_not_loaded"
-        result["gate_status"] = result["status"]
-        result["execution"]["build_load"] = "fallback_or_not_loaded"
-        result["execution"]["sanity"] = "load_failed"
-        result["reason"] = loaded.timed_out ? "shared object load sanity timed out" :
-                              "one or more built shared objects could not be proven loaded"
-        result["next_action"] = loaded.timed_out ?
-                                  "Retry with the runner environment or investigate the timeout." :
-                                  "Investigate the load/sanity failure; do not call the build verified."
-      end
-      result["exit_code"] = loaded.success ? 0 : 1
+
+      <<~'RUBY'
+        paths = ARGV
+        abort "no shared objects supplied" if paths.empty?
+        requires = ENV.fetch("VERIFY_REQUIRES").split(",")
+        requires.each { |feature| require feature }
+        loaded_paths = $LOADED_FEATURES.map { |entry| File.realpath(entry) rescue entry }
+        missing = paths.map { |path| File.realpath(path) } - loaded_paths
+        abort "documented entrypoint did not load the injected extension: #{missing.join(', ')}" unless missing.empty?
+
+        case ENV.fetch("VERIFY_SANITY_KIND")
+        when "graphql_c_parser"
+          abort "GraphQL::CParser is not defined" unless defined?(GraphQL::CParser)
+          abort "GraphQL.default_parser is not GraphQL::CParser" unless GraphQL.default_parser.equal?(GraphQL::CParser)
+          document = GraphQL::CParser.parse("{ __typename }")
+          abort "GraphQL::CParser.parse returned no definitions" unless document.respond_to?(:definitions) && !document.definitions.empty?
+          puts "documented_load=graphql_c_parser"
+        else
+          abort "unknown fixed load recipe sanity kind"
+        end
+      RUBY
     end
 
     def gem_command(*args)
@@ -518,10 +635,11 @@ module CorpusCandidateValidation
   module_function
 
   def parse_options(argv)
-    options = { mode: nil, work_dir: nil, result_path: nil, preflight_only: false }
+    options = { mode: nil, compiler: nil, work_dir: nil, result_path: nil, preflight_only: false }
     parser = OptionParser.new do |opts|
       opts.banner = "Usage: CANDIDATE_NAME=... CANDIDATE_VERSION=... ruby tools/verify_corpus_candidate.rb [options]"
-      opts.on("--mode MODE", MODES, "build_load or upstream") { |value| options[:mode] = value }
+      opts.on("--mode MODE", MODES, "build_load, load_sanity, or upstream") { |value| options[:mode] = value }
+      opts.on("--compiler COMPILER", COMPILERS, "rubycc or host") { |value| options[:compiler] = value }
       opts.on("--work-dir PATH", "isolated work directory") { |value| options[:work_dir] = value }
       opts.on("--result PATH", "structured result path") { |value| options[:result_path] = value }
       opts.on("--preflight-only", "stop after identity/static/recipe checks") { options[:preflight_only] = true }

@@ -28,12 +28,12 @@ class TestCorpusCandidateValidationWorkflow < Minitest::Test
       assert_equal true, inputs.fetch(name).fetch("required"), name
     end
     assert_equal "ruby", inputs.fetch("platform").fetch("default")
-    assert_equal %w[build_load upstream], inputs.fetch("mode").fetch("options")
+    assert_equal %w[build_load load_sanity upstream], inputs.fetch("mode").fetch("options")
   end
 
   def test_permissions_runner_timeout_and_no_matrix_are_bounded
     assert_equal({ "contents" => "read" }, @workflow.fetch("permissions"))
-    assert_equal({ "preflight" => 10, "build_load" => 30, "upstream" => 90 },
+    assert_equal({ "preflight" => 10, "build_load" => 30, "load_sanity" => 30, "upstream" => 90 },
                  @jobs.transform_values { |job| job.fetch("timeout-minutes") })
     @jobs.each_value { |job| refute job.key?("strategy"), "candidate validation must not be a matrix" }
     @jobs.each_value { |job| assert_equal "ubuntu-24.04", job.fetch("runs-on") }
@@ -70,6 +70,23 @@ class TestCorpusCandidateValidationWorkflow < Minitest::Test
     assert_includes run_scripts, "verify_gem_tests.rb --control"
     assert_includes run_scripts, "verify_gem_tests.rb --json"
     refute_includes File.read(WORKFLOW), "--update"
+  end
+
+  def test_load_sanity_compares_host_and_rubycc_with_separate_reports
+    load_sanity = @jobs.fetch("load_sanity")
+    assert_includes load_sanity.fetch("steps").map { |step| step["name"] },
+                    "Run the host compiler control with the fixed load recipe"
+    assert_includes load_sanity.fetch("steps").map { |step| step["name"] },
+                    "Run rubycc with the fixed load recipe"
+    assert_includes load_sanity.fetch("steps").map { |step| step["name"] },
+                    "Compare host and rubycc load statuses"
+    load_steps = load_sanity.fetch("steps")
+    load_script = load_steps.filter_map { |step| step["run"] }.join("\n")
+    assert_includes load_script, "--compiler host"
+    assert_includes load_script, "--compiler rubycc"
+    assert_includes load_script, "documented_load_pass"
+    comparison_step = load_steps.find { |step| step["name"] == "Compare host and rubycc load statuses" }
+    assert_includes comparison_step.to_s, "comparison.json"
   end
 
   def test_uploaded_reports_are_structured_and_short_lived

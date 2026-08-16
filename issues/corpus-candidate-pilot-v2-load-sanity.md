@@ -1,10 +1,10 @@
 ---
-status: open
+status: done
 kind: infra
 opened: 2026-08-16
-closed:
-branch:
-pr:
+closed: 2026-08-16
+branch: corpus-candidate-pilot-v2-load-sanity
+pr: https://github.com/nuna/rubycc/pull/75
 steps:
   - corpus-candidate-pilot-v2-load-sanity-1
   - corpus-candidate-pilot-v2-load-sanity-2
@@ -41,11 +41,18 @@ genericな`.so` requireだけで判定すると、build成功をload失敗と誤
 
 ## 作業ログ
 
-未着手。pilot v2のgraphql-c_parser 1.1.4でbuild evidenceとgeneric load sanityの結果が分かれた
-ため、固定entrypointを持つrecipeへ分離する作業対象として記録した。
+`corpus_candidate_load_recipes.rb`にname/version/platform/SHAで固定するrecipe schemaを追加し、
+`graphql/c_parser`、`graphql` 2.6.8、`graphql_c_parser` sanityをreview済みentrypointとして登録した。
+recipeに任意commandやscriptを持たせず、未登録候補は`recipe_missing`で停止するようにした。
+
+`verify_corpus_candidate.rb`と手動workflowにhost control/rubyccの分離実行を追加し、native extension
+install、rubycc build evidence、documented loadを別statusで出力するようにした。固定候補を
+Ruby 3.3.12で実測し、さらにGitHub Actions Ruby 4.0.6の[run 31950250084](https://github.com/nuna/rubycc/actions/runs/31950250084)
+でhost/rubyccとも`documented_load_pass`、比較`pass`を確認した。raw artifactはignored領域へ保存し、
+正式corpusとverified databaseは変更していない。
 
 ## 決着
 
-未着手。
+実装・固定archiveの再検証・Actions比較・Ruby 3.3/4.0 CI確認まで完了した。PR #75で反映した。
 
 このissueでは候補gemを正式corpusへ追加しない。

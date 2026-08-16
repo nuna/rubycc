@@ -24,6 +24,16 @@ class TestVerifyCorpusCandidate < Minitest::Test
     assert_nil input.validate!
     assert_equal "json", input.input_json.fetch("name")
     assert_equal "build_load", input.input_json.fetch("mode")
+    assert_equal "rubycc", input.input_json.fetch("compiler")
+  end
+
+  def test_input_accepts_documented_load_sanity_and_host_control
+    input = Input.from_env(valid_env.merge("CANDIDATE_MODE" => "load_sanity",
+                                           "CANDIDATE_COMPILER" => "host"))
+
+    assert_nil input.validate!
+    assert_equal "load_sanity", input.input_json.fetch("mode")
+    assert_equal "host", input.input_json.fetch("compiler")
   end
 
   def test_input_rejects_shell_metacharacters_in_name
@@ -52,6 +62,26 @@ class TestVerifyCorpusCandidate < Minitest::Test
       Input.from_env(valid_env.merge("CANDIDATE_MODE" => "arbitrary_command")).validate!
     end
     assert_includes mode_error.message, "mode must be one of"
+
+    compiler_error = assert_raises(ArgumentError) do
+      Input.from_env(valid_env.merge("CANDIDATE_COMPILER" => "arbitrary_command")).validate!
+    end
+    assert_includes compiler_error.message, "compiler must be one of"
+  end
+
+  def test_fixed_load_recipe_requires_exact_candidate_identity
+    recipe = CorpusCandidateLoadRecipes.find(
+      name: "graphql-c_parser", version: "1.1.4", platform: "ruby",
+      sha256: "8d3bf769ae935373ada877fe003036892b45be98c2fbcc6731dd82af2c3e0656"
+    )
+
+    refute_nil recipe
+    assert_equal ["graphql/c_parser"], recipe.dig("entrypoint", "requires")
+    assert_equal "graphql_c_parser", recipe.dig("entrypoint", "sanity_kind")
+    assert_nil CorpusCandidateLoadRecipes.find(
+      name: "graphql-c_parser", version: "1.1.4", platform: "ruby", sha256: "b" * 64
+    )
+    refute recipe.values.any? { |value| value.to_s.match?(/command|script|eval/) }
   end
 
   def test_workflow_tool_does_not_offer_database_update_mode

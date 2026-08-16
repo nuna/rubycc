@@ -11935,3 +11935,22 @@ availabilityは別途監視対象とした。
 候補の正式追加・verified database更新は行っていない。replayのraw artifactは
 `docs/development/corpus-candidate-evaluation/artifacts/`以下に限定し、manifest、run registry、metrics、
 reportのみを追跡対象とした。2日窓の試行とキャンセルrunは日別再現性を優先して集計から除外した。
+
+## corpus-candidate-pilot-v2-load-sanity-1〜2 — documented load entrypointを固定し、host/rubyccを比較する
+
+`graphql-c_parser 1.1.4`の固定archive(SHA-256
+`8d3bf769ae935373ada877fe003036892b45be98c2fbcc6731dd82af2c3e0656`)に対し、任意のrequireや
+commandを受け付けないdata-only recipe schemaを追加した。recipeは`graphql/c_parser`をrequireし、
+`graphql` 2.6.8を依存gemとして隔離GEM_HOMEへ導入したうえで、`GraphQL::CParser.parse`とdefault
+parserの一致をsanityとして確認する。recipe未登録の候補は`recipe_missing`で停止する。
+
+候補検査器はhost controlとrubyccを別compiler・別作業領域で実行し、native extension install、
+rubycc build evidence、documented load、純Ruby fallbackを混同しないstatusへ分離した。ローカルの
+Ruby 3.3.12ではhost/rubyccとも`documented_load_pass`、GitHub ActionsのRuby 4.0.6でも同じ結果と
+なった。Actions run 31950250084の比較結果は`pass`で、rubycc側のbuild evidenceも`pass`だった。
+以前のgeneric `.so` requireでの`GraphQL::Language`未定義は、candidateのbuild失敗ではなく、
+documented entrypointを使わない検査器側の誤判定と切り分けられた。
+
+検査結果の要約は[`pilot-v2-load-sanity.md`](corpus-candidate-evaluation/pilot-v2-load-sanity.md)に記録し、
+raw log/JSONは既存のignored artifact領域へ保存した。このissueでは正式corpus、headers、compiler、
+`data/verified_gems.json`を変更していない。

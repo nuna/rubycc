@@ -29,6 +29,7 @@ name: corpus-candidate-validation
         type: choice
         options:
           - build_load
+          - load_sanity
           - upstream
 
 permissions:
@@ -45,6 +46,7 @@ jobs:
     outputs:
       gate_status: ${{ steps.inspect.outputs.gate_status }}
       static_status: ${{ steps.inspect.outputs.static_status }}
+      load_recipe_status: ${{ steps.inspect.outputs.load_recipe_status }}
       recipe_status: ${{ steps.inspect.outputs.recipe_status }}
     steps:
       - uses: actions/checkout@v7
@@ -83,6 +85,7 @@ jobs:
               File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |output|
                 output.puts "gate_status=#{result.fetch("gate_status", "unknown")}"
                 output.puts "static_status=#{result.dig("static", "status").to_s}"
+                output.puts "load_recipe_status=#{result.dig("load_recipe", "status").to_s}"
                 output.puts "recipe_status=#{result.dig("recipe", "status").to_s}"
               end
             ' "$CANDIDATE_RESULT"
@@ -143,6 +146,114 @@ jobs:
           path: |
             ${{ runner.temp }}/corpus-candidate-validation/build-load/result.json
             ${{ runner.temp }}/corpus-candidate-validation/build-load/build-load.log
+          retention-days: 14
+          if-no-files-found: warn
+
+  load_sanity:
+    needs: preflight
+    if: ${{ inputs.mode == 'load_sanity' && needs.preflight.outputs.gate_status == 'candidate' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: false
+
+      - name: Run the host compiler control with the fixed load recipe
+        shell: bash
+        env:
+          CANDIDATE_NAME: ${{ inputs.name }}
+          CANDIDATE_VERSION: ${{ inputs.version }}
+          CANDIDATE_PLATFORM: ${{ inputs.platform }}
+          CANDIDATE_SHA256: ${{ inputs.sha256 }}
+          CANDIDATE_MODE: load_sanity
+          CANDIDATE_COMPILER: host
+          CANDIDATE_WORK: ${{ runner.temp }}/corpus-candidate-validation/load-sanity/control
+          CANDIDATE_RESULT: ${{ runner.temp }}/corpus-candidate-validation/load-sanity/control/result.json
+        run: |
+          set -o pipefail
+          mkdir -p "$(dirname "$CANDIDATE_RESULT")"
+          set +e
+          ruby tools/verify_corpus_candidate.rb --mode load_sanity --compiler host \
+            2>&1 | tee "$(dirname "$CANDIDATE_RESULT")/validation.log"
+          control_status=${PIPESTATUS[0]}
+          set -e
+          echo "control_status=$control_status"
+
+      - name: Run rubycc with the fixed load recipe
+        shell: bash
+        env:
+          CANDIDATE_NAME: ${{ inputs.name }}
+          CANDIDATE_VERSION: ${{ inputs.version }}
+          CANDIDATE_PLATFORM: ${{ inputs.platform }}
+          CANDIDATE_SHA256: ${{ inputs.sha256 }}
+          CANDIDATE_MODE: load_sanity
+          CANDIDATE_COMPILER: rubycc
+          CANDIDATE_WORK: ${{ runner.temp }}/corpus-candidate-validation/load-sanity/rubycc
+          CANDIDATE_RESULT: ${{ runner.temp }}/corpus-candidate-validation/load-sanity/rubycc/result.json
+        run: |
+          set -o pipefail
+          mkdir -p "$(dirname "$CANDIDATE_RESULT")"
+          set +e
+          ruby tools/verify_corpus_candidate.rb --mode load_sanity --compiler rubycc \
+            2>&1 | tee "$(dirname "$CANDIDATE_RESULT")/validation.log"
+          rubycc_status=${PIPESTATUS[0]}
+          set -e
+          echo "rubycc_status=$rubycc_status"
+
+      - name: Compare host and rubycc load statuses
+        if: always()
+        shell: bash
+        env:
+          CONTROL_RESULT: ${{ runner.temp }}/corpus-candidate-validation/load-sanity/control/result.json
+          RUBYCC_RESULT: ${{ runner.temp }}/corpus-candidate-validation/load-sanity/rubycc/result.json
+          COMPARISON_RESULT: ${{ runner.temp }}/corpus-candidate-validation/load-sanity/comparison.json
+        run: |
+          ruby -rjson -e '
+            paths = {"control" => ENV.fetch("CONTROL_RESULT"), "rubycc" => ENV.fetch("RUBYCC_RESULT")}
+            payloads = paths.to_h do |label, path|
+              [label, File.file?(path) ? JSON.parse(File.read(path)) : {"status" => "missing"}]
+            rescue JSON::ParserError
+              [label, {"status" => "invalid_result"}]
+            end
+            statuses = payloads.transform_values { |payload| payload.fetch("status", "invalid_result") }
+            comparison = if statuses.values.all? { |status| status == "documented_load_pass" }
+                           "pass"
+                         elsif statuses["control"] == "documented_load_pass"
+                           "rubycc_only_failure"
+                         elsif statuses["rubycc"] == "documented_load_pass"
+                           "control_only_failure"
+                         else
+                           "both_failed"
+                         end
+            summary = {
+              "schema_version" => 1,
+              "mode" => "load_sanity",
+              "statuses" => statuses,
+              "comparison" => comparison,
+              "load_recipe" => payloads.values.first["load_recipe"]
+            }
+            File.write(ENV.fetch("COMPARISON_RESULT"), JSON.pretty_generate(summary) + "\n")
+            puts JSON.pretty_generate(summary)
+            exit 1 unless comparison == "pass"
+          '
+
+      - name: Upload host/rubycc load reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: corpus-candidate-validation-load-sanity-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/corpus-candidate-validation/load-sanity/control/result.json
+            ${{ runner.temp }}/corpus-candidate-validation/load-sanity/control/validation.log
+            ${{ runner.temp }}/corpus-candidate-validation/load-sanity/rubycc/result.json
+            ${{ runner.temp }}/corpus-candidate-validation/load-sanity/rubycc/validation.log
+            ${{ runner.temp }}/corpus-candidate-validation/load-sanity/comparison.json
           retention-days: 14
           if-no-files-found: warn
 
