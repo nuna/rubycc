@@ -1,8 +1,8 @@
 ---
-status: in-progress
+status: done
 kind: infra
 opened: 2026-08-16
-closed:
+closed: 2026-08-16
 branch: corpus-candidate-validation-workflow
 pr: 71
 steps:
@@ -97,6 +97,16 @@ archive/name/version/platformの照合、rubycc build evidence、2つのshared o
 すべて成功し、結果は`build_load_pass`になった。これはworkflowの経路確認用であり、upstream testの
 合格や`verified_gems`/corpusへの追加を意味しない。
 
+### 2026-08-16(決着)
+
+PR #71をmasterへマージした(merge commit: `cebe7186f34d4ecf2e47b059eb923a8654fec04c`)。
+`workflow_dispatch`専用workflow、固定identityの再照合、build/load smokeとreview済みrecipeによる
+upstream検証の分離、構造化result artifactを実装した。入力拒否、checksum不一致、recipeなし、
+環境不足、build/load成功をそれぞれ検証し、Ruby 3.3/4.0のCIも成功した
+([run 31935030354](https://github.com/nuna/rubycc/actions/runs/31935030354))。
+
 ## 決着
 
-(完了時に記入。結果と`docs/development/STEPS.md`の該当エントリへのリンクを残す。)
+**解消した**。PR #71でmasterに取り込んだ。設計判断と検証結果は
+[`docs/development/STEPS.md`](../docs/development/STEPS.md)の
+`corpus-candidate-validation-workflow-1〜3`に記録した。
