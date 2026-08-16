@@ -469,7 +469,7 @@ module CorpusCandidateScan
           "records" => results.sort_by { |result| record_sort_key(result) }.map { |result| record(result) }
         }
         FileUtils.mkdir_p(File.dirname(path))
-        File.binwrite(path, JSON.pretty_generate(payload) + "\n")
+        File.binwrite(path, stable_pretty_generate(payload) + "\n")
       end
 
       def source_name(config, source)
@@ -478,6 +478,13 @@ module CorpusCandidateScan
         return "bestgems" if source == BestgemsTotal
 
         source::LABEL
+      end
+
+      # Ruby's bundled json gem has changed how it pretty-prints empty arrays
+      # across supported interpreter versions. Keep review artifacts byte
+      # stable so a replay and a fixture compare the same way on every CI job.
+      def stable_pretty_generate(payload)
+        JSON.pretty_generate(payload).gsub(/\[\n(?:[ \t]*\n)*[ \t]*\]/, "[]")
       end
 
       def record_sort_key(result)

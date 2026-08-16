@@ -141,7 +141,7 @@ review 負荷、既存 corpus への増分価値を分けて判断できる。
 #### `corpus-candidate-evaluation-1`
 
 実験結果を見る前に、対象期間を次の UTC 7 日 window へ固定した。いずれも半開区間で、同じ
-scanner revision `corpus-candidate-artifact-3`（commit `2beaf384e8dc5b3e6aff2553f987e9dbed5c7dc3`）を
+scanner revision `corpus-candidate-evaluation-2`（commit `ac9f149a55036dd3057db67d643405734a331b47`）を
 使う。比較対照は rubygems.org popular rank 1〜100 (`tools/scan_popular_gems.rb 1 10`) とする。
 
 1. `2026-08-09T00:00:00Z` — `2026-08-16T00:00:00Z`
@@ -168,6 +168,70 @@ unique gem 数、既存 corpus、分類、選択除外理由、API request 数�
 限定する。この二段階化は測定前に決めた資源上の境界であり、selection-only の `uninspected` を
 `[1]` 候補と数えない。
 
+#### `corpus-candidate-evaluation-2`
+
+同じ scanner revision `ac9f149a55036dd3057db67d643405734a331b47` で、4 window と popular
+rank 1〜100 を実行した。timeframe はページングと選定だけを測る `--selection-only` なので、
+全選択 release の v2 `platform=ruby` / yanked 検証と archive fetch は静的サンプルへ延期した。
+各 artifact の `source_requests` には URL、cache key、response SHA-256 を保存し、raw response
+cache は再集計用に実験環境へ残した。
+
+| window (UTC, 半開区間) | version entries | pages | unique gems | corpus `[3]` | `[1]` | `[1b]` | `[2]` | `[R]` | `[E]` | 新規 uninspected | API requests |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 08-09 — 08-16 | 2,954 | 100 | 1,355 | 4 | 0 | 0 | 0 | 0 | 33 | 1,318 | 100 |
+| 08-02 — 08-09 | 3,245 | 110 | 1,541 | 4 | 0 | 0 | 0 | 0 | 37 | 1,500 | 110 |
+| 07-26 — 08-02 | 3,192 | 108 | 1,334 | 4 | 0 | 0 | 0 | 0 | 25 | 1,305 | 108 |
+| 07-19 — 07-26 | 3,438 | 116 | 1,417 | 1 | 0 | 0 | 0 | 0 | 68 | 1,348 | 116 |
+| 合計 | 12,829 | 434 | 5,647 | 13 | 0 | 0 | 0 | 0 | 163 | 5,471 | 434 |
+
+選定で除外した release entry は、duplicate release 5,409 件、prerelease 512 件、yanked
+0 件だった。selection-only では v2 source/yanked 検証を実行していないため、source gem 不在・
+yanked の全体値は未計測 (`deferred`) であり、`[E]` 163 件は「非 prerelease の候補 release を
+選べなかった」選定エラーである。これは source gem が無いことの証明ではない。
+
+対照の popular rank 1〜100 は 100 gem、API request 110、`[1]` 相当の status 7 件だったが、
+7 件すべて既存 corpus で、新規 `[1]` は 0 件だった。`[2]` は nokogiri 1 件、`[R]` は grpc
+1 件、既存 corpus の sqlite3 は `[2]` status、no-ext は 90 件だった。timeframe の
+`uninspected` は全 window の名前 union が 3,889 件（うち既存 corpus 8、新規未検査 3,881 件）
+で、popular の新規 `[1]` との差集合を「適格候補」とは数えない。前者は静的検査前の名前集合
+だからである。
+
+#### `corpus-candidate-evaluation-3`
+
+候補選択規則を結果確認前に固定し、4 window の選定 union から `created_at` 降順、gem 名順で
+最大3件を選んだ。selection-only では新しい gap / system header を観測できないため、実際の
+tie-break は `created_at` と名前に進み、次を静的サンプルにした。
+
+| gem | version | platform | static status | C/H | bundled/gap | SHA-256一致 | rubycc target build |
+|---|---|---|---|---:|---|---|---|
+| DhanHQ | 3.4.0 | ruby | no_ext | 0/0 | none/none | yes | not run (no C extension) |
+| phronomy | 0.19.0 | ruby | no_ext | 0/0 | none/none | yes | not run (no C extension) |
+| security | 0.2.0 | ruby | no_ext | 0/0 | none/none | yes | not run (no C extension) |
+
+3件とも v2 metadata は HTTP 200、`platform=ruby`、`yanked=false` で、archive SHA は API
+SHA と一致した。rubycc 自身の `gem build` と scratch GEM_HOME への install は成功したが、
+対象3 gem は C extension が無いため、事前規則に従って `RUBYCC=1 gem install` 相当の C 拡張
+build 対象から除外した。新規 extension、header、gap、review reason は 0 件である。
+
+ネットワーク実験には再試行も記録した。07-26 window は page 9 の `Net::OpenTimeout` 後に
+retry-1 が完了し、07-19 window は初回 DNS failure、retry-1 の page 99 `ENETUNREACH` 後に
+retry-2 が完了した。成功 artifact は固定名へ正規化して保存し、失敗試行を成功として数えない。
+
+この結果、現在の bounded 実装を corpus へ増やす自動・定期経路としては **不採用** とする。
+理由は、観測された期間 source 固有の静的 `[1]` が 0 件、popular 対照の新規 `[1]` も 0 件、
+静的サンプル3件もすべて no-ext で、実用的な build 成功・新規 gap・review 解消を1件も示さな
+かったためである。なお、3,881 件の未検査名がすべて純 Ruby だと結論したわけではない。
+selection-only のままでは source/yanked と archive の適格性を全件確認できず、この不確実性を
+含む状態で「適切に増やせる」とは判定できない。追加の metadata prefilter か、より大きな
+事前固定静的サンプルを設計する follow-up が必要であり、今回の PR では corpus を変更しない。
+
 ## 決着
 
-(未着手)
+**不採用（現行 bounded route の自動・定期運用）**。
+
+- 4 window の選定・除外・request provenance と popular 対照を保存した
+- selection-only の `uninspected` と静的 `[1]` を分離して集計した
+- 最大3件の固定静的サンプルはすべて no-ext、new header/gap/review は 0 件だった
+- `test/corpus/gems.rb`、header、compiler gap、`data/verified_gems.json` は変更していない
+- source/yanked の全件検証は deferred であり、未検査 3,881 件の不存在を主張しない
+- 最終 test-runner の `rake test` は 3,242 runs / 11,549 assertions / 41 skips / 0 failures / 0 errors で終了した

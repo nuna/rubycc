@@ -27,10 +27,16 @@ module CorpusCandidateEvaluation
     }
     rejection_counts = Hash.new(0)
     candidate_names = []
+    selected_names = []
+    new_selection_names = []
 
     records.each do |record|
       corpus = record.fetch("corpus")
       status = corpus.fetch("status")
+      if status == "uninspected"
+        selected_names << record.fetch("name")
+        new_selection_names << record.fetch("name") unless corpus.fetch("included")
+      end
       if corpus.fetch("included") && status != "error" && status != "no_ext"
         counts["corpus"] += 1
       elsif status == "candidate"
@@ -55,6 +61,7 @@ module CorpusCandidateEvaluation
         category = case reason
                    when /prerelease/ then "prerelease"
                    when /yanked/ then "yanked"
+                   when /duplicate release/ then "duplicate_release"
                    when /source platform unavailable/ then "source_platform_missing"
                    when /v2 lookup failed|v2 response|invalid v2/ then "source_lookup_error"
                    else "other"
@@ -75,7 +82,8 @@ module CorpusCandidateEvaluation
       "selection_rejections" => rejection_counts.sort.to_h,
       "api_requests" => Array(artifact["source_requests"]).size,
       "candidate_names" => candidate_names.sort,
-      "selected_names" => records.filter_map { |record| record["name"] if record.dig("corpus", "status") == "uninspected" }.sort,
+      "selected_names" => selected_names.sort,
+      "new_selection_names" => new_selection_names.sort,
       "review_gems" => counts["review"] + counts["assembly_review"]
     }
   end

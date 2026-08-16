@@ -11773,3 +11773,17 @@ issue / skill の review 境界を追加した。最終 targeted test は scanne
 Census 30 / 383、issue docs 5 / 336、いずれも failures / errors 0。直前の全体 `rake test` は
 3238 runs / 11528 assertions / 41 skips / failures 0 / errors 0。artifact は正式 corpus 追加を
 行わず、後続 evaluation issue が候補源の増分価値を判定する。
+
+## corpus-candidate-evaluation-1 — 実験入力を固定し、対照 scan を収集する
+
+結果を見る前に、完了済み UTC 7 日 window 4 個と rubygems.org popular rank 1〜100、scanner revision ac9f149a55036dd3057db67d643405734a331b47、selection-only の資源境界を固定した。4 window の artifact と popular artifact を保存し、各 source request の URL / cache key / response SHA-256 を残した。raw response cache 自体は repository に入れず、同じ cache で version entry 数を再集計できるようにした。07-26 は page 9 の Net::OpenTimeout 後に retry-1、07-19 は DNS failure と retry-1 page 99 の ENETUNREACH 後に retry-2 が成功したため、失敗試行も manifest に記録した。
+
+## corpus-candidate-evaluation-2 — 増分候補を試験する
+
+selection-only の実測は 12,829 version entries / 5,647 gem occurrences / 434 pages / 163 selection errors / 5,471 新規未検査名だった。候補 status [1]、[1b]、[2]、[R] は全 window で 0。選定除外は duplicate release 5,409、prerelease 512 で、source gem / yanked の全体検証は延期した。popular 1〜100 は 100 gem、既存 corpus 8、new [1] 0、[2] 1、[R] 1、no-ext 90 だった。selection-only の uninspected name union 3,889（新規未検査 3,881）を適格候補とは数えなかった。
+
+## corpus-candidate-evaluation-3 — 発見方法の採否を決着する
+
+結果確認前に固定した順序で最大3件（DhanHQ 3.4.0、phronomy 0.19.0、security 0.2.0）を静的検査した。3件とも platform=ruby、non-yanked、archive/API SHA 一致、no-ext、C/H 0/0、bundled/gap/review 0。rubycc package の build/install は成功したが、対象 gem の C extension が無いため target build は実行しなかった。検査済みの期間固有 [1]、新規 header/gap、build 成功は 0 件である。
+
+現行 bounded route は corpus の自動・定期拡張として不採用と決着した。未検査 3,881 件がすべて純 Ruby だと推測せず、source/yanked の deferred と selection-only の限界を明記した。次の metadata prefilter または大きな事前固定静的サンプルは別 issue とし、今回の corpus / verified gem DB は変更しない。targeted test は summarizer 3 runs / 13 assertions、scanner 17 / 78、issue docs 5 / 336、いずれも failures / errors / skips 0。最終の全体 rake test は 3,242 runs / 11,549 assertions / 41 skips、failures / errors 0。

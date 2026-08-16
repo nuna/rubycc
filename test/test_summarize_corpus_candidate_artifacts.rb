@@ -31,6 +31,7 @@ class TestSummarizeCorpusCandidateArtifacts < Minitest::Test
       assert_equal 1, summary.dig("counts", "candidate")
       assert_equal 1, summary.dig("selection_rejections", "prerelease")
       assert_equal 1, summary.dig("selection_rejections", "yanked")
+      assert_equal 0, summary.dig("selection_rejections", "duplicate_release").to_i
       assert_equal ["example-gem"], summary["candidate_names"]
     end
   end
@@ -44,6 +45,7 @@ class TestSummarizeCorpusCandidateArtifacts < Minitest::Test
       path = File.join(root, "scan.json")
       File.write(File.join(raw_dir, cache_key), JSON.generate([{ "name" => "a" }, { "name" => "b" }]))
       data = artifact
+      data["records"][0]["selection"]["rejections"] = ["0.9.0: duplicate release"]
       data["source_requests"] = [{ "url" => url, "cache_key" => cache_key }]
       File.write(path, JSON.generate(data))
 
@@ -51,6 +53,7 @@ class TestSummarizeCorpusCandidateArtifacts < Minitest::Test
 
       assert_equal 1, summary["raw_timeframe_responses"]
       assert_equal 2, summary["version_entries"]
+      assert_equal 1, summary.dig("selection_rejections", "duplicate_release")
     end
   end
 
@@ -64,6 +67,7 @@ class TestSummarizeCorpusCandidateArtifacts < Minitest::Test
       assert_equal 1, summary.dig("counts", "uninspected")
       assert_equal 0, summary.dig("counts", "candidate")
       assert_equal ["example-gem"], summary["selected_names"]
+      assert_equal ["example-gem"], summary["new_selection_names"]
     end
   end
 end
