@@ -1,8 +1,8 @@
 ---
-status: in-progress
+status: done
 kind: infra
 opened: 2026-08-16
-closed:
+closed: 2026-08-16
 branch: corpus-candidate-local-inspection-skill
 pr: 69
 steps:
@@ -110,4 +110,7 @@ build/load依頼はこの停止条件により実行していない。`actionage
 
 ## 決着
 
-(完了時に記入。結果と`docs/development/STEPS.md`の該当エントリへのリンクを残す。)
+PR #69をmasterへマージした(merge commit: `8e3a14be23b6e502663b6f286d9227606faa6c09`)。
+`inspect-corpus-candidate` skill、`CLAUDE.md`への登録、固定identity・静的検査・隔離build/load・
+recipe限定testの停止境界を実装し、fresh-context forward testと3ケースの有効性実証を完了した。
+作業ログは[`corpus-candidate-local-inspection-skill-1〜3`](../docs/development/STEPS.md)に記録した。

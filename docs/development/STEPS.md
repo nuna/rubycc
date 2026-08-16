@@ -11828,3 +11828,27 @@ archive57.246秒、unpack/static11.227秒、artifact書き出し0.023秒。変�
 109 archiveから826 entries / 262 archiveへ変動しているため、厳密なA/B速度比ではなく、15分
 目標とフェーズ別の再現可能な証拠として扱う。日次workflow、gem build/test、corpus正式追加は
 このissueでは行わない。
+
+## corpus-candidate-local-inspection-skill-1〜3 — 候補gemを一件ずつ安全に検査するskillを追加する
+
+正式なcorpus追加までを扱う`corpus-expansion`とは分離して、候補gemのname/version/platform/SHAと
+元artifactを固定し、archive identity、gemspec、R10、未宣言native source、extension root、header
+差分を静的に確認するrepo-local `inspect-corpus-candidate` skillを追加した。Ruby 3.3系はrbenvから
+利用可能なpatch versionを選び、system Rubyへfallbackしない。archive、unpack tree、log、reportは
+候補ごとの一時directoryまたは`docs/development/corpus-candidate-evaluation/artifacts/`へ隔離し、
+後者はignore対象とした。
+
+build/loadは明示依頼かつ静的停止条件が無い場合だけ隔離GEM_HOMEで行い、純Ruby fallbackを成功と
+扱わない。upstream testは既存recipeがある候補だけに限定し、skillは`verified`や正式corpus追加を
+自動で宣言しない。scannerのC/C++一覧だけでは不十分なため、extension root以下のGo/Rust等のnative
+sourceと`go.mod`/`Cargo.toml`等のbuild manifestも追加棚卸しし、未知のbuild形態は`review`で停止する。
+
+固定artifactの`funnel_http 0.5.12`を使ったfresh-context forward testでは、C/Hに加えてGo/cgoと
+`go.mod`/`go.sum`を検出し、build/loadを実行せず停止した。追加の実証では、同候補を`review`で停止、
+`actionagent 1.2.1`を`no_ext`で停止、意図的なSHA不一致をunpack前に拒否できた。いずれも候補gemの
+コードは実行していない。Ruby 3.3.12のskill validator、issue docs(5 runs / 471 assertions)、
+doc links(3 runs / 41 assertions)、PR #69のRuby 3.3/4.0 CIはすべて成功した。
+
+PR #69をmerge commit `8e3a14be23b6e502663b6f286d9227606faa6c09`としてmasterへ取り込んだ。skillは
+候補発見後の安全な比較可能検査を実証したが、未知のGo/cgo候補を自動でcorpusへ追加するものではなく、
+別途recipeと人手reviewが必要な状態で停止する。
