@@ -146,6 +146,26 @@ tools/scan_popular_gems.rb --source timeframe \
 - `SCAN_FETCH_CONCURRENCY` — timeframe archive worker数(既定 `2`、許容範囲 `1..4`)。
 - `SCAN_VERBOSE` — `1` を設定すると、C 拡張を持たない gem も `[0]` として一覧表示する。
 
+### 日次 GitHub Actions
+
+`.github/workflows/corpus-candidate-daily.yml` は通常の push / pull request CI と独立して、毎日
+`01:17 UTC` に直前の完了済みUTC日を scan する。実行対象はこのscannerのmetadata取得、archive取得、
+unpack、静的分類だけで、`test/corpus/gems.rb`は変更しない。scheduleの欠測を補うときは、同じworkflowを
+manual dispatchし、次のように対象日の半開区間を `from` / `to` へそのまま指定する。
+
+```sh
+gh workflow run corpus-candidate-daily.yml \
+  --ref master \
+  -f from=2026-08-15T00:00:00Z \
+  -f to=2026-08-16T00:00:00Z
+```
+
+workflowは同時に1つだけ走り、進行中のscanを後発runがキャンセルしない。artifactには interval と
+scanner commit を含む名前で、`classification.json`、`run-summary.json`、末尾200行の`scan.log`
+だけを35日保存する。`.gem`、unpack tree、raw response cacheはrunnerの一時領域に残るだけで、artifact
+やrepositoryへは保存しない。同じintervalを別SHAで再実行した場合はartifact名とclassificationの
+normalized input / corpus classificationを比較し、scanner変更と分類差を分けて確認する。
+
 ### ランキングソース
 
 - `rubygems` — `https://rubygems.org/releases/popular` の人気ランキング。1 ページ 10 gem。
