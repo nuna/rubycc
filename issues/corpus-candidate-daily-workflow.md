@@ -73,6 +73,15 @@ revisionと環境で揃えにくい。このissueは
 方針とした。scheduleの時刻ではなくexact UTC intervalをcheckpointにし、compact JSONだけを
 保存する。raw archiveはSHA付きURLから再取得できるため、Actions artifactへ保存しない。
 
+日次workflowの実装を `corpus-candidate-daily-workflow` branchで開始した。タスク1でschedule / manual
+dispatchとexact UTC 1日区間、タスク2で最小権限・35分timeout・非キャンセルconcurrency・compact
+artifactを追加した。タスク3ではworkflow契約テストとmanual replay手順を追加した。
+
+Ruby 3.3.12で `rake test` は 3256 runs / 11554 assertions / 0 failures / 0 errors / 41 skips、
+workflow契約テストは 6 runs / 64 assertions、scanner targeted testは 25 runs / 128 assertions
+だった。schedule success、意図したfailure、manual replayのrun URLと所要時間は、workflowをremoteへ
+pushして実行可能にした後で追記する。
+
 ## 決着
 
 (完了時に記入。結果と`docs/development/STEPS.md`の該当エントリへのリンクを残す。)
