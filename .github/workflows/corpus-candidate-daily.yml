@@ -17,11 +17,23 @@ name: corpus-candidate-daily
         required: true
         type: string
 
+permissions:
+  contents: read
+
+# A scheduled run and a replay for the same day must not consume two runners.
+# Queue a later run instead of cancelling a scan that is already downloading.
+concurrency:
+  group: corpus-candidate-daily-scan
+  cancel-in-progress: false
+
 jobs:
   scan:
     runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -64,7 +76,7 @@ jobs:
           {
             echo "from=$from"
             echo "to=$to"
-            echo "key=$(printf "%s-%s" "$from" "$to" | tr -d ':-')"
+            echo "key=$(printf "%s-%s" "$from" "$to" | tr -d ':')"
           } >> "$GITHUB_OUTPUT"
 
       - name: Run the static corpus candidate scan
@@ -78,11 +90,31 @@ jobs:
           set -euo pipefail
           mkdir -p "$SCAN_WORK" "$SCAN_OUTPUT_DIR"
           set -o pipefail
+          full_log="$SCAN_WORK/scan.log"
+          set +e
           ruby tools/scan_popular_gems.rb \
-            --source timeframe \
-            --from "$SCAN_FROM" \
-            --to "$SCAN_TO" \
-            --artifact "$SCAN_OUTPUT_DIR/classification.json" \
-            --summary "$SCAN_OUTPUT_DIR/run-summary.json" \
-            --fetch-concurrency 2 \
-            2>&1 | tee "$SCAN_OUTPUT_DIR/scan.log"
+              --source timeframe \
+              --from "$SCAN_FROM" \
+              --to "$SCAN_TO" \
+              --artifact "$SCAN_OUTPUT_DIR/classification.json" \
+              --summary "$SCAN_OUTPUT_DIR/run-summary.json" \
+              --fetch-concurrency 2 \
+              2>&1 | tee "$full_log"
+          scan_status=${PIPESTATUS[0]}
+          set -e
+          # Keep the uploaded log bounded; the complete log remains only in the
+          # ephemeral runner workspace and is available in the job log.
+          tail -n 200 "$full_log" > "$SCAN_OUTPUT_DIR/scan.log"
+          exit "$scan_status"
+
+      - name: Upload the compact scan report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: corpus-candidate-${{ steps.window.outputs.key }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/corpus-candidate-output/classification.json
+            ${{ runner.temp }}/corpus-candidate-output/run-summary.json
+            ${{ runner.temp }}/corpus-candidate-output/scan.log
+          retention-days: 35
+          if-no-files-found: warn
