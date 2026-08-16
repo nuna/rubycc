@@ -99,3 +99,140 @@ jobs:
             ${{ runner.temp }}/corpus-candidate-validation/preflight/preflight.log
           retention-days: 14
           if-no-files-found: warn
+
+  build_load:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.gate_status == 'candidate' && (inputs.mode == 'build_load' || inputs.mode == 'upstream') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: false
+
+      - name: Build and load the candidate in an isolated GEM_HOME
+        shell: bash
+        env:
+          CANDIDATE_NAME: ${{ inputs.name }}
+          CANDIDATE_VERSION: ${{ inputs.version }}
+          CANDIDATE_PLATFORM: ${{ inputs.platform }}
+          CANDIDATE_SHA256: ${{ inputs.sha256 }}
+          CANDIDATE_MODE: build_load
+          CANDIDATE_WORK: ${{ runner.temp }}/corpus-candidate-validation/build-load
+          CANDIDATE_RESULT: ${{ runner.temp }}/corpus-candidate-validation/build-load/result.json
+        run: |
+          set -o pipefail
+          mkdir -p "$(dirname "$CANDIDATE_RESULT")"
+          set +e
+          ruby tools/verify_corpus_candidate.rb --mode build_load \
+            2>&1 | tee "$(dirname "$CANDIDATE_RESULT")/build-load.log"
+          validation_status=${PIPESTATUS[0]}
+          set -e
+          exit "$validation_status"
+
+      - name: Upload build/load report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: corpus-candidate-validation-build-load-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/corpus-candidate-validation/build-load/result.json
+            ${{ runner.temp }}/corpus-candidate-validation/build-load/build-load.log
+          retention-days: 14
+          if-no-files-found: warn
+
+  upstream:
+    needs: [preflight, build_load]
+    if: ${{ inputs.mode == 'upstream' && needs.build_load.result == 'success' && needs.preflight.outputs.gate_status == 'candidate' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: false
+
+      - name: Recheck the fixed archive and reviewed recipe
+        id: recipe_preflight
+        shell: bash
+        env:
+          CANDIDATE_NAME: ${{ inputs.name }}
+          CANDIDATE_VERSION: ${{ inputs.version }}
+          CANDIDATE_PLATFORM: ${{ inputs.platform }}
+          CANDIDATE_SHA256: ${{ inputs.sha256 }}
+          CANDIDATE_MODE: upstream
+          CANDIDATE_WORK: ${{ runner.temp }}/corpus-candidate-validation/upstream
+          CANDIDATE_RESULT: ${{ runner.temp }}/corpus-candidate-validation/upstream/preflight.json
+        run: |
+          set -o pipefail
+          mkdir -p "$(dirname "$CANDIDATE_RESULT")"
+          set +e
+          ruby tools/verify_corpus_candidate.rb --mode upstream --preflight-only \
+            2>&1 | tee "$(dirname "$CANDIDATE_RESULT")/preflight.log"
+          preflight_status=${PIPESTATUS[0]}
+          set -e
+          ready=false
+          if [[ -f "$CANDIDATE_RESULT" ]]; then
+            ready="$(ruby -rjson -e '
+              result = JSON.parse(File.read(ARGV.fetch(0)))
+              puts(result.fetch("status") == "ready" ? "true" : "false")
+            ' "$CANDIDATE_RESULT")"
+          fi
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+          exit "$preflight_status"
+
+      - name: Run the host compiler control recipe
+        if: steps.recipe_preflight.outputs.ready == 'true'
+        shell: bash
+        env:
+          CANDIDATE_NAME: ${{ inputs.name }}
+          VERIFY_WORK: ${{ runner.temp }}/corpus-candidate-validation/upstream
+          CONTROL_RESULT: ${{ runner.temp }}/corpus-candidate-validation/upstream/control.json
+        run: |
+          set -o pipefail
+          set +e
+          ruby tools/verify_gem_tests.rb --control --json "$CONTROL_RESULT" "$CANDIDATE_NAME" \
+            2>&1 | tee "${VERIFY_WORK}/control.log"
+          control_status=${PIPESTATUS[0]}
+          set -e
+          echo "control_status=$control_status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Run the rubycc upstream recipe without updating the database
+        if: steps.recipe_preflight.outputs.ready == 'true'
+        shell: bash
+        env:
+          CANDIDATE_NAME: ${{ inputs.name }}
+          VERIFY_WORK: ${{ runner.temp }}/corpus-candidate-validation/upstream
+          RUBYCC_RESULT: ${{ runner.temp }}/corpus-candidate-validation/upstream/rubycc.json
+        run: |
+          set -o pipefail
+          set +e
+          ruby tools/verify_gem_tests.rb --json "$RUBYCC_RESULT" "$CANDIDATE_NAME" \
+            2>&1 | tee "${VERIFY_WORK}/rubycc.log"
+          rubycc_status=${PIPESTATUS[0]}
+          set -e
+          echo "rubycc_status=$rubycc_status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload upstream reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: corpus-candidate-validation-upstream-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/corpus-candidate-validation/upstream/preflight.json
+            ${{ runner.temp }}/corpus-candidate-validation/upstream/control.json
+            ${{ runner.temp }}/corpus-candidate-validation/upstream/rubycc.json
+            ${{ runner.temp }}/corpus-candidate-validation/upstream/*.log
+          retention-days: 14
+          if-no-files-found: warn
