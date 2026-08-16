@@ -11954,3 +11954,22 @@ documented entrypointを使わない検査器側の誤判定と切り分けら�
 検査結果の要約は[`pilot-v2-load-sanity.md`](corpus-candidate-evaluation/pilot-v2-load-sanity.md)に記録し、
 raw log/JSONは既存のignored artifact領域へ保存した。このissueでは正式corpus、headers、compiler、
 `data/verified_gems.json`を変更していない。
+
+## corpus-candidate-pilot-v2-graphql-c-parser-1〜2 — documented entrypointでgeneric load失敗を切り分ける
+
+固定archive `graphql-c_parser 1.1.4` (SHA-256
+`8d3bf769ae935373ada877fe003036892b45be98c2fbcc6731dd82af2c3e0656`)を、既存local skillのstatic
+artifactとActions preflightで再確認した。static statusは`candidate`、extension rootは
+`ext/graphql_c_parser_ext`、new system headerは`alloca.h`、new gap headerは`libintl.h`と`malloc.h`
+だった。
+
+PR #75で固定recipeを追加し、Ruby wrapperのdocumented entrypoint `graphql/c_parser`と依存
+`graphql 2.6.8`を隔離GEM_HOMEへ導入して、`GraphQL::CParser.parse("{ __typename }")`およびdefault
+parserの一致をsanityにした。host/rubyccを別環境で比較し、Ruby 3.3.12のローカル検証とActions run
+31950250084 (Ruby 4.0.6)で、双方`documented_load_pass`、rubycc側のbuild evidence`pass`、比較結果
+`pass`を得た。旧generic `.so` requireの`GraphQL::Language` NameErrorは、candidateのbuild失敗ではなく
+documented entrypointを使わない検査器の誤判定と切り分けられた。
+
+review済みupstream recipeは無かったため、任意test commandへfallbackせずupstream testは未実行とした。
+候補の正式corpus追加、header/compiler、`data/verified_gems.json`更新は行っていない。検査結果の詳細は
+[`pilot-v2-load-sanity.md`](corpus-candidate-evaluation/pilot-v2-load-sanity.md)に記録し、issueを完了にした。
