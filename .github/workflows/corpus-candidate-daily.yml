@@ -13,7 +13,7 @@ name: corpus-candidate-daily
         required: true
         type: string
       to:
-        description: "Exclusive UTC day end (one or two UTC days), for example 2026-08-16T00:00:00Z"
+        description: "Exclusive UTC day end, for example 2026-08-16T00:00:00Z"
         required: true
         type: string
 
@@ -70,8 +70,7 @@ jobs:
             abort "to must be a UTC midnight timestamp" unless pattern.match?(to_text)
             from = Time.iso8601(from_text)
             to = Time.iso8601(to_text)
-            duration = to - from
-            abort "interval must be one or two completed UTC days" unless [86_400, 172_800].include?(duration)
+            abort "interval must be one completed UTC day" unless to - from == 86_400
           '
 
           {
