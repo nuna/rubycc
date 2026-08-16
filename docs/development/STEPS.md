@@ -11723,3 +11723,67 @@ mysql2 は docker コンテナ `rubycc-mariadb` を要求し、停止してい�
 issue は **DESIGN N2 の達成をもって閉じ**、残差は
 `issues/promoted-register-addressing.md` へ申し送った。**閉じる判断そのものより、
 「条件が指す分母を測ったか」を確かめる方が先だった**というのがこのステップの教訓である。
+
+## corpus-candidate-discovery-1 — scanner を library / CLI 境界へ分離する
+
+ARGV 解釈、HTTP 通信、sleep、出力、cache を `CorpusCandidateScan` の設定・依存注入へ移し、
+require 時の副作用をなくした。既存 rank source の位置引数、環境変数、終了 status、分類欄は
+維持した。fixture と偽 HTTP client を使うテストを追加した。
+
+## corpus-candidate-discovery-2 — timeframe source と release 選択を実装する
+
+`/api/v1/timeframe_versions.json` の UTC 期間・全 page 走査と pagination guard を追加した。
+prerelease / yanked / native-platform-only を除外し、v2 の `platform=ruby` と version 固定 fetch、
+gemspec の name / version / platform 照合を行う。API schema、重複、異常系を hermetic fixture で
+検証した。
+
+## corpus-candidate-discovery-3 — live scan で経路と運用条件を検証する
+
+対象期間 `2026-08-15T00:00:00Z` ～ `2026-08-16T00:00:00Z` の live scan は終了 status 0。
+153 version、重複排除後 114 gem、timeframe 7 page、gem fetch 109/109 成功、分類は `[1]` 8、
+`[1b]` 0、`[2]` 0、`[3]` 0、`[E]` 5、`[0]` 0、直接 API request は 121
+(timeframe 7 + v2 114) だった。候補は `atomic-ruby`, `classifier`, `hx_ruby`, `ironpress`,
+`page_print`, `pgn2`, `udb`, `wreq`。初回の read-only HOME による RubyGems spec cache 失敗を
+受け、cache を `SCAN_WORK/gem_spec_cache` に固定して再実行した。これは候補経路の smoke test
+であり、corpus への正式追加や発見方法の有効性を証明するものではない。
+
+検証結果: `ruby -Itest test/test_scan_popular_gems.rb` は 11 runs / 46 assertions、
+`ruby -Itest -Ilib test/test_issue_docs.rb` は 5 / 332、`ruby -Itest test/test_corpus_census.rb`
+は 29 / 377、`rake test` は 3232 runs / 11492 assertions / 41 skips。いずれも failures 0、
+errors 0。
+
+## corpus-candidate-artifact-1 — scan artifact の schema と provenance を固定する
+
+schema version 1 の JSON artifact、normalized input、source request / raw response SHA-256、
+raw response cache、取得 `.gem` の SHA-256 欄を追加した。absolute path、実行時刻、cache hit
+状態は artifact に入れない。保存済み response を再生する fixture と golden JSON で byte 単位の
+決定性を検証した。
+
+## corpus-candidate-artifact-2 — 静的 review 診断を Census と共有する
+
+`Corpus::Census.classify_source_files` を抽出し、scanner の C/H 数と system / gap header 集計を
+Census と共通化した。archive 内の `undeclared_native_source` と、gemspec の
+`extension_outside_census_root` を `[R]` review bucket に分離した。`[1b]` は assembly 専用の
+まま維持し、R10 gate は複製していない。
+
+## corpus-candidate-artifact-3 — source 共通 schema と再生手順を確定する
+
+popular / bestgems / timeframe の source naming fixture、SHA mismatch hard error、利用手順、
+issue / skill の review 境界を追加した。最終 targeted test は scanner 17 runs / 78 assertions、
+Census 30 / 383、issue docs 5 / 336、いずれも failures / errors 0。直前の全体 `rake test` は
+3238 runs / 11528 assertions / 41 skips / failures 0 / errors 0。artifact は正式 corpus 追加を
+行わず、後続 evaluation issue が候補源の増分価値を判定する。
+
+## corpus-candidate-evaluation-1 — 実験入力を固定し、対照 scan を収集する
+
+結果を見る前に、完了済み UTC 7 日 window 4 個と rubygems.org popular rank 1〜100、scanner revision ac9f149a55036dd3057db67d643405734a331b47、selection-only の資源境界を固定した。4 window の artifact と popular artifact を保存し、各 source request の URL / cache key / response SHA-256 を残した。raw response cache 自体は repository に入れず、同じ cache で version entry 数を再集計できるようにした。07-26 は page 9 の Net::OpenTimeout 後に retry-1、07-19 は DNS failure と retry-1 page 99 の ENETUNREACH 後に retry-2 が成功したため、失敗試行も manifest に記録した。
+
+## corpus-candidate-evaluation-2 — 増分候補を試験する
+
+selection-only の実測は 12,829 version entries / 5,647 gem occurrences / 434 pages / 163 selection errors / 5,471 新規未検査名だった。候補 status [1]、[1b]、[2]、[R] は全 window で 0。選定除外は duplicate release 5,409、prerelease 512 で、source gem / yanked の全体検証は延期した。popular 1〜100 は 100 gem、既存 corpus 8、new [1] 0、[2] 1、[R] 1、no-ext 90 だった。selection-only の uninspected name union 3,889（新規未検査 3,881）を適格候補とは数えなかった。
+
+## corpus-candidate-evaluation-3 — 発見方法の採否を決着する
+
+結果確認前に固定した順序で最大3件（DhanHQ 3.4.0、phronomy 0.19.0、security 0.2.0）を静的検査した。3件とも platform=ruby、non-yanked、archive/API SHA 一致、no-ext、C/H 0/0、bundled/gap/review 0。rubycc package の build/install は成功したが、対象 gem の C extension が無いため target build は実行しなかった。検査済みの期間固有 [1]、新規 header/gap、build 成功は 0 件である。
+
+現行 bounded route は corpus の自動・定期拡張として不採用と決着した。未検査 3,881 件がすべて純 Ruby だと推測せず、source/yanked の deferred と selection-only の限界を明記した。次の metadata prefilter または大きな事前固定静的サンプルは別 issue とし、今回の corpus / verified gem DB は変更しない。targeted test は summarizer 3 runs / 13 assertions、scanner 17 / 78、issue docs 5 / 336、いずれも failures / errors / skips 0。最終の全体 rake test は 3,242 runs / 11,549 assertions / 41 skips、failures / errors 0。

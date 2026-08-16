@@ -84,6 +84,30 @@ module Corpus
       own_basenames.include?(File.basename(spelling))
     end
 
+    # Classify a supplied, already-selected source file list. Keeping this
+    # operation in Census prevents candidate discovery from growing a second
+    # include policy. The caller owns the source list and bundled set; this
+    # helper only reads the files and returns fresh data.
+    def classify_source_files(source_files, bundled_set)
+      files = Array(source_files).sort
+      own_basenames = files.select { |path| path.end_with?(".h") }
+                           .map { |path| File.basename(path) }.to_set
+      result = { includes: {}, ruby_self: [], ext_c_files: 0, ext_h_files: 0 }
+
+      files.each do |path|
+        path.end_with?(".h") ? (result[:ext_h_files] += 1) : (result[:ext_c_files] += 1)
+        extract_angle_includes(File.read(path, encoding: "BINARY")).each do |spelling|
+          if ruby_or_self?(spelling, own_basenames)
+            result[:ruby_self] << spelling
+          else
+            result[:includes][spelling] ||= classify_include(spelling, bundled_set)
+          end
+        end
+      end
+      result[:ruby_self] = result[:ruby_self].uniq.sort
+      result
+    end
+
     # C++ translation units / headers. Presence excludes a gem under R10.
     CPP_SOURCE_EXTS = %w[.cpp .cc .cxx .c++ .hpp .hxx .hh].freeze
 
@@ -257,7 +281,13 @@ module Corpus
 
       cmd = ["gem", "fetch", name, "--platform=ruby"]
       cmd += ["--version", version] if version
-      out, status = Open3.capture2e(*cmd, chdir: cache_dir)
+      # Keep RubyGems' compact-index cache beside the requested gem cache. A
+      # read-only HOME is common in CI and sandboxed scans; relying on the
+      # process user's default ~/.cache/gem would make an otherwise writable
+      # corpus cache unusable.
+      spec_cache = File.join(cache_dir, "gem_spec_cache")
+      FileUtils.mkdir_p(spec_cache)
+      out, status = Open3.capture2e({ "GEM_SPEC_CACHE" => spec_cache }, *cmd, chdir: cache_dir)
       unless status.success?
         return [nil, out.strip]
       end
@@ -376,21 +406,8 @@ module Corpus
         return result
       end
 
-      files = ext_source_files(source_root)
-      own_basenames = files.select { |p| p.end_with?(".h") }.map { |p| File.basename(p) }.to_set
-
-      files.each do |path|
-        path.end_with?(".h") ? (result[:ext_h_files] += 1) : (result[:ext_c_files] += 1)
-        src = File.read(path, encoding: "BINARY")
-        extract_angle_includes(src).each do |spelling|
-          if ruby_or_self?(spelling, own_basenames)
-            result[:ruby_self] << spelling
-          else
-            result[:includes][spelling] ||= classify_include(spelling, bundled_set)
-          end
-        end
-      end
-      result[:ruby_self] = result[:ruby_self].uniq.sort
+      analysis = classify_source_files(ext_source_files(source_root), bundled_set)
+      result.merge!(analysis)
       result[:status] = :ok
       result
     rescue StandardError => e

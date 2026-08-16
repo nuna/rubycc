@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "source": "timeframe",
+  "input": {
+    "source": "timeframe",
+    "verbose": false,
+    "from": "2026-08-01T00:00:00Z",
+    "to": "2026-08-02T00:00:00Z"
+  },
+  "source_requests": [
+    {
+      "url": "https://rubygems.org/api/v1/timeframe_versions.json?from=2026-08-01T00%3A00%3A00Z&to=2026-08-02T00%3A00%3A00Z&page=1",
+      "cache_key": "a8d32ad89433d68f70a5e9d5a066e94cd004b35369163ecf953ca411ce8a9fd6",
+      "response_sha256": "7c3e3a69dbdf001cca18942dd108ba30c479bb9b8c19c1199c38934f1ddabd62"
+    }
+  ],
+  "records": [
+    {
+      "rank": null,
+      "name": "example-gem",
+      "version": "1.0.0",
+      "platform": "ruby",
+      "created_at": "2026-08-01T12:00:00Z",
+      "downloads": 100,
+      "version_downloads": 10,
+      "selection": {
+        "note": "selected 1.0.0",
+        "rejections": []
+      },
+      "gem": {
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "api_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sha256_match": "match"
+      },
+      "gemspec": {
+        "extensions": [
+          "ext/example/extconf.rb"
+        ],
+        "extension_directories": [
+          "ext/example"
+        ],
+        "native_source_files": [],
+        "extconf_files": []
+      },
+      "corpus": {
+        "included": false,
+        "status": "candidate",
+        "reason": null,
+        "review_reasons": [],
+        "c_files": 1,
+        "h_files": 0
+      },
+      "headers": {
+        "bundled": [
+          "stdio.h"
+        ],
+        "gap": [
+          "cpuid.h"
+        ],
+        "ruby_or_self": [
+          "ruby.h"
+        ]
+      }
+    }
+  ]
+}
