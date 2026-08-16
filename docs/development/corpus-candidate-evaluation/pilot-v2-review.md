@@ -93,6 +93,14 @@ failureを満たし、候補の増分価値も検出できる。一方、source 
   timeframeとv2 metadataのstale release/404を候補errorと分離する
 - [corpus-candidate-pilot-v2-load-sanity](../../../issues/corpus-candidate-pilot-v2-load-sanity.md):
   候補ごとのreview済みload entrypointを安全に扱う
+- [corpus-candidate-pilot-v2-review-cost](../../../issues/corpus-candidate-pilot-v2-review-cost.md):
+  人手reviewのactive time、Actions待ち、機械実行時間を分離して運用負荷を計測する
+- [corpus-candidate-pilot-v2-rbtrace](../../../issues/corpus-candidate-pilot-v2-rbtrace.md):
+  bundled msgpackのbuild失敗を候補固有問題とrubycc gapへ分離する
+- [corpus-candidate-pilot-v2-graphql-c-parser](../../../issues/corpus-candidate-pilot-v2-graphql-c-parser.md):
+  documented load entrypointでgeneric sanityの誤判定を再検証する
+- [corpus-candidate-pilot-v2-roaring](../../../issues/corpus-candidate-pilot-v2-roaring.md):
+  `#warning` preprocessor gapの再現と正式corpus追加方針を決める
 
 正式追加に進める候補はまだ無い。roaringはcompiler gap対応を別途判断し、rbtraceとgraphql-c_parserは
 それぞれのfollow-upで再現性を確認してから、1 gem = 1 issueの追加判断へ進む。

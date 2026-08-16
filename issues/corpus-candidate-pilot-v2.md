@@ -131,6 +131,13 @@ metricsは[`pilot-v2-metrics.json`](../docs/development/corpus-candidate-evaluat
 候補別結果は[`pilot-v2-inspections.json`](../docs/development/corpus-candidate-evaluation/pilot-v2-inspections.json)
 に要約した。follow-upとしてsource error分離と候補ごとのload sanity recipe issueを作成した。
 
+未計測だった人手review負荷と、上位候補ごとの再検証・正式追加判断も次のissueへ分割した。
+
+- [review負荷計測](corpus-candidate-pilot-v2-review-cost.md)
+- [rbtrace 0.5.5](corpus-candidate-pilot-v2-rbtrace.md)
+- [graphql-c_parser 1.1.4](corpus-candidate-pilot-v2-graphql-c-parser.md)
+- [roaring 0.4.1](corpus-candidate-pilot-v2-roaring.md)
+
 ## 決着
 
 中間判定は **条件付き採用**。日次scanの実行時間・timeout・window final failureと、header/gap・
