@@ -4,7 +4,7 @@ kind: infra
 opened: 2026-08-16
 closed:
 branch: corpus-candidate-daily-workflow
-pr:
+pr: 67
 steps:
   - corpus-candidate-daily-workflow-1
   - corpus-candidate-daily-workflow-2
