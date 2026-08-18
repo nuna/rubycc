@@ -1,11 +1,11 @@
 ---
-status: open
+status: in-progress
 kind: debt
 opened: 2026-08-15
 closed:
-branch:
+branch: optimization-pass-throughput
 pr:
-steps: []
+steps: [optimization-pass-throughput-1]
 ---
 
 # 最適化 2 段でコンパイル速度が 12.4% 落ちた分を取り返す
@@ -86,6 +86,38 @@ N1(YJIT 有効時 20,000 行/秒)は元から未達(69.3%)だったが、**59% �
 最初の実行は 6 条件すべてが 0 バイトのログを残して「完了」し、マーカーだけが
 作られていた。**出力の中身を見ずに次へ進んでいたら、誤った内訳で設計判断していた。**
 
+### 2026-08-19(実装 — `optimization-pass-throughput-1`)
+
+`IR::Analysis` を新設し、未知 op の有無・読み/書き回数・transient 集合を**関数 1 本に
+つき 1 回**計算して `Simplify` → `Promotion` → バックエンドへ配る形にした。3 つの
+書き換えは数え直す代わりに差分更新する。`operand_vregs` の配列生成は yield 形に、
+バックエンドの `@transient` / `@promoted` は vreg 添字の配列にした。
+
+外部レビュー(別系統のモデル)の指摘を 1 件反映した — **差分更新の結果が、書き換え後の
+命令列を数え直したものと一致することを確かめるテストが無い**。`test/test_ir_analysis.rb`
+を新設し、5 つの形(前送り・後方定義ループでの融合・多周回の死結果連鎖・3 つの同居・
+書き換え無し)で確かめている。**検算はテスト側の素朴な実装で行い、`lib/` の数え上げ
+関数は呼ばない**(同じコードで検算しても意味がないため)。
+
 ## 決着
 
-(未着手)
+**回帰の約 71% を回収した**(2026-08-19)。
+
+| 条件 | 結果 |
+|---|---|
+| 生成物がバイト単位で一致 | **532 / 532 一致**(x86-64 / AArch64 × benchmark・examples・c-testsuite 210 本)。`test_deterministic_build.rb` も 0 failures |
+| 全スイート 0 failures | **3219 runs / 11427 assertions / 0 failures / 0 errors / 41 skips** |
+| ペア計測で改善 | **master 比 +11.1%**(3 ラウンドとも 1.103〜1.120)。最適化前比 0.864 → **0.960** |
+| 到達値を THROUGHPUT.md に追記 | 追記済み(推移表 + 経緯の節) |
+
+**残る約 4% は回収しない。** stackprof で後半処理 41.7ms の内訳を見ると
+バックエンドの emit が 59% で、最適化前ツリーは同じ部分が 16ms、しかも**より長い
+命令列**を吐いていた。差は命令ごとに実際に増えた仕事(残余表の更新・昇格 / transient の
+参照・オペランド形の 3 分岐)であり、**最適化の本体そのもの**である。ブランチ上で
+両パスを無効化しても全体時間がほぼ変わらない(0.491s → 0.499s)ところまで来ており、
+パスの費用がパスの減らした emit 量と相殺している。
+
+設計判断の本体は `docs/development/STEPS.md` の `optimization-pass-throughput-1`。
+
+**N1 は依然として未達**である(目標の 59% → 約 64%)。穴を埋める課題は
+[cross-process-header-cache](cross-process-header-cache.md) に戻る。
