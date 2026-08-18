@@ -2,6 +2,7 @@
 
 require_relative "../compile_error"
 require_relative "../ir/ir"
+require_relative "../ir/analysis"
 require_relative "../ir/promotion"
 require_relative "../ir/simplify"
 require_relative "slot_residency"
@@ -290,21 +291,28 @@ module Rubycc
         flt: 4, fle: 9, fgt: 12, fge: 10
       }.freeze
 
-      def compile(ir_func)
+      # `analysis` is the census of `ir_func`'s instruction list (IR::Analysis).
+      # The compiler passes the one IR::Simplify already took on its way
+      # through; a caller that hands over a function directly gets it taken
+      # here.
+      def compile(ir_func, analysis = IR::Analysis.of(ir_func))
         @code = +"".b
         reset_slot_residency
         # Slots this function never has to write: an expression temporary whose
         # one reader is the instruction right behind its producer stays in the
-        # register it was computed in (see IR::Simplify#transient_vregs and
-        # #store_reg). The set is a property of the instruction list, so it is
-        # computed once here rather than rediscovered per instruction.
-        @transient = IR::Simplify.transient_vregs(ir_func.insts, ir_func.param_count)
+        # register it was computed in (see IR::Simplify#transient_flags and
+        # #store_reg). The answer is a property of the instruction list, so it
+        # is taken once here rather than rediscovered per instruction, and it
+        # arrives as an array indexed by vreg number — the numbers are dense and
+        # small, and this is asked on every store the backend emits.
+        @transient = analysis.transient
         # Slots this function does not have at all: a promoted value lives in
         # one callee-saved register from the prologue to the epilogue, so its
         # slot is never read, written or named (see #promotion_assignment,
         # #load_reg and #store_reg). Like @transient this is a property of the
-        # instruction list, decided once here.
-        @promoted = promotion_assignment(ir_func)
+        # instruction list, decided once here, and indexed by vreg number for
+        # the same reason.
+        @promoted = promotion_assignment(ir_func, analysis)
         # @labels maps a label id to its resolved byte offset; @fixups collects
         # [patch_offset, label_id, kind] for each forward/backward branch whose
         # immediate is written once every label offset is known.
@@ -331,14 +339,21 @@ module Rubycc
       private
 
       # Binds the best promotion candidates to PROMOTION_REGISTERS in order,
-      # returning the vreg -> register map the whole backend consults. Taking
-      # the first few of an ordered list is the entire allocation: one register
-      # each, held for the function's length, so there is no interference to
-      # resolve and nothing to undo when the registers run out — the candidates
-      # past the tenth simply keep their slots.
-      def promotion_assignment(ir_func)
-        vregs = IR::Promotion.candidates(ir_func).first(PROMOTION_REGISTERS.size)
-        vregs.each_with_index.to_h { |vreg, index| [vreg, PROMOTION_REGISTERS[index]] }
+      # returning the vreg -> register table the whole backend consults (an
+      # array; a vreg that owns no register indexes nil). Taking the first few
+      # of an ordered list is the entire allocation: one register each, held for
+      # the function's length, so there is no interference to resolve and
+      # nothing to undo when the registers run out — the candidates past the
+      # tenth simply keep their slots.
+      #
+      # @promoted_registers is the same binding in assignment order, which is
+      # the order the save slots are laid out in (#layout_frame).
+      def promotion_assignment(ir_func, analysis)
+        vregs = IR::Promotion.candidates(ir_func, analysis).first(PROMOTION_REGISTERS.size)
+        @promoted_registers = PROMOTION_REGISTERS.first(vregs.size)
+        promoted = Array.new(ir_func.vreg_count)
+        vregs.each_with_index { |vreg, index| promoted[vreg] = PROMOTION_REGISTERS[index] }
+        promoted
       end
 
       # Computes the frame's size and every object's base offset. From sp
@@ -386,7 +401,7 @@ module Rubycc
         # whatever the count. They are laid out in assignment order,
         # a function of the instruction list, so the frame stays deterministic
         # (N4).
-        @promoted_saves = @promoted.values.map do |reg|
+        @promoted_saves = @promoted_registers.map do |reg|
           offset = running
           running += 8
           [reg, offset]
@@ -1511,7 +1526,7 @@ module Rubycc
           note_slots_undisturbed
           return
         end
-        if @transient.include?(vreg)
+        if @transient[vreg]
           # The value's only reader is the next instruction, which will find it
           # here; the slot itself is never named again, so nothing is written.
           note_slot_loaded(reg, vreg)
@@ -1647,7 +1662,7 @@ module Rubycc
       # does not disturb the table (see PROMOTION_REGISTERS and #load_reg), so it
       # does not stop a caller from claiming the fast path.
       def store_result(reg, dst, only_wrote: nil)
-        unless @promoted.key?(dst)
+        unless @promoted[dst]
           store_reg(reg, dst) # which discards a stale table itself, before anything else
           return
         end
@@ -1750,7 +1765,7 @@ module Rubycc
       # str S{reg}/D{reg}, [slot]. The counterpart of #load_fp.
       def store_fp(reg, vreg, size)
         refresh_slot_residency
-        if @transient.include?(vreg)
+        if @transient[vreg]
           note_slot_loaded_to_vector(reg, vreg, size)
           return
         end

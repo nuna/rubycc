@@ -38,7 +38,16 @@ module Rubycc
     # The pass is fail-safe by construction: it needs to know every place a
     # virtual register can be *read*, and an op it does not recognize means it
     # cannot know that, so #run hands the function back untouched rather than
-    # guessing (see #operand_vregs).
+    # guessing (see #each_operand_vreg).
+    #
+    # The census the three rewrites decide from — how often each virtual
+    # register is read and written — is taken **once**, by #census, and then
+    # kept true by each rewrite as it goes: forwarding a copy removes exactly
+    # one read and one write of the temporary, fusing a subscript removes the
+    # reads of the pair it replaces, and dropping a dead instruction removes
+    # its own. What comes out is therefore the census of the list that comes
+    # out, which is what IR::Analysis hands on to IR::Promotion and to the
+    # backend so neither has to count the list again.
     module Simplify
       module_function
 
@@ -48,18 +57,33 @@ module Rubycc
       # and because a stable frame layout is what keeps the same source
       # producing the same bytes (N4).
       def run(function)
+        run_counted(function).first
+      end
+
+      # #run plus the census of the list it decided on: [function, reads,
+      # writes]. `reads` and `writes` are arrays indexed by virtual register
+      # number — the numbers are dense and small, so an array is what a hash
+      # was standing in for — and both are nil when an unrecognized op made the
+      # pass refuse the function, which is the same answer as "nothing here may
+      # be counted on" for every later consumer (IR::Analysis).
+      def run_counted(function)
         insts = function.insts
-        return function unless insts.all? { |inst| known_op?(inst.op) }
+        reads, writes = census(insts, function.vreg_count)
+        return [function, nil, nil] if reads.nil?
 
-        # Instruction has no #== of its own, so the array comparison is
-        # element identity: an untouched function really does come back as the
-        # very objects the generator produced, and is handed on unwrapped.
-        rewritten = drop_dead_results(fuse_subscripts(forward_single_use_copies(insts)))
-        return function if rewritten == insts
+        rewritten = drop_dead_results(
+          fuse_subscripts(forward_single_use_copies(insts, reads, writes), reads, writes),
+          reads, writes
+        )
+        # Each rewrite hands its own array back untouched when it changed
+        # nothing, so an untouched function really does come back as the very
+        # objects the generator produced, and is handed on unwrapped.
+        return [function, reads, writes] if rewritten.equal?(insts)
 
-        Function.new(function.name, rewritten, function.vreg_count, function.param_count,
-                     function.stack_objects, function.linkage, function.variadic,
-                     function.param_kinds)
+        [Function.new(function.name, rewritten, function.vreg_count, function.param_count,
+                      function.stack_objects, function.linkage, function.variadic,
+                      function.param_kinds),
+         reads, writes]
       end
 
       # The element sizes a subscript's scale factor may have. Both targets
@@ -109,55 +133,108 @@ module Rubycc
         addr_of object_addr string_addr global_addr func_addr got_addr
       ].freeze
 
+      # The four groups above as one op -> shape table. The arrays are the
+      # documentation, one line per op in reading order; this is what the scans
+      # ask, a single hash probe per instruction rather than up to four linear
+      # searches through thirty symbols. The irregular ops each get a shape of
+      # their own, their operands living in fields no other op uses.
+      OPERAND_SHAPES = {}.tap do |shapes|
+        TWO_OPERAND_OPS.each { |op| shapes[op] = :two }
+        ONE_OPERAND_OPS.each { |op| shapes[op] = :one }
+        NO_OPERAND_OPS.each { |op| shapes[op] = :none }
+        IRREGULAR_OPS.each { |op| shapes[op] = op }
+      end.freeze
+
       def known_op?(op)
-        TWO_OPERAND_OPS.include?(op) || ONE_OPERAND_OPS.include?(op) ||
-          NO_OPERAND_OPS.include?(op) || IRREGULAR_OPS.include?(op)
+        OPERAND_SHAPES.key?(op)
       end
 
-      # Every virtual register `inst` reads. Getting this exhaustive is what the
-      # whole pass rests on — a missed read would let a live value be deleted —
-      # so the shapes are enumerated rather than inferred, and #run refuses to
-      # touch a function containing an op not listed above.
-      def operand_vregs(inst)
-        op = inst.op
-        return [inst.a, inst.b] if TWO_OPERAND_OPS.include?(op)
-        return [inst.a] if ONE_OPERAND_OPS.include?(op)
-        return [] if NO_OPERAND_OPS.include?(op)
-
-        case op
+      # Yields every virtual register `inst` reads, nils skipped and repeats
+      # kept ("t + t" reads t twice). Getting this exhaustive is what the whole
+      # pass rests on — a missed read would let a live value be deleted — so the
+      # shapes are enumerated rather than inferred, and #run refuses to touch a
+      # function containing an op not listed above (which yields nothing here).
+      #
+      # It yields rather than returning the list it used to return because it
+      # runs once per instruction per scan, and that list was garbage every
+      # time — one array per instruction per pass, on a path the GC already
+      # dominates. #reads_vreg? is the one question a caller asked the list
+      # rather than the elements.
+      def each_operand_vreg(inst)
+        case OPERAND_SHAPES[inst.op]
+        when :two
+          a = inst.a
+          b = inst.b
+          yield a unless a.nil?
+          yield b unless b.nil?
+        when :one
+          a = inst.a
+          yield a unless a.nil?
+        when :none
+          nil
         when :call, :call_indirect
           # Each argument is a [vreg, kind] pair, whose vreg is nil for an
           # alignment pad; an indirect call also reads its target, and a struct
           # result read back in registers is scattered into a buffer whose
           # address is a further read (the second half of the size pair).
-          vregs = inst.b.filter_map { |vreg, _kind| vreg }
-          vregs << inst.a if op == :call_indirect
+          inst.b.each { |vreg, _kind| yield vreg unless vreg.nil? }
+          yield inst.a if inst.op == :call_indirect
           ret = inst.size&.last
-          vregs << ret.first if ret.is_a?(Array)
-          vregs
+          yield ret.first if ret.is_a?(Array)
         when :ret
-          inst.a.nil? ? [] : [inst.a]
+          a = inst.a
+          yield a unless a.nil?
         when :atomic_rmw
-          [inst.a, inst.b[0]]
+          yield inst.a
+          yield inst.b[0]
         when :atomic_cas
-          [inst.a, inst.b[0], inst.b[1]]
+          yield inst.a
+          yield inst.b[0]
+          yield inst.b[1]
         end
       end
 
-      # Counts how many instructions read each virtual register.
-      def read_counts(insts)
-        counts = Hash.new(0)
-        insts.each do |inst|
-          operand_vregs(inst).each { |vreg| counts[vreg] += 1 unless vreg.nil? }
-        end
-        counts
+      # Whether `inst` reads `vreg` — #each_operand_vreg's membership test,
+      # without the list it would have had to build to answer.
+      def reads_vreg?(inst, vreg)
+        each_operand_vreg(inst) { |operand| return true if operand == vreg }
+        false
       end
 
-      # Counts how many instructions write each virtual register.
-      def write_counts(insts)
-        counts = Hash.new(0)
-        insts.each { |inst| counts[inst.dst] += 1 unless inst.dst.nil? }
-        counts
+      # How often each virtual register is read and written, as the pair of
+      # arrays [reads, writes] indexed by register number, or nil when some op
+      # is not one this file knows how to read (the fail-safe #run rests on,
+      # tested here because this is the one scan every caller starts from).
+      #
+      # `vreg_count` only sizes the arrays: a register past it still counts,
+      # growing them, so a hand-built function with a loose count is answered
+      # the same as a generated one.
+      #
+      # This scan and the ones below walk the list by index rather than with
+      # each_with_index, which is the one place in this file where speed decided
+      # the shape: the block call per instruction was measured at a sixth of the
+      # whole back half of the compiler (stackprof, bigdecimal.c, 2026-08-15).
+      def census(insts, vreg_count = 0)
+        reads = Array.new(vreg_count, 0)
+        writes = Array.new(vreg_count, 0)
+        index = 0
+        size = insts.size
+        while index < size
+          inst = insts[index]
+          index += 1
+          return nil unless OPERAND_SHAPES.key?(inst.op)
+
+          dst = inst.dst
+          unless dst.nil?
+            count = writes[dst]
+            writes[dst] = count ? count + 1 : 1
+          end
+          each_operand_vreg(inst) do |vreg|
+            count = reads[vreg]
+            reads[vreg] = count ? count + 1 : 1
+          end
+        end
+        [reads, writes]
       end
 
       # Maps each virtual register written by exactly one :const to
@@ -171,16 +248,24 @@ module Rubycc
       def constant_definitions(insts)
         constants = {}
         rejected = {}
-        insts.each_with_index do |inst, index|
-          rejected[inst.a] = true if inst.op == :addr_of
-          next if inst.dst.nil?
-
-          if inst.op == :const && !constants.key?(inst.dst)
-            constants[inst.dst] = [inst.a, index]
-          else
-            rejected[inst.dst] = true
+        index = 0
+        size = insts.size
+        while index < size
+          inst = insts[index]
+          op = inst.op
+          rejected[inst.a] = true if op == :addr_of
+          dst = inst.dst
+          unless dst.nil?
+            if op == :const && !constants.key?(dst)
+              constants[dst] = [inst.a, index]
+            else
+              rejected[dst] = true
+            end
           end
+          index += 1
         end
+        return constants if rejected.empty?
+
         constants.reject { |vreg, _| rejected[vreg] }
       end
 
@@ -198,26 +283,36 @@ module Rubycc
       # i + 1" becomes an add whose destination is its own operand): every
       # backend loads an instruction's operands into registers before it stores
       # the result.
-      def forward_single_use_copies(insts)
-        reads = read_counts(insts)
-        writes = write_counts(insts)
-        forwarded = []
-        skip_next = false
-        insts.each_with_index do |inst, index|
-          if skip_next
-            skip_next = false
-            next
-          end
+      #
+      # `reads` and `writes` come from #census and are brought up to date as the
+      # rewrite goes: the pair "T = ...; V = T" becomes one instruction writing
+      # V, so T loses its single read and its single write and nothing else
+      # moves. Updating them in flight cannot change a later decision, which is
+      # what makes keeping the census incrementally the same pass as counting it
+      # afresh would have been: the guard has just established that this pair is
+      # T's only reader and only writer, so no instruction the loop has yet to
+      # reach mentions T at all.
+      def forward_single_use_copies(insts, reads, writes)
+        forwarded = nil
+        index = 0
+        size = insts.size
+        while index < size
+          inst = insts[index]
+          dst = inst.dst
           copy = insts[index + 1]
-          if inst.dst && copy && copy.op == :copy && copy.a == inst.dst && copy.dst != inst.dst &&
-             reads[inst.dst] == 1 && writes[inst.dst] == 1
+          if dst && copy && copy.op == :copy && copy.a == dst && copy.dst != dst &&
+             reads[dst] == 1 && writes[dst] == 1
+            forwarded ||= insts[0, index]
             forwarded << Instruction.new(inst.op, dst: copy.dst, a: inst.a, b: inst.b, size: inst.size)
-            skip_next = true
+            reads[dst] -= 1
+            writes[dst] -= 1
+            index += 2 # the copy is the second half of what was just written
           else
-            forwarded << inst
+            forwarded << inst if forwarded
+            index += 1
           end
         end
-        forwarded
+        forwarded || insts
       end
 
       # Collapses "index * element_size" followed by "base + that" into one
@@ -225,25 +320,42 @@ module Rubycc
       # actually emits a subscript and is also what makes the rewrite obviously
       # safe: with nothing in between, neither operand of the add can have been
       # rewritten since the multiply read it.
-      def fuse_subscripts(insts)
+      #
+      # The census is kept true the same way #forward_single_use_copies keeps
+      # it: the two instructions the :scaled_add replaces stop reading what they
+      # read and it starts reading what it reads. Here, though, the decisions
+      # are deliberately taken from `census`, which stops following `reads` the
+      # moment the first fusion would disturb it — a loop may read a value the
+      # list defines further down, so a fusion *can* lower the read count a
+      # later fusion's guard consults, and the answer has to stay the one the
+      # pre-pass count gave.
+      def fuse_subscripts(insts, reads, writes)
         constants = constant_definitions(insts)
-        reads = read_counts(insts)
-        fused = []
-        skip_next = false
-        insts.each_with_index do |inst, index|
-          if skip_next
-            skip_next = false
-            next
-          end
-          replacement = scaled_add_for(inst, insts[index + 1], index, constants, reads)
+        return insts if constants.empty?
+
+        census = reads
+        fused = nil
+        index = 0
+        size = insts.size
+        while index < size
+          inst = insts[index]
+          add = insts[index + 1]
+          replacement = scaled_add_for(inst, add, index, constants, census)
           if replacement
+            census = reads.dup if census.equal?(reads)
+            fused ||= insts[0, index]
             fused << replacement
-            skip_next = true
+            each_operand_vreg(inst) { |vreg| reads[vreg] -= 1 }
+            each_operand_vreg(add) { |vreg| reads[vreg] -= 1 }
+            each_operand_vreg(replacement) { |vreg| reads[vreg] += 1 }
+            writes[inst.dst] -= 1 # the add's destination is the replacement's
+            index += 2 # the add is the second half of the :scaled_add
           else
-            fused << inst
+            fused << inst if fused
+            index += 1
           end
         end
-        fused
+        fused || insts
       end
 
       # The :scaled_add that replaces `mul` and the `add` right behind it, or
@@ -331,26 +443,50 @@ module Rubycc
         div mod udiv umod alloca jump_if_zero ret
       ].freeze
 
-      # The virtual registers a backend may leave in a register instead of
-      # writing out. `param_count` names the leading slots the prologue fills.
-      def transient_vregs(insts, param_count)
-        return [].to_set unless insts.all? { |inst| known_op?(inst.op) }
+      # The three whitelists above, and PURE_OPS, as lookup tables. The arrays
+      # are the documentation — one line per op, in reading order, which is how
+      # each of them is read and argued about — and these are what the scans ask
+      # once per instruction.
+      PURE = PURE_OPS.to_h { |op| [op, true] }.freeze
+      PRODUCERS = PRODUCER_OPS.to_h { |op| [op, true] }.freeze
+      CONSUMERS = CONSUMER_OPS.to_h { |op| [op, true] }.freeze
 
-        reads = read_counts(insts)
-        writes = write_counts(insts)
-        transient = Set.new
-        insts.each_with_index do |inst, index|
+      # Which virtual registers a backend may leave in a register instead of
+      # writing out, as an array indexed by register number holding true for a
+      # transient and nil for everything else — the form the backends ask on
+      # every store they emit. `param_count` names the leading slots the
+      # prologue fills; `reads` and `writes` are #census of this very list.
+      def transient_flags(insts, param_count, reads, writes, vreg_count = 0)
+        flags = Array.new(vreg_count)
+        index = 0
+        size = insts.size
+        while index < size
+          inst = insts[index]
+          index += 1
           vreg = inst.dst
           next if vreg.nil? || vreg < param_count
           next unless reads[vreg] == 1 && writes[vreg] == 1
-          next unless PRODUCER_OPS.include?(inst.op)
+          next unless PRODUCERS.key?(inst.op)
 
-          reader = insts[index + 1]
-          next unless reader && CONSUMER_OPS.include?(reader.op)
-          next unless operand_vregs(reader).include?(vreg)
+          reader = insts[index]
+          next unless reader && CONSUMERS.key?(reader.op)
+          next unless reads_vreg?(reader, vreg)
           next unless vector_result_width(inst) == vector_operand_width(reader, vreg)
 
-          transient << vreg
+          flags[vreg] = true
+        end
+        flags
+      end
+
+      # The same answer as a set of register numbers, for a caller that has no
+      # census in hand and wants to read the result rather than index it.
+      def transient_vregs(insts, param_count)
+        reads, writes = census(insts)
+        return Set.new if reads.nil?
+
+        transient = Set.new
+        transient_flags(insts, param_count, reads, writes).each_with_index do |flag, vreg|
+          transient << vreg if flag
         end
         transient
       end
@@ -384,15 +520,49 @@ module Rubycc
       # which can make the instruction that produced *those* values dead in
       # turn (a fused subscript's element-size constant is reached in one round,
       # the sign extension feeding a discarded "i++" in two).
-      def drop_dead_results(insts)
+      #
+      # Each round subtracts the reads it drops as it drops them rather than
+      # counting the whole list again, which makes the passes over the list a
+      # function of what is actually dead instead of of the depth of the chain.
+      # Applying a subtraction inside the round it was made in can only bring a
+      # removal forward from the next round to this one, never add or lose one:
+      # an instruction with no readers keeps having none as more instructions
+      # go, so the process removes exactly the instructions no chain of readers
+      # reaches, whatever order it visits them in.
+      #
+      # `orphaned` is what ends the loop one round earlier than "a round that
+      # dropped nothing" would: an instruction can only have *become* dead
+      # through a subtraction that took one of its readers' counts to zero, so a
+      # round in which no count reached zero has left nothing behind for the
+      # next one to find. The commonest round of all is exactly that shape — the
+      # element-size :const a fused subscript orphans reads nothing itself — so
+      # the confirming pass over the whole list usually goes.
+      def drop_dead_results(insts, reads, writes)
         loop do
-          reads = read_counts(insts)
-          kept = insts.reject do |inst|
-            PURE_OPS.include?(inst.op) && !inst.dst.nil? && reads[inst.dst].zero?
+          kept = nil
+          orphaned = false
+          index = 0
+          size = insts.size
+          while index < size
+            inst = insts[index]
+            dst = inst.dst
+            if !dst.nil? && (reads[dst] || 0).zero? && PURE.key?(inst.op)
+              kept ||= insts[0, index]
+              each_operand_vreg(inst) do |vreg|
+                count = reads[vreg] - 1
+                reads[vreg] = count
+                orphaned = true if count.zero?
+              end
+              writes[dst] -= 1
+            elsif kept
+              kept << inst
+            end
+            index += 1
           end
-          return insts if kept.size == insts.size
+          return insts if kept.nil?
 
           insts = kept
+          return insts unless orphaned
         end
       end
     end
