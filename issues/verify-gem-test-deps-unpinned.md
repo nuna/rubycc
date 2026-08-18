@@ -1,11 +1,11 @@
 ---
-status: open
+status: in-progress
 kind: gap
 opened: 2026-08-15
 closed:
-branch:
+branch: verify-gem-test-deps-unpinned
 pr:
-steps: []
+steps: [verify-gem-test-deps-unpinned-1]
 ---
 
 # レシピのテスト依存の固定が、共有 GEM_HOME 越しに他の gem を壊す
@@ -79,6 +79,33 @@ Error: test_ractor(TestNKF): NoMethodError: undefined method 'value' for an inst
    (**コンパイラは無関係**)
 5. 版を 1.0.5 に落としているのは `racc` のレシピの `test_dep_versions` と特定
 
+### 2026-08-19(実装 — `verify-gem-test-deps-unpinned-1`)
+
+**各 gem の実行直前に、その gem が使うべき版を入れ直す**形にした。前の gem が何を
+残していても上書きされ、rubycc 側と対照側が同じ版を使う。既定版は
+`DEFAULT_TEST_DEP_VERSIONS`(`test-unit-ruby-core` 1.0.15 / `test-unit` 3.7.8)に
+1 か所でまとめ、レシピの `test_dep_versions` がそれを上書きする。
+
 ## 決着
 
-(未着手)
+**順序に依存しなくなった**(2026-08-19)。
+
+`test-unit-ruby-core` の 1.0.5 と 1.0.15 が**両方キャッシュに残っている**状態
+(問題が再現しやすい構成)で 3 通りの順序を実行した:
+
+| 順序 | racc | date | etc | nkf | psych |
+|---|---|---|---|---|---|
+| `racc` 先頭 | PASS | PASS | PASS | PASS | PASS |
+| `racc` 末尾 | PASS | PASS | PASS | PASS | PASS |
+| 直前の実行が 1.0.5 を残した状態から再度 | PASS | PASS | PASS | PASS | PASS |
+
+修正前は 2 番目の順序で date / etc / nkf / psych が FAIL していた。
+`rake test` は 3287 runs / 0 failures。
+
+**ホストの Ruby が上がったときの直し方**を定数のコメントに書いた — 失敗したら該当 gem の
+最新版でこのホストの Ruby に対して測り直し、この定数を更新する。**個別レシピを
+特例化しない**(それが今回の原因だったため)。
+
+**残した判断**: `--json` エビデンスに記録するのは、いまも**レシピが明示した pin だけ**で、
+既定版込みの「実際に使われた版」ではない。台帳の証拠を自己記述的にするなら後者が
+望ましいが、本 issue の範囲外なので変えていない。

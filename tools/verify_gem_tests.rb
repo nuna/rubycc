@@ -115,6 +115,29 @@ CLEARED_ENV = {
   "BUNDLER_SETUP" => nil, "RUBYGEMS_GEMDEPS" => nil
 }.freeze
 
+# Versions used for a test_dep a recipe pulls in without pinning it via
+# test_dep_versions. The scratch GEM_HOME is shared across every gem in a run
+# (see "--- scratch GEM_HOME ---" below), so without an explicit version here
+# too, whichever recipe happens to run first decides what every later recipe
+# gets -- and a recipe that *does* pin (racc's test-unit-ruby-core => "1.0.5",
+# for its Gemfile's pin) then leaks that pin into gems that never asked for it.
+# Measured 2026-08-15 (issues/verify-gem-test-deps-unpinned.md): with racc's
+# 1.0.5 left behind, date/etc/nkf/psych's suites fail in test-unit-ruby-core's
+# own core_assertions.rb#assert_ractor, not in the gem under test -- it calls
+# Ractor#value, which only exists from Ruby 3.5 -- while this host runs 3.4.5.
+#
+# 1.0.15 / 3.7.8 is the combination measured to pass date/etc/nkf/psych's
+# suites on this host (Ruby 3.4.5, 2026-08-15). If the host Ruby is upgraded
+# and a default here starts failing the same way (a test-unit-ruby-core
+# helper method that version does not have yet), re-measure the newest
+# release of the failing gem against this host's Ruby and update the
+# version here -- do not special-case the affected recipes' test_deps
+# instead, or this constant stops being the single place a default lives.
+DEFAULT_TEST_DEP_VERSIONS = {
+  "test-unit-ruby-core" => "1.0.15",
+  "test-unit" => "3.7.8"
+}.freeze
+
 # --- recipes ----------------------------------------------------------------
 #
 # There is no universal way to run "a gem's own test suite": the load paths, the
@@ -181,7 +204,11 @@ CLEARED_ENV = {
 #                 dragged through the compiler under test.
 #   test_dep_versions  exact versions for test_deps whose upstream suite has a
 #                 compatibility pin; these are installed in preference to any
-#                 incompatible version already cached in the scratch GEM_HOME.
+#                 incompatible version already cached in the scratch GEM_HOME,
+#                 and override DEFAULT_TEST_DEP_VERSIONS for the deps they
+#                 name. A test_dep with no entry here and none in
+#                 DEFAULT_TEST_DEP_VERSIONS floats to whatever version is
+#                 already cached or the newest release, same as before.
 #   force_ruby_platform  passes `--platform ruby` to `gem install`, for a gem
 #                 that also publishes precompiled native-platform gems
 #                 RubyGems would otherwise prefer over the source one (see
@@ -2217,7 +2244,7 @@ def verify_gem(name, recipe)
 
   result[:build_state] = :pass
 
-  test_dep_versions = recipe.fetch(:test_dep_versions, {})
+  test_dep_versions = DEFAULT_TEST_DEP_VERSIONS.merge(recipe.fetch(:test_dep_versions, {}))
   Array(recipe[:test_deps]).each { |dep| ensure_test_dep(dep, test_dep_versions[dep]) }
   extra_load_paths = Array(recipe[:dep_load_paths]).map { |dep| dep_lib_dir(dep) }
 
