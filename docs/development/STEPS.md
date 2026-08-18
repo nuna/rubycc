@@ -10733,6 +10733,26 @@ gcc 14 は `-Wimplicit-int` / `-Wimplicit-function-declaration` /
 (ツール不足で静かに skip・環境由来の stderr 雑音・対照の版差)。
 `FILES` を絞った運用だけを試していたら、467 件の skip は見えなかった。
 
+## qemu-aarch64-binfmt-flag-1 — Docker が arm64 を起動できるかを先に測る(M4 開発経路)
+
+`rake test:qemu_aarch64` は、arm64 の受入れイメージを build してからテストを走らせる。
+しかし x86-64 の Docker ホストで binfmt の interpreter がコンテナの mount namespace
+から見えないと、build または起動時に `exec format error` だけを残して止まる。
+**その失敗をイメージ build の前に、同じ基底イメージの `/bin/true` を実行する probe で
+確かめる**ことにした。判定の正は Docker クライアントの `/proc` ではなく Docker
+デーモン上の実行結果である。Docker Desktop やリモートデーモンでも、実際に使う実行経路
+を測れるからである。native AArch64 のデーモンは probe を省略する。
+
+probe が interpreter 不在や実行形式の失敗を返した場合は、F フラグ付き binfmt の再登録
+または qemu の bind-mount を案内して終了する。ホストの binfmt を自動で変更したり、
+特権付きの再登録を実行したりはしない — それは利用者の環境を変更する操作であり、
+Docker の接続先によって手順も異なるためである。その他の Docker エラーは binfmt と
+決めつけず、元の出力を診断に残す。
+
+この preflight は `tools/qemu_aarch64_preflight.rb` に置き、gem の実行時コードには含めない。
+native デーモン、probe 成功、binfmt 由来の失敗、一般 Docker 失敗を単体テストで固定し、
+このホストではイメージ build より前に案内付きで終了することを確認した。
+
 ---
 
 ## m4-aarch64-acceptance-2 — musl の aarch64 を初めて走らせた(M4 受け入れ)
@@ -11703,6 +11723,275 @@ mysql2 は docker コンテナ `rubycc-mariadb` を要求し、停止してい�
 issue は **DESIGN N2 の達成をもって閉じ**、残差は
 `issues/promoted-register-addressing.md` へ申し送った。**閉じる判断そのものより、
 「条件が指す分母を測ったか」を確かめる方が先だった**というのがこのステップの教訓である。
+
+## corpus-candidate-discovery-1 — scanner を library / CLI 境界へ分離する
+
+ARGV 解釈、HTTP 通信、sleep、出力、cache を `CorpusCandidateScan` の設定・依存注入へ移し、
+require 時の副作用をなくした。既存 rank source の位置引数、環境変数、終了 status、分類欄は
+維持した。fixture と偽 HTTP client を使うテストを追加した。
+
+## corpus-candidate-discovery-2 — timeframe source と release 選択を実装する
+
+`/api/v1/timeframe_versions.json` の UTC 期間・全 page 走査と pagination guard を追加した。
+prerelease / yanked / native-platform-only を除外し、v2 の `platform=ruby` と version 固定 fetch、
+gemspec の name / version / platform 照合を行う。API schema、重複、異常系を hermetic fixture で
+検証した。
+
+## corpus-candidate-discovery-3 — live scan で経路と運用条件を検証する
+
+対象期間 `2026-08-15T00:00:00Z` ～ `2026-08-16T00:00:00Z` の live scan は終了 status 0。
+153 version、重複排除後 114 gem、timeframe 7 page、gem fetch 109/109 成功、分類は `[1]` 8、
+`[1b]` 0、`[2]` 0、`[3]` 0、`[E]` 5、`[0]` 0、直接 API request は 121
+(timeframe 7 + v2 114) だった。候補は `atomic-ruby`, `classifier`, `hx_ruby`, `ironpress`,
+`page_print`, `pgn2`, `udb`, `wreq`。初回の read-only HOME による RubyGems spec cache 失敗を
+受け、cache を `SCAN_WORK/gem_spec_cache` に固定して再実行した。これは候補経路の smoke test
+であり、corpus への正式追加や発見方法の有効性を証明するものではない。
+
+検証結果: `ruby -Itest test/test_scan_popular_gems.rb` は 11 runs / 46 assertions、
+`ruby -Itest -Ilib test/test_issue_docs.rb` は 5 / 332、`ruby -Itest test/test_corpus_census.rb`
+は 29 / 377、`rake test` は 3232 runs / 11492 assertions / 41 skips。いずれも failures 0、
+errors 0。
+
+## corpus-candidate-artifact-1 — scan artifact の schema と provenance を固定する
+
+schema version 1 の JSON artifact、normalized input、source request / raw response SHA-256、
+raw response cache、取得 `.gem` の SHA-256 欄を追加した。absolute path、実行時刻、cache hit
+状態は artifact に入れない。保存済み response を再生する fixture と golden JSON で byte 単位の
+決定性を検証した。
+
+## corpus-candidate-artifact-2 — 静的 review 診断を Census と共有する
+
+`Corpus::Census.classify_source_files` を抽出し、scanner の C/H 数と system / gap header 集計を
+Census と共通化した。archive 内の `undeclared_native_source` と、gemspec の
+`extension_outside_census_root` を `[R]` review bucket に分離した。`[1b]` は assembly 専用の
+まま維持し、R10 gate は複製していない。
+
+## corpus-candidate-artifact-3 — source 共通 schema と再生手順を確定する
+
+popular / bestgems / timeframe の source naming fixture、SHA mismatch hard error、利用手順、
+issue / skill の review 境界を追加した。最終 targeted test は scanner 17 runs / 78 assertions、
+Census 30 / 383、issue docs 5 / 336、いずれも failures / errors 0。直前の全体 `rake test` は
+3238 runs / 11528 assertions / 41 skips / failures 0 / errors 0。artifact は正式 corpus 追加を
+行わず、後続 evaluation issue が候補源の増分価値を判定する。
+
+## corpus-candidate-evaluation-1 — 実験入力を固定し、対照 scan を収集する
+
+結果を見る前に、完了済み UTC 7 日 window 4 個と rubygems.org popular rank 1〜100、scanner revision ac9f149a55036dd3057db67d643405734a331b47、selection-only の資源境界を固定した。4 window の artifact と popular artifact を保存し、各 source request の URL / cache key / response SHA-256 を残した。raw response cache 自体は repository に入れず、同じ cache で version entry 数を再集計できるようにした。07-26 は page 9 の Net::OpenTimeout 後に retry-1、07-19 は DNS failure と retry-1 page 99 の ENETUNREACH 後に retry-2 が成功したため、失敗試行も manifest に記録した。
+
+## corpus-candidate-evaluation-2 — 増分候補を試験する
+
+selection-only の実測は 12,829 version entries / 5,647 gem occurrences / 434 pages / 163 selection errors / 5,471 新規未検査名だった。候補 status [1]、[1b]、[2]、[R] は全 window で 0。選定除外は duplicate release 5,409、prerelease 512 で、source gem / yanked の全体検証は延期した。popular 1〜100 は 100 gem、既存 corpus 8、new [1] 0、[2] 1、[R] 1、no-ext 90 だった。selection-only の uninspected name union 3,889（新規未検査 3,881）を適格候補とは数えなかった。
+
+## corpus-candidate-evaluation-3 — 発見方法の採否を決着する
+
+結果確認前に固定した順序で最大3件（DhanHQ 3.4.0、phronomy 0.19.0、security 0.2.0）を静的検査した。3件とも platform=ruby、non-yanked、archive/API SHA 一致、no-ext、C/H 0/0、bundled/gap/review 0。rubycc package の build/install は成功したが、対象 gem の C extension が無いため target build は実行しなかった。検査済みの期間固有 [1]、新規 header/gap、build 成功は 0 件である。
+
+現行 bounded route は corpus の自動・定期拡張として不採用と決着した。未検査 3,881 件がすべて純 Ruby だと推測せず、source/yanked の deferred と selection-only の限界を明記した。次の metadata prefilter または大きな事前固定静的サンプルは別 issue とし、今回の corpus / verified gem DB は変更しない。targeted test は summarizer 3 runs / 13 assertions、scanner 17 / 78、issue docs 5 / 336、いずれも failures / errors / skips 0。最終の全体 rake test は 3,242 runs / 11,549 assertions / 41 skips、failures / errors 0。
+
+## corpus-candidate-issue-close — merge済み候補発見issueを完了にする
+
+PR #60〜#62のmergeを確認し、候補発見の実装・artifact診断・増分評価の3 issueを `done` にした。
+discoveryはtimeframe sourceとlive smoke、artifactは決定的provenanceとreview分類、evaluationは
+4 windowとpopular対照による不採用判断までを完了条件とした。いずれも `test/corpus/gems.rb`、
+header、compiler、`data/verified_gems.json`を変更していない。
+
+PR #64で追加した次段階の5 issue（scan runtime、daily workflow、local inspection skill、手動
+validation workflow、pilot）は未実装のため `open` に残した。各issueへ3タスクの実装計画と依存順を
+追記し、次の実装PRで1 issue = 1 PRとして着手できる状態にした。今回のissue lifecycle更新と
+計画追記はRuby 3.3.12のissue docs testで確認する。
+
+## corpus-candidate-scan-runtime-1〜3 — scanの計測とarchive取得を実装する
+
+決定的なreview artifactに実行時刻・絶対path・cache hit・worker数を混ぜないため、runtime
+evidenceはschema version 1のrun summaryへ分離した。summaryはpagination、release正規化、v2
+metadata、archive取得、unpack/static、artifact書き出しを計測し、nestedなv2計測は親のrelease
+正規化時間から差し引く。source/archive request数、unique URL、byte数、cache hit、archiveの
+success/retry/failureも記録し、失敗したsource URLもprovenanceから落とさない。
+
+timeframeのv2 responseに固定HTTPS `gem_uri`を必須化し、archiveは直接取得して`.part`へ書き込み、
+SHA-256一致後に完成ファイルへatomic renameする。完了済みarchiveは同じname/versionとSHAが一致
+すると再利用し、途中失敗で`.part`をcache hitとは扱わない。既存rank scanは固定URIを持たない
+ため、互換fallbackとして`Corpus::Census.fetch_gem`を残す。timeframe direct fetchのworker数は
+既定2、許容1〜4に制限し、HTTP 408/429/5xxとopen/read timeoutにRetry-After優先の指数backoffを
+適用した。
+
+malformed metadata、SHA不一致、partial、途中再開、429、timeout、worker上限、direct/fallback
+の同一fixture分類をhermetic testで固定した。Ruby 3.3.12のscanner targeted testは25 runs /
+128 assertions、全体`rake test`は3,250 runs / 11,487 assertions / 41 skips、failures/errors 0。
+
+固定UTC window `2026-08-15T00:00:00Z`〜`2026-08-16T00:00:00Z`を専用空cacheで実測した変更後の
+wall timeは399.407秒(6分39.4秒)。入力は826 version entries、v2 candidates 765、archive
+262件(113,236,992 bytes)、work領域424 MB(unpack込み)で、archive success/retry/failureは
+262/1/0だった。フェーズはpagination 1.472秒、release正規化0.035秒、v2 metadata329.371秒、
+archive57.246秒、unpack/static11.227秒、artifact書き出し0.023秒。変更前の同window記録は
+約23分強・109 archive・約50 MB archive・約83 MB workだったが、live APIの内容が153 entries /
+109 archiveから826 entries / 262 archiveへ変動しているため、厳密なA/B速度比ではなく、15分
+目標とフェーズ別の再現可能な証拠として扱う。日次workflow、gem build/test、corpus正式追加は
+このissueでは行わない。
+
+## corpus-candidate-local-inspection-skill-1〜3 — 候補gemを一件ずつ安全に検査するskillを追加する
+
+正式なcorpus追加までを扱う`corpus-expansion`とは分離して、候補gemのname/version/platform/SHAと
+元artifactを固定し、archive identity、gemspec、R10、未宣言native source、extension root、header
+差分を静的に確認するrepo-local `inspect-corpus-candidate` skillを追加した。Ruby 3.3系はrbenvから
+利用可能なpatch versionを選び、system Rubyへfallbackしない。archive、unpack tree、log、reportは
+候補ごとの一時directoryまたは`docs/development/corpus-candidate-evaluation/artifacts/`へ隔離し、
+後者はignore対象とした。
+
+build/loadは明示依頼かつ静的停止条件が無い場合だけ隔離GEM_HOMEで行い、純Ruby fallbackを成功と
+扱わない。upstream testは既存recipeがある候補だけに限定し、skillは`verified`や正式corpus追加を
+自動で宣言しない。scannerのC/C++一覧だけでは不十分なため、extension root以下のGo/Rust等のnative
+sourceと`go.mod`/`Cargo.toml`等のbuild manifestも追加棚卸しし、未知のbuild形態は`review`で停止する。
+
+固定artifactの`funnel_http 0.5.12`を使ったfresh-context forward testでは、C/Hに加えてGo/cgoと
+`go.mod`/`go.sum`を検出し、build/loadを実行せず停止した。追加の実証では、同候補を`review`で停止、
+`actionagent 1.2.1`を`no_ext`で停止、意図的なSHA不一致をunpack前に拒否できた。いずれも候補gemの
+コードは実行していない。Ruby 3.3.12のskill validator、issue docs(5 runs / 471 assertions)、
+doc links(3 runs / 41 assertions)、PR #69のRuby 3.3/4.0 CIはすべて成功した。
+
+PR #69をmerge commit `8e3a14be23b6e502663b6f286d9227606faa6c09`としてmasterへ取り込んだ。skillは
+候補発見後の安全な比較可能検査を実証したが、未知のGo/cgo候補を自動でcorpusへ追加するものではなく、
+別途recipeと人手reviewが必要な状態で停止する。
+
+## corpus-candidate-validation-workflow-1〜3 — 任意コード実行を手動workflowに隔離する
+
+選択済みcorpus候補を1件ずつ検証する`workflow_dispatch`専用workflowと、検証を担う
+`tools/verify_corpus_candidate.rb`を追加した。archiveを再取得してgem名・version・platform・
+SHA-256を再照合し、build/load smoke、host cc control、review済みrecipeに限定したupstream testを
+別経路で実行する。結果は候補のidentityとstatusを持つ構造化artifactとして14日だけ保存し、
+corpusや`data/verified_gems.json`は変更しない。
+
+日次の静的scan artifactをそのまま実行入力として信頼せず、実行直前にarchiveのidentityを確認する。
+不一致や不正なdispatch入力は候補のコードを実行する前に停止する。`contents: read`、credentialを
+残さないcheckout、secret/cacheなし、候補1件1job、build/load 30分・upstream込み90分のtimeoutに
+限定し、任意コード実行の範囲と保持物を絞った。upstream testはreview済みrecipeに限定し、任意URL・
+任意command・入力scriptを受け付けない。
+
+build/loadの成功、sanity checkの成功、upstream testの結果を別statusとして扱い、成功をそのまま
+`verified`やcorpus追加と解釈しない。input拒否、SHA不一致、recipeなし、環境不足、timeout、
+infrastructure failureなどの停止理由を分け、安全な既知gemとfixtureで境界を検証した。
+`test_corpus_candidate_validation_workflow.rb`、`test_verify_corpus_candidate.rb`、`test_issue_docs.rb`、
+`test_doc_links.rb`を実行し、Ruby 3.3/4.0のCI run 31935030354も成功した。`json 2.21.1`は固定SHAで
+`build_load_pass`、`actionagent 1.2.1`は`no_ext`、`funnel_http 0.5.12`はGo/cgoの`review_required`
+となることを確認した。
+
+手動dispatchとreview済みrecipeを要求するため候補の一括検証や完全自動化はできないが、日次workflowへ
+任意コード実行を持ち込まず、候補ごとに停止理由と再現結果をレビューできる境界を優先した。
+
+## corpus-candidate-pilot-v2-1〜3 — 日次フル静的scanの収率と運用条件を実測する
+
+結果を見る前に、2026-08-02〜08-15の連続UTC 1日window 14個、scanner revision
+`66a20d76314e93f342f3618da25e3bcaf62ee3be`、popular rank 1〜100 control、候補priority、欠測・
+再実行・28日延長条件をmanifestへ固定した。先行runではrelease entry数と作業領域が不足していた
+ため、計測項目を追加したrevisionで14日を同じintervalへ順次replayし、14/14成功・欠測0・timeout0を
+確認した。Actionsのconcurrency groupがpending runを1件に制限するため、並列dispatchせず完了確認後に
+次のwindowを起動した。
+
+正式14日分は6,858 release entries、日別unique gem occurrences 4,494、251 source pages、
+3,786 archive inspections、archive success/retry/failure 3,786/0/0、取得4,107,296,256 bytes。
+classificationはno-ext 3,419、candidate 258、error 709、review/needs_review 79、excluded 29。
+既存corpusとpopular上位100を除くcandidateは251 occurrences / 200 unique names、日跨ぎ重複率
+20.3187%。既存census matrixにないcandidate new system spellingは3、new gap spellingは88、
+既存gemと同一header集合は204 occurrenceだった。build shapeはsingle-extconf 239、multi-extconf 6、
+cargo 2、rake 2、mkrf entrypoint 2で、popular controlの新規candidateは0だった。
+
+日次wall time p50は58.803327秒、p95は99.579438秒、最大作業領域は2,030,391,850 bytes
+(約1.89 GiB)で、15分目標・timeout 0・window final failure 0/14を満たした。ただし8/15にv2
+metadata 404が503件あり、record error率は709/4,494 (15.7766%)。window final failure率とは
+別のsource data-quality指標としてmetricsへ残した。raw response、gem archive、unpack tree、logは
+ignored artifactsに置き、review可能なmanifest、run registry、metrics、reportだけをcommitした。
+
+固定priorityでrbtrace 0.5.5、graphql-c_parser 1.1.4、roaring 0.4.1を選び、repo-local
+`inspect-corpus-candidate` static preflightと、同一name/version/platform/SHAの手動Actions
+`build_load`を実施した。3件ともidentityは一致したが、rbtraceはbundled msgpack configure/install、
+graphql-c_parserはload sanity、roaringは`#warning`のpreprocessor診断で停止した。build/load passは
+0件、upstream recipeは未実行、人手review時間は未計時。roaringの診断は再現可能な新規rubycc gapで、
+発見経路の増分価値は確認できたが、source errorとreview負荷が未解決のため結論は**条件付き採用**とした。
+28日延長は候補0条件に該当しないため行わず、corpus/header/compiler/verified databaseは変更していない。
+
+集計と候補検査の詳細は[`pilot-v2-review.md`](corpus-candidate-evaluation/pilot-v2-review.md)、
+metricsは[`pilot-v2-metrics.json`](corpus-candidate-evaluation/pilot-v2-metrics.json)、候補別の
+固定identityとActions結果は[`pilot-v2-inspections.json`](corpus-candidate-evaluation/pilot-v2-inspections.json)。
+source error分離は[`issues/corpus-candidate-pilot-v2-source-errors.md`](../../issues/corpus-candidate-pilot-v2-source-errors.md)、
+load sanity recipeは[`issues/corpus-candidate-pilot-v2-load-sanity.md`](../../issues/corpus-candidate-pilot-v2-load-sanity.md)
+へ引き継いだ。validatorの`ext` root誤判定は`07467d2`/`740cafc`で修正した。
+
+## corpus-candidate-pilot-v2-source-errors-1〜2 — source errorを候補分母から分離する
+
+`stale_release`、`v2_metadata_404`、`rate_limited`、`network_failure`、`archive_sha_mismatch`を
+候補・`no_ext`・通常の処理errorとは別statusに分類し、artifactには発生stage、HTTP status、reasonを、
+run summaryにはkind/stage別件数を保存するようにした。summarizerはsource error rateとwindow failure
+rateを別分母で計算し、失敗または欠測windowを成功分母へ混ぜない。fixture付きscanner testは28 runs /
+144 assertions、summary testは4 runs / 25 assertionsでfailures/errors 0。
+
+scanner revision `5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48`で2026-08-02〜08-15の14日を再実行した結果、
+14/14 window成功、window failure 0、timeout 0、wall-time p95 129.751秒だった。4,494 recordsのうち
+source errorは575件 (12.7948%、全件`v2_metadata_404`)、通常の処理errorは134件 (2.9818%)で、旧来の
+`error` 709件 (15.7766%)を再現可能に分離できた。8/15に501件が集中したため、upstream metadata
+availabilityは別途監視対象とした。
+
+固定corpus/popular control後のeligible candidateは251 occurrences / 200 unique names、選定は
+`rbtrace`、`graphql-c_parser`、`roaring`の3件。source error分離後も候補プールが残ることを確認したが、
+候補の正式追加・verified database更新は行っていない。replayのraw artifactは
+`docs/development/corpus-candidate-evaluation/artifacts/`以下に限定し、manifest、run registry、metrics、
+reportのみを追跡対象とした。2日窓の試行とキャンセルrunは日別再現性を優先して集計から除外した。
+
+## corpus-candidate-pilot-v2-load-sanity-1〜2 — documented load entrypointを固定し、host/rubyccを比較する
+
+`graphql-c_parser 1.1.4`の固定archive(SHA-256
+`8d3bf769ae935373ada877fe003036892b45be98c2fbcc6731dd82af2c3e0656`)に対し、任意のrequireや
+commandを受け付けないdata-only recipe schemaを追加した。recipeは`graphql/c_parser`をrequireし、
+`graphql` 2.6.8を依存gemとして隔離GEM_HOMEへ導入したうえで、`GraphQL::CParser.parse`とdefault
+parserの一致をsanityとして確認する。recipe未登録の候補は`recipe_missing`で停止する。
+
+候補検査器はhost controlとrubyccを別compiler・別作業領域で実行し、native extension install、
+rubycc build evidence、documented load、純Ruby fallbackを混同しないstatusへ分離した。ローカルの
+Ruby 3.3.12ではhost/rubyccとも`documented_load_pass`、GitHub ActionsのRuby 4.0.6でも同じ結果と
+なった。Actions run 31950250084の比較結果は`pass`で、rubycc側のbuild evidenceも`pass`だった。
+以前のgeneric `.so` requireでの`GraphQL::Language`未定義は、candidateのbuild失敗ではなく、
+documented entrypointを使わない検査器側の誤判定と切り分けられた。
+
+検査結果の要約は[`pilot-v2-load-sanity.md`](corpus-candidate-evaluation/pilot-v2-load-sanity.md)に記録し、
+raw log/JSONは既存のignored artifact領域へ保存した。このissueでは正式corpus、headers、compiler、
+`data/verified_gems.json`を変更していない。
+
+## corpus-candidate-pilot-v2-graphql-c-parser-1〜2 — documented entrypointでgeneric load失敗を切り分ける
+
+固定archive `graphql-c_parser 1.1.4` (SHA-256
+`8d3bf769ae935373ada877fe003036892b45be98c2fbcc6731dd82af2c3e0656`)を、既存local skillのstatic
+artifactとActions preflightで再確認した。static statusは`candidate`、extension rootは
+`ext/graphql_c_parser_ext`、new system headerは`alloca.h`、new gap headerは`libintl.h`と`malloc.h`
+だった。
+
+PR #75で固定recipeを追加し、Ruby wrapperのdocumented entrypoint `graphql/c_parser`と依存
+`graphql 2.6.8`を隔離GEM_HOMEへ導入して、`GraphQL::CParser.parse("{ __typename }")`およびdefault
+parserの一致をsanityにした。host/rubyccを別環境で比較し、Ruby 3.3.12のローカル検証とActions run
+31950250084 (Ruby 4.0.6)で、双方`documented_load_pass`、rubycc側のbuild evidence`pass`、比較結果
+`pass`を得た。旧generic `.so` requireの`GraphQL::Language` NameErrorは、candidateのbuild失敗ではなく
+documented entrypointを使わない検査器の誤判定と切り分けられた。
+
+review済みupstream recipeは無かったため、任意test commandへfallbackせずupstream testは未実行とした。
+候補の正式corpus追加、header/compiler、`data/verified_gems.json`更新は行っていない。検査結果の詳細は
+[`pilot-v2-load-sanity.md`](corpus-candidate-evaluation/pilot-v2-load-sanity.md)に記録し、issueを完了にした。
+
+## corpus-candidate-pilot-v2-rbtrace-1〜2 — bundled msgpack failureをrmake gapへ分類する
+
+固定archive `rbtrace 0.5.5` (SHA-256
+`ed0200ffeac4251f3464412e52f36cd64c473673c2739129e0b48c568672fe68`)を、repo-local
+`inspect-corpus-candidate` skillとcandidate verifierのpreflightで再確認した。Ruby 3.3.12の隔離
+GEM_HOMEではhost controlが`build_load_pass`、native extension installが`pass`、shared object loadが
+`all_shared_objects_loaded`だった。同じarchiveのrubycc実行は、bundled msgpackのconfigureとC
+compile/linkまでは進んだが、Automake/libtoolの`install-libLTLIBRARIES` recipeでrmakeが
+`for`/`if`/`done`/brace groupとshell variableを扱えず`build_failed` (exit 1)になった。
+
+GitHub Actions [run 31951987733](https://github.com/nuna/rubycc/actions/runs/31951987733)でも、
+ubuntu-24.04/Ruby 4.0.6のpreflightは固定identity一致・`candidate`、build/loadは同じ`make install`
+段階で`build_failed`だった。candidate archiveを使わない最小Executor実行でも同じ構文エラーを再現
+できたため、分類は`rubycc_gap`（rmake build-executor gap）とした。review済みupstream recipeは無く、
+`recipe_missing`としてupstream test/documented loadは実行していない。候補はcorpusへ追加せず、
+rmakeの対応は[`rmake-automake-shell-recipes.md`](../../issues/rmake-automake-shell-recipes.md)へ分離した。
+詳細は[`pilot-v2-rbtrace-revalidation.md`](corpus-candidate-evaluation/pilot-v2-rbtrace-revalidation.md)。
+corpus、header、compiler、`data/verified_gems.json`は変更していない。
 
 ## optimization-pass-throughput-1 — 生成コードの速度を、コンパイルの速度で買っていた
 

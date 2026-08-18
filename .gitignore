@@ -4,3 +4,7 @@ tmp/
 *.o
 *.so
 Gemfile.lock
+
+# Network-dependent corpus-candidate scan work. Commit the manifest, metrics,
+# and conclusions beside this directory, not fetched responses or gem archives.
+docs/development/corpus-candidate-evaluation/artifacts/

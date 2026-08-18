@@ -88,16 +88,112 @@ Fetch failures skip that gem (with the reason recorded) without stopping the run
 
 ```sh
 tools/scan_popular_gems.rb [first_page] [last_page]   # デフォルト 11 20
+tools/scan_popular_gems.rb --source timeframe \
+  --from 2026-08-15T00:00:00Z --to 2026-08-16T00:00:00Z
 ```
 
 1 ページ = 10 ランク(rubygems.org 側のページングに合わせている)。例えば
 `tools/scan_popular_gems.rb 1 10` はランク 1〜100 を走査する。
 
+`timeframe` は rubygems.org の `/api/v1/timeframe_versions.json` を使い、指定した UTC の
+期間に作成された version を全 page 取得する。`from` / `to` は ISO 8601 で、期間は最大 7 日。
+同じ gem は prerelease と yanked を除いて 1 version に畳み、v2 version API で
+`platform=ruby` の source gem と固定 `gem_uri` を確認してから、version 固定で検査する。
+archive は `gem_uri` から直接取得し、v2 の SHA-256 と一致するまで展開しない。source gem を
+選べない場合は `[E]` に理由を出し、候補として黙って捨てない。候補が `[1]` に出ても、
+`test/corpus/gems.rb` への正式追加は手動で行う。
+
+JSON review artifact を保存する場合は `--artifact` または `SCAN_ARTIFACT` を指定する。
+実行時間やcache hitを保存する場合は `--summary` または `SCAN_SUMMARY` も指定する。
+同じ `SCAN_WORK` を使う再実行では `raw_responses/` の保存済み API response と `.gem` cache を
+再利用できる。archiveの取得途中で失敗した場合は `.part` を残さず、完了済みの
+`name-version.gem` はSHA一致時だけ再利用する。timeframe scanのarchive取得は既定2 worker、
+`--fetch-concurrency` / `SCAN_FETCH_CONCURRENCY` で1〜4に制限できる(4を超える値は拒否する)。
+rank scanは固定 `gem_uri` を持たないため、互換fallbackとして既存の `gem fetch` 経路を使う。
+
+決定的なreview artifactと実行時のrun summaryは別ファイルである。artifactには schema version、
+正規化した入力、request / response SHA-256、`.gem` SHA-256、選択理由、Census の status と
+header 分類が入り、時刻・絶対path・cache hit状態・worker数は入らないため、保存済み入力の
+再生結果をbyte単位で比較できる。summaryには `phases_seconds` (pagination、release選択、
+v2 metadata、archive取得、unpack/static、artifact書き出し)、`requests` (source/archive別の
+attempts、unique URL、cache hit、byte数)、`archives` (success/retry/failure) と結果件数が入る。
+フェーズはnestedな計測を親から差し引くため、wall timeを二重計上しない。
+
+```sh
+SCAN_WORK=/tmp/rubycc_scan \
+tools/scan_popular_gems.rb --source timeframe \
+  --from 2026-08-15T00:00:00Z --to 2026-08-16T00:00:00Z \
+  --artifact /tmp/rubycc_scan/timeframe.json \
+  --summary /tmp/rubycc_scan/timeframe-summary.json \
+  --fetch-concurrency 2
+```
+
+`[R]` は未宣言 native source または `ext/` 外 extension など、人手 review が必要で通常の
+`[1]` 候補にしていない記録である。`[1b]` は従来どおり assembly 専用。artifact は調査材料
+であり、`test/corpus/gems.rb` や `data/verified_gems.json` を自動更新しない。
+
+timeframe の source 側で release または archive のidentityを確定できない場合は、通常の `[E]` と
+候補を混ぜず、artifactの `corpus.status` に `stale_release`、`v2_metadata_404`、`rate_limited`、
+`network_failure`、`archive_sha_mismatch` のいずれかを記録する。これらは候補・`no_ext`・成功へ
+変換しない。run summaryにはsource errorのkind/stage別件数を記録し、window自体の失敗は集計側で
+source errorと別のfailureとして扱う。
+
 環境変数:
 
 - `SCAN_WORK` — ダウンロードした `.gem` / API レスポンスのキャッシュ先(既定値は tmpdir 配下)。
-- `SCAN_SOURCE` — `auto`(既定)/ `rubygems` / `bestgems`。ランキングの取得元を選ぶ。
+- RubyGems の spec cache も `SCAN_WORK/gem_spec_cache` に置くため、HOME が read-only でも
+  writable な `SCAN_WORK` を指定すれば実行できる。
+- `SCAN_SOURCE` — `auto`(既定)/ `rubygems` / `bestgems` / `timeframe`。ランキングまたは期間sourceを選ぶ。
+- `SCAN_FROM` / `SCAN_TO` — `timeframe`を環境変数で実行する場合のISO 8601 UTC境界。
+- `SCAN_ARTIFACT` — review artifact の出力先。指定時は API response を `SCAN_WORK/raw_responses/`
+  に cache する。
+- `SCAN_SUMMARY` — 実行時summaryの出力先。summaryは時間・cache・byte数を含むため、決定的artifactとは
+  別に保存する。
+- `SCAN_FETCH_CONCURRENCY` — timeframe archive worker数(既定 `2`、許容範囲 `1..4`)。
 - `SCAN_VERBOSE` — `1` を設定すると、C 拡張を持たない gem も `[0]` として一覧表示する。
+
+### 日次 GitHub Actions
+
+`.github/workflows/corpus-candidate-daily.yml` は通常の push / pull request CI と独立して、毎日
+`01:17 UTC` に直前の完了済みUTC日を scan する。実行対象はこのscannerのmetadata取得、archive取得、
+unpack、静的分類だけで、`test/corpus/gems.rb`は変更しない。scheduleの欠測を補うときは、同じworkflowを
+manual dispatchし、次のように対象日の半開区間を `from` / `to` へそのまま指定する。
+
+```sh
+gh workflow run corpus-candidate-daily.yml \
+  --ref master \
+  -f from=2026-08-15T00:00:00Z \
+  -f to=2026-08-16T00:00:00Z
+```
+
+workflowは同時に1つだけ走り、進行中のscanを後発runがキャンセルしない。artifactには interval と
+scanner commit を含む名前で、`classification.json`、`run-summary.json`、末尾200行の`scan.log`
+だけを35日保存する。`.gem`、unpack tree、raw response cacheはrunnerの一時領域に残るだけで、artifact
+やrepositoryへは保存しない。同じintervalを別SHAで再実行した場合はartifact名とclassificationの
+normalized input / corpus classificationを比較し、scanner変更と分類差を分けて確認する。
+
+### 手動候補validation GitHub Actions
+
+`.github/workflows/corpus-candidate-validation.yml` は `workflow_dispatch` 専用で、日次scanや通常の
+push / pull requestからは起動しない。候補の `name`、`version`、`platform`、RubyGems archiveの
+SHA-256、`mode=build_load|upstream`を指定する。
+
+```sh
+gh workflow run corpus-candidate-validation.yml \
+  --ref master \
+  -f name=json \
+  -f version=2.21.1 \
+  -f platform=ruby \
+  -f sha256=13a43df75d95641443f5702dff350f237164a9d811ff0f2c2800d4d980220583 \
+  -f mode=build_load
+```
+
+workflowは入力形式を検証してから固定URLのarchiveを再取得し、SHAとgemspecのname/version/platformを
+照合する。不一致、`no_ext`、未宣言native source、未知のnative build形態ではbuild/loadへ進まない。
+`build_load`は単一候補を隔離GEM_HOMEで実行し、rubycc buildの証拠と全shared objectのloadを確認する。
+`upstream`はそのjobとは別に、`tools/verify_gem_tests.rb`のreview済みrecipeをhost controlとrubyccで
+実行する。`--update`、任意URL、dispatch入力のtest command、cache保存は使わず、`data/verified_gems.json`
+とcorpusは変更しない。結果JSONと短いlogだけを14日間artifactへ保存する。
 
 ### ランキングソース
 

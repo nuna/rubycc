@@ -839,6 +839,16 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   **完了(Step 143)**: `tools/scan_popular_gems.rb`。R10 の判定は `census.rb` に委譲し
   再実装しない。R10 が原理的に見ない**アセンブラ要否**はスキャナ側で 2 系統
   (`.S`/`.s` 走査 + `$objs` の未対応エントリ)検査し、`[1b]` に分類する。
+- **RubyGems 更新履歴を期間 source として候補発見に使う。** **完了(corpus-candidate-discovery-3)**:
+  `tools/scan_popular_gems.rb --source timeframe` を追加し、UTC 1 日の live scan で 153 version /
+  114 gem / 109 fetch 成功 / `[1]` 8 / `[E]` 5 を実測。候補を `test/corpus/gems.rb` へ自動追加せず、
+  複数 window と既存 source の増分価値を判定する評価は後続 issue に残した。
+- **候補 scan の provenance と静的 review 診断を artifact に保存する。** **完了(corpus-candidate-artifact-3)**:
+  schema version 1 の決定的 JSON、raw response / `.gem` SHA-256、`undeclared_native_source` と
+  `extension_outside_census_root` の `[R]` 分類、Census 共通 include helper を実装した。artifact は
+  調査材料に限定し、corpus と verified gem DB は自動更新しない。候補源の増分価値の判定は
+  `corpus-candidate-evaluation` に残す。
+- ~~RubyGems timeframe 候補源の増分価値を検証する~~ 完了(corpus-candidate-evaluation-3; 不採用): 4 個の UTC 7 日 window と popular rank 1〜100 を同一 revision で比較した。timeframe は 12,829 version entries / 5,647 gem occurrences / 新規未検査 3,881、検査済みの新規 [1] は 0。固定静的サンプル3件もすべて no-ext で、新規 header/gap や build 成功を示さなかった。selection-only の source/yanked deferred を含む限界を記録し、自動・定期運用へ進めない。manifest、metrics、report は docs/development/corpus-candidate-evaluation/ に保存し、再生成可能な作業artifact、corpus、verified gem DB はcommitしない。
 - ~~`data/verified_gems.json` を手編集ではなく実走結果から生成/拡張する
   (data/README.md が当初から述べていた意図)。~~ **完了(Step 144)**:
   `tools/verify_gem_tests.rb`。`RUBYCC=1 gem install` → rubycc が使われた痕跡の確認 →

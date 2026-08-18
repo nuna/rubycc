@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "scanner_revision": "ac9f149a55036dd3057db67d643405734a331b47",
+  "timeframes": [
+    {
+      "id": "2026-08-09",
+      "from": "2026-08-09T00:00:00Z",
+      "to": "2026-08-16T00:00:00Z",
+      "artifact": "artifacts/timeframe-2026-08-09.json",
+      "version_entries": 2954,
+      "pages": 100,
+      "unique_gems": 1355,
+      "corpus": 4,
+      "candidate": 0,
+      "assembly_review": 0,
+      "r10_excluded": 0,
+      "review": 0,
+      "error": 33,
+      "uninspected_new": 1318,
+      "api_requests": 100,
+      "human_review_required": 33,
+      "selection_rejections": {
+        "duplicate_release": 1221,
+        "prerelease": 108,
+        "yanked": 0,
+        "source_gem_missing": null
+      },
+      "source_yanked_verification": "deferred"
+    },
+    {
+      "id": "2026-08-02",
+      "from": "2026-08-02T00:00:00Z",
+      "to": "2026-08-09T00:00:00Z",
+      "artifact": "artifacts/timeframe-2026-08-02.json",
+      "version_entries": 3245,
+      "pages": 110,
+      "unique_gems": 1541,
+      "corpus": 4,
+      "candidate": 0,
+      "assembly_review": 0,
+      "r10_excluded": 0,
+      "review": 0,
+      "error": 37,
+      "uninspected_new": 1500,
+      "api_requests": 110,
+      "human_review_required": 37,
+      "selection_rejections": {
+        "duplicate_release": 1238,
+        "prerelease": 102,
+        "yanked": 0,
+        "source_gem_missing": null
+      },
+      "source_yanked_verification": "deferred"
+    },
+    {
+      "id": "2026-07-26",
+      "from": "2026-07-26T00:00:00Z",
+      "to": "2026-08-02T00:00:00Z",
+      "artifact": "artifacts/timeframe-2026-07-26.json",
+      "version_entries": 3192,
+      "pages": 108,
+      "unique_gems": 1334,
+      "corpus": 4,
+      "candidate": 0,
+      "assembly_review": 0,
+      "r10_excluded": 0,
+      "review": 0,
+      "error": 25,
+      "uninspected_new": 1305,
+      "api_requests": 108,
+      "human_review_required": 25,
+      "selection_rejections": {
+        "duplicate_release": 1455,
+        "prerelease": 80,
+        "yanked": 0,
+        "source_gem_missing": null
+      },
+      "source_yanked_verification": "deferred"
+    },
+    {
+      "id": "2026-07-19",
+      "from": "2026-07-19T00:00:00Z",
+      "to": "2026-07-26T00:00:00Z",
+      "artifact": "artifacts/timeframe-2026-07-19.json",
+      "version_entries": 3438,
+      "pages": 116,
+      "unique_gems": 1417,
+      "corpus": 1,
+      "candidate": 0,
+      "assembly_review": 0,
+      "r10_excluded": 0,
+      "review": 0,
+      "error": 68,
+      "uninspected_new": 1348,
+      "api_requests": 116,
+      "human_review_required": 68,
+      "selection_rejections": {
+        "duplicate_release": 1495,
+        "prerelease": 222,
+        "yanked": 0,
+        "source_gem_missing": null
+      },
+      "source_yanked_verification": "deferred"
+    }
+  ],
+  "timeframe_total": {
+    "version_entries": 12829,
+    "pages": 434,
+    "unique_gem_occurrences": 5647,
+    "corpus": 13,
+    "candidate": 0,
+    "assembly_review": 0,
+    "r10_excluded": 0,
+    "review": 0,
+    "error": 163,
+    "uninspected_new": 5471,
+    "api_requests": 434,
+    "selection_rejections": {
+      "duplicate_release": 5409,
+      "prerelease": 512,
+      "yanked": 0,
+      "source_gem_missing": null
+    },
+    "source_yanked_verification": "deferred"
+  },
+  "name_union": {
+    "uninspected_names": 3889,
+    "existing_corpus_names_in_union": 8,
+    "new_uninspected_names": 3881,
+    "popular_new_static_candidates": 0,
+    "period_only_uninspected_names": 3881,
+    "interpretation": "These are selection-only names, not eligible [1] candidates. Static archive and source/yanked gates were not run for the full union."
+  },
+  "popular_control": {
+    "rank_range": "1-100",
+    "unique_gems": 100,
+    "api_requests": 110,
+    "existing_corpus": 8,
+    "new_static_candidates": 0,
+    "candidate_status_rows_in_existing_corpus": 7,
+    "assembly_review": 0,
+    "r10_excluded": 1,
+    "review": 1,
+    "error": 0,
+    "no_ext": 90,
+    "candidate_status_names": [
+      "bootsnap",
+      "google-protobuf",
+      "io-console",
+      "json",
+      "msgpack",
+      "oj",
+      "websocket-driver"
+    ],
+    "review_names": ["grpc"],
+    "r10_excluded_names": ["nokogiri"]
+  },
+  "static_sample": {
+    "size": 3,
+    "status_counts": {"no_ext": 3, "candidate": 0, "assembly_review": 0, "r10_excluded": 0, "review": 0, "error": 0},
+    "new_system_headers": [],
+    "new_gap_headers": [],
+    "build_successes": 0,
+    "build_failures": 0,
+    "build_not_run_no_c_extension": 3,
+    "environment_shortfalls": 0
+  },
+  "decision": {
+    "result": "reject_current_bounded_route_for_automatic_or_periodic_corpus_expansion",
+    "corpus_files_changed": false,
+    "reason": "No observed timeframe [1] candidate, no new popular [1] candidate, and all three fixed static targets were no-ext; full selection-only union remains uninspected."
+  }
+}

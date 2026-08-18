@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "experiment": "corpus-candidate-pilot-v2-source-errors-replay",
+  "scanner_revision": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48",
+  "workflow_head": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48",
+  "windows": [
+    {"id": "2026-08-02", "run_id": 31947588054, "url": "https://github.com/nuna/rubycc/actions/runs/31947588054", "conclusion": "success", "scanner_revision": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48"},
+    {"id": "2026-08-03", "run_id": 31947636524, "url": "https://github.com/nuna/rubycc/actions/runs/31947636524", "conclusion": "success", "scanner_revision": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48"},
+    {"id": "2026-08-04", "run_id": 31947764270, "url": "https://github.com/nuna/rubycc/actions/runs/31947764270", "conclusion": "success", "scanner_revision": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48"},
+    {"id": "2026-08-05", "run_id": 31947839212, "url": "https://github.com/nuna/rubycc/actions/runs/31947839212", "conclusion": "success", "scanner_revision": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48"},
+    {"id": "2026-08-06", "run_id": 31947943514, "url": "https://github.com/nuna/rubycc/actions/runs/31947943514", "conclusion": "success", "scanner_revision": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48"},
+    {"id": "2026-08-07", "run_id": 31948008480, "url": "https://github.com/nuna/rubycc/actions/runs/31948008480", "conclusion": "success", "scanner_revision": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48"},
+    {"id": "2026-08-08", "run_id": 31948083215, "url": "https://github.com/nuna/rubycc/actions/runs/31948083215", "conclusion": "success", "scanner_revision": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48"},
+    {"id": "2026-08-09", "run_id": 31948572903, "url": "https://github.com/nuna/rubycc/actions/runs/31948572903", "conclusion": "success", "scanner_revision": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48"},
+    {"id": "2026-08-10", "run_id": 31948621715, "url": "https://github.com/nuna/rubycc/actions/runs/31948621715", "conclusion": "success", "scanner_revision": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48"},
+    {"id": "2026-08-11", "run_id": 31948710392, "url": "https://github.com/nuna/rubycc/actions/runs/31948710392", "conclusion": "success", "scanner_revision": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48"},
+    {"id": "2026-08-12", "run_id": 31948834045, "url": "https://github.com/nuna/rubycc/actions/runs/31948834045", "conclusion": "success", "scanner_revision": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48"},
+    {"id": "2026-08-13", "run_id": 31948913768, "url": "https://github.com/nuna/rubycc/actions/runs/31948913768", "conclusion": "success", "scanner_revision": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48"},
+    {"id": "2026-08-14", "run_id": 31948988829, "url": "https://github.com/nuna/rubycc/actions/runs/31948988829", "conclusion": "success", "scanner_revision": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48"},
+    {"id": "2026-08-15", "run_id": 31947606207, "url": "https://github.com/nuna/rubycc/actions/runs/31947606207", "conclusion": "success", "scanner_revision": "5f6fc6d40a68aca89fc37ad1c530eeaeb41a7c48"}
+  ],
+  "popular_control": {
+    "artifact": "artifacts/pilot-v2/popular-control.json",
+    "source": "rubygems.org popular ranks 1-100",
+    "execution": "local Ruby 3.3.12; static archive scan; not part of the 14-window denominator"
+  }
+}

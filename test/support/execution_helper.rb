@@ -107,6 +107,15 @@ module ExecutionHelper
   # about the test's own C that should not be silenced (docs/development/GAPS.md gap W).
   OBSOLETE_C_FLAGS = ["-fpermissive"].freeze
 
+  # Whole examples whose subject is a construct C99 removed. This allowlist is
+  # shared by the host and AArch64 example oracles so a compiler-version
+  # compatibility exception cannot silently exist on only one target.
+  OBSOLETE_C_EXAMPLES = ["m5/atomic_type_10_knr_definitions.c"].freeze
+
+  def obsolete_c_example?(relative_path)
+    OBSOLETE_C_EXAMPLES.include?(relative_path)
+  end
+
   def compile_with_gcc(c_source, output_path, pic: false, obsolete: false)
     dir = File.dirname(output_path)
     source_path = File.join(dir, "#{File.basename(output_path, ".*")}.c")

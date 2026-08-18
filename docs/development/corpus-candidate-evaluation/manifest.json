@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "experiment": "corpus-candidate-evaluation",
+  "date": "2026-08-16",
+  "scanner_revision": "ac9f149a55036dd3057db67d643405734a331b47",
+  "selection_mode": "timeframe selection-only; static archive inspection deferred to a fixed sample",
+  "timeframe_cli": "ruby tools/scan_popular_gems.rb --source timeframe --from FROM --to TO --selection-only --artifact ARTIFACT",
+  "popular_cli": "ruby tools/scan_popular_gems.rb 1 10 --artifact ARTIFACT",
+  "popular_control": {
+    "source": "rubygems.org popular",
+    "rank_range": "1-100",
+    "pages": "1-10"
+  },
+  "timeframes": [
+    {
+      "id": "2026-08-09",
+      "from": "2026-08-09T00:00:00Z",
+      "to": "2026-08-16T00:00:00Z",
+      "artifact": "artifacts/timeframe-2026-08-09.json",
+      "raw_response_cache_retained": true
+    },
+    {
+      "id": "2026-08-02",
+      "from": "2026-08-02T00:00:00Z",
+      "to": "2026-08-09T00:00:00Z",
+      "artifact": "artifacts/timeframe-2026-08-02.json",
+      "raw_response_cache_retained": true
+    },
+    {
+      "id": "2026-07-26",
+      "from": "2026-07-26T00:00:00Z",
+      "to": "2026-08-02T00:00:00Z",
+      "artifact": "artifacts/timeframe-2026-07-26.json",
+      "raw_response_cache_retained": true,
+      "successful_attempt": "retry-1",
+      "failed_attempts": [
+        "page 9: Net::OpenTimeout"
+      ]
+    },
+    {
+      "id": "2026-07-19",
+      "from": "2026-07-19T00:00:00Z",
+      "to": "2026-07-26T00:00:00Z",
+      "artifact": "artifacts/timeframe-2026-07-19.json",
+      "raw_response_cache_retained": true,
+      "successful_attempt": "retry-2",
+      "failed_attempts": [
+        "initial: DNS failure",
+        "retry-1 page 99: ENETUNREACH"
+      ]
+    }
+  ],
+  "static_sample_rule": {
+    "maximum": 3,
+    "priority": [
+      "new gap header",
+      "new system header",
+      "created_at descending",
+      "gem name ascending"
+    ],
+    "observed_header_priority": "unavailable in selection-only mode; created_at/name tie-break applied",
+    "artifact": "artifacts/static-sample.json"
+  },
+  "raw_cache_policy": "raw response caches are not committed; generated artifacts record request URL, cache key, and response SHA-256",
+  "artifact_policy": "paths under artifacts/ identify ignored experiment work; commit manifest.json, metrics.json, and evaluation-report.md instead"
+}

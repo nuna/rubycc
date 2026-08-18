@@ -1,0 +1,120 @@
+# Independent networked collection. It is deliberately not part of the
+# required push/pull-request test workflows.
+name: corpus-candidate-daily
+
+"on":
+  schedule:
+    # 01:17 UTC avoids the load spike at the top of the hour.
+    - cron: "17 1 * * *"
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "UTC day start, for example 2026-08-15T00:00:00Z"
+        required: true
+        type: string
+      to:
+        description: "Exclusive UTC day end, for example 2026-08-16T00:00:00Z"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# A scheduled run and a replay for the same day must not consume two runners.
+# Queue a later run instead of cancelling a scan that is already downloading.
+concurrency:
+  group: corpus-candidate-daily-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: false
+
+      - name: Resolve the exact UTC interval
+        id: window
+        shell: bash
+        env:
+          INPUT_FROM: ${{ inputs.from }}
+          INPUT_TO: ${{ inputs.to }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            from="$INPUT_FROM"
+            to="$INPUT_TO"
+          else
+            read -r from to < <(ruby -rtime -e '
+              now = Time.now.utc
+              to = Time.utc(now.year, now.month, now.day)
+              from = to - 86_400
+              puts [from.strftime("%Y-%m-%dT00:00:00Z"),
+                    to.strftime("%Y-%m-%dT00:00:00Z")].join(" ")
+            ')
+          fi
+
+          SCAN_FROM="$from" SCAN_TO="$to" ruby -rtime -e '
+            pattern = /\A\d{4}-\d{2}-\d{2}T00:00:00Z\z/
+            from_text = ENV.fetch("SCAN_FROM")
+            to_text = ENV.fetch("SCAN_TO")
+            abort "from must be a UTC midnight timestamp" unless pattern.match?(from_text)
+            abort "to must be a UTC midnight timestamp" unless pattern.match?(to_text)
+            from = Time.iso8601(from_text)
+            to = Time.iso8601(to_text)
+            abort "interval must be one completed UTC day" unless to - from == 86_400
+          '
+
+          {
+            echo "from=$from"
+            echo "to=$to"
+            echo "key=$(printf "%s-%s" "$from" "$to" | tr -d ':')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run the static corpus candidate scan
+        shell: bash
+        env:
+          SCAN_FROM: ${{ steps.window.outputs.from }}
+          SCAN_TO: ${{ steps.window.outputs.to }}
+          SCAN_WORK: ${{ runner.temp }}/corpus-candidate-work
+          SCAN_OUTPUT_DIR: ${{ runner.temp }}/corpus-candidate-output
+        run: |
+          set -euo pipefail
+          mkdir -p "$SCAN_WORK" "$SCAN_OUTPUT_DIR"
+          set -o pipefail
+          full_log="$SCAN_WORK/scan.log"
+          set +e
+          ruby tools/scan_popular_gems.rb \
+              --source timeframe \
+              --from "$SCAN_FROM" \
+              --to "$SCAN_TO" \
+              --artifact "$SCAN_OUTPUT_DIR/classification.json" \
+              --summary "$SCAN_OUTPUT_DIR/run-summary.json" \
+              --fetch-concurrency 2 \
+              2>&1 | tee "$full_log"
+          scan_status=${PIPESTATUS[0]}
+          set -e
+          # Keep the uploaded log bounded; the complete log remains only in the
+          # ephemeral runner workspace and is available in the job log.
+          tail -n 200 "$full_log" > "$SCAN_OUTPUT_DIR/scan.log"
+          exit "$scan_status"
+
+      - name: Upload the compact scan report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: corpus-candidate-${{ steps.window.outputs.key }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/corpus-candidate-output/classification.json
+            ${{ runner.temp }}/corpus-candidate-output/run-summary.json
+            ${{ runner.temp }}/corpus-candidate-output/scan.log
+          retention-days: 35
+          if-no-files-found: warn
