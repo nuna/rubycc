@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: debt
 opened: 2026-08-15
-closed:
+closed: 2026-08-19
 branch: optimization-pass-throughput
-pr:
+pr: 78
 steps: [optimization-pass-throughput-1]
 ---
 
