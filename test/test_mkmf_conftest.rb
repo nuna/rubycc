@@ -162,6 +162,68 @@ class TestMkmfConftest < Minitest::Test
     assert_equal 1, data[:rubylib_count], "lib/ should be on RUBYLIB exactly once"
   end
 
+  # --- how a conftest is spawned (Step mkmf-shell-free-conftest-1) -----------
+
+  # mkmf builds every conftest command as one string and hands it to
+  # `system`/`IO.popen`, which leaves Ruby to choose between exec'ing it and
+  # passing it to /bin/sh. The shim converts the string to an argv array first,
+  # so what reaches the spawn is never a command string: in an environment with
+  # no /bin/sh (DESIGN R5) the shell branch fails with no diagnostic at all.
+  # The probe replaces Kernel#system in the child to record the exact arguments.
+  def test_conftest_commands_are_spawned_as_argv_not_as_a_command_string
+    result, _log, err, status = run_in_mkmf(<<~RUBY)
+      seen = []
+      Object.prepend(Module.new {
+        define_method(:system) { |*args| seen << args.drop(1); true }
+      })
+      xsystem("/bin/echo one 'two three'")
+      xsystem("./conftest")
+      xsystem(["/bin/echo", "already argv"])
+      result = seen
+    RUBY
+
+    assert status.success?, "the mkmf child exited nonzero:\n#{err}"
+    split, single, passthrough = result
+
+    assert_equal ["/bin/echo", "one", "two three"], split,
+                 "the string command should reach system() as separate argv words"
+    # A one-word command would still be a lone String argument, which is where
+    # Ruby decides for itself whether to involve a shell; the [program, argv0]
+    # form settles it.
+    assert_equal [["./conftest", "./conftest"]], single
+    assert_equal ["/bin/echo", "already argv"], passthrough,
+                 "a command mkmf already built as an array must pass through untouched"
+  end
+
+  # A command that genuinely needs a shell is refused, with the reason written
+  # where a failed build is debugged from (mkmf.log). Returning false instead
+  # would be read by mkmf as "the compiler cannot do this" — the misdiagnosis
+  # ("You have to install development tools first") that hid this problem.
+  def test_shell_only_constructs_are_refused_with_the_reason_in_mkmf_log
+    # A non-interpolating heredoc: the body's regexp escapes have to reach the
+    # child verbatim.
+    result, log, err, status = run_in_mkmf(<<~'RUBY')
+      result = ["/bin/echo a | /bin/cat", "/bin/echo a && /bin/echo b",
+                "/bin/echo a > out.txt", "/bin/echo `date`"].map do |command|
+        begin
+          xsystem(command)
+          "ran without a shell"
+        rescue Rubycc::MkmfShim::ShellRequiredError => e
+          e.message[/\((.+?)\)/, 1]
+        end
+      end
+      result << File.exist?("out.txt")
+    RUBY
+
+    assert status.success?, "the mkmf child exited nonzero:\n#{err}"
+    assert_equal ["pipe '|'", "command connector '&&'", "redirection",
+                  "shell metacharacter '`'", false],
+                 result, "each construct must raise, and nothing may be run"
+    assert_includes log, "refusing to run a conftest command that needs a shell",
+                     "the refusal must be recorded in mkmf.log"
+    assert_includes log, "pipe '|'", "mkmf.log must name the construct at fault"
+  end
+
   # --- corpus extconf reproduction (opt-in, networked) -----------------------
 
   # msgpack 1.8.3's extconf.rb, run under the shim, must generate a Makefile

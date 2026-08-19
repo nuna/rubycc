@@ -2,6 +2,7 @@
 
 require "fileutils"
 require_relative "errors"
+require_relative "../command_line"
 
 module Rubycc
   module Rmake
@@ -50,14 +51,11 @@ module Rubycc
         end
       end
 
-      # One redirection parsed off a command: which stream (:stdout/:stderr),
-      # whether it truncates or appends, and the target path (relative to the
-      # command's cwd).
-      Redirection = Struct.new(:stream, :mode, :path)
-
-      # One simple command: leading `VAR=value` assignments, the argv words and
-      # the redirections that apply to it.
-      SimpleCommand = Struct.new(:assignments, :argv, :redirections)
+      # The parsed shapes come from the shared splitter (Rubycc::CommandLine),
+      # which rmake and the mkmf shim both use; they are named here too so the
+      # runner reads as it did when it owned the parser.
+      Redirection = CommandLine::Redirection
+      SimpleCommand = CommandLine::SimpleCommand
 
       def initialize(dir:, out: $stdout, err: $stderr, dry_run: false, env: ENV,
                      tools: [], jobs: 1)
@@ -129,183 +127,24 @@ module Rubycc
         success
       end
 
-      # --- lexing ----------------------------------------------------------
-
-      # Characters after which a backslash inside double quotes keeps its
-      # special meaning (POSIX quote removal, XCU 2.2 / 2.2.3): only these five
-      # make the backslash consume — and remove itself along with — the next
-      # character; before a newline both vanish (line continuation). Before any
-      # other character the backslash inside double quotes is left in the word
-      # verbatim: `"a\b"` stays `a\b`, while `"a\"b"` becomes `a"b`. Verified
-      # against /bin/sh (dash).
-      DQUOTE_BACKSLASH_SPECIAL = ["$", "`", '"', "\\", "\n"].freeze
-
-      # Split a recipe line into tokens: :word (quote-stripped), the connectors
-      # :and/:or/:semi and :redirect markers. Single quotes protect everything
-      # verbatim — backslash has no special meaning inside them. Double quotes
-      # strip a backslash only before `$`/`` ` ``/`"`/`\`/newline
-      # (DQUOTE_BACKSLASH_SPECIAL); elsewhere the backslash stays in the word.
-      # Outside any quote, a backslash preserves the literal value of the
-      # following character and disappears itself, except before a newline
-      # where both vanish (line continuation) — this is POSIX quote removal,
-      # verified against /bin/sh. mkmf relies on the outside-quotes rule: it
-      # writes `-DSYSCONFDIR=\"...\"` expecting the shell to unescape the
-      # backslash-quotes into a literal `"` in the word. Genuinely unhandled
-      # shell syntax (pipe, background, substitution, subshell) stops the run.
-      def tokenize(target, text)
-        tokens = []
-        word = nil
-        i = 0
-        n = text.length
-        while i < n
-          c = text[i]
-          case c
-          when "'"
-            close = text.index(c, i + 1)
-            unsupported!("unterminated quote", target, text) if close.nil?
-            word = (word || +"") + text[(i + 1)...close]
-            i = close + 1
-          when '"'
-            segment, i = scan_double_quoted(target, text, i)
-            word = (word || +"") + segment
-          when "\\"
-            nxt = text[i + 1]
-            if nxt.nil?
-              # A lone trailing backslash with nothing to escape is kept
-              # literally (verified against /bin/sh).
-              word = (word || +"") + c
-              i += 1
-            elsif nxt == "\n"
-              i += 2 # line continuation: backslash and newline both vanish
-            else
-              word = (word || +"") + nxt
-              i += 2
-            end
-          when " ", "\t"
-            tokens << [:word, word] if word
-            word = nil
-            i += 1
-          when "&"
-            tokens << [:word, word] if word
-            word = nil
-            unsupported!("background '&'", target, text) unless text[i + 1] == "&"
-            tokens << [:and]
-            i += 2
-          when "|"
-            tokens << [:word, word] if word
-            word = nil
-            unsupported!("pipe '|'", target, text) unless text[i + 1] == "|"
-            tokens << [:or]
-            i += 2
-          when ";"
-            tokens << [:word, word] if word
-            word = nil
-            tokens << [:semi]
-            i += 1
-          when ">"
-            tokens << [:word, word] if word
-            word = nil
-            if text[i + 1] == ">"
-              tokens << [:redirect, :stdout, :append]
-              i += 2
-            else
-              tokens << [:redirect, :stdout, :truncate]
-              i += 1
-            end
-          when "<", "`", "(", ")"
-            unsupported!("shell metacharacter '#{c}'", target, text)
-          else
-            if word.nil? && (c == "1" || c == "2") && text[i + 1] == ">"
-              stream = c == "2" ? :stderr : :stdout
-              if text[i + 2] == ">"
-                tokens << [:redirect, stream, :append]
-                i += 3
-              else
-                tokens << [:redirect, stream, :truncate]
-                i += 2
-              end
-            else
-              word = (word || +"") + c
-              i += 1
-            end
-          end
-        end
-        tokens << [:word, word] if word
-        tokens
-      end
-
-      # Scan a double-quoted segment starting at +i+ (text[i] == '"'). Applies
-      # the backslash-removal rule that is special to double quotes (see
-      # DQUOTE_BACKSLASH_SPECIAL) and returns [content, index_after_closing_quote].
-      def scan_double_quoted(target, text, i)
-        n = text.length
-        j = i + 1
-        buf = +""
-        loop do
-          unsupported!("unterminated quote", target, text) if j >= n
-
-          c = text[j]
-          if c == '"'
-            j += 1
-            break
-          elsif c == "\\" && j + 1 < n && DQUOTE_BACKSLASH_SPECIAL.include?(text[j + 1])
-            nxt = text[j + 1]
-            buf << nxt unless nxt == "\n" # backslash-newline vanishes entirely
-            j += 2
-          else
-            buf << c
-            j += 1
-          end
-        end
-        [buf, j]
-      end
-
       # --- parsing ---------------------------------------------------------
 
-      # Turn the token stream into [[connector, SimpleCommand], ...]. A leading
-      # run of `VAR=value` words become that command's environment; a redirect
-      # marker consumes the following word as its target path.
+      # Split a recipe line into words and connectors with the shared splitter.
+      # Kept as a method of the runner because a failure has to name the target
+      # whose recipe was at fault, which only the runner knows.
+      def tokenize(target, text)
+        CommandLine.tokenize(text)
+      rescue CommandLine::UnsupportedSyntaxError => e
+        unsupported!(e.construct, target, text)
+      end
+
+      # Turn the line into [[connector, SimpleCommand], ...]. A leading run of
+      # `VAR=value` words become that command's environment; a redirect marker
+      # consumes the following word as its target path.
       def parse_line(target, text)
-        tokens = tokenize(target, text)
-        commands = []
-        connector = :first
-        assignments = []
-        argv = []
-        redirections = []
-        i = 0
-
-        flush = lambda do
-          unless assignments.empty? && argv.empty? && redirections.empty?
-            commands << [connector, SimpleCommand.new(assignments, argv, redirections)]
-          end
-          assignments = []
-          argv = []
-          redirections = []
-        end
-
-        while i < tokens.length
-          tok = tokens[i]
-          case tok[0]
-          when :word
-            w = tok[1]
-            if argv.empty? && w =~ /\A[A-Za-z_][A-Za-z0-9_]*=/
-              assignments << w
-            else
-              argv << w
-            end
-          when :and, :or, :semi
-            flush.call
-            connector = tok[0]
-          when :redirect
-            nxt = tokens[i + 1]
-            unsupported!("redirection without a target", target, text) if nxt.nil? || nxt[0] != :word
-            redirections << Redirection.new(tok[1], tok[2], nxt[1])
-            i += 1
-          end
-          i += 1
-        end
-        flush.call
-        commands
+        CommandLine.parse(text)
+      rescue CommandLine::UnsupportedSyntaxError => e
+        unsupported!(e.construct, target, text)
       end
 
       # --- running a simple command ---------------------------------------
