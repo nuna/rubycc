@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-19
-closed:
+closed: 2026-08-19
 branch: warning-directive
-pr:
+pr: 84
 steps: [warning-directive-1]
 ---
 

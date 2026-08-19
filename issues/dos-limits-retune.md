@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: debt
 opened: 2026-08-12
-closed:
+closed: 2026-08-19
 branch: dos-limits-retune
-pr:
+pr: 83
 steps: [dos-limits-retune-1]
 ---
 

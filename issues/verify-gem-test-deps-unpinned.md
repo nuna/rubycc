@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-15
-closed:
+closed: 2026-08-19
 branch: verify-gem-test-deps-unpinned
-pr:
+pr: 82
 steps: [verify-gem-test-deps-unpinned-1]
 ---
 
