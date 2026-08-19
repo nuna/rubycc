@@ -670,6 +670,7 @@ module Rubycc
         when "undef"        then handle_undef(name, body)
         when "line"         then handle_line(name, body)
         when "error"        then handle_error(hash, body)
+        when "warning"      then handle_warning(hash, body)
         when "pragma"       then handle_pragma(body, filename)
         else
           raise_at(name, "invalid preprocessing directive '##{name.text}'")
@@ -1324,8 +1325,8 @@ module Rubycc
       end
 
       # GCC diagnoses a conflicting redefinition from a system header as a
-      # warning, not a preprocessing error. Rubycc has no warning stream, so
-      # keep the header's later definition and continue; this is required by
+      # warning, not a preprocessing error. Rubycc reports nothing for it and
+      # keeps the header's later definition, continuing; this is required by
       # libffi, whose target header changes FFI_GO_CLOSURES after fiddle's local
       # compatibility header intentionally set it to zero. User-source
       # conflicts retain the strict diagnostic above.
@@ -1460,13 +1461,29 @@ module Rubycc
         one.zip(other).all? { |a, b| a.type == b.type && a.text == b.text }
       end
 
-      # --- #error ----------------------------------------------------------------
+      # --- #error / #warning -----------------------------------------------------
 
       def handle_error(hash, body)
-        # The message is the directive's tokens spelled out and single-spaced; it
-        # is never macro-expanded (matching gcc).
+        raise_at(hash, directive_message(body, "error"))
+      end
+
+      # "#warning" (C23 6.10.2p2, long a GNU extension): the same message, on the
+      # channel that reports and returns. The translation unit keeps going and
+      # the compile still succeeds, which is the whole point — a portability
+      # header announcing "unrecognized compiler" must not be the thing that
+      # kills the build.
+      def handle_warning(hash, body)
+        warn_at(hash, directive_message(body, "warning"))
+      end
+
+      # The text a #error / #warning reports: the directive's tokens spelled out
+      # and single-spaced, never macro-expanded (matching gcc), with the
+      # directive's own name standing in when it carried no message. Quoting is
+      # not required of the message and nothing is stripped from it, so
+      # `#warning foo bar` and `#warning "foo bar"` each report what they spell.
+      def directive_message(body, name)
         message = body.map(&:text).join(" ")
-        raise_at(hash, message.empty? ? "#error" : message)
+        message.empty? ? "##{name}" : message
       end
 
       # --- #line -----------------------------------------------------------------
@@ -2000,6 +2017,16 @@ module Rubycc
 
       def raise_at(pp, description)
         raise CompileError.new(
+          description,
+          filename: pp.filename, line: pp.line, column: pp.column,
+          source_line: pp.source_line
+        )
+      end
+
+      # As #raise_at, but on the non-fatal channel: the message is written to the
+      # diagnostic stream in the same format and preprocessing continues.
+      def warn_at(pp, description)
+        Diagnostics.warn(
           description,
           filename: pp.filename, line: pp.line, column: pp.column,
           source_line: pp.source_line

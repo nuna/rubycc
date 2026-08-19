@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "test_helper"
+require "stringio"
 
 class TestDiagnostics < Minitest::Test
   include ExecutionHelper
@@ -1679,5 +1680,47 @@ class TestDiagnostics < Minitest::Test
     error = assert_raises(Rubycc::CompileError) { compile(source) }
     assert_match(/constructor priorities must be integers from 0 to 65535 inclusive/,
                  error.description)
+  end
+
+  # --- the warning channel (warning-directive-1) -----------------------------
+  #
+  # Everything above is an error: reported by raising, which also ends the
+  # translation unit. Rubycc::Diagnostics is the other half -- a located message
+  # that is reported and returned from -- and its whole reason for sharing a
+  # renderer with CompileError is that the two must not drift apart in format.
+
+  def test_a_warning_is_spelled_like_an_error_apart_from_the_severity
+    location = { filename: "foo.c", line: 3, column: 5, source_line: "  int x = 1;" }
+    sink = StringIO.new
+    Rubycc::Diagnostics.to(sink) { Rubycc::Diagnostics.warn("something to say", **location) }
+    error = Rubycc::CompileError.new("something to say", **location)
+
+    assert_equal "#{error.message.sub("error:", "warning:")}\n", sink.string
+    assert_equal ["foo.c:3:5: warning: something to say", "  int x = 1;", "    ^"],
+                 sink.string.split("\n")
+  end
+
+  def test_warnings_are_discarded_when_the_channel_has_no_stream
+    _out, err = capture_io do
+      Rubycc::Diagnostics.to(nil) do
+        Rubycc::Diagnostics.warn("unheard", filename: "foo.c", line: 1, column: 1, source_line: "x")
+      end
+    end
+    assert_empty err
+  end
+
+  # The stream is restored when the block ends, so a nested run (rmake driving
+  # the Driver in-process) cannot leave a stale sink behind.
+  def test_the_warning_stream_is_restored_after_the_block
+    outer = StringIO.new
+    Rubycc::Diagnostics.to(outer) do
+      Rubycc::Diagnostics.to(StringIO.new) do
+        Rubycc::Diagnostics.warn("inner", filename: "foo.c", line: 1, column: 1, source_line: "x")
+      end
+      Rubycc::Diagnostics.warn("outer", filename: "foo.c", line: 1, column: 1, source_line: "x")
+    end
+
+    assert_match(/warning: outer/, outer.string)
+    refute_match(/inner/, outer.string)
   end
 end

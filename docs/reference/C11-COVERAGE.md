@@ -161,7 +161,7 @@ R10 の検証対象を 90%以上にすることである。C11 の全条項を�
 | 6.10.2 | Source file inclusion | 部分実装 | `"file"` / `<file>`、`#include_next` に対応する。マクロ展開結果をヘッダ名にする形式は対象外 |
 | 6.10.3 | Macro replacement | 実装済み | オブジェクト/関数マクロ、`#`/`##`、`__VA_ARGS__`、GNU 名前付き可変長引数、カンマ削除に対応する。病的な自己参照入れ子の一部は gcc と異なる |
 | 6.10.4 | Line control | 実装済み | `#line` と `__LINE__`/`__FILE__` の制御に対応する |
-| 6.10.5 | Error directive | 実装済み | `#error` に対応する |
+| 6.10.5 | Error directive | 実装済み | `#error` に対応する。**C11 に無い `#warning`**(長く GNU 拡張、C23 6.10.2p2 で標準化)にも拡張として対応する — 同じ書式の診断を標準エラーに出し、コンパイルは継続する(終了コードは 0) |
 | 6.10.6 | Pragma directive | 部分実装 | `#pragma once` に対応する。それ以外の pragma は受理して無視する |
 | 6.10.7 | Null directive | 実装済み | 空ディレクティブに対応する |
 | 6.10.8 | Predefined macro names | 部分実装 | `__FILE__`/`__LINE__`/`__STDC__`/`__STDC_VERSION__`/`__RUBYCC__` を提供する。`__GNUC__` は定義しない |

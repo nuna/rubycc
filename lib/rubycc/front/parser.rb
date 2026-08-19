@@ -739,8 +739,9 @@ module Rubycc
       # left out — type `int`, located at the identifier itself (6.9.1p6). C90
       # spelled that default out; C11 instead requires every identifier to be
       # declared, but gcc keeps accepting the omission with a -Wimplicit-int
-      # warning (measured), and a warning is not a channel this compiler has, so
-      # the older, permissive reading is the one implemented.
+      # warning (measured), and this compiler warns about nothing in the front
+      # end (Diagnostics.warn carries only #warning so far), so the older,
+      # permissive reading is the one implemented.
       def old_style_parameters(identifier_list, declared)
         identifier_list.names.map do |name_tok|
           type, const, decl_tok = declared[name_tok.value]
@@ -865,9 +866,8 @@ module Rubycc
         else
           # An init attribute on an object has nothing to register — there is no
           # function to call — so it is refused here. gcc only warns ("attribute
-          # ignored"), but a warning this compiler has no channel for would be a
-          # silent drop, and a dropped initializer is invisible until the program
-          # misbehaves at run time.
+          # ignored"), but this parser emits no warnings, and a silently dropped
+          # initializer is invisible until the program misbehaves at run time.
           reject_init_attributes(attributes)
           register_visibility_attributes(name_tok.value, attributes)
           parse_global_declarator(type, name_tok, pointer_quals, spec_info)
@@ -1556,7 +1556,7 @@ module Rubycc
       # The run-order number of a constructor/destructor. The window and its
       # wording follow gcc's measured behavior (see MAX_INIT_PRIORITY); the
       # 0..100 range gcc reserves for the implementation is accepted here, since
-      # gcc only warns about it and this compiler has no warning channel.
+      # gcc only warns about it and this parser emits no warnings.
       def parse_init_priority_argument(name)
         expr = parse_parenthesized_constant
         value = evaluate_constant_expression(expr, "'#{name}' attribute argument is not an integer constant",

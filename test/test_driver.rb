@@ -270,6 +270,94 @@ class TestDriver < Minitest::Test
     end
   end
 
+  # --- #warning and the warning channel ------------------------------------
+
+  # A translation unit with a #warning compiles: the message goes to standard
+  # error in the usual diagnostic format, the object is written, and the exit
+  # status is 0 -- the whole point of the directive (C23 6.10.2p2). gcc 13.3.0
+  # measured the same on the same input (2026-08-19).
+  def test_warning_directive_compiles_and_reports_on_stderr
+    in_tmpdir do |dir|
+      File.write(File.join(dir, "w.c"), %(#warning "unrecognized compiler"\nint main(void){ return 0; }\n))
+      out, err, status = rubycc("-c", "w.c", "-o", "w.o", dir: dir)
+
+      assert_equal 0, status.exitstatus, err
+      assert File.exist?(File.join(dir, "w.o"))
+      assert_equal ['w.c:1:1: warning: "unrecognized compiler"',
+                    '#warning "unrecognized compiler"',
+                    "^"], err.split("\n")
+      assert_empty out, "the warning must not reach standard output"
+    end
+  end
+
+  # The message needs no quotes; whatever the rest of the line spells is what
+  # is reported.
+  def test_warning_directive_accepts_an_unquoted_message
+    in_tmpdir do |dir|
+      File.write(File.join(dir, "w.c"), "#warning unrecognized compiler\nint main(void){ return 0; }\n")
+      _out, err, status = rubycc("-c", "w.c", "-o", "w.o", dir: dir)
+
+      assert_equal 0, status.exitstatus, err
+      assert_match(/w\.c:1:1: warning: unrecognized compiler/, err)
+    end
+  end
+
+  # -E writes preprocessed text to standard output; a warning raised while
+  # preprocessing must not be mixed into it.
+  def test_warning_during_dash_e_keeps_stdout_clean
+    in_tmpdir do |dir|
+      File.write(File.join(dir, "w.c"), "#warning noisy\nint x = 1;\n")
+      out, err, status = rubycc("-E", "w.c", dir: dir)
+
+      assert_equal 0, status.exitstatus, err
+      assert_match(/int x = 1\s*;/, out)
+      refute_match(/warning/, out)
+      assert_match(/warning: noisy/, err)
+    end
+  end
+
+  # "-w" is honored: it silences the compiler's warnings (and is no longer
+  # reported as an unknown option, which it was before this channel existed).
+  def test_suppress_warnings_flag_silences_the_warning
+    in_tmpdir do |dir|
+      File.write(File.join(dir, "w.c"), "#warning noisy\nint main(void){ return 0; }\n")
+      _out, err, status = rubycc("-c", "-w", "w.c", "-o", "w.o", dir: dir)
+
+      assert_equal 0, status.exitstatus, err
+      assert File.exist?(File.join(dir, "w.o"))
+      assert_empty err.strip
+    end
+  end
+
+  # "-Werror" is deliberately *not* honored (see Driver#silently_ignored?):
+  # promoting the single warning rubycc implements, while staying silent about
+  # everything else gcc would warn on, would only bring back the build failure
+  # #warning support exists to end. The flag stays accepted and ignored.
+  def test_werror_does_not_promote_the_warning
+    in_tmpdir do |dir|
+      File.write(File.join(dir, "w.c"), "#warning noisy\nint main(void){ return 0; }\n")
+      _out, err, status = rubycc("-c", "-Werror", "w.c", "-o", "w.o", dir: dir)
+
+      assert_equal 0, status.exitstatus, err
+      assert File.exist?(File.join(dir, "w.o"))
+      assert_match(/warning: noisy/, err)
+      refute_match(/error:/, err)
+    end
+  end
+
+  # #error is untouched by any of this: it still ends the compile.
+  def test_error_directive_still_fails_the_build
+    in_tmpdir do |dir|
+      File.write(File.join(dir, "e.c"), "#warning first\n#error stop right here\nint main(void){ return 0; }\n")
+      _out, err, status = rubycc("-c", "e.c", "-o", "e.o", dir: dir)
+
+      assert_equal 1, status.exitstatus
+      assert_match(/e\.c:2:1: error: stop right here/, err)
+      assert_match(/warning: first/, err)
+      refute File.exist?(File.join(dir, "e.o"))
+    end
+  end
+
   # --- unknown / tolerated flags ------------------------------------------
 
   # An unknown option is warned about and ignored; a build with a valid input

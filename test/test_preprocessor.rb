@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "test_helper"
+require "stringio"
 
 class TestPreprocessor < Minitest::Test
   include ExecutionHelper
@@ -11,6 +12,14 @@ class TestPreprocessor < Minitest::Test
 
   def lex(source, filename: "test.c")
     Rubycc::Front::Lexer.new(source, filename: filename).tokenize
+  end
+
+  # Preprocesses with the warning channel captured, returning the token stream
+  # and everything the channel was handed.
+  def pp_capturing_warnings(source, filename: "test.c")
+    sink = StringIO.new
+    tokens = Rubycc::Diagnostics.to(sink) { pp(source, filename: filename) }
+    [tokens, sink.string]
   end
 
   # The full attribute tuple of a token, so equivalence can be asserted as a
@@ -1343,6 +1352,89 @@ class TestPreprocessor < Minitest::Test
     error = assert_raises(Rubycc::CompileError) { pp("int x;\n#error stop right here\n") }
     assert_match(/stop right here/, error.description)
     assert_equal 2, error.line
+  end
+
+  # --- #warning --------------------------------------------------------------
+
+  # "#warning" (C23 6.10.2p2, long a GNU extension) is the other half of
+  # "#error": the message is reported and preprocessing continues, so the
+  # translation unit still compiles. These pin both halves of that -- what comes
+  # out on the warning channel, and that the tokens around it survive.
+
+  def test_warning_directive_reports_its_message_without_failing
+    tokens, warnings = pp_capturing_warnings("int x;\n#warning stop and think\nint y;\n")
+
+    assert_equal ["int", "x", ";", "int", "y", ";"], tokens.reject(&:eof?).map(&:value)
+    assert_equal ["test.c:2:1: warning: stop and think",
+                  "#warning stop and think",
+                  "^"], warnings.split("\n")
+  end
+
+  # The message is the rest of the line, quotes and all: they are part of the
+  # text, not a required wrapper around it (gcc accepts either spelling).
+  def test_warning_directive_accepts_a_quoted_message
+    _tokens, warnings = pp_capturing_warnings(%(#warning "Warning. Unrecognized compiler."\n))
+    assert_match(/warning: "Warning\. Unrecognized compiler\."/, warnings)
+  end
+
+  def test_warning_directive_accepts_an_unquoted_message
+    _tokens, warnings = pp_capturing_warnings("#warning Warning. Unrecognized compiler.\n")
+    assert_match(/warning: Warning \. Unrecognized compiler \./, warnings)
+  end
+
+  # With no message at all the directive names itself, as #error does.
+  def test_warning_directive_without_a_message_names_itself
+    _tokens, warnings = pp_capturing_warnings("#warning\n")
+    assert_equal "test.c:1:1: warning: #warning", warnings.lines.first.chomp
+  end
+
+  # Like #error, the message is not macro-expanded (matching gcc).
+  def test_warning_directive_message_is_not_macro_expanded
+    _tokens, warnings = pp_capturing_warnings("#define LEVEL 3\n#warning LEVEL is set\n")
+    assert_match(/warning: LEVEL is set/, warnings)
+  end
+
+  # A dropped conditional group's directives are not acted on, so a #warning
+  # inside one is silent -- the same rule that keeps #error there harmless.
+  def test_warning_directive_in_a_skipped_group_is_not_reported
+    tokens, warnings = pp_capturing_warnings("#if 0\n#warning never mind\n#endif\nint x;\n")
+
+    assert_equal ["int", "x", ";"], tokens.reject(&:eof?).map(&:value)
+    assert_empty warnings
+  end
+
+  # A #warning ahead of a #error does not soften it: the error still ends the
+  # translation unit, and the warning is still reported on its way there.
+  def test_error_directive_still_fails_after_a_warning
+    warnings = StringIO.new
+    error = assert_raises(Rubycc::CompileError) do
+      Rubycc::Diagnostics.to(warnings) { pp("#warning first\n#error then stop\n") }
+    end
+
+    assert_match(/then stop/, error.description)
+    assert_match(/warning: first/, warnings.string)
+  end
+
+  # The channel's default target is the process's standard error, resolved when
+  # the warning is emitted; standard output is left alone (the driver's -E mode
+  # writes preprocessed text there, and the differential tests compare it).
+  def test_warning_goes_to_standard_error_by_default
+    out, err = capture_io { pp("#warning noisy\nint x;\n") }
+
+    assert_empty out
+    assert_match(/test\.c:1:1: warning: noisy/, err)
+  end
+
+  # Warnings are discarded when the channel has no stream (what the driver's
+  # "-w" selects); the translation unit is otherwise unaffected.
+  def test_warning_is_discarded_when_the_channel_is_closed
+    out, err = capture_io do
+      tokens = Rubycc::Diagnostics.to(nil) { pp("#warning quiet please\nint x;\n") }
+      assert_equal ["int", "x", ";"], tokens.reject(&:eof?).map(&:value)
+    end
+
+    assert_empty out
+    assert_empty err
   end
 
   # --- conditional inclusion: #if / #ifdef / #ifndef / #elif / #else / #endif -

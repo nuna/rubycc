@@ -59,10 +59,18 @@ class TestExamples < Minitest::Test
     end
   end
 
+  # A sample's own diagnostics are not what this test compares: gcc's go into
+  # capture2e below and are read only when the compile fails. rubycc's warning
+  # channel is pointed at nothing for the same reason, so a sample that warns on
+  # purpose (m6/warning_directive_1_notice.c) does not spray the reporter's
+  # output on every run. What it warns *about* is still covered -- by the
+  # driver and preprocessor tests, which read the channel directly.
   def compile_example(path, object_path, compiler)
     case compiler
     when :rubycc
-      Rubycc::Compiler.compile_file(path, object_path, target: host_target)
+      Rubycc::Diagnostics.to(nil) do
+        Rubycc::Compiler.compile_file(path, object_path, target: host_target)
+      end
     when :gcc
       relative_path = path.delete_prefix("#{EXAMPLES_ROOT}/")
       args = ["gcc", "-c", ExecutionHelper::REFERENCE_STD_FLAG, "-fno-pie"]
