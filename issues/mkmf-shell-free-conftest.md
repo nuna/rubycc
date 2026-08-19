@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-20
-closed:
+closed: 2026-08-20
 branch: mkmf-shell-free-conftest
-pr:
+pr: 88
 steps: [mkmf-shell-free-conftest-1]
 ---
 
