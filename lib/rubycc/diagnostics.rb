@@ -50,10 +50,24 @@ module Rubycc
       # A gcc-style diagnostic: the "file:line:column: severity: text" header,
       # the offending source line, and a caret under the offending column.
       # `severity` is the bare word ("error", "warning").
+      #
+      # The message is assembled as *bytes*. Two of its pieces come from outside
+      # and carry whatever encoding their origin gave them: the source line is
+      # ASCII-8BIT (the scanner reads bytes, see Preprocess::Scanner), while the
+      # file name — and, through a header name or a macro spelling, sometimes the
+      # description — comes from the command line and is tagged with the locale's
+      # encoding. Splicing two such strings with plain interpolation raises
+      # Encoding::CompatibilityError as soon as both hold a byte past 0x7F
+      # (compiling "日本.c" under a UTF-8 locale, with a comment in Japanese on
+      # the offending line), which would replace the diagnostic with a Ruby
+      # backtrace — the very failure this renderer exists to avoid. Re-tagging
+      # each piece as bytes removes the question: nothing is transcoded, the
+      # bytes reach the terminal as they were spelled in the source, and the
+      # caret still counts in characters (see Scanner#column_at).
       def render(severity, description, filename:, line:, column:, source_line:)
-        header = "#{filename}:#{line}:#{column}: #{severity}: #{description}"
-        caret = "#{" " * (column - 1)}^"
-        "#{header}\n#{source_line}\n#{caret}"
+        message = +"".b
+        message << filename.to_s.b << ":#{line}:#{column}: #{severity}: " << description.to_s.b
+        message << "\n" << source_line.to_s.b << "\n" << (" " * (column - 1)) << "^"
       end
 
       # Reports a warning at a source position and returns; the compile goes on.

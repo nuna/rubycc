@@ -1264,8 +1264,12 @@ module Rubycc
         @include_origin[File.expand_path(path)] = index
       end
 
+      # A header is read as bytes, never as text in the process's locale:
+      # File.read would tag the result with Encoding.default_external, and under
+      # a locale of "C" that is US-ASCII, which makes the first byte past 0x7F
+      # in the file an ArgumentError instead of a comment (see Scanner).
       def read_source(path, name, hash)
-        File.read(path)
+        File.binread(path)
       rescue SystemCallError
         raise_at(hash, "#{name}: No such file or directory")
       end

@@ -1,11 +1,11 @@
 ---
-status: open
+status: in-progress
 kind: gap
 opened: 2026-08-20
 closed:
-branch:
+branch: default-external-encoding
 pr:
-steps: []
+steps: [default-external-encoding-1]
 ---
 
 # `LANG` の無い環境で、同梱ヘッダを読んだ瞬間に落ちる(`File.read` がロケール依存)
@@ -84,4 +84,27 @@ conftest が rubycc の起動に成功した直後に、この例外で落ちて
 
 ## 決着
 
-(未着手)
+**ロケール非依存になった**(2026-08-20)。
+
+| 条件 | 結果 |
+|---|---|
+| ロケール未設定で `#include <stddef.h>` | **成功** |
+| 非 ASCII の利用者ソース(UTF-8 コメント / 不正バイト) | **成功**、gcc と生バイト一致 |
+| 生成物のバイト一致 | **57 / 57**(`-E` 出力も 12 ファイルで一致) |
+| `rake test` | **3330 runs / 0 failures** |
+
+**読み出し 4 か所だけでは足りなかった** — 列の数え方・`:other` の単位・
+連結時のエンコーディング(2 か所)にも変更が要った。設計判断は
+`docs/development/STEPS.md` の `default-external-encoding-1`。
+
+**副産物**: UTF-8 文字列リテラルが**ロケールに関係なく壊れていた**ことが判明し、
+同時に直った(gcc と同じ生バイトが `.rodata` に入る)。
+`examples/m6/source_encoding_1_non_ascii.c` で常時検証する。
+
+**残した限界**: 単独の継続バイトは 0 として数えるため、2 つ並ぶと同じ列を報告する。
+文脈自由な数え方(= スパンをどこで切っても和が保たれる)を優先した判断で、
+期待値はテストに固定してある。
+
+**同じ欠陥の残り**は [locale-dependent-file-reads](locale-dependent-file-reads.md)
+(`.pc` / Makefile / Gemfile / リンカスクリプト)へ、**引き金が逆向きの別欠陥**は
+[argv-encoding-classification](argv-encoding-classification.md) へ切り出した。

@@ -308,6 +308,12 @@ class TestDosResilience < Minitest::Test
   # [line, column] must index that token's own spelling in the source line.
   # Multibyte characters count as one column each, before and after a block
   # comment, a spliced line and a multibyte string literal.
+  #
+  # The scan is over bytes (see Preprocess::Scanner), so a token's text is the
+  # source's bytes while its column is a character count: the slice a column
+  # indexes is taken in characters, as wide as the token's own character count,
+  # and compared as bytes. A stray multibyte character is one token, which is
+  # what lets the two be compared at all.
   def test_columns_stay_correct_in_a_non_ascii_file
     source = "// あ\nint éx = 1; /* あ\n */ int y; \\\nint z;\nchar *s = \"ああ\"; int w;\n"
     lines = source.split("\n", -1)
@@ -316,7 +322,8 @@ class TestDosResilience < Minitest::Test
 
     refute_empty tokens
     tokens.each do |t|
-      assert_equal t.text, lines[t.line - 1][t.column - 1, t.text.length],
+      columns = t.text.bytesize - t.text.count(Scanner::CONTINUATION_BYTES)
+      assert_equal t.text, lines[t.line - 1][t.column - 1, columns].b,
                    "token #{t.text.inspect} is not at #{t.line}:#{t.column}"
     end
   end

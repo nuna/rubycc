@@ -24,6 +24,20 @@ module Rubycc
     # the following physical line (see #sync). Positions are byte offsets
     # (StringScanner's native unit); columns are converted back to character
     # counts only when a token is actually made, and only for non-ASCII source.
+    #
+    # The unit of the whole scan is the *byte*: a C source file is a sequence of
+    # bytes (5.1.1.2), not text in whatever encoding the process's locale
+    # happens to name, and every construct this scanner recognizes is spelled in
+    # the basic character set. Anything else — a UTF-8 comment, a string literal
+    # holding non-ASCII bytes, a file that is not valid UTF-8 at all — only has
+    # to be carried through, and bytes carry it. #initialize therefore re-tags
+    # its input as ASCII-8BIT. That is what makes the compiler independent of
+    # Encoding.default_external: reading a header with File.read under a locale
+    # of "C" yields a US-ASCII string, and the first regexp or #split over it
+    # raises ArgumentError on the first byte past 0x7F (the bundled stddef.h has
+    # three, in a comment). Callers that read files hand bytes over already
+    # (File.binread); an embedder passing a String gets it re-tagged here, so no
+    # entry point can smuggle a locale-dependent encoding past this point.
     class Scanner
       # Two- and one-character punctuators gain the preprocessor-only "##" and
       # "#" over the shared punctuator tables; the three-character set is unchanged.
@@ -68,8 +82,27 @@ module Rubycc
       WIDE_CHAR_RE = /L'(?:[^'\\\n]|\\[^\n])*(?:'|\\)?/
       WIDE_STRING_RE = /L"(?:[^"\\\n]|\\[^\n])*(?:"|\\)?/
 
+      # One character that matched no token class above (6.4p1). "Character",
+      # not "byte": a lead byte takes the continuation bytes that follow it, so
+      # a stray multibyte character stays one token spanning one column. Byte
+      # tokens would break the rule that a token's spelling starts at its
+      # reported column — a caret would point at the character and the message
+      # would name a third of it — and would report one error per byte. A byte
+      # that is not UTF-8 at all (a lone continuation byte, or a lead byte with
+      # nothing after it) is a token of its own, which keeps the scan total for
+      # input that is not UTF-8. Tagged /n because the scanned text is bytes.
+      OTHER_RE = /[\xC0-\xFF][\x80-\xBF]*|./n
+
+      # UTF-8 continuation bytes (0b10xxxxxx): the bytes #column_at does not
+      # count, so that a multibyte character spans one column. Spelled as a byte
+      # range over an ASCII-8BIT string, which is what the scanned text is.
+      CONTINUATION_BYTES = "\x80-\xBF".b.freeze
+
       def initialize(source, filename:)
         @filename = filename
+        # The scan is over bytes, so anything handed over as text is re-tagged
+        # here — never transcoded (see the class comment).
+        source = source.b unless source.encoding == Encoding::BINARY
         # -1 keeps a trailing empty field so line numbers map 1:1 to entries.
         @lines = source.split("\n", -1)
         splice(source)
@@ -127,7 +160,7 @@ module Rubycc
           @spliced = source
           return
         end
-        spliced = +""
+        spliced = +"".b
         pos = 0
         while (idx = source.index("\\\n", pos))
           spliced << source[pos...idx]
@@ -166,17 +199,38 @@ module Rubycc
       end
 
       # The 1-based column of byte offset `pos`, counted in characters from the
-      # current physical line's start. Byte arithmetic serves ASCII source
-      # directly; non-ASCII source has to count characters, and must count them
-      # *incrementally*: measuring the whole @line_start..pos span per token
-      # costs O(line length) each time, so a single long line of L tokens costs
-      # O(L^2) — and one non-ASCII byte anywhere in the file (a comment in
-      # Japanese, a UTF-8 BOM) is enough to switch @ascii_only off for all of
-      # it. Tokens are located left to right, so keeping the last (byte offset,
-      # column) pair as a cursor and counting only the span since then makes a
-      # line cost O(line length) in total. Should a caller ever ask for an
-      # offset behind the cursor, the count restarts from the line start, so the
-      # answer stays right even if that monotonicity is lost.
+      # current physical line's start. A "character" here is a byte that is not
+      # a UTF-8 continuation byte: the scanned text is bytes, so the count
+      # cannot be delegated to String#length, and this rule gives the character
+      # count exactly for well-formed UTF-8 (the only multibyte encoding a
+      # caret-and-column diagnostic can hope to line up on a terminal) while
+      # staying defined — one column per byte that can begin a character — for
+      # input that is not UTF-8 at all. It is also decomposable, which the
+      # incremental cursor below needs: the count over a span is the sum over
+      # its parts however the span is cut, even mid-character.
+      #
+      # A rule that looked at the byte before — "count a
+      # continuation byte unless a lead byte precedes it" — would be more
+      # accurate on malformed input and would lose exactly that: a span cut
+      # between a lead byte and its continuation would be counted one way by
+      # the first half and another by the second, and the running total below
+      # would drift. The price is paid where the input is not UTF-8 anyway: a
+      # lone continuation byte counts as nothing, so two of them report the same
+      # column and the rest of that line is reported as many columns short (the
+      # answer is pinned in test/test_source_encoding.rb rather than left to be
+      # discovered).
+      #
+      # Byte arithmetic serves ASCII source directly; non-ASCII source has to
+      # count characters, and must count them *incrementally*: measuring the
+      # whole @line_start..pos span per token costs O(line length) each time, so
+      # a single long line of L tokens costs O(L^2) — and one non-ASCII byte
+      # anywhere in the file (a comment in Japanese, a UTF-8 BOM) is enough to
+      # switch @ascii_only off for all of it. Tokens are located left to right,
+      # so keeping the last (byte offset, column) pair as a cursor and counting
+      # only the span since then makes a line cost O(line length) in total.
+      # Should a caller ever ask for an offset behind the cursor, the count
+      # restarts from the line start, so the answer stays right even if that
+      # monotonicity is lost.
       def column_at(pos)
         return pos - @line_start + 1 if @ascii_only
 
@@ -185,7 +239,8 @@ module Rubycc
           @column_chars = 0
         end
         if pos > @column_pos
-          @column_chars += @spliced.byteslice(@column_pos, pos - @column_pos).length
+          span = @spliced.byteslice(@column_pos, pos - @column_pos)
+          @column_chars += span.bytesize - span.count(CONTINUATION_BYTES)
           @column_pos = pos
         end
         @column_chars + 1
@@ -255,7 +310,7 @@ module Rubycc
           # :other token (6.4p1), deferring the decision of whether it is an
           # error to a later phase.
           type = :other
-          text = ss.getch
+          text = ss.scan(OTHER_RE)
         end
         make_token(type, text, line, column, space_before)
       end
