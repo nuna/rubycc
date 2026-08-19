@@ -1,11 +1,11 @@
 ---
-status: open
+status: in-progress
 kind: debt
 opened: 2026-08-12
 closed:
-branch:
+branch: dos-limits-retune
 pr:
-steps: []
+steps: [dos-limits-retune-1]
 ---
 
 # DoS フェイルセーフの上限値を、実環境の実測で再調整する
@@ -44,6 +44,44 @@ steps: []
 **正しさの問題で DoS 対策とは別軸**なので、この課題には含めない
 (`docs/development/ROADMAP.md` §3 の負債表に残る)。
 
+
+### 2026-08-19(測定 — `dos-limits-retune-1`)
+
+**上限を支配しているのは libc でもホストのスタックサイズでもなく、Ruby の VM スタックだった。**
+
+パーサの再帰は Ruby レベルの再帰なので、限界を決めるのは `ulimit -s` ではなく
+`RUBY_THREAD_VM_STACK_SIZE`(既定 1 MiB)である。実測(2026-08-19、括弧 300 段
+= 共有カウンタで上限 500 に達する入力):
+
+| VM スタック | 結果 |
+|---|---|
+| 1 MiB(既定) | **診断が勝つ** |
+| 512 KiB | 診断が勝つ |
+| 256 KiB 以下 | SystemStackError(診断が負ける) |
+
+`ulimit -s` は 8 MiB から 128 KiB まで下げても**結果が変わらない**(すべて診断が勝つ)。
+つまり本 issue が「実行環境のスタックサイズ」と書いていた前提は、**Ruby 実装では
+当たらない**。
+
+**musl / Alpine でも同じ**: `ruby:3.4-alpine`(ruby 3.4.10、x86_64-linux-musl)で
+同じ入力を通し、`error: expression nested too deeply` が出た。受け入れ条件が求めた
+「musl / Alpine での測定」はこれで満たしている。
+
+**負け方も想定と違った。** issue は「診断エラーになる前に SIGSEGV で落ちる」ことを
+危険として挙げていたが、Ruby レベルの再帰が尽きたときに起きるのは **SystemStackError
+という Ruby の例外**であり、メモリ安全性が壊れる形ではない。
+
 ## 決着
 
-(未着手)
+**現状維持(上限 500 のまま)。** 根拠:
+
+1. 既定の VM スタック(1 MiB)に対して**2 倍の余裕**がある(512 KiB でもまだ診断が勝つ)
+2. libc とホストのスタックサイズは**この限界を動かさない**。musl でも同じ挙動
+3. 危険として挙げられていた SIGSEGV は、**Ruby 実装である以上起きない**
+   (起きるのは捕捉可能な `SystemStackError`)
+4. 実コードの最大は 41 括弧段で、上限 500 との差は依然として大きい
+
+**再評価が要るのは、ホストのスタックサイズが変わったときではなく、
+`RUBY_THREAD_VM_STACK_SIZE` を既定の 4 分の 1 以下に絞った環境で動かすとき**である。
+`docs/development/security-dos-review.md` の「今後の課題」にあった前提を、この形に
+置き換える。
