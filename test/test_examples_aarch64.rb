@@ -69,10 +69,14 @@ class TestExamplesAArch64 < Minitest::Test
   def build_and_run_with_rubycc(path)
     in_tmpdir do |dir|
       object_path = File.join(dir, "example.o")
-      binary = Rubycc::Compiler.new.compile(
-        File.read(path), filename: path, target: "aarch64",
-        include_paths: CROSS_SYSTEM_INCLUDE_PATHS, system_includes: false
-      )
+      # Warnings are discarded, as they are on the host runner (see
+      # TestExamples#compile_example): this comparison is [exit status, stdout].
+      binary = Rubycc::Diagnostics.to(nil) do
+        Rubycc::Compiler.new.compile(
+          File.read(path), filename: path, target: "aarch64",
+          include_paths: CROSS_SYSTEM_INCLUDE_PATHS, system_includes: false
+        )
+      end
       File.binwrite(object_path, binary)
       link_and_run_aarch64(object_path)
     end

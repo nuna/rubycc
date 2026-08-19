@@ -216,8 +216,8 @@ module Rubycc
       # `__attribute__((destructor(0)))`, lands in the same section and, being
       # ahead of the supplier in link order, ends up running *after* this slot
       # rather than before it. gcc warns about that priority range for exactly
-      # this kind of reason; rubycc has no warning channel, so the ordering there
-      # is simply implementation-defined.)
+      # this kind of reason; rubycc's linker warns about nothing, so the ordering
+      # there is simply implementation-defined.)
       CXA_FINALIZE_SYMBOL    = "__cxa_finalize"
       DSO_FINALIZER_SYMBOL   = "__rubycc_dso_finalize"
       DSO_FINI_ARRAY_SECTION = ".fini_array.00000"

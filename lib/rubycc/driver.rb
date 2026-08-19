@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rbconfig"
+require_relative "diagnostics"
 require_relative "compile_error"
 require_relative "compiler"
 require_relative "preprocess/preprocessor"
@@ -83,13 +84,18 @@ module Rubycc
       @system_includes = true  # -nostdinc clears this
       @default_libs = true     # -nodefaultlibs clears this
       @target = nil            # -target/--target; defaults to the host CPU
+      @warnings = true         # -w clears this
     end
 
     def run
       return print_version if version_requested?
 
       parse
-      dispatch
+      # Compiler warnings (Diagnostics.warn, today only #warning) follow this
+      # invocation's error stream, so an in-process caller that injected one —
+      # rmake running the Driver inside a step worker — captures them with
+      # everything else this run reports. `-w` discards them instead.
+      Diagnostics.to(@warnings ? @err : nil) { dispatch }
       0
     rescue UsageError => e
       @err.puts "#{PROG}: error: #{e.message}"
@@ -145,6 +151,7 @@ module Rubycc
       when "-fvisibility=default"                 then @default_visibility = :default; i + 1
       when "-fvisibility=internal"                then @default_visibility = :internal; i + 1
       when "-fvisibility=protected"               then @default_visibility = :protected; i + 1
+      when "-w"                                  then @warnings = false; i + 1
       when "-nostdinc"                           then @system_includes = false; i + 1
       when "-nodefaultlibs"                       then @default_libs = false; i + 1
       when "-target", "--target" then @target = normalize_target(value(arg, i)); i + 2
@@ -186,9 +193,35 @@ module Rubycc
     # Whether `arg` is a documented gcc flag family this toolchain does not model
     # but accepts without complaint: the optimization (`-O*`), debug (`-g*`),
     # warning (`-W*`) and remaining code-generation (`-f*`) switches, the language-standard
-    # selector (`-std=…`), and the fixed bare set above. A machine switch (`-m*`)
-    # is deliberately excluded — it names a target capability this toolchain does
-    # not honor, so it is warned about like any other unmodelled option.
+    # selector (`-std=…`), and the fixed bare set above.
+    #
+    # The warning switches deserve their decision spelled out, now that there is
+    # a warning to switch (Diagnostics.warn, reached today only by `#warning`):
+    #
+    # * `-w` (suppress all warnings) **is honored** — see #handle_arg. It costs
+    #   one flag and cannot change what compiles, only what is printed, and it
+    #   was not even in the ignore list before (lowercase, so the `-W*` family
+    #   regex misses it): a build passing `-w` drew "unknown option '-w'
+    #   ignored", which is itself noise of the kind `-w` asks to be spared.
+    #   It silences the compiler's diagnostics only, not this driver's own
+    #   "PROG: warning: …" lines, which is where gcc draws the same line
+    #   (measured 2026-08-19, gcc 13.3.0: `gcc -w -c a.c b.o` prints no #warning
+    #   but still prints "gcc: warning: b.o: linker input file unused …").
+    # * `-Werror` (and `-Werror=…`) **is not honored**: it stays accepted and
+    #   ignored. Honoring it would mean failing a build over the one warning
+    #   rubycc happens to implement while staying silent about the hundreds gcc
+    #   would have raised on the same source — a promotion of an arbitrary
+    #   subset, which is worse than not promoting at all. It would also aim
+    #   straight at what this channel was built for: a portability header's
+    #   `#warning "unrecognized compiler"` would go back to killing the build,
+    #   the very failure #warning support exists to end. Revisit if rubycc ever
+    #   grows a warning set worth calling a set.
+    # * The individual `-Wfoo` / `-Wno-foo` selectors are likewise accepted and
+    #   ignored: rubycc has no warning categories to select between yet.
+    #
+    # A machine switch (`-m*`) is deliberately excluded — it names a target
+    # capability this toolchain does not honor, so it is warned about like any
+    # other unmodelled option.
     def silently_ignored?(arg)
       SILENT_IGNORE_EXACT.include?(arg) ||
         arg.match?(/\A-(?:O|g|W|f)/) || arg.start_with?("-std=")

@@ -6,6 +6,7 @@ module Rubycc
   class Error < StandardError; end
 end
 
+require_relative "rubycc/diagnostics"
 require_relative "rubycc/compile_error"
 require_relative "rubycc/type"
 require_relative "rubycc/front/token"

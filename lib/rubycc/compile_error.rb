@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "diagnostics"
+
 module Rubycc
   # Base error class (also defined in rubycc.rb; reopened here so this file can
   # be required standalone).
@@ -27,10 +29,11 @@ module Rubycc
 
     private
 
+    # Rendered by the shared diagnostic formatter, so an error and a warning
+    # (Diagnostics.warn) differ only in the severity word.
     def build_message
-      header = "#{filename}:#{line}:#{column}: error: #{description}"
-      caret = "#{" " * (column - 1)}^"
-      "#{header}\n#{source_line}\n#{caret}"
+      Diagnostics.render("error", description, filename: filename, line: line,
+                                               column: column, source_line: source_line)
     end
   end
 end

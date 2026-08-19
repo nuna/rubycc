@@ -4977,8 +4977,8 @@ module Rubycc
       # unsigned char / uint8_t buffer and handing it to the char* str*/mem* API
       # (e.g. redcarpet's html_smartypants.c passes a uint8_t* to strncmp). Two
       # such pointees address objects of identical size and alignment, so the
-      # reinterpretation is benign; accept it here (this subset has no warning
-      # channel, so nothing is emitted). The three 1-byte character types are
+      # reinterpretation is benign; accept it here (this subset warns about
+      # nothing, so it is accepted silently). The three 1-byte character types are
       # also mutually compatible, including plain char vs signed char which share
       # a signedness -- this is the char*/signed char* debt Step 73 opened
       # (docs/development/ROADMAP.md), which the character family carries no representation
