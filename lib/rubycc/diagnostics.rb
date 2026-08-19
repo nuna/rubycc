@@ -31,7 +31,20 @@ module Rubycc
     INHERIT = Object.new
     private_constant :INHERIT
 
-    @stream = INHERIT
+    # The stream lives in thread-local storage rather than in a class variable.
+    # Nothing in this compiler runs two Drivers in one process today (rmake's
+    # `-j` forks each step, and a forked worker runs its Driver in-process but
+    # alone), so a shared slot would be correct as things stand. Thread-local
+    # costs one lookup and removes the whole class of bug the moment somebody
+    # does thread a second compile through here.
+    KEY = :rubycc_diagnostics_stream
+    private_constant :KEY
+
+    # Thread-local storage cannot tell "set to nil" from "never set", and the
+    # difference matters here: nil is a caller asking to discard, an absent slot
+    # means inherit $stderr. DISCARD carries the request instead.
+    DISCARD = Object.new
+    private_constant :DISCARD
 
     class << self
       # A gcc-style diagnostic: the "file:line:column: severity: text" header,
@@ -58,17 +71,20 @@ module Rubycc
       # restored afterwards, so a nested run (rmake invoking the Driver
       # in-process) leaves nothing behind.
       def to(stream)
-        previous = @stream
-        @stream = stream
+        previous = Thread.current.thread_variable_get(KEY) || INHERIT
+        Thread.current.thread_variable_set(KEY, stream.nil? ? DISCARD : stream)
         yield
       ensure
-        @stream = previous
+        Thread.current.thread_variable_set(KEY, previous)
       end
 
       private
 
       def stream
-        @stream.equal?(INHERIT) ? $stderr : @stream
+        current = Thread.current.thread_variable_get(KEY) || INHERIT
+        return $stderr if current.equal?(INHERIT)
+
+        current.equal?(DISCARD) ? nil : current
       end
     end
   end
