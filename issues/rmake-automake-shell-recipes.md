@@ -1,9 +1,9 @@
 ---
-status: open
+status: in-progress
 kind: gap
 opened: 2026-08-16
 closed:
-branch:
+branch: rmake-automake-shell-recipes
 pr:
 steps:
   - rmake-automake-shell-recipes-1
@@ -92,3 +92,35 @@ rbtrace 0.5.5の再検証で、msgpackのconfigureおよびC compile/linkはruby
 ## 決着
 
 未着手。
+
+### 2026-08-19(再現 — `rmake-automake-shell-recipes-1` の前半)
+
+rbtrace のアーカイブを使わずに再現した。最小 Makefile 1 本(`for` / `if` / brace group /
+シェル変数を 1 行に持つ recipe)で、GNU make は成功し rmake は失敗する。
+
+```
+=== GNU make ===  found: a.txt        (exit 0)
+=== rmake     ===  sh: 1: Syntax error: "fi" unexpected
+                   sh: 1: Syntax error: "done" unexpected
+                   sh: 1: Syntax error: "}" unexpected
+                   all: recipe command failed (exited with status 2)
+```
+
+**エラーが `sh:` から出ている点が重要である。** `lib/rubycc/rmake/executor.rb` は
+「shell を使わない・shell コマンド文字列を組み立てない」(DESIGN R5: 最小ターゲット環境に
+`/bin/sh` は無い)と宣言しており、コード中に `sh` の起動は無い。それでも `/bin/sh` が
+動いているのは、**recipe を `;` で分割した断片を `Process.spawn` に渡しているため**と
+見られる — Ruby の `spawn` は**メタ文字を含む単一文字列を渡されるとシェルに委ねる**。
+
+つまり現状は次の 2 つが同時に成り立っている:
+
+1. rmake は「shell を使わない」と宣言し、未知の構文には `UnsupportedRecipeError` を
+   上げる設計である
+2. 実際には、分割された断片が `/bin/sh` に渡って**構文エラーとして失敗**している
+   (`UnsupportedRecipeError` にすらなっていない)
+
+**この 2 番目は、対応範囲を決める前に閉じるべき穴である。** shell が無い環境で同じ
+recipe を踏めば挙動が変わる(`sh` が無いのだから別のエラーになる)以上、
+**現状は「shell の有無で結果が変わる」= R5 の境界が破れている**。
+
+範囲の決定(どの構文を rmake 自身が解釈するか)は次段の作業とする。
