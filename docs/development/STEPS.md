@@ -12184,3 +12184,82 @@ gcc は警告 1 行を出して終了コード 0 で通る(実測 2026-08-19、g
 違う**・破棄・ストリームの復元)。サンプルは
 `examples/m6/warning_directive_1_notice.c`(ビルドそのものが実演で、gcc 差分は
 「未知のコンパイラ」分岐が選んだ値を覆う)。
+
+## mkmf-shell-free-conftest-1 — 診断を 1 つ書いて、実測に 1 つ潰された
+
+### 実物を当てるまで、誰も試していなかった
+
+DESIGN R5 は「ミニマム環境には as / ld / ar / make / **sh も存在しない**」を前提に、
+ツールチェイン全体を Almost Pure Ruby で提供すると定めている。だが
+**その環境で C 拡張をビルドした実績が無かった。** `examples/distroless/Dockerfile` は
+**コンパイルを `/bin/sh` のある builder 段で行う**構成で(上流の distroless に Ruby が
+無いのでそうするしかない)、冒頭が「最終段を distroless *相当の姿勢* にする」と
+断っている。
+
+利用者から Docker Hardened Image(`dhi.io/ruby:4`)を教わり、**Ruby はあるがシェルも
+make も cc も無い**という条件が初めて揃った。イメージを export して 4,985 エントリを
+数え、シェルが 1 つも無いことを確認したうえで `RUBYCC=1 gem install json` を回した。
+
+### 私の診断は間違っていた
+
+失敗を見て、`mkmf.log` に残るコマンドが 1 個の文字列であることから
+**「文字列を `system` に渡すからシェルが要る」**と診断し、issue にそう書いた。
+実測がそれを否定した:
+
+| 呼び方 | 結果 |
+|---|---|
+| `system("ruby -e 0")`(メタ文字なし) | **成功**(sh 無しで直接 exec) |
+| `system("ruby -e '0'")`(引用符あり) | 失敗 |
+
+**Ruby はメタ文字が無ければシェルを経由しない。** そして落ちた json の conftest 行には
+**メタ文字が 1 つも無かった**。私が名指しした原因では落ちていなかった。
+
+`system("echo hi") -> nil` という「証拠」も誤読だった。**`echo` の実行ファイルが
+イメージに無い**ためで、シェルの不在とは別の理由である。**同じ nil が 2 つの異なる
+原因から出ることを確かめずに、片方だと決めつけていた。**
+
+### 本当の壁は 3 つ、いずれもシェルではなかった
+
+1. **`/usr/bin/env` が無い**。`exe/rubycc` の shebang が `#!/usr/bin/env ruby` なので
+   exec が 127 で失敗する。RubyGems 生成の binstub(`#!/usr/local/bin/ruby`)なら動く
+2. **`Encoding.default_external`**。`LANG` 未設定で US-ASCII になり、`File.read` した
+   **同梱ヘッダの非 ASCII バイト**で即死する。**ホストでも再現する** —
+   最小環境固有ではない
+3. **jemalloc ヘッダの欠落**。`ruby/config.h` が `RUBY_ALTERNATIVE_MALLOC_HEADER` を
+   定義しているのにヘッダが無く、**gcc でも `#include "ruby.h"` が通らない**。
+   このイメージは現状どのコンパイラでも C 拡張をビルドできない
+
+1 と 2 は別 issue に切った(`env-less-shebang` / `default-external-encoding`)。
+3 のため **dhi は受け入れゲートに使えない** — 合格条件は `ruby:4.0-slim` から
+シェルを剥いだイメージに差し替え、**dhi の測定は「行き止まり」として残した**。
+実イメージを当てて初めて分かったことだからである。
+
+### それでも変更には価値がある
+
+シェルが要るのは**メタ文字を含む conftest** で、それは実在する
+(mkmf が吐く `-DSYSCONFDIR=\"…\"` の形はコーパスにも出る)。シェルの無いイメージでの
+前後比較:
+
+| `-DGREETING=\"hi\"` を含む `try_compile` | 結果 |
+|---|---|
+| 変更前 | `The compiler failed to generate an executable file.` |
+| **変更後** | **`true`** |
+
+変更前の文言が示すとおり、**失敗は「コンパイラが無い」という誤診断として現れる**。
+これが今回の実装が消したものである。
+
+### 断り方を先に決めた
+
+分解できない構文(パイプ・`&&`・`;`・リダイレクト等)に出会ったら
+**明示的に例外を上げ、シェルには絶対に委ねない**。理由は
+`rmake-automake-shell-recipes` の調査で「**shell の有無で結果が変わる**」状態を
+問題として記録した直後だからで、同じ形を新しく作るわけにいかない。
+
+`false` を返さないのも意図である — mkmf は false を「コンパイラが無い」と誤診断する。
+**mkmf 自身の `Logging.message` で mkmf.log に理由を書いてから** raise する。
+
+### 分解器は書かずに移した
+
+argv への分解は **rmake が既に持っていた**(引用を尊重した語分割)。コピーではなく
+`Rubycc::CommandLine` へ**移設**し、rmake はそれを使う薄い層になった。rmake の
+外向き挙動とエラー文言は変えていない(既存テスト 55 件を無改変で通過)。
