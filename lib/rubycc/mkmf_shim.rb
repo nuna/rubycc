@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rbconfig"
+require_relative "command_line"
 
 # The mkmf integration shim: requiring this file (before `require "mkmf"`)
 # reroutes every conftest command mkmf issues — compile, link, preprocess — to
@@ -24,6 +25,16 @@ require "rbconfig"
 # repository's `lib/` on the load path when rubycc is run from a checkout rather
 # than an installed gem. The shim prepends that directory to `RUBYLIB` so the
 # value propagates to the child processes mkmf spawns.
+#
+# Rewriting the RbConfig keys settles *what* mkmf runs; ShellFreeCommands
+# settles *how*. mkmf builds each conftest command as one string and hands it to
+# `system`/`IO.popen`, which lets Ruby decide between exec'ing it and handing it
+# to /bin/sh — and the environment DESIGN R5 targets has no /bin/sh. The shim
+# prepends the two methods that spawn (`xsystem`, `xpopen`) and converts a string
+# command into an argv array first, so nothing about the run depends on a shell
+# being there. A command that genuinely needs shell interpretation is refused
+# with its reason written to mkmf.log rather than being run through a shell that
+# may or may not exist.
 module Rubycc
   module MkmfShim
     # The repository's lib/ directory (this file lives at lib/rubycc/mkmf_shim.rb)
@@ -43,6 +54,102 @@ module Rubycc
         "CPP"       => "#{RUBYCC_EXE} -E",
         "PKG_CONFIG" => PKGCONF_EXE
       }
+    end
+
+    # Raised when a conftest command cannot be run without a shell. It is a
+    # refusal, not a build failure: mkmf reads a false return as "the compiler
+    # cannot build this", which would misreport an unrunnable command as a
+    # missing header or a broken toolchain, so the shim stops the extconf
+    # instead.
+    class ShellRequiredError < Rubycc::Error; end
+
+    # Prepended to MakeMakefile so the two methods that spawn a conftest —
+    # `xsystem` (compile/link/run) and `xpopen` (the same, reading the output) —
+    # receive an argv array where mkmf built a string. mkmf's own
+    # `expand_command` keeps whatever shape it is given (an Array stays an Array
+    # and is spawned directly; a String stays a String and reaches the shell),
+    # so converting the command on the way in is the whole change: the logging,
+    # the werror handling and the env hash are still mkmf's.
+    #
+    # The conversion runs mkmf's `$(VAR)` expansion *before* splitting, which is
+    # the order a shell saw: mkmf expanded the variables and sh did the word
+    # splitting. `super` expands again, on words that no longer hold `$(...)`.
+    module ShellFreeCommands
+      def xsystem(command, werror: false)
+        super(rubycc_spawn_form(command), werror: werror)
+      end
+
+      def xpopen(command, *mode, &block)
+        super(rubycc_spawn_form(command), *mode, &block)
+      end
+
+      private
+
+      # The command as something spawnable without a shell. Arrays are already
+      # that and pass through untouched (mkmf builds the pkg-config calls that
+      # way); a string is expanded and split. The method name is prefixed
+      # because prepending to MakeMakefile puts it on every extconf's Object.
+      def rubycc_spawn_form(command)
+        return command unless command.is_a?(String)
+
+        _env, expanded = expand_command(command)
+        MkmfShim.spawn_form(expanded)
+      end
+    end
+
+    # Split +command+ into the argv array mkmf should spawn, or refuse it.
+    # A one-word command comes back as `[[program, program]]`: `system(env, str)`
+    # with a single string would put Ruby back in charge of choosing between exec
+    # and the shell (it scans for metacharacters and splits on spaces), and the
+    # explicit [program, argv0] form takes that choice away — `./conftest` and a
+    # path with a space in it are then spawned the same way.
+    def self.spawn_form(command)
+      argv = CommandLine.argv(command)
+      argv.length == 1 ? [[argv[0], argv[0]]] : argv
+    rescue CommandLine::UnsupportedSyntaxError => e
+      refuse!(e, command)
+    end
+
+    # Report a command the shim will not run. The reason goes to mkmf.log, where
+    # anyone debugging a failed extension build already looks, and then the
+    # exception stops the extconf: a silent false here is exactly the
+    # misdiagnosis ("You have to install development tools first") that hid this
+    # whole problem before.
+    def self.refuse!(error, command)
+      message = <<~MSG
+        rubycc: refusing to run a conftest command that needs a shell (#{error.construct}):
+          #{command}
+        The mkmf shim spawns conftest commands as an argv array because the target
+        environment has no /bin/sh (DESIGN R5), and it does not fall back to one:
+        a fallback would make the result depend on whether a shell happens to be
+        installed. Nothing was run.
+      MSG
+      log_to_mkmf(message)
+      raise ShellRequiredError, message
+    end
+
+    # Append +message+ to mkmf.log through mkmf's own Logging module (which
+    # opens the file if it is not open yet). Logging is best-effort: if the log
+    # cannot be written the refusal itself must still be raised.
+    def self.log_to_mkmf(message)
+      return unless defined?(::MakeMakefile::Logging)
+
+      ::MakeMakefile::Logging.message("%s", message)
+    rescue SystemCallError, IOError
+      nil
+    end
+
+    # Put ShellFreeCommands in front of MakeMakefile's own methods.
+    #
+    # mkmf is normally *not* loaded yet at this point: the shim is injected with
+    # `RUBYOPT=-rrubycc/mkmf_shim`, which runs before extconf.rb requires mkmf.
+    # Defining the module first and prepending to it works in that order because
+    # mkmf reopens the module rather than replacing it, and its closing
+    # `include MakeMakefile` carries the prepended module into Object with it.
+    # Prepending an already-prepended module is a no-op, so this is idempotent.
+    def self.prepend_shell_free_commands!
+      Object.const_set(:MakeMakefile, Module.new) unless defined?(::MakeMakefile)
+      ::MakeMakefile.prepend(ShellFreeCommands)
     end
 
     # Rewrites the toolchain keys in both RbConfig hashes and prepends the
@@ -65,6 +172,7 @@ module Rubycc
       end
 
       prepend_rubylib!
+      prepend_shell_free_commands!
     end
 
     # Puts the repository lib/ at the front of RUBYLIB so a rubycc executable
