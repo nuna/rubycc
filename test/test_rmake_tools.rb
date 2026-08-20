@@ -317,7 +317,7 @@ class TestRmakeTools < Minitest::Test
   def test_real_json_parser_makefile_builds_so
     AcceptanceResultReporter.with_result("rmake-json-parser") do
       unless ENV["RMAKE_ACCEPTANCE"] == "1" || AcceptanceFetchHelper.strict?
-        skip "set RMAKE_ACCEPTANCE=1 to run the json acceptance"
+        skip "set RMAKE_ACCEPTANCE=1 to run the networked json acceptance"
       end
 
       src_parser = fetch_json_parser_src

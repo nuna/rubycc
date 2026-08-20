@@ -239,7 +239,7 @@ class TestGemInstall < Minitest::Test
   # yield the GEM_HOME so the caller can require and drive the built gem.
   def acceptance_gem_install(name, version, hermetic: false)
     unless ENV["RMAKE_ACCEPTANCE"] == "1" || AcceptanceFetchHelper.strict?
-      skip "set RMAKE_ACCEPTANCE=1 to run the gem-install acceptance"
+      skip "set RMAKE_ACCEPTANCE=1 to run the networked gem-install acceptance"
     end
 
     Dir.mktmpdir("rubycc-gem-install") do |gem_home|

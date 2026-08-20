@@ -209,7 +209,7 @@ class TestMkmfConftest < Minitest::Test
   def require_acceptance!
     return true if acceptance?
 
-    skip "set RMAKE_ACCEPTANCE=1 to run the acceptance"
+    skip "set RMAKE_ACCEPTANCE=1 to run the networked acceptance"
   end
 
   # The set of HAVE_* macro names a Makefile defines through its CPPFLAGS, read
