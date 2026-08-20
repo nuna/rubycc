@@ -422,7 +422,8 @@ module Rubycc
     end
 
     def compile_source(input)
-      Compiler.new.compile(File.read(input[:path]), filename: input[:path],
+      # Bytes, not locale-encoded text: see Preprocess::Scanner's class comment.
+      Compiler.new.compile(File.binread(input[:path]), filename: input[:path],
                            include_paths: @include_paths, pic: @pic, defines: @defines,
                            system_includes: @system_includes, target: target, libc: libc,
                            default_visibility: @default_visibility)
@@ -437,12 +438,12 @@ module Rubycc
     # byte-faithful copy of gcc's `-E` output; it is enough for a probe that only
     # needs macros expanded and headers included. Non-source inputs are ignored.
     def preprocess_only
-      text = +""
+      text = +"".b
       @inputs.each do |input|
         next unless input[:kind] == :source
 
         tokens = preprocessor_for_target.preprocess(
-          File.read(input[:path]), filename: input[:path],
+          File.binread(input[:path]), filename: input[:path],
           include_paths: @include_paths, defines: @defines,
           system_includes: @system_includes
         )
@@ -470,7 +471,7 @@ module Rubycc
     end
 
     def render_preprocessed(tokens)
-      out = +""
+      out = +"".b
       previous = nil
       tokens.each do |token|
         if previous.nil?
@@ -480,11 +481,28 @@ module Rubycc
         elsif token.space_before
           out << " "
         end
-        out << token.text
+        out << token_bytes(token.text)
         previous = token
       end
       out << "\n" unless out.empty?
       out
+    end
+
+    # A token's spelling as bytes. Almost every token comes from the scanner and
+    # is ASCII-8BIT already (see Preprocess::Scanner); the exceptions are the
+    # ones the preprocessor synthesizes rather than scans, and __FILE__ is the
+    # one that matters — it expands to a string literal spelled with the file
+    # name this driver was handed, which carries the locale's encoding. Appending
+    # such a string to a buffer that already holds raw bytes (a UTF-8 string
+    # literal out of the source) is an Encoding::CompatibilityError: -E would
+    # abort with a Ruby backtrace instead of printing the text it was asked for.
+    # Re-tagging is not transcoding — the bytes are the same either way — and it
+    # costs an allocation only for the strings that are actually mixed, since a
+    # spelling that is already bytes, or is pure ASCII, is compatible as it is.
+    def token_bytes(text)
+      return text if text.encoding == Encoding::BINARY || text.ascii_only?
+
+      text.b
     end
 
     # --- diagnostics -------------------------------------------------------

@@ -307,7 +307,8 @@ module Rubycc
                           system_includes: true, target: "x86_64",
                           libc: Preprocess::Preprocessor.host_libc,
                           default_visibility: :default)
-      source = File.read(input_path)
+      # Bytes, not locale-encoded text: see Scanner's class comment.
+      source = File.binread(input_path)
       binary = new.compile(source, filename: input_path, include_paths: include_paths,
                                    pic: pic, defines: defines, system_includes: system_includes,
                                    target: target, libc: libc,

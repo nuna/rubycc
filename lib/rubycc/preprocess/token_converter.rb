@@ -55,7 +55,7 @@ module Rubycc
             tokens << front_token(pp, :punct, pp.text)
             index += 1
           when :other
-            raise_at(pp, "unexpected character #{pp.text.inspect}")
+            raise_at(pp, "unexpected character #{spelling_of(pp.text)}")
           end
         end
         tokens
@@ -143,6 +143,16 @@ module Rubycc
           filename: pp.filename, line: pp.line, column: pp.column,
           source_line: pp.source_line, base: base, suffix: suffix
         )
+      end
+
+      # How an :other token is named in its diagnostic. The scanner works on
+      # bytes, so the token's text is bytes; a well-formed UTF-8 character is
+      # re-tagged so the message shows the character the author typed rather
+      # than the escapes of its encoding, and anything else stays bytes and is
+      # shown escaped (there is no reading of it to offer).
+      def spelling_of(text)
+        utf8 = text.dup.force_encoding(Encoding::UTF_8)
+        (utf8.valid_encoding? ? utf8 : text).inspect
       end
 
       def raise_at(pp, description)
