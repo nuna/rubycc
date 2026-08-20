@@ -21,10 +21,19 @@ require_relative "command_line"
 # in-process only (no file on disk is modified) and idempotent: requiring the
 # shim twice is a no-op.
 #
-# The rubycc executables shebang-launch `require "rubycc"`, which needs the
-# repository's `lib/` on the load path when rubycc is run from a checkout rather
-# than an installed gem. The shim prepends that directory to `RUBYLIB` so the
-# value propagates to the child processes mkmf spawns.
+# The rubycc executables are launched through the running interpreter — the
+# rewritten `CC` is `<RbConfig.ruby> <path>/exe/rubycc`, not the bare path. Their
+# `#!/usr/bin/env ruby` shebang is resolved by the kernel, and a minimal image
+# (DESIGN R5) need not have /usr/bin/env: `dhi.io/ruby:4` has no coreutils at
+# all, and there every exec of the executable fails with status 127 before a line
+# of rubycc runs. Naming the interpreter also settles *which* Ruby compiles —
+# `env ruby` takes the first one on PATH, which on a multi-Ruby host is not
+# necessarily the one the gem is being installed into.
+#
+# They also `require "rubycc"`, which needs the repository's `lib/` on the load
+# path when rubycc is run from a checkout rather than an installed gem. The shim
+# prepends that directory to `RUBYLIB` so the value propagates to the child
+# processes mkmf spawns.
 #
 # Rewriting the RbConfig keys settles *what* mkmf runs; ShellFreeCommands
 # settles *how*. mkmf builds each conftest command as one string and hands it to
@@ -40,18 +49,44 @@ module Rubycc
     # The repository's lib/ directory (this file lives at lib/rubycc/mkmf_shim.rb)
     # and the gcc-compatible executables that stand in for the external toolchain.
     LIB_DIR     = File.expand_path("..", __dir__)
-    RUBYCC_EXE  = File.expand_path("../../exe/rubycc", __dir__)
-    PKGCONF_EXE = File.expand_path("../../exe/rubycc-pkgconf", __dir__)
+    EXE_DIR     = File.expand_path("../../exe", __dir__)
+    RUBYCC_EXE  = File.join(EXE_DIR, "rubycc")
+    PKGCONF_EXE = File.join(EXE_DIR, "rubycc-pkgconf")
+
+    # The interpreter every rubycc executable is launched through: this very
+    # process's Ruby, by absolute path. RbConfig.ruby is what mkmf, RubyGems and
+    # rubycc's own doctor already use to re-enter Ruby.
+    RUBY = RbConfig.ruby
+
+    # A command mkmf can embed verbatim, built from +words+: the interpreter
+    # first, then the executable (see the file comment — the shebang is not
+    # resolvable everywhere). Each word is quoted, because a command that has to
+    # travel as a single string comes apart at the first space in an
+    # installation path, and both splitters that read it back — rubycc's own and
+    # the Shellwords RubyGems uses — honour the same quoting.
+    def self.launcher(*words)
+      words.map { |word| CommandLine.quote(word) }.join(" ")
+    end
+
+    # The rubycc compiler as mkmf must spell it.
+    RUBYCC_COMMAND = launcher(RUBY, RUBYCC_EXE)
 
     # The RbConfig keys rewritten to point at rubycc. Each maps to the command
-    # string mkmf embeds verbatim when it expands `$(CC)` and friends: a single
-    # shell-metacharacter-free executable path (plus, for the compound tools, the
-    # driver's own mode flag) so mkmf's `system(env, *command)` execs it directly.
+    # string mkmf embeds verbatim when it expands `$(CC)` and friends: shell-
+    # metacharacter-free words (the interpreter, the executable and, for the
+    # compound tools, the driver's own mode flag) so mkmf's `system(env,
+    # *command)` execs them directly.
+    #
+    # PKG_CONFIG is the exception that stays a bare path: mkmf resolves it with
+    # `find_executable0` (mkmf.rb's pkg_config) before running it, and that stats
+    # the value as one file name — a two-word command would simply not be found
+    # and pkg-config support would silently switch itself off. The interpreter is
+    # put in front of it at spawn time instead, by ShellFreeCommands.
     def self.replacements
       {
-        "CC"        => RUBYCC_EXE,
-        "LDSHARED"  => "#{RUBYCC_EXE} -shared",
-        "CPP"       => "#{RUBYCC_EXE} -E",
+        "CC"        => RUBYCC_COMMAND,
+        "LDSHARED"  => "#{RUBYCC_COMMAND} -shared",
+        "CPP"       => "#{RUBYCC_COMMAND} -E",
         "PKG_CONFIG" => PKGCONF_EXE
       }
     end
@@ -86,11 +121,12 @@ module Rubycc
       private
 
       # The command as something spawnable without a shell. Arrays are already
-      # that and pass through untouched (mkmf builds the pkg-config calls that
-      # way); a string is expanded and split. The method name is prefixed
-      # because prepending to MakeMakefile puts it on every extconf's Object.
+      # that and only have the interpreter supplied (mkmf builds the pkg-config
+      # calls that way); a string is expanded, split and then treated the same.
+      # The method name is prefixed because prepending to MakeMakefile puts it on
+      # every extconf's Object.
       def rubycc_spawn_form(command)
-        return command unless command.is_a?(String)
+        return MkmfShim.interpreter_form(command) unless command.is_a?(String)
 
         _env, expanded = expand_command(command)
         MkmfShim.spawn_form(expanded)
@@ -104,10 +140,32 @@ module Rubycc
     # explicit [program, argv0] form takes that choice away — `./conftest` and a
     # path with a space in it are then spawned the same way.
     def self.spawn_form(command)
-      argv = CommandLine.argv(command)
+      argv = interpreter_form(CommandLine.argv(command))
       argv.length == 1 ? [[argv[0], argv[0]]] : argv
     rescue CommandLine::UnsupportedSyntaxError => e
       refuse!(e, command)
+    end
+
+    # +argv+ with the interpreter put in front when the command runs one of
+    # rubycc's own executables directly. The rewritten `CC`/`LDSHARED`/`CPP`
+    # already carry it, but `PKG_CONFIG` cannot (see .replacements), and mkmf
+    # spawns pkg-config as an array — which reaches the kernel verbatim, shebang
+    # line and all. Supplying the interpreter here covers both spellings with one
+    # rule. A leading env hash (mkmf passes PKG_CONFIG_PATH that way) is skipped
+    # over rather than counted as the program word.
+    def self.interpreter_form(argv)
+      return argv unless argv.is_a?(Array)
+
+      index = argv.index { |word| !word.is_a?(Hash) }
+      return argv if index.nil? || !own_executable?(argv[index])
+
+      argv.dup.insert(index, RUBY)
+    end
+
+    # Whether +word+ names one of the executables this gem ships — the files
+    # whose `#!/usr/bin/env ruby` line an exec would have to resolve.
+    def self.own_executable?(word)
+      word.is_a?(String) && File.dirname(word) == EXE_DIR
     end
 
     # Report a command the shim will not run. The reason goes to mkmf.log, where

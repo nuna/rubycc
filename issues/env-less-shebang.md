@@ -1,11 +1,11 @@
 ---
-status: open
+status: in-progress
 kind: gap
 opened: 2026-08-20
 closed:
-branch:
+branch: env-less-shebang
 pr:
-steps: []
+steps: [env-less-shebang-1]
 ---
 
 # `/usr/bin/env` の無い環境で rubycc の実行ファイルが起動できない
@@ -61,7 +61,7 @@ Image、distroless 系)はこの条件に該当する。
   `RbConfig.ruby` を突き合わせる)
 - `bundle exec rake test` が 0 failures
 
-## 対応の候補(未決)
+## 対応の候補(**B を採用、2026-08-20**)
 
 | 案 | 中身 | 代償 |
 |---|---|---|
@@ -81,3 +81,29 @@ Ruby はメタ文字の無いコマンド文字列を直接 exec しており、
 ## 決着
 
 (未着手)
+
+## 決着
+
+**B を採用した**(2026-08-20)。設計判断は `docs/development/STEPS.md` の `env-less-shebang-1`。
+
+| 条件 | 結果 |
+|---|---|
+| `/usr/bin/env` の無いイメージで 127 が出ない | **達成**(`mkmf.log` / `gem_make.out` の 127 出現 0。rubycc が自前の診断まで到達) |
+| gem を入れた Ruby と同じ Ruby でコンパイラが動く | **達成**(囮の `ruby` を PATH 先頭に置いて起動回数 0。3 つの Ruby で確認) |
+| `rake test` 0 failures | **3340 runs / 0 failures** |
+| 生成物のバイト一致 | **12 / 12** |
+
+**A(binstub があれば使う)は却下**した — 環境で分岐する形で、`mkmf-shell-free-conftest`
+で決めた「環境で結果が変わる状態を作らない」と噛み合わない。
+
+**`PKG_CONFIG` だけは 2 語にできない**(mkmf が 1 個のファイル名として stat するため、
+2 語にすると pkg-config 対応が無言で無効化される)。値はパスのままにし、**spawn の瞬間に**
+インタプリタを前置する形で解決した。環境を見ないので分岐にはならない。
+
+**rmake のツール識別は「先頭語」から「引数列の前置一致」に変えた。** 当初の正規表現に
+よる推測は、外れたときに外部 spawn へ落ちるのではなく**壊れた実行**になることが
+クロスレビューで判明したためである(`jruby …` / `ruby -Ilib …` / `ruby /tmp/gcc …`)。
+
+**残した宿題**: 再帰 `$(MAKE)` は展開文字列の検査止まりで、`cd sub && $(MAKE)` が実際に
+子 rmake として起動するテストが無い。2 語化で壊れやすくなった箇所なので、
+テストを足す価値はある(本ステップの範囲外)。

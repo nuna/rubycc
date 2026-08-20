@@ -32,6 +32,7 @@ class TestRmakeTools < Minitest::Test
   Rmake = Rubycc::Rmake
   Makefile = Rmake::Makefile
   FIXTURES_ROOT = File.expand_path("fixtures/mkmf", __dir__)
+  RUBYCC_EXE = File.expand_path("../exe/rubycc", __dir__)
 
   def with_dir
     Dir.mktmpdir { |dir| yield dir }
@@ -125,10 +126,124 @@ class TestRmakeTools < Minitest::Test
     end
   end
 
-  # tool_programs collapses `$(CC)` and `$(CC) -shared` to just the program word.
-  def test_tool_programs_are_the_first_words_of_cc_and_ldshared
+  # A tool is an argv *prefix* — the words `$(CC)` expands to — not a program
+  # name. For a plain gcc Makefile that prefix is one word, and `$(CC) -shared`
+  # collapses onto it: the trailing option belongs to the compiler driver, which
+  # reads it out of the recipe, so it is trimmed off the prefix rather than
+  # dropped with it.
+  def test_tool_prefixes_of_a_gcc_makefile
     mk = Makefile.parse("CC = gcc\nLDSHARED = $(CC) -shared\n")
-    assert_equal ["gcc"], mk.tool_programs
+    assert_equal [["gcc"]], mk.tool_prefixes
+  end
+
+  # Step env-less-shebang-1: the mkmf shim writes `CC = <ruby> <path>/exe/rubycc`
+  # so the executable is launched through the interpreter rather than through its
+  # `#!/usr/bin/env ruby` line. Both words name the program and both must be in
+  # the prefix — dropping only the first would hand the script path to the Driver
+  # as if it were a compiler argument.
+  def test_tool_prefixes_cover_an_interpreter_launched_compiler
+    mk = Makefile.parse("CC = #{RbConfig.ruby} #{RUBYCC_EXE}\nLDSHARED = $(CC) -shared\n")
+    assert_equal [[RbConfig.ruby, RUBYCC_EXE]], mk.tool_prefixes
+  end
+
+  # The prefix is read off the Makefile, never guessed from what a word looks
+  # like, so launchers rmake has never heard of work by construction. These three
+  # are the cases a name-matching rule got wrong:
+  #
+  #   * `jruby <script>` — an interpreter whose name is not "ruby";
+  #   * `ruby -Ilib <script>` — an interpreter flag between the two;
+  #   * a recipe running `ruby /tmp/gcc` where the Makefile's CC is `gcc` — a
+  #     different program that merely shares a basename with the tool.
+  def test_tool_prefixes_do_not_guess_which_word_is_the_launcher
+    jruby = Makefile.parse("CC = jruby /gem/exe/rubycc\nLDSHARED = $(CC) -shared\n")
+    assert_equal [["jruby", "/gem/exe/rubycc"]], jruby.tool_prefixes
+
+    flagged = Makefile.parse("CC = ruby -Ilib /gem/exe/rubycc\nLDSHARED = $(CC) -shared\n")
+    assert_equal [["ruby", "-Ilib", "/gem/exe/rubycc"]], flagged.tool_prefixes
+  end
+
+  # What each of those does to a recipe line: the whole prefix is consumed and
+  # only the words the recipe added reach the Driver, while a command that is not
+  # the tool matches nothing and is left to be spawned.
+  def test_tool_prefix_matching_consumes_exactly_the_launcher_words
+    driver_argv = lambda do |cc, recipe|
+      prefixes = Makefile.parse("CC = #{cc}\nLDSHARED = $(CC) -shared\n").tool_prefixes
+      argv = Rubycc::CommandLine.argv(recipe)
+      hit = prefixes.select { |prefix| Rmake::ToolCommand.match?(argv, prefix) }.max_by(&:length)
+      hit && argv.drop(hit.length)
+    end
+
+    assert_equal ["-c", "a.c"], driver_argv.call("jruby /gem/exe/rubycc", "jruby /gem/exe/rubycc -c a.c")
+    assert_equal ["-shared", "-o", "x.so"],
+                 driver_argv.call("jruby /gem/exe/rubycc", "jruby /gem/exe/rubycc -shared -o x.so")
+    assert_equal ["-c", "a.c"],
+                 driver_argv.call("ruby -Ilib /gem/exe/rubycc", "ruby -Ilib /gem/exe/rubycc -c a.c")
+    assert_nil driver_argv.call("gcc", "ruby /tmp/gcc -c a.c"),
+               "a command that merely shares a basename with the tool must not be substituted"
+    # The unchanged gcc behaviour, for contrast: matched, and `-shared` stays.
+    assert_equal ["-c", "a.c"], driver_argv.call("gcc", "gcc -c a.c")
+    assert_equal ["-shared", "-o", "x.so"], driver_argv.call("gcc", "gcc -shared -o x.so")
+  end
+
+  # A path with a space in it survives as one word: the shim quotes what it
+  # writes, and both the Makefile's `$(CC)` and the recipe line are read back
+  # through the same splitter.
+  def test_tool_prefixes_keep_quoted_paths_with_spaces_whole
+    mk = Makefile.parse("CC = '/a b/ruby' '/c d/exe/rubycc'\nLDSHARED = $(CC) -shared\n")
+    assert_equal [["/a b/ruby", "/c d/exe/rubycc"]], mk.tool_prefixes
+  end
+
+  # And end to end: a Makefile whose CC is spelled the way the mkmf shim spells
+  # it must still build through the Driver in-process. The interpreter word is a
+  # path that does not exist, so nothing can be spawned from this Makefile at
+  # all: the build can only succeed by never running the command as a process,
+  # which is what substitution means.
+  def test_interpreter_launched_compiler_is_substituted_in_process
+    with_dir do |dir|
+      write_mkmf_like_sources(dir)
+      absent_ruby = path(dir, "no-such-bin", "ruby")
+      text = File.read(path(dir, "Makefile")).sub("CC = gcc", "CC = #{absent_ruby} #{RUBYCC_EXE}")
+      File.write(path(dir, "Makefile"), text)
+      mk = Makefile.parse(text, dir: dir)
+      mk.run("all", out: StringIO.new, tools: :rubycc, jobs: 1)
+
+      so = path(dir, "mylib.so")
+      assert File.exist?(so), "the interpreter-launched CC must still route to the Driver"
+      lib = Fiddle.dlopen(so)
+      assert_equal 11, call(lib, "a_val", [], Fiddle::TYPE_INT).call
+    ensure
+      lib&.close
+    end
+  end
+
+  # The same build with both launcher words living under a directory whose name
+  # contains a space, quoted in the Makefile the way the shim quotes them. The
+  # link line's `-shared` has to survive the prefix trimming too, or the result
+  # is an executable rather than a shared object and the dlopen fails.
+  def test_launcher_paths_containing_spaces_still_build
+    with_dir do |dir|
+      write_mkmf_like_sources(dir)
+      spaced = path(dir, "a b")
+      FileUtils.mkdir_p(spaced)
+      ruby_link = File.join(spaced, "ruby")
+      rubycc_link = File.join(spaced, "rubycc")
+      File.symlink(RbConfig.ruby, ruby_link)
+      File.symlink(RUBYCC_EXE, rubycc_link)
+
+      cc = "'#{ruby_link}' '#{rubycc_link}'"
+      text = File.read(path(dir, "Makefile")).sub("CC = gcc", "CC = #{cc}")
+      File.write(path(dir, "Makefile"), text)
+      mk = Makefile.parse(text, dir: dir)
+      assert_equal [[ruby_link, rubycc_link]], mk.tool_prefixes
+      mk.run("all", out: StringIO.new, tools: :rubycc, jobs: 1)
+
+      so = path(dir, "mylib.so")
+      assert File.exist?(so), "a launcher path with a space must still build"
+      lib = Fiddle.dlopen(so)
+      assert_equal 31, call(lib, "b_val", [], Fiddle::TYPE_INT).call
+    ensure
+      lib&.close
+    end
   end
 
   # With substitution off (the default) the compiler command is exec'd, not sent

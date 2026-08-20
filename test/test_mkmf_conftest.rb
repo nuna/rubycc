@@ -25,6 +25,9 @@ require_relative "support/acceptance_result_reporter"
 class TestMkmfConftest < Minitest::Test
   LIB_DIR    = File.expand_path("../lib", __dir__)
   EXE_PATH   = File.expand_path("../exe/rubycc", __dir__)
+  PKGCONF_PATH = File.expand_path("../exe/rubycc-pkgconf", __dir__)
+  # What the shim writes as `CC`: this interpreter, then the executable.
+  CC_COMMAND = "#{RbConfig.ruby} #{EXE_PATH}"
   FIXTURES_ROOT = File.expand_path("fixtures/mkmf", __dir__)
 
   # Runs `ruby_body` in a child interpreter that has loaded the mkmf shim and
@@ -117,11 +120,13 @@ class TestMkmfConftest < Minitest::Test
 
   # The shim rewrites exactly the toolchain keys, in both RbConfig hashes, and
   # leaves everything else (CXX, the include flags, the ruby header dirs) intact.
+  # Each rewritten command launches rubycc through the interpreter (Step
+  # env-less-shebang-1), never through the executable's own shebang line.
   def test_shim_rewrites_toolchain_config_keys
     out, err, status = Open3.capture3(
       RbConfig.ruby, "-I#{LIB_DIR}", "-e", <<~RUBY
         require "rubycc/mkmf_shim"
-        keys = %w[CC LDSHARED CPP CXX]
+        keys = %w[CC LDSHARED CPP CXX PKG_CONFIG]
         data = {}
         keys.each { |k| data["CONFIG:\#{k}"] = RbConfig::CONFIG[k] }
         keys.each { |k| data["MAKEFILE:\#{k}"] = RbConfig::MAKEFILE_CONFIG[k] }
@@ -131,35 +136,124 @@ class TestMkmfConftest < Minitest::Test
     assert status.success?, err
     data = Marshal.load(out)
 
-    assert_equal EXE_PATH, data["CONFIG:CC"]
-    assert_equal "#{EXE_PATH} -shared", data["CONFIG:LDSHARED"]
-    assert_equal "#{EXE_PATH} -E", data["CONFIG:CPP"]
+    assert_equal CC_COMMAND, data["CONFIG:CC"]
+    assert_equal "#{CC_COMMAND} -shared", data["CONFIG:LDSHARED"]
+    assert_equal "#{CC_COMMAND} -E", data["CONFIG:CPP"]
     # MAKEFILE_CONFIG is rewritten too, so the generated Makefile's CC line is rubycc.
-    assert_equal EXE_PATH, data["MAKEFILE:CC"]
-    assert_equal "#{EXE_PATH} -shared", data["MAKEFILE:LDSHARED"]
+    assert_equal CC_COMMAND, data["MAKEFILE:CC"]
+    assert_equal "#{CC_COMMAND} -shared", data["MAKEFILE:LDSHARED"]
     # CXX is deliberately untouched (rubycc compiles no C++).
-    refute_equal EXE_PATH, data["CONFIG:CXX"]
+    refute_includes data["CONFIG:CXX"].to_s, EXE_PATH
+    # PKG_CONFIG is the exception that stays a bare path: mkmf resolves it with
+    # find_executable0, which stats the value as one file name, so a two-word
+    # command would simply not be found. The interpreter is supplied at spawn
+    # time instead (see the pkg-config array test below).
+    assert_equal PKGCONF_PATH, data["CONFIG:PKG_CONFIG"]
   end
 
-  # The shim is idempotent: requiring it twice leaves one lib/ entry at the
-  # front of RUBYLIB and the same rewritten commands.
-  def test_shim_is_idempotent
+  # The interpreter named in CC is *this* Ruby, not whatever `ruby` the PATH
+  # would find: the compiler has to run under the Ruby the gem is being
+  # installed into, or it compiles against another one's RbConfig.
+  def test_rewritten_commands_name_the_running_interpreter
     out, err, status = Open3.capture3(
       RbConfig.ruby, "-I#{LIB_DIR}", "-e", <<~RUBY
         require "rubycc/mkmf_shim"
+        STDOUT.write(Marshal.dump(RbConfig::CONFIG["CC"].split(" ", 2)))
+      RUBY
+    )
+    assert status.success?, err
+    interpreter, program = Marshal.load(out)
+
+    assert_equal RbConfig.ruby, interpreter, "CC must launch rubycc through this very Ruby"
+    assert_equal EXE_PATH, program
+    assert File.file?(interpreter), "the interpreter word must be an absolute path to a real file"
+  end
+
+  # The pkg-config path, driven through mkmf's real `pkg_config` rather than a
+  # stand-in: mkmf resolves `$PKGCONFIG` with find_executable0 (so the config
+  # value has to stay a single stat-able path), probes with `xsystem([env, prog,
+  # "--exists", pkg])` and then reads the flags with `xpopen([env, prog, ...])`.
+  # Both spawns are arrays that reach the kernel verbatim, so it is the shim that
+  # has to put the interpreter in front of them — and both carry a leading env
+  # hash here, because dir_config found a `pkgconfig` directory and mkmf passes
+  # PKG_CONFIG_PATH that way. The answer has to come back from the real
+  # rubycc-pkgconf reading a real .pc file.
+  def test_pkg_config_reads_a_real_pc_file_through_the_shim
+    result, log, err, status = run_in_mkmf(<<~RUBY)
+      prefix = File.join(Dir.pwd, "fake")
+      FileUtils.mkdir_p(File.join(prefix, "lib", "pkgconfig"))
+      FileUtils.mkdir_p(File.join(prefix, "include"))
+      File.write(File.join(prefix, "lib", "pkgconfig", "rubyccprobe.pc"), <<~PC)
+        Name: rubyccprobe
+        Description: a .pc file written by the rubycc test suite
+        Version: 4.5.6
+        Cflags: -I\#{prefix}/include
+        Libs: -L\#{prefix}/lib -lm
+      PC
+      # What `--with-rubyccprobe-lib=<dir>` would have set: it is what makes mkmf
+      # pass PKG_CONFIG_PATH as the leading env hash of both spawns.
+      $configure_args["--with-rubyccprobe-lib"] = File.join(prefix, "lib")
+      result = {
+        pkgconfig: RbConfig::CONFIG["PKG_CONFIG"],
+        prefix: prefix,
+        cflags: pkg_config("rubyccprobe", "cflags"),
+        modversion: pkg_config("rubyccprobe", "modversion"),
+        missing: pkg_config("rubycc_no_such_package_xyz", "cflags")
+      }
+    RUBY
+
+    assert status.success?, "the mkmf child exited nonzero:\n#{err}"
+    refute_nil result, "no Marshal result from the mkmf child:\n#{err}"
+
+    assert_equal "-I#{result[:prefix]}/include", result[:cflags],
+                 "pkg_config must return the Cflags rubycc-pkgconf read out of the .pc file"
+    assert_equal "4.5.6", result[:modversion]
+    assert_nil result[:missing], "a package with no .pc file must come back as not found"
+
+    # The command mkmf logged is the one it spawned: interpreter first, then the
+    # pkg-config shim — which is the only reason the array spawn does not have to
+    # resolve `#!/usr/bin/env ruby`.
+    assert_includes log, "#{RbConfig.ruby} #{PKGCONF_PATH}",
+                     "mkmf.log must show pkg-config being launched through the interpreter"
+    assert_includes log, "PKG_CONFIG_PATH", "the probe must have carried the env hash"
+  end
+
+  # A command has to travel as one string (`CC = ...` in the generated Makefile,
+  # `ENV["MAKE"]` for RubyGems), so its words are quoted: an installation path is
+  # allowed to contain a space, and an unquoted one would split into two
+  # arguments and take the build apart. Both splitters that read the value back —
+  # rubycc's own, and the Shellwords RubyGems uses — must return the paths whole.
+  # Run in a child, like everything else here, because requiring the shim
+  # rewrites the requiring process's RbConfig.
+  def test_launcher_words_are_quoted_for_paths_with_spaces
+    out, err, status = Open3.capture3(
+      RbConfig.ruby, "-I#{LIB_DIR}", "-e", <<~RUBY
         require "rubycc/mkmf_shim"
-        Rubycc::MkmfShim.install!
-        data = { cc: RbConfig::CONFIG["CC"],
-                 rubylib_head: ENV["RUBYLIB"].to_s.split(File::PATH_SEPARATOR).first,
-                 rubylib_count: ENV["RUBYLIB"].to_s.split(File::PATH_SEPARATOR).count(#{LIB_DIR.inspect}) }
+        require "shellwords"
+        spaced = Rubycc::MkmfShim.launcher("/opt/ruby 4.0/bin/ruby", "/gems/rubycc 1.0.0/exe/rubycc")
+        data = {
+          spaced: spaced,
+          own_split: Rubycc::CommandLine.argv(spaced),
+          shellwords: Shellwords.split(spaced),
+          with_flag: Rubycc::CommandLine.argv("\#{spaced} -shared"),
+          plain: Rubycc::MkmfShim.launcher("/usr/bin/ruby", "/gems/exe/rubycc"),
+          cc_split: Rubycc::CommandLine.argv(RbConfig::CONFIG["CC"])
+        }
         STDOUT.write(Marshal.dump(data))
       RUBY
     )
     assert status.success?, err
     data = Marshal.load(out)
-    assert_equal EXE_PATH, data[:cc]
-    assert_equal LIB_DIR, data[:rubylib_head]
-    assert_equal 1, data[:rubylib_count], "lib/ should be on RUBYLIB exactly once"
+
+    words = ["/opt/ruby 4.0/bin/ruby", "/gems/rubycc 1.0.0/exe/rubycc"]
+    assert_equal words, data[:own_split]
+    assert_equal words, data[:shellwords]
+    assert_equal words + ["-shared"], data[:with_flag],
+                 "the driver's own flag must stay a separate word after the quoted ones"
+    assert_equal "/usr/bin/ruby /gems/exe/rubycc", data[:plain],
+                 "a path needing no quoting must be left alone, so the common case stays readable"
+    # And the real CC of this checkout splits back into exactly its two words.
+    assert_equal [RbConfig.ruby, EXE_PATH], data[:cc_split]
   end
 
   # --- how a conftest is spawned (Step mkmf-shell-free-conftest-1) -----------

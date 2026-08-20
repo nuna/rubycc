@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
+require "rbconfig"
+
 require_relative "errors"
+require_relative "../command_line"
 require_relative "makefile"
 
 module Rubycc
@@ -129,6 +132,14 @@ module Rubycc
       # bare "make" that would hand the recursive build to a host GNU make (or
       # fail outright) instead of rubycc.
       #
+      # The path is prefixed with the running interpreter and both words are
+      # quoted (a path may contain a space), the same shape the rubygems_plugin
+      # and the mkmf shim use: rmake's own `#!/usr/bin/env ruby`
+      # line cannot be resolved on a host with no /usr/bin/env (DESIGN R5), so a
+      # recursive invocation has to name the interpreter itself — and naming
+      # *this* interpreter also keeps the recursive build on the Ruby the
+      # top-level one is running under.
+      #
       # `ENV["MAKE"]` is honoured first because RubyGems' rubygems_plugin sets it
       # to rmake before invoking `$(MAKE)` at the top level, and that value must
       # propagate unchanged into any recipe this run itself expands.
@@ -136,7 +147,8 @@ module Rubycc
         env_make = ENV["MAKE"]
         return env_make if env_make && !env_make.empty?
 
-        File.expand_path($PROGRAM_NAME)
+        [RbConfig.ruby, File.expand_path($PROGRAM_NAME)]
+          .map { |word| CommandLine.quote(word) }.join(" ")
       end
     end
   end

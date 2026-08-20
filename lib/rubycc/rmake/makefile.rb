@@ -5,6 +5,7 @@ require_relative "model"
 require_relative "expander"
 require_relative "parser"
 require_relative "executor"
+require_relative "tool_command"
 
 module Rubycc
   module Rmake
@@ -68,8 +69,8 @@ module Rubycc
       # (make -n) and matches #plan's #command_lines.
       #
       # +tools+ turns on in-process tool substitution (B3): when truthy the
-      # recipe commands whose argv[0] is this Makefile's compiler/linker program
-      # (the first word of `$(CC)` / `$(LDSHARED)`, normally "gcc") are run by
+      # recipe commands that run this Makefile's compiler/linker — the ones whose
+      # argv begins with the words of `$(CC)` / `$(LDSHARED)` — are run by
       # rubycc's own Driver in a forked child instead of being exec'd, so no
       # external compiler is needed. It defaults off, leaving the B2 behaviour
       # (every command exec'd) exactly as it was. +jobs+ is the maximum number of
@@ -81,19 +82,28 @@ module Rubycc
               tools: nil, jobs: 1)
         computed = plan(goal, now: now)
         Executor.new(dir: @dir, out: out, err: err, dry_run: dry_run, env: env,
-                     tools: tools ? tool_programs : [], jobs: jobs).execute(computed)
+                     tools: tools ? tool_prefixes : [], jobs: jobs).execute(computed)
         computed
       end
 
-      # The set of program names a `-`tools run substitutes for rubycc: the first
-      # word of `$(CC)` and of `$(LDSHARED)` (the compile and shared-link drivers
-      # mkmf emits). `$(LDSHARED)` is normally `$(CC) -shared`, so its flag words
-      # already sit inside the expanded recipe and only the leading program name
-      # is matched here; for the mkmf corpus both reduce to "gcc".
-      def tool_programs
+      # The commands a `-`tools run substitutes for rubycc, each as the argv
+      # prefix that names the program: the words of `$(CC)` and of `$(LDSHARED)`
+      # (the compile and shared-link drivers mkmf emits), with trailing option
+      # words trimmed off. `LDSHARED` is normally `$(CC) -shared`, so both
+      # collapse to the same prefix and the `-shared` stays in the recipe where
+      # the Driver reads it; a plain gcc Makefile gives ["gcc"].
+      #
+      # A prefix rather than a program name because the words that name the
+      # program are not always one: the mkmf shim writes `CC = <ruby>
+      # <path>/exe/rubycc`, launching the executable through the running
+      # interpreter rather than through its `#!/usr/bin/env ruby` line. Matching
+      # the whole prefix is what keeps `ruby -Ilib <script>` or `jruby <script>`
+      # from handing the script path to the Driver as a compiler argument
+      # (ToolCommand).
+      def tool_prefixes
         [variable_value("CC"), variable_value("LDSHARED")]
-          .map { |value| value.split(/\s+/).reject(&:empty?).first }
-          .compact.uniq
+          .map { |value| ToolCommand.prefix(value) }
+          .reject(&:empty?).uniq
       end
 
       # The fully-expanded value of a variable (empty string when undefined).

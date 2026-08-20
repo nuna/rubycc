@@ -252,6 +252,23 @@ module Rubycc
       command.argv
     end
 
+    # The inverse of the splitter for one word: +word+ spelled so that #argv
+    # (and a POSIX shell, and Shellwords, which is what RubyGems splits
+    # `ENV["MAKE"]` with) reads it back as this exact single word. Needed because
+    # a tool command has to be carried as *one string* — `CC = <ruby> <exe>` in a
+    # Makefile, `ENV["MAKE"]` for RubyGems — and an installation path is allowed
+    # to contain a space.
+    #
+    # A word of ordinary path characters is left alone, so the common case stays
+    # readable; anything else is single-quoted (which protects every character
+    # but a single quote), and a word containing a single quote is spelled with
+    # the `'\''` idiom every one of those splitters understands.
+    def quote(word)
+      return word if word.match?(/\A[A-Za-z0-9_@%+=:,.\/-]+\z/)
+
+      "'" + word.gsub("'", %q('"'"')) + "'"
+    end
+
     def unsupported!(construct, text)
       raise UnsupportedSyntaxError.new(construct, text)
     end
