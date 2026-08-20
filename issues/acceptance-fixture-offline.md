@@ -1,11 +1,11 @@
 ---
-status: in-progress
+status: done
 kind: infra
 opened: 2026-08-12
-closed:
+closed: 2026-08-21
 branch: acceptance-fixture-offline
 pr: 93
-steps: []
+steps: [test-ci-implementation-5]
 ---
 
 # ネットワーク受入れ経路を fixture 化して、遮断環境で実行する(TEST-PLAN 2B-1)
@@ -49,14 +49,14 @@ skip され、skip は静かに緑になっていた。
 
 ### 2026-08-21
 
-PR [#93](https://github.com/nuna/rubycc/pull/93) を作成した。master反映後に `status: done`
-へ更新する。
+PR [#93](https://github.com/nuna/rubycc/pull/93) を作成した。masterへマージ後に
+`status: done` へ更新する。
 
 外部gemの再配布を避けるため、リポジトリ内のgem archiveは削除した。manifestのURL・SHA-256
 からActions cacheへCI実行時に取得し、検証後にnetwork namespace内のacceptanceへ渡す方式へ変更した。
 
 ## 決着
 
-実装とローカル検証は完了。`acceptance-fixture-offline` の変更を master に反映した時点で
-`status: done` とし、PRまたは `pr: none` を記録する。現時点ではブランチ上のため
-`in-progress` とする。
+実装とローカル検証を完了し、PR [#93](https://github.com/nuna/rubycc/pull/93) として
+masterへマージした(Merge commit `d5e4c26`)。gem archiveはリポジトリへ再配布せず、
+manifestのURL・SHA-256からCI cacheへ取得する方式で決着した。
