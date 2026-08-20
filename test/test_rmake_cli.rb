@@ -2,6 +2,7 @@
 
 require_relative "test_helper"
 require "rubycc/rmake/rmake"
+require "rbconfig"
 require "tmpdir"
 require "fileutils"
 require "stringio"
@@ -168,14 +169,19 @@ class TestRmakeCli < Minitest::Test
     end
   end
 
-  def test_make_variable_defaults_to_this_process_absolute_path
+  # The default names the running interpreter as well as the program path
+  # (Step env-less-shebang-1): rmake's own `#!/usr/bin/env ruby` line is not
+  # resolvable on an image without /usr/bin/env, so a recursive `$(MAKE)` that
+  # named the bare path would fail to exec with status 127 there.
+  def test_make_variable_defaults_to_this_interpreter_and_process_path
     with_env_make(nil) do
       with_dir do |dir|
         File.write(path(dir, "Makefile"), "show:\n\techo make=[$(MAKE)] > out.txt\n")
         code, _out, err = run_cli(["show"], dir)
 
         assert_equal 0, code, err
-        assert_equal "make=[#{File.expand_path($PROGRAM_NAME)}]", File.read(path(dir, "out.txt")).strip
+        assert_equal "make=[#{RbConfig.ruby} #{File.expand_path($PROGRAM_NAME)}]",
+                     File.read(path(dir, "out.txt")).strip
       end
     end
   end
@@ -204,7 +210,8 @@ class TestRmakeCli < Minitest::Test
         code, _out, err = run_cli(["show"], dir)
 
         assert_equal 0, code, err
-        assert_equal "make=[#{File.expand_path($PROGRAM_NAME)}]", File.read(path(dir, "out.txt")).strip
+        assert_equal "make=[#{RbConfig.ruby} #{File.expand_path($PROGRAM_NAME)}]",
+                     File.read(path(dir, "out.txt")).strip
       end
     end
   end

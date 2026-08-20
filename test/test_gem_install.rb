@@ -8,6 +8,7 @@ require_relative "support/acceptance_fetch_helper"
 require_relative "support/acceptance_manifest_helper"
 require_relative "support/acceptance_result_reporter"
 require "rbconfig"
+require "rubycc/command_line"
 
 # Step 61 (M3 / ROADMAP §6 B6): the rubygems_plugin that makes a plain
 # `gem install <native-ext-gem>` build through rubycc, plus the packaging that
@@ -27,6 +28,11 @@ class TestGemInstall < Minitest::Test
   RMAKE_EXE   = File.join(REPO_ROOT, "exe/rmake")
   PKGCONF_EXE = File.join(REPO_ROOT, "exe/rubycc-pkgconf")
   LIB_DIR     = File.join(REPO_ROOT, "lib")
+  # `$(MAKE)` is rmake launched through this interpreter, never through its
+  # `#!/usr/bin/env ruby` line (Step env-less-shebang-1), with both words quoted
+  # so a path containing a space survives RubyGems' Shellwords.split.
+  RMAKE_COMMAND = "#{Rubycc::CommandLine.quote(RbConfig.ruby)} " \
+                  "#{Rubycc::CommandLine.quote(RMAKE_EXE)}"
 
   # Load the plugin without letting its bottom-line auto-install touch this
   # process's ENV: force it off across the require, then restore ENV.
@@ -95,11 +101,44 @@ class TestGemInstall < Minitest::Test
       %w[MAKE PKG_CONFIG RUBYLIB RUBYOPT].each { |k| ENV.delete(k) }
       Plugin.install!
 
-      assert_equal RMAKE_EXE, ENV["MAKE"]
+      assert_equal RMAKE_COMMAND, ENV["MAKE"]
+      # PKG_CONFIG stays a bare path — mkmf stats that value with
+      # find_executable0, so it has to name one file; the mkmf shim supplies the
+      # interpreter when the command is spawned.
       assert_equal PKGCONF_EXE, ENV["PKG_CONFIG"]
       assert_equal LIB_DIR, ENV["RUBYLIB"].split(File::PATH_SEPARATOR).first
       assert_includes ENV["RUBYOPT"].split(/\s+/), "-rrubycc/mkmf_shim"
     end
+  end
+
+  # RubyGems splits `ENV["MAKE"]` with Shellwords (Gem::Ext::Builder.make), so
+  # what it spawns must be exactly the interpreter and rmake — two words, however
+  # many spaces the installation path contains.
+  def test_make_splits_back_into_the_interpreter_and_rmake
+    require "shellwords"
+    with_env do
+      ENV.delete("MAKE")
+      Plugin.install!
+
+      assert_equal [RbConfig.ruby, RMAKE_EXE], Shellwords.split(ENV["MAKE"])
+    end
+  end
+
+  # The plugin is loaded by every `gem` command there is, so the disabled path
+  # must not pull rubycc (or anything else) in: the requires belong to install!,
+  # not to the top of the file.
+  def test_disabled_plugin_loads_nothing
+    out, err, status = Open3.capture3(
+      RbConfig.ruby, "-e", <<~RUBY
+        before = $LOADED_FEATURES.dup
+        ENV["RUBYCC"] = "0"
+        load #{PLUGIN_PATH.dump}
+        added = $LOADED_FEATURES - before
+        STDOUT.write(Marshal.dump(added.reject { |f| f.include?("rubygems_plugin") }))
+      RUBY
+    )
+    assert status.success?, err
+    assert_empty Marshal.load(out), "a disabled plugin must require nothing"
   end
 
   def test_install_is_idempotent

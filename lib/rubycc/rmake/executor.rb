@@ -2,6 +2,7 @@
 
 require "fileutils"
 require_relative "errors"
+require_relative "tool_command"
 require_relative "../command_line"
 
 module Rubycc
@@ -24,11 +25,12 @@ module Rubycc
     # directly with an argv array; the runner never builds a shell command string.
     #
     # B3 adds two things on top of that. First, in-process tool substitution: when
-    # a set of program names is passed as +tools+, a command whose argv[0] is one
-    # of them (the first word of `$(CC)`/`$(LDSHARED)`) is not exec'd but run by
-    # rubycc's own Driver — inside a forked child, so a compiler crash cannot take
-    # rmake down and the Driver's per-invocation state stays isolated. Second, a
-    # `-j` scheduler that forks independent stale steps up to +jobs+ at a time,
+    # +tools+ carries the argv prefixes of `$(CC)`/`$(LDSHARED)` (which may be two
+    # words or more — the mkmf shim writes `<ruby> <path>/exe/rubycc`), a command
+    # whose argv begins with one of them is not exec'd but run by rubycc's own
+    # Driver — inside a forked child, so a compiler crash cannot take rmake down
+    # and the Driver's per-invocation state stays isolated. Second, a `-j`
+    # scheduler that forks independent stale steps up to +jobs+ at a time,
     # honouring the plan's dependency edges and buffering each worker's output to
     # flush it whole when the step finishes (make -O's un-interleaved output).
     class Executor
@@ -64,7 +66,9 @@ module Rubycc
         @err = err
         @dry_run = dry_run
         @env = env
-        @tools = Array(tools)
+        # Each tool is an argv prefix (the words that name the program). A bare
+        # string is accepted as the one-word prefix it describes.
+        @tools = Array(tools).map { |tool| Array(tool) }
         @jobs = [jobs.to_i, 1].max
         # In sequential mode a substituted tool is fork-isolated for its own sake;
         # a parallel worker is already a forked step child, so it runs the Driver
@@ -158,31 +162,36 @@ module Rubycc
         name = File.basename(argv[0])
         if BUILTINS.include?(name)
           run_builtin(target, name, argv, cmd, state, text)
-        elsif tool?(argv[0])
-          run_tool(argv, cmd, state)
+        elsif (driver_argv = tool_arguments(argv))
+          run_tool(driver_argv, cmd, state)
         else
           run_external(target, argv, cmd, state)
         end
       end
 
-      # Whether argv[0] names one of the substituted tool programs (matched by the
-      # word as written and by its basename, so both `gcc` and `/usr/bin/gcc`
-      # resolve). Empty when substitution is off, which keeps the default path
-      # (exec every unknown command) untouched.
-      def tool?(arg0)
-        return false if @tools.empty?
+      # The arguments to hand rubycc's Driver when +argv+ runs one of the
+      # substituted tools, or nil when it does not (in which case the command is
+      # run as an ordinary external process). A tool is matched by its whole argv
+      # prefix — the words `$(CC)`/`$(LDSHARED)` expand to, which for the mkmf
+      # shim's `<ruby> <path>/exe/rubycc` is two of them — and exactly those words
+      # are dropped, so what reaches the Driver is what the recipe added. The
+      # longest matching prefix wins, since a longer one describes the command
+      # more completely. With substitution off (@tools empty) nothing matches,
+      # which keeps the default path (exec every unknown command) untouched.
+      def tool_arguments(argv)
+        return nil if @tools.empty?
 
-        @tools.include?(arg0) || @tools.include?(File.basename(arg0))
+        prefix = @tools.select { |candidate| ToolCommand.match?(argv, candidate) }.max_by(&:length)
+        prefix && argv.drop(prefix.length)
       end
 
       # Run a substituted compiler/linker command through rubycc's Driver, which
-      # takes the gcc-style argv minus its program word. The compile line and the
-      # `-shared` link line map through the same Driver entry point (it selects
-      # its mode from the flags), so the two need no special-casing here. Sequential
-      # runs fork for crash isolation; a parallel worker is already isolated and
-      # runs the Driver in-process.
-      def run_tool(argv, cmd, state)
-        driver_argv = argv.drop(1)
+      # takes the gcc-style argv minus the words that named the program (see
+      # #tool_arguments). The compile line and the `-shared` link line map through
+      # the same Driver entry point (it selects its mode from the flags), so the
+      # two need no special-casing here. Sequential runs fork for crash isolation;
+      # a parallel worker is already isolated and runs the Driver in-process.
+      def run_tool(driver_argv, cmd, state)
         ok, reason = @isolate_tool ? fork_driver(driver_argv, state.cwd, cmd) \
                                    : inline_driver(driver_argv, state.cwd, cmd)
         state.failure_reason = reason unless ok
