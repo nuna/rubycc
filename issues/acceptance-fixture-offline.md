@@ -4,7 +4,7 @@ kind: infra
 opened: 2026-08-12
 closed:
 branch: acceptance-fixture-offline
-pr:
+pr: 93
 steps: []
 ---
 
@@ -46,6 +46,11 @@ skip され、skip は静かに緑になっていた。
 - mkmf、rmake、gem install の実物経路を `weekly.yml` の `unshare --user --map-root-user --net` 内で実行し、7つの required IDとartifact reportを `acceptance-fixture` profileへ接続した。
 - ローカルのnetwork namespaceで `mkmf` extconf、rmake parser build、json/msgpack gem installを実行し、各0 failure / 0 skipを確認した。fixture archiveのSHA-256と期待結果の単体検査も通過した。
 - 作業ツリー分離のため、ブランチ `acceptance-fixture-offline` と専用worktreeで作業中。master反映とPR番号の確定待ち。
+
+### 2026-08-21
+
+PR [#93](https://github.com/nuna/rubycc/pull/93) を作成した。master反映後に `status: done`
+へ更新する。
 
 ## 決着
 
