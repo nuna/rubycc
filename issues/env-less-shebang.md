@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-20
-closed:
+closed: 2026-08-20
 branch: env-less-shebang
-pr:
+pr: 91
 steps: [env-less-shebang-1]
 ---
 
