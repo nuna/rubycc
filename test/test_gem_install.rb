@@ -4,6 +4,7 @@ require_relative "test_helper"
 require "tmpdir"
 require "fileutils"
 require "open3"
+require "json"
 require_relative "support/acceptance_fetch_helper"
 require_relative "support/acceptance_manifest_helper"
 require_relative "support/acceptance_result_reporter"
@@ -14,10 +15,11 @@ require "rubycc/command_line"
 # `gem install <native-ext-gem>` build through rubycc, plus the packaging that
 # ships it. The offline tests pin the plugin's decision logic (RUBYCC=1/0/auto),
 # its idempotent ENV injection and its zero-side-effect disabled path, and check
-# the gemspec globs carry the new files. The networked end-to-end acceptance —
-# install rubycc into a scratch GEM_HOME, then `RUBYCC=1 gem install json`
-# (msgpack) and prove the build ran through rubycc and the result works — needs
-# the gems off the network, so it is opt-in behind RMAKE_ACCEPTANCE=1.
+# the gemspec globs carry the new files. The end-to-end acceptance — install
+# rubycc into a scratch GEM_HOME, then `RUBYCC=1 gem install json` (msgpack) and
+# prove the build ran through rubycc and the result works — is opt-in behind
+# RMAKE_ACCEPTANCE=1. The fixture profile supplies pinned gem archives locally;
+# live acceptance uses their manifest URLs.
 #
 # The plugin file runs `install!` at load time when enabled, so it is required
 # once here with RUBYCC forced off (and ENV restored) to avoid mutating the test
@@ -189,7 +191,7 @@ class TestGemInstall < Minitest::Test
                  "all exe/* files must be declared as executables so bin stubs are generated"
   end
 
-  # --- networked end-to-end acceptance (opt-in) -----------------------------
+  # --- end-to-end acceptance (live or fixture, opt-in) -----------------------
 
   # Install rubycc into a scratch GEM_HOME so its plugin auto-loads, then
   # `RUBYCC=1 gem install json` — the plain install command, no extra flags —
@@ -202,7 +204,8 @@ class TestGemInstall < Minitest::Test
           gem "json"; require "json"
           print JSON.parse(JSON.generate({"a" => [1, 2, 3]}))["a"].sum
         RUBY
-        assert_equal "6", out, "json round-trip must work in the built gem"
+        assert_equal expected_fixture("json").fetch("round_trip"), out,
+                     "json round-trip must work in the built gem"
       end
     end
   end
@@ -215,7 +218,8 @@ class TestGemInstall < Minitest::Test
           packed = MessagePack::Packer.new.write([1, "x", true]).to_s
           print MessagePack::Unpacker.new.feed(packed).read.inspect
         RUBY
-        assert_equal '[1, "x", true]', out, "msgpack pack/unpack round-trip must work"
+        assert_equal expected_fixture("msgpack").fetch("round_trip"), out,
+                     "msgpack pack/unpack round-trip must work"
       end
     end
   end
@@ -239,7 +243,8 @@ class TestGemInstall < Minitest::Test
           gem "json"; require "json"
           print JSON.parse(JSON.generate({"a" => [1, 2, 3]}))["a"].sum
         RUBY
-        assert_equal "6", out, "json round-trip must work in the hermetically built gem"
+        assert_equal expected_fixture("json").fetch("round_trip"), out,
+                     "json round-trip must work in the hermetically built gem"
       end
     end
   end
@@ -252,17 +257,25 @@ class TestGemInstall < Minitest::Test
           packed = MessagePack::Packer.new.write([1, "x", true]).to_s
           print MessagePack::Unpacker.new.feed(packed).read.inspect
         RUBY
-        assert_equal '[1, "x", true]', out, "msgpack round-trip must work in the hermetically built gem"
+        assert_equal expected_fixture("msgpack").fetch("round_trip"), out,
+                     "msgpack round-trip must work in the hermetically built gem"
       end
     end
   end
 
   private
 
-  # Build+install rubycc into a fresh GEM_HOME, install +name+-+version+ from the
-  # network with RUBYCC=1, assert success and a produced .so, verify the build
-  # went through exe/rmake and rubycc (gem_make.out evidence), and yield the
-  # GEM_HOME so the caller can require and drive the built gem.
+  def expected_fixture(name)
+    @expected_fixtures ||= JSON.parse(
+      File.read(File.join(REPO_ROOT, "test/fixtures/acceptance/expected-results.json"))
+    )
+    @expected_fixtures.fetch(name)
+  end
+
+  # Build+install rubycc into a fresh GEM_HOME, fetch +name+-+version+ from the
+  # live URL or fixture with RUBYCC=1, assert success and a produced .so, verify
+  # the build went through exe/rmake and rubycc (gem_make.out evidence), and
+  # yield the GEM_HOME so the caller can require and drive the built gem.
   def acceptance_gem_install(name, version, hermetic: false)
     unless ENV["RMAKE_ACCEPTANCE"] == "1" || AcceptanceFetchHelper.strict?
       skip "set RMAKE_ACCEPTANCE=1 to run the networked gem-install acceptance"
@@ -276,7 +289,7 @@ class TestGemInstall < Minitest::Test
       ).fetch_gem_file(
         gem_name: name, version: version,
         expected_sha256: artifact.fetch("sha256"), artifact_id: artifact_id,
-        artifact_url: artifact.fetch("url")
+        artifact_url: artifact.fetch("url"), fixture_path: artifact.fetch("fixture", nil)
       )
       install_rubycc_into(gem_home)
 

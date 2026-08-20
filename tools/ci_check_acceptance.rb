@@ -154,6 +154,12 @@ module Rubycc
         raise CIResult::Error, "acceptance artifact #{id.inspect} expired on #{expires}"
       end
 
+      fixture = artifact.fetch("fixture", nil)
+      if fixture && (!fixture.is_a?(String) || fixture.empty? || fixture.start_with?("/") ||
+                     fixture.split(/[\\\/]/).include?(".."))
+        raise CIResult::Error, "fixture for artifact #{id.inspect} must be a relative path"
+      end
+
       artifact.merge("id" => id, "kind" => kind, "url" => url, "sha256" => sha256)
     rescue KeyError => e
       raise CIResult::Error, "acceptance artifact is missing #{e.key.inspect}", cause: e

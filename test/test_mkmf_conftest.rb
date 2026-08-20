@@ -19,9 +19,9 @@ require_relative "support/acceptance_result_reporter"
 # check_sizeof)が gcc と同じ真偽・値を返すこと、mkmf.log が本物の体裁で rubycc の
 # コマンド行と "checked program was" 節を残すことを検証する。
 #
-# msgpack / json の extconf 再現(ネットワーク使用)は RMAKE_ACCEPTANCE=1 の opt-in
-# ガード付きで、生成 Makefile の probe 結果(-DHAVE_* 集合)を Step 55 採取 fixtures と
-# 突き合わせる。
+# msgpack / json の extconf 再現は RMAKE_ACCEPTANCE=1 の opt-in ガード付きで、生成
+# Makefile の probe 結果(-DHAVE_* 集合)を Step 55 採取 fixtures と突き合わせる。
+# CI_NETWORK=fixture のときは、manifestに固定したCI-local gem archiveを使う。
 class TestMkmfConftest < Minitest::Test
   LIB_DIR    = File.expand_path("../lib", __dir__)
   EXE_PATH   = File.expand_path("../exe/rubycc", __dir__)
@@ -318,7 +318,7 @@ class TestMkmfConftest < Minitest::Test
     assert_includes log, "pipe '|'", "mkmf.log must name the construct at fault"
   end
 
-  # --- corpus extconf reproduction (opt-in, networked) -----------------------
+  # --- corpus extconf reproduction (opt-in, live or fixture) -----------------
 
   # msgpack 1.8.3's extconf.rb, run under the shim, must generate a Makefile
   # whose probe result — the set of -DHAVE_* macros in its CPPFLAGS — matches the
@@ -398,7 +398,7 @@ class TestMkmfConftest < Minitest::Test
     AcceptanceFetchHelper::Fetcher.new(work_dir: work).fetch_gem(
       gem_name: gem_name, version: version, extension_subdir: ext_subdir,
       expected_sha256: artifact.fetch("sha256"), artifact_id: artifact.fetch("id"),
-      artifact_url: artifact.fetch("url")
+      artifact_url: artifact.fetch("url"), fixture_path: artifact.fetch("fixture", nil)
     )
   rescue AcceptanceFetchHelper::Failure => e
     raise e if AcceptanceFetchHelper.strict?

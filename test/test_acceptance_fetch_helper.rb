@@ -10,6 +10,16 @@ require_relative "support/acceptance_fetch_helper"
 class TestAcceptanceFetchHelper < Minitest::Test
   FakeStatus = Struct.new(:success?)
 
+  def setup
+    @saved_acceptance_environment = ENV.to_hash
+    ENV.delete("CI_NETWORK")
+    ENV.delete("CI_FIXTURE_ROOT")
+  end
+
+  def teardown
+    ENV.replace(@saved_acceptance_environment)
+  end
+
   def test_fetches_unpacks_and_returns_the_requested_extension
     Dir.mktmpdir do |dir|
       calls = []
@@ -193,6 +203,60 @@ class TestAcceptanceFetchHelper < Minitest::Test
       )
       second = JSON.parse(File.read(report)).first
       assert second.fetch("cache_hit")
+    ensure
+      ENV.replace(saved) if saved
+    end
+  end
+
+  def test_fixture_mode_copies_a_pinned_archive_without_invoking_the_runner
+    Dir.mktmpdir do |root|
+      fixture = File.join(root, "json-2.21.1.gem")
+      File.write(fixture, "fixture archive")
+      expected = Digest::SHA256.file(fixture).hexdigest
+      destination_root = Dir.mktmpdir
+      saved = ENV.to_hash
+      ENV["CI_NETWORK"] = "fixture"
+      ENV["CI_FIXTURE_ROOT"] = root
+
+      runner = lambda do |_command, **|
+        flunk "fixture mode must not invoke a network-capable runner"
+      end
+      destination = AcceptanceFetchHelper::Fetcher.new(
+        work_dir: destination_root, runner: runner
+      ).fetch_url(
+        url: "https://rubygems.org/downloads/json-2.21.1.gem",
+        destination: "json-2.21.1.gem",
+        expected_sha256: expected,
+        fixture_path: "json-2.21.1.gem"
+      )
+
+      assert_equal File.read(fixture), File.read(destination)
+    ensure
+      ENV.replace(saved) if saved
+      FileUtils.rm_rf(destination_root) if destination_root
+    end
+  end
+
+  def test_fixture_mode_reports_a_missing_archive_without_network_fallback
+    Dir.mktmpdir do |root|
+      saved = ENV.to_hash
+      ENV["CI_NETWORK"] = "fixture"
+      ENV["CI_FIXTURE_ROOT"] = root
+
+      runner = lambda do |_command, **|
+        flunk "fixture mode must not fall back to a network command"
+      end
+      error = assert_raises(AcceptanceFetchHelper::Failure) do
+        AcceptanceFetchHelper::Fetcher.new(work_dir: root, runner: runner).fetch_url(
+          url: "https://rubygems.org/downloads/missing.gem",
+          destination: "missing.gem",
+          expected_sha256: "0" * 64,
+          fixture_path: "missing.gem"
+        )
+      end
+
+      assert_equal :environment, error.kind
+      assert_includes error.message, "fixture archive is missing"
     ensure
       ENV.replace(saved) if saved
     end

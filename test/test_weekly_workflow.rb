@@ -50,4 +50,31 @@ class TestWeeklyWorkflow < Minitest::Test
     script = contract.fetch("steps").fetch(0).fetch("run")
     assert_includes script, "verify_step and only cannot be combined"
   end
+
+  def test_fixture_job_runs_real_acceptance_inputs_in_a_network_namespace
+    steps = @jobs.fetch("acceptance-fixture").fetch("steps")
+    cache = steps.find { |step| step.fetch("uses", "").start_with?("actions/cache@") }
+    refute_nil cache
+    assert_equal "tmp/ci/acceptance-fixtures", cache.fetch("with").fetch("path")
+    assert_includes cache.fetch("with").fetch("key"), "hashFiles('config/ci/acceptance_manifest.json')"
+
+    prepare = steps.find { |step| step.fetch("name", "").include?("Prepare and verify") }
+    refute_nil prepare
+    assert_includes prepare.fetch("run"), "tools/ci_prepare_acceptance_fixtures.rb"
+    assert_includes prepare.fetch("run"), "test/test_acceptance_fixtures.rb"
+
+    run = steps.find { |step| step.fetch("name", "").include?("without network") }
+    refute_nil run
+    script = run.fetch("run")
+
+    assert_includes script, "unshare --user --map-root-user --net"
+    assert_includes script, "test/test_mkmf_conftest.rb"
+    assert_includes script, "test/test_rmake_tools.rb"
+    assert_includes script, "test/test_gem_install.rb"
+
+    env = run.fetch("env")
+    assert_equal "fixture", env.fetch("CI_NETWORK")
+    assert_equal "1", env.fetch("RMAKE_ACCEPTANCE_STRICT")
+    assert_equal "${{ github.workspace }}/tmp/ci/acceptance-fixtures", env.fetch("CI_FIXTURE_ROOT")
+  end
 end

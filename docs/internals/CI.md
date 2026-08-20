@@ -174,19 +174,26 @@ install・extension load・upstream suite の証拠を代用しない。
 
 ### acceptance-fixture
 
-コミット済みの mkmf/rmake fixture を `acceptance-fixture` profile で実行し、
-`mkmf-fixture-probes` と `rmake-fixture-build` を構造化結果へ記録する
-**ネットワークフリーの job** である。
+manifestに固定した json 2.21.1 / msgpack 1.8.3 のURL・SHA-256を使い、
+`tools/ci_prepare_acceptance_fixtures.rb` がActions cacheへ取得・検証したCI-local archiveと、
+`test/fixtures/acceptance/` の期待する round-trip 結果を使って、`acceptance-fixture` profileで
+fetch・unpack・extconf・build・gem installを実行する **ネットワークフリーのテストjob** である。
+`CI_NETWORK=fixture` のとき fetch helper は明示されたローカル archive だけを atomic copy
+し、fixture がなければネットワークへフォールバックせず typed failure にする。
+
+cache準備後のjobは `unshare --user --map-root-user --net` の network namespace 内で、
+`mkmf-fixture-probes`、`mkmf-msgpack-extconf`、`mkmf-json-extconf`、
+`rmake-fixture-build`、`rmake-json-parser`、`gem-install-json`、
+`gem-install-msgpack` を実行し、結果と取得 archive の digest を構造化 artifact へ記録する。
 
 **PR の必須判定ではない。** 実行しているテスト本体は Tier A の `rake test` に
 含まれるので、PR ごとの回帰検出は Tier A が担う。この job が足しているのは、
-専用 profile での実行と、必須 ID が本当に実行されたことを
-`ci_check_acceptance.rb` が検証する点だけである。
+専用 profile でのネットワーク遮断実行と、必須 ID が本当に実行されたことを
+`ci_check_acceptance.rb` が検証する点である。
 
 **live acceptance の代替にはならない。** gem の取得・unpack・extconf・ビルドという、
-実際に skip が発生していた経路は依然ネットワークを必要とする。fixture 化
-(TEST-PLAN の 2B-1)は未実施で、この job が green でも live 経路が未実行なら
-受入れは成立していない。
+実際の外部 gem サービスへの接続と manifest URL の健全性は live job が検証する。
+この job が green でも live 経路が未実行なら、外部サービス込みの受入れは成立していない。
 
 ### acceptance
 
