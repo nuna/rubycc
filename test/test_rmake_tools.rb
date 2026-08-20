@@ -26,8 +26,9 @@ require_relative "support/acceptance_result_reporter"
 #     wall-clock intervals) while still respecting the dependency edges, and a
 #     `jobs: 1` run of the same plan does not overlap.
 #
-# The optional json acceptance (a real fixture Makefile driven to `parser.so`)
-# needs the gem source off the network and is gated behind RMAKE_ACCEPTANCE=1.
+# The optional json acceptance (a real gem Makefile driven to `parser.so`) is
+# gated behind RMAKE_ACCEPTANCE=1. CI_NETWORK=fixture supplies its pinned
+# archive locally; the live profile fetches the same artifact from its URL.
 class TestRmakeTools < Minitest::Test
   Rmake = Rubycc::Rmake
   Makefile = Rmake::Makefile
@@ -307,16 +308,16 @@ class TestRmakeTools < Minitest::Test
     assert_equal 1, text.lines.count { |line| line == "ruby_version = #{RbConfig::CONFIG.fetch('ruby_version')}\n" }
   end
 
-  # --- optional real json acceptance (network) ------------------------------
+  # --- optional real json acceptance (live or fixture) ----------------------
 
   # The ROADMAP B3 acceptance: drive the real fixture parser Makefile to
   # parser.so with `tools: :rubycc` and `jobs: 2`, then dlopen it. Needs the json
-  # gem source, so it is opt-in (RMAKE_ACCEPTANCE=1) to keep the offline suite
-  # network-free.
+  # gem source, so it is opt-in (RMAKE_ACCEPTANCE=1). The fixture profile
+  # supplies that source from a pinned local archive.
   def test_real_json_parser_makefile_builds_so
     AcceptanceResultReporter.with_result("rmake-json-parser") do
       unless ENV["RMAKE_ACCEPTANCE"] == "1" || AcceptanceFetchHelper.strict?
-        skip "set RMAKE_ACCEPTANCE=1 to run the networked json acceptance"
+        skip "set RMAKE_ACCEPTANCE=1 to run the json acceptance"
       end
 
       src_parser = fetch_json_parser_src
@@ -373,7 +374,7 @@ class TestRmakeTools < Minitest::Test
       gem_name: "json", version: "2.21.1", extension_subdir: "ext/json/ext/parser",
       required_file: "parser.c",
       expected_sha256: artifact.fetch("sha256"), artifact_id: artifact.fetch("id"),
-      artifact_url: artifact.fetch("url")
+      artifact_url: artifact.fetch("url"), fixture_path: artifact.fetch("fixture", nil)
     )
   rescue AcceptanceFetchHelper::Failure => e
     raise e if AcceptanceFetchHelper.strict?

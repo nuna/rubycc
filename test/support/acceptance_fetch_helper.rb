@@ -97,6 +97,32 @@ module AcceptanceFetchHelper
     )
   end
 
+  # A fixture path is repository-relative by contract. Keeping the root and
+  # traversal check here means a fixture-mode test cannot accidentally turn a
+  # manifest value into an arbitrary local file read.
+  def resolve_fixture_path(fixture_path)
+    value = String(fixture_path)
+    raise ArgumentError, "fixture path must not be empty" if value.empty?
+    if value.start_with?("/") || value.split(/[\\\/]/).include?("..")
+      raise ArgumentError, "fixture path must be relative and stay below the fixture root"
+    end
+
+    root_value = ENV["CI_FIXTURE_ROOT"]
+    root_value = nil if root_value.nil? || root_value.empty?
+    root = File.expand_path(root_value || File.expand_path("../..", __dir__))
+    path = File.expand_path(value, root)
+    unless path == root || path.start_with?("#{root}#{File::SEPARATOR}")
+      raise ArgumentError, "fixture path must stay below the fixture root"
+    end
+    path
+  rescue TypeError
+    raise ArgumentError, "fixture path must be a string"
+  end
+
+  def fixture_mode?
+    ENV["CI_NETWORK"] == "fixture"
+  end
+
   def record_artifact(id:, kind:, url:, expected_sha256:, path:, cache_hit:)
     report_path = ENV["CI_ARTIFACT_REPORT_PATH"] || ENV["M2_ARTIFACT_REPORT"]
     return if report_path.nil? || report_path.empty?
@@ -163,7 +189,8 @@ module AcceptanceFetchHelper
     end
 
     def fetch_gem_file(gem_name:, version:, platform: "ruby", expected_sha256: nil,
-                       artifact_id: nil, artifact_kind: "rubygems-gem", artifact_url: nil)
+                       artifact_id: nil, artifact_kind: "rubygems-gem", artifact_url: nil,
+                       fixture_path: nil)
       validate_component!(gem_name, "gem name")
       validate_component!(version, "gem version")
       expected_sha256 = AcceptanceFetchHelper.normalize_sha256(expected_sha256) unless expected_sha256.nil?
@@ -175,7 +202,8 @@ module AcceptanceFetchHelper
       gem_file = File.join(@work_dir, "#{gem_name}-#{version}.gem")
       verify_cached_or_fetch(
         gem_file, gem_name, version, platform, expected_sha256,
-        artifact_id: artifact_id, artifact_kind: artifact_kind, artifact_url: artifact_url
+        artifact_id: artifact_id, artifact_kind: artifact_kind, artifact_url: artifact_url,
+        fixture_path: fixture_path
       )
       gem_file
     end
@@ -185,12 +213,18 @@ module AcceptanceFetchHelper
     # and RubyGems packages so their retry, timeout, cache and report semantics
     # cannot drift apart.
     def fetch_url(url:, destination:, expected_sha256:, artifact_id: nil,
-                  artifact_kind: "source", artifact_url: url)
+                  artifact_kind: "source", artifact_url: url, fixture_path: nil)
       validate_url!(url)
       expected = AcceptanceFetchHelper.normalize_sha256(expected_sha256)
       if artifact_id && artifact_url != url
         raise ArgumentError, "artifact_url must match url"
       end
+
+      return fetch_fixture_url(
+        url: url, destination: destination, expected_sha256: expected,
+        artifact_id: artifact_id, artifact_kind: artifact_kind,
+        artifact_url: artifact_url, fixture_path: fixture_path
+      ) if AcceptanceFetchHelper.fixture_mode?
 
       destination = File.expand_path(destination, @work_dir)
       FileUtils.mkdir_p(File.dirname(destination))
@@ -251,7 +285,8 @@ module AcceptanceFetchHelper
     end
 
     def fetch_gem(gem_name:, version:, extension_subdir:, required_file: "extconf.rb", platform: "ruby",
-                  expected_sha256: nil, artifact_id: nil, artifact_kind: "rubygems-gem", artifact_url: nil)
+                  expected_sha256: nil, artifact_id: nil, artifact_kind: "rubygems-gem", artifact_url: nil,
+                  fixture_path: nil)
       validate_component!(extension_subdir, "extension path")
       validate_component!(required_file, "required file")
 
@@ -259,7 +294,8 @@ module AcceptanceFetchHelper
       extension_dir = File.join(unpacked, extension_subdir)
       gem_file = fetch_gem_file(gem_name: gem_name, version: version, platform: platform,
                                 expected_sha256: expected_sha256, artifact_id: artifact_id,
-                                artifact_kind: artifact_kind, artifact_url: artifact_url)
+                                artifact_kind: artifact_kind, artifact_url: artifact_url,
+                                fixture_path: fixture_path)
       return extension_dir if File.file?(File.join(extension_dir, required_file))
 
       FileUtils.rm_rf(unpacked)
@@ -279,17 +315,86 @@ module AcceptanceFetchHelper
     private
 
     def verify_cached_or_fetch(gem_file, gem_name, version, platform, expected_sha256,
-                               artifact_id:, artifact_kind:, artifact_url:)
+                               artifact_id:, artifact_kind:, artifact_url:, fixture_path:)
       if artifact_url
         fetch_url(
           url: artifact_url, destination: gem_file, expected_sha256: expected_sha256,
-          artifact_id: artifact_id, artifact_kind: artifact_kind
+          artifact_id: artifact_id, artifact_kind: artifact_kind, fixture_path: fixture_path
         )
         return
       end
 
+      if AcceptanceFetchHelper.fixture_mode?
+        raise Failure.new(
+          kind: :environment,
+          message: "fixture mode requires a pinned artifact URL and fixture path",
+          command: nil,
+          output: "",
+          attempts: 1
+        )
+      end
+
       fetch_file(gem_file, gem_name, version, platform) unless File.file?(gem_file)
       AcceptanceFetchHelper.verify_sha256(gem_file, expected_sha256) if expected_sha256
+    end
+
+    # Copying a committed archive through the same atomic destination and
+    # checksum path as a network download keeps fixture and live acceptance
+    # comparable. No subprocess or network-capable command is invoked here.
+    def fetch_fixture_url(url:, destination:, expected_sha256:, artifact_id:, artifact_kind:,
+                          artifact_url:, fixture_path:)
+      unless fixture_path
+        raise Failure.new(
+          kind: :environment,
+          message: "fixture mode requires fixture_path for #{url}",
+          command: nil,
+          output: "",
+          attempts: 1
+        )
+      end
+
+      source = AcceptanceFetchHelper.resolve_fixture_path(fixture_path)
+      unless File.file?(source)
+        raise Failure.new(
+          kind: :environment,
+          message: "fixture archive is missing: #{source}",
+          command: nil,
+          output: "",
+          attempts: 1
+        )
+      end
+
+      destination = File.expand_path(destination, @work_dir)
+      FileUtils.mkdir_p(File.dirname(destination))
+      if File.file?(destination)
+        AcceptanceFetchHelper.verify_sha256(destination, expected_sha256)
+        AcceptanceFetchHelper.record_artifact(
+          id: artifact_id, kind: artifact_kind, url: artifact_url,
+          expected_sha256: expected_sha256, path: destination, cache_hit: true
+        ) if artifact_id
+        return destination
+      end
+
+      partial = "#{destination}.part-#{Process.pid}-#{Thread.current.object_id}"
+      FileUtils.rm_f(partial)
+      FileUtils.cp(source, partial)
+      AcceptanceFetchHelper.verify_sha256(partial, expected_sha256)
+      File.rename(partial, destination)
+      AcceptanceFetchHelper.record_artifact(
+        id: artifact_id, kind: artifact_kind, url: artifact_url,
+        expected_sha256: expected_sha256, path: destination, cache_hit: false
+      ) if artifact_id
+      destination
+    rescue SystemCallError => e
+      raise Failure.new(
+        kind: :environment,
+        message: "fixture archive could not be copied: #{e.message}",
+        command: nil,
+        output: "",
+        attempts: 1
+      ), cause: e
+    ensure
+      FileUtils.rm_f(partial) if partial
     end
 
     def fetch_file(gem_file, gem_name, version, platform)

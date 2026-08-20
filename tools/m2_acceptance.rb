@@ -178,7 +178,8 @@ def fetch_gem(name)
   gem_file = fetcher.fetch_url(
     url: gem_artifact.fetch("url"), destination: gem_file,
     expected_sha256: gem_artifact.fetch("sha256"), artifact_id: gem_artifact.fetch("id"),
-    artifact_kind: gem_artifact.fetch("kind"), artifact_url: gem_artifact.fetch("url")
+    artifact_kind: gem_artifact.fetch("kind"), artifact_url: gem_artifact.fetch("url"),
+    fixture_path: gem_artifact.fetch("fixture", nil)
   )
 
   tarball = File.join(WORK_DIR, "#{name}-#{version}-src.tar.gz")

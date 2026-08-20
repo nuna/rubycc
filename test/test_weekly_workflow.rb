@@ -50,4 +50,21 @@ class TestWeeklyWorkflow < Minitest::Test
     script = contract.fetch("steps").fetch(0).fetch("run")
     assert_includes script, "verify_step and only cannot be combined"
   end
+
+  def test_fixture_job_runs_real_acceptance_inputs_in_a_network_namespace
+    steps = @jobs.fetch("acceptance-fixture").fetch("steps")
+    run = steps.find { |step| step.fetch("name", "").include?("without network") }
+    refute_nil run
+    script = run.fetch("run")
+
+    assert_includes script, "unshare --user --map-root-user --net"
+    assert_includes script, "test/test_mkmf_conftest.rb"
+    assert_includes script, "test/test_rmake_tools.rb"
+    assert_includes script, "test/test_gem_install.rb"
+
+    env = run.fetch("env")
+    assert_equal "fixture", env.fetch("CI_NETWORK")
+    assert_equal "1", env.fetch("RMAKE_ACCEPTANCE_STRICT")
+    assert_equal "${{ github.workspace }}", env.fetch("CI_FIXTURE_ROOT")
+  end
 end

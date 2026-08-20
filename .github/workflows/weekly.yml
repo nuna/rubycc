@@ -124,8 +124,8 @@ jobs:
   acceptance-fixture:
     # This is the deterministic acceptance contract. It runs on every scheduled
     # weekly invocation and on an acceptance-only dispatch, independently of
-    # rubygems.org. It is the required product signal when the live network is
-    # unavailable.
+    # rubygems.org. The committed gem archives exercise fetch/unpack/extconf/build
+    # while the test step is placed in an empty network namespace.
     if: inputs.verify_step == '' && (inputs.only == '' || inputs.only == 'acceptance')
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -145,25 +145,47 @@ jobs:
       - name: bundle install
         run: bundle install --jobs 4 --retry 3
 
-      - name: Run deterministic mkmf and rmake fixtures
+      - name: Run pinned acceptance fixtures without network access
         shell: bash
         env:
           CI_PROFILE: acceptance-fixture
           CI_RESULT_PATH: tmp/ci/acceptance-fixture-results.json
+          CI_ARTIFACT_REPORT_PATH: tmp/ci/acceptance-fixture-artifacts.json
+          CI_FIXTURE_ROOT: ${{ github.workspace }}
           CI_NETWORK: fixture
+          RMAKE_ACCEPTANCE_STRICT: "1"
         run: |
           set -o pipefail
           mkdir -p tmp/ci
           set +e
-          bundle exec ruby -Ilib:test test/test_mkmf_conftest.rb \
-            --name test_conftest_probe_api_matches_gcc_truth --verbose \
-            2>&1 | tee tmp/ci/acceptance-fixture-mkmf.log
-          mkmf_status=${PIPESTATUS[0]}
-          bundle exec ruby -Ilib:test test/test_rmake_tools.rb \
-            --name test_tools_substitution_builds_loadable_so_sequential --verbose \
+          unshare --user --map-root-user --net -- bash -lc \
+            'bundle exec ruby -Ilib:test test/test_mkmf_conftest.rb \
+              --name test_conftest_probe_api_matches_gcc_truth --verbose' \
+            2>&1 | tee tmp/ci/acceptance-fixture-probes.log
+          probes_status=${PIPESTATUS[0]}
+          unshare --user --map-root-user --net -- bash -lc \
+            'bundle exec ruby -Ilib:test test/test_mkmf_conftest.rb \
+              --name "/test_(msgpack|json)_extconf/" --verbose' \
+            2>&1 | tee tmp/ci/acceptance-fixture-extconf.log
+          extconf_status=${PIPESTATUS[0]}
+          unshare --user --map-root-user --net -- bash -lc \
+            'bundle exec ruby -Ilib:test test/test_rmake_tools.rb \
+              --name test_tools_substitution_builds_loadable_so_sequential --verbose' \
             2>&1 | tee tmp/ci/acceptance-fixture-rmake.log
           rmake_status=${PIPESTATUS[0]}
-          if [ "$mkmf_status" -ne 0 ] || [ "$rmake_status" -ne 0 ]; then
+          unshare --user --map-root-user --net -- bash -lc \
+            'bundle exec ruby -Ilib:test test/test_rmake_tools.rb \
+              --name test_real_json_parser_makefile_builds_so --verbose' \
+            2>&1 | tee tmp/ci/acceptance-fixture-rmake-gem.log
+          rmake_gem_status=${PIPESTATUS[0]}
+          unshare --user --map-root-user --net -- bash -lc \
+            'bundle exec ruby -Ilib:test test/test_gem_install.rb \
+              --name "/test_gem_install_(json|msgpack)_builds_through_rubycc/" --verbose' \
+            2>&1 | tee tmp/ci/acceptance-fixture-gem-install.log
+          gem_install_status=${PIPESTATUS[0]}
+          if [ "$probes_status" -ne 0 ] || [ "$extconf_status" -ne 0 ] || \
+             [ "$rmake_status" -ne 0 ] || [ "$rmake_gem_status" -ne 0 ] || \
+             [ "$gem_install_status" -ne 0 ]; then
             exit 1
           fi
 
@@ -174,6 +196,7 @@ jobs:
             --manifest config/ci/acceptance_manifest.json \
             --results tmp/ci/acceptance-fixture-results.json \
             --profile acceptance-fixture \
+            --artifacts tmp/ci/acceptance-fixture-artifacts.json \
             --strict
 
       - name: Upload deterministic acceptance artifacts
@@ -184,6 +207,7 @@ jobs:
           path: |
             tmp/ci/acceptance-fixture-*.log
             tmp/ci/acceptance-fixture-results.json
+            tmp/ci/acceptance-fixture-artifacts.json
           if-no-files-found: warn
 
   acceptance:

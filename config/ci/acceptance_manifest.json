@@ -14,6 +14,7 @@
       "platform": "ruby",
       "url": "https://rubygems.org/downloads/json-2.21.1.gem",
       "sha256": "13a43df75d95641443f5702dff350f237164a9d811ff0f2c2800d4d980220583",
+      "fixture": "test/fixtures/acceptance/json-2.21.1.gem",
       "expires": "2026-12-31"
     },
     {
@@ -24,6 +25,7 @@
       "platform": "ruby",
       "url": "https://rubygems.org/downloads/msgpack-1.8.3.gem",
       "sha256": "8bda4a6428d3244e50d6bd55854d354edbada88a4e1f4f5731a39a0f86bee6a1",
+      "fixture": "test/fixtures/acceptance/msgpack-1.8.3.gem",
       "expires": "2026-12-31"
     },
     {
@@ -73,7 +75,7 @@
     {
       "id": "mkmf-msgpack-extconf",
       "description": "msgpack extconf probe set matches the committed fixture",
-      "profiles": ["acceptance-live"],
+      "profiles": ["acceptance-live", "acceptance-fixture"],
       "artifacts": ["gem-msgpack-1.8.3-ruby"],
       "allowed_states": ["pass"],
       "owner": "rubycc-maintainers",
@@ -82,7 +84,7 @@
     {
       "id": "mkmf-json-extconf",
       "description": "json extconf SIMD probe agrees with the committed fixture",
-      "profiles": ["acceptance-live"],
+      "profiles": ["acceptance-live", "acceptance-fixture"],
       "artifacts": ["gem-json-2.21.1-ruby"],
       "allowed_states": ["pass"],
       "owner": "rubycc-maintainers",
@@ -91,7 +93,7 @@
     {
       "id": "rmake-json-parser",
       "description": "rmake builds and loads the json parser extension",
-      "profiles": ["acceptance-live"],
+      "profiles": ["acceptance-live", "acceptance-fixture"],
       "artifacts": ["gem-json-2.21.1-ruby"],
       "allowed_states": ["pass"],
       "owner": "rubycc-maintainers",
@@ -100,7 +102,7 @@
     {
       "id": "gem-install-json",
       "description": "json installs and passes its rubycc-built smoke test",
-      "profiles": ["acceptance-live"],
+      "profiles": ["acceptance-live", "acceptance-fixture"],
       "artifacts": ["gem-json-2.21.1-ruby"],
       "allowed_states": ["pass"],
       "owner": "rubycc-maintainers",
@@ -109,7 +111,7 @@
     {
       "id": "gem-install-msgpack",
       "description": "msgpack installs and passes its rubycc-built smoke test",
-      "profiles": ["acceptance-live"],
+      "profiles": ["acceptance-live", "acceptance-fixture"],
       "artifacts": ["gem-msgpack-1.8.3-ruby"],
       "allowed_states": ["pass"],
       "owner": "rubycc-maintainers",

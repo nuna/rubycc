@@ -1,6 +1,7 @@
 pkg/
 tmp/
 *.gem
+!test/fixtures/acceptance/*.gem
 *.o
 *.so
 Gemfile.lock

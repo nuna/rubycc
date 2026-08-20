@@ -277,7 +277,7 @@ x86_64とAArch64のELF・ABI固有期待値は共通化せず、GCC・ELF仕様�
 | 1A `00130`・`00151` | 完了 | stdout/GCC oracle、`00151` mutation、skip再導入検出。host suiteは実CPU targetを選択 |
 | 1B rmake golden | 完了 | logical path、全fixtureのheader独立性、未知missing targetの合成禁止、CI strict失敗 |
 | 2A fetch helper | 完了 | retry分類、実子プロセスtimeout、manifest URL直取得、atomic download、SHA-256検証、checksum/unpack分類、strict typed failure |
-| 2B fixture job | 完了 | mkmf/rmakeのnetwork-free required profileとmanifestをworkflowへ接続 |
+| 2B fixture job | 完了 | json/msgpackのコミット済みgem archive・SHA-256・期待結果をfixture化し、fetch/unpack/extconf/build/gem installをnetwork namespace内で実行するworkflowとmanifestへ接続 |
 | 2C live/M2 | 実装・ローカル実測完了 | live stable ID、M2結果ID、`inconclusive` policy、manifest artifact report、pinned URL/digest、variadic scan artifactを接続。x86_64ローカルでlive対象30 runs / 2598 assertionsとM2 json 603 tests / msgpack 455 examplesを実測pass |
 | 3 native AArch64 smoke | 実runner実測完了 | native RubyのCPU/arch、gcc machine、Fiddle、Ruby headers、loader/libc preflight、skip防止、ABI/Fiddle/cross-compiler smokeを接続。[weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)でrequired ID全件pass |
 | 4A struct `va_arg` | 完了 | DESIGNの対応範囲を修正し、struct caller・直接/typedef `va_arg`の診断を固定 |
@@ -298,11 +298,11 @@ fetch helper 9 / 33、scanner 8 / 44、rmake golden 7 / 24、c-suite対象4 / 23
 | native AArch64の実測 | `uname`だけでなくRubyの`RbConfig`を検証するnative smoke workflowを追加済み。[weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)で実測完了 | AArch64 runner上で対象smokeがskipされずpassし、ログにnative contextが残ることを確認済み |
 | R10全対象gemの手動分類 | scannerのc-testsuite実測と、M2で取得できたjson/msgpackのartifact走査まで。macro展開・生成コードを含む全gemの手動分類は未完了 | R10対象gemごとに「実使用・誤検出・要追加確認」を分類し、struct `va_arg`の実装要否を決定する |
 | native/live実測がtipより前のcommit | native実測は`7d903c4`、live実測は`d36a39d`で取得したもので、いずれもtip `94786cf` ではない。以降に`260af8e`がRakefile・`tools/verify_gem_tests.rb`・テスト2本を追加している | tipで再実行するか、実測が有効な範囲をcommit単位で明示する |
-| **2B-1 fixtureの作成が未実施**([issue](../../issues/acceptance-fixture-offline.md)) | `acceptance-fixture` jobは既存のmkmf/rmakeテスト2件を専用profileで再実行しているだけで、gem archive・checksum・期待結果のfixture化は行っていない。実際にskipが発生していたfetch/unpack/extconf/build経路はnetwork必須のまま | 2B-1の完了条件どおりarchiveと期待結果をfixture化し、network遮断環境（2B-4）で当該経路が実行されることを確認する |
+| 2B-1 fixtureの作成([issue](../../issues/acceptance-fixture-offline.md)) | 完了。`test/fixtures/acceptance/` にjson/msgpack archiveと期待結果を追加し、manifestのSHA-256を検証するfixture modeを実装。`weekly.yml` はnetwork namespace内でfetch/unpack/extconf/build/gem installを実行する | fixture archiveのdigest、7つのrequired ID、network遮断下の0 skip/0 failureをローカルで確認済み。Actionsでは同じjobのartifactを継続確認する |
 | **2B-3 required job化が未実施**([issue](../../issues/acceptance-fixture-required-job.md)) | fixture jobは`weekly.yml`にあり、`test.yml`（PR必須）には無い | fixtureがliveの代替として成立してから、PR必須にするかTier Aで足りるかを判断する |
 
 未実施をgreenとして扱わない。`acceptance-fixture`はnetwork-freeのTier B jobであり、
-PRの必須判定ではなく、liveの代替でもない（上表2B-1・2B-3、および[`CI.md`](../internals/CI.md)を参照）。
+PRの必須判定ではなく、liveの代替でもない（上表2B-3、および[`CI.md`](../internals/CI.md)を参照）。
 live/nativeは後述の実runner結果で確認済みだが、実測commitがtipより前である点と、
 R10手動分類の未確認範囲は受入れ判定から区別する。
 
