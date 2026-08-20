@@ -41,7 +41,7 @@ skip され、skip は静かに緑になっていた。
 
 ### 2026-08-20
 
-- `test/fixtures/acceptance/` に manifest と同じ SHA-256 の json 2.21.1 / msgpack 1.8.3 の gem archive、期待する version と round-trip 結果を追加した。
+- `test/fixtures/acceptance/` に manifestのURL・SHA-256に対応する期待する version と round-trip 結果を追加した。
 - `AcceptanceFetchHelper` に `CI_NETWORK=fixture` modeを追加した。fixture pathをmanifestから明示的に受け取り、archiveのdigestを検証してから unpack へ進む。欠落時は network fallback せず `:environment` failure とする。
 - mkmf、rmake、gem install の実物経路を `weekly.yml` の `unshare --user --map-root-user --net` 内で実行し、7つの required IDとartifact reportを `acceptance-fixture` profileへ接続した。
 - ローカルのnetwork namespaceで `mkmf` extconf、rmake parser build、json/msgpack gem installを実行し、各0 failure / 0 skipを確認した。fixture archiveのSHA-256と期待結果の単体検査も通過した。
@@ -51,6 +51,9 @@ skip され、skip は静かに緑になっていた。
 
 PR [#93](https://github.com/nuna/rubycc/pull/93) を作成した。master反映後に `status: done`
 へ更新する。
+
+外部gemの再配布を避けるため、リポジトリ内のgem archiveは削除した。manifestのURL・SHA-256
+からActions cacheへCI実行時に取得し、検証後にnetwork namespace内のacceptanceへ渡す方式へ変更した。
 
 ## 決着
 

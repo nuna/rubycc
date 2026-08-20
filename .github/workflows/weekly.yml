@@ -123,9 +123,9 @@ jobs:
   # test suites).
   acceptance-fixture:
     # This is the deterministic acceptance contract. It runs on every scheduled
-    # weekly invocation and on an acceptance-only dispatch, independently of
-    # rubygems.org. The committed gem archives exercise fetch/unpack/extconf/build
-    # while the test step is placed in an empty network namespace.
+    # weekly invocation and on an acceptance-only dispatch. The gem archives are
+    # prepared in an Actions cache; the acceptance test step itself is placed in
+    # an empty network namespace.
     if: inputs.verify_step == '' && (inputs.only == '' || inputs.only == 'acceptance')
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -145,13 +145,26 @@ jobs:
       - name: bundle install
         run: bundle install --jobs 4 --retry 3
 
+      - name: Restore pinned acceptance gem cache
+        uses: actions/cache@v4
+        with:
+          path: tmp/ci/acceptance-fixtures
+          key: acceptance-fixture-gems-${{ hashFiles('config/ci/acceptance_manifest.json') }}
+
+      - name: Prepare and verify pinned acceptance gem cache
+        env:
+          CI_FIXTURE_ROOT: ${{ github.workspace }}/tmp/ci/acceptance-fixtures
+        run: |
+          bundle exec ruby tools/ci_prepare_acceptance_fixtures.rb
+          bundle exec ruby -Ilib:test test/test_acceptance_fixtures.rb --verbose
+
       - name: Run pinned acceptance fixtures without network access
         shell: bash
         env:
           CI_PROFILE: acceptance-fixture
           CI_RESULT_PATH: tmp/ci/acceptance-fixture-results.json
           CI_ARTIFACT_REPORT_PATH: tmp/ci/acceptance-fixture-artifacts.json
-          CI_FIXTURE_ROOT: ${{ github.workspace }}
+          CI_FIXTURE_ROOT: ${{ github.workspace }}/tmp/ci/acceptance-fixtures
           CI_NETWORK: fixture
           RMAKE_ACCEPTANCE_STRICT: "1"
         run: |

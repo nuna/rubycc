@@ -21,7 +21,7 @@ require_relative "support/acceptance_result_reporter"
 #
 # msgpack / json の extconf 再現は RMAKE_ACCEPTANCE=1 の opt-in ガード付きで、生成
 # Makefile の probe 結果(-DHAVE_* 集合)を Step 55 採取 fixtures と突き合わせる。
-# CI_NETWORK=fixture のときは、manifestに固定したコミット済みgem archiveを使う。
+# CI_NETWORK=fixture のときは、manifestに固定したCI-local gem archiveを使う。
 class TestMkmfConftest < Minitest::Test
   LIB_DIR    = File.expand_path("../lib", __dir__)
   EXE_PATH   = File.expand_path("../exe/rubycc", __dir__)

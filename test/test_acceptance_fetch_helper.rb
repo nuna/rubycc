@@ -211,7 +211,7 @@ class TestAcceptanceFetchHelper < Minitest::Test
   def test_fixture_mode_copies_a_pinned_archive_without_invoking_the_runner
     Dir.mktmpdir do |root|
       fixture = File.join(root, "json-2.21.1.gem")
-      File.write(fixture, "committed gem archive")
+      File.write(fixture, "fixture archive")
       expected = Digest::SHA256.file(fixture).hexdigest
       destination_root = Dir.mktmpdir
       saved = ENV.to_hash

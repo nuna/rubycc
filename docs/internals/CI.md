@@ -152,13 +152,14 @@ install・extension load・upstream suite の証拠を代用しない。
 
 ### acceptance-fixture
 
-`test/fixtures/acceptance/` にコミットした json 2.21.1 / msgpack 1.8.3 の gem archive、
-manifest の SHA-256、期待する round-trip 結果を使い、`acceptance-fixture` profile で
-fetch・unpack・extconf・build・gem install を実行する **ネットワークフリーの job** である。
+manifestに固定した json 2.21.1 / msgpack 1.8.3 のURL・SHA-256を使い、
+`tools/ci_prepare_acceptance_fixtures.rb` がActions cacheへ取得・検証したCI-local archiveと、
+`test/fixtures/acceptance/` の期待する round-trip 結果を使って、`acceptance-fixture` profileで
+fetch・unpack・extconf・build・gem installを実行する **ネットワークフリーのテストjob** である。
 `CI_NETWORK=fixture` のとき fetch helper は明示されたローカル archive だけを atomic copy
 し、fixture がなければネットワークへフォールバックせず typed failure にする。
 
-job は `unshare --user --map-root-user --net` の network namespace 内で、
+cache準備後のjobは `unshare --user --map-root-user --net` の network namespace 内で、
 `mkmf-fixture-probes`、`mkmf-msgpack-extconf`、`mkmf-json-extconf`、
 `rmake-fixture-build`、`rmake-json-parser`、`gem-install-json`、
 `gem-install-msgpack` を実行し、結果と取得 archive の digest を構造化 artifact へ記録する。

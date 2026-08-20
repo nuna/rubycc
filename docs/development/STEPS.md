@@ -9915,6 +9915,10 @@ full suite は dispatch 専用のまま残す**という分け方にした。両
 実際に skip が発生していた経路は依然ネットワークを必要とする。TEST-PLAN の 2B-1
 (archive の fixture 化)が未実施であることを残課題に明記した。
 
+2026-08-21 update: 2B-1はPR [#93](https://github.com/nuna/rubycc/pull/93)で実装した。
+外部gem archiveは再配布を避けるためコミットせず、manifestのURL・SHA-256からCI cacheへ
+取得・検証してからnetwork namespace内のacceptanceへ渡す。
+
 これは workflow と文書だけの変更なので、C の examples は追加していない。
 
 ## test-ci-implementation-7 — struct `va_arg` の需要は、コンパイラ自身が既に答えていた(M5 H6)

@@ -1,11 +1,11 @@
 {
   "json": {
-    "archive": "test/fixtures/acceptance/json-2.21.1.gem",
+    "archive": "json-2.21.1.gem",
     "version": "2.21.1",
     "round_trip": "6"
   },
   "msgpack": {
-    "archive": "test/fixtures/acceptance/msgpack-1.8.3.gem",
+    "archive": "msgpack-1.8.3.gem",
     "version": "1.8.3",
     "round_trip": "[1, \"x\", true]"
   }
