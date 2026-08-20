@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-20
-closed:
+closed: 2026-08-20
 branch: default-external-encoding
-pr:
+pr: 90
 steps: [default-external-encoding-1]
 ---
 
