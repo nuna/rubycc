@@ -52,7 +52,9 @@ module Rubycc
           return 2
         end
 
-        mk = Makefile.parse(File.read(makefile_path), dir: @dir, overrides: options[:overrides],
+        # Bytes: a Makefile carries comments (and occasionally a path) in
+        # whatever encoding its author used.
+        mk = Makefile.parse(File.binread(makefile_path), dir: @dir, overrides: options[:overrides],
                              defaults: { "MAKE" => make_default })
         goals = options[:targets].empty? ? [nil] : options[:targets]
         # Tool substitution is always on: rmake is rubycc's build CLI, so the

@@ -138,9 +138,12 @@ module Rubycc
       # (archives and objects) to feed the merge, both in first-seen order.
       Resolution = Struct.new(:needed, :inputs, keyword_init: true)
 
+      # The search path is held as bytes (lib/rubycc.rb): `-L` operands carry the
+      # locale's encoding, while the names joined onto them come from linker
+      # scripts and directory listings.
       def initialize(search_dirs: [], target: nil)
-        @dirs = (search_dirs + self.class.default_system_dirs(target: target)).select do |d|
-          File.directory?(d)
+        @dirs = (search_dirs + self.class.default_system_dirs(target: target)).filter_map do |d|
+          d.b if File.directory?(d)
         end
       end
 
@@ -148,11 +151,13 @@ module Rubycc
       # the existing default directories); exposed so a driver can report it.
       attr_reader :dirs
 
+      # +libraries+ are the texts after `-l`, split off the command line; each is
+      # composed into a file name (`lib<name>.so`), so it is taken as bytes.
       def resolve(libraries)
         @needed = []
         @inputs = []
         @seen = Set.new
-        libraries.each { |spec| resolve_spec(spec) }
+        libraries.each { |spec| resolve_spec(spec.b) }
         Resolution.new(needed: @needed, inputs: @inputs)
       end
 
@@ -259,8 +264,10 @@ module Rubycc
         end
       end
 
+      # Entries come back tagged with the filesystem encoding; as bytes they can
+      # be joined onto #dirs whatever either of them holds.
       def directory_entries(dir)
-        Dir.children(dir)
+        Dir.children(dir).map(&:b)
       rescue SystemCallError
         []
       end
@@ -306,7 +313,9 @@ module Rubycc
       # `-l` token inside the script searches the path recursively and an absolute
       # path is ingested directly.
       def expand_script(path)
-        LinkerScript.parse(File.read(path)).each { |token| resolve_token(token) }
+        # Bytes: a script's comment names a distributor and its file list names
+        # paths, either of which can sit outside ASCII.
+        LinkerScript.parse(File.binread(path)).each { |token| resolve_token(token) }
       end
 
       # Resolves one token from a linker script's file list. A `-l` token is a
@@ -353,7 +362,10 @@ module Rubycc
         end
       end
 
+      # Bytes in (lib/rubycc.rb): every command this reader recognizes is spelled
+      # in ASCII, and the names it collects are paths.
       def initialize(text)
+        text = text.b unless text.encoding == Encoding::BINARY
         @tokens = tokenize(strip_comments(text))
       end
 

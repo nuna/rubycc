@@ -108,9 +108,15 @@ module Rubycc
       # An explicit value replaces the default outright, even when it is empty
       # (`PKG_CONFIG_SYSTEM_INCLUDE_PATH=` then means "no directory is a
       # system directory"); only an unset variable falls back to +defaults+.
+      #
+      # The list is held as bytes (lib/rubycc.rb): +value+ comes from the
+      # environment, while the directories it is compared against in
+      # #reject_system come out of a .pc file, and for a non-ASCII directory a
+      # differing encoding never compares equal — the `-I`/`-L` the environment
+      # asked to suppress would be emitted instead.
       def directory_list(value, defaults)
-        list = value.nil? ? defaults : value.split(File::PATH_SEPARATOR).reject(&:empty?)
-        list.map { |dir| normalize(dir) }
+        list = value.nil? ? defaults : value.b.split(File::PATH_SEPARATOR).reject(&:empty?)
+        list.map { |dir| normalize(dir.b) }
       end
 
       def set?(value)

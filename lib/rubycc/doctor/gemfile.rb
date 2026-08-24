@@ -32,12 +32,15 @@ module Rubycc
       # Load gem information from +dir+ (or an explicit --gemfile path). A
       # Gemfile.lock next to the Gemfile is preferred; otherwise the Gemfile
       # itself is parsed. Returns a Result, or nil when neither file exists.
+      #
+      # Read as bytes (lib/rubycc.rb): a Gemfile that comments in its author's
+      # own language is ordinary, and the doctor is the first command anyone runs.
       def load(gemfile_path)
         lock = "#{gemfile_path}.lock"
         if File.file?(lock)
-          parse_lock(File.read(lock), path: lock)
+          parse_lock(File.binread(lock), path: lock)
         elsif File.file?(gemfile_path)
-          parse_gemfile(File.read(gemfile_path), path: gemfile_path)
+          parse_gemfile(File.binread(gemfile_path), path: gemfile_path)
         end
       end
 
@@ -47,7 +50,11 @@ module Rubycc
       # 4-space indent (`name (version)`), each optionally trailed by its own
       # dependencies at 6-space indent (`dep (constraint)`). DEPENDENCIES lists
       # the directly-declared gems at 2-space indent.
+      #
+      # Bytes in (lib/rubycc.rb): every construct named above is spelled in
+      # ASCII, and the rest is carried through.
       def parse_lock(text, path: nil)
+        text = text.b unless text.encoding == Encoding::BINARY
         entries = []
         direct = []
         section = nil       # current top-level section header
@@ -96,8 +103,10 @@ module Rubycc
       # declaration and an optional literal version argument. This never evaluates
       # the file, so conditionals, variables and computed names are invisible —
       # the caller reports the reduced fidelity. Group/platform blocks are not
-      # tracked; every declared gem is returned.
+      # tracked; every declared gem is returned. Bytes in, like #parse_lock: the
+      # comment this strips is exactly where a Gemfile's non-ASCII lives.
       def parse_gemfile(text, path: nil)
+        text = text.b unless text.encoding == Encoding::BINARY
         entries = []
         text.each_line do |raw|
           line = raw.sub(/#.*/, "")

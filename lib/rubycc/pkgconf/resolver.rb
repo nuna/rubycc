@@ -34,7 +34,9 @@ module Rubycc
         path = SearchPath.find(name, directories: @directories)
         raise NotFoundError, "package '#{name}' not found (searched #{@directories.join(File::PATH_SEPARATOR)})" unless path
 
-        @cache[name] = Parser.parse(File.read(path), path: path)
+        # Bytes: a .pc file's Name/Description routinely carry non-ASCII (a
+        # copyright sign, an accented maintainer name).
+        @cache[name] = Parser.parse(File.binread(path), path: path)
       end
 
       # Own Cflags, then each public Requires recursively, then each

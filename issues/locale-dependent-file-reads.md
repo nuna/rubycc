@@ -1,11 +1,11 @@
 ---
-status: open
+status: in-progress
 kind: gap
 opened: 2026-08-20
 closed:
-branch:
-pr:
-steps: []
+branch: locale-dependent-file-reads
+pr: 
+steps: [locale-dependent-file-reads-1]
 ---
 
 # C ソース以外の `File.read` が 4 か所残っており、ロケールの無い環境で落ちる
@@ -85,4 +85,23 @@ systemd のユニット、CI のコンテナ、Docker の既定)が対象で、�
 
 ## 決着
 
-(未着手)
+設計判断の本文は `docs/development/STEPS.md` の `locale-dependent-file-reads-1`。
+
+要点だけ記す。
+
+- **挙げた 4 か所に加えて 5 件目があった** — `doctor/verified_gems.rb` が同梱の
+  `data/verified_gems.json` を `File.read` していた。**Gemfile の内容と無関係に、
+  ロケールの無い環境の `rubycc-doctor` は必ずここで死んでいた**。JSON は UTF-8 と
+  規格が決めている(RFC 8259 §8.1)ので、ここだけはバイト列にせず encoding を明示した
+- **「見込み」は外れた。** 起票時は「パーサの正規表現は ASCII だからバイト列でも動く」と
+  書いた。パーサの内側ではそのとおりだったが、**外側で新しく壊れた** —
+  BINARY の非 ASCII は UTF-8 と連結できないので、パス結合・変数展開・`Dir.children` の
+  戻り・`-l` 名の 5 か所に修正が要った
+- **境界は `File.join` だけではなかった。** 非 ASCII を含む文字列はエンコーディングが
+  違えば `==` も `eql?` も `hash` も一致しない。これで **`rmake <非 ASCII の target>` が
+  無出力・exit 0 で終わる退行**が入りかけていた(HEAD では動く)。
+  例外ではなく沈黙なので、クロスレビューで指摘されるまで気づいていなかった
+- **範囲外として残したもの** — `doctor/builder.rb` の `Open3.capture2e` は戻り値が
+  ロケール依存のままである。用途が `.lines` / `.chomp` / `.reject` / `.join` だけで
+  例外にならないことを実測した。ファイルの読み出しではないので本課題の対象ではないが、
+  **用途に依存した安全性**である
