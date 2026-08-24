@@ -30,12 +30,24 @@ def safe_member_name?(name)
   true
 end
 
+# A member name reaches this program from two directions — read out of the
+# archive, and typed on the command line — and the two meet as Hash keys and as
+# ==, which non-ASCII bytes fail unless both are tagged alike. ArReader hands
+# long names back tagged UTF-8 and short ones as bytes; re-tagging is done here
+# rather than there because the linker consumes the same reader.
+def member_key(name)
+  name.encoding == Encoding::BINARY ? name : name.b
+end
+
 if ARGV.include?("--version") || ARGV.include?("-v")
   puts "#{PROG} #{Rubycc::VERSION}"
   exit 0
 end
 
-args = ARGV.dup
+# The command line crosses into rubycc here, so it is re-tagged as bytes
+# (lib/rubycc.rb): the flag word below is matched with a regexp, and the file
+# names are matched against member names read out of the archive.
+args = ARGV.map { |arg| arg.encoding == Encoding::BINARY ? arg : arg.b }
 usage_error("no operation specified") if args.empty?
 
 # The first word is the combined flag string (e.g. "rcs", "t", "x"), with an
@@ -70,13 +82,14 @@ begin
     data_by_name = {}
     if File.exist?(archive)
       Reader.read_file(archive).members.reject(&:special?).each do |m|
-        order << m.name
-        data_by_name[m.name] = m.data
+        name = member_key(m.name)
+        order << name
+        data_by_name[name] = m.data
       end
     end
 
     members.each do |path|
-      name = File.basename(path)
+      name = member_key(File.basename(path))
       order << name unless data_by_name.key?(name)
       data_by_name[name] = File.binread(path)
     end
@@ -89,9 +102,9 @@ begin
     Reader.read_file(archive).members.reject(&:special?).each { |m| puts m.name }
 
   when :extract
-    wanted = members.empty? ? nil : members.map { |p| File.basename(p) }
+    wanted = members.empty? ? nil : members.map { |p| member_key(File.basename(p)) }
     Reader.read_file(archive).members.reject(&:special?).each do |m|
-      next if wanted && !wanted.include?(m.name)
+      next if wanted && !wanted.include?(member_key(m.name))
 
       fail_with("refusing to extract member with unsafe name '#{m.name}'") unless safe_member_name?(m.name)
 
