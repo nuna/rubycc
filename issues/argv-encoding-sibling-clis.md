@@ -1,11 +1,11 @@
 ---
-status: open
+status: in-progress
 kind: gap
 opened: 2026-08-25
 closed:
-branch:
+branch: argv-encoding-sibling-clis
 pr:
-steps: []
+steps: [argv-encoding-sibling-clis-1]
 ---
 
 # `rmake` と `rubycc-ar` の引数分類が、`rubycc` と同じ形でロケール依存のまま残っている
@@ -64,4 +64,19 @@ lib/rubycc/rmake/cli.rb:93:in 'Regexp#===': invalid byte sequence in UTF-8 (Argu
 
 ## 決着
 
-(未着手)
+設計判断の本文は `docs/development/STEPS.md` の `argv-encoding-sibling-clis-1`。
+
+要点だけ記す。
+
+- **起票時の表は 2 か所足りなかった。**「`-f <bad>` は診断で済む」は**分離綴りだけ**で、
+  joined の `-fM<不正バイト>` は落ちる。**bare `-j` の次の語**も別の行(`cli.rb:98`)で落ちる。
+  1 つのメソッドの中に同じ原因が 3 か所あった
+- **貼り直して壊れたのは 2 か所。**`-f` の相対パスを `Dir.pwd` に繋ぐ `File.expand_path`
+  (前ステップと同じ形)と、アーカイブのメンバ名の突き合わせ
+- **`ar r` の重複追加は master の時点で既に起きていた。**`ArReader` が短い名前を
+  バイト列、長い名前を UTF-8 で返す非対称のせいで、**短い**非 ASCII 名は
+  UTF-8 の ARGV と一致していなかった。実測で確認(`s日.o` が 2 行になる)。
+  つまり貼り直しは短い名前を直し長い名前を壊す関係で、両側を揃えて初めて両方通る
+- **範囲外** — リーダの非対称そのものはリンカも消費するため
+  [ar-reader-name-encoding](ar-reader-name-encoding.md) へ切り出した。
+  `rubycc-pkgconf` は落ちず、`rubycc-doctor` のバックトレースは Ruby の `optparse.rb`

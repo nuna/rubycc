@@ -44,9 +44,14 @@ module Rubycc
       end
 
       def run(argv)
-        options = parse_argv(argv)
+        # The command line crosses into rmake here, so it is re-tagged as bytes
+        # (lib/rubycc.rb): every goal and `VAR=value` operand is matched against
+        # words of the Makefile, which the Parser hands over as bytes. The array
+        # is rebuilt rather than mutated, since an in-process caller owns the one
+        # it passes.
+        options = parse_argv(argv.map { |arg| arg.encoding == Encoding::BINARY ? arg : arg.b })
 
-        makefile_path = File.expand_path(options[:file] || DEFAULT_MAKEFILE, @dir)
+        makefile_path = File.expand_path(options[:file] || DEFAULT_MAKEFILE, dir_bytes)
         unless File.file?(makefile_path)
           @err.puts("rmake: #{options[:file] || DEFAULT_MAKEFILE}: No such file")
           return 2
@@ -116,6 +121,15 @@ module Rubycc
         end
 
         { overrides: overrides, targets: targets, jobs: [jobs, 1].max, file: file }
+      end
+
+      # A relative -f operand is completed against #dir, which came from the
+      # process (Dir.pwd, or the caller's own string) rather than from bytes, so
+      # the base is re-tagged too: File.expand_path joins the two, and a byte
+      # operand under a non-ASCII working directory is exactly the join Ruby
+      # refuses when their tags differ.
+      def dir_bytes
+        @dir_bytes ||= @dir.encoding == Encoding::BINARY ? @dir : @dir.b
       end
 
       def processor_count
