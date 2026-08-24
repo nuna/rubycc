@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-20
-closed:
+closed: 2026-08-25
 branch: argv-encoding-classification
-pr:
+pr: 98
 steps: [argv-encoding-classification-1]
 ---
 
