@@ -508,8 +508,13 @@ module Rubycc
       # <stdarg.h> or a libc header resolves with no explicit -I; the driver's
       # -nostdinc passes it false to search only the caller's directories.
       def preprocess(source, filename:, include_paths: [], defines: [], system_includes: true)
+        # The directory a relative path is completed against (see
+        # #absolute_path). It comes from the process, so it is held as bytes,
+        # and it is read per run rather than once, since a caller driving
+        # several translation units may chdir between them.
+        @working_directory = Dir.pwd.b
         system_paths = system_includes ? default_system_include_paths : []
-        @system_include_paths = system_paths.map { |path| File.expand_path(path) }
+        @system_include_paths = system_paths.map { |path| absolute_path(path) }
         @include_paths = include_paths + system_paths
         # #resolve_include's cache keys a resolved path off @include_paths (and,
         # for quote includes, the includer's directory), so it must start empty
@@ -1034,7 +1039,7 @@ module Rubycc
       def process_include(hash, name, path, output)
         # A header that asked for "#pragma once" is read at most once per unit; a
         # later #include resolving to the same file is silently skipped (6.10.6).
-        return if @pragma_once.key?(File.expand_path(path))
+        return if @pragma_once.key?(absolute_path(path))
 
         # A guarded header whose guard macro is currently defined would emit
         # nothing and change nothing — skip its walk entirely (see @guard_cache).
@@ -1238,7 +1243,7 @@ module Rubycc
       # resolution beside its includer) has no "here" to resume past, so gcc
       # falls back to plain #include semantics for it, which this does too.
       def resolve_include_next(kind, name, includer, hash)
-        origin = @include_origin[File.expand_path(includer)]
+        origin = @include_origin[absolute_path(includer)]
         return resolve_include(kind, name, includer, hash) unless origin
 
         index, path = search_include_paths(name, origin + 1)
@@ -1261,7 +1266,19 @@ module Rubycc
       end
 
       def record_include_origin(path, index)
-        @include_origin[File.expand_path(path)] = index
+        @include_origin[absolute_path(path)] = index
+      end
+
+      # A path in the absolute form that serves as a file's identity here: the
+      # key of the "#pragma once" set and of the #include_next origin map, and
+      # the spelling the system-header test compares against. Both halves are
+      # bytes (lib/rubycc.rb) — the path itself, which reaches this class from a
+      # `-I` operand or a header name, and the base a relative one is completed
+      # against, which File.expand_path would otherwise take from the process
+      # itself and then refuse to splice a byte path onto.
+      def absolute_path(path)
+        path = path.b unless path.encoding == Encoding::BINARY
+        File.expand_path(path, @working_directory)
       end
 
       # A header is read as bytes, never as text in the process's locale:
@@ -1338,7 +1355,7 @@ module Rubycc
         filename = name.filename.to_s
         return false if filename.empty? || filename.start_with?("<")
 
-        path = File.expand_path(filename)
+        path = absolute_path(filename)
         @system_include_paths.any? { |root| path == root || path.start_with?("#{root}/") }
       end
 
@@ -1548,7 +1565,7 @@ module Rubycc
         first = body[0]
         return unless first&.type == :identifier && first.text == "once"
 
-        @pragma_once[File.expand_path(filename)] = true
+        @pragma_once[absolute_path(filename)] = true
       end
 
       # --- macro expansion -------------------------------------------------------

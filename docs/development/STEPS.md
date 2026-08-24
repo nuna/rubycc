@@ -12534,3 +12534,98 @@ transcode も通らないため例外にならない**ことを実測した。�
   残る 6 件は**この変更が作りうる故障**を押さえるもので、対応する修正を 1 件ずつ戻して
   落ちることを確かめた。goal の修正を戻したときだけは例外ではなく
   `Expected "" to include ...` — **沈黙をテストで捕まえる形になっている**
+
+## argv-encoding-classification-1 — 引数もバイト列で受け取る
+
+### 決めることは境界だけだった
+
+規則の本文は `lib/rubycc.rb` のクラスコメントにあり、**そこに ARGV が名指しで挙がっている** —
+「プロセスから入る文字列(ARGV・ENV・`Dir.pwd`・ディレクトリ一覧)は、跨ぐクラス境界で
+`String#b` に貼り直す」。`locale-dependent-file-reads-1` がそう書いた時点で、
+**Driver だけが従っていない**状態だった。このステップに設計の余地は少なく、決めたのは
+どこを境界にするかだけである。
+
+`Driver#initialize` にした。`parse` ではないのは、`version_requested?` / `handle_arg` /
+`value` / `ARG_CONSUMING_IGNORED` の `@argv[i + 1]` が**すべて `@argv` を読む**からで、
+1 か所で全分岐が覆える。配列は作り直す — rmake の executor は `argv.drop(...)` で作った
+**自分の配列**を `Driver.run` に渡すので、要素を置き換えると呼び出し元の持ち物を書き換える
+ことになる。
+
+### 壊れたのは `File.expand_path` だった
+
+先行 2 ステップと同じく、**直した側ではなく直したことで壊れた側**が本題になった。
+相対のバイト列パスを `File.expand_path` に渡すと、Ruby は基準を `Dir.pwd`(プロセス由来の
+文字列)から取って繋ぐ。**作業ディレクトリ名が非 ASCII だと `Encoding::CompatibilityError`**
+になる。
+
+該当は preprocessor の 5 か所で、いずれも**「ファイルの同一性を表す絶対パス」という
+1 つの概念**だった(`#pragma once` の集合キー、`#include_next` の起点マップ 2 か所、
+システムヘッダ判定、システム探索路の正規化)。`absolute_path(path)` に集約し、基準を
+`@working_directory`(`Dir.pwd.b`)として**明示的に渡す**形にした。
+
+基準を `preprocess` の入口で 1 回読むことにしたので、**従来「呼び出し時点の `Dir.pwd`」
+だったものが「その翻訳単位を開始した時点の `Dir.pwd`」に変わる**。リポジトリ内で
+`Dir.chdir` するのは rmake の executor の 2 か所だけで、どちらも `Driver.run` を呼ぶ**前**に
+移動する(`fork_driver` は fork した子で、`inline_driver` はブロックで囲う)ため、
+1 回の preprocess の途中で動く経路は無い。
+
+元の欠陥は例外だが、**`#pragma once` のキーが外れる形は「ヘッダが 2 回読まれて別の診断が
+出る」という沈黙寄りの壊れ方**なので、テストで別に押さえた。
+
+### 壊れなかった側は、推測ではなく追った
+
+`Compiler::TARGETS` のハッシュ引きと `SILENT_IGNORE_EXACT` の照合は、キーが ASCII のみ
+なのでタグが違っても `==` / `eql?` / `hash` が一致する。`-l` / `-L` は
+`locale-dependent-file-reads-1` が既に resolver 側で貼り直していた。`-D` / `-U` は
+`split("=", 2)` と ASCII リテラルへの補間だけで、スキャナが入口で貼り直す。
+`-Wl,-soname` は `.dynstr` が `buf << name.b` で組み立つので生バイトがそのまま入る。
+`Diagnostics.render` と `-E` の `token_bytes` は `default-external-encoding-1` で既に
+バイト列で組み立て済みだった。ELF の `.strtab` も同じ形なので、**STT_FILE のバイトが
+変わらない** — 生成物 12 本の sha256 一致はここに効いている。
+
+### 副産物 — 妥当な UTF-8 でも落ちていた
+
+**引き金が「不正なバイト」ではなく「両側が非 ASCII」の欠陥が同時に消えた。**
+非 ASCII の `-I` ディレクトリと非 ASCII のヘッダ名を `File.join` する経路で、
+無改変ツリーは `Encoding::CompatibilityError` になる。issue の再現条件からは外れており、
+`test_japanese_paths_still_compile` が無改変ツリーで落ちることがその証拠である。
+
+### 検証
+
+- `bundle exec rake test` — **3382 runs / 13449 assertions / 0 failures / 0 errors / 41 skips**
+- 生成物は `benchmark/c/*.c`(5)と `examples/m6/*.c`(7)の **12 本すべて sha256 一致**
+  (HEAD の複製と最終ツリーの双方でコンパイルして比較)
+- 新テストは 19 件。**無改変ツリーでは 17 件が落ちる**(16 failures + 1 error)。
+  通る 2 件は**この変更が作りうる故障を押さえるガード**である:
+  `-L`/`-l` の解決は resolver 側が先行ステップで貼り直し済みなので今も通り、
+  `--version` は `parse` より先に答える**順序**だけが理由で安全なので、その順序を固定する
+
+### クロスレビューが見つけたもの・却下したもの
+
+別系統(codex)の事前クロスレビューは**ブロッカーを挙げなかった**が、テストの穴を 4 件指摘し、
+うち 3 件を採った — `-U` のテストが名前と裏腹に ASCII の operand しか渡していなかったこと、
+非 ASCII の `-L` からの**解決成功**が無いこと、`#include_next` の起点マップが非 ASCII で
+試されていないこと。`-E` の穴はメインセッションが独立に見つけて先に埋めていた。
+
+**却下したのは「gcc との差分比較が無い」**である。ROADMAP §2 は実行テストに gcc 差分を
+原則求めるが、それは C の意味論を対照するための規則であって、ここで問うているのは
+**引数の綴りが下流でどう扱われるか**であり C の意味論ではない。生成物が変わらないことは
+12 本の sha256 一致が、綴りが変わらないことは同一入力の rubycc 同士の比較が押さえている。
+
+境界のコメントも刈り込んだ。**規則の本文は `lib/rubycc.rb` に 1 つだけ置き、各サイトは
+結論に留める**という `locale-dependent-file-reads-1` の判断に従う。
+
+### 範囲外にしたもの
+
+**自前で ARGV を分類する残り 2 つのコマンドは直していない**(実測のみ、
+[argv-encoding-sibling-clis](../../issues/argv-encoding-sibling-clis.md))。
+`rmake` は `cli.rb:93` の `Regexp#===` で、`rubycc-ar` は先頭フラグ語の `String#sub` で
+同じように落ちる。`rubycc-pkgconf` は生の引数に正規表現を当てないので落ちない。
+**`rmake` の方が踏みやすい** — goal 名と `VAR=value` は利用者ではなく Makefile と
+`gem install` が渡すからである。それぞれ別のテストが要るので切り出した。
+
+**ヘッダ探索路のうち同梱ディレクトリだけがバイト列でない**件も切り出した
+([system-include-path-encoding](../../issues/system-include-path-encoding.md))。
+`@system_include_paths`(同一性)は `absolute_path` で揃ったが、探索に使う `@include_paths`
+には元の綴りのまま入る。**master でも同じ行で再現する**ことを確かめてから外した —
+この変更が作ったものではない。
