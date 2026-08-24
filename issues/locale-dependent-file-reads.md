@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-20
-closed:
+closed: 2026-08-25
 branch: locale-dependent-file-reads
-pr: 
+pr: 95
 steps: [locale-dependent-file-reads-1]
 ---
 
