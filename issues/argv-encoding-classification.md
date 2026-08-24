@@ -1,11 +1,11 @@
 ---
-status: open
+status: in-progress
 kind: gap
 opened: 2026-08-20
 closed:
-branch:
+branch: argv-encoding-classification
 pr:
-steps: []
+steps: [argv-encoding-classification-1]
 ---
 
 # ロケールのエンコーディングで不正なバイトを含む引数を渡すと、ファイルを読む前に落ちる
@@ -79,4 +79,23 @@ UTF-8 のロケールで扱う場合、外部から取得したソース、フ�
 
 ## 決着
 
-(未着手)
+設計判断の本文は `docs/development/STEPS.md` の `argv-encoding-classification-1`。
+
+要点だけ記す。
+
+- **「見込み」は当たったが、規則はすでに書かれていた。** 起票時は「ARGV も入口で
+  `arg.b` にするのが筋に見える」と書いた。実際に `lib/rubycc.rb` のクラスコメントが
+  **ARGV を名指しで**その扱いだと定めており、`locale-dependent-file-reads-1` の時点で
+  **Driver だけが従っていない**状態だった。決めたのは境界の場所だけである
+- **依存すると書いた `Diagnostics.render` は手を入れずに済んだ。** 起票時の懸念どおり
+  診断ヘッダにはバイト列が流れるが、`default-external-encoding-1` が既にバイト列で
+  組み立てるようにしていた
+- **貼り直して壊れたのは `File.expand_path` だった。** 相対のバイト列パスは
+  `Dir.pwd`(プロセス由来)に繋がれるので、**作業ディレクトリ名が非 ASCII だと落ちる**。
+  preprocessor の 5 か所を `absolute_path` に集約した
+- **引き金が「不正なバイト」ではない欠陥も同時に消えた** — 非 ASCII の `-I` と
+  非 ASCII のヘッダ名の `File.join`。本課題の再現条件からは外れていた
+- **範囲外として切り出したもの** — 自前で ARGV を分類する
+  [`rmake` と `rubycc-ar`](argv-encoding-sibling-clis.md)(実測済み。`rubycc-pkgconf` は
+  落ちない)、および[ヘッダ探索路の同梱ディレクトリだけがバイト列でない件](system-include-path-encoding.md)
+  (**master でも再現する**ことを確かめてから外した)

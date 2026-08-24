@@ -68,7 +68,12 @@ module Rubycc
     end
 
     def initialize(argv, stdout: $stdout, stderr: $stderr)
-      @argv = argv
+      # The command line crosses into rubycc here, so it is re-tagged as bytes
+      # (lib/rubycc.rb): every option is spelled in ASCII and every operand is a
+      # path or a macro spelling, none of which this driver reads as text. The
+      # array is rebuilt rather than mutated, since an in-process caller (rmake's
+      # executor) owns the one it passes.
+      @argv = argv.map { |arg| arg.encoding == Encoding::BINARY ? arg : arg.b }
       @out = stdout
       @err = stderr
       @inputs = []          # [{ path:, kind: }] in command-line order

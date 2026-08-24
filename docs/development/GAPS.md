@@ -12,7 +12,8 @@
 |---|---|---|---|---|
 | **S**([第 2 段の issue](../../issues/platform-abi-alignment.md)) | **`long double` の幅が 8 バイト**(`double` として扱う。DESIGN 3.3 の既知の制限)。**可変長引数に渡す経路は解消済み**(`long-double-varargs-1`) | **残るのは幅に依存するもの** — `sizeof` / `_Alignof` / `max_align_t` / 構造体メンバのオフセット、および**名前付き引数と戻り値**(`frexpl` 等の libc 呼び出しは依然不整合) | **実測**(2026-08-13)。`printf("%Lg", x)` は gcc と一致し、oj の失敗テスト名の集合も対照と完全一致(687 runs / 1 failure / 2 errors、名前も同一) | **オブジェクトファイルの ABI が変わる**ので、他の既知逸脱(enum の底型、`wchar_t` の符号性)と**まとめて 1 つの major** で閉じる |
 | **T** | **配列の要素数をパーサが数える文脈で、struct を返す式が単一式初期化子として読めない** | `pt b[] = { {1,2}, fp(), {5,6} };` が gcc では 3 要素になるのに rubycc は拒否する。パーサは `[]` の長さをここで確定させる必要があるが、型表を持たないので `fp()` の型が分からない | **実測**(2026-08-08) | struct を直接初期化する形は通る(atomic-type-13)。**`gaps-s-t-u-2` で診断だけ正直にした**(以前は `excess elements in scalar initializer` という的外れな文言だった)。解消にはパーサ側に型を引く手段が要る |
-| **Y**([issue](../../issues/argv-encoding-classification.md)) | **引数の分類がロケール依存**。ロケールのエンコーディングで不正なバイトを含む `ARGV` を `Regexp#===` に掛けて落ちる | ファイル名だけでなく `-I` / `-D` / `-l` の値も対象。**ファイルを読む前**に落ちる | **実測**(2026-08-20、master でも再現) | **引き金が `locale-dependent-file-reads` と逆向き** — あちらはロケール無し × ファイルの中身、こちらはロケール有り × 引数のバイト列 |
+| **Z**([issue](../../issues/system-include-path-encoding.md)) | **ヘッダ探索路のうち同梱ディレクトリだけがバイト列でない**。`@include_paths` に UTF-8 のまま入り、バイト列のヘッダ名と `File.join` できない | **rubycc 自身が非 ASCII のパスに置かれている**とき、非 ASCII のヘッダ名が見つからないと診断ではなくバックトレースになる(綴り間違いでも通る経路) | **実測**(2026-08-25、master でも再現) | **同一性(`@system_include_paths`)は揃っており、探索側だけが残っている**。直すと候補パスの綴りが変わるので、キャッシュ鍵まで下流を確かめる必要がある |
+| **AA**([issue](../../issues/argv-encoding-sibling-clis.md)) | **`rmake` と `rubycc-ar` の引数分類がロケール依存のまま**。`rubycc` 本体だけが `argv-encoding-classification-1` で直った | **`rmake` は利用者が引数を打たない** — goal 名と `VAR=value` は Makefile と `gem install` が渡すので、壊れた名前の gem でバックトレースになる | **実測**(2026-08-25) | 直し方は本体と同じだが、**`rmake` は引数を Makefile の内容と突き合わせる**ので、貼り直しで壊れる側の確認が広い |
 
 ## 2. 未解消の負債
 
