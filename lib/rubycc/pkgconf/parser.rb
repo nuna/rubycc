@@ -27,7 +27,11 @@ module Rubycc
         new(text, path: path).parse
       end
 
+      # Bytes in (lib/rubycc.rb): the .pc grammar is spelled in ASCII, and the
+      # field values are carried through (a US-ASCII-tagged Description makes
+      # String#strip raise).
       def initialize(text, path: nil)
+        text = text.b unless text.encoding == Encoding::BINARY
         @text = text
         @path = path
         @variables = {}

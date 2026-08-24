@@ -52,9 +52,15 @@ module Rubycc
       # judging staleness against the filesystem as of +now+ is implicit in the
       # file mtimes read from #dir. Returns a Plan of steps in the order make
       # would run them.
+      #
+      # +goal+ comes from the process (a command-line target), while the names it
+      # has to match — the rule targets, .PHONY, the default goal — are words of
+      # the Makefile, which Parser hands over as bytes. A goal spelled in another
+      # encoding matches no explicit rule at all once it holds a non-ASCII byte,
+      # so it is re-tagged here rather than silently planning nothing.
       def plan(goal = nil, now: Time.now)
         @now = now
-        goal ||= @default_goal
+        goal = goal ? goal.b : @default_goal
         raise RmakeError, "no target specified and the Makefile has no default goal" if goal.nil?
 
         @steps = []
@@ -337,8 +343,14 @@ module Rubycc
         @vpath_dirs ||= variable_value("VPATH").split(/[:\s]+/).reject(&:empty?)
       end
 
+      # +name+ is a word of the Makefile (bytes) while #dir came from the process
+      # (ARGV or Dir.pwd), so the join is done in bytes.
       def full_path(name)
-        absolute?(name) ? name : File.join(@dir, name)
+        absolute?(name) ? name : File.join(dir_bytes, name)
+      end
+
+      def dir_bytes
+        @dir_bytes ||= @dir.b
       end
 
       def absolute?(name)

@@ -47,8 +47,11 @@ module Rubycc
         @current_rule = nil
         @expander = Expander.new(@variables)
         @overrides = overrides || {}
-        (defaults || {}).each { |name, value| @variables[name] = Variable.new(:simple, value.to_s) }
-        @overrides.each { |name, value| @variables[name] = Variable.new(:simple, value.to_s) }
+        # Seeded values arrive from the process (a `VAR=value` operand, the
+        # built-in MAKE) and are expanded into the Makefile's own byte text, so
+        # they are taken as bytes here.
+        (defaults || {}).each { |name, value| @variables[name] = Variable.new(:simple, value.to_s.b) }
+        @overrides.each { |name, value| @variables[name] = Variable.new(:simple, value.to_s.b) }
       end
 
       attr_reader :variables, :rules
@@ -57,7 +60,10 @@ module Rubycc
         new(overrides: overrides, defaults: defaults).tap { |p| p.run(text) }
       end
 
+      # Bytes in (lib/rubycc.rb): the Makefile grammar is spelled in ASCII, and
+      # comments and recipe text are carried through.
       def run(text)
+        text = text.b unless text.encoding == Encoding::BINARY
         logical_lines(text).each do |content, kind, line_no|
           if kind == :recipe
             handle_recipe(content, line_no)

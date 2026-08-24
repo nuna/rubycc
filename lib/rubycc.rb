@@ -2,6 +2,17 @@
 
 require_relative "rubycc/version"
 
+# Every file rubycc reads — C source, a .pc file, a Makefile, a Gemfile, a
+# linker script — is read as bytes (File.binread), and every path it builds is a
+# byte string. The reason is a property of Ruby rather than of any one reader:
+# two strings holding the same non-ASCII bytes under different encodings are
+# neither == nor eql?, hash differently, and cannot be joined or concatenated at
+# all — while File.read tags what it returns with Encoding.default_external,
+# which is the locale, which is US-ASCII when there is none. Strings that enter
+# from the process instead (ARGV, ENV, Dir.pwd, a directory listing) are
+# therefore re-tagged with String#b at the class boundary they cross;
+# `text.b unless text.encoding == Encoding::BINARY` is the spelling for that,
+# leaving a string that is already bytes alone rather than duplicating it.
 module Rubycc
   class Error < StandardError; end
 end

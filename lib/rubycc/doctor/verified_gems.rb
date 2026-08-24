@@ -46,8 +46,12 @@ module Rubycc
       end
 
       # Load the database from +path+ (defaults to the shipped file).
+      #
+      # The encoding is named rather than inherited from the locale: JSON *is*
+      # UTF-8 (RFC 8259 §8.1), so there is nothing to guess. The shipped file's
+      # notes carry non-ASCII punctuation, which a locale-tagged read rejects.
       def self.load(path = DEFAULT_PATH)
-        new(JSON.parse(File.read(path)))
+        new(JSON.parse(File.read(path, encoding: Encoding::UTF_8)))
       end
 
       def initialize(raw)

@@ -61,7 +61,10 @@ module Rubycc
 
       def initialize(dir:, out: $stdout, err: $stderr, dry_run: false, env: ENV,
                      tools: [], jobs: 1)
-        @dir = File.expand_path(dir)
+        # Kept as bytes: everything joined onto it later — a recipe's file names,
+        # a `cd` operand — comes from the Makefile, which Parser hands over as
+        # bytes.
+        @dir = File.expand_path(dir).b
         @out = out
         @err = err
         @dry_run = dry_run
