@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-25
-closed:
+closed: 2026-08-25
 branch: argv-encoding-sibling-clis
-pr:
+pr: 100
 steps: [argv-encoding-sibling-clis-1]
 ---
 
