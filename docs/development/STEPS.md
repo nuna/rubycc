@@ -12420,6 +12420,27 @@ rmake の in-process 置換(B3)が壊れる。最初の実装は正規表現で�
 イメージ側の既知要因)まで到達する。**このイメージはどのコンパイラでも C 拡張を
 ビルドできない**ので、完走の検証はシェルを剥いだ `ruby:4.0-slim` 派生で行った。
 
+### 追記(2026-08-25)— jemalloc が要求される理由を測った
+
+上で「イメージ側の既知要因」と書いた部分の中身を確かめた。**拡張が jemalloc を
+要求しているのではなく、Ruby のヘッダが自分の malloc 実装として要求している。**
+
+イメージの Ruby が `--with-jemalloc` 付きでビルドされており
+(`configure_args` に含まれる)、`ruby/config.h` に
+`#define RUBY_ALTERNATIVE_MALLOC_HEADER <jemalloc/jemalloc.h>` が焼き込まれている。
+これを `ruby/missing.h` が無条件に `#include` し、`missing.h` は `ruby.h` から辿られる。
+**`ruby.h` を include する拡張は例外なくこの行を通る**ので、拡張側では回避できない。
+
+イメージにあるのは `libjemalloc.so.2` だけで、`/usr/include/jemalloc/jemalloc.h` も
+リンク用の `libjemalloc.so` も無い(実測 2026-08-25)。実行に要るものだけを残し、
+開発用のヘッダと `-l` 用のシンボリックリンクを削るという Hardened Image の方針として
+一貫している。詰まる順序はコンパイル時のヘッダが先で、仮に通してもリンクで
+`-ljemalloc` が解決できない。
+
+**`examples/distroless/Dockerfile` を Hardened Image ベースにする案は、これを理由に
+採らなかった。** examples は読む人が `docker build` して確かめられることが要件で、
+原理的に完走しないイメージを既定にすると確かめようがない。認証が要る点も同じ向きに働く。
+
 ## locale-dependent-file-reads-1 — 直した側ではなく、直したことで壊れた側が高くついた
 
 `default-external-encoding-1` は C のソースとヘッダをバイト列で読むようにした。**rubycc が
