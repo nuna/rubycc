@@ -12908,3 +12908,40 @@ skip ガードを足すと守る対象が減るだけである。
 - 新テストは 1 件。**無改変ツリーでは落ちる**(`/usr/include/malloc.h:61` の構文エラー)
 - 5 件の `#define` を**1 件ずつ**外すと、**5 件とも**このテストが落ちる。空回りしている
   probe は無い
+
+## acceptance-fixture-netns-hosted-runner-1 — 遮断は、通ることと効いていることの両方を確かめる
+
+`weekly.yml` の `acceptance-fixture` job は、実装した週(PR #93)には一度も緑にならなかった。
+`unshare --user --map-root-user --net` が hosted の `ubuntu-24.04` で通らないためである
+(Ubuntu 24.04 は非特権 user namespace を AppArmor で制限する)。
+**ローカル(WSL2)で通ったから CI でも通る、が崩れた形**である。
+
+### 3 案のうち、既存の形を変えずに済むものを採った
+
+| 案 | 採否 |
+|---|---|
+| **sysctl で AppArmor の制限を外し、既存の `unshare` をそのまま使う** | **採用**。呼び出し 5 か所を変えずに済み、既存テストが検査している文字列も残る |
+| `sudo unshare -n` で root の namespace を作り、テストを元のユーザへ降ろす | 不採用。5 か所すべての書き換えが要る。**ただし防御機構を外さない**利点がある |
+| `ip netns` / firewall 規則 | 不採用。遮断の単位がジョブ全体に広がる |
+
+採用案は**カーネルの防御機構を 1 つ外す**。影響は使い捨てランナー 1 台・1 ジョブの間に
+限られ、そのランナーは元よりこのリポジトリのコードを任意に実行する場所である。
+**この選択の是非は人間の判断に委ねた**(issue に 2 案を併記してある)。
+
+### 「通ること」と「効いていること」は別である
+
+制限を外した直後に `unshare ... -- true` を置いた。**本番のテストを走らせる前に、
+unshare が通ることをそこで確かめて落とす**ためである。前回はこれが無かったので、
+5 つの本番呼び出しが順に失敗して結果ファイルすら残らなかった。
+
+逆向きの確認も足した。namespace の中から `rubygems.org` へ**到達できたらジョブを落とす**。
+遮断が外れても緑になる経路を残さないためで、これが無ければ「ネットワーク無しで
+通った」という主張の根拠が消える。
+
+### 検証
+
+- `workflow_dispatch`(`only: acceptance`)で `acceptance-fixture` が **success**、
+  必須 7 ID すべて `state: pass`、5 回の呼び出しがいずれも **0 failures / 0 errors / 0 skips**
+  ([run 32882636400](https://github.com/nuna/rubycc/actions/runs/32882636400))
+- job の所要は **1.8 分**(live の `acceptance` は 5.8 分)
+- `bundle exec rake test` — 3409 runs / 13788 assertions / 0 failures / 0 errors / 41 skips

@@ -75,6 +75,36 @@ run 32658611908 のログから原因を特定した。未検証の候補は次�
 - `sudo unshare -n` で root の network namespace を作り、テストは元のユーザへ落として実行する
 - user namespace を使わず、`sudo ip netns` か firewall 規則で遮断する
 
+### 2026-08-26(実装と実測)
+
+**sysctl 案(候補 1)で通った。** hosted の `ubuntu-24.04` で
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` を実行したうえで、
+既存の `unshare --user --map-root-user --net` を変えずに使う。制限を外した直後に
+`unshare ... -- true` を置き、**本番のテストの前に効いたことを確かめて落とす**形にした。
+
+遮断が効いていることの確認ステップも足した。namespace の中から `rubygems.org` へ
+**到達できたらジョブを落とす**。遮断が外れたまま緑になる経路を残さないため。
+
+`workflow_dispatch`(`only: acceptance`)で実測
+([run 32882636400](https://github.com/nuna/rubycc/actions/runs/32882636400)、
+ブランチ `acceptance-fixture-netns-hosted-runner`):
+
+| job | 結果 | 所要 |
+| --- | --- | --- |
+| `acceptance`(live) | success | 5.8 分 |
+| `acceptance-fixture` | **success** | **1.8 分** |
+
+必須 7 ID すべてが `state: pass`(`mkmf-fixture-probes` / `mkmf-json-extconf` /
+`mkmf-msgpack-extconf` / `rmake-fixture-build` / `rmake-json-parser` /
+`gem-install-json` / `gem-install-msgpack`)。5 回の呼び出しはいずれも
+**0 failures / 0 errors / 0 skips**。
+
+**候補 2・3(`sudo unshare -n` + 降格、`ip netns` / firewall)は試していない。**
+候補 1 が通ったためである。ただし**候補 1 はカーネルの防御機構を 1 つ外す**という
+性質を持つ(影響は使い捨てランナー 1 台・1 ジョブの間に限られる)。
+防御機構を外さずに済ませたいなら候補 2 で、その場合は 5 か所の呼び出しを
+書き換えることになる。**この選択は人間の判断に委ねる。**
+
 ## 決着
 
 (未着手)
