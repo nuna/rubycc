@@ -353,7 +353,19 @@ module Rubycc
         "__ATOMIC_ACQUIRE" => "2",
         "__ATOMIC_RELEASE" => "3",
         "__ATOMIC_ACQ_REL" => "4",
-        "__ATOMIC_SEQ_CST" => "5"
+        "__ATOMIC_SEQ_CST" => "5",
+        # Byte order: the __ORDER_*__ enumerators are gcc's fixed values for
+        # the classic 4321/1234/3412 encodings (independent of target), while
+        # __BYTE_ORDER__ and __FLOAT_WORD_ORDER__ carry gcc's verbatim
+        # replacement text — a reference to __ORDER_LITTLE_ENDIAN__, not the
+        # number itself — so a #if re-expands it just like gcc does. Both
+        # x86-64 and aarch64 are little-endian, so no per-target branch here;
+        # values are `gcc -dM -E </dev/null` on both, 2026-08-25.
+        "__ORDER_LITTLE_ENDIAN__" => "1234",
+        "__ORDER_BIG_ENDIAN__" => "4321",
+        "__ORDER_PDP_ENDIAN__" => "3412",
+        "__BYTE_ORDER__" => "__ORDER_LITTLE_ENDIAN__",
+        "__FLOAT_WORD_ORDER__" => "__ORDER_LITTLE_ENDIAN__"
       }.freeze
 
       # The libc this host's C library is: "musl" or "glibc" (see LIBCS). Read
