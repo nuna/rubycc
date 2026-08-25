@@ -1,11 +1,11 @@
 ---
-status: open
+status: in-progress
 kind: gap
 opened: 2026-08-25
 closed:
-branch:
+branch: system-include-path-encoding
 pr:
-steps: []
+steps: [system-include-path-encoding-1]
 ---
 
 # 非 ASCII のパスに置いた rubycc が、見つからない非 ASCII のヘッダ名でバックトレースを出す
@@ -82,4 +82,16 @@ encodings: UTF-8 and BINARY (ASCII-8BIT) (Encoding::CompatibilityError)
 
 ## 決着
 
-(未着手)
+設計判断の本文は `docs/development/STEPS.md` の `system-include-path-encoding-1`。
+
+要点だけ記す。
+
+- **直す位置は 3 案から選んだ。**`File.join` の呼び出し側でも、`BUNDLED_INCLUDE_DIR` などの
+  定数の定義時でもなく、**`@include_paths` を組み立てるとき**にした。2 つの出所
+  (呼び出し元の `-I` と `__dir__` 由来の同梱ディレクトリ)が**合流する唯一の場所**だからである
+- **「引き金はテストでは作れない」は思い込みだった。**移すのに要るのは `lib/` `include/`
+  `exe/` の 3 つだけで、2.3 MB・148 ファイル・27 ms。クロスレビューの指摘で測り直し、
+  **引き金そのものを組み立てるテスト**を足した。コピーであってリンクではない —
+  `__dir__` はリンクを解決するので、リンクでは元のパスが返って何も試さない
+- **`__has_include`(`include_exists?`)にも同じ連結があった。**issue が挙げていたのは
+  `search_include_paths` だけだが、`@include_paths` を共有しているので同時に直った
