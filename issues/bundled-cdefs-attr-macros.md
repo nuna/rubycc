@@ -1,9 +1,9 @@
 ---
-status: open
+status: in-progress
 kind: gap
 opened: 2026-08-25
 closed:
-branch:
+branch: bundled-cdefs-attr-macros
 pr:
 steps: []
 ---
@@ -82,6 +82,15 @@ int main(void){ void *p = malloc(1); free(p); return 0; }
 同梱 `sys/cdefs.h` が本物を無効化している以上、埋めるべきはそちらだと見ている
 (着手時に確定させること)。
 
+### 2026-08-26(実装)
+
+5 件を同梱 `sys/cdefs.h` に足した(空展開)。テストは `test/test_host_header_shim.rb` を
+新設した — `test/test_header_abi.rb` は同梱ヘッダの ABI を cross / musl のプロファイル込みで
+見る場所なので、ホスト限定のこの検査は混ぜない。
+
+**5 件のうちホスト経路で踏むのは `__attr_dealloc_free` だけ**なので、5 マクロを直接使う
+宣言だけの probe をテストの C 源に置いた。1 件ずつ `#define` を外すと 5 件とも落ちる。
+
 ## 決着
 
-(未着手)
+設計記録は `docs/development/STEPS.md` の `bundled-cdefs-attr-macros-1`。

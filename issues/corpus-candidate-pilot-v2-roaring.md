@@ -157,7 +157,26 @@ compiler側のgapとして [byte-order-predefined-macros](byte-order-predefined-
 なお、`#warning` の最小fixtureはPR #84で既にあるので、手順 2 の 3 番(fixture追加案)は
 **その分は不要**である。
 
+### 2026-08-25(byte order 解消後の再走)
+
+[byte-order-predefined-macros](byte-order-predefined-macros.md) を入れたブランチで
+同じ固定SHAを `build_load` した([run 32855252546](https://github.com/nuna/rubycc/actions/runs/32855252546))。
+**`roaring.h:486` のエラーは消えた** — rubyccがgccと同じ枝を取るようになった。
+`roaring.h:313` の `#warning` は警告として通過したまま。
+
+次の停止点は**同梱ヘッダとホストヘッダの噛み合わせ**である。`roaring.c` / `bitmap64.c` /
+`cext.c` の3 TUすべてで同じ:
+
+```
+/usr/include/malloc.h:61:3: error: expected ';'
+  __attr_dealloc_free;
+```
+
+roaring固有ではなく、`#include <malloc.h>` の2行で再現する。
+[bundled-cdefs-attr-macros](bundled-cdefs-attr-macros.md) として分離して起票した。
+
 ## 決着
 
-未着手(手順 1 完了。次は [byte-order-predefined-macros](byte-order-predefined-macros.md) の
-merge後に固定SHAで build_load を再走する)。
+未着手(手順 1 完了。停止点は 2 つ解消し、`__BYTE_ORDER__` は PR #105 で master に入った。
+次は [bundled-cdefs-attr-macros](bundled-cdefs-attr-macros.md) の解消後に
+固定SHAで build_load を再走する)。

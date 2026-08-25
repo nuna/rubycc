@@ -72,6 +72,18 @@
 #define __result_use_check
 #define __COLD
 
+/* Static-analysis annotations: __attr_access describes which parameter is a
+   buffer and how it is used, __attr_access_none says a parameter is not
+   accessed at all, and __attr_dealloc (plus the fclose/free object-like
+   spellings some headers apply directly) pairs an allocating function with
+   the one that must free its result. rubycc performs no such analysis, so
+   each expands to nothing, the same as the __attribute_* group above. */
+#define __attr_access(params)
+#define __attr_access_none(argno)
+#define __attr_dealloc(dealloc, argno)
+#define __attr_dealloc_fclose
+#define __attr_dealloc_free
+
 #define __nonnull(params)
 #define __always_inline    __inline
 #define __extern_inline    extern __inline
