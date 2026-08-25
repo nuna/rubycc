@@ -515,7 +515,12 @@ module Rubycc
         @working_directory = Dir.pwd.b
         system_paths = system_includes ? default_system_include_paths : []
         @system_include_paths = system_paths.map { |path| absolute_path(path) }
-        @include_paths = include_paths + system_paths
+        # Bytes (lib/rubycc.rb): the only spot where a caller's -I (already
+        # bytes) and the bundled/libc directories (process-derived, so not)
+        # merge before joining with a header name, itself bytes.
+        @include_paths = (include_paths + system_paths).map do |path|
+          path.encoding == Encoding::BINARY ? path : path.b
+        end
         # #resolve_include's cache keys a resolved path off @include_paths (and,
         # for quote includes, the includer's directory), so it must start empty
         # every run rather than survive across calls with a different search path.
