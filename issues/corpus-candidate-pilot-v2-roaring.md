@@ -115,9 +115,49 @@ rubycc本体の仕様変更を分離する必要がある。
 
 ## 作業ログ
 
-未着手。`#warning`の拒否が再現可能な新規rubycc gapか、gemのcompiler分岐・環境依存かを分離するために
+起票時。`#warning`の拒否が再現可能な新規rubycc gapか、gemのcompiler分岐・環境依存かを分離するために
 起票した。
+
+### 2026-08-25(手順 1 を実行)
+
+**identity は一致した。** 隔離directoryへ再取得したarchiveのSHA-256は
+`caf8802c8de04d8567fb8438d226810179f4cbb5f4f1c87d0e73bfcec54cd9e8`(期待値と一致、183,808 bytes)、
+gemspecは `roaring` / `0.4.1` / `ruby`。extension rootは `ext/roaring`、native sourceは
+C 4 本 + H 2 本(`roaring.c` だけで 26,017 行の CRoaring amalgamation)。
+
+**`#warning` は解消していた。** `corpus-candidate-validation` を master(`90ce9ca`)で
+`mode: build_load` として dispatch した([run 32849373119](https://github.com/nuna/rubycc/actions/runs/32849373119)、
+Ruby 4.0.6)。preflightは `ready`、build_loadは `build_failed`。ログの `roaring.h:313` は
+**エラーではなく警告として通過**している:
+
+```
+./roaring.h:313:1: warning: "Warning. Unrecognized compiler."
+```
+
+つまり [warning-directive](warning-directive.md)(PR #84)の修正が実gemで効くことを確認した。
+
+**次の停止点は別のgapだった。**
+
+```
+./roaring.h:486:9: error: macro names must be identifiers
+#ifndef !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__)
+```
+
+`roaring.h:464` の `#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__)` で
+gccは真の側、rubyccは偽の側を取る。**rubyccがgccの定義済みマクロ 5 件
+(`__BYTE_ORDER__` / `__ORDER_LITTLE_ENDIAN__` / `__ORDER_BIG_ENDIAN__` /
+`__ORDER_PDP_ENDIAN__` / `__FLOAT_WORD_ORDER__`)を持たない**ためで、
+486行の壊れた`#ifndef`はgccが一度も読まない枝にある上流の誤りである。
+rubyccの診断自体はgccと同じ文言で正しい。
+
+compiler側のgapとして [byte-order-predefined-macros](byte-order-predefined-macros.md) を
+分離して起票した(手順 2-4 の「compiler issueへ切り出す」に相当)。
+**この候補の正式追加は、そちらのmerge後に固定SHAで再走してから判断する。**
+
+なお、`#warning` の最小fixtureはPR #84で既にあるので、手順 2 の 3 番(fixture追加案)は
+**その分は不要**である。
 
 ## 決着
 
-未着手。
+未着手(手順 1 完了。次は [byte-order-predefined-macros](byte-order-predefined-macros.md) の
+merge後に固定SHAで build_load を再走する)。

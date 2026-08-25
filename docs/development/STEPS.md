@@ -12793,3 +12793,56 @@ end-to-end で確かめていない**という指摘である。**この指摘�
 - 生成物は `benchmark/c/*.c`(5)と `examples/m6/*.c`(7)の **12 本すべて sha256 一致**
 - 新テストは 6 件で、**無改変ツリーでは 6 件すべてが落ちる**(4 failures + 2 errors)。
   空回りしているものは無い
+
+## byte-order-predefined-macros-1 — gcc が持つ byte order の定義済みマクロ 5 件を揃える
+
+gcc は `__ORDER_LITTLE_ENDIAN__`(1234)・`__ORDER_BIG_ENDIAN__`(4321)・
+`__ORDER_PDP_ENDIAN__`(3412)・`__BYTE_ORDER__`・`__FLOAT_WORD_ORDER__` を定義済みで持ち、
+rubycc は 1 つも持っていなかった。同梱ヘッダにある `__BYTE_ORDER`(glibc の綴り)とは
+**別のマクロ**である。値は x86-64 と aarch64 で同一なので、ターゲット別の分岐は作っていない。
+
+### 見つかり方 — 診断は正しいのに、読む場所が違った
+
+コーパス候補 `roaring 0.4.1` のビルドが `roaring.h:486` で止まっていた。
+
+```
+./roaring.h:486:9: error: macro names must be identifiers
+#ifndef !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__)
+```
+
+`#ifndef` に識別子以外を書いたこの行は**上流 CRoaring の誤り**で、rubycc の診断は
+gcc と同じ文言で正しい。**問題は 22 行上にあった** — `roaring.h:464` の
+`#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__)` で gcc は真の枝、
+rubycc は偽の枝を取る。壊れた行は**gcc が一度も読まない枝の中**にあり、
+「エラーの行を直す」では的を外す形だった。
+
+### 別名を数値に畳まなかった
+
+`__BYTE_ORDER__` の置換テキストは 1234 ではなく `__ORDER_LITTLE_ENDIAN__` への参照である。
+gcc の `-dM` の綴りをそのまま持つのが**表の既存の規約**(`__WCHAR_MIN__` が
+`(-__WCHAR_MAX__ - 1)` を持つのと同じ)で、`#if` の中で再展開される。
+利用側が `__ORDER_LITTLE_ENDIAN__` を再定義したときの見え方まで gcc と揃う。
+
+### 未定義の識別子が 0 に畳まれるので、素直なテストは空回りする
+
+**このステップ特有の落とし穴である。**`#if` の中では未知の識別子が 0 になるため、
+`#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__` は**修正前も `0 == 0` で真**になる。
+最初に書いた 4 件のうち 2 件がこれで、無改変ツリーでも通ってしまっていた。
+
+差別できる形は 3 つある。**big endian との比較が偽になること**(修正前は真)、
+**`__ORDER_LITTLE_ENDIAN__` を再定義すると `__BYTE_ORDER__` の値も動くこと**(別名である証拠)、
+**`#undef` の前が定義済みであること**(後だけ見ても差が出ない)。
+
+### クロスレビューの指摘と、採らなかったもの
+
+別系統(codex)の事前クロスレビューは**実装側に指摘なし**、テストのカバレッジを 3 件挙げた。
+big endian 比較の欠落(こちらの実測と同じ結論)、別名であることの未検査、aarch64 の未検査で、
+**3 件とも採った**。`#undef` の前を見ていない点は codex は挙げず、こちらの
+「無改変ツリーで落ちるか」の実測で出た。
+
+### 検証
+
+- `bundle exec rake test` — **3407 runs / 13734 assertions / 0 failures / 0 errors / 41 skips**
+- 新テストは 6 件で、**無改変ツリーでは 6 件すべてが落ちる**(master の worktree に
+  テストだけを載せて実測)。空回りしているものは無い
+- `benchmark/c` と `examples/` に該当マクロを使うものは無く、生成物は変わらない

@@ -1117,6 +1117,74 @@ class TestPreprocessor < Minitest::Test
     assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
   end
 
+  def test_byte_order_macros_expand_to_gcc_values
+    # __BYTE_ORDER__ and __FLOAT_WORD_ORDER__ carry gcc's replacement text — a
+    # reference to __ORDER_LITTLE_ENDIAN__, not the number — so plain expansion
+    # must chase through it down to 1234, same as gcc.
+    {
+      "__ORDER_LITTLE_ENDIAN__" => 1234, "__ORDER_BIG_ENDIAN__" => 4321,
+      "__ORDER_PDP_ENDIAN__" => 3412, "__BYTE_ORDER__" => 1234,
+      "__FLOAT_WORD_ORDER__" => 1234
+    }.each do |name, value|
+      tokens = pp(name).reject(&:eof?)
+      assert_equal 1, tokens.length, "#{name} should expand to one token"
+      assert_equal value, tokens.first.value, "#{name} should expand to gcc's value"
+    end
+  end
+
+  def test_byte_order_macros_are_the_same_on_aarch64
+    # Both x86-64 and aarch64 targets are little-endian, so the byte order
+    # macros must expand to the same gcc values regardless of arch_macros.
+    aarch64 = Rubycc::Preprocess::Preprocessor.new(
+      arch_macros: Rubycc::Preprocess::Preprocessor::AARCH64_ARCH_MACROS
+    )
+    {
+      "__ORDER_LITTLE_ENDIAN__" => 1234, "__ORDER_BIG_ENDIAN__" => 4321,
+      "__ORDER_PDP_ENDIAN__" => 3412, "__BYTE_ORDER__" => 1234,
+      "__FLOAT_WORD_ORDER__" => 1234
+    }.each do |name, value|
+      tokens = aarch64.run(name, filename: "t.c", system_includes: false).reject(&:eof?)
+      assert_equal 1, tokens.length, "#{name} should expand to one token on aarch64"
+      assert_equal value, tokens.first.value, "#{name} should expand to gcc's value on aarch64"
+    end
+  end
+
+  def test_byte_order_compares_equal_in_if
+    # A pair of undefined identifiers would both fold to 0 in #if and compare
+    # equal, so the little-endian match alone can't tell an alias from a
+    # missing macro; the big-endian mismatch is what actually discriminates.
+    little = "#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "yes", ";"], pp(little).reject(&:eof?).map(&:value)
+
+    big = "#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "no", ";"], pp(big).reject(&:eof?).map(&:value)
+  end
+
+  def test_byte_order_is_an_alias_not_a_literal
+    # If __BYTE_ORDER__ were #define'd straight to the number 1234, it would
+    # keep expanding to 1234 forever. Its actual replacement text is a
+    # reference to __ORDER_LITTLE_ENDIAN__, so redefining that macro after
+    # #undef must change what __BYTE_ORDER__ expands to as well.
+    source = "#undef __ORDER_LITTLE_ENDIAN__\n#define __ORDER_LITTLE_ENDIAN__ 42\n" \
+             "#if __BYTE_ORDER__ == 42\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_byte_order_dispatch_takes_the_gcc_branch
+    # roaring.h:464 dispatches on this exact pair; gcc takes the true branch.
+    source = "#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__)\n" \
+             "int yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_byte_order_macro_is_undefinable
+    source = "#ifdef __BYTE_ORDER__\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "yes", ";"], pp(source).reject(&:eof?).map(&:value)
+
+    source = "#undef __BYTE_ORDER__\n#ifdef __BYTE_ORDER__\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
   # --- #pragma ---------------------------------------------------------------
 
   def test_pragma_once_reads_a_header_only_once
