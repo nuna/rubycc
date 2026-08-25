@@ -1,9 +1,9 @@
 ---
-status: open
+status: in-progress
 kind: infra
 opened: 2026-08-25
 closed:
-branch:
+branch: acceptance-fixture-netns-hosted-runner
 pr:
 steps: []
 ---

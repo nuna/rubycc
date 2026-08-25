@@ -158,6 +158,30 @@ jobs:
           bundle exec ruby tools/ci_prepare_acceptance_fixtures.rb
           bundle exec ruby -Ilib:test test/test_acceptance_fixtures.rb --verbose
 
+      - name: Allow unprivileged user namespaces
+        # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor
+        # (kernel.apparmor_restrict_unprivileged_userns=1), which makes the
+        # unshare calls below fail with "write failed /proc/self/uid_map:
+        # Operation not permitted" on GitHub-hosted runners (run 32658611908,
+        # 2026-08-23). Lift the restriction and prove it took effect before
+        # relying on it for the real fixture run.
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          unshare --user --map-root-user --net -- true
+
+      - name: Verify the namespace really has no network
+        shell: bash
+        run: |
+          set -euo pipefail
+          if unshare --user --map-root-user --net -- \
+               bash -lc 'curl -sS --max-time 10 -o /dev/null https://rubygems.org'; then
+            echo "the namespace reached the network; the fixture run would not prove anything" >&2
+            exit 1
+          fi
+          echo "the namespace has no network, as required"
+
       - name: Run pinned acceptance fixtures without network access
         shell: bash
         env:
