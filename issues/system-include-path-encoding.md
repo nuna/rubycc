@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-25
-closed:
+closed: 2026-08-25
 branch: system-include-path-encoding
-pr:
+pr: 102
 steps: [system-include-path-encoding-1]
 ---
 
