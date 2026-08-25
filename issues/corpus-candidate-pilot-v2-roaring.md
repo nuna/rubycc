@@ -175,8 +175,40 @@ compiler側のgapとして [byte-order-predefined-macros](byte-order-predefined-
 roaring固有ではなく、`#include <malloc.h>` の2行で再現する。
 [bundled-cdefs-attr-macros](bundled-cdefs-attr-macros.md) として分離して起票した。
 
+### 2026-08-26(cdefs 解消後の再走 — 停止点は 2 種類に分かれた)
+
+master(`1c4d019`、[bundled-cdefs-attr-macros](bundled-cdefs-attr-macros.md) 込み)で
+3 回目の `build_load`([run 32880666098](https://github.com/nuna/rubycc/actions/runs/32880666098))。
+`malloc.h` のエラーは消え、**4 TU すべてがコンパイルまで進んだうえで、2 種類の理由で落ちた**。
+
+| TU | 停止点 |
+| --- | --- |
+| `cext.c` / `bitmap32.c` / `bitmap64.c` | `roaring.h:365` の `__builtin_popcountll` が未実装 |
+| `roaring.c` | `roaring.c:894` の `static inline __m256i popcount256(__m256i v)` — **AVX2 の組み込み関数** |
+
+前者は [popcount-and-long-bit-scan-builtins](popcount-and-long-bit-scan-builtins.md) として
+分離した(roaring とは独立に価値がある)。
+
+**後者はこの候補の性格を決める。** `roaring.h:157` の
+`#if defined(__x86_64__) || defined(_M_X64)` で `CROARING_IS_X64` が立ち、gcc も同じ枝を取る。
+つまり**分岐選択の食い違いではなく**、gcc が `__attribute__((target("avx2")))` と
+実行時ディスパッチで本当に AVX2 を積んでいる形である。rubycc は `__m256i` 系の型も
+`_mm256_*` の組み込み関数も持たない。
+
+`ROARING_DISABLE_X64` を渡せば x64 経路ごと落ちるが、**archive への patch や build 変数の
+差し込みは手順で禁じている**(`extconf.rb` はこれを設定しない)。
+
+**したがって roaring の採否は「rubycc が x86 SIMD 組み込み関数を持つか」という
+プロジェクト方針の判断待ちである。** ここで勝手に決めない。選択肢は 3 つ:
+
+1. SIMD 組み込み関数の実装に着手する(M2〜M4 級の規模。要求もコーパスからの圧力も
+   これ 1 件では足りない)
+2. `docs/reference/OUT-OF-SCOPE-GEMS.md` へ「対応しないと判断済み」として記録し、
+   再検討の条件を書く
+3. 判断を保留し、`popcount` だけ直して候補は open のまま置く(現状)
+
 ## 決着
 
-未着手(手順 1 完了。停止点は 2 つ解消し、`__BYTE_ORDER__` は PR #105 で master に入った。
-次は [bundled-cdefs-attr-macros](bundled-cdefs-attr-macros.md) の解消後に
-固定SHAで build_load を再走する)。
+未着手(手順 1 完了。停止点は 3 つ解消した — `#warning`(PR #84)、
+`__BYTE_ORDER__`(PR #105)、同梱 cdefs.h の `__attr_*`(PR #106)。
+**残る AVX2 組み込み関数は方針判断が要る**ので、ここで止めて人間の判断を待つ)。
