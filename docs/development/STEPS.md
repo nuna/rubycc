@@ -12846,3 +12846,65 @@ big endian 比較の欠落(こちらの実測と同じ結論)、別名である�
 - 新テストは 6 件で、**無改変ツリーでは 6 件すべてが落ちる**(master の worktree に
   テストだけを載せて実測)。空回りしているものは無い
 - `benchmark/c` と `examples/` に該当マクロを使うものは無く、生成物は変わらない
+
+## bundled-cdefs-attr-macros-1 — 同梱 cdefs.h の穴を、ホストのヘッダが踏み抜いていた
+
+同梱 `sys/cdefs.h` に `__attr_access` / `__attr_access_none` / `__attr_dealloc` /
+`__attr_dealloc_fclose` / `__attr_dealloc_free` の 5 件を足した。展開先は空で、
+すぐ上に並ぶ `__attribute_*` 群と同じ扱いである(rubycc が実装しない属性は空に展開する。
+glibc が `__GNUC_PREREQ` の偽側で取る形と同じ)。
+
+### 壊れ方は「同梱していないこと」ではなく「無効化していること」だった
+
+同梱していないヘッダはホストの `/usr/include` から読まれる。それ自体は設計どおりである。
+問題は、**同梱の `sys/cdefs.h` が glibc の `_SYS_CDEFS_H` を先に立てて本物を no-op にする**
+ことで、同梱側に無いマクロは未定義のまま**識別子として残る**。宣言の途中に裸の識別子が
+現れるので、**宣言が見つからない**のではなく**構文エラー**になる。
+
+```
+/usr/include/malloc.h:61:3: error: expected ';'
+  __attr_dealloc_free;
+```
+
+`#include <malloc.h>` の 2 行で再現する。同梱側は同じ宣言に並ぶ `__attribute_malloc__`・
+`__attribute_warn_unused_result__`・`__attribute_alloc_size__` を持っており、
+`__attr_dealloc` 系だけが抜けていた。
+
+### `malloc.h` を同梱する案を採らなかった
+
+それでも `malloc.h` は通る。**ただし同じ形が次のヘッダで再発する** — 原因は
+`malloc.h` が無いことではなく、同梱 cdefs.h が本物を無効化していることだからである。
+ホストのトップレベルヘッダが使う `__attr_*` を機械的に突き合わせると抜けは 5 件で、
+そのうち `malloc.h` が踏むのは 1 件にすぎない。埋めるべきは cdefs.h の側である。
+
+### テストは ABI ハーネスに混ぜず、新しいファイルに置いた
+
+`test/test_header_abi.rb` は**同梱ヘッダ**の ABI が gcc と一致することを見る場所で、
+cross と musl のプロファイルも回す。今回守りたいのは「**同梱していない**ヘッダを
+ホストから読んだとき、同梱 cdefs.h がそれを壊さない」というホスト限定の性質なので、
+`test/test_host_header_shim.rb` を新設した。
+
+### 5 件のうち、ホスト経路で踏むのは 1 件だけである
+
+`malloc.h` が踏むのは `__attr_dealloc_free` だけで、残り 4 件は同梱のあるヘッダ
+(`stdio.h` など)にしか現れない。**綴りや引数の数を間違えても検出できない**ので、
+5 マクロを直接使う宣言だけの probe をテストの C 源に置いた。gcc 側では本物の属性へ
+展開されるため、引数の数が違えば gcc 側が落ちる。
+
+副産物として**ホスト依存の偽陽性も塞がった**。probe を置く前は、`__attr_dealloc_free` を
+使わない libc 版のホストでは、定義を消してもテストが通る形だった。
+
+### クロスレビューの指摘と、採らなかったもの
+
+別系統(codex)の事前クロスレビューは**実装側に指摘なし**。挙げたのは上記 2 件
+(4 件が未テスト、ホスト依存の偽陽性)で、**どちらも probe で塞いだ**。
+codex が代案に挙げた「ホストの `malloc.h` が該当マクロを使っていなければ skip する」は
+**採らなかった** — probe があれば host の版によらず 5 件とも踏むので、
+skip ガードを足すと守る対象が減るだけである。
+
+### 検証
+
+- `bundle exec rake test` — **3408 runs / 13758 assertions / 0 failures / 0 errors / 41 skips**
+- 新テストは 1 件。**無改変ツリーでは落ちる**(`/usr/include/malloc.h:61` の構文エラー)
+- 5 件の `#define` を**1 件ずつ**外すと、**5 件とも**このテストが落ちる。空回りしている
+  probe は無い
