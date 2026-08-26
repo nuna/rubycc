@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: debt
 opened: 2026-08-27
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-08-27
+branch: token-representation-measurement
+pr: 113
+steps: [token-representation-measurement-1]
 ---
 
 # トークン表現の重さを測り、軽量化の上限を出す
@@ -58,6 +58,30 @@ N1 の受け入れ条件を利用者体感へ戻す判断(`THROUGHPUT.md`)に伴
 [cross-process-header-cache](cross-process-header-cache.md) の次の一手として切り出した。
 **測定を先に置くのは、08-19 に同じやり方で「方式が成立しない」と分かった前例があるため**である。
 
+### 2026-08-27(測定と判断)
+
+Ruby 4.0.6 + YJIT、`RUNS=5` の中央値。数値は `docs/development/THROUGHPUT.md` の
+「トークン表現の重さ」に記録した。
+
+| | json `parser.c` | `#include <ruby.h>` |
+|---|---:|---:|
+| convert が full に占める割合 | **6.7%** | **8.9%** |
+| `PPToken` / `Front::Token` 生成 | 145,843 / 52,486 | 103,503 / 28,037 |
+| 総オブジェクト生成 | 1,206,074 | 1,070,848 |
+
+**個数の見積りは当たっていた**(約 20 万個 → 実測 198,329)。**それでも上限は 6.7〜8.9%** で、
+層の分離を手放す代償に見合わない。**軽量化は実装しない。**
+
+副産物として 2 つ分かった。`PPToken` が `Front::Token` の **2.8 倍**あり、重いのは変換ではなく
+**`PPToken` を作りすぎていること**の側であること。そして質量は前処理にあり
+(json 53.0%、ヘッダのみの TU で **76.0%**)、**走査以外の前処理が 29〜52%** を占めること。
+
+測定器の欠陥を 1 つ踏んだので残す。**カウンタを入れたまま総オブジェクト数を測ると、
+`*a` / `**kw` の展開で約 60 万個ぶん水増しされる**(1,801,873 → 1,206,074)。
+数える対象と数え方が同じパスに同居してはいけない。
+
 ## 決着
 
-(未着手)
+上限は full の 6.7〜8.9%。**軽量化は実装しない**と決めた。記録は
+`docs/development/THROUGHPUT.md` の「トークン表現の重さ(2026-08-27 実測)」。
+これを受けて [cross-process-header-cache](cross-process-header-cache.md) を `dropped` にした。
