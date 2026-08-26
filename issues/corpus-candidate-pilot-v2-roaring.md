@@ -10,7 +10,12 @@ steps:
   - corpus-candidate-pilot-v2-roaring-2
 ---
 
-# roaring 0.4.1 の `#warning` preprocessor gapを再現し、対応方針を決める
+# roaring 0.4.1 を正式追加するか決める — 残る障害は x86 SIMD 組み込み関数
+
+**現在地(2026-08-27)**: 起票時の `#warning` は PR #84 で解消済み。以後の再走で
+`__BYTE_ORDER__`(PR #105)と同梱 cdefs.h の `__attr_*`(PR #106)も解消し、
+**残るのは AVX2 の組み込み関数だけ**である。経緯は作業ログを参照。
+以下の「課題」は起票時(2026-08-16)の記述であり、当時の事実として残す。
 
 ## 課題
 
