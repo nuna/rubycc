@@ -12966,3 +12966,42 @@ toolcache の Ruby が走らない。テストが root のままだと作業ツ�
 - 捨てた候補 1 の実測([run 32882636400](https://github.com/nuna/rubycc/actions/runs/32882636400)):
   同じく緑だった。**動かなかったのではない**
 - `bundle exec rake test` — 3409 runs / 13788 assertions / 0 failures / 0 errors / 41 skips
+
+## popcount-and-long-bit-scan-builtins-impl-1 — 数え上げは、CPU に依存しない形で展開する
+
+`__builtin_popcount` / `-l` / `-ll` を実装し、ビット走査の `l` 綴り
+(`__builtin_clzl` / `__builtin_ctzl`)を足した。
+
+### `l` は `ll` と同じ幅へ写した
+
+x86-64 と AArch64 では `long` も `long long` も 8 バイトである。したがって `l` の綴りは
+**既存の 8 バイト経路をそのまま指せばよく**、IR もバックエンドも触っていない。
+抜けていたのはキーワード表と `__has_builtin` の表だけだった。
+
+### popcount は `:bit_scan` に相乗りさせず、別の IR 命令にした
+
+`:bit_scan` は「端から数えた 0 の個数」を返す走査で、popcount は**計数**である。
+方向の第 3 の値として足すと、`b` が方向を表すという命令の約束が壊れる。
+
+### 命令があっても使わない — `popcnt` も `cnt` も
+
+x86-64 の `popcnt` は **SSE4.2 の命令で、ベースラインの x86-64 には無い**。
+使えば出力が実行環境の CPU に依存し、決定的ビルド(N4)の前提も 1 通りでなくなる。
+AArch64 の `cnt` は AdvSIMD のベクタ命令で、汎用レジスタとの往復と `addv` による
+バイト和が要る。**両バックエンドとも SWAR(分割統治の加算)で展開**した。
+
+| | 4 バイト | 8 バイト |
+|---|---|---|
+| x86-64 | 15 命令 | 19 命令(論理演算に imm64 が無く、マスクごとに `movabs`) |
+| AArch64 | 13 命令 | 13 命令(マスクも乗数も bitmask immediate で足りる) |
+
+### 検証
+
+- gcc 差分を**両ターゲットで実測**した。エッジ値 20 件と xorshift の 20,000 値について、
+  popcount 3 綴りと `clzl` / `ctzl` の結果が **x86-64(ホスト実行)・AArch64
+  (cross gcc + qemu)とも gcc と一致**
+- `bundle exec rake test` — **3415 runs / 13797 assertions / 0 failures / 0 errors / 41 skips**
+- `test/test_aarch64_execution.rb` は **0 skips**(qemu 実走を確認)
+- **生成物は 12 本すべて sha256 一致**。`emit_mul` を `MADD_ZERO` に寄せた 1 行の変更が
+  出力を動かしていないことの確認でもある
+- 新規・拡張テスト 8 件は、**無改変ツリーでは 8 件とも落ちる**

@@ -25,7 +25,8 @@ rubycc は `__GNUC__` を定義せず、独自マクロ `__RUBYCC__` を定義�
 | GNU カンマ削除 `, ## __VA_ARGS__` | 意味論まで対応 | 可変長実引数が省略された場合に限り直前のカンマを削除する |
 | `__builtin_constant_p` | 意味論まで対応 | 定数式なら 1、非定数なら 0 を返す。引数自体は評価しない |
 | `__builtin_choose_expr(const, a, b)` | 意味論まで対応 | 定数条件で選択した AST を使用し、選ばれない式は評価・コード生成しない |
-| `__builtin_ctz`/`__builtin_ctzll`/`__builtin_clz`/`__builtin_clzll` | 意味論まで対応 | 32/64 ビットのビット走査に対応する。0 の動作は GCC と同じく未定義 |
+| `__builtin_ctz`/`__builtin_clz`(無印・`l`・`ll` の 3 綴り) | 意味論まで対応 | 32/64 ビットのビット走査に対応する。`l` は `ll` と同じ 64 ビットで数える(両ターゲットとも `long` は 8 バイト)。0 の動作は GCC と同じく未定義 |
+| `__builtin_popcount`(無印・`l`・`ll` の 3 綴り) | 意味論まで対応 | 32/64 ビットの 1 ビット数え上げに対応する。0 も定義され 0 を返す。ハードウェアの population count 命令(x86-64 の `popcnt` は SSE4.2、AArch64 の `cnt` は AdvSIMD)は使わず、両ターゲットとも SWAR 展開を出す |
 | `__atomic_*` 10 形 | 意味論まで対応 | `load_n`/`store_n`/`exchange_n`/`compare_exchange_n`/`fetch_add`/`fetch_sub`/`add_fetch`/`sub_fetch`/`or_fetch`/`thread_fence` に対応する。対象幅は 4/8 バイト。メモリオーダは受理するが seq_cst として処理し、weak CAS は strong として扱う。x86-64 は lock 命令と MFENCE、aarch64 は LDAR/STLR、LDAXR/STLXR、DMB ISH を使用する |
 | `__builtin_add_overflow`/`__builtin_sub_overflow`/`__builtin_mul_overflow` | 意味論まで対応 | 符号付き・符号なし整数の演算結果を格納し、格納先の型でオーバーフローした場合に `_Bool` の 1 を返す。非整数・128 ビットの組み合わせは診断する |
 | `__sync_*` 10 形 | 意味論まで対応 | `__sync_fetch_and_add`/`__sync_fetch_and_sub`/`__sync_add_and_fetch`/`__sync_sub_and_fetch`/`__sync_or_and_fetch`/`__sync_lock_test_and_set`/`__sync_lock_release`/`__sync_synchronize`/`__sync_bool_compare_and_swap`/`__sync_val_compare_and_swap` に対応する。整数・ポインタの 4/8 バイトを対象とし、full barrier 契約を持つ |

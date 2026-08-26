@@ -396,13 +396,22 @@ module Rubycc
       # produces no code and no side effects.
       BuiltinConstantP = Data.define(:expr, :token)
 
-      # "__builtin_ctz/ctzll/clz/clzll ( x )": counts the trailing (ctz) or
-      # leading (clz) zero bits of an integer, typed int. `operand` is the value
-      # scanned, `direction` is :forward for ctz or :reverse for clz, and `width`
-      # is the operand's byte width (4 for the plain form, 8 for the "ll" form).
+      # "__builtin_ctz/ctzl/ctzll/clz/clzl/clzll ( x )": counts the trailing
+      # (ctz) or leading (clz) zero bits of an integer, typed int. `operand` is
+      # the value scanned, `direction` is :forward for ctz or :reverse for clz,
+      # and `width` is the operand's byte width (4 for the plain form, 8 for the
+      # "l" and "ll" ones — `long` and `long long` are both 8 bytes here).
       # `x == 0` is undefined behavior (gcc), so no zero handling is implied.
       # `token` is the builtin keyword.
       BuiltinBitScan = Data.define(:operand, :direction, :width, :token)
+
+      # "__builtin_popcount/popcountl/popcountll ( x )": counts the set bits of
+      # an integer, typed int. `operand` is the value counted and `width` its
+      # byte width (4 for the plain form, 8 for the "l" and "ll" ones, `long`
+      # and `long long` being the same width on both targets). Unlike a bit
+      # scan this is total: a zero operand counts zero bits, as in gcc. `token`
+      # is the builtin keyword.
+      BuiltinPopcount = Data.define(:operand, :width, :token)
 
       # "__builtin_add/sub/mul_overflow ( a , b , res )": computes "a op b" with
       # infinite precision, stores the result converted to the type `res` points

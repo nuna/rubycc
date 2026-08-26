@@ -38,13 +38,24 @@ class TestGccBuiltins < Minitest::Test
     #else
     #define ALSO 0
     #endif
+    #if __has_builtin(__builtin_popcount) && __has_builtin(__builtin_popcountl) && \\
+        __has_builtin(__builtin_popcountll)
+    #define COUNTS 1
+    #else
+    #define COUNTS 0
+    #endif
+    #if __has_builtin(__builtin_ctzl) && __has_builtin(__builtin_clzl)
+    #define LONG_SCANS 1
+    #else
+    #define LONG_SCANS 0
+    #endif
     #if __has_builtin(__builtin_no_such_thing_xyz)
     #define MISSING 1
     #else
     #define MISSING 0
     #endif
     int main(void) {
-      printf("%d %d %d %d\\n", HAVE_OPERATOR, KNOWN, ALSO, MISSING);
+      printf("%d %d %d %d %d %d\\n", HAVE_OPERATOR, KNOWN, ALSO, COUNTS, LONG_SCANS, MISSING);
       return 0;
     }
   C
@@ -103,6 +114,105 @@ class TestGccBuiltins < Minitest::Test
              __builtin_ctzll(e), __builtin_ctzll(f), __builtin_ctzll(g));
       printf("%d %d %d\\n",
              __builtin_clzll(e), __builtin_clzll(f), __builtin_clzll(g));
+      return 0;
+    }
+  C
+
+  # The "l" spellings of the two scans, which name `long` where the plain form
+  # names `int` and the "ll" one `long long`. On both targets rubycc emits for
+  # `long` is 8 bytes, so every "l" answer must equal its "ll" neighbour's — and
+  # must differ from the 32-bit form wherever the width is what decides (the
+  # clz of 1 is 31 at 32 bits and 63 at 64). The comparison against gcc is what
+  # settles the width question: gcc is counting in a real `long`.
+  LONG_BIT_SCAN_SOURCE = <<~C
+    #include <stdio.h>
+    int ctz_l(unsigned long x) { return __builtin_ctzl(x); }
+    int clz_l(unsigned long x) { return __builtin_clzl(x); }
+    int ctz_ll(unsigned long long x) { return __builtin_ctzll(x); }
+    int clz_ll(unsigned long long x) { return __builtin_clzll(x); }
+    int main(void) {
+      unsigned long values[6];
+      int i;
+      values[0] = 1UL; values[1] = 0xFF00UL; values[2] = 1UL << 40;
+      values[3] = 1UL << 63; values[4] = 0xFFFFFFFFFFFFFFFFUL; values[5] = 0x100000000UL;
+      for (i = 0; i < 6; i++) {
+        printf("%d %d %d %d\\n", ctz_l(values[i]), ctz_ll(values[i]),
+               clz_l(values[i]), clz_ll(values[i]));
+      }
+      printf("%d %d\\n", __builtin_clzl(1UL), __builtin_ctzl(1UL << 40));
+      return 0;
+    }
+  C
+
+  # __builtin_popcount and its "l"/"ll" forms over representative values: zero,
+  # a single bit at either end, every bit, each half alone, and two mottled
+  # patterns. The operands travel through an array and a function parameter so
+  # the count runs on a value in a register — a literal would be folded by the
+  # constant evaluator and would say nothing about what the backends emit.
+  # Unlike a bit scan, zero is a defined operand here and counts 0.
+  #
+  # The last three lines are about the operand's *width*, which is the builtin's
+  # and not the argument's: a signed -1 counts 32 bits through the plain form
+  # and 64 through the "ll" one, a `signed char` of -1 counts the 32 bits its
+  # promotion and conversion leave, and a value whose high half is set counts
+  # only its low half through the 4-byte form.
+  POPCOUNT_SOURCE = <<~C
+    #include <stdio.h>
+    int count_int(unsigned x) { return __builtin_popcount(x); }
+    int count_long(unsigned long x) { return __builtin_popcountl(x); }
+    int count_long_long(unsigned long long x) { return __builtin_popcountll(x); }
+    int count_of_char(signed char c) { return __builtin_popcount(c); }
+    int count_low_half(unsigned long long x) { return __builtin_popcount(x); }
+    int main(void) {
+      unsigned narrow[7];
+      unsigned long long wide[7];
+      int i;
+      narrow[0] = 0u; narrow[1] = 1u; narrow[2] = 0x80000000u; narrow[3] = 0xFFFFFFFFu;
+      narrow[4] = 0xFFFF0000u; narrow[5] = 0x0000FFFFu; narrow[6] = 0xDEADBEEFu;
+      wide[0] = 0ull; wide[1] = 1ull; wide[2] = 1ull << 63;
+      wide[3] = 0xFFFFFFFFFFFFFFFFull; wide[4] = 0xFFFFFFFF00000000ull;
+      wide[5] = 0x00000000FFFFFFFFull; wide[6] = 0x0123456789ABCDEFull;
+      for (i = 0; i < 7; i++) {
+        printf("%d %d %d\\n", count_int(narrow[i]), count_long((unsigned long)wide[i]),
+               count_long_long(wide[i]));
+      }
+      printf("%d %d\\n", count_int(-1), count_long_long(-1));
+      printf("%d %d\\n", count_of_char(-1), count_low_half(0xFFFFFFFF00000001ull));
+      printf("%d %d %d\\n", __builtin_popcount(-1), __builtin_popcountl(0xFFFFul),
+             __builtin_popcountll(0xF0F0F0F0F0F0F0F0ull));
+      /* The whole expression is an int whatever the operand's width was, which
+         sizeof reads off the type alone (the operand is not evaluated). */
+      printf("%zu %zu\\n", sizeof(__builtin_popcount(narrow[0])),
+             sizeof(__builtin_popcountll(wide[0])));
+      return 0;
+    }
+  C
+
+  # The same counts in the contexts that need a *constant*, which is the shape a
+  # header takes when it sizes something by a bit mask: a static initializer, an
+  # array bound, an enumerator, a _Static_assert and a case label. None of these
+  # reaches a backend at all — the constant evaluator answers them — so they are
+  # the second of the two paths a fold has to agree with gcc on.
+  #
+  # A preprocessor "#if" is deliberately absent: a builtin call is not a
+  # constant expression there (gcc reports "missing binary operator before token
+  # '('", the identifier having been replaced by 0), so the only constant
+  # contexts to match are the translation-time ones below.
+  POPCOUNT_CONSTANT_SOURCE = <<~C
+    #include <stdio.h>
+    static int folded = __builtin_popcount(0xFFu);
+    static char sized[__builtin_popcountll(0xF0F0F0F0F0F0F0F0ULL)];
+    enum { LOW_BITS = __builtin_popcountl(0xFFFFUL), NEGATIVE = __builtin_popcount(-1) };
+    int main(void) {
+      _Static_assert(__builtin_popcount(0x10101) == 3, "a set-bit count folds");
+      _Static_assert(__builtin_popcount(0) == 0, "zero is a defined operand");
+      _Static_assert(__builtin_ctzl(1UL << 40) == 40, "the l spelling folds too");
+      _Static_assert(__builtin_clzl(1UL) == 63, "and counts in 64 bits");
+      switch (folded) {
+        case __builtin_popcount(255): puts("the case label folded"); break;
+        default: puts("unreachable"); break;
+      }
+      printf("%d %zu %d %d\\n", folded, sizeof(sized), (int)LOW_BITS, (int)NEGATIVE);
       return 0;
     }
   C
@@ -288,6 +398,33 @@ class TestGccBuiltins < Minitest::Test
 
   def test_bit_scan_matches_gcc
     assert_matches_gcc(BIT_SCAN_SOURCE, "bit_scan")
+  end
+
+  def test_long_spelled_bit_scans_match_gcc
+    assert_matches_gcc(LONG_BIT_SCAN_SOURCE, "long_bit_scan")
+  end
+
+  def test_popcount_matches_gcc
+    assert_matches_gcc(POPCOUNT_SOURCE, "popcount")
+  end
+
+  def test_popcount_in_constant_contexts_matches_gcc
+    assert_matches_gcc(POPCOUNT_CONSTANT_SOURCE, "popcount_constant")
+  end
+
+  # The operand has to be an integer: there is nothing to count in a double, and
+  # gcc rejects it too. The diagnostic names the operand's own token.
+  def test_popcount_of_non_integer_rejected
+    source = <<~C
+      int main(void) {
+        double d = 1.0;
+        return __builtin_popcount(d);
+      }
+    C
+    error = assert_raises(Rubycc::CompileError) do
+      Rubycc::Compiler.new.compile(source, filename: "popcount_type.c", target: host_target)
+    end
+    assert_match(/argument to a bit-count builtin is not of integer type/, error.message)
   end
 
   def test_unreachable_matches_gcc

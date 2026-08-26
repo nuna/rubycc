@@ -720,6 +720,7 @@ module Rubycc
         when :call_indirect then emit_call_indirect(inst.dst, inst.a, inst.b, inst.size)
         when :mulhi then emit_mulhi(inst.dst, inst.a, inst.b)
         when :bit_scan then emit_bit_scan(inst.dst, inst.a, inst.b, inst.size)
+        when :popcount then emit_popcount(inst.dst, inst.a, inst.size)
         when :string_addr then emit_symbol_address(inst.dst, kind: :string, string_id: inst.a)
         when :global_addr then emit_symbol_address(inst.dst, kind: :global, symbol: inst.a)
         when :func_addr then emit_symbol_address(inst.dst, kind: :func, symbol: inst.a)
@@ -786,8 +787,7 @@ module Rubycc
       def emit_mul(dst, a, b, size)
         rn, rm = binary_operand_registers(a, b, commutative: true)
         rd = result_register(dst)
-        base = size == 8 ? 0x9B007C00 : 0x1B007C00 # madd with Ra = xzr
-        emit_word(base | (rm << 16) | (rn << 5) | rd)
+        emit_word(MADD_ZERO[width(size)] | (rm << 16) | (rn << 5) | rd)
         store_result(rd, dst, only_wrote: rd) # one word, Rd its only written field
       end
 
@@ -836,6 +836,59 @@ module Rubycc
         end
         emit_word(CLZ[w] | (rn << 5) | rd)
         store_result(rd, dst, only_wrote: rd) # RBIT and CLZ both write rd and nothing else
+      end
+
+      # :popcount — how many bits of a's value are set (__builtin_popcount and
+      # its "l"/"ll" forms). AArch64's population count, CNT, is an AdvSIMD
+      # instruction: it counts within each byte of a *vector* register, so using
+      # it would mean moving the operand across register files and then summing
+      # the byte counts anyway (ADDV). The general-register expansion below
+      # avoids the crossing entirely, and is the same divide-and-conquer sum
+      # (SWAR) the x86-64 backend emits — where the derivation of the four
+      # stages and of their masks is written out (backend/x86_64.rb
+      # #emit_popcount), that being the one place worth stating it.
+      #
+      # Only the final stage differs in what it can name: the multiplier and the
+      # masks are all bitmask immediates here (repeating bit patterns, which is
+      # exactly what "logical (immediate)" encodes), so no constant has to be
+      # built with movz/movk — the multiply's operand does need a register, but
+      # one `mov` of an immediate fills it.
+      #
+      # A runs the value through the stages and B holds the partner each stage
+      # shifts out of it. A is loaded rather than read where it lies because
+      # every stage overwrites it, so a promoted operand would be destroyed.
+      def emit_popcount(dst, src_vreg, size)
+        w = width(size)
+        load_reg(A, src_vreg)                             # A = value to count
+        emit_popcount_lsr(B, A, 1, w)                     # B = x >> 1
+        emit_popcount_and(B, B, POPCOUNT_PAIR_IMMS, w)    # B &= 0x5555...
+        emit_word(SUB_SHIFTED[w] | (B << 16) | (A << 5) | A) # A = pair counts
+        emit_popcount_and(B, A, POPCOUNT_NIBBLE_IMMS, w)  # B = x & 0x3333...
+        emit_popcount_lsr(A, A, 2, w)                     # A = x >> 2
+        emit_popcount_and(A, A, POPCOUNT_NIBBLE_IMMS, w)  # A &= 0x3333...
+        emit_word(ADD_SHIFTED[w] | (B << 16) | (A << 5) | A) # A = nibble counts
+        emit_popcount_lsr(B, A, 4, w)                     # B = x >> 4
+        emit_word(ADD_SHIFTED[w] | (B << 16) | (A << 5) | A) # A = x + (x >> 4)
+        emit_popcount_and(A, A, POPCOUNT_BYTE_IMMS, w)    # A = one count per byte
+        emit_word(MOV_IMM[w] | (POPCOUNT_ONES_IMMS << 10) | (XZR << 5) | B) # B = 0x0101...
+        emit_word(MADD_ZERO[w] | (B << 16) | (A << 5) | A) # A = the bytes, summed
+        emit_popcount_lsr(A, A, size * 8 - 8, w)          # A = the top byte
+        store_reg(A, dst)
+      end
+
+      # `lsr Rd, Rn, #shift` at the count's width: the shift-by-immediate the
+      # architecture has no opcode of its own for, being the UBFM that keeps the
+      # field from `shift` up to the register's top bit and right-aligns it.
+      def emit_popcount_lsr(rd, rn, shift, w)
+        emit_word(LSR_IMM[w] | (shift << 16) | ((w - 1) << 10) | (rn << 5) | rd)
+      end
+
+      # `and Rd, Rn, #mask` at the count's width, the mask named by the imms
+      # field that encodes its repeating pattern (see POPCOUNT_PAIR_IMMS). Every
+      # mask this expansion needs starts its run of ones at bit 0, so immr — the
+      # rotation — is zero throughout and is not a parameter.
+      def emit_popcount_and(rd, rn, imms, w)
+        emit_word(AND_IMM[w] | (imms << 10) | (rn << 5) | rd)
       end
 
       # :alloca — dynamic stack allocation (__builtin_alloca). The requested
@@ -2096,6 +2149,49 @@ module Rubycc
       # width, sf choosing the W or X view.
       RBIT = { 32 => 0x5AC00000, 64 => 0xDAC00000 }.freeze
       CLZ  = { 32 => 0x5AC01000, 64 => 0xDAC01000 }.freeze
+
+      # madd Rd, Rn, Rm, xzr — the plain multiply, which the architecture
+      # spells as a multiply-add whose addend is the zero register. Both :mul
+      # and the population count's last stage need it, at either width.
+      MADD_ZERO = { 32 => 0x1B007C00, 64 => 0x9B007C00 }.freeze
+
+      # "Bitfield" (UBFM) and "Logical (immediate)", the two families the
+      # population count expands into:
+      #   sf(31) opc(30:29) 100110(28:23) N(22) immr(21:16) imms(15:10) Rn Rd
+      #                                                      -- UBFM, opc = 10
+      #   sf(31) opc(30:29) 100100(28:23) N(22) immr(21:16) imms(15:10) Rn Rd
+      #                                             -- AND/ORR immediate, opc =
+      #                                                00 (AND) and 01 (ORR)
+      # A shift by an immediate has no opcode of its own: `lsr Rd, Rn, #s` is
+      # UBFM with immr = s and imms = the register's top bit (31 or 63), which
+      # extracts the bits from s upwards and right-aligns them. Its 64-bit form
+      # sets N = 1 (a 64-bit bitfield), which is the 0x400000 in that base; the
+      # two logical bases leave N = 0, every pattern the count needs being
+      # shorter than 32 bits (below).
+      LSR_IMM = { 32 => 0x53000000, 64 => 0xD3400000 }.freeze
+      AND_IMM = { 32 => 0x12000000, 64 => 0x92000000 }.freeze
+      MOV_IMM = { 32 => 0x32000000, 64 => 0xB2000000 }.freeze # orr Rd, xzr, #imm
+
+      # The masks and the multiplier of the population count, as their imms
+      # fields. A logical immediate is a pattern of `esize` bits — 2, 4, 8, 16,
+      # 32 or 64 — repeated to fill the register, holding a run of ones that
+      # immr then rotates; N:imms names the element size and the run length
+      # together, by how many leading ones imms carries:
+      #
+      #   0b11110s  esize 2,  s + 1 ones   0x5555...  s = 0: one 1 per pair
+      #   0b1110ss  esize 4,  s + 1 ones   0x3333...  s = 1: two 1s per nibble
+      #   0b110sss  esize 8,  s + 1 ones   0x0F0F...  s = 3: four 1s per byte
+      #                                    0x0101...  s = 0: one 1 per byte
+      #
+      # All four runs start at bit 0, so immr is 0 for each and the same field
+      # serves either width (N = 0 in both, the pattern being shorter than 32
+      # bits). This is why the expansion needs no movz/movk anywhere: the
+      # constants it works with are precisely the repeating kind this encoding
+      # was made for.
+      POPCOUNT_PAIR_IMMS = 0b111100
+      POPCOUNT_NIBBLE_IMMS = 0b111001
+      POPCOUNT_BYTE_IMMS = 0b110011
+      POPCOUNT_ONES_IMMS = 0b110000
 
       # "Add/subtract (extended register)", 64-bit, with option = 011 (UXTX, the
       # identity extension of an X operand) and no shift:

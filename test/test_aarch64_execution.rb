@@ -859,6 +859,71 @@ class TestAArch64Execution < Minitest::Test
     C
   end
 
+  # __builtin_popcount / popcountl / popcountll on aarch64. Neither backend uses
+  # a hardware population count (aarch64's CNT is an AdvSIMD instruction over a
+  # vector register, x86-64's POPCNT an SSE4.2 one), so what runs here is the
+  # divide-and-conquer expansion — thirteen general-register instructions whose
+  # masks are all bitmask immediates. Under qemu that expansion is executed, not
+  # just encoded, which is what makes this the check on the masks: a wrong imms
+  # field still assembles, and only a wrong *answer* shows it.
+  #
+  # The cases separate the count's width from the argument's. 0xFFFFFFFF counts
+  # 32 either way, but a `long` operand with only its high half set counts 32
+  # through the 8-byte form and 0 through the 4-byte one — a count that ran at
+  # the wrong width, or on the X view of a W operand, disagrees on those lines.
+  # Zero is included because it is defined here (unlike a bit scan's operand).
+  def test_popcount_builtins
+    assert_aarch64_matches_gcc(source(<<~C))
+      int count32(unsigned x) { return __builtin_popcount(x); }
+      int count_long(unsigned long x) { return __builtin_popcountl(x); }
+      int count64(unsigned long long x) { return __builtin_popcountll(x); }
+      int count_low_half(unsigned long x) { return __builtin_popcount(x); }
+      int main(void) {
+        unsigned narrow[6];
+        unsigned long wide[6];
+        int i;
+        narrow[0] = 0u; narrow[1] = 1u; narrow[2] = 0x80000000u;
+        narrow[3] = 0xFFFFFFFFu; narrow[4] = 0xF0F0F0F0u; narrow[5] = 0xDEADBEEFu;
+        wide[0] = 0ul; wide[1] = 1ul; wide[2] = 1ul << 63;
+        wide[3] = 0xFFFFFFFFFFFFFFFFul; wide[4] = 0xFFFFFFFF00000000ul;
+        wide[5] = 0x0123456789ABCDEFul;
+        for (i = 0; i < 6; i = i + 1) put_long(count32(narrow[i]));
+        for (i = 0; i < 6; i = i + 1) {
+          put_long(count_long(wide[i]));
+          put_long(count64(wide[i]));
+          put_long(count_low_half(wide[i]));
+        }
+        return 0;
+      }
+    C
+  end
+
+  # The "l" spellings of the two scans, which rubycc lowers at the same width as
+  # the "ll" ones (`long` and `long long` are both 8 bytes here). Every pair of
+  # answers must agree, and the values are the ones whose 32-bit and 64-bit
+  # counts differ, so a scan that had taken the W form would show.
+  def test_long_spelled_bit_scan_builtins
+    assert_aarch64_matches_gcc(source(<<~C))
+      int ctz_l(unsigned long x) { return __builtin_ctzl(x); }
+      int clz_l(unsigned long x) { return __builtin_clzl(x); }
+      int ctz_ll(unsigned long long x) { return __builtin_ctzll(x); }
+      int clz_ll(unsigned long long x) { return __builtin_clzll(x); }
+      int main(void) {
+        unsigned long wide[5];
+        int i;
+        wide[0] = 1ul; wide[1] = 0xFF00ul; wide[2] = 1ul << 40;
+        wide[3] = 1ul << 63; wide[4] = 0x100000000ul;
+        for (i = 0; i < 5; i = i + 1) {
+          put_long(ctz_l(wide[i]));
+          put_long(ctz_ll(wide[i]));
+          put_long(clz_l(wide[i]));
+          put_long(clz_ll(wide[i]));
+        }
+        return 0;
+      }
+    C
+  end
+
   # A deduced-size array of function pointers dispatched by index (Step 98): the
   # "[]" bound is inferred from the initializer even though it sits inside the
   # parenthesized declarator "int (*ops[])(int)", and each ops[i](10) is an

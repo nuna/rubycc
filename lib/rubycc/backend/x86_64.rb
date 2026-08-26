@@ -513,6 +513,8 @@ module Rubycc
           emit_alloca(inst.dst, inst.a)
         when :bit_scan
           emit_bit_scan(inst.dst, inst.a, inst.b, inst.size)
+        when :popcount
+          emit_popcount(inst.dst, inst.a, inst.size)
         when :atomic_load
           emit_atomic_load(inst.dst, inst.a, inst.size)
         when :atomic_store
@@ -900,6 +902,141 @@ module Rubycc
           emit(0x83, 0xF0, size * 8 - 1) # xor eax, bits-1  ->  (bits-1) - index
         end
         store_reg(EAX, dst)
+      end
+
+      # The bit-field patterns :popcount folds over, in their 8-byte form; a
+      # 4-byte count uses the low half of each. The first three keep the partial
+      # counts of one width from spilling into their neighbours, and the last is
+      # the one-per-byte multiplier that sums the eight byte counts at once.
+      POPCOUNT_PAIR_MASK = 0x5555_5555_5555_5555
+      POPCOUNT_NIBBLE_MASK = 0x3333_3333_3333_3333
+      POPCOUNT_BYTE_MASK = 0x0F0F_0F0F_0F0F_0F0F
+      POPCOUNT_BYTE_ONES = 0x0101_0101_0101_0101
+
+      # :popcount — how many bits of a's value are set (__builtin_popcount and
+      # its "l"/"ll" forms). x86-64 does have an instruction for exactly this,
+      # `popcnt`, but it arrived with SSE4.2 and is not part of the baseline
+      # architecture rubycc emits for: using it would make the output fault on
+      # an older CPU, and make it depend on the CPU that happened to build it.
+      # The count is expanded instead, in the same shape the aarch64 backend
+      # uses (whose `cnt` is an extension too — an AdvSIMD one, reached only
+      # through a vector register).
+      #
+      # The expansion is a divide-and-conquer sum over the register's own bits
+      # ("SWAR"): a register is read as many independent counts side by side,
+      # which are added pairwise until one of them spans it. Start from 2-bit
+      # fields, where the count is already there to be read — a field holding
+      # hi:lo has hi + lo bits set — and each step halves the number of fields
+      # while doubling their width: 32 counts become 16, then 8, 4, 2 and 1 in a
+      # 64-bit register, half that in a 32-bit one. What every step needs is a
+      # shift to bring one field's partner onto it, an add, and enough masking
+      # that no field's sum reaches its neighbour. Three steps are written out
+      # below and the remaining ones — three of them at 64 bits, two at 32 —
+      # are what the closing multiply performs in a single instruction:
+      #
+      #   pairs    x -= (x >> 1) & 0x5555...   each 2-bit field v = 2*hi + lo
+      #                                        becomes v - hi = hi + lo. The
+      #                                        subtraction never borrows across
+      #                                        a field (the result is at most
+      #                                        the field's own value), so the
+      #                                        one mask on the shift is all it
+      #                                        takes
+      #   nibbles  x = (x & 0x3333...) + ((x >> 2) & 0x3333...)
+      #                                        two counts of at most 2 sum to 4,
+      #                                        which no longer fits a 2-bit
+      #                                        field: both sides are masked
+      #                                        before adding, into the 4-bit
+      #                                        fields that do hold it
+      #   bytes    x = (x + (x >> 4)) & 0x0F0F...
+      #                                        two counts of at most 4 sum to 8,
+      #                                        which still fits a nibble, so the
+      #                                        add can run unmasked and one mask
+      #                                        afterwards clears the odd nibbles
+      #                                        it dirtied
+      #   total    (x * 0x0101...) >> (bits - 8)
+      #                                        every byte now holds its own
+      #                                        count. Multiplying by one-per-byte
+      #                                        adds each byte into every byte
+      #                                        above it, so the top byte receives
+      #                                        all of them; the column sums are
+      #                                        at most 64 and never carry out of
+      #                                        a byte, and the shift brings that
+      #                                        top byte down
+      #
+      # rcx carries the running value, rax the copy each stage shifts and adds
+      # back in (and, from the third stage on, the result), and rdx a mask —
+      # which only the 8-byte form needs, x86-64 having no 64-bit immediate for
+      # a logical op. The 4-byte form is the same sequence in 32-bit registers,
+      # whose writes zero the upper half, so the indeterminate high bits of a
+      # slot that was moved 64 bits at a time never enter the count.
+      def emit_popcount(dst, src_vreg, size)
+        load_reg(ECX, src_vreg)                            # rcx = value to count
+        emit_popcount_reg(0x89, EAX, ECX, size)            # mov rax, rcx
+        emit_popcount_shr(EAX, 1, size)                    # rax = x >> 1
+        emit_popcount_mask([EAX], POPCOUNT_PAIR_MASK, size)
+        emit_popcount_reg(0x29, ECX, EAX, size)            # sub rcx, rax  (pair counts)
+        emit_popcount_reg(0x89, EAX, ECX, size)            # mov rax, rcx
+        emit_popcount_shr(ECX, 2, size)                    # rcx = x >> 2
+        emit_popcount_mask([EAX, ECX], POPCOUNT_NIBBLE_MASK, size)
+        emit_popcount_reg(0x01, ECX, EAX, size)            # add rcx, rax  (nibble counts)
+        emit_popcount_reg(0x89, EAX, ECX, size)            # mov rax, rcx
+        emit_popcount_shr(EAX, 4, size)                    # rax = x >> 4
+        emit_popcount_reg(0x01, EAX, ECX, size)            # add rax, rcx
+        emit_popcount_mask([EAX], POPCOUNT_BYTE_MASK, size) # byte counts
+        emit_popcount_byte_sum(size)                       # rax = sum of the bytes
+        store_reg(EAX, dst)
+      end
+
+      # One two-register instruction of the expansion, in the "r/m, reg"
+      # direction: `opcode` applies `reg` to `rm`. An 8-byte count takes a REX.W
+      # prefix and a 4-byte one no prefix at all — every register here is one of
+      # rax/rcx/rdx, so no REX bit is needed to name them.
+      def emit_popcount_reg(opcode, rm, reg, size)
+        emit(0x48) if size == 8                            # REX.W: the 64-bit form
+        emit(opcode, 0xC0 | (reg << 3) | rm)
+      end
+
+      # `shr rm, count` (C1 /5 ib) at the count's width.
+      def emit_popcount_shr(rm, count, size)
+        emit(0x48) if size == 8                            # REX.W: a 64-bit shift
+        emit(0xC1, 0xE8 | rm, count)
+      end
+
+      # Masks each of `regs` with one of the expansion's field patterns. A
+      # 4-byte count names it as an immediate ("and r/m32, imm32", 81 /4 id); an
+      # 8-byte one cannot, x86-64's logical ops taking at most a sign-extended
+      # imm32, so the mask is materialized in rdx once (movabs) and applied from
+      # there ("and r/m64, r64", 21 /r) — which is why the registers to mask
+      # arrive together rather than one call at a time: the nibble stage masks
+      # two of them with the same pattern.
+      def emit_popcount_mask(regs, mask, size)
+        if size == 8
+          emit(0x48, 0xBA)                                 # movabs rdx, imm64
+          emit_bytes([mask].pack("Q<"))
+          regs.each { |reg| emit_popcount_reg(0x21, reg, EDX, size) } # and reg, rdx
+        else
+          regs.each do |reg|
+            emit(0x81, 0xE0 | reg)                         # and r/m32, imm32
+            emit_bytes([mask & 0xFFFFFFFF].pack("L<"))
+          end
+        end
+      end
+
+      # The expansion's last stage: rax holds one count per byte, and the
+      # multiply by one-per-byte gathers them into the top byte, which the shift
+      # brings down. The 4-byte form takes its multiplier as an immediate
+      # ("imul r32, r/m32, imm32", 69 /r id); the 8-byte one has no imm64 form
+      # either, so the multiplier goes through rdx ("imul r64, r/m64", 0F AF /r).
+      def emit_popcount_byte_sum(size)
+        if size == 8
+          emit(0x48, 0xBA)                                 # movabs rdx, 0x0101010101010101
+          emit_bytes([POPCOUNT_BYTE_ONES].pack("Q<"))
+          emit(0x48, 0x0F, 0xAF, 0xC2)                     # imul rax, rdx
+        else
+          emit(0x69, 0xC0)                                 # imul eax, eax, imm32
+          emit_bytes([POPCOUNT_BYTE_ONES & 0xFFFFFFFF].pack("L<"))
+        end
+        emit_popcount_shr(EAX, size * 8 - 8, size)         # rax = the top byte
       end
 
       # --- atomics -----------------------------------------------------------
