@@ -1,11 +1,11 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-26
-closed:
+closed: 2026-08-26
 branch: popcount-and-long-bit-scan-builtins-impl
-pr:
-steps: []
+pr: 109
+steps: [popcount-and-long-bit-scan-builtins-impl-1]
 ---
 
 # `__builtin_popcount*` と、ビット走査の `l` 綴りが無い

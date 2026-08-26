@@ -1,11 +1,11 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-25
-closed:
+closed: 2026-08-25
 branch: bundled-cdefs-attr-macros
-pr:
-steps: []
+pr: 106
+steps: [bundled-cdefs-attr-macros-1]
 ---
 
 # 同梱 `sys/cdefs.h` に無い `__attr_*` のせいで、ホストの glibc ヘッダが構文エラーになる
