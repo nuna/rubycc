@@ -67,7 +67,9 @@ class TestWeeklyWorkflow < Minitest::Test
     refute_nil run
     script = run.fetch("run")
 
-    assert_includes script, "unshare --user --map-root-user --net"
+    assert_includes script, "sudo -E env"
+    assert_includes script, "unshare --net"
+    assert_includes script, "setpriv"
     assert_includes script, "test/test_mkmf_conftest.rb"
     assert_includes script, "test/test_rmake_tools.rb"
     assert_includes script, "test/test_gem_install.rb"
@@ -76,5 +78,25 @@ class TestWeeklyWorkflow < Minitest::Test
     assert_equal "fixture", env.fetch("CI_NETWORK")
     assert_equal "1", env.fetch("RMAKE_ACCEPTANCE_STRICT")
     assert_equal "${{ github.workspace }}/tmp/ci/acceptance-fixtures", env.fetch("CI_FIXTURE_ROOT")
+  end
+
+  def test_fixture_job_blocks_network_via_root_owned_namespace_and_verifies_the_blackhole
+    steps = @jobs.fetch("acceptance-fixture").fetch("steps")
+
+    verify_no_network = steps.find { |step| step.fetch("name", "").include?("Verify the namespace really has no network") }
+    refute_nil verify_no_network
+    verify_script = verify_no_network.fetch("run")
+    assert_includes verify_script, "sudo -E env"
+    assert_includes verify_script, "unshare --net"
+    assert_includes verify_script, "setpriv"
+
+    fixture_run = steps.find { |step| step.fetch("name", "").include?("without network") }
+    refute_nil fixture_run
+
+    verify_index = steps.index(verify_no_network)
+    fixture_index = steps.index(fixture_run)
+
+    assert_operator verify_index, :<, fixture_index,
+                     "the network blackhole check must run before the fixture step"
   end
 end
