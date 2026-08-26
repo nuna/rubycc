@@ -1,11 +1,11 @@
 ---
-status: in-progress
+status: done
 kind: debt
 opened: 2026-08-27
-closed:
+closed: 2026-08-27
 branch: token-representation-measurement
-pr:
-steps: []
+pr: 113
+steps: [token-representation-measurement-1]
 ---
 
 # トークン表現の重さを測り、軽量化の上限を出す
