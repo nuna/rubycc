@@ -1,10 +1,10 @@
 ---
-status: in-progress
+status: done
 kind: infra
 opened: 2026-08-16
-closed:
+closed: 2026-08-16
 branch: corpus-candidate-pilot-v2
-pr:
+pr: 73
 steps:
   - corpus-candidate-pilot-v2-1
   - corpus-candidate-pilot-v2-2
@@ -145,3 +145,19 @@ build形態の増分検出は条件を満たしたが、source error率、人手
 未達または未計測である。14日でeligible候補が0ではないため28日延長はしない。source errorとload
 sanityのfollow-up完了後に、日次scanをcorpus自動拡張へ昇格させるか再判定する。この評価では
 `test/corpus/gems.rb`、header、compiler、`data/verified_gems.json`を変更していない。
+
+**この issue は分割で解消とする**(2026-08-27)。PR [#73](https://github.com/nuna/rubycc/pull/73)
+(2026-08-16)で評価と後続への分割まで入っており、`issues/README.md` の粒度の規約
+(1 PR に収まらないものは分割し、親は `dropped` ではなく `done`)に沿う。子の状態:
+
+| 子 issue | 状態 |
+| --- | --- |
+| [source-errors](corpus-candidate-pilot-v2-source-errors.md) | done |
+| [load-sanity](corpus-candidate-pilot-v2-load-sanity.md) | done |
+| [graphql-c-parser](corpus-candidate-pilot-v2-graphql-c-parser.md) | done |
+| [rbtrace](corpus-candidate-pilot-v2-rbtrace.md) | done |
+| [roaring](corpus-candidate-pilot-v2-roaring.md) | **open**(x86 SIMD 組み込み関数の判断待ち) |
+| [review-cost](corpus-candidate-pilot-v2-review-cost.md) | **open** |
+
+上の決着が書く「日次 scan を corpus 自動拡張へ昇格させるか」の再判定は、
+[review-cost](corpus-candidate-pilot-v2-review-cost.md) が引き継ぐ。
