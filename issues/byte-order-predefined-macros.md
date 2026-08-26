@@ -1,11 +1,11 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-25
-closed:
+closed: 2026-08-25
 branch: byte-order-predefined-macros
-pr:
-steps: []
+pr: 105
+steps: [byte-order-predefined-macros-1]
 ---
 
 # gcc が予約している byte order の定義済みマクロ 5 件を揃える

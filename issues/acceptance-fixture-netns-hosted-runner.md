@@ -1,11 +1,11 @@
 ---
-status: in-progress
+status: done
 kind: infra
 opened: 2026-08-25
-closed:
+closed: 2026-08-26
 branch: acceptance-fixture-netns-hosted-runner
-pr:
-steps: []
+pr: 108
+steps: [acceptance-fixture-netns-hosted-runner-1]
 ---
 
 # hosted runner で `acceptance-fixture` の network 遮断が成立しない
