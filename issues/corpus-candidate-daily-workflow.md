@@ -1,8 +1,8 @@
 ---
-status: in-progress
+status: done
 kind: infra
 opened: 2026-08-16
-closed:
+closed: 2026-08-16
 branch: corpus-candidate-daily-workflow
 pr: 67
 steps:
@@ -84,4 +84,10 @@ pushして実行可能にした後で追記する。
 
 ## 決着
 
-(完了時に記入。結果と`docs/development/STEPS.md`の該当エントリへのリンクを残す。)
+PR [#67](https://github.com/nuna/rubycc/pull/67)(2026-08-16)として master に入った。
+`.github/workflows/corpus-candidate-daily.yml` がそれで、その後 `e218c1b` で
+scheduled UTC interval の引き継ぎを直している。設計記録は
+`docs/development/STEPS.md` の `corpus-candidate-daily-workflow-1` 〜 `-3`。
+
+**状態の更新が漏れていた**(2026-08-27 に消し込み)。マージ時にブランチを削除したため、
+`branch:` が指す先が無くなっていたのが見つけた端緒である。
