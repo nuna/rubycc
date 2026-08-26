@@ -756,6 +756,10 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   「R10 pass rate」節(`data/verified_gems.json` から生成)。
 
 ### H5 — 性能(N1: 20,000 行/秒)
+
+**注(2026-08-27)**: 以下は当時の受け入れ条件(20,000 行/秒)に照らした記録である。
+N1 は行/秒をゲートから外す形へ改めた。現在の条件は
+[THROUGHPUT.md](THROUGHPUT.md) の「N1 の受け入れ条件と、行/秒の位置づけ」。
 - ~~まず**測定を整備**~~ **完了(Step 105)**: `rake bench:throughput`
   (benchmark/throughput.rb)が json/msgpack/bigdecimal の実 gem ソースを
   mkmf shim 経由の extconf でステージし、インプロセス・ウォーム状態の
