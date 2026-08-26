@@ -65,7 +65,7 @@ GitHub Free の 2,000 分/月に収める設計)。
 
 [acceptance-fixture-netns-hosted-runner](acceptance-fixture-netns-hosted-runner.md) が
 解消し、**`acceptance-fixture` job は hosted runner で緑になった**
-([run 32882636400](https://github.com/nuna/rubycc/actions/runs/32882636400))。
+([run 32978860535](https://github.com/nuna/rubycc/actions/runs/32978860535))。
 必須 7 ID すべてが pass、0 skips。これで判断の前提が揃った。
 
 **判断に必要な数値は出そろっている。**

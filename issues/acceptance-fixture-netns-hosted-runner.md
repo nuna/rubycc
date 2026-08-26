@@ -75,35 +75,44 @@ run 32658611908 のログから原因を特定した。未検証の候補は次�
 - `sudo unshare -n` で root の network namespace を作り、テストは元のユーザへ落として実行する
 - user namespace を使わず、`sudo ip netns` か firewall 規則で遮断する
 
-### 2026-08-26(実装と実測)
+### 2026-08-26(3 案のうち 2 案を実測し、後の方を採った)
 
-**sysctl 案(候補 1)で通った。** hosted の `ubuntu-24.04` で
-`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` を実行したうえで、
-既存の `unshare --user --map-root-user --net` を変えずに使う。制限を外した直後に
-`unshare ... -- true` を置き、**本番のテストの前に効いたことを確かめて落とす**形にした。
+**候補 1(sysctl)は通ったが、採らなかった。**
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` で制限を外せば、既存の
+`unshare --user --map-root-user --net` がそのまま動く。実測でも `acceptance-fixture` は
+success、必須 7 ID すべて pass、1.8 分だった
+([run 32882636400](https://github.com/nuna/rubycc/actions/runs/32882636400))。
+**採らなかったのは、カーネルの防御機構を 1 つ外す形だからである**(ユーザ判断)。
+hosted・使い捨て・sudo が元から使える環境では実害はほぼ無いが、self-hosted ランナーを
+導入したときや、同じ手順を開発機で真似したときに意味が変わる。
 
-遮断が効いていることの確認ステップも足した。namespace の中から `rubygems.org` へ
-**到達できたらジョブを落とす**。遮断が外れたまま緑になる経路を残さないため。
+**候補 2(root が名前空間を作る)を採った。**
 
-`workflow_dispatch`(`only: acceptance`)で実測
-([run 32882636400](https://github.com/nuna/rubycc/actions/runs/32882636400)、
-ブランチ `acceptance-fixture-netns-hosted-runner`):
+```sh
+sudo -E env "PATH=$PATH" unshare --net -- \
+  setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups --inh-caps=-all \
+  bash -lc '...'
+```
 
-| job | 結果 | 所要 |
-| --- | --- | --- |
-| `acceptance`(live) | success | 5.8 分 |
-| `acceptance-fixture` | **success** | **1.8 分** |
+root は `CAP_SYS_ADMIN` を持つのでユーザ名前空間を必要とせず、**AppArmor の制限に触れない**。
+`sudo` が環境変数を落とすので `PATH` は明示的に渡す。テストが root で走ると作業ツリーの
+所有権が変わるため `setpriv` で元のユーザへ降ろし、capability は持ち越さない。
 
-必須 7 ID すべてが `state: pass`(`mkmf-fixture-probes` / `mkmf-json-extconf` /
-`mkmf-msgpack-extconf` / `rmake-fixture-build` / `rmake-json-parser` /
-`gem-install-json` / `gem-install-msgpack`)。5 回の呼び出しはいずれも
-**0 failures / 0 errors / 0 skips**。
+実測([run 32978860535](https://github.com/nuna/rubycc/actions/runs/32978860535)):
+`acceptance-fixture` は **success**、必須 7 ID すべて `state: pass`、
+5 回の呼び出しがいずれも **0 failures / 0 errors / 0 skips**、**1.8 分**(候補 1 と同じ)。
 
-**候補 2・3(`sudo unshare -n` + 降格、`ip netns` / firewall)は試していない。**
-候補 1 が通ったためである。ただし**候補 1 はカーネルの防御機構を 1 つ外す**という
-性質を持つ(影響は使い捨てランナー 1 台・1 ジョブの間に限られる)。
-防御機構を外さずに済ませたいなら候補 2 で、その場合は 5 か所の呼び出しを
-書き換えることになる。**この選択は人間の判断に委ねる。**
+その後、5 か所に並んでいた前置きを `isolated` というシェル関数にまとめ、
+**同じことをもう一度実測した**([run 32979807051](https://github.com/nuna/rubycc/actions/runs/32979807051)、
+7 ID すべて pass / 0 skips)。渡す文字列は変えていないが、変えていないことを測って確かめた。
+
+**候補 3(`ip netns` / firewall)は試していない。** 候補 2 で足りたためである。
+なお firewall で全体を落とす形は使えない — Actions のランナー自身が状態報告と
+ログ送信にネットワークを使うので、uid で絞る必要があり、そのために専用ユーザを
+作ることになる。
+
+遮断が効いていることの確認ステップも入れた。namespace の中から `rubygems.org` へ
+**到達できたらジョブを落とす**。これが無いと、遮断が外れても緑になる。
 
 ## 決着
 
