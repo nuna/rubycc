@@ -1,9 +1,9 @@
 ---
-status: open
+status: in-progress
 kind: gap
 opened: 2026-08-26
 closed:
-branch:
+branch: popcount-and-long-bit-scan-builtins-impl
 pr:
 steps: []
 ---
@@ -80,6 +80,20 @@ x86-64 には無い。gcc も `-mpopcnt` 無しでは命令を使わず展開す
 [corpus-candidate-pilot-v2-roaring](corpus-candidate-pilot-v2-roaring.md) の 3 回目の
 再走で見つけた。`l` の綴りが無いことは、その場で `__builtin_clzl` を試して確かめた。
 
+### 2026-08-26(実装)
+
+`l` の綴りはキーワード表の追加だけで済んだ(既存の 8 バイト経路をそのまま指す)。
+popcount は新しい IR 命令 `:popcount` にし、**両バックエンドとも SWAR で展開**した —
+x86-64 の `popcnt` は SSE4.2 の命令でベースラインに無く、AArch64 の `cnt` は
+ベクタレジスタとの往復が要るためである。
+
+gcc 差分を**両ターゲットで実測**した。エッジ値 20 件と xorshift の 20,000 値について、
+x86-64(ホスト実行)と AArch64(cross gcc + qemu)のいずれも gcc と一致。
+
+`#if` は定数文脈として使えない(前処理では識別子が 0 に置換されるので、gcc 自身が
+`missing binary operator` を出す)。定数畳み込みの被覆は静的初期化子・配列長・
+enum 定数・`_Static_assert`・`case` ラベルの 5 形にした。
+
 ## 決着
 
-(未着手)
+設計記録は `docs/development/STEPS.md` の `popcount-and-long-bit-scan-builtins-impl-1`。

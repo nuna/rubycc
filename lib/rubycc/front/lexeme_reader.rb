@@ -39,7 +39,9 @@ module Rubycc
                     __builtin_va_start __builtin_va_arg __builtin_va_end __builtin_va_copy
                     __builtin_expect __builtin_alloca __builtin_offsetof
                     __builtin_constant_p __builtin_choose_expr
-                    __builtin_ctz __builtin_ctzll __builtin_clz __builtin_clzll
+                    __builtin_ctz __builtin_ctzl __builtin_ctzll
+                    __builtin_clz __builtin_clzl __builtin_clzll
+                    __builtin_popcount __builtin_popcountl __builtin_popcountll
                     __builtin_unreachable __builtin_memcpy
                     __builtin_add_overflow __builtin_sub_overflow __builtin_mul_overflow
                     __atomic_load_n __atomic_store_n __atomic_exchange_n

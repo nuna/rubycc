@@ -2092,6 +2092,8 @@ module Rubycc
           gen_builtin_constant_p(node)
         when Front::AST::BuiltinBitScan
           gen_builtin_bit_scan(node)
+        when Front::AST::BuiltinPopcount
+          gen_builtin_popcount(node)
         when Front::AST::BuiltinOverflow
           gen_builtin_overflow(node)
         when Front::AST::BuiltinAtomic
@@ -2418,11 +2420,12 @@ module Rubycc
         [dst, Type::Int]
       end
 
-      # "__builtin_ctz/ctzll/clz/clzll(x)": counts x's trailing (ctz) or leading
-      # (clz) zero bits, as an int. The operand is converted to the unsigned
-      # integer of the builtin's width (4 or 8 bytes), then a single :bit_scan op
-      # lowers to bsf (forward/ctz) or bsr-based (reverse/clz) hardware. A
-      # zero operand is undefined behavior (gcc), so no zero handling is emitted.
+      # "__builtin_ctz/clz(x)", in any spelling: counts x's trailing (ctz) or
+      # leading (clz) zero bits, as an int. The operand is converted to the
+      # unsigned integer of the builtin's width (4 or 8 bytes), then a single
+      # :bit_scan op lowers to bsf (forward/ctz) or bsr-based (reverse/clz)
+      # hardware. A zero operand is undefined behavior (gcc), so no zero
+      # handling is emitted.
       def gen_builtin_bit_scan(node)
         value, type = gen_value(node.operand)
         unless type.integer?
@@ -2432,6 +2435,24 @@ module Rubycc
                                token: node.token)
         dst = new_vreg
         emit(:bit_scan, dst: dst, a: value, b: node.direction, size: node.width)
+        [dst, Type::Int]
+      end
+
+      # "__builtin_popcount/popcountl/popcountll(x)": counts x's set bits, as an
+      # int. The operand travels the same path a bit scan's does — converted to
+      # the unsigned integer of the builtin's width, so a narrower or signed
+      # argument is widened exactly once and the count runs over that width and
+      # no other — and then one :popcount op, which each backend expands.
+      # Every operand value is defined here, zero included (it counts 0).
+      def gen_builtin_popcount(node)
+        value, type = gen_value(node.operand)
+        unless type.integer?
+          error_at(node.operand.token, "argument to a bit-count builtin is not of integer type")
+        end
+        value = convert(value, from: type, to: node.width == 8 ? Type::ULong : Type::UInt,
+                               token: node.token)
+        dst = new_vreg
+        emit(:popcount, dst: dst, a: value, size: node.width)
         [dst, Type::Int]
       end
 
@@ -6042,7 +6063,7 @@ module Rubycc
           static_type(node.right)
         when Front::AST::LogicalAnd, Front::AST::LogicalOr,
              Front::AST::BuiltinConstantP, Front::AST::BuiltinBitScan,
-             Front::AST::BuiltinOverflow
+             Front::AST::BuiltinPopcount, Front::AST::BuiltinOverflow
           Type::Int
         when Front::AST::BuiltinUnreachable
           Type::Void

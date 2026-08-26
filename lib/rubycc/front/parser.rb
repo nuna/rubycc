@@ -3411,12 +3411,16 @@ module Rubycc
             parse_builtin_choose_expr
           elsif peek.keyword?("__builtin_ctz")
             parse_builtin_bit_scan(:forward, 4)
-          elsif peek.keyword?("__builtin_ctzll")
+          elsif peek.keyword?("__builtin_ctzl") || peek.keyword?("__builtin_ctzll")
             parse_builtin_bit_scan(:forward, 8)
           elsif peek.keyword?("__builtin_clz")
             parse_builtin_bit_scan(:reverse, 4)
-          elsif peek.keyword?("__builtin_clzll")
+          elsif peek.keyword?("__builtin_clzl") || peek.keyword?("__builtin_clzll")
             parse_builtin_bit_scan(:reverse, 8)
+          elsif peek.keyword?("__builtin_popcount")
+            parse_builtin_popcount(4)
+          elsif peek.keyword?("__builtin_popcountl") || peek.keyword?("__builtin_popcountll")
+            parse_builtin_popcount(8)
           elsif peek.keyword?("__builtin_unreachable")
             parse_builtin_unreachable
           elsif peek.keyword?("__builtin_memcpy")
@@ -3635,16 +3639,33 @@ module Rubycc
         selector.zero? ? when_false : when_true
       end
 
-      # "__builtin_ctz/ctzll/clz/clzll ( assignment-expression )": one integer
-      # operand whose trailing (`:forward`) or leading (`:reverse`) zero bits are
-      # counted over `width` bytes. The generator settles the operand's integer
-      # type check and lowers the bit scan; the result is int.
+      # "__builtin_ctz/clz ( assignment-expression )", in any of their three
+      # spellings: one integer operand whose trailing (`:forward`) or leading
+      # (`:reverse`) zero bits are counted over `width` bytes. The generator
+      # settles the operand's integer type check and lowers the bit scan; the
+      # result is int.
+      #
+      # The "l" spelling shares the "ll" one's width because `long` and `long
+      # long` are both 8 bytes on every target rubycc emits for; a target where
+      # they differed would have to split them here.
       def parse_builtin_bit_scan(direction, width)
         keyword_tok = advance # the "__builtin_ctz"/... keyword
         expect_punct("(")
         operand = parse_assignment_expression
         expect_punct(")")
         AST::BuiltinBitScan.new(operand, direction, width, keyword_tok)
+      end
+
+      # "__builtin_popcount/popcountl/popcountll ( assignment-expression )": one
+      # integer operand whose set bits are counted over `width` bytes, the width
+      # coming from the spelling exactly as it does for a bit scan. The generator
+      # checks the operand's type and lowers the count; the result is int.
+      def parse_builtin_popcount(width)
+        keyword_tok = advance # the "__builtin_popcount"/... keyword
+        expect_punct("(")
+        operand = parse_assignment_expression
+        expect_punct(")")
+        AST::BuiltinPopcount.new(operand, width, keyword_tok)
       end
 
       # "__builtin_add/sub/mul_overflow ( a , b , res )": exactly three arguments,

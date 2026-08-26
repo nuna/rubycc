@@ -151,6 +151,8 @@ module Rubycc
           evaluate_builtin_constant_p(node)
         when AST::BuiltinBitScan
           evaluate_builtin_bit_scan(node)
+        when AST::BuiltinPopcount
+          evaluate_builtin_popcount(node)
         else
           # Every other node — VariableRef, Call, Assignment,
           # CompoundAssignment, IncDec, MemberAccess, Subscript, StringLit,
@@ -619,6 +621,16 @@ module Rubycc
         else
           bits - value.bit_length                # leading zero count
         end
+      end
+
+      # __builtin_popcount(x) folds to the number of set bits in a constant
+      # operand, over its `width`-byte value — the same mask a bit scan applies,
+      # which is what makes __builtin_popcount(-1) the 32 gcc gives (the operand
+      # is counted as an unsigned int) rather than an infinite run of sign bits.
+      # There is no undefined case to leave unfolded: zero counts zero bits.
+      def evaluate_builtin_popcount(node)
+        value = evaluate(node.operand) & ((1 << (node.width * 8)) - 1)
+        value.to_s(2).count("1")
       end
 
       # Whether `type` is an incomplete tagged type with no size or alignment: a

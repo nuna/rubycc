@@ -262,11 +262,12 @@ Instruction(op, dst:, a:, b:, size:)
 |---|---|---|
 | :alloca | dst ← alloca(a) | a はバイト数を持つ vreg。関数の自動記憶域を動的に確保し、その基底アドレスを dst に置く。両ターゲットとも 16 バイト単位に切り上げてスタックポインタを下げ、関数復帰時にまとめて解放する(スコープ単位では解放しない)。x86-64 は `rsp` を動かすだけでよい(全スロットが `rbp` 基準)。AArch64 は sp 基準のフレームを持つため、**この命令を含む関数だけ x29 でフレームを固定**し、スロット参照と呼び出しの outgoing 領域を切り替える(§6.3) |
 
-### ビットスキャン
+### ビットスキャン・ビット数え上げ
 
 | 命令 | 形 | 意味 |
 |---|---|---|
-| :bit_scan | dst ← scan(a)。b = 方向、size = 4/8 | 整数 a の 0 ビット数を数える(__builtin_ctz/clz とその ll 形)。b = `:forward` は末尾 0 の個数(ctz)、`:reverse` は先頭 0 の個数(clz)。x86-64 は `:forward` を `bsf`、`:reverse` を `bsr` の後 (size*8−1) との `xor`(= (幅−1) − 最上位セットビット位置)に降ろす(size 8 は REX.W 付き)。AArch64 は `:reverse` を `clz` 単体、`:forward` を `rbit` + `clz` に降ろす(size 4 は W レジスタ形式、size 8 は X レジスタ形式)。オペランド 0 は未定義(gcc 準拠)なのでゼロ処理は出さない。結果は int |
+| :bit_scan | dst ← scan(a)。b = 方向、size = 4/8 | 整数 a の 0 ビット数を数える(__builtin_ctz/clz とその l 形・ll 形)。b = `:forward` は末尾 0 の個数(ctz)、`:reverse` は先頭 0 の個数(clz)。x86-64 は `:forward` を `bsf`、`:reverse` を `bsr` の後 (size*8−1) との `xor`(= (幅−1) − 最上位セットビット位置)に降ろす(size 8 は REX.W 付き)。AArch64 は `:reverse` を `clz` 単体、`:forward` を `rbit` + `clz` に降ろす(size 4 は W レジスタ形式、size 8 は X レジスタ形式)。オペランド 0 は未定義(gcc 準拠)なのでゼロ処理は出さない。結果は int |
+| :popcount | dst ← ones(a)。size = 4/8、b は未使用 | 整数 a の 1 ビット数を数える(__builtin_popcount とその l 形・ll 形)。**オペランド 0 も定義**(0 を返す)で、ビットスキャンと違い未定義のケースは無い。**どちらのバックエンドもハードウェアの population count 命令を使わない** — x86-64 の `popcnt` は SSE4.2、AArch64 の `cnt` は AdvSIMD のベクタ命令であり、前者はベースラインに無く、後者はベクタレジスタを経由することになるため。代わりに両者とも同じ分割統治(SWAR)展開を出す: 2 ビット幅の部分和から始めて幅を倍にしながら 4 段(pair → nibble → byte → 全体)で畳み、最後の段は 1 バイトに 1 を置いた定数との乗算で全バイトを最上位バイトに集めて右シフトする。x86-64 は 15 命令(size 4)/ 19 命令(size 8、論理演算に imm64 が無いので各マスクを `movabs` で rdx に置く)、AArch64 は 13 命令(マスクも乗数もすべて bitmask immediate なので movz/movk は不要)。導出は `backend/x86_64.rb#emit_popcount` に書いてある。結果は int |
 
 ### アトミック操作
 

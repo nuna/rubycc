@@ -105,7 +105,7 @@ module Rubycc
       # parameter count).
       ONE_OPERAND_OPS = %i[
         copy neg sext zext ftof itof ftoi load uload addr_of alloca
-        bit_scan va_start atomic_load jump_if_zero
+        bit_scan popcount va_start atomic_load jump_if_zero
       ].freeze
 
       # Ops that read no virtual register at all: their `a` is an immediate, a
@@ -129,7 +129,7 @@ module Rubycc
         const copy add sub mul mulhi and or xor shl sar shr neg
         eq ne lt le gt ge ult ule ugt uge
         fadd fsub fmul fdiv feq fne flt fle fgt fge itof ftoi ftof
-        sext zext bit_scan scaled_add
+        sext zext bit_scan popcount scaled_add
         addr_of object_addr string_addr global_addr func_addr got_addr
       ].freeze
 
@@ -430,7 +430,7 @@ module Rubycc
         const copy add sub mul mulhi and or xor shl sar shr neg
         eq ne lt le gt ge ult ule ugt uge
         fadd fsub fmul fdiv feq fne flt fle fgt fge itof ftoi ftof
-        sext zext bit_scan scaled_add load uload
+        sext zext bit_scan popcount scaled_add load uload
         div mod udiv umod alloca
         addr_of object_addr string_addr global_addr func_addr got_addr
       ].freeze
@@ -439,7 +439,7 @@ module Rubycc
         copy add sub mul mulhi and or xor shl sar shr neg
         eq ne lt le gt ge ult ule ugt uge
         fadd fsub fmul fdiv feq fne flt fle fgt fge itof ftoi ftof
-        sext zext bit_scan scaled_add load uload store memcpy
+        sext zext bit_scan popcount scaled_add load uload store memcpy
         div mod udiv umod alloca jump_if_zero ret
       ].freeze
 

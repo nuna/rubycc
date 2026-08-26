@@ -130,6 +130,16 @@ class TestAArch64Backend < Minitest::Test
   def rbit(sf, rd, rn) = dp1(0b000000, sf, rd, rn)
   def clz(sf, rd, rn)  = dp1(0b000100, sf, rd, rn)
 
+  # "Bitfield":
+  #   sf(31) opc(30:29) 100110(28:23) N(22) immr(21:16) imms(15:10) Rn(9:5) Rd
+  # opc = 10 is UBFM, which `lsr Rd, Rn, #s` is the alias of: taking the field
+  # from bit s up to the register's top (imms = 31 or 63) and right-aligning it
+  # shifts the register right by s. N mirrors sf (a 64-bit bitfield).
+  def lsr_imm(sf, rd, rn, shift)
+    (sf << 31) | (0b10 << 29) | (0b100110 << 23) | (sf << 22) |
+      (shift << 16) | (((sf == 1 ? 64 : 32) - 1) << 10) | (rn << 5) | rd
+  end
+
   # "Data-processing (2 source)":
   #   sf(31) 0(30) S(29)=0 11010110(28:21) Rm(20:16) opcode(15:10)
   #   Rn(9:5) Rd(4:0)
@@ -253,11 +263,23 @@ class TestAArch64Backend < Minitest::Test
   # "Logical (immediate)":
   #   sf(31) opc(30:29) 100100(28:23) N(22) immr(21:16) imms(15:10)
   #   Rn(9:5) Rd(4:0)
-  # opc = 00 is AND. The immediate is a bitmask pattern rather than a plain
-  # number: with N = 1 (a 64-bit element) imms is the length of a run of ones
-  # minus one and immr the right rotation applied to it.
+  # opc = 00 is AND (01 is the ORR #mov_imm is built from). The immediate is a
+  # bitmask pattern rather than a plain number: N:imms names an element of 2, 4,
+  # 8, 16, 32 or 64 bits together with a run of ones inside it, and that element
+  # repeats to fill the register; immr is the right rotation applied to the run.
+  # N = 1 is the 64-bit element, where imms is the run length minus one. N = 0
+  # puts the element size in imms' leading ones instead — 0b110sss is an element
+  # of 8 bits holding s + 1 ones, 0b1110ss one of 4, 0b11110s one of 2 — which
+  # is what the repeating masks of a population count need.
   def and_imm(sf, rd, rn, n, immr, imms)
     (sf << 31) | (0b100100 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd
+  end
+
+  # mov Rd, #pattern: the same encoding with opc = 01 (ORR) and the zero
+  # register as Rn, which is how a bitmask pattern reaches a register without
+  # the movz/movk pair an arbitrary constant would need.
+  def mov_imm(sf, rd, n, immr, imms)
+    and_imm(sf, rd, XZR, n, immr, imms) | (0b01 << 29)
   end
 
   # and Xd, Xn, #-16 — 60 ones (imms = 59) rotated right by 60, which puts the
@@ -665,6 +687,39 @@ class TestAArch64Backend < Minitest::Test
                  body_of(:bit_scan, dst: 2, a: 0, b: :reverse, size: 8)
     assert_words [ldr_slot(A, 0), rbit(1, A, A), clz(1, A, A), str_slot(A, 2)],
                  body_of(:bit_scan, dst: 2, a: 0, b: :forward, size: 8)
+  end
+
+  # :popcount — the divide-and-conquer expansion, thirteen instructions with no
+  # constant built by movz/movk: every mask (one 1 per pair, two per nibble,
+  # four per byte) and the one-per-byte multiplier is a repeating pattern, which
+  # is exactly what a logical immediate encodes. The expected words are built
+  # from the field layouts above rather than copied from the backend, so the
+  # imms values (0b111100, 0b111001, 0b110011, 0b110000) are asserted as
+  # patterns and not as opaque numbers — with N = 0, each element being shorter
+  # than 32 bits, and immr = 0, each run of ones starting at bit 0.
+  #
+  # The whole sequence runs on A and B: the operand is moved into A even when it
+  # is already in a register, because every stage overwrites it.
+  def test_popcount_is_the_swar_expansion_at_the_operand_width
+    [[0, 4, 24], [1, 8, 56]].each do |sf, size, final_shift|
+      assert_words [ldr_slot(A, 0),
+                    lsr_imm(sf, B, A, 1),
+                    and_imm(sf, B, B, 0, 0, 0b111100),
+                    sub_reg(sf, A, A, B),
+                    and_imm(sf, B, A, 0, 0, 0b111001),
+                    lsr_imm(sf, A, A, 2),
+                    and_imm(sf, A, A, 0, 0, 0b111001),
+                    add_reg(sf, A, A, B),
+                    lsr_imm(sf, B, A, 4),
+                    add_reg(sf, A, A, B),
+                    and_imm(sf, A, A, 0, 0, 0b110011),
+                    mov_imm(sf, B, 0, 0, 0b110000),
+                    madd(sf, A, A, B, XZR),
+                    lsr_imm(sf, A, A, final_shift),
+                    str_slot(A, 2)],
+                   body_of(:popcount, dst: 2, a: 0, size: size),
+                   "size #{size}"
+    end
   end
 
   # Negation is a subtraction from the zero register.

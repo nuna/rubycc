@@ -249,6 +249,19 @@ module Rubycc
     #                               one, at the W or X width `size` names. A zero
     #                               operand is undefined (as in gcc), so no zero
     #                               case is emitted. The result is an int
+    #   :popcount dst <- ones(a)    counts the set bits of the integer in vreg a,
+    #                               for __builtin_popcount (and its "l"/"ll"
+    #                               forms); `size` is the operand width (4 or 8)
+    #                               and b is unused. Every operand value is
+    #                               defined, zero included. Neither backend uses
+    #                               a hardware population count — x86-64's
+    #                               `popcnt` is an SSE4.2 instruction the
+    #                               baseline does not have, and aarch64's `cnt`
+    #                               is an AdvSIMD one over a vector register —
+    #                               so both expand the same divide-and-conquer
+    #                               (SWAR) sum of bit fields, described in
+    #                               backend/x86_64.rb#emit_popcount. The result
+    #                               is an int
     #
     # The five atomic ops below lower gcc's __atomic_* builtins. Every one is
     # sequentially consistent — the IR carries no memory order at all, because
