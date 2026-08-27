@@ -1,11 +1,11 @@
 ---
-status: in-progress
+status: done
 kind: infra
 opened: 2026-08-27
-closed:
+closed: 2026-08-27
 branch: census-snapshot-refresh
-pr:
-steps: []
+pr: 116
+steps: [census-snapshot-refresh-1]
 ---
 
 # 文書再編で置き去りになった census スナップショットを再生成して、週次 census を緑に戻す
@@ -88,4 +88,5 @@ R10 basis の 2 行。**パスの綴りを正規化して `-` 側と `+` 側を�
 
 ## 決着
 
-(進行中)
+PR #116 でマージ。`rake corpus:census` を回して 8 行の置換(すべて文書パスの綴り)を
+commit した。設計記録は [STEPS.md の `census-snapshot-refresh-1`](../docs/development/STEPS.md)。
