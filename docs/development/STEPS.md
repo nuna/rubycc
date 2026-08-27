@@ -13032,3 +13032,107 @@ codex は「読んでいる最中にツリーが変わった」と報告して�
 - **生成物は 12 本すべて sha256 一致**。`emit_mul` を `MADD_ZERO` に寄せた 1 行の変更が
   出力を動かしていないことの確認でもある
 - 新規・拡張テスト 8 件は、**無改変ツリーでは 8 件とも落ちる**
+
+---
+
+## roadmap-gaps-backlog-sweep-1 — 期限の切れた宿題は、文書ではなく issue に置く
+
+`ROADMAP.md` と `GAPS.md` に散文で残っていた未消化の作業を洗い、**8 件を `issues/` へ移した**。
+`issues/README.md` が掲げる「未消化の作業は文書の主題のついでに書かない」を、
+既存の文書に対して**遡って適用した**回である。
+
+### 何が起きていたか — 受け皿のマイルストーンが先に終わる
+
+ROADMAP §3 の負債表は各行に「解消予定」を持つ。ところがその値は
+**M2・H4 といったマイルストーン名**で、当のマイルストーンが完了しても行は残る。
+実測でこうなっていた:
+
+| 負債 | 解消予定の記載 | その受け皿の状態 |
+|---|---|---|
+| マクロ再展開の hide-set 交差 | M2 | Step 54 で完了 |
+| -fPIC の PC32 参照 | H4(§3.1) | 完了 |
+| 128 ビット整数の残りの演算 | H4(§3.1) | 完了 |
+
+**状態を持たない置き場に期限を書くと、期限だけが宙に浮く。** これは
+`issues/README.md` が front matter の `status` を導入した理由そのもので、
+同じ失敗が古い文書の側に残っていた。
+
+### 書き写す前に測り直した
+
+散文を issue に移すだけなら文章の移動で済むが、**古い事実を 1 件増やすことになる**ので、
+3 件はこのホスト(WSL2 / gcc 14.2)で再現を取り直した。3 件とも記述は今も正しかった:
+
+- `-fPIC`: rubycc は `R_X86_64_PC32 shared_counter - 4`、gcc は `R_X86_64_REX_GOTPCRELX`。
+  `gcc -shared` は `relocation R_X86_64_PC32 ... can not be used when making a shared object` で落ちる
+- 128 ビット: `/ % & | ^` の 5 通りすべてが `not supported yet` の診断、gcc は 5 通りとも成功
+- hide-set: `-E` が `printf("%d\n", CAT(x,y));` を出す(gcc は `xy`)。
+  コンパイルすると **`implicit declaration of function 'CAT'`** — 原因のマクロとは別の名前で報告される
+
+### 切り分けを 1 件直した
+
+`-fPIC` の PC32 参照を「未起票の負債」と一括りにしたのは**雑だった**。半分は決着済みである:
+
+- **介入を尊重しない**(自分で定義したグローバルを直接束縛する)という意味論上の逸脱は
+  `GAPS.md` §4 で**現状維持**と判断済み(ユーザ判断 2026-08-06、再検討条件つき)
+- **起票したのは残り半分** — GNU ld が「preemptible シンボルへの PC32」を拒否するため
+  `gcc -shared` と組めないという相互運用の制限。実行そのものは正しい
+
+### GAPS を辿ったら、文書の穴ではなく CI の赤が出た
+
+`GAPS.md` 側は §1 の 3 行が全て issue に紐付き、§2 は空、§3 は 3 行とも消し込み済みで、
+**未起票の課題は無かった**。代わりに §3 の消し込み文が事実と食い違っていた:
+
+| 書いてあったこと | 実際(2026-08-27 に実測) |
+|---|---|
+| `verified_gems.json` に musl の記録が 1 件も無い | **3 件ある**(`json` / `stringio` / `io-wait`) |
+| json / msgpack の aarch64 `gem install` だけが未完了 | `m4-aarch64-acceptance-2` で**完了**(596 tests / 455 examples) |
+
+食い違いを辿った先で、**Tier B の 2 ジョブが定常的に赤い**ことが分かった。
+
+- **`musl`**: 2026-08-09 以降のスケジュール実行 3 回すべて failure。直近は
+  3346 runs / 2 failures で、`TestSharedObject#test_compiled_constructor_order_matches_gcc`
+  (`"123L123L123L"` → `"123L"`)と
+  `TestPic#test_pic_objects_link_into_a_shared_object_and_round_trip`(GOT 経由の初回読みが
+  100 ではなく 55)。**08-09 の 2 件とは組み合わせが違う**(あちらはコンストラクタ順 2 件)
+- **`census`**: `docs-audience-split-1` の文書再編で `test/corpus/gems.rb` の note の
+  参照先が変わったのに、そこから生成される `test/corpus/include-census.md` を
+  commit し直していない。古い綴りが 8 箇所残っている。ヘッダのカバレッジは動いていない
+
+**GAPS が「測った、解決した」と書いていたことが、赤の発見を遅らせた。**
+文書が古いだけなら読み手が困るだけだが、この場合は**赤が定常化して新しい赤を隠す**。
+現に 3 週間で失敗の集合が入れ替わっているのに、誰もそれを見ていなかった。
+
+### 消し込み
+
+ROADMAP 側は、完了しているのに「残り」と書かれていた計画を 6 箇所たたんだ
+(L3 後半・L8 の M2 受け入れ・A5 の M4 受け入れ・ABI ファジングの機種パラメタ化・
+rubygems.org への公開・§10 のヘッダトークンキャッシュ)。
+**L5 第三段(`.gnu.hash` / RELRO)だけは本当に未実装**だったので、
+たたまずに issue へ出した(`lib/` に該当する実装が 1 件も無いことを `grep` で確認)。
+
+`GAPS.md` §5 には**ギャップ U の解消記録が無かった**(別の行から「§1 の U」として
+参照だけされていた)ので追記した。`gaps-s-t-u-1` で `__GLIBC_MINOR__` のハードコードを
+libc 自身の `.gnu.version_d` から実測する形に置き換えた件である。
+
+### 起票した 8 件
+
+| issue | kind | 出所 |
+|---|---|---|
+| `macro-hide-set-intersection` | debt | ROADMAP §3 |
+| `pic-exported-global-got` | debt | ROADMAP §3 / §3.1 |
+| `int128-remaining-operators` | debt | ROADMAP §3 / §3.1 |
+| `struct-returning-initializer-element` | gap | GAPS §1 の T |
+| `rbs-r10-denominator` | docs | ROADMAP §8(「別ステップの判断」と書かれたまま) |
+| `gnu-hash-and-relro` | feature | ROADMAP §5 の L5 第三段 |
+| `musl-shared-object-regression` | gap | 週次 CI(GAPS の食い違いを辿って発見) |
+| `census-snapshot-refresh` | infra | 同上 |
+
+`macro-hide-set-intersection` は `kind: gap` ではなく `debt` にした。GAPS §1 に行が無く
+ROADMAP の負債表に住んでいたためで、gap にすると GAPS へ新しい記号を振ることになる
+(それは別の判断である)。
+
+### 検証
+
+- `test/test_issue_docs.rb` — **5 runs / 1,189 assertions / 0 failures / 0 errors / 0 skips**
+- `test/test_doc_links.rb` — **3 runs / 41 assertions / 0 failures / 0 errors / 0 skips**
+  (docs から `issues/` への相互リンクが全て解決することの検査を含む)

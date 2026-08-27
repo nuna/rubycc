@@ -27,7 +27,7 @@ M4 完了後も「残項目」を掲げたままになっていた)。
 | M3 ビルド統合(rmake / plugin / pkg-config / conftest) | 完了(Step 64)。distroless 相当も完了(Step 202) |
 | M4 aarch64 バックエンド | **完了(`m4-aarch64-acceptance-4`)**。受け入れ 4 項目は下表 |
 | M5 互換ヘッダ・コーパス 90%・v1.0 | **完了(`release-close-1`)**。R10 は 31/34 = 91.2%、タグ `v1.0.0`(`dca836f`)、`gem push` は 2026-08-13 |
-| M6 以降 | **進行中**。基本最適化は**両段とも完了**(スピルトラフィック削減 + レジスタ割付)。C カーネル 5 件で **N2 が成立**(gcc -O2 比 1.09〜2.78x)、コーパスの合格率は 31/31 で維持。残りはヘッダトークンキャッシュ・macOS・行番号デバッグ情報・GCC 擬態モード |
+| M6 以降 | **進行中**。基本最適化は**両段とも完了**(スピルトラフィック削減 + レジスタ割付)。C カーネル 5 件で **N2 が成立**(gcc -O2 比 1.09〜2.78x)、コーパスの合格率は 31/31 で維持。**§10 の M6 表に「着手する」項目は残っていない** — ヘッダトークンキャッシュは `dropped`、GCC 擬態モードは着手しない、macOS と行番号デバッグ情報は保留(要求が出た時点で起票)。**次に何をやるかは `issues/` が一次情報** |
 
 検証済み gem は glibc x86-64 が 31 件、musl x86-64 が 3 件、glibc aarch64 が 6 件
 (一次情報は `data/verified_gems.json`。R10 の分母・分子・合格率は
@@ -174,8 +174,8 @@ M4 完了後も「残項目」を掲げたままになっていた)。
 | ~~文式 `({ … })`~~ | **解消(Step 40、4466e68)**: 一次式で `(` の直後が `{` のとき複合文をパースし最後の式文の値・型を採る文式を実装。`?:` の片側 void アーム(GCC 拡張)対応込み。c-testsuite 00213/00214 合格。Data_Make_Struct / TypedData_Make_Struct / rb_intern() の展開先が通る | ~~早期 M2(最優先負債)~~ **完了** |
 | ~~`__builtin_offsetof` / 定数文脈 offsetof~~ | **解消(Step 42)**: `__builtin_offsetof(type-name, member-designator)` を実装(ネスト `.name`・添字 `[expr]`・匿名メンバ対応、ビットフィールドは診断)。ConstantEvaluator が畳むため static 初期化子・配列サイズ・case ラベルの定数文脈で使え、同梱 stddef.h の offsetof も __builtin_offsetof 展開に変更 | ~~早期(Step 42 予定)~~ **完了** |
 | ~~ビットフィールドのアクセス~~ | **解消(Step 48、d1da0bf)**: 読み・書き・複合代入・++/-- を格納単位の load → shift/mask → read-modify-write store で実装(符号付きは符号拡張、代入式の値は切り詰め後の読み直し)。& は 6.5.3.2p1 の診断。00218 は enum 符号性(00170 と同根)で残置 | ~~M2~~ **完了** |
-| マクロ再展開の hide-set 交差 | `CAT(A,B)(x)` の CAT2 経由再展開が gcc と相違(c-testsuite 00201 で実証)。修正方針記録済み: 置換 paint を「呼び出し名の suppress ∩ 閉じ括弧の suppress + 自名」へ | M2 |
-| 128 ビット整数の演算残り | 乗算・加減算・比較・変換に加え、**値渡し/返しを Step 94**(16 バイト 2-INTEGER 集約として既存の構造体 ABI 経路)、**シフト `<<`/`>>` を Step 95**(二重ワードシフト合成)で実装。いずれも両ターゲットの gcc 差分実行オラクルで検証。残りは除算・剰余・ビット演算(`& | ^`)・可変長渡しが診断エラー。**corpus 実害**: bigdecimal が `bits.h` で値渡し(Step 93 検出)と `x >> 64`(Step 94 後に検出)を使い落ちていた → Step 94/95 で解消 | **値渡し/返し(Step 94)・シフト(Step 95)解消。残りの演算は H4** |
+| マクロ再展開の hide-set 交差([issue](../../issues/macro-hide-set-intersection.md)) | `CAT(A,B)(x)` の CAT2 経由再展開が gcc と相違(c-testsuite 00201 で実証)。修正方針記録済み: 置換 paint を「呼び出し名の suppress ∩ 閉じ括弧の suppress + 自名」へ | 起票済み(受け皿だった M2 は Step 54 で完了) |
+| 128 ビット整数の演算残り([issue](../../issues/int128-remaining-operators.md)) | 乗算・加減算・比較・変換に加え、**値渡し/返しを Step 94**(16 バイト 2-INTEGER 集約として既存の構造体 ABI 経路)、**シフト `<<`/`>>` を Step 95**(二重ワードシフト合成)で実装。いずれも両ターゲットの gcc 差分実行オラクルで検証。残りは除算・剰余・ビット演算(`& | ^`)・可変長渡しが診断エラー。**corpus 実害**: bigdecimal が `bits.h` で値渡し(Step 93 検出)と `x >> 64`(Step 94 後に検出)を使い落ちていた → Step 94/95 で解消 | **値渡し/返し(Step 94)・シフト(Step 95)解消。残りの演算は H4** |
 | enum の unsigned 底型([issue](../../issues/platform-abi-alignment.md)) | 全 enum を int へ写像(gcc は全非負 enum を unsigned int に)。c-testsuite 00170 のポインタ符号不一致で顕在 | 実害が出た時点 |
 | compound literal / VLA / _Generic / ワイド文字列 / #pragma push_macro / K&R `int ()` 型 | 各々診断エラー(c-testsuite スキップ表に理由記録) | 実害が出た時点 |
 | ~~素の `char` の符号性がターゲット依存~~ | **解消(Step 73)**: 文字型を 4 実体に分離し(素の char の符号あり/なし + ターゲット非依存の signed/unsigned char)、`Compiler::TARGETS` の `char_signed` からプリプロセッサ・パーサ・IR ジェネレータの 3 段へ配る。同梱 limits.h も `__CHAR_UNSIGNED__` で分岐 | ~~A3~~ **完了** |
@@ -187,7 +187,7 @@ M4 完了後も「残項目」を掲げたままになっていた)。
 | ~~float リテラルの binary32 丸め~~ | **解消(Step 69)**: `pack("e")` が FLT_MAX 超を +inf へ飽和させていた。double のビット界から 23 ビットへ最近接・偶数丸めで縮約する変換に置き換え、ABI ハーネスの FLT_MAX 検査を通常の assert へ復帰 | ~~早期~~ **完了** |
 | long double = double 扱い(GAPS S。[第 1 段](../../issues/long-double-varargs.md) / [第 2 段](../../issues/platform-abi-alignment.md)) | rubycc は long double を 8 バイト double として扱う(DESIGN 3.3 の既知制限)ため max_align_t が 16/8(glibc は 32/16)。x87 80bit 対応まで ABI ハーネスの該当検査は非 assert。**実害は測定済み** — `printf("%Lg", x)` に 8 バイトを積むのに glibc は 16 バイト読むので値が壊れ、oj の `UsualTest#test_decimal` が対照と食い違う唯一の差になっている | **v1.0 直後に最優先で着手**(ユーザ判断、2026-08-11)。v1.0 では挙動を変えず README / CHANGELOG の既知の制限に明記するに留めた(いま診断エラーにすると、今ビルドできている gem がビルドできなくなる副作用の方が広いため)。着手時は 2 段階を検討する: **(1) 可変長引数に渡すときだけ double を 80 ビット拡張形式(aarch64 は binary128)に変換して積む** — double は両形式の部分集合なので変換は無損失で、観測されている実害はこれで閉じる。ただし `sizeof(long double)` の食い違いは残る。**(2) x87 / binary128 の演算そのもの** — パーサ・定数畳み込み・ABI 分類・va_arg に及ぶマイルストーン規模 |
 | DoS フェイルセーフの上限値 | パーサ再帰深さ 500・#if 式 500・マクロ展開 100 万トークン等(Step 32)は実行環境のスタックサイズ(本環境 ~330 括弧段)前提。極端に浅いスタックの環境では再評価が必要。詳細は docs/development/security-dos-review.md | コーパス(R10)実測で再調整 |
-| -fPIC で定義済みエクスポートグローバルを PC32 参照 | Step 33 は TU 内定義グローバルを PC32(interpose 非対応の -Bsymbolic 相当)。rubycc の SharedLinker は S+A−P で正しく解決するが、GNU ld は preemptible シンボルへの PC32 を共有オブジェクト規則違反として拒否(gcc -shared 相互リンク不可)。実行は正しい | 真の interpose 対応(エクスポート定義グローバルも GOT 経由)を M2 終盤か PIC 改善で。実 gem がグローバル変数をエクスポートするか R10 コーパスで判定 |
+| -fPIC で定義済みエクスポートグローバルを PC32 参照([issue](../../issues/pic-exported-global-got.md)) | Step 33 は TU 内定義グローバルを PC32(interpose 非対応の -Bsymbolic 相当)。rubycc の SharedLinker は S+A−P で正しく解決するが、GNU ld は preemptible シンボルへの PC32 を共有オブジェクト規則違反として拒否(gcc -shared 相互リンク不可)。実行は正しい | 真の interpose 対応(エクスポート定義グローバルも GOT 経由)を M2 終盤か PIC 改善で。実 gem がグローバル変数をエクスポートするか R10 コーパスで判定 |
 
 ### 3.1 開いた負債の後続 STEP への割り当て(明示スケジュール)
 
@@ -198,9 +198,9 @@ M4 完了後も「残項目」を掲げたままになっていた)。
 | 負債 | 解消予定 | 根拠 |
 |---|---|---|
 | 不完全型 struct の param/return、内側スコープ `struct S;` 再宣言、~~ブロックスコープ関数宣言~~(**Step 168 で解消**)、指し先 const 書き込み検出、compound literal / VLA / _Generic / ワイド文字列 / #pragma push_macro / K&R `int ()`、enum unsigned 底型 | **H4**(言語機能不足 → M1 流儀の追補ステップ) | H3 の #include/ビルド集計と gem テストで顕在化した順に H4 で追補。コーパスに現れないものは v1.0 の「既知の制限」として README 記載(H6) |
-| 128 ビット整数の演算残り(除算・剰余・ビット演算) | **H4**(値渡し/返しは Step 94、シフトは Step 95 で解消済み)。残りの演算は必要になった時点 | 実 gem が `__int128` を使う頻度は低い。bigdecimal で実害が出た値渡し(Step 94)とシフト(Step 95)は解消。残りは使う gem がコーパスに現れれば H4 で実装 |
+| 128 ビット整数の演算残り(除算・剰余・ビット演算) | **[issue](../../issues/int128-remaining-operators.md)**(値渡し/返しは Step 94、シフトは Step 95 で解消済み)。残りの演算は必要になった時点 | 実 gem が `__int128` を使う頻度は低い。bigdecimal で実害が出た値渡し(Step 94)とシフト(Step 95)は解消。残りは使う gem がコーパスに現れれば H4 で実装 |
 | ~~`char *` と `signed char *` の非互換化~~ | **解消(Step 98)**: `pointer_sign_compatible?` で同サイズ逆符号 + 文字型3種の相互互換を受理。redcarpet の `uint8_t*` → `strncmp` で実害が出て緩和 | ~~Step 73 の副作用~~ **完了(Step 98)** |
-| ~~スタック引数の 16 バイト整列(x86_64/aarch64 共通)~~ **解消(Step 94)**、-fPIC の PC32 参照 | 16 バイト整列は Step 94 で解消(`:pad_stack` 機構 + クロス TU 実行オラクル)。-fPIC PC32 は **H4**(ABI バグ → 最優先修正 + ABI ファジングに再発防止ケース追加) | ABI 不一致は SEGV 直結の最重要リスク(DESIGN 7 章)。ファジング(下記)で網羅的に炙り出す |
+| ~~スタック引数の 16 バイト整列(x86_64/aarch64 共通)~~ **解消(Step 94)**、-fPIC の PC32 参照 | 16 バイト整列は Step 94 で解消(`:pad_stack` 機構 + クロス TU 実行オラクル)。-fPIC PC32 は **[issue](../../issues/pic-exported-global-got.md) へ移した**(H4 は終了。ABI バグではなく GNU ld との相互運用の制限で、実行そのものは正しい) | ABI 不一致は SEGV 直結の最重要リスク(DESIGN 7 章)。ファジング(下記)で網羅的に炙り出す |
 | `wchar_t` typedef 符号性 | **feature-gated**(ワイド文字対応時) | 該当機能を意図的に未対応(診断で拒否)としているため、着手するまで観測不能 |
 | long double = double(GAPS S) | ~~feature-gated~~ → **v1.0 直後に最優先**(§3 の該当行に段取りを記載) | 「当該機能に着手するまで観測不能」という当初の見立ては**外れた**。H4 で oj が実害を出し(`%Lg` に 8 バイトを積む)、対照と食い違う唯一のテストになっている。v1.0 は文書化で通し、直後に着手する |
 | DoS フェイルセーフ上限値の再調整 | **H4**(コーパス R10 実測で再調整) | docs/development/security-dos-review.md 記載。極浅スタック環境の実測が入手できた時点 |
@@ -241,9 +241,9 @@ system ar と双方向相互運用・決定的出力)。設計記録は STEPS.md
   汎用 RelocatableWriter。セクション結合・シンボル解決(strong/weak・
   multiple definition 診断・UND 残存許容)・再配置付け替え(セクションシンボル
   addend 補正)・アーカイブ遅延取り込み。設計記録は STEPS.md の Step 31。
-- **後半(残り)**: 再配置の適用エンジン(R_X86_64_PC32 / PLT32 / 64 / 32 / 32S の
-  バイトパッチ)。L5(.so ライタ)/L7(実行ファイル)が仮想アドレス配置とともに
-  使うため、そちらのステップで実装する。
+- ~~**後半**: 再配置の適用エンジン(R_X86_64_PC32 / PLT32 / 64 / 32 / 32S の
+  バイトパッチ)~~ **完了(Step 34)**: 計画どおり L5(.so ライタ)側で、仮想アドレス
+  配置とともに実装した(STEPS.md の Step 34「静的再配置の適用エンジン(L3 後半に相当)」)。
 
 ### ~~L4 — PIC データアクセス(コンパイラ側の前提対応)~~ **完了(Step 33、84be163)**
 計画どおり実装(-fPIC で外部グローバル/関数のアドレス取得を GOT 経由
@@ -264,7 +264,8 @@ system ar と双方向相互運用・決定的出力)。設計記録は STEPS.md
   (--as-needed 相当)・DT_SONAME、未解決 UND は残す。遅延バインドの複雑さを
   避け BIND_NOW を既定。**Fiddle dlopen で外部 libc 関数(strlen/puts/environ)を
   実呼び出し**まで検証済み。設計記録は STEPS.md の Step 35。
-- **第三段(残り)**: **.gnu.hash**(ブルームフィルタ・バケット。公式仕様が薄いので
+- **第三段(未実装。[issue](../../issues/gnu-hash-and-relro.md))**: **.gnu.hash**
+  (ブルームフィルタ・バケット。公式仕様が薄いので
   binutils の出力を readelf で観察して外形を合わせる。実装コードは見ない: R11)。
   glibc は gnu.hash 優先・musl 対応も含め .hash と両方持つ安全側(DESIGN 5.3)。
   .hash のみでも dlopen は動く(Step 34/35 で実証済み)ので、これは適合性・
@@ -314,10 +315,11 @@ STEPS.md の Step 37。musl での検証は L8 の M2 受け入れ(両コンテ�
   `.name`・添字 `[expr]`・匿名メンバ対応、ビットフィールドは診断。同梱 stddef.h の
   offsetof を __builtin_offsetof 展開へ変更し、static 初期化子・配列サイズ・
   case ラベルで使えるようにした。設計記録は STEPS.md の Step 42。
-- **M2 受け入れの最終形(残り、次ステップ)**: json と msgpack を「extconf.rb が
-  生成した Makefile のコマンドを
-  手動で rubycc に置き換えて」ビルドし、**gem 自身のテストスイートに合格**。
-  glibc / musl 両コンテナで確認。
+- ~~**M2 受け入れの最終形**: json と msgpack を「extconf.rb が生成した Makefile の
+  コマンドを手動で rubycc に置き換えて」ビルドし、**gem 自身のテストスイートに合格**~~
+  **完了(Step 54)**。当時 glibc のみで、musl コンテナの確認は残項目として送られたが、
+  そちらも Step 175 以降の musl ジョブで実施済み(現状は
+  [週次が赤い](../../issues/musl-shared-object-regression.md))。
 - 検証環境の前提: この時点では同梱 libc ヘッダ(R8)が無いので、
   「Ruby ヘッダ + libc 開発ヘッダが存在する通常のビルドコンテナ」で検証してよい
   (プリプロセッサの既定インクルードパスに /usr/include を許す)。ヘッダレス環境
@@ -552,13 +554,14 @@ M2 完了(手動ビルドが通る状態)が前提。ラベル B1〜B7 は計画
   qemu 上で dlopen・関数呼び出し(C 拡張そのものの形)。SharedLinker は前段で既に
   機種化されており、実変更は supported_machines の拡大が核心。PLT は BIND_NOW で
   PLT0 不要。CompatRuntime の機種不整合も解消。x86_64 は .so バイト一致。
-- **その後 M4 受け入れ**: aarch64 で全スイート + json/msgpack の gem install。
-  Step 208 で qemu 上の aarch64 版 Ruby(mkmf/rake が動く環境)を整備し、
-  `io-wait` / `stringio` の限定実走は完了した。**json/msgpack と全スイートは未検証**で、
-  qemu の遅さを踏まえてコンテナ/CI マトリクスで継続する。
-  リンカ・コンパイラ側の成果物は aarch64 .so を正しく生成できる段階に到達済み。
-- A4 から持ち越し: **ABI ファジングハーネス(Step 25/62)の機種パラメタ化**。現状は
-  ホスト gcc 前提でクロス経路を持たないため、QEMU マトリクス整備と併せて対応する。
+- ~~**その後 M4 受け入れ**: aarch64 で全スイート + json/msgpack の gem install~~
+  **完了**。Step 208 で qemu 上の aarch64 版 Ruby を整備して `io-wait` / `stringio` を
+  限定実走し、**全スイートは `test-ci-implementation-4`**(native `ubuntu-24.04-arm` 上の
+  Ruby 3.3 / 4.0 が success)、**json / msgpack の gem install は `m4-aarch64-acceptance-2`**
+  (596 tests / 455 examples が 0 failures)で片付いた。§「現在地」の M4 受け入れ表が一次情報。
+- ~~A4 から持ち越し: **ABI ファジングハーネス(Step 25/62)の機種パラメタ化**~~
+  **完了**。`test/test_cross_abi.rb` が同じ 40 レイアウトを x86_64 と aarch64 の両方で回す
+  (aarch64 はクロス gcc + QEMU 経路なので aarch64 Ruby は要らない)。
 - **CI 環境のトレードオフ**(再掲): QEMU はどこでも動くが遅く、まれに実機と挙動が違う。
   既定は QEMU の Docker マトリクス、リリース前検証だけ実機。
 - **CI 環境のトレードオフ**: QEMU(binfmt_misc)はどこでも動くが遅く、まれに実機と
@@ -823,7 +826,8 @@ N1 は行/秒をゲートから外す形へ改めた。現在の条件は
   コーパス合格率の回帰を破壊的変更として扱う)を決めて記録。~~
   **バージョニング方針は策定・README に記載済み(Step 130)**: セマンティック
   バージョニング + 「コーパス合格率の回帰は破壊的変更」という固有ルール。
-  **rubygems.org への公開は未実施**(公開はアカウント保有者の操作)。
+  ~~rubygems.org への公開は未実施~~ **公開済み**(`gem push` は 2026-08-13。
+  タグ `v1.0.0` = `dca836f`。§「現在地」の M5 行が一次情報)。
 - ~~CI(GitHub Actions)を構築し、サポート Ruby 全バージョンでの継続検証を自動化する。~~
   **完了(Step 135)**: 3 層構成で新設([`CI.md`](../internals/CI.md))。**Tier A**(`test.yml`、
   push / PR)は Ruby 3.3 / 4.0 のマトリクスで全スイートを実行。差分テストの
@@ -951,7 +955,8 @@ RDoc と非互換で、`RDocPluginParserTest` が落ちる(`corpus-sqlite3-pg-2`
 `byebug` / `unicorn` / `debug` に適用した除外基準(どの実装でも (d) 水準の証拠が
 取れない)を満たす。**それでも分母から外していない** — 除外しなくても 90% を
 超えており、**分母を小さくして達成するのは避けたい**からである。外すかどうかは
-別ステップの判断とし、外す場合は `test/corpus/gems.rb` に理由を宣言する。
+[`rbs-r10-denominator`](../../issues/rbs-r10-denominator.md) で判断し、外す場合は
+`test/corpus/gems.rb` に理由を宣言する。
 **これらを PASS として水増ししない**方針は変わらない。
 
 `include/stdatomic.h` は `_Atomic` 自体ではなく `atomic_thread_fence` だけを提供する
@@ -1034,7 +1039,7 @@ M6 の当初記載は「macOS(Mach-O)、基本最適化(レジスタ割付・簡
 |---|---|---|
 | 基本最適化(**第 1 段**: スピルトラフィック削減) | **完了**([issue](../../issues/spill-traffic-cleanup.md) / [STEPS](STEPS.md) の `spill-traffic-cleanup-1` / `-2`) | 割付を持たないまま取れる分(直後の読み戻し・スロット直接参照・添字スケールの 1 命令化・単一使用値のストア省略)を実装。C カーネル 5 件で **gcc -O2 比 4.84〜7.41x → 1.08〜3.24x** となり **N2(2〜5 倍)が成立**、gcc -O0 比は 0.67〜1.02x(2026-08-13 実測、[BENCHMARKS](BENCHMARKS.md)) |
 | 基本最適化(**第 2 段**: レジスタ割付) | ~~**着手する**~~ → **完了**([issue](../../issues/register-allocation.md) / [STEPS](STEPS.md) の `register-allocation-1`〜`-3`) | **関数全域の専有割付**(1 vreg = 1 callee-saved レジスタ)を x86-64 と AArch64 に入れた。saxpy の内側ループは x86-64 が 27 → **20**、AArch64 が 31 → **15**(gcc -O1 はそれぞれ 6 / 7)。gcc -O2 比は **1.09〜2.78x**。**`-O` レベルはゲートに使わない**と決めた(挙動が 1 通りなら N4 の検証も 1 通り)ため、レベル実装は本項目から外れている |
-| プロセス横断のヘッダトークンキャッシュ | **着手する**([issue](../../issues/cross-process-header-cache.md)) | **N1 が未達** — 13,854 行/秒 = 目標の 69.3%。残ボトルネックはユニークヘッダの初回字句解析に収斂し、TU 内のレバーは 2〜4% 級。`THROUGHPUT.md` からの申し送り(当初の M6 記載には無い項目) |
+| プロセス横断のヘッダトークンキャッシュ | ~~着手する~~ → **やらない**([issue](../../issues/cross-process-header-cache.md) を `dropped`) | 当初は「N1 が未達(13,854 行/秒 = 当時の目標の 69.3%)で、残ボトルネックがユニークヘッダの初回字句解析に収斂している」ことを根拠にしていた。**その後 2 つが変わった** — N1 は行/秒をゲートから外し継続計測値に改めた(`token-representation-measurement` / [THROUGHPUT.md](THROUGHPUT.md))。加えて**トークン表現を軽くして取れる上限を測ったら 6.7〜8.9% しかなかった**ので、プロセス横断キャッシュの前提そのものが崩れた。理由と再評価条件は issue 本文 |
 | GCC 擬態モード | **着手しない** | 上記のとおり前倒し条件が発火せず、実測でも爆発半径が大きい |
 | macOS(Mach-O) | **保留** | Mach-O ライタ・dyld・別 ABI と M2〜M4 規模だが、**利用者からの要求もコーパスからの圧力も記録が無い**。着手するなら「なぜ今か」を先に作る |
 | 行番号デバッグ情報(DWARF) | **保留** | 拡張の実行時クラッシュを追う場面で効くが、実害の記録がまだ無い。`.debug_line` に限れば範囲は限定的なので、要求が出た時点で起票する |
@@ -1042,4 +1047,6 @@ M6 の当初記載は「macOS(Mach-O)、基本最適化(レジスタ割付・簡
 **着手順は `long-double-varargs`(GAPS S)が先**である。あちらは値が壊れる正しさの問題で、
 上の 2 件は速度の問題だからである。**この順で消化した** — `long-double-varargs` を
 PR #47 で閉じ、次に速度の第 1 段(スピルトラフィック削減)を片付けた。
-第 2 段(レジスタ割付)も 2026-08-15 に完了し、**残るのはヘッダトークンキャッシュ**である。
+第 2 段(レジスタ割付)も 2026-08-15 に完了した。**残っていたヘッダトークンキャッシュは
+2026-08-27 に `dropped` にした**(上表)ので、この表で「着手する」ものは無くなった。
+以降の作業は `issues/` を見ること。

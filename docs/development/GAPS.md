@@ -11,7 +11,7 @@
 | # | 何が足りないか | 誰が困るか | 確からしさ | 詳細 |
 |---|---|---|---|---|
 | **S**([第 2 段の issue](../../issues/platform-abi-alignment.md)) | **`long double` の幅が 8 バイト**(`double` として扱う。DESIGN 3.3 の既知の制限)。**可変長引数に渡す経路は解消済み**(`long-double-varargs-1`) | **残るのは幅に依存するもの** — `sizeof` / `_Alignof` / `max_align_t` / 構造体メンバのオフセット、および**名前付き引数と戻り値**(`frexpl` 等の libc 呼び出しは依然不整合) | **実測**(2026-08-13)。`printf("%Lg", x)` は gcc と一致し、oj の失敗テスト名の集合も対照と完全一致(687 runs / 1 failure / 2 errors、名前も同一) | **オブジェクトファイルの ABI が変わる**ので、他の既知逸脱(enum の底型、`wchar_t` の符号性)と**まとめて 1 つの major** で閉じる |
-| **T** | **配列の要素数をパーサが数える文脈で、struct を返す式が単一式初期化子として読めない** | `pt b[] = { {1,2}, fp(), {5,6} };` が gcc では 3 要素になるのに rubycc は拒否する。パーサは `[]` の長さをここで確定させる必要があるが、型表を持たないので `fp()` の型が分からない | **実測**(2026-08-08) | struct を直接初期化する形は通る(atomic-type-13)。**`gaps-s-t-u-2` で診断だけ正直にした**(以前は `excess elements in scalar initializer` という的外れな文言だった)。解消にはパーサ側に型を引く手段が要る |
+| **T**([issue](../../issues/struct-returning-initializer-element.md)) | **配列の要素数をパーサが数える文脈で、struct を返す式が単一式初期化子として読めない** | `pt b[] = { {1,2}, fp(), {5,6} };` が gcc では 3 要素になるのに rubycc は拒否する。パーサは `[]` の長さをここで確定させる必要があるが、型表を持たないので `fp()` の型が分からない | **実測**(2026-08-08) | struct を直接初期化する形は通る(atomic-type-13)。**`gaps-s-t-u-2` で診断だけ正直にした**(以前は `excess elements in scalar initializer` という的外れな文言だった)。解消にはパーサ側に型を引く手段が要る |
 | **AB**([issue](../../issues/ar-reader-name-encoding.md)) | **`ArReader` が返す名前の綴りが名前の長さで変わる**。短い名前はバイト列、長い名前は `force_encoding(UTF-8)` | リーダの戻り値を別の出所の名前と突き合わせるコードが、**名前の長さで当たったり外れたりする**。`rubycc-ar` では実際に外れていた(CLI 側で吸収済み) | **実測**(2026-08-25、同一アーカイブ内の 2 件で確認) | **リンカの遅延展開も同じリーダを消費する**ので、直すならそちらの突き合わせを先に洗うこと |
 
 ## 2. 未解消の負債
@@ -27,8 +27,8 @@
 
 | 未測定 | 詳細 |
 |---|---|
-| ~~**musl** での全検証~~ | **測定した(Step 175)**。結果は緑ではなく、ギャップ G・H・I として §1 に移した。`data/verified_gems.json` に musl の記録が 1 件も無いのは変わらないが、それは**環境が無いからではなく通っていないから**になった |
-| ~~**aarch64 での gem install 実走**~~ | **限定測定済み(Step 208)**。qemu 上の glibc / aarch64 Ruby 4.0.6 で `io-wait` と `stringio` の gem install・gem 自身のテストが通った。**全スイートは `test-ci-implementation-4` で解消**([weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)、native `ubuntu-24.04-arm` 上の Ruby 3.3 / 4.0 が success)。`json` / `msgpack` の aarch64 上 `gem install` だけが未完了 |
+| ~~**musl** での全検証~~ | **測定した(Step 175)**。結果は緑ではなく、ギャップ G・H・I として §1 に移し、いずれも解消した(H は Steps 177〜179、I は Step 196、G は Steps 193・204 で、Step 205 に突き合わせの記録)。`data/verified_gems.json` の musl 記録は**3 件になった**(`json` / `stringio` / `io-wait`。2026-08-27 に実測)。**ただし Tier B の `musl` ジョブは 2026-08-09 以降のスケジュール実行 3 回すべてで赤い** — 共有オブジェクト系 2 件の失敗で、[issue](../../issues/musl-shared-object-regression.md) に分離した |
+| ~~**aarch64 での gem install 実走**~~ | **限定測定済み(Step 208)**。qemu 上の glibc / aarch64 Ruby 4.0.6 で `io-wait` と `stringio` の gem install・gem 自身のテストが通った。**全スイートは `test-ci-implementation-4` で解消**([weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)、native `ubuntu-24.04-arm` 上の Ruby 3.3 / 4.0 が success)。~~`json` / `msgpack` の aarch64 上 `gem install`~~ も **`m4-aarch64-acceptance-2` で完了**(arm64 コンテナの aarch64 Ruby 4.0.6 で json 596 tests / msgpack 455 examples が 0 failures。`data/verified_gems.json` に記録あり)|
 | ~~真の distroless コンテナ検証~~ | **測定済み(Step 202)**。glibc / musl の `ruby:4.0` distroless相当で json / msgpack / sqlite3 / pg のビルドとrequireに成功 |
 
 ## 4. 方針として受け入れたもの(ギャップではない)
@@ -92,8 +92,10 @@
   突き合わせて 0 failures を確認した**(Step 205)。
 - **真の distroless コンテナ検証**: Step 202 で glibc / musl の両方を実測。
   cc / gcc / clang / make / sh と libc 開発ヘッダを除いた状態で、4 gem の
-  `--platform ruby` ビルドと実行に成功した。**musl 全スイートと aarch64 の
-  `json` / `msgpack` を含む M4 全面受入れは未完了**。
+  `--platform ruby` ビルドと実行に成功した。**この行が併記していた「musl 全スイートと
+  aarch64 の `json` / `msgpack` は未完了」は古い** — aarch64 側は
+  `m4-aarch64-acceptance-2` で完了し、musl 側は未測定ではなく
+  [週次が赤い](../../issues/musl-shared-object-regression.md)状態である(2026-08-27 に確認)。
 
 - **ギャップ V**(既定のシステム include 探索パスが x86-64 の multiarch 決め打ち):
   `test-ci-implementation-9` で解消。**当初 U と採番したが、§1 の U(`__GLIBC_MINOR__`)と
@@ -102,5 +104,11 @@
   名前が違う(`bits/` の中身が別物)ので、同梱 arch 層とまったく同じく `libc_arch` に
   従わせた。**`float.h`(Step 201)・`math.h`(`test-ci-implementation-2`)に続いて
   3 件目の「freestanding/共通層は機種に依らない」という思い込み**である。
+
+- **ギャップ U**(同梱 `features.h` が `__GLIBC_MINOR__ 39` をハードコードしていた):
+  `gaps-s-t-u-1` で解消。libc 自身の `.gnu.version_d` から**実測**する形にした
+  (ホスト固有のパスは書かない。測れないときは定義せず、従来値 39 をフォールバックに残す)。
+  これで `test_header_abi.rb` の `__GLIBC_MINOR__` / `__GLIBC_PREREQ` 検査が
+  **2.39 以外のホストでも通る**ようになった。
 
 いずれも設計判断は STEPS.md の各ステップに記録がある。
