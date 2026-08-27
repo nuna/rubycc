@@ -979,9 +979,19 @@ class TestSharedObject < Minitest::Test
   # The unit the array slots point into: each marker appends its own letter to a
   # buffer an exported function hands back, so the order the runtime called them
   # in is directly observable after dlopen.
+  #
+  # trace/marked stay `static`: this fixture shares the names with
+  # RUBYCC_CONSTRUCTORS and GCC_CONSTRUCTORS below, and musl's dlclose is
+  # effectively a no-op, so a library loaded earlier in the process stays
+  # resident even after the test that loaded it calls `lib.close`. If these
+  # globals were exported, a later gcc-built .so of the same name would resolve
+  # `trace` to the first library loaded (ELF's default symbol interposition),
+  # and one test's "CBA" could show up ahead of another test's "123L". Internal
+  # linkage gives every library its own copy, leaving only what the test
+  # actually wants to measure: constructor execution order.
   MARKERS = <<~C
-    char trace[16];
-    int marked;
+    static char trace[16];
+    static int marked;
     void mark_a(void) { trace[marked] = 'A'; marked = marked + 1; }
     void mark_b(void) { trace[marked] = 'B'; marked = marked + 1; }
     void mark_c(void) { trace[marked] = 'C'; marked = marked + 1; }
@@ -1156,9 +1166,14 @@ class TestSharedObject < Minitest::Test
   # front end could not emit them. These start from C instead: rubycc compiles
   # `__attribute__((constructor))`, rubycc links the result, and the loader runs
   # what comes out — compile, link and load on one line.
+  #
+  # trace/marked are `static` for the same reason as in MARKERS above: musl's
+  # dlclose does not actually unload, so exported globals of the same name
+  # would leak from one loaded .so into the next and let one test's trace
+  # bleed into another's.
   RUBYCC_CONSTRUCTORS = <<~C
-    char trace[16];
-    int marked;
+    static char trace[16];
+    static int marked;
     static void rec(char c) { trace[marked] = c; marked = marked + 1; }
     __attribute__((constructor(101))) static void first(void)  { rec('1'); }
     __attribute__((constructor(500))) static void third(void)  { rec('3'); }
@@ -1282,9 +1297,13 @@ class TestSharedObject < Minitest::Test
   # at a named function, and spells a priority as `.init_array.NNNNN`. Linking
   # gcc's own object proves both forms are handled, and gcc's own `.so` from the
   # same source is the oracle for the resulting order.
+  #
+  # Again, trace/marked stay `static`: musl's dlclose leaves earlier libraries
+  # resident, so an exported trace/marked here would resolve to whichever
+  # same-named library loaded first instead of this one.
   GCC_CONSTRUCTORS = <<~C
-    char trace[16];
-    int marked;
+    static char trace[16];
+    static int marked;
     static void rec(char c) { trace[marked++] = c; }
     __attribute__((constructor(101))) static void first(void)  { rec('1'); }
     __attribute__((constructor(500))) static void third(void)  { rec('3'); }

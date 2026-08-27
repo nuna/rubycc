@@ -1,9 +1,9 @@
 ---
-status: open
+status: in-progress
 kind: gap
 opened: 2026-08-27
 closed:
-branch:
+branch: musl-shared-object-regression
 pr:
 steps: []
 ---
@@ -88,6 +88,48 @@ musl は片付いたように見える**。実際には週次が 3 回連続で�
 着手時の注意: `musl` ジョブは `docker run ruby:4.0-alpine` でホスト上のチェックアウトを
 マウントして走る(ジョブコンテナが使えない理由は `weekly.yml` のコメントにある)ので、
 **手元で同じ形を再現できる**。CI の週次を待つ必要は無い。
+
+**同日中に手元で再現し、原因を特定して直した。**
+
+再現は 2 ファイル(`test_pic.rb` / `test_shared_object.rb`)だけで足りた
+(`ruby arch: x86_64-linux-musl` / `gcc target: x86_64-alpine-linux-musl`)。
+切り分けの順は次のとおりで、**最初の 2 つの仮説は外れた**:
+
+| 実験 | 結果 |
+|---|---|
+| 比較テスト単独 | 0 failures — **単独では再現しない** |
+| 先行 dlopen テスト + 比較テストの 2 件 | 0 failures — **1 回の残留では足りない** |
+| gcc の `.so` の `DT_SONAME` | **無し** — soname による重複排除説は消えた |
+| seed 1〜12 で全件 | **全 seed で 1〜2 failures**。seed 依存 |
+
+seed=1 の失敗内容が答えだった:
+
+```
+test_links_gcc_constructors_and_matches_gcc_ordering   -"CBA123L"      +"123L"
+test_compiled_constructor_order_matches_gcc            -"CBA123L123L"  +"123L"
+```
+
+`"CBA"` は**別のフィクスチャ**(`MARKERS` の `mark_a` / `mark_b` / `mark_c`)が書いた文字である。
+このファイルの 3 つのフィクスチャは、どれも同じ綴りの `char trace[16]; int marked;` を
+**エクスポート**していた。musl の `dlclose` は実質 no-op なので、`lib.close` しても
+先に読み込んだ `.so` が常駐し続ける。そこへ次の `.so` が載ると、**gcc ビルドの側は
+ELF の既定どおり最初に読み込まれたライブラリの `trace` に書く**。
+
+**rubycc の値 `"123L"` の方が正しい。** 同じファイルの
+`test_dlopen_runs_compiled_constructors_in_priority_order` が、優先度
+101 → 200 → 500 → 無指定の順として `"123L"` を独立に固定している。
+壊れていたのは対照側の期待値の作られ方である。
+
+glibc で露見しなかったのは `dlclose` が本当にアンロードするからで、
+**seed 依存だったのは、どのテストが先に常駐するかが実行順で変わるため**である。
+
+直したのはフィクスチャで、**コンパイラ側は無変更**。`trace` / `marked` を内部リンケージに
+すると各ライブラリが自分の複製を持つので、テストが測りたいもの(コンストラクタの実行順)
+だけが残る。`trace_of` / `marked_count` / `mark_a`〜`mark_c` はエクスポートのまま
+(ハンドメイドの `.init_array` が外部シンボルとして参照するため)。
+
+**`GAPS.md` §4 の再検討条件は発火しない。** 条件は「実在の gem で実害が出たとき」であり、
+自分のテストのフィクスチャが同じ綴りを共有していたことはそれに当たらない。
 
 ## 決着
 
