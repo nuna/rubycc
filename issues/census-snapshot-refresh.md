@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: infra
 opened: 2026-08-27
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-08-27
+branch: census-snapshot-refresh
+pr: 116
+steps: [census-snapshot-refresh-1]
 ---
 
 # 文書再編で置き去りになった census スナップショットを再生成して、週次 census を緑に戻す
@@ -73,6 +73,20 @@ rubycc の欠陥ではない。**
 `rake test` では捕まらない。捕まえているのは週次の `census` ジョブだけで、
 それが 2 週間赤いまま放置されていた。
 
+`bundle exec rake corpus:census` を実行(終了ステータス 0、gem 取得を含めて約 9 分)。
+**差分は 8 行の置換のみで、すべて文書パスの綴りだった**:
+
+| 置換 | 件数 |
+|---|---|
+| `docs/STEPS.md` → `docs/development/STEPS.md` | 6 |
+| `docs/OUT-OF-SCOPE-GEMS.md` → `docs/reference/OUT-OF-SCOPE-GEMS.md` | 2 |
+
+対象は `fcntl` / `sqlite3` / `byebug` / `thin` / `unicorn` / `debug` の note 行と、
+R10 basis の 2 行。**パスの綴りを正規化して `-` 側と `+` 側を突き合わせると完全に一致する**ので、
+ヘッダのカバレッジ・R10 の分母/分子・gap candidate(70 件)はいずれも動いていない。
+`git diff --stat` も census 1 ファイルだけで、他は動いていない。
+
 ## 決着
 
-(未着手)
+PR #116 でマージ。`rake corpus:census` を回して 8 行の置換(すべて文書パスの綴り)を
+commit した。設計記録は [STEPS.md の `census-snapshot-refresh-1`](../docs/development/STEPS.md)。
