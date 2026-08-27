@@ -13136,3 +13136,46 @@ ROADMAP の負債表に住んでいたためで、gap にすると GAPS へ新�
 - `test/test_issue_docs.rb` — **5 runs / 1,189 assertions / 0 failures / 0 errors / 0 skips**
 - `test/test_doc_links.rb` — **3 runs / 41 assertions / 0 failures / 0 errors / 0 skips**
   (docs から `issues/` への相互リンクが全て解決することの検査を含む)
+
+---
+
+## census-snapshot-refresh-1 — 生成物を commit し忘れると、通知路がふさがる
+
+週次 Tier B の `census` ジョブが 2026-08-16・08-23 と赤かった。原因は
+**`test/corpus/include-census.md` の再生成漏れ**である。
+
+`docs-audience-split-1` の文書再編で `test/corpus/gems.rb` の `note` に書かれた参照先が
+`docs/STEPS.md` → `docs/development/STEPS.md`、`docs/OUT-OF-SCOPE-GEMS.md` →
+`docs/reference/OUT-OF-SCOPE-GEMS.md` に変わった。**その `note` は census の入力**なので、
+スナップショットを作り直して commit するまで、生成結果と commit 済みの中身がずれ続ける。
+
+### 直し方より、差分の中身の確認に手間をかけた
+
+`bundle exec rake corpus:census` を回すだけの作業だが、**出てきた差分が本当に
+文字列の置換だけか**を確かめないと、この commit が別の変化を巻き込む。
+パスの綴りを正規化して `-` 側と `+` 側を突き合わせ、**完全に一致する**ことを確認した。
+
+| 置換 | 件数 |
+|---|---|
+| `docs/STEPS.md` → `docs/development/STEPS.md` | 6 |
+| `docs/OUT-OF-SCOPE-GEMS.md` → `docs/reference/OUT-OF-SCOPE-GEMS.md` | 2 |
+
+ヘッダのカバレッジ・R10 の分母/分子・gap candidate(70 件)は動いていない。
+
+### 何が本当の損害だったか
+
+`census` ジョブの目的は「rubycc 自身のヘッダカバレッジが動いたら知らせる」ことで、
+gem のバージョンは `gems.rb` に固定されているから差分は上流の変動ではありえない、
+という前提で組まれている。**その通知路が文字列の差分でふさがっていた** —
+2 週間のあいだ、本当にカバレッジが動いても同じ「赤」としてしか出なかった。
+
+`rake corpus:census` はネットワークを要するので `rake test` の外にある(Rakefile の
+コメントが「on-demand dev task; NOT part of `rake test`」と明記している)。
+**捕まえられるのは週次だけなので、週次を赤いまま放置すると誰も捕まえられなくなる。**
+`musl` ジョブ([issue](../../issues/musl-shared-object-regression.md))と併せて、
+Tier B が 2 ジョブ赤いまま流れていた。
+
+### 検証
+
+- `bundle exec rake corpus:census` — 終了ステータス 0
+- `git diff --stat` — `test/corpus/include-census.md` のみ 8 insertions / 8 deletions
