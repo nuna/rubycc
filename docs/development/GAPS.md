@@ -27,7 +27,7 @@
 
 | 未測定 | 詳細 |
 |---|---|
-| ~~**musl** での全検証~~ | **測定した(Step 175)**。結果は緑ではなく、ギャップ G・H・I として §1 に移し、いずれも解消した(H は Steps 177〜179、I は Step 196、G は Steps 193・204 で、Step 205 に突き合わせの記録)。`data/verified_gems.json` の musl 記録は**3 件になった**(`json` / `stringio` / `io-wait`。2026-08-27 に実測)。**Tier B の `musl` ジョブは 2026-08-09 以降ずっと赤いが、原因は 2 つに分かれた** — 共有オブジェクト系 2 件は [PR #117](../../issues/musl-shared-object-regression.md) で解消し(2026-09-01 の [run 33523016856](https://github.com/nuna/rubycc/actions/runs/33523016856) で 0 failures を確認)、残る 1 error は glibc 専用フィクスチャの[別件](../../issues/host-header-shim-glibc-only.md)である |
+| ~~**musl** での全検証~~ | **測定した(Step 175)**。結果は緑ではなく、ギャップ G・H・I として §1 に移し、いずれも解消した(H は Steps 177〜179、I は Step 196、G は Steps 193・204 で、Step 205 に突き合わせの記録)。`data/verified_gems.json` の musl 記録は**3 件になった**(`json` / `stringio` / `io-wait`。2026-08-27 に実測)。**Tier B の `musl` ジョブは 2026-08-09 以降赤かったが、2026-09-01 に緑に戻した** — 原因は 2 つで、共有オブジェクト系 2 件は [PR #117](../../issues/musl-shared-object-regression.md)、glibc 専用フィクスチャの 1 error は [PR #119](../../issues/host-header-shim-glibc-only.md) で解消。[run 33526840347](https://github.com/nuna/rubycc/actions/runs/33526840347) が **3416 runs / 0 failures / 0 errors**(skips は 581 → 582 で、増えたのは意図した 1 件だけ)|
 | ~~**aarch64 での gem install 実走**~~ | **限定測定済み(Step 208)**。qemu 上の glibc / aarch64 Ruby 4.0.6 で `io-wait` と `stringio` の gem install・gem 自身のテストが通った。**全スイートは `test-ci-implementation-4` で解消**([weekly run 31345396123](https://github.com/nuna/rubycc/actions/runs/31345396123)、native `ubuntu-24.04-arm` 上の Ruby 3.3 / 4.0 が success)。~~`json` / `msgpack` の aarch64 上 `gem install`~~ も **`m4-aarch64-acceptance-2` で完了**(arm64 コンテナの aarch64 Ruby 4.0.6 で json 596 tests / msgpack 455 examples が 0 failures。`data/verified_gems.json` に記録あり)|
 | ~~真の distroless コンテナ検証~~ | **測定済み(Step 202)**。glibc / musl の `ruby:4.0` distroless相当で json / msgpack / sqlite3 / pg のビルドとrequireに成功 |
 
@@ -94,10 +94,9 @@
   cc / gcc / clang / make / sh と libc 開発ヘッダを除いた状態で、4 gem の
   `--platform ruby` ビルドと実行に成功した。**この行が併記していた「musl 全スイートと
   aarch64 の `json` / `msgpack` は未完了」は古い** — aarch64 側は
-  `m4-aarch64-acceptance-2` で完了し、musl 側は未測定ではなく
-  **週次が赤い**状態である(2026-08-27 に確認)。その赤は 2026-09-01 に切り分けが済み、
-  [共有オブジェクト系 2 件](../../issues/musl-shared-object-regression.md)は解消、
-  残るのは [glibc 専用フィクスチャの 1 error](../../issues/host-header-shim-glibc-only.md) だけである。
+  `m4-aarch64-acceptance-2` で完了し、musl 側も **2026-09-01 に週次が緑に戻った**
+  ([共有オブジェクト系 2 件](../../issues/musl-shared-object-regression.md)と
+  [glibc 専用フィクスチャの 1 error](../../issues/host-header-shim-glibc-only.md)の 2 つが原因だった)。
 
 - **ギャップ V**(既定のシステム include 探索パスが x86-64 の multiarch 決め打ち):
   `test-ci-implementation-9` で解消。**当初 U と採番したが、§1 の U(`__GLIBC_MINOR__`)と

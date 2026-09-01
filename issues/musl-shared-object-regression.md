@@ -159,3 +159,9 @@ PR #117 でマージ。**直したのはテストのフィクスチャで、コ�
 **「失敗の集合が 2026-08-09 と 2026-08-23 で違う理由」も答えが出た。** 実行順
 (minitest の seed)でどの `.so` が先に常駐するかが変わるため、同じ 1 つの原因から
 出る失敗の組み合わせが週ごとに入れ替わっていた。
+
+**2026-09-01 追記: `musl` ジョブは緑に戻った。** 別件の [PR #119](host-header-shim-glibc-only.md)
+がマージされた後の [run 33526840347](https://github.com/nuna/rubycc/actions/runs/33526840347) で
+**3416 runs / 0 failures / 0 errors / 582 skips**。この issue の受け入れ条件
+「Tier B の `musl` ジョブが 0 failures / 0 errors で緑になる」は、
+**2 つの issue の両方が閉じてはじめて満たされた**。
