@@ -13179,3 +13179,72 @@ Tier B が 2 ジョブ赤いまま流れていた。
 
 - `bundle exec rake corpus:census` — 終了ステータス 0
 - `git diff --stat` — `test/corpus/include-census.md` のみ 8 insertions / 8 deletions
+
+---
+
+## musl-shared-object-regression-1 — 期待値の側が汚れていた
+
+週次 Tier B の `musl` ジョブが 2026-08-09 以降のスケジュール実行 3 回すべてで赤かった。
+**直したのはテストのフィクスチャで、コンパイラ側は 1 行も変えていない。**
+
+### 仮説を 2 つ捨ててから当たった
+
+手元に docker があったので、週次を待たずに `ruby:4.0-alpine` で再現した
+(2 ファイルだけで足りる。`ruby arch: x86_64-linux-musl`)。
+
+| 実験 | 結果 | 消えた仮説 |
+|---|---|---|
+| 比較テスト単独 | 0 failures | 「テスト自体が musl で壊れる」 |
+| 先行 dlopen テスト + 比較テスト | 0 failures | 「先行する 1 回の残留で足りる」 |
+| gcc の `.so` の `DT_SONAME` | **無し** | 「soname による重複排除」 |
+| seed 1〜12 | **全 seed で 1〜2 failures** | — |
+
+**seed 依存だと分かった時点で、原因が実行順にあることが確定した。**
+CI で失敗の集合が週ごとに違っていたのも同じ理由である。
+
+### 失敗の中身が答えだった
+
+```
+test_links_gcc_constructors_and_matches_gcc_ordering   -"CBA123L"      +"123L"
+test_compiled_constructor_order_matches_gcc            -"CBA123L123L"  +"123L"
+```
+
+`"CBA"` は**別のフィクスチャ**が書いた文字である(`MARKERS` の `mark_a` / `mark_b` / `mark_c`)。
+このファイルの 3 つの C フィクスチャは、どれも同じ綴りの
+`char trace[16]; int marked;` を**エクスポート**していた。
+
+musl の `dlclose` は実質 no-op なので、テストが `lib.close` しても先に読み込んだ `.so` が
+常駐し続ける。そこへ次の `.so` が載ると、**gcc ビルドの側は ELF の既定どおり
+最初に読み込まれたライブラリの `trace` に書く**。結果、あるテストの `"CBA"` が
+別のテストの `"123L"` の前に現れる。
+
+**rubycc の値 `"123L"` の方が正しい。** 同じファイルの
+`test_dlopen_runs_compiled_constructors_in_priority_order` が、優先度
+101 → 200 → 500 → 無指定の順として `"123L"` を独立に固定している。
+**壊れていたのは対照側の期待値の作られ方**で、テストはそれを rubycc の非として報告していた。
+
+glibc で 1 度も出なかったのは、`dlclose` が本当にアンロードするからである。
+**「musl でだけ落ちる」は、musl が壊しているのではなく、musl が見せている。**
+`stdckdint.h`・`_Noreturn`・`offsetof`・介入の件に続いて 5 回目の同じ形である。
+
+### 直し方 — 測りたいものだけを残す
+
+`trace` / `marked` を内部リンケージにした。各ライブラリが自分の複製を持てば、
+テストが測りたいもの(**コンストラクタの実行順**)だけが残る。
+`trace_of` / `marked_count` / `mark_a`〜`mark_c` はエクスポートのままにした —
+ハンドメイドの `.init_array` オブジェクトが外部シンボルとして参照するためである。
+
+**`GAPS.md` §4 の再検討条件は発火しない。** 「共有ライブラリのシンボル介入を尊重しない」
+という逸脱の再検討条件は**実在の gem で実害が出たとき**(ユーザ判断 2026-08-06)であり、
+自分のテストのフィクスチャが 3 つとも同じ綴りを共有していたことはそれに当たらない。
+今回の失敗は、その逸脱が**対照側の汚染を隠さなかった**ために見えたものである。
+
+`test/test_aarch64_shared_object.rb` にも同じ綴りのフィクスチャがあるが、**触っていない**。
+そちらで問題が出た証拠が無く、「実害が出た項目を優先する」(R11 / DESIGN 4.2)に反するため。
+
+### 検証
+
+- **musl、seed 1〜12**: 各 61 runs / 276 assertions / **0 failures** / 0 errors / 15 skips
+  (修正前は全 12 seed で 1〜2 failures)
+- **glibc(ホスト)、seed 1〜6**: 各 61 runs / 388 assertions / **0 failures** / 0 errors / 0 skips
+- **glibc `test/test_pic.rb`**: 11 runs / **0 failures**
