@@ -13248,3 +13248,64 @@ glibc で 1 度も出なかったのは、`dlclose` が本当にアンロード�
   (修正前は全 12 seed で 1〜2 failures)
 - **glibc(ホスト)、seed 1〜6**: 各 61 runs / 388 assertions / **0 failures** / 0 errors / 0 skips
 - **glibc `test/test_pic.rb`**: 11 runs / **0 failures**
+
+---
+
+## host-header-shim-glibc-only-1 — 対照が落ちるなら、それは差分ではない
+
+`musl-shared-object-regression-1` の受け入れ条件は「週次の `musl` ジョブが緑になる」だった。
+マージ後に `weekly.yml` を dispatch して確かめたところ、**共有オブジェクト系の 2 件は
+消えていたが、ジョブは緑にならなかった**。残っていたのは別の 1 件である。
+
+| musl の実行 | 結果 |
+|---|---|
+| 2026-08-30 [33334787161](https://github.com/nuna/rubycc/actions/runs/33334787161) | 2 failures / 1 error / 581 skips |
+| 2026-09-01 [33523016856](https://github.com/nuna/rubycc/actions/runs/33523016856) | **0 failures** / 1 error / 581 skips |
+
+**受け入れ条件を CI で確かめなければ、ここで止まらずに `done` にしていた。**
+手元の再現では対象の 2 ファイルしか回していないので、この 1 error は見えていなかった。
+
+### 対照も落ちることを確かめてから、環境由来と判断した
+
+残っていたのは `TestHostHeaderShim#test_unbundled_host_header_compiles_and_runs_like_gcc` で、
+`__attr_dealloc_free` が未定義の識別子として構文エラーになる。
+`ruby:4.0-alpine` の中で実測した(2026-09-01):
+
+| 調べたこと | 結果 |
+|---|---|
+| `/usr/include/malloc.h` | **在る**(362 バイト) |
+| `/usr/include/sys/cdefs.h` | **無い** |
+| `grep -rn "__attr_dealloc_free" /usr/include/` | **0 件** |
+| **gcc に同じソースを渡す** | **同じく失敗** |
+
+決め手は最後の行である。**対照の gcc も同じ位置で落ちるなら、比較する対象が存在しない。**
+rubycc が先に落ちるので差分実行まで到達しないだけで、これは rubycc の非ではない。
+
+このテストが守っているのは「同梱 `sys/cdefs.h` がホストの本物を `_SYS_CDEFS_H` で
+無効化するので、ホストのヘッダが頼るマクロを同梱側が全部持っていること」
+(`bundled-cdefs-attr-macros-1`)という性質で、**その危険は本物の `sys/cdefs.h` を
+持つホストにしか存在しない**。musl では無効化する相手がいない。
+
+混入時期も切り分けられる。このテストは PR #106(2026-08-25、`c633df9`)が
+glibc ホストで追加したもので、週次の 2026-08-23 は 0 errors、2026-08-30 は 1 error である。
+
+### 判定を `/usr/include/sys/cdefs.h` の有無だけにすると、glibc 側が skip する
+
+指示した判定はそれだけだったが、**このホストでは `/usr/include/sys/` というディレクトリ自体が無い**。
+Debian / Ubuntu の multiarch レイアウトでは実体が
+`/usr/include/x86_64-linux-gnu/sys/cdefs.h` にあるためで、そのまま入れていれば
+**glibc でも skip して、守るべき性質を誰も検査しなくなっていた**。移譲先が実測で見つけた。
+
+判定は両方の置き場所を見る形にした。Alpine には `/usr/include/sys/` は在るが
+その中に `cdefs.h` が無く、multiarch のディレクトリも無いので、判定は変わらない。
+
+**skip は静かに緑になるので、両側を実測して確かめた**:
+
+| ホスト | 結果 |
+|---|---|
+| glibc(このマシン、Ubuntu 24.04) | 1 runs / 3 assertions / 0 failures / **0 skips** — 従来どおり実行される |
+| musl(`ruby:4.0-alpine`) | 1 runs / 0 failures / **1 skips** — 理由付きで skip |
+
+`tools/ci_check_skips.rb` は Tier A(glibc)で走るが、そこでは skip が増えないので影響しない。
+`musl` ジョブはもともとこのツールを走らせていない(Alpine に aarch64 musl クロスが無く、
+aarch64 の差分テストが全部 skip するため。`weekly.yml` のコメント)。

@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-01
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-01
+branch: host-header-shim-glibc-only
+pr: 119
+steps: [host-header-shim-glibc-only-1]
 ---
 
 # glibc 専用のフィクスチャを musl でも走らせている `TestHostHeaderShim` を、理由付きで skip する
@@ -83,4 +83,18 @@ musl では同梱 cdefs.h が無効化する相手がいない。
 
 ## 決着
 
-(未着手)
+PR #119 でマージ。**テスト側だけの修正**で、`setup` にホストの libc が glibc の
+`sys/cdefs.h` を持たない場合の理由付き skip を足した。設計記録は
+[STEPS.md の `host-header-shim-glibc-only-1`](../docs/development/STEPS.md)。
+
+**判定を `/usr/include/sys/cdefs.h` の有無だけにすると glibc 側も skip する**ことが
+実装中に分かった。Debian / Ubuntu の multiarch では実体が
+`/usr/include/x86_64-linux-gnu/sys/cdefs.h` にあり、`/usr/include/sys/` という
+ディレクトリ自体が無い。両方の置き場所を見る形にした。
+
+skip は静かに緑になるので、**両側を実測して確かめた**:
+
+| ホスト | 結果 |
+|---|---|
+| glibc(Ubuntu 24.04) | 1 runs / 3 assertions / 0 failures / **0 skips** — 従来どおり実行 |
+| musl(`ruby:4.0-alpine`) | 1 runs / 0 failures / **1 skips** — 理由付きで skip |
