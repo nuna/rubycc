@@ -19,6 +19,17 @@ class TestHostHeaderShim < Minitest::Test
   def setup
     skip "gcc unavailable (needed to link and cross-check)" unless tool?("gcc")
     skip "host <malloc.h> not found (/usr/include/malloc.h missing)" unless File.exist?("/usr/include/malloc.h")
+    # __attr_dealloc_free, __attr_dealloc, __attr_dealloc_fclose, __attr_access,
+    # and __attr_access_none are glibc's own <sys/cdefs.h> macros, not something
+    # any libc's <malloc.h> defines itself. A host without glibc's <sys/cdefs.h>
+    # has no reason to have them at all, so MALLOC_H_SOURCE is not valid C there
+    # to begin with -- gcc rejects it too (verified 2026-09-01 on ruby:4.0-alpine
+    # (musl): /usr/include/sys/cdefs.h is absent, __attr_dealloc_free appears
+    # nowhere under /usr/include, and gcc fails the same source with "expected
+    # declaration specifiers before '__attr_dealloc_free'"). With no differential
+    # to run against and no real <sys/cdefs.h> for the bundled one to shadow,
+    # the danger this file guards against does not exist on such a host.
+    skip "host has no glibc <sys/cdefs.h> (__attr_* macros are glibc-specific)" unless glibc_cdefs_h?
     unless Rubycc::Compiler::TARGETS.key?(HOST_TARGET)
       skip "host CPU #{HOST_TARGET.inspect} is not a rubycc target " \
            "(#{Rubycc::Compiler::TARGETS.keys.join(", ")})"
@@ -84,5 +95,15 @@ class TestHostHeaderShim < Minitest::Test
 
   def tool?(name)
     system(name, "--version", out: File::NULL, err: File::NULL) ? true : false
+  end
+
+  # Unlike /usr/include/malloc.h, glibc's <sys/cdefs.h> is not necessarily at
+  # /usr/include/sys/cdefs.h directly: Debian/Ubuntu's multiarch layout puts it
+  # under a per-arch directory instead (/usr/include/x86_64-linux-gnu/sys on
+  # this project's own CI runners), so both spellings count. Alpine has
+  # /usr/include/sys but no cdefs.h in it and no multiarch directory, so
+  # neither matches there.
+  def glibc_cdefs_h?
+    File.exist?("/usr/include/sys/cdefs.h") || !Dir.glob("/usr/include/*/sys/cdefs.h").empty?
   end
 end
