@@ -1,11 +1,11 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-27
-closed:
+closed: 2026-09-01
 branch: musl-shared-object-regression
-pr:
-steps: []
+pr: 117
+steps: [musl-shared-object-regression-1]
 ---
 
 # musl 週次ジョブの共有オブジェクト系 2 件の失敗を潰して、Tier B の musl を緑に戻す
@@ -133,4 +133,29 @@ glibc で露見しなかったのは `dlclose` が本当にアンロードする
 
 ## 決着
 
-(未着手)
+PR #117 でマージ。**直したのはテストのフィクスチャで、コンパイラは無変更**である。
+3 つのフィクスチャが同じ綴りでエクスポートしていた `trace` / `marked` を内部リンケージにした。
+設計記録は [STEPS.md の `musl-shared-object-regression-1`](../docs/development/STEPS.md)。
+
+**受け入れ条件のうち、2 件の失敗については CI で確認した。** マージ後の master (`b0c3a21`) に
+`weekly.yml` を dispatch した run
+[33523016856](https://github.com/nuna/rubycc/actions/runs/33523016856) の musl:
+
+| 実行 | 結果 |
+|---|---|
+| 2026-08-30 [33334787161](https://github.com/nuna/rubycc/actions/runs/33334787161)(マージ前) | **2 failures** / 1 error |
+| 2026-09-01 [33523016856](https://github.com/nuna/rubycc/actions/runs/33523016856)(マージ後) | **0 failures** / 1 error |
+
+`TestSharedObject` の 2 件は消えた。**skip では通していない**(skips は 581 で
+マージ前の 581 から動いていない)。
+
+**ただし `musl` ジョブはまだ緑ではない。** 残っている 1 error は
+`TestHostHeaderShim#test_unbundled_host_header_compiles_and_runs_like_gcc` で、
+これは**この issue が扱った問題ではない**。PR #106(2026-08-25)が glibc ホストで
+書いたフィクスチャが musl では妥当な C ではない、という別件であり、
+[別の issue](host-header-shim-glibc-only.md) に分離した。2026-08-23 の週次が
+0 errors で、2026-08-30 が 1 error であることから、混入時期も切り分けられている。
+
+**「失敗の集合が 2026-08-09 と 2026-08-23 で違う理由」も答えが出た。** 実行順
+(minitest の seed)でどの `.so` が先に常駐するかが変わるため、同じ 1 つの原因から
+出る失敗の組み合わせが週ごとに入れ替わっていた。

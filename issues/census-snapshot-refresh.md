@@ -90,3 +90,9 @@ R10 basis の 2 行。**パスの綴りを正規化して `-` 側と `+` 側を�
 
 PR #116 でマージ。`rake corpus:census` を回して 8 行の置換(すべて文書パスの綴り)を
 commit した。設計記録は [STEPS.md の `census-snapshot-refresh-1`](../docs/development/STEPS.md)。
+
+**受け入れ条件の最後の 1 行(週次が緑になる)を CI で確認した。** マージ後最初の
+スケジュール実行 2026-08-30 [33334787161](https://github.com/nuna/rubycc/actions/runs/33334787161)
+(head `c8d8c7a`)で `census` が **success**。同じ run の `musl` は failure のままで、
+これは [musl 側の issue](musl-shared-object-regression.md) の PR #117 が未マージだったためである。
+**2 つの赤が独立だったことが、この 1 回の run で裏付けられた。**
