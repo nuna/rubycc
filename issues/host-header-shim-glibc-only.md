@@ -98,3 +98,10 @@ skip は静かに緑になるので、**両側を実測して確かめた**:
 |---|---|
 | glibc(Ubuntu 24.04) | 1 runs / 3 assertions / 0 failures / **0 skips** — 従来どおり実行 |
 | musl(`ruby:4.0-alpine`) | 1 runs / 0 failures / **1 skips** — 理由付きで skip |
+
+**受け入れ条件の最後の 1 行(`musl` ジョブが 0 failures / 0 errors)も CI で確認した。**
+マージ後の master (`0d1dfcd`) に dispatch した
+[run 33526840347](https://github.com/nuna/rubycc/actions/runs/33526840347) の musl が
+**3416 runs / 12595 assertions / 0 failures / 0 errors / 582 skips**。
+**skips は 581 → 582 で、増えたのはこの 1 件だけ**である — skip を撒いて緑にしたのではない。
+これで [musl の週次は 2026-08-09 以来はじめて緑](musl-shared-object-regression.md)に戻った。
