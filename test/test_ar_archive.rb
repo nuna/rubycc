@@ -8,10 +8,11 @@ require "open3"
 # Four concerns are covered: the writer/reader round-trip (including long names,
 # member replacement and byte-for-byte determinism), the ranlib symbol index
 # built from rubycc-compiled objects, how the names the reader returns are
-# spelled (bytes, whatever a name's length — with the linker's lazy pull-in
-# alongside, since it consumes the same reader), and interoperability with the
-# system `ar` in both directions. The interop and CLI cases are skip-guarded
-# when their external tools are missing so the suite still runs on a bare host.
+# spelled (bytes, whatever a name's length, and the same spelling ELFReader
+# gives — with the linker's lazy pull-in alongside, since it consumes both
+# readers), and interoperability with the system `ar` in both directions. The
+# interop and CLI cases are skip-guarded when their external tools are missing
+# so the suite still runs on a bare host.
 class TestArArchive < Minitest::Test
   include ExecutionHelper
 
@@ -209,6 +210,28 @@ class TestArArchive < Minitest::Test
     assert_equal LONG_NAME, reader.member_defining(from_long).name
   end
 
+  # One name travels through both readers: the `/` index entry ArReader answers
+  # with is the byte string ELFReader read out of the member's .symtab when the
+  # index was built (ArWriter#gather_symbols). The two must therefore spell it
+  # the same way, or a caller holding one reader's answer cannot ask the other —
+  # which is the whole use of an index, since what it names is then looked up in
+  # the member it points at.
+  def test_the_two_readers_spell_a_symbol_the_same_way
+    symbol = "add_\xE6\x97\xA5".b
+    member = object_exporting(symbol)
+    reader = Reader.read(Writer.new.add_member(LONG_NAME, member).to_binary)
+
+    from_elf = ELFReader.read(member).symbol(symbol)
+    refute_nil from_elf, "sanity: the member defines the symbol"
+    from_ar = reader.symbols.first[:name]
+
+    assert_equal from_elf.name.encoding, from_ar.encoding
+    refute_nil reader.member_defining(from_elf.name),
+               "a name ELFReader returned must find the member the index points at"
+    refute_nil ELFReader.read(member).symbol(from_ar),
+               "a name ArReader returned must find the symbol in the member"
+  end
+
   # The linker's lazy pull-in reads its archives through this same reader, so a
   # member whose exported symbol name carries non-ASCII bytes must still be
   # taken for a reference to it and left alone when nothing refers to it. C
@@ -216,11 +239,6 @@ class TestArArchive < Minitest::Test
   # these objects are written rather than compiled. The defining member is given
   # the long name too, putting the `//` table on the path as well — the linker
   # spells a member's name into the label it hangs diagnostics on.
-  #
-  # The merged names are compared as bytes because ELFReader, unlike this
-  # reader, still tags what it reads out of a string table UTF-8
-  # (issues/elf-reader-name-encoding.md); what is pinned here is which members
-  # were pulled, not how the ELF side spells them.
   def test_linker_pulls_the_member_defining_a_non_ascii_symbol
     needed = "helper_\xE6\x97\xA5".b
     stray = "stray_\xE6\x97\xA5".b
@@ -230,9 +248,9 @@ class TestArArchive < Minitest::Test
                     .to_binary
 
     merged = ELFReader.read(Linker.link([object_referencing(needed), archive]))
-    defined_names = merged.symbols.select { |s| s.bind == :global && s.defined? }.map { |s| s.name.b }
+    defined_names = merged.symbols.select { |s| s.bind == :global && s.defined? }.map(&:name)
     assert_includes defined_names, needed, "the member defining the referenced symbol must be pulled in"
-    refute_includes merged.symbols.map { |s| s.name.b }, stray, "the member nothing references must stay out"
+    refute_includes merged.symbols.map(&:name), stray, "the member nothing references must stay out"
   end
 
   # The same pull-in reached through a path instead of bytes in memory. A caller
@@ -249,7 +267,7 @@ class TestArArchive < Minitest::Test
       File.binwrite(path, Writer.new.add_member(LONG_NAME, object_exporting(needed)).to_binary)
 
       merged = ELFReader.read(Linker.link([object_referencing(needed), path]))
-      assert_includes merged.symbols.map { |s| s.name.b }, needed,
+      assert_includes merged.symbols.map(&:name), needed,
                       "the member must be pulled in whatever the path's encoding"
     end
   end

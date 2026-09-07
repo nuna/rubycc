@@ -12,7 +12,6 @@
 |---|---|---|---|---|
 | **S**([第 2 段の issue](../../issues/platform-abi-alignment.md)) | **`long double` の幅が 8 バイト**(`double` として扱う。DESIGN 3.3 の既知の制限)。**可変長引数に渡す経路は解消済み**(`long-double-varargs-1`) | **残るのは幅に依存するもの** — `sizeof` / `_Alignof` / `max_align_t` / 構造体メンバのオフセット、および**名前付き引数と戻り値**(`frexpl` 等の libc 呼び出しは依然不整合) | **実測**(2026-08-13)。`printf("%Lg", x)` は gcc と一致し、oj の失敗テスト名の集合も対照と完全一致(687 runs / 1 failure / 2 errors、名前も同一) | **オブジェクトファイルの ABI が変わる**ので、他の既知逸脱(enum の底型、`wchar_t` の符号性)と**まとめて 1 つの major** で閉じる |
 | **T**([issue](../../issues/struct-returning-initializer-element.md)) | **配列の要素数をパーサが数える文脈で、struct を返す式が単一式初期化子として読めない** | `pt b[] = { {1,2}, fp(), {5,6} };` が gcc では 3 要素になるのに rubycc は拒否する。パーサは `[]` の長さをここで確定させる必要があるが、型表を持たないので `fp()` の型が分からない | **実測**(2026-08-08) | struct を直接初期化する形は通る(atomic-type-13)。**`gaps-s-t-u-2` で診断だけ正直にした**(以前は `excess elements in scalar initializer` という的外れな文言だった)。解消にはパーサ側に型を引く手段が要る |
-| **AD**([issue](../../issues/elf-reader-name-encoding.md)) | **`ELFReader` が返す名前が UTF-8 タグ付き**(セクション名・シンボル名・`DT_SONAME` / `DT_NEEDED`)。`lib/rubycc.rb` の「読んだものはバイト列」から外れている | `ELFReader#symbol` に**バイト列の名前を渡すと引けない**(非 ASCII のとき)。`ar-reader-name-encoding-1` で `ArReader` 側だけが規約に揃ったので、**食い違いは 2 つのリーダの間に移った** | **実測**(2026-09-08。書いたバイト列と同じ 10 バイトで `symbol` が `nil`)。ただし**実害は休眠中** — 突き合わせの両側とも `ELFReader` 由来で、ARGV からシンボル名を受け取る経路(`-u` 等)が無い | `ELFReader` は消費者が多い。踏むのは任意バイトのシンボル名(アセンブラのラベル)を名前で引く経路 |
 
 ## 2. 未解消の負債
 
@@ -41,6 +40,12 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ AD**(`ELFReader` が返す名前が UTF-8 タグ付き):
+  `elf-reader-name-encoding-1` で解消。**起票から解消まで同じ日**である —
+  `ar-reader-name-encoding-1` が `ArReader` 側だけを規約に揃えた結果、
+  食い違いが 2 つのリーダの間に移ったので、続けて閉じた。
+  `#symbol` / `#section` が書いたときのバイト列で引けるようになり、
+  ar のテストに残していた `.b` の回避も外れた。
 - **ギャップ AC**(引数として渡されたマクロ名に hide-set を足していなかった):
   `macro-argument-hide-set-1` で解消。`f(f)(1)` が gcc と同じ `f(1)` になった。
   **起票から解消まで 1 日**で、前ステップ(`macro-hide-set-intersection-1`)の

@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-08
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-08
+branch: elf-reader-name-encoding
+pr: 125
+steps: [elf-reader-name-encoding-1]
 ---
 
 # `ELFReader` が返す名前が UTF-8 タグ付きで、バイト列の名前と突き合わせられない
@@ -92,4 +92,28 @@ C の識別子は非 ASCII になり得ない、という理由で先送りさ�
 
 ## 決着
 
-(未着手)
+**解消した**(`elf-reader-name-encoding-1`。設計判断の本文は
+[STEPS.md](../docs/development/STEPS.md) の該当節)。起票と同じ日である —
+`ar-reader-name-encoding-1` が食い違いを 2 つのリーダの間に移したので、続けて閉じた。
+
+`read_string` の `force_encoding` を外した(**この 1 メソッドが、リーダが返す名前の
+全部の出所である**)。空名を返す早期 return のリテラルも `"".b` に揃えた。
+
+受け入れ条件の照合(2026-09-08):
+
+| 条件 | 結果 |
+|---|---|
+| 名前が全部 `ASCII-8BIT` | セクション名・シンボル名・`DT_SONAME` / `DT_NEEDED` を固定するテストを追加。**修正前は落ちることを実測**(`"lib日.so.1"` が UTF-8 で返る) |
+| `symbol(name)` が書いたバイト列で引ける | 同上。修正前は `nil` |
+| 2 つのリーダが同じ綴りで引ける | `test_the_two_readers_spell_a_symbol_the_same_way` で相互に引き合う形で固定 |
+| `rake test` が 0 failures | **3429 runs / 0 failures / 0 errors / 39 skips** |
+| 生成物が変わらない | 12 件すべて sha256 一致 |
+| 診断への補間が壊れない | **`.b` を足す必要のある箇所は無かった**(下記) |
+
+**補間の危険は、探した結果ここには無かった。** `lib/rubycc/link/` と
+`lib/rubycc/objfile/` の補間箇所を全件読み、ELF 由来の名前と結合するリテラルが
+**すべて ASCII のみ**であることを確認した(Ruby は ASCII だけの UTF-8 文字列と
+バイト列を互換に扱う)。パス由来の文字列と出会う 2 箇所は
+`ar-reader-name-encoding-1` が `load_input` で `.b` 済みで、**今回 `sym.name` 側も
+バイト列になったことで両側が揃った** — 変更前は「UTF-8 の名前 + バイト列のラベル」で、
+両側に非 ASCII が来ると壊れる形が残っていた。

@@ -8,8 +8,9 @@ require "open3"
 # with ELFWriter (N7): every object the writer can emit is read back and its
 # parsed structure asserted against what was written. Alongside that, real
 # gcc/rubycc `.o` files and the system libc `.so` are read to prove the parser
-# works on artifacts it did not itself produce, and `readelf` is used as an
-# independent oracle where available.
+# works on artifacts it did not itself produce, `readelf` is used as an
+# independent oracle where available, and one section pins how the names the
+# reader returns are spelled (bytes, as everything rubycc reads is).
 class TestElfReader < Minitest::Test
   include ExecutionHelper
   include LibcHelper
@@ -23,6 +24,8 @@ class TestElfReader < Minitest::Test
 
   Reader = Rubycc::ObjFile::ELFReader
   Writer = Rubycc::ObjFile::ELFWriter
+  RelWriter = Rubycc::ObjFile::RelocatableWriter
+  SharedLinker = Rubycc::Link::SharedLinker
 
   # mov eax, 42; leave; ret.
   MAIN_CODE = [0xB8, 0x2A, 0x00, 0x00, 0x00, 0xC9, 0xC3].pack("C*")
@@ -454,6 +457,56 @@ class TestElfReader < Minitest::Test
     refute_nil lib.dynamic_symbol("printf")
   end
 
+  # --- the names the reader returns are bytes -----------------------------
+
+  # "\xE6\x97\xA5" is "日": valid UTF-8, and not ASCII. Two strings holding the
+  # same non-ASCII bytes under different encodings are neither == nor eql? and
+  # hash apart (lib/rubycc.rb), so a name the reader tagged as text could not be
+  # found through the bytes its writer was handed -- which is what these cases
+  # pin, for every name that comes out of the one string-table read. A C
+  # identifier cannot carry such bytes, so these objects are written rather than
+  # compiled; an assembler label can, and so can a SONAME, which is a filename.
+  NON_ASCII_SYMBOL = "helper_\xE6\x97\xA5".b
+  NON_ASCII_SECTION = ".text.\xE6\x97\xA5".b
+  NON_ASCII_SONAME = "lib\xE6\x97\xA5.so.1".b
+  NON_ASCII_DEP_SONAME = "libdep\xE6\x97\xA5.so.1".b
+
+  def test_section_and_symbol_names_are_the_bytes_they_were_written_with
+    obj = Reader.read(object_exporting(NON_ASCII_SYMBOL, section: NON_ASCII_SECTION))
+
+    assert_equal [Encoding::BINARY], obj.sections.map { |s| s.name.encoding }.uniq
+    assert_equal [Encoding::BINARY], obj.symbols.map { |s| s.name.encoding }.uniq
+
+    sec = obj.section(NON_ASCII_SECTION)
+    refute_nil sec, "a section must be findable through the bytes it was named with"
+    assert_equal NON_ASCII_SECTION, sec.name
+
+    sym = obj.symbol(NON_ASCII_SYMBOL)
+    refute_nil sym, "a symbol must be findable through the bytes it was named with"
+    assert_equal NON_ASCII_SYMBOL, sym.name
+    assert_equal sec.index, sym.section.index
+  end
+
+  # DT_SONAME and DT_NEEDED come out of .dynstr through the same read, and the
+  # DT_NEEDED recorded here is a name that made the round trip: the dependency
+  # is handed to the linker as a parsed reader, so the string written into this
+  # object's .dynstr is the one the reader returned for the dependency's SONAME.
+  def test_soname_and_needed_are_the_bytes_the_link_recorded
+    dep = SharedLinker.link([object_exporting(NON_ASCII_SYMBOL)], soname: NON_ASCII_DEP_SONAME)
+    lib = SharedLinker.link([object_calling(NON_ASCII_SYMBOL)],
+                            needed: [Reader.read(dep)], soname: NON_ASCII_SONAME)
+
+    r = Reader.read(lib)
+    assert_equal NON_ASCII_SONAME, r.soname
+    assert_equal Encoding::BINARY, r.soname.encoding
+    assert_equal [NON_ASCII_DEP_SONAME], r.needed
+    assert_equal [Encoding::BINARY], r.needed.map(&:encoding)
+
+    imported = r.dynamic_symbol(NON_ASCII_SYMBOL)
+    refute_nil imported, "the import must be findable through the bytes it was named with"
+    assert_equal Encoding::BINARY, imported.name.encoding
+  end
+
   # --- malformed-input diagnostics ---------------------------------------
 
   def test_truncated_header_is_rejected
@@ -490,6 +543,38 @@ class TestElfReader < Minitest::Test
   end
 
   private
+
+  SHT_PROGBITS = 1
+  SHF_ALLOC = 0x2
+  SHF_EXECINSTR = 0x4
+  R_X86_64_PLT32 = 4
+  # ret — nothing built here is ever run; a body is only needed so the symbol
+  # has a size and the section has bytes.
+  RET_CODE = [0xC3].pack("C*")
+
+  # A minimal relocatable object defining one global function, and its
+  # counterpart calling a function it does not define. Written with
+  # RelocatableWriter because a name carrying arbitrary bytes has no source
+  # spelling; the call in the second one is what keeps the undefined symbol an
+  # import through the link, and with it the dependency that supplies it.
+  def object_exporting(name, section: ".text")
+    w = RelWriter.new
+    text = w.add_section(name: section, type: SHT_PROGBITS, flags: SHF_ALLOC | SHF_EXECINSTR,
+                         addralign: 1, data: RET_CODE)
+    w.add_symbol(name: name, bind: :global, type: :func, section: text, size: RET_CODE.bytesize)
+    w.to_binary
+  end
+
+  def object_calling(name)
+    w = RelWriter.new
+    text = w.add_section(name: ".text", type: SHT_PROGBITS, flags: SHF_ALLOC | SHF_EXECINSTR,
+                         addralign: 1, data: CALL_CODE)
+    callee = w.add_symbol(name: name, bind: :global, type: :notype)
+    w.add_symbol(name: "user", bind: :global, type: :func, section: text, size: CALL_CODE.bytesize)
+    w.add_relocation(target: text, offset: CALL_REL32_OFFSET, symbol: callee,
+                     type: R_X86_64_PLT32, addend: -4)
+    w.to_binary
+  end
 
   def build_writer
     writer = Writer.new
