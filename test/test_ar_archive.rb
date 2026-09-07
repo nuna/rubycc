@@ -5,16 +5,21 @@ require "tmpdir"
 require "open3"
 
 # Exercises Rubycc::ObjFile::ArWriter / ArReader and the exe/rubycc-ar CLI.
-# Three concerns are covered: the writer/reader round-trip (including long names,
+# Four concerns are covered: the writer/reader round-trip (including long names,
 # member replacement and byte-for-byte determinism), the ranlib symbol index
-# built from rubycc-compiled objects, and interoperability with the system `ar`
-# in both directions. The interop and CLI cases are skip-guarded when their
-# external tools are missing so the suite still runs on a bare host.
+# built from rubycc-compiled objects, how the names the reader returns are
+# spelled (bytes, whatever a name's length — with the linker's lazy pull-in
+# alongside, since it consumes the same reader), and interoperability with the
+# system `ar` in both directions. The interop and CLI cases are skip-guarded
+# when their external tools are missing so the suite still runs on a bare host.
 class TestArArchive < Minitest::Test
   include ExecutionHelper
 
   Reader = Rubycc::ObjFile::ArReader
   Writer = Rubycc::ObjFile::ArWriter
+  ELFReader = Rubycc::ObjFile::ELFReader
+  RelWriter = Rubycc::ObjFile::RelocatableWriter
+  Linker = Rubycc::Link::PartialLinker
 
   EXE_PATH = File.expand_path("../exe/rubycc-ar", __dir__)
   LIB_DIR = File.expand_path("../lib", __dir__)
@@ -154,6 +159,99 @@ class TestArArchive < Minitest::Test
     reader = Reader.read(Writer.new.to_binary)
     assert_equal ["/"], reader.members.map(&:name)
     assert_empty reader.symbols
+  end
+
+  # --- names are bytes, whatever their length ----------------------------
+
+  # "\xE6\x97\xA5" is "日": valid UTF-8, and not ASCII. Names spelled with it are
+  # what tells the reader's two name paths apart, because two strings holding
+  # the same non-ASCII bytes under different encodings are neither == nor eql?
+  # and hash apart (lib/rubycc.rb). SHORT_NAME fits the 16-byte inline field of
+  # a member header; LONG_NAME does not and is pushed out to the `//` extended
+  # name table. A caller comparing a name it already holds against the reader's
+  # answer must not have the hit depend on which of the two it asked about.
+  SHORT_NAME = "s\xE6\x97\xA5.o".b
+  LONG_NAME = "llllllllllllllllllll\xE6\x97\xA5.o".b
+
+  def test_member_names_are_bytes_whatever_their_length
+    archive = Writer.new
+                    .add_member(SHORT_NAME, "one".b)
+                    .add_member(LONG_NAME, "two".b)
+                    .to_binary
+
+    reader = Reader.read(archive)
+    assert reader.members.any? { |m| m.special? && m.name == "//" },
+           "the long name must reach the // table for the two paths to differ"
+    names = reader.members.reject(&:special?).map(&:name)
+    assert_equal [Encoding::BINARY, Encoding::BINARY], names.map(&:encoding)
+    assert_equal [SHORT_NAME, LONG_NAME], names
+    assert_equal "one".b, reader.member(SHORT_NAME).data
+    assert_equal "two".b, reader.member(LONG_NAME).data
+  end
+
+  # The `/` index carries symbol names as raw NUL-terminated bytes, and it is
+  # the same rule there: whatever bytes a member's ELF string table held are
+  # what comes back, so an index entry compares equal to the member name beside
+  # it and to a name any other reader of the archive holds.
+  def test_symbol_index_names_are_bytes
+    from_short = "add_\xE6\x97\xA5".b
+    from_long = "sub_\xE6\x97\xA5".b
+    archive = Writer.new
+                    .add_member(SHORT_NAME, object_exporting(from_short))
+                    .add_member(LONG_NAME, object_exporting(from_long))
+                    .to_binary
+
+    reader = Reader.read(archive)
+    assert_equal [from_short, from_long], reader.symbols.map { |s| s[:name] }
+    assert_equal [Encoding::BINARY, Encoding::BINARY], reader.symbols.map { |s| s[:name].encoding }
+    assert_equal [Encoding::BINARY, Encoding::BINARY], reader.symbol_index.keys.map(&:encoding)
+    assert_equal SHORT_NAME, reader.member_defining(from_short).name
+    assert_equal LONG_NAME, reader.member_defining(from_long).name
+  end
+
+  # The linker's lazy pull-in reads its archives through this same reader, so a
+  # member whose exported symbol name carries non-ASCII bytes must still be
+  # taken for a reference to it and left alone when nothing refers to it. C
+  # identifiers cannot hold such bytes; an assembler label can, which is why
+  # these objects are written rather than compiled. The defining member is given
+  # the long name too, putting the `//` table on the path as well — the linker
+  # spells a member's name into the label it hangs diagnostics on.
+  #
+  # The merged names are compared as bytes because ELFReader, unlike this
+  # reader, still tags what it reads out of a string table UTF-8
+  # (issues/elf-reader-name-encoding.md); what is pinned here is which members
+  # were pulled, not how the ELF side spells them.
+  def test_linker_pulls_the_member_defining_a_non_ascii_symbol
+    needed = "helper_\xE6\x97\xA5".b
+    stray = "stray_\xE6\x97\xA5".b
+    archive = Writer.new
+                    .add_member(LONG_NAME, object_exporting(needed))
+                    .add_member(SHORT_NAME, object_exporting(stray))
+                    .to_binary
+
+    merged = ELFReader.read(Linker.link([object_referencing(needed), archive]))
+    defined_names = merged.symbols.select { |s| s.bind == :global && s.defined? }.map { |s| s.name.b }
+    assert_includes defined_names, needed, "the member defining the referenced symbol must be pulled in"
+    refute_includes merged.symbols.map { |s| s.name.b }, stray, "the member nothing references must stay out"
+  end
+
+  # The same pull-in reached through a path instead of bytes in memory. A caller
+  # that has not re-tagged its path (lib/rubycc.rb) hands the linker a UTF-8
+  # string, and the label the linker hangs on a pulled-in member joins that path
+  # with the member's name, which is bytes — an interpolation Ruby refuses once
+  # both sides hold non-ASCII bytes. Diagnostic text must not be the thing that
+  # raises, so the path is taken as bytes at the boundary instead.
+  def test_an_archive_path_that_is_not_bytes_still_pulls_its_members
+    needed = "helper_\xE6\x97\xA5".b
+    Dir.mktmpdir("rubycc-ar") do |dir|
+      path = File.join(dir, "lib\xE6\x97\xA5.a")
+      assert_equal Encoding::UTF_8, path.encoding, "the point of this case is a path that is not bytes"
+      File.binwrite(path, Writer.new.add_member(LONG_NAME, object_exporting(needed)).to_binary)
+
+      merged = ELFReader.read(Linker.link([object_referencing(needed), path]))
+      assert_includes merged.symbols.map { |s| s.name.b }, needed,
+                      "the member must be pulled in whatever the path's encoding"
+    end
   end
 
   # --- interop: our writer -> system ar ---------------------------------
@@ -396,6 +494,34 @@ class TestArArchive < Minitest::Test
   end
 
   private
+
+  SHT_PROGBITS  = 1
+  SHF_ALLOC     = 0x2
+  SHF_EXECINSTR = 0x4
+  ONE_INSTRUCTION = "\xC3".b # x86_64 `ret`; nothing here is ever run
+
+  # A minimal relocatable object defining one global function symbol, and its
+  # counterpart referencing one it does not define. They are written rather than
+  # compiled because a C identifier cannot carry the non-ASCII bytes these cases
+  # are about — an assembler label is where such a symbol name comes from.
+  def object_exporting(symbol_name)
+    w = RelWriter.new
+    text = w.add_section(name: ".text", type: SHT_PROGBITS, flags: SHF_ALLOC | SHF_EXECINSTR,
+                         addralign: 1, data: ONE_INSTRUCTION)
+    w.add_symbol(name: symbol_name, bind: :global, type: :func, section: text,
+                 size: ONE_INSTRUCTION.bytesize)
+    w.to_binary
+  end
+
+  def object_referencing(symbol_name)
+    w = RelWriter.new
+    text = w.add_section(name: ".text", type: SHT_PROGBITS, flags: SHF_ALLOC | SHF_EXECINSTR,
+                         addralign: 1, data: ONE_INSTRUCTION)
+    w.add_symbol(name: symbol_name, bind: :global, type: :notype)
+    w.add_symbol(name: "user", bind: :global, type: :func, section: text,
+                 size: ONE_INSTRUCTION.bytesize)
+    w.to_binary
+  end
 
   # A dependency-free file copy so the test does not require 'fileutils'.
   def FileUtils_cp(src, dst)

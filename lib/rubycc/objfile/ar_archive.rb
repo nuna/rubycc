@@ -193,6 +193,14 @@ module Rubycc
 
       # Resolves a `/N` reference: read from byte `offset` in the `//` table up to
       # the terminating `\n` and drop the trailing `/` GNU appends to each entry.
+      #
+      # The slice is left as bytes, like every other name this reader hands back
+      # (lib/rubycc.rb). An archive names a member in whatever bytes the
+      # filesystem gave it, and two strings holding the same non-ASCII bytes
+      # under different encodings are neither == nor eql? and hash apart — so
+      # tagging a name here would make it differ from a SHORT name spelled with
+      # the same bytes, and whether a caller's comparison hit would then depend
+      # on how long the name happened to be.
       def resolve_long_name(offset, pos)
         table = @name_table or
           raise ArFormatError, "member at offset #{pos} references a name table that is absent"
@@ -201,7 +209,7 @@ module Rubycc
         end
 
         stop = table.index("\n".b, offset) || table.bytesize
-        table.byteslice(offset...stop).chomp("/").force_encoding(Encoding::UTF_8)
+        table.byteslice(offset...stop).chomp("/")
       end
 
       # Turns the raw `/` symbol table into name -> member entries. Deferred until
@@ -223,7 +231,10 @@ module Rubycc
         cursor = 0
         count.times do |i|
           stop = names_blob.index("\0".b, cursor) or break
-          name = names_blob.byteslice(cursor...stop).force_encoding(Encoding::UTF_8)
+          # Bytes, like the member names: a symbol name is whatever bytes the
+          # member's ELF string table held, and one spelling for every name a
+          # reader hands back is the whole point (see resolve_long_name).
+          name = names_blob.byteslice(cursor...stop)
           cursor = stop + 1
           member = by_offset[offsets[i]]
           @symbols << { name: name, member: member } if member
