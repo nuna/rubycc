@@ -60,6 +60,14 @@ module Rubycc
     # The word that names each connector in a diagnostic.
     CONNECTOR_NAMES = { and: "&&", or: "||", semi: ";" }.freeze
 
+    # Shell reserved words that introduce compound commands (loops, `if`,
+    # `case`, brace groups, negation) this splitter has no interpreter for.
+    # Only the unambiguous ones are listed: `in`, `time` and `select` are left
+    # out because they double as ordinary words often enough that flagging them
+    # would misfire. Checked only in the command-name position (see #parse) —
+    # `-Wl,{...}` or `echo fi` are plain words, not this construct.
+    RESERVED_WORDS = %w[for do done if then elif else fi case esac while until { } !].freeze
+
     module_function
 
     # Split +text+ into tokens: :word (quote-stripped), the connectors
@@ -213,6 +221,20 @@ module Rubycc
           if argv.empty? && w =~ /\A[A-Za-z_][A-Za-z0-9_]*=/
             assignments << w
           else
+            # A reserved word in the command-name position needs a shell
+            # grammar this splitter does not have (a loop, a conditional, a
+            # brace group) to make sense of. Trying to run it as a plain
+            # command exec's `for` itself and fails in a way that looks like
+            # a missing tool rather than unsupported syntax; approximating
+            # the construct (interpreting the loop, say) is not on the table
+            # either — that is the shell-fallback risk this module exists to
+            # remove (see the file banner and mkmf-shell-free-conftest-1).
+            # Refusing with UnsupportedSyntaxError is the correct failure
+            # mode until rmake grows an interpreter for these constructs,
+            # which is separate work, not this fix.
+            if argv.empty? && RESERVED_WORDS.include?(w)
+              unsupported!("shell reserved word '#{w}'", text)
+            end
             argv << w
           end
         when :and, :or, :semi

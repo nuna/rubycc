@@ -477,6 +477,22 @@ class TestRmakeExecutor < Minitest::Test
     end
   end
 
+  # A one-word recipe command used to reach Process.spawn as a bare string,
+  # which Ruby execs via /bin/sh whenever there is nothing else in argv (see
+  # rmake-no-shell-fallback). A missing one-word command must fail the same
+  # way a missing multi-word one does — "cannot execute", never a shell's own
+  # "not found"/syntax-error text — regardless of the target environment
+  # having a shell at all.
+  def test_a_single_word_missing_command_is_not_run_through_a_shell
+    with_dir do |dir|
+      err = assert_raises(Rmake::CommandFailedError) do
+        run_recipes(dir, ["definitely-not-a-real-tool-xyz"])
+      end
+      assert_equal "t", err.target
+      assert_includes err.message, "cannot execute definitely-not-a-real-tool-xyz"
+    end
+  end
+
   # --- recipe attributes: - (ignore) and @ (silent) -------------------------
 
   def test_dash_attribute_ignores_a_failing_command
@@ -550,6 +566,26 @@ class TestRmakeExecutor < Minitest::Test
   def test_unterminated_quote_is_unsupported
     with_dir do |dir|
       assert_raises(Rmake::UnsupportedRecipeError) { run_recipes(dir, ['echo "open']) }
+    end
+  end
+
+  # Regression for rmake-no-shell-fallback: a `for`/`if` recipe like Automake
+  # emits used to reach /bin/sh a word at a time (Process.spawn's one-word
+  # special case), producing shell syntax errors instead of a diagnosis. It
+  # must now be refused up front as a reserved word rmake does not interpret,
+  # never handed to a shell.
+  def test_a_for_if_recipe_is_refused_not_shelled_out
+    with_dir do |dir|
+      # Already past Make's own `$$` -> `$` expansion, as the Executor sees it
+      # (run_recipes hands Command texts straight to the Executor; the Makefile
+      # layer that expands `$$` is not involved).
+      recipe = 'list=\'a.txt b.txt\'; list2=; for p in $list; do if test -f $p; ' \
+               'then list2="$list2 $p"; else :; fi; done; test -z "$list2" || { echo found: $list2; }'
+      err = assert_raises(Rmake::UnsupportedRecipeError) do
+        run_recipes(dir, [recipe])
+      end
+      assert_equal "t", err.target
+      assert_includes err.message, "unsupported shell construct (shell reserved word 'for')"
     end
   end
 end

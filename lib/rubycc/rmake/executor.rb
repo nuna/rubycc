@@ -251,7 +251,20 @@ module Rubycc
           options[:out] = out_io if out_io
           options[:err] = err_io if err_io
           begin
-            pid = Process.spawn(env_overrides(cmd.assignments), *argv, options)
+            # `[argv[0], argv[0]]` (program plus argv0) rather than a bare
+            # `argv[0]` is load-bearing. Given a lone command string, Process
+            # .spawn decides for itself whether to involve /bin/sh, and it
+            # routes a shell reserved word there: measured on Ruby 3.4.5,
+            # "for", "do", "done", "if", "then", "elif", "else", "fi", "case",
+            # "esac", "while", "until", "in", "time", "!", "{", "}", "[[" and
+            # "]]" all reach the shell, while an ordinary name execs directly
+            # and raises ENOENT. A recipe fragment that happens to be one such
+            # word would then behave one way where a shell is installed and
+            # another where it is not -- the outcome DESIGN R5 and this module
+            # exist to rule out (see the file banner). The array form takes the
+            # decision away: it always execs. Commands of two words or more
+            # already did.
+            pid = Process.spawn(env_overrides(cmd.assignments), [argv[0], argv[0]], *argv[1..], options)
             _, status = Process.waitpid2(pid)
             state.failure_reason = "exited with status #{status.exitstatus}" unless status.success?
             status.success?
