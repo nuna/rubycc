@@ -1856,7 +1856,40 @@ module Rubycc
             index += 1
           end
         end
-        result
+        # hsadd(HS, OS), the last step of Prosser's subst (6.10.3.4p2): every
+        # token this call produces, argument-derived ones included, gains this
+        # call's paint. An argument keeps whatever painting it arrived with, but
+        # a macro name passed as an argument is unpainted against *this* call --
+        # it never passed through this replacement list -- and without this it
+        # would sit at the end of the substitution able to meet a "(" from the
+        # surrounding tokens and open a call the standard does not allow
+        # ("#define f(x) x" / "f(f)(1)" reads as "f(1)", not "1").
+        #
+        # Non-identifiers are painted too, because a ")" among them is read by
+        # #paint as one end of a later call: a ")" that lost this paint would
+        # empty the hide-set intersection and stop halting a self-referential or
+        # mutually recursive expansion. relocate and its kin already stamp
+        # exactly `painted`, so only argument-sourced tokens really gain here.
+        result.map! { |t| add_paint(t, painted) }
+      end
+
+      # A copy of `token` with `painted` added to its suppress set, or `token`
+      # itself when that would add nothing. The identity test comes first because
+      # it settles the common case in one comparison: relocate and kin stamp the
+      # very array `painted`, and a substitution is mostly their output, so the
+      # per-name scan is only paid for tokens that came from an argument. Union,
+      # not replacement: the token may carry a history of its own that still has
+      # to hold.
+      def add_paint(token, painted)
+        return token if token.suppress.equal?(painted)
+        return token if painted.all? { |name| token.suppress.include?(name) }
+
+        PPToken.new(
+          type: token.type, text: token.text,
+          filename: token.filename, line: token.line, column: token.column,
+          source_line: token.source_line, space_before: token.space_before,
+          suppress: (token.suppress | painted).freeze
+        )
       end
 
       # The tokens a plain (non-operator) replacement element expands to: a

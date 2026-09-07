@@ -930,7 +930,8 @@ __has_include / __has_attribute / __has_builtin、#pragma once。実装は 2 フ
 **訂正(`macro-hide-set-intersection-1`)**: 上の 4 挙動のうち **`f(f)(1)`→`1` は
 gcc と一致していない**(2026-09-07 実測: gcc は `f(1)`)。引数由来のトークンに
 hide-set を足さない設計の帰結で、[issue](../../issues/macro-argument-hide-set.md) に
-起票した(GAPS §1 の AC)。他の 3 つと 00201 は一致を実測で確認済み。
+起票した(GAPS の AC。**翌日 `macro-argument-hide-set-1` で解消した**)。
+他の 3 つと 00201 は一致を実測で確認済み。
 
 **トレードオフ**: hide-set 交差なしの青染めは病的な自己入れ子で gcc と発散し得る
 (上記。**閉じ括弧との交差則は `macro-hide-set-intersection-1` で導入した**)。`+ ## +` → `++` のような「有効だが意外な」貼り付けは gcc 同様に許容。
@@ -13374,3 +13375,64 @@ suppress + 自名」(6.10.3.4 の交差則)に変え、c-testsuite 00201 の ski
 **skip が 2 件減るのは正しい** — c-testsuite は `TestCSuite` と `TestCSuiteAArch64` の
 2 本走るので、00201 は最初から 2 件 skip していた。runs が 1 増えたのは追加した
 ユニットテストである。**増えた skip は無い**(一覧を突き合わせて確認)。
+
+---
+
+## macro-argument-hide-set-1 — 前のステップが、当たり前の最適化を罠に変えていた
+
+**内容**: マクロ置換の結果に含まれる**引数由来のトークンにも** hide-set を足すようにした
+(Prosser の `subst` 末尾の `hsadd`、6.10.3.4p2)。`substitute` の出口 1 か所で、返す
+トークン列の全要素に `painted` を合併する。`expand_argument`(引数を単独で先に展開する
+6.10.3.1 の経路)は触っていない。実装は implementer。直前の
+`macro-hide-set-intersection-1` の検証中に見つけた食い違いの解消である。
+
+**設計判断**:
+
+- **非識別子も塗る。** suppress を読むのは `expandable_macro?`(識別子のみ)だから
+  識別子に限ってよさそうに見えるが、**前ステップで閉じ括弧の suppress が交差計算の
+  入力になった**ので、置換が産んだ `)` が paint を失うと
+  `#define f(x) g(x)` / `#define g(x) f(x)` の相互再帰が止まらなくなる。
+  **前ステップが、それ単体では正しい最適化を罠に変えていた**という形である。
+  移譲時にこの一点を名指しで禁じ、停止することを実測で確かめた。
+- **塗り直しは新しいトークンを作る(その場で書き換えない)**。`Invocation#expanded` は
+  引数の展開結果をメモ化して同じトークン列を使い回すので、破壊的に塗ると
+  同じ引数を 2 回使うマクロで 1 回目の paint が 2 回目に漏れる。
+- **同じ配列オブジェクトなら塗り直しを省く**。`relocate` とその仲間は `painted` を
+  そのまま持たせるので、`equal?` 1 回で置換リスト由来のトークンを弾ける。
+  これを入れないと合成入力で +27%(下記)だった。
+
+**閉じたのは 1 件ではなかった。** 受け入れ条件の 5 形に加えて周辺を測ったところ、
+**`#define g(x) x` / `#define h g` に `h(g)(2)`** も食い違っていた(gcc `g(2)` /
+変更前の rubycc `2`)。同じ規則の別の現れ方で、本ステップで一緒に一致した。
+`CAT(CA,T)(x)`(貼り合わせが自分の名前を成す)・`#` の間接ストリンガイズ・
+空引数の直後の呼び出しは変更前後とも gcc と一致していた。
+
+**測ったこと**(2026-09-08、WSL2 / Ruby 3.4.5。`-E` のみ、交互に 7〜9 回実行した中央値):
+
+| 入力 | 変更前(`0f52bdb`) | 変更後 |
+|---|---|---|
+| `#include <ruby.h>` 1 本(実際の gem ビルドが必ず通る道) | 0.712s | **0.713s(差なし)** |
+| 入れ子関数マクロ呼び出し 4,000 行だけの合成ファイル | 0.883s | **1.054s(+19%)** |
+
+**遅くなるのは引数由来のトークンをコピーする分**で、置換リスト由来のトークンは
+`equal?` で素通りする。実入力で差が出ないのは、ヘッダの大半が入れ子の関数マクロ呼び出し
+ではないためである。**合成入力の +19% は「マクロ呼び出ししか書かれていないファイル」の
+値**であって、実際のコンパイル時間の変化ではない。
+
+**assertions は run 間で揺れるので、合否の証拠に使わない。** 同一ツリー
+(`efc495c` と `0f52bdb` は tree が同一)で `rake test` を 2 回測ったところ
+**14048 と 14072** で、runs / failures / errors / skips(3417 / 0 / 0 / 39)は一致した。
+前ステップの記録に assertions を証拠として書いたが、比較には使えない値である。
+
+**検証**:
+
+| | 変更前(`0f52bdb`) | 本ステップ |
+|---|---|---|
+| `rake test` | 3417 runs / 0 failures / 0 errors / 39 skips | **3417 runs / 0 failures / 0 errors / 39 skips** |
+| `test/test_c_suite.rb` | 223 runs / 13 skips | **223 runs / 0 failures / 13 skips** |
+| `test/test_preprocessor.rb` | — | **226 runs / 0 failures / 0 skips** |
+| `tools/ci_check_skips.rb`(`native-x86`) | — | **OK** |
+
+`test_macro_name_from_an_argument_still_expands` は期待値ごと書き換えた
+(`test_macro_name_from_an_argument_does_not_form_a_new_call`)。
+**前ステップで「これは gcc の挙動ではない」と断り書きを入れたテストで、その断りごと消えた。**
