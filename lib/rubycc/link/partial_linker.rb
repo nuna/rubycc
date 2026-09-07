@@ -89,12 +89,19 @@ module Rubycc
       # Classifies one raw input. A String that already opens with an ELF or ar
       # magic is taken as in-memory bytes; anything else is a filesystem path to
       # read. The resulting bytes are then dispatched to the matching reader.
+      #
+      # A path is re-tagged as bytes on the way in, the boundary rule of
+      # lib/rubycc.rb: it is joined with an archive member's name to label a
+      # pulled-in member, and ArReader returns those names as bytes, which Ruby
+      # will not interpolate together with a path tagged otherwise once either
+      # side holds non-ASCII bytes. A label is diagnostic text and must never be
+      # the thing that raises.
       def load_input(raw, index)
         if raw.is_a?(String) && (raw.b.start_with?(ELFMAG) || raw.b.start_with?(AR_MAGIC))
           bytes = raw.b
           label = "input##{index}"
         else
-          label = raw.to_s
+          label = raw.to_s.b
           bytes = File.binread(label)
         end
 

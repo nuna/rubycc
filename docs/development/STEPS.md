@@ -13436,3 +13436,55 @@ suppress + 自名」(6.10.3.4 の交差則)に変え、c-testsuite 00201 の ski
 `test_macro_name_from_an_argument_still_expands` は期待値ごと書き換えた
 (`test_macro_name_from_an_argument_does_not_form_a_new_call`)。
 **前ステップで「これは gcc の挙動ではない」と断り書きを入れたテストで、その断りごと消えた。**
+
+---
+
+## ar-reader-name-encoding-1 — 直す前に洗えと書いた場所は無傷で、隣が元から落ちていた
+
+**内容**: `ArReader` が返す名前を**全部バイト列**に揃えた(`resolve_long_name` と
+`resolve_symbol_index` の `force_encoding(UTF-8)` を削除)。`lib/rubycc.rb` の
+「rubycc が読むものはバイト列」に合流させたもので、これまでは**同じアーカイブの中で
+名前の長さによって綴りが変わって**いた(GAPS AB)。`exe/rubycc-ar` が CLI 側で
+吸収していた `member_key` は恒等写像になったので外した。実装は heavy-implementer。
+
+**設計判断**:
+
+- **`member_key` は外し、説明は残した。** 消えるのは分岐であって経緯ではないので、
+  ARGV 再タグ付けのコメントに「リーダはどの長さでもバイト列を返す」という現在の理由と、
+  揃っていなかった頃の症状(`r` が重複追加、`x` が無出力・exit 0)を両方書いた。
+- **診断ラベルの `.b` は範囲外だが入れた。** `partial_linker.rb` の
+  `"#{input.label}(#{member.name})"` は、パスが UTF-8 タグでメンバ名が非 ASCII の
+  バイト列だと `Encoding::CompatibilityError` を上げる。**変更前から短い名前で
+  落ちていた**もので、リーダを揃えると長い名前もそこに揃ってしまう。
+  受け入れ条件「リンカ側の消費経路が壊れないこと」に直接触れるので、`load_input` の
+  境界でパスを `.b` に再タグ付けして閉じた。**診断の文字列が例外の発生源になってはならない。**
+- **`ELFReader` の同じ逸脱は直さなかった。** 消費者が多く(リンカ 3 種・索引生成・
+  ライブラリ解決・多数のテスト)、直すこと自体より**直したことで壊れる側**を洗う作業になる。
+  GAPS の **AD** として分けた。今回 `ArReader` 側だけが規約に揃ったので、
+  **食い違いは「名前の長さの間」から「2 つのリーダの間」へ移った**。
+- **新しいテストは `test_ar_archive.rb` に置いた。** `test_link.rb` は `setup` で
+  `skip_unless_x86_64_host` するため、aarch64 ネイティブ runner ではこの検査が
+  丸ごと skip される。移譲先が気付いて場所を変えた。
+
+**測ったこと**(2026-09-08、ホスト、Ruby 3.4.5):
+
+| メンバ名 | パス `libascii.a` | パス `libあ.a`(UTF-8) |
+|---|---|---|
+| 短い(変更前) | ok | **CompatibilityError** |
+| 長い(変更前) | ok | ok |
+| 短い・長い(本ステップ) | ok | **ok** |
+
+**issue が「先に洗え」と名指しした場所は、実装上は無傷だった。** `PartialLinker` は
+`ArReader` のシンボル索引を一度も呼ばず、各メンバを `ELFReader` に食わせ直している。
+`resolve_symbol_index` の `force_encoding` が届く先はテストだけだった。
+**懸念した経路が空で、隣の診断が元から落ちていた**という形で、着手前の調査は
+「消費者を数える」ところまでやらないと当たらない。
+
+**検証**:
+
+| | 変更前(`0f52bdb`) | 本ステップ |
+|---|---|---|
+| `rake test` | 3417 runs / 0 failures / 0 errors / 39 skips | **3421 runs / 0 failures / 0 errors / 39 skips**(+4 は追加テスト) |
+| `test/test_ar_archive.rb` | — | 29 runs / 0 failures |
+| `test/test_cli_argv_encoding.rb`(非 ASCII の `r` / `x` / `t`) | 13 runs / 0 failures | **13 runs / 0 failures**(期待値は不変) |
+| 生成物の sha256(`benchmark/c/*.c` 5 + `examples/m6/*.c` 7) | — | **12 件すべて一致** |

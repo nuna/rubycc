@@ -239,10 +239,10 @@ class TestCliArgvEncoding < Minitest::Test
   # An archive whose own name is not valid UTF-8, holding members whose names
   # are not either: the archive name is a path and nothing else, so its bytes
   # only have to reach the filesystem unchanged. The member names go further —
-  # `t` prints them straight out of the reader, which is the one place the CLI
-  # does not normalize them, and the reader spells a short name and a long one
-  # differently. Both lengths are listed so that printing stays byte-for-byte
-  # whatever the reader hands over.
+  # `t` prints them straight out of the reader. Both lengths are listed because
+  # a short name and a long one reach the reader by different routes (the
+  # header's inline field, and the `//` name table), and printing has to stay
+  # byte-for-byte either way.
   def test_an_archive_name_that_is_not_valid_utf8_is_written_and_listed
     in_tmpdir do |dir|
       archive = spell("lib", INVALID, ".a")
@@ -264,12 +264,13 @@ class TestCliArgvEncoding < Minitest::Test
 
   # `r` decides replace-or-append by looking a file's basename up among the
   # member names read out of the archive, so the two sides have to be tagged
-  # alike. Both marks and both name lengths are tried: ArReader tags a long name
-  # (one that does not fit the 16-byte inline field, so it lives in the `//`
-  # table) UTF-8 and leaves a short one as bytes, so a command line tagged
-  # either way matches only one of them. A mismatch is silent — the archive
-  # simply grows a second member with the same name, and a linker reading it
-  # would take the stale one.
+  # alike. Both marks and both name lengths are tried, because the two lengths
+  # take different routes through the reader (the header's inline field, and
+  # the `//` name table): while those two routes disagreed — the long one was
+  # tagged UTF-8, the short one left as bytes — a command line tagged either
+  # way matched only one of them. A mismatch is silent: the archive simply
+  # grows a second member with the same name, and a linker reading it would
+  # take the stale one.
   def test_replace_does_not_duplicate_a_member_whose_name_is_not_ascii
     [NON_ASCII, INVALID].each do |mark|
       ["m".b + mark + ".o".b, spell("a_member_name_past_the_inline_field", mark, ".o")].each do |name|
