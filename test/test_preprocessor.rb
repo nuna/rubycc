@@ -297,15 +297,15 @@ class TestPreprocessor < Minitest::Test
     assert_equal [3], tokens.map(&:value)
   end
 
-  def test_macro_name_from_an_argument_still_expands
-    # The inner "f" arrives through the argument, so it is not painted and forms
-    # a call with the source "(1)": "f(f)(1)" yields "1".
-    #
-    # This pins today's behavior, not gcc's: gcc leaves "f(1)", because it paints
-    # argument-borne tokens too. That deviation is issues/macro-argument-hide-set.md
-    # (GAPS AC), and closing it changes the value this test expects.
+  def test_macro_name_from_an_argument_does_not_form_a_new_call
+    # The inner "f" arrives through the argument, but substitute's tail paints
+    # every token of the result -- argument-borne ones included -- with "f"
+    # (6.10.3.4p2's hsadd), so this "f" cannot expand again even though it now
+    # sits beside the source's own "(1)". "f(f)(1)" therefore stays "f(1)",
+    # matching gcc.
     tokens = pp("#define f(x) x\nf(f)(1)").reject(&:eof?)
-    assert_equal [1], tokens.map(&:value)
+    assert_equal [:ident, :punct, :num, :punct], tokens.map(&:type)
+    assert_equal ["f", "(", 1, ")"], tokens.map(&:value)
   end
 
   def test_mutually_recursive_function_macros_terminate
