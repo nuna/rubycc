@@ -13898,3 +13898,32 @@ rubycc の側の問題ではない。
 (2026-09-11 実測、`gh api .../branches/master/protection` → 404)、
 **Tier A ですら merge をブロックしていない**。設定側は
 [`branch-protection-required-checks`](../../issues/branch-protection-required-checks.md) に分けた。
+
+---
+
+## ci-dispatch-after-batch-1 — PR のチェックが原理的に見られない層がある
+
+**内容**: 「コンパイラ・リンカ・ビルド層に触る変更をまとめてマージしたら、次の作業に移る前に
+週次を 1 回手で dispatch する」という作法を `docs/internals/CI.md` に足した。文書だけの変更。
+
+**根拠は実例である。** PR で走るのは `test.yml` と `acceptance-fixture.yml` で、
+**どちらも x86-64 / glibc の上でしか回らない**。#121〜#125 をマージした後に dispatch したところ
+`musl` だけが 1 件落ちた(`musl-dlopen-fixture-symbols-1`)。musl の `dlclose` が実質 no-op
+であることに依存した順序依存の失敗で、**glibc では原理的に出ない**。
+dispatch していなければ次の定期実行(日曜)まで気付かなかった。
+
+**「マージのたびに回さない」理由は、書いた後に変わった。** 最初は
+「週次の `timeout-minutes` 合計 435 分は GitHub Free の 2,000 分/月に対して重い」と書いたが、
+**このリポジトリは public なので分数の予算は効かない**(`acceptance-fixture-required-1` で
+実行コストの節を書き直した時に確定した事実)。マージせずに置いていた間に前提が消えていた形で、
+**本文を直してからマージした**。
+
+**費用が消えたわけではない**ので、効いている方を測って書き直した:
+週次は **9 ジョブを並列に起こす**(実測で壁時計 7 分 5 秒、runner 時間の合計は約 30 分)。
+同時実行枠を **PR のチェック自身と奪い合う**うえ、`census` と `acceptance` は
+**rubygems.org を叩く** — マージのたびに外部サービスへ取りに行くのは筋が悪い。
+
+**merge-tree が「衝突しない」と言っても、文書は矛盾し得る。** この PR と
+`acceptance-fixture-required-1` は `CI.md` の別の節を触っていたので git は何も言わなかったが、
+**片方が「無料枠に対して重い」、もう片方が「無料枠は消費しない」と書いている**状態だった。
+テキストの衝突が無いことは、意味が揃っていることの証明にならない。

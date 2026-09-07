@@ -264,6 +264,39 @@ stdio のリンクに関する Gap P である。
 | `only: acceptance` | 決定的 fixture と live acceptance のみ |
 | `only: aarch64` | native aarch64 の Tier A 全スイートと native-aarch64-smoke |
 
+### まとまったマージの後に一度 dispatch する
+
+**PR で走るもの(`test.yml` と `acceptance-fixture.yml`)は、どちらも x86-64 / glibc の
+上でしか回らない。** musl と aarch64 でしか現れない失敗は、PR のチェックでは
+**原理的に見えない**。したがって、
+コンパイラ・リンカ・ビルド層に触る変更をまとめてマージしたら、**次の作業に移る前に
+週次を 1 回手で回す**:
+
+```sh
+gh workflow run weekly.yml --ref master
+gh run list --workflow=weekly.yml --limit 1 --json databaseId,headSha
+```
+
+`headSha` が意図した master のコミットと一致することを確かめてから結果を読むこと
+(dispatch は「その時点の master」を拾うので、直後に別の push があるとずれる)。
+
+**マージのたびに回さない。** リポジトリが public になって分数の予算は効かなくなったが
+(「実行コスト」節)、費用が消えたわけではない。週次は **9 ジョブを並列に起こす** —
+実測で壁時計 7 分 5 秒、runner 時間の合計は約 30 分である
+([run 34158423847](https://github.com/nuna/rubycc/actions/runs/34158423847)、2026-09-11)。
+同時実行枠を **PR のチェック自身と奪い合う**うえ、`census` と `acceptance` は
+**rubygems.org を叩く**。マージのたびに外部サービスへ取りに行くのは筋が悪い。
+**まとまった単位で 1 回**が釣り合う。
+
+実績(2026-09-08): #121〜#125 をマージした後に dispatch したところ、`musl` だけが
+1 件失敗した(`TestPic#test_pic_objects_link_into_a_shared_object_and_round_trip`、
+[run 34155057494](https://github.com/nuna/rubycc/actions/runs/34155057494))。
+**musl の `dlclose` が実質 no-op であることに依存した順序依存の失敗**で、
+glibc では出ない。しかも minitest の seed 次第で出たり出なかったりする。
+#126 で閉じ、`70f6926` での確認 dispatch は全ジョブ success
+([run 34158423847](https://github.com/nuna/rubycc/actions/runs/34158423847))。
+**dispatch していなければ、次の定期実行(日曜)まで気付かなかった。**
+
 ## リリース配布物
 
 タグ push または手動実行で Tier A を再実行する。タグ push ではタグ名から `v` を除いた
