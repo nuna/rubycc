@@ -48,6 +48,34 @@ R10 の合格率(2026-08-12 時点で 31/34 = 91.2%)は `data/verified_gems.json
 **粒度の注意**: R10-4〜R10-7 は 1 PR に収まらない可能性が高い。着手時に
 R10-4/5(実測)と R10-6/7(レビューと再実測)へ分割することを想定している。
 
+### 2026-09-08 — 残っている `c` 8 件が何を待っているのかを確定させた
+
+**着手はしていない。** 次に入る人が「何を測れば `c` が解けるか」から始めなくて済むように、
+台帳と `data/r10_manual_classification.json` を読んで内訳だけ確定させた。
+
+**`c` は検証欄(control / rubycc / extension load / upstream suite)の結果ではない。**
+prism・psych・fiddle は**4 欄すべて pass なのに `c`** である。判定は
+`zero_finding_review` — 「候補 0 件という走査結果が、実際にビルドされる範囲を
+覆っているか」の評価であって、ビルドやテストの成否とは別系統である。
+**最初にこの区別を取り違えたので、記録しておく。**
+
+`data/r10_manual_classification.json` の各 `zero_finding_review` には
+`rationale` / `source_evidence` / `follow_up.next_action` が入っており、
+**やるべき測定はすでに書かれている**。8 件は理由で 2 つに分かれる:
+
+| 分類 | gem | 待っているもの |
+|---|---|---|
+| **走査した集合が、実際に選ばれる集合と違う** | prism / rbs / nio4r | 走査は `ext/` だけを見たが、`extconf.rb` は root の `src` も選ぶ(nio4r は `libev/ev.c` の textual include)。**台帳の `selected_build_path.translation_units` には正しい集合が既に入っている** |
+| **プロファイル(外部ライブラリ・生成物)が固定されていない** | openssl / psych / fiddle / pg / puma | リンクした OpenSSL / libyaml / libffi / libpq の同一性、Ragel 生成物の出所、`extconf.h` / `DT_NEEDED` が記録されていない |
+
+**upstream suite の実走は R10-4 の要件ではない。** 必要なのは
+「選ばれた翻訳単位を control / rubycc で前処理して走査し直す」ことで、
+`rubycc -E` が出せるものである。gem のソース取得(ネットワーク)は要るが、
+gem 本体テストの実走まで要るのは R10-5 の一部だけである。
+
+**8 件の `follow_up.due` はいずれも 2026-08-24 で、既に過ぎている。**
+着手時に期限を引き直すこと。
+
 ## 決着
 
 (未着手)
