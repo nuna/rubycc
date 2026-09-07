@@ -143,20 +143,27 @@ class TestPic < Minitest::Test
   # the result (a) carries no TEXTREL (every text reference is PC-relative), and
   # (b) round-trips a value through GOT-based extern data reads/writes and an
   # extern function called through a GOT-loaded pointer, dlopened via Fiddle.
+  #
+  # The exported names carry a pic_ prefix so they cannot collide with the
+  # same-shaped fixture in test_shared_object.rb: musl's dlclose is effectively
+  # a no-op, and Fiddle's dlopen uses RTLD_GLOBAL, so a library loaded earlier
+  # in the process stays resident and its definition wins ELF's default symbol
+  # interposition for anything loaded later under the same name. glibc does not
+  # show this (its dlclose really unloads).
   def test_pic_objects_link_into_a_shared_object_and_round_trip
     skip "gcc not available" unless gcc_available?
 
     access = <<~C
-      extern int shared_counter;
-      extern int bump(int by);
+      extern int pic_shared_counter;
+      extern int pic_bump(int by);
       typedef int (*fn)(int);
-      int read_counter(void) { return shared_counter; }
-      void write_counter(int v) { shared_counter = v; }
-      int call_via_ptr(int x) { fn f = bump; return f(x); }
+      int pic_read_counter(void) { return pic_shared_counter; }
+      void pic_write_counter(int v) { pic_shared_counter = v; }
+      int pic_call_via_ptr(int x) { fn f = pic_bump; return f(x); }
     C
     define = <<~C
-      int shared_counter = 100;
-      int bump(int by) { return by + 1; }
+      int pic_shared_counter = 100;
+      int pic_bump(int by) { return by + 1; }
     C
 
     in_tmpdir do |dir|
@@ -172,9 +179,9 @@ class TestPic < Minitest::Test
       assert_no_textrel(so)
 
       lib = Fiddle.dlopen(so)
-      read_counter = fiddle_fn(lib, "read_counter", [], Fiddle::TYPE_INT)
-      write_counter = fiddle_fn(lib, "write_counter", [Fiddle::TYPE_INT], Fiddle::TYPE_VOID)
-      call_via_ptr = fiddle_fn(lib, "call_via_ptr", [Fiddle::TYPE_INT], Fiddle::TYPE_INT)
+      read_counter = fiddle_fn(lib, "pic_read_counter", [], Fiddle::TYPE_INT)
+      write_counter = fiddle_fn(lib, "pic_write_counter", [Fiddle::TYPE_INT], Fiddle::TYPE_VOID)
+      call_via_ptr = fiddle_fn(lib, "pic_call_via_ptr", [Fiddle::TYPE_INT], Fiddle::TYPE_INT)
 
       assert_equal 100, read_counter.call, "initial extern data read through the GOT"
       write_counter.call(55)

@@ -70,22 +70,33 @@ class TestAArch64SharedObject < Minitest::Test
   C
 
   # Two units whose merge keeps GOT-relative relocations against symbols that
-  # become internal (access.c reaches shared_counter and bump through the GOT
-  # because they are extern at compile time), plus a file-scope pointer
+  # become internal (access.c reaches a64_shared_counter and a64_bump through
+  # the GOT because they are extern at compile time), plus a file-scope pointer
   # initializer that lands an R_AARCH64_ABS64 in .data.
+  #
+  # The exported names carry an a64_ prefix so they cannot collide with the
+  # same-shaped fixture in test_shared_object.rb / test_pic.rb, where the
+  # collision was real: musl's dlclose is effectively a no-op and Fiddle's
+  # dlopen uses RTLD_GLOBAL, so a library loaded earlier in the process stays
+  # resident and its definition wins ELF's default symbol interposition for
+  # anything loaded later under the same name (glibc does not show this -- its
+  # dlclose really unloads). Nothing loads *this* fixture into the test
+  # process: it is aarch64 code, run under qemu or read statically. The prefix
+  # is here so that the three fixtures stay distinct if that ever changes, not
+  # because a collision is reachable today.
   ACCESS = <<~C
-    extern int shared_counter;
-    extern int bump(int by);
+    extern int a64_shared_counter;
+    extern int a64_bump(int by);
     typedef int (*fn)(int);
-    int read_counter(void) { return shared_counter; }
-    void write_counter(int v) { shared_counter = v; }
-    int call_via_ptr(int x) { fn f = bump; return f(x); }
+    int a64_read_counter(void) { return a64_shared_counter; }
+    void a64_write_counter(int v) { a64_shared_counter = v; }
+    int a64_call_via_ptr(int x) { fn f = a64_bump; return f(x); }
   C
   DEFINE = <<~C
-    int shared_counter = 100;
-    int bump(int by) { return by + 1; }
-    char *stored = "world";
-    char *stored_message(void) { return stored; }
+    int a64_shared_counter = 100;
+    int a64_bump(int by) { return by + 1; }
+    char *a64_stored = "world";
+    char *a64_stored_message(void) { return a64_stored; }
   C
 
   # A translation unit that imports from libc: an external function call (strlen,
@@ -147,7 +158,7 @@ class TestAArch64SharedObject < Minitest::Test
     rela = r.relocation_sections.find { |rs| rs.section.name == ".rela.dyn" }
     refute_nil rela, ".rela.dyn must be present for GOT slots and data pointers"
 
-    # Two GOT slots (shared_counter, bump) and one data-pointer initializer.
+    # Two GOT slots (a64_shared_counter, a64_bump) and one data-pointer initializer.
     assert_equal 3, rela.relocations.size
     rela.relocations.each do |reloc|
       assert_equal R_AARCH64_RELATIVE, reloc.type, "every dynamic relocation is RELATIVE"
@@ -538,14 +549,14 @@ class TestAArch64SharedObject < Minitest::Test
 
     consumer = <<~C
       #include <stdio.h>
-      int read_counter(void); void write_counter(int);
-      int call_via_ptr(int); char *stored_message(void);
+      int a64_read_counter(void); void a64_write_counter(int);
+      int a64_call_via_ptr(int); char *a64_stored_message(void);
       int main(void) {
-        printf("%d\\n", read_counter());
-        write_counter(55);
-        printf("%d\\n", read_counter());
-        printf("%d\\n", call_via_ptr(42));
-        printf("%s\\n", stored_message());
+        printf("%d\\n", a64_read_counter());
+        a64_write_counter(55);
+        printf("%d\\n", a64_read_counter());
+        printf("%d\\n", a64_call_via_ptr(42));
+        printf("%s\\n", a64_stored_message());
         return 0;
       }
     C

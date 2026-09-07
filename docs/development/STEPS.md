@@ -13606,3 +13606,53 @@ suppress + 自名」(6.10.3.4 の交差則)に変え、c-testsuite 00201 の ski
 | `test/test_shared_object.rb`(`DT_SONAME` / `DT_NEEDED` の経路) | — | **61 runs / 0 failures / 0 skips** |
 | `test/test_elf_reader.rb` | — | 24 runs / 0 failures |
 | 生成物の sha256(`benchmark/c/*.c` 5 + `examples/m6/*.c` 7) | — | **12 件すべて一致** |
+
+---
+
+## musl-dlopen-fixture-symbols-1 — 週次を回さなければ、次の定期実行まで気付かなかった
+
+**内容**: dlopen するテストフィクスチャがエクスポートするシンボル名を、ファイルごとに
+一意にした(`test_pic.rb` に `pic_`、`test_aarch64_shared_object.rb` に `a64_`)。
+週次の `musl` ジョブが `TestPic` で 1 件落ちていたのを閉じた。**テストだけの変更で、
+`lib/` は触っていない。**
+
+**見つけ方**が要点である。今日の 5 本(#121〜#125)をマージした後、**Tier A の外を
+確かめるために週次を dispatch した**。Tier A は x86-64 / glibc しか回さないので、
+この失敗は**原理的に出ない**。dispatch していなければ次の定期実行まで気付かなかった。
+
+**原因**は #117 と同じ根で、範囲が違う。`test_pic.rb` と `test_shared_object.rb` が
+**同じ名前**の `shared_counter` / `read_counter` / `write_counter` をエクスポートする
+`.so` をそれぞれ dlopen し、**どちらも途中で 55 を書き込む**。musl の `dlclose` は
+実質 no-op、Fiddle の dlopen は `RTLD_GLOBAL` なので、後から読み込んだ側の
+`shared_counter` は**先に読み込まれた定義**に解決される(ELF の既定のシンボル介入)。
+先のテストが 55 を書いた後なので、後のテストの「初期値 100」が 55 になる。
+
+**seed 依存であることを先に確定させた**(`ruby:4.0-alpine`、2 ファイルを 1 プロセスで実行):
+
+| seed | 実行順 | 結果 |
+|---|---|---|
+| 1 | TestPic → TestSharedObject | 0 failures |
+| **7** | **TestSharedObject → TestPic** | **1 failure(Expected 100 / Actual 55)** |
+| 42 | TestPic → TestSharedObject | 0 failures |
+
+**`44ad2e0` が壊したのではなく、seed が変わったから出た。** 今日の変更でテスト数が
+3416 → 3429 に増え、順序が変わっている。**「再実行すると緑になることがある」形の
+赤は、CI の信号として最も質が悪い** — 直ったのか順序が変わっただけなのか区別できない。
+
+**設計判断**:
+
+- **`static` 化(#117 の手)は使えない。** あちらは構築子の実行順を測るフィクスチャで、
+  内部リンケージにしても測るものが変わらなかった。こちらは**`extern` の解決
+  (GOT 経由のクロス TU 参照)そのものを測る**ので、エクスポートを止められない。
+  一意な名前にするのが唯一の手である。
+- **`test_shared_object.rb` は変えず、他の 2 ファイルに接頭辞を付けた。**
+  #117 が触ったばかりで、こちらを基準の名前と見なした。
+- **残る重複 3 件は直していない。** dlopen する全フィクスチャを洗って
+  `a_val` / `b_val`(定数を返すだけ、値も同一)、`my_crc`(libz の `crc32` を同じ入力で
+  呼ぶだけ)、`my_len`(`strlen` の素通し)が重なっていたが、**いずれも状態を持たず、
+  どちらの定義が勝っても観測値が変わらない**。名前を分ける規則の目的は
+  「観測が実行順に依存しないこと」であって、名前の一意性それ自体ではない。
+
+**アーキテクチャが違えば衝突しない。** `test_aarch64_shared_object.rb` の接頭辞は
+**防御的なもの**で、aarch64 の `.so` が x86-64 のテストプロセスに dlopen されることは
+無い(qemu の別プロセスか `ELFReader` の静的読み取りである)。コメントにもそう書いた。
