@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: debt
 opened: 2026-08-27
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-07
+branch: macro-hide-set-intersection
+pr: 121
+steps: [macro-hide-set-intersection-1]
 ---
 
 # マクロ再展開の hide-set を Prosser の交差則で計算する(c-testsuite 00201)
@@ -97,4 +97,29 @@ ROADMAP §3 の散文にだけ載っていた負債を起票した。再現・�
 
 ## 決着
 
-(未着手)
+**解消した**(`macro-hide-set-intersection-1`。設計判断の本文は
+[STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+関数形式マクロの置換 paint を「呼び出し名の suppress ∩ 閉じ括弧の suppress + 自名」に
+変えた。**着手時の注意に挙げた「どちらの段で交差を取るか」は置換 paint 側で、
+引数の展開段は触っていない。**
+
+受け入れ条件の照合:
+
+| 条件 | 結果 |
+|---|---|
+| `SKIP` から `"00201"` を消して `rake test` が 0 failures | **3417 runs / 14048 assertions / 0 failures / 0 errors / 39 skips** |
+| 最小再現が `42` を出す | `-E` が gcc と同じトークン列(`printf("%d\n",xy);`。空白の入れ方だけ違う)。c-testsuite ランナーは実行結果のバイト一致で判定し、合格した |
+| 自己再帰・相互再帰が引き続き止まる | 既存 4 テスト + 追加したユニットテストが 0 failures |
+| `test/test_preprocessor.rb` が 0 failures | **226 runs / 0 failures / 0 skips** |
+
+issue が書いた「合格数 201 → 202」という数値には**一致しない**。起票(2026-08-27)以降に
+別の SKIP が増減しているためで、実測は `TestCSuite` の skip が 14 → 13 である。
+`rake test` 全体の skip は 41 → 39 で、**2 件減るのが正しい** —
+c-testsuite は `TestCSuite` と `TestCSuiteAArch64` の 2 本走るので 00201 は 2 件 skip していた。
+
+**副産物**: 受け入れ条件の「既存の 4 挙動が壊れていないこと」を gcc と突き合わせて
+確かめたところ、そのうち `f(f)(1)` は**もともと gcc と一致していなかった**
+(gcc `f(1)` / rubycc `1`。`master` でも同じ)。Step 27 の記録が「一致させた」と
+書いていた分を訂正し、[`macro-argument-hide-set`](macro-argument-hide-set.md)(GAPS §1 の **AC**)
+として起票した。

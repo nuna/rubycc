@@ -1726,10 +1726,10 @@ module Rubycc
           return
         end
 
-        raw, commas = collect_arguments(tok, queue)
+        raw, commas, close = collect_arguments(tok, queue)
         raw = match_arity(tok, macro, raw)
         invocation = Invocation.new(raw, commas, Array.new(raw.length))
-        queue.unshift(*substitute(tok, macro, invocation))
+        queue.unshift(*substitute(tok, macro, invocation, close))
       end
 
       # Whether the next non-newline token waiting in `queue` opens an argument
@@ -1744,9 +1744,12 @@ module Rubycc
       # confirmed by #call_follows?, then tokens up to the matching ")", split on
       # top-level commas. Nested parentheses are balanced so a comma or ")" inside
       # them belongs to an argument, and a newline is inter-token space that is
-      # dropped. Returns [arguments, commas]: the argument token lists and the
+      # dropped. Returns [arguments, commas, close]: the argument token lists, the
       # separating comma tokens themselves (kept so #__VA_ARGS__ can reproduce the
-      # exact spelling). Running out of tokens is an unterminated invocation.
+      # exact spelling), and the closing ")" token itself -- #expand_function_macro
+      # passes it on to #paint, whose hide-set intersection (6.10.3.4) needs the
+      # ")"'s own painting, not just its text. Running out of tokens is an
+      # unterminated invocation.
       def collect_arguments(tok, queue)
         queue.shift while queue.first&.newline?
         queue.shift # the "("
@@ -1762,7 +1765,7 @@ module Rubycc
             next
           elsif depth.zero? && token.punct?(")")
             arguments << current
-            return [arguments, commas]
+            return [arguments, commas, token]
           elsif depth.zero? && token.punct?(",")
             arguments << current
             commas << token
@@ -1814,15 +1817,18 @@ module Rubycc
 
       # Builds a macro's substitution by walking its replacement list once
       # (6.10.3). `invocation` carries a function-like call's arguments, or is nil
-      # for an object-like macro. "#" stringizes the following parameter's raw
-      # argument; "##" pastes the token to its left onto the operand to its right;
-      # a plain parameter becomes its pre-expanded argument, unless it abuts a
-      # "##", where the raw argument is used instead (6.10.3.1p1); every other
-      # token is a literal relocated to the use site and painted with the macro's
-      # name. `span` tracks how many tokens the token just placed contributed, so
-      # a following "##" knows its left operand (0 marks a placemarker).
-      def substitute(tok, macro, invocation)
-        painted = paint(tok)
+      # for an object-like macro. `close` is the ")" token that closed a
+      # function-like call's argument list (nil for an object-like macro, which
+      # has none); #paint needs it for the hide-set intersection rule. "#"
+      # stringizes the following parameter's raw argument; "##" pastes the token
+      # to its left onto the operand to its right; a plain parameter becomes its
+      # pre-expanded argument, unless it abuts a "##", where the raw argument is
+      # used instead (6.10.3.1p1); every other token is a literal relocated to the
+      # use site and painted with the macro's name. `span` tracks how many tokens
+      # the token just placed contributed, so a following "##" knows its left
+      # operand (0 marks a placemarker).
+      def substitute(tok, macro, invocation, close = nil)
+        painted = paint(tok, close)
         rep = macro.replacement
         result = []
         span = 0
@@ -2031,11 +2037,27 @@ module Rubycc
         )
       end
 
-      # The painting a token produced by expanding `tok` carries: `tok`'s own
-      # suppression set plus the macro name now being expanded, frozen so the
-      # shared list is never mutated by a later token's painting.
-      def paint(tok)
-        (tok.suppress + [tok.text]).freeze
+      # The painting a token produced by expanding `tok` carries: the names it
+      # must not expand into again, plus the macro name now being expanded,
+      # frozen so the shared list is never mutated by a later token's painting.
+      # `close` is the ")" that closed a call, or nil for an object-like macro,
+      # which has no call to close and so keeps `tok`'s own set entire.
+      #
+      # A call carries over only the names suppressed for *both* its name and
+      # its ")" -- the hide-set intersection of 6.10.3.4. The two sets differ
+      # only when the call was stitched together out of tokens with different
+      # histories: a name produced by an expansion (painted against it) reaching
+      # across to a ")" spelled in the source (painted against nothing). Taking
+      # the union there would leak an enclosing expansion's paint into a call it
+      # never wrote, which is what stalled c-testsuite 00201, where a "##" paste
+      # forms the macro name and the source supplies its argument list. Where
+      # name and ")" descend from the same replacement -- the ordinary case, and
+      # what a self-referential or mutually recursive macro produces -- the two
+      # sets are equal, so the intersection changes nothing and the recursion
+      # guard stands.
+      def paint(tok, close)
+        hidden = close ? (tok.suppress & close.suppress) : tok.suppress
+        (hidden + [tok.text]).freeze
       end
 
       def comma_token(site, suppress)

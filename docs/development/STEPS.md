@@ -927,8 +927,13 @@ __has_include / __has_attribute / __has_builtin、#pragma once。実装は 2 フ
   照合して 2 回目以降を丸ごとスキップ。その他の #pragma は受理して無視
   (gcc 固有 pragma で診断爆死しないため)。_Pragma は未対応(ROADMAP どおり)。
 
+**訂正(`macro-hide-set-intersection-1`)**: 上の 4 挙動のうち **`f(f)(1)`→`1` は
+gcc と一致していない**(2026-09-07 実測: gcc は `f(1)`)。引数由来のトークンに
+hide-set を足さない設計の帰結で、[issue](../../issues/macro-argument-hide-set.md) に
+起票した(GAPS §1 の AC)。他の 3 つと 00201 は一致を実測で確認済み。
+
 **トレードオフ**: hide-set 交差なしの青染めは病的な自己入れ子で gcc と発散し得る
-(上記)。`+ ## +` → `++` のような「有効だが意外な」貼り付けは gcc 同様に許容。
+(上記。**閉じ括弧との交差則は `macro-hide-set-intersection-1` で導入した**)。`+ ## +` → `++` のような「有効だが意外な」貼り付けは gcc 同様に許容。
 #__VA_ARGS__ の空白再現はコンマトークンの space_before 粒度(コメント由来の
 空白も 1 個の空白になる)。
 
@@ -13309,3 +13314,63 @@ Debian / Ubuntu の multiarch レイアウトでは実体が
 `tools/ci_check_skips.rb` は Tier A(glibc)で走るが、そこでは skip が増えないので影響しない。
 `musl` ジョブはもともとこのツールを走らせていない(Alpine に aarch64 musl クロスが無く、
 aarch64 の差分テストが全部 skip するため。`weekly.yml` のコメント)。
+
+---
+
+## macro-hide-set-intersection-1 — 交差が効くのは、呼び出しが 2 つの履歴から縫い合わされたときだけ
+
+**内容**: 関数形式マクロの置換に塗る hide-set を「呼び出し名の suppress ∩ **閉じ括弧の**
+suppress + 自名」(6.10.3.4 の交差則)に変え、c-testsuite 00201 の skip を外した。
+`collect_arguments` が閉じ括弧トークン自身も返し、`substitute` 経由で `paint` に渡す。
+オブジェクト形式マクロは閉じ括弧を持たないので従来どおり(和集合)である。実装は implementer、
+方針は Step 27 に記録済みだったため探索は無し。
+
+**設計判断**:
+
+- **交差が既存の再帰抑止を壊さない理由は「両端の履歴が同じかどうか」に尽きる**。
+  呼び出しの名前と `)` が同じ置換リストから出ていれば両者の suppress は等しく、
+  **交差は恒等**である。自己再帰(`#define f(x) f(x)`)も相互再帰(`a` → `b(a)`)も
+  この形なので挙動は変わらない。差が出るのは**名前が展開で生まれ、引数リストがソースに
+  書かれている**場合だけで、それが 00201 である — `CAT(A,B)` の `##` が
+  `{CAT, CAT2}` を負った `AB` を作り、その `AB` がソースの `(x)` を取る。
+  `)` は無印なので交差は空、置換 `CAT(x,y)` は `{AB}` だけで塗られて再展開が進む。
+- **Prosser の `hsadd`(引数由来トークンにも hide-set を足す)は採らなかった**。
+  今回の変更は置換の paint だけである。引数側も同時に直すと、00201 が通った理由と
+  `f(f)(1)` の値が変わった理由が 1 つの差分に同居して切り分けられなくなる。
+  引数側は[別 issue](../../issues/macro-argument-hide-set.md)(GAPS §1 の **AC**)に切った。
+- **skip を消すときは、その skip の許可規則も消す**。`config/ci/skip-baseline.json` の
+  `native-x86` / `native-aarch64` 両プロファイルに 00201 の理由が登録されていた。
+  `min_count: 0` なので**残しても CI は落ちない**が、落ちないからこそ気付かれずに
+  許可リストが嘘になる(存在しない skip を許可し続ける)。
+- **外部スイート経由でしか固定されていない挙動には、単体の試験を足す**。00201 は
+  c-testsuite のランナー越しにしか観測できなかったので、
+  `test/test_preprocessor.rb` に交差則のユニットテストを追加した。
+
+**測ったこと**(2026-09-07、WSL2 / gcc 14.2。`-E` の最終行):
+
+| 形 | gcc | rubycc |
+|---|---|---|
+| `#define f(x) f(x)` / `f(1)` | `f(1)` | `f(1)` |
+| `#define g f` `#define f(x) x` / `g(3)` | `3` | `3` |
+| **`#define f(x) x` / `f(f)(1)`** | **`f(1)`** | **`1`**(食い違い) |
+| `#define a b(a)` `#define b(x) x` / `a` | `a` | `a` |
+| **c-testsuite 00201** | **`xy`** | **`xy`**(本ステップで一致) |
+
+**記録を信じずに測ったら、Step 27 の「gcc と一致させた」が 1 件外れていた。**
+上表の `f(f)(1)` がそれで、`master`(`26db8da`)でも同じ出力なので今回の変更が
+生んだものではない。Step 27 の節に訂正を入れ、GAPS §1 に **AC** として起票した。
+**受け入れ条件が「既存の 4 挙動が壊れていないこと」だったので、壊れていないことを
+確かめる過程で、そもそも 1 つは主張どおりでなかったことが出てきた**という形である。
+
+**検証**:
+
+| | master(`26db8da`) | 本ステップ |
+|---|---|---|
+| `rake test` | 3416 runs / 41 skips | **3417 runs / 14048 assertions / 0 failures / 0 errors / 39 skips** |
+| `test/test_c_suite.rb` | 14 skips | **223 runs / 0 failures / 13 skips** |
+| `test/test_preprocessor.rb` | — | **226 runs / 0 failures / 0 skips** |
+| `tools/ci_check_skips.rb`(`native-x86`) | — | **OK**(39 skips ≤ 45、3417 runs ≥ 2500) |
+
+**skip が 2 件減るのは正しい** — c-testsuite は `TestCSuite` と `TestCSuiteAArch64` の
+2 本走るので、00201 は最初から 2 件 skip していた。runs が 1 増えたのは追加した
+ユニットテストである。**増えた skip は無い**(一覧を突き合わせて確認)。
