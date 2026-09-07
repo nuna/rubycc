@@ -627,11 +627,22 @@ module Rubycc
       # A NUL-terminated string starting at `offset` within a string table's
       # bytes; an out-of-range offset yields "" rather than raising, since a
       # zero sh_name legitimately points at the leading NUL (the empty name).
+      #
+      # The slice is left as bytes, like everything rubycc reads (lib/rubycc.rb),
+      # and this one method is where every name the reader hands back comes from:
+      # section names, .symtab / .dynsym symbol names, DT_SONAME / DT_NEEDED, and
+      # version names. A string table holds whatever bytes produced the object —
+      # a C identifier cannot carry non-ASCII, an assembler label can — and two
+      # strings holding the same non-ASCII bytes under different encodings are
+      # neither == nor eql? and hash apart, so tagging here would leave a name
+      # unfindable through the bytes a caller already holds (#symbol, #section)
+      # and spelled differently from the same name read by ArReader, which takes
+      # it out of this very string table when it builds an archive's index.
       def read_string(strtab, offset)
-        return "" if offset >= strtab.bytesize
+        return "".b if offset >= strtab.bytesize
 
         stop = strtab.index("\0".b, offset) || strtab.bytesize
-        strtab.byteslice(offset...stop).force_encoding(Encoding::UTF_8)
+        strtab.byteslice(offset...stop)
       end
 
       # Guards every structural read: the whole [offset, length) span must lie

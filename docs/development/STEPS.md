@@ -13555,3 +13555,54 @@ suppress + 自名」(6.10.3.4 の交差則)に変え、c-testsuite 00201 の ski
 | `test/test_command_line.rb` | — | 7 runs / 0 failures |
 | `test/test_rmake_executor.rb` | — | 57 runs / 0 failures |
 | `test/test_mkmf_conftest.rb`(`CommandLine` を共有) | — | 10 runs / 0 failures / 2 skips |
+
+---
+
+## elf-reader-name-encoding-1 — 直した側が、直していない側との食い違いを作る
+
+**内容**: `ELFReader` が返す名前をバイト列に揃えた(`read_string` の
+`force_encoding(UTF-8)` を削除)。**この 1 メソッドが、セクション名・`.symtab` /
+`.dynsym` のシンボル名・`DT_SONAME` / `DT_NEEDED`・バージョン名の全部の出所**である。
+前ステップ `ar-reader-name-encoding-1` の直接の続きで、GAPS の **AD** を閉じた。
+実装は heavy-implementer。
+
+**起票と解消が同じ日になったのは、前ステップが食い違いを移したからである。**
+`ArReader` だけを規約(`lib/rubycc.rb`「読んだものはバイト列」)に揃えた結果、
+食い違いは「名前の長さの間」から「2 つのリーダの間」へ動いた。**片方だけ直すと、
+直っていない側との境界に同じ問題が生まれる** — 分けて起票した判断自体は変えないが、
+続けて閉じないと差分の意味が半分になる。
+
+**設計判断**:
+
+- **空名の早期 return も `"".b` にした。** `strtab` が空で `offset == 0` のときだけ通る
+  経路で、そこだけ UTF-8 のリテラルが漏れていた。**1 か所でも漏れると
+  「全部バイト列」という不変条件が言えなくなる**ので、リテラル側も揃えた。
+- **補間の危険は、探した結果この範囲には無かった。** `link/` と `objfile/` の補間箇所を
+  全件読み、ELF 名と結合するリテラルが**すべて ASCII のみ**であることを確認した
+  (Ruby は ASCII だけの UTF-8 とバイト列を互換に扱うので、この形は安全である)。
+  パス由来の文字列と出会う 2 箇所は前ステップが `.b` 済みで、**今回 `sym.name` 側も
+  バイト列になって両側が揃った** — 変更前は「UTF-8 の名前 + バイト列のラベル」という、
+  両側に非 ASCII が来ると壊れる形が残っていた。
+- **前ステップが残した回避を外した。** `test_linker_pulls_the_member_defining_a_non_ascii_symbol`
+  は ELF 側の綴りを跨ぐために比較を `.b` に落としてあった。同じ回避が隣のテストにも
+  あったので併せて外している。**回避はコメントで理由と外す条件を書いておくと、
+  次のステップで確実に回収できる。**
+
+**測ったこと**(2026-09-08、ホスト、Ruby 3.4.5):
+
+| | 変更前 | 本ステップ |
+|---|---|---|
+| `ELFReader#symbol("helper_\xE6\x97\xA5".b)` | **`nil`**(同じ 10 バイトなのに引けない) | 引ける |
+| 非 ASCII の `DT_SONAME` を読み戻す | `"lib日.so.1"`(UTF-8) | 同じバイト列(BINARY) |
+| `ArReader#member_defining` ↔ `ELFReader#symbol` | 綴りが違うので相互に引けない | 相互に引ける |
+
+新規テストは**修正前に落ちることを実測してから**入れた(2 件とも fail)。
+
+**検証**:
+
+| | master(`73cb518`) | 本ステップ |
+|---|---|---|
+| `rake test` | 3426 runs / 0 failures / 0 errors / 39 skips | **3429 runs / 0 failures / 0 errors / 39 skips**(+3 は追加テスト) |
+| `test/test_shared_object.rb`(`DT_SONAME` / `DT_NEEDED` の経路) | — | **61 runs / 0 failures / 0 skips** |
+| `test/test_elf_reader.rb` | — | 24 runs / 0 failures |
+| 生成物の sha256(`benchmark/c/*.c` 5 + `examples/m6/*.c` 7) | — | **12 件すべて一致** |
