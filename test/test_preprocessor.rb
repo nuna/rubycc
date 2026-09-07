@@ -280,7 +280,7 @@ class TestPreprocessor < Minitest::Test
                  tokens.map(&:value)
   end
 
-  # --- painting (6.10.3.4): the four rule-driven behaviors -------------------
+  # --- painting (6.10.3.4): the rule-driven behaviors ------------------------
 
   def test_self_referential_function_macro_keeps_the_literal_name
     # "#define f(x) f(x)" and "f(1)": the literal "f" is painted, so the rescanned
@@ -300,6 +300,10 @@ class TestPreprocessor < Minitest::Test
   def test_macro_name_from_an_argument_still_expands
     # The inner "f" arrives through the argument, so it is not painted and forms
     # a call with the source "(1)": "f(f)(1)" yields "1".
+    #
+    # This pins today's behavior, not gcc's: gcc leaves "f(1)", because it paints
+    # argument-borne tokens too. That deviation is issues/macro-argument-hide-set.md
+    # (GAPS AC), and closing it changes the value this test expects.
     tokens = pp("#define f(x) x\nf(f)(1)").reject(&:eof?)
     assert_equal [1], tokens.map(&:value)
   end
@@ -308,6 +312,17 @@ class TestPreprocessor < Minitest::Test
     tokens = pp("#define a b(a)\n#define b(x) x\na").reject(&:eof?)
     assert_equal [:ident], tokens.map(&:type)
     assert_equal ["a"], tokens.map(&:value)
+  end
+
+  def test_pasted_macro_name_expands_against_a_source_argument_list
+    # The call is stitched together from two histories: "CAT(A,B)" pastes into an
+    # "AB" hidden against {CAT, CAT2}, and that "AB" takes the source's own "(x)",
+    # whose ")" is hidden against nothing. The hide sets intersect to nothing, so
+    # the replacement "CAT(x,y)" is hidden only against AB and still expands --
+    # c-testsuite 00201, and what the union of the two sets would stall on.
+    source = "#define CAT2(a,b) a##b\n#define CAT(a,b) CAT2(a,b)\n#define AB(x) CAT(x,y)\nCAT(A,B)(x)"
+    tokens = pp(source).reject(&:eof?)
+    assert_equal ["xy"], tokens.map(&:value)
   end
 
   # --- __VA_ARGS__ -----------------------------------------------------------

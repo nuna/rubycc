@@ -48,7 +48,6 @@ class TestCSuite < Minitest::Test
     "00150" => "block-scope compound literals now work (Step 53), but this case uses file-scope compound literals with static storage duration (a deliberate diagnostic)",
     "00152" => "#line directive (accept-only planned)",
     "00170" => "passes 'int *' where 'unsigned int *' expected (enum underlying type is unsigned in gcc; rubycc models enums as int, so this pointer-sign mismatch is a conforming rejection) — the enum function-pointer identity itself is now fixed and unit-tested",
-    "00201" => "macro re-expansion needs Prosser hide-set intersection (documented Step 27 deviation)",
     "00204" => "struct-by-value / HFA calling convention and struct va_arg (out of scope) — the exact-fit string initializer it also exercised is now fixed",
     "00206" => "#pragma push_macro/pop_macro (silently-ignored pragma)",
     "00207" => "variable-length arrays (out of scope)",
