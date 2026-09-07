@@ -8,6 +8,7 @@ pr:
 steps:
   - rmake-automake-shell-recipes-1
   - rmake-automake-shell-recipes-2
+  - rmake-no-shell-fallback-1
 ---
 
 # rmakeがAutomake/libtoolのshell compound recipeを実行できない
@@ -124,3 +125,18 @@ recipe を踏めば挙動が変わる(`sh` が無いのだから別のエラー�
 **現状は「shell の有無で結果が変わる」= R5 の境界が破れている**。
 
 範囲の決定(どの構文を rmake 自身が解釈するか)は次段の作業とする。
+
+### 2026-09-08 — シェルに渡る穴を閉じた(`rmake-no-shell-fallback-1`、ブランチ `rmake-no-shell-fallback`)
+
+上の作業ログが「`sh:` からエラーが出ている」と記録した状態を閉じた。原因は
+`Process.spawn(env, *argv, options)` が **`argv` 1 語のとき `spawn(env, "文字列")` の形になり、
+シェルを呼ぶかどうかを Ruby が決めていた**ことである。Ruby は**シェルの予約語を
+`/bin/sh` に回す**(実測: `for do done if then elif else fi case esac while until in time ! { } [[ ]]`)。
+
+`spawn` に `[プログラム, argv0]` の配列形式を渡して必ず直接 exec させ、あわせて
+コマンド名の位置の予約語 15 語を `UnsupportedSyntaxError` にした。再現 Makefile は
+`all: unsupported shell construct (shell reserved word 'for')` で止まる。
+
+**残っているのは対応範囲の決定である** — `for` / `if` / brace group のどれを rmake 自身が
+解釈するか。本ステップはそこには手を付けていない(断り方を設計どおりにしただけ)。
+詳細は STEPS.md の `rmake-no-shell-fallback-1`。

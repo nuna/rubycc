@@ -13488,3 +13488,70 @@ suppress + 自名」(6.10.3.4 の交差則)に変え、c-testsuite 00201 の ski
 | `test/test_ar_archive.rb` | — | 29 runs / 0 failures |
 | `test/test_cli_argv_encoding.rb`(非 ASCII の `r` / `x` / `t`) | 13 runs / 0 failures | **13 runs / 0 failures**(期待値は不変) |
 | 生成物の sha256(`benchmark/c/*.c` 5 + `examples/m6/*.c` 7) | — | **12 件すべて一致** |
+
+---
+
+## rmake-no-shell-fallback-1 — シェルを呼ぶかどうかを Ruby に決めさせていた
+
+**内容**: rmake が recipe の断片を `/bin/sh` に渡してしまう穴を塞いだ。DESIGN R5 は
+「最小ターゲット環境に `/bin/sh` は無い」ためシェルを使わないと定めており、
+`lib/rubycc/command_line.rb` の冒頭も「シェルへのフォールバックは予備として持たない —
+シェルが在るかどうかで結果が変わることこそ、この実装が消そうとしているもの」と書いていた。
+**その宣言が破れていた。** `rmake-automake-shell-recipes` の作業ログが記録した
+「`sh:` からエラーが出ている」の原因である。実装は implementer。
+
+**原因**は `Process.spawn` の呼び方だった。`run_external` は
+`Process.spawn(env, *argv, options)` と書いており、**`argv` が 1 語のときだけ
+`spawn(env, "文字列")` の形になる**。この形では**シェルを呼ぶかどうかを Ruby が決める**。
+
+**Ruby はシェルの予約語を `/bin/sh` に回す**(Ruby 3.4.5 で実測、2026-09-08。
+存在しない名前を渡して `Errno::ENOENT`(直接 exec)か `sh:` の出力かで判別した):
+
+| | 語 |
+|---|---|
+| `/bin/sh` 経由 | `for do done if then elif else fi case esac while until in time ! { } [[ ]]` |
+| 直接 exec | 上記以外(`select` / `function` / 普通の名前) |
+
+観測されていた 3 つの構文エラー(`fi` / `done` / `}`)は、ちょうど 1 語になる断片と
+一致する。**メタ文字を含むかどうかではなく、予約語かどうかで分かれていた。**
+
+**設計判断**:
+
+- **`spawn` に `[プログラム, argv0]` の配列形式を渡す。** これで**語数にも綴りにも
+  よらず必ず直接 exec** になり、判断が Ruby の手を離れる。2 語以上の命令は
+  もともと直接 exec だったので、1 語をそれに揃えた形である。
+- **予約語はコマンド名の位置で断る。** 配列形式だけだと `for` が
+  `cannot execute for` になり、**コンパイラや道具が無いかのような失敗に見える**。
+  `mkmf-shell-free-conftest-1` が決めた「分解できない構文に出会ったら明示的に例外を
+  上げ、シェルには絶対に委ねない」の適用として、`unsupported shell construct
+  (shell reserved word 'for')` を上げる。**ループや条件分岐は実装していない** —
+  対応範囲の決定は別の作業である。
+- **断る語は 15 語に絞った**(`for do done if then elif else fi case esac while until { } !`)。
+  Ruby の一覧にある `in` / `time` / `[[` / `]]` は入れていない。`in` と `time` は
+  普通の語としても現れるからで、**穴自体は配列形式が塞いでいる**ので、
+  ここは診断の質の問題であって安全性の問題ではない。
+- **見るのはコマンド名の位置だけ。** `echo fi` や `-Wl,{...}` は普通の語のままである。
+
+**測ったこと**(2026-09-08、このホスト。issue の再現 Makefile):
+
+| | 出力 |
+|---|---|
+| GNU make | `found: a.txt`(exit 0) |
+| rmake(変更前) | `sh: 1: Syntax error: "fi" unexpected` ほか 2 件 → `recipe command failed (exited with status 2)` |
+| rmake(本ステップ) | `all: unsupported shell construct (shell reserved word 'for')` |
+
+`-j1` / 既定 / `-j4` の 3 通りで同じ診断が出ることを確認した(移譲先が
+並列時は別のラップになるかもしれないと報告したが、再現しなかった)。
+
+**この recipe が通るようになったわけではない。** 通らないことが**設計どおりの断り方で
+分かる**ようになった、というのが本ステップの内容である。どの構文を rmake 自身が
+解釈するかは `rmake-automake-shell-recipes` に残る。
+
+**検証**:
+
+| | master(`112981f`) | 本ステップ |
+|---|---|---|
+| `rake test` | 3421 runs / 0 failures / 0 errors / 39 skips | **3426 runs / 0 failures / 0 errors / 39 skips**(+5 は追加テスト) |
+| `test/test_command_line.rb` | — | 7 runs / 0 failures |
+| `test/test_rmake_executor.rb` | — | 57 runs / 0 failures |
+| `test/test_mkmf_conftest.rb`(`CommandLine` を共有) | — | 10 runs / 0 failures / 2 skips |

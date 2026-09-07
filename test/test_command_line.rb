@@ -35,6 +35,30 @@ class TestCommandLine < Minitest::Test
     assert_equal ["./conftest"], Rubycc::CommandLine.argv("./conftest")
   end
 
+  def test_refuses_a_shell_reserved_word_in_command_position
+    %w[for do done if then elif else fi case esac while until { } !].each do |word|
+      command = "#{word} x"
+      error = assert_raises(Rubycc::CommandLine::UnsupportedSyntaxError, command) do
+        Rubycc::CommandLine.argv(command)
+      end
+      assert_equal "shell reserved word '#{word}'", error.construct, command
+      assert_includes error.message, command.inspect
+    end
+  end
+
+  def test_a_reserved_word_after_a_connector_is_still_caught_in_command_position
+    error = assert_raises(Rubycc::CommandLine::UnsupportedSyntaxError) do
+      Rubycc::CommandLine.parse("true; for p in a b; do :; done")
+    end
+    assert_equal "shell reserved word 'for'", error.construct
+  end
+
+  def test_the_same_word_in_argument_position_is_a_plain_word
+    assert_equal ["echo", "fi"], Rubycc::CommandLine.argv("echo fi")
+    assert_equal ["echo", "done"], Rubycc::CommandLine.argv("echo done")
+    assert_equal ["ld", "-Wl,{foo}"], Rubycc::CommandLine.argv("ld -Wl,{foo}")
+  end
+
   def test_refuses_what_only_a_shell_could_run
     {
       "gcc a.c | tee log" => "pipe '|'",
