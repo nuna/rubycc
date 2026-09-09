@@ -1266,6 +1266,62 @@ RECIPES = BASE_RECIPES.merge(
     }
   },
 
+  # The suite here cannot pass without the extension: every test calls
+  # DebugInspector.open, which the C file defines and nothing else provides --
+  # there is no pure-Ruby implementation to fall back to, and no copy of this
+  # gem ships with the interpreter. The sanity expression is still
+  # injected_so_loaded?, because a suite that cannot pass is not the same
+  # guarantee as knowing *which* .so answered the require.
+  "debug_inspector" => {
+    version: "1.2.0",
+    tarball: "https://github.com/banister/debug_inspector/archive/refs/tags/v1.2.0.tar.gz",
+    sos: { "lib/debug_inspector.so" => "lib/debug_inspector.so" },
+    test_deps: %w[minitest],
+    # The Rakefile's Rake::TestTask: libs = test + lib, test_files
+    # FileList["test/**/*_test.rb"]. test/test_helper.rb puts lib on the load
+    # path itself and requires minitest/autorun, so the loader form is enough.
+    runner: :ruby_files,
+    load_paths: %w[lib test],
+    test_glob: "test/**/*_test.rb",
+    sanity: {
+      requires: %w[debug_inspector],
+      expr: "injected_so_loaded?"
+    }
+  },
+
+  # The gem is named bindex; everything inside it is spelled skiptrace, so the
+  # upstream tarball unpacks as skiptrace-0.8.1 and the require is "skiptrace".
+  "bindex" => {
+    version: "0.8.1",
+    tarball: "https://github.com/gsamokovarov/bindex/archive/refs/tags/v0.8.1.tar.gz",
+    sos: { "lib/skiptrace/internal/cruby.so" => "lib/skiptrace/internal/cruby.so" },
+    test_deps: %w[minitest],
+    # test/test_helper.rb reaches for the MiniTest constant, the spelling
+    # minitest carried before the rename. Measured on this host (2026-09-10):
+    # 5.25.5 no longer defines it (the suite dies with "uninitialized constant
+    # Skiptrace::MiniTest" under both compilers), 5.18.1 still does. 5.18.1 in
+    # turn requires mutex_m, which stopped being a default gem in Ruby 3.4, so
+    # this recipe is a Ruby 3.3 measurement -- the pin and the interpreter are
+    # one decision, not two.
+    test_dep_versions: { "minitest" => "5.18.1" },
+    # The Rakefile's Rake::TestTask: the default libs (["lib"]) plus "test",
+    # test_files FileList["test/**/*_test.rb"]. test/test_helper.rb requires
+    # minitest/autorun and every fixture under test/fixtures itself.
+    runner: :ruby_files,
+    load_paths: %w[lib test],
+    test_glob: "test/**/*_test.rb",
+    sanity: {
+      requires: %w[skiptrace],
+      # lib/skiptrace.rb dispatches on RUBY_ENGINE and has a pure-Ruby internal
+      # only for rbx and jruby: on MRI it requires skiptrace/internal/cruby with
+      # nothing to fall back to. So the suite cannot pass without an extension,
+      # and what this check adds is *which* extension answered -- another copy
+      # of the gem already installed on the host would satisfy the require just
+      # as well.
+      expr: "injected_so_loaded?"
+    }
+  },
+
   "pg" => {
     version: "1.6.3",
     tarball: "https://github.com/ged/ruby-pg/archive/refs/tags/v1.6.3.tar.gz",

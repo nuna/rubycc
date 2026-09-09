@@ -8,6 +8,19 @@ Versioning follows semver with one project-specific rule: **a regression in the 
 pass rate is a breaking change**, whatever the code change looked like. See the
 Versioning section of the README.
 
+## Unreleased
+
+- **Corpus pass rate 91.2% → 94.3%** (33 of 35 R10 machine-gate targets). `rbs` left the
+  denominator — its upstream suite fails identically under the reference compiler, the
+  same basis `byebug`, `unicorn` and `debug` were excluded on — and `debug_inspector` and
+  `bindex` were added and verified in the same step, so the denominator grew rather than
+  shrank. Verification is per environment: both new gems are recorded against
+  glibc x86-64 / Ruby 3.3.12, where their suites and the gcc control both pass.
+- **rubycc now interprets the shell subset Automake writes install rules with** —
+  `for`, `if`, brace groups, shell variables and `test` — in-process, without
+  `/bin/sh`. Pipes, command substitution and `while` are still refused rather than
+  approximated.
+
 ## 1.0.0 (2026-08-12)
 
 First release. rubycc builds Ruby C extensions with no gcc, no binutils, no make and no

@@ -393,5 +393,27 @@
       }
     ],
     "notes": "The suite starts its own PostgreSQL server from `pg_config --bindir`, so the host needs the server package and not only libpq; the socket directory it uses must also stay under the 107-byte sun_path limit, which a long work directory silently breaks (the server then refuses to start and no example runs at all). The run reported 4 pendings (not failures): two are upstream's own `skip` when port 5432 is already taken (spec/pg/connection_spec.rb:840), which is the case whenever a normal PostgreSQL install is running, and two apply to native binary gems only. A dozen specs assert on wall-clock durations read from Time.now, so a host that steps its clock fails them at random: measured here at 2/40 runs for rubycc and 3/40 for the gcc control, while the underlying connection took 2.003-2.010 s on both sides in all 80 measurements (Step corpus-sqlite3-pg-2). The recorded run was made with the clock stepping stopped."
+  },
+  "debug_inspector": {
+    "verifications": [
+      {
+        "versions": ["1.2.0"],
+        "environment": "glibc x86_64 / ruby 3.3.12",
+        "verified_at": "2026-09-10",
+        "evidence": "RUBYCC=1 gem install debug_inspector succeeded (debug_inspector.so built through rmake); the gem's own test/unit suite passed 6 tests / 29 assertions / 0 failures / 0 errors (Step corpus-debug-inspector-rbs-1). Re-verified with tools/verify_gem_tests.rb (Step corpus-debug-inspector-rbs-1): the gem's own test/unit suite passed 6 tests / 29 assertions / 0 failures / 0 errors."
+      }
+    ],
+    "notes": ""
+  },
+  "bindex": {
+    "verifications": [
+      {
+        "versions": ["0.8.1"],
+        "environment": "glibc x86_64 / ruby 3.3.12",
+        "verified_at": "2026-09-10",
+        "evidence": "RUBYCC=1 gem install bindex succeeded (cruby.so built through rmake); the gem's own test/unit suite passed 10 tests / 19 assertions / 0 failures / 0 errors (Step corpus-debug-inspector-rbs-1)."
+      }
+    ],
+    "notes": ""
   }
 }

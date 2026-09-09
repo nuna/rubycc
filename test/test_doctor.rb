@@ -57,9 +57,9 @@ class TestDoctor < Minitest::Test
 
   def test_verified_gems_json_holds_only_confirmed_gems
     raw = JSON.parse(File.read(DATA))
-    assert_equal %w[bigdecimal bootsnap date digest erb etc fiddle google-protobuf http_parser.rb io-console io-nonblock
-                    io-wait json msgpack mysql2 nio4r nkf pg prism psych puma racc redcarpet sqlite3 stackprof stringio
-                    strscan syslog websocket-driver yajl-ruby zlib],
+    assert_equal %w[bigdecimal bindex bootsnap date debug_inspector digest erb etc fiddle google-protobuf
+                    http_parser.rb io-console io-nonblock io-wait json msgpack mysql2 nio4r nkf pg prism psych puma
+                    racc redcarpet sqlite3 stackprof stringio strscan syslog websocket-driver yajl-ruby zlib],
                  raw.keys.sort
 
     # `versions` lives inside each verification record, so the assertion is

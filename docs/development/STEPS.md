@@ -13748,3 +13748,65 @@ $(am__nobase_list) | while read dir files; do ... done
 | GNU make との差分(22 本のレシピ) | — | **22/22 一致**(stdout・終了ステータス・生成ファイル木) |
 | issue の再現レシピ | `sh: 1: Syntax error` → 失敗 | **`found: a.txt`(GNU make と一致)** |
 | `tools/ci_check_skips.rb`(`native-x86`) | — | **OK** |
+
+---
+
+## corpus-debug-inspector-rbs-1 — 分母は縮めるのではなく入れ替える
+
+**内容**: `rbs` を R10 の分母から外し(`control_suite_passes: false`)、代わりに
+`debug_inspector` 1.2.0 と `bindex` 0.8.1 をコーパスに足して (d) 水準まで検証した。
+**分母は 34 → 35、分子は 31 → 33、合格率は 91.2% → 94.3%。**
+ユーザ判断は「rbs を外す代わりに、合格率が維持できる gem を加えること」だった。
+
+**`rbs` を外す理由は 2026-08-16 の実測にある** — 落ちているのは C 拡張ではなく
+`RDocPluginParserTest`(ホスト Ruby 3.4 が受け付けなくなった引数で
+`RDoc::TokenStream#collect_tokens` を呼ぶ純 Ruby)で、**gcc 対照も桁まで同じ数字**である。
+`byebug` / `unicorn` / `debug` に適用した基準をそのまま満たしていながら、
+「分母を小さくして達成するのは達成の意味を薄める」という理由で残されていた。
+**その理由は正しく、だから今回は同じステップで足した。**
+
+**設計判断**:
+
+- **候補は推測せず、走査で出した。** `tools/scan_popular_gems.rb` をランク 101〜500 に
+  かけ、ゲートを通って未収載の gem を機械的に列挙した(bestgems の総ダウンロード順)。
+  最初に思いついた `bcrypt` は**既に `OUT-OF-SCOPE-GEMS.md` に基準 B(同梱 `x86.S`)で
+  記録済み**で、一覧が効いた。
+- **落とした候補は、落とした理由ごと記録した。** 除外基準に 2 つ足りなかったので追加した:
+  - **E(ビルド駆動系が外部ツールを要求する)**: `digest-crc` は拡張が Rakefile で、
+    その中で `sh 'make'` と**リテラルに**書く。RubyGems プラグインが差し込む
+    `ENV["MAKE"]`(= rmake)を見ないので、システムの make が要る。
+    **rubycc と host の両方が同じ理由で `build_failed`** になることを実測した。
+  - **F(上流が別 gem のモノレポで、その gem 自身のスイートを取り出せていない)**:
+    `graphql-c_parser` は install と documented load が rubycc で pass 済みなのに、
+    ソースが graphql-ruby の中にあるため (d) 水準の証拠が作れない。
+    **ビルドできないのではない**ので D(テストが無い)とは分けた。
+- **検証は環境ごとの記録である、を使い切った。** `debug_inspector` の上流スイートは
+  ホスト既定の Ruby 3.4.5 では **rubycc・対照とも同じ 3 エラー**で落ち、3.3.12 では
+  **両方 PASS** する。落ちるのはテストがホスト Ruby に追随していないためで、
+  rubycc の差ではない。`verified_gems.json` は環境を記録に持つので、
+  「glibc x86_64 / ruby 3.3.12」として正確に残せる。
+- **依存のピンは版ごとに実測して決める。** `bindex` の上流は `MiniTest` という古い綴りを
+  使う。「minitest 5 なら別名が残っている」という当てはまり、**実測すると 5.25.5 には無く、
+  5.18.1 には有った**。その 5.18.1 は `mutex_m` を require し、それは Ruby 3.4 で
+  default gem から外れている。**ピンと Ruby のバージョンは 1 つの判断**である。
+
+**測ったこと**(2026-09-10、このホスト):
+
+| gem | ruby 3.4.5 | ruby 3.3.12 | 記録 |
+|---|---|---|---|
+| debug_inspector 1.2.0 | rubycc・対照とも FAIL(同じ 3 errors) | **両方 PASS**(6 runs / 29 assertions) | 3.3.12 で記録 |
+| bindex 0.8.1 | minitest 5.18.1 が `mutex_m` 不在で読めない | **両方 PASS**(10 runs / 19 assertions) | 同上 |
+
+| | 変更前 | 本ステップ |
+|---|---|---|
+| コーパス候補 | 39 | **41** |
+| R10 分母 | 34 | **35** |
+| 検証済み(分子) | 31 | **33** |
+| 合格率 | 91.2% | **94.3%** |
+
+**次に広げるときの在庫**(再走査しなくて済むように): `ed25519` 1.3.0 は
+**build_load が rubycc で pass 済み**だが、`spec/spec_helper.rb` が `Coveralls.wear!` を
+呼ぶのでテスト依存の扱いを決める必要がある。`kgio` / `raindrops` は上流が GitHub ではなく
+`yhbt.net` で 2019 年から更新が無い。`jaro_winkler` は最新が java プラットフォームのみ。
+`bson` は指定した版が取得できなかった(最新は 5.2.0)。走査は 100 ランクあたり
+30 秒〜11 分かかる。
