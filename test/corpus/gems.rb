@@ -235,7 +235,20 @@ module Corpus
       {
         name: "rbs",
         version: "3.10.0",
-        note: "Ruby 4.0 bundled gem; pure C parser/type-signature extension."
+        control_suite_passes: false,
+        note: "Ruby 4.0 bundled gem; pure C parser/type-signature extension. " \
+              "Out of the R10 denominator: the upstream suite does not pass " \
+              "with the reference compiler either. Measured on 2026-08-16 " \
+              "with tools/verify_gem_tests.rb (docs/development/STEPS.md " \
+              "corpus-sqlite3-pg-2), control and rubycc runs reporting the " \
+              "same numbers to the digit — 707 tests, 5,414 assertions, 18 " \
+              "failures, 7 errors, 10 omissions. What fails is RDocPluginParserTest, " \
+              "pure Ruby that calls RDoc::TokenStream#collect_tokens with " \
+              "arguments the host Ruby 3.4 no longer takes; the C extension " \
+              "builds and rbs_extension.so loads. Kept in the denominator " \
+              "until 2026-09-10 on the reasoning that shrinking it is a poor " \
+              "way to reach 90%; removed once debug_inspector was added in " \
+              "the same step, so the denominator did not shrink."
       },
       {
         name: "syslog",
@@ -470,6 +483,45 @@ module Corpus
               "/ H 3 files. extconf.rb is only 3 lines. Was formerly a " \
               "default gem, but is not in Ruby 4.0.6's default gem list, " \
               "so it was not part of the default gem group in Step 117."
+      },
+      # Added 2026-09-10 (corpus-debug-inspector-rbs-1), when rbs left the R10
+      # denominator: the denominator is meant to say how much real-world C the
+      # compiler is measured against, so a gem that leaves it is replaced rather
+      # than simply subtracted. The candidate came from
+      # tools/scan_popular_gems.rb over ranks 101-300 (bestgems total downloads),
+      # which reported exactly three gems that pass the R10 gate and are not
+      # already here: bcrypt (bundled x86.S — basis B), digest-crc and this one.
+      # digest-crc was rejected on measurement rather than on reading: its
+      # extension is a Rakefile that calls `sh "make"` literally, so it ignores
+      # the MAKE the RubyGems plugin injects and needs the system make that
+      # DESIGN R5's target environment does not have (both compilers fail the
+      # same way in an isolated GEM_HOME, for the same missing rake).
+      {
+        name: "debug_inspector",
+        version: "1.2.0",
+        note: "203,811,552 downloads. Single ext dir (ext/debug_inspector); " \
+              "C 1 file / H 0 files. extconf.rb is 18 lines: mkmf and " \
+              "create_makefile, with a Makefile that only echoes for engines " \
+              "that cannot compile extensions. The C API behind " \
+              "binding_of_caller and better_errors. Its upstream suite cannot " \
+              "pass without the extension loaded — every test calls " \
+              "DebugInspector.open, which is the extension itself — so the " \
+              "suite measures what R10 asks about rather than a pure Ruby " \
+              "fallback. Measured on 2026-09-10 with " \
+              "tools/verify_corpus_candidate.rb: build_load_pass under both " \
+              "rubycc and the host control, rubycc_build_evidence pass."
+      },
+      {
+        name: "bindex",
+        version: "0.8.1",
+        note: "154,236,896 downloads. Single ext dir (ext/skiptrace); C 1 " \
+              "file / H 1 file. extconf.rb only calls create_makefile. The " \
+              "binding-capture behind better_errors; the gem is named bindex " \
+              "but everything inside it is spelled skiptrace, including the " \
+              "installed lib/skiptrace/internal/cruby.so. Same measurement as " \
+              "debug_inspector above (2026-09-10, " \
+              "tools/verify_corpus_candidate.rb): build_load_pass under both " \
+              "rubycc and the host control, rubycc_build_evidence pass."
       }
     ].freeze
   end

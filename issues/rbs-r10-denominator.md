@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: docs
 opened: 2026-08-27
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-10
+branch: corpus-debug-inspector-rbs
+pr: 130
+steps: [corpus-debug-inspector-rbs-1]
 ---
 
 # `rbs` を R10 の分母に残すか外すかを決めて、`test/corpus/gems.rb` に宣言する
@@ -69,4 +69,24 @@ ROADMAP §8 の散文に「別ステップの判断」として残っていた�
 
 ## 決着
 
-(未着手)
+**A(外す)を選んだ。ただし分母は縮めていない**(`corpus-debug-inspector-rbs-1`。
+設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+ユーザ判断は「rbs を外す代わりに、合格率が維持できる gem を加えること」だった。
+**「分母を小さくして達成するのは達成の意味を薄める」という当初の理由はそのまま正しい**ので、
+外すのと同じステップで `debug_inspector` 1.2.0 と `bindex` 0.8.1 を足して検証した。
+
+| | 変更前 | 本ステップ |
+|---|---|---|
+| R10 分母 | 34 | **35** |
+| 検証済み(分子) | 31 | **33** |
+| 合格率 | 91.2% | **94.3%** |
+
+受け入れ条件 A の照合:
+
+| 条件 | 結果 |
+|---|---|
+| `gems.rb` の `rbs` に `control_suite_passes: false` と、測定日・対照の数字・`corpus-sqlite3-pg-2` への参照を含む `note` | 入れた。**何が落ちているか**(C 拡張ではなく `RDocPluginParserTest`)と、**残していた理由と外した経緯**も書いた |
+| 「R10 pass rate」節の再生成 | `rake corpus:census` で再生成。**分母は 33 ではなく 35** — 同じステップで 2 件足したため |
+| README / CHANGELOG の合格率 | README を 94.3% に更新。CHANGELOG は **1.0.0 の記述を書き換えず**、Unreleased 節を足した(リリース時点の記述はその時点の事実である) |
+| `rake test` が 0 failures | 別途確認 |

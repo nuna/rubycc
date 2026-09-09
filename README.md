@@ -35,8 +35,8 @@ The verified environments are:
 The bundled headers match the ABI of the supported environments on both architectures
 and both C libraries.
 
-The current corpus census has 39 candidates, 34 gems in the R10 machine-gate denominator,
-and 31 verified gems: **91.2%**, which meets the 90% the design requires. `pg` and
+The current corpus census has 41 candidates, 35 gems in the R10 machine-gate denominator,
+and 33 verified gems: **94.3%**, which meets the 90% the design requires. `pg` and
 `sqlite3` are in that denominator through explicit DESIGN-compatible profiles (pg's
 native-source path, sqlite3 with `--enable-system-libraries`), so the rate is measured
 against a larger corpus than the 90.6% reported before those two were added. See
@@ -165,7 +165,7 @@ not a rubycc workaround.
 Semantic versioning, with one project-specific rule:
 
 - **A regression in the corpus pass rate is a breaking change.** The corpus
-  (`test/corpus/gems.rb`, 39 candidates and currently 34 R10 machine-gate targets) is the
+  (`test/corpus/gems.rb`, 41 candidates and currently 35 R10 machine-gate targets) is the
   contract. The selected profile and exact extconf arguments are part of each target's
   identity; they do not by themselves count as an upstream-suite verification.
   If a release stops building a gem that the previous release built, that is major-version

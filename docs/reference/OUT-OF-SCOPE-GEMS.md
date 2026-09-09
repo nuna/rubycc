@@ -18,6 +18,8 @@ DESIGN の R10 は、gem のインストール成功と gem 自身のテスト�
 | **B** | **実体のあるアセンブリ(`.S` / インライン asm)を含む** | rubycc にアセンブラはなく、`.S` を受け取る経路もない |
 | **C** | **autoconf の `configure` を実行する vendored ビルド**(mini_portile 系) | `configure` は POSIX シェルを必要とし、シェル非依存という要件に反する |
 | **D** | **上流にテストスイートがない** | gem 自身のテスト合格というR10の検証証拠を得られないため、R10の分母から除外する |
+| **E** | **gem 自身のビルド駆動系が、ツールチェインの提供しない外部ツールを必須にする** | `extconf.rb` ではなく Rakefile を拡張として宣言し、その中で `make` や `sed` を**リテラルに**呼ぶ形。RubyGems プラグインが差し込む `ENV["MAKE"]`(= rmake)は見られないので、**シェル非依存と同じ理由で**最小環境では完結しない。C の親戚だが、`configure` ではなくレシピの側にある |
+| **F** | **上流ソースが別 gem のモノレポにあり、その gem 自身のスイートを取り出せていない** | ビルドできないのではなく**(d) 水準の証拠が作れない**という理由の除外である。取り出す手段が確立すれば分母に戻せる — D(そもそもテストが無い)とは性質が違う |
 
 Cには例外がある。`--use-system-libraries` や `--enable-system-libraries` など、
 gemが提供するシステムライブラリ利用モードは対象内である。DESIGN R10が
@@ -35,6 +37,8 @@ gemが提供するシステムライブラリ利用モードは対象内であ�
 | **eventmachine** | A | C++ 拡張であり、これに依存する `thin` の通常インストールも止まる | `test/corpus/gems.rb` の依存情報と census 結果 |
 | **fcntl** | D | 上流にテストスイートがなく、R10の検証証拠を得られないため分母から除外する | `test/corpus/gems.rb` の `upstream_tests: false` |
 | **sqlite3 の既定インストール** | C | bundled sqlite3 のビルドで mini_portile と上流 `configure` を使う | `ext/sqlite3/extconf.rb` の経路確認 |
+| **digest-crc** | E | 拡張が `ext/digest/Rakefile` で、その中で `sh 'make'` と**リテラルに**書いている。RubyGems プラグインが差し込む `ENV["MAKE"]`(= rmake)を見ないので、システムの make が要る | **実測**(2026-09-10)。`tools/verify_corpus_candidate.rb` を rubycc と host の両方で実行し、隔離した GEM_HOME に rake が無くて**両方が同じ理由で** `build_failed`。Rakefile の該当行は `ext/digest/Rakefile` の `sh 'make', 'clean'` / `sh 'make'` |
+| **graphql-c_parser** | F | 上流ソースが独立リポジトリではなく **graphql-ruby のモノレポの中**にあり、「その gem 自身のテストスイート」に相当する tarball が取れない | gem の `source_code_uri` が `rmosolgo/graphql-ruby` を指すことの確認(2026-09-10)。**install と documented load は rubycc で pass 済み**(`corpus-candidate-pilot-v2-graphql-c-parser`)なので、ビルドできないのではなく **(d) 水準の証拠が作れない**という理由での除外である |
 
 `nokogiri --use-system-libraries` と `sqlite3 --enable-system-libraries` は、
 それぞれシステムライブラリを使う対象内の経路である。
