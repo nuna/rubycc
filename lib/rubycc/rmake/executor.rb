@@ -4,6 +4,7 @@ require "fileutils"
 require_relative "errors"
 require_relative "tool_command"
 require_relative "../command_line"
+require_relative "../shell"
 
 module Rubycc
   module Rmake
@@ -37,18 +38,26 @@ module Rubycc
       # The utilities reimplemented in-process, keyed by the command's basename so
       # that `/usr/bin/mkdir` and `mkdir` resolve to the same builtin. `:` is
       # make's $(NULLCMD); `exit` is how mkmf's `TOUCH = exit >` stamps a
-      # timestamp file (the `>` creates it, `exit` succeeds).
-      BUILTINS = %w[cd rm mkdir rmdir cp install echo touch true : exit].freeze
+      # timestamp file (the `>` creates it, `exit` succeeds). `test` and its
+      # other spelling `[` (escaped here only because %w[] counts brackets) are
+      # builtins for the same reason as the rest: coreutils is not in the
+      # minimal target environment, so falling back to /usr/bin/test would make
+      # a recipe's result depend on what happens to be installed.
+      BUILTINS = %w[cd rm mkdir rmdir cp install echo touch true : exit test \[].freeze
 
       # Per-recipe-line mutable state: the working directory a `cd` in the same
-      # line has moved to, and the reason string of the most recent failure (used
-      # to enrich CommandFailedError). Each recipe line starts from the Makefile's
-      # base directory afresh, matching make running every line in its own shell.
+      # line has moved to, the shell variables assignments in the same line have
+      # set, and the reason string of the most recent failure (used to enrich
+      # CommandFailedError). Each recipe line starts from the Makefile's base
+      # directory with no variables, matching make running every line in its own
+      # shell — a `list=` in one line must not be visible in the next.
       class LineState
         attr_accessor :cwd, :failure_reason
+        attr_reader :variables
 
         def initialize(cwd)
           @cwd = cwd
+          @variables = {}
           @failure_reason = nil
         end
       end
@@ -116,22 +125,21 @@ module Rubycc
         @out.puts(command.text) if @dry_run || !command.silent?
       end
 
-      # Interpret a recipe line as an and-or list: simple commands joined by
-      # `&&` (run next only after success), `||` (run next only after failure)
-      # and `;` (always run next). A single left-to-right status carries the
-      # result, exactly as an sh and-or list evaluates. Returns the final success.
+      # Interpret a recipe line with Rubycc::Shell — the connectors (`&&`, `||`,
+      # `;`), the compound commands (`for`, `if`, `{ }`) and the shell variables
+      # — and run each simple command it hands back here. The split is on
+      # purpose: Shell knows shell syntax and nothing about make, this runner
+      # knows the builtins, the substituted tools and the redirections and
+      # nothing about syntax. The variables live in +state+, so they last for
+      # this line only, and expansion falls back to the environment the spawned
+      # commands will themselves see, so `$PATH` means one thing per recipe.
       def run_and_or_list(target, text, state)
-        commands = parse_line(target, text)
-        success = true
-        commands.each do |connector, cmd|
-          run = case connector
-                when :first, :semi then true
-                when :and then success
-                when :or then !success
-                end
-          success = run_simple(target, cmd, state, text) if run
+        shell = Shell.new(variables: state.variables, environment: @env) do |cmd|
+          run_simple(target, cmd, state, text)
         end
-        success
+        shell.run(text)
+      rescue CommandLine::UnsupportedSyntaxError => e
+        unsupported!(e.construct, target, text)
       end
 
       # --- parsing ---------------------------------------------------------
@@ -141,15 +149,6 @@ module Rubycc
       # whose recipe was at fault, which only the runner knows.
       def tokenize(target, text)
         CommandLine.tokenize(text)
-      rescue CommandLine::UnsupportedSyntaxError => e
-        unsupported!(e.construct, target, text)
-      end
-
-      # Turn the line into [[connector, SimpleCommand], ...]. A leading run of
-      # `VAR=value` words become that command's environment; a redirect marker
-      # consumes the following word as its target path.
-      def parse_line(target, text)
-        CommandLine.parse(text)
       rescue CommandLine::UnsupportedSyntaxError => e
         unsupported!(e.construct, target, text)
       end
@@ -473,6 +472,7 @@ module Rubycc
           when "install" then builtin_install(target, argv, state, text)
           when "echo" then builtin_echo(argv, out)
           when "touch" then builtin_touch(argv, state)
+          when "test", "[" then builtin_test(target, argv, state, text)
           when "true", ":", "exit" then true
           else
             # BUILTINS listed it but no branch handles it — a programming error.
@@ -647,6 +647,73 @@ module Rubycc
         out.write(args.join(" "))
         out.write("\n") if newline
         true
+      end
+
+      # `test EXPR` / `[ EXPR ]` — the conditional Automake's install rules ask
+      # every file about (`test -f $p`, `test -z "$list2"`). It is a builtin
+      # rather than /usr/bin/test for the reason the whole runner exists: the
+      # minimal target environment has no coreutils, and a recipe must not
+      # succeed only where they happen to be installed. Only the primaries those
+      # recipes use are implemented; anything else is refused rather than
+      # guessed, since a wrong answer here silently takes the wrong branch.
+      # A false condition is an ordinary status, not an error, so it records no
+      # failure reason.
+      def builtin_test(target, argv, state, text)
+        args = argv.drop(1)
+        if File.basename(argv[0]) == "["
+          unsupported!("`[` without a closing `]`", target, text) unless args.last == "]"
+
+          args = args[0...-1]
+        end
+        test_expression(target, args, state, text)
+      end
+
+      # Evaluate a test expression by its argument count, which is how POSIX
+      # defines it (XCU test): no arguments is false, one argument is true when
+      # the string is not empty, two are a unary primary, three a binary one,
+      # and a leading `!` negates whichever of those follows.
+      def test_expression(target, args, state, text)
+        return !test_expression(target, args.drop(1), state, text) if args.first == "!"
+
+        case args.length
+        when 0 then false
+        when 1 then !args[0].empty?
+        when 2 then test_unary(target, args[0], args[1], state, text)
+        when 3 then test_binary(target, args, text)
+        else unsupported!("test expression #{args.inspect}", target, text)
+        end
+      end
+
+      # The file and string primaries. `-r` asks the kernel rather than reading
+      # the mode bits, so it answers for the user rmake is actually running as.
+      def test_unary(target, op, operand, state, text)
+        case op
+        when "-n" then !operand.empty?
+        when "-z" then operand.empty?
+        else
+          # The rest ask about a file, resolved against this line's cwd like
+          # every other operand a builtin takes.
+          path = absolute(operand, state.cwd)
+          case op
+          when "-f" then File.file?(path)
+          when "-d" then File.directory?(path)
+          when "-e" then File.exist?(path)
+          when "-r" then File.readable?(path)
+          when "-s" then File.exist?(path) && File.size(path).positive?
+          else unsupported!("test primary '#{op}'", target, text)
+          end
+        end
+      end
+
+      # String comparison. The arithmetic and file-age primaries (`-eq`, `-nt`,
+      # ...) are refused: no recipe rmake has to run uses one.
+      def test_binary(target, args, text)
+        left, op, right = args
+        case op
+        when "=" then left == right
+        when "!=" then left != right
+        else unsupported!("test operator '#{op}'", target, text)
+        end
       end
 
       # `touch FILE...` — create each file or update its timestamp.

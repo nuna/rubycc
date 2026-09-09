@@ -13656,3 +13656,95 @@ suppress + 自名」(6.10.3.4 の交差則)に変え、c-testsuite 00201 の ski
 **アーキテクチャが違えば衝突しない。** `test_aarch64_shared_object.rb` の接頭辞は
 **防御的なもの**で、aarch64 の `.so` が x86-64 のテストプロセスに dlopen されることは
 無い(qemu の別プロセスか `ELFReader` の静的読み取りである)。コメントにもそう書いた。
+
+---
+
+## rmake-shell-subset-1 — 実行ファイルにしても、指せる相手がいない
+
+**内容**: シェルのサブセットを解釈する層 `Rubycc::Shell`(`lib/rubycc/shell.rb`)を新設し、
+rmake がインプロセスで呼ぶ形にした。Automake / libtool が生成する install レシピの
+制御構造(`for` / `if` / brace group)とシェル変数を、**`/bin/sh` を起こさずに**実行できる。
+`rmake-no-shell-fallback-1` が「断り方」を設計どおりにした続きで、**断っていた構文を
+実際に解釈する**段である。実装は heavy-implementer、範囲と配置はメインセッションが決めた。
+
+### rmake に組み込むか、`rsh` を作るか
+
+**組み込む(ライブラリ層)方に決めた。決め手は「実行ファイルにしても指せる相手がいない」ことである。**
+
+シェルを起こす側 — Ruby の `system` / `Kernel#spawn` のシェル形式、mkmf の `xsystem`、
+`#!/bin/sh` の configure — は**いずれも `/bin/sh` というパスが焼き込まれている**。
+`rsh` という名前の実行ファイルを置いても誰も見ない。実際に効かせるには `/bin/sh` **として**
+インストールするしかなく、それは範囲外である。**使い手のいない CLI を先に作るのは
+先回り実装**(DESIGN 4.2 / R11)にあたる。
+
+組み込む側の利点は 3 つ:
+
+- **プロセスを起こさない。** rmake がインプロセス実行を選んだ理由(M3 B3)に逆行しない。
+  gem のビルド 1 回でレシピ行は数百走る
+- **診断が保てる。** `UnsupportedRecipeError` は「どのターゲットのどのレシピか」を持つ。
+  別プロセスにすると終了コードと stderr に潰れる
+- **状態モデルが一致する。** POSIX make は**レシピ 1 行ごとに新しいシェル**を起こすので、
+  シェル変数は行をまたいで持続しない。既存の `LineState`(行ごと)がそのまま器になる
+
+**層として分けておけば、CLI が要る日が来ても薄い包みで足りる** — 後から変えられる方を選んだ。
+
+### 層の切り方
+
+`CommandLine` がトークン層(語分割・クォート除去)、`Shell` がその上の構文層、
+**単純コマンドの実行は rmake に残す**(`Shell` は呼び出し元が渡す runner に委譲する)。
+`Shell` は make を知らず、rmake は構文を知らない。
+
+移譲先の設計判断で採ったもの: **展開はソース→ソースの書き換え**で行い、語分割は
+`CommandLine` に一本化した(POSIX の「語認識 → 展開 → 語分割」の順を、
+`tokenize_spans` で構文だけ先に決めてから元テキストの断片を展開する形で満たす)。
+値に含まれる `;` やクォートが構文にならず、分割規則の実装が 1 か所に留まる。
+
+**予約語を 2 つに割った**: `COMPOUND_WORDS`(`for do done if then elif else fi { }`)は
+`Shell` が解釈するので `parse` は通すが、**文法を持たない mkmf シムの入口(`argv`)は
+従来どおり断る**。`RESERVED_WORDS`(`case esac while until !`)はどの層も解釈しない。
+
+### 覆した判断 — 未定義変数は「空」ではなく「環境を見てから空」
+
+移譲先は環境を取り込まない実装にしていた(理由: 環境に依存するとマシンごとにビルドが変わる)。
+**同じレシピの中で `echo $PATH` と子プロセスが見る PATH が食い違う**ので、
+rmake が子に渡すのと同じ表を展開でも引く形に変えた(行内の代入が優先、どちらにも無ければ空)。
+sh のセマンティクスは「変数は環境から来る」であり、**再現性は環境を無視することではなく
+環境を固定することで得るもの**である。
+
+### 範囲 — どこで止めたか、なぜそこか
+
+**入れた**: `for` / `if` / `elif` / `else` / brace group / シェル変数の代入と展開 /
+クォート無し展開の語分割 / `test` と `[` のビルトイン(最小環境に coreutils は無いので
+外部に落とせない)。
+**入れない**: サブシェル・パイプ・コマンド置換・`case` / `while` / 関数・バックグラウンド・
+ヒアドキュメント。これらは引き続き明示的に拒否する。
+
+**rbtrace で測った結果、この線引きの外側は「あと少し」ではなく「別の壁」だった。**
+
+| | 結果 |
+|---|---|
+| 同梱 msgpack の `install-libLTLIBRARIES` | **越えた**(master 状態では `unsupported shell construct (shell reserved word 'for')` / exit 2、本ステップでは exit 0。同一ツリーでの前後差) |
+| 次の失敗点 `install-nobase_includeHEADERS` | **止まる**(`shell metacharacter '` + "`" + `'`) |
+
+生成元を直接読んで確かめた(`msgpack-1.1.0/src/Makefile.in:598`、`Makefile.in:138-145`):
+
+```make
+srcdirstrip=`echo "$(srcdir)" | sed 's/[].[^$$\\*|]/\\\\&/g'`
+for p in $$list; do echo "$$p $$p"; done | sed "..." | $(AWK) '...'
+$(am__nobase_list) | while read dir files; do ... done
+```
+
+**パイプ・コマンド置換・`while` を実装しても、これは通らない。** レシピが `sed` と `awk` に
+外部コマンドとして依存しており、**R5 の最小環境にはどちらも無い**からである。
+通すには sed と awk の実装が要る。**「あと 3 構文」ではなく「あと 2 つのツール」**なので、
+ここで止めた。今回の実装の価値は rbtrace 固有ではなく、**Automake レシピ一般の制御構造**が
+通るようになったことにある。
+
+**検証**:
+
+| | master(`95e3887`) | 本ステップ |
+|---|---|---|
+| `rake test` | 3429 runs / 0 failures / 0 errors / 39 skips | **3496 runs / 0 failures / 0 errors / 39 skips** |
+| GNU make との差分(22 本のレシピ) | — | **22/22 一致**(stdout・終了ステータス・生成ファイル木) |
+| issue の再現レシピ | `sh: 1: Syntax error` → 失敗 | **`found: a.txt`(GNU make と一致)** |
+| `tools/ci_check_skips.rb`(`native-x86`) | — | **OK** |

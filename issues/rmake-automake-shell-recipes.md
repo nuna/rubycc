@@ -1,14 +1,15 @@
 ---
-status: in-progress
+status: done
 kind: gap
 opened: 2026-08-16
-closed:
+closed: 2026-09-10
 branch: rmake-automake-shell-recipes
-pr:
+pr: 129
 steps:
   - rmake-automake-shell-recipes-1
   - rmake-automake-shell-recipes-2
   - rmake-no-shell-fallback-1
+  - rmake-shell-subset-1
 ---
 
 # rmakeがAutomake/libtoolのshell compound recipeを実行できない
@@ -140,3 +141,46 @@ recipe を踏めば挙動が変わる(`sh` が無いのだから別のエラー�
 **残っているのは対応範囲の決定である** — `for` / `if` / brace group のどれを rmake 自身が
 解釈するか。本ステップはそこには手を付けていない(断り方を設計どおりにしただけ)。
 詳細は STEPS.md の `rmake-no-shell-fallback-1`。
+
+### 2026-09-10 — 対応範囲を決めて実装した(`rmake-shell-subset-1`、ブランチ `rmake-shell-subset`)
+
+**ユーザ判断**: rubycc のツールチェインが sh のサブセットを持つ。**rmake に組み込むか
+`rsh` を作るかはメリット・デメリットを比べて決める**、という指示だった。
+
+**組み込む(ライブラリ層 `Rubycc::Shell` + rmake がインプロセスで呼ぶ)に決めた。**
+決め手は「実行ファイルにしても指せる相手がいない」こと — シェルを起こす側は
+`/bin/sh` というパスが焼き込まれており、別名の実行ファイルは誰からも参照されない。
+比較の本文は STEPS.md の `rmake-shell-subset-1`。
+
+**入れた構文**: `for` / `if` / `elif` / `else` / brace group / シェル変数の代入と展開 /
+クォート無し展開の語分割 / `test` と `[` のビルトイン。
+**入れない**: サブシェル・パイプ・コマンド置換・`case` / `while` / 関数・
+バックグラウンド・ヒアドキュメント(明示的に拒否)。
+
+**rbtrace は前進したが通らない。次の壁は構文ではなくツールだった。**
+
+| | 結果 |
+|---|---|
+| 同梱 msgpack の `install-libLTLIBRARIES` | **越えた**(同一ツリーでの前後差を実測) |
+| 次の失敗点 `install-nobase_includeHEADERS` | 止まる。生成元(`msgpack-1.1.0/src/Makefile.in:598`)は
+コマンド置換・パイプ・`while read` に加えて **`sed` と `awk` を外部コマンドとして呼ぶ** |
+
+**R5 の最小環境には sed も awk も無い**ので、パイプ・コマンド置換・`while` を実装しても
+このレシピは通らない。**「あと 3 構文」ではなく「あと 2 つのツール」**である。
+rbtrace のコーパス追加は引き続き別判断([`corpus-candidate-pilot-v2-rbtrace`](corpus-candidate-pilot-v2-rbtrace.md))。
+
+## 決着
+
+**解消した**(`rmake-shell-subset-1`。設計判断の本文は
+[STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+受け入れ条件の照合:
+
+| 条件 | 結果 |
+|---|---|
+| rbtrace archive を使わない最小再現 | `test/test_rmake_executor.rb` に固定。GNU make と同じ `found: a.txt` を出す |
+| 対応対象を決め、実装または明示的な停止理由を設計資料へ残す | 上記の線引きを DESIGN R5 と STEPS.md に記録 |
+| shellless / R5 境界の維持、`/bin/sh` フォールバックを足さない | `Rubycc::Shell` は自前の解釈器で、シェルを起こす経路は無い |
+| 最小 fixture と既存 mkmf fixture の回帰テスト | `test/test_shell.rb`(48 件)+ `test_rmake_executor.rb`(74 件)。GNU make との差分 22/22 一致 |
+| 固定 SHA の rbtrace を再実行し結果を記録 | 上の表のとおり。**corpus は更新していない** |
+| `test/corpus/gems.rb` / header / compiler / `verified_gems.json` を変更しない | 変更していない |

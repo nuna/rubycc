@@ -18,11 +18,13 @@ module Rubycc
   # the splitter lives here rather than in either of them.
   #
   # Nothing here expands anything: no variables, no globs, no command
-  # substitution. A construct that would need a shell to interpret raises
-  # UnsupportedSyntaxError — the caller reports it. Falling back to a shell is
-  # not an option we keep in reserve: a fallback would make the result depend on
-  # whether a shell happens to exist, which is the very thing this code exists to
-  # remove.
+  # substitution, and no grammar above one command's words — `for` and `if`
+  # belong to the layer above (Rubycc::Shell), which calls this one on the
+  # simple commands it has already cut out of a line. A construct that would
+  # need a shell to interpret raises UnsupportedSyntaxError — the caller reports
+  # it. Falling back to a shell is not an option we keep in reserve: a fallback
+  # would make the result depend on whether a shell happens to exist, which is
+  # the very thing this code exists to remove.
   module CommandLine
     # A construct the splitter does not interpret (a pipe, background `&`,
     # command substitution, an unterminated quote, ...). It names the construct
@@ -60,13 +62,22 @@ module Rubycc
     # The word that names each connector in a diagnostic.
     CONNECTOR_NAMES = { and: "&&", or: "||", semi: ";" }.freeze
 
-    # Shell reserved words that introduce compound commands (loops, `if`,
-    # `case`, brace groups, negation) this splitter has no interpreter for.
-    # Only the unambiguous ones are listed: `in`, `time` and `select` are left
-    # out because they double as ordinary words often enough that flagging them
-    # would misfire. Checked only in the command-name position (see #parse) —
-    # `-Wl,{...}` or `echo fi` are plain words, not this construct.
-    RESERVED_WORDS = %w[for do done if then elif else fi case esac while until { } !].freeze
+    # Shell reserved words that introduce a compound command Rubycc::Shell has a
+    # grammar for (the `for` loop, `if`, the brace group). They are still not
+    # something *this* module can make sense of — it splits one command's words,
+    # and these words are the seams between commands — so the single-command
+    # entry point (#argv) keeps refusing them. #parse does not: it is what Shell
+    # calls once it has cut a simple command out of the line, by which point the
+    # keywords are gone.
+    COMPOUND_WORDS = %w[for do done if then elif else fi { }].freeze
+
+    # Reserved words nothing here interprets: no layer of rubycc has a grammar
+    # for `case`, `while`, `until` or `!`, so they are refused wherever they
+    # appear in the command-name position. Only the unambiguous ones are listed:
+    # `in`, `time` and `select` are left out because they double as ordinary
+    # words often enough that flagging them would misfire. Checked only in the
+    # command-name position (see #parse) — `echo while` is a plain word.
+    RESERVED_WORDS = %w[case esac while until !].freeze
 
     module_function
 
@@ -83,23 +94,50 @@ module Rubycc
     # backslash-quotes into a literal `"` in the word. Genuinely unhandled
     # shell syntax (pipe, background, substitution, subshell) stops the split.
     def tokenize(text)
+      tokenize_spans(text).map(&:first)
+    end
+
+    # #tokenize's split, with each token paired with the `start...stop` range it
+    # occupied in +text+. Rubycc::Shell needs to get the *source* of a word back
+    # after the split: a POSIX shell recognises words first and only then expands
+    # parameters in them (XCU 2.1), and whether `$x` is inside quotes decides
+    # whether its value is field-split. Quote removal has already thrown that
+    # away by the time #tokenize returns a word, so Shell parses the structure
+    # from these tokens, cuts each simple command out of +text+ by its span,
+    # expands it, and calls #parse on the result.
+    def tokenize_spans(text)
       tokens = []
       word = nil
+      word_start = nil
       i = 0
       n = text.length
+      # Close off the word being accumulated, if any, at +stop+.
+      flush = lambda do |stop|
+        next if word.nil?
+
+        tokens << [[:word, word], word_start...stop]
+        word = nil
+        word_start = nil
+      end
+      # Start (or continue) a word at the current position.
+      begin_word = lambda { word_start ||= i }
+
       while i < n
         c = text[i]
         case c
         when "'"
           close = text.index(c, i + 1)
           unsupported!("unterminated quote", text) if close.nil?
+          begin_word.call
           word = (word || +"") + text[(i + 1)...close]
           i = close + 1
         when '"'
+          begin_word.call
           segment, i = scan_double_quoted(text, i)
           word = (word || +"") + segment
         when "\\"
           nxt = text[i + 1]
+          begin_word.call
           if nxt.nil?
             # A lone trailing backslash with nothing to escape is kept
             # literally (verified against /bin/sh).
@@ -107,39 +145,37 @@ module Rubycc
             i += 1
           elsif nxt == "\n"
             i += 2 # line continuation: backslash and newline both vanish
+            # Nothing was added to the word; if it is still empty the span must
+            # not claim to have started here.
+            word_start = nil if word.nil?
           else
             word = (word || +"") + nxt
             i += 2
           end
         when " ", "\t"
-          tokens << [:word, word] if word
-          word = nil
+          flush.call(i)
           i += 1
         when "&"
-          tokens << [:word, word] if word
-          word = nil
+          flush.call(i)
           unsupported!("background '&'", text) unless text[i + 1] == "&"
-          tokens << [:and]
+          tokens << [[:and], i...(i + 2)]
           i += 2
         when "|"
-          tokens << [:word, word] if word
-          word = nil
+          flush.call(i)
           unsupported!("pipe '|'", text) unless text[i + 1] == "|"
-          tokens << [:or]
+          tokens << [[:or], i...(i + 2)]
           i += 2
         when ";"
-          tokens << [:word, word] if word
-          word = nil
-          tokens << [:semi]
+          flush.call(i)
+          tokens << [[:semi], i...(i + 1)]
           i += 1
         when ">"
-          tokens << [:word, word] if word
-          word = nil
+          flush.call(i)
           if text[i + 1] == ">"
-            tokens << [:redirect, :stdout, :append]
+            tokens << [[:redirect, :stdout, :append], i...(i + 2)]
             i += 2
           else
-            tokens << [:redirect, :stdout, :truncate]
+            tokens << [[:redirect, :stdout, :truncate], i...(i + 1)]
             i += 1
           end
         when "<", "`", "(", ")"
@@ -148,19 +184,20 @@ module Rubycc
           if word.nil? && (c == "1" || c == "2") && text[i + 1] == ">"
             stream = c == "2" ? :stderr : :stdout
             if text[i + 2] == ">"
-              tokens << [:redirect, stream, :append]
+              tokens << [[:redirect, stream, :append], i...(i + 3)]
               i += 3
             else
-              tokens << [:redirect, stream, :truncate]
+              tokens << [[:redirect, stream, :truncate], i...(i + 2)]
               i += 2
             end
           else
+            begin_word.call
             word = (word || +"") + c
             i += 1
           end
         end
       end
-      tokens << [:word, word] if word
+      flush.call(n)
       tokens
     end
 
@@ -222,16 +259,15 @@ module Rubycc
             assignments << w
           else
             # A reserved word in the command-name position needs a shell
-            # grammar this splitter does not have (a loop, a conditional, a
-            # brace group) to make sense of. Trying to run it as a plain
-            # command exec's `for` itself and fails in a way that looks like
-            # a missing tool rather than unsupported syntax; approximating
-            # the construct (interpreting the loop, say) is not on the table
-            # either — that is the shell-fallback risk this module exists to
-            # remove (see the file banner and mkmf-shell-free-conftest-1).
-            # Refusing with UnsupportedSyntaxError is the correct failure
-            # mode until rmake grows an interpreter for these constructs,
-            # which is separate work, not this fix.
+            # grammar to make sense of. The ones a grammar now exists for
+            # (COMPOUND_WORDS) never reach here — Rubycc::Shell consumes them
+            # while cutting the line into simple commands, and calls this on
+            # what is left. The rest have no interpreter anywhere in rubycc, so
+            # they are refused: running one as a plain command would exec
+            # `while` itself and fail like a missing tool rather than like
+            # unsupported syntax, and approximating the construct is the
+            # shell-fallback risk this module exists to remove (see the file
+            # banner and mkmf-shell-free-conftest-1).
             if argv.empty? && RESERVED_WORDS.include?(w)
               unsupported!("shell reserved word '#{w}'", text)
             end
@@ -267,6 +303,11 @@ module Rubycc
       end
 
       command = commands.first[1]
+      # A compound keyword is refused here even though #parse now lets it
+      # through: this entry point promises *one plain command*, and a caller
+      # that has no shell grammar (the mkmf shim) must not exec a `for`.
+      unsupported!("shell reserved word '#{command.argv.first}'", text) \
+        if COMPOUND_WORDS.include?(command.argv.first)
       unsupported!("redirection", text) unless command.redirections.empty?
       unsupported!("environment assignment '#{command.assignments.first}'", text) \
         unless command.assignments.empty?
