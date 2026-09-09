@@ -569,23 +569,192 @@ class TestRmakeExecutor < Minitest::Test
     end
   end
 
-  # Regression for rmake-no-shell-fallback: a `for`/`if` recipe like Automake
-  # emits used to reach /bin/sh a word at a time (Process.spawn's one-word
-  # special case), producing shell syntax errors instead of a diagnosis. It
-  # must now be refused up front as a reserved word rmake does not interpret,
-  # never handed to a shell.
-  def test_a_for_if_recipe_is_refused_not_shelled_out
+  # --- the shell subset: for / if / brace group / variables ------------------
+  #
+  # Step rmake-shell-subset-1. The syntax is Rubycc::Shell's (unit-tested in
+  # test_shell.rb); what is pinned here is the join between the two layers —
+  # Shell decides what runs, this runner runs it with the builtins, the cwd and
+  # the redirections it owns.
+
+  def test_the_automake_install_shape_produces_what_gnu_make_produces
+    # The recipe from issues/rmake-automake-shell-recipes.md, already past
+    # make's own `$$` -> `$` expansion (run_recipes hands Command texts straight
+    # to the Executor). It used to be refused as a reserved word; with only
+    # a.txt present GNU make prints `found: a.txt`, and so must rmake.
+    recipe = 'list=\'a.txt b.txt\'; list2=; for p in $list; do if test -f $p; ' \
+             'then list2="$list2 $p"; else :; fi; done; test -z "$list2" || { echo found: $list2; }'
     with_dir do |dir|
-      # Already past Make's own `$$` -> `$` expansion, as the Executor sees it
-      # (run_recipes hands Command texts straight to the Executor; the Makefile
-      # layer that expands `$$` is not involved).
-      recipe = 'list=\'a.txt b.txt\'; list2=; for p in $list; do if test -f $p; ' \
-               'then list2="$list2 $p"; else :; fi; done; test -z "$list2" || { echo found: $list2; }'
+      FileUtils.touch(path(dir, "a.txt"))
+      out = StringIO.new
+      run_recipes(dir, [recipe], out: out, silent: true)
+      assert_equal "found: a.txt\n", out.string
+    end
+  end
+
+  def test_for_loop_runs_a_builtin_per_word
+    with_dir do |dir|
+      run_recipes(dir, ["for f in a b c; do touch $f; done"])
+      assert_equal %w[a b c], Dir.children(dir).sort
+    end
+  end
+
+  def test_for_loop_over_an_empty_list_does_nothing_and_succeeds
+    with_dir do |dir|
+      run_recipes(dir, ["list=; for f in $list; do touch $f; done"])
+      assert_empty Dir.children(dir)
+    end
+  end
+
+  def test_if_selects_a_branch_on_a_builtin_status
+    with_dir do |dir|
+      FileUtils.touch(path(dir, "there"))
+      run_recipes(dir, ["if test -f there; then touch yes; else touch no; fi"])
+      assert_equal %w[there yes], Dir.children(dir).sort
+    end
+  end
+
+  def test_a_shell_variable_lives_for_one_recipe_line_only
+    # make runs every line in its own shell, so the second line must not see
+    # the first line's variable.
+    with_dir do |dir|
+      out = StringIO.new
+      run_recipes(dir, ["name=first; echo got:$name", "echo got:$name"], out: out, silent: true)
+      assert_equal "got:first\ngot:\n", out.string
+    end
+  end
+
+  def test_a_variable_set_in_a_loop_accumulates_and_reaches_a_builtin
+    with_dir do |dir|
+      out = StringIO.new
+      run_recipes(dir, ['list=; for p in a b; do list="$list $p"; done; echo kept:$list'],
+                  out: out, silent: true)
+      assert_equal "kept:a b\n", out.string
+    end
+  end
+
+  def test_cd_inside_a_loop_still_moves_the_rest_of_the_line
+    with_dir do |dir|
+      FileUtils.mkdir(path(dir, "sub"))
+      run_recipes(dir, ["cd sub; for f in a b; do touch $f; done"])
+      assert_equal %w[a b], Dir.children(path(dir, "sub")).sort
+    end
+  end
+
+  def test_a_brace_group_is_guarded_as_one_command
+    with_dir do |dir|
+      run_recipes(dir, ["rm missing || { touch recovered; touch again; }"])
+      assert_equal %w[again recovered], Dir.children(dir).sort
+    end
+  end
+
+  def test_a_redirection_inside_a_group_applies_to_its_own_command
+    with_dir do |dir|
+      run_recipes(dir, ['{ echo one > log; echo two >> log; }'])
+      assert_equal "one\ntwo\n", File.read(path(dir, "log"))
+    end
+  end
+
+  def test_an_expanded_word_is_globbed_like_any_other
+    with_dir do |dir|
+      FileUtils.touch(path(dir, "x.o"))
+      out = StringIO.new
+      run_recipes(dir, ['pat=*.o; echo $pat'], out: out, silent: true)
+      assert_equal "x.o\n", out.string
+    end
+  end
+
+  # --- the test / [ builtin -------------------------------------------------
+  #
+  # `test` is a builtin for the same reason as the rest of them: the minimal
+  # target environment has no coreutils (DESIGN R5), so a recipe that branches
+  # on `test -f` must not depend on /usr/bin/test being installed.
+
+  def test_file_primaries_answer_about_the_commands_cwd
+    with_dir do |dir|
+      FileUtils.touch(path(dir, "file"))
+      File.write(path(dir, "sized"), "x")
+      FileUtils.mkdir(path(dir, "adir"))
+      {
+        "-f file" => true, "-f adir" => false, "-f missing" => false,
+        "-d adir" => true, "-d file" => false,
+        "-e file" => true, "-e adir" => true, "-e missing" => false,
+        "-r file" => true, "-r missing" => false,
+        "-s sized" => true, "-s file" => false
+      }.each do |expression, expected|
+        out = StringIO.new
+        run_recipes(dir, ["test #{expression} && echo yes || echo no"], out: out, silent: true)
+        assert_equal("#{expected ? "yes" : "no"}\n", out.string, expression)
+      end
+    end
+  end
+
+  def test_string_primaries_and_comparisons
+    with_dir do |dir|
+      {
+        '-n "x"' => true, '-n ""' => false,
+        '-z ""' => true, '-z "x"' => false,
+        "a = a" => true, "a = b" => false,
+        "a != b" => true, "a != a" => false,
+        '"x"' => true, '""' => false
+      }.each do |expression, expected|
+        out = StringIO.new
+        run_recipes(dir, ["test #{expression} && echo yes || echo no"], out: out, silent: true)
+        assert_equal("#{expected ? "yes" : "no"}\n", out.string, expression)
+      end
+    end
+  end
+
+  def test_bang_negates_a_test
+    with_dir do |dir|
+      out = StringIO.new
+      run_recipes(dir, ["test ! -f missing && echo yes || echo no"], out: out, silent: true)
+      assert_equal "yes\n", out.string
+    end
+  end
+
+  def test_bracket_form_requires_its_closing_bracket
+    with_dir do |dir|
+      out = StringIO.new
+      run_recipes(dir, ["[ -d . ] && echo yes || echo no"], out: out, silent: true)
+      assert_equal "yes\n", out.string
+
+      assert_raises(Rmake::UnsupportedRecipeError) { run_recipes(dir, ["[ -d . "]) }
+    end
+  end
+
+  def test_an_unimplemented_test_primary_is_refused_not_guessed
+    with_dir do |dir|
+      err = assert_raises(Rmake::UnsupportedRecipeError) { run_recipes(dir, ["test -x file"]) }
+      assert_includes err.message, "test primary '-x'"
+      assert_raises(Rmake::UnsupportedRecipeError) { run_recipes(dir, ["test 1 -eq 1"]) }
+    end
+  end
+
+  def test_a_false_test_fails_the_recipe_line
+    with_dir do |dir|
+      assert_raises(Rmake::CommandFailedError) { run_recipes(dir, ["test -f missing"]) }
+    end
+  end
+
+  # --- constructs that stay refused -----------------------------------------
+
+  def test_a_loop_rmake_has_no_grammar_for_is_still_refused
+    with_dir do |dir|
       err = assert_raises(Rmake::UnsupportedRecipeError) do
-        run_recipes(dir, [recipe])
+        run_recipes(dir, ["while true; do touch a; done"])
       end
       assert_equal "t", err.target
-      assert_includes err.message, "unsupported shell construct (shell reserved word 'for')"
+      assert_includes err.message, "shell reserved word 'while'"
+      refute File.exist?(path(dir, "a")), "nothing may run when the line does not parse"
+    end
+  end
+
+  def test_a_misplaced_keyword_is_reported_against_its_target
+    with_dir do |dir|
+      err = assert_raises(Rmake::UnsupportedRecipeError) do
+        run_recipes(dir, ["touch a; done"])
+      end
+      assert_includes err.message, "unexpected 'done'"
     end
   end
 end

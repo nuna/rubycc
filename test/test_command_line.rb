@@ -48,7 +48,25 @@ class TestCommandLine < Minitest::Test
 
   def test_a_reserved_word_after_a_connector_is_still_caught_in_command_position
     error = assert_raises(Rubycc::CommandLine::UnsupportedSyntaxError) do
-      Rubycc::CommandLine.parse("true; for p in a b; do :; done")
+      Rubycc::CommandLine.parse("true; while read x; do :; done")
+    end
+    assert_equal "shell reserved word 'while'", error.construct
+  end
+
+  # Step rmake-shell-subset-1 split the reserved words in two. Rubycc::Shell
+  # now has a grammar for `for`/`if`/`{ }`, and it calls #parse on the simple
+  # commands it has already cut out of the line, so #parse must not refuse
+  # those words on its own. #argv still does: it promises one plain command to
+  # a caller (the mkmf shim) that has no grammar at all.
+  def test_parse_leaves_the_compound_keywords_to_the_shell_layer
+    commands = Rubycc::CommandLine.parse("for p in a b")
+    assert_equal 1, commands.length
+    assert_equal %w[for p in a b], commands.first[1].argv
+  end
+
+  def test_argv_still_refuses_a_compound_keyword
+    error = assert_raises(Rubycc::CommandLine::UnsupportedSyntaxError) do
+      Rubycc::CommandLine.argv("for p in a b")
     end
     assert_equal "shell reserved word 'for'", error.construct
   end
