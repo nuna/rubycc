@@ -1,13 +1,14 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-08-16
-closed:
-branch:
-pr:
+closed: 2026-09-10
+branch: roaring-out-of-scope
+pr: 131
 steps:
   - corpus-candidate-pilot-v2-roaring-1
   - corpus-candidate-pilot-v2-roaring-2
+  - roaring-out-of-scope-1
 ---
 
 # roaring 0.4.1 を正式追加するか決める — 残る障害は x86 SIMD 組み込み関数
@@ -214,6 +215,26 @@ master(`1c4d019`、[bundled-cdefs-attr-macros](bundled-cdefs-attr-macros.md) 込
 
 ## 決着
 
-未着手(手順 1 完了。停止点は 3 つ解消した — `#warning`(PR #84)、
-`__BYTE_ORDER__`(PR #105)、同梱 cdefs.h の `__attr_*`(PR #106)。
-**残る AVX2 組み込み関数は方針判断が要る**ので、ここで止めて人間の判断を待つ)。
+**正式追加しない。対象外として記録した**(ユーザ判断、2026-09-10。
+`roaring-out-of-scope-1`。設計判断の本文は
+[STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+作業ログの末尾に挙げた 3 択のうち **(2) `OUT-OF-SCOPE-GEMS.md` へ記録する**を選んだ。
+判断の対象は gem ではなく「**無効化できない経路でベクトル組み込み関数を使う**」形で、
+除外基準 **G** として一覧に足し、**再検討の条件も同じ節に書いた**
+([OUT-OF-SCOPE-GEMS.md](../docs/reference/OUT-OF-SCOPE-GEMS.md) の §2「roaring の扱いと、再検討の条件」)。
+
+受け入れ条件の照合:
+
+| 条件 | 結果 |
+|---|---|
+| 固定 archive SHA と gemspec を再確認し、同じ archive で失敗を再現する | 2026-08-25 に実施(SHA 一致、183,808 bytes) |
+| `#warning` の入力箇所・rubycc の最初のエラー・host の結果を記録する | 作業ログに記録。**`#warning` は PR #84 で解消済み** |
+| 3 択(`rubycc_gap` / `gem_branch_or_environment` / `unsupported_candidate`)を根拠付きで決める | **`unsupported_candidate`**。gcc と**同じ枝**を取った上で AVX2 が必須になる形で、分岐選択の食い違いではない |
+| `rubycc_gap` の場合は最小 fixture と回帰テストを別 PR にする | 該当した 3 件は**すべて分離済み**(`#warning` PR #84、`__BYTE_ORDER__` PR #105、同梱 cdefs.h PR #106) |
+| 正式追加する場合は 1 つの人間レビュー可能な PR にまとめる | **正式追加しないので該当しない** |
+
+**この候補は 3 つの実 gap を炙り出して役目を果たした。** 追加できなかったことと、
+候補として無価値だったことは別である。残る `__builtin_popcountll` は
+[popcount-and-long-bit-scan-builtins](popcount-and-long-bit-scan-builtins.md) として
+**open のまま**にしてある — roaring とは独立に価値があるためで、この判断では閉じない。
