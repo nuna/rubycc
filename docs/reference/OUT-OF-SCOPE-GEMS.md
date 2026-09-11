@@ -20,6 +20,7 @@ DESIGN の R10 は、gem のインストール成功と gem 自身のテスト�
 | **D** | **上流にテストスイートがない** | gem 自身のテスト合格というR10の検証証拠を得られないため、R10の分母から除外する |
 | **E** | **gem 自身のビルド駆動系が、ツールチェインの提供しない外部ツールを必須にする** | `extconf.rb` ではなく Rakefile を拡張として宣言し、その中で `make` や `sed` を**リテラルに**呼ぶ形。RubyGems プラグインが差し込む `ENV["MAKE"]`(= rmake)は見られないので、**シェル非依存と同じ理由で**最小環境では完結しない。C の親戚だが、`configure` ではなくレシピの側にある |
 | **F** | **上流ソースが別 gem のモノレポにあり、その gem 自身のスイートを取り出せていない** | ビルドできないのではなく**(d) 水準の証拠が作れない**という理由の除外である。取り出す手段が確立すれば分母に戻せる — D(そもそもテストが無い)とは性質が違う |
+| **G** | **無効化できない経路でベクトル組み込み関数(SIMD intrinsics)を使う** | rubycc は `__m256i` 等のベクトル型も `_mm256_*` の組み込み関数も持たない。**ゲートで落とせるものは対象内である** — コーパスの多くの gem は `arm_neon.h` / `cpuid.h` をprobe の裏に置いており、probe が失敗すればスカラ経路になる。対象外になるのは、**gcc と同じ枝を選んだ上で**ベクトル経路が必須になる形である |
 
 Cには例外がある。`--use-system-libraries` や `--enable-system-libraries` など、
 gemが提供するシステムライブラリ利用モードは対象内である。DESIGN R10が
@@ -39,6 +40,7 @@ gemが提供するシステムライブラリ利用モードは対象内であ�
 | **sqlite3 の既定インストール** | C | bundled sqlite3 のビルドで mini_portile と上流 `configure` を使う | `ext/sqlite3/extconf.rb` の経路確認 |
 | **digest-crc** | E | 拡張が `ext/digest/Rakefile` で、その中で `sh 'make'` と**リテラルに**書いている。RubyGems プラグインが差し込む `ENV["MAKE"]`(= rmake)を見ないので、システムの make が要る | **実測**(2026-09-10)。`tools/verify_corpus_candidate.rb` を rubycc と host の両方で実行し、隔離した GEM_HOME に rake が無くて**両方が同じ理由で** `build_failed`。Rakefile の該当行は `ext/digest/Rakefile` の `sh 'make', 'clean'` / `sh 'make'` |
 | **graphql-c_parser** | F | 上流ソースが独立リポジトリではなく **graphql-ruby のモノレポの中**にあり、「その gem 自身のテストスイート」に相当する tarball が取れない | gem の `source_code_uri` が `rmosolgo/graphql-ruby` を指すことの確認(2026-09-10)。**install と documented load は rubycc で pass 済み**(`corpus-candidate-pilot-v2-graphql-c-parser`)なので、ビルドできないのではなく **(d) 水準の証拠が作れない**という理由での除外である |
+| **roaring** | G | `roaring.c:894` の `static inline __m256i popcount256(__m256i v)`。`roaring.h:157` の `#if defined(__x86_64__) || defined(_M_X64)` で `CROARING_IS_X64` が立ち、**gcc も同じ枝を取る** — 分岐選択の食い違いではなく、gcc が `__attribute__((target("avx2")))` と実行時ディスパッチで本当に AVX2 を積んでいる。`ROARING_DISABLE_X64` を渡せば落とせるが、`extconf.rb` はそれを設定しないので、**archive に手を入れずには通らない** | **実測**(2026-08-26、[run 32880666098](https://github.com/nuna/rubycc/actions/runs/32880666098))。ここに至るまでに停止点を 3 つ解消している — `#warning`(PR #84)、`__BYTE_ORDER__`(PR #105)、同梱 cdefs.h の `__attr_*`(PR #106)。詳細は[issue](../../issues/corpus-candidate-pilot-v2-roaring.md) |
 
 `nokogiri --use-system-libraries` と `sqlite3 --enable-system-libraries` は、
 それぞれシステムライブラリを使う対象内の経路である。
@@ -49,6 +51,27 @@ gemが提供するシステムライブラリ利用モードは対象内であ�
 `gem install thin` はC++拡張の `eventmachine` もビルドするため、インストール
 全体は対象外となる。`unicorn` の依存である `kgio` と `raindrops` はC拡張なので、
 この理由では対象外にならない。
+
+### roaring の扱いと、再検討の条件
+
+**対象外にしたのは gem ではなく「ベクトル組み込み関数を必須にする経路」である**(ユーザ判断、2026-09-10)。
+選択肢は 3 つあった — (1) SIMD 組み込み関数を実装する、(2) 対象外として記録する、(3) 保留を続ける。
+**(1) は M2〜M4 級の規模**で、要求もコーパスからの圧力もこの 1 件では足りない。
+**(3) は最も高くつく** — 判断が出ないまま、次に候補を見る人が同じ調査を繰り返す。
+
+**再検討の条件**(どれかが真になったら開き直す):
+
+- **ベクトル組み込み関数を必須にする gem がもう 1 件以上現れたとき。** 1 件では規模に見合わないが、
+  複数なら「SIMD を持たないこと」自体がコーパスの上限になる
+- **rubycc が別の理由でベクトル型を持つことになったとき**(自動ベクトル化の実装など)。
+  組み込み関数はその副産物として近くなる
+- **roaring 側が `ROARING_DISABLE_X64` を `extconf.rb` で選べるようになったとき。**
+  いま落とせないのは gem の build 設定の問題であって、rubycc の側の問題ではない
+
+**`popcount` 系の組み込み関数は別件である。** roaring の 4 TU のうち 3 つは
+`__builtin_popcountll` で止まっており、そちらは
+[issue](../../issues/popcount-and-long-bit-scan-builtins.md) として分けてある —
+**roaring とは独立に価値がある**ので、この判断では閉じない。
 
 ## 3. R10の分母から除外される境界例
 
