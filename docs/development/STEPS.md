@@ -13848,3 +13848,53 @@ rubycc の側の問題ではない。
 残る `__builtin_popcountll` も
 [popcount-and-long-bit-scan-builtins](../../issues/popcount-and-long-bit-scan-builtins.md) として
 **open のまま**にした。この判断で閉じるのは roaring の採否だけである。
+
+---
+
+## acceptance-fixture-required-1 — 「Tier A に含まれる」が 7 件中 2 件にしか当たっていなかった
+
+**内容**: `acceptance-fixture` ジョブを `.github/workflows/acceptance-fixture.yml` へ切り出し、
+**PR ごとに走るようにした**。`weekly.yml` は `workflow_call` で同じ定義を呼ぶ。
+ユーザ判断(2026-09-11)。判断そのものが issue の主題だった。
+
+**必須化の根拠は、CI.md の記述が事実と違っていたことである。** そこにはこう書いてあった:
+
+> **PR の必須判定ではない。** 実行しているテスト本体は Tier A の `rake test` に含まれるので、
+> PR ごとの回帰検出は Tier A が担う。
+
+**当たっていたのは必須 7 ID のうち 2 件だけだった。**
+
+| Tier A で走る | Tier A で skip |
+|---|---|
+| `mkmf-fixture-probes` / `rmake-fixture-build` | `mkmf-json-extconf` / `mkmf-msgpack-extconf` / `rmake-json-parser` / `gem-install-json` / `gem-install-msgpack` |
+
+5 件は `RMAKE_ACCEPTANCE` / strict のガードで落ちる。**PR は extconf も gem install も
+一度も通していなかった。** この記述は判断と無関係に誤りなので、事実ごと書き直した。
+
+**設計判断**:
+
+- **`test.yml` には足さず、独立したワークフローにした。** `test.yml` 自身が weekly と
+  release から `workflow_call` で再利用されているので、そこへ足すと**週次とリリースで
+  二重に走る**。切り出せば定義は 1 つのまま、PR と週次の両方から呼べる。
+- **`pull_request` に `paths-ignore` を付けない。** `test.yml` と同じ方針である。
+  `push` の除外一覧は `test.yml` と同一で、**テストがその一致を検査する** —
+  片方だけ走る状態を防ぐためで、後からどちらかを触ったときに気付ける。
+- **weekly 側に残したのは「いつ走るか」だけ。** ジョブが何をするかの説明は新ファイルへ、
+  dispatch 入力で絞る条件の説明は呼び出し側へ分けた。
+
+**測ったこと**(この PR 自身の run。新ジョブは `pull_request` トリガを持つので、
+**PR を出した時点で自分を検証する**):
+
+| | 実測 |
+|---|---|
+| `acceptance-fixture` | **1 分 55 秒**(起票時の見積もり 1.8 分と一致) |
+| `test (4.0)` | 3 分 54 秒 |
+
+**PR のレイテンシは増えていない。** 別ワークフローなので Tier A と**並列に走り**、
+しかも先に終わる。増分を「+1.8 分」と見積もっていたが、**実際の待ち時間の増分は 0** で、
+費用は runner の同時実行枠だけである(public リポジトリなので分数は無料)。
+
+**「走る」と「落ちたら merge できない」は別である。** `master` にブランチ保護は無く
+(2026-09-11 実測、`gh api .../branches/master/protection` → 404)、
+**Tier A ですら merge をブロックしていない**。設定側は
+[`branch-protection-required-checks`](../../issues/branch-protection-required-checks.md) に分けた。

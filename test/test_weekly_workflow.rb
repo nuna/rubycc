@@ -3,12 +3,46 @@
 require "minitest/autorun"
 require "yaml"
 
+# The weekly workflow's dispatch contract, and the deterministic acceptance
+# fixture job it delegates to. That job lives in its own workflow because it now
+# runs on every pull request as well (acceptance-fixture-required-1), so what it
+# does is pinned against that file while *when the weekly runs it* stays pinned
+# here -- the two questions moved apart and the assertions follow.
 class TestWeeklyWorkflow < Minitest::Test
   WORKFLOW = File.expand_path("../.github/workflows/weekly.yml", __dir__).freeze
+  FIXTURE_WORKFLOW = File.expand_path("../.github/workflows/acceptance-fixture.yml", __dir__).freeze
+  TEST_WORKFLOW = File.expand_path("../.github/workflows/test.yml", __dir__).freeze
 
   def setup
     @workflow = YAML.load_file(WORKFLOW)
     @jobs = @workflow.fetch("jobs")
+    @fixture_workflow = YAML.load_file(FIXTURE_WORKFLOW)
+    @fixture_job = @fixture_workflow.fetch("jobs").fetch("acceptance-fixture")
+  end
+
+  # The weekly still decides *whether* the fixture job runs; the job itself is
+  # one line of delegation, so a step assertion here would pin nothing.
+  def test_the_weekly_delegates_the_fixture_job_to_its_own_workflow
+    job = @jobs.fetch("acceptance-fixture")
+    assert_equal "./.github/workflows/acceptance-fixture.yml", job.fetch("uses")
+    refute job.key?("steps"), "the weekly must not carry a second copy of the fixture steps"
+  end
+
+  # The point of giving the job its own workflow: a pull request runs it. No
+  # paths-ignore on pull_request, for the reason test.yml states -- a PR always
+  # runs the full contract -- and the push filter is the same list test.yml uses,
+  # so a docs-only push does not spend a runner in either workflow.
+  def test_the_fixture_workflow_runs_on_every_pull_request
+    triggers = @fixture_workflow.fetch("on")
+    assert triggers.key?("pull_request"), "the fixture contract must run on pull requests"
+    assert_nil triggers["pull_request"], "pull_request must carry no filter"
+    assert triggers.key?("workflow_call"), "the weekly reuses this workflow"
+
+    push = triggers.fetch("push")
+    assert_equal ["master"], push.fetch("branches")
+    assert_equal YAML.load_file(TEST_WORKFLOW).fetch("on").fetch("push").fetch("paths-ignore"),
+                 push.fetch("paths-ignore"),
+                 "the two workflows must ignore the same paths, or one runs where the other does not"
   end
 
   def test_acceptance_only_is_a_choice_and_runs_fixture_and_live
@@ -52,7 +86,7 @@ class TestWeeklyWorkflow < Minitest::Test
   end
 
   def test_fixture_job_runs_real_acceptance_inputs_in_a_network_namespace
-    steps = @jobs.fetch("acceptance-fixture").fetch("steps")
+    steps = @fixture_job.fetch("steps")
     cache = steps.find { |step| step.fetch("uses", "").start_with?("actions/cache@") }
     refute_nil cache
     assert_equal "tmp/ci/acceptance-fixtures", cache.fetch("with").fetch("path")
@@ -81,7 +115,7 @@ class TestWeeklyWorkflow < Minitest::Test
   end
 
   def test_fixture_job_blocks_network_via_root_owned_namespace_and_verifies_the_blackhole
-    steps = @jobs.fetch("acceptance-fixture").fetch("steps")
+    steps = @fixture_job.fetch("steps")
 
     verify_no_network = steps.find { |step| step.fetch("name", "").include?("Verify the namespace really has no network") }
     refute_nil verify_no_network

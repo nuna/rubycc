@@ -1,0 +1,168 @@
+# The deterministic half of the acceptance contract: the same gem install path
+# the live weekly job takes, run against archives pinned by URL and SHA-256 in
+# config/ci/acceptance_manifest.json, inside a namespace with no network at all.
+# Nothing here reaches rubygems.org -- the live job next to it in weekly.yml is
+# what proves the manifest URLs and the real service still work.
+#
+# It has its own workflow because it runs on every pull request as well
+# (acceptance-fixture-required-1): Tier A skips five of the manifest's seven
+# required IDs behind RMAKE_ACCEPTANCE and strict guards, so without this job a
+# pull request never exercises extconf, rmake's json parser build or either gem
+# install. The weekly reuses it through workflow_call.
+name: acceptance-fixture
+
+# Quoted so YAML parsers cannot read the key as the boolean `on` (YAML 1.1
+# treats bare on/off/yes/no as booleans).
+"on":
+  pull_request:
+  push:
+    branches: [master]
+    # Same skip list as test.yml; see its comment for why pull_request has no
+    # paths-ignore.
+    paths-ignore:
+      - 'docs/**'
+      - 'references/**'
+      - 'README.md'
+      - 'CLAUDE.md'
+      - 'LICENSE.txt'
+      - 'NOTICE'
+      - 'benchmark/results/**'
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # This is the deterministic acceptance contract. The gem archives are
+  # prepared in an Actions cache; the acceptance test step itself is placed in
+  # an empty network namespace.
+  acceptance-fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the local fixture toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: false
+
+      - name: bundle install
+        run: bundle install --jobs 4 --retry 3
+
+      - name: Restore pinned acceptance gem cache
+        uses: actions/cache@v4
+        with:
+          path: tmp/ci/acceptance-fixtures
+          key: acceptance-fixture-gems-${{ hashFiles('config/ci/acceptance_manifest.json') }}
+
+      - name: Prepare and verify pinned acceptance gem cache
+        env:
+          CI_FIXTURE_ROOT: ${{ github.workspace }}/tmp/ci/acceptance-fixtures
+        run: |
+          bundle exec ruby tools/ci_prepare_acceptance_fixtures.rb
+          bundle exec ruby -Ilib:test test/test_acceptance_fixtures.rb --verbose
+
+      - name: Verify the namespace really has no network
+        # root has CAP_SYS_ADMIN and can create a network namespace without a
+        # user namespace, so this does not need the unprivileged user
+        # namespace that Ubuntu 24.04 restricts via AppArmor
+        # (kernel.apparmor_restrict_unprivileged_userns=1, run 32658611908,
+        # 2026-08-23). setpriv drops back to the invoking user before running
+        # anything, so the kernel's defenses stay intact.
+        shell: bash
+        run: |
+          set -euo pipefail
+          if sudo -E env "PATH=$PATH" unshare --net -- \
+               setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups --inh-caps=-all \
+               bash -lc 'curl -sS --max-time 10 -o /dev/null https://rubygems.org'; then
+            echo "the namespace reached the network; the fixture run would not prove anything" >&2
+            exit 1
+          fi
+          echo "the namespace has no network, as required"
+
+      - name: Run pinned acceptance fixtures without network access
+        shell: bash
+        env:
+          CI_PROFILE: acceptance-fixture
+          CI_RESULT_PATH: tmp/ci/acceptance-fixture-results.json
+          CI_ARTIFACT_REPORT_PATH: tmp/ci/acceptance-fixture-artifacts.json
+          CI_FIXTURE_ROOT: ${{ github.workspace }}/tmp/ci/acceptance-fixtures
+          CI_NETWORK: fixture
+          RMAKE_ACCEPTANCE_STRICT: "1"
+        run: |
+          set -o pipefail
+          mkdir -p tmp/ci
+
+          # One invocation of the blacked-out namespace, so the five below read
+          # as the test commands they are. root creates the network namespace
+          # (CAP_SYS_ADMIN), which is why no unprivileged user namespace -- the
+          # thing Ubuntu 24.04 restricts through AppArmor -- is involved; setpriv
+          # drops straight back to the invoking user, so nothing under test runs
+          # as root and the workspace keeps its ownership. sudo clears the
+          # environment, so PATH is handed over explicitly or the toolcache Ruby
+          # is not the one that runs.
+          isolated() {
+            sudo -E env "PATH=$PATH" unshare --net -- \
+              setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups --inh-caps=-all \
+              bash -lc "$1"
+          }
+
+          set +e
+          isolated \
+            'bundle exec ruby -Ilib:test test/test_mkmf_conftest.rb \
+              --name test_conftest_probe_api_matches_gcc_truth --verbose' \
+            2>&1 | tee tmp/ci/acceptance-fixture-probes.log
+          probes_status=${PIPESTATUS[0]}
+          isolated \
+            'bundle exec ruby -Ilib:test test/test_mkmf_conftest.rb \
+              --name "/test_(msgpack|json)_extconf/" --verbose' \
+            2>&1 | tee tmp/ci/acceptance-fixture-extconf.log
+          extconf_status=${PIPESTATUS[0]}
+          isolated \
+            'bundle exec ruby -Ilib:test test/test_rmake_tools.rb \
+              --name test_tools_substitution_builds_loadable_so_sequential --verbose' \
+            2>&1 | tee tmp/ci/acceptance-fixture-rmake.log
+          rmake_status=${PIPESTATUS[0]}
+          isolated \
+            'bundle exec ruby -Ilib:test test/test_rmake_tools.rb \
+              --name test_real_json_parser_makefile_builds_so --verbose' \
+            2>&1 | tee tmp/ci/acceptance-fixture-rmake-gem.log
+          rmake_gem_status=${PIPESTATUS[0]}
+          isolated \
+            'bundle exec ruby -Ilib:test test/test_gem_install.rb \
+              --name "/test_gem_install_(json|msgpack)_builds_through_rubycc/" --verbose' \
+            2>&1 | tee tmp/ci/acceptance-fixture-gem-install.log
+          gem_install_status=${PIPESTATUS[0]}
+          if [ "$probes_status" -ne 0 ] || [ "$extconf_status" -ne 0 ] || \
+             [ "$rmake_status" -ne 0 ] || [ "$rmake_gem_status" -ne 0 ] || \
+             [ "$gem_install_status" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Check required fixture results
+        if: always()
+        run: |
+          ruby tools/ci_check_acceptance.rb \
+            --manifest config/ci/acceptance_manifest.json \
+            --results tmp/ci/acceptance-fixture-results.json \
+            --profile acceptance-fixture \
+            --artifacts tmp/ci/acceptance-fixture-artifacts.json \
+            --strict
+
+      - name: Upload deterministic acceptance artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: acceptance-fixture
+          path: |
+            tmp/ci/acceptance-fixture-*.log
+            tmp/ci/acceptance-fixture-results.json
+            tmp/ci/acceptance-fixture-artifacts.json
+          if-no-files-found: warn
