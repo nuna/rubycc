@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: infra
 opened: 2026-08-12
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-11
+branch: acceptance-fixture-required
+pr: 132
+steps: [acceptance-fixture-required-1]
 ---
 
 # fixture 受入れを PR 必須にするかを決める(TEST-PLAN 2B-3)
@@ -84,4 +84,23 @@ GitHub Free の 2,000 分/月に収める設計)。
 
 ## 決着
 
-(未着手)
+**必須化した**(ユーザ判断、2026-09-11。`acceptance-fixture-required-1`。
+設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+ジョブを `.github/workflows/acceptance-fixture.yml` へ切り出し、
+`pull_request` / `push`(master)/ `workflow_call` / `workflow_dispatch` の 4 トリガにした。
+`weekly.yml` は `workflow_call` で**同じ定義**を呼ぶ(コピーは作っていない)。
+`test.yml` に足さなかったのは、`test.yml` 自身が weekly と release から再利用されており、
+そこへ足すと週次とリリースで二重に走るためである。
+
+受け入れ条件の照合:
+
+| 条件 | 結果 |
+|---|---|
+| fixture が live の代替として成立していることを確認した上で判断し、根拠を `CI.md` に記録する | 前提(`acceptance-fixture-offline` #93 / `acceptance-fixture-netns-hosted-runner` #108)は解消済みで、週次でも緑。根拠を `CI.md` に記録した |
+| 必須化する場合は Tier A の実行時間の増分を実測して記録する | **この PR 自身の run で実測** — `acceptance-fixture` 1 分 55 秒、`test (4.0)` 3 分 54 秒。**別ワークフローで並列に走り先に終わるので、PR のレイテンシの増分は 0** だった(見積もりは「+1.8 分」だった) |
+| `CI.md:189` の「実行しているテスト本体は Tier A の `rake test` に含まれる」を直す | **直した**。7 件中 5 件に当てはまっていなかったという事実ごと書いた |
+
+**「PR ごとに走る」と「落ちたら merge できない」は別である。** 後者はリポジトリ設定で、
+`master` にはブランチ保護がかかっていない(2026-09-11 実測、404)。
+[`branch-protection-required-checks`](branch-protection-required-checks.md) として分離した。

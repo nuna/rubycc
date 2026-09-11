@@ -9,6 +9,7 @@ rubycc の継続的検証は、通常の回帰、週次の追加検証、リリ�
 | 層 | ワークフロー | トリガ | 対象 | 設定上限 |
 |---|---|---|---|---|
 | Tier A | `test.yml` | master への push、pull request、手動、reusable workflow 呼び出し | Ruby 3.3 / 4.0 の全 Minitest スイート | 60 分 / Ruby 1 本 |
+| Tier A | `acceptance-fixture.yml` | 同上 | 固定 archive によるネットワーク遮断の受入れ(必須 7 ID) | 25 分 |
 | Tier B | `weekly.yml` | 毎週日曜 18:00 UTC(月曜 03:00 JST)、手動 | census、決定的 fixture、受入れ、スループット、native aarch64 smoke、Ruby 3.4、musl、musl/aarch64 | 20〜90 分 / ジョブ |
 | Tier C | `release.yml` | `v*` タグの push、手動 | Tier A の再実行と gem の再現ビルド | test 60 分 + package 30 分 |
 
@@ -186,10 +187,17 @@ cache準備後のjobは `unshare --user --map-root-user --net` の network names
 `rmake-fixture-build`、`rmake-json-parser`、`gem-install-json`、
 `gem-install-msgpack` を実行し、結果と取得 archive の digest を構造化 artifact へ記録する。
 
-**PR の必須判定ではない。** 実行しているテスト本体は Tier A の `rake test` に
-含まれるので、PR ごとの回帰検出は Tier A が担う。この job が足しているのは、
-専用 profile でのネットワーク遮断実行と、必須 ID が本当に実行されたことを
-`ci_check_acceptance.rb` が検証する点である。
+**PR ごとに走る**(`acceptance-fixture-required-1`)。以前ここには「実行している
+テスト本体は Tier A の `rake test` に含まれる」と書いてあったが、**それは 7 件中
+2 件にしか当てはまらなかった** — `mkmf-fixture-probes` と `rmake-fixture-build` 以外の
+5 件は `RMAKE_ACCEPTANCE` / strict のガードで Tier A では skip する(2026-08-25 実測、
+2026-09-11 の全スイートの skip 一覧でも同じ)。**PR が extconf も gem install も
+一度も通していなかった**ので、この job を PR トリガに移した。
+
+ジョブ本体は [`../../.github/workflows/acceptance-fixture.yml`](../../.github/workflows/acceptance-fixture.yml)
+にあり、`weekly.yml` は `workflow_call` で同じものを呼ぶ(定義は 1 つ)。
+`test.yml` に足さなかったのは、`test.yml` 自身が weekly と release から再利用されており、
+そこへ足すと週次とリリースで二重に走るためである。
 
 **live acceptance の代替にはならない。** gem の取得・unpack・extconf・ビルドという、
 実際の外部 gem サービスへの接続と manifest URL の健全性は live job が検証する。
@@ -267,6 +275,14 @@ stdio のリンクに関する Gap P である。
 として保存し、rubygems.org への push は自動化しない。
 
 ## 実行コスト
+
+**このリポジトリは現在 public なので、Actions の無料枠(2,000 分/月)は消費しない**
+(2026-08-25 実測。`gh api /repos/nuna/rubycc --jq .private` が `false`)。
+費用は分数ではなく **PR のレイテンシ**である。ただし `acceptance-fixture` を PR に足した
+分については、**待ち時間の増分は 0 だった** — 別ワークフローなので Tier A と並列に走り、
+先に終わる(2026-09-11 実測: `acceptance-fixture` 1 分 55 秒、`test (4.0)` 3 分 54 秒)。
+残るのは runner の同時実行枠だけである。
+以下は private だった頃の見積もりで、private に戻す判断をするときの材料として残す。
 
 private repository の GitHub Free Actions 枠は 2,000 分/月である。設定上限の合計は、
 Tier A が push 1 回につき 120 分、週次スケジュールが 435 分、
