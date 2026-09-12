@@ -201,3 +201,36 @@ README では要約に留めそちらへリンクする。
   **pkg-config の `--version` は本物なら pkg-config 自身のバージョンを返すもの**で、
   スクリプトがその形式を解釈しうるため、**似て非なる値を返す方が危険**である。
   必要になるまで足さない。
+
+## 6. リリース手順(v1.1.0)
+
+**v1.1.0 は 2026-09-12 の作業。** タグ push と `gem push` は v1.0.0 と同じく
+**意図的に自動化しない**(アカウント保有者の操作)。
+
+§5 の警告どおり、**配るものを実際に作って動かしてから**表を埋めた。
+
+| | 状態 |
+|---|---|
+| `lib/rubycc/version.rb` を `1.1.0` に | **済** |
+| `CHANGELOG.md` の 1.1.0 エントリ | **済**。**英語で書く**(この文書は gem に同梱されて配られる。最初 日本語で書いて直した) |
+| README の実績を実測値に更新 | **済**(`corpus-debug-inspector-rbs-1` で更新済み: 41 候補 / R10 分母 35 / 検証済み 33 = **94.3%**) |
+| `bundle exec rake test` | **済** — 3,498 runs / 14,489 assertions / 0 failures / 0 errors / 39 skips。`tools/ci_check_skips.rb` も OK |
+| gem の再現ビルド | **済** — `SOURCE_DATE_EPOCH=1789176602` を固定して別ディレクトリで 2 回ビルドし、`cmp` で**バイト一致**(637,440 bytes、SHA-256 `42a84e1a335c4bb65de737082855da5af213bd74c48a62058cd4a75946f97d18`) |
+| 同梱物の確認 | **済** — 165 ファイル。`LICENSE.txt` / `NOTICE` / `README.md` / `CHANGELOG.md` / `data/verified_gems.json` すべて在り、ヘッダ 81 本、lib 66 本、exe 5 本 |
+| **配るものを動かす** | **済** — 隔離した `GEM_HOME` に `gem install` し、`rubycc` / `rubycc-ar` / `rubycc-doctor` が `1.1.0` を答えることと、`hello.c` を**コンパイルして実行できる**ことを確認 |
+| **タグ `v1.1.0` を打つ** | **未** — 人の手で行う |
+| **`gem push`** | **未** — 人の手で行う |
+
+### 動かして確かめたこと
+
+`--version` を 5 つのコマンドすべてに投げた。**`rmake` と `rubycc-pkgconf` は
+未対応のままで、これは §5 の「測って『直さない』と判断したもの」どおり**である
+(mkmf は `--version` を呼ばない。pkg-config の `--version` は本物ならツール自身の
+バージョンを返すもので、似て非なる値の方が危険)。**前回 v1.0.0 で見つかった
+`rubycc-doctor` の "version unknown" は再発していない。**
+
+| コマンド | 出力 |
+|---|---|
+| `rubycc` / `rubycc-ar` / `rubycc-doctor` | `<名前> 1.1.0` |
+| `rmake` | `rmake: Makefile: No such file`(`--version` を引数として解釈しない) |
+| `rubycc-pkgconf` | `rubycc-pkgconf: unknown option '--version'` |
