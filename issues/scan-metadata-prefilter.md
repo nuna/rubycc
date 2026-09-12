@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: infra
 opened: 2026-09-12
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-12
+branch: scan-metadata-prefilter
+pr: 138
+steps: [scan-metadata-prefilter-1]
 ---
 
 # 候補走査の 99% は捨てる gem の全文ダウンロードである
@@ -86,4 +86,20 @@ extensions:
 
 ## 決着
 
-(未着手)
+**解消した**(`scan-metadata-prefilter-1`。設計判断の本文は
+[STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+受け入れ条件の照合(2026-09-12、ランク 101〜300、空の `SCAN_WORK` から):
+
+| 条件 | 結果 |
+|---|---|
+| 走査が 2 段になっている | 第 1 段は `Range: bytes=0-8191`、第 2 段は通ったものだけ |
+| **判定結果が変わらない** | ベース `94618c4` の worktree で**修正前のコードを同じ窓で走らせ、出力を diff** した。**追加したサマリ 1 行を除いて完全一致** |
+| SHA-256 は全文から | 変更なし。全文を取らなかった gem の `gem_sha256` は `nil` のまま |
+| 断片に収まらなければ全文へフォールバック | 206 以外 / メンバ未完結 / ustar 無し / gzip・YAML 失敗 / platform 不一致 / `required_ruby_version` 不一致。**実測で 200 件中 0 件**(4 件はぴったりの長さで再要求して解決) |
+| artifact にどの段で落としたかが残る | 各レコードに `decision`(`stage` / `prefilter` / `reason`)、run summary に `prefilter` ブロック |
+| 転送量と所要時間の削減を実測 | **10m42s → 2m39s(4.0 倍)**、全文取得 200 → 20 件、**35.8 MB 節約**、work dir 306 MB → 83 MB |
+
+**着手前に確かめることに挙げた 2 点**も守られている — 深い検査は全文側に残し
+(`bcrypt` の `$objs` は `data.tar.gz` の中)、第 1 段は「落としてよいか」ではなく
+「**全文を取る価値があるか**」の判定に留めた(拡張子の一覧は意図的に上位集合)。

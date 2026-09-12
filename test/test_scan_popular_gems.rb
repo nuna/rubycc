@@ -6,6 +6,7 @@ require "open3"
 require "rbconfig"
 require "stringio"
 require "tmpdir"
+require "zlib"
 
 require_relative "../tools/scan_popular_gems"
 
@@ -49,6 +50,34 @@ class TestScanPopularGems < Minitest::Test
       @body
     ensure
       @lock.synchronize { @active -= 1 }
+    end
+  end
+
+  # Answers a prefix request the way rubygems.org does: 206 with a
+  # Content-Range naming the full size. `status` other than 206 stands for the
+  # servers that ignore the range, and `cap` for one that returns fewer bytes
+  # than were asked for.
+  class FakeRangeHttp
+    attr_reader :prefix_requests
+
+    def initialize(body, status: 206, cap: nil)
+      @body = body.b
+      @status = status
+      @cap = cap
+      @prefix_requests = []
+    end
+
+    def get_prefix(url, length)
+      @prefix_requests << [url, length]
+      return { status: @status, body: nil, reason: "#{@status} Not Partial" } unless @status == 206
+
+      prefix = @body.byteslice(0, [length, @cap || length].min)
+      { status: 206, body: prefix,
+        content_range: "bytes 0-#{prefix.bytesize - 1}/#{@body.bytesize}" }
+    end
+
+    def get_bytes(_url)
+      raise "stage 2 must not download an archive in this test"
     end
   end
 
@@ -747,7 +776,228 @@ class TestScanPopularGems < Minitest::Test
     assert_includes output.string, "assembly-gem"
   end
 
+  # --- stage 1: metadata prefilter -----------------------------------------
+
+  def test_metadata_member_is_read_out_of_an_eight_kilobyte_prefix
+    Dir.mktmpdir do |root|
+      body = File.binread(build_gem_fixture(root, files: { "ext/example/example.c" => "int example;\n" },
+                                            extensions: ["ext/example/extconf.rb"]))
+      status, member = CorpusCandidateScan::GemArchiveFragment.member(
+        body.byteslice(0, 8192), "metadata.gz"
+      )
+
+      assert_equal :ok, status
+      spec = Gem::Specification.from_yaml(Zlib.gunzip(member))
+      assert_equal ["ext/example/extconf.rb"], spec.extensions
+      assert_includes spec.files, "ext/example/example.c"
+      assert_operator member.bytesize, :<, body.bytesize / 2
+    end
+  end
+
+  def test_prefix_without_a_complete_member_reports_the_bytes_it_would_need
+    Dir.mktmpdir do |root|
+      body = File.binread(build_gem_fixture(root, files: { "lib/example.rb" => "module Example; end\n" }))
+
+      truncated, needed = CorpusCandidateScan::GemArchiveFragment.member(body.byteslice(0, 600), "metadata.gz")
+      assert_equal :truncated, truncated
+      assert_operator needed, :>, 600
+
+      header_only, _ = CorpusCandidateScan::GemArchiveFragment.member(body.byteslice(0, 200), "metadata.gz")
+      assert_equal :truncated, header_only
+
+      malformed, reason = CorpusCandidateScan::GemArchiveFragment.member("x" * 2048, "metadata.gz")
+      assert_equal :malformed, malformed
+      assert_includes reason, "ustar"
+
+      absent, absent_reason = CorpusCandidateScan::GemArchiveFragment.member("\0" * 1024, "metadata.gz")
+      assert_equal :malformed, absent
+      assert_includes absent_reason, "not a member"
+    end
+  end
+
+  def test_gem_without_native_sources_is_settled_without_downloading_the_archive
+    Dir.mktmpdir do |root|
+      work_dir = File.join(root, "work")
+      body = File.binread(build_gem_fixture(root, files: { "lib/example.rb" => "module Example; end\n" }))
+      range = FakeRangeHttp.new(body)
+      scanner = prefilter_scanner(work_dir, range)
+
+      result = scanner.send(:inspect_gem, { rank: 7, name: "example-gem" })
+
+      assert_equal :no_ext, result[:status]
+      assert_equal :metadata, result[:decided_by]
+      assert_equal "skip", result.dig(:prefilter, :outcome)
+      assert_equal "1.0.0", result[:version]
+      assert_equal 4_200, result[:downloads]
+      assert_nil result[:gem_sha256]
+      assert_equal 1, range.prefix_requests.length
+      assert_empty Dir.glob(File.join(work_dir, "*.gem"))
+
+      record = CorpusCandidateScan::Artifact.record(result)
+      assert_equal "metadata", record.dig("decision", "stage")
+      assert_equal "skip", record.dig("decision", "prefilter")
+    end
+  end
+
+  def test_undeclared_native_source_in_the_file_list_still_reaches_the_archive
+    Dir.mktmpdir do |root|
+      work_dir = File.join(root, "work")
+      body = File.binread(
+        build_gem_fixture(root, files: { "lib/example.rb" => "module Example; end\n",
+                                         "vendor/bundled/thing.c" => "int thing;\n" })
+      )
+      range = FakeRangeHttp.new(body)
+      scanner = prefilter_scanner(work_dir, range)
+      result = { name: "example-gem" }
+
+      assert_nil scanner.send(:metadata_prefilter, { rank: 7, name: "example-gem" }, result)
+      assert_equal "fetch", result.dig(:prefilter, :outcome)
+      assert_includes result.dig(:prefilter, :reason), "vendor/bundled/thing.c"
+    end
+  end
+
+  def test_declared_extension_reaches_the_archive
+    Dir.mktmpdir do |root|
+      work_dir = File.join(root, "work")
+      body = File.binread(
+        build_gem_fixture(root, files: { "ext/example/example.c" => "int example;\n" },
+                          extensions: ["ext/example/extconf.rb"])
+      )
+      scanner = prefilter_scanner(work_dir, FakeRangeHttp.new(body))
+      result = { name: "example-gem" }
+
+      assert_nil scanner.send(:metadata_prefilter, { rank: 7, name: "example-gem" }, result)
+      assert_equal "fetch", result.dig(:prefilter, :outcome)
+      assert_includes result.dig(:prefilter, :reason), "ext/example/extconf.rb"
+    end
+  end
+
+  def test_every_unreadable_probe_falls_back_to_the_full_archive
+    Dir.mktmpdir do |root|
+      work_dir = File.join(root, "work")
+      body = File.binread(build_gem_fixture(root, files: { "lib/example.rb" => "module Example; end\n" }))
+      entry = { rank: 7, name: "example-gem" }
+
+      whole_file = {}
+      assert_nil prefilter_scanner(work_dir, FakeRangeHttp.new(body, status: 200))
+        .send(:metadata_prefilter, entry, whole_file)
+      assert_equal "fallback", whole_file.dig(:prefilter, :outcome)
+      assert_includes whole_file.dig(:prefilter, :reason), "200"
+
+      incomplete = {}
+      assert_nil prefilter_scanner(File.join(root, "incomplete"), FakeRangeHttp.new(body, cap: 600))
+        .send(:metadata_prefilter, entry, incomplete)
+      assert_equal "fallback", incomplete.dig(:prefilter, :outcome)
+      assert_includes incomplete.dig(:prefilter, :reason), "metadata.gz needs"
+
+      corrupt_body = body.dup
+      corrupt_body.setbyte(600, corrupt_body.getbyte(600) ^ 0xff)
+      corrupt = {}
+      assert_nil prefilter_scanner(File.join(root, "corrupt"), FakeRangeHttp.new(corrupt_body))
+        .send(:metadata_prefilter, entry, corrupt)
+      assert_equal "fallback", corrupt.dig(:prefilter, :outcome)
+      assert_includes corrupt.dig(:prefilter, :reason), "did not decode"
+    end
+  end
+
+  # The probe reads the latest release; the archive fetch resolves whatever
+  # `gem fetch --platform=ruby` can install. A newest release that outruns the
+  # running interpreter sends the fetch to an older one, whose contents the
+  # probe never saw -- so its answer cannot be reused, not even the cheap
+  # "nothing native here" one.
+  def test_a_release_the_running_ruby_cannot_install_falls_back_to_the_archive
+    Dir.mktmpdir do |root|
+      unreachable = ">= #{Gem::Version.new(RUBY_VERSION).segments.first + 1}"
+      body = File.binread(
+        build_gem_fixture(root, files: { "lib/example.rb" => "module Example; end\n" },
+                          required_ruby_version: unreachable)
+      )
+      range = FakeRangeHttp.new(body)
+      scanner = prefilter_scanner(File.join(root, "work"), range)
+      result = { name: "example-gem" }
+
+      assert_nil scanner.send(:metadata_prefilter, { rank: 7, name: "example-gem" }, result)
+      assert_equal "fallback", result.dig(:prefilter, :outcome)
+      assert_includes result.dig(:prefilter, :reason), "requires ruby"
+      assert_includes result.dig(:prefilter, :reason), RUBY_VERSION
+      refute_equal :metadata, result[:decided_by]
+    end
+  end
+
+  def test_a_member_past_the_first_prefix_is_re_requested_at_its_exact_size
+    Dir.mktmpdir do |root|
+      work_dir = File.join(root, "work")
+      body = File.binread(build_gem_fixture(root, files: { "lib/example.rb" => "module Example; end\n" }))
+      range = FakeRangeHttp.new(body)
+      scanner = prefilter_scanner(work_dir, range)
+
+      probe = scanner.send(:fetch_gem_metadata, "example-gem", "1.0.0",
+                           "https://rubygems.org/gems/example-gem-1.0.0.gem", length: 300)
+
+      assert_equal "example-gem", probe.fetch(:spec).name
+      lengths = range.prefix_requests.map(&:last)
+      assert_equal 300, lengths.first
+      assert_equal probe.fetch(:bytes), lengths.last
+      assert_operator lengths.last, :<, body.bytesize
+      assert_equal body.bytesize, probe.fetch(:archive_bytes)
+    end
+  end
+
+  def test_a_cached_archive_is_not_probed_again
+    Dir.mktmpdir do |root|
+      work_dir = File.join(root, "work")
+      FileUtils.mkdir_p(work_dir)
+      gem_path = build_gem_fixture(root, files: { "lib/example.rb" => "module Example; end\n" })
+      FileUtils.cp(gem_path, File.join(work_dir, "example-gem-1.0.0.gem"))
+      range = FakeRangeHttp.new(File.binread(gem_path))
+      scanner = prefilter_scanner(work_dir, range)
+
+      result = scanner.send(:inspect_gem, { rank: 7, name: "example-gem" })
+
+      assert_equal :no_ext, result[:status]
+      assert_equal :archive, result[:decided_by]
+      assert_equal "skipped", result.dig(:prefilter, :outcome)
+      assert_empty range.prefix_requests
+    end
+  end
+
   private
+
+  def prefilter_scanner(work_dir, range_http)
+    config = CorpusCandidateScan::Configuration.new(first_page: 1, last_page: 1, work_dir: work_dir)
+    release = JSON.generate(
+      "name" => "example-gem", "version" => "1.0.0", "platform" => "ruby", "downloads" => 4_200,
+      "gem_uri" => "https://rubygems.org/gems/example-gem-1.0.0.gem"
+    )
+    CorpusCandidateScan::Scanner.new(
+      config: config,
+      http_client: FakeHttp.new("https://rubygems.org/api/v1/gems/example-gem.json" => release),
+      archive_http_client: range_http, sleeper: ->(_seconds) {}, err: StringIO.new
+    )
+  end
+
+  def build_gem_fixture(directory, files:, extensions: [], required_ruby_version: nil)
+    source = File.join(directory, "source-#{files.keys.hash.abs}")
+    (files.keys + extensions).each do |file|
+      path = File.join(source, file)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, files.fetch(file, "require 'mkmf'\ncreate_makefile('example')\n"))
+    end
+    specification = Gem::Specification.new do |gem|
+      gem.name = "example-gem"
+      gem.version = "1.0.0"
+      gem.summary = "hermetic prefilter fixture"
+      gem.authors = ["rubycc"]
+      gem.email = ["rubycc@example.invalid"]
+      gem.licenses = ["MIT"]
+      gem.homepage = "https://example.invalid/rubycc-fixture"
+      gem.files = (files.keys + extensions).sort
+      gem.extensions = extensions
+      gem.require_paths = ["lib"]
+      gem.required_ruby_version = required_ruby_version if required_ruby_version
+    end
+    Dir.chdir(source) { File.expand_path(Gem::Package.build(specification)) }
+  end
 
   def build_fixture_gem(directory)
     FileUtils.mkdir_p(File.join(directory, "ext", "example"))

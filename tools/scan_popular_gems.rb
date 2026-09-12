@@ -27,6 +27,8 @@ require "time"
 require "tmpdir"
 require "thread"
 require "uri"
+require "yaml"
+require "zlib"
 
 RUBYCC_ROOT = File.expand_path("..", __dir__)
 require File.join(RUBYCC_ROOT, "test/corpus/census")
@@ -43,6 +45,7 @@ module CorpusCandidateScan
     release_selection
     v2_metadata
     ranking
+    metadata_probe
     archive_fetch
     unpack_static
     artifact_write
@@ -50,8 +53,25 @@ module CorpusCandidateScan
   SUMMARY_ARCHIVE_COUNTERS = %i[
     inspections fetch_attempts cache_hits successes failures retries bytes unique_urls
   ].freeze
+  # Stage-1 evidence, and the only place probe traffic is counted: prefix
+  # requests carry no URL-level provenance, so they stay out of the `requests`
+  # and `archives` blocks the way rank-mode `gem fetch` traffic already does.
+  # `saved_bytes` is the sum of the archive sizes that were never transferred,
+  # taken from the Content-Range totals the probes came back with.
+  SUMMARY_PREFILTER_COUNTERS = %i[
+    metadata_probes metadata_cache_hits metadata_probe_bytes
+    metadata_skips metadata_saved_bytes metadata_full_fetches metadata_fallbacks
+  ].freeze
   DEFAULT_FETCH_CONCURRENCY = 2
   MAX_FETCH_CONCURRENCY = 4
+  # metadata.gz is the first tar member of a .gem and holds the packaged
+  # gemspec. 8 KiB covers it for every gem measured on 2026-09-12 (nokogiri's
+  # was 2,118 bytes inside a 4.4 MB archive); a larger member is re-requested
+  # once at its exact size, and anything past the cap falls back to the full
+  # archive rather than trading one download for two.
+  METADATA_PROBE_BYTES = 8 * 1024
+  METADATA_PROBE_MAX_BYTES = 1024 * 1024
+  GEM_METADATA_MEMBER = "metadata.gz"
 
   # Source failures are kept out of the normal candidate/error buckets.  A
   # source failure means that the scanner could not establish a trustworthy
@@ -320,13 +340,39 @@ module CorpusCandidateScan
       end
     end
 
+    # A prefix request is a request the caller can afford to lose: the scan
+    # only uses it to decide whether the whole file is worth downloading. So
+    # every answer other than "206 with the prefix" is returned as data rather
+    # than raised, and the caller falls back to the full download. 200 means
+    # the server ignored the range and sent everything, which is the one
+    # outcome where accepting the answer would defeat the point of asking.
+    def get_prefix(url, length, redirect_budget: 5)
+      raise "too many redirects while fetching #{url}" if redirect_budget.negative?
+
+      uri = URI.parse(url)
+      response = request_with_retries(uri, "Range" => "bytes=0-#{length - 1}")
+      code = response.code.to_i
+
+      case code
+      when 206
+        { status: code, body: response.body.to_s.b, content_range: response["content-range"] }
+      when 300..399
+        location = response["location"]
+        return { status: code, body: nil, reason: "redirected without a location" } if location.to_s.empty?
+
+        get_prefix(URI.join(url, location).to_s, length, redirect_budget: redirect_budget - 1)
+      else
+        { status: code, body: nil, reason: "#{response.code} #{response.message}" }
+      end
+    end
+
     private
 
-    def request_with_retries(uri)
+    def request_with_retries(uri, headers = {})
       retry_number = 0
       loop do
         response = begin
-          request_once(uri)
+          request_once(uri, headers)
         rescue StandardError => e
           raise unless RETRYABLE_ERRORS.any? { |error_class| e.is_a?(error_class) }
 
@@ -345,12 +391,17 @@ module CorpusCandidateScan
       end
     end
 
-    def request_once(uri)
-      return @requester.call(uri) if @requester
+    def request_once(uri, headers = {})
+      # Injected requesters predate request headers. A one-argument requester
+      # is called the way it always was so that hermetic fakes keep working;
+      # only a requester that asks for the headers is shown them.
+      if @requester
+        return @requester.arity == 1 ? @requester.call(uri) : @requester.call(uri, headers)
+      end
 
       Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https",
                       open_timeout: @open_timeout, read_timeout: @read_timeout) do |http|
-        http.request(Net::HTTP::Get.new(uri, "User-Agent" => @user_agent))
+        http.request(Net::HTTP::Get.new(uri, { "User-Agent" => @user_agent }.merge(headers)))
       end
     end
 
@@ -595,6 +646,66 @@ module CorpusCandidateScan
   OBJS_CONCAT_RE = /\$objs\.concat\(\s*(#{OBJS_VALUE_RE})\s*\)/m
   OBJ_TOKEN_RE = %r{[\w.\-/]+\.o\b}
 
+  # A .gem is an uncompressed tar, so the head of the file is a tar header
+  # followed by the member it describes. Only the reading side of the format is
+  # implemented, and only as far as locating one member by name: the scan never
+  # writes tar, and the point of reading a prefix is that the prefix may stop in
+  # the middle of a member. A truncated prefix therefore has to come back as
+  # "truncated, and here is how many bytes it would take" rather than as an
+  # exception, because that number is what turns a failed probe into a second,
+  # exactly sized request instead of a full download.
+  module GemArchiveFragment
+    BLOCK_SIZE = 512
+    NAME_OFFSET = 0
+    NAME_LENGTH = 100
+    SIZE_OFFSET = 124
+    SIZE_LENGTH = 12
+    MAGIC_OFFSET = 257
+    MAGIC = "ustar"
+
+    module_function
+
+    # Returns [:ok, data], [:truncated, bytes_required] or [:malformed, reason].
+    def member(bytes, member_name)
+      data = bytes.to_s.b
+      offset = 0
+      loop do
+        header = data.byteslice(offset, BLOCK_SIZE)
+        return [:truncated, offset + BLOCK_SIZE] if header.nil? || header.bytesize < BLOCK_SIZE
+        # The two zero blocks that end a tar are the only place a name is
+        # allowed to be empty, so reaching one means the member is not here.
+        return [:malformed, "#{member_name} is not a member of the archive"] if header.each_byte.all?(&:zero?)
+        unless header.byteslice(MAGIC_OFFSET, MAGIC.bytesize) == MAGIC
+          return [:malformed, "no ustar magic in the tar header at offset #{offset}"]
+        end
+
+        name = trim(header.byteslice(NAME_OFFSET, NAME_LENGTH))
+        size = octal(header.byteslice(SIZE_OFFSET, SIZE_LENGTH))
+        return [:malformed, "unreadable size in the tar header for #{name.inspect}"] unless size
+
+        content_offset = offset + BLOCK_SIZE
+        if name == member_name
+          return [:truncated, content_offset + size] if data.bytesize < content_offset + size
+
+          return [:ok, data.byteslice(content_offset, size)]
+        end
+
+        offset = content_offset + (((size + BLOCK_SIZE - 1) / BLOCK_SIZE) * BLOCK_SIZE)
+      end
+    end
+
+    def trim(field)
+      field.to_s.sub(/\0.*\z/m, "")
+    end
+
+    def octal(field)
+      text = trim(field).strip
+      return nil unless text.match?(/\A[0-7]+\z/)
+
+      text.to_i(8)
+    end
+  end
+
   module InspectionHelpers
     module_function
 
@@ -604,6 +715,22 @@ module CorpusCandidateScan
 
     def non_ext_extension_dirs(extensions)
       extension_dirs(extensions).reject { |dir| dir == "ext" || dir.start_with?("ext/") }
+    end
+
+    # `gem build` packages exactly the files the gemspec lists, so the file list
+    # in metadata.gz answers the same question archive_native_sources/1 asks of
+    # the unpacked archive. The suffixes here are a superset of the ones that
+    # method reacts to (plus assembler and the two conventional build scripts):
+    # a suffix listed here but not there can only cost a download, never hide a
+    # gem that the unpacked scan would have flagged.
+    NATIVE_SOURCE_SUFFIXES = %w[.c .h .cc .cpp .cxx .c++ .hpp .hxx .hh .s].freeze
+    NATIVE_BUILD_SCRIPTS = %w[extconf.rb mkrf_conf.rb].freeze
+
+    def native_source_hint(files)
+      Array(files).map(&:to_s).sort.find do |file|
+        NATIVE_SOURCE_SUFFIXES.include?(File.extname(file).downcase) ||
+          NATIVE_BUILD_SCRIPTS.include?(File.basename(file))
+      end
     end
 
     def archive_native_sources(root)
@@ -740,7 +867,23 @@ module CorpusCandidateScan
           }
         }.tap do |record|
           record["source_error"] = result[:source_error] if result[:source_error]
+          verdict = decision(result)
+          record["decision"] = verdict if verdict
         end
+      end
+
+      # Answers "why was X never downloaded?" without needing the run log. The
+      # byte counts that go with it are runtime evidence and live in RunSummary;
+      # what belongs here is which stage reached the verdict, and on what.
+      def decision(result)
+        prefilter = result[:prefilter]
+        return nil unless prefilter
+
+        {
+          "stage" => (result[:decided_by] || :archive).to_s,
+          "prefilter" => prefilter[:outcome].to_s,
+          "reason" => prefilter[:reason]
+        }.compact
       end
     end
   end
@@ -794,6 +937,11 @@ module CorpusCandidateScan
             "by_stage" => source_errors.group_by { |error| error.fetch("stage") }
                                              .transform_values(&:length).sort.to_h
           },
+          "prefilter" => SUMMARY_PREFILTER_COUNTERS.to_h { |name| [name.to_s, counters.fetch(name, 0)] }
+                                                    .merge(
+                                                      "decided_by" => results.group_by { |result| (result[:decided_by] || :not_applicable).to_s }
+                                                                              .transform_values(&:length).sort.to_h
+                                                    ),
           "results" => results.group_by { |result| result[:status].to_s }
                                .transform_values(&:length)
                                .sort.to_h
@@ -910,6 +1058,8 @@ module CorpusCandidateScan
       @corpus_names = corpus_names.to_set
       @bundled_headers = bundled_headers || Corpus::Census.bundled_headers(File.join(RUBYCC_ROOT, "include"))
       @api_cache_dir = File.join(config.work_dir, "api")
+      @gem_api_cache = {}
+      @gem_api_errors = {}
       @phase_stack = []
       @started_at = nil
       @last_source = nil
@@ -1311,25 +1461,252 @@ module CorpusCandidateScan
       slice
     end
 
-    def gem_downloads(name)
-      FileUtils.mkdir_p(@api_cache_dir)
+    # The v1 release endpoint is where a rank-based scan learns which release it
+    # is looking at: the ranking pages carry names, not versions. The download
+    # count already needed this response, so naming the release for the
+    # metadata probe costs no extra request -- only an earlier one.
+    def gem_api_release(name)
+      return @gem_api_cache[name] if @gem_api_cache.key?(name)
+
       url = "https://rubygems.org/api/v1/gems/#{URI.encode_www_form_component(name)}.json"
       path = File.join(@api_cache_dir, "#{name}.json")
-      if config.artifact_path
-        # Artifact mode must record the request on every replay. RecordingHttpClient
-        # then serves the body from raw_responses/ instead of making the second
-        # artifact silently omit a request just because api/ already exists.
-        body = @http.get(url)
-        File.write(path, body)
-      elsif !File.file?(path)
-        body = @http.get(url)
-        File.write(path, body)
-        @sleeper.call(API_DELAY)
+      @gem_api_cache[name] = begin
+        FileUtils.mkdir_p(@api_cache_dir)
+        if config.artifact_path
+          # Artifact mode must record the request on every replay. RecordingHttpClient
+          # then serves the body from raw_responses/ instead of making the second
+          # artifact silently omit a request just because api/ already exists.
+          body = @http.get(url)
+          File.write(path, body)
+        elsif !File.file?(path)
+          body = @http.get(url)
+          File.write(path, body)
+          @sleeper.call(API_DELAY)
+        end
+        JSON.parse(File.read(path))
+      rescue StandardError => e
+        @gem_api_errors[name] = "#{e.class}: #{e.message}"
+        nil
       end
-      JSON.parse(File.read(path))["downloads"]
+    end
+
+    def gem_downloads(name)
+      release = gem_api_release(name)
+      unless release.is_a?(Hash)
+        @err.puts "    downloads unavailable for #{name}: #{@gem_api_errors[name]}"
+        return nil
+      end
+
+      release["downloads"]
+    end
+
+    # --- stage 1: read the gemspec out of the head of the archive ------------
+
+    # Whether a gem can have a C extension is decided by two gemspec fields,
+    # and the gemspec travels in metadata.gz at the front of the .gem. Reading
+    # those few kilobytes first keeps the scan from spending a multi-megabyte
+    # download on gems with no native code at all: of 1,000 ranked gems scanned
+    # on 2026-09-12, 54 had a C extension and the other 946 were downloaded in
+    # full only to be discarded.
+    #
+    # This stage may answer only "worth downloading" or "not worth
+    # downloading". Every deeper judgement -- the R10 gate, the assembler
+    # check, the $objs list that excludes bcrypt -- needs data.tar.gz and stays
+    # in stage 2, and so does the SHA-256 provenance, which is computed from
+    # the whole archive and never from a prefix.
+    #
+    # Returns a finished no_ext result when the gem can be settled here, and
+    # nil when the caller should go on to download the archive. A probe that
+    # cannot be trusted returns nil too: a gem is never dropped from the scan
+    # because its metadata could not be read.
+    def metadata_prefilter(entry, result)
+      probe = measure_phase("metadata_probe") { probe_gem_metadata(entry) }
+      spec = probe[:spec]
+      unless spec
+        increment_counter(:metadata_fallbacks)
+        result[:prefilter] = { outcome: "fallback", reason: probe.fetch(:reason) }
+        return nil
+      end
+
+      # The probe read whatever the v1 API calls the latest release; stage 2
+      # downloads whatever `gem fetch --platform=ruby` resolves. Those are the
+      # same release unless the newest one puts required_ruby_version past the
+      # running interpreter, in which case the fetch walks back to an older
+      # release whose contents this probe has not seen. Nothing read here may
+      # stand in for that release, so the probe is discarded rather than
+      # reinterpreted: an older release is exactly where a since-removed C
+      # extension would still be.
+      unless running_ruby_satisfies?(spec)
+        increment_counter(:metadata_fallbacks)
+        result[:prefilter] = {
+          outcome: "fallback",
+          reason: "#{spec.version} requires ruby #{spec.required_ruby_version}, and this is " \
+                  "#{RUBY_VERSION}: the archive fetch would resolve a different release"
+        }
+        return nil
+      end
+
+      extensions = spec.extensions.to_a.map(&:to_s)
+      if extensions.any?
+        increment_counter(:metadata_full_fetches)
+        result[:prefilter] = {
+          outcome: "fetch",
+          reason: "gemspec declares #{extensions.size} extension(s): #{extensions.sort.join(', ')}"
+        }
+        return nil
+      end
+
+      # `extensions` alone is not the question. A gem that ships C sources
+      # without declaring an extension is exactly what the [R] bucket exists to
+      # surface -- libdatadog, pry-doc and datadog-ruby_core_source were all
+      # found that way -- so the file list is consulted even when the gemspec
+      # declares nothing to build.
+      hint = InspectionHelpers.native_source_hint(spec.files)
+      if hint
+        increment_counter(:metadata_full_fetches)
+        result[:prefilter] = { outcome: "fetch", reason: "gemspec file list contains #{hint}" }
+        return nil
+      end
+
+      increment_counter(:metadata_skips)
+      increment_counter(:metadata_saved_bytes, [probe[:archive_bytes].to_i - probe[:bytes].to_i, 0].max)
+      result[:decided_by] = :metadata
+      result[:prefilter] = {
+        outcome: "skip",
+        reason: "gemspec #{spec.version} declares no extension and lists no native source " \
+                "among #{spec.files.to_a.size} file(s)"
+      }
+      result[:version] = spec.version.to_s
+      result[:platform] = spec.platform.to_s
+      result[:downloads] = entry.key?(:downloads) ? entry[:downloads] : gem_downloads(entry[:name])
+      result[:status] = :no_ext
+      result[:reason] = result[:prefilter][:reason]
+      result
+    end
+
+    # A gemspec with no requirement carries Gem::Requirement.default (">= 0"),
+    # which every version satisfies, so the common case needs no special test.
+    def running_ruby_satisfies?(spec)
+      requirement = spec.required_ruby_version
+      return true if requirement.nil?
+
+      requirement.satisfied_by?(Gem::Version.new(RUBY_VERSION))
+    rescue StandardError
+      # An unparsable requirement is a reason to distrust the probe, not to
+      # trust it.
+      false
+    end
+
+    def probe_gem_metadata(entry)
+      name = entry[:name]
+      release = gem_api_release(name)
+      unless release.is_a?(Hash)
+        return { reason: "release metadata unavailable: #{@gem_api_errors[name]}" }
+      end
+
+      version = release["version"].to_s
+      platform = release["platform"].to_s
+      gem_uri = release["gem_uri"].to_s
+      return { reason: "release metadata names no version" } if version.empty?
+      # A prefix of a platform archive would describe a release that stage 2
+      # would not have downloaded, since the archive fetch pins --platform=ruby.
+      # This is the half of "did stage 2 want this same release?" that the
+      # release metadata can answer on its own; the required_ruby_version half
+      # needs the gemspec and is checked in #metadata_prefilter once the probe
+      # has been decoded. Answering it here saves the prefix request.
+      return { reason: "latest release is platform #{platform.inspect}, not ruby" } unless platform == "ruby"
+
+      requested = entry[:version]
+      if requested && requested.to_s != version
+        return { reason: "release metadata names #{version}, not the requested #{requested}" }
+      end
+      return { reason: "release metadata names no gem_uri" } if gem_uri.empty?
+
+      cached = read_metadata_cache(name, version)
+      return decode_gem_metadata(cached[:member], bytes: 0, archive_bytes: cached[:archive_bytes]) if cached
+
+      fetch_gem_metadata(name, version, gem_uri)
+    end
+
+    # Two retries, because a prefix too short to hold the tar header only
+    # teaches the caller the header's length; the member's length is a block
+    # later. The production prefix always covers the header, so the second
+    # retry exists for the hermetic tests and for a server that truncates.
+    def fetch_gem_metadata(name, version, gem_uri, length: METADATA_PROBE_BYTES, retries: 2)
+      increment_counter(:metadata_probes)
+      response = begin
+        @archive_http_client.get_prefix(gem_uri, length)
+      rescue StandardError => e
+        return { reason: "prefix request failed: #{e.class}: #{e.message}" }
+      end
+
+      body = response[:body]
+      unless response[:status].to_i == 206 && body
+        return { reason: "prefix request was answered #{response[:reason] || response[:status]}" }
+      end
+
+      increment_counter(:metadata_probe_bytes, body.bytesize)
+      archive_bytes = content_range_total(response[:content_range]) || body.bytesize
+      status, payload = GemArchiveFragment.member(body, GEM_METADATA_MEMBER)
+      case status
+      when :ok
+        write_metadata_cache(name, version, payload, archive_bytes)
+        decode_gem_metadata(payload, bytes: body.bytesize, archive_bytes: archive_bytes)
+      when :truncated
+        # The header said how long the member is, so one exactly sized request
+        # still beats the full archive -- as long as it is still much smaller
+        # than the archive, which is the only reason this stage exists.
+        if retries.positive? && payload > length && payload <= METADATA_PROBE_MAX_BYTES && payload < archive_bytes
+          return fetch_gem_metadata(name, version, gem_uri, length: payload, retries: retries - 1)
+        end
+
+        { reason: "#{GEM_METADATA_MEMBER} needs #{payload} bytes of a #{archive_bytes}-byte archive" }
+      else
+        { reason: payload.to_s }
+      end
+    end
+
+    def decode_gem_metadata(member, bytes:, archive_bytes:)
+      spec = Gem::Specification.from_yaml(Zlib.gunzip(member))
+      { spec: spec, bytes: bytes, archive_bytes: archive_bytes }
     rescue StandardError => e
-      @err.puts "    downloads unavailable for #{name}: #{e.class}: #{e.message}"
+      { reason: "#{GEM_METADATA_MEMBER} did not decode: #{e.class}: #{e.message}" }
+    end
+
+    CONTENT_RANGE_TOTAL_RE = %r{\Abytes\s+\d+-\d+/(\d+)\z}
+
+    def content_range_total(header)
+      match = CONTENT_RANGE_TOTAL_RE.match(header.to_s.strip)
+      match && Integer(match[1])
+    end
+
+    # Caching the member, not the whole prefix, keeps a restarted scan from
+    # paying the round trip again. The archive size travels with it because the
+    # saved-bytes counter is the only evidence that this stage is worth having.
+    def metadata_cache_path(name, version)
+      File.join(config.work_dir, "metadata", "#{name}-#{version}.json")
+    end
+
+    def read_metadata_cache(name, version)
+      path = metadata_cache_path(name, version)
+      return nil unless File.file?(path)
+
+      payload = JSON.parse(File.read(path))
+      member = payload.fetch("metadata_gz").unpack1("m0")
+      increment_counter(:metadata_cache_hits)
+      { member: member, archive_bytes: payload.fetch("archive_bytes").to_i }
+    rescue StandardError
       nil
+    end
+
+    def write_metadata_cache(name, version, member, archive_bytes)
+      path = metadata_cache_path(name, version)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, JSON.generate("archive_bytes" => archive_bytes,
+                                     "metadata_gz" => [member].pack("m0")))
+    rescue SystemCallError
+      # The cache is an optimisation for the next run; a scan that cannot write
+      # it has still answered the question it was asked.
     end
 
     def fetch_timeframe_archives(entries)
@@ -1395,6 +1772,18 @@ module CorpusCandidateScan
 
       requested_version = entry[:version]
       increment_counter(:inspections)
+      # The timeframe source hands in an archive it already downloaded and
+      # verified against the v2 SHA-256, so there is nothing for a prefix
+      # request to save there.
+      unless archive
+        if Corpus::Census.cached_gem_path(name, requested_version, config.work_dir)
+          result[:prefilter] = { outcome: "skipped", reason: "the archive is already cached" }
+        else
+          settled = metadata_prefilter(entry, result)
+          return settled if settled
+        end
+        result[:decided_by] = :archive
+      end
       gem_path, fetch_error = if archive
                                 archive
                               else
@@ -1661,6 +2050,14 @@ module CorpusCandidateScan
       @out.puts "  without a C extension       : #{no_ext.size}#{config.verbose ? '' : '  (run with SCAN_VERBOSE=1 to list)'}"
       @out.puts "  errors                      : #{errors.size}#{errors.empty? ? '' : "  (#{errors.map { |r| r[:name] }.join(', ')})"}"
       @out.puts "  source errors               : #{source_errors.size}#{source_errors.empty? ? '' : "  (#{source_errors.map { |r| r[:name] }.join(', ')})"}"
+      if @counters[:metadata_probes].positive? || @counters[:metadata_cache_hits].positive?
+        @out.puts "  metadata prefilter          : #{@counters[:metadata_skips]} settled without downloading " \
+                  "(#{humanize(@counters[:metadata_saved_bytes])} bytes not transferred), " \
+                  "#{@counters[:metadata_full_fetches]} sent on to the archive, " \
+                  "#{@counters[:metadata_fallbacks]} fell back; " \
+                  "#{@counters[:metadata_probes]} probe(s) read #{humanize(@counters[:metadata_probe_bytes])} bytes, " \
+                  "#{@counters[:metadata_cache_hits]} cache hit(s)"
+      end
       @out.puts "-" * 100
 
       errors.size < results.size
