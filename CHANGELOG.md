@@ -8,18 +8,66 @@ Versioning follows semver with one project-specific rule: **a regression in the 
 pass rate is a breaking change**, whatever the code change looked like. See the
 Versioning section of the README.
 
-## Unreleased
+## 1.1.0 (2026-09-12)
 
-- **Corpus pass rate 91.2% → 94.3%** (33 of 35 R10 machine-gate targets). `rbs` left the
-  denominator — its upstream suite fails identically under the reference compiler, the
-  same basis `byebug`, `unicorn` and `debug` were excluded on — and `debug_inspector` and
-  `bindex` were added and verified in the same step, so the denominator grew rather than
-  shrank. Verification is per environment: both new gems are recorded against
-  glibc x86-64 / Ruby 3.3.12, where their suites and the gcc control both pass.
-- **rubycc now interprets the shell subset Automake writes install rules with** —
-  `for`, `if`, brace groups, shell variables and `test` — in-process, without
-  `/bin/sh`. Pipes, command substitution and `while` are still refused rather than
-  approximated.
+84 pull requests since 1.0.0, and no breaking change — including under this project's own
+rule, since the corpus pass rate went up rather than down.
+
+### Corpus
+
+- **Pass rate 91.2% → 94.3%**: 33 of the 35 gems in the R10 machine-gate denominator are
+  verified. `rbs` left the denominator because its upstream suite fails identically under
+  the reference compiler — the basis `byebug`, `unicorn` and `debug` were excluded on —
+  and `debug_inspector` and `bindex` were added and verified in the same step, so the
+  denominator grew from 34 to 35 rather than shrinking. Verification is recorded per
+  environment; both new gems are recorded against glibc x86-64 / Ruby 3.3.12.
+- A candidate-discovery pipeline: a scanner over popularity rankings, a pinned artifact
+  schema, arbitrary candidate code confined to a manual workflow, and a skill that
+  inspects one candidate at a time.
+
+### Compiler
+
+- **`long double` passed to a variadic function now works** (the first half of the known
+  limitation). The width stays 8 bytes, but a value handed to `...` is converted to the
+  80-bit extended format (binary128 on AArch64) before it is pushed, so
+  `printf("%Lg", x)` agrees with glibc.
+- **Macro re-expansion now matches gcc**: the hide set of a call is the intersection of
+  its name's and its closing paren's (6.10.3.4), and argument-borne tokens are painted
+  with the call's own name. c-testsuite 00201 passes, and so does `f(f)(1)`.
+- `__builtin_popcountll` and the other bit-count / bit-scan builtins.
+- The five byte-order predefined macros gcc supplies (`__BYTE_ORDER__` and friends).
+- The `#warning` directive.
+- The `__attr_*` macros in the bundled `sys/cdefs.h`, which the host's `<malloc.h>` reaches
+  for on a glibc host.
+
+### Generated code
+
+- Spill traffic reduction and a register allocator that keeps a value in one register
+  across a function, on both x86-64 and AArch64.
+
+### Toolchain
+
+- **rmake interprets a shell subset itself** — `for`, `if`, brace groups, shell variables
+  and the `test` / `[` builtins — so the install rules Automake and libtool generate run.
+  It never hands anything to `/bin/sh`: pipes, command substitution and `while` are
+  refused rather than approximated.
+- A recipe fragment could reach `/bin/sh` after all: `Process.spawn` routes a lone shell
+  reserved word to a shell, so a one-word command behaved differently from a two-word one.
+  Closed.
+- mkmf's conftest command runs without a shell.
+- **Everything rubycc reads is bytes**: C source, `ARGV`, the include search path, and the
+  names `ar` and ELF readers return. Two strings holding the same non-ASCII bytes under
+  different encodings are not equal, so one spelling per name is the only way the
+  comparisons hold.
+
+### CI
+
+- The deterministic acceptance contract (pinned archives, no network) runs on **every pull
+  request**. Tier A skips five of its seven required IDs, so a pull request had never run
+  extconf or either gem install.
+- The musl weekly job is green again: shared-object fixtures, a glibc-only fixture that is
+  not valid C on musl, and symbol collisions between fixtures that musl's no-op `dlclose`
+  leaves resident.
 
 ## 1.0.0 (2026-08-12)
 
