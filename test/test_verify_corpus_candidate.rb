@@ -84,11 +84,19 @@ class TestVerifyCorpusCandidate < Minitest::Test
     refute recipe.values.any? { |value| value.to_s.match?(/command|script|eval/) }
   end
 
-  def test_workflow_tool_does_not_offer_database_update_mode
+  # The (d)-level database stays out of reach of this tool. It never runs the
+  # gem's own suite, so it cannot produce the only evidence that file accepts.
+  #
+  # --update exists (it records a build_load pass in data/buildable_gems.json,
+  # a ledger R10 does not count), so "the tool has no update mode" is no longer
+  # the invariant; "the tool cannot touch the R10 numerator" is. The dispatched
+  # workflow still never passes the flag -- that half is pinned on the workflow
+  # file itself by test_corpus_candidate_validation_workflow.rb.
+  def test_workflow_tool_cannot_update_the_verified_gems_database
     source = File.read(File.expand_path("../tools/verify_corpus_candidate.rb", __dir__))
 
-    refute_includes source, "data/verified_gems.json"
-    refute_includes source, "--update"
+    refute_includes source, "verified_gems"
+    assert_includes source, "data/buildable_gems.json"
   end
 
   def test_extension_root_gate_allows_ext_and_descendants_only

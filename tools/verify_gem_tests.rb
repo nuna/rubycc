@@ -73,6 +73,9 @@ RUBYCC_ROOT = File.expand_path("..", __dir__)
 # tool must not carry a second copy of either.
 require File.join(RUBYCC_ROOT, "lib/rubycc/doctor/verified_gems")
 
+# The on-disk shape of the ledger files, shared with data/buildable_gems.json.
+require File.join(RUBYCC_ROOT, "tools/gem_ledger_format")
+
 WORK_DIR = File.expand_path(ENV["VERIFY_WORK"] || File.join(Dir.tmpdir, "rubycc_verify_gem_tests"))
 
 # Generous ceilings: the slowest suite here (bigdecimal) takes about 25s and the
@@ -2459,55 +2462,17 @@ end
 
 # --- database update ---------------------------------------------------------
 
-ENTRY_KEY_ORDER = %w[verifications notes].freeze
-VERIFICATION_KEY_ORDER = %w[versions environment verified_at evidence].freeze
-
-# data/verified_gems.json's exact house style: two-space indent, one key per
-# line, and `versions` as a single-line inline array. JSON.pretty_generate would
-# explode every array over three lines and rewrite every existing entry, so the
-# file gets its own tiny emitter instead. The nesting is fixed (entry ->
-# verifications -> record), so the indentation is hard-coded per level rather
-# than made generic.
+# The (d)-level database's records live under "verifications". Its on-disk
+# shape -- key order, indentation, the inline `versions` array, and the
+# environment spelling -- is shared with data/buildable_gems.json and lives in
+# tools/gem_ledger_format.rb, so the two ledgers cannot drift apart in form
+# while they differ in claim.
 def emit_database(db)
-  entries = db.map do |name, attrs|
-    fields = ENTRY_KEY_ORDER.map do |key|
-      rendered = key == "verifications" ? emit_verifications(Array(attrs[key])) : JSON.generate(attrs[key])
-      "    #{JSON.generate(key)}: #{rendered}"
-    end
-    "  #{JSON.generate(name)}: {\n#{fields.join(",\n")}\n  }"
-  end
-  "{\n#{entries.join(",\n")}\n}\n"
+  GemLedgerFormat.emit(db, records_key: "verifications")
 end
 
-# The `verifications` array of one entry, one record per brace block.
-def emit_verifications(records)
-  blocks = records.map do |record|
-    fields = VERIFICATION_KEY_ORDER.map do |key|
-      value = record[key]
-      rendered =
-        if key == "versions"
-          "[#{Array(value).map { |v| JSON.generate(v) }.join(', ')}]"
-        else
-          JSON.generate(value)
-        end
-      "        #{JSON.generate(key)}: #{rendered}"
-    end
-    "      {\n#{fields.join(",\n")}\n      }"
-  end
-  "[\n#{blocks.join(",\n")}\n    ]"
-end
-
-# "glibc x86_64 / ruby 3.4.5" -- the shape the existing entries use. The libc is
-# read from RbConfig's arch triplet, which is how MRI itself distinguishes a musl
-# build ("x86_64-linux-musl") from a glibc one ("x86_64-linux").
 def environment_string
-  arch = RbConfig::CONFIG["arch"].to_s
-  libc =
-    if arch.include?("musl") then "musl"
-    elsif arch.include?("linux") then "glibc"
-    else arch.split("-").last
-    end
-  "#{libc} #{RbConfig::CONFIG['host_cpu']} / ruby #{RUBY_VERSION}"
+  GemLedgerFormat.environment_string
 end
 
 def suite_label(runner)

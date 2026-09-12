@@ -6,6 +6,14 @@
 # candidate fields through environment variables so shell quoting is never used
 # to construct a command or a URL.  Upstream suites remain delegated to the
 # reviewed recipes in tools/verify_gem_tests.rb.
+#
+# With --update a build_load pass is also recorded in data/buildable_gems.json,
+# the ledger of gems rubycc can build.  That is the only file this tool ever
+# writes inside the repository, and it is deliberately not one R10 counts: the
+# (d)-level database stays out of reach here, because this tool never runs the
+# gem's own suite and so can never produce that evidence.  The CI workflow does
+# not pass the flag (a dispatched run must not mutate the checkout); it is for
+# a local run whose result a human is about to review.
 
 require "digest"
 require "fileutils"
@@ -17,6 +25,7 @@ require "rubygems/package"
 require "timeout"
 
 require_relative "corpus_candidate_load_recipes"
+require_relative "buildable_gems_ledger"
 
 module CorpusCandidateValidation
   ROOT = File.expand_path("..", __dir__).freeze
@@ -139,9 +148,10 @@ module CorpusCandidateValidation
   end
 
   class Runner
-    def initialize(input, preflight_only: false)
+    def initialize(input, preflight_only: false, update_ledger: false)
       @input = input
       @preflight_only = preflight_only
+      @update_ledger = update_ledger
       @work_dir = input.work_dir.to_s.empty? ? File.join(Dir.tmpdir, "corpus-candidate-validation") :
                                                  File.expand_path(input.work_dir)
       @result_path = input.result_path.to_s.empty? ? File.join(@work_dir, "result.json") :
@@ -177,6 +187,7 @@ module CorpusCandidateValidation
 
       build_and_load!(result)
       write_result(result)
+      record_build(result)
       result.fetch("exit_code")
     rescue ValidationStop => e
       write_result(e.result)
@@ -626,6 +637,23 @@ module CorpusCandidateValidation
       text.to_s.gsub(@work_dir, "<CANDIDATE_WORK>").gsub(ROOT, "<RUBYCC_ROOT>")
     end
 
+    # Append the run to data/buildable_gems.json when it earned the build_load
+    # claim.  The ledger itself decides what "earned" means, so the rule lives in
+    # one place; anything short of it is reported and not written, because a
+    # ledger that records near-misses is no longer a list of gems that build.
+    def record_build(result)
+      return unless @update_ledger
+
+      recorded = BuildableGemsLedger.record(result)
+      if recorded
+        puts "recorded #{recorded.fetch('name')} #{recorded.fetch('version')} " \
+             "(#{recorded.fetch('how')}) in #{recorded.fetch('path')}"
+      else
+        warn "not recorded: status=#{result['status']} " \
+             "rubycc_build_evidence=#{result.dig('execution', 'rubycc_build_evidence')}"
+      end
+    end
+
     def write_result(result)
       FileUtils.mkdir_p(File.dirname(@result_path))
       File.write(@result_path, JSON.pretty_generate(result) + "\n")
@@ -635,7 +663,8 @@ module CorpusCandidateValidation
   module_function
 
   def parse_options(argv)
-    options = { mode: nil, compiler: nil, work_dir: nil, result_path: nil, preflight_only: false }
+    options = { mode: nil, compiler: nil, work_dir: nil, result_path: nil, preflight_only: false,
+                update: false }
     parser = OptionParser.new do |opts|
       opts.banner = "Usage: CANDIDATE_NAME=... CANDIDATE_VERSION=... ruby tools/verify_corpus_candidate.rb [options]"
       opts.on("--mode MODE", MODES, "build_load, load_sanity, or upstream") { |value| options[:mode] = value }
@@ -643,6 +672,7 @@ module CorpusCandidateValidation
       opts.on("--work-dir PATH", "isolated work directory") { |value| options[:work_dir] = value }
       opts.on("--result PATH", "structured result path") { |value| options[:result_path] = value }
       opts.on("--preflight-only", "stop after identity/static/recipe checks") { options[:preflight_only] = true }
+      opts.on("--update", "record a build_load pass in data/buildable_gems.json") { options[:update] = true }
       opts.on("--help", "show this help") { puts opts; exit 0 }
     end
     parser.parse!(argv)
@@ -652,7 +682,8 @@ module CorpusCandidateValidation
   def main(argv, env: ENV)
     options = parse_options(argv)
     input = Input.from_env(env, options.compact)
-    Runner.new(input, preflight_only: options.fetch(:preflight_only)).run
+    Runner.new(input, preflight_only: options.fetch(:preflight_only),
+                      update_ledger: options.fetch(:update)).run
   rescue OptionParser::ParseError => e
     warn e.message
     1
