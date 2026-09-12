@@ -502,7 +502,11 @@ module CorpusCandidateScan
   module BestgemsTotal
     PAGE_SIZE = 20
     LABEL = "bestgems.org total-downloads ranking"
-    ROW_RE = %r{<tr><td class="right">(\d+)</td><td class="right">([\d,]+)</td><td><a href="/gems/([^"]+)">}
+    # The rank cell is thousands-separated past 999, exactly like the download
+    # count next to it and the numbers in the header: page 50 is ranks
+    # 981-1,000, and a `\d+` rank capture silently dropped that last row, which
+    # then failed the row-count check with no hint of why (measured 2026-09-12).
+    ROW_RE = %r{<tr><td class="right">([\d,]+)</td><td class="right">([\d,]+)</td><td><a href="/gems/([^"]+)">}
     HEADER_RE = %r{<em class="numeric">([\d,]+)</em>-<em class="numeric">([\d,]+)</em> of all <em class="numeric">([\d,]+)</em> gems}
 
     module_function
@@ -526,7 +530,7 @@ module CorpusCandidateScan
       end
 
       entries = rows.map do |rank, _downloads, name|
-        { rank: Integer(rank), name: URI.decode_www_form_component(name) }
+        { rank: Integer(rank.delete(",")), name: URI.decode_www_form_component(name) }
       end
       unless entries.first[:rank] == first && entries.last[:rank] == last
         raise "#{url(page)}: row ranks #{entries.first[:rank]}-#{entries.last[:rank]} " \
