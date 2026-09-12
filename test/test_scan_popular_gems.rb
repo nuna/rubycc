@@ -181,6 +181,27 @@ class TestScanPopularGems < Minitest::Test
     end
   end
 
+  # bestgems writes every number in its table thousands-separated, ranks
+  # included. A `\d+` rank capture matched none of a four-digit row, so page 50
+  # (ranks 981-1,000) came back one row short and the scan aborted on the
+  # row-count check -- a message about the page layout for what was really this
+  # regex. Ranks past 999 are exactly where an expansion has to look, so the
+  # gap was in front of the work rather than behind it.
+  def test_bestgems_reads_a_thousands_separated_rank
+    html = <<~HTML
+      <em class="numeric">999</em>-<em class="numeric">1,000</em> of all <em class="numeric">190,000</em> gems
+      <tr><td class="right">999</td><td class="right">12,345</td><td><a href="/gems/gem_a">gem_a</a></td></tr>
+      <tr><td class="right">1,000</td><td class="right">12,344</td><td><a href="/gems/gem_b">gem_b</a></td></tr>
+    HTML
+    http = FakeHttp.new("https://bestgems.org/total?page=50" => html)
+
+    page = CorpusCandidateScan::BestgemsTotal.fetch_page(http, 50)
+
+    assert_equal [999, 1000], page.fetch(:entries).map { |e| e.fetch(:rank) }
+    assert_equal %w[gem_a gem_b], page.fetch(:entries).map { |e| e.fetch(:name) }
+    assert_equal 1000, page.fetch(:last)
+  end
+
   def test_artifact_schema_names_all_scan_sources_consistently
     config = CorpusCandidateScan::Configuration.new(first_page: 1, last_page: 1, work_dir: Dir.tmpdir)
 
