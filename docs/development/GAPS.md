@@ -22,13 +22,13 @@
 | **AM**([issue](../../issues/bundled-sched-param.md)) | **同梱 `sched.h` に `struct sched_param` が無い**。glibc の `<spawn.h>` がメンバに持つので、`<spawn.h>` ごと読めない | `<spawn.h>` を含む gem。`posix-spawn` 0.3.15 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `incomplete type`) | AF と同じ系統。**`<spawn.h>` が他に何を要るかを先に測って**まとめて決める |
 | **AN**([issue](../../issues/incompatible-function-pointer-argument.md)) | **gcc 13 が警告にとどめる 3 つの診断をエラーにする** — 互換でないポインタ・暗黙の関数宣言・暗黙の int(最後のものは `expected type specifier` で原因を伝えない)。gcc 14 は 3 つとも既定でエラー | 古い書き方の gem。`hpricot` 0.8.6 / `fast_xs` 0.8.0 / `fast_trie` 0.5.1 / `zipruby` 0.3.6 の 4 件が該当し、**対照の gcc 13 はどれも通る** | **実測**(2026-09-13、gcc 13 のみ。gcc 14 はこのホストに無い) | **警告に下げるかエラーを保つかが未決**。対照の版で結論が変わる |
 | **AO**([issue](../../issues/include-absolute-path.md)) | **`#include` に絶対パスを書くと、実在するファイルでも開けない**。`resolve_include` が名前を必ずディレクトリにつなぐ | `RUBY_EXTCONF_H` を絶対パスで設定する gem。`numo-narray` 0.9.2.1 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、直書き・マクロ経由・`-D` 経由の 4 形とも再現。相対パスは通る) | 名前が絶対パスなら、まずそのまま試す |
-| **AP**([issue](../../issues/stdc-no-vla-macro.md)) | **VLA に対応しないのに `__STDC_NO_VLA__` を定義していない**(C11 6.10.8.3) | マクロを見て VLA を避ける gem。`brotli` 0.8.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、前処理で未定義を確認) | 定義すれば brotli は VLA を使わない枝を選ぶ。他の `__STDC_NO_*` も同時に測る |
 | **AQ**([issue](../../issues/bundled-sys-types-caddr.md)) | **同梱 `sys/types.h` に glibc の内部名 `__caddr_t` が無い**。glibc の `<net/if.h>` が読めない | `<net/if.h>` を含む gem。`network_interface` 0.0.4 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `expected type specifier`) | AF / AM と同じ系統。glibc 本体が使う内部名を数えてから足す |
 | **AR**([issue](../../issues/bundled-stdlib-qsort-r.md)) | **同梱 `stdlib.h` に `qsort_r` が無い**(`_GNU_SOURCE` のもとでも)。Ruby の `config.h` が `_GNU_SOURCE` を定義するので、拡張からは常に見えない | `qsort_r` を呼ぶ gem。`enumerable-statistics` 2.0.9 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`-D_GNU_SOURCE` 付きの最小再現) | **AF と一緒に** `<stdlib.h>` の GNU / MISC の枝をまとめて見る |
 | **AS**([issue](../../issues/rmake-gnu-make-conditionals.md)) | **rmake が GNU make の条件文(`ifeq` など)を読めない**。パーサは代入とルール以外をすべて拒否する | 同梱ライブラリの手書き Makefile を make に渡す gem。`hiredis-client` 0.30.1 が該当し、**対照(GNU make)は通る** | **実測**(2026-09-13) | **対応するか対象外にするかが未決**。mkmf の Makefile は条件文を使わない |
 | **AT**([issue](../../issues/typeof-operator.md)) | **`typeof`(GNU 拡張、C23 で標準化)を受け付けない**。未宣言の関数として報告される | `algorithms` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
 | **AU**([issue](../../issues/bundled-pthread-attr-guard.md)) | **同梱 `pthread.h` が `pthread_attr_t` を glibc のガード(`__have_pthread_attr_t`)無しで定義する**。`<netdb.h>` の `sigevent_t.h` と型の再定義になる | `_GNU_SOURCE` のもとで `<netdb.h>` を含む gem。`trilogy` 2.13.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`<pthread.h>` + `<netdb.h>` の最小再現) | 同梱 `pthread.h` の他の型にも同じ穴が無いかを数える |
 | **AV**([issue](../../issues/include-duplicate-system-dir.md)) | **`-I/usr/include` を渡すと、glibc 本体のヘッダが同梱ヘッダより先に見つかる**。gcc はシステムと重なる `-I` を無視する | `dir_config` に `/usr` を渡す古い gem。`do_sqlite3` 0.10.17 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`#include <stdio.h>` だけで再現) | gcc の規則(`-isystem` / `-idirafter` を含む)を測ってから合わせる |
+| **AW**([issue](../../issues/extension-struct-member.md)) | **構造体のメンバ宣言の頭の `__extension__` を受け付けない**(宣言の頭の形は通る) | glibc の `<threads.h>` を使うコード。`bits/atomic_wide_counter.h:27` で止まるので、`thrd_create` のプログラムがビルドできない(**gcc は通る**) | **実測**(2026-09-13、最小再現) | 閉じたら `__STDC_NO_THREADS__` の定義を測り直す(`stdc-no-vla-macro-1`) |
 
 ## 2. 未解消の負債
 
@@ -57,6 +57,11 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ AP**(VLA に対応しないのに `__STDC_NO_VLA__` を定義していない):
+  `stdc-no-vla-macro-1` で解消。C11 6.10.8.3 の他の条件付き機能マクロも同時に測り、
+  `__STDC_NO_COMPLEX__`/`__STDC_NO_THREADS__` は同じく未対応なので定義したが、
+  `__STDC_NO_ATOMICS__` は `_Atomic`/`<stdatomic.h>` が実際に動くため定義しなかった。
+  brotli 0.8.0 が実際に `build_load_pass` になるかは、マージ後に `rake corpus:census` で確かめる。
 - **ギャップ AI**(ファイルスコープの `extern int x = 1;` を拒否する):
   `extern-initializer-file-scope-1` で解消。C11 6.9.2p1 の例のとおり外部定義として
   受理し、IR 生成器が `.data` に実体を出すよう変えた。制約違反はブロックスコープの

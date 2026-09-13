@@ -291,6 +291,36 @@ module Rubycc
       PREDEFINED_PLATFORM_MACROS = %w[__linux__ __gnu_linux__ __unix__ __ELF__
                                       __LP64__ _LP64 __STDC_HOSTED__].freeze
 
+      # The C11 6.10.8.3 conditional-feature macros for a feature rubycc does
+      # not support: "An implementation that does not support ... shall define"
+      # each to the integer constant 1, so a portable header can tell whether
+      # to take the feature's code path at all. Each name here was measured
+      # against what rubycc's front end and bundled headers actually accept
+      # (2026-09-13, docs/development/STEPS.md "stdc-no-vla-macro-1"):
+      #
+      # - __STDC_NO_VLA__: ROADMAP §3 decided a variable-length array is a
+      #   diagnosed error ("array size must be an integer constant"), and
+      #   DESIGN R7 calls VLA support optional, so rubycc qualifies.
+      # - __STDC_NO_COMPLEX__: "_Complex" is not a keyword the lexer
+      #   recognizes at all (lib/rubycc/front/lexeme_reader.rb's KEYWORDS),
+      #   and no <complex.h> is bundled, so no complex type exists to name.
+      # - __STDC_NO_THREADS__: 6.10.8.3 ties this macro to the <threads.h>
+      #   header alone (_Thread_local is not a conditional feature, so its
+      #   absence — GAPS gap AH — is not the reason). No <threads.h> is
+      #   bundled, and glibc's own <threads.h> does not compile under rubycc:
+      #   it reaches bits/atomic_wide_counter.h, whose struct member is
+      #   declared with a leading "__extension__" that the member-declaration
+      #   parser rejects (measured 2026-09-13; issues/extension-struct-member.md).
+      #   Once that header compiles, this entry has to be re-measured.
+      #
+      # __STDC_NO_ATOMICS__ is deliberately absent: "_Atomic" is a keyword the
+      # parser implements (both the qualifier and the parenthesized
+      # atomic-type-specifier forms) and <stdatomic.h> is bundled and builds
+      # and runs a program using atomic_fetch_add, so rubycc does support
+      # atomics and must not claim otherwise.
+      PREDEFINED_CONDITIONAL_FEATURE_MACROS = %w[__STDC_NO_VLA__ __STDC_NO_COMPLEX__
+                                                  __STDC_NO_THREADS__].freeze
+
       # The CPU-identifying macros for each target, the subset of gcc's that
       # glibc's own headers dispatch on. Getting these from the target rather
       # than fixing them was forced by the aarch64 backend: a unit compiled for
@@ -460,6 +490,7 @@ module Rubycc
         # name (String) => Macro.
         @macros = {}
         (arch_macros + PREDEFINED_PLATFORM_MACROS).each { |name| @macros[name] = predefined_target_macro }
+        PREDEFINED_CONDITIONAL_FEATURE_MACROS.each { |name| @macros[name] = predefined_target_macro }
         @macros["__CHAR_UNSIGNED__"] = predefined_target_macro if char_unsigned
         @macros[LIBC_MUSL_MACRO] = predefined_target_macro if libc == "musl"
         PREDEFINED_NUMERIC_MACROS.each { |name, text| @macros[name] = predefined_numeric_macro(text) }
