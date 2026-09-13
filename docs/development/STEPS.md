@@ -15012,3 +15012,28 @@ rubycc が実装していない警告のための検査であり、実装する�
 
 ラベルの直後に単独で置いた形は、統合時に最小再現で rubycc が `expected expression` で落ちることを確かめ、
 [attribute-statement-after-label](../../issues/attribute-statement-after-label.md)(GAPS **BE**)に起票した。
+
+## ledger-after-wave-1-1 — 直した欠陥が、止まっていた gem を実際に通したか
+
+**内容**: 方針が決まっている欠陥の 1 回目(PR #147: AX / AE / AW / AY)をマージした後の master で、
+その欠陥で止まっていた gem 5 件を `tools/verify_corpus_candidate.rb --update` で測り直した。
+**台帳を 100 → 105 件**にした。
+
+**測り直した結果**(2026-09-13、このホスト、master 62e29fc):
+
+| gem | 止めていた欠陥 | 結果 |
+|---|---|---|
+| string_undump 0.1.1 | AX(`\e` エスケープ) | `build_load_pass` |
+| murmurhash3 0.1.7 | AE(CRLF の行連結) | `build_load_pass` |
+| gc_tracer 1.5.1 | AE | `build_load_pass` |
+| pngdefry 0.1.3 | AE | `build_load_pass` |
+| liquid-c 4.2.0 | AY(文としての `__attribute__`) | ビルドは通ったが、単独の `require` で `uninitialized constant Liquid::MemoryError` → レシピを書いて `documented_load_pass` |
+
+**5 件とも、起票した欠陥が本当にその gem を止めていた。** 1 件の修正(AE)が 3 件を通した。
+
+liquid-c は、ビルドの段では欠陥が消えたが、ロードの段で**入口の Ruby を前提にする拡張**の形だった
+(バッチ 1〜4 のレシピと同じ)。レシピの依存は base64 0.3.0 / bigdecimal 4.1.3 / strscan 3.1.8 /
+liquid 5.13.0 で、入口は `liquid` と `liquid/c`。**base64 が要るのは bson_ext と同じ理由**
+(Ruby 3.4 で既定の gem から外れた。liquid 5.13.0 の gemspec には書かれていない)。
+
+**検証**: `rake test` **3,597 runs / 18,081 assertions / 0 failures / 0 errors / 39 skips**。
