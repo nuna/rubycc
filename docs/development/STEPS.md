@@ -15577,3 +15577,59 @@ GAPS 行 AN のスコープ(gcc 13 が警告に留める制約違反)は変え�
 `test_conditional_null_pointer.rb`(6 runs)・`test_extern_initializer_file_scope.rb`(4 runs)
 はいずれも 0 failures。`numo-narray` 側の実ビルド確認・`rake test` 全体は今回も未実行
 (呼び出し元の統合時に確認)。
+
+## ledger-after-wave-1-1 — 直した欠陥が、止まっていた gem を実際に通したか
+
+**内容**: 方針が決まっている欠陥の 1 回目(PR #147: AX / AE / AW / AY)をマージした後の master で、
+その欠陥で止まっていた gem 5 件を `tools/verify_corpus_candidate.rb --update` で測り直した。
+**台帳を 100 → 105 件**にした。
+
+**測り直した結果**(2026-09-13、このホスト、master 62e29fc):
+
+| gem | 止めていた欠陥 | 結果 |
+|---|---|---|
+| string_undump 0.1.1 | AX(`\e` エスケープ) | `build_load_pass` |
+| murmurhash3 0.1.7 | AE(CRLF の行連結) | `build_load_pass` |
+| gc_tracer 1.5.1 | AE | `build_load_pass` |
+| pngdefry 0.1.3 | AE | `build_load_pass` |
+| liquid-c 4.2.0 | AY(文としての `__attribute__`) | ビルドは通ったが、単独の `require` で `uninitialized constant Liquid::MemoryError` → レシピを書いて `documented_load_pass` |
+
+**5 件とも、起票した欠陥が本当にその gem を止めていた。** 1 件の修正(AE)が 3 件を通した。
+
+liquid-c は、ビルドの段では欠陥が消えたが、ロードの段で**入口の Ruby を前提にする拡張**の形だった
+(バッチ 1〜4 のレシピと同じ)。レシピの依存は base64 0.3.0 / bigdecimal 4.1.3 / strscan 3.1.8 /
+liquid 5.13.0 で、入口は `liquid` と `liquid/c`。**base64 が要るのは bson_ext と同じ理由**
+(Ruby 3.4 で既定の gem から外れた。liquid 5.13.0 の gemspec には書かれていない)。
+
+**検証**: `rake test` **3,597 runs / 18,081 assertions / 0 failures / 0 errors / 39 skips**。
+
+## ledger-after-wave-1-2 — 2 回目の修正でも、止まっていた gem を測り直す
+
+**内容**: 方針が決まっている不足の 2 回目(PR #148: AV / AZ / AL / BD)をマージした master をこのブランチに取り込み、
+その不足で止まっていた gem 5 件を `tools/verify_corpus_candidate.rb --update` で測り直した。**台帳を 105 → 108 件**にした。
+
+**測り直した結果**(2026-09-14、このホスト、master fb308d9 を取り込んだ状態):
+
+| gem | 止めていた不足 | 結果 |
+|---|---|---|
+| herb 0.10.4 | AZ(`__builtin_strlen`) | `build_load_pass` |
+| unicode 0.4.4.5 | AL(展開予算) | `build_load_pass` |
+| do_sqlite3 0.10.17 | AV(`-I/usr/include`) | ビルドは通ったが、単独の `require` で `cannot load such file -- bigdecimal` → レシピ(bigdecimal 4.1.3 / data_objects 0.10.17、入口は `bigdecimal` → `do_sqlite3`)で `documented_load_pass` |
+| amalgalite 2.0.0 | AL | **展開予算は越えたが、次の不足で止まった** — 同梱 `stdlib.h` が `alloca` を宣言しない(`sqlite3.c:55748`)。GAPS **BG** に起票 |
+| numo-narray 0.9.2.1 | AO → BD | **2 つの修正を越えたが、3 つ目の不足で止まった** — rmake が、別の規則で生成されるソース(`t_bit.c`)を経由して `.c.o` をつなげない。GAPS **BH** に起票 |
+
+**5 件とも、起票した不足は本当にその gem を止めていた** — ただし 2 件は、その先にもう 1 つ不足があった。
+numo-narray は AO(`#include` の絶対パス)、BD(旧形式の関数ポインタ)、BH(rmake)と、**直すたびに次の不足が見えた**。
+1 回目の後の測り直し(`ledger-after-wave-1-1`)では 5 件中 5 件が通ったが、今回は 5 件中 3 件だった。
+
+do_sqlite3 は、拡張の中から `bigdecimal` を読みにいくところで見つからない(Ruby 3.4 で既定の gem から外れた)。
+先に `bigdecimal` を読めば拡張が読み込まれるので、それを入口の順番としてレシピに書いた。
+同じ理由の gem は bson_ext・liquid-c(base64)に続いて 3 件目である。
+
+### 最小再現で退けた見立て
+
+numo-narray は、最初は Makefile の前提条件のワイルドカード(`$(DEPENDS)` の `gen/*.rb`)を rmake が展開しないのだと疑った。
+最小の Makefile で試すと、ワイルドカードを含む生成規則は rmake でも作られた。**壊れているのは、生成規則と接尾辞規則のつながり**で、
+`x.c` を生成する規則と `.c.o` だけの Makefile で、rmake は `x.c` も `x.o` も作らずにリンクまで進むことを確かめた(GNU make は作る)。
+
+**検証**: `rake test` **3,650 runs / 18,338 assertions / 0 failures / 0 errors / 39 skips**。

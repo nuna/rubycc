@@ -282,6 +282,36 @@ module CorpusCandidateLoadRecipes
         "requires" => ["aead", "aead/cipher"],
         "sanity_kind" => "entrypoint_loaded"
       }
+    },
+    {
+      "name" => "liquid-c",
+      "version" => "4.2.0",
+      "platform" => "ruby",
+      "sha256" => "1741ecef2948deafd79361ad443b98eb799605e02039fe072df5821ee8d51810",
+      "dependencies" => [
+        {"name" => "base64", "version" => "0.3.0"},
+        {"name" => "bigdecimal", "version" => "4.1.3"},
+        {"name" => "strscan", "version" => "3.1.8"},
+        {"name" => "liquid", "version" => "5.13.0"}
+      ],
+      "entrypoint" => {
+        "requires" => ["liquid", "liquid/c"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "do_sqlite3",
+      "version" => "0.10.17",
+      "platform" => "ruby",
+      "sha256" => "8ebdac3d05c2711b7a8215937cbb5f5c97082a12515d3cab50e6f1273129bf3f",
+      "dependencies" => [
+        {"name" => "bigdecimal", "version" => "4.1.3"},
+        {"name" => "data_objects", "version" => "0.10.17"}
+      ],
+      "entrypoint" => {
+        "requires" => ["bigdecimal", "do_sqlite3"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
     }
   ].map(&:freeze).freeze
 
