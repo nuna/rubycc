@@ -1,5 +1,25 @@
 # data/ — repository-attached reference data
 
+## 2 つの台帳 — 何を証拠として受け付けるか
+
+ここには gem について**主張の強さが違う台帳が 2 つ**ある。分けてある理由は、
+弱い証拠と強い証拠を同じ数に混ぜると、その数が何を意味するのか誰にも言えなくなるからである。
+
+| ファイル | 受け付ける証拠 | 書くツール | 1 件あたりの費用(2026-09-12 実測) |
+|---|---|---|---|
+| `verified_gems.json` | **(d) 水準** — **その gem 自身のテストスイートが、rubycc がビルドした `.so` に対して合格した** | `tools/verify_gem_tests.rb --update` | 20〜40 分(レシピを書いて実走する) |
+| `buildable_gems.json` | **build_load 水準** — **install できて `.so` がロードできた**。テストスイートについては**何も言わない** | `tools/verify_corpus_candidate.rb --mode build_load --update` | 1〜2 分 |
+
+**R10 の分母・分子は `buildable_gems.json` を見ない。** 合格率の分母は
+`test/corpus/gems.rb`(ゲートを通った gem)、分子は `verified_gems.json` に (d) 水準の
+記録がある gem で決まる。build_load はそのどちらにも入らない — 安いほうの証拠で率が動けば、
+その率はもう「gem 自身のテストが通った割合」ではなくなる。
+この 2 つの経路が新しい台帳を**読まない**ことは `test/test_buildable_gems.rb` が
+(名前を grep するのではなく、センサス生成と doctor が実際に開いたファイルを見て)固定している。
+
+「ビルドできない」と分かった gem の置き場はどちらでもない。基準つきで
+`docs/reference/OUT-OF-SCOPE-GEMS.md` に書く。
+
 ## verified_gems.json
 
 The build-verified gem database `rubycc doctor` consults as its **primary
@@ -115,3 +135,58 @@ tools/verify_gem_tests.rb --update --step 143 redcarpet  # 合格した gem を�
   DB のキー集合が食い違うと、ツールは貼り付け用の `assert_equal` 行を表示して警告する
   だけで、テストファイルは決して自動編集しない(gem の追加を意識的な編集に留める
   ための意図的なゲート)。
+
+## buildable_gems.json
+
+「**rubycc でビルドできる**」gem の台帳。1 件の記録が主張するのは
+**`gem install` が成功し、そのとき rubycc がビルドした `.so` を require でロードできた**
+ことだけで、その gem のテストスイートについては何も言わない。
+
+構造は `verified_gems.json` と同じ入れ子(1 gem = 1 エントリ、環境ごとの記録がその内側)で、
+配列のキーだけが違う:
+
+| key      | type            | meaning |
+|----------|-----------------|---------|
+| `builds` | array of 記録   | その gem をビルドできた**環境ごとの記録**。挿入順(古い順)。空にはしない |
+| `notes`  | string          | 既知の但し書き。無ければ空文字 |
+
+`builds` の各要素は `verified_gems.json` の verification 記録と同じ 4 欄
+(`versions` / `environment` / `verified_at` / `evidence`)を持つ。
+`versions` が各記録の内側にある理由も、ある環境で未検証であることを
+「その環境の記録が無いこと」で表すのも同じである(上節を参照)。
+
+配列名を `verifications` にしなかったのは、**主張が違うものに同じ名前を使わないため**である。
+同じ名前なら、2 つのファイルを `verifications` の件数で足し合わせるコードや読み手が
+いずれ現れる。
+
+初期状態は空オブジェクト `{}` である(器を先に用意し、記録はツールが足す)。
+
+### 更新は `tools/verify_corpus_candidate.rb --mode build_load --update` 経由で行う
+
+このツールは固定された identity(name / version / platform / SHA-256)の archive を取得し、
+静的ゲートを通したうえで隔離 `GEM_HOME` に `RUBYCC=1 gem install` し、
+`.so` が本当にロードできることまで確かめる。台帳に書かれるのは
+**`status: build_load_pass` かつ `rubycc_build_evidence: pass`** の結果だけである。
+
+- `rubycc_build_evidence` は `gem_make.out` が `exe/rmake` を、生成 Makefile が `exe/rubycc` を
+  指していることの実測であり、これが無い install は「rubycc でビルドできた」ことの証拠にならない。
+  `--compiler host` の対照実行は `not_applicable` になるので**決して記録されない**
+- `--mode load_sanity` の `documented_load_pass` も記録しない。あれはレシピ固有の
+  別の主張(文書化された entrypoint が動く)であり、混ぜない
+- 記録先の選び方は `verify_gem_tests.rb` と同じ。**その実行が走った環境の記録だけ**を更新し
+  (`versions` は和集合、`verified_at` は当日)、その環境の記録が無ければ `builds` の末尾に足す
+- ただし `evidence` は**追記ではなく再生成**する。(d) 水準の evidence はステップ履歴を溜める欄で
+  再実行では復元できないが、こちらの evidence はステップにもバージョンにも触れないため、
+  再実行すると**同じ 1 文がもう一度できるだけ**であり、追記は重複にしかならない
+- `evidence` に「テストスイートが合格した」系の主張は書けない。ツール側が
+  `BuildableGemsLedger::CLAIM_OUT_OF_SCOPE` で拒否し、`test/test_buildable_gems.rb` が
+  ファイルの側でも固定している。(d) 水準の主張は `verified_gems.json` にしか置けない
+- `notes` はこちらでも**人間の責務**であり、ツールは既存の値を保持する
+
+CI(`.github/workflows/corpus-candidate-validation.yml`)はこのフラグを渡さない。
+dispatch された実行がチェックアウトを書き換えてはならないためで、
+`--update` は**結果を人がすぐ確認するローカル実行のためのもの**である。
+
+書式(インデント 2、`versions` は 1 行のインライン配列)と `environment` の綴りは
+`tools/gem_ledger_format.rb` にあり、`verified_gems.json` と共有している。
+主張は違ってよいが、**同じ機械が 2 つの名前で記録されては困る**。

@@ -14140,3 +14140,43 @@ rubygems.org は Range 要求に応える(HTTP 206 を実測)。人気 gem 10 �
 `debug_inspector` は `corpus-debug-inspector-rbs-1` でコーパスに入ったので `[3]` に出る。
 **期待表と比べるだけなら「不一致」で止まっていた**ところを、修正前のコードを同じ窓で
 走らせたことで「期待表の方が古い」と切り分けられた。
+
+---
+
+## buildable-gems-ledger-1 — 弱い主張には、弱い主張のための台帳を作る
+
+**内容**: `data/buildable_gems.json` を新設し、`tools/verify_corpus_candidate.rb --update` から
+**build_load 水準の事実だけ**を記録できるようにした。中身は空のまま入れる(器と中身を分ける)。
+ユーザ指示「**ビルドできる gem を 100 件**」に対する **A + C** の C にあたる。実装は heavy-implementer。
+
+**なぜ器が要るか。** 合格率の分母は `test/corpus/gems.rb` で自動的に決まるので、
+**build_load まで通った gem をそこへ足すと、足した瞬間に R10 の率が落ちる**
+(100 件足せば 94.3% → 35%)。**「ビルドできる」と「コーパスに入れる」を同じ操作にしない**
+ための置き場である。
+
+**設計判断**:
+
+- **配列のキーを `verifications` にせず `builds` にした。** `verified_gems.json` と
+  同じ入れ子構造にしつつ、**主張が違うものに同じ名前を使わない**。読む側が
+  「どちらの台帳を見ているか」を構造から取り違えない。
+- **`evidence` に「テストスイートが合格した」とは書けない**ことをテストで固定した。
+  (d) 水準の主張は `verified_gems.json` にしか置けない。**台帳を分けただけでは、
+  文章で主張が混ざる**ので、語のレベルで止める。
+- **R10 の計算がこの台帳を読まないことを、経路で固定した。** `grep` ではなく、
+  センサス生成と doctor の入力に現れないことを検査する。移譲先は
+  **census に読み込みを 1 行足すと落ちること**まで確かめている(mutation check)。
+- **evidence は追記ではなく再生成。** `verify_gem_tests.rb` の evidence は
+  ステップ履歴(再実行では復元できない)を溜める欄だが、build_load の evidence は
+  ステップにもバージョンにも触れないので、追記すると同じ 1 文が重複するだけである。
+
+**既存の壁を 1 枚、狙いを絞り直した。** `test_workflow_tool_does_not_offer_database_update_mode` は
+`refute_includes source, "--update"` を持っており、`--update` を足すと必ず落ちる。
+不変条件を弱めるのではなく、**守るべきものを言い直した** —
+「このツールに更新モードが無い」ではなく「**このツールは R10 の分子に触れない**」
+(`refute_includes source, "verified_gems"` の方が強い)。
+**CI が `--update` を渡さないことは、ワークフロー YAML を見る別のテストが今も無傷で守っている**
+(`refute_includes File.read(WORKFLOW), "--update"`)。**任意の候補コードを走らせるツールの
+権限は契約の一部**なので、緩めるのではなく分けた。
+
+**検証**: `rake test` **3,522 runs / 0 failures / 0 errors / 39 skips**(master 3,508 + 新規 14)。
+`debug_inspector` 1 件を実際に記録して台帳が動くことを確かめ、**空に戻してから**コミットした。

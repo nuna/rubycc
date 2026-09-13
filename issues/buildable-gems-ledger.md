@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: infra
 opened: 2026-09-12
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-12
+branch: buildable-gems-ledger
+pr: 139
+steps: [buildable-gems-ledger-1]
 ---
 
 # 「ビルドできる」を、R10 の分母を壊さずに数える台帳
@@ -81,4 +81,18 @@ DESIGN R10 の目標は件数ではなく**率**で、**コーパスの 90% 以�
 
 ## 決着
 
-(未着手)
+**器を作った**(`buildable-gems-ledger-1`。設計判断の本文は
+[STEPS.md](../docs/development/STEPS.md) の該当節)。**中身は空のまま入れた** —
+器と中身を別の変更に分けるためで、記録は次の作業から始まる。
+
+| 条件 | 結果 |
+|---|---|
+| `verified_gems.json` と同じ入れ子構造 | 同じ。ただし配列のキーは **`builds`**(主張が違うものに同じ名前を使わない) |
+| ツールだけが書く | `tools/verify_corpus_candidate.rb --update`。**`build_load_pass` かつ `rubycc_build_evidence: pass`** のときだけ |
+| R10 の分母・分子に影響しない | センサス生成と doctor の入力に現れないことを経路で検査。**census に読み込みを 1 行足すと落ちる**ことまで確認 |
+| 主張の強さが混ざらない | `builds` の `evidence` に「テストスイート合格」系の語が現れないことをテストで固定 |
+| `data/README.md` に 2 つの台帳の違い | 冒頭に比較表、末尾に schema 節 |
+
+**着手前に確かめることの 2 点**: (d) 水準の gem も両方の台帳に載ってよい(安い証拠と高い証拠は
+別の事実である)。ビルドできないと分かった gem は引き続き
+[OUT-OF-SCOPE-GEMS.md](../docs/reference/OUT-OF-SCOPE-GEMS.md) に基準つきで書く。
