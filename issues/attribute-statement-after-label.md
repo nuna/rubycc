@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-13
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-14
+branch: gap-fixes-wave-3
+pr: 150
+steps: [attribute-statement-after-label-1]
 ---
 
 # ラベルの直後に単独で置いた属性の文を受け付けない
@@ -55,6 +55,20 @@ int main(void) { return f(1); }
 
 `attribute-statement-1` の統合時に、実装したエージェントが対象外として報告した形を最小再現で確かめて起票した。
 
+### 2026-09-14(実装)
+
+`#parse_block_item` の属性の空文の処理を `#parse_attribute_only_statement` に切り出し、ラベルの後の 1 文を読む
+`#parse_statement` でも同じ判定で呼ぶようにした(コードの重複なし)。gcc を測ると、`case 1:` / `default:` / 通常のラベルの
+直後の属性の空文はどれも通り、属性の後が `;` 以外ならエラー。通常のラベルの後の「属性 + 宣言」は gcc のラベル属性の拡張で
+通るが、本件の範囲外とした(STEPS)。
+
 ## 決着
 
-(未着手)
+**解消した**(`attribute-statement-after-label-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 最小再現がコンパイルでき、`f(1)` が gcc と同じ値を返す | `test/test_attribute_statement_after_label.rb` が gcc 差分で確認(`f(1)` = 11) |
+| `default:` や通常のラベルの直後でも通る | 同じテストで確認 |
+| 属性の後が `;` 以外ならエラーのまま | 同じテストで確認 |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

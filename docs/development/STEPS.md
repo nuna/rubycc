@@ -15746,3 +15746,66 @@ issue の 3 形・既定の実引数拡張がかかる実引数(`char`・`short`
 スキップ数は既存の SKIP 一覧によるもの。全スイート(`rake test`)は走らせていない。
 
 サンプル `examples/m6/unprototyped_function_redeclaration_1_old_style_header.c` を足した。
+
+## attribute-statement-after-label-1 — ラベルの直後の 1 文も、属性だけの空文として読む
+
+**課題**([issue](../../issues/attribute-statement-after-label.md)、GAPS **BE**): `case` ラベルの
+直後に `__attribute__ ((fallthrough));` を単独で置くと、rubycc は `expected expression` で拒否する。
+gcc は通す(2026-09-13、このホストの gcc 13.3 で実測)。`attribute-statement-1` は文として書いた
+GNU 属性(`__attribute__((fallthrough));`)を `#parse_block_item` に届く経路(ブロックの要素、
+実文に続く次の block item として現れる位置)でだけ直しており、統合時に「`case N:` の**直後の
+1 文**そのものが属性文である形は `#parse_nested_statement` から `#parse_statement` を直接呼ぶ
+経路で、`#parse_block_item` を経由しないため対象外」と報告・起票されていた形である。
+
+### gcc の実測 — ラベルの種類で「属性の後が `;` 以外」の扱いが分かれる
+
+2026-09-14、このホストの gcc 13.3 で以下を確かめた:
+
+| ソース | 結果 |
+|---|---|
+| `case 1: __attribute__((fallthrough)); case 2: return x + 10;`(issue の最小再現) | ok |
+| `default: __attribute__((fallthrough)); case 2: ...` | ok |
+| `L: __attribute__((fallthrough)); if (x) goto L; ...`(通常のラベル) | ok(`warning: 'fallthrough' attribute ignored`) |
+| `case 1: __attribute__((fallthrough)) return x; case 2: ...`(属性の直後が `;` でない) | **エラー**(`expected identifier or '(' before 'return'`) |
+| `L: __attribute__((unused)) int y = x; return y;`(属性の直後が `;` でない、通常のラベル) | **ok**(`warning: GNU-style attribute between label and declaration appertains to the label`) |
+
+最後の 1 行は、GNU C が「識別子ラベルには属性を付けられる」という**ラベル属性**の拡張を持つため
+(`case`/`default` ラベルにはこの拡張が無い)で、`case`/`default` の直後だけを見れば
+「属性の後が `;` 以外ならエラー」は issue の記述どおり成り立つ。通常のラベルの直後に
+非宣言・非属性の実文以外(宣言や `;` 以外で終わる属性列)を続けた場合の一致は、
+ラベル属性という**別の**未実装の拡張に依存するため本ステップの対象外のままとした
+(既存のギャップで、この修正が新たに広げても縮めてもいない)。
+
+### 実装 — `#parse_block_item` と同じ判定・同じ parse を `#parse_statement` でも使う
+
+`#parse_block_item` の「`__attribute__` を読んだ直後、属性列の先が型指定子でなければ `;` を期待して
+`AST::EmptyStmt` を返す」処理を `#parse_attribute_only_statement` として切り出し、
+`#parse_block_item` と `#parse_statement` の両方から呼ぶようにした。ガード条件
+(`peek.keyword?("__attribute__") && !attribute_prefixes_declaration?`)自体は両方の呼び出し元に
+残したが、外の分岐だけの短い式(1 行)であり、実際に読み進める処理(属性列を読み飛ばし
+`;` を期待し `AST::EmptyStmt` を作る 3 行)を複製していない。`#parse_statement` はラベルの直後の
+1 文を含め、`if`/`while`/`for` などあらゆる制御構造の本体(`#parse_nested_statement` 経由)からも
+呼ばれる共通経路なので、この 1 か所への追加で `case`/`default`/通常のラベルの**すべて**の
+直後をまとめて直せる。
+
+宣言の頭の属性(`__attribute__((unused)) int x;`)の扱いは変えていない: `attribute_prefixes_declaration?`
+が真のときは新しい分岐に入らず、これまでどおり `#parse_declaration`(`#parse_block_item` の場合)
+または `else` 節の `#parse_expression_statement`(`#parse_statement` の場合、ラベルの直後に
+宣言は置けないので元々構文エラーになる経路)に落ちる。ラベルの直後に宣言を置く形
+(`L: int y;` のように、属性の有無に関係なく)は元から rubycc がサポートしていないので
+(`#parse_statement` に宣言を読む分岐が無い)、この修正の前後で挙動は変わらない。
+
+### 検証
+
+2026-09-14、`test/test_attribute_statement_after_label.rb`(新規)**5 runs / 8 assertions /
+0 failures**(issue の最小再現の gcc 差分・`default:` の直後・通常のラベルの直後・
+属性の直後が `;` でない形が引き続きエラーになること・ラベルの直後の宣言頭属性が
+この修正の前後で挙動不変であることの 5 本)。
+`test/test_attribute_statement.rb` **7 runs / 14 assertions / 0 failures**、
+`test/test_parser.rb` **332 runs / 1023 assertions / 0 failures**、
+`test/test_diagnostics.rb` **238 runs / 750 assertions / 0 failures**、
+`test/test_examples.rb` **62 runs / 63 assertions / 0 failures**、
+`test/test_examples_aarch64.rb` **568 runs / 989 assertions / 0 failures / 26 skips**、
+`test/test_c_suite.rb` **223 runs / 435 assertions / 0 failures / 13 skips**、
+`test/test_c_suite_aarch64.rb` **444 runs / 861 assertions / 0 failures / 26 skips**
+(いずれも 2026-09-14、`examples/m6/attribute_statement_after_label_1_case_label.c` を含む)。

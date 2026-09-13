@@ -2267,10 +2267,7 @@ module Rubycc
         # attribute, known or not) is ignored exactly like an unrecognized
         # declaration attribute would be.
         if peek.keyword?("__attribute__") && !attribute_prefixes_declaration?
-          attr_tok = peek
-          parse_attribute_specifiers
-          expect_punct(";")
-          return [AST::EmptyStmt.new(attr_tok)]
+          return [parse_attribute_only_statement]
         end
 
         if type_specifier?(peek)
@@ -2278,6 +2275,21 @@ module Rubycc
         else
           [parse_statement]
         end
+      end
+
+      # Parses a GNU attribute-specifier sequence that stands for a whole
+      # statement ("__attribute__((fallthrough));"), per the comment above
+      # this method's caller in #parse_block_item. Shared with #parse_statement
+      # so the statement right after a label ("case 1:
+      # __attribute__((fallthrough)); case 2: ...", reached through
+      # #parse_nested_statement rather than #parse_block_item) gets the same
+      # treatment. Assumes the caller already confirmed the guard
+      # (`peek.keyword?("__attribute__") && !attribute_prefixes_declaration?`).
+      def parse_attribute_only_statement
+        attr_tok = peek
+        parse_attribute_specifiers
+        expect_punct(";")
+        AST::EmptyStmt.new(attr_tok)
       end
 
       # Whether the token just past a run of leading "__attribute__((...))"
@@ -3005,6 +3017,13 @@ module Rubycc
         # apart from an expression-statement that merely begins with a name.
         elsif peek.type == :ident && peek_ahead(1)&.punct?(":")
           parse_labeled_statement
+        # The statement right after a label (a "case"/"default"/plain label)
+        # reaches #parse_statement through #parse_nested_statement rather than
+        # #parse_block_item, so the attribute-only-statement handling there
+        # (see #parse_block_item's comment) needs its own guard here too;
+        # #parse_attribute_only_statement is the shared parse.
+        elsif peek.keyword?("__attribute__") && !attribute_prefixes_declaration?
+          parse_attribute_only_statement
         else
           parse_expression_statement
         end
