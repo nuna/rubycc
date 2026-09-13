@@ -839,17 +839,25 @@ class TestPreprocessor < Minitest::Test
 
   def test_stdc_no_vla_and_kin_are_predefined
     # C11 6.10.8.3: an implementation not supporting a conditional feature
-    # defines its macro to 1. rubycc lacks VLAs, _Complex and <threads.h>
-    # (measured 2026-09-13, see PREDEFINED_CONDITIONAL_FEATURE_MACROS).
-    tokens = pp("int a = __STDC_NO_VLA__; int b = __STDC_NO_COMPLEX__; " \
-                "int c = __STDC_NO_THREADS__;").reject(&:eof?)
-    assert_equal [1, 1, 1], tokens.select { |t| t.type == :num }.map(&:value)
+    # defines its macro to 1. rubycc lacks VLAs and _Complex (measured
+    # 2026-09-13, see PREDEFINED_CONDITIONAL_FEATURE_MACROS).
+    tokens = pp("int a = __STDC_NO_VLA__; int b = __STDC_NO_COMPLEX__;").reject(&:eof?)
+    assert_equal [1, 1], tokens.select { |t| t.type == :num }.map(&:value)
   end
 
   def test_stdc_no_atomics_is_not_predefined
     # rubycc does support _Atomic and <stdatomic.h> (measured 2026-09-13), so
     # it must not claim otherwise.
     source = "#ifdef __STDC_NO_ATOMICS__\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_stdc_no_threads_is_not_predefined
+    # rubycc does support <threads.h> (a leading "__extension__" in a struct
+    # member declaration no longer breaks glibc's bits/atomic_wide_counter.h;
+    # measured 2026-09-13, extension-struct-member-1), so it must not claim
+    # otherwise.
+    source = "#ifdef __STDC_NO_THREADS__\nint yes;\n#else\nint no;\n#endif"
     assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
   end
 

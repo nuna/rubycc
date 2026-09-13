@@ -14741,3 +14741,274 @@ rubycc でビルドした `aead.so` は、単独の `require` で `undefined sym
 走査の窓を広げるほうが早く増えた結果である。**起票した欠陥は、どれも実在の gem が 1 件以上止まっている**。
 
 **検証**: `rake test` **3,552 runs / 17,837 assertions / 0 failures / 0 errors / 39 skips**。
+
+## escape-sequence-e-1 — ESC は綴りが 2 通りある GNU 拡張だった
+
+**課題**([issue](../../issues/escape-sequence-e.md)、GAPS **AX**): rubycc は文字列・文字定数中の
+`\e`(ESC、0x1B を表す GNU 拡張)を `unknown escape sequence` で拒否していた。C11 6.4.4.4 の
+単純エスケープには無い綴りだが、gcc 13.3 は既定で無条件に受理する(2026-09-13 実測、このホスト、
+WSL2)。コーパス候補 `string_undump` 0.1.1 の `ext/string_undump/string_undump.c:37` が
+`return "\e";` と書いており、対照の gcc はビルド・ロードに成功する(buildable-gems-batch-4)。
+
+### 実測(2026-09-13、このホスト、gcc 13.3.0)
+
+`"\e[0m"` / `'\e'` / `'\E'` を実行して確かめた:
+
+| 条件 | 結果 |
+|---|---|
+| `gcc`(既定、`-Wall -Wextra`) | 警告なしで受理。`'\e'` == `'\E'` == 0x1B(実行して確認、`27 91 27 27`) |
+| `gcc -pedantic` | `warning: non-ISO-standard escape sequence, '\e'`(`'\E'` も同じ)。**エラーにはならない**、終了コード 0 |
+| `gcc`、`L'\e'`(wide 文字定数) | 0x1B(実行して確認)。rubycc は wide **文字列**リテラルを診断するが wide **文字定数**は元から対応しており(`lib/rubycc/preprocess/token_converter.rb#decode_char` が `"L"` 接頭辞を落として通常の文字定数と同じ `LexemeReader` に渡す)、`\e` を足せば無条件に追随する |
+
+規格に無い他のエスケープも合わせて測った(`\q` は文字、`\%` は記号):
+
+| エスケープ | `gcc -Wall -Wextra`(pedantic なし) |
+|---|---|
+| `\q`(文字) | `warning: unknown escape sequence: '\q'` — バックスラッシュを落として `q` として受理 |
+| `\%`(記号) | **警告なし** — バックスラッシュを落として `%` として受理 |
+
+**どちらも rubycc の既存の挙動(`unknown escape sequence` でエラー)は変えていない。**
+`string_undump` 0.1.1 も本タスクの受け入れ条件も `\q`/`\%` 相当の受理を要求しておらず、
+`test/test_lexer.rb` の既存テスト(`test_unknown_escape_in_character_constant_raises` 等)も
+`\q` のエラーを固定している。gcc と完全に一致させる(文字は警告、記号は無診断で通す)には
+診断機構(現状はエラーのみで警告レベルが無い)を新設する必要があり、必要になった時点で
+別途 issue を立てる。
+
+### 実装
+
+`lib/rubycc/front/lexeme_reader.rb` の `ESCAPES`(6.4.4.4p1 の単純エスケープの表、文字定数と
+文字列リテラルで共有)に `"e" => 27, "E" => 27` を追加しただけ。文字列・文字定数の両方が
+同じ `read_escaped_byte` を経由するため、この 1 行で両方に効く。wide 文字定数
+(`L'\e'`)も `decode_char` が `"L"` を剥がしてから同じ経路に渡すため、追加の変更は不要
+(実測で確認)。wide 文字列リテラル(`L"\e"`)は rubycc がそもそも対応しないため対象外
+(`decode_string` が `"wide string literals are not supported"` で診断する、既存の挙動のまま)。
+
+### 検証
+
+`test/test_escape_sequence_e.rb` を新設。字句レベル(`'\e'`/`'\E'`/文字列中の `\e`/`\E` の
+値が 0x1B)に加え、gcc 差分の実行(`assert_c_exit_status` / `assert_c_program` を
+`compiler: :gcc` と `compiler: :rubycc` の両方で回し、終了コード・標準出力のバイト値が
+0x1B(=27)であることを確認)、wide 文字定数 `L'\e'` の実行、そして `\q`/`\%` の
+エラーが変わっていないことの回帰テストを含む。
+
+- `test/test_escape_sequence_e.rb`: **15 runs / 26 assertions / 0 failures**(2026-09-13)
+- `test/test_lexer.rb`(既存の `\q` エラー等が壊れていないことの確認): **86 runs / 257 assertions / 0 failures**
+- `test/test_examples.rb`(新サンプルを含む全件): **57 runs / 58 assertions / 0 failures**
+
+サンプルは `examples/m6/escape_sequence_e_1_ansi_color.c`(`\e`/`\E` を文字列・文字定数・wide
+文字定数の 3 箇所で使い、`test_examples.rb` の gcc 差分が終了コード・標準出力の両方を検証する)。
+
+## crlf-line-splice-1 — 改行の正規化を行連結より前に置く
+
+**課題**([issue](../../issues/crlf-line-splice.md)、GAPS **AE**): `\` の直後が `\r\n` だと、rubycc は
+行連結と認めずに `error: unexpected character "\"` になる(2026-09-13 実測、gcc 13.3。起票時の
+「gcc 14.2」は誤記)。原因は `lib/rubycc/preprocess/scanner.rb` の `splice`(翻訳フェーズ 2)が
+リテラルの `"\\\n"` だけを探しており、`\` と `\n` の間に `\r` が挟まると一致しないこと。**CRLF 自体は
+通る** — `\r` が `HORIZONTAL_WS_RE` の水平空白として読み飛ばされ、続く `\n` が改行トークンになる経路が
+たまたま効いていたためで、行連結の判定はこの経路を通らない。
+
+**実在の gem 3 件が対照(gcc)は成功し rubycc だけ落ちる**(2026-09-13 実測): `murmurhash3` 0.1.7
+(`ext/murmurhash3/murmur3.c:113` の文字列リテラル継続)、`gc_tracer` 1.5.1
+(`ext/gc_tracer/gc_logging.c:106` の関数形マクロ継続)、`pngdefry` 0.1.3
+(同梱 `miniz.c:1291` の `if` 継続)。
+
+### gcc の挙動を実測して合わせた
+
+受け入れ条件が「`\r` を無条件に改行にするな、gcc の挙動を実測して合わせろ」と求めていたので、
+まず gcc 13.3(2026-09-13、このホスト)で 3 点を測った:
+
+| 入力 | gcc |
+|---|---|
+| `// comment\rint main(void){...}\r`(コメントの直後が単独 `\r`) | `-E` の出力で `int main` がコメントの外に出る → **単独 `\r` も改行として扱う** |
+| `int main(void){\ret'…' \r}`(`\` の直後が単独 `\r`、`\n` は無い) | 継続が効き、コンパイルが通る(stray `\` 警告なし) |
+| `"a\rb"`(文字列リテラルの中の生の `\r` バイト) | `missing terminating "` character のエラー → **文字列リテラルの中でも `\r` は改行に写像される** |
+| `\` の直後が改行以外の文字(対照実験) | `error: stray '\' in program` |
+
+3 点目が判断の核心だった。gcc は「行連結のときだけ `\r` を認める」のではなく、**トークン化より前の
+翻訳フェーズ 1 で、`\r\n` と単独の `\r` をどちらも改行 1 個に写像している**(C11 5.1.1.2 は行末の
+写像を処理系定義のまま残しており、これは gcc の選択)。文字列リテラルの中の生の `\r` が改行になって
+リテラルを終わらせてしまうのは、その写像がトークンの種類を見ずに先に走る証拠であり、「トークンの
+種類によって `\r` の扱いを変える」実装では再現できない。
+
+### 実装
+
+`lib/rubycc/preprocess/scanner.rb` の `Scanner#initialize` に、`@lines` を作る・`splice` を呼ぶより
+前段として `normalize_line_endings` を追加した。`source.gsub(/\r\n?/, "\n")` で `\r\n` と単独の `\r`
+をどちらも `\n` 1 個に置き換える(`\r` を含まない入力は無変更で返し、共通ケースでコピーしない
+既存の `splice` と同じ節約をする)。これで既存の `splice` は変更していない — 正規化後は
+バックスラッシュ継続がどんな行末で書かれていても必ずリテラルの `"\\\n"` になるので、フェーズ 2 の
+実装そのものに手を入れる理由がなくなった。
+
+文字列・文字定数の中の生の `\r` バイトも同じ正規化を通る(フェーズ 1 はトークンの外形を見る前に
+走る)。`\r` という 2 文字のエスケープ(バックスラッシュ + 文字 `r`)は生の `0x0D` バイトを含まないので
+正規化の対象にならず、バイト列は変わらない。
+
+### 検証
+
+新設 `test/test_crlf_line_splice.rb`(12 件、いずれも `String#b` で CRLF/CR のバイト列を直書きした
+フィクスチャで、git の改行変換に依存しない): `Scanner` 単体で CRLF/単独 CR 越しの行連結・行コメント終端・
+改行カウント、文字列リテラル中の生 CR バイトが gcc と同じくリテラルを終わらせること、`\r` エスケープが
+無変化であることをピン止めし、issue の 3 つの最小再現(CRLF のみのファイル、文字列リテラルの
+バックスラッシュ継続、`#define` のバックスラッシュ継続)と `murmurhash3` 相当の文字列継続、
+単独 `\r` によるバックスラッシュ継続を gcc 差分(`compiler: :gcc` / `compiler: :rubycc` の両方で
+`assert_c_exit_status`)で確認した。
+
+**結果**(2026-09-13、このワークツリー): `test_crlf_line_splice.rb` **12 runs / 21 assertions / 0
+failures**、`test_scanner.rb` **16 runs / 28 assertions / 0 failures**、`test_preprocessor.rb`
+**229 runs / 475 assertions / 0 failures**(いずれも既存の回帰なし)。`rake test` 全体・
+`murmurhash3` の `build_load`(`tools/verify_corpus_candidate.rb`)はこの範囲では実行していない
+(ネットワーク越しの gem 取得を伴うため、統合側の検証に委ねた)。
+
+**サンプルは追加しなかった。** `examples/` のチェックインサンプルは、リポジトリのどんな取得経路
+(clone・別 OS・エディタの保存設定)でもバイト列が保たれることが前提だが、この欠陥が再現するのは
+**まさに CRLF/CR という改行のバイト列そのもの**であり、git がテキストファイルとして改行を正規化する
+設定(`core.autocrlf` など、リポジトリ側に `.gitattributes` は無く未設定)や、レビュー・エディタでの
+保存で CRLF が LF に化けれ(あるいはその逆)ば、サンプルはその時点で無言のうちにこの欠陥を
+再現しなくなる。実行はできてしまうので `test_examples.rb` の gcc 差分ビルドは失敗として気付けない
+(LF だけのファイルは元から通っていたため)。`include-absolute-path-1` が「機種依存の値は 1 ファイルに
+恒久固定できない」としてサンプルを見送ったのと同種の判断で、ここでは「改行のバイト列」がその
+固定できない値にあたる。回帰の担保は `test/test_crlf_line_splice.rb` に置いた。
+
+## extension-struct-member-1 — 構造体のメンバ宣言の頭の `__extension__` を受け付ける
+
+**課題**([issue](../../issues/extension-struct-member.md)、GAPS **AW**): `__extension__`(pedantic
+警告を黙らせるだけの GNU マーカー)を構造体・共用体のメンバ宣言の頭に付けると、rubycc は
+`expected type specifier` で拒否していた(gcc は通す)。パーサは宣言の頭に並ぶ `__extension__` を
+`parse_external_declaration`(`lib/rubycc/front/parser.rb:518`、`skip_extension_markers` は
+1638 行から)で読み飛ばしていたが、**構造体のメンバ宣言を読む `parse_struct_body` では
+読み飛ばしていなかった**(2026-09-13 実測、このホスト・WSL2・gcc 13.3)。
+
+glibc の `<threads.h>` が読み込む `bits/atomic_wide_counter.h:27` の
+`__extension__ unsigned long long int __value64;` がこの形で、`<threads.h>` 自体が
+rubycc でコンパイルできない原因になっていた。
+
+### 実装
+
+`parse_struct_body`(`lib/rubycc/front/parser.rb`)のメンバ宣言ループで、既存の
+`skip_extension_markers`(`parse_external_declaration` が使うのと同じメソッド)を
+`spec_tok = peek` の直前で呼ぶだけの変更。新しい読み飛ばしロジックは追加していない —
+既存のヘルパーを新しい呼び出し箇所から使っただけなので、読み飛ばしの意味は
+外部宣言・ブロックスコープ宣言と揃っている。
+
+### 検証
+
+`test/test_extension_struct_member.rb`(新規)を gcc 差分で追加:
+
+- 構造体メンバへの前置(issue の再現そのもの)・共用体メンバへの前置・入れ子構造体の
+  メンバへの前置の 3 形で、`sizeof` / `offsetof` が gcc と一致することを確認
+  (2026-09-13 実測、このホスト): `struct { __extension__ unsigned long long int v; int w; }`
+  は `sizeof=16 offsetof(v)=0 offsetof(w)=8`、共用体は `sizeof=8 offsetof(v)=0 offsetof(w)=0`、
+  入れ子構造体は外側 `sizeof=32` で `pre` が 0・`nested` が 8 のオフセット、いずれも gcc と一致。
+- `<threads.h>` を使う `thrd_create` / `thrd_join` のプログラム(issue と同じ形)が
+  rubycc でビルド・リンク・実行でき、gcc と同じ出力(`42`)になることを確認
+  (2026-09-13 実測、glibc 2.39・gcc 13.3)。`-pthread` を付けなくても両者とも成功する
+  (glibc 2.34 以降 pthread シンボルは libc に統合されているため)。**追いかけるべき「その先の
+  エラー」は無かった** — `__extension__` の修正だけで `<threads.h>` は最後まで通った。
+
+### `__STDC_NO_THREADS__` の再測定
+
+`stdc-no-vla-macro-1` は、glibc の `<threads.h>` がこの `__extension__` で止まっていたことを
+根拠に `__STDC_NO_THREADS__` を定義していた。この issue を閉じたことで根拠が消えたので、
+2026-09-13 に測り直した: 上の `thrd_create`/`thrd_join` のプログラムが rubycc で
+コンパイル・リンク・実行まで成功し、出力が gcc と一致する。C11 6.10.8.3 はこのマクロを
+`<threads.h>` 対応の有無**だけ**に結びつけているので、**`__STDC_NO_THREADS__` を
+`PREDEFINED_CONDITIONAL_FEATURE_MACROS` から外した**(`lib/rubycc/preprocess/preprocessor.rb`)。
+コメントも「対応済みなので定義しない」側(`__STDC_NO_ATOMICS__` と同じ扱い)に書き換えた。
+
+`test/test_preprocessor.rb` の `test_stdc_no_vla_and_kin_are_predefined` から
+`__STDC_NO_THREADS__` の断定を外し、`__STDC_NO_ATOMICS__` と対になる
+`test_stdc_no_threads_is_not_predefined`(`#ifdef` で偽側に落ちることを確認)を追加した。
+`test/test_stdc_no_vla_macro.rb` は `__STDC_NO_THREADS__` に触れていなかったため変更なし。
+
+### サンプル
+
+`examples/m6/extension_struct_member_1_member_prefix.c` — 構造体・共用体・入れ子構造体の
+それぞれのメンバに `__extension__` を前置し、`sizeof`/`offsetof` を出力する。`<threads.h>` は
+システムヘッダ(glibc)への依存になるためサンプルには含めず、issue の再現に忠実な
+最小形のみを収録した。`test/test_examples.rb` が gcc 差分で検証する。
+
+### 実装した AI エージェントへの申し送り(R11)
+
+既存 OSS コンパイラ(chibicc 等)の実装を参照・模倣していない。既存の
+`skip_extension_markers` ヘルパーを新しい呼び出し箇所(`parse_struct_body`)へ
+追加しただけで、判断はすべて ISO C 6.7.2.1(struct-declaration-list)と、
+issue に書かれた実測結果に基づく。
+
+## attribute-statement-1 — 属性は宣言だけでなく、`;` の前にも立てる
+
+**課題**([issue](../../issues/attribute-statement.md)、GAPS **AY**): switch の中で
+`__attribute__ ((fallthrough));` を文として書くと、rubycc は `expected type specifier` で拒否していた。
+`#parse_block_item` が文頭の `__attribute__` を宣言の頭の属性(位置 a、
+`__attribute__((unused)) int x;`)と区別せず、常に `#parse_declaration` へ回して型指定子を探しに
+行っていたためである。gcc は通す(2026-09-13、このホストの gcc 13.3 で実測)。実在の gem
+`liquid-c` 4.2.0 が `ext/liquid_c/parser.c:242` でこの形を書いており、`-Wimplicit-fallthrough` を
+黙らせるためのものである。
+
+### gcc の実測 — GNU 属性文は「`;` の直前」に限られる
+
+2026-09-13、このホストの gcc 13.3 で以下を確かめた:
+
+| ソース | 結果 |
+|---|---|
+| `switch` 内で `x += 1; __attribute__((fallthrough)); case 2: ...`(issue の最小再現) | ok |
+| `__attribute__((totally_unknown_attr_xyz));`(未知の属性、単独の文) | ok(`warning: empty declaration`) |
+| `__attribute__((fallthrough));`(switch の外、次が `case`/`default` でない位置) | **エラー**(`invalid use of attribute 'fallthrough'`) |
+| `__attribute__((unused)) return x;`(属性の直後が `;` でなく他の文) | **エラー**(`expected identifier or '(' before 'return'`) |
+| `__attribute__((fallthrough)) case 2:`(属性の直後が `;` でなくラベル) | **エラー**(`expected identifier or '(' before 'case'`。加えて `attribute not followed by ';'` の警告) |
+
+gcc の診断文言(`empty declaration`)は、これが「文」への特別な文法ではなく、
+**型指定子を持たない宣言(属性だけの空宣言)**として読まれていることを示している。
+属性の直後に `;` が来る場合に限って空の宣言として通り、それ以外(他の文やラベル)が
+続くと「属性の後には宣言子が来るはず」という宣言としての解釈のまま構文エラーになる。
+
+### 決定 — 未知の属性も `fallthrough` も、構文として受理し無視する。置き場所の妥当性は診断しない
+
+DESIGN R7 は「`aligned`/`packed` 以外の属性は無視する」と決めている。これは文属性にも
+そのまま適用し、`fallthrough` を含むどの属性名であっても**構文としてだけ**受理し、意味を
+持たせない。gcc は `fallthrough` という**名前**だけを特別扱いして置き場所(次が
+`case`/`default` かどうか)を検査するが、これは `-Wimplicit-fallthrough` という
+rubycc が実装していない警告のための検査であり、実装すると `fallthrough` という
+1 属性のためだけに位置解析を持ち込むことになる。受け入れ条件は「最小再現が通る」
+「未知の属性も文として受理する」であり、`fallthrough` の誤用を診断することは求めていない
+ので、**gcc のこの 1 点(誤った位置の `fallthrough` を診断すること)は追わない**。
+
+### 実装 — `;` の直前でだけ、宣言でなく空文として読む
+
+`#parse_block_item` に、`__attribute__` を読んだ直後の判定を足した。属性列
+(`__attribute__((...))` の繰り返し)を読み飛ばした先のトークンが型指定子なら
+(既存の宣言頭の属性)そのまま `#parse_declaration` に委ね、型指定子でなければ
+`;` を期待して `AST::EmptyStmt` を返す(gcc の「空宣言」に対応する扱い)。属性列の
+読み飛ばしには、`#paren_starts_declarator?` が宣言子の判定に使っていた既存の
+`#index_after_attributes`(バランスの取れた括弧を数えて `__attribute__((...))` を
+まるごと飛ばす)をそのまま流用した(新しい字句先読みを増やしていない)。
+
+**gcc の実測どおり、属性列の直後が `;` でない場合は素通ししない**: `attribute_prefixes_declaration?`
+が偽でも次が `;` でなければ `expect_punct(";")` がそこでエラーにする(gcc の
+「属性の直後は宣言子か `;` のはず」という拒否と同じ形)。これにより
+`__attribute__((unused)) return x;` のような形は rubycc でも構文エラーのままになる
+(gcc も拒否するので差分は生じない)。
+
+`case N: __attribute__(...); ...` の `__attribute__` は `case` の**直後の 1 文**ではなく、
+`case` の直後の文(実文)に続く**次の block item**として現れる(issue の最小再現がまさにこの形)。
+この位置は `#parse_block_item` のループを通るので今回の修正で届く。`case N:` の**直後の 1 文**
+そのものが属性文である形(`case N: __attribute__((...)); ...`)は `#parse_nested_statement` から
+`#parse_statement` を直接呼ぶ経路で、`#parse_block_item` を経由しないため今回の修正の対象外 ——
+サンプルはこの位置を避け、`case` の直後に実文を 1 つ置いてから属性文を続ける形にした
+(issue の最小再現と同じ形)。
+
+宣言の頭の属性(`__attribute__((unused)) int x;`)の扱いは変えていない: 属性列の直後が
+型指定子であることを確認できたときだけ `#parse_declaration` に委ねる分岐なので、既存の
+`type_specifier?` の判定・`#parse_declaration_specifiers` の属性収集はそのまま通る。
+
+### 検証
+
+`test/test_attribute_statement.rb`(新規)**7 runs / 14 assertions / 0 failures**
+(issue の最小再現の gcc 差分・未知の属性の文・空の属性列の文・複数の `__attribute__((...))`
+の連続・ブロック内唯一の文としての属性文・宣言頭の属性の回帰確認 2 種)。
+`test/test_parser.rb` **332 runs / 1023 assertions / 0 failures**、
+`test/test_diagnostics.rb` **238 runs / 750 assertions / 0 failures**、
+`test/test_examples.rb` **57 runs / 58 assertions / 0 failures**
+(いずれも 2026-09-13、`examples/m6/attribute_statement_1_fallthrough.c` を含む)。
+
+ラベルの直後に単独で置いた形は、統合時に最小再現で rubycc が `expected expression` で落ちることを確かめ、
+[attribute-statement-after-label](../../issues/attribute-statement-after-label.md)(GAPS **BE**)に起票した。

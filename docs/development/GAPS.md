@@ -12,7 +12,6 @@
 |---|---|---|---|---|
 | **S**([第 2 段の issue](../../issues/platform-abi-alignment.md)) | **`long double` の幅が 8 バイト**(`double` として扱う。DESIGN 3.3 の既知の制限)。**可変長引数に渡す経路は解消済み**(`long-double-varargs-1`) | **残るのは幅に依存するもの** — `sizeof` / `_Alignof` / `max_align_t` / 構造体メンバのオフセット、および**名前付き引数と戻り値**(`frexpl` 等の libc 呼び出しは依然不整合) | **実測**(2026-08-13)。`printf("%Lg", x)` は gcc と一致し、oj の失敗テスト名の集合も対照と完全一致(687 runs / 1 failure / 2 errors、名前も同一) | **オブジェクトファイルの ABI が変わる**ので、他の既知逸脱(enum の底型、`wchar_t` の符号性)と**まとめて 1 つの major** で閉じる |
 | **T**([issue](../../issues/struct-returning-initializer-element.md)) | **配列の要素数をパーサが数える文脈で、struct を返す式が単一式初期化子として読めない** | `pt b[] = { {1,2}, fp(), {5,6} };` が gcc では 3 要素になるのに rubycc は拒否する。パーサは `[]` の長さをここで確定させる必要があるが、型表を持たないので `fp()` の型が分からない | **実測**(2026-08-08) | struct を直接初期化する形は通る(atomic-type-13)。**`gaps-s-t-u-2` で診断だけ正直にした**(以前は `excess elements in scalar initializer` という的外れな文言だった)。解消にはパーサ側に型を引く手段が要る |
-| **AE**([issue](../../issues/crlf-line-splice.md)) | **CRLF の行末で行連結(`\` + 改行)が働かない**。`\` の次に `\n` を期待するところへ `\r` が来て字句エラーになる | CRLF で配られ、継続行を 1 行でも持つ gem。**ソースの見た目に問題が無いのに字句エラー**になるので原因に辿り着きにくい | **実測**(2026-09-13)。CRLF の単純なファイルは通り、継続行だけが落ちる。`murmurhash3` 0.1.7 / `gc_tracer` 1.5.1(マクロ定義の継続行)/ `pngdefry` 0.1.3(同梱の miniz.c)の 3 件が該当し、**対照の gcc はどれも通る** | 翻訳フェーズ 1 で `\r\n` を改行に正規化すれば閉じる見込み。`\r` 単独を改行扱いしないこと |
 | **AF**([issue](../../issues/bundled-stdlib-getloadavg.md)) | **同梱 `stdlib.h` に `getloadavg` の宣言が無い**(glibc は `__USE_MISC` の枝に置く) | `getloadavg` を呼ぶ gem。`vmstat` 2.3.1 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `implicit declaration`) | **`_DEFAULT_SOURCE` の枝ごと見て決める** — 1 つずつ塞ぐと回数が増える |
 | **AG**([issue](../../issues/zero-length-array.md)) | **長さ 0 の配列(GNU 拡張)を拒否する**。規格(6.7.6.2p1)には忠実だが gcc は既定で受理する | `binding_ninja` 0.2.3 の `dummy_method_arg[0]` が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `array size must be positive`) | 受理するか対象外にするかを**根拠付きで決めてから**実装する。フレキシブル配列メンバの扱いを先に測る |
 | **AH**([issue](../../issues/thread-local-storage.md)) | **スレッドローカル記憶域が無い** — C11 の `_Thread_local` も GNU の `__thread` も `expected type specifier` で拒否する。コンパイラに言及が 1 つも無く、記憶域クラスとしてまるごと無い | TLS 変数を宣言するヘッダを含む gem。`pg_query` 6.2.3 が同梱 postgres ヘッダの `__thread` で、`scout_apm` 6.3.0 が `allocations.c:29` の `static __thread` で落ち、**対照の gcc はどちらもビルドに成功する** | **実測**(2026-09-13、最小再現で両方とも拒否) | **マイルストーン級**。ELF の TLS セクション・TLS 再配置・`%fs` / `tpidr_el0` 相対の生成が要り、拡張は `.so` なので**動的モデルでないと実在の gem に効かない** |
@@ -27,14 +26,12 @@
 | **AT**([issue](../../issues/typeof-operator.md)) | **`typeof`(GNU 拡張、C23 で標準化)を受け付けない**。未宣言の関数として報告される | `algorithms` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
 | **AU**([issue](../../issues/bundled-pthread-attr-guard.md)) | **同梱 `pthread.h` が `pthread_attr_t` を glibc のガード(`__have_pthread_attr_t`)無しで定義する**。`<netdb.h>` の `sigevent_t.h` と型の再定義になる | `_GNU_SOURCE` のもとで `<netdb.h>` を含む gem。`trilogy` 2.13.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`<pthread.h>` + `<netdb.h>` の最小再現) | 同梱 `pthread.h` の他の型にも同じ穴が無いかを数える |
 | **AV**([issue](../../issues/include-duplicate-system-dir.md)) | **`-I/usr/include` を渡すと、glibc 本体のヘッダが同梱ヘッダより先に見つかる**。gcc はシステムと重なる `-I` を無視する | `dir_config` に `/usr` を渡す古い gem。`do_sqlite3` 0.10.17 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`#include <stdio.h>` だけで再現) | gcc の規則(`-isystem` / `-idirafter` を含む)を測ってから合わせる |
-| **AW**([issue](../../issues/extension-struct-member.md)) | **構造体のメンバ宣言の頭の `__extension__` を受け付けない**(宣言の頭の形は通る) | glibc の `<threads.h>` を使うコード。`bits/atomic_wide_counter.h:27` で止まるので、`thrd_create` のプログラムがビルドできない(**gcc は通る**) | **実測**(2026-09-13、最小再現) | 閉じたら `__STDC_NO_THREADS__` の定義を測り直す(`stdc-no-vla-macro-1`) |
-| **AX**([issue](../../issues/escape-sequence-e.md)) | **エスケープ `\e`(GNU 拡張、ESC)を未知のエスケープとして拒否する** | 端末の色付けを書く gem。`string_undump` 0.1.1 が該当し、**対照の gcc は通る**(警告も出ない) | **実測**(2026-09-13、最小再現) | `\E` も同じ。規格に無い他のエスケープの扱いは gcc を測ってから決める |
-| **AY**([issue](../../issues/attribute-statement.md)) | **文として書いた `__attribute__ ((fallthrough));` を拒否する**。文の頭の属性を宣言の始まりとして読む | `-Wimplicit-fallthrough` を黙らせる gem。`liquid-c` 4.2.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `expected type specifier`) | 宣言の頭の属性の扱いは変えない |
 | **AZ**([issue](../../issues/builtin-strlen.md)) | **`__builtin_strlen` が無い**。未宣言の関数として報告される | `herb` 0.10.4 が `hb_string.h:27` のマクロの中で使い、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 文字列リテラルの場合に定数へ畳むかを gcc と比べて決める |
 | **BA**([issue](../../issues/bundled-termios-tcflow.md)) | **同梱 `termios.h` に `tcflow`(POSIX)と `TCO*` / `TCI*` の定数が無い** | `ruby-termios` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | §2 の同梱ヘッダの洗い出しの対象 |
 | **BB**([issue](../../issues/bundled-ioctl-tiocm.md)) | **同梱 `sys/ioctl.h` に `TIOCMGET` / `TIOCM_*` が無い** | `serialport` 1.4.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | aarch64 の要求番号を測ってから、共通層に置くかを決める |
 | **BC**([issue](../../issues/atomic-builtin-small-widths.md)) | **`__atomic_*` ビルトインが 1 / 2 バイトの対象を拒否する**(4 / 8 バイト限定と自己申告) | 1 バイトのスピンロックを持つ gem。`iodine` 0.7.59 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 4 / 8 バイト限定のビルトインを一覧にしてから足す |
 | **BD**([issue](../../issues/unprototyped-function-pointer-compat.md)) | **仮引数付きの関数ポインタを旧形式の `void (*)()` へ代入できない**。C11 6.7.6.3p15 では互換な型 | 旧形式の関数ポインタをメンバに持つ gem。`numo-narray` 0.9.2.1 の `ndloop.c:359` が該当し、**対照の gcc は通る**(警告も出ない) | **実測**(2026-09-13、最小再現) | AN(gcc 13 が警告する制約違反)とは別件。既定の実引数拡張で型が変わる仮引数の組み合わせは診断を保つ |
+| **BE**([issue](../../issues/attribute-statement-after-label.md)) | **ラベルの直後に単独で置いた属性の文を拒否する**(`case 1: __attribute__ ((fallthrough)); case 2:`)。AY の修正はブロックの要素として現れる形だけを直した | 空の case から次の case へ落とすときに属性を書く gem。実在の gem ではまだ見ていない | **実測**(2026-09-13、最小再現で `expected expression`。gcc は通る) | ラベルの後の文を読む経路(`parse_nested_statement` → `parse_statement`)にも同じ判定を入れる |
 
 ## 2. 未解消の負債
 
@@ -64,6 +61,19 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ AY**(文として書いた `__attribute__ ((fallthrough));` を拒否する):
+  `attribute-statement-1` で解消。属性の並びの後が宣言でなく `;` なら、空の文として読む(gcc の「空の宣言」と同じ形)。
+  R7 のとおり属性の中身は構文として受理して捨てる。**ラベルの直後に単独で置いた形は残った**(BE)。
+- **ギャップ AW**(構造体のメンバ宣言の頭の `__extension__` を受け付けない):
+  `extension-struct-member-1` で解消。メンバ宣言でも既存の読み飛ばしを使った。glibc の `<threads.h>` が
+  rubycc でビルド・実行できるようになったので、`__STDC_NO_THREADS__` の定義を外した(C11 6.10.8.3)。
+- **ギャップ AE**(CRLF の行末で行連結が働かない):
+  `crlf-line-splice-1` で解消。翻訳フェーズ 1 で `\r\n` と単独の `\r` をどちらも改行に写像した。
+  起票時は「単独の `\r` を改行扱いしない」と書いたが、gcc を測ると単独の `\r` もトークンの種類を問わず改行として扱う
+  (文字列リテラルの中の生の CR もリテラルを終わらせる)ので、それに合わせた。
+- **ギャップ AX**(エスケープ `\e` を未知のエスケープとして拒否する):
+  `escape-sequence-e-1` で解消。`\e` / `\E` を ESC(0x1B)として、文字列・文字定数・wide 文字定数で受理した。
+  規格に無い他のエスケープ(`\q` など)は gcc が警告止まりでも、従来どおりエラーのまま残した。
 - **ギャップ AO**(`#include` に絶対パスを書くと、実在するファイルでも開けない):
   `include-absolute-path-1` で解消。`resolve_include` / `resolve_include_next` の両方に
   「名前が絶対パスならディレクトリ結合をせずそのまま試す」分岐を先頭に足した。絶対パスで開いた

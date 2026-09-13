@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-13
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-13
+branch: gap-fixes-wave-1
+pr: 147
+steps: [attribute-statement-1]
 ---
 
 # 文として書いた `__attribute__ ((fallthrough));` を受け付けない
@@ -58,6 +58,21 @@ buildable-gems-batch-4)。`-Wimplicit-fallthrough` を黙らせるための書�
 
 buildable-gems-batch-4 で、rubycc だけが落ちて対照は通った 1 件。
 
+### 2026-09-13(実装)
+
+ブロックの要素の頭に属性が並んだとき、属性の後が型指定子でなければ `;` を求めて空の文として読むようにした。
+gcc を測ると、属性の後が `;` 以外(別の文やラベル)ならエラーにするので、その形は rubycc でもエラーのまま。
+**ラベルの直後に単独で置いた形(`case 1: __attribute__ ((fallthrough)); case 2:`)は、ラベルの後の文を
+読む別の経路を通るので直っていない**。[attribute-statement-after-label](attribute-statement-after-label.md)(GAPS BE)に起票した。
+
 ## 決着
 
-(未着手)
+**解消した**(`attribute-statement-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 最小再現が通り、`f(1)` と `f(2)` が gcc と同じ値を返す | `test/test_attribute_statement.rb` が gcc 差分の実行で確認 |
+| 他の文属性を受理して無視するか診断するかを決め、STEPS に書く | R7 のとおり、どの属性名でも構文として受理して捨てる。gcc が `fallthrough` の置き場所だけを検査するのは追わない(STEPS) |
+| 宣言の頭の `__attribute__` の扱いは変えない | 回帰テスト 2 件で固定 |
+| `liquid-c` 4.2.0 が rubycc でビルドできる | **マージ後に台帳の手順で測る** |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

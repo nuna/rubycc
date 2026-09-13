@@ -304,22 +304,26 @@ module Rubycc
       # - __STDC_NO_COMPLEX__: "_Complex" is not a keyword the lexer
       #   recognizes at all (lib/rubycc/front/lexeme_reader.rb's KEYWORDS),
       #   and no <complex.h> is bundled, so no complex type exists to name.
-      # - __STDC_NO_THREADS__: 6.10.8.3 ties this macro to the <threads.h>
-      #   header alone (_Thread_local is not a conditional feature, so its
-      #   absence — GAPS gap AH — is not the reason). No <threads.h> is
-      #   bundled, and glibc's own <threads.h> does not compile under rubycc:
-      #   it reaches bits/atomic_wide_counter.h, whose struct member is
-      #   declared with a leading "__extension__" that the member-declaration
-      #   parser rejects (measured 2026-09-13; issues/extension-struct-member.md).
-      #   Once that header compiles, this entry has to be re-measured.
+      # __STDC_NO_THREADS__ is deliberately absent: 6.10.8.3 ties it to the
+      # <threads.h> header alone (_Thread_local is not a conditional feature,
+      # so its absence — GAPS gap AH — is not the reason). It used to be
+      # listed here because glibc's own <threads.h> could not compile under
+      # rubycc — it reaches bits/atomic_wide_counter.h, whose struct member is
+      # declared with a leading "__extension__" that the member-declaration
+      # parser rejected. Once the parser learned to skip a leading
+      # "__extension__" in a struct/union member declaration
+      # (extension-struct-member-1), that header compiles, and a thrd_create/
+      # thrd_join program built and run under rubycc matches gcc's output
+      # (measured 2026-09-13; issues/extension-struct-member.md), so rubycc
+      # does support <threads.h> and must not claim otherwise.
       #
-      # __STDC_NO_ATOMICS__ is deliberately absent: "_Atomic" is a keyword the
-      # parser implements (both the qualifier and the parenthesized
-      # atomic-type-specifier forms) and <stdatomic.h> is bundled and builds
-      # and runs a program using atomic_fetch_add, so rubycc does support
-      # atomics and must not claim otherwise.
-      PREDEFINED_CONDITIONAL_FEATURE_MACROS = %w[__STDC_NO_VLA__ __STDC_NO_COMPLEX__
-                                                  __STDC_NO_THREADS__].freeze
+      # __STDC_NO_ATOMICS__ is deliberately absent for the same kind of
+      # reason: "_Atomic" is a keyword the parser implements (both the
+      # qualifier and the parenthesized atomic-type-specifier forms) and
+      # <stdatomic.h> is bundled and builds and runs a program using
+      # atomic_fetch_add, so rubycc does support atomics and must not claim
+      # otherwise.
+      PREDEFINED_CONDITIONAL_FEATURE_MACROS = %w[__STDC_NO_VLA__ __STDC_NO_COMPLEX__].freeze
 
       # The CPU-identifying macros for each target, the subset of gcc's that
       # glibc's own headers dispatch on. Getting these from the target rather

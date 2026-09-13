@@ -103,6 +103,11 @@ module Rubycc
         # The scan is over bytes, so anything handed over as text is re-tagged
         # here — never transcoded (see the class comment).
         source = source.b unless source.encoding == Encoding::BINARY
+        # Translation phase 1 (5.1.1.2): map physical source line terminators
+        # to the single new-line character before anything else looks at the
+        # bytes. Done here, once, so every later phase — splicing, comment and
+        # string scanning, line/column bookkeeping — only ever sees "\n".
+        source = normalize_line_endings(source)
         # -1 keeps a trailing empty field so line numbers map 1:1 to entries.
         @lines = source.split("\n", -1)
         splice(source)
@@ -148,6 +153,34 @@ module Rubycc
       end
 
       private
+
+      # Translation phase 1's line-terminator mapping (5.1.1.2): the standard
+      # requires an implementation-defined mapping of physical source lines to
+      # the source character set, and gcc's mapping — confirmed empirically
+      # (2026-09-13, gcc 13.3, see issues/crlf-line-splice.md) — folds CRLF and
+      # a lone CR (the classic Mac OS 9 line ending) into a single "\n", the
+      # same as a lone "\n". A CR is mapped unconditionally, whether or not a
+      # backslash precedes it, because the mapping runs before phase 2 (the
+      # backslash-newline splice) even looks at the text; that ordering is why
+      # a lone CR line ending also works.
+      #
+      # This does *not* touch a "\r" written as the two-character escape
+      # `\r` inside a string or character literal (that is backslash then the
+      # letter r, no CR byte, so the pattern below never matches it) — only a
+      # raw CR byte (0x0D) is remapped. A raw CR byte that is not a legitimate
+      # line terminator — e.g. one embedded in a string literal — becomes a
+      # "\n" like any other, which under gcc ends the literal early with a
+      # "missing terminating" error (measured 2026-09-13); reproducing that
+      # here means never special-casing CR *inside* a token, only mapping it
+      # here in the one place phase 1 happens, before tokens exist at all.
+      #
+      # A source with no CR (the common case, and every LF-only file already
+      # in the corpus) is returned unchanged, not copied.
+      def normalize_line_endings(source)
+        return source unless source.include?("\r")
+
+        source.gsub(/\r\n?/, "\n")
+      end
 
       # Translation phase 2: delete every backslash-newline pair, recording for
       # each deletion the byte offset (in the spliced text) where the next

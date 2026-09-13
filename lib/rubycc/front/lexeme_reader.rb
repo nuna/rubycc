@@ -85,10 +85,19 @@ module Rubycc
       # constructs. "\x" (hexadecimal, any number of digits) and octal ("\ooo",
       # 1-3 digits, "0" included) are handled separately in #read_escaped_byte
       # since their value comes from digits rather than a fixed table lookup.
+      #
+      # "\e"/"\E" (ESC, 0x1B) are a GNU extension, not part of 6.4.4.4's simple
+      # escapes; gcc 13.3 accepts both spellings unconditionally, only warning
+      # under -pedantic ("non-ISO-standard escape sequence"), measured
+      # 2026-09-13 (issues/escape-sequence-e.md). No other out-of-standard
+      # escape is added here: an escaped letter such as "\q" still raises below
+      # (gcc itself only warns, but nothing in this codebase's corpus needs it
+      # accepted, so the existing diagnostic is kept).
       ESCAPES = {
         "n" => 10, "t" => 9, "r" => 13, "\\" => 92,
         "'" => 39, "\"" => 34, "?" => 63,
-        "a" => 7, "b" => 8, "f" => 12, "v" => 11
+        "a" => 7, "b" => 8, "f" => 12, "v" => 11,
+        "e" => 27, "E" => 27
       }.freeze
 
       # Three-character punctuators, matched before the shorter lists so the

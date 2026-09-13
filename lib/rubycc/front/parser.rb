@@ -1854,6 +1854,13 @@ module Rubycc
             next
           end
 
+          # A leading "__extension__" (a GNU marker that silences pedantic
+          # warnings) prefixes a member declaration with no semantic effect,
+          # just as it does an external declaration (see
+          # #parse_external_declaration); glibc's <bits/atomic_wide_counter.h>
+          # relies on this to declare a member with such a prefix.
+          skip_extension_markers
+
           spec_tok = peek
           # An _Alignas among a member declaration's specifiers belongs to every
           # declarator it introduces, exactly as the base type does, so it is
@@ -2210,11 +2217,48 @@ module Rubycc
           return parse_declaration
         end
 
+        # A GNU attribute-specifier sequence may open either a declaration
+        # (position a, "__attribute__((unused)) int x;") or an *empty
+        # statement carrying attributes* ("__attribute__((fallthrough));",
+        # gcc's spelling of a fallthrough marker before a switch's next
+        # "case"/"default"). gcc only accepts the latter directly in front of
+        # the statement's terminating ";" — measured 2026-09-13: gcc rejects
+        # "__attribute__((unused)) return x;" ("expected identifier or '('
+        # before 'return'") and "__attribute__((fallthrough)) case 2:" (same
+        # diagnostic, plus an "attribute not followed by ';'" warning) — so
+        # this mirrors that shape rather than accepting the attribute before
+        # an arbitrary statement.
+        #
+        # Look past the whole attribute sequence: if what follows still opens
+        # a declaration, this is the familiar declaration-leading attribute
+        # and is left below for #parse_declaration, which reads it as part of
+        # the specifier run. Otherwise every attribute in the sequence is
+        # accepted and discarded right here — per R7, only 'aligned'/'packed'
+        # carry semantics anywhere in this parser, and that holds for a
+        # statement attribute too, so 'fallthrough' (and any other statement
+        # attribute, known or not) is ignored exactly like an unrecognized
+        # declaration attribute would be.
+        if peek.keyword?("__attribute__") && !attribute_prefixes_declaration?
+          attr_tok = peek
+          parse_attribute_specifiers
+          expect_punct(";")
+          return [AST::EmptyStmt.new(attr_tok)]
+        end
+
         if type_specifier?(peek)
           parse_declaration
         else
           [parse_statement]
         end
+      end
+
+      # Whether the token just past a run of leading "__attribute__((...))"
+      # specifiers opens a declaration, so #parse_block_item can tell that from
+      # a statement-leading attribute sequence without committing to either
+      # parse. Assumes `peek` is already "__attribute__".
+      def attribute_prefixes_declaration?
+        following = @tokens[index_after_attributes(@pos)]
+        !following.nil? && type_specifier?(following)
       end
 
       def parse_declaration
@@ -2687,7 +2731,9 @@ module Rubycc
       # starting at `index`, matching parentheses so an argument list of any
       # shape is skipped whole. Used only for lookahead (nothing is consumed):
       # #paren_starts_declarator? peers past an attribute to the token that
-      # classifies a "(". Returns `index` unchanged when no attribute is present.
+      # classifies a "(", and #attribute_prefixes_declaration? peers past one to
+      # tell a declaration-leading attribute from a statement-leading one.
+      # Returns `index` unchanged when no attribute is present.
       def index_after_attributes(index)
         while @tokens[index]&.keyword?("__attribute__")
           index += 1

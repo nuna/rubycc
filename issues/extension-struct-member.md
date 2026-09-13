@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-13
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-13
+branch: gap-fixes-wave-1
+pr: 147
+steps: [extension-struct-member-1]
 ---
 
 # 構造体のメンバ宣言の頭の `__extension__` を受け付けない
@@ -48,6 +48,19 @@ rubycc では上のエラーで止まる(2026-09-13 実測)。
 `stdc-no-vla-macro-1` のレビューで、`__STDC_NO_THREADS__` の根拠を確かめるために glibc の
 `<threads.h>` を rubycc でコンパイルして見つけた。
 
+### 2026-09-13(実装)
+
+構造体・共用体のメンバ宣言を読むループの先頭で、既存の `__extension__` の読み飛ばしを呼んだ。
+その結果、`thrd_create` / `thrd_join` のプログラムが rubycc でビルド・リンク・実行でき、gcc と同じ
+`42` を出した。**その先で止まる別のエラーは無かった。** そこで `__STDC_NO_THREADS__` の定義を外した。
+
 ## 決着
 
-(未着手)
+**解消した**(`extension-struct-member-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 最小再現が通り、配置(`sizeof` / `offsetof`)が gcc と一致する | `test/test_extension_struct_member.rb` で確認 |
+| 共用体のメンバ、入れ子の構造体のメンバでも通る | 同じテストで確認 |
+| `<threads.h>` のプログラムが rubycc でビルドでき gcc と同じ出力になる。`__STDC_NO_THREADS__` を測り直す | ビルド・実行とも一致(`42`)。**`__STDC_NO_THREADS__` の定義を外した**(C11 6.10.8.3 は `<threads.h>` の有無だけに結びつける) |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

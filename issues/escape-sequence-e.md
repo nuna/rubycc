@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-13
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-13
+branch: gap-fixes-wave-1
+pr: 147
+steps: [escape-sequence-e-1]
 ---
 
 # 文字列・文字定数のエスケープ `\e`(GNU 拡張、ESC)を受け付けない
@@ -46,6 +46,19 @@ const char *esc(void) { return "\e[0m"; }
 
 buildable-gems-batch-4 で、rubycc だけが落ちて対照は通った 1 件。
 
+### 2026-09-13(実装)
+
+`lib/rubycc/front/lexeme_reader.rb` の単純エスケープの表に `\e` / `\E` を足した。文字列・文字定数・
+wide 文字定数が同じ表を通るので、1 箇所で足りた。`\q` / `\%` についての gcc の扱いも測り、
+rubycc の既存のエラーは変えていない(理由は STEPS)。
+
 ## 決着
 
-(未着手)
+**解消した**(`escape-sequence-e-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 最小再現が通り、`\e` と `\E` が 0x1B になる(文字列・文字定数) | `test/test_escape_sequence_e.rb` が gcc 差分の実行で確認(wide 文字定数 `L'\e'` も) |
+| 規格に無い他のエスケープの扱いは gcc を測ってから決める | 測った(`\q` は gcc で警告、`\%` は無診断)。rubycc は従来どおりエラーのまま。変えるには警告の段階を持つ診断が要る |
+| `string_undump` 0.1.1 が rubycc でビルドできる | **マージ後に台帳の手順で測る** |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |
