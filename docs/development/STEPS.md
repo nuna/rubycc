@@ -15633,3 +15633,363 @@ numo-narray は、最初は Makefile の前提条件のワイルドカード(`$(
 `x.c` を生成する規則と `.c.o` だけの Makefile で、rmake は `x.c` も `x.o` も作らずにリンクまで進むことを確かめた(GNU make は作る)。
 
 **検証**: `rake test` **3,650 runs / 18,338 assertions / 0 failures / 0 errors / 39 skips**。
+
+## unprototyped-function-redeclaration-1 — 旧形式で宣言した名前付き関数の再宣言・定義・呼び出し(C11 6.7.6.3p15)
+
+**課題**(GAPS 行 BF、`issues/unprototyped-function-redeclaration.md`): `int f();` のように旧形式
+(空の `()`、関数定義の外)で宣言した**名前付き関数**を、仮引数付きで再宣言・定義すると
+`conflicting types`、プロトタイプ付きの定義より前に引数付きで呼ぶと `too many arguments` で止まっていた。
+unprototyped-function-pointer-compat-1(BD)は関数ポインタ型にしか `prototyped` を運んでおらず、
+名前付き関数の宣言は生成器の `@signatures` に仮引数の配列として記録され、`declare_function` は
+`existing[:param_types] != param_types` で照合していた(BD の STEPS 記録「スコープ外として残した箇所」のとおり)。
+
+### gcc の実測
+
+2026-09-14、このホスト(WSL2 / gcc 13.3.0、`-std=gnu11 -Wall -Wextra`、`-c`)で測った。
+
+| 入力 | gcc |
+|---|---|
+| `void f(); void f(int x) { (void)x; }` | ok(診断なし) |
+| `int g(); int g(int); int g(int x) { return x; }` | ok(診断なし) |
+| `int h();` → `h(3)` を呼ぶ → `int h(int x) {...}` | ok(診断なし) |
+| `int f(int); int f(); int f(int x) {...}`(逆順) | ok |
+| `int f(void); int f();` | ok |
+| `int f(); int f(double, long, void *, unsigned);` | ok |
+| `int f(); int f(a) char a; {...}`(K&R 定義) | ok |
+| `int f(); int (*p)(int) = f; int (*q)(void) = f;` | ok |
+| `int f();` → `f(1, 2.0f, (char)3)` | ok |
+| ブロックスコープの `int f();` → 呼び出し → 後でファイルスコープに定義 | ok |
+| `int f(); int f(char);`・`(short)`・`(float)`・`(_Bool)` | **error** `conflicting types for 'f'` |
+| `int f(); int f(int, ...);`・`int f(); int f(const char *, ...);` | **error** `conflicting types` |
+| `int f(); int f(char c) {...}`・`int f(char); int f();` | **error** `conflicting types` |
+| `int f(); long f(int);` | **error** `conflicting types` |
+| `int f(); int f(int); int f(long);` | **error** `conflicting types`(3 行目) |
+| `int f();` → `f(1)` → `int f(unsigned char c) {...}` | **error** `conflicting types` |
+| `int f(); int f(int);` → `f(1, 2)`(定義の後も同じ) | **error** `too many arguments to function 'f'` |
+| `int f(); int (*p)(char) = f;` | warning のみ(`-Wincompatible-pointer-types`) |
+
+互換でない組み合わせは、関数ポインタの代入(BD で測った 4 形はどれも警告のみ)と違い、
+**名前付き関数の再宣言では gcc もハードエラー**にする。
+
+### 修正
+
+- `AST::FunctionDecl` に `prototyped`(宣言子の `Type::FunctionType#prototyped`)を足した。
+  既定値は `true`(`FunctionType` と同じく、既存の生成箇所の意味を変えない)。パーサは
+  `parse_external_declarator` で `type.prototyped` を渡す。
+- `@signatures` の各項目に `prototyped:` を足した。ブロックスコープの関数宣言は `decl.type.prototyped`、
+  関数定義は常に `true`(`()` は定義では「仮引数なし」、K&R 定義は宣言リストで型が確定する)を渡す。
+  組み込みの種(`memcpy`・`strlen`)は `prototyped: true`。
+- `declare_function` は、既存の項目と新しい宣言をどちらも `Type::FunctionType` にして
+  `Type.composite` で合成する。合成できなければ `conflicting types`、できれば**合成型を表に書き戻す**。
+  `Type.composite` には「両辺が関数型なら `function_type_composite`」の 1 行を足しただけで、
+  6.7.6.3p15 の判定(`Type.function_types_compatible?`)と 6.2.7p3 の「プロトタイプ側が勝つ」は
+  BD がまとめたものをそのまま使う。builtin-strlen-2 の「種は最初の宣言に黙って譲る」は、
+  合成の前に `existing` を無いものとして扱う既存の行がそのまま効く。
+- `gen_direct_call` は、表の項目が `prototyped: false` のとき、BD の `gen_indirect_call` と同じく
+  可変長で固定仮引数 0 個として実引数を下ろす(個数を検査せず、各実引数に既定の実引数拡張)。
+  プロトタイプか定義を見た後は合成型が `prototyped` になるので、以後の呼び出しは従来どおり検査される。
+- `function_type_of` は `sig[:prototyped]` を運ぶようにした。これで、旧形式でしか宣言していない関数の
+  アドレスは `T (*)()` 型になり、`int (*p)(int) = f;` のような初期化・代入も BD の規則で判定される。
+
+### 判断
+
+- **`@signatures` には `Type::FunctionType` ではなく `prototyped` の鍵を足した。** 表を読む箇所は
+  `sig[:param_types]`・`sig[:return_type]`・`sig[:variadic]` を直接見ており(直接呼び出し・`call_return_type`・
+  PIC の判定など約 10 か所)、`FunctionType` そのものに置き換えると変更がこのステップの目的と関係ない
+  箇所に広がる。一方、型としての判定は `function_type_of` で `FunctionType` を組み立ててから
+  `Type.composite` に渡すので、規則の置き場は `lib/rubycc/type.rb` の 1 か所に保てる。
+- **表には合成型を書き戻す。** 最後に見た宣言ではなく合成型を持つので、`int f(int); int f();` の後も
+  `f(1, 2)` は `too many arguments` になり、`int f(); int f(int); int f(long);` は 3 行目で
+  `conflicting types` になる(どちらも gcc と同じ)。
+- **旧形式の宣言だけが見えている呼び出しは可変長呼び出しと同じ経路に乗せる。** x86-64 では `%al` の
+  設定も付いてくる。呼び出し先は可変長関数かもしれないので、BD が関数ポインタ経由の呼び出しで
+  測った gcc の出力と同じ扱いになる。
+- **`int f(); int (*p)(char) = f;` は引き続きエラーにする。** gcc は警告に留めるが、これは GAPS 行 AN
+  (制約違反を gcc 13 が警告に留める形)の範囲で、BD と同じく広げない。変更前もこの形はエラーだった
+  (`f` をプロトタイプ付きの `int (void)` とみなしていたため)ので、挙動は変わっていない。
+- 表は翻訳単位全体で 1 つのまま(ブロックスコープの宣言も同じ表に入る)。`int f(int);` の後の
+  ブロック内 `int f();` で `f(2)` がプロトタイプで検査されるのは、6.2.7p4(先の宣言が見えている
+  ときの合成型)と一致する。
+
+### テスト
+
+新規 `test/test_unprototyped_function_redeclaration.rb`(43 runs)。gcc 差分の対象は 9 形:
+issue の 3 形・既定の実引数拡張がかかる実引数(`char`・`short`・`float`・`long`・ポインタ)・
+ブロックスコープの旧形式宣言・K&R 定義・旧形式で宣言した関数のアドレス・逆順(プロトタイプ → 旧形式)・
+組み込みの種の後の `unsigned long strlen();`。各形を、ホストの gcc 差分・aarch64 向けのコンパイルのみ・
+クロス gcc + qemu の差分の 3 通りで検査する。ほかに、互換でない 11 形が gcc と同じ行で
+`conflicting types for 'f'` になること、プロトタイプ・定義の後の `too many arguments`、
+プロトタイプ前の任意個数の呼び出し、2 つ目の定義の `redefinition`、
+`int strlen(); unsigned long strlen(char *);` が 2 行目で `conflicting types` になること。
+
+同じ新規テストを変更前の `lib/`(`origin/master` を展開したもの)で走らせると
+**43 runs 中 5 failures + 28 errors**。差分 27 件はすべて error、診断 16 件のうち 6 件が failure/error
+(より前の行で `conflicting types` になって止まるため)で、互換でない 10 形の拒否だけは変更前後で同じ。
+
+2026-09-14、ワークツリー `unprototyped-function-redeclaration`(`origin/master` + 本変更)で実行した結果:
+
+| ファイル | runs | failures | errors | skips |
+|---|---|---|---|---|
+| test/test_unprototyped_function_redeclaration.rb | 43 | 0 | 0 | 0 |
+| test/test_unprototyped_function_pointer_compat.rb | 13 | 0 | 0 | 0 |
+| test/test_builtin_strlen.rb | 5 | 0 | 0 | 0 |
+| test/test_builtin_strlen_seed.rb | 19 | 0 | 0 | 0 |
+| test/test_knr_function_definitions.rb | 13 | 0 | 0 | 0 |
+| test/test_diagnostics.rb | 238 | 0 | 0 | 0 |
+| test/test_parser.rb | 332 | 0 | 0 | 0 |
+| test/test_type.rb | 92 | 0 | 0 | 0 |
+| test/test_examples.rb | 62 | 0 | 0 | 0 |
+| test/test_examples_aarch64.rb | 568 | 0 | 0 | 26 |
+| test/test_c_suite.rb | 223 | 0 | 0 | 13 |
+| test/test_c_suite_aarch64.rb | 444 | 0 | 0 | 26 |
+
+スキップ数は既存の SKIP 一覧によるもの。全スイート(`rake test`)は走らせていない。
+
+サンプル `examples/m6/unprototyped_function_redeclaration_1_old_style_header.c` を足した。
+
+## attribute-statement-after-label-1 — ラベルの直後の 1 文も、属性だけの空文として読む
+
+**課題**([issue](../../issues/attribute-statement-after-label.md)、GAPS **BE**): `case` ラベルの
+直後に `__attribute__ ((fallthrough));` を単独で置くと、rubycc は `expected expression` で拒否する。
+gcc は通す(2026-09-13、このホストの gcc 13.3 で実測)。`attribute-statement-1` は文として書いた
+GNU 属性(`__attribute__((fallthrough));`)を `#parse_block_item` に届く経路(ブロックの要素、
+実文に続く次の block item として現れる位置)でだけ直しており、統合時に「`case N:` の**直後の
+1 文**そのものが属性文である形は `#parse_nested_statement` から `#parse_statement` を直接呼ぶ
+経路で、`#parse_block_item` を経由しないため対象外」と報告・起票されていた形である。
+
+### gcc の実測 — ラベルの種類で「属性の後が `;` 以外」の扱いが分かれる
+
+2026-09-14、このホストの gcc 13.3 で以下を確かめた:
+
+| ソース | 結果 |
+|---|---|
+| `case 1: __attribute__((fallthrough)); case 2: return x + 10;`(issue の最小再現) | ok |
+| `default: __attribute__((fallthrough)); case 2: ...` | ok |
+| `L: __attribute__((fallthrough)); if (x) goto L; ...`(通常のラベル) | ok(`warning: 'fallthrough' attribute ignored`) |
+| `case 1: __attribute__((fallthrough)) return x; case 2: ...`(属性の直後が `;` でない) | **エラー**(`expected identifier or '(' before 'return'`) |
+| `L: __attribute__((unused)) int y = x; return y;`(属性の直後が `;` でない、通常のラベル) | **ok**(`warning: GNU-style attribute between label and declaration appertains to the label`) |
+
+最後の 1 行は、GNU C が「識別子ラベルには属性を付けられる」という**ラベル属性**の拡張を持つため
+(`case`/`default` ラベルにはこの拡張が無い)で、`case`/`default` の直後だけを見れば
+「属性の後が `;` 以外ならエラー」は issue の記述どおり成り立つ。通常のラベルの直後に
+非宣言・非属性の実文以外(宣言や `;` 以外で終わる属性列)を続けた場合の一致は、
+ラベル属性という**別の**未実装の拡張に依存するため本ステップの対象外のままとした
+(既存のギャップで、この修正が新たに広げても縮めてもいない)。
+
+### 実装 — `#parse_block_item` と同じ判定・同じ parse を `#parse_statement` でも使う
+
+`#parse_block_item` の「`__attribute__` を読んだ直後、属性列の先が型指定子でなければ `;` を期待して
+`AST::EmptyStmt` を返す」処理を `#parse_attribute_only_statement` として切り出し、
+`#parse_block_item` と `#parse_statement` の両方から呼ぶようにした。ガード条件
+(`peek.keyword?("__attribute__") && !attribute_prefixes_declaration?`)自体は両方の呼び出し元に
+残したが、外の分岐だけの短い式(1 行)であり、実際に読み進める処理(属性列を読み飛ばし
+`;` を期待し `AST::EmptyStmt` を作る 3 行)を複製していない。`#parse_statement` はラベルの直後の
+1 文を含め、`if`/`while`/`for` などあらゆる制御構造の本体(`#parse_nested_statement` 経由)からも
+呼ばれる共通経路なので、この 1 か所への追加で `case`/`default`/通常のラベルの**すべて**の
+直後をまとめて直せる。
+
+宣言の頭の属性(`__attribute__((unused)) int x;`)の扱いは変えていない: `attribute_prefixes_declaration?`
+が真のときは新しい分岐に入らず、これまでどおり `#parse_declaration`(`#parse_block_item` の場合)
+または `else` 節の `#parse_expression_statement`(`#parse_statement` の場合、ラベルの直後に
+宣言は置けないので元々構文エラーになる経路)に落ちる。ラベルの直後に宣言を置く形
+(`L: int y;` のように、属性の有無に関係なく)は元から rubycc がサポートしていないので
+(`#parse_statement` に宣言を読む分岐が無い)、この修正の前後で挙動は変わらない。
+
+### 検証
+
+2026-09-14、`test/test_attribute_statement_after_label.rb`(新規)**5 runs / 8 assertions /
+0 failures**(issue の最小再現の gcc 差分・`default:` の直後・通常のラベルの直後・
+属性の直後が `;` でない形が引き続きエラーになること・ラベルの直後の宣言頭属性が
+この修正の前後で挙動不変であることの 5 本)。
+`test/test_attribute_statement.rb` **7 runs / 14 assertions / 0 failures**、
+`test/test_parser.rb` **332 runs / 1023 assertions / 0 failures**、
+`test/test_diagnostics.rb` **238 runs / 750 assertions / 0 failures**、
+`test/test_examples.rb` **62 runs / 63 assertions / 0 failures**、
+`test/test_examples_aarch64.rb` **568 runs / 989 assertions / 0 failures / 26 skips**、
+`test/test_c_suite.rb` **223 runs / 435 assertions / 0 failures / 13 skips**、
+`test/test_c_suite_aarch64.rb` **444 runs / 861 assertions / 0 failures / 26 skips**
+(いずれも 2026-09-14、`examples/m6/attribute_statement_after_label_1_case_label.c` を含む)。
+
+## rmake-suffix-rule-generated-source-1 — 推論規則が「まだ無いが作れる」ソースを使えるようにする
+
+GAPS BH / `issues/rmake-suffix-rule-generated-source.md` の決着。
+変更は `lib/rubycc/rmake/makefile.rb`・`lib/rubycc/rmake/errors.rb`、
+テストは新規 `test/test_rmake_suffix_rule_generated_source.rb`。
+
+### 事実(2026-09-14、この WSL2 の GNU Make 4.3 で測定)
+
+issue の Makefile(`x.c` を明示規則で `gen/src.txt` から生成し、`.c.o:` でコンパイル)に
+加え、次の形を GNU make で実走した:
+
+| ケース | GNU make 4.3 の結果 |
+|---|---|
+| issue の Makefile | `cp gen/src.txt x.c` → `cc -c -o x.o x.c` → `cc -o prog x.o` |
+| 明示規則が `.c.o:` より後ろにある | 同上(規則の順序によらない) |
+| `.t.c:` + `.c.o:`、`x.t` が存在 | `cp x.t x.c` → compile → link → **`rm x.c`**(中間ファイル削除) |
+| 同上で `x.t` も明示規則で生成 | `x.t` 生成 → `x.c` → `x.o` → link → `rm x.c` |
+| 3 段連鎖 `.a.b:` `.b.c:` `.c.o:` | 3 段とも実行し、`rm x.c x.b` |
+| `x.c` が存在し、先に並ぶ `.t` は `.s.t:` 連鎖でしか作れない | `.c.o:` を選ぶ(存在するファイルが連鎖に勝つ) |
+| 同上で `x.t` が明示規則のターゲット | やはり `.c.o:` を選ぶ |
+| 両方存在、`.SUFFIXES: .t .c .o` で `.c.o:` を先に定義 | `.c.o:` を選ぶ(**`.SUFFIXES` 順ではなく規則の定義順**) |
+| `.c.o:` と `.o.c:`、何も存在しない | `Circular x.c <- x.o dependency dropped.` の後、壊れた `cp  x.c` を実行して失敗 |
+| `prog: x.o` で `x.o` の作り方が無い | `make: *** No rule to make target 'x.o', needed by 'prog'.  Stop.`(exit 2) |
+| コマンドラインのゴールが無い | `make: *** No rule to make target 'nope'.  Stop.` |
+| `x.c: gen/src.txt gen/nope.txt` | `No rule to make target 'gen/nope.txt', needed by 'x.c'.  Stop.`、何も実行しない |
+| `FORCE:`(空規則)・`foo: bar` + `bar:`・規則の無い `.PHONY` | いずれもエラーにしない |
+| `x.c: gen/src.txt`(レシピ無し明示規則)で `x.c` 不在 | `.c.o:` を選び、コンパイラが `x.c` 不在で失敗 |
+| `x.c` が他の規則の前提として現れるだけ | `.c.o:` を選び、`No rule to make target 'x.c', needed by 'x.o'` |
+| 前提 `gen/*.rb`(一致あり) | 一致をソートして展開(`$^=gen/a.rb gen/b.rb gen/c.rb`)。絶対パス・変数経由・`?`・`[...]` も同様 |
+| 前提 `gen/*.rb`(一致なし) | 字面のまま残り `No rule to make target 'gen/*.rb', needed by 'x.c'.  Stop.` |
+
+修正前の rmake(origin/master、fb308d9 を含む)は、存在しないソースを推論候補から外していたので
+`x.o` に規則が付かず、しかも「作り方の無い前提」を黙って無視していたため、リンクで初めて落ちていた
+(issue 記載の症状)。新テストファイル(ワイルドカード節を足す前の 21 件)を修正前コードに
+当てると 14 件が落ちる(5 failures, 9 errors)ことを確認した。
+
+numo-narray 0.9.2.1(sha256 `eed76b47…adceb`)を
+`tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc` で試した結果:
+
+1. 推論の修正だけの段階では、今度は
+   `rmake: No rule to make target '<CANDIDATE_WORK>/.../gen/*.rb', needed by 't_bit.c'.  Stop.`
+   で止まった。numo の `depend.erb` は `DEPENDS = $(C_TMPL) <srcdir>/gen/*.rb` を前提に並べる。
+   **修正前の rmake はこの字面を黙って無視していた**ので、issue の対照実験
+   (`x.c: gen/a.rb gen/*.rb` は通る)はワイルドカードを扱えていたのではなく、無視していただけだった。
+2. 前提のワイルドカード展開を足した後は、生成規則が走って `t_*.c` がコンパイルに進んだ。
+   並列ビルドが止まった時点で生成済みは `t_bit.c` `t_int8.c` `t_int16.c` `t_int32.c`
+   `t_int64.c` `t_uint8.c` の 6 本。失敗は
+   `t_int8.c:20:1: error: emmintrin.h: No such file or directory`(`t_int16.c` `t_int32.c`
+   `t_int64.c` も同じ)で、別原因(status `build_failed`)。
+
+### 判断
+
+- **推論候補のソースは 2 段で判定する**。1 段目は「ファイルとして存在する」(POSIX の条件そのもの)、
+  それで決まらなければ 2 段目で「作れる」(明示規則のターゲット、または再帰的に別の推論規則で作れる)。
+  「存在が連鎖に勝つ」は上表の実測に合わせた。1 段にまとめると、先に並ぶ連鎖候補が既存ファイルを
+  押しのけてしまい、既存の Makefile で選ばれる規則が変わる。
+- **候補の順は `.SUFFIXES` 順のまま**。GNU make は規則の定義順だが、rmake は Step 56 から POSIX の
+  `.SUFFIXES` 順で、mkmf の Makefile では両者が一致する。ここで変える理由が無い。
+- **連鎖の循環は探索を打ち切る**(訪問中の名前は候補から外す)。GNU make は依存を捨てて壊れた
+  レシピを走らせるが、そこまで真似る価値は無く、rmake は `No rule to make target 'x.o'` で止める。
+- **中間ファイルは消さない**。GNU make は連鎖で作った、明示的に言及されていないファイルを
+  最後に `rm` する。gem のビルドでは残って困ることが無く、消すと 2 回目の実行の判定
+  (中間が無くても最新とみなす)まで実装が要る。差として記録するに留める。
+- **作り方の無い前提は計画段階で `NoRuleError` にする**。文言は GNU make に合わせ
+  (`rmake: No rule to make target 'x.o', needed by 'prog'.  Stop.`、CLI は exit 2)、ログを
+  どちらの make が書いても同じに読めるようにした。「作れない」の定義は、ファイルが無く・
+  明示規則のターゲットでもなく(レシピ無しの `FORCE:` 等は作れる扱い)・推論も効かず・
+  `.PHONY` でもない、の全部。GNU make との差は 2 つ残る:
+  (a) rmake は計画を全部立ててから実行するので、欠けた前提より前の手順も走らない
+  (GNU make は手前まで実行してから止まる)。
+  (b) 他の規則の前提に現れるだけの名前(GNU make の "ought to exist")は候補扱いしないので、
+  エラーの名指しが `x.c` ではなく `x.o` になる。どちらも止まる位置はリンクより前。
+- **前提のワイルドカードを展開する**(`*`・`?`・`[`。Makefile のディレクトリ基準、絶対パスは
+  そのまま、一致をソート、一致なしは字面を残す)。上の事実 1 の通り、欠けた前提を報告するように
+  した時点で、それまで黙って無視されていた `gen/*.rb` がエラーになり、issue の対照実験で
+  通っていた形を壊す。展開は Makefile を読んだ時点で 1 回だけ行う(後でレシピが作るファイルは
+  拾わない。GNU make と同じ)。ターゲット側のワイルドカードは展開しない(コーパスに出てこない)。
+- **numo-narray はこのステップの範囲では通らない**。rmake の段は越え、残りは rubycc の
+  `<emmintrin.h>`(SSE2 組み込み関数)の欠如で、rmake とは別の課題。
+
+## bundled-pthread-attr-guard-1 — `pthread_attr_t` に glibc 自身のガードを追従させる
+
+GAPS 表の行 AU。`issues/bundled-pthread-attr-guard.md` が記録する再現を 2026-09-13 に
+このホスト(WSL2 / gcc 13.3)で確認済み: `_GNU_SOURCE` のもとで `<pthread.h>` の後に
+`<netdb.h>` を含めると、rubycc だけが
+`bits/types/sigevent_t.h:17:30: error: redefinition of typedef 'pthread_attr_t'` で落ち、
+gcc は通る。
+
+### 原因
+
+glibc は `pthread_attr_t` を `bits/pthreadtypes.h` と `bits/types/sigevent_t.h`
+(`<netdb.h>` が `__USE_GNU` のとき引く)の 2 か所で typedef しており、
+共有ガード `__have_pthread_attr_t` で 1 回に絞っている。rubycc の同梱
+`include/libc/glibc/{x86_64,aarch64}/pthread.h` はこのガードを見ずに
+`typedef union { char __size[N]; long __align; } pthread_attr_t;` と定義していたため、
+`<netdb.h>` が同梱ヘッダより後に来ると glibc 本体の `sigevent_t.h` がもう一度
+(**別の型として**)typedef し、C11 6.7p3 が禁じる再定義になる。
+
+**逆順(`<netdb.h>` を先に含める)も同じ理由で壊れていた**ことを実測で確認した
+(2026-09-14、修正前の同梱ヘッダで再現): `sigevent_t.h` が先に
+`union pthread_attr_t`(不完全型の前方宣言)を typedef してガードを立て、
+その後に来る同梱 `pthread.h` 側がガードを見ずに**別の型**として再 typedef して
+同じエラーになる。ガード漏れは向きに関係なく踏む。
+
+### 対処
+
+glibc 自身の書き方(`/usr/aarch64-linux-gnu/include/bits/pthreadtypes.h` で確認、
+x86-64 host の `/usr/include/x86_64-linux-gnu/bits/pthreadtypes.h` と同一パターン)に
+合わせ、**typedef とタグの完成を分離**した:
+
+```c
+#ifndef __have_pthread_attr_t
+typedef union pthread_attr_t pthread_attr_t;
+# define __have_pthread_attr_t 1
+#endif
+union pthread_attr_t { char __size[56]; long __align; };  /* 常に完成させる */
+```
+
+順序に関わらず両立する理由: どちらのヘッダが先に来ても「タグの前方宣言 + ガード設定」は
+1 回だけ実行され(先着ヘッダの `#ifndef` だけが通る)、**タグの完成**
+(`union pthread_attr_t { ... };`)は本ファイルが無条件に実行する。glibc 本体の
+`bits/pthreadtypes.h` も全く同じ二段構え(タグの完成が先、ガード付き typedef が後、
+順序が逆なだけ)であることを確認済みで、この構造は**glibc 自身の相互運用規約**であり
+発明ではない。
+
+`__have_pthread_attr_t` というガード名・「前方宣言されたタグを typedef する」という形は
+ABI の相互運用に必要な事実そのもの(§4 の整理と同じ理屈、Step 147 の `__sigset_t` と同種)
+であり、glibc のヘッダ本文をコピーしたものではない(R11 / `docs/reference/HEADER-LICENSING.md` §6)。
+ABI 値(`pthread_attr_t` の `sizeof`/`_Alignof`)は 1 バイトも動いていないので、
+Step 147 と同じ判断で**由来台帳(§3)は更新しなかった**。
+
+### 他の同梱型の点検
+
+`pthread.h` が定義する残り(`pthread_mutex_t`・`pthread_mutexattr_t`・`pthread_cond_t`・
+`pthread_condattr_t`・`pthread_rwlock_t`・`pthread_rwlockattr_t`・`pthread_t`・
+`pthread_once_t`・`pthread_key_t`・`pthread_spinlock_t`)について、
+x86-64 host (`/usr/include/x86_64-linux-gnu/bits/`) と aarch64 cross sysroot
+(`/usr/aarch64-linux-gnu/include/bits/`) の両方で `grep -rl "__have_" bits/` を実測した
+(2026-09-14)。ヒットしたのは `bits/pthreadtypes.h` と `bits/types/sigevent_t.h` の
+2 ファイルのみで、いずれも `__have_pthread_attr_t` だけ。**glibc 自身のヘッダ間で
+共有されるガードは `pthread_attr_t` の 1 件だけ**であることを確認し、他の型には
+同種の修正を要しない。
+
+### テスト
+
+- `test/test_bundled_pthread_attr_guard.rb`(新規): issue の最小再現(`pthread.h` →
+  `netdb.h`、`_GNU_SOURCE`)をそのままコンパイルする回帰テスト。x86-64 は実物の
+  `<netdb.h>` で forward/reverse 両方向、`pthread_attr_t` を非ポインタの実オブジェクトとして
+  `struct sigevent.sigev_notify_attributes` に渡す完全型チェックまで含めて計 5 テスト。
+- 同ファイルの aarch64 クラスは、実物の `<netdb.h>` の代わりに
+  `__have_pthread_attr_t` ガードの**手書きの代替**(glibc 2 か所と同一の 4 行)を使う。
+  理由: この開発ホストの `aarch64-linux-gnu-gcc` クロスパッケージ
+  (`libc6-dev-arm64-cross`)は `/usr/aarch64-linux-gnu/include` に**独自の sysroot**を
+  持ち、rubycc の既定システム探索パス(aarch64 は `/usr/include/aarch64-linux-gnu` +
+  `/usr/include` を期待、`Preprocessor::LIBC_MULTIARCH_INCLUDE_DIRS`)とは噛み合わない。
+  `/usr/include/aarch64-linux-gnu` が存在しないため、フォールバック先の
+  `/usr/include/netdb.h` は**ホスト自身の x86-64 版**になり、そこから辿る
+  `bits/stdint-uintn.h` が見つからずに落ちる(2026-09-14 実測、
+  `.github/workflows/test.yml` の既定 `ubuntu-24.04` ランナーも同じ構成なので、
+  push のたびに走る通常経路でも同様に起きる)。この経路は**このステップの範囲外の
+  既存ギャップ**(同梱していないヘッダを aarch64 クロス側で解決する仕組みが無い)であり、
+  修正はガードの仕組み自体を検証する代替に留めた。
+- `test/test_header_abi.rb` に `PTHREAD_ATTR_NETDB_FORWARD`/`_REVERSE` Spec
+  (x86-64、実物の `<netdb.h>` で `pthread_attr_t` の `sizeof`/`_Alignof` を gcc と比較)、
+  aarch64 クラスには `also:` が使えない(snippet は必ず include の後に来る、
+  `HeaderAbiHarness#abi_probe_source` の制約)ため専用のヘルパー
+  `run_pthread_attr_guard_case_aarch64`/`assert_pthread_attr_guard_matches` を追加し、
+  同じ手書き代替を forward/reverse 両方向で cross gcc と突き合わせた。
+- 修正前の 2 ファイルだけを `git stash` で退避し、新規 4 + 5 = 9 テストのうち
+  gcc 単体のものを除く全てが**修正前は再現のエラーで落ち、修正後は通る**ことを
+  2026-09-14 に実測(forward・reverse・aarch64 forward/reverse 全部)。
+- `test/test_header_abi.rb` 全体 125 runs / 370 assertions / 0 failures / 0 skips。
+  `test/test_bundled_pthread_attr_guard.rb` 7 runs / 3 assertions / 0 failures / 0 skips。
+  `test/test_examples.rb` 61 runs / 0 failures。`test/test_examples_aarch64.rb` 566 runs /
+  0 failures / 26 skips(既存、無関係)。`test/test_c_suite.rb` 223 runs / 0 failures /
+  13 skips(既存)。`test/test_c_suite_aarch64.rb` 444 runs / 0 failures / 26 skips(既存)。
+
+### 残された観点(このステップでは直していない)
+
+x86-64 ホストの `-target aarch64` が、同梱していないヘッダ(`<netdb.h>` 等)をクロス sysroot
+(`/usr/aarch64-linux-gnu/include`)から探さない件は、別の課題として
+`issues/aarch64-cross-sysroot-include.md`(GAPS BI)に起票した。直ったら、上の aarch64 テストを
+実物の `<netdb.h>` に置き換える。

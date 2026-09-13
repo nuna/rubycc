@@ -499,8 +499,16 @@ module Rubycc
       # Phase B; `inline` is accepted and folded away by the parser and left off
       # here since the generator has no use for it yet. `variadic` is true when
       # the prototype ends in "..." ("int printf(const char *, ...);"), in which
-      # case `params` holds only the fixed, named parameters.
-      FunctionDecl = Data.define(:name, :return_type, :params, :token, :storage, :variadic)
+      # case `params` holds only the fixed, named parameters. `prototyped` is
+      # the declarator's Type::FunctionType#prototyped: false for the old-style
+      # "int f();" (unspecified parameters, `params` empty), true for "(void)"
+      # and every parameter-type list. It defaults to true so a construction
+      # that predates the field keeps meaning a prototype.
+      FunctionDecl = Data.define(:name, :return_type, :params, :token, :storage, :variadic, :prototyped) do
+        def initialize(name:, return_type:, params:, token:, storage:, variadic:, prototyped: true)
+          super
+        end
+      end
 
       # A function definition. `return_type` is the declared Rubycc::Type
       # (int, char, void or a pointer). `params` is an array of Parameter

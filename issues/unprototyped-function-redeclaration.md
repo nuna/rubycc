@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-14
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-14
+branch: gap-fixes-wave-3
+pr: 150
+steps: [unprototyped-function-redeclaration-1]
 ---
 
 # 旧形式で宣言した名前付き関数を、仮引数付きで再宣言・定義・呼び出しできない
@@ -57,6 +57,21 @@ BD は関数ポインタ型(`Type::FunctionType` に `prototyped` を足した)�
 BD の手直しのレビューで、エージェントが範囲外として残した形を測った。BD の修正の前と後で結果が同じなので、
 BD の退行ではなく前からある不足と分かった。
 
+### 2026-09-14(実装)
+
+生成器の関数の宣言表(`@signatures`)に `prototyped` の鍵を足した(`Type::FunctionType` に置き換えると表を読む約 10 か所に
+変更が広がるため)。再宣言は既存の宣言と新しい宣言を `Type.composite` で合成し、合成できなければ `conflicting types`、
+できれば合成した型を表に書き戻す。旧形式の宣言しか見えていない関数の呼び出しは、BD が関数ポインタ経由の呼び出しに入れた
+規則と同じく、引数の数を照合せず既定の実引数拡張をかける。issue の 3 形は gcc と同じくビルド・実行でき(統合時に再測定)、
+互換でない組み合わせ(`int f(); int f(char);` など)は gcc と同じくエラーのまま。
+
 ## 決着
 
-(未着手)
+**解消した**(`unprototyped-function-redeclaration-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 3 つの形が gcc と同じくコンパイルでき、実行結果が一致する | `test/test_unprototyped_function_redeclaration.rb` が gcc 差分(ホスト / aarch64 のクロス gcc + qemu)で確認 |
+| 旧形式でしか宣言されていない関数の呼び出しに既定の実引数拡張がかかる | 同じテストで確認 |
+| 互換でない組み合わせは診断を保つ(gcc を先に測る) | gcc も名前付き関数の再宣言ではエラーにする。rubycc も同じ行でエラー |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

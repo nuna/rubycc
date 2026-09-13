@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-13
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-14
+branch: gap-fixes-wave-3
+pr: 150
+steps: [bundled-pthread-attr-guard-1]
 ---
 
 # 同梱 `pthread.h` が `pthread_attr_t` を glibc のガード無しで定義し、`<netdb.h>` と衝突する
@@ -60,6 +60,23 @@ rubycc の同梱 `include/libc/glibc/x86_64/pthread.h:58` は
 buildable-gems-batch-3 で、rubycc だけが落ちて対照は通った 1 件。`cext.c` の `#include` を順に足しても
 再現せず、落ちていたのは `trilogy.c` のほうだった。そこから `<netdb.h>` に辿り着いた。
 
+### 2026-09-14(実装)
+
+glibc と同じく、typedef を `__have_pthread_attr_t` で 1 回に絞り、共用体の中身は無条件に定義する形にした
+(x86_64 / aarch64 の両方)。**逆順(`<netdb.h>` を先に含める)も同じ理由で壊れていた**ことを修正前のヘッダで確かめ、
+両方向をテストにした。glibc のヘッダ間で共有されるガードは、x86-64 と aarch64 の両方で `pthread_attr_t` の 1 件だけだった。
+
+aarch64 のテストは実物の `<netdb.h>` を使えなかった。x86-64 ホストの `-target aarch64` が、同梱していないヘッダを
+クロス sysroot から探さないためで、別の課題として [`aarch64-cross-sysroot-include`](aarch64-cross-sysroot-include.md)(BI)に起票した。
+
 ## 決着
 
-(未着手)
+**解消した**(`bundled-pthread-attr-guard-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| `<pthread.h>` + `<netdb.h>` の最小再現が rubycc で通る | `test/test_bundled_pthread_attr_guard.rb` で両方向を確認。修正前は落ちることも確認 |
+| `pthread_attr_t` の大きさと整列が x86-64 と aarch64 の両方で一致したまま | `test/test_header_abi.rb` の forward / reverse の Spec(aarch64 は手書きの代替で) |
+| 同梱 `pthread.h` の他の型を数え、同じ形で直す | 数えた結果、glibc と共有するガードは `pthread_attr_t` の 1 件だけ。直すものは無い |
+| `trilogy` 2.13.0 | この PR の後に測り直して台帳に記録する |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

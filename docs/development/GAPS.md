@@ -23,14 +23,11 @@
 | **AR**([issue](../../issues/bundled-stdlib-qsort-r.md)) | **同梱 `stdlib.h` に `qsort_r` が無い**(`_GNU_SOURCE` のもとでも)。Ruby の `config.h` が `_GNU_SOURCE` を定義するので、拡張からは常に見えない | `qsort_r` を呼ぶ gem。`enumerable-statistics` 2.0.9 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`-D_GNU_SOURCE` 付きの最小再現) | **AF と一緒に** `<stdlib.h>` の GNU / MISC の枝をまとめて見る |
 | **AS**([issue](../../issues/rmake-gnu-make-conditionals.md)) | **rmake が GNU make の条件文(`ifeq` など)を読めない**。パーサは代入とルール以外をすべて拒否する | 同梱ライブラリの手書き Makefile を make に渡す gem。`hiredis-client` 0.30.1 が該当し、**対照(GNU make)は通る** | **実測**(2026-09-13) | **対応するか対象外にするかが未決**。mkmf の Makefile は条件文を使わない |
 | **AT**([issue](../../issues/typeof-operator.md)) | **`typeof`(GNU 拡張、C23 で標準化)を受け付けない**。未宣言の関数として報告される | `algorithms` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
-| **AU**([issue](../../issues/bundled-pthread-attr-guard.md)) | **同梱 `pthread.h` が `pthread_attr_t` を glibc のガード(`__have_pthread_attr_t`)無しで定義する**。`<netdb.h>` の `sigevent_t.h` と型の再定義になる | `_GNU_SOURCE` のもとで `<netdb.h>` を含む gem。`trilogy` 2.13.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`<pthread.h>` + `<netdb.h>` の最小再現) | 同梱 `pthread.h` の他の型にも同じ穴が無いかを数える |
 | **BA**([issue](../../issues/bundled-termios-tcflow.md)) | **同梱 `termios.h` に `tcflow`(POSIX)と `TCO*` / `TCI*` の定数が無い** | `ruby-termios` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | §2 の同梱ヘッダの洗い出しの対象 |
 | **BB**([issue](../../issues/bundled-ioctl-tiocm.md)) | **同梱 `sys/ioctl.h` に `TIOCMGET` / `TIOCM_*` が無い** | `serialport` 1.4.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | aarch64 の要求番号を測ってから、共通層に置くかを決める |
 | **BC**([issue](../../issues/atomic-builtin-small-widths.md)) | **`__atomic_*` ビルトインが 1 / 2 バイトの対象を拒否する**(4 / 8 バイト限定と自己申告) | 1 バイトのスピンロックを持つ gem。`iodine` 0.7.59 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 4 / 8 バイト限定のビルトインを一覧にしてから足す |
-| **BE**([issue](../../issues/attribute-statement-after-label.md)) | **ラベルの直後に単独で置いた属性の文を拒否する**(`case 1: __attribute__ ((fallthrough)); case 2:`)。AY の修正はブロックの要素として現れる形だけを直した | 空の case から次の case へ落とすときに属性を書く gem。実在の gem ではまだ見ていない | **実測**(2026-09-13、最小再現で `expected expression`。gcc は通る) | ラベルの後の文を読む経路(`parse_nested_statement` → `parse_statement`)にも同じ判定を入れる |
-| **BF**([issue](../../issues/unprototyped-function-redeclaration.md)) | **旧形式で宣言した名前付き関数を、仮引数付きで再宣言・定義・呼び出しできない**(`void f(); void f(int x) {...}`)。関数の宣言表が `prototyped` を運ばない | 古いヘッダの `int f();` 形の宣言と、同じ翻訳単位の定義。実在の gem ではまだ見ていない | **実測**(2026-09-14、3 形とも。BD の修正の前後で同じ結果なので前からある不足) | BD が `Type` にまとめた互換の規則をそのまま使えるよう、宣言表の持ち方を先に決める |
 | **BG**([issue](../../issues/bundled-stdlib-alloca.md)) | **同梱 `stdlib.h` が `alloca` を宣言しない**(glibc は `__USE_MISC` で `<alloca.h>` を含む。`<alloca.h>` を直接含めば通る) | `<stdlib.h>` だけで `alloca` を呼ぶコード。`amalgalite` 2.0.0 の同梱 SQLite が AL を越えた先で止まる。**対照の gcc は通る** | **実測**(2026-09-14、最小再現) | §2 の同梱ヘッダの洗い出しの対象。AF / AR と同じ `<stdlib.h>` の話 |
-| **BH**([issue](../../issues/rmake-suffix-rule-generated-source.md)) | **rmake が、別の規則で生成されるソースを経由して接尾辞規則(`.c.o`)をつなげない**。作れないことを報告せずにリンクまで進む | ソースを Makefile の規則で生成する gem。`numo-narray` 0.9.2.1 が AO・BD を越えた先で止まる(`t_bit.o` が無い)。**対照(GNU make)は通る** | **実測**(2026-09-14、最小の Makefile で再現。前提条件のワイルドカードだけなら通る) | 作れない前提条件はその場で報告して止めること |
+| **BI**([issue](../../issues/aarch64-cross-sysroot-include.md)) | **x86-64 ホストで `-target aarch64` のとき、同梱していないシステムヘッダをクロス sysroot(`/usr/aarch64-linux-gnu/include`)から探さない**。ホストの x86-64 版 `/usr/include/netdb.h` を読んで `bits/stdint-uintn.h` で落ちる | x86-64 ホストでの aarch64 クロステスト。`<netdb.h>` を含むコードを aarch64 で検証できない。**対照の `aarch64-linux-gnu-gcc` は通る** | **実測**(2026-09-14、`#include <netdb.h>` の最小再現)。ネイティブ aarch64 ホストは未測定 | sysroot を決め打ちにするか、クロス gcc に問い合わせるかを決める |
 
 ## 2. 未解消の負債
 
@@ -60,6 +57,18 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ AU**(同梱 `pthread.h` が `pthread_attr_t` を glibc のガード無しで定義する):
+  `bundled-pthread-attr-guard-1` で解消。glibc と同じく、typedef を `__have_pthread_attr_t` で 1 回に絞り、共用体の中身を別に定義した
+  (x86_64 / aarch64 の両方)。`<netdb.h>` と `<pthread.h>` をどちらの順で含めても同じ型になる。他の同梱の型に glibc 共有のガードは無かった。
+- **ギャップ BH**(rmake が、生成されるソースを経由して接尾辞規則をつなげない):
+  `rmake-suffix-rule-generated-source-1` で解消。推論規則のソースが存在しなくても、明示規則や別の推論規則で作れるなら使う。
+  作れない前提条件は GNU make と同じ文言(`No rule to make target ...`)でその場で止める。これに合わせて、前提条件の
+  ワイルドカード(`gen/*.rb` など)を展開するようにした(以前は黙って無視していた)。
+- **ギャップ BE**(ラベルの直後に単独で置いた属性の文を拒否する):
+  `attribute-statement-after-label-1` で解消。AY の属性の空文の処理を切り出し、ラベルの後の 1 文を読む経路からも使った。
+- **ギャップ BF**(旧形式で宣言した名前付き関数を、仮引数付きで再宣言・定義・呼び出しできない):
+  `unprototyped-function-redeclaration-1` で解消。関数の宣言表に `prototyped` を持たせ、再宣言を BD の合成型の規則(6.2.7p3)で
+  合成する。旧形式の宣言しか見えていない関数の呼び出しには、既定の実引数拡張をかける。
 - **ギャップ BD**(仮引数付きの関数ポインタを旧形式の `void (*)()` へ代入できない):
   `unprototyped-function-pointer-compat-1` で解消。関数型に `prototyped` を足し、C11 6.7.6.3p15 の互換と 6.2.7p3 の合成型を
   代入・比較・条件演算子・再宣言・ファイルスコープの初期化子に使った。旧形式の関数ポインタ経由の呼び出しは引数の数を

@@ -31,6 +31,26 @@ module Rubycc
     # before it can exhaust the Ruby stack.
     class ExpansionError < RmakeError; end
 
+    # Raised while planning when a name the build needs is neither an existing
+    # file nor something the Makefile can make: no explicit rule names it as a
+    # target, no inference rule applies to it, and it is not .PHONY. Planning
+    # stops at that name rather than leaving the gap to surface later as a
+    # confusing failure of whatever consumes it (a link that cannot find an
+    # object). The wording follows GNU make's diagnostic, so a log reads the
+    # same whichever make produced it: `No rule to make target 'x.o', needed by
+    # 'prog'.  Stop.`, and without the `needed by` part for a goal given on the
+    # command line.
+    class NoRuleError < RmakeError
+      attr_reader :target, :needed_by
+
+      def initialize(target:, needed_by: nil)
+        @target = target
+        @needed_by = needed_by
+        detail = needed_by ? ", needed by '#{needed_by}'" : ""
+        super("No rule to make target '#{target}'#{detail}.  Stop.")
+      end
+    end
+
     # Base for a failure that happens while *running* a plan (as opposed to
     # parsing or planning it). It always names the target whose recipe was
     # executing and the exact expanded recipe line at fault, so a build failure

@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-14
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-14
+branch: gap-fixes-wave-3
+pr: 150
+steps: [rmake-suffix-rule-generated-source-1]
 ---
 
 # rmake が、別の規則で生成されるソースを経由して接尾辞規則をつなげない
@@ -74,6 +74,26 @@ numo-narray は、[`include-absolute-path`](include-absolute-path.md)(AO)と
 2 回目の修正(#148)の後に numo-narray を測り直して見つけた。最初は前提条件のワイルドカードを疑い、
 最小再現で退けてから、接尾辞規則のつながりに辿り着いた。
 
+### 2026-09-14(実装)
+
+推論規則のソースは、存在するものを先に探し、無ければ「作れる」もの(明示規則のターゲット、または別の推論規則で
+再帰的に作れるもの)を使うようにした。作れない前提条件は GNU make と同じ文言でその場で止める。
+
+**起票時の対照実験の読み方を訂正する。** 上の課題節に「前提条件にワイルドカード(`gen/*.rb`)を含む生成規則は rmake でも
+作られた」と書いたが、**実際は rmake が `gen/*.rb` を展開せず、黙って無視していたから通って見えていた**。作れない前提条件で
+止めるようにした時点で、numo-narray は `No rule to make target '.../gen/*.rb'` で止まった。そこで前提条件のワイルドカードを
+GNU make と同じく展開するようにした(Makefile のディレクトリ基準、一致をソート、一致が無ければ字面のまま残してエラー)。
+
+numo-narray 0.9.2.1 は rmake の段を越え、`t_bit.c` などが生成されてコンパイルまで進んだ。次は
+`t_int8.c:20:1: error: emmintrin.h: No such file or directory` で止まる(SSE2 の組み込み関数のヘッダ。rmake の範囲外)。
+
 ## 決着
 
-(未着手)
+**解消した**(`rmake-suffix-rule-generated-source-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 上の Makefile で rmake が `x.c` → `x.o` → `prog` の順に作る | `test/test_rmake_suffix_rule_generated_source.rb` で確認(2 段・3 段の連鎖も) |
+| 作れない前提条件はその場で報告して止まる(GNU make の文言と動作を先に測る) | `rmake: No rule to make target 'x.o', needed by 'prog'.  Stop.`(exit 2)。GNU make と違って手前の手順も実行せずに止まる点は STEPS に記録 |
+| `numo-narray` 0.9.2.1 が rmake でビルドできる | **rmake の段は越えた**。その先は `emmintrin.h` で止まる(rmake の範囲外) |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |
