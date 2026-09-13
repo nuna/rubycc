@@ -13,7 +13,7 @@ steps: []
 ## 課題
 
 **C11 の `_Thread_local` も GNU の `__thread` も、rubycc は受け付けない。** gcc は通す。
-2026-09-13 にこのホスト(WSL2 / gcc 14.2)で最小再現を測った:
+2026-09-13 にこのホスト(WSL2 / gcc 13.3)で最小再現を測った:
 
 ```c
 _Thread_local int t;          /* 2 つ目は __thread int t; */
@@ -41,6 +41,15 @@ extern PGDLLIMPORT __thread ErrorContextCallback *error_context_stack;
 **対照の gcc はビルドに成功する**(対照が落ちたのはロードの証明の段で、これは
 ハーネス側の既知の盲点である)。
 
+**2 件目がある。** コーパス候補 `scout_apm` 6.3.0 は `ext/allocations/allocations.c:29` で
+
+```c
+static __thread uint64_t endpoint_allocations;
+```
+
+と書いており、rubycc は同じ `expected type specifier` で落ちる。**対照の gcc はビルドとロードに
+成功する**(2026-09-13 実測、buildable-gems-batch-2)。
+
 **規模は小さくない。** 字句・構文の受理だけでは終わらない:
 
 - **ELF の TLS**: `.tbss` / `.tdata` セクション、`PT_TLS` プログラムヘッダ
@@ -65,7 +74,7 @@ extern PGDLLIMPORT __thread ErrorContextCallback *error_context_stack;
   (`-ftls-model=local-exec`)だけを実装しても**実在の gem には効かない**
 - **これはマイルストーン級である**。実装に入る前に、同じ理由で落ちる gem が
   コーパス候補に何件あるかを数え、規模に見合うかを判断すること
-  (いま分かっているのは `pg_query` の 1 件だけ)
+  (いま分かっているのは `pg_query` と `scout_apm` の 2 件)
 
 ## 作業ログ
 
@@ -74,6 +83,12 @@ extern PGDLLIMPORT __thread ErrorContextCallback *error_context_stack;
 コーパス候補の `build_load` で「両方失敗」と数えていた中に、**対照はビルドに成功していて
 落ちたのはロードの証明だけ**のものが混ざっていた。取り直したところ pg_query は
 rubycc だけが構文エラーで落ちており、原因がこれだった。
+
+### 2026-09-13(追記)
+
+buildable-gems-batch-2 で 2 件目(`scout_apm` 6.3.0)が見つかった。
+あわせて、起票時の「gcc 14.2」を**このホストの実測値 13.3**(`gcc --version` が
+`gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0`)に直した。
 
 ## 決着
 

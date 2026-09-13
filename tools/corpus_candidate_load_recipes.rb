@@ -58,6 +58,77 @@ module CorpusCandidateLoadRecipes
         "requires" => ["raindrops"],
         "sanity_kind" => "entrypoint_loaded"
       }
+    },
+    {
+      "name" => "ruby-ll",
+      "version" => "2.2.0",
+      "platform" => "ruby",
+      "sha256" => "f8811ae1dfc77d6d95033a615aacb6ab8e93fb9f421fefe75107b077dc9ab588",
+      "dependencies" => [
+        {"name" => "ast", "version" => "2.4.3"},
+        {"name" => "ansi", "version" => "1.6.0"}
+      ],
+      "entrypoint" => {
+        "requires" => ["ll"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "oga",
+      "version" => "3.5",
+      "platform" => "ruby",
+      "sha256" => "2b65fe1dd192c01079f93748a04a7a8011369e4c99ea1c7e73f4a037e3229353",
+      "dependencies" => [
+        {"name" => "ast", "version" => "2.4.3"},
+        {"name" => "ansi", "version" => "1.6.0"},
+        {"name" => "ruby-ll", "version" => "2.2.0"}
+      ],
+      "entrypoint" => {
+        "requires" => ["oga"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "smarter_csv",
+      "version" => "1.19.0",
+      "platform" => "ruby",
+      "sha256" => "fec551faa10a7b24f62e10a2bcba0e5116f5f86ced8c6a52b41ba7b33d03697b",
+      "dependencies" => [
+        {"name" => "bigdecimal", "version" => "4.1.2"}
+      ],
+      "entrypoint" => {
+        "requires" => ["smarter_csv"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "bson_ext",
+      "version" => "1.12.5",
+      "platform" => "ruby",
+      "sha256" => "e7badf502fc2728c6e0e942e71db5497ff0de7eb30653935cb7877a312e6b209",
+      "dependencies" => [
+        {"name" => "base64", "version" => "0.3.0"},
+        {"name" => "bson", "version" => "1.12.5"}
+      ],
+      "entrypoint" => {
+        "requires" => ["bson"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "oj-introspect",
+      "version" => "0.9.0",
+      "platform" => "ruby",
+      "sha256" => "b7af4974654e8733902bb7707ec96155c1c577d0ba2564eb1d72cd091546834f",
+      "dependencies" => [
+        {"name" => "bigdecimal", "version" => "4.1.2"},
+        {"name" => "ostruct", "version" => "0.6.3"},
+        {"name" => "oj", "version" => "3.17.6"}
+      ],
+      "entrypoint" => {
+        "requires" => ["oj/introspect"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
     }
   ].map(&:freeze).freeze
 

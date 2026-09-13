@@ -240,5 +240,181 @@
       }
     ],
     "notes": ""
+  },
+  "atomic": {
+    "builds": [
+      {
+        "versions": ["1.1.101"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by require (tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+      }
+    ],
+    "notes": ""
+  },
+  "aliyun-sdk": {
+    "builds": [
+      {
+        "versions": ["0.8.0"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by require (tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+      }
+    ],
+    "notes": ""
+  },
+  "iconv": {
+    "builds": [
+      {
+        "versions": ["1.1.1"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by require (tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+      }
+    ],
+    "notes": ""
+  },
+  "github-linguist": {
+    "builds": [
+      {
+        "versions": ["9.7.0"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by require (tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+      }
+    ],
+    "notes": ""
+  },
+  "oily_png": {
+    "builds": [
+      {
+        "versions": ["1.2.1"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by require (tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+      }
+    ],
+    "notes": ""
+  },
+  "xxhash": {
+    "builds": [
+      {
+        "versions": ["0.7.0"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by require (tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+      }
+    ],
+    "notes": ""
+  },
+  "rdiscount": {
+    "builds": [
+      {
+        "versions": ["2.2.7.5"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by require (tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+      }
+    ],
+    "notes": ""
+  },
+  "html_tokenizer": {
+    "builds": [
+      {
+        "versions": ["0.0.8"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by require (tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+      }
+    ],
+    "notes": ""
+  },
+  "rblineprof": {
+    "builds": [
+      {
+        "versions": ["0.3.7"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by require (tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+      }
+    ],
+    "notes": ""
+  },
+  "cassandra-driver": {
+    "builds": [
+      {
+        "versions": ["3.2.5"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by require (tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+      }
+    ],
+    "notes": ""
+  },
+  "extlz4": {
+    "builds": [
+      {
+        "versions": ["0.3.5"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by require (tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+      }
+    ],
+    "notes": ""
+  },
+  "ruby-ll": {
+    "builds": [
+      {
+        "versions": ["2.2.0"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by requiring the gem's own documented entrypoint (ll) (tools/verify_corpus_candidate.rb --mode load_sanity --compiler rubycc). Recipe dependencies (ast, ansi) were installed with the host toolchain first, so this establishes the claim for the candidate's own shared object only."
+      }
+    ],
+    "notes": ""
+  },
+  "oga": {
+    "builds": [
+      {
+        "versions": ["3.5"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by requiring the gem's own documented entrypoint (oga) (tools/verify_corpus_candidate.rb --mode load_sanity --compiler rubycc). Recipe dependencies (ast, ansi, ruby-ll) were installed with the host toolchain first, so this establishes the claim for the candidate's own shared object only."
+      }
+    ],
+    "notes": ""
+  },
+  "smarter_csv": {
+    "builds": [
+      {
+        "versions": ["1.19.0"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by requiring the gem's own documented entrypoint (smarter_csv) (tools/verify_corpus_candidate.rb --mode load_sanity --compiler rubycc). Recipe dependencies (bigdecimal) were installed with the host toolchain first, so this establishes the claim for the candidate's own shared object only."
+      }
+    ],
+    "notes": ""
+  },
+  "bson_ext": {
+    "builds": [
+      {
+        "versions": ["1.12.5"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by requiring the gem's own documented entrypoint (bson) (tools/verify_corpus_candidate.rb --mode load_sanity --compiler rubycc). Recipe dependencies (base64, bson) were installed with the host toolchain first, so this establishes the claim for the candidate's own shared object only."
+      }
+    ],
+    "notes": ""
+  },
+  "oj-introspect": {
+    "builds": [
+      {
+        "versions": ["0.9.0"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-13",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by requiring the gem's own documented entrypoint (oj/introspect) (tools/verify_corpus_candidate.rb --mode load_sanity --compiler rubycc). Recipe dependencies (bigdecimal, ostruct, oj) were installed with the host toolchain first, so this establishes the claim for the candidate's own shared object only."
+      }
+    ],
+    "notes": ""
   }
 }

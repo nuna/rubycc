@@ -14269,3 +14269,88 @@ R10 には入らないがビルドもロードもできる — **A + C の分け
   以後、ループ内のコマンドはすべて `</dev/null` にしている
 
 **検証**: `rake test` **3,528 runs / 0 failures / 0 errors / 39 skips**。
+
+## buildable-gems-batch-2 — 34 件を全部どこかに置いた
+
+**内容**: ランク 1501〜2500 の走査で出た候補 34 件(候補 41 件から C ソースが 0 件の 7 件を除いたもの)を
+`build_load` に流し、**台帳を 22 → 38 件**にした。**rubycc の欠陥を 6 件**起票し(GAPS AI〜AN)、
+既存の AH に 2 件目の gem を足した。34 件はすべて、台帳・レシピ・起票・除外・理由付きの保留の
+**どこかに置いた**。
+
+**走査**: 事前フィルタ(`scan-metadata-prefilter-1`)を入れた最初の新しい窓である。1,000 件を
+**17 分 2 秒**で走査し(以前は約 60 分)、939 件は**ダウンロードせずに**決着した(397,647,075 バイト)。
+
+**台帳に入った 16 件**:
+
+- `build_load_pass` が 11 件 — atomic / aliyun-sdk / iconv / github-linguist / oily_png / xxhash /
+  rdiscount / html_tokenizer / rblineprof / cassandra-driver / extlz4
+- レシピを書いて入口から読んだ `documented_load_pass` が 5 件 — ruby-ll / oga / smarter_csv /
+  bson_ext / oj-introspect
+
+### レシピの 5 件 — ロードの失敗は、今回も入口の問題だった
+
+ruby-ll / oga / smarter_csv / bson_ext は、rubycc も対照もビルドに成功し、単独の `require` で
+`uninitialized constant`(LL / Oga / SmarterCSV / BSON)になった。バッチ 1 の ox / kgio / raindrops と
+同じ形である。**入口から読めば 4 件とも `.so` がロードされる。**
+
+依存は gem ごとに違った。
+
+| gem | 入口 | 依存(版を固定) | 補足 |
+|---|---|---|---|
+| ruby-ll | `ll` | ast 2.4.3 / ansi 1.6.0 | 1 回目は `ast` が無く、入れて 2 回目に `ansi` が無いと分かった |
+| oga | `oga` | ast / ansi / ruby-ll 2.2.0 | ruby-ll は対照(RUBYCC=0)でビルドされる |
+| smarter_csv | `smarter_csv` | bigdecimal 4.1.2 | |
+| bson_ext | `bson` | base64 0.3.0 / bson 1.12.5 | **base64 は gemspec に無い** — Ruby 3.4 で既定 gem から外れた |
+| oj-introspect | `oj/introspect` | bigdecimal / ostruct 0.6.3 / oj 3.17.6 | **`extconf.rb` 自身が `require "oj"` する**。レシピの依存は候補のビルドより前に入るので、同じ仕組みで足りた |
+
+ruby-ll の依存は、試さなくても gemspec の `runtime_dependencies` に書いてあった。
+レシピ作りを gemspec から始める件を [load-recipe-from-gemspec](../../issues/load-recipe-from-gemspec.md)
+に起票した。
+
+### rubycc の欠陥 — 対照は通り、rubycc だけが落ちた
+
+| gem | 原因 | 記録 |
+|---|---|---|
+| cool.io | ファイルスコープの **`extern` 付き定義**(初期化子あり)を拒否。C11 6.9.2p1 では外部定義 | GAPS **AI** |
+| semian | **可変長引数に共用体を値で渡せない**(`semctl` の `union semun`) | GAPS **AJ** |
+| strptime | **ラベルのアドレス**(`&&label`、GNU 拡張)を受け付けない | GAPS **AK**(方針未決) |
+| unicode | **マクロ展開の予算がソースのトークンまで数える**。マクロの無い大きな表で止まる | GAPS **AL** |
+| posix-spawn | 同梱 `sched.h` に **`struct sched_param`** が無く、glibc の `<spawn.h>` が読めない | GAPS **AM** |
+| hpricot | **互換でない関数ポインタの実引数**をエラーにする。gcc 13 は警告、gcc 14 はエラー | GAPS **AN**(方針未決) |
+| scout_apm | **`static __thread`** | 既存の GAPS **AH** に 2 件目として追記 |
+
+**全件を最小再現まで詰めてから起票した。** unicode の再現は、最初の 45,000 行の表では通ってしまった
+(上限の 100 万に届かない)。80,000 行にして、マクロを 1 つも使わない入力が
+「暴走マクロ」として止まることを確かめた。
+
+**2 件は方針を決めずに起票した。** strptime(AK)は、GNU 拡張についての判断が DESIGN にも
+ROADMAP §3 にも記録されていない。hpricot(AN)は、**対照の gcc の版で結論が変わる** —
+rubycc の挙動は gcc 14 と揃い、gcc 13 とは揃わない。
+
+### 除外基準 J を新設した — `__GNUC__` を前提にし、代わりの経路が無い
+
+concurrent-ruby-ext は `atomic_reference.c` で `memory_barrier()` を `__GNUC__` / MSVC / macOS の
+分岐でだけ定義し、**どれにも当たらないときの経路が無い**。rubycc は R7 で `__GNUC__` を定義しないので、
+`implicit declaration of function 'memory_barrier'` になる。
+
+R7 は「多くの gem は `#ifdef __GNUC__` の `#else` 側に移植可能なフォールバックを持つ」ことを前提に、
+`__GNUC__` を定義しないと決めている。**その前提が成り立たない gem** を、基準 H と同じく
+「rubycc 側の範囲の話」として基準 J に置いた。R7 が変われば対象内に戻る。
+
+### 残りの 11 件 — 台帳にも欠陥にもならなかったもの
+
+| 分類 | gem |
+|---|---|
+| **この Ruby では C をビルドしない** | interception(`extconf.rb` が Ruby 2.0 以上では何もしない Makefile を書く)/ resolv(Windows 専用) |
+| gem が Ruby 3.4 を受け付けない | string-scrub(`< 2.1`)→ 走査の弱点として [起票](../../issues/scan-required-ruby-version-after-fetch.md) |
+| ホストのライブラリ・道具が無い | snappy(`cmake`)/ rjb(`JAVA_HOME`)/ mysql(libmysqlclient) |
+| Rakefile 拡張で rake が要る | scrypt(ffi-compiler) |
+| **Rust 拡張** | code_ownership → 基準 **I** |
+| **vendored の `configure`** | zookeeper → 基準 **C**(rmake がバッククォート入りのレシピを拒否) |
+| `__GNUC__` 前提 | concurrent-ruby-ext → 基準 **J** |
+| **保留** | skylight — `libskylight.so` は**インストール時にダウンロードされる出来合いのバイナリ**で `Init_` を持たず、`dlopen` で読まれる。rubycc がビルドした `skylight_native.so` とは別物で、今のロードの証明はこれを区別できない |
+
+「ホストに無い」と「Rakefile 拡張」は、バッチ 1 の rugged(CMake)/ llhttp-ffi と同じ扱いにし、
+除外基準には上げていない。**R10 の分母に入っていない gem を、測れた範囲を越えて対象外と書かない**ためである。
+
+**検証**: `rake test` **3,528 runs / 15,895 assertions / 0 failures / 0 errors / 39 skips**。
