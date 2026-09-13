@@ -21,6 +21,8 @@ DESIGN の R10 は、gem のインストール成功と gem 自身のテスト�
 | **E** | **gem 自身のビルド駆動系が、ツールチェインの提供しない外部ツールを必須にする** | `extconf.rb` ではなく Rakefile を拡張として宣言し、その中で `make` や `sed` を**リテラルに**呼ぶ形。RubyGems プラグインが差し込む `ENV["MAKE"]`(= rmake)は見られないので、**シェル非依存と同じ理由で**最小環境では完結しない。C の親戚だが、`configure` ではなくレシピの側にある |
 | **F** | **上流ソースが別 gem のモノレポにあり、その gem 自身のスイートを取り出せていない** | ビルドできないのではなく**(d) 水準の証拠が作れない**という理由の除外である。取り出す手段が確立すれば分母に戻せる — D(そもそもテストが無い)とは性質が違う |
 | **G** | **無効化できない経路でベクトル組み込み関数(SIMD intrinsics)を使う** | rubycc は `__m256i` 等のベクトル型も `_mm256_*` の組み込み関数も持たない。**ゲートで落とせるものは対象内である** — コーパスの多くの gem は `arm_neon.h` / `cpuid.h` をprobe の裏に置いており、probe が失敗すればスカラ経路になる。対象外になるのは、**gcc と同じ枝を選んだ上で**ベクトル経路が必須になる形である |
+| **H** | **対応しないと決めた C の機能を必須の経路で使う** | VLA・`_Generic`・ワイド文字列・`#pragma push_macro` など、ROADMAP §3 で**診断エラーにすると決めた**もの。**基準 A/B と違い、これは rubycc 側の範囲の話**なので、決定が変われば対象内に戻る |
+| **I** | **拡張が C 以外の言語(Rust)で書かれている** | rubycc は C コンパイラであり、`Cargo.toml` を持ち C ソースが 0 件の拡張(rb-sys / magnus 系)には、コンパイルする対象が無い。**基準 A(C++)を広げずに別に立てた** — A の既存の記録の意味を動かさないため |
 
 Cには例外がある。`--use-system-libraries` や `--enable-system-libraries` など、
 gemが提供するシステムライブラリ利用モードは対象内である。DESIGN R10が
@@ -41,6 +43,10 @@ gemが提供するシステムライブラリ利用モードは対象内であ�
 | **digest-crc** | E | 拡張が `ext/digest/Rakefile` で、その中で `sh 'make'` と**リテラルに**書いている。RubyGems プラグインが差し込む `ENV["MAKE"]`(= rmake)を見ないので、システムの make が要る | **実測**(2026-09-10)。`tools/verify_corpus_candidate.rb` を rubycc と host の両方で実行し、隔離した GEM_HOME に rake が無くて**両方が同じ理由で** `build_failed`。Rakefile の該当行は `ext/digest/Rakefile` の `sh 'make', 'clean'` / `sh 'make'` |
 | **graphql-c_parser** | F | 上流ソースが独立リポジトリではなく **graphql-ruby のモノレポの中**にあり、「その gem 自身のテストスイート」に相当する tarball が取れない | gem の `source_code_uri` が `rmosolgo/graphql-ruby` を指すことの確認(2026-09-10)。**install と documented load は rubycc で pass 済み**(`corpus-candidate-pilot-v2-graphql-c-parser`)なので、ビルドできないのではなく **(d) 水準の証拠が作れない**という理由での除外である |
 | **roaring** | G | `roaring.c:894` の `static inline __m256i popcount256(__m256i v)`。`roaring.h:157` の `#if defined(__x86_64__) || defined(_M_X64)` で `CROARING_IS_X64` が立ち、**gcc も同じ枝を取る** — 分岐選択の食い違いではなく、gcc が `__attribute__((target("avx2")))` と実行時ディスパッチで本当に AVX2 を積んでいる。`ROARING_DISABLE_X64` を渡せば落とせるが、`extconf.rb` はそれを設定しないので、**archive に手を入れずには通らない** | **実測**(2026-08-26、[run 32880666098](https://github.com/nuna/rubycc/actions/runs/32880666098))。ここに至るまでに停止点を 3 つ解消している — `#warning`(PR #84)、`__BYTE_ORDER__`(PR #105)、同梱 cdefs.h の `__attr_*`(PR #106)。詳細は[issue](../../issues/corpus-candidate-pilot-v2-roaring.md) |
+| **cbor** | H | `ext/cbor/packer.h:271` の `char buf[len];` — **可変長配列(VLA)**。上流のソースにも `/* XXX */` と注釈がある | **実測**(2026-09-13、`tools/verify_corpus_candidate.rb`)。rubycc は `array size must be an integer constant` で拒否、**対照の gcc は通る**。VLA は ROADMAP §3 で診断エラーと決めた既知の範囲外(c-testsuite 00207 も同じ理由で skip) |
+| **thrift** | H | `ext/struct.c:243` の `char name_buf[RSTRING_LEN(field_name) + 2];` — 大きさが実行時の値で決まる**可変長配列(VLA)** | **実測**(2026-09-13、`tools/verify_corpus_candidate.rb`)。rubycc は `array size must be an integer constant` で拒否、**対照の gcc はビルドに成功する**。cbor と同じ文言だが、**同じ文言は定数畳み込みの欠陥でも出る**ので、該当行を読んで VLA と確かめてから記録した |
+| **commonmarker** | I | `Cargo.toml` / `ext/commonmarker/Cargo.toml` を持ち、**C ソースは 0 件** | **実測**(2026-09-13、`tools/verify_corpus_candidate.rb` の静的段が `review_required` で停止。`static.native_sources` が空、`build_manifests` に Cargo 一式) |
+| **prometheus-client-mmap** | I | 拡張 `ext/fast_mmaped_file_rs` が Rust で、**C ソースは 0 件** | **実測**(同日、同じ静的段で停止。`build_manifests` に Cargo 一式) |
 
 `nokogiri --use-system-libraries` と `sqlite3 --enable-system-libraries` は、
 それぞれシステムライブラリを使う対象内の経路である。

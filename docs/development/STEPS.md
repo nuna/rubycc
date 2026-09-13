@@ -14180,3 +14180,92 @@ rubygems.org は Range 要求に応える(HTTP 206 を実測)。人気 gem 10 �
 
 **検証**: `rake test` **3,522 runs / 0 failures / 0 errors / 39 skips**(master 3,508 + 新規 14)。
 `debug_inspector` 1 件を実際に記録して台帳が動くことを確かめ、**空に戻してから**コミットした。
+
+---
+
+## buildable-gems-batch-1 — 「両方失敗」は 1 つの分類ではなかった
+
+**内容**: 走査で出た候補 46 件を `build_load` に流し、**台帳を 0 → 22 件**にした。
+その過程で **rubycc の欠陥を 4 件**、実在の gem から見つけて起票し(GAPS AE〜AH)、
+**ハーネスの盲点を 1 つ**直した。ユーザ指示「ビルドできる gem を 100 件」の最初の収穫である。
+
+**バッチの組み方**: 失敗した gem にだけ対照(host gcc)を走らせた。成功した gem に対照は要らないが、
+失敗したときは「rubycc の欠陥か、誰にもビルドできないのか」を分けないと記録にならない。
+
+**台帳に入った 22 件**: `build_load_pass` が 18 件(bcrypt_pbkdf / ruby-prof / hiredis / cgi /
+fast_blank / escape_utils / rinku / better_html / RedCloth / hamlit / sysrandom /
+regexp_property_values / character_set / io-event / version_sorter / datadog-ci / amatch / ed25519)、
+入口から読んだ `documented_load_pass` が 4 件(ox / kgio / raindrops / graphql-c_parser)。
+
+### rubycc の欠陥 — 対照は通り、rubycc だけが落ちた
+
+| gem | 原因 | 記録 |
+|---|---|---|
+| murmurhash3 | **CRLF の行末で行連結(`\` + 改行)が働かない** | GAPS **AE** |
+| vmstat | 同梱 `stdlib.h` に **`getloadavg`** の宣言が無い | GAPS **AF** |
+| binding_ninja | **長さ 0 の配列**(GNU 拡張)を拒否 | GAPS **AG** |
+| pg_query | **スレッドローカル記憶域**(`_Thread_local` / `__thread`)がまるごと無い | GAPS **AH** |
+
+CRLF は最小再現まで詰めた — **CRLF の単純なファイルは通り、壊れるのは行連結の判定だけ**である。
+TLS は**マイルストーン級**で、ELF の TLS セクション・TLS 再配置・`%fs` / `tpidr_el0` 相対の生成が要り、
+拡張は `.so` なので動的モデルでないと実在の gem に効かない。
+
+### ハーネスの盲点 — 単独 require は、誰もやらない読み方だった
+
+ox / kgio / raindrops は、rubycc がビルドに成功しているのに「ロード失敗」になっていた。
+汎用検査が**ビルドした `.so` を単独で `require`** しており、**入口の Ruby を前提にした拡張**が
+落ちるためである(`cannot load such file -- ox/version` / `uninitialized constant Socket` /
+`uninitialized constant Raindrops::ListenStats`)。**入口から読めば 3 件とも `.so` がロードされる**。
+
+直し方は 2 段になった:
+
+- **汎用の sanity kind `entrypoint_loaded`** を足し、3 件にレシピを書いた。gem ごとの専用検査にしなかったのは、
+  台帳の主張(ビルドできて、ロードできた)は「ビルドした `.so` がすべて `$LOADED_FEATURES` に載る」で
+  証明済みで、専用検査は件数に比例して伸びるからである
+- **台帳の追記条件が `build_load_pass` だけを受け付けていた**ので、`documented_load_pass` も受け付けた。
+  既存コメントは「別の、レシピ固有の主張」とだけ書いており、**違うことは述べていたが、
+  なぜ台帳に入れられないかは述べていなかった**。証明の強さはむしろ上である
+  (利用者と同じ読み方で読んでいる)。依存 gem はホストで入れたと証拠文に書かせた
+
+副次的に、R10 のコーパスからは基準 F で外した **graphql-c_parser が台帳には正当に入った**。
+R10 には入らないがビルドもロードもできる — **A + C の分け方がちょうど効く例**である。
+
+### 誤りを 1 つ直した — 対照の `fallback_or_not_loaded` は「対照はビルドできた」
+
+最初の集計で、対照が `build_load_pass` でないものを「両方失敗 = rubycc の非ではない」と数えた。
+**誤りだった。** 対照が `fallback_or_not_loaded` なら**対照はビルドに成功しており**、落ちたのは
+ロードの証明(上の盲点)である。pg_query はここに紛れていて、取り直すと rubycc だけが
+構文エラーで落ちていた — TLS の欠陥はこの訂正で見つかった。
+
+**「両方失敗」は 1 つの分類ではなかった**(取り直した 20 件の内訳):
+
+| 分類 | gem |
+|---|---|
+| ホストのライブラリ・道具が無い | curb / timfel-krb5-auth / libxml-ruby / rgeo / rugged(CMake) |
+| ハーネスが依存 gem を入れていない(`--ignore-dependencies`) | ffi-yajl / debase / datadog |
+| Rakefile 拡張で rake が要る | llhttp-ffi |
+| gem 側が Ruby 3.4 を対象外にしている | ddtrace(`< 3.4`) |
+| ビルドする C が無い | executable-hooks / sass-embedded / ruby-debug-ide |
+| Ruby 拡張ではない C ライブラリ | libyajl2(rubycc でビルドはできた。require できるものが無い) |
+| **Rust 拡張** | commonmarker / prometheus-client-mmap → 除外基準 **I** を新設 |
+| **VLA** | cbor / thrift → 除外基準 **H** を新設 |
+| rubycc の欠陥 | pg_query → GAPS AH |
+| 未測定 | http-parser(Rakefile の中身を読んでいないので基準 E とは決めない) |
+
+**同じ文言でも原因は違いうる。** thrift は cbor と同じ `array size must be an integer constant` だったが、
+同じ文言は定数畳み込みの欠陥でも出る。**該当行を読んで VLA だと確かめてから**記録した。
+
+### 走査器の弱点
+
+候補 `[1]` に **C ソースが 0 件の gem が混ざる**(ランク 501〜1500 で 43 件中 6 件)。
+`extensions` を宣言していればゲートを通るためで、供給を多く見積もり、検証の手間を無駄にする。
+[scan-gate-zero-c-sources](../../issues/scan-gate-zero-c-sources.md) に起票した。
+
+### 途中の事故 2 件
+
+- **結果ファイルを失った。** セッションの再開で scratchpad が新しくなり、バッチの TSV が消えた。
+  **台帳はリポジトリに入っていたので残った** — 成果物を scratchpad だけに置かない
+- **分類が 20 件中 15 件で止まった。** ループ内のコマンドが標準入力を読み、リストの残りを食べた。
+  以後、ループ内のコマンドはすべて `</dev/null` にしている
+
+**検証**: `rake test` **3,528 runs / 0 failures / 0 errors / 39 skips**。

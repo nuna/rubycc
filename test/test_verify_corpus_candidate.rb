@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "tmpdir"
+
 require_relative "test_helper"
 require_relative "../tools/verify_corpus_candidate"
 
@@ -82,6 +84,42 @@ class TestVerifyCorpusCandidate < Minitest::Test
       name: "graphql-c_parser", version: "1.1.4", platform: "ruby", sha256: "b" * 64
     )
     refute recipe.values.any? { |value| value.to_s.match?(/command|script|eval/) }
+  end
+
+  def test_fixed_load_recipes_require_exact_candidate_identity_for_ox_kgio_raindrops
+    [
+      ["ox", "2.14.29", "206736d5a8dade9dca10cf72022bc157ad6ca3eecaba3853918426ed88e12dc2", ["ox"]],
+      ["kgio", "2.11.4", "bda7a2146115998a5b07154e708e0ac02c38dcee7e793c33e2e14f600fdfffc6", ["kgio"]],
+      ["raindrops", "0.20.1", "aa0eb9ff6834f2d9e232ba688bd49cb30be893bc5a3452e74722c94c1fab4730", ["raindrops"]]
+    ].each do |name, version, sha256, requires|
+      recipe = CorpusCandidateLoadRecipes.find(name: name, version: version, platform: "ruby", sha256: sha256)
+
+      refute_nil recipe, "expected a recipe for #{name} #{version}"
+      assert_equal requires, recipe.dig("entrypoint", "requires")
+      assert_equal "entrypoint_loaded", recipe.dig("entrypoint", "sanity_kind")
+      assert_nil CorpusCandidateLoadRecipes.find(name: name, version: version, platform: "ruby", sha256: "b" * 64)
+      refute recipe.values.any? { |value| value.to_s.match?(/command|script|eval/) }
+    end
+  end
+
+  def test_entrypoint_loaded_sanity_kind_is_a_known_branch_in_the_load_script
+    Dir.mktmpdir do |dir|
+      input = Input.from_env(valid_env.merge("CANDIDATE_WORK" => dir, "CANDIDATE_RESULT" => File.join(dir, "result.json")))
+      runner = CorpusCandidateValidation::Runner.new(input)
+      recipe = {"entrypoint" => {"requires" => [], "sanity_kind" => "entrypoint_loaded"}}
+      script = runner.send(:load_script_for, recipe)
+
+      stub = File.join(dir, "stub.rb")
+      File.write(stub, "")
+
+      out, status = Open3.capture2(
+        {"VERIFY_REQUIRES" => stub, "VERIFY_SANITY_KIND" => "entrypoint_loaded"},
+        RbConfig.ruby, "-e", script, stub
+      )
+
+      assert status.success?, out
+      assert_includes out, "documented_load=entrypoint_loaded"
+    end
   end
 
   # The (d)-level database stays out of reach of this tool. It never runs the
