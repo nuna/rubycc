@@ -14402,3 +14402,85 @@ C11 6.9.2p1 は例そのもので `extern int i3 = 3; // definition, external li
 `test_diagnostics.rb` **238 runs / 0 failures**、`test_extern_incomplete_array.rb`
 **11 runs / 0 failures**、`test_examples.rb` **55 runs / 0 failures**(いずれも 2026-09-13)。
 `rake test` 全体で **3,534 runs / 15,907 assertions / 0 failures / 0 errors / 39 skips**。
+
+## buildable-gems-batch-3 — 直した欠陥が、その場で台帳を 1 件増やした
+
+**内容**: ランク 2501〜4500 の走査で出た候補 63 件を `build_load` に流し、**台帳を 38 → 60 件**にした
+(バッチ 3 の 21 件と、欠陥の修正で通った cool.io の 1 件)。**rubycc の欠陥を 8 件**起票し(GAPS AO〜AV)、
+既存の AN を 3 つの診断・4 件の gem に広げた。
+
+**走査**: 2,000 件のうち 1,887 件を**ダウンロードせずに**決着した(827,869,577 バイト)。
+候補表 68 行から、C ソースが 0 件の 4 件と台帳にある 1 件を除いて 63 件。候補の抽出は、
+候補表の中にアセンブリ入りの gem を並べた行が混ざることに気づいて、その行を除く形に直してから使った
+(バッチ 2 の走査ログで、41 行・候補 18 件になることを先に確かめた)。
+
+**台帳に入った 22 件**:
+
+- `build_load_pass` が 16 件 — fast-stemmer / ruby-stemmer / systemd-journal / bluecloth /
+  pg_array_parser / jumphash / sysvmq / similar_text / syck / statistics2 / lz4-ruby / fast_stack /
+  keccak / curses / rcsv / sha3
+- レシピの `documented_load_pass` が 5 件 — gvltools / levenshtein / digest-murmurhash(依存なし)、
+  sequel_pg(pg 1.6.3 / sequel 5.108.0。README のとおり Sequel の postgres アダプタから読まれる)、
+  panko_serializer(oj 3.17.6 / activesupport 8.1.3.1)
+- **cool.io**(バッチ 2 の候補)— `extern-initializer-file-scope-1`(GAPS AI、PR #142)で直した後、
+  修正を取り込んだ rubycc で `build_load_pass`
+
+### 欠陥を直すと、台帳が実際に増えることを確かめた
+
+バッチ 2 で起票した AI(ファイルスコープの `extern` 付き定義)を、このバッチの間に直してマージした。
+**直した rubycc で cool.io を測り直すと、そのまま `build_load_pass` になった。** 欠陥 1 件の修正は
+gem 1 件にしか効かないので、走査のほうが件数は稼げる。ただし、**起票した欠陥が本当にその gem を
+止めていたこと**は、測り直して初めて確かめられる。
+
+### rubycc の欠陥 — 対照は通り、rubycc だけが落ちた
+
+| gem | 原因 | 記録 |
+|---|---|---|
+| numo-narray | `#include` に**絶対パス**を書くと開けない(`RUBY_EXTCONF_H` が絶対パス) | GAPS **AO** |
+| brotli | VLA に対応しないのに **`__STDC_NO_VLA__`** を定義していない | GAPS **AP** |
+| network_interface | 同梱 `sys/types.h` に **`__caddr_t`** が無い | GAPS **AQ** |
+| enumerable-statistics | 同梱 `stdlib.h` に **`qsort_r`** が無い | GAPS **AR** |
+| hiredis-client | rmake が GNU make の**条件文**を読めない | GAPS **AS**(方針未決) |
+| algorithms | **`typeof`** を受け付けない | GAPS **AT**(方針未決) |
+| trilogy | 同梱 `pthread.h` が **`pthread_attr_t` を glibc のガード無しで**定義し、`<netdb.h>` と衝突 | GAPS **AU** |
+| do_sqlite3 | **`-I/usr/include`** で glibc 本体のヘッダが同梱ヘッダより先に見つかる | GAPS **AV** |
+| fast_xs / fast_trie / zipruby | gcc 13 が警告にとどめる**互換でないポインタ・暗黙の関数宣言・暗黙の int** | 既存の GAPS **AN** を広げた(方針未決) |
+
+**最初の見立てが外れたものが 3 つあった。** どれも測り直して退けた:
+
+- numo-narray は、rmake が `-DRUBY_EXTCONF_H=\"…\"` のエスケープを残している疑いから始めた。
+  エスケープが残る形なら別のエラーになることを確かめ、**rubycc の `#include` が絶対パスを扱えない**ことに
+  辿り着いた
+- brotli は、仮引数の VLA(ポインタに読み替わるので本物の VLA より狭い)を別の欠陥として立てるつもりだった。
+  分岐条件を読むと、**マクロ 1 つで brotli は VLA を避ける**
+- trilogy は `cext.c` の `#include` を順に足しても再現しなかった。落ちていたのは `trilogy.c` のほうで、
+  そこから `<netdb.h>` に辿り着いた
+
+**Ruby の拡張は例外なく `_GNU_SOURCE` のもとでコンパイルされる**(Ruby の `config.h:17`)。
+AR と AU はどちらもこれが前提で、同梱ヘッダの GNU の枝の穴は、拡張からは常に見える。
+
+**AN は 1 件から 4 件になった。** gcc 14 が既定でエラーに格上げした 3 つの診断
+(`qemu` の記録にある)を、rubycc は最初からエラーにしている。**4 件は多くないが、同じ形の古い gem は
+まだある**と見込むので、判断を急ぐ理由は増えた。
+
+### 除外した 1 件と、残りの分類
+
+damerau-levenshtein は `long long s[sl];` の本物の VLA なので、基準 **H** で除外一覧に載せた。
+
+| 分類 | gem |
+|---|---|
+| **保留** | god(拡張を読むのはイベントハンドラを使うときの内部ファイル経由で、文書化された入口ではない)/ pycall(Python の実体が要る)/ splitclient-rb(実行時依存が 10 件) |
+| Ruby の拡張ではない | levenshtein-ffi(FFI で読む C ライブラリで、`Init_` が無い) |
+| この Ruby では C をビルドしない | bond(Ruby 1.9.2 以上では何もしない Makefile)/ gctime(`GC.total_time` があれば同じ) |
+| ホストのライブラリ・道具が無い | ruby-odbc / ruby-filemagic / ovirt-engine-sdk / patron / idn-ruby / geoip-c / ruby-libvirt / ruby-oci8 |
+| ハーネスが依存 gem を入れていない | debugger / glib2 / gio2 / gobject-introspection / cairo(`extconf.rb` が別 gem を `require` する) |
+| Ruby 3.4 で動かない古い gem(対照もビルドに失敗) | ruby-debug-base / linecache / rcov / fastthread / mongrel / pcaprub |
+| 対照も設定判定で止まる(原因は未調査) | phashion(mkmf の `The compiler failed to generate an executable file`) |
+| glibc と衝突(対照もビルドに失敗) | gitlab-pg_query(`strchrnul` の型が glibc の宣言と合わない) |
+| Rakefile 拡張 / 静的段で停止 | seccomp-tools / argon2 |
+| Windows 専用 | win32ole |
+
+**両方失敗が 24 件と多かった**(バッチ 2 は 7 件)。ランクが下がるほど、古い gem とホストのライブラリに
+依存する gem が増える。**歩留まりは 34 件中 16 件から 63 件中 21 件に下がった**。
+
+**検証**: `rake test` **3,534 runs / 16,612 assertions / 0 failures / 0 errors / 39 skips**。
