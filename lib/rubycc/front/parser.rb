@@ -3477,6 +3477,8 @@ module Rubycc
             parse_builtin_unreachable
           elsif peek.keyword?("__builtin_memcpy")
             parse_builtin_memcpy
+          elsif peek.keyword?("__builtin_strlen")
+            parse_builtin_strlen
           elsif peek.type == :keyword && OVERFLOW_BUILTINS.key?(peek.value)
             parse_builtin_overflow
           elsif peek.type == :keyword && ATOMIC_BUILTINS.key?(peek.value)
@@ -3798,6 +3800,42 @@ module Rubycc
           error_at(keyword_tok, "'__builtin_memcpy' expects 3 arguments, have #{args.size}")
         end
         AST::Call.new(AST::VariableRef.new("memcpy", keyword_tok), args, keyword_tok)
+      end
+
+      # "__builtin_strlen ( s )": when the sole argument is (syntactically) a
+      # string literal, gcc folds the whole expression to the constant number
+      # of bytes before the first NUL — the value ordinary strlen would return
+      # — with no code emitted at all, so it is a genuine constant-expression:
+      # it holds in a static initializer, an array bound, a case label or a
+      # _Static_assert (measured against gcc 13.3, 2026-09-13). That fold is
+      # done straight away, here, by turning the whole call into an AST::IntLit
+      # of type "unsigned long" (size_t on this ABI); every later stage already
+      # knows how to place an IntLit anywhere a constant-expression is wanted,
+      # so no other file needs to learn about this builtin. Any other argument
+      # (a variable, a non-literal expression) is rewritten to a plain call of
+      # the libc function "strlen", exactly like __builtin_memcpy above; the
+      # generator seeds a builtin prototype for "strlen" so this compiles even
+      # when <string.h> is not included, matching gcc's builtin.
+      def parse_builtin_strlen
+        keyword_tok = advance # "__builtin_strlen"
+        expect_punct("(")
+        args = parse_argument_expression_list
+        expect_punct(")")
+        unless args.size == 1
+          error_at(keyword_tok, "'__builtin_strlen' expects 1 argument, have #{args.size}")
+        end
+
+        arg = args.first
+        if arg.is_a?(AST::StringLit)
+          # A string literal's stored value has no terminating NUL (see
+          # AST::StringLit), but an embedded "\0" escape still ends a real
+          # strlen scan early, so the length is the position of the first NUL
+          # byte when there is one, the full byte count otherwise.
+          length = arg.value.index("\x00".b) || arg.value.bytesize
+          AST::IntLit.new(length, keyword_tok, Type::ULong)
+        else
+          AST::Call.new(AST::VariableRef.new("strlen", keyword_tok), args, keyword_tok)
+        end
       end
 
       # member-designator = identifier ( "." identifier | "[" expression "]" )*:

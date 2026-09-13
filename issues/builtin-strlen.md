@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-13
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-13
+branch: gap-fixes-wave-2
+pr: 148
+steps: [builtin-strlen-1]
 ---
 
 # `__builtin_strlen` が無い
@@ -49,6 +49,21 @@ gcc は文字列リテラルに対する `__builtin_strlen` を**定数に畳む
 
 buildable-gems-batch-4 で、rubycc だけが落ちて対照は通った 1 件。
 
+### 2026-09-13(実装)
+
+文字列リテラルの引数は構文段階で `unsigned long` の定数に畳み、それ以外は `strlen` の呼び出しに書き換えた
+(`__builtin_memcpy` と同じ形)。gcc で測ると、畳んだ値は配列の大きさ・静的初期化子・`_Static_assert`・
+`case` ラベルのどれでも使えたので、rubycc も同じ位置で使える。同族の `__builtin_mem*` / `__builtin_str*` の
+うち rubycc に無いのは 11 綴りで、需要が出るまで足さない(STEPS)。
+
 ## 決着
 
-(未着手)
+**解消した**(`builtin-strlen-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 最小再現が通り gcc と同じ値を返す。`char *` 変数の引数でも通る | `test/test_builtin_strlen.rb` が gcc 差分の実行で確認 |
+| 文字列リテラルの場合に定数式として使えるかを gcc と比べて決める | gcc は 4 つの位置すべてで通す。rubycc も同じく通る |
+| 同族のビルトインのうち無いものを数え、足す範囲を STEPS に書く | 11 綴り。需要が出るまで足さない |
+| `herb` 0.10.4 が rubycc でビルドできる | **マージ後に台帳の手順で測る** |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

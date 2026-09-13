@@ -127,6 +127,22 @@ module Rubycc
           variadic: false,
           defined: false
         }
+        # gcc provides strlen as a builtin too, folding a string-literal
+        # argument to a constant (see Front::Parser#parse_builtin_strlen) and
+        # otherwise rewriting __builtin_strlen(...) into a plain call to
+        # "strlen". Seed its prototype the same way memcpy's is seeded above —
+        # unsigned long strlen(const char *) — matching the ordinary libc
+        # prototype (unlike memcpy's void *, strlen's parameter really is
+        # char *, and a translation unit that also declares it, as a mkmf
+        # conftest typically does, must see the identical type or
+        # #declare_function's redeclaration check rejects it) — so this
+        # compiles even without <string.h>.
+        @signatures["strlen"] = {
+          param_types: [Type::Pointer.new(Type::Char)],
+          return_type: Type::ULong,
+          variadic: false,
+          defined: false
+        }
         # The translation-unit-wide string pool: `@strings` holds each interned
         # byte string in id order, `@string_ids` maps content back to its id so
         # identical literals collapse to one entry (and one .rodata address).

@@ -247,9 +247,9 @@ module Rubycc
       # the branch-prediction hint, the stack allocator, offsetof, the
       # constant/choose folds, the count-leading/trailing-zero scans and the
       # set-bit count (each in its plain, "l" and "ll" spelling), the
-      # unreachable hint, memcpy, the three overflow-checked arithmetic forms,
-      # the nine __atomic_* forms and the ten legacy __sync_* forms. Every other
-      # builtin query is false, so a header that guards a fallback behind
+      # unreachable hint, memcpy, strlen, the three overflow-checked arithmetic
+      # forms, the nine __atomic_* forms and the ten legacy __sync_* forms. Every
+      # other builtin query is false, so a header that guards a fallback behind
       # __has_builtin (e.g. json's bswap path) takes the fallback for one rubycc
       # does not provide. Kept in sync with the parser's builtin keywords. Kept
       # as a Hash (used only for membership) so the check is O(1).
@@ -260,7 +260,7 @@ module Rubycc
                           __builtin_clz __builtin_clzl __builtin_clzll
                           __builtin_popcount __builtin_popcountl
                           __builtin_popcountll
-                          __builtin_unreachable __builtin_memcpy
+                          __builtin_unreachable __builtin_memcpy __builtin_strlen
                           __builtin_add_overflow __builtin_sub_overflow
                           __builtin_mul_overflow
                           __atomic_load_n __atomic_store_n __atomic_exchange_n

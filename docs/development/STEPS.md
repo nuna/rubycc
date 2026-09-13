@@ -15099,3 +15099,97 @@ rubycc の driver は `-I`/`-isystem`/`-iquote`/`-idirafter` を区別せず 1 �
 C サンプルは追加しない: この課題の挙動はコマンドライン引数(`-I`/`-isystem`/`-idirafter`と
 そのディレクトリの中身)に依存し、`examples/` の C ソース 1 本では再現できない
 (examples はソース差分のみを比較する仕組みで、ビルドフラグを差し替える経路を持たない)。
+
+## builtin-strlen-1 — `__builtin_strlen` は文字列リテラルなら定数に畳む
+
+**課題**([issue](../../issues/builtin-strlen.md)、GAPS **AZ**): `__builtin_strlen` を、rubycc は
+未宣言の関数として報告していた(gcc は通す)。2026-09-13 にこのホスト(WSL2 / gcc 13.3)で
+最小再現を測った: `unsigned long f(void) { return __builtin_strlen("abc"); }` は gcc が
+`3` を返す一方、rubycc は `implicit declaration of function '__builtin_strlen'` で拒否していた。
+
+コーパス候補 `herb` 0.10.4 の `src/include/lib/hb_string.h:27` が
+`(uint32_t) __builtin_strlen(string)` とマクロの中で書いており、対照の gcc はビルド・ロードに
+成功する(2026-09-13 実測、buildable-gems-batch-4)。
+
+### gcc の実測 — 定数式として使える位置
+
+2026-09-13、このホスト(gcc 13.3)で、`__builtin_strlen("abc")` を次の 4 箇所に置いて測った:
+配列の大きさ・ファイルスコープ変数の静的初期化子・`_Static_assert`・`switch` の `case` ラベル。
+**いずれも警告なしでコンパイルが通る** — gcc は文字列リテラル引数を genuine な
+constant-expression として畳んでいる(`__builtin_offsetof` と同種)。
+
+### 実装
+
+新しい AST ノードは追加していない。`Front::Parser#parse_builtin_strlen`
+(`lib/rubycc/front/parser.rb`)が構文段階でその場に振り分ける:
+
+- 唯一の実引数が**構文的に文字列リテラル**(`AST::StringLit`)なら、その場で
+  `AST::IntLit`(型 `unsigned long`)に書き換える。値は最初の NUL バイトの位置
+  (埋め込み `\0` エスケープがあれば途中で止まる)か、無ければバイト数そのもの。
+  `IntLit` は他のすべての段(定数評価器・初期化子・生成器)がすでにどこでも
+  定数式として置ける形なので、この 1 か所の書き換え以外どのファイルも
+  この builtin を意識する必要がない。
+- それ以外の実引数(変数、非リテラル式)は `__builtin_memcpy` と同じ手筋で
+  libc の `strlen` への通常の呼び出しに書き換える。`Generator#generate`
+  (`lib/rubycc/ir/generator.rb`)が `memcpy` の隣にプロトタイプ
+  `unsigned long strlen(const char *)` をあらかじめ登録するので、
+  `<string.h>` を含めていない翻訳単位でもコンパイルできる。
+
+**つまずき**: 最初 `strlen` のシグネチャを `memcpy` に倣って `void *` パラメータで
+登録したところ、`examples/m2/step37_conftest.c`(`unsigned long strlen(const char *s);`
+という素の宣言を持つ)が「conflicting types for 'strlen'」で壊れた。
+`Generator#declare_function` は再宣言の一致を**型の完全一致**で見る
+(`lib/rubycc/ir/generator.rb:997`)ため、`memcpy` の `void *` と違い、
+`strlen` は本物の libc プロトタイプに合わせて `char *` で登録し直した。
+
+### 同族の `__builtin_mem*` / `__builtin_str*` の欠落数
+
+2026-09-13、gcc 13.3 に対して `__has_builtin` で 11 綴りを走査した(`strlen` 以外):
+`__builtin_strcmp` `__builtin_strcpy` `__builtin_strcat` `__builtin_strchr`
+`__builtin_strncmp` `__builtin_strncpy` `__builtin_strdup` `__builtin_memcmp`
+`__builtin_memset` `__builtin_memmove` `__builtin_mempcpy` — **gcc は全部認める**。
+rubycc がこれまで持っていたのはこの族では `__builtin_memcpy` のみで、このステップで
+`__builtin_strlen` を足したので、**残り 11 綴りが未実装**として残る。
+どれも `__builtin_strlen` と違って「文字列リテラルなら畳む」特別扱いが要らず
+(定数畳み込みの需要が実測でも issue でも出ていない)、`__builtin_memcpy` と同じ
+「libc 関数への書き換え」だけで足りるはずだが、それぞれ個別の実在ニーズが無いまま
+先回りで足すのは本ステップの範囲外なので、GAPS には追加しない(需要が出たら
+別 issue を立てる)。
+
+### 検証
+
+`test/test_builtin_strlen.rb`(新規)を gcc 差分で追加:
+
+- 文字列リテラル引数(空文字列を含む)・`char *` 変数引数・埋め込み `\0` を持つ
+  リテラルの 4 パターンを 1 プログラムで比較(2026-09-13 実測: `rubycc` は
+  `6 0 6 2` を出力し gcc と一致)。
+- 定数式の 5 箇所(静的初期化子・配列の大きさ・匿名 `enum` の列挙子・
+  `_Static_assert` 2 本・`case` ラベル 2 本)をまとめて 1 プログラムで比較。
+- herb 由来のマクロ形(`#define HB_STRLEN(s) ((unsigned) __builtin_strlen(s))`)。
+- 実引数が 2 個のときのアリティ診断(`'__builtin_strlen' expects 1 argument, have 2`)。
+- `__has_builtin(__builtin_strlen)` が真であること。
+
+`rake test` は本エージェントの権限外(テストファイル限定実行)。実行したのは
+`test/test_builtin_strlen.rb`(新規、5 runs / 13 assertions)・
+`test/test_gcc_builtins.rb`(既存の builtin テスト、22 runs / 62 assertions、回帰なし)・
+`test/test_atomic_builtins.rb`(既存、回帰なし)・`test/test_examples.rb`
+(全サンプルの gcc 差分、`examples/m2/step37_conftest.c` の signature 衝突を
+上の実装修正で解消した後は 60 runs / 0 failures)。いずれも 0 failures, 0 errors。
+
+### サンプル
+
+`examples/m6/builtin_strlen_1_constant_fold.c` — 文字列リテラル引数の定数畳み込み
+(配列の大きさ・静的初期化子・`_Static_assert`・`case` ラベル)と、`char *` 変数引数の
+実行時呼び出し、埋め込み `\0`、herb 由来のマクロ形を 1 ファイルで実演する。
+`test/test_examples.rb` が gcc 差分で検証する。
+
+### 実装した AI エージェントへの申し送り(R11)
+
+既存 OSS コンパイラ(chibicc 等)の実装を参照・模倣していない。判断はすべて
+ISO C の該当箇所(6.6 の constant-expression、7.24.6.3 の `strlen`)と、issue および
+このステップで実測した gcc 13.3 の挙動に基づく。`__builtin_memcpy` の既存の
+「libc 呼び出しへの書き換え」という構造をそのまま流用したが、コードは新規に書いた。
+
+**副作用**: `strlen` のプロトタイプを翻訳単位の最初から登録するので、`<string.h>` を含めずに `strlen` を呼んでも
+「宣言の無い関数」のエラーにならなくなった。`memcpy` はもともと同じ扱いで、gcc も `strlen` を組み込みとして知っている
+(gcc は警告を出す)。統合時に確かめた。
