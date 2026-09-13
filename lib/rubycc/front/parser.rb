@@ -3786,11 +3786,13 @@ module Rubycc
         AST::BuiltinUnreachable.new(keyword_tok)
       end
 
-      # "__builtin_memcpy ( dst , src , n )": rewritten to an ordinary call of
-      # the libc function "memcpy", so it links against the C library's memcpy
-      # like the plain call would. The generator seeds a builtin prototype for
-      # "memcpy" (void *(void *, const void *, unsigned long)), so this compiles
-      # even when <string.h> is not included, matching gcc's builtin.
+      # "__builtin_memcpy ( dst , src , n )": rewritten to an ordinary call
+      # whose callee keeps the builtin's own name. The generator lowers a call
+      # of that name to a call of the libc function "memcpy", checked against
+      # the builtin's fixed prototype (void *(void *, const void *, unsigned
+      # long)) rather than whatever the program itself declared memcpy as —
+      # gcc's builtin keeps its own type the same way — so this compiles even
+      # when <string.h> is not included, and links against libc's memcpy.
       def parse_builtin_memcpy
         keyword_tok = advance # "__builtin_memcpy"
         expect_punct("(")
@@ -3799,7 +3801,7 @@ module Rubycc
         unless args.size == 3
           error_at(keyword_tok, "'__builtin_memcpy' expects 3 arguments, have #{args.size}")
         end
-        AST::Call.new(AST::VariableRef.new("memcpy", keyword_tok), args, keyword_tok)
+        AST::Call.new(AST::VariableRef.new("__builtin_memcpy", keyword_tok), args, keyword_tok)
       end
 
       # "__builtin_strlen ( s )": when the sole argument is (syntactically) a
@@ -3812,10 +3814,14 @@ module Rubycc
       # of type "unsigned long" (size_t on this ABI); every later stage already
       # knows how to place an IntLit anywhere a constant-expression is wanted,
       # so no other file needs to learn about this builtin. Any other argument
-      # (a variable, a non-literal expression) is rewritten to a plain call of
-      # the libc function "strlen", exactly like __builtin_memcpy above; the
-      # generator seeds a builtin prototype for "strlen" so this compiles even
-      # when <string.h> is not included, matching gcc's builtin.
+      # (a variable, a non-literal expression) becomes a run-time call lowered
+      # exactly like __builtin_memcpy above: the callee keeps the builtin's name,
+      # and the generator calls libc's "strlen" with the builtin's own prototype
+      # (unsigned long strlen(const char *)), so this compiles even when
+      # <string.h> is not included and the result stays unsigned long even when
+      # the program declared strlen differently itself — gcc 13.3 gives
+      # "sizeof __builtin_strlen(p)" as 8 after "int strlen(char *);" while a
+      # plain "strlen(p)" there is 4 (measured 2026-09-14).
       def parse_builtin_strlen
         keyword_tok = advance # "__builtin_strlen"
         expect_punct("(")
@@ -3834,7 +3840,7 @@ module Rubycc
           length = arg.value.index("\x00".b) || arg.value.bytesize
           AST::IntLit.new(length, keyword_tok, Type::ULong)
         else
-          AST::Call.new(AST::VariableRef.new("strlen", keyword_tok), args, keyword_tok)
+          AST::Call.new(AST::VariableRef.new("__builtin_strlen", keyword_tok), args, keyword_tok)
         end
       end
 

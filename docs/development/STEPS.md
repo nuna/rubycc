@@ -15305,3 +15305,126 @@ builtin マクロ (`__FILE__` など) は 1 トークンだけを生成し、コ
 `test/test_dos_resilience.rb` **35 runs / 131 assertions / 0 failures**(2026-09-13、16.2 秒。
 `test_exponentially_expanding_macro_is_rejected` 単体では 3.49 秒)。
 `rake test` 全体は未実行(呼び出し元の統合作業に委ねる)。
+
+## builtin-strlen-2 — 組み込みの種シグネチャはプログラム自身の宣言に譲る
+
+**課題**: builtin-strlen-1(bc55e37)は `Generator#generate` に `strlen` のプロトタイプ
+`unsigned long strlen(char *)` を最初から登録した(`memcpy` の種の隣)。そのステップでは
+x86-64 の対象テスト(`test/test_builtin_strlen.rb`・`test/test_gcc_builtins.rb`・該当サンプル)しか
+走らせていなかった。2026-09-14、ブランチ `gap-fixes-wave-2` で `rake test` 全体を走らせたところ
+**18 件(4 failures + 14 errors)が落ち、すべて `conflicting types for 'strlen'`** だった。
+builtin-strlen-1 より前はどれも通っていた。代表例:
+
+- `TestCSuite#test_c_suite_00025` と `TestCSuiteAArch64#test_c_suite_aarch64_00025` —
+  テスト側の宣言は `int strlen(char *);`
+- `TestCSuiteAArch64` の 00179 / 00180 —
+  `/usr/aarch64-linux-gnu/include/string.h:407:1: conflicting types for 'strlen'`
+- `TestHeaderAbiAarch64#test_netinet_in_abi_matches_cross_gcc`(`size_t strlen(const char *__s);`)、
+  `TestAArch64SelfLink#test_conftest_style_try_run`(`unsigned long strlen(const char *s);`)、
+  `TestExamplesAArch64` の spill_traffic_cleanup 1/2(`extern size_t strlen (const char *__s)`)、
+  ほか約 10 件(同じメッセージ)
+
+### 原因 — 形ごと
+
+どちらの形も同じ仕組みで壊れた。`Generator#declare_function` は、既に `@signatures` にある
+シグネチャを**プログラムが先に書いた宣言**とみなし、再宣言と型の完全一致を要求する。
+種はプログラムの宣言ではないのに、同じ比較にかけられていた。そのうえで、形ごとの不一致は次のとおり
+(2026-09-14、このホストで rubycc の最小再現により確認):
+
+1. **`int strlen(char *);`(00025、全ターゲット)** — 戻り値型が `int` で、種は `unsigned long`。
+   ターゲットに関係なく食い違う。
+2. **`size_t strlen(const char *)`(aarch64 のみ)** — `lib/rubycc/compiler.rb` は aarch64 に
+   `char_signed: false` を与え、パーサは素の `char` を `Type.plain_char(false)`、すなわち
+   `Type::UnsignedChar` に解決する。`const` は `Type` の一部ではない(型比較から落ちる)ので、
+   aarch64 での `const char *` は `Pointer(UnsignedChar)` になる。一方、種は
+   `Type::Pointer.new(Type::Char)`(符号付きの単一インスタンス)を**ターゲットに関係なく**
+   書き込んでいたので、両者は等しくならない。x86-64 では素の `char` が `Type::Char` そのもので、
+   `size_t` は両ターゲットとも `unsigned long` なので、ヘッダの宣言と種は完全に一致し、
+   衝突しなかった。**x86 の string.h が通って aarch64 の string.h が落ちた理由はこれ**で、
+   ヘッダ本文の違いではない(`/usr/include/string.h:407` と
+   `/usr/aarch64-linux-gnu/include/string.h:407` はどちらも `extern size_t strlen (const char *__s)`)。
+   同梱の `include/libc/string.h:42` の `size_t strlen(const char *__s);` も aarch64 では
+   同じ理由で衝突した。
+
+### gcc の実測
+
+2026-09-14、このホストの gcc 13.3(`-std=gnu17`)で測った。
+
+- `int strlen(char *);` の後に `strlen(p)` を呼ぶと、警告
+  `conflicting types for built-in function 'strlen'; expected 'long unsigned int(const char *)'
+  [-Wbuiltin-declaration-mismatch]` だけでコンパイルが通り、`call strlen@PLT` が出る。
+- 同じ宣言の後でも **`__builtin_strlen(p)` は組み込み自身の型を保つ**。
+  `sizeof(__builtin_strlen(p))` は 8、`sizeof(strlen(p))` は 4。5 バイトの文字列で
+  `__builtin_strlen(p) - 6 > 0` は 1(符号無しで折り返す)、`strlen(p) - 6 > 0` は 0。
+- ファイルスコープの `int strlen = 7;` は、警告
+  `built-in function 'strlen' declared as non-function` だけでコンパイルが通る。
+- 宣言なしの `strlen(p)` は、implicit declaration と
+  `incompatible implicit declaration of built-in function 'strlen'` の警告だけで通る
+  (gcc 14 は既定で拒否するので、差分テストには使わない)。
+
+### 修正
+
+- 種のシグネチャに **`builtin_seed: true`** の印を付けた。名前で特別扱いするのではなく、印で扱う。
+  `Generator#builtin_signatures` が `memcpy` と `strlen` の 2 件を返し、`strlen` の引数は
+  `Type::Pointer.new(@plain_char)`(ターゲットの素の `char`)にした。`#generate` はこの表を
+  `@builtin_signatures` として持ち、その複製で `@signatures` を始める。
+- `#declare_function` は、既存のシグネチャが種ならそれを無いものとして扱い、プログラムの
+  **最初の宣言でそのまま置き換える**(型は問わない)。2 つ目以降の実際の再宣言は、
+  これまでどおりその最初の宣言と完全一致で照合する。
+- `#declare_global` も、同じ名前のファイルスコープのオブジェクトが来たら種を消して通す
+  (実際の関数宣言と同名なら、これまでどおり redefinition)。
+- パーサは非リテラルの `__builtin_strlen(...)` と `__builtin_memcpy(...)` を、callee 名を
+  **`__builtin_strlen` / `__builtin_memcpy` のまま**の `AST::Call` にする(従来は `strlen` /
+  `memcpy` に書き換えていた)。生成器の `BUILTIN_LIBCALLS` がこの名前を libc の関数名に対応づけ、
+  `#gen_call` と `#call_return_type` は、プログラムの宣言ではなく `@builtin_signatures` の
+  固定プロトタイプで型を決めて libc のシンボルを呼ぶ。新しい AST ノードは足していない。
+  `__builtin_*` はレキサのキーワードなので、プログラムの識別子とは衝突しない。
+- `memcpy` の種も同じ仕組みに載せた。
+
+### 判断
+
+- **`__builtin_strlen` の型は gcc に合わせて組み込みのものを保つ。** 依頼の段階では、プログラムが
+  `int strlen(char *)` を宣言したら `__builtin_strlen` もそのシグネチャで呼ぶ想定だった。
+  しかし上の gcc 実測では、組み込みは宣言に関係なく `unsigned long` を返す。プログラムの
+  シグネチャに従うと `sizeof` と符号無しの折り返しで gcc と観測可能な差が出るので、
+  組み込みの固定プロトタイプを使うことにした。素の `strlen(p)` の呼び出しは、これまでどおり
+  プログラムの宣言に従う(gcc と同じ)。
+- **種は「最初の宣言に黙って譲る」形にし、警告は出さない。** rubycc にはこの種の警告の経路が無い。
+  gcc の警告に合わせて診断を足すのは本ステップの範囲外とした。
+- **`memcpy` の種も同じ印で扱う。** 片方だけ特別扱いが残ると、次に種を足す人がどちらに
+  倣うべきか分からなくなる。挙動が変わるのは、従来 `conflicting types for 'memcpy'` で
+  拒否していた宣言(例: `char *memcpy(char *, char *, unsigned long);`)を gcc と同じく
+  通すようになる点だけで、既存の通過テストには影響しない(下の実行結果)。
+- 種の `char` をターゲットの素の `char` にしたので、宣言なしの `__builtin_strlen(p)` や
+  `strlen(p)` に `char *` を渡したときも、aarch64 で型が食い違わない。
+
+### テスト
+
+新規 `test/test_builtin_strlen_seed.rb`(19 runs)。gcc 差分の対象は 5 形:
+`int strlen(char *)`(00025 の形)・`size_t strlen(const char *)`・`#include <string.h>`・
+宣言なし・独自の `memcpy` 宣言。どれも宣言の後で非リテラルの `__builtin_strlen` を呼び、
+`sizeof` と符号無しの折り返しを出力する。各形を、ホストの gcc 差分・aarch64 向けのコンパイルのみ
+(クロスツールチェーン不要)・クロス gcc + qemu の差分の 3 通りで検査する。ほかに
+「宣言なしの素の `strlen` が種で通る」「ユーザ宣言の後の食い違う再宣言は従来どおり
+`2:1` で conflicting types」「一致する再宣言は通る」「ファイルスコープの `int strlen` に種が譲る」。
+
+2026-09-14、ワークツリー `builtin-strlen-seed`(adc862a + 本変更)で実行した結果:
+
+| ファイル | runs | failures | errors | skips |
+|---|---|---|---|---|
+| test/test_builtin_strlen_seed.rb | 19 | 0 | 0 | 0 |
+| test/test_builtin_strlen.rb + test/test_gcc_builtins.rb | 27 | 0 | 0 | 0 |
+| test/test_c_suite.rb | 223 | 0 | 0 | 13 |
+| test/test_c_suite_aarch64.rb | 444 | 0 | 0 | 26 |
+| test/test_header_abi.rb | 121 | 0 | 0 | 0 |
+| test/test_aarch64_self_link.rb | 18 | 0 | 0 | 0 |
+| test/test_examples.rb + test/test_examples_aarch64.rb | 564 | 0 | 0 | 26 |
+| strlen/memcpy を含む他の 6 本(parser・knr・library_resolution・executable・execution_harness・shared_object) | 705 | 0 | 0 | 0 |
+| strlen/memcpy を含む aarch64 の 4 本(globals_execution・backend・execution・shared_object) | 199 | 0 | 0 | 0 |
+
+同じ新規テストを修正前の `lib/`(adc862a を展開したもの)で走らせると、
+**19 runs 中 1 failure + 12 errors**。すべて `conflicting types for 'strlen'`
+(または `'memcpy'`)で、回帰を捕まえることを確認した。
+スキップ数は既存の SKIP 一覧によるもの。全スイート(`rake test`)は走らせていない。
+
+サンプルは足していない。このステップは既存の宣言との衝突を直すもので、1 ファイルで実演できる新しい機能を持たない。

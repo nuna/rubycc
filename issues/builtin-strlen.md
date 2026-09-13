@@ -5,7 +5,7 @@ opened: 2026-09-13
 closed: 2026-09-13
 branch: gap-fixes-wave-2
 pr: 148
-steps: [builtin-strlen-1]
+steps: [builtin-strlen-1, builtin-strlen-2]
 ---
 
 # `__builtin_strlen` が無い
@@ -55,6 +55,15 @@ buildable-gems-batch-4 で、rubycc だけが落ちて対照は通った 1 件�
 (`__builtin_memcpy` と同じ形)。gcc で測ると、畳んだ値は配列の大きさ・静的初期化子・`_Static_assert`・
 `case` ラベルのどれでも使えたので、rubycc も同じ位置で使える。同族の `__builtin_mem*` / `__builtin_str*` の
 うち rubycc に無いのは 11 綴りで、需要が出るまで足さない(STEPS)。
+
+### 2026-09-14(退行の修正)
+
+`builtin-strlen-1` の後にブランチ全体で `rake test` を走らせると、**18 件が `conflicting types for 'strlen'` で落ちた**。
+最初から登録した `strlen` のプロトタイプが、プログラム自身の宣言(c-testsuite 00025 の `int strlen(char *);`、
+aarch64 の glibc の `size_t strlen(const char *)` — aarch64 では素の `char` が符号無し)と衝突していた。
+`builtin-strlen-1` を実装したときは x86 の対象テストしか走らせておらず、aarch64 と c-testsuite を見ていなかった。
+`builtin-strlen-2` で、最初から登録するプロトタイプに印を付け、プログラムの最初の宣言に黙って譲るようにした
+(`memcpy` も同じ扱い)。`__builtin_strlen` の型は、gcc と同じく組み込みのまま保つ。
 
 ## 決着
 

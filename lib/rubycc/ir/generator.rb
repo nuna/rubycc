@@ -114,35 +114,14 @@ module Rubycc
         # extra, promoted arguments past the fixed ones); `defined` distinguishes
         # a prototype from a completed definition so redefinitions can be
         # rejected.
-        @signatures = {}
-        # gcc provides memcpy as a builtin, and the parser rewrites
-        # __builtin_memcpy(...) into a plain call to "memcpy". Seed its prototype
-        # up front — void *memcpy(void *, const void *, unsigned long) — so such a
-        # call compiles even when the translation unit never declares memcpy (no
-        # <string.h>); a later, identical string.h prototype merges in without
-        # conflict, and the reference resolves to libc's memcpy at link time.
-        @signatures["memcpy"] = {
-          param_types: [Type::Pointer.new(Type::Void), Type::Pointer.new(Type::Void), Type::ULong],
-          return_type: Type::Pointer.new(Type::Void),
-          variadic: false,
-          defined: false
-        }
-        # gcc provides strlen as a builtin too, folding a string-literal
-        # argument to a constant (see Front::Parser#parse_builtin_strlen) and
-        # otherwise rewriting __builtin_strlen(...) into a plain call to
-        # "strlen". Seed its prototype the same way memcpy's is seeded above —
-        # unsigned long strlen(const char *) — matching the ordinary libc
-        # prototype (unlike memcpy's void *, strlen's parameter really is
-        # char *, and a translation unit that also declares it, as a mkmf
-        # conftest typically does, must see the identical type or
-        # #declare_function's redeclaration check rejects it) — so this
-        # compiles even without <string.h>.
-        @signatures["strlen"] = {
-          param_types: [Type::Pointer.new(Type::Char)],
-          return_type: Type::ULong,
-          variadic: false,
-          defined: false
-        }
+        # A signature carrying `builtin_seed: true` was not declared by the
+        # program at all: it is one of the builtin prototypes below, present from
+        # the start. It stands in only until the program declares that name
+        # itself — the first real declaration replaces it silently (see
+        # #declare_function and #declare_global) — so it can never be the
+        # "earlier declaration" a conflicting-types check measures against.
+        @builtin_signatures = builtin_signatures
+        @signatures = @builtin_signatures.dup
         # The translation-unit-wide string pool: `@strings` holds each interned
         # byte string in id order, `@string_ids` maps content back to its id so
         # identical literals collapse to one entry (and one .rodata address).
@@ -241,7 +220,12 @@ module Rubycc
       # Whenever a binding already exists (from an earlier reference or
       # definition), the two must agree on type.
       def declare_global(decl)
-        if @signatures.key?(decl.name)
+        # A builtin seed yields to a file-scope object of its name as well (gcc
+        # only warns that the builtin is redeclared as a non-function); a real
+        # function declaration of the name is still a redefinition.
+        if @signatures[decl.name]&.fetch(:builtin_seed, false)
+          @signatures.delete(decl.name)
+        elsif @signatures.key?(decl.name)
           error_at(decl.token, "redefinition of '#{decl.name}'")
         end
         # Resolve the initializer first: a "[]" array bound is only known once
@@ -997,6 +981,11 @@ module Rubycc
           end
         end
         existing = @signatures[name]
+        # A builtin seed is not a declaration the program made, so the program's
+        # first declaration of the name replaces it outright — whatever its type,
+        # as gcc lets a user declaration override a builtin with at most a
+        # warning. Every later redeclaration then meets that real one below.
+        existing = nil if existing&.fetch(:builtin_seed, false)
         if existing
           if existing[:param_types] != param_types || existing[:return_type] != return_type ||
              existing[:variadic] != variadic
@@ -4071,6 +4060,13 @@ module Rubycc
       # site).
       def gen_call(node)
         callee = node.callee
+        # A builtin the parser left as a call (see BUILTIN_LIBCALLS) calls its
+        # libc function under the builtin's own fixed prototype, never under the
+        # program's declaration of that function.
+        if callee.is_a?(Front::AST::VariableRef) && (libc_name = BUILTIN_LIBCALLS[callee.name])
+          return gen_direct_call(node, libc_name, @builtin_signatures.fetch(libc_name))
+        end
+
         # A bare identifier callee that binds no variable is a direct call to a
         # function of that name; an unknown one is an implicit declaration.
         if callee.is_a?(Front::AST::VariableRef) && lookup_variable(callee.name).nil?
@@ -4083,9 +4079,9 @@ module Rubycc
         end
       end
 
-      # A direct call to the named function, its signature already known.
-      def gen_direct_call(node, name)
-        sig = @signatures[name]
+      # A direct call to the named function, checked against `sig` — the
+      # function's recorded signature unless the caller supplies another.
+      def gen_direct_call(node, name, sig = @signatures[name])
         plumb = struct_return_plumbing(sig[:return_type])
         args = lower_call_arguments(node, sig[:param_types], sig[:variadic], name, plumb[:hidden])
         fixed = sig[:variadic] ? sig[:param_types].size : nil
@@ -6211,7 +6207,9 @@ module Rubycc
       # one.
       def call_return_type(node)
         callee = node.callee
-        if callee.is_a?(Front::AST::VariableRef) && lookup_variable(callee.name).nil?
+        if callee.is_a?(Front::AST::VariableRef) && (libc_name = BUILTIN_LIBCALLS[callee.name])
+          @builtin_signatures.fetch(libc_name)[:return_type]
+        elsif callee.is_a?(Front::AST::VariableRef) && lookup_variable(callee.name).nil?
           sig = @signatures[callee.name]
           error_at(node.token, "implicit declaration of function '#{callee.name}'") unless sig
           sig[:return_type]
@@ -6328,6 +6326,40 @@ module Rubycc
       # an indirect call or a function-pointer assignment against it.
       def function_type_of(sig)
         Type::FunctionType.new(sig[:return_type], sig[:param_types], sig[:variadic])
+      end
+
+      # The builtins the parser rewrites into a run-time call rather than
+      # folding (Front::Parser#parse_builtin_memcpy, #parse_builtin_strlen): the
+      # callee name the rewritten call keeps -> the libc function it calls.
+      BUILTIN_LIBCALLS = { "__builtin_memcpy" => "memcpy", "__builtin_strlen" => "strlen" }.freeze
+
+      # gcc's fixed prototypes for the libc functions behind BUILTIN_LIBCALLS,
+      # keyed by the libc name and each marked `builtin_seed: true`. They serve
+      # twice: as the signature a __builtin_* call is always checked against,
+      # and as the seed #generate places in @signatures so a plain call of the
+      # function compiles without <string.h> (gcc accepts it with a warning)
+      # until the program declares the function itself. strlen's parameter is
+      # the target's plain char (const is not part of a Type), so the seed has
+      # the very type a `const char *` declaration on this target resolves to.
+      def builtin_signatures
+        {
+          # void *memcpy(void *, const void *, unsigned long)
+          "memcpy" => {
+            param_types: [Type::Pointer.new(Type::Void), Type::Pointer.new(Type::Void), Type::ULong],
+            return_type: Type::Pointer.new(Type::Void),
+            variadic: false,
+            defined: false,
+            builtin_seed: true
+          }.freeze,
+          # unsigned long strlen(const char *)
+          "strlen" => {
+            param_types: [Type::Pointer.new(@plain_char)],
+            return_type: Type::ULong,
+            variadic: false,
+            defined: false,
+            builtin_seed: true
+          }.freeze
+        }.freeze
       end
 
       def new_vreg
