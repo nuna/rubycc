@@ -17,7 +17,6 @@
 | **AH**([issue](../../issues/thread-local-storage.md)) | **スレッドローカル記憶域が無い** — C11 の `_Thread_local` も GNU の `__thread` も `expected type specifier` で拒否する。コンパイラに言及が 1 つも無く、記憶域クラスとしてまるごと無い | TLS 変数を宣言するヘッダを含む gem。`pg_query` 6.2.3 が同梱 postgres ヘッダの `__thread` で、`scout_apm` 6.3.0 が `allocations.c:29` の `static __thread` で落ち、**対照の gcc はどちらもビルドに成功する** | **実測**(2026-09-13、最小再現で両方とも拒否) | **マイルストーン級**。ELF の TLS セクション・TLS 再配置・`%fs` / `tpidr_el0` 相対の生成が要り、拡張は `.so` なので**動的モデルでないと実在の gem に効かない** |
 | **AJ**([issue](../../issues/variadic-aggregate-argument.md)) | **可変長引数に構造体・共用体を値で渡せない**(`not supported yet` と自己申告) | `semctl` に `union semun` を渡す gem。`semian` 0.28.4 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 固定引数の構造体渡しは実装済み。x86-64 と AArch64 の両方で、呼ぶ側・呼ばれる側の両向きを gcc と突き合わせる |
 | **AK**([issue](../../issues/labels-as-values.md)) | **ラベルのアドレス(`&&label` / `goto *p`、GNU 拡張)を受け付けない**。診断は `expected expression` で原因を伝えない | 表引きのディスパッチを持つ gem。`strptime` 0.2.5 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
-| **AL**([issue](../../issues/expansion-budget-source-tokens.md)) | **マクロ展開の予算(100 万)がソースを素通りするトークンまで数える**。マクロの無い大きな表が「暴走マクロ」として止まる | 巨大な表や amalgamation を持つ gem。`unicode` 0.4.4.5 の `unidata.map`(24,555 行)と、`amalgalite` 2.0.0 の同梱 SQLite(`sqlite3.c`、22 万行超)が該当し、**対照の gcc はどちらも通る** | **実測**(2026-09-13、80,000 行の生成入力で再現。45,000 行は通る) | 置換で生まれたトークンだけを数えれば、上限はコメントどおりの意味になる |
 | **AM**([issue](../../issues/bundled-sched-param.md)) | **同梱 `sched.h` に `struct sched_param` が無い**。glibc の `<spawn.h>` がメンバに持つので、`<spawn.h>` ごと読めない | `<spawn.h>` を含む gem。`posix-spawn` 0.3.15 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `incomplete type`) | AF と同じ系統。**`<spawn.h>` が他に何を要るかを先に測って**まとめて決める |
 | **AN**([issue](../../issues/incompatible-function-pointer-argument.md)) | **gcc 13 が警告にとどめる 4 つの診断をエラーにする** — 互換でないポインタ・暗黙の関数宣言・暗黙の int(`expected type specifier` で原因を伝えない)・整数とポインタの変換。gcc 14 はどれも既定でエラー | 古い書き方の gem。`hpricot` / `fast_xs` / `fast_trie` / `zipruby` / `github-markdown` / `gctools` / `semacode-ruby19` / `picky` / `allocation_tracer` / `ruby_deep_clone` の 10 件が該当し、**対照の gcc 13 はどれも通る** | **実測**(2026-09-13、gcc 13 のみ。gcc 14 はこのホストに無い) | **警告に下げるかエラーを保つかが未決**。対照の版で結論が変わる |
 | **AQ**([issue](../../issues/bundled-sys-types-caddr.md)) | **同梱 `sys/types.h` に glibc の内部名 `__caddr_t` が無い**。glibc の `<net/if.h>` が読めない | `<net/if.h>` を含む gem。`network_interface` 0.0.4 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `expected type specifier`) | AF / AM と同じ系統。glibc 本体が使う内部名を数えてから足す |
@@ -59,6 +58,9 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ AL**(マクロ展開の予算がソースを素通りするトークンまで数える):
+  `expansion-budget-source-tokens-1` で解消。予算を、マクロの置換が生んだトークンだけに課すようにした。
+  上限の値(100 万)と、暴走するマクロを拒否する性質は変えていない。
 - **ギャップ AZ**(`__builtin_strlen` が無い):
   `builtin-strlen-1` で解消。文字列リテラルの引数は構文段階で定数に畳み(gcc と同じく配列の大きさ・静的初期化子・
   `case` ラベルで使える)、それ以外は `strlen` の呼び出しに書き換える。同族の 11 綴りは需要が出るまで足さない。
