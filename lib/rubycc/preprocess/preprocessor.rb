@@ -166,24 +166,32 @@ module Rubycc
       # itself); 200 is comfortably deeper than any sane header nesting.
       INCLUDE_DEPTH_LIMIT = 200
 
-      # The cumulative ceiling on how many tokens macro expansion may process
-      # across a whole translation unit. Blue-painting (see #expand_tokens) stops
-      # self-reference and mutual recursion, but nothing otherwise bounds an
-      # exponentially expanding macro — the classic "#define B1 B0 B0 ... #define
-      # B40 B39 B39" doubles its output each level, so "B40" would materialize
-      # 2^40 tokens and exhaust CPU and memory long before finishing. Charging one
-      # unit per token pulled from the work queue and tripping this ceiling turns
-      # that runaway into a located CompileError. The bound is a whole-run
-      # cumulative budget (expand_tokens runs once per gathered line and once per
-      # #if condition, and recurses for each argument), so an expansion that
-      # explodes across many small calls is still caught. The real #include
-      # <ruby.h> header graph — the whole CRuby + libc header set, a worst-case
-      # legitimate input — consumes about 137k, so one million leaves a 7x margin
-      # while it never fires on real code. It is deliberately not larger: because
-      # a doubling macro is rejected only after the full budget is processed, the
-      # ceiling also caps the worst-case work a hostile input can force (about
-      # three seconds here), so raising it would trade rejection latency for
-      # headroom no real translation unit needs.
+      # The cumulative ceiling on how many tokens macro *substitution* may
+      # materialize across a whole translation unit. Blue-painting (see
+      # #expand_tokens) stops self-reference and mutual recursion, but nothing
+      # otherwise bounds an exponentially expanding macro — the classic
+      # "#define B1 B0 B0 ... #define B40 B39 B39" doubles its output each
+      # level, so "B40" would materialize 2^40 tokens and exhaust CPU and
+      # memory long before finishing. Charging one unit per token a macro
+      # substitution produces (see #enqueue_substitution) and tripping this
+      # ceiling turns that runaway into a located CompileError. Only tokens a
+      # substitution actually generates are charged — a source token that
+      # merely passes through untouched (the overwhelming bulk of any
+      # ordinary file, including a large macro-free table) never is, so the
+      # ceiling scales with how much a macro expands, exactly what its
+      # diagnostic claims, rather than with the size of the input. The bound
+      # is a whole-run cumulative budget (expand_tokens runs once per gathered
+      # line and once per #if condition, and recurses for each argument), so
+      # an expansion that explodes across many small calls is still caught.
+      # The real #include <ruby.h> header graph — the whole CRuby + libc
+      # header set, a worst-case legitimate input — never comes close (it is
+      # almost entirely declarations and pass-through tokens, not macro
+      # output), so one million leaves an ample margin while it never fires on
+      # real code. It is deliberately not larger: because a doubling macro is
+      # rejected only after the full budget is processed, the ceiling also
+      # caps the worst-case work a hostile input can force, so raising it
+      # would trade rejection latency for headroom no real translation unit
+      # needs.
       EXPANSION_TOKEN_LIMIT = 1_000_000
 
       # The ceiling on conditional-directive nesting within a single file. A
@@ -247,9 +255,9 @@ module Rubycc
       # the branch-prediction hint, the stack allocator, offsetof, the
       # constant/choose folds, the count-leading/trailing-zero scans and the
       # set-bit count (each in its plain, "l" and "ll" spelling), the
-      # unreachable hint, memcpy, the three overflow-checked arithmetic forms,
-      # the nine __atomic_* forms and the ten legacy __sync_* forms. Every other
-      # builtin query is false, so a header that guards a fallback behind
+      # unreachable hint, memcpy, strlen, the three overflow-checked arithmetic
+      # forms, the nine __atomic_* forms and the ten legacy __sync_* forms. Every
+      # other builtin query is false, so a header that guards a fallback behind
       # __has_builtin (e.g. json's bswap path) takes the fallback for one rubycc
       # does not provide. Kept in sync with the parser's builtin keywords. Kept
       # as a Hash (used only for membership) so the check is O(1).
@@ -260,7 +268,7 @@ module Rubycc
                           __builtin_clz __builtin_clzl __builtin_clzll
                           __builtin_popcount __builtin_popcountl
                           __builtin_popcountll
-                          __builtin_unreachable __builtin_memcpy
+                          __builtin_unreachable __builtin_memcpy __builtin_strlen
                           __builtin_add_overflow __builtin_sub_overflow
                           __builtin_mul_overflow
                           __atomic_load_n __atomic_store_n __atomic_exchange_n
@@ -566,10 +574,23 @@ module Rubycc
         @working_directory = Dir.pwd.b
         system_paths = system_includes ? default_system_include_paths : []
         @system_include_paths = system_paths.map { |path| absolute_path(path) }
+        # A caller directory (-I/-isystem/-idirafter, all folded into
+        # `include_paths` by the driver) that names the same directory as one
+        # already on the system search path is dropped, matching gcc: measured
+        # 2026-09-13 with `gcc -v -E`, `-I`, `-isystem` and `-idirafter` are all
+        # reported as "ignoring duplicate directory" and vanish from the search
+        # list when they duplicate a system directory (the multiarch directory
+        # included), while a directory that does not duplicate one keeps both
+        # its position ahead of the system path and its order relative to the
+        # other surviving caller directories. The comparison follows the real
+        # directory (a trailing slash, a ".." segment and a symlink to a system
+        # directory were all measured as duplicates too) rather than the
+        # literal spelling; see #real_directory_path.
+        deduped_include_paths = reject_system_duplicate_paths(include_paths, @system_include_paths)
         # Bytes (lib/rubycc.rb): the only spot where a caller's -I (already
         # bytes) and the bundled/libc directories (process-derived, so not)
         # merge before joining with a header name, itself bytes.
-        @include_paths = (include_paths + system_paths).map do |path|
+        @include_paths = (deduped_include_paths + system_paths).map do |path|
           path.encoding == Encoding::BINARY ? path : path.b
         end
         # #resolve_include's cache keys a resolved path off @include_paths (and,
@@ -617,6 +638,32 @@ module Rubycc
       def hermetic_headers?
         value = ENV[HERMETIC_HEADERS_ENV]
         !value.nil? && !value.empty? && value != "0"
+      end
+
+      # Drops any of `include_paths` (the caller's -I/-isystem/-idirafter
+      # directories, in command-line order) that names the same real directory
+      # as one of `system_paths` (already absolute), keeping every other
+      # directory's position. This is gcc's "ignoring duplicate directory"
+      # rule (see #preprocess for what was measured).
+      def reject_system_duplicate_paths(include_paths, system_paths)
+        return include_paths if include_paths.empty?
+
+        real_system_paths = system_paths.map { |path| real_directory_path(path) }
+        include_paths.reject { |path| real_system_paths.include?(real_directory_path(path)) }
+      end
+
+      # The directory `path` names, resolved past symlinks and ".." segments
+      # (File.realpath) so two different spellings of the same directory
+      # compare equal -- gcc's duplicate check does the same (a symlink to
+      # /usr/include and "/usr/include/x86_64-linux-gnu/.." were both measured
+      # as duplicates of /usr/include). Falls back to the lexically expanded
+      # path when the directory does not exist, since realpath has nothing to
+      # resolve against and gcc reports a missing directory separately from a
+      # duplicate one (not modeled here).
+      def real_directory_path(path)
+        File.realpath(absolute_path(path))
+      rescue SystemCallError
+        absolute_path(path)
       end
 
       # Applies the driver's command-line `-D`/`-U` requests before the source is
@@ -1662,14 +1709,6 @@ module Rubycc
         queue = tokens.dup
         until queue.empty?
           tok = queue.shift
-          # Charge one unit of the whole-run expansion budget per token examined.
-          # A macro's substitution is pushed back onto the queue and re-examined,
-          # so an exponentially expanding macro is charged for every token it
-          # generates and trips this ceiling instead of running away.
-          @expansion_tokens += 1
-          if @expansion_tokens > EXPANSION_TOKEN_LIMIT
-            raise_at(tok, "macro expansion is too large (possible runaway or exponentially expanding macro)")
-          end
           if pragma_operator?(tok)
             consume_pragma_operator(tok, queue)
           elsif expandable_builtin?(tok)
@@ -1677,7 +1716,7 @@ module Rubycc
           elsif expandable_macro?(tok)
             macro = @macros[tok.text]
             if macro.kind == :object
-              queue.unshift(*substitute(tok, macro, nil))
+              enqueue_substitution(queue, tok, substitute(tok, macro, nil))
             else
               expand_function_macro(tok, macro, queue, output)
             end
@@ -1685,6 +1724,24 @@ module Rubycc
             output << tok
           end
         end
+      end
+
+      # Pushes a macro's substitution back onto the work queue for rescanning,
+      # charging the whole-run expansion budget (see EXPANSION_TOKEN_LIMIT) for
+      # every token it contains. Only tokens a substitution actually produces
+      # are charged here; a source token that is shifted off the queue and
+      # simply emitted (the common case for the bulk of any file) never goes
+      # through this method and so never spends any of the budget. Because a
+      # generated token that itself names a macro is charged again the next
+      # time it is substituted, an exponentially expanding macro still spends
+      # the budget once per token it ever materializes and trips the ceiling,
+      # exactly as before.
+      def enqueue_substitution(queue, tok, generated)
+        @expansion_tokens += generated.length
+        if @expansion_tokens > EXPANSION_TOKEN_LIMIT
+          raise_at(tok, "macro expansion is too large (possible runaway or exponentially expanding macro)")
+        end
+        queue.unshift(*generated)
       end
 
       # Whether `tok` should expand now: an identifier naming a macro that its own
@@ -1783,7 +1840,7 @@ module Rubycc
         raw, commas, close = collect_arguments(tok, queue)
         raw = match_arity(tok, macro, raw)
         invocation = Invocation.new(raw, commas, Array.new(raw.length))
-        queue.unshift(*substitute(tok, macro, invocation, close))
+        enqueue_substitution(queue, tok, substitute(tok, macro, invocation, close))
       end
 
       # Whether the next non-newline token waiting in `queue` opens an argument

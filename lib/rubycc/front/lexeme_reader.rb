@@ -42,7 +42,7 @@ module Rubycc
                     __builtin_ctz __builtin_ctzl __builtin_ctzll
                     __builtin_clz __builtin_clzl __builtin_clzll
                     __builtin_popcount __builtin_popcountl __builtin_popcountll
-                    __builtin_unreachable __builtin_memcpy
+                    __builtin_unreachable __builtin_memcpy __builtin_strlen
                     __builtin_add_overflow __builtin_sub_overflow __builtin_mul_overflow
                     __atomic_load_n __atomic_store_n __atomic_exchange_n
                     __atomic_compare_exchange_n

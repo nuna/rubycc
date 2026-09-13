@@ -17,7 +17,6 @@
 | **AH**([issue](../../issues/thread-local-storage.md)) | **スレッドローカル記憶域が無い** — C11 の `_Thread_local` も GNU の `__thread` も `expected type specifier` で拒否する。コンパイラに言及が 1 つも無く、記憶域クラスとしてまるごと無い | TLS 変数を宣言するヘッダを含む gem。`pg_query` 6.2.3 が同梱 postgres ヘッダの `__thread` で、`scout_apm` 6.3.0 が `allocations.c:29` の `static __thread` で落ち、**対照の gcc はどちらもビルドに成功する** | **実測**(2026-09-13、最小再現で両方とも拒否) | **マイルストーン級**。ELF の TLS セクション・TLS 再配置・`%fs` / `tpidr_el0` 相対の生成が要り、拡張は `.so` なので**動的モデルでないと実在の gem に効かない** |
 | **AJ**([issue](../../issues/variadic-aggregate-argument.md)) | **可変長引数に構造体・共用体を値で渡せない**(`not supported yet` と自己申告) | `semctl` に `union semun` を渡す gem。`semian` 0.28.4 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 固定引数の構造体渡しは実装済み。x86-64 と AArch64 の両方で、呼ぶ側・呼ばれる側の両向きを gcc と突き合わせる |
 | **AK**([issue](../../issues/labels-as-values.md)) | **ラベルのアドレス(`&&label` / `goto *p`、GNU 拡張)を受け付けない**。診断は `expected expression` で原因を伝えない | 表引きのディスパッチを持つ gem。`strptime` 0.2.5 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
-| **AL**([issue](../../issues/expansion-budget-source-tokens.md)) | **マクロ展開の予算(100 万)がソースを素通りするトークンまで数える**。マクロの無い大きな表が「暴走マクロ」として止まる | 巨大な表や amalgamation を持つ gem。`unicode` 0.4.4.5 の `unidata.map`(24,555 行)と、`amalgalite` 2.0.0 の同梱 SQLite(`sqlite3.c`、22 万行超)が該当し、**対照の gcc はどちらも通る** | **実測**(2026-09-13、80,000 行の生成入力で再現。45,000 行は通る) | 置換で生まれたトークンだけを数えれば、上限はコメントどおりの意味になる |
 | **AM**([issue](../../issues/bundled-sched-param.md)) | **同梱 `sched.h` に `struct sched_param` が無い**。glibc の `<spawn.h>` がメンバに持つので、`<spawn.h>` ごと読めない | `<spawn.h>` を含む gem。`posix-spawn` 0.3.15 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `incomplete type`) | AF と同じ系統。**`<spawn.h>` が他に何を要るかを先に測って**まとめて決める |
 | **AN**([issue](../../issues/incompatible-function-pointer-argument.md)) | **gcc 13 が警告にとどめる 4 つの診断をエラーにする** — 互換でないポインタ・暗黙の関数宣言・暗黙の int(`expected type specifier` で原因を伝えない)・整数とポインタの変換。gcc 14 はどれも既定でエラー | 古い書き方の gem。`hpricot` / `fast_xs` / `fast_trie` / `zipruby` / `github-markdown` / `gctools` / `semacode-ruby19` / `picky` / `allocation_tracer` / `ruby_deep_clone` の 10 件が該当し、**対照の gcc 13 はどれも通る** | **実測**(2026-09-13、gcc 13 のみ。gcc 14 はこのホストに無い) | **警告に下げるかエラーを保つかが未決**。対照の版で結論が変わる |
 | **AQ**([issue](../../issues/bundled-sys-types-caddr.md)) | **同梱 `sys/types.h` に glibc の内部名 `__caddr_t` が無い**。glibc の `<net/if.h>` が読めない | `<net/if.h>` を含む gem。`network_interface` 0.0.4 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `expected type specifier`) | AF / AM と同じ系統。glibc 本体が使う内部名を数えてから足す |
@@ -25,13 +24,11 @@
 | **AS**([issue](../../issues/rmake-gnu-make-conditionals.md)) | **rmake が GNU make の条件文(`ifeq` など)を読めない**。パーサは代入とルール以外をすべて拒否する | 同梱ライブラリの手書き Makefile を make に渡す gem。`hiredis-client` 0.30.1 が該当し、**対照(GNU make)は通る** | **実測**(2026-09-13) | **対応するか対象外にするかが未決**。mkmf の Makefile は条件文を使わない |
 | **AT**([issue](../../issues/typeof-operator.md)) | **`typeof`(GNU 拡張、C23 で標準化)を受け付けない**。未宣言の関数として報告される | `algorithms` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
 | **AU**([issue](../../issues/bundled-pthread-attr-guard.md)) | **同梱 `pthread.h` が `pthread_attr_t` を glibc のガード(`__have_pthread_attr_t`)無しで定義する**。`<netdb.h>` の `sigevent_t.h` と型の再定義になる | `_GNU_SOURCE` のもとで `<netdb.h>` を含む gem。`trilogy` 2.13.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`<pthread.h>` + `<netdb.h>` の最小再現) | 同梱 `pthread.h` の他の型にも同じ穴が無いかを数える |
-| **AV**([issue](../../issues/include-duplicate-system-dir.md)) | **`-I/usr/include` を渡すと、glibc 本体のヘッダが同梱ヘッダより先に見つかる**。gcc はシステムと重なる `-I` を無視する | `dir_config` に `/usr` を渡す古い gem。`do_sqlite3` 0.10.17 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`#include <stdio.h>` だけで再現) | gcc の規則(`-isystem` / `-idirafter` を含む)を測ってから合わせる |
-| **AZ**([issue](../../issues/builtin-strlen.md)) | **`__builtin_strlen` が無い**。未宣言の関数として報告される | `herb` 0.10.4 が `hb_string.h:27` のマクロの中で使い、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 文字列リテラルの場合に定数へ畳むかを gcc と比べて決める |
 | **BA**([issue](../../issues/bundled-termios-tcflow.md)) | **同梱 `termios.h` に `tcflow`(POSIX)と `TCO*` / `TCI*` の定数が無い** | `ruby-termios` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | §2 の同梱ヘッダの洗い出しの対象 |
 | **BB**([issue](../../issues/bundled-ioctl-tiocm.md)) | **同梱 `sys/ioctl.h` に `TIOCMGET` / `TIOCM_*` が無い** | `serialport` 1.4.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | aarch64 の要求番号を測ってから、共通層に置くかを決める |
 | **BC**([issue](../../issues/atomic-builtin-small-widths.md)) | **`__atomic_*` ビルトインが 1 / 2 バイトの対象を拒否する**(4 / 8 バイト限定と自己申告) | 1 バイトのスピンロックを持つ gem。`iodine` 0.7.59 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 4 / 8 バイト限定のビルトインを一覧にしてから足す |
-| **BD**([issue](../../issues/unprototyped-function-pointer-compat.md)) | **仮引数付きの関数ポインタを旧形式の `void (*)()` へ代入できない**。C11 6.7.6.3p15 では互換な型 | 旧形式の関数ポインタをメンバに持つ gem。`numo-narray` 0.9.2.1 の `ndloop.c:359` が該当し、**対照の gcc は通る**(警告も出ない) | **実測**(2026-09-13、最小再現) | AN(gcc 13 が警告する制約違反)とは別件。既定の実引数拡張で型が変わる仮引数の組み合わせは診断を保つ |
 | **BE**([issue](../../issues/attribute-statement-after-label.md)) | **ラベルの直後に単独で置いた属性の文を拒否する**(`case 1: __attribute__ ((fallthrough)); case 2:`)。AY の修正はブロックの要素として現れる形だけを直した | 空の case から次の case へ落とすときに属性を書く gem。実在の gem ではまだ見ていない | **実測**(2026-09-13、最小再現で `expected expression`。gcc は通る) | ラベルの後の文を読む経路(`parse_nested_statement` → `parse_statement`)にも同じ判定を入れる |
+| **BF**([issue](../../issues/unprototyped-function-redeclaration.md)) | **旧形式で宣言した名前付き関数を、仮引数付きで再宣言・定義・呼び出しできない**(`void f(); void f(int x) {...}`)。関数の宣言表が `prototyped` を運ばない | 古いヘッダの `int f();` 形の宣言と、同じ翻訳単位の定義。実在の gem ではまだ見ていない | **実測**(2026-09-14、3 形とも。BD の修正の前後で同じ結果なので前からある不足) | BD が `Type` にまとめた互換の規則をそのまま使えるよう、宣言表の持ち方を先に決める |
 
 ## 2. 未解消の負債
 
@@ -61,6 +58,21 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ BD**(仮引数付きの関数ポインタを旧形式の `void (*)()` へ代入できない):
+  `unprototyped-function-pointer-compat-1` で解消。関数型に `prototyped` を足し、C11 6.7.6.3p15 の互換と 6.2.7p3 の合成型を
+  代入・比較・条件演算子・再宣言・ファイルスコープの初期化子に使った。旧形式の関数ポインタ経由の呼び出しは引数の数を
+  照合せず、既定の実引数拡張をかける。名前付き関数の再宣言は残った(BF)。
+- **ギャップ AL**(マクロ展開の予算がソースを素通りするトークンまで数える):
+  `expansion-budget-source-tokens-1` で解消。予算を、マクロの置換が生んだトークンだけに課すようにした。
+  上限の値(100 万)と、暴走するマクロを拒否する性質は変えていない。
+- **ギャップ AZ**(`__builtin_strlen` が無い):
+  `builtin-strlen-1` で解消。文字列リテラルの引数は構文段階で定数に畳み(gcc と同じく配列の大きさ・静的初期化子・
+  `case` ラベルで使える)、それ以外は `strlen` の呼び出しに書き換える。同族の 11 綴りは需要が出るまで足さない。
+  最初から登録した `strlen` のプロトタイプがプログラム自身の宣言と衝突した退行は、`builtin-strlen-2` で直した
+  (登録したプロトタイプはプログラムの最初の宣言に譲る)。
+- **ギャップ AV**(`-I/usr/include` で glibc 本体のヘッダが同梱ヘッダより先に見つかる):
+  `include-duplicate-system-dir-1` で解消。gcc と同じく、システムのディレクトリと実ディレクトリが一致する
+  `-I` / `-isystem` / `-idirafter` を探索パスから外した(末尾のスラッシュ・`..`・シンボリックリンクも同じとみなす)。
 - **ギャップ AY**(文として書いた `__attribute__ ((fallthrough));` を拒否する):
   `attribute-statement-1` で解消。属性の並びの後が宣言でなく `;` なら、空の文として読む(gcc の「空の宣言」と同じ形)。
   R7 のとおり属性の中身は構文として受理して捨てる。**ラベルの直後に単独で置いた形は残った**(BE)。

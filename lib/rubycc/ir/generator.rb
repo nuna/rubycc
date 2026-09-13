@@ -114,19 +114,14 @@ module Rubycc
         # extra, promoted arguments past the fixed ones); `defined` distinguishes
         # a prototype from a completed definition so redefinitions can be
         # rejected.
-        @signatures = {}
-        # gcc provides memcpy as a builtin, and the parser rewrites
-        # __builtin_memcpy(...) into a plain call to "memcpy". Seed its prototype
-        # up front — void *memcpy(void *, const void *, unsigned long) — so such a
-        # call compiles even when the translation unit never declares memcpy (no
-        # <string.h>); a later, identical string.h prototype merges in without
-        # conflict, and the reference resolves to libc's memcpy at link time.
-        @signatures["memcpy"] = {
-          param_types: [Type::Pointer.new(Type::Void), Type::Pointer.new(Type::Void), Type::ULong],
-          return_type: Type::Pointer.new(Type::Void),
-          variadic: false,
-          defined: false
-        }
+        # A signature carrying `builtin_seed: true` was not declared by the
+        # program at all: it is one of the builtin prototypes below, present from
+        # the start. It stands in only until the program declares that name
+        # itself — the first real declaration replaces it silently (see
+        # #declare_function and #declare_global) — so it can never be the
+        # "earlier declaration" a conflicting-types check measures against.
+        @builtin_signatures = builtin_signatures
+        @signatures = @builtin_signatures.dup
         # The translation-unit-wide string pool: `@strings` holds each interned
         # byte string in id order, `@string_ids` maps content back to its id so
         # identical literals collapse to one entry (and one .rodata address).
@@ -225,7 +220,12 @@ module Rubycc
       # Whenever a binding already exists (from an earlier reference or
       # definition), the two must agree on type.
       def declare_global(decl)
-        if @signatures.key?(decl.name)
+        # A builtin seed yields to a file-scope object of its name as well (gcc
+        # only warns that the builtin is redeclared as a non-function); a real
+        # function declaration of the name is still a redefinition.
+        if @signatures[decl.name]&.fetch(:builtin_seed, false)
+          @signatures.delete(decl.name)
+        elsif @signatures.key?(decl.name)
           error_at(decl.token, "redefinition of '#{decl.name}'")
         end
         # Resolve the initializer first: a "[]" array bound is only known once
@@ -660,8 +660,11 @@ module Rubycc
 
       # The function symbol a pointer initializer takes the address of — "f" or
       # "&f" — or nil when `value` is not a function reference. The function's
-      # signature must match the pointer's target type, exactly as a local
-      # function-pointer assignment requires. A name shadowed by a file-scope
+      # signature must be compatible with the pointer's target type (6.7.6.3p15
+      # via Type.function_types_compatible?, exactly as a local function-pointer
+      # assignment requires — see #compatible_types?), which admits both an
+      # exact match and a real prototype against the old-style unprototyped
+      # form ("void (*p)() = some_function;"). A name shadowed by a file-scope
       # variable is left to #address_constant_symbol.
       def function_address_constant(type, value)
         name =
@@ -676,7 +679,10 @@ module Rubycc
         sig = @signatures[name]
         return nil unless sig
 
-        unless type.pointer? && type.target == function_type_of(sig)
+        target_type = function_type_of(sig)
+        unless type.pointer? && (type.target == target_type ||
+                                  (type.target.function? &&
+                                   Type.function_types_compatible?(type.target, target_type)))
           error_at(value.token, "incompatible types in initialization")
         end
         name
@@ -981,6 +987,11 @@ module Rubycc
           end
         end
         existing = @signatures[name]
+        # A builtin seed is not a declaration the program made, so the program's
+        # first declaration of the name replaces it outright — whatever its type,
+        # as gcc lets a user declaration override a builtin with at most a
+        # warning. Every later redeclaration then meets that real one below.
+        existing = nil if existing&.fetch(:builtin_seed, false)
         if existing
           if existing[:param_types] != param_types || existing[:return_type] != return_type ||
              existing[:variadic] != variadic
@@ -4055,6 +4066,13 @@ module Rubycc
       # site).
       def gen_call(node)
         callee = node.callee
+        # A builtin the parser left as a call (see BUILTIN_LIBCALLS) calls its
+        # libc function under the builtin's own fixed prototype, never under the
+        # program's declaration of that function.
+        if callee.is_a?(Front::AST::VariableRef) && (libc_name = BUILTIN_LIBCALLS[callee.name])
+          return gen_direct_call(node, libc_name, @builtin_signatures.fetch(libc_name))
+        end
+
         # A bare identifier callee that binds no variable is a direct call to a
         # function of that name; an unknown one is an implicit declaration.
         if callee.is_a?(Front::AST::VariableRef) && lookup_variable(callee.name).nil?
@@ -4067,9 +4085,9 @@ module Rubycc
         end
       end
 
-      # A direct call to the named function, its signature already known.
-      def gen_direct_call(node, name)
-        sig = @signatures[name]
+      # A direct call to the named function, checked against `sig` — the
+      # function's recorded signature unless the caller supplies another.
+      def gen_direct_call(node, name, sig = @signatures[name])
         plumb = struct_return_plumbing(sig[:return_type])
         args = lower_call_arguments(node, sig[:param_types], sig[:variadic], name, plumb[:hidden])
         fixed = sig[:variadic] ? sig[:param_types].size : nil
@@ -4084,12 +4102,26 @@ module Rubycc
       # its type must be a pointer to a function, whose signature drives the
       # argument checks and supplies the result type. The target address rides
       # in the a-field and the argument vregs in b, exactly like a direct call.
+      #
+      # A pointer to the old-style unprototyped function type
+      # (Type::FunctionType#prototyped false, "void (*)()") has no parameter
+      # type list to check arity or types against, so it is treated exactly
+      # like a variadic call with no fixed parameters (#lower_call_arguments):
+      # every argument is admitted and takes the default argument promotions
+      # (6.5.2.2p6) instead of an assignment conversion, matching what
+      # numo-narray's ndloop.c does calling its `void (*loop_func)();` member
+      # directly, uncast, with real arguments. This also matches the System V
+      # ABI at the machine level: gcc sets %al (the vector-register count) the
+      # same way before such a call as it does before a call to a variadic
+      # prototype (measured 2026-09-13), because the actual callee might turn
+      # out to read it.
       def gen_indirect_call(node)
         target, callee_type = gen_value(node.callee)
         func_type = called_function_type(callee_type, node.token)
         plumb = struct_return_plumbing(func_type.return_type)
-        args = lower_call_arguments(node, func_type.param_types, func_type.variadic, nil, plumb[:hidden])
-        fixed = func_type.variadic ? func_type.param_types.size : nil
+        variadic = func_type.variadic || !func_type.prototyped
+        args = lower_call_arguments(node, func_type.param_types, variadic, nil, plumb[:hidden])
+        fixed = variadic ? func_type.param_types.size : nil
         emit_call_result(plumb, func_type.return_type) do |dst|
           emit(:call_indirect, dst: dst, a: target, b: args,
                                size: call_size(fixed, call_ret_descriptor(func_type.return_type, plumb)))
@@ -4705,6 +4737,16 @@ module Rubycc
           else_type
         elsif void_pointer_composite?(then_type, else_type)
           Type::Pointer.new(Type::Void)
+        # Two pointers to compatible function types (6.7.6.3p15: a real
+        # prototype against the old-style unprototyped form) still have a
+        # composite type per 6.5.15p6's "pointers to compatible types" case,
+        # exactly as a redeclaration merge does (Type.composite); anything
+        # else two pointers could disagree on (unrelated function
+        # signatures, an object pointee mismatch) is not a composite and
+        # falls through unchanged.
+        elsif then_type.pointer? && else_type.pointer? &&
+              (composite = Type.composite(then_type, else_type))
+          composite
         elsif then_type.void? || else_type.void?
           Type::Void
         elsif then_type.arithmetic? && else_type.arithmetic?
@@ -4993,7 +5035,9 @@ module Rubycc
         return true if expected.bool? && actual.pointer?
         return true if expected.pointer? && actual.pointer? &&
                         (expected == actual || expected.target.void? || actual.target.void? ||
-                         pointer_sign_compatible?(expected.target, actual.target))
+                         pointer_sign_compatible?(expected.target, actual.target) ||
+                         (expected.target.function? && actual.target.function? &&
+                          Type.function_types_compatible?(expected.target, actual.target)))
 
         expected == actual
       end
@@ -5866,15 +5910,24 @@ module Rubycc
       FLOAT_COMPARISONS = { eq: :feq, ne: :fne, lt: :flt, le: :fle, gt: :fgt, ge: :fge }.freeze
 
       # "==" and "!=" alone let a void * mix with any other pointer type (as
-      # in an assignment); every other pointer comparison ("<", "<=", ">",
-      # ">=") requires the exact same pointer type on both sides, void *
-      # included.
+      # in an assignment), and let two pointers to compatible-but-not-identical
+      # function types compare (6.5.9p2: "pointers to compatible types",
+      # 6.7.6.3p15 — a real prototype against the old-style unprototyped form,
+      # #function_types_compatible? — is what numo-narray's ndloop.c does at
+      # "if (lp->loop_func == loop_narray)", comparing its old-style member
+      # against a fully prototyped function's address). Every other pointer
+      # comparison ("<", "<=", ">", ">=") requires the exact same pointer type
+      # on both sides, void * included.
       EQUALITY_OPS = %i[eq ne].freeze
 
       def pointer_comparable?(op, lhs_type, rhs_type)
-        return lhs_type == rhs_type || lhs_type.target.void? || rhs_type.target.void? if EQUALITY_OPS.include?(op)
+        return true if lhs_type == rhs_type
 
-        lhs_type == rhs_type
+        return false unless EQUALITY_OPS.include?(op)
+
+        lhs_type.target.void? || rhs_type.target.void? ||
+          (lhs_type.target.function? && rhs_type.target.function? &&
+           Type.function_types_compatible?(lhs_type.target, rhs_type.target))
       end
 
       # Pointer arithmetic (p + n, p - n, p - q) scales by the pointed-to
@@ -6195,7 +6248,9 @@ module Rubycc
       # one.
       def call_return_type(node)
         callee = node.callee
-        if callee.is_a?(Front::AST::VariableRef) && lookup_variable(callee.name).nil?
+        if callee.is_a?(Front::AST::VariableRef) && (libc_name = BUILTIN_LIBCALLS[callee.name])
+          @builtin_signatures.fetch(libc_name)[:return_type]
+        elsif callee.is_a?(Front::AST::VariableRef) && lookup_variable(callee.name).nil?
           sig = @signatures[callee.name]
           error_at(node.token, "implicit declaration of function '#{callee.name}'") unless sig
           sig[:return_type]
@@ -6310,8 +6365,54 @@ module Rubycc
       # The Type::FunctionType a function's recorded signature describes, used
       # both to build the pointer a function designator decays to and to check
       # an indirect call or a function-pointer assignment against it.
+      #
+      # `prototyped` is always true here: `sig` describes a named function
+      # this translation unit has declared or defined, and #declare_function's
+      # signature table (@signatures) does not carry the parser's `prototyped`
+      # flag through -- every function this subset lets reach a call site
+      # already has its real (possibly declaration-list-derived, see
+      # Parser#parse_old_style_function_definition) parameter types on file.
+      # The one program this misses is a named function declared old-style and
+      # never defined ("void work();"), whose address is then used as an
+      # unprototyped `void (*)()`-compatible value; treating it as prototyped
+      # is only ever *more* strict than 6.7.6.3p15 requires there, never less
+      # -- it cannot accept a program the standard rejects.
       def function_type_of(sig)
-        Type::FunctionType.new(sig[:return_type], sig[:param_types], sig[:variadic])
+        Type::FunctionType.new(sig[:return_type], sig[:param_types], sig[:variadic], true)
+      end
+
+      # The builtins the parser rewrites into a run-time call rather than
+      # folding (Front::Parser#parse_builtin_memcpy, #parse_builtin_strlen): the
+      # callee name the rewritten call keeps -> the libc function it calls.
+      BUILTIN_LIBCALLS = { "__builtin_memcpy" => "memcpy", "__builtin_strlen" => "strlen" }.freeze
+
+      # gcc's fixed prototypes for the libc functions behind BUILTIN_LIBCALLS,
+      # keyed by the libc name and each marked `builtin_seed: true`. They serve
+      # twice: as the signature a __builtin_* call is always checked against,
+      # and as the seed #generate places in @signatures so a plain call of the
+      # function compiles without <string.h> (gcc accepts it with a warning)
+      # until the program declares the function itself. strlen's parameter is
+      # the target's plain char (const is not part of a Type), so the seed has
+      # the very type a `const char *` declaration on this target resolves to.
+      def builtin_signatures
+        {
+          # void *memcpy(void *, const void *, unsigned long)
+          "memcpy" => {
+            param_types: [Type::Pointer.new(Type::Void), Type::Pointer.new(Type::Void), Type::ULong],
+            return_type: Type::Pointer.new(Type::Void),
+            variadic: false,
+            defined: false,
+            builtin_seed: true
+          }.freeze,
+          # unsigned long strlen(const char *)
+          "strlen" => {
+            param_types: [Type::Pointer.new(@plain_char)],
+            return_type: Type::ULong,
+            variadic: false,
+            defined: false,
+            builtin_seed: true
+          }.freeze
+        }.freeze
       end
 
       def new_vreg

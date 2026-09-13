@@ -597,6 +597,15 @@ module Rubycc
           if function_params.nil?
             error_at(name_tok, "function definition through a typedef is not allowed")
           end
+          # A literal "()" reaching a definition means "no parameters"
+          # (6.7.6.3p14), not the old-style "unspecified parameters" form
+          # #apply_declarator_suffix assumed when it built `type` -- it cannot
+          # see this far ahead. Upgrade it to prototyped before it is declared,
+          # so a later redeclaration or a use of this function's address is
+          # checked against a real zero-parameter prototype.
+          unless type.prototyped
+            type = Type::FunctionType.new(type.return_type, type.param_types, type.variadic, true)
+          end
           # A function reserves no object to align (6.7.5p2).
           reject_alignas(spec_info.alignas, "function '#{name_tok.value}'")
           declare_ordinary_name(name_tok.value, type)
@@ -655,7 +664,12 @@ module Rubycc
         # empty parameter list; the types are known now, so the function's real
         # type is put together here. An old-style definition is never variadic —
         # an identifier list has no "..." — so the flag is false throughout.
-        type = Type::FunctionType.new(type.return_type, abi_types, false)
+        # `prototyped` is true: a definition's declaration-list fixes every
+        # parameter's real (promoted) type, so this is as good a prototype as
+        # an explicit one for any later redeclaration or use of this
+        # function's address (6.7.6.3p15's identifier-list case, which this
+        # subset does not otherwise model — see Type.composite).
+        type = Type::FunctionType.new(type.return_type, abi_types, false, true)
 
         # A function reserves no object to align (6.7.5p2).
         reject_alignas(spec_info.alignas, "function '#{name_tok.value}'")
@@ -798,15 +812,17 @@ module Rubycc
         type
       end
 
-      # Refuses an identifier list at a declarator position that cannot be the
-      # definition of that function. 6.7.6.3p3 lets a non-empty identifier list
-      # appear only there, so a prototype, a typedef, a member, a parameter or a
-      # local written that way ("int f(a, b);") names parameters whose types it
-      # never supplies. gcc only warns and reads such a declarator as the
-      # unprototyped "int f()"; this compiler models no unprototyped function
-      # type, so reading it that way would silently give the name a "(void)"
-      # signature and then check every call against it — a confident wrong
-      # diagnosis in place of an accurate one.
+      # Refuses a *non-empty* identifier list at a declarator position that
+      # cannot be the definition of that function. 6.7.6.3p3 lets a non-empty
+      # identifier list appear only there, so a prototype, a typedef, a
+      # member, a parameter or a local written that way ("int f(a, b);") names
+      # parameters whose types it never supplies. gcc only warns and reads such
+      # a declarator as the unprototyped "int f()"; this compiler models no
+      # unprototyped function type for a *named* parameter list like this one
+      # (only for a literal, nameless "()" — see Type::FunctionType#prototyped
+      # — which carries no names to lose), so reading it that way would
+      # silently give the name a "(void)" signature and then check every call
+      # against it — a confident wrong diagnosis in place of an accurate one.
       def reject_identifier_list(params)
         return unless params.is_a?(IdentifierList)
 
@@ -2120,19 +2136,31 @@ module Rubycc
         AST::FunctionDef.new(name, return_type, params, body, return_tok, storage, variadic)
       end
 
-      # Returns [params, variadic]: an array of AST::Parameter (empty for "()" or
-      # "(void)") and whether the list ends in a "..." variable-argument marker
-      # (6.7.6.3). A bare "void" only means "no parameters" when it is the entire
-      # list (followed immediately by ")"); "void *" or a later "void" parameter
-      # falls through to parse_parameter_declaration, which rejects a non-pointer
-      # void. A "..." is admitted only after at least one named parameter and a
-      # comma ("int a, ..."): a lone "(...)" has no fixed parameter to anchor a
+      # Returns [params, variadic, empty_parens]: an array of AST::Parameter
+      # (empty for "()" or "(void)"), whether the list ends in a "..."
+      # variable-argument marker (6.7.6.3), and whether the parentheses were
+      # literally empty (true only for "()", never for "(void)"). A bare "void"
+      # only means "no parameters" when it is the entire list (followed
+      # immediately by ")"); "void *" or a later "void" parameter falls through
+      # to parse_parameter_declaration, which rejects a non-pointer void. A
+      # "..." is admitted only after at least one named parameter and a comma
+      # ("int a, ..."): a lone "(...)" has no fixed parameter to anchor a
       # va_start on, and nothing may follow the "...".
+      #
+      # `empty_parens` distinguishes the two C declarators that both parse to
+      # an empty parameter list: "(void)" always states "no parameters" (a real
+      # prototype), while a literal "()" is ambiguous on its own -- 6.7.6.3p14
+      # reads it as "no parameters" only when it is part of a function
+      # definition, and otherwise as the old-style "unspecified parameters"
+      # form (6.7.6.3p15). #apply_declarator_suffix uses this flag to build the
+      # FunctionType's `prototyped` field; the definition case is corrected
+      # after the fact once #parse_external_declaration sees the following "{"
+      # (see the `type.prototyped` fixup there).
       def parse_parameter_type_list
-        return [[], false] if peek.punct?(")")
+        return [[], false, true] if peek.punct?(")")
         if peek.keyword?("void") && peek_ahead(1)&.punct?(")")
           advance
-          return [[], false]
+          return [[], false, false]
         end
         if peek.punct?("...")
           error_at(peek, "ISO C requires a named parameter before '...'")
@@ -2153,7 +2181,7 @@ module Rubycc
           end
           params << parse_parameter_declaration
         end
-        [params, variadic]
+        [params, variadic, false]
       end
 
       # parameter-declaration = type-specifier declarator?, the declarator being
@@ -2820,17 +2848,25 @@ module Rubycc
       # array/function ones adjusted, see #parse_parameter_declaration) here so
       # the suffix can both build the function type and, when it belongs to a
       # real function, hand its Parameter objects back for the body. Returns
-      # [:function, params, paren_token, variadic], `params` being either the
-      # Parameter array of a prototype or an IdentifierList; the variadic flag
-      # carries a trailing "..." forward to #apply_declarator_suffix so it lands
-      # on the FunctionType.
+      # [:function, params, paren_token, variadic, empty_parens], `params`
+      # being either the Parameter array of a prototype or an IdentifierList;
+      # the variadic flag carries a trailing "..." forward to
+      # #apply_declarator_suffix so it lands on the FunctionType, and
+      # `empty_parens` (see #parse_parameter_type_list) tells it whether to
+      # mark that FunctionType unprototyped. A non-empty identifier list is
+      # always part of the definition it names (6.7.6.3p3) and never reaches
+      # #apply_declarator_suffix as the final type -- #parse_old_style_function_definition
+      # replaces it once the declaration-list supplies real types -- so
+      # `empty_parens` is irrelevant there and passed as false.
       def parse_function_suffix
         paren_tok = advance # "("
-        return [:function, parse_identifier_list(paren_tok), paren_tok, false] if identifier_list_ahead?
+        if identifier_list_ahead?
+          return [:function, parse_identifier_list(paren_tok), paren_tok, false, false]
+        end
 
-        params, variadic = parse_parameter_type_list
+        params, variadic, empty_parens = parse_parameter_type_list
         expect_punct(")")
-        [:function, params, paren_tok, variadic]
+        [:function, params, paren_tok, variadic, empty_parens]
       end
 
       # Whether the just-opened "(" holds an identifier-list rather than a
@@ -2879,7 +2915,7 @@ module Rubycc
       # "[]" (deduced from an initializer or adjusted away on a parameter). The
       # suffix's own token (the "(" or "[") locates any diagnostic.
       def apply_declarator_suffix(suffix, inner)
-        kind, data, tok, variadic = suffix
+        kind, data, tok, variadic, empty_parens = suffix
         if kind == :function
           error_at(tok, "function returning a function is not allowed") if inner.function?
           error_at(tok, "function returning an array is not allowed") if inner.array?
@@ -2888,9 +2924,19 @@ module Rubycc
           # placeholder with no parameters, which
           # #parse_old_style_function_definition replaces once they are known.
           # It matches what an empty "()" builds, so a declarator that never
-          # reaches a definition still has a usable (if arity-less) type.
+          # reaches a definition still has a usable (if arity-less) type; its
+          # `prototyped` flag is moot either way, since this placeholder is
+          # never bound to a name.
+          #
+          # For the non-identifier-list case, `prototyped` is false only for a
+          # literal "()" (`empty_parens`) -- the old-style declarator 6.7.6.3p15
+          # treats as having unspecified parameters. A non-empty
+          # parameter-type-list and an explicit "(void)" are always prototyped;
+          # #parse_external_declaration corrects a truly-empty "()" back to
+          # prototyped when it turns out to head a function definition
+          # (6.7.6.3p14).
           params = data.is_a?(IdentifierList) ? [] : data.map(&:type)
-          Type::FunctionType.new(inner, params, variadic)
+          Type::FunctionType.new(inner, params, variadic, !empty_parens)
         else
           error_at(tok, "array of functions is not allowed") if inner.function?
           error_at(tok, "array has incomplete element type") if inner.array? && inner.incomplete?
@@ -3477,6 +3523,8 @@ module Rubycc
             parse_builtin_unreachable
           elsif peek.keyword?("__builtin_memcpy")
             parse_builtin_memcpy
+          elsif peek.keyword?("__builtin_strlen")
+            parse_builtin_strlen
           elsif peek.type == :keyword && OVERFLOW_BUILTINS.key?(peek.value)
             parse_builtin_overflow
           elsif peek.type == :keyword && ATOMIC_BUILTINS.key?(peek.value)
@@ -3784,11 +3832,13 @@ module Rubycc
         AST::BuiltinUnreachable.new(keyword_tok)
       end
 
-      # "__builtin_memcpy ( dst , src , n )": rewritten to an ordinary call of
-      # the libc function "memcpy", so it links against the C library's memcpy
-      # like the plain call would. The generator seeds a builtin prototype for
-      # "memcpy" (void *(void *, const void *, unsigned long)), so this compiles
-      # even when <string.h> is not included, matching gcc's builtin.
+      # "__builtin_memcpy ( dst , src , n )": rewritten to an ordinary call
+      # whose callee keeps the builtin's own name. The generator lowers a call
+      # of that name to a call of the libc function "memcpy", checked against
+      # the builtin's fixed prototype (void *(void *, const void *, unsigned
+      # long)) rather than whatever the program itself declared memcpy as —
+      # gcc's builtin keeps its own type the same way — so this compiles even
+      # when <string.h> is not included, and links against libc's memcpy.
       def parse_builtin_memcpy
         keyword_tok = advance # "__builtin_memcpy"
         expect_punct("(")
@@ -3797,7 +3847,47 @@ module Rubycc
         unless args.size == 3
           error_at(keyword_tok, "'__builtin_memcpy' expects 3 arguments, have #{args.size}")
         end
-        AST::Call.new(AST::VariableRef.new("memcpy", keyword_tok), args, keyword_tok)
+        AST::Call.new(AST::VariableRef.new("__builtin_memcpy", keyword_tok), args, keyword_tok)
+      end
+
+      # "__builtin_strlen ( s )": when the sole argument is (syntactically) a
+      # string literal, gcc folds the whole expression to the constant number
+      # of bytes before the first NUL — the value ordinary strlen would return
+      # — with no code emitted at all, so it is a genuine constant-expression:
+      # it holds in a static initializer, an array bound, a case label or a
+      # _Static_assert (measured against gcc 13.3, 2026-09-13). That fold is
+      # done straight away, here, by turning the whole call into an AST::IntLit
+      # of type "unsigned long" (size_t on this ABI); every later stage already
+      # knows how to place an IntLit anywhere a constant-expression is wanted,
+      # so no other file needs to learn about this builtin. Any other argument
+      # (a variable, a non-literal expression) becomes a run-time call lowered
+      # exactly like __builtin_memcpy above: the callee keeps the builtin's name,
+      # and the generator calls libc's "strlen" with the builtin's own prototype
+      # (unsigned long strlen(const char *)), so this compiles even when
+      # <string.h> is not included and the result stays unsigned long even when
+      # the program declared strlen differently itself — gcc 13.3 gives
+      # "sizeof __builtin_strlen(p)" as 8 after "int strlen(char *);" while a
+      # plain "strlen(p)" there is 4 (measured 2026-09-14).
+      def parse_builtin_strlen
+        keyword_tok = advance # "__builtin_strlen"
+        expect_punct("(")
+        args = parse_argument_expression_list
+        expect_punct(")")
+        unless args.size == 1
+          error_at(keyword_tok, "'__builtin_strlen' expects 1 argument, have #{args.size}")
+        end
+
+        arg = args.first
+        if arg.is_a?(AST::StringLit)
+          # A string literal's stored value has no terminating NUL (see
+          # AST::StringLit), but an embedded "\0" escape still ends a real
+          # strlen scan early, so the length is the position of the first NUL
+          # byte when there is one, the full byte count otherwise.
+          length = arg.value.index("\x00".b) || arg.value.bytesize
+          AST::IntLit.new(length, keyword_tok, Type::ULong)
+        else
+          AST::Call.new(AST::VariableRef.new("__builtin_strlen", keyword_tok), args, keyword_tok)
+        end
       end
 
       # member-designator = identifier ( "." identifier | "[" expression "]" )*:
