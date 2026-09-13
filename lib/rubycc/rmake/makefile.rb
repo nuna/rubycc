@@ -124,8 +124,26 @@ module Rubycc
       def index_rules(rules)
         rules.each do |rule|
           targets = expand_words(rule.targets)
-          prereqs = expand_words(rule.prerequisites)
+          prereqs = glob_prerequisites(expand_words(rule.prerequisites))
           targets.each { |t| classify_target(t, prereqs, rule) }
+        end
+      end
+
+      # Replace each prerequisite word holding a `*`, `?` or `[` with the files
+      # it matches, sorted, relative to #dir (an absolute pattern stays
+      # absolute). A pattern that matches nothing is kept verbatim, and so ends
+      # up as a name nothing can make. All of this is GNU make 4.3's behaviour,
+      # measured 2026-09-14; numo-narray's `DEPENDS = ... $(srcdir)/gen/*.rb`
+      # is the corpus case. Before rmake diagnosed unmakeable prerequisites the
+      # literal pattern was silently skipped, which hid the missing expansion.
+      # Matching happens once, when the Makefile is read, so a file a recipe
+      # creates later is not picked up — the same as in GNU make.
+      def glob_prerequisites(words)
+        words.flat_map do |word|
+          next [word] unless word.match?(/[*?\[]/)
+
+          matches = Dir.glob(word, base: dir_bytes).sort.map(&:b)
+          matches.empty? ? [word] : matches
         end
       end
 
@@ -165,18 +183,22 @@ module Rubycc
       # prerequisite steps become that step's #prereqs and are hidden behind it);
       # a target that is not a step forwards its prerequisites' exposed steps, so
       # a phony aggregate like `all` exposes the real steps beneath it.
-      def build(target)
+      #
+      # +needed_by+ is the target that asked for this one (nil for the goal); it
+      # only serves the NoRuleError raised when +target+ cannot be made at all.
+      def build(target, needed_by = nil)
         return @state[target] if @state.key?(target)
 
         # Tentative entry breaks any dependency cycle without looping forever.
         @state[target] = [false, file_mtime(target), []]
         node = resolve(target)
+        raise NoRuleError.new(target: target, needed_by: needed_by) if unmakeable?(node)
 
         rebuilt = false
         newest = nil
         dep_steps = []
         node[:prereqs].each do |p|
-          stale, mtime, exposed = build(p)
+          stale, mtime, exposed = build(p, target)
           rebuilt ||= stale
           newest = newer(newest, mtime)
           dep_steps.concat(exposed)
@@ -218,6 +240,7 @@ module Rubycc
 
         {
           target: target,
+          explicit: !entry.nil?,
           prereqs: prereqs,
           recipe: recipe,
           source: source,
@@ -227,24 +250,67 @@ module Rubycc
         }
       end
 
+      # True when nothing can produce +node+'s target: it is not a file, no
+      # explicit rule names it (an explicit rule without a recipe still counts —
+      # `FORCE:` is the idiom that relies on it, and GNU make, measured, accepts
+      # such a target as made), no inference rule applied, and it is not .PHONY.
+      def unmakeable?(node)
+        !node[:explicit] && node[:recipe].nil? && node[:mtime].nil? && !node[:phony]
+      end
+
       # Find an inference rule for +target+: its suffix must be a known
       # `.SUFFIXES` entry and produced by some `.X.Y:` rule whose same-stem
-      # source file exists (searched along VPATH). Returns [rule, source_name,
-      # stem] or nil. Candidate source suffixes are tried in `.SUFFIXES` order,
-      # as make does.
-      def infer_suffix_rule(target)
+      # source is available. Returns [rule, source_name, stem] or nil.
+      #
+      # Availability is judged in two passes over the candidates, each in
+      # `.SUFFIXES` order (POSIX's order, which rmake has always used; GNU make
+      # instead follows the order the rules were defined in):
+      #
+      # 1. a source that exists as a file (searched along VPATH) — POSIX's own
+      #    condition, which alone decides whenever any candidate exists;
+      # 2. otherwise a source that can itself be made (#makeable_source?): the
+      #    target of an explicit rule, or — recursively — of another inference
+      #    rule. This is what lets `.c.o:` compile a `.c` that an explicit rule
+      #    generates, and a `.t.c:` + `.c.o:` pair chain from an existing `.t`.
+      #
+      # The order of the passes matters and was measured against GNU make 4.3
+      # (2026-09-14): with both `x.c` present and an earlier-listed `x.t` that
+      # only a rule could produce, GNU make compiles `x.c`, so an existing file
+      # beats a buildable one regardless of the suffix order.
+      #
+      # +visiting+ holds the names whose inference is in progress along the
+      # current chain, so mutually inverse rules (`.c.o:` with `.o.c:`) end the
+      # search instead of recursing forever.
+      def infer_suffix_rule(target, visiting = [target])
         to_suffix = suffix_of(target)
         return nil unless to_suffix && @suffixes.include?(to_suffix)
 
         stem = target[0...(target.length - to_suffix.length)]
-        @suffixes.each do |from|
+        candidates = @suffixes.filter_map do |from|
           rule = @suffix_rules.find { |r| r.from_suffix == from && r.to_suffix == to_suffix }
-          next unless rule
+          rule && [rule, "#{stem}#{from}"]
+        end
 
-          resolved = resolve_prerequisite("#{stem}#{from}")
+        candidates.each do |rule, source|
+          resolved = resolve_prerequisite(source)
           return [rule, resolved, stem] if resolved
         end
+        candidates.each do |rule, source|
+          return [rule, source, stem] if makeable_source?(source, visiting)
+        end
         nil
+      end
+
+      # Whether a candidate source that does not exist as a file can be made:
+      # an explicit rule names it as a target, or an inference rule can build
+      # it (from a file that exists or, in turn, from something makeable). The
+      # name stays unadorned — a file that is yet to be made has no VPATH
+      # location, so it is made (and read back as $<) in the build directory.
+      def makeable_source?(name, visiting)
+        return true if @explicit.key?(name)
+        return false if visiting.include?(name)
+
+        !infer_suffix_rule(name, visiting + [name]).nil?
       end
 
       def suffix_of(name)

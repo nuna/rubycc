@@ -15809,3 +15809,83 @@ GNU 属性(`__attribute__((fallthrough));`)を `#parse_block_item` に届く経�
 `test/test_c_suite.rb` **223 runs / 435 assertions / 0 failures / 13 skips**、
 `test/test_c_suite_aarch64.rb` **444 runs / 861 assertions / 0 failures / 26 skips**
 (いずれも 2026-09-14、`examples/m6/attribute_statement_after_label_1_case_label.c` を含む)。
+
+## rmake-suffix-rule-generated-source-1 — 推論規則が「まだ無いが作れる」ソースを使えるようにする
+
+GAPS BH / `issues/rmake-suffix-rule-generated-source.md` の決着。
+変更は `lib/rubycc/rmake/makefile.rb`・`lib/rubycc/rmake/errors.rb`、
+テストは新規 `test/test_rmake_suffix_rule_generated_source.rb`。
+
+### 事実(2026-09-14、この WSL2 の GNU Make 4.3 で測定)
+
+issue の Makefile(`x.c` を明示規則で `gen/src.txt` から生成し、`.c.o:` でコンパイル)に
+加え、次の形を GNU make で実走した:
+
+| ケース | GNU make 4.3 の結果 |
+|---|---|
+| issue の Makefile | `cp gen/src.txt x.c` → `cc -c -o x.o x.c` → `cc -o prog x.o` |
+| 明示規則が `.c.o:` より後ろにある | 同上(規則の順序によらない) |
+| `.t.c:` + `.c.o:`、`x.t` が存在 | `cp x.t x.c` → compile → link → **`rm x.c`**(中間ファイル削除) |
+| 同上で `x.t` も明示規則で生成 | `x.t` 生成 → `x.c` → `x.o` → link → `rm x.c` |
+| 3 段連鎖 `.a.b:` `.b.c:` `.c.o:` | 3 段とも実行し、`rm x.c x.b` |
+| `x.c` が存在し、先に並ぶ `.t` は `.s.t:` 連鎖でしか作れない | `.c.o:` を選ぶ(存在するファイルが連鎖に勝つ) |
+| 同上で `x.t` が明示規則のターゲット | やはり `.c.o:` を選ぶ |
+| 両方存在、`.SUFFIXES: .t .c .o` で `.c.o:` を先に定義 | `.c.o:` を選ぶ(**`.SUFFIXES` 順ではなく規則の定義順**) |
+| `.c.o:` と `.o.c:`、何も存在しない | `Circular x.c <- x.o dependency dropped.` の後、壊れた `cp  x.c` を実行して失敗 |
+| `prog: x.o` で `x.o` の作り方が無い | `make: *** No rule to make target 'x.o', needed by 'prog'.  Stop.`(exit 2) |
+| コマンドラインのゴールが無い | `make: *** No rule to make target 'nope'.  Stop.` |
+| `x.c: gen/src.txt gen/nope.txt` | `No rule to make target 'gen/nope.txt', needed by 'x.c'.  Stop.`、何も実行しない |
+| `FORCE:`(空規則)・`foo: bar` + `bar:`・規則の無い `.PHONY` | いずれもエラーにしない |
+| `x.c: gen/src.txt`(レシピ無し明示規則)で `x.c` 不在 | `.c.o:` を選び、コンパイラが `x.c` 不在で失敗 |
+| `x.c` が他の規則の前提として現れるだけ | `.c.o:` を選び、`No rule to make target 'x.c', needed by 'x.o'` |
+| 前提 `gen/*.rb`(一致あり) | 一致をソートして展開(`$^=gen/a.rb gen/b.rb gen/c.rb`)。絶対パス・変数経由・`?`・`[...]` も同様 |
+| 前提 `gen/*.rb`(一致なし) | 字面のまま残り `No rule to make target 'gen/*.rb', needed by 'x.c'.  Stop.` |
+
+修正前の rmake(origin/master、fb308d9 を含む)は、存在しないソースを推論候補から外していたので
+`x.o` に規則が付かず、しかも「作り方の無い前提」を黙って無視していたため、リンクで初めて落ちていた
+(issue 記載の症状)。新テストファイル(ワイルドカード節を足す前の 21 件)を修正前コードに
+当てると 14 件が落ちる(5 failures, 9 errors)ことを確認した。
+
+numo-narray 0.9.2.1(sha256 `eed76b47…adceb`)を
+`tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc` で試した結果:
+
+1. 推論の修正だけの段階では、今度は
+   `rmake: No rule to make target '<CANDIDATE_WORK>/.../gen/*.rb', needed by 't_bit.c'.  Stop.`
+   で止まった。numo の `depend.erb` は `DEPENDS = $(C_TMPL) <srcdir>/gen/*.rb` を前提に並べる。
+   **修正前の rmake はこの字面を黙って無視していた**ので、issue の対照実験
+   (`x.c: gen/a.rb gen/*.rb` は通る)はワイルドカードを扱えていたのではなく、無視していただけだった。
+2. 前提のワイルドカード展開を足した後は、生成規則が走って `t_*.c` がコンパイルに進んだ。
+   並列ビルドが止まった時点で生成済みは `t_bit.c` `t_int8.c` `t_int16.c` `t_int32.c`
+   `t_int64.c` `t_uint8.c` の 6 本。失敗は
+   `t_int8.c:20:1: error: emmintrin.h: No such file or directory`(`t_int16.c` `t_int32.c`
+   `t_int64.c` も同じ)で、別原因(status `build_failed`)。
+
+### 判断
+
+- **推論候補のソースは 2 段で判定する**。1 段目は「ファイルとして存在する」(POSIX の条件そのもの)、
+  それで決まらなければ 2 段目で「作れる」(明示規則のターゲット、または再帰的に別の推論規則で作れる)。
+  「存在が連鎖に勝つ」は上表の実測に合わせた。1 段にまとめると、先に並ぶ連鎖候補が既存ファイルを
+  押しのけてしまい、既存の Makefile で選ばれる規則が変わる。
+- **候補の順は `.SUFFIXES` 順のまま**。GNU make は規則の定義順だが、rmake は Step 56 から POSIX の
+  `.SUFFIXES` 順で、mkmf の Makefile では両者が一致する。ここで変える理由が無い。
+- **連鎖の循環は探索を打ち切る**(訪問中の名前は候補から外す)。GNU make は依存を捨てて壊れた
+  レシピを走らせるが、そこまで真似る価値は無く、rmake は `No rule to make target 'x.o'` で止める。
+- **中間ファイルは消さない**。GNU make は連鎖で作った、明示的に言及されていないファイルを
+  最後に `rm` する。gem のビルドでは残って困ることが無く、消すと 2 回目の実行の判定
+  (中間が無くても最新とみなす)まで実装が要る。差として記録するに留める。
+- **作り方の無い前提は計画段階で `NoRuleError` にする**。文言は GNU make に合わせ
+  (`rmake: No rule to make target 'x.o', needed by 'prog'.  Stop.`、CLI は exit 2)、ログを
+  どちらの make が書いても同じに読めるようにした。「作れない」の定義は、ファイルが無く・
+  明示規則のターゲットでもなく(レシピ無しの `FORCE:` 等は作れる扱い)・推論も効かず・
+  `.PHONY` でもない、の全部。GNU make との差は 2 つ残る:
+  (a) rmake は計画を全部立ててから実行するので、欠けた前提より前の手順も走らない
+  (GNU make は手前まで実行してから止まる)。
+  (b) 他の規則の前提に現れるだけの名前(GNU make の "ought to exist")は候補扱いしないので、
+  エラーの名指しが `x.c` ではなく `x.o` になる。どちらも止まる位置はリンクより前。
+- **前提のワイルドカードを展開する**(`*`・`?`・`[`。Makefile のディレクトリ基準、絶対パスは
+  そのまま、一致をソート、一致なしは字面を残す)。上の事実 1 の通り、欠けた前提を報告するように
+  した時点で、それまで黙って無視されていた `gen/*.rb` がエラーになり、issue の対照実験で
+  通っていた形を壊す。展開は Makefile を読んだ時点で 1 回だけ行う(後でレシピが作るファイルは
+  拾わない。GNU make と同じ)。ターゲット側のワイルドカードは展開しない(コーパスに出てこない)。
+- **numo-narray はこのステップの範囲では通らない**。rmake の段は越え、残りは rubycc の
+  `<emmintrin.h>`(SSE2 組み込み関数)の欠如で、rmake とは別の課題。
