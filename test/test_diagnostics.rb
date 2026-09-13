@@ -1408,10 +1408,10 @@ class TestDiagnostics < Minitest::Test
     assert_match(/incomplete type/, error.description)
   end
 
-  def test_extern_with_initializer_is_rejected
-    source = "extern int g = 5; int main(void) { return 0; }"
+  def test_block_scope_extern_with_initializer_is_rejected
+    source = "void f(void) { extern int y = 1; } int main(void) { return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/'g' has both 'extern' and initializer/, error.description)
+    assert_match(/'y' has both 'extern' and initializer/, error.description)
   end
 
   def test_block_scope_static_with_a_non_constant_initializer_is_rejected

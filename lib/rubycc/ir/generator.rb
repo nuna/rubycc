@@ -211,12 +211,17 @@ module Rubycc
 
       # Records a file-scope variable. A name already taken by a function is a
       # redefinition. The storage class then steers the outcome:
-      #   * `extern` is a reference declaration — it registers the binding (so
-      #     later code sees the name and its type) but reserves no storage, and
-      #     any number may coexist with each other and with one real definition;
-      #   * an absent or `static` specifier is a *definition*, tentative when it
-      #     has no initializer (6.9.2): a run of such declarations of one name
-      #     merges into a single object, at most one of them initializing it.
+      #   * `extern` with no initializer is a reference declaration — it
+      #     registers the binding (so later code sees the name and its type)
+      #     but reserves no storage, and any number may coexist with each
+      #     other and with one real definition;
+      #   * `extern` *with* an initializer is itself the external definition
+      #     (6.9.2p1) — the initializer is what makes it one, exactly as if
+      #     `extern` were absent — so it is handled the same as the next case;
+      #   * an absent or `static` specifier, or `extern` with an initializer,
+      #     is a *definition*, tentative when it has no initializer (6.9.2): a
+      #     run of such declarations of one name merges into a single object,
+      #     at most one of them initializing it.
       # Whenever a binding already exists (from an earlier reference or
       # definition), the two must agree on type.
       def declare_global(decl)
@@ -246,7 +251,7 @@ module Rubycc
         # subscript it, so it binds with its incomplete type intact.
         require_complete(type, decl.token) unless extern_incomplete_array?(decl.storage, type)
 
-        if decl.storage == :extern
+        if decl.storage == :extern && !has_init
           declare_extern_global(decl, type)
         else
           merge_object_definition(decl, type, init, has_init)
@@ -296,10 +301,11 @@ module Rubycc
         composite
       end
 
-      # Merges one non-extern (tentative or real) file-scope definition into the
-      # object's record (6.9.2). The first such declaration reserves the object —
-      # .data if it initializes, else a tentative .bss object; a later declaration
-      # of the same name must agree in type and linkage, may add the one allowed
+      # Merges one file-scope definition — absent/static storage, or `extern`
+      # carrying an initializer (6.9.2p1) — into the object's record (6.9.2).
+      # The first such declaration reserves the object — .data if it
+      # initializes, else a tentative .bss object; a later declaration of the
+      # same name must agree in type and linkage, may add the one allowed
       # initializer (upgrading a tentative .bss object to .data in place), and a
       # second initializer is the redefinition error.
       def merge_object_definition(decl, type, init, has_init)

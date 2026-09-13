@@ -910,11 +910,13 @@ module Rubycc
         initializer_value = nil
         initializer_node = nil
         if peek.punct?("=")
-          # An "extern" object with an initializer is a definition, not a mere
-          # reference; the two together are contradictory, so reject them.
-          if spec_info.storage == :extern
-            error_at(name_tok, "'#{name_tok.value}' has both 'extern' and initializer")
-          end
+          # A file-scope "extern" with an initializer is an external
+          # definition, not a mere reference — the initializer is what makes
+          # it one (6.9.2p1's own example: "extern int i3 = 3; // definition,
+          # external linkage"), so nothing is rejected here: the declaration
+          # is handled exactly as it would be without "extern". Only at block
+          # scope is the combination a constraint violation (6.7.9p5), which
+          # #parse_init_declarator enforces separately.
           advance # "="
           init = parse_initializer
           if InitializerResolver.structural?(type, init)
@@ -2298,6 +2300,10 @@ module Rubycc
         const = declarator_object_const(type, spec_info.const, pointer_quals)
         initializer = nil
         if peek.punct?("=")
+          # A block-scope "extern" with an initializer is a constraint
+          # violation (6.7.9p5), unlike the same combination at file scope
+          # (6.9.2p1), where it is an external definition and admitted by
+          # #parse_global_declarator.
           if spec_info.storage == :extern
             error_at(name_tok, "'#{name_tok.value}' has both 'extern' and initializer")
           end
