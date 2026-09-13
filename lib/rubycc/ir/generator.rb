@@ -660,8 +660,11 @@ module Rubycc
 
       # The function symbol a pointer initializer takes the address of — "f" or
       # "&f" — or nil when `value` is not a function reference. The function's
-      # signature must match the pointer's target type, exactly as a local
-      # function-pointer assignment requires. A name shadowed by a file-scope
+      # signature must be compatible with the pointer's target type (6.7.6.3p15
+      # via Type.function_types_compatible?, exactly as a local function-pointer
+      # assignment requires — see #compatible_types?), which admits both an
+      # exact match and a real prototype against the old-style unprototyped
+      # form ("void (*p)() = some_function;"). A name shadowed by a file-scope
       # variable is left to #address_constant_symbol.
       def function_address_constant(type, value)
         name =
@@ -676,7 +679,10 @@ module Rubycc
         sig = @signatures[name]
         return nil unless sig
 
-        unless type.pointer? && type.target == function_type_of(sig)
+        target_type = function_type_of(sig)
+        unless type.pointer? && (type.target == target_type ||
+                                  (type.target.function? &&
+                                   Type.function_types_compatible?(type.target, target_type)))
           error_at(value.token, "incompatible types in initialization")
         end
         name
@@ -4096,12 +4102,26 @@ module Rubycc
       # its type must be a pointer to a function, whose signature drives the
       # argument checks and supplies the result type. The target address rides
       # in the a-field and the argument vregs in b, exactly like a direct call.
+      #
+      # A pointer to the old-style unprototyped function type
+      # (Type::FunctionType#prototyped false, "void (*)()") has no parameter
+      # type list to check arity or types against, so it is treated exactly
+      # like a variadic call with no fixed parameters (#lower_call_arguments):
+      # every argument is admitted and takes the default argument promotions
+      # (6.5.2.2p6) instead of an assignment conversion, matching what
+      # numo-narray's ndloop.c does calling its `void (*loop_func)();` member
+      # directly, uncast, with real arguments. This also matches the System V
+      # ABI at the machine level: gcc sets %al (the vector-register count) the
+      # same way before such a call as it does before a call to a variadic
+      # prototype (measured 2026-09-13), because the actual callee might turn
+      # out to read it.
       def gen_indirect_call(node)
         target, callee_type = gen_value(node.callee)
         func_type = called_function_type(callee_type, node.token)
         plumb = struct_return_plumbing(func_type.return_type)
-        args = lower_call_arguments(node, func_type.param_types, func_type.variadic, nil, plumb[:hidden])
-        fixed = func_type.variadic ? func_type.param_types.size : nil
+        variadic = func_type.variadic || !func_type.prototyped
+        args = lower_call_arguments(node, func_type.param_types, variadic, nil, plumb[:hidden])
+        fixed = variadic ? func_type.param_types.size : nil
         emit_call_result(plumb, func_type.return_type) do |dst|
           emit(:call_indirect, dst: dst, a: target, b: args,
                                size: call_size(fixed, call_ret_descriptor(func_type.return_type, plumb)))
@@ -4717,6 +4737,16 @@ module Rubycc
           else_type
         elsif void_pointer_composite?(then_type, else_type)
           Type::Pointer.new(Type::Void)
+        # Two pointers to compatible function types (6.7.6.3p15: a real
+        # prototype against the old-style unprototyped form) still have a
+        # composite type per 6.5.15p6's "pointers to compatible types" case,
+        # exactly as a redeclaration merge does (Type.composite); anything
+        # else two pointers could disagree on (unrelated function
+        # signatures, an object pointee mismatch) is not a composite and
+        # falls through unchanged.
+        elsif then_type.pointer? && else_type.pointer? &&
+              (composite = Type.composite(then_type, else_type))
+          composite
         elsif then_type.void? || else_type.void?
           Type::Void
         elsif then_type.arithmetic? && else_type.arithmetic?
@@ -5005,7 +5035,9 @@ module Rubycc
         return true if expected.bool? && actual.pointer?
         return true if expected.pointer? && actual.pointer? &&
                         (expected == actual || expected.target.void? || actual.target.void? ||
-                         pointer_sign_compatible?(expected.target, actual.target))
+                         pointer_sign_compatible?(expected.target, actual.target) ||
+                         (expected.target.function? && actual.target.function? &&
+                          Type.function_types_compatible?(expected.target, actual.target)))
 
         expected == actual
       end
@@ -5878,15 +5910,24 @@ module Rubycc
       FLOAT_COMPARISONS = { eq: :feq, ne: :fne, lt: :flt, le: :fle, gt: :fgt, ge: :fge }.freeze
 
       # "==" and "!=" alone let a void * mix with any other pointer type (as
-      # in an assignment); every other pointer comparison ("<", "<=", ">",
-      # ">=") requires the exact same pointer type on both sides, void *
-      # included.
+      # in an assignment), and let two pointers to compatible-but-not-identical
+      # function types compare (6.5.9p2: "pointers to compatible types",
+      # 6.7.6.3p15 — a real prototype against the old-style unprototyped form,
+      # #function_types_compatible? — is what numo-narray's ndloop.c does at
+      # "if (lp->loop_func == loop_narray)", comparing its old-style member
+      # against a fully prototyped function's address). Every other pointer
+      # comparison ("<", "<=", ">", ">=") requires the exact same pointer type
+      # on both sides, void * included.
       EQUALITY_OPS = %i[eq ne].freeze
 
       def pointer_comparable?(op, lhs_type, rhs_type)
-        return lhs_type == rhs_type || lhs_type.target.void? || rhs_type.target.void? if EQUALITY_OPS.include?(op)
+        return true if lhs_type == rhs_type
 
-        lhs_type == rhs_type
+        return false unless EQUALITY_OPS.include?(op)
+
+        lhs_type.target.void? || rhs_type.target.void? ||
+          (lhs_type.target.function? && rhs_type.target.function? &&
+           Type.function_types_compatible?(lhs_type.target, rhs_type.target))
       end
 
       # Pointer arithmetic (p + n, p - n, p - q) scales by the pointed-to
@@ -6324,8 +6365,20 @@ module Rubycc
       # The Type::FunctionType a function's recorded signature describes, used
       # both to build the pointer a function designator decays to and to check
       # an indirect call or a function-pointer assignment against it.
+      #
+      # `prototyped` is always true here: `sig` describes a named function
+      # this translation unit has declared or defined, and #declare_function's
+      # signature table (@signatures) does not carry the parser's `prototyped`
+      # flag through -- every function this subset lets reach a call site
+      # already has its real (possibly declaration-list-derived, see
+      # Parser#parse_old_style_function_definition) parameter types on file.
+      # The one program this misses is a named function declared old-style and
+      # never defined ("void work();"), whose address is then used as an
+      # unprototyped `void (*)()`-compatible value; treating it as prototyped
+      # is only ever *more* strict than 6.7.6.3p15 requires there, never less
+      # -- it cannot accept a program the standard rejects.
       def function_type_of(sig)
-        Type::FunctionType.new(sig[:return_type], sig[:param_types], sig[:variadic])
+        Type::FunctionType.new(sig[:return_type], sig[:param_types], sig[:variadic], true)
       end
 
       # The builtins the parser rewrites into a run-time call rather than

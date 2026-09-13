@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-13
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-14
+branch: gap-fixes-wave-2
+pr: 148
+steps: [unprototyped-function-pointer-compat-1]
 ---
 
 # 仮引数付きの関数ポインタを、旧形式の `void (*)()` へ代入できない
@@ -62,6 +62,29 @@ buildable-gems-batch-4 の後、AO を直した rubycc で numo-narray を測り
 読み違え(`lp->vargs = args;` だと思った)、両辺とも `VALUE` なのに拒否されていると誤解しかけた。
 エラーの行番号どおり 359 行目を読み直して、関数ポインタの代入だと分かった。
 
+### 2026-09-13〜14(実装とレビュー)
+
+関数型に `prototyped` を足して、旧形式の `()` と `(void)` / 仮引数付きを区別し、C11 6.7.6.3p15 の互換を入れた。
+**最初の実装はレビューで退行が見つかった**: `void (*p)(); void (*p)(void);` のような再宣言が `conflicting types` になり
+(型の `==` が `prototyped` まで比べるようになったため)、旧形式の関数ポインタ経由の呼び出しが「引数が多すぎる」で落ちた
+(issue の最小再現は呼ぶ前にキャストしていたので見えなかった)。numo-narray は `ndloop.c:1297` で
+`(*(lp->loop_func))(nf, lp);` とキャストせずに呼び、1275 / 1287 行で `lp->loop_func == loop_narray` と比べているので、
+どちらも直す必要があった。手直しで、互換と合成型(6.2.7p3)の規則を `Type` にまとめ、代入・比較・条件演算子・再宣言・
+ファイルスコープの初期化子のすべてで使い、旧形式経由の呼び出しには既定の実引数拡張をかけるようにした。
+直した後は、再現 7 つ(再宣言 3 形・メンバ経由の呼び出し・型の違う引数での呼び出し・`==` / `!=`・ファイルスコープの初期化子)が
+gcc と一致した。
+
+**名前付き関数の再宣言(`void f(); void f(int x) {...}`)は範囲外として残った**。BD の修正の前後で同じエラーなので
+前からある不足で、[unprototyped-function-redeclaration](unprototyped-function-redeclaration.md)(GAPS BF)に起票した。
+
 ## 決着
 
-(未着手)
+**解消した**(`unprototyped-function-pointer-compat-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 最小再現がコンパイルでき、`run()` が 7 を返す | `test/test_unprototyped_function_pointer_compat.rb` が gcc 差分の実行で確認 |
+| 逆向きの代入と、実引数として渡す場合も通る | 同じテストで確認 |
+| 互換にならない組み合わせ(拡張で型が変わる仮引数・省略記号)は診断を保つ | gcc は警告止まりだが、AN の範囲を広げない方針どおりエラーを保った(STEPS) |
+| `numo-narray` 0.9.2.1 が rubycc でビルドできる | **マージ後に台帳の手順で測る**。numo-narray の呼び出しと比較の形は再現で確認済み |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

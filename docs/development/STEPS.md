@@ -15428,3 +15428,152 @@ builtin-strlen-1 より前はどれも通っていた。代表例:
 スキップ数は既存の SKIP 一覧によるもの。全スイート(`rake test`)は走らせていない。
 
 サンプルは足していない。このステップは既存の宣言との衝突を直すもので、1 ファイルで実演できる新しい機能を持たない。
+
+## unprototyped-function-pointer-compat-1 — 旧形式の関数ポインタ型とプロトタイプ付き関数ポインタ型の互換(C11 6.7.6.3p15)
+
+**課題**(GAPS 行 BD、`issues/unprototyped-function-pointer-compat.md`): `void (*)(int *, long)` を
+`void (*loop_func)();` のような旧形式(空の `()`、関数定義の外)の関数ポインタへ代入すると、
+rubycc は `incompatible types in assignment` で拒否していた。gcc は警告も出さずに通す
+(2026-09-13、このホスト gcc 13.3、`-std=gnu11 -Wall -Wextra` で実測、警告 0 件・exit 0)。
+コーパス候補 `numo-narray` 0.9.2.1 の `ext/numo/narray/ndloop.c:359`
+(`lp->loop_func = loop_func;`、`na_md_loop_t` のメンバ `void (*loop_func)();`)がこの形で、
+[`include-absolute-path`](../../issues/include-absolute-path.md)(AO)を直した後にここで止まっていた。
+
+**規格**: C11 6.7.6.3p15 は、一方が仮引数の型並びを持ち、もう一方が関数定義でない旧形式の
+宣言子(空の `()` の識別子リスト)であるとき、仮引数の型並びが省略記号(`...`)を持たず、
+各仮引数の型が既定の実引数拡張(6.5.2.2p6)の結果と互換であれば、2 つの関数型は互換だと
+定める。
+
+**この型システムの前提の欠落**: 変更前の `Type::FunctionType` は `param_types` しか持たず、
+`(void)`(明示的に「仮引数なし」)と `()`(空の識別子リスト、旧形式)が両方とも
+`param_types == []` になり、区別できなかった(`lib/rubycc/type.rb` の元コメントが
+明言していたとおり)。6.7.6.3p15 を実装するにはこの 2 つを区別する必要があるため、
+`FunctionType` に `prototyped`(真偽値、デフォルト `true`)を追加した:
+
+- `(void)` と非空の仮引数型並びは常に `prototyped: true`。
+- 空の `()` は、関数**定義**の一部でなければ `prototyped: false`(旧形式・仮引数未指定)。
+  6.7.6.3p14 により、`()` が関数定義の一部であれば「仮引数なし」を意味するので、
+  `Parser#parse_declaration` が本体の `{` を見た時点で `prototyped: true` へ作り直す
+  (`lib/rubycc/front/parser.rb`)。
+- 旧形式(K&R)定義の宣言リストが仮引数の実型を確定させた後(`parse_old_style_function_definition`)
+  は `prototyped: true`(実型が分かっているので、通常のプロトタイプと同様に扱ってよい —
+  6.7.6.3p15 の識別子リスト側の判定はこの subset では実装していない。後述の残課題を参照)。
+- 非空の識別子リスト(`int f(a, b);` のような、定義でない位置の旧形式)は既存どおり
+  そのままハードエラー(`reject_identifier_list`)。名前を伴う仮引数リストを「仮引数未指定」
+  として黙って読むのは、間違った診断を自信満々に出す方が、正確な診断より悪いという
+  既存の判断を維持した。
+
+**実装**(現在の置き場所は `lib/rubycc/type.rb`。経緯は下の「2026-09-14 の手直し」参照):
+`Type.function_types_compatible?` が 2 つの関数型の 6.7.6.3p15 互換を判定する。ロジック:
+
+1. 完全に等しければ互換(既存の厳密一致がそのまま通る主要ケース)。
+2. 戻り値の型が異なれば非互換。
+3. 双方が `prototyped` で一致していれば(両方 true、あるいは両方 false)、1. で
+   弾かれなかった時点で非互換 — 2 つの異なるプロトタイプ同士に緩和は適用されない
+   (GAPS 行 AN のスコープと非干渉)。
+4. 一方が `prototyped`(プロトタイプ側)で他方が旧形式なら、プロトタイプ側が
+   省略記号を持たず、かつ全仮引数型が既定の実引数拡張で変化しないことを確認する
+   (`Type.default_argument_promotion_unchanged?` — 整数は「ランクが `int` 未満でない」、
+   浮動小数点は「`double` 以上の幅」で判定。`float`(4 バイト)だけが変化する)。
+   `lib/rubycc/ir/generator.rb#compatible_types?` はこれをそのまま呼ぶ。
+
+**gcc 実測(まだ非互換とすべき組み合わせ)**: 2026-09-13、同ホスト gcc 13.3、
+`-std=gnu11 -Wall -Wextra` で、仮引数が `char`/`short`/`float`(既定の実引数拡張で
+型が変わる)、および省略記号を持つプロトタイプを旧形式へ代入する 4 パターンをすべて実測。
+**いずれも gcc は `-Wincompatible-pointer-types` 警告のみで exit 0**(エラーにしない)。
+これは GAPS 行 AN(`incompatible-function-pointer-argument.md`)が扱う「gcc 13 は制約違反を
+警告に留める」パターンと同種だが、**AN のスコープを広げない**という今回の要件どおり、
+rubycc はこの 4 パターンを引き続きエラーにする(標準どおりの非互換のまま)。
+
+**波及した別経路**: `Type::FunctionType.new` の呼び出し箇所は 3 か所
+(`parser.rb` 2 か所、`generator.rb#function_type_of` 1 か所)。既存テスト(`test_type.rb`、
+`test_parser.rb`)は 3 引数の呼び出しを多数持つため、`prototyped:` にキーワード引数の
+デフォルト `true` を与えるカスタム `initialize` を `Data.define` のブロックに追加し、
+既存呼び出しを変更せずに済ませた。`function_type_of`(名前つき関数の宣言/定義から
+関数ポインタ型を組み立てる経路)は `@signatures` に `prototyped` を持たせておらず、
+常に `true` を渡す — 名前つき関数がまれに旧形式のまま(本体を持たず)宣言される場合を
+見落とすが、その見落としは「本来 6.7.6.3p15 で通るはずの代入を厳格側に倒して拒否する」
+方向にしか効かない(受理してはいけないプログラムを受理することはない)ので許容した。
+
+**スコープ外として残した箇所**(見つけたが今回は直していない):
+
+- 名前つき関数の再宣言マージ(`declare_function` の `existing[:param_types] != param_types`)
+  は `prototyped` を見ておらず、6.7.6.3p15 の識別子リスト側の判定(K&R 定義と
+  プロトタイプ宣言の食い違いを既定の実引数拡張越しに比較する規則)は実装していない。
+  `@signatures` は `Type::FunctionType` そのものでなく生の配列(`param_types`)で
+  シグネチャを持つため、`prototyped` フラグ自体を運んでいない。この既存の欠落は
+  下記「2026-09-14 の手直し」で扱った回帰(ポインタ**オブジェクト**の再宣言マージ)
+  とは別の話 — こちらは名前つき**関数**同士の再宣言(`void f(); void f(int);` のような形)
+  で、コーパス候補からの実例も無いため今回は見送った。
+
+**受け入れ条件の確認(2026-09-13 時点)**: 最小再現(`run()` が 7)・逆方向の代入・実引数
+として渡す経路を `test/test_unprototyped_function_pointer_compat.rb` の gcc 差分で確認。
+`char`/`short`/`float` 仮引数と省略記号の 4 パターンは引き続き `incompatible types` 系の
+診断が出ることを同ファイルで確認。`test_diagnostics.rb`(238 runs)・`test_type.rb`(92 runs)・
+`test_parser.rb`(332 runs)・`test_knr_function_definitions.rb`(13 runs)・
+`test_examples.rb`(60 runs)はいずれも 0 failures。`numo-narray` 側の実ビルド確認・
+`rake test` 全体はこの時点では未実行だった。
+
+### 2026-09-14 の手直し — レビューで見つかった回帰と抜け
+
+**事実(レビュー時の測定、2026-09-13〜14、同ホスト gcc 13.3)**: `Type::FunctionType` の
+Data 等価性に `prototyped` を足したことで、`==` で型を比べている箇所すべてで
+「`()` と `(void)`/実プロトタイプ」が非等価になった。実際に壊れていた 4 例:
+
+| 再現コード | gcc | 変更前 rubycc | 変更後(直す前)rubycc |
+|---|---|---|---|
+| `void (*p)(); void (*p)(void);` | ok | ok | `conflicting types for 'p'`(回帰) |
+| `typedef int (*F)(); F g; int (*g)(void);` | ok | ok | `conflicting types for 'g'`(回帰) |
+| `extern int (*h)(); int (*h)(int);` | ok | `conflicting types for 'h'`(既存の欠落) | 同じ欠落のまま |
+| `struct s{int(*f)();}; ...; v.f = one; v.f(0);`(キャストなしで直接呼ぶ) | ok | `incompatible types in assignment` | `too many arguments to function pointer`(別の欠落) |
+
+加えて、numo-narray 0.9.2.1 の `ext/numo/narray/ndloop.c` を読み直すと、旧形式メンバは
+**キャストなしで直接呼ばれ**(1297 行目 `(*(lp->loop_func))(nf, lp);`)、**プロトタイプ付き
+関数デザイネータと `==`/`!=` で比較もされている**(1275・1287 行目
+`if (lp->loop_func == loop_narray)`)。前回の最小再現がキャストで隠していた 2 つの経路。
+
+**判断**: 「代入・実引数・戻り値」の互換性判定(`compatible_assignment?`)だけでなく、
+**同じ 6.7.6.3p15 判定を型システム全体で一貫させる**必要がある。分散していた判定を
+`lib/rubycc/type.rb` の `Type.function_types_compatible?` / `Type.default_argument_promotion_unchanged?`
+に一本化し(旧 `generator.rb` の同名 private メソッドは削除)、以下の呼び出し元すべてから
+参照する形に直した:
+
+1. **6.2.7p3 の合成型(同一オブジェクトの再宣言マージ)**: `Type.composite` に
+   `pointer_composite`/`function_type_composite` を追加。両辺がポインタで、両辺の指す先が
+   関数型のとき、6.7.6.3p15 互換なら**プロトタイプ側**を合成型として採用する
+   (6.2.7p3 の「仮引数型並びを持つ側が勝つ」規則)。これで `composite_declaration_type`
+   経由の `bind_extern_reference`(`extern` 参照)・`merge_object_definition`(ファイルスコープ
+   定義・仮定義)の両方が直る — 表の 1〜3 行目はすべてこの 1 箇所の修正で通るようになった。
+   ブロックスコープの `extern` も同じ `bind_extern_reference` を使うので同時に直る。
+2. **ファイルスコープの初期化子**(`function_address_constant`): 生の `==` の代わりに
+   `Type.function_types_compatible?` も受理するよう変更(`void (*p)() = some_function;`)。
+3. **間接呼び出しの実引数**(`gen_indirect_call`): `Type::FunctionType#prototyped` が
+   `false` のときは `lower_call_arguments` に `variadic: true` を渡すことで、
+   **仮引数個数の検査を丸ごとスキップ**し、各実引数を(可変長引数の可変部と同じ)
+   既定の実引数拡張で渡すようにした。SysV ABI の `%al`(ベクタレジスタ数)設定も
+   可変長呼び出しと同じ経路に乗るため副作用として付いてくる — 実際に呼び出し先が
+   可変長かもしれない以上、これは gcc の吐くコードと一致する(2026-09-14 実測、
+   `movl $1, %eax` を浮動小数点実引数ありの間接呼び出し前に gcc も出す)。
+4. **`==`/`!=` 比較**(`pointer_comparable?`): 両辺が関数ポインタで 6.7.6.3p15 互換なら
+   `==`/`!=` を受理(6.5.9p2「両方とも互換な型へのポインタ」)。`<`/`<=`/`>`/`>=` は
+   従来どおり完全一致のみ。
+5. **条件式**(`conditional_result_type`): `cond ? p : q` の両辺が関数ポインタで
+   6.7.6.3p15 互換なら合成型を結果型にする(6.5.15p6 は結果型を合成型と定めているので、
+   `Type.composite` をそのまま呼ぶ)。
+
+**スコープ境界の確認**: 名前つき関数同士の再宣言(`declare_function`)は今回も直していない
+(上の「スコープ外として残した箇所」のとおり、コーパス候補に実例が無い)。
+GAPS 行 AN のスコープ(gcc 13 が警告に留める制約違反)は変えていない — 2 つの異なる
+プロトタイプ同士(`void (*p)(int); void (*p)(long);` 等)は再宣言マージでも代入でも
+引き続き `conflicting types`/`incompatible types` になることを実測済み。
+
+**受け入れ条件の再確認(2026-09-14 実測)**: 上表の 4 パターンすべてが gcc と同じ exit 0
+になることを再実測。加えて numo-narray の 2 つの実際の形(キャストなし直接呼び出し・
+プロトタイプ付き関数デザイネータとの `==`/`!=`)を模した gcc 差分テストを追加し、一致を確認。
+`test_unprototyped_function_pointer_compat.rb` は 13 runs / 38 assertions / 0 failures。
+`test_diagnostics.rb`(238 runs)・`test_type.rb`(92 runs)・`test_parser.rb`(332 runs)・
+`test_knr_function_definitions.rb`(13 runs)・`test_examples.rb`(60 runs)・
+`test_block_scope_function_decl.rb`(13 runs)・`test_extern_incomplete_array.rb`(11 runs)・
+`test_conditional_null_pointer.rb`(6 runs)・`test_extern_initializer_file_scope.rb`(4 runs)
+はいずれも 0 failures。`numo-narray` 側の実ビルド確認・`rake test` 全体は今回も未実行
+(呼び出し元の統合時に確認)。

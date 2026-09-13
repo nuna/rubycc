@@ -27,8 +27,8 @@
 | **BA**([issue](../../issues/bundled-termios-tcflow.md)) | **同梱 `termios.h` に `tcflow`(POSIX)と `TCO*` / `TCI*` の定数が無い** | `ruby-termios` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | §2 の同梱ヘッダの洗い出しの対象 |
 | **BB**([issue](../../issues/bundled-ioctl-tiocm.md)) | **同梱 `sys/ioctl.h` に `TIOCMGET` / `TIOCM_*` が無い** | `serialport` 1.4.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | aarch64 の要求番号を測ってから、共通層に置くかを決める |
 | **BC**([issue](../../issues/atomic-builtin-small-widths.md)) | **`__atomic_*` ビルトインが 1 / 2 バイトの対象を拒否する**(4 / 8 バイト限定と自己申告) | 1 バイトのスピンロックを持つ gem。`iodine` 0.7.59 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 4 / 8 バイト限定のビルトインを一覧にしてから足す |
-| **BD**([issue](../../issues/unprototyped-function-pointer-compat.md)) | **仮引数付きの関数ポインタを旧形式の `void (*)()` へ代入できない**。C11 6.7.6.3p15 では互換な型 | 旧形式の関数ポインタをメンバに持つ gem。`numo-narray` 0.9.2.1 の `ndloop.c:359` が該当し、**対照の gcc は通る**(警告も出ない) | **実測**(2026-09-13、最小再現) | AN(gcc 13 が警告する制約違反)とは別件。既定の実引数拡張で型が変わる仮引数の組み合わせは診断を保つ |
 | **BE**([issue](../../issues/attribute-statement-after-label.md)) | **ラベルの直後に単独で置いた属性の文を拒否する**(`case 1: __attribute__ ((fallthrough)); case 2:`)。AY の修正はブロックの要素として現れる形だけを直した | 空の case から次の case へ落とすときに属性を書く gem。実在の gem ではまだ見ていない | **実測**(2026-09-13、最小再現で `expected expression`。gcc は通る) | ラベルの後の文を読む経路(`parse_nested_statement` → `parse_statement`)にも同じ判定を入れる |
+| **BF**([issue](../../issues/unprototyped-function-redeclaration.md)) | **旧形式で宣言した名前付き関数を、仮引数付きで再宣言・定義・呼び出しできない**(`void f(); void f(int x) {...}`)。関数の宣言表が `prototyped` を運ばない | 古いヘッダの `int f();` 形の宣言と、同じ翻訳単位の定義。実在の gem ではまだ見ていない | **実測**(2026-09-14、3 形とも。BD の修正の前後で同じ結果なので前からある不足) | BD が `Type` にまとめた互換の規則をそのまま使えるよう、宣言表の持ち方を先に決める |
 
 ## 2. 未解消の負債
 
@@ -58,6 +58,10 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ BD**(仮引数付きの関数ポインタを旧形式の `void (*)()` へ代入できない):
+  `unprototyped-function-pointer-compat-1` で解消。関数型に `prototyped` を足し、C11 6.7.6.3p15 の互換と 6.2.7p3 の合成型を
+  代入・比較・条件演算子・再宣言・ファイルスコープの初期化子に使った。旧形式の関数ポインタ経由の呼び出しは引数の数を
+  照合せず、既定の実引数拡張をかける。名前付き関数の再宣言は残った(BF)。
 - **ギャップ AL**(マクロ展開の予算がソースを素通りするトークンまで数える):
   `expansion-budget-source-tokens-1` で解消。予算を、マクロの置換が生んだトークンだけに課すようにした。
   上限の値(100 万)と、暴走するマクロを拒否する性質は変えていない。
