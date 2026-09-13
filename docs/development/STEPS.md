@@ -14933,3 +14933,82 @@ rubycc でコンパイルできない原因になっていた。
 `skip_extension_markers` ヘルパーを新しい呼び出し箇所(`parse_struct_body`)へ
 追加しただけで、判断はすべて ISO C 6.7.2.1(struct-declaration-list)と、
 issue に書かれた実測結果に基づく。
+
+## attribute-statement-1 — 属性は宣言だけでなく、`;` の前にも立てる
+
+**課題**([issue](../../issues/attribute-statement.md)、GAPS **AY**): switch の中で
+`__attribute__ ((fallthrough));` を文として書くと、rubycc は `expected type specifier` で拒否していた。
+`#parse_block_item` が文頭の `__attribute__` を宣言の頭の属性(位置 a、
+`__attribute__((unused)) int x;`)と区別せず、常に `#parse_declaration` へ回して型指定子を探しに
+行っていたためである。gcc は通す(2026-09-13、このホストの gcc 13.3 で実測)。実在の gem
+`liquid-c` 4.2.0 が `ext/liquid_c/parser.c:242` でこの形を書いており、`-Wimplicit-fallthrough` を
+黙らせるためのものである。
+
+### gcc の実測 — GNU 属性文は「`;` の直前」に限られる
+
+2026-09-13、このホストの gcc 13.3 で以下を確かめた:
+
+| ソース | 結果 |
+|---|---|
+| `switch` 内で `x += 1; __attribute__((fallthrough)); case 2: ...`(issue の最小再現) | ok |
+| `__attribute__((totally_unknown_attr_xyz));`(未知の属性、単独の文) | ok(`warning: empty declaration`) |
+| `__attribute__((fallthrough));`(switch の外、次が `case`/`default` でない位置) | **エラー**(`invalid use of attribute 'fallthrough'`) |
+| `__attribute__((unused)) return x;`(属性の直後が `;` でなく他の文) | **エラー**(`expected identifier or '(' before 'return'`) |
+| `__attribute__((fallthrough)) case 2:`(属性の直後が `;` でなくラベル) | **エラー**(`expected identifier or '(' before 'case'`。加えて `attribute not followed by ';'` の警告) |
+
+gcc の診断文言(`empty declaration`)は、これが「文」への特別な文法ではなく、
+**型指定子を持たない宣言(属性だけの空宣言)**として読まれていることを示している。
+属性の直後に `;` が来る場合に限って空の宣言として通り、それ以外(他の文やラベル)が
+続くと「属性の後には宣言子が来るはず」という宣言としての解釈のまま構文エラーになる。
+
+### 決定 — 未知の属性も `fallthrough` も、構文として受理し無視する。置き場所の妥当性は診断しない
+
+DESIGN R7 は「`aligned`/`packed` 以外の属性は無視する」と決めている。これは文属性にも
+そのまま適用し、`fallthrough` を含むどの属性名であっても**構文としてだけ**受理し、意味を
+持たせない。gcc は `fallthrough` という**名前**だけを特別扱いして置き場所(次が
+`case`/`default` かどうか)を検査するが、これは `-Wimplicit-fallthrough` という
+rubycc が実装していない警告のための検査であり、実装すると `fallthrough` という
+1 属性のためだけに位置解析を持ち込むことになる。受け入れ条件は「最小再現が通る」
+「未知の属性も文として受理する」であり、`fallthrough` の誤用を診断することは求めていない
+ので、**gcc のこの 1 点(誤った位置の `fallthrough` を診断すること)は追わない**。
+
+### 実装 — `;` の直前でだけ、宣言でなく空文として読む
+
+`#parse_block_item` に、`__attribute__` を読んだ直後の判定を足した。属性列
+(`__attribute__((...))` の繰り返し)を読み飛ばした先のトークンが型指定子なら
+(既存の宣言頭の属性)そのまま `#parse_declaration` に委ね、型指定子でなければ
+`;` を期待して `AST::EmptyStmt` を返す(gcc の「空宣言」に対応する扱い)。属性列の
+読み飛ばしには、`#paren_starts_declarator?` が宣言子の判定に使っていた既存の
+`#index_after_attributes`(バランスの取れた括弧を数えて `__attribute__((...))` を
+まるごと飛ばす)をそのまま流用した(新しい字句先読みを増やしていない)。
+
+**gcc の実測どおり、属性列の直後が `;` でない場合は素通ししない**: `attribute_prefixes_declaration?`
+が偽でも次が `;` でなければ `expect_punct(";")` がそこでエラーにする(gcc の
+「属性の直後は宣言子か `;` のはず」という拒否と同じ形)。これにより
+`__attribute__((unused)) return x;` のような形は rubycc でも構文エラーのままになる
+(gcc も拒否するので差分は生じない)。
+
+`case N: __attribute__(...); ...` の `__attribute__` は `case` の**直後の 1 文**ではなく、
+`case` の直後の文(実文)に続く**次の block item**として現れる(issue の最小再現がまさにこの形)。
+この位置は `#parse_block_item` のループを通るので今回の修正で届く。`case N:` の**直後の 1 文**
+そのものが属性文である形(`case N: __attribute__((...)); ...`)は `#parse_nested_statement` から
+`#parse_statement` を直接呼ぶ経路で、`#parse_block_item` を経由しないため今回の修正の対象外 ——
+サンプルはこの位置を避け、`case` の直後に実文を 1 つ置いてから属性文を続ける形にした
+(issue の最小再現と同じ形)。
+
+宣言の頭の属性(`__attribute__((unused)) int x;`)の扱いは変えていない: 属性列の直後が
+型指定子であることを確認できたときだけ `#parse_declaration` に委ねる分岐なので、既存の
+`type_specifier?` の判定・`#parse_declaration_specifiers` の属性収集はそのまま通る。
+
+### 検証
+
+`test/test_attribute_statement.rb`(新規)**7 runs / 14 assertions / 0 failures**
+(issue の最小再現の gcc 差分・未知の属性の文・空の属性列の文・複数の `__attribute__((...))`
+の連続・ブロック内唯一の文としての属性文・宣言頭の属性の回帰確認 2 種)。
+`test/test_parser.rb` **332 runs / 1023 assertions / 0 failures**、
+`test/test_diagnostics.rb` **238 runs / 750 assertions / 0 failures**、
+`test/test_examples.rb` **57 runs / 58 assertions / 0 failures**
+(いずれも 2026-09-13、`examples/m6/attribute_statement_1_fallthrough.c` を含む)。
+
+ラベルの直後に単独で置いた形は、統合時に最小再現で rubycc が `expected expression` で落ちることを確かめ、
+[attribute-statement-after-label](../../issues/attribute-statement-after-label.md)(GAPS **BE**)に起票した。
