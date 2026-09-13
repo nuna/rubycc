@@ -14681,3 +14681,63 @@ digest-sha3 と google-cloud-debugger は、走査が Ruby の版を満たさな
 2 回続けて途中で終わった。[scan-bestgems-short-page](../../issues/scan-bestgems-short-page.md) に起票した。
 
 **検証**: `rake test` **3,552 runs / 17,787 assertions / 0 failures / 0 errors / 39 skips**。
+
+## buildable-gems-batch-4-2 — 台帳が 100 件に届いた
+
+**内容**: ランク 8541〜8940 の走査で出た候補 6 件を `build_load` に流し、**台帳を 98 → 100 件**にした。
+ユーザ指示「ビルドできる gem を 100 まで増やしたい」の到達点である。
+
+**走査**: 次の窓(ランク 8501〜12500)は bestgems の不整合なページで 2 回止まった
+([scan-bestgems-short-page](../../issues/scan-bestgems-short-page.md))。**読めていた範囲**(ランク 8541〜8940)に
+窓を絞って走査し直し、400 件のうち 381 件をダウンロードせずに決着した(187,444,780 バイト)。
+候補表 7 行から C ソースが 0 件の 1 件(sup)を除いて 6 件。
+
+**台帳に入った 2 件**:
+
+- `build_load_pass` — readapt
+- レシピの `documented_load_pass` — **aead**(依存は systemu 2.6.5 / macaddr 1.7.2。入口は `aead` と `aead/cipher`)
+
+### aead — 単独では読めず、入口からなら読める理由
+
+rubycc でビルドした `aead.so` は、単独の `require` で `undefined symbol: ERR_peek_error` になった。
+**対照の gcc でビルドした `.so` は単独でも読める。** 違いは rubycc の欠陥ではなく、**決めてある設計**から来ていた:
+
+- aead の Makefile は、rubycc 側も対照側も `-lcrypto` を持たない(`LIBS = $(LIBRUBYARG_SHARED) -lm -lpthread -lc`)。
+  拡張は OpenSSL の関数を未解決のまま持ち、先に読まれた `openssl.so` が載せた libcrypto に頼っている
+  (Ruby は拡張を `RTLD_GLOBAL` で読む)
+- gcc の `.so` は遅延バインドなので、呼ばれるまで解決しない。**rubycc の `.so` は `DT_FLAGS` に `BIND_NOW`、
+  `DT_FLAGS_1` に `NOW` を持ち**、読み込んだ時点で全部を解決する。これは STEPS の共有ライブラリの節で
+  「即時バインドを既定にして遅延リゾルバを不採用」と**決めた挙動**である(`lib/rubycc/link/shared_linker.rb:26`)
+- 最小再現で確かめた: 呼ばれない関数の中でだけ未定義の関数を参照する拡張は、gcc 版は `require` でき、
+  rubycc 版は `undefined symbol` で落ちる
+
+**gem 自身の入口(`aead/cipher`)は `openssl` を先に読む**ので、入口から読めば rubycc 版も読める。
+台帳の主張(ビルドでき、利用者と同じ読み方でロードできた)には、この読み方で足りる。
+
+この挙動は、**他の拡張が載せたライブラリに頼る拡張**を単独で読む汎用検査に対して、今後も同じ形で現れる。
+即時バインドの判断そのものを見直す根拠にはまだならない(実害は、単独の `require` という誰もしない読み方に限られる)。
+
+### 残りの 4 件
+
+| gem | 分類 | 記録 |
+|---|---|---|
+| pngdefry | 同梱 `miniz.c` が CRLF で、`\` の直後が `\r\n` の行連結 | 既存の GAPS **AE** に 3 件目 |
+| ruby_deep_clone | `rb_hash_foreach` の第 2 引数が互換でないポインタ | 既存の GAPS **AN** に 10 件目 |
+| fast_underscore | `char segment[RSTRING_LEN(string) * ...];` の本物の VLA | 除外基準 **H** |
+| autotest-fsevent | `extconf.rb` が macOS(`uname -s` が `Darwin`)でだけビルドし、それ以外では空の Makefile を書く | この環境では C をビルドしない |
+
+### 100 件までの道のり
+
+| 段階 | 台帳 | 主な出来事 |
+|---|---|---|
+| batch-1 | 0 → 22 | 別台帳を立て、ハーネスの盲点(単独 `require`)を入口のレシピで塞いだ |
+| batch-2 | 22 → 38 | 欠陥 6 件を起票。除外基準 J を新設 |
+| batch-3 | 38 → 60 | 欠陥 8 件を起票。AI を直して cool.io が通った |
+| batch-4-1 | 60 → 98 | 欠陥 7 件を起票。AP / AO を直して brotli が通り、numo-narray は次の欠陥(BD)で止まった |
+| batch-4-2 | 98 → 100 | 走査器の弱点を回避して 6 件を追加走査 |
+
+**欠陥の起票は 26 件**(AE〜BD。AW だけはバッチではなく `stdc-no-vla-macro-1` のレビューで見つけた)、
+うち **3 件を直した**(AI / AP / AO)。100 件は、欠陥を直すより
+走査の窓を広げるほうが早く増えた結果である。**起票した欠陥は、どれも実在の gem が 1 件以上止まっている**。
+
+**検証**: `rake test` **3,552 runs / 17,837 assertions / 0 failures / 0 errors / 39 skips**。

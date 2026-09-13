@@ -84,8 +84,9 @@ buildable-gems-batch-4 で**さらに 3 件**。**どれも対照の gcc 13 は�
 | `semacode-ruby19` 0.7.4 | `semacode.c:61` / `iec16022ecc200.c:498` | 暗黙の関数宣言(`iec16022init`)/ 整数とポインタの変換(`VALUE rb_str = NULL;`) |
 | `picky` 4.31.3 | `picky.c:47` | 互換でないポインタ(`rb_block_call` の第 5 引数) |
 | `allocation_tracer` 0.6.3 | `allocation_tracer.c:201` | 互換でないポインタ(`rb_st_foreach` の第 2 引数) |
+| `ruby_deep_clone` 0.8.0 | `deep_clone.c:105` | 互換でないポインタ(`rb_hash_foreach` の第 2 引数。buildable-gems-batch-4-2) |
 
-**判断の重みは件数で変わった** — 起票時は 1 件、今は 9 件である。
+**判断の重みは件数で変わった** — 起票時は 1 件、今は 10 件である。
 
 ## 受け入れ条件
 

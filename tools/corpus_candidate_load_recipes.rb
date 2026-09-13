@@ -268,6 +268,20 @@ module CorpusCandidateLoadRecipes
         "requires" => ["dedup"],
         "sanity_kind" => "entrypoint_loaded"
       }
+    },
+    {
+      "name" => "aead",
+      "version" => "1.8.1",
+      "platform" => "ruby",
+      "sha256" => "17d7f20cda415b9f0d511d35ab234b01553940b88176ac90219110e7afa1d56f",
+      "dependencies" => [
+        {"name" => "systemu", "version" => "2.6.5"},
+        {"name" => "macaddr", "version" => "1.7.2"}
+      ],
+      "entrypoint" => {
+        "requires" => ["aead", "aead/cipher"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
     }
   ].map(&:freeze).freeze
 

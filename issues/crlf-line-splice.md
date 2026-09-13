@@ -54,6 +54,11 @@ CRLF で、113 行目が
 `\r\n` になっている。rubycc は `gc_logging.c:106:59: error: unexpected character` で落ち、
 **対照の gcc はビルドとロードに成功する**(2026-09-13 実測、buildable-gems-batch-4)。
 
+**3 件目もある。** コーパス候補 `pngdefry` 0.1.3 の同梱 `ext/pngdefry/miniz.c` は CRLF で、
+1291 行目 `if (pIn_buf_cur >= pIn_buf_end) { \` の `\` の直後が `\r\n` になっている。rubycc は
+`miniz.c:1291:37: error: unexpected character` で落ち、**対照の gcc はビルドとロードに成功する**
+(2026-09-13 実測、buildable-gems-batch-4-2)。
+
 CRLF で配られる gem は珍しくない。**1 行でも継続行があれば落ちる**ので、
 落ち方は「ソースの見た目には何も問題が無いのに字句エラー」になり、原因に辿り着きにくい。
 
