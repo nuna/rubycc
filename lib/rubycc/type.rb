@@ -527,10 +527,26 @@ module Rubycc
     # after the named parameters, "int (const char *, ...)"). For a variadic
     # type `param_types` holds only the fixed, named parameters. Being a Data,
     # two function types are equal exactly when their return type, parameter
-    # types and variadic flag all match, so "int (int)" == "int (int)" but a
-    # variadic "int (int, ...)" differs from the fixed "int (int)"; this makes a
-    # function-pointer signature check reject a variadic/non-variadic mismatch on
-    # its own.
+    # types, variadic flag and `prototyped` flag all match, so "int (int)" ==
+    # "int (int)" but a variadic "int (int, ...)" differs from the fixed
+    # "int (int)"; this makes a function-pointer signature check reject a
+    # variadic/non-variadic mismatch on its own.
+    #
+    # `prototyped` tells apart the two C declarators that both parse to an
+    # empty `param_types` array. `(void)` and a non-empty parameter-type-list
+    # are always prototyped (true): they state the exact parameter count and
+    # types. A declarator whose parentheses hold an empty identifier list --
+    # plain `()` -- is prototyped only when it is part of a function
+    # *definition* (6.7.6.3p14: there it means "no parameters", exactly like
+    # `(void)`, and Parser#parse_external_declaration rebuilds the type
+    # accordingly once it sees the following "{"); everywhere else -- a
+    # prototype declaration, a typedef, a struct member, a variable's
+    # declarator -- it is the old-style "unspecified parameters" form
+    # (K&R 6.7.6.3), and `prototyped` is false.
+    # #compatible_types?'s function-pointer case (lib/rubycc/ir/generator.rb)
+    # consults this flag to apply 6.7.6.3p15's relaxed rule: an unprototyped
+    # `()` is compatible with a real prototype that has no ellipsis and whose
+    # parameter types are all unchanged by the default argument promotions.
     #
     # A function type is not an object type: it has no storage width, so #size
     # and #alignment raise (a well-formed program measures a *pointer* to a
@@ -539,7 +555,17 @@ module Rubycc
     # subset only through a pointer (a function pointer, Pointer with a
     # FunctionType target) or as the very type a function declarator builds;
     # #function? tells it apart from every object type.
-    FunctionType = Data.define(:return_type, :param_types, :variadic) do
+    FunctionType = Data.define(:return_type, :param_types, :variadic, :prototyped) do
+      # `prototyped` defaults to true: every construction site except the two
+      # spots that build the old-style "()" form
+      # (Parser#apply_declarator_suffix, Parser#parse_external_declaration's
+      # definition fixup) means a real prototype, and defaulting it lets the
+      # many call sites that predate this field (tests included) keep
+      # constructing a FunctionType without naming it.
+      def initialize(return_type:, param_types:, variadic:, prototyped: true)
+        super
+      end
+
       def pointer?
         false
       end
@@ -1209,9 +1235,9 @@ module Rubycc
     # nil when the two types are not compatible — the signal a declaration merge
     # turns into its "conflicting types" diagnostic.
     #
-    # One case of that paragraph matters in this subset: when one declaration is
-    # an array type of known size and the other an array type of unspecified
-    # size, the composite type is the array type of *known* size. So
+    # One case of that paragraph matters for an array in this subset: when one
+    # declaration is an array type of known size and the other an array type of
+    # unspecified size, the composite type is the array type of *known* size. So
     #
     #     extern int tbl[];  int tbl[3] = {1, 2, 3};
     #
@@ -1222,22 +1248,127 @@ module Rubycc
     # same rule through a multidimensional array ("extern int m[][4];" against
     # "int m[2][4]"), whose inner dimensions are always known and so must agree.
     #
+    # Another of the paragraph's cases matters for a pointer to a function: when
+    # one side has a real parameter-type list and the other is the old-style
+    # declarator with unspecified parameters (Type::FunctionType#prototyped
+    # false — see lib/rubycc/front/parser.rb), the composite type is a pointer
+    # to the *prototyped* function type (6.2.7p3 has the parameter-type list
+    # win). So
+    #
+    #     void (*p)();  void (*p)(void);
+    #
+    # declares one object of type "void (*)(void)" in either order, and a later
+    # call through `p`, or a comparison against another function pointer, is
+    # checked against the real prototype. This requires the two function types
+    # to be compatible per 6.7.6.3p15 first (#function_types_compatible?, also
+    # used by the assignment/argument/comparison checks in
+    # lib/rubycc/ir/generator.rb); two prototypes that genuinely disagree, or
+    # two pointers to a non-function target, are unaffected and fall through to
+    # the exact-equality case below.
+    #
     # Every other pair of types composes exactly when the two are identical,
     # which is what the equality comparison at each declaration-merge site meant
-    # before this rule existed. The paragraph's remaining cases — a function type
-    # declared with a parameter type list against one declared without, and a
-    # pointer to either of the above — do not arise here: this subset merges
-    # function signatures by equality (it models no unprototyped declaration),
-    # and a parameter of array type is adjusted to a pointer by the parser.
+    # before these two rules existed. A parameter of array type is adjusted to a
+    # pointer by the parser, so that shape of 6.2.7p3's pointer case does not
+    # arise here.
     def self.composite(first, second)
       return first if first == second
-      return nil unless first.array? && second.array?
+      return array_composite(first, second) if first.array? && second.array?
+      return pointer_composite(first, second) if first.pointer? && second.pointer?
 
+      nil
+    end
+
+    # The array half of #composite, split out once #composite grew a second
+    # case (pointers) alongside it.
+    def self.array_composite(first, second)
       element = composite(first.element, second.element)
       return nil if element.nil?
       return nil if first.length && second.length && first.length != second.length
 
       Array.new(element, first.length || second.length)
+    end
+
+    # The pointer half of #composite. Only a pointer to a function has a
+    # composite narrower than plain equality in this subset (see #composite's
+    # own comment); a pointer to anything else composes only when identical,
+    # which #composite's equality check already tried and failed, so nil is
+    # correct here too.
+    def self.pointer_composite(first, second)
+      return nil unless first.target.function? && second.target.function?
+
+      target = function_type_composite(first.target, second.target)
+      return nil if target.nil?
+
+      Pointer.new(target)
+    end
+
+    # The composite of two function types (6.2.7p3), or nil when they are not
+    # compatible (6.7.6.3p15). By the time #pointer_composite calls this, the
+    # two differ (their enclosing pointers already failed #composite's equality
+    # check), so two full prototypes always disagree here and there is nothing
+    # to compose (nil). The one composable case left is a real prototype
+    # against the old-style unprototyped form: 6.2.7p3 has the parameter-type
+    # list win, so the composite is the prototyped side.
+    def self.function_type_composite(one, other)
+      return nil unless function_types_compatible?(one, other)
+
+      one.prototyped ? one : other
+    end
+
+    # Whether two function types are compatible (6.7.6.3p15). Two full
+    # prototypes (or two occurrences of the same old-style type) are compatible
+    # exactly when identical. The one further case the paragraph admits is a
+    # real prototype against the old-style unprototyped form: a declarator
+    # whose parentheses were empty and which is not part of a function
+    # definition ("void (*)()", see Type::FunctionType#prototyped and
+    # Parser#apply_declarator_suffix). Such a pair is compatible when the
+    # prototype's parameter list has no ellipsis and every parameter type is
+    # left unchanged by the default argument promotions (6.5.2.2p6) -- a value
+    # of that type, passed through the unprototyped side uncast, arrives with
+    # the exact bit pattern the prototype expects, so the mismatch is invisible
+    # at run time.
+    #
+    # A parameter whose type *does* change under those promotions (`char`,
+    # `short`, `float`) or a variadic prototype stay incompatible: gcc 13.3
+    # only warns about them (-Wincompatible-pointer-types, not an error;
+    # measured 2026-09-13), the same constraint-violation downgrade GAPS row AN
+    # already decided not to follow — rubycc keeps erroring on a genuinely
+    # incompatible function pointer.
+    #
+    # The old-style side's own (always empty) parameter list carries no
+    # information and is not consulted; only its #prototyped flag and the
+    # other side's return type matter. Used by #composite (redeclaration/
+    # object-merge) and, directly, by lib/rubycc/ir/generator.rb's
+    # assignment/argument/return/pointer-comparison and indirect-call checks.
+    def self.function_types_compatible?(one, other)
+      return true if one == other
+      return false unless one.return_type == other.return_type
+      # Two full prototypes that differ, or two old-style types (which can
+      # only differ in return type, already checked above): no relaxation
+      # applies.
+      return false if one.prototyped == other.prototyped
+
+      prototyped = one.prototyped ? one : other
+      return false if prototyped.variadic
+
+      prototyped.param_types.all? { |type| default_argument_promotion_unchanged?(type) }
+    end
+
+    # True when the default argument promotions (6.5.2.2p6: integer promotion,
+    # then float promotes to double) leave `type` unchanged. An integer type is
+    # unchanged when its rank is not below `int` (`int`, `unsigned int`, `long`
+    # and wider all satisfy this; `char`/`short`/`_Bool`, being narrower than
+    # `int`, do not); a floating type is unchanged when it is already as wide as
+    # `double` (`double` and `long double` — the latter is 8 bytes wide in this
+    # subset's representation too, see Type::LongDouble — but not `float`).
+    # Anything neither integer nor floating (a pointer, a struct) is untouched
+    # by the default argument promotions.
+    def self.default_argument_promotion_unchanged?(type)
+      return type.size >= 4 if type.integer?
+      return type.size >= Double.size if type.float?
+
+      true
     end
 
     # True for the character types (6.2.5p15): either plain `char` and the two

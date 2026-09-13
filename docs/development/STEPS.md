@@ -15012,3 +15012,568 @@ rubycc が実装していない警告のための検査であり、実装する�
 
 ラベルの直後に単独で置いた形は、統合時に最小再現で rubycc が `expected expression` で落ちることを確かめ、
 [attribute-statement-after-label](../../issues/attribute-statement-after-label.md)(GAPS **BE**)に起票した。
+
+## include-duplicate-system-dir-1 — システムのディレクトリと同じ `-I` は無視する
+
+**課題**([issue](../../issues/include-duplicate-system-dir.md)、GAPS **AV**): `-I/usr/include`
+を付けると、`#include <stdio.h>` だけの翻訳単位が rubycc では通らなくなる
+(`/usr/include/stdio.h:655:12: error: expected ';'`)。gcc は通す。rubycc の既定の探索パスは
+同梱ヘッダの**後**に `/usr/include/x86_64-linux-gnu` と `/usr/include` を置くが、
+`-I` はその同梱ヘッダより**前**に積まれるため、`-I/usr/include` を渡すと glibc 本体の
+`stdio.h` が同梱ヘッダより先に見つかり、そこにある `__fortified_attr_access`
+(同梱の `sys/cdefs.h` が定義しないマクロ)で落ちる。実在の gem `do_sqlite3` 0.10.17 の
+`extconf.rb:11`(`dir_config("sqlite3", [..., "/usr"])`)がこの形で `-I/usr/include` を足す。
+
+### gcc の実測 — システムのディレクトリと重なる `-I`/`-isystem`/`-idirafter` は無視される
+
+2026-09-13、このホスト(WSL2、gcc 13.3)で `gcc -v -E` を使って確かめた:
+
+| ソース(`#include <stdio.h>`) | 結果 |
+|---|---|
+| `-I/usr/include` | `ignoring duplicate directory "/usr/include"`。探索リストは無指定時と同じ順序 |
+| `-isystem /usr/include` | 同上(`-isystem` も同じ理由で無視される) |
+| `-idirafter /usr/include` | 同上(`-idirafter` も同じ理由で無視される) |
+| `-I/usr/include/` (末尾スラッシュ) | 同上。文言は与えたままの綴り(`"/usr/include/"`)を表示するが、無視の判定は実ディレクトリで行われる |
+| `-I/usr/include/x86_64-linux-gnu/..` | 同上(`..` を含む綴りも実ディレクトリとして `/usr/include` と一致) |
+| `-I` にシステムのディレクトリへのシンボリックリンク | 同上(シンボリックリンク先で一致) |
+| `-I/usr/include/x86_64-linux-gnu`(multiarch ディレクトリそのもの) | 同上 |
+| `-I/tmp/myinc`(システムと重ならない、独自ヘッダを含むディレクトリ) | 無視されない。探索リストの先頭(システムより前)に残る |
+| `-I/tmp/myinc -I/usr/include` / `-I/usr/include -I/tmp/myinc`(順序を入れ替え) | どちらも `/tmp/myinc` だけが残り、位置は変わらない(重ならない `-I` の順序は保たれる) |
+| `-I/tmp/does-not-exist -I/tmp/does-not-exist`(存在しないディレクトリの重複) | `ignoring nonexistent directory` (`duplicate` ではない別の診断。今回の対象外) |
+
+`ignoring duplicate` は診断文言こそ与えた綴りをそのまま表示するが、判定自体は
+シンボリックリンクや `..` を解決した**実ディレクトリ**で行われている(いずれも
+`stat` の dev/ino が一致するのと同じ状況で重複と判定された)。
+
+### 決定 — 「重ならない `-I` は順序を変えない」を満たす最小の規則を実装する
+
+受け入れ条件が要求するのは「システムのディレクトリと重なる `-I` を無視する」ことと
+「重ならない `-I` の順序を変えない」ことの 2 点であり、上の実測はどちらも
+「-I/-isystem/-idirafter のうち、システムディレクトリ(同梱ヘッダも含む rubycc の
+既定探索パス全体)と実ディレクトリが一致するものだけを取り除き、他は元の順序のまま
+残す」という 1 つの規則で説明できる。
+
+一方、`-I/tmp/myinc -I/tmp/myinc`(ユーザー同士の重複)も gcc は 2 個目を無視したが、
+これは issue の受け入れ条件が求めている範囲(システムのディレクトリとの重複)の外側
+なので実装しない。存在しないディレクトリの `ignoring nonexistent directory` も同様に
+別の診断であり、対象外(GAPS には残さない — 受け入れ条件外の挙動差は issue の対象外と
+判断したため、別課題として起票しない)。
+
+rubycc の driver は `-I`/`-isystem`/`-iquote`/`-idirafter` を区別せず 1 本の
+`@include_paths` 配列に畳み込んでいる(`lib/rubycc/driver.rb`)。上の実測で
+`-isystem`/`-idirafter` も `-I` と同じに無視されると分かったので、この畳み込みを
+変える理由はなく、Preprocessor 側で「畳み込んだ後の 1 本のリストからシステムと
+重なるものを削る」だけで規則を満たせる。
+
+### 実装 — 実ディレクトリ比較で重複を落とす。`File.realpath` failsafe 付き
+
+`Preprocessor#preprocess` が `@include_paths` を組み立てる箇所
+(`lib/rubycc/preprocess/preprocessor.rb`)に、システムパスと実ディレクトリが一致する
+呼び出し側のディレクトリを取り除く `#reject_system_duplicate_paths` を挟んだ。
+比較は `#real_directory_path`(`File.realpath` でシンボリックリンクと `..` を解決し、
+対象が存在しない場合だけ字句展開(`File.expand_path` 相当の `#absolute_path`)に
+フォールバックする)で行う。存在しないディレクトリ同士は実測どおり別の診断
+(`ignoring nonexistent directory`)の対象であり rubycc は診断自体を実装していないため、
+フォールバックは「重複判定だけは字句一致で行う」という最小限にとどめた。
+
+システムパス側は同梱ヘッダ・multiarch ディレクトリ・`/usr/include` を含む
+`default_system_include_paths` の全体(距離適用前の絶対パス化済みの `@system_include_paths`)
+であり、bundled 側との重複も同じ規則で落ちる(実測はしていないが、
+「システムのディレクトリと重なる `-I` を無視する」という受け入れ条件の文言どおり、
+同梱ヘッダをシステムディレクトリの一種として扱う一貫性を優先した — 実利用でこの経路が
+踏まれるのは考えにくいが、動作を分ける理由もない)。
+
+### 検証
+
+`test/test_include_duplicate_system_dir.rb`(新規)10 runs / 12 assertions / 0 failures /
+**0 skips**(このホストに `/usr/include/stdio.h` と gcc の双方があるため、
+`-I`/`-isystem`/`-idirafter` それぞれの実コンパイルとリンク実行の gcc 差分検証が
+スキップされずに走った)。
+
+`test/test_preprocessor.rb` 230 runs / 476 assertions / 0 failures、
+`test/test_driver.rb` 31 runs / 141 assertions / 0 failures、
+`test/test_include_absolute_path.rb` 10 runs / 14 assertions / 0 failures、
+`test/test_include_path_encoding.rb` 6 runs / 32 assertions / 0 failures
+(いずれも既存分、退行なし。2026-09-13 このホストで実行)。
+
+C サンプルは追加しない: この課題の挙動はコマンドライン引数(`-I`/`-isystem`/`-idirafter`と
+そのディレクトリの中身)に依存し、`examples/` の C ソース 1 本では再現できない
+(examples はソース差分のみを比較する仕組みで、ビルドフラグを差し替える経路を持たない)。
+
+## builtin-strlen-1 — `__builtin_strlen` は文字列リテラルなら定数に畳む
+
+**課題**([issue](../../issues/builtin-strlen.md)、GAPS **AZ**): `__builtin_strlen` を、rubycc は
+未宣言の関数として報告していた(gcc は通す)。2026-09-13 にこのホスト(WSL2 / gcc 13.3)で
+最小再現を測った: `unsigned long f(void) { return __builtin_strlen("abc"); }` は gcc が
+`3` を返す一方、rubycc は `implicit declaration of function '__builtin_strlen'` で拒否していた。
+
+コーパス候補 `herb` 0.10.4 の `src/include/lib/hb_string.h:27` が
+`(uint32_t) __builtin_strlen(string)` とマクロの中で書いており、対照の gcc はビルド・ロードに
+成功する(2026-09-13 実測、buildable-gems-batch-4)。
+
+### gcc の実測 — 定数式として使える位置
+
+2026-09-13、このホスト(gcc 13.3)で、`__builtin_strlen("abc")` を次の 4 箇所に置いて測った:
+配列の大きさ・ファイルスコープ変数の静的初期化子・`_Static_assert`・`switch` の `case` ラベル。
+**いずれも警告なしでコンパイルが通る** — gcc は文字列リテラル引数を genuine な
+constant-expression として畳んでいる(`__builtin_offsetof` と同種)。
+
+### 実装
+
+新しい AST ノードは追加していない。`Front::Parser#parse_builtin_strlen`
+(`lib/rubycc/front/parser.rb`)が構文段階でその場に振り分ける:
+
+- 唯一の実引数が**構文的に文字列リテラル**(`AST::StringLit`)なら、その場で
+  `AST::IntLit`(型 `unsigned long`)に書き換える。値は最初の NUL バイトの位置
+  (埋め込み `\0` エスケープがあれば途中で止まる)か、無ければバイト数そのもの。
+  `IntLit` は他のすべての段(定数評価器・初期化子・生成器)がすでにどこでも
+  定数式として置ける形なので、この 1 か所の書き換え以外どのファイルも
+  この builtin を意識する必要がない。
+- それ以外の実引数(変数、非リテラル式)は `__builtin_memcpy` と同じ手筋で
+  libc の `strlen` への通常の呼び出しに書き換える。`Generator#generate`
+  (`lib/rubycc/ir/generator.rb`)が `memcpy` の隣にプロトタイプ
+  `unsigned long strlen(const char *)` をあらかじめ登録するので、
+  `<string.h>` を含めていない翻訳単位でもコンパイルできる。
+
+**つまずき**: 最初 `strlen` のシグネチャを `memcpy` に倣って `void *` パラメータで
+登録したところ、`examples/m2/step37_conftest.c`(`unsigned long strlen(const char *s);`
+という素の宣言を持つ)が「conflicting types for 'strlen'」で壊れた。
+`Generator#declare_function` は再宣言の一致を**型の完全一致**で見る
+(`lib/rubycc/ir/generator.rb:997`)ため、`memcpy` の `void *` と違い、
+`strlen` は本物の libc プロトタイプに合わせて `char *` で登録し直した。
+
+### 同族の `__builtin_mem*` / `__builtin_str*` の欠落数
+
+2026-09-13、gcc 13.3 に対して `__has_builtin` で 11 綴りを走査した(`strlen` 以外):
+`__builtin_strcmp` `__builtin_strcpy` `__builtin_strcat` `__builtin_strchr`
+`__builtin_strncmp` `__builtin_strncpy` `__builtin_strdup` `__builtin_memcmp`
+`__builtin_memset` `__builtin_memmove` `__builtin_mempcpy` — **gcc は全部認める**。
+rubycc がこれまで持っていたのはこの族では `__builtin_memcpy` のみで、このステップで
+`__builtin_strlen` を足したので、**残り 11 綴りが未実装**として残る。
+どれも `__builtin_strlen` と違って「文字列リテラルなら畳む」特別扱いが要らず
+(定数畳み込みの需要が実測でも issue でも出ていない)、`__builtin_memcpy` と同じ
+「libc 関数への書き換え」だけで足りるはずだが、それぞれ個別の実在ニーズが無いまま
+先回りで足すのは本ステップの範囲外なので、GAPS には追加しない(需要が出たら
+別 issue を立てる)。
+
+### 検証
+
+`test/test_builtin_strlen.rb`(新規)を gcc 差分で追加:
+
+- 文字列リテラル引数(空文字列を含む)・`char *` 変数引数・埋め込み `\0` を持つ
+  リテラルの 4 パターンを 1 プログラムで比較(2026-09-13 実測: `rubycc` は
+  `6 0 6 2` を出力し gcc と一致)。
+- 定数式の 5 箇所(静的初期化子・配列の大きさ・匿名 `enum` の列挙子・
+  `_Static_assert` 2 本・`case` ラベル 2 本)をまとめて 1 プログラムで比較。
+- herb 由来のマクロ形(`#define HB_STRLEN(s) ((unsigned) __builtin_strlen(s))`)。
+- 実引数が 2 個のときのアリティ診断(`'__builtin_strlen' expects 1 argument, have 2`)。
+- `__has_builtin(__builtin_strlen)` が真であること。
+
+`rake test` は本エージェントの権限外(テストファイル限定実行)。実行したのは
+`test/test_builtin_strlen.rb`(新規、5 runs / 13 assertions)・
+`test/test_gcc_builtins.rb`(既存の builtin テスト、22 runs / 62 assertions、回帰なし)・
+`test/test_atomic_builtins.rb`(既存、回帰なし)・`test/test_examples.rb`
+(全サンプルの gcc 差分、`examples/m2/step37_conftest.c` の signature 衝突を
+上の実装修正で解消した後は 60 runs / 0 failures)。いずれも 0 failures, 0 errors。
+
+### サンプル
+
+`examples/m6/builtin_strlen_1_constant_fold.c` — 文字列リテラル引数の定数畳み込み
+(配列の大きさ・静的初期化子・`_Static_assert`・`case` ラベル)と、`char *` 変数引数の
+実行時呼び出し、埋め込み `\0`、herb 由来のマクロ形を 1 ファイルで実演する。
+`test/test_examples.rb` が gcc 差分で検証する。
+
+### 実装した AI エージェントへの申し送り(R11)
+
+既存 OSS コンパイラ(chibicc 等)の実装を参照・模倣していない。判断はすべて
+ISO C の該当箇所(6.6 の constant-expression、7.24.6.3 の `strlen`)と、issue および
+このステップで実測した gcc 13.3 の挙動に基づく。`__builtin_memcpy` の既存の
+「libc 呼び出しへの書き換え」という構造をそのまま流用したが、コードは新規に書いた。
+
+**副作用**: `strlen` のプロトタイプを翻訳単位の最初から登録するので、`<string.h>` を含めずに `strlen` を呼んでも
+「宣言の無い関数」のエラーにならなくなった。`memcpy` はもともと同じ扱いで、gcc も `strlen` を組み込みとして知っている
+(gcc は警告を出す)。統合時に確かめた。
+
+## expansion-budget-source-tokens-1 — マクロ展開予算を「置換で生まれたトークン」だけに課金する
+
+### 課題
+
+[expansion-budget-source-tokens](../../issues/expansion-budget-source-tokens.md)(GAPS **AL**)。
+`lib/rubycc/preprocess/preprocessor.rb` の `#expand_tokens` は、翻訳単位ごとに 0 に戻る
+`@expansion_tokens`(`EXPANSION_TOKEN_LIMIT` = 100 万)を、**キューから取り出したトークン 1 つ
+ごとに**消費していた。マクロが生成したトークンだけでなく、ソースを素通りするだけのトークンも
+同じように数えていたため、マクロを 1 つも使わない大きな入力(生成した表・amalgamation 済み
+ソース)が「暴走マクロ」と誤診断されて拒否されていた。
+
+### 決着
+
+**置換が生み出したトークンだけに課金する。** `#expand_tokens` のループ本体からループ先頭の
+課金を削り、代わりに新しい `#enqueue_substitution(queue, tok, generated)` を作って、object 系
+マクロの置換 (`#expand_tokens` 内) と function 系マクロの置換 (`#expand_function_macro`) の
+両方の `queue.unshift(*substitute(...))` をこれ経由に置き換えた。課金は「置換の**呼び出し**
+1 回につき、生成されたトークン数」で、生成されたトークンがさらにマクロ名であれば、それが次に
+置換されるときに**再度**課金される(既存のペイント機構はそのまま)。これにより、倍々に展開する
+マクロは今まで通り生成した総トークン数ぶん課金され続けるので、上限の役割(暴走検出)は保たれる。
+builtin マクロ (`__FILE__` など) は 1 トークンだけを生成し、コメントに書いてある通り再帰も
+起こり得ないので、課金対象にしなかった(暴走の的にならない)。
+
+`EXPANSION_TOKEN_LIMIT` のコメントを、「調べたトークン全部」ではなく「置換が生成したトークン
+だけ」を数える設計に合わせて書き直した。旧コメントにあった「`<ruby.h>` は約 13.7 万を消費する」
+という数値は、素通りトークンを含む**旧方式での実測値**だったため、新方式では成立しない具体的
+数値の主張として残さず、定性的な説明(ヘッダはほぼ宣言と素通りトークンで、置換出力ではない)に
+差し替えた。
+
+### 受け入れ条件との対応
+
+- **80,000 行の表が通り、`n()` が gcc と一致する**: `test/test_expansion_budget_source_tokens.rb`
+  の `#test_a_large_macro_free_table_compiles_and_matches_gcc` で確認(ただし後述の理由で 3,000 行
+  に縮小)。
+- **暴走マクロの拒否は保たれる**: 既存の `test/test_dos_resilience.rb`
+  `#test_exponentially_expanding_macro_is_rejected`(B0..B21 の倍々マクロ)が、修正後も同じ
+  `/macro expansion is too large/` で失敗し、20 秒未満のまま(2026-09-13 実測: 単体実行で
+  3.49 秒。旧コメントの「ここでは約 3 秒」という実測値とほぼ同じ桁)。新規テストへの複製はせず、
+  このテストを実行して確認する方針にした(issue の着手前チェックリストにある通り)。
+- **`unicode` 0.4.4.5 のビルド**: 本ステップの実装スコープには含めない(コーパス gem のビルド
+  検証は corpus-expansion スキルの領分)。実装が正しければ機序としては通るはずだが、実際の
+  gem ビルドでの確認は別途行う。
+- **`rake test` が 0 failures**: 本ステップでは `test/test_expansion_budget_source_tokens.rb`
+  (新規)・`test/test_preprocessor.rb`・`test/test_dos_resilience.rb` のみを実行して確認した
+  (全体は実行していない)。
+
+### 計測(2026-09-13、このホスト)
+
+課題にある生成器(`struct e { int a,b,c,d,e,f; }; static const struct e tbl[] = { { 1,2,3,4,5,6 }, ... };`)
+で計測した:
+
+| N(行数) | 出力トークン数 | Preprocessor#run のみ | Compiler#compile(パース+コード生成込み) |
+|---|---|---|---|
+| 100 | 1,452 | — | — |
+| 5,000 | 70,052 | — | 1.11 秒 |
+| 20,000 | 280,052 | — | 4.49 秒 |
+| 40,000 | 560,052 | — | 8.80 秒 |
+| 72,000 | 1,008,052 | 7.42 秒 | 16.63 秒 |
+| 80,000 | 1,120,052 | 8.17 秒 | (未計測。72,000 系列から外挿すると 18 秒台) |
+
+出力トークン数は `14 * N + 52` にきれいに一致する(N=100, 80,000 の両方で完全一致を確認)。
+旧方式はここに**素通りしない**トークン(改行など)もさらに数えていたので、旧コード時点の実測
+(issue にある「N=80,000 で 66,667 行目のトークンで失敗」)は `66,667 * 15 ≒ 1,000,005` と
+ほぼ一致し、旧方式は 1 行あたり約 15 単位を消費していたと推定できる(この推定は今回の修正の
+正しさの傍証であって、旧コードを復元して再計測したものではない)。
+
+**Compiler#compile はトークン数に対しほぼ線形**(5,000→20,000 で約 4.05 倍、20,000→40,000 で
+約 1.96 倍)だが、**1 トークンあたりの単価はプリプロセスだけの場合よりずっと高い**
+(72,000 行で比べると、プリプロセスのみ 7.42 秒 に対しコード生成込みは 16.63 秒)。
+
+### テストの分割理由(判断)
+
+受け入れ条件は「N=80,000 が通って `n()` が gcc と一致する」ことを求めているが、旧予算
+(100 万)を確実に超えたと言えるには出力トークン数で 100 万を上回る入力が要る。上の表の通り、
+それだけのトークン数を実際にコンパイル(パース+コード生成)まで通すと 15〜18 秒台になり、
+「a few seconds」に収まらない。一方この下限(約 100 万トークン)は**今回の修正の対象外の
+コストであり、修正でこれ以上小さくはできない**(プリプロセス自体のトークン処理単価は変えて
+いない。変えたのは何を課金するかだけで、素通りトークンの処理コスト自体は変わらない)。
+
+そこで 2 つに分けた:
+
+1. `#test_a_table_that_would_have_exhausted_the_old_source_token_budget_now_preprocesses` ——
+   72,000 行(出力トークン数 1,008,052 で 100 万を上回る、旧方式ならさらに多く課金されていた
+   はずなので「旧方式なら確実に超えていた」と言える最小限に近い行数)を `Preprocessor#run`
+   だけに通し、例外を投げずに完走し、トークン数が式通りであることを確認する。プリプロセスだけ
+   なので 72,000 行でも 7〜8 秒で収まる。
+2. `#test_a_large_macro_free_table_compiles_and_matches_gcc` —— 3,000 行(旧予算には遠く届か
+   ないが、コンパイル・リンク・実行して gcc と `printf("%d\n", n())` の標準出力を比較する)で、
+   実際に動く値が正しいことを確認する。1 秒未満で終わる。
+
+「80,000 行そのものを 1 本のテストでコンパイル・実行まで通す」ことは、上記の理由で行わなかった。
+コード生成のトークンあたり単価そのものを速くする話は本 issue のスコープ外であり、別途 GAPS に
+挙げるかどうかは要検討(このステップでは着手しない)。
+
+### C サンプルについて
+
+`examples/m*/` へのサンプル追加は見送った。この修正が意味を持つには出力トークン数で 100 万を
+超える入力が要り、そのようなサンプルは巨大な生成ファイルにせざるを得ず、`test/test_examples.rb`
+が全サンプルを毎回 gcc 差分でビルド・実行する運用(examples/README.md)にとって明らかに
+不釣り合いに重い。機能そのものはコード上の分岐追加ではなく既存の「マクロを含む/含まない C
+ファイルは今まで通り動く」ことの範囲内なので、サンプルを欠いても回帰の見落としにはならない
+と判断した。
+
+### 検証
+
+`test/test_expansion_budget_source_tokens.rb`(新規)**2 runs / 7 assertions / 0 failures**
+(2026-09-13、実行時間 8.6 秒)。
+`test/test_preprocessor.rb` **230 runs / 476 assertions / 0 failures**(2026-09-13)。
+`test/test_dos_resilience.rb` **35 runs / 131 assertions / 0 failures**(2026-09-13、16.2 秒。
+`test_exponentially_expanding_macro_is_rejected` 単体では 3.49 秒)。
+`rake test` 全体は未実行(呼び出し元の統合作業に委ねる)。
+
+## builtin-strlen-2 — 組み込みの種シグネチャはプログラム自身の宣言に譲る
+
+**課題**: builtin-strlen-1(bc55e37)は `Generator#generate` に `strlen` のプロトタイプ
+`unsigned long strlen(char *)` を最初から登録した(`memcpy` の種の隣)。そのステップでは
+x86-64 の対象テスト(`test/test_builtin_strlen.rb`・`test/test_gcc_builtins.rb`・該当サンプル)しか
+走らせていなかった。2026-09-14、ブランチ `gap-fixes-wave-2` で `rake test` 全体を走らせたところ
+**18 件(4 failures + 14 errors)が落ち、すべて `conflicting types for 'strlen'`** だった。
+builtin-strlen-1 より前はどれも通っていた。代表例:
+
+- `TestCSuite#test_c_suite_00025` と `TestCSuiteAArch64#test_c_suite_aarch64_00025` —
+  テスト側の宣言は `int strlen(char *);`
+- `TestCSuiteAArch64` の 00179 / 00180 —
+  `/usr/aarch64-linux-gnu/include/string.h:407:1: conflicting types for 'strlen'`
+- `TestHeaderAbiAarch64#test_netinet_in_abi_matches_cross_gcc`(`size_t strlen(const char *__s);`)、
+  `TestAArch64SelfLink#test_conftest_style_try_run`(`unsigned long strlen(const char *s);`)、
+  `TestExamplesAArch64` の spill_traffic_cleanup 1/2(`extern size_t strlen (const char *__s)`)、
+  ほか約 10 件(同じメッセージ)
+
+### 原因 — 形ごと
+
+どちらの形も同じ仕組みで壊れた。`Generator#declare_function` は、既に `@signatures` にある
+シグネチャを**プログラムが先に書いた宣言**とみなし、再宣言と型の完全一致を要求する。
+種はプログラムの宣言ではないのに、同じ比較にかけられていた。そのうえで、形ごとの不一致は次のとおり
+(2026-09-14、このホストで rubycc の最小再現により確認):
+
+1. **`int strlen(char *);`(00025、全ターゲット)** — 戻り値型が `int` で、種は `unsigned long`。
+   ターゲットに関係なく食い違う。
+2. **`size_t strlen(const char *)`(aarch64 のみ)** — `lib/rubycc/compiler.rb` は aarch64 に
+   `char_signed: false` を与え、パーサは素の `char` を `Type.plain_char(false)`、すなわち
+   `Type::UnsignedChar` に解決する。`const` は `Type` の一部ではない(型比較から落ちる)ので、
+   aarch64 での `const char *` は `Pointer(UnsignedChar)` になる。一方、種は
+   `Type::Pointer.new(Type::Char)`(符号付きの単一インスタンス)を**ターゲットに関係なく**
+   書き込んでいたので、両者は等しくならない。x86-64 では素の `char` が `Type::Char` そのもので、
+   `size_t` は両ターゲットとも `unsigned long` なので、ヘッダの宣言と種は完全に一致し、
+   衝突しなかった。**x86 の string.h が通って aarch64 の string.h が落ちた理由はこれ**で、
+   ヘッダ本文の違いではない(`/usr/include/string.h:407` と
+   `/usr/aarch64-linux-gnu/include/string.h:407` はどちらも `extern size_t strlen (const char *__s)`)。
+   同梱の `include/libc/string.h:42` の `size_t strlen(const char *__s);` も aarch64 では
+   同じ理由で衝突した。
+
+### gcc の実測
+
+2026-09-14、このホストの gcc 13.3(`-std=gnu17`)で測った。
+
+- `int strlen(char *);` の後に `strlen(p)` を呼ぶと、警告
+  `conflicting types for built-in function 'strlen'; expected 'long unsigned int(const char *)'
+  [-Wbuiltin-declaration-mismatch]` だけでコンパイルが通り、`call strlen@PLT` が出る。
+- 同じ宣言の後でも **`__builtin_strlen(p)` は組み込み自身の型を保つ**。
+  `sizeof(__builtin_strlen(p))` は 8、`sizeof(strlen(p))` は 4。5 バイトの文字列で
+  `__builtin_strlen(p) - 6 > 0` は 1(符号無しで折り返す)、`strlen(p) - 6 > 0` は 0。
+- ファイルスコープの `int strlen = 7;` は、警告
+  `built-in function 'strlen' declared as non-function` だけでコンパイルが通る。
+- 宣言なしの `strlen(p)` は、implicit declaration と
+  `incompatible implicit declaration of built-in function 'strlen'` の警告だけで通る
+  (gcc 14 は既定で拒否するので、差分テストには使わない)。
+
+### 修正
+
+- 種のシグネチャに **`builtin_seed: true`** の印を付けた。名前で特別扱いするのではなく、印で扱う。
+  `Generator#builtin_signatures` が `memcpy` と `strlen` の 2 件を返し、`strlen` の引数は
+  `Type::Pointer.new(@plain_char)`(ターゲットの素の `char`)にした。`#generate` はこの表を
+  `@builtin_signatures` として持ち、その複製で `@signatures` を始める。
+- `#declare_function` は、既存のシグネチャが種ならそれを無いものとして扱い、プログラムの
+  **最初の宣言でそのまま置き換える**(型は問わない)。2 つ目以降の実際の再宣言は、
+  これまでどおりその最初の宣言と完全一致で照合する。
+- `#declare_global` も、同じ名前のファイルスコープのオブジェクトが来たら種を消して通す
+  (実際の関数宣言と同名なら、これまでどおり redefinition)。
+- パーサは非リテラルの `__builtin_strlen(...)` と `__builtin_memcpy(...)` を、callee 名を
+  **`__builtin_strlen` / `__builtin_memcpy` のまま**の `AST::Call` にする(従来は `strlen` /
+  `memcpy` に書き換えていた)。生成器の `BUILTIN_LIBCALLS` がこの名前を libc の関数名に対応づけ、
+  `#gen_call` と `#call_return_type` は、プログラムの宣言ではなく `@builtin_signatures` の
+  固定プロトタイプで型を決めて libc のシンボルを呼ぶ。新しい AST ノードは足していない。
+  `__builtin_*` はレキサのキーワードなので、プログラムの識別子とは衝突しない。
+- `memcpy` の種も同じ仕組みに載せた。
+
+### 判断
+
+- **`__builtin_strlen` の型は gcc に合わせて組み込みのものを保つ。** 依頼の段階では、プログラムが
+  `int strlen(char *)` を宣言したら `__builtin_strlen` もそのシグネチャで呼ぶ想定だった。
+  しかし上の gcc 実測では、組み込みは宣言に関係なく `unsigned long` を返す。プログラムの
+  シグネチャに従うと `sizeof` と符号無しの折り返しで gcc と観測可能な差が出るので、
+  組み込みの固定プロトタイプを使うことにした。素の `strlen(p)` の呼び出しは、これまでどおり
+  プログラムの宣言に従う(gcc と同じ)。
+- **種は「最初の宣言に黙って譲る」形にし、警告は出さない。** rubycc にはこの種の警告の経路が無い。
+  gcc の警告に合わせて診断を足すのは本ステップの範囲外とした。
+- **`memcpy` の種も同じ印で扱う。** 片方だけ特別扱いが残ると、次に種を足す人がどちらに
+  倣うべきか分からなくなる。挙動が変わるのは、従来 `conflicting types for 'memcpy'` で
+  拒否していた宣言(例: `char *memcpy(char *, char *, unsigned long);`)を gcc と同じく
+  通すようになる点だけで、既存の通過テストには影響しない(下の実行結果)。
+- 種の `char` をターゲットの素の `char` にしたので、宣言なしの `__builtin_strlen(p)` や
+  `strlen(p)` に `char *` を渡したときも、aarch64 で型が食い違わない。
+
+### テスト
+
+新規 `test/test_builtin_strlen_seed.rb`(19 runs)。gcc 差分の対象は 5 形:
+`int strlen(char *)`(00025 の形)・`size_t strlen(const char *)`・`#include <string.h>`・
+宣言なし・独自の `memcpy` 宣言。どれも宣言の後で非リテラルの `__builtin_strlen` を呼び、
+`sizeof` と符号無しの折り返しを出力する。各形を、ホストの gcc 差分・aarch64 向けのコンパイルのみ
+(クロスツールチェーン不要)・クロス gcc + qemu の差分の 3 通りで検査する。ほかに
+「宣言なしの素の `strlen` が種で通る」「ユーザ宣言の後の食い違う再宣言は従来どおり
+`2:1` で conflicting types」「一致する再宣言は通る」「ファイルスコープの `int strlen` に種が譲る」。
+
+2026-09-14、ワークツリー `builtin-strlen-seed`(adc862a + 本変更)で実行した結果:
+
+| ファイル | runs | failures | errors | skips |
+|---|---|---|---|---|
+| test/test_builtin_strlen_seed.rb | 19 | 0 | 0 | 0 |
+| test/test_builtin_strlen.rb + test/test_gcc_builtins.rb | 27 | 0 | 0 | 0 |
+| test/test_c_suite.rb | 223 | 0 | 0 | 13 |
+| test/test_c_suite_aarch64.rb | 444 | 0 | 0 | 26 |
+| test/test_header_abi.rb | 121 | 0 | 0 | 0 |
+| test/test_aarch64_self_link.rb | 18 | 0 | 0 | 0 |
+| test/test_examples.rb + test/test_examples_aarch64.rb | 564 | 0 | 0 | 26 |
+| strlen/memcpy を含む他の 6 本(parser・knr・library_resolution・executable・execution_harness・shared_object) | 705 | 0 | 0 | 0 |
+| strlen/memcpy を含む aarch64 の 4 本(globals_execution・backend・execution・shared_object) | 199 | 0 | 0 | 0 |
+
+同じ新規テストを修正前の `lib/`(adc862a を展開したもの)で走らせると、
+**19 runs 中 1 failure + 12 errors**。すべて `conflicting types for 'strlen'`
+(または `'memcpy'`)で、回帰を捕まえることを確認した。
+スキップ数は既存の SKIP 一覧によるもの。全スイート(`rake test`)は走らせていない。
+
+サンプルは足していない。このステップは既存の宣言との衝突を直すもので、1 ファイルで実演できる新しい機能を持たない。
+
+## unprototyped-function-pointer-compat-1 — 旧形式の関数ポインタ型とプロトタイプ付き関数ポインタ型の互換(C11 6.7.6.3p15)
+
+**課題**(GAPS 行 BD、`issues/unprototyped-function-pointer-compat.md`): `void (*)(int *, long)` を
+`void (*loop_func)();` のような旧形式(空の `()`、関数定義の外)の関数ポインタへ代入すると、
+rubycc は `incompatible types in assignment` で拒否していた。gcc は警告も出さずに通す
+(2026-09-13、このホスト gcc 13.3、`-std=gnu11 -Wall -Wextra` で実測、警告 0 件・exit 0)。
+コーパス候補 `numo-narray` 0.9.2.1 の `ext/numo/narray/ndloop.c:359`
+(`lp->loop_func = loop_func;`、`na_md_loop_t` のメンバ `void (*loop_func)();`)がこの形で、
+[`include-absolute-path`](../../issues/include-absolute-path.md)(AO)を直した後にここで止まっていた。
+
+**規格**: C11 6.7.6.3p15 は、一方が仮引数の型並びを持ち、もう一方が関数定義でない旧形式の
+宣言子(空の `()` の識別子リスト)であるとき、仮引数の型並びが省略記号(`...`)を持たず、
+各仮引数の型が既定の実引数拡張(6.5.2.2p6)の結果と互換であれば、2 つの関数型は互換だと
+定める。
+
+**この型システムの前提の欠落**: 変更前の `Type::FunctionType` は `param_types` しか持たず、
+`(void)`(明示的に「仮引数なし」)と `()`(空の識別子リスト、旧形式)が両方とも
+`param_types == []` になり、区別できなかった(`lib/rubycc/type.rb` の元コメントが
+明言していたとおり)。6.7.6.3p15 を実装するにはこの 2 つを区別する必要があるため、
+`FunctionType` に `prototyped`(真偽値、デフォルト `true`)を追加した:
+
+- `(void)` と非空の仮引数型並びは常に `prototyped: true`。
+- 空の `()` は、関数**定義**の一部でなければ `prototyped: false`(旧形式・仮引数未指定)。
+  6.7.6.3p14 により、`()` が関数定義の一部であれば「仮引数なし」を意味するので、
+  `Parser#parse_declaration` が本体の `{` を見た時点で `prototyped: true` へ作り直す
+  (`lib/rubycc/front/parser.rb`)。
+- 旧形式(K&R)定義の宣言リストが仮引数の実型を確定させた後(`parse_old_style_function_definition`)
+  は `prototyped: true`(実型が分かっているので、通常のプロトタイプと同様に扱ってよい —
+  6.7.6.3p15 の識別子リスト側の判定はこの subset では実装していない。後述の残課題を参照)。
+- 非空の識別子リスト(`int f(a, b);` のような、定義でない位置の旧形式)は既存どおり
+  そのままハードエラー(`reject_identifier_list`)。名前を伴う仮引数リストを「仮引数未指定」
+  として黙って読むのは、間違った診断を自信満々に出す方が、正確な診断より悪いという
+  既存の判断を維持した。
+
+**実装**(現在の置き場所は `lib/rubycc/type.rb`。経緯は下の「2026-09-14 の手直し」参照):
+`Type.function_types_compatible?` が 2 つの関数型の 6.7.6.3p15 互換を判定する。ロジック:
+
+1. 完全に等しければ互換(既存の厳密一致がそのまま通る主要ケース)。
+2. 戻り値の型が異なれば非互換。
+3. 双方が `prototyped` で一致していれば(両方 true、あるいは両方 false)、1. で
+   弾かれなかった時点で非互換 — 2 つの異なるプロトタイプ同士に緩和は適用されない
+   (GAPS 行 AN のスコープと非干渉)。
+4. 一方が `prototyped`(プロトタイプ側)で他方が旧形式なら、プロトタイプ側が
+   省略記号を持たず、かつ全仮引数型が既定の実引数拡張で変化しないことを確認する
+   (`Type.default_argument_promotion_unchanged?` — 整数は「ランクが `int` 未満でない」、
+   浮動小数点は「`double` 以上の幅」で判定。`float`(4 バイト)だけが変化する)。
+   `lib/rubycc/ir/generator.rb#compatible_types?` はこれをそのまま呼ぶ。
+
+**gcc 実測(まだ非互換とすべき組み合わせ)**: 2026-09-13、同ホスト gcc 13.3、
+`-std=gnu11 -Wall -Wextra` で、仮引数が `char`/`short`/`float`(既定の実引数拡張で
+型が変わる)、および省略記号を持つプロトタイプを旧形式へ代入する 4 パターンをすべて実測。
+**いずれも gcc は `-Wincompatible-pointer-types` 警告のみで exit 0**(エラーにしない)。
+これは GAPS 行 AN(`incompatible-function-pointer-argument.md`)が扱う「gcc 13 は制約違反を
+警告に留める」パターンと同種だが、**AN のスコープを広げない**という今回の要件どおり、
+rubycc はこの 4 パターンを引き続きエラーにする(標準どおりの非互換のまま)。
+
+**波及した別経路**: `Type::FunctionType.new` の呼び出し箇所は 3 か所
+(`parser.rb` 2 か所、`generator.rb#function_type_of` 1 か所)。既存テスト(`test_type.rb`、
+`test_parser.rb`)は 3 引数の呼び出しを多数持つため、`prototyped:` にキーワード引数の
+デフォルト `true` を与えるカスタム `initialize` を `Data.define` のブロックに追加し、
+既存呼び出しを変更せずに済ませた。`function_type_of`(名前つき関数の宣言/定義から
+関数ポインタ型を組み立てる経路)は `@signatures` に `prototyped` を持たせておらず、
+常に `true` を渡す — 名前つき関数がまれに旧形式のまま(本体を持たず)宣言される場合を
+見落とすが、その見落としは「本来 6.7.6.3p15 で通るはずの代入を厳格側に倒して拒否する」
+方向にしか効かない(受理してはいけないプログラムを受理することはない)ので許容した。
+
+**スコープ外として残した箇所**(見つけたが今回は直していない):
+
+- 名前つき関数の再宣言マージ(`declare_function` の `existing[:param_types] != param_types`)
+  は `prototyped` を見ておらず、6.7.6.3p15 の識別子リスト側の判定(K&R 定義と
+  プロトタイプ宣言の食い違いを既定の実引数拡張越しに比較する規則)は実装していない。
+  `@signatures` は `Type::FunctionType` そのものでなく生の配列(`param_types`)で
+  シグネチャを持つため、`prototyped` フラグ自体を運んでいない。この既存の欠落は
+  下記「2026-09-14 の手直し」で扱った回帰(ポインタ**オブジェクト**の再宣言マージ)
+  とは別の話 — こちらは名前つき**関数**同士の再宣言(`void f(); void f(int);` のような形)
+  で、コーパス候補からの実例も無いため今回は見送った。
+
+**受け入れ条件の確認(2026-09-13 時点)**: 最小再現(`run()` が 7)・逆方向の代入・実引数
+として渡す経路を `test/test_unprototyped_function_pointer_compat.rb` の gcc 差分で確認。
+`char`/`short`/`float` 仮引数と省略記号の 4 パターンは引き続き `incompatible types` 系の
+診断が出ることを同ファイルで確認。`test_diagnostics.rb`(238 runs)・`test_type.rb`(92 runs)・
+`test_parser.rb`(332 runs)・`test_knr_function_definitions.rb`(13 runs)・
+`test_examples.rb`(60 runs)はいずれも 0 failures。`numo-narray` 側の実ビルド確認・
+`rake test` 全体はこの時点では未実行だった。
+
+### 2026-09-14 の手直し — レビューで見つかった回帰と抜け
+
+**事実(レビュー時の測定、2026-09-13〜14、同ホスト gcc 13.3)**: `Type::FunctionType` の
+Data 等価性に `prototyped` を足したことで、`==` で型を比べている箇所すべてで
+「`()` と `(void)`/実プロトタイプ」が非等価になった。実際に壊れていた 4 例:
+
+| 再現コード | gcc | 変更前 rubycc | 変更後(直す前)rubycc |
+|---|---|---|---|
+| `void (*p)(); void (*p)(void);` | ok | ok | `conflicting types for 'p'`(回帰) |
+| `typedef int (*F)(); F g; int (*g)(void);` | ok | ok | `conflicting types for 'g'`(回帰) |
+| `extern int (*h)(); int (*h)(int);` | ok | `conflicting types for 'h'`(既存の欠落) | 同じ欠落のまま |
+| `struct s{int(*f)();}; ...; v.f = one; v.f(0);`(キャストなしで直接呼ぶ) | ok | `incompatible types in assignment` | `too many arguments to function pointer`(別の欠落) |
+
+加えて、numo-narray 0.9.2.1 の `ext/numo/narray/ndloop.c` を読み直すと、旧形式メンバは
+**キャストなしで直接呼ばれ**(1297 行目 `(*(lp->loop_func))(nf, lp);`)、**プロトタイプ付き
+関数デザイネータと `==`/`!=` で比較もされている**(1275・1287 行目
+`if (lp->loop_func == loop_narray)`)。前回の最小再現がキャストで隠していた 2 つの経路。
+
+**判断**: 「代入・実引数・戻り値」の互換性判定(`compatible_assignment?`)だけでなく、
+**同じ 6.7.6.3p15 判定を型システム全体で一貫させる**必要がある。分散していた判定を
+`lib/rubycc/type.rb` の `Type.function_types_compatible?` / `Type.default_argument_promotion_unchanged?`
+に一本化し(旧 `generator.rb` の同名 private メソッドは削除)、以下の呼び出し元すべてから
+参照する形に直した:
+
+1. **6.2.7p3 の合成型(同一オブジェクトの再宣言マージ)**: `Type.composite` に
+   `pointer_composite`/`function_type_composite` を追加。両辺がポインタで、両辺の指す先が
+   関数型のとき、6.7.6.3p15 互換なら**プロトタイプ側**を合成型として採用する
+   (6.2.7p3 の「仮引数型並びを持つ側が勝つ」規則)。これで `composite_declaration_type`
+   経由の `bind_extern_reference`(`extern` 参照)・`merge_object_definition`(ファイルスコープ
+   定義・仮定義)の両方が直る — 表の 1〜3 行目はすべてこの 1 箇所の修正で通るようになった。
+   ブロックスコープの `extern` も同じ `bind_extern_reference` を使うので同時に直る。
+2. **ファイルスコープの初期化子**(`function_address_constant`): 生の `==` の代わりに
+   `Type.function_types_compatible?` も受理するよう変更(`void (*p)() = some_function;`)。
+3. **間接呼び出しの実引数**(`gen_indirect_call`): `Type::FunctionType#prototyped` が
+   `false` のときは `lower_call_arguments` に `variadic: true` を渡すことで、
+   **仮引数個数の検査を丸ごとスキップ**し、各実引数を(可変長引数の可変部と同じ)
+   既定の実引数拡張で渡すようにした。SysV ABI の `%al`(ベクタレジスタ数)設定も
+   可変長呼び出しと同じ経路に乗るため副作用として付いてくる — 実際に呼び出し先が
+   可変長かもしれない以上、これは gcc の吐くコードと一致する(2026-09-14 実測、
+   `movl $1, %eax` を浮動小数点実引数ありの間接呼び出し前に gcc も出す)。
+4. **`==`/`!=` 比較**(`pointer_comparable?`): 両辺が関数ポインタで 6.7.6.3p15 互換なら
+   `==`/`!=` を受理(6.5.9p2「両方とも互換な型へのポインタ」)。`<`/`<=`/`>`/`>=` は
+   従来どおり完全一致のみ。
+5. **条件式**(`conditional_result_type`): `cond ? p : q` の両辺が関数ポインタで
+   6.7.6.3p15 互換なら合成型を結果型にする(6.5.15p6 は結果型を合成型と定めているので、
+   `Type.composite` をそのまま呼ぶ)。
+
+**スコープ境界の確認**: 名前つき関数同士の再宣言(`declare_function`)は今回も直していない
+(上の「スコープ外として残した箇所」のとおり、コーパス候補に実例が無い)。
+GAPS 行 AN のスコープ(gcc 13 が警告に留める制約違反)は変えていない — 2 つの異なる
+プロトタイプ同士(`void (*p)(int); void (*p)(long);` 等)は再宣言マージでも代入でも
+引き続き `conflicting types`/`incompatible types` になることを実測済み。
+
+**受け入れ条件の再確認(2026-09-14 実測)**: 上表の 4 パターンすべてが gcc と同じ exit 0
+になることを再実測。加えて numo-narray の 2 つの実際の形(キャストなし直接呼び出し・
+プロトタイプ付き関数デザイネータとの `==`/`!=`)を模した gcc 差分テストを追加し、一致を確認。
+`test_unprototyped_function_pointer_compat.rb` は 13 runs / 38 assertions / 0 failures。
+`test_diagnostics.rb`(238 runs)・`test_type.rb`(92 runs)・`test_parser.rb`(332 runs)・
+`test_knr_function_definitions.rb`(13 runs)・`test_examples.rb`(60 runs)・
+`test_block_scope_function_decl.rb`(13 runs)・`test_extern_incomplete_array.rb`(11 runs)・
+`test_conditional_null_pointer.rb`(6 runs)・`test_extern_initializer_file_scope.rb`(4 runs)
+はいずれも 0 failures。`numo-narray` 側の実ビルド確認・`rake test` 全体は今回も未実行
+(呼び出し元の統合時に確認)。
