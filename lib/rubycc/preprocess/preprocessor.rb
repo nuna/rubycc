@@ -1254,11 +1254,16 @@ module Rubycc
         end
       end
 
-      # Resolves a header name to a filesystem path. A quoted include is looked
-      # for first beside the file that names it, then along the search path; an
-      # angled include only along the search path (6.10.2p2-3). A match found
-      # along the search path records which directory it came from, so a later
-      # #include_next from this same file knows where to resume.
+      # Resolves a header name to a filesystem path. If the name is itself an
+      # absolute path, it is tried as-is before any directory joining, for both
+      # quote and angle forms (6.10.2p2-3 leaves an absolute name's handling to
+      # the implementation; gcc opens it directly). Otherwise a quoted include
+      # is looked for first beside the file that names it, then along the
+      # search path; an angled include only along the search path. A match
+      # found along the search path records which directory it came from, so a
+      # later #include_next from this same file knows where to resume; an
+      # absolute-path match was not found along the search path, so no origin
+      # is recorded for it (see #resolve_include_next).
       #
       # The same header name is resolved over and over within one translation
       # unit (each use site re-#includes it, guarded headers included, before
@@ -1272,6 +1277,12 @@ module Rubycc
         key = kind == :quote ? [File.dirname(includer), name] : name
         cached = @resolve_cache[key]
         return cached if cached
+
+        if File.absolute_path?(name)
+          raise_at(hash, "#{name}: No such file or directory") unless File.file?(name)
+          @resolve_cache[key] = name
+          return name
+        end
 
         if kind == :quote
           beside = File.join(File.dirname(includer), name)
@@ -1290,11 +1301,19 @@ module Rubycc
       end
 
       # Resolves a header name for #include_next: search resumes one directory
-      # past wherever `includer` itself was found along the search path. A file
-      # with no recorded origin (the main source file, or a quote-relative
-      # resolution beside its includer) has no "here" to resume past, so gcc
-      # falls back to plain #include semantics for it, which this does too.
+      # past wherever `includer` itself was found along the search path. An
+      # absolute name is tried as-is first, same as #resolve_include, since
+      # there is no search-path position to resume from for it either way. A
+      # file with no recorded origin (the main source file, an absolute-path
+      # resolution, or a quote-relative resolution beside its includer) has no
+      # "here" to resume past, so gcc falls back to plain #include semantics
+      # for it, which this does too.
       def resolve_include_next(kind, name, includer, hash)
+        if File.absolute_path?(name)
+          raise_at(hash, "#{name}: No such file or directory") unless File.file?(name)
+          return name
+        end
+
         origin = @include_origin[absolute_path(includer)]
         return resolve_include(kind, name, includer, hash) unless origin
 

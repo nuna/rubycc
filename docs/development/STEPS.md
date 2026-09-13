@@ -14547,3 +14547,56 @@ gcc と同じ出力(`15`)・終了コードになることを検証する。
 `test/corpus/include-census.md` は、定義を足す前と 1 バイトも違わなかった。3 つのマクロを足したことで
 別の枝を選ぶようになったコーパスの gem は無い。brotli 0.8.0 の `build_load` は、マージ後に
 台帳の手順(`tools/verify_corpus_candidate.rb --update`)で測る。
+
+## include-absolute-path-1 — 絶対パスの `#include` は、まずそのまま試す
+
+**課題**([issue](../../issues/include-absolute-path.md)、GAPS **AO**): `#include` のヘッダ名が
+絶対パスだと、実在するファイルでも rubycc は `No such file or directory` になる(2026-09-13 実測、
+直書き・マクロ経由・`-D` 経由の 4 形とも再現。相対パスは通る)。原因は
+`lib/rubycc/preprocess/preprocessor.rb` の `resolve_include` が、引用符形式は
+`File.join(File.dirname(includer), name)`、次に検索パスの各ディレクトリと名前を `File.join` する
+（`search_include_paths`)だけで、**名前そのものを単独で試す経路が無かった**こと。名前が絶対パスだと
+`File.join` はどちらも「ディレクトリ + 絶対パス」になり、名前自体は一度も試されない。
+
+**実害**: コーパス候補 `numo-narray` 0.9.2.1 は `extconf.rb` が `RUBY_EXTCONF_H` を絶対パスに設定し、
+Ruby の `ruby/internal/config.h:25` が `#include RUBY_EXTCONF_H` する。対照の gcc はビルドとロードに
+成功する(2026-09-13 実測、`buildable-gems-batch-3`)。
+
+### 実装
+
+`resolve_include` に、`File.absolute_path?(name)` が真なら**ディレクトリ結合を一切せず名前をそのまま
+`File.file?` で試す**分岐を先頭に追加した。引用符・山括弧の両方に効かせる(6.10.2p2-3 は絶対パス名の
+扱いを処理系定義のまま残しており、gcc は直接開く)。見つからなければ同じ
+`"#{name}: No such file or directory"` 診断にする。相対名の解決順(引用符形式は取り込み元の隣 →
+検索パス、山括弧形式は検索パスのみ)は変更していない。
+
+**`#include_next` の起点記録は、絶対パスで開いたファイルには残さない**。既存のコメントが述べる
+「起点が無いファイル(メインソースファイル、または取り込み元の隣で解決した引用符形式)は
+`#include_next` が素の `#include` と同じ意味になる」という規則に、絶対パスで開いたファイルも
+そのまま合流させた — 検索パスに沿って見つかったわけではないので、次にその内側で `#include_next`
+されたときに「どこから再開するか」を持たないのは一貫している。
+
+**`resolve_include_next` 自身にも同じバグがあった**(`search_include_paths(name, origin + 1)` も
+同じ `File.join` を使う)。絶対パスの名前を最優先で試す同じ分岐を `resolve_include_next` の先頭にも
+足した。`@resolve_cache` のキー付け(引用符形式は `[dirname(includer), name]`、山括弧形式は
+`name` のみ)は変更していない。
+
+### 検証
+
+新設 `test/test_include_absolute_path.rb`(10 件): 4 形すべてが解決してヘッダの中身が使われること、
+相対解決(`-D` 経由・引用符形式の隣接解決)が変わっていないこと、実在しない絶対パスが同じ診断に
+なること、絶対パスで開いたファイルからの `#include_next` が素の `#include` と同じ経路を辿ること
+(`resolve_include` 側のフォールバック)、`#include_next` 自身に絶対パスを渡した場合に直接解決する
+こと(`resolve_include_next` 側の新分岐)、そして gcc 差分の実行テスト 1 本
+(`ABS_VALUE` マクロを絶対パスヘッダから取り込み、`printf` の出力が gcc と一致することを確認)。
+
+**サンプルは追加しなかった。** 絶対パスは機種・実行ごとに変わる値であり、`examples/` のチェックイン
+サンプルは同一パスで恒久的にビルドできる単一ファイルであることが前提(`examples/README.md`)。
+1 ファイルに絶対パスを固定して埋め込むことはできない(`extern-initializer-file-scope-1` の
+「単一翻訳単位で完結できない確認はサンプルではなくテストが担う」判断と同種)。
+
+**検証**(2026-09-13): `test_include_absolute_path.rb` **10 runs / 14 assertions / 0 failures**、
+`test_preprocessor.rb` **229 runs / 475 assertions / 0 failures**、`test_include_path_encoding.rb`
+**6 runs / 32 assertions / 0 failures**。`rake test` 全体で
+**3,552 runs / 16,666 assertions / 0 failures / 0 errors / 39 skips**。`numo-narray` 0.9.2.1 の
+`build_load` は、マージ後に台帳の手順(`tools/verify_corpus_candidate.rb --update`)で測る。
