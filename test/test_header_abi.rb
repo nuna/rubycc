@@ -929,6 +929,62 @@ class TestHeaderAbi < Minitest::Test
     C
   )
 
+  # <pthread.h> then <netdb.h> (bundled-pthread-attr-guard-1): the regression
+  # guard for the pthread_attr_t collision issues/bundled-pthread-attr-guard.md
+  # records. glibc's own bits/types/sigevent_t.h -- which <netdb.h> reaches
+  # under _GNU_SOURCE, none of which rubycc bundles -- forward-declares
+  # "union pthread_attr_t" behind the guard __have_pthread_attr_t, the same
+  # guard glibc's bits/pthreadtypes.h checks. Before this fix, rubycc's bundled
+  # pthread.h did not check that guard, so <netdb.h> re-typedefed
+  # pthread_attr_t as a different type once it reached sigevent_t.h and gcc
+  # (which does check the guard) built this fine while rubycc did not -- a
+  # SIGSET_SELECT_FIRST-shaped defect (Step 147) but against a *host* header
+  # rubycc does not bundle rather than a second bundled header. `sizes` re-runs
+  # the PTHREAD Spec's load-bearing check (pthread_attr_t's sizeof/_Alignof
+  # against the gcc oracle) with <netdb.h> also in scope, and the snippet
+  # declares an actual (non-pointer) pthread_attr_t and wires it into a real
+  # struct sigevent through sigev_notify_attributes -- the exact field
+  # sigevent_t.h's forward declaration exists for -- so the probe proves the
+  # type is a complete object, not merely an unused pointer target.
+  PTHREAD_ATTR_NETDB_FORWARD = HeaderAbiHarness::Spec.new(
+    header: "pthread.h",
+    also: ["netdb.h"],
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[pthread_attr_t],
+    snippets: [<<~C.chomp]
+      static unsigned long abi_pthread_attr_netdb_forward(void) {
+        pthread_attr_t attr;
+        struct sigevent sev;
+        sev.sigev_notify_attributes = &attr;
+        return sizeof(attr) + sizeof(sev) + (gethostbyname != 0);
+      }
+    C
+  )
+
+  # <netdb.h> then <pthread.h>: the same collision with the include order
+  # reversed. The fix does more than swap which side wins a race: without
+  # completing "union pthread_attr_t" in a statement separate from its
+  # typedef (see the header's own comment), reversing the order would trade
+  # the redefinition error in the forward case for an "incomplete type" error
+  # here instead, since only sigevent_t.h's forward declaration would have run
+  # by the time rubycc's own header saw the guard already set. This Spec is
+  # what proves that failure mode does not exist either, the same way Step
+  # 147 pins both SIGSET_SELECT_FIRST and SIGSET_SIGNAL_FIRST rather than one.
+  PTHREAD_ATTR_NETDB_REVERSE = HeaderAbiHarness::Spec.new(
+    header: "netdb.h",
+    also: ["pthread.h"],
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[pthread_attr_t],
+    snippets: [<<~C.chomp]
+      static unsigned long abi_pthread_attr_netdb_reverse(void) {
+        pthread_attr_t attr;
+        struct sigevent sev;
+        sev.sigev_notify_attributes = &attr;
+        return sizeof(attr) + sizeof(sev) + (gethostbyname != 0);
+      }
+    C
+  )
+
   # <setjmp.h> (Step 122, M5 H2): the non-local jump facility. Like pthread.h,
   # jmp_buf/sigjmp_buf are arch dependent -- glibc's saved register set is wider
   # on aarch64 -- so the header lives in the arch layer alongside pthread.h and
@@ -1733,6 +1789,14 @@ class TestHeaderAbi < Minitest::Test
     assert_abi_matches(PTHREAD)
   end
 
+  def test_pthread_attr_netdb_forward_abi_matches_gcc
+    assert_abi_matches(PTHREAD_ATTR_NETDB_FORWARD)
+  end
+
+  def test_pthread_attr_netdb_reverse_abi_matches_gcc
+    assert_abi_matches(PTHREAD_ATTR_NETDB_REVERSE)
+  end
+
   def test_setjmp_abi_matches_gcc
     assert_abi_matches(SETJMP)
   end
@@ -2286,6 +2350,57 @@ class TestHeaderAbiAarch64 < Minitest::Test
     assert_abi_matches_aarch64(TestHeaderAbi::PTHREAD)
   end
 
+  # The aarch64 counterpart of TestHeaderAbi::PTHREAD_ATTR_NETDB_FORWARD/REVERSE
+  # (bundled-pthread-attr-guard-1) -- but checked against a hand-written
+  # stand-in for the colliding declaration rather than the real <netdb.h>.
+  # rubycc's aarch64 system-header search cannot resolve <netdb.h> (or any
+  # other header rubycc does not bundle) on this cross toolchain at all:
+  # rubycc's search for the aarch64 target expects the native multiarch layout
+  # (/usr/include/aarch64-linux-gnu + /usr/include, see
+  # Preprocessor::LIBC_MULTIARCH_INCLUDE_DIRS), but the aarch64-linux-gnu-gcc
+  # cross package this repository's CI installs on every push's *default*
+  # x86-64 runner (.github/workflows/test.yml, not only this sandbox) keeps its
+  # own sysroot at /usr/aarch64-linux-gnu/include instead, so
+  # /usr/include/aarch64-linux-gnu does not exist there and the preprocessor
+  # falls through to the host's own x86-64 /usr/include/netdb.h, which then
+  # fails to find the x86-64-only bits/stdint-uintn.h it needs (measured
+  # 2026-09-14). Reusing the real-<netdb.h> Specs here would therefore fail
+  # this test on every ordinary push for a reason that has nothing to do with
+  # the header fix under test -- a pre-existing gap in how rubycc's default
+  # aarch64 system search path relates to this Debian cross-toolchain layout,
+  # not a regression from this fix.
+  #
+  # So this pins the actual mechanism instead of one specific header that uses
+  # it: a hand-written stand-in for glibc's own pthread_attr_t forward
+  # declaration -- the same guarded typedef bits/types/sigevent_t.h and
+  # bits/pthreadtypes.h each carry (not copied from either file: the two lines
+  # are the shared ABI convention itself, the guard name and the "typedef a
+  # forward-declared tag" shape, not a creative expression -- R11 /
+  # HEADER-LICENSING.md #4, the same reasoning Step 147 already applied to
+  # __sigset_t). Placed after <pthread.h>, the stand-in's own #ifndef must find
+  # __have_pthread_attr_t already set (by the real bits/pthreadtypes.h on the
+  # gcc oracle side, confirmed present verbatim on this cross sysroot, and by
+  # this header's own fix on rubycc's side) and skip its typedef -- exactly the
+  # failure this fix closes, since before it rubycc's header never set that
+  # guard and the stand-in's typedef always collided with rubycc's own
+  # (differently-typed) pthread_attr_t.
+  def test_pthread_attr_guard_forward_abi_matches_cross_gcc
+    assert_pthread_attr_guard_matches(run_pthread_attr_guard_case_aarch64(:forward), "forward")
+  end
+
+  # The include-order-reversed counterpart of the case above (the stand-in
+  # runs first, forward-declaring "union pthread_attr_t" and setting the guard
+  # itself, before <pthread.h> completes the tag's body), the same way Step
+  # 147 pins SIGSET_SELECT_FIRST and SIGSET_SIGNAL_FIRST rather than only one
+  # order. Real glibc's own bits/pthreadtypes.h (confirmed on this cross
+  # sysroot) always completes "union pthread_attr_t { ... };" unconditionally,
+  # regardless of whether the guard was already set by an earlier forward
+  # declaration -- exactly the shape this header's own fix follows -- so both
+  # sides finish this order with a complete type too.
+  def test_pthread_attr_guard_reverse_abi_matches_cross_gcc
+    assert_pthread_attr_guard_matches(run_pthread_attr_guard_case_aarch64(:reverse), "reverse")
+  end
+
   def test_setjmp_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::SETJMP)
   end
@@ -2473,6 +2588,74 @@ class TestHeaderAbiAarch64 < Minitest::Test
                  "rubycc aarch64 probe for <#{spec.header}> exited #{result.rubycc_status}"
     assert_equal result.gcc_out, result.rubycc_out,
                  "<#{spec.header}>: rubycc aarch64 ABI output differs from cross gcc"
+  end
+
+  # Builds the probe source for the pthread_attr_t guard stand-in
+  # (bundled-pthread-attr-guard-1), in the given include `order`, and returns
+  # the Result of running it against both the cross gcc oracle and rubycc's
+  # aarch64 build -- the same [gcc_status, gcc_out, rubycc_status, rubycc_out]
+  # shape HeaderAbiHarness::Result carries, built by hand here (rather than
+  # through a Spec/#run_abi_case_aarch64) because the stand-in must sit
+  # *before* <pthread.h> in the :reverse order, and a Spec's `snippets` always
+  # follow every #include (see HeaderAbiHarness#abi_probe_source) -- there is
+  # no Spec field for text that must precede the header under test.
+  #
+  # :forward places <pthread.h> first, then the stand-in (mirroring
+  # PTHREAD_ATTR_NETDB_FORWARD's <pthread.h> then <netdb.h>); :reverse places
+  # the stand-in first, then <pthread.h> (mirroring
+  # PTHREAD_ATTR_NETDB_REVERSE's <netdb.h> then <pthread.h>). Both orders
+  # declare an actual (non-pointer) pthread_attr_t and pass its address to
+  # pthread_attr_init, the same "real object, not just a pointer target" proof
+  # PTHREAD_ATTR_NETDB_FORWARD/REVERSE's snippets use.
+  def run_pthread_attr_guard_case_aarch64(order)
+    stand_in = <<~C.chomp
+      #ifndef __have_pthread_attr_t
+      typedef union pthread_attr_t pthread_attr_t;
+      # define __have_pthread_attr_t 1
+      #endif
+    C
+    pthread_include = "#include <pthread.h>"
+    preamble = order == :forward ? "#{pthread_include}\n#{stand_in}" : "#{stand_in}\n#{pthread_include}"
+    source = <<~C
+      #define _GNU_SOURCE
+      #include <stdio.h>
+      #include <stddef.h>
+      #{preamble}
+      static unsigned long abi_pthread_attr_guard(pthread_attr_t *at) {
+        return sizeof(*at) + sizeof(pthread_attr_init(at));
+      }
+      int main(void) {
+        pthread_attr_t attr;
+        printf("sizeof(pthread_attr_t) = %zu, _Alignof(pthread_attr_t) = %zu, "
+               "abi_pthread_attr_guard = %lu\\n",
+               sizeof(pthread_attr_t), _Alignof(pthread_attr_t), abi_pthread_attr_guard(&attr));
+        return 0;
+      }
+    C
+
+    name = "pthread_attr_guard_#{order}"
+    in_tmpdir do |dir|
+      rubycc_obj = File.join(dir, "#{name}_rubycc.o")
+      compile_with_rubycc_aarch64(source, rubycc_obj, libc: "glibc")
+      rubycc_status, rubycc_out = link_and_run_aarch64(rubycc_obj)
+
+      gcc_obj = compile_with_cross_gcc(source, File.join(dir, "#{name}_gcc.o"))
+      gcc_status, gcc_out = link_and_run_aarch64(gcc_obj)
+
+      HeaderAbiHarness::Result.new(gcc_status, gcc_out, rubycc_status, rubycc_out)
+    end
+  end
+
+  # Asserts the same clean-run-and-byte-identical-output contract
+  # #assert_abi_matches_aarch64 checks for a Spec, for the pthread_attr_t guard
+  # stand-in's `order` (a plain label here, not a Spec's header name).
+  def assert_pthread_attr_guard_matches(result, order)
+    assert_equal 0, result.gcc_status,
+                 "cross-gcc pthread_attr_t guard probe (#{order}) exited #{result.gcc_status}"
+    assert_equal 0, result.rubycc_status,
+                 "rubycc aarch64 pthread_attr_t guard probe (#{order}) exited #{result.rubycc_status}"
+    assert_equal result.gcc_out, result.rubycc_out,
+                 "pthread_attr_t guard (#{order}): rubycc aarch64 output differs from cross gcc"
   end
 end
 

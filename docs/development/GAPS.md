@@ -23,11 +23,11 @@
 | **AR**([issue](../../issues/bundled-stdlib-qsort-r.md)) | **同梱 `stdlib.h` に `qsort_r` が無い**(`_GNU_SOURCE` のもとでも)。Ruby の `config.h` が `_GNU_SOURCE` を定義するので、拡張からは常に見えない | `qsort_r` を呼ぶ gem。`enumerable-statistics` 2.0.9 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`-D_GNU_SOURCE` 付きの最小再現) | **AF と一緒に** `<stdlib.h>` の GNU / MISC の枝をまとめて見る |
 | **AS**([issue](../../issues/rmake-gnu-make-conditionals.md)) | **rmake が GNU make の条件文(`ifeq` など)を読めない**。パーサは代入とルール以外をすべて拒否する | 同梱ライブラリの手書き Makefile を make に渡す gem。`hiredis-client` 0.30.1 が該当し、**対照(GNU make)は通る** | **実測**(2026-09-13) | **対応するか対象外にするかが未決**。mkmf の Makefile は条件文を使わない |
 | **AT**([issue](../../issues/typeof-operator.md)) | **`typeof`(GNU 拡張、C23 で標準化)を受け付けない**。未宣言の関数として報告される | `algorithms` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
-| **AU**([issue](../../issues/bundled-pthread-attr-guard.md)) | **同梱 `pthread.h` が `pthread_attr_t` を glibc のガード(`__have_pthread_attr_t`)無しで定義する**。`<netdb.h>` の `sigevent_t.h` と型の再定義になる | `_GNU_SOURCE` のもとで `<netdb.h>` を含む gem。`trilogy` 2.13.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`<pthread.h>` + `<netdb.h>` の最小再現) | 同梱 `pthread.h` の他の型にも同じ穴が無いかを数える |
 | **BA**([issue](../../issues/bundled-termios-tcflow.md)) | **同梱 `termios.h` に `tcflow`(POSIX)と `TCO*` / `TCI*` の定数が無い** | `ruby-termios` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | §2 の同梱ヘッダの洗い出しの対象 |
 | **BB**([issue](../../issues/bundled-ioctl-tiocm.md)) | **同梱 `sys/ioctl.h` に `TIOCMGET` / `TIOCM_*` が無い** | `serialport` 1.4.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | aarch64 の要求番号を測ってから、共通層に置くかを決める |
 | **BC**([issue](../../issues/atomic-builtin-small-widths.md)) | **`__atomic_*` ビルトインが 1 / 2 バイトの対象を拒否する**(4 / 8 バイト限定と自己申告) | 1 バイトのスピンロックを持つ gem。`iodine` 0.7.59 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 4 / 8 バイト限定のビルトインを一覧にしてから足す |
 | **BG**([issue](../../issues/bundled-stdlib-alloca.md)) | **同梱 `stdlib.h` が `alloca` を宣言しない**(glibc は `__USE_MISC` で `<alloca.h>` を含む。`<alloca.h>` を直接含めば通る) | `<stdlib.h>` だけで `alloca` を呼ぶコード。`amalgalite` 2.0.0 の同梱 SQLite が AL を越えた先で止まる。**対照の gcc は通る** | **実測**(2026-09-14、最小再現) | §2 の同梱ヘッダの洗い出しの対象。AF / AR と同じ `<stdlib.h>` の話 |
+| **BI**([issue](../../issues/aarch64-cross-sysroot-include.md)) | **x86-64 ホストで `-target aarch64` のとき、同梱していないシステムヘッダをクロス sysroot(`/usr/aarch64-linux-gnu/include`)から探さない**。ホストの x86-64 版 `/usr/include/netdb.h` を読んで `bits/stdint-uintn.h` で落ちる | x86-64 ホストでの aarch64 クロステスト。`<netdb.h>` を含むコードを aarch64 で検証できない。**対照の `aarch64-linux-gnu-gcc` は通る** | **実測**(2026-09-14、`#include <netdb.h>` の最小再現)。ネイティブ aarch64 ホストは未測定 | sysroot を決め打ちにするか、クロス gcc に問い合わせるかを決める |
 
 ## 2. 未解消の負債
 
@@ -57,6 +57,9 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ AU**(同梱 `pthread.h` が `pthread_attr_t` を glibc のガード無しで定義する):
+  `bundled-pthread-attr-guard-1` で解消。glibc と同じく、typedef を `__have_pthread_attr_t` で 1 回に絞り、共用体の中身を別に定義した
+  (x86_64 / aarch64 の両方)。`<netdb.h>` と `<pthread.h>` をどちらの順で含めても同じ型になる。他の同梱の型に glibc 共有のガードは無かった。
 - **ギャップ BH**(rmake が、生成されるソースを経由して接尾辞規則をつなげない):
   `rmake-suffix-rule-generated-source-1` で解消。推論規則のソースが存在しなくても、明示規則や別の推論規則で作れるなら使う。
   作れない前提条件は GNU make と同じ文言(`No rule to make target ...`)でその場で止める。これに合わせて、前提条件の

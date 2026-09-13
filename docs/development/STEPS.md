@@ -15889,3 +15889,107 @@ numo-narray 0.9.2.1(sha256 `eed76b47…adceb`)を
   拾わない。GNU make と同じ)。ターゲット側のワイルドカードは展開しない(コーパスに出てこない)。
 - **numo-narray はこのステップの範囲では通らない**。rmake の段は越え、残りは rubycc の
   `<emmintrin.h>`(SSE2 組み込み関数)の欠如で、rmake とは別の課題。
+
+## bundled-pthread-attr-guard-1 — `pthread_attr_t` に glibc 自身のガードを追従させる
+
+GAPS 表の行 AU。`issues/bundled-pthread-attr-guard.md` が記録する再現を 2026-09-13 に
+このホスト(WSL2 / gcc 13.3)で確認済み: `_GNU_SOURCE` のもとで `<pthread.h>` の後に
+`<netdb.h>` を含めると、rubycc だけが
+`bits/types/sigevent_t.h:17:30: error: redefinition of typedef 'pthread_attr_t'` で落ち、
+gcc は通る。
+
+### 原因
+
+glibc は `pthread_attr_t` を `bits/pthreadtypes.h` と `bits/types/sigevent_t.h`
+(`<netdb.h>` が `__USE_GNU` のとき引く)の 2 か所で typedef しており、
+共有ガード `__have_pthread_attr_t` で 1 回に絞っている。rubycc の同梱
+`include/libc/glibc/{x86_64,aarch64}/pthread.h` はこのガードを見ずに
+`typedef union { char __size[N]; long __align; } pthread_attr_t;` と定義していたため、
+`<netdb.h>` が同梱ヘッダより後に来ると glibc 本体の `sigevent_t.h` がもう一度
+(**別の型として**)typedef し、C11 6.7p3 が禁じる再定義になる。
+
+**逆順(`<netdb.h>` を先に含める)も同じ理由で壊れていた**ことを実測で確認した
+(2026-09-14、修正前の同梱ヘッダで再現): `sigevent_t.h` が先に
+`union pthread_attr_t`(不完全型の前方宣言)を typedef してガードを立て、
+その後に来る同梱 `pthread.h` 側がガードを見ずに**別の型**として再 typedef して
+同じエラーになる。ガード漏れは向きに関係なく踏む。
+
+### 対処
+
+glibc 自身の書き方(`/usr/aarch64-linux-gnu/include/bits/pthreadtypes.h` で確認、
+x86-64 host の `/usr/include/x86_64-linux-gnu/bits/pthreadtypes.h` と同一パターン)に
+合わせ、**typedef とタグの完成を分離**した:
+
+```c
+#ifndef __have_pthread_attr_t
+typedef union pthread_attr_t pthread_attr_t;
+# define __have_pthread_attr_t 1
+#endif
+union pthread_attr_t { char __size[56]; long __align; };  /* 常に完成させる */
+```
+
+順序に関わらず両立する理由: どちらのヘッダが先に来ても「タグの前方宣言 + ガード設定」は
+1 回だけ実行され(先着ヘッダの `#ifndef` だけが通る)、**タグの完成**
+(`union pthread_attr_t { ... };`)は本ファイルが無条件に実行する。glibc 本体の
+`bits/pthreadtypes.h` も全く同じ二段構え(タグの完成が先、ガード付き typedef が後、
+順序が逆なだけ)であることを確認済みで、この構造は**glibc 自身の相互運用規約**であり
+発明ではない。
+
+`__have_pthread_attr_t` というガード名・「前方宣言されたタグを typedef する」という形は
+ABI の相互運用に必要な事実そのもの(§4 の整理と同じ理屈、Step 147 の `__sigset_t` と同種)
+であり、glibc のヘッダ本文をコピーしたものではない(R11 / `docs/reference/HEADER-LICENSING.md` §6)。
+ABI 値(`pthread_attr_t` の `sizeof`/`_Alignof`)は 1 バイトも動いていないので、
+Step 147 と同じ判断で**由来台帳(§3)は更新しなかった**。
+
+### 他の同梱型の点検
+
+`pthread.h` が定義する残り(`pthread_mutex_t`・`pthread_mutexattr_t`・`pthread_cond_t`・
+`pthread_condattr_t`・`pthread_rwlock_t`・`pthread_rwlockattr_t`・`pthread_t`・
+`pthread_once_t`・`pthread_key_t`・`pthread_spinlock_t`)について、
+x86-64 host (`/usr/include/x86_64-linux-gnu/bits/`) と aarch64 cross sysroot
+(`/usr/aarch64-linux-gnu/include/bits/`) の両方で `grep -rl "__have_" bits/` を実測した
+(2026-09-14)。ヒットしたのは `bits/pthreadtypes.h` と `bits/types/sigevent_t.h` の
+2 ファイルのみで、いずれも `__have_pthread_attr_t` だけ。**glibc 自身のヘッダ間で
+共有されるガードは `pthread_attr_t` の 1 件だけ**であることを確認し、他の型には
+同種の修正を要しない。
+
+### テスト
+
+- `test/test_bundled_pthread_attr_guard.rb`(新規): issue の最小再現(`pthread.h` →
+  `netdb.h`、`_GNU_SOURCE`)をそのままコンパイルする回帰テスト。x86-64 は実物の
+  `<netdb.h>` で forward/reverse 両方向、`pthread_attr_t` を非ポインタの実オブジェクトとして
+  `struct sigevent.sigev_notify_attributes` に渡す完全型チェックまで含めて計 5 テスト。
+- 同ファイルの aarch64 クラスは、実物の `<netdb.h>` の代わりに
+  `__have_pthread_attr_t` ガードの**手書きの代替**(glibc 2 か所と同一の 4 行)を使う。
+  理由: この開発ホストの `aarch64-linux-gnu-gcc` クロスパッケージ
+  (`libc6-dev-arm64-cross`)は `/usr/aarch64-linux-gnu/include` に**独自の sysroot**を
+  持ち、rubycc の既定システム探索パス(aarch64 は `/usr/include/aarch64-linux-gnu` +
+  `/usr/include` を期待、`Preprocessor::LIBC_MULTIARCH_INCLUDE_DIRS`)とは噛み合わない。
+  `/usr/include/aarch64-linux-gnu` が存在しないため、フォールバック先の
+  `/usr/include/netdb.h` は**ホスト自身の x86-64 版**になり、そこから辿る
+  `bits/stdint-uintn.h` が見つからずに落ちる(2026-09-14 実測、
+  `.github/workflows/test.yml` の既定 `ubuntu-24.04` ランナーも同じ構成なので、
+  push のたびに走る通常経路でも同様に起きる)。この経路は**このステップの範囲外の
+  既存ギャップ**(同梱していないヘッダを aarch64 クロス側で解決する仕組みが無い)であり、
+  修正はガードの仕組み自体を検証する代替に留めた。
+- `test/test_header_abi.rb` に `PTHREAD_ATTR_NETDB_FORWARD`/`_REVERSE` Spec
+  (x86-64、実物の `<netdb.h>` で `pthread_attr_t` の `sizeof`/`_Alignof` を gcc と比較)、
+  aarch64 クラスには `also:` が使えない(snippet は必ず include の後に来る、
+  `HeaderAbiHarness#abi_probe_source` の制約)ため専用のヘルパー
+  `run_pthread_attr_guard_case_aarch64`/`assert_pthread_attr_guard_matches` を追加し、
+  同じ手書き代替を forward/reverse 両方向で cross gcc と突き合わせた。
+- 修正前の 2 ファイルだけを `git stash` で退避し、新規 4 + 5 = 9 テストのうち
+  gcc 単体のものを除く全てが**修正前は再現のエラーで落ち、修正後は通る**ことを
+  2026-09-14 に実測(forward・reverse・aarch64 forward/reverse 全部)。
+- `test/test_header_abi.rb` 全体 125 runs / 370 assertions / 0 failures / 0 skips。
+  `test/test_bundled_pthread_attr_guard.rb` 7 runs / 3 assertions / 0 failures / 0 skips。
+  `test/test_examples.rb` 61 runs / 0 failures。`test/test_examples_aarch64.rb` 566 runs /
+  0 failures / 26 skips(既存、無関係)。`test/test_c_suite.rb` 223 runs / 0 failures /
+  13 skips(既存)。`test/test_c_suite_aarch64.rb` 444 runs / 0 failures / 26 skips(既存)。
+
+### 残された観点(このステップでは直していない)
+
+x86-64 ホストの `-target aarch64` が、同梱していないヘッダ(`<netdb.h>` 等)をクロス sysroot
+(`/usr/aarch64-linux-gnu/include`)から探さない件は、別の課題として
+`issues/aarch64-cross-sysroot-include.md`(GAPS BI)に起票した。直ったら、上の aarch64 テストを
+実物の `<netdb.h>` に置き換える。

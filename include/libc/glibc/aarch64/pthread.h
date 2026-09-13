@@ -54,8 +54,35 @@ typedef int           pthread_spinlock_t;
    pthread_rwlockattr_t keeps glibc's 8-byte size but musl's alignment is
    narrower. Both figures measured with the ABI harness, glibc's on this host
    and musl's on the CI aarch64 musl run (docs/STEPS.md Step 202). */
+/* pthread_attr_t alone, among every opaque object here, is guarded by glibc
+   itself: glibc's own bits/types/sigevent_t.h -- reachable through <netdb.h>,
+   <signal.h>, <aio.h> and <time.h>, none of which rubycc bundles, so the host's
+   real copy is what a gem's #include chain reaches -- forward-declares
+   "union pthread_attr_t" under the guard __have_pthread_attr_t, the same guard
+   glibc's own bits/pthreadtypes.h checks before its own typedef (measured
+   identical on the aarch64 cross sysroot's headers, 2026-09-13, matching this
+   host's x86-64 glibc). Without checking that guard here too, whichever of
+   this header and the host's sigevent_t.h is #included second re-typedefs
+   pthread_attr_t as a *different* type -- glibc's "union pthread_attr_t"
+   against this header's anonymous union -- which C11 6.7p3 forbids (a typedef
+   may repeat only when it names the same type); see
+   issues/bundled-pthread-attr-guard.md for the reproduction and the companion
+   glibc/x86-64/pthread.h for the same fix. Spelling the tag "pthread_attr_t"
+   the way glibc does, and completing its body in a statement separate from the
+   typedef, makes the two sides agree regardless of include order: whichever
+   header runs first only forward-declares the tag and sets the guard, and this
+   header unconditionally completes the tag's body (once), so the type is
+   always complete by the time anything declares a variable of it. None of the
+   other opaque objects below have a matching guard anywhere in glibc's own
+   headers (checked across the cross sysroot's bits/ tree, same result as the
+   x86-64 host), so only this one needs the treatment. */
+#ifndef __have_pthread_attr_t
+typedef union pthread_attr_t pthread_attr_t;
+# define __have_pthread_attr_t 1
+#endif
+
 #if defined(__RUBYCC_LIBC_MUSL__)
-typedef union { char __size[56]; long __align; } pthread_attr_t;
+union pthread_attr_t { char __size[56]; long __align; };
 typedef union { char __size[40]; long __align; } pthread_mutex_t;
 typedef union { char __size[4];  int  __align; } pthread_mutexattr_t;
 typedef union { char __size[48]; long __align; } pthread_cond_t;
@@ -63,7 +90,7 @@ typedef union { char __size[4];  int  __align; } pthread_condattr_t;
 typedef union { char __size[56]; long __align; } pthread_rwlock_t;
 typedef union { char __size[8];  int  __align; } pthread_rwlockattr_t;
 #else
-typedef union { char __size[64]; long __align; } pthread_attr_t;
+union pthread_attr_t { char __size[64]; long __align; };
 typedef union { char __size[48]; long __align; } pthread_mutex_t;
 typedef union { char __size[8];  int  __align; } pthread_mutexattr_t;
 typedef union { char __size[48]; long __align; } pthread_cond_t;

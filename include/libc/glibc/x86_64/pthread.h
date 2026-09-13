@@ -34,7 +34,31 @@ typedef int           pthread_spinlock_t;
    pthread_attr_t, pthread_mutex_t, pthread_mutexattr_t and pthread_condattr_t
    have a wider __size[N] on aarch64 (the four counts that differ between the two
    arch layers); the others are identical on both arches. */
-typedef union { char __size[56]; long __align; } pthread_attr_t;
+/* pthread_attr_t alone, among every opaque object below, is guarded by glibc
+   itself: glibc's own bits/types/sigevent_t.h -- reachable through <netdb.h>,
+   <signal.h>, <aio.h> and <time.h>, none of which rubycc bundles, so the host's
+   real copy is what a gem's #include chain reaches -- forward-declares
+   "union pthread_attr_t" under the guard __have_pthread_attr_t, the same guard
+   glibc's own bits/pthreadtypes.h checks before its own typedef (measured on
+   this host's glibc headers, 2026-09-13). Without checking that guard here too,
+   whichever of this header and the host's sigevent_t.h is #included second
+   re-typedefs pthread_attr_t as a *different* type -- glibc's "union
+   pthread_attr_t" against this header's anonymous union -- which C11 6.7p3
+   forbids (a typedef may repeat only when it names the same type); see
+   issues/bundled-pthread-attr-guard.md for the reproduction. Spelling the tag
+   "pthread_attr_t" the way glibc does, and completing its body in a statement
+   separate from the typedef, makes the two sides agree regardless of include
+   order: whichever header runs first only forward-declares the tag and sets
+   the guard, and this header unconditionally completes the tag's body (once),
+   so the type is always complete by the time anything declares a variable of
+   it. None of the other opaque objects below have a matching guard anywhere
+   in glibc's own headers (checked across /usr/include's bits/ tree), so only
+   this one needs the treatment. */
+#ifndef __have_pthread_attr_t
+typedef union pthread_attr_t pthread_attr_t;
+# define __have_pthread_attr_t 1
+#endif
+union pthread_attr_t { char __size[56]; long __align; };
 typedef union { char __size[40]; long __align; } pthread_mutex_t;
 typedef union { char __size[4];  int  __align; } pthread_mutexattr_t;
 typedef union { char __size[48]; long __align; } pthread_cond_t;
