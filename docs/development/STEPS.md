@@ -14741,3 +14741,59 @@ rubycc でビルドした `aead.so` は、単独の `require` で `undefined sym
 走査の窓を広げるほうが早く増えた結果である。**起票した欠陥は、どれも実在の gem が 1 件以上止まっている**。
 
 **検証**: `rake test` **3,552 runs / 17,837 assertions / 0 failures / 0 errors / 39 skips**。
+
+## escape-sequence-e-1 — ESC は綴りが 2 通りある GNU 拡張だった
+
+**課題**([issue](../../issues/escape-sequence-e.md)、GAPS **AX**): rubycc は文字列・文字定数中の
+`\e`(ESC、0x1B を表す GNU 拡張)を `unknown escape sequence` で拒否していた。C11 6.4.4.4 の
+単純エスケープには無い綴りだが、gcc 13.3 は既定で無条件に受理する(2026-09-13 実測、このホスト、
+WSL2)。コーパス候補 `string_undump` 0.1.1 の `ext/string_undump/string_undump.c:37` が
+`return "\e";` と書いており、対照の gcc はビルド・ロードに成功する(buildable-gems-batch-4)。
+
+### 実測(2026-09-13、このホスト、gcc 13.3.0)
+
+`"\e[0m"` / `'\e'` / `'\E'` を実行して確かめた:
+
+| 条件 | 結果 |
+|---|---|
+| `gcc`(既定、`-Wall -Wextra`) | 警告なしで受理。`'\e'` == `'\E'` == 0x1B(実行して確認、`27 91 27 27`) |
+| `gcc -pedantic` | `warning: non-ISO-standard escape sequence, '\e'`(`'\E'` も同じ)。**エラーにはならない**、終了コード 0 |
+| `gcc`、`L'\e'`(wide 文字定数) | 0x1B(実行して確認)。rubycc は wide **文字列**リテラルを診断するが wide **文字定数**は元から対応しており(`lib/rubycc/preprocess/token_converter.rb#decode_char` が `"L"` 接頭辞を落として通常の文字定数と同じ `LexemeReader` に渡す)、`\e` を足せば無条件に追随する |
+
+規格に無い他のエスケープも合わせて測った(`\q` は文字、`\%` は記号):
+
+| エスケープ | `gcc -Wall -Wextra`(pedantic なし) |
+|---|---|
+| `\q`(文字) | `warning: unknown escape sequence: '\q'` — バックスラッシュを落として `q` として受理 |
+| `\%`(記号) | **警告なし** — バックスラッシュを落として `%` として受理 |
+
+**どちらも rubycc の既存の挙動(`unknown escape sequence` でエラー)は変えていない。**
+`string_undump` 0.1.1 も本タスクの受け入れ条件も `\q`/`\%` 相当の受理を要求しておらず、
+`test/test_lexer.rb` の既存テスト(`test_unknown_escape_in_character_constant_raises` 等)も
+`\q` のエラーを固定している。gcc と完全に一致させる(文字は警告、記号は無診断で通す)には
+診断機構(現状はエラーのみで警告レベルが無い)を新設する必要があり、必要になった時点で
+別途 issue を立てる。
+
+### 実装
+
+`lib/rubycc/front/lexeme_reader.rb` の `ESCAPES`(6.4.4.4p1 の単純エスケープの表、文字定数と
+文字列リテラルで共有)に `"e" => 27, "E" => 27` を追加しただけ。文字列・文字定数の両方が
+同じ `read_escaped_byte` を経由するため、この 1 行で両方に効く。wide 文字定数
+(`L'\e'`)も `decode_char` が `"L"` を剥がしてから同じ経路に渡すため、追加の変更は不要
+(実測で確認)。wide 文字列リテラル(`L"\e"`)は rubycc がそもそも対応しないため対象外
+(`decode_string` が `"wide string literals are not supported"` で診断する、既存の挙動のまま)。
+
+### 検証
+
+`test/test_escape_sequence_e.rb` を新設。字句レベル(`'\e'`/`'\E'`/文字列中の `\e`/`\E` の
+値が 0x1B)に加え、gcc 差分の実行(`assert_c_exit_status` / `assert_c_program` を
+`compiler: :gcc` と `compiler: :rubycc` の両方で回し、終了コード・標準出力のバイト値が
+0x1B(=27)であることを確認)、wide 文字定数 `L'\e'` の実行、そして `\q`/`\%` の
+エラーが変わっていないことの回帰テストを含む。
+
+- `test/test_escape_sequence_e.rb`: **15 runs / 26 assertions / 0 failures**(2026-09-13)
+- `test/test_lexer.rb`(既存の `\q` エラー等が壊れていないことの確認): **86 runs / 257 assertions / 0 failures**
+- `test/test_examples.rb`(新サンプルを含む全件): **57 runs / 58 assertions / 0 failures**
+
+サンプルは `examples/m6/escape_sequence_e_1_ansi_color.c`(`\e`/`\E` を文字列・文字定数・wide
+文字定数の 3 箇所で使い、`test_examples.rb` の gcc 差分が終了コード・標準出力の両方を検証する)。

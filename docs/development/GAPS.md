@@ -28,7 +28,6 @@
 | **AU**([issue](../../issues/bundled-pthread-attr-guard.md)) | **同梱 `pthread.h` が `pthread_attr_t` を glibc のガード(`__have_pthread_attr_t`)無しで定義する**。`<netdb.h>` の `sigevent_t.h` と型の再定義になる | `_GNU_SOURCE` のもとで `<netdb.h>` を含む gem。`trilogy` 2.13.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`<pthread.h>` + `<netdb.h>` の最小再現) | 同梱 `pthread.h` の他の型にも同じ穴が無いかを数える |
 | **AV**([issue](../../issues/include-duplicate-system-dir.md)) | **`-I/usr/include` を渡すと、glibc 本体のヘッダが同梱ヘッダより先に見つかる**。gcc はシステムと重なる `-I` を無視する | `dir_config` に `/usr` を渡す古い gem。`do_sqlite3` 0.10.17 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`#include <stdio.h>` だけで再現) | gcc の規則(`-isystem` / `-idirafter` を含む)を測ってから合わせる |
 | **AW**([issue](../../issues/extension-struct-member.md)) | **構造体のメンバ宣言の頭の `__extension__` を受け付けない**(宣言の頭の形は通る) | glibc の `<threads.h>` を使うコード。`bits/atomic_wide_counter.h:27` で止まるので、`thrd_create` のプログラムがビルドできない(**gcc は通る**) | **実測**(2026-09-13、最小再現) | 閉じたら `__STDC_NO_THREADS__` の定義を測り直す(`stdc-no-vla-macro-1`) |
-| **AX**([issue](../../issues/escape-sequence-e.md)) | **エスケープ `\e`(GNU 拡張、ESC)を未知のエスケープとして拒否する** | 端末の色付けを書く gem。`string_undump` 0.1.1 が該当し、**対照の gcc は通る**(警告も出ない) | **実測**(2026-09-13、最小再現) | `\E` も同じ。規格に無い他のエスケープの扱いは gcc を測ってから決める |
 | **AY**([issue](../../issues/attribute-statement.md)) | **文として書いた `__attribute__ ((fallthrough));` を拒否する**。文の頭の属性を宣言の始まりとして読む | `-Wimplicit-fallthrough` を黙らせる gem。`liquid-c` 4.2.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `expected type specifier`) | 宣言の頭の属性の扱いは変えない |
 | **AZ**([issue](../../issues/builtin-strlen.md)) | **`__builtin_strlen` が無い**。未宣言の関数として報告される | `herb` 0.10.4 が `hb_string.h:27` のマクロの中で使い、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 文字列リテラルの場合に定数へ畳むかを gcc と比べて決める |
 | **BA**([issue](../../issues/bundled-termios-tcflow.md)) | **同梱 `termios.h` に `tcflow`(POSIX)と `TCO*` / `TCI*` の定数が無い** | `ruby-termios` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | §2 の同梱ヘッダの洗い出しの対象 |
@@ -64,6 +63,9 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ AX**(エスケープ `\e` を未知のエスケープとして拒否する):
+  `escape-sequence-e-1` で解消。`\e` / `\E` を ESC(0x1B)として、文字列・文字定数・wide 文字定数で受理した。
+  規格に無い他のエスケープ(`\q` など)は gcc が警告止まりでも、従来どおりエラーのまま残した。
 - **ギャップ AO**(`#include` に絶対パスを書くと、実在するファイルでも開けない):
   `include-absolute-path-1` で解消。`resolve_include` / `resolve_include_next` の両方に
   「名前が絶対パスならディレクトリ結合をせずそのまま試す」分岐を先頭に足した。絶対パスで開いた
