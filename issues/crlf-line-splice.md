@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-13
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-13
+branch: gap-fixes-wave-1
+pr: 147
+steps: [crlf-line-splice-1]
 ---
 
 # CRLF の行末では行連結(`\` + 改行)が働かない
@@ -80,6 +80,22 @@ CRLF で配られる gem は珍しくない。**1 行でも継続行があれば
 コーパス候補 46 件の `build_load` を流したところ、**rubycc だけが落ちて対照は通る**ものが
 5 件出た。その 1 件を追って見つけた。最小再現は上のとおり。
 
+### 2026-09-13(実装)
+
+`lib/rubycc/preprocess/scanner.rb` の最初の段で `\r\n` と単独の `\r` を改行に写像した(翻訳フェーズ 1)。
+行連結(フェーズ 2)の実装には手を入れていない。受け入れ条件の「単独の `\r` を改行扱いしない」は、
+**gcc を測ると外れていた** — gcc は単独の `\r` をコメントの中でも文字列リテラルの中でも改行として扱う。
+条件のもう半分「gcc の挙動を実測して合わせる」を優先した。
+
 ## 決着
 
-(未着手)
+**解消した**(`crlf-line-splice-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 3 つの最小再現が gcc と同じ結果になる | `test/test_crlf_line_splice.rb` が gcc 差分の実行で確認 |
+| 単独の `\r` を改行として扱わない(gcc を実測して合わせる) | **gcc を測った結果、単独の `\r` も改行として扱う**ことが分かり、それに合わせた(上の作業ログ) |
+| 文字列リテラルの中の `\r` エスケープのバイト列が変わらない | 同じテストで固定(2 文字のエスケープは CR バイトを含まないので写像の対象外) |
+| CRLF のフィクスチャで固定した回帰テストがある | `test/test_crlf_line_splice.rb`(バイト列を `String#b` で直書きし、git の改行変換に依存しない) |
+| `murmurhash3` 0.1.7 が `build_load` を通る | **マージ後に台帳の手順で測る**(`gc_tracer` / `pngdefry` も) |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

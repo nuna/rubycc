@@ -14797,3 +14797,74 @@ WSL2)。コーパス候補 `string_undump` 0.1.1 の `ext/string_undump/string_u
 
 サンプルは `examples/m6/escape_sequence_e_1_ansi_color.c`(`\e`/`\E` を文字列・文字定数・wide
 文字定数の 3 箇所で使い、`test_examples.rb` の gcc 差分が終了コード・標準出力の両方を検証する)。
+
+## crlf-line-splice-1 — 改行の正規化を行連結より前に置く
+
+**課題**([issue](../../issues/crlf-line-splice.md)、GAPS **AE**): `\` の直後が `\r\n` だと、rubycc は
+行連結と認めずに `error: unexpected character "\"` になる(2026-09-13 実測、gcc 13.3。起票時の
+「gcc 14.2」は誤記)。原因は `lib/rubycc/preprocess/scanner.rb` の `splice`(翻訳フェーズ 2)が
+リテラルの `"\\\n"` だけを探しており、`\` と `\n` の間に `\r` が挟まると一致しないこと。**CRLF 自体は
+通る** — `\r` が `HORIZONTAL_WS_RE` の水平空白として読み飛ばされ、続く `\n` が改行トークンになる経路が
+たまたま効いていたためで、行連結の判定はこの経路を通らない。
+
+**実在の gem 3 件が対照(gcc)は成功し rubycc だけ落ちる**(2026-09-13 実測): `murmurhash3` 0.1.7
+(`ext/murmurhash3/murmur3.c:113` の文字列リテラル継続)、`gc_tracer` 1.5.1
+(`ext/gc_tracer/gc_logging.c:106` の関数形マクロ継続)、`pngdefry` 0.1.3
+(同梱 `miniz.c:1291` の `if` 継続)。
+
+### gcc の挙動を実測して合わせた
+
+受け入れ条件が「`\r` を無条件に改行にするな、gcc の挙動を実測して合わせろ」と求めていたので、
+まず gcc 13.3(2026-09-13、このホスト)で 3 点を測った:
+
+| 入力 | gcc |
+|---|---|
+| `// comment\rint main(void){...}\r`(コメントの直後が単独 `\r`) | `-E` の出力で `int main` がコメントの外に出る → **単独 `\r` も改行として扱う** |
+| `int main(void){\ret'…' \r}`(`\` の直後が単独 `\r`、`\n` は無い) | 継続が効き、コンパイルが通る(stray `\` 警告なし) |
+| `"a\rb"`(文字列リテラルの中の生の `\r` バイト) | `missing terminating "` character のエラー → **文字列リテラルの中でも `\r` は改行に写像される** |
+| `\` の直後が改行以外の文字(対照実験) | `error: stray '\' in program` |
+
+3 点目が判断の核心だった。gcc は「行連結のときだけ `\r` を認める」のではなく、**トークン化より前の
+翻訳フェーズ 1 で、`\r\n` と単独の `\r` をどちらも改行 1 個に写像している**(C11 5.1.1.2 は行末の
+写像を処理系定義のまま残しており、これは gcc の選択)。文字列リテラルの中の生の `\r` が改行になって
+リテラルを終わらせてしまうのは、その写像がトークンの種類を見ずに先に走る証拠であり、「トークンの
+種類によって `\r` の扱いを変える」実装では再現できない。
+
+### 実装
+
+`lib/rubycc/preprocess/scanner.rb` の `Scanner#initialize` に、`@lines` を作る・`splice` を呼ぶより
+前段として `normalize_line_endings` を追加した。`source.gsub(/\r\n?/, "\n")` で `\r\n` と単独の `\r`
+をどちらも `\n` 1 個に置き換える(`\r` を含まない入力は無変更で返し、共通ケースでコピーしない
+既存の `splice` と同じ節約をする)。これで既存の `splice` は変更していない — 正規化後は
+バックスラッシュ継続がどんな行末で書かれていても必ずリテラルの `"\\\n"` になるので、フェーズ 2 の
+実装そのものに手を入れる理由がなくなった。
+
+文字列・文字定数の中の生の `\r` バイトも同じ正規化を通る(フェーズ 1 はトークンの外形を見る前に
+走る)。`\r` という 2 文字のエスケープ(バックスラッシュ + 文字 `r`)は生の `0x0D` バイトを含まないので
+正規化の対象にならず、バイト列は変わらない。
+
+### 検証
+
+新設 `test/test_crlf_line_splice.rb`(12 件、いずれも `String#b` で CRLF/CR のバイト列を直書きした
+フィクスチャで、git の改行変換に依存しない): `Scanner` 単体で CRLF/単独 CR 越しの行連結・行コメント終端・
+改行カウント、文字列リテラル中の生 CR バイトが gcc と同じくリテラルを終わらせること、`\r` エスケープが
+無変化であることをピン止めし、issue の 3 つの最小再現(CRLF のみのファイル、文字列リテラルの
+バックスラッシュ継続、`#define` のバックスラッシュ継続)と `murmurhash3` 相当の文字列継続、
+単独 `\r` によるバックスラッシュ継続を gcc 差分(`compiler: :gcc` / `compiler: :rubycc` の両方で
+`assert_c_exit_status`)で確認した。
+
+**結果**(2026-09-13、このワークツリー): `test_crlf_line_splice.rb` **12 runs / 21 assertions / 0
+failures**、`test_scanner.rb` **16 runs / 28 assertions / 0 failures**、`test_preprocessor.rb`
+**229 runs / 475 assertions / 0 failures**(いずれも既存の回帰なし)。`rake test` 全体・
+`murmurhash3` の `build_load`(`tools/verify_corpus_candidate.rb`)はこの範囲では実行していない
+(ネットワーク越しの gem 取得を伴うため、統合側の検証に委ねた)。
+
+**サンプルは追加しなかった。** `examples/` のチェックインサンプルは、リポジトリのどんな取得経路
+(clone・別 OS・エディタの保存設定)でもバイト列が保たれることが前提だが、この欠陥が再現するのは
+**まさに CRLF/CR という改行のバイト列そのもの**であり、git がテキストファイルとして改行を正規化する
+設定(`core.autocrlf` など、リポジトリ側に `.gitattributes` は無く未設定)や、レビュー・エディタでの
+保存で CRLF が LF に化けれ(あるいはその逆)ば、サンプルはその時点で無言のうちにこの欠陥を
+再現しなくなる。実行はできてしまうので `test_examples.rb` の gcc 差分ビルドは失敗として気付けない
+(LF だけのファイルは元から通っていたため)。`include-absolute-path-1` が「機種依存の値は 1 ファイルに
+恒久固定できない」としてサンプルを見送ったのと同種の判断で、ここでは「改行のバイト列」がその
+固定できない値にあたる。回帰の担保は `test/test_crlf_line_splice.rb` に置いた。
