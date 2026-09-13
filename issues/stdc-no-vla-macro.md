@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-13
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-13
+branch: stdc-no-vla-macro
+pr: 144
+steps: [stdc-no-vla-macro-1]
 ---
 
 # 可変長配列に対応しないのに `__STDC_NO_VLA__` を定義していない
@@ -70,6 +70,29 @@ buildable-gems-batch-3 で、rubycc だけが落ちて対照は通った 1 件�
 (6.7.6.3p7 でポインタに読み替わるので、本物の VLA より狭い)」を別の欠陥として立てるつもりだったが、
 brotli の分岐条件を読んで、マクロ 1 つで足りると分かった。
 
+### 2026-09-13(実装)
+
+`__STDC_NO_VLA__` を定義した。同時に他の条件付き機能マクロ 3 つも実測し、
+`__STDC_NO_COMPLEX__`/`__STDC_NO_THREADS__` は rubycc が未対応なので同じく定義したが、
+`__STDC_NO_ATOMICS__` は `_Atomic`/`<stdatomic.h>` が実際に動くため定義しなかった
+(根拠は STEPS の該当エントリ)。
+
+レビューで `__STDC_NO_THREADS__` の根拠を直した。最初は `_Thread_local` が無いことを挙げていたが、
+6.10.8.3 がこのマクロで示すのは `<threads.h>` の有無だけである。glibc の `<threads.h>` を
+rubycc でコンパイルして確かめ、構造体メンバの頭の `__extension__` で止まることを見つけた
+([extension-struct-member](extension-struct-member.md) に起票)。定義する結論は変わらない。
+
 ## 決着
 
-(未着手)
+**解消した**(`stdc-no-vla-macro-1`。設計判断・実装・実測値の本文は
+[STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+受け入れ条件との対応:
+
+| 受け入れ条件 | 状態 |
+|---|---|
+| rubycc が `__STDC_NO_VLA__` を `1` と定義する | **満たした**。`test/test_preprocessor.rb`・`test/test_stdc_no_vla_macro.rb` で検証(STEPS 参照) |
+| 他の条件付き機能のマクロも同時に測り、対応状況と一致させる | **満たした**。`__STDC_NO_COMPLEX__`/`__STDC_NO_THREADS__` を追加定義、`__STDC_NO_ATOMICS__` は対応済みのため定義しなかった(根拠は STEPS) |
+| 定義を足したことでコーパスの gem が別の枝を選ぶようになった場合、`rake corpus:census` で壊れていないことを確かめる | **満たした**。`rake corpus:census` を走らせ(2026-09-13)、43 gem を処理して終了コード 0。**生成される `test/corpus/include-census.md` は 1 バイトも変わらなかった** — 3 つのマクロで分岐が変わったコーパスの gem は無い |
+| `brotli` 0.8.0 が rubycc でビルドできる | **未実施**。このセッションでは隔離ビルドを走らせていない。**マージ後にメインセッションが確認する** |
+| `rake test` が 0 failures | **満たした**。**3,542 runs / 16,647 assertions / 0 failures / 0 errors / 39 skips** |

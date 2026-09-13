@@ -14484,3 +14484,66 @@ damerau-levenshtein は `long long s[sl];` の本物の VLA なので、基準 *
 依存する gem が増える。**歩留まりは 34 件中 16 件から 63 件中 21 件に下がった**。
 
 **検証**: `rake test` **3,534 runs / 16,612 assertions / 0 failures / 0 errors / 39 skips**。
+
+## stdc-no-vla-macro-1 — 「対応しない」なら、そう名乗るマクロがある
+
+**課題**([issue](../../issues/stdc-no-vla-macro.md)、GAPS **AP**): rubycc は可変長配列(VLA)を
+`array size must be an integer constant` で拒否する(ROADMAP §3 の決定どおりで、DESIGN R7 も
+VLA を「オプション扱い」としている)が、C11 6.10.8.3 が定める「対応しない実装は
+`__STDC_NO_VLA__` を整数定数 `1` と定義しなければならない」を満たしていなかった。コーパス候補
+`brotli` 0.8.0 の `vendor/brotli/c/include/brotli/port.h:257-263` は、このマクロの有無で
+配列仮引数を VLA 形(`(name)`)にするか空の `[]` にするかを選ぶ移植性ヘッダで、
+マクロが未定義だと VLA 形を選んでしまい rubycc が拒否していた(2026-09-13 実測、
+`buildable-gems-batch-3`)。
+
+### 他の条件付き機能マクロも同時に測った
+
+6.10.8.3 は `__STDC_NO_VLA__` と同じ形の条件付き機能マクロを他に 3 つ定める。
+それぞれ実際に動くかを最小再現で測り(2026-09-13、このホスト)、**対応していないものだけ**定義した:
+
+| マクロ | 対応状況 | 根拠 |
+|---|---|---|
+| `__STDC_NO_VLA__` | **未対応 → 定義**(`1`) | `array size must be an integer constant` |
+| `__STDC_NO_COMPLEX__` | **未対応 → 定義**(`1`) | `_Complex` は `lib/rubycc/front/lexeme_reader.rb` の `KEYWORDS` に無く、`double _Complex z;` は `expected ';'` で拒否される。同梱 `<complex.h>` も無い |
+| `__STDC_NO_THREADS__` | **未対応 → 定義**(`1`) | 6.10.8.3 がこのマクロで示すのは **`<threads.h>` を提供しないこと**だけである(`_Thread_local` は条件付き機能ではないので、GAPS AH は根拠にならない)。同梱 `<threads.h>` は無く、glibc の `<threads.h>` は rubycc でコンパイルできない — 読み込む `bits/atomic_wide_counter.h:27` の、頭に `__extension__` が付いた構造体メンバを拒否する。`thrd_create` / `thrd_join` のプログラムは gcc では `42` を出し、rubycc はそこで止まる([extension-struct-member](../../issues/extension-struct-member.md) に起票) |
+| `__STDC_NO_ATOMICS__` | **対応済み → 定義しない** | `_Atomic int x; atomic_fetch_add(&x, 1);` を含む `#include <stdatomic.h>` のプログラムが、rubycc でコンパイル・リンク・実行まで成功する(終了コードで確認) |
+
+`__STDC_NO_ATOMICS__` を定義しないのは、パーサが `_Atomic`(修飾子・
+`_Atomic(type)` の両方の綴り)を実装し、同梱 `<stdatomic.h>` が実際に動くため —
+対応している機能を「対応しない」と名乗らせないための判断である。
+
+### 実装
+
+`lib/rubycc/preprocess/preprocessor.rb` に `PREDEFINED_CONDITIONAL_FEATURE_MACROS`
+(`__STDC_NO_VLA__` / `__STDC_NO_COMPLEX__` / `__STDC_NO_THREADS__`)を追加し、
+`PREDEFINED_PLATFORM_MACROS` と同じ仕組み(`predefined_target_macro`、値は
+pp-number `"1"` の通常の `#define` 済みエントリ)で `@macros` に積んだ。`BUILTIN_MACROS`
+ではなく通常のマクロなので、`__linux__` などと同様に `#undef`/再定義が許される
+(gcc 自身の条件付き機能マクロもそう振る舞う)。
+
+### 検証
+
+`test/test_preprocessor.rb` に 3 件追加 — 3 マクロが `1` に展開されること、
+`__STDC_NO_ATOMICS__` は `#ifdef` で偽のままなこと、`__STDC_NO_VLA__` が
+`__linux__` などと同じく `#undef` できること。
+
+`test/test_stdc_no_vla_macro.rb` を新設し、brotli の分岐そのものを再現した
+gcc 差分テストを追加した — `#if defined(__STDC_VERSION__) && ... && !defined(__STDC_NO_VLA__)`
+で仮引数を選ぶヘッダを模し、`size_t data_size, const int data[data_size]` という
+VLA 仮引数の形(macro 未定義側の分岐)が**マクロ定義前は rubycc だけが拒否し、gcc は通る**
+ことを別途確認した上(2026-09-13、`sum(size_t data_size, const int data[data_size])`
+単体の最小再現)、マクロ定義後の完成形(`ARRAY_PARAM` マクロで囲んだ形)が
+gcc と同じ出力(`15`)・終了コードになることを検証する。
+
+サンプルは `examples/m6/stdc_no_vla_macro_1_array_param.c`(brotli の分岐を単一翻訳単位に
+再現し、`test_examples.rb` の gcc 差分が検証する)。
+
+**検証**(2026-09-13): `test_stdc_no_vla_macro.rb` **3 runs / 6 assertions / 0 failures**、
+`test_preprocessor.rb` **229 runs / 475 assertions / 0 failures**、`test_examples.rb`
+**56 runs / 57 assertions / 0 failures**(新サンプル 1 本を含む)。`rake test` 全体で
+**3,542 runs / 16,647 assertions / 0 failures / 0 errors / 39 skips**。
+
+**コーパスの分岐は 1 つも変わらなかった。** `rake corpus:census`(43 gem、終了コード 0)が生成する
+`test/corpus/include-census.md` は、定義を足す前と 1 バイトも違わなかった。3 つのマクロを足したことで
+別の枝を選ぶようになったコーパスの gem は無い。brotli 0.8.0 の `build_load` は、マージ後に
+台帳の手順(`tools/verify_corpus_candidate.rb --update`)で測る。

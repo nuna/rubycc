@@ -837,6 +837,29 @@ class TestPreprocessor < Minitest::Test
     assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
   end
 
+  def test_stdc_no_vla_and_kin_are_predefined
+    # C11 6.10.8.3: an implementation not supporting a conditional feature
+    # defines its macro to 1. rubycc lacks VLAs, _Complex and <threads.h>
+    # (measured 2026-09-13, see PREDEFINED_CONDITIONAL_FEATURE_MACROS).
+    tokens = pp("int a = __STDC_NO_VLA__; int b = __STDC_NO_COMPLEX__; " \
+                "int c = __STDC_NO_THREADS__;").reject(&:eof?)
+    assert_equal [1, 1, 1], tokens.select { |t| t.type == :num }.map(&:value)
+  end
+
+  def test_stdc_no_atomics_is_not_predefined
+    # rubycc does support _Atomic and <stdatomic.h> (measured 2026-09-13), so
+    # it must not claim otherwise.
+    source = "#ifdef __STDC_NO_ATOMICS__\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
+  def test_stdc_no_vla_may_be_undefined_unlike_a_builtin
+    # An ordinary #define'd entry like the platform macros, not a BUILTIN_MACROS
+    # entry, so #undef is allowed, matching gcc's own conditional-feature macros.
+    source = "#undef __STDC_NO_VLA__\n#ifdef __STDC_NO_VLA__\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
   def test_non_reserved_target_spellings_are_absent
     # gcc drops the non-reserved forms ("linux", "unix", "i386") under
     # -std=c11; only the reserved __..__ spellings are predefined here.
