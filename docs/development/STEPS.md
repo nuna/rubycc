@@ -15633,3 +15633,116 @@ numo-narray は、最初は Makefile の前提条件のワイルドカード(`$(
 `x.c` を生成する規則と `.c.o` だけの Makefile で、rmake は `x.c` も `x.o` も作らずにリンクまで進むことを確かめた(GNU make は作る)。
 
 **検証**: `rake test` **3,650 runs / 18,338 assertions / 0 failures / 0 errors / 39 skips**。
+
+## unprototyped-function-redeclaration-1 — 旧形式で宣言した名前付き関数の再宣言・定義・呼び出し(C11 6.7.6.3p15)
+
+**課題**(GAPS 行 BF、`issues/unprototyped-function-redeclaration.md`): `int f();` のように旧形式
+(空の `()`、関数定義の外)で宣言した**名前付き関数**を、仮引数付きで再宣言・定義すると
+`conflicting types`、プロトタイプ付きの定義より前に引数付きで呼ぶと `too many arguments` で止まっていた。
+unprototyped-function-pointer-compat-1(BD)は関数ポインタ型にしか `prototyped` を運んでおらず、
+名前付き関数の宣言は生成器の `@signatures` に仮引数の配列として記録され、`declare_function` は
+`existing[:param_types] != param_types` で照合していた(BD の STEPS 記録「スコープ外として残した箇所」のとおり)。
+
+### gcc の実測
+
+2026-09-14、このホスト(WSL2 / gcc 13.3.0、`-std=gnu11 -Wall -Wextra`、`-c`)で測った。
+
+| 入力 | gcc |
+|---|---|
+| `void f(); void f(int x) { (void)x; }` | ok(診断なし) |
+| `int g(); int g(int); int g(int x) { return x; }` | ok(診断なし) |
+| `int h();` → `h(3)` を呼ぶ → `int h(int x) {...}` | ok(診断なし) |
+| `int f(int); int f(); int f(int x) {...}`(逆順) | ok |
+| `int f(void); int f();` | ok |
+| `int f(); int f(double, long, void *, unsigned);` | ok |
+| `int f(); int f(a) char a; {...}`(K&R 定義) | ok |
+| `int f(); int (*p)(int) = f; int (*q)(void) = f;` | ok |
+| `int f();` → `f(1, 2.0f, (char)3)` | ok |
+| ブロックスコープの `int f();` → 呼び出し → 後でファイルスコープに定義 | ok |
+| `int f(); int f(char);`・`(short)`・`(float)`・`(_Bool)` | **error** `conflicting types for 'f'` |
+| `int f(); int f(int, ...);`・`int f(); int f(const char *, ...);` | **error** `conflicting types` |
+| `int f(); int f(char c) {...}`・`int f(char); int f();` | **error** `conflicting types` |
+| `int f(); long f(int);` | **error** `conflicting types` |
+| `int f(); int f(int); int f(long);` | **error** `conflicting types`(3 行目) |
+| `int f();` → `f(1)` → `int f(unsigned char c) {...}` | **error** `conflicting types` |
+| `int f(); int f(int);` → `f(1, 2)`(定義の後も同じ) | **error** `too many arguments to function 'f'` |
+| `int f(); int (*p)(char) = f;` | warning のみ(`-Wincompatible-pointer-types`) |
+
+互換でない組み合わせは、関数ポインタの代入(BD で測った 4 形はどれも警告のみ)と違い、
+**名前付き関数の再宣言では gcc もハードエラー**にする。
+
+### 修正
+
+- `AST::FunctionDecl` に `prototyped`(宣言子の `Type::FunctionType#prototyped`)を足した。
+  既定値は `true`(`FunctionType` と同じく、既存の生成箇所の意味を変えない)。パーサは
+  `parse_external_declarator` で `type.prototyped` を渡す。
+- `@signatures` の各項目に `prototyped:` を足した。ブロックスコープの関数宣言は `decl.type.prototyped`、
+  関数定義は常に `true`(`()` は定義では「仮引数なし」、K&R 定義は宣言リストで型が確定する)を渡す。
+  組み込みの種(`memcpy`・`strlen`)は `prototyped: true`。
+- `declare_function` は、既存の項目と新しい宣言をどちらも `Type::FunctionType` にして
+  `Type.composite` で合成する。合成できなければ `conflicting types`、できれば**合成型を表に書き戻す**。
+  `Type.composite` には「両辺が関数型なら `function_type_composite`」の 1 行を足しただけで、
+  6.7.6.3p15 の判定(`Type.function_types_compatible?`)と 6.2.7p3 の「プロトタイプ側が勝つ」は
+  BD がまとめたものをそのまま使う。builtin-strlen-2 の「種は最初の宣言に黙って譲る」は、
+  合成の前に `existing` を無いものとして扱う既存の行がそのまま効く。
+- `gen_direct_call` は、表の項目が `prototyped: false` のとき、BD の `gen_indirect_call` と同じく
+  可変長で固定仮引数 0 個として実引数を下ろす(個数を検査せず、各実引数に既定の実引数拡張)。
+  プロトタイプか定義を見た後は合成型が `prototyped` になるので、以後の呼び出しは従来どおり検査される。
+- `function_type_of` は `sig[:prototyped]` を運ぶようにした。これで、旧形式でしか宣言していない関数の
+  アドレスは `T (*)()` 型になり、`int (*p)(int) = f;` のような初期化・代入も BD の規則で判定される。
+
+### 判断
+
+- **`@signatures` には `Type::FunctionType` ではなく `prototyped` の鍵を足した。** 表を読む箇所は
+  `sig[:param_types]`・`sig[:return_type]`・`sig[:variadic]` を直接見ており(直接呼び出し・`call_return_type`・
+  PIC の判定など約 10 か所)、`FunctionType` そのものに置き換えると変更がこのステップの目的と関係ない
+  箇所に広がる。一方、型としての判定は `function_type_of` で `FunctionType` を組み立ててから
+  `Type.composite` に渡すので、規則の置き場は `lib/rubycc/type.rb` の 1 か所に保てる。
+- **表には合成型を書き戻す。** 最後に見た宣言ではなく合成型を持つので、`int f(int); int f();` の後も
+  `f(1, 2)` は `too many arguments` になり、`int f(); int f(int); int f(long);` は 3 行目で
+  `conflicting types` になる(どちらも gcc と同じ)。
+- **旧形式の宣言だけが見えている呼び出しは可変長呼び出しと同じ経路に乗せる。** x86-64 では `%al` の
+  設定も付いてくる。呼び出し先は可変長関数かもしれないので、BD が関数ポインタ経由の呼び出しで
+  測った gcc の出力と同じ扱いになる。
+- **`int f(); int (*p)(char) = f;` は引き続きエラーにする。** gcc は警告に留めるが、これは GAPS 行 AN
+  (制約違反を gcc 13 が警告に留める形)の範囲で、BD と同じく広げない。変更前もこの形はエラーだった
+  (`f` をプロトタイプ付きの `int (void)` とみなしていたため)ので、挙動は変わっていない。
+- 表は翻訳単位全体で 1 つのまま(ブロックスコープの宣言も同じ表に入る)。`int f(int);` の後の
+  ブロック内 `int f();` で `f(2)` がプロトタイプで検査されるのは、6.2.7p4(先の宣言が見えている
+  ときの合成型)と一致する。
+
+### テスト
+
+新規 `test/test_unprototyped_function_redeclaration.rb`(43 runs)。gcc 差分の対象は 9 形:
+issue の 3 形・既定の実引数拡張がかかる実引数(`char`・`short`・`float`・`long`・ポインタ)・
+ブロックスコープの旧形式宣言・K&R 定義・旧形式で宣言した関数のアドレス・逆順(プロトタイプ → 旧形式)・
+組み込みの種の後の `unsigned long strlen();`。各形を、ホストの gcc 差分・aarch64 向けのコンパイルのみ・
+クロス gcc + qemu の差分の 3 通りで検査する。ほかに、互換でない 11 形が gcc と同じ行で
+`conflicting types for 'f'` になること、プロトタイプ・定義の後の `too many arguments`、
+プロトタイプ前の任意個数の呼び出し、2 つ目の定義の `redefinition`、
+`int strlen(); unsigned long strlen(char *);` が 2 行目で `conflicting types` になること。
+
+同じ新規テストを変更前の `lib/`(`origin/master` を展開したもの)で走らせると
+**43 runs 中 5 failures + 28 errors**。差分 27 件はすべて error、診断 16 件のうち 6 件が failure/error
+(より前の行で `conflicting types` になって止まるため)で、互換でない 10 形の拒否だけは変更前後で同じ。
+
+2026-09-14、ワークツリー `unprototyped-function-redeclaration`(`origin/master` + 本変更)で実行した結果:
+
+| ファイル | runs | failures | errors | skips |
+|---|---|---|---|---|
+| test/test_unprototyped_function_redeclaration.rb | 43 | 0 | 0 | 0 |
+| test/test_unprototyped_function_pointer_compat.rb | 13 | 0 | 0 | 0 |
+| test/test_builtin_strlen.rb | 5 | 0 | 0 | 0 |
+| test/test_builtin_strlen_seed.rb | 19 | 0 | 0 | 0 |
+| test/test_knr_function_definitions.rb | 13 | 0 | 0 | 0 |
+| test/test_diagnostics.rb | 238 | 0 | 0 | 0 |
+| test/test_parser.rb | 332 | 0 | 0 | 0 |
+| test/test_type.rb | 92 | 0 | 0 | 0 |
+| test/test_examples.rb | 62 | 0 | 0 | 0 |
+| test/test_examples_aarch64.rb | 568 | 0 | 0 | 26 |
+| test/test_c_suite.rb | 223 | 0 | 0 | 13 |
+| test/test_c_suite_aarch64.rb | 444 | 0 | 0 | 26 |
+
+スキップ数は既存の SKIP 一覧によるもの。全スイート(`rake test`)は走らせていない。
+
+サンプル `examples/m6/unprototyped_function_redeclaration_1_old_style_header.c` を足した。

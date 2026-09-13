@@ -1266,15 +1266,22 @@ module Rubycc
     # two pointers to a non-function target, are unaffected and fall through to
     # the exact-equality case below.
     #
+    # The same function-type rule applies with no pointer around it, to the
+    # declarations of one named function (lib/rubycc/ir/generator.rb's
+    # #declare_function): "int f(); int f(int);" declares one function of type
+    # "int (int)", in either order, while "int f(); int f(char);" does not
+    # compose (6.7.6.3p15) and so conflicts.
+    #
     # Every other pair of types composes exactly when the two are identical,
     # which is what the equality comparison at each declaration-merge site meant
-    # before these two rules existed. A parameter of array type is adjusted to a
+    # before these rules existed. A parameter of array type is adjusted to a
     # pointer by the parser, so that shape of 6.2.7p3's pointer case does not
     # arise here.
     def self.composite(first, second)
       return first if first == second
       return array_composite(first, second) if first.array? && second.array?
       return pointer_composite(first, second) if first.pointer? && second.pointer?
+      return function_type_composite(first, second) if first.function? && second.function?
 
       nil
     end
@@ -1304,12 +1311,12 @@ module Rubycc
     end
 
     # The composite of two function types (6.2.7p3), or nil when they are not
-    # compatible (6.7.6.3p15). By the time #pointer_composite calls this, the
-    # two differ (their enclosing pointers already failed #composite's equality
-    # check), so two full prototypes always disagree here and there is nothing
-    # to compose (nil). The one composable case left is a real prototype
-    # against the old-style unprototyped form: 6.2.7p3 has the parameter-type
-    # list win, so the composite is the prototyped side.
+    # compatible (6.7.6.3p15). By the time #composite (directly, or through
+    # #pointer_composite) calls this, the two differ (#composite's equality
+    # check already failed), so two full prototypes always disagree here and
+    # there is nothing to compose (nil). The one composable case left is a real
+    # prototype against the old-style unprototyped form: 6.2.7p3 has the
+    # parameter-type list win, so the composite is the prototyped side.
     def self.function_type_composite(one, other)
       return nil unless function_types_compatible?(one, other)
 

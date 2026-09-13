@@ -878,7 +878,7 @@ module Rubycc
           register_init_attributes(name_tok.value, attributes)
           AST::FunctionDecl.new(name_tok.value, type.return_type,
                                 declarator_prototype_params(type, params, return_tok), return_tok,
-                                spec_info.storage, type.variadic)
+                                spec_info.storage, type.variadic, type.prototyped)
         else
           # An init attribute on an object has nothing to register — there is no
           # function to call — so it is refused here. gcc only warns ("attribute

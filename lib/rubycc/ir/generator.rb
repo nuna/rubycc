@@ -106,14 +106,18 @@ module Rubycc
         # defined here, a `static`, and a string literal keep the PC-relative
         # form. When false the lowering is byte-for-byte the non-PIC one.
         @pic = pic
-        # name -> { param_types:, return_type:, variadic:, defined: }.
+        # name -> { param_types:, return_type:, variadic:, prototyped:, defined: }.
         # `param_types` is the array of parameter Rubycc::Types (its length being
         # the fixed arity — for a variadic function, only the named parameters);
         # `return_type` is the declared Rubycc::Type of a call to this function;
         # `variadic` is true for a "..."-terminated prototype (its calls admit
-        # extra, promoted arguments past the fixed ones); `defined` distinguishes
-        # a prototype from a completed definition so redefinitions can be
-        # rejected.
+        # extra, promoted arguments past the fixed ones); `prototyped` is false
+        # while every declaration seen so far is the old-style "int f();" form
+        # (Type::FunctionType#prototyped — `param_types` is then empty and says
+        # nothing about the arity); `defined` distinguishes a prototype from a
+        # completed definition so redefinitions can be rejected. The first four
+        # fields are the composite type (6.2.7p3) of every declaration so far,
+        # see #declare_function and #function_type_of.
         # A signature carrying `builtin_seed: true` was not declared by the
         # program at all: it is one of the builtin prototypes below, present from
         # the start. It stands in only until the program declares that name
@@ -162,14 +166,18 @@ module Rubycc
             # M1 does not diagnose a static/extern mismatch against the eventual
             # definition, so a prototype only contributes a signature.
             declare_function(decl.name, decl.return_type, decl.params.map(&:abi_type),
-                             variadic: decl.variadic, defined: false, token: decl.token)
+                             variadic: decl.variadic, prototyped: decl.prototyped,
+                             defined: false, token: decl.token)
           when Front::AST::FunctionDef
             # A signature is what *callers* must agree with, so it is built from
             # the types the parameters are passed as. The two differ only for an
             # old-style definition, whose narrow parameters arrive promoted
-            # (see AST::Parameter#abi_type).
+            # (see AST::Parameter#abi_type). A definition always states its
+            # parameters: "()" there means none (6.7.6.3p14), and an old-style
+            # definition's declaration-list fixes every type.
             declare_function(decl.name, decl.return_type, decl.params.map(&:abi_type),
-                             variadic: decl.variadic, defined: true, token: decl.token)
+                             variadic: decl.variadic, prototyped: true,
+                             defined: true, token: decl.token)
             # `static` gives the definition internal linkage (an STB_LOCAL text
             # symbol); an absent or `extern` specifier leaves it external.
             linkage = decl.storage == :static ? :internal : :external
@@ -959,15 +967,23 @@ module Rubycc
       end
 
       # Records or updates a function's signature, enforcing that repeated
-      # declarations agree on their return type and parameter types (which
-      # also covers arity) and that a body is defined at most once.
+      # declarations have compatible types and that a body is defined at most
+      # once.
       #
-      # Agreement here is plain type equality, not the composite type an object's
-      # declarations merge under (see #composite_declaration_type): no array type
-      # can reach this comparison — C forbids returning one and the parser adjusts
-      # a parameter of array type to a pointer — so the composite rule for an
-      # unspecified array bound has nothing to act on.
-      def declare_function(name, return_type, param_types, variadic:, defined:, token:)
+      # Two declarations of one function must be compatible (6.2.7p2), and the
+      # name then has their composite type (6.2.7p3), both decided by
+      # Type.composite exactly as for a pointer-to-function object's
+      # redeclaration. Between two prototypes that is plain equality (return
+      # type, parameter types — which also covers arity — and "..."): no array
+      # type can reach this comparison, since C forbids returning one and the
+      # parser adjusts a parameter of array type to a pointer. The one relaxed
+      # case is the old-style "int f();" (`prototyped` false) against a real
+      # prototype: compatible when the prototype has no "..." and no parameter
+      # the default argument promotions would change (6.7.6.3p15), and the
+      # prototype is what the name keeps — so "int f(); int f(int);" and
+      # "int f(int); int f();" both leave "int (int)" on file, while
+      # "int f(); int f(char);" still conflicts (gcc 13.3 rejects it too).
+      def declare_function(name, return_type, param_types, variadic:, prototyped:, defined:, token:)
         error_at(token, "redefinition of '#{name}'") if @global_bindings.key?(name)
         # A struct passed or returned by value must have a known layout for its
         # System V eightbyte classification, so an incomplete struct is rejected
@@ -992,18 +1008,20 @@ module Rubycc
         # as gcc lets a user declaration override a builtin with at most a
         # warning. Every later redeclaration then meets that real one below.
         existing = nil if existing&.fetch(:builtin_seed, false)
+        type = Type::FunctionType.new(return_type, param_types, variadic, prototyped)
         if existing
-          if existing[:param_types] != param_types || existing[:return_type] != return_type ||
-             existing[:variadic] != variadic
+          type = Type.composite(function_type_of(existing), type)
+          if type.nil?
             error_at(token, "conflicting types for '#{name}'")
           elsif defined && existing[:defined]
             error_at(token, "redefinition of '#{name}'")
           end
         end
         @signatures[name] = {
-          param_types: param_types,
-          return_type: return_type,
-          variadic: variadic,
+          param_types: type.param_types,
+          return_type: type.return_type,
+          variadic: type.variadic,
+          prototyped: type.prototyped,
           defined: defined || existing&.fetch(:defined) || false
         }
       end
@@ -1832,7 +1850,8 @@ module Rubycc
 
         type = decl.type
         declare_function(decl.name, type.return_type, type.param_types,
-                         variadic: type.variadic, defined: false, token: decl.token)
+                         variadic: type.variadic, prototyped: type.prototyped,
+                         defined: false, token: decl.token)
       end
 
       # A 128-bit local. Like a struct, it lives in a stack object (16 bytes here)
@@ -4087,10 +4106,19 @@ module Rubycc
 
       # A direct call to the named function, checked against `sig` — the
       # function's recorded signature unless the caller supplies another.
+      #
+      # A function known so far only through old-style "int f();" declarations
+      # (`prototyped` false) has no parameter types to check against, so its
+      # call is lowered exactly like a call through a pointer to that type (see
+      # #gen_indirect_call): any number of arguments, each taking the default
+      # argument promotions (6.5.2.2p6). Once a prototype or the definition has
+      # been seen, the composite #declare_function keeps is prototyped and later
+      # calls are checked against it, as gcc does.
       def gen_direct_call(node, name, sig = @signatures[name])
         plumb = struct_return_plumbing(sig[:return_type])
-        args = lower_call_arguments(node, sig[:param_types], sig[:variadic], name, plumb[:hidden])
-        fixed = sig[:variadic] ? sig[:param_types].size : nil
+        variadic = sig[:variadic] || !sig[:prototyped]
+        args = lower_call_arguments(node, sig[:param_types], variadic, name, plumb[:hidden])
+        fixed = variadic ? sig[:param_types].size : nil
         emit_call_result(plumb, sig[:return_type]) do |dst|
           emit(:call, dst: dst, a: name, b: args,
                       size: call_size(fixed, call_ret_descriptor(sig[:return_type], plumb)))
@@ -6363,22 +6391,14 @@ module Rubycc
       end
 
       # The Type::FunctionType a function's recorded signature describes, used
-      # both to build the pointer a function designator decays to and to check
-      # an indirect call or a function-pointer assignment against it.
-      #
-      # `prototyped` is always true here: `sig` describes a named function
-      # this translation unit has declared or defined, and #declare_function's
-      # signature table (@signatures) does not carry the parser's `prototyped`
-      # flag through -- every function this subset lets reach a call site
-      # already has its real (possibly declaration-list-derived, see
-      # Parser#parse_old_style_function_definition) parameter types on file.
-      # The one program this misses is a named function declared old-style and
-      # never defined ("void work();"), whose address is then used as an
-      # unprototyped `void (*)()`-compatible value; treating it as prototyped
-      # is only ever *more* strict than 6.7.6.3p15 requires there, never less
-      # -- it cannot accept a program the standard rejects.
+      # to merge a redeclaration (#declare_function), to build the pointer a
+      # function designator decays to, and to check an indirect call or a
+      # function-pointer assignment against it. A function declared only
+      # old-style so far ("void work();") yields the unprototyped "void ()", so
+      # its address is a `void (*)()` value like any other (6.7.6.3p15 then
+      # decides what it may be assigned to or compared with).
       def function_type_of(sig)
-        Type::FunctionType.new(sig[:return_type], sig[:param_types], sig[:variadic], true)
+        Type::FunctionType.new(sig[:return_type], sig[:param_types], sig[:variadic], sig[:prototyped])
       end
 
       # The builtins the parser rewrites into a run-time call rather than
@@ -6401,6 +6421,7 @@ module Rubycc
             param_types: [Type::Pointer.new(Type::Void), Type::Pointer.new(Type::Void), Type::ULong],
             return_type: Type::Pointer.new(Type::Void),
             variadic: false,
+            prototyped: true,
             defined: false,
             builtin_seed: true
           }.freeze,
@@ -6409,6 +6430,7 @@ module Rubycc
             param_types: [Type::Pointer.new(@plain_char)],
             return_type: Type::ULong,
             variadic: false,
+            prototyped: true,
             defined: false,
             builtin_seed: true
           }.freeze
