@@ -8,13 +8,14 @@ pr:
 steps: []
 ---
 
-# gcc 13 が警告にとどめる 3 つの診断(互換でないポインタ・暗黙の関数宣言・暗黙の int)を、rubycc はエラーにする
+# gcc 13 が警告にとどめる 4 つの診断(互換でないポインタ・暗黙の関数宣言・暗黙の int・整数とポインタの変換)を、rubycc はエラーにする
 
 ## 課題
 
-**gcc 14 が既定でエラーに格上げした 3 つの診断を、rubycc は最初からエラーにしている。** gcc 13 は
-3 つとも警告だけで通す。起票時は 1 つ目(互換でない関数ポインタ)だけだったが、
-buildable-gems-batch-3 で残りの 2 つも実在の gem で出たので、**1 つの判断**として扱う。
+**gcc 14 が既定でエラーに格上げした診断を、rubycc は最初からエラーにしている。** gcc 13 は
+どれも警告だけで通す。起票時は 1 つ目(互換でない関数ポインタ)だけだったが、
+buildable-gems-batch-3 で暗黙の関数宣言と暗黙の int が、buildable-gems-batch-4 で整数とポインタの変換が
+実在の gem で出たので、**1 つの判断**として扱う。
 
 ### 互換でないポインタ(`-Wincompatible-pointer-types`)
 
@@ -49,6 +50,7 @@ rubycc のエラーは `lib/rubycc/ir/generator.rb:4227` の `compatible_assignm
 |---|---|---|
 | `int g(void) { return helper(2); }`(`helper` は後で定義) | 警告 `implicit declaration of function 'helper'` | **エラー**(同じ文言) |
 | `static twice(int x) { return x * 2; }`(戻り値の型が無い) | 警告 `return type defaults to 'int'` | **エラー `expected type specifier`** |
+| `typedef unsigned long V; V f(void) { V v = ((void *)0); return v; }`(`-Wint-conversion`) | 警告 `initialization of 'V' ... from 'void *' makes integer from pointer without a cast` | **エラー `incompatible types in assignment`** |
 
 **暗黙の int の診断は原因を伝えていない。** `expected type specifier` からは、C89 の書き方だと分からない。
 
@@ -73,7 +75,17 @@ buildable-gems-batch-3 で**さらに 3 件**が同じ系統で落ちた。**ど
 | `fast_trie` 0.5.1 | `tail.c:111` / `trie.c:84` | 互換でないポインタ / 暗黙の関数宣言(`trie_has_key` は `trie-private.c:105` で定義、宣言が見えない) |
 | `zipruby` 0.3.6 | `zip_crypt.c:25` / `mkstemp.c:69` | 暗黙の int(`static zipenc_crc32(uLong crc, char c)`)/ 暗黙の関数宣言(`getpid`) |
 
-**判断の重みは件数で変わった** — 起票時は 1 件、今は 4 件である。
+buildable-gems-batch-4 で**さらに 3 件**。**どれも対照の gcc 13 はビルドに成功する**(2026-09-13 実測):
+
+| gem | 箇所 | 診断 |
+|---|---|---|
+| `github-markdown` 0.6.9 | `gh-markdown.c:82` | 暗黙の関数宣言(`houdini_escape_html0`) |
+| `gctools` 0.2.4 | `oobgc.c:188` | 暗黙の関数宣言(`rb_autoload`。この Ruby のヘッダは宣言しない) |
+| `semacode-ruby19` 0.7.4 | `semacode.c:61` / `iec16022ecc200.c:498` | 暗黙の関数宣言(`iec16022init`)/ 整数とポインタの変換(`VALUE rb_str = NULL;`) |
+| `picky` 4.31.3 | `picky.c:47` | 互換でないポインタ(`rb_block_call` の第 5 引数) |
+| `allocation_tracer` 0.6.3 | `allocation_tracer.c:201` | 互換でないポインタ(`rb_st_foreach` の第 2 引数) |
+
+**判断の重みは件数で変わった** — 起票時は 1 件、今は 9 件である。
 
 ## 受け入れ条件
 

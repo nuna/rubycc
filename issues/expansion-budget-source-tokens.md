@@ -44,6 +44,11 @@ int n(void) { return (int)(sizeof tbl / sizeof tbl[0]); }
 その行に暴走するマクロは無い(使っているのは `NULL` だけ)。**対照の gcc はビルドとロードに成功する**
 (2026-09-13 実測)。
 
+**2 件目がある。** コーパス候補 `amalgalite` 2.0.0 は SQLite の amalgamation(`sqlite3.c`、22 万行を超える
+1 ファイル)を同梱しており、rubycc は `sqlite3.c:221705:8: error: macro expansion is too large` で止まる。
+**対照の gcc はビルドとロードに成功する**(2026-09-13 実測、buildable-gems-batch-4)。
+**amalgamation を同梱する gem はどれも同じ理由で落ちる**と見込む(1 翻訳単位のトークン数が上限を超える)。
+
 **診断が誤った原因を指す。** 利用者は存在しない暴走マクロを探すことになる。
 
 ## 受け入れ条件

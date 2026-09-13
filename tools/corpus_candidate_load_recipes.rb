@@ -190,6 +190,84 @@ module CorpusCandidateLoadRecipes
         "requires" => ["digest/murmurhash"],
         "sanity_kind" => "entrypoint_loaded"
       }
+    },
+    {
+      "name" => "splitclient-rb",
+      "version" => "8.11.3",
+      "platform" => "ruby",
+      "sha256" => "9a2483a68d7939df96f9633d31de499617e0bb34c55a1217df334df5bea64547",
+      "dependencies" => [
+        {"name" => "bitarray", "version" => "1.3.2"},
+        {"name" => "concurrent-ruby", "version" => "1.3.8"},
+        {"name" => "json", "version" => "2.21.2"},
+        {"name" => "jwt", "version" => "3.3.0"},
+        {"name" => "lru_redux", "version" => "1.1.0"},
+        {"name" => "net-http-persistent", "version" => "4.0.8"},
+        {"name" => "redis", "version" => "5.4.1"},
+        {"name" => "faraday", "version" => "2.14.3"},
+        {"name" => "faraday-net_http_persistent", "version" => "2.3.1"}
+      ],
+      "entrypoint" => {
+        "requires" => ["splitclient-rb"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "llhttp",
+      "version" => "0.6.2",
+      "platform" => "ruby",
+      "sha256" => "3c3c59aafb1e1594ab2f45293478f697458f5a91eb0f0db4b27f61a064024982",
+      "dependencies" => [],
+      "entrypoint" => {
+        "requires" => ["llhttp"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "tomlib",
+      "version" => "0.7.3",
+      "platform" => "ruby",
+      "sha256" => "85e562eeaa40b2aca552a13515f41fc6ae9dc522154bc1089c8d3ef94dcebd9b",
+      "dependencies" => [
+        {"name" => "bigdecimal", "version" => "4.1.2"}
+      ],
+      "entrypoint" => {
+        "requires" => ["tomlib"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "quirc",
+      "version" => "0.2.0",
+      "platform" => "ruby",
+      "sha256" => "b235ffda5fdddef6d1374a8a1a36fa64f98994e31e5f6ec76b10d89d9ee643c1",
+      "dependencies" => [],
+      "entrypoint" => {
+        "requires" => ["quirc"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "looksee",
+      "version" => "5.1.0",
+      "platform" => "ruby",
+      "sha256" => "9498fd11ffc959d7780ee8928ccd6a9c2b7451593c480e4e0dc12b41c140b7b6",
+      "dependencies" => [],
+      "entrypoint" => {
+        "requires" => ["looksee"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "dedup",
+      "version" => "0.1.4",
+      "platform" => "ruby",
+      "sha256" => "947d7ab050b9a7160417c1a149ed1085731cfb95b7d98934f3ee2fb22c561e63",
+      "dependencies" => [],
+      "entrypoint" => {
+        "requires" => ["dedup"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
     }
   ].map(&:freeze).freeze
 
