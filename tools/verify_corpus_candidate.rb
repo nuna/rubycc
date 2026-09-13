@@ -623,6 +623,17 @@ module CorpusCandidateValidation
           document = GraphQL::CParser.parse("{ __typename }")
           abort "GraphQL::CParser.parse returned no definitions" unless document.respond_to?(:definitions) && !document.definitions.empty?
           puts "documented_load=graphql_c_parser"
+        when "entrypoint_loaded"
+          # The ledger's claim is build_load: the extension built, and requiring
+          # the documented entrypoint loaded it. The missing-check above already
+          # proves every built shared object is in $LOADED_FEATURES, so that is
+          # the whole of the evidence here. A per-gem functional probe (like
+          # graphql_c_parser's) does not scale with the number of recipes and
+          # would overstate what the ledger actually claims. graphql_c_parser
+          # keeps its own probe because that gem also ships a pure-Ruby parser,
+          # so loading the extension is not enough on its own to show the C
+          # extension was selected over the fallback.
+          puts "documented_load=entrypoint_loaded"
         else
           abort "unknown fixed load recipe sanity kind"
         end

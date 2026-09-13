@@ -166,13 +166,21 @@ tools/verify_gem_tests.rb --update --step 143 redcarpet  # 合格した gem を�
 このツールは固定された identity(name / version / platform / SHA-256)の archive を取得し、
 静的ゲートを通したうえで隔離 `GEM_HOME` に `RUBYCC=1 gem install` し、
 `.so` が本当にロードできることまで確かめる。台帳に書かれるのは
-**`status: build_load_pass` かつ `rubycc_build_evidence: pass`** の結果だけである。
+**`status` が `build_load_pass` または `documented_load_pass` で、かつ
+`rubycc_build_evidence: pass`** の結果である。
 
 - `rubycc_build_evidence` は `gem_make.out` が `exe/rmake` を、生成 Makefile が `exe/rubycc` を
   指していることの実測であり、これが無い install は「rubycc でビルドできた」ことの証拠にならない。
   `--compiler host` の対照実行は `not_applicable` になるので**決して記録されない**
-- `--mode load_sanity` の `documented_load_pass` も記録しない。あれはレシピ固有の
-  別の主張(文書化された entrypoint が動く)であり、混ぜない
+- `--mode load_sanity` の `documented_load_pass` も**受け付ける証拠に含む**。ビルドした `.so` を
+  単独で require する代わりに、gem 自身の文書化された entrypoint から読み込んで、
+  すべての `.so` が `$LOADED_FEATURES` に載ったことを確かめるモードで、台帳が主張する
+  2 点(rubycc がビルドした・その `.so` がロードできた)は変わらない。むしろ ox / kgio /
+  raindrops のように拡張が gem の入口を前提にしていて単独 require では正しく判定できない
+  gem を、利用者と同じ読み方で拾える。レシピに依存 gem があるときは、それらは候補の
+  ビルドより前にホストのツールチェインで入れたものであり、evidence はその旨を明記する
+  (rubycc の証拠は候補自身の `.so` に対してだけ成立する)。`documented_load_failed` や
+  `fallback_or_not_loaded`、host 実行の `not_applicable` は従来どおり記録しない
 - 記録先の選び方は `verify_gem_tests.rb` と同じ。**その実行が走った環境の記録だけ**を更新し
   (`versions` は和集合、`verified_at` は当日)、その環境の記録が無ければ `builds` の末尾に足す
 - ただし `evidence` は**追記ではなく再生成**する。(d) 水準の evidence はステップ履歴を溜める欄で

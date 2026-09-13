@@ -10,7 +10,12 @@
 # expensive claim ("the gem's own suite passed"). This file is read by neither.
 #
 # The claim recorded here is exactly what tools/verify_corpus_candidate.rb
-# --mode build_load measures, and no more. Evidence that a test suite passed
+# measures in --mode build_load or --mode load_sanity, and no more: rubycc
+# built the gem, and its shared object loaded. load_sanity counts too because
+# it proves that same claim by reading the gem the way its users actually do
+# -- through its own documented entrypoint -- rather than by requiring the
+# built .so on its own, which some extensions (ox, kgio, raindrops) never
+# expect to happen and so fail outright. Evidence that a test suite passed
 # belongs in data/verified_gems.json; CLAIM_OUT_OF_SCOPE below refuses it here,
 # because a ledger whose entries make two different claims can no longer be
 # counted.
@@ -34,27 +39,55 @@ module BuildableGemsLedger
   CLAIM_OUT_OF_SCOPE = /test suite|suite passed|tests passed|passed .{0,20}suite|examples?,? \d+ failures/i
 
   # A result is recordable only when the tool proved both halves of the claim:
-  # the candidate installed and loaded (build_load_pass), and the build really
-  # went through rubycc (rubycc_build_evidence). A --compiler host run reports
+  # the candidate installed and loaded, and the build really went through
+  # rubycc (rubycc_build_evidence). A --compiler host run reports
   # "not_applicable" for the second and is therefore never recorded: it says
   # nothing about rubycc.
   #
-  # The documented-entrypoint modes (load_sanity) end in "documented_load_pass",
-  # a different and recipe-specific claim; they are not written here either.
+  # "build_load_pass" and "documented_load_pass" both count. They prove the
+  # same two things this ledger claims (rubycc built it, and its .so loaded);
+  # they differ only in how the .so was loaded, not in what got proven.
+  # documented_load_pass in fact reads the gem the way a user would -- through
+  # its own documented entrypoint -- rather than requiring the built .so on
+  # its own, which is why extensions that assume that entrypoint (ox, kgio,
+  # raindrops) fail the plain require and need it. A recipe's sanity_kind may
+  # run a stronger, gem-specific functional probe on top of that (e.g.
+  # graphql_c_parser), but this ledger never repeats that probe in its
+  # evidence, so recording the result does not smuggle the stronger claim in
+  # under the weaker one.
+  # "documented_load_failed", "fallback_or_not_loaded", and a host run's
+  # "not_applicable" evidence remain unrecordable: none of them proves the
+  # .so loaded through rubycc.
   def self.recordable?(result)
-    result["status"] == "build_load_pass" &&
+    %w[build_load_pass documented_load_pass].include?(result["status"]) &&
       result.dig("execution", "rubycc_build_evidence") == "pass"
   end
 
-  # What a build_load pass actually establishes, in the words of the two traces
-  # the tool checks. Deliberately free of the gem's version: `versions` is a
-  # union over every version measured in this environment, so a version named in
-  # the prose would go stale the moment a second one is added.
+  # What a pass actually establishes, in the words of the traces the tool
+  # checks. Deliberately free of the gem's version in both branches:
+  # `versions` is a union over every version measured in this environment, so
+  # a version named in the prose would go stale the moment a second one is
+  # added.
   def self.evidence(result)
-    "RUBYCC=1 gem install succeeded with the extension built through rmake " \
-      "(gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), " \
-      "and every shared object it produced was proven loaded by require " \
-      "(tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+    case result["status"]
+    when "build_load_pass"
+      "RUBYCC=1 gem install succeeded with the extension built through rmake " \
+        "(gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), " \
+        "and every shared object it produced was proven loaded by require " \
+        "(tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+    when "documented_load_pass"
+      requires = result.fetch("load_recipe").fetch("entrypoint").fetch("requires").join(", ")
+      dependencies = Array(result.dig("load_recipe", "dependencies"))
+      dependency_clause = dependencies.empty? ? "" :
+        " Recipe dependencies (#{dependencies.map { |dep| dep.fetch("name") }.join(", ")}) " \
+        "were installed with the host toolchain first, so this establishes the claim for the " \
+        "candidate's own shared object only."
+      "RUBYCC=1 gem install succeeded with the extension built through rmake " \
+        "(gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), " \
+        "and every shared object it produced was proven loaded by requiring the gem's own " \
+        "documented entrypoint (#{requires}) " \
+        "(tools/verify_corpus_candidate.rb --mode load_sanity --compiler rubycc).#{dependency_clause}"
+    end
   end
 
   # Merge one measurement into +db+ (parsed JSON) and return [db, how].

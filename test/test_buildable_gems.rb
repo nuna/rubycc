@@ -137,6 +137,27 @@ class TestBuildableGems < Minitest::Test
     refute_includes evidence, "1.2.0"
   end
 
+  def test_generated_evidence_for_a_documented_load_pass_names_the_entrypoint_and_mode
+    evidence = LEDGER.evidence(documented_load_pass(requires: ["ox"], dependencies: []))
+
+    refute_match LEDGER::CLAIM_OUT_OF_SCOPE, evidence
+    assert_includes evidence, "exe/rmake"
+    assert_includes evidence, "exe/rubycc"
+    assert_includes evidence, "ox"
+    assert_includes evidence, "--mode load_sanity"
+    refute_includes evidence, "2.14.29"
+  end
+
+  def test_generated_evidence_for_a_documented_load_pass_with_dependencies_names_the_host_install
+    evidence = LEDGER.evidence(
+      documented_load_pass(requires: ["ox"], dependencies: [{ "name" => "bigdecimal", "version" => "4.1.2" }])
+    )
+
+    refute_match LEDGER::CLAIM_OUT_OF_SCOPE, evidence
+    assert_includes evidence, "bigdecimal"
+    assert_includes evidence, "host toolchain"
+  end
+
   def test_merge_refuses_evidence_that_claims_more_than_a_build
     error = assert_raises(ArgumentError) do
       LEDGER.merge({}, name: "debug_inspector", version: "1.2.0", environment: "e",
@@ -155,22 +176,58 @@ class TestBuildableGems < Minitest::Test
     }
   end
 
-  def test_only_a_rubycc_build_load_pass_is_recordable
+  def documented_load_pass(requires:, dependencies:, rubycc_build_evidence: "pass")
+    {
+      "status" => "documented_load_pass",
+      "input" => { "name" => "ox", "version" => "2.14.29" },
+      "execution" => { "rubycc_build_evidence" => rubycc_build_evidence },
+      "load_recipe" => {
+        "dependencies" => dependencies,
+        "entrypoint" => { "requires" => requires, "sanity_kind" => "entrypoint_loaded" }
+      }
+    }
+  end
+
+  def test_only_a_rubycc_build_or_documented_load_pass_is_recordable
     assert LEDGER.recordable?(build_load_pass)
+    # load_sanity's pass proves the same two things through the gem's own
+    # documented entrypoint instead of a bare require, so it counts too.
+    assert LEDGER.recordable?(build_load_pass(status: "documented_load_pass"))
 
     # A host-compiler control proves nothing about rubycc...
     refute LEDGER.recordable?(build_load_pass(rubycc_build_evidence: "not_applicable"))
     refute LEDGER.recordable?(build_load_pass(rubycc_build_evidence: "missing"))
+    refute LEDGER.recordable?(build_load_pass(status: "documented_load_pass", rubycc_build_evidence: "not_applicable"))
     # ...and neither does anything short of a load.
     refute LEDGER.recordable?(build_load_pass(status: "build_failed"))
     refute LEDGER.recordable?(build_load_pass(status: "fallback_or_not_loaded"))
-    # load_sanity's pass is a different, recipe-specific claim.
-    refute LEDGER.recordable?(build_load_pass(status: "documented_load_pass"))
+    refute LEDGER.recordable?(build_load_pass(status: "documented_load_failed"))
   end
 
   def test_record_writes_nothing_for_a_result_that_earned_no_claim
     in_temp_ledger("{}\n") do |path|
       assert_nil LEDGER.record(build_load_pass(status: "build_failed"), path: path)
+      assert_equal "{}\n", File.read(path)
+    end
+  end
+
+  def test_record_writes_a_documented_load_pass
+    in_temp_ledger("{}\n") do |path|
+      summary = LEDGER.record(documented_load_pass(requires: ["ox"], dependencies: []),
+                               path: path, environment: "e", today: "2026-09-13")
+      refute_nil summary
+      record = JSON.parse(File.read(path)).fetch("ox").fetch("builds").first
+      assert_includes record.fetch("evidence"), "ox"
+      assert_includes record.fetch("evidence"), "--mode load_sanity"
+    end
+  end
+
+  def test_record_writes_nothing_for_documented_load_failure_or_fallback_or_host
+    in_temp_ledger("{}\n") do |path|
+      assert_nil LEDGER.record(documented_load_pass(requires: ["ox"], dependencies: [])
+                                  .merge("status" => "documented_load_failed"), path: path)
+      assert_nil LEDGER.record(build_load_pass(status: "fallback_or_not_loaded"), path: path)
+      assert_nil LEDGER.record(build_load_pass(rubycc_build_evidence: "not_applicable"), path: path)
       assert_equal "{}\n", File.read(path)
     end
   end

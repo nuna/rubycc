@@ -23,6 +23,41 @@ module CorpusCandidateLoadRecipes
         "requires" => ["graphql/c_parser"],
         "sanity_kind" => "graphql_c_parser"
       }
+    },
+    {
+      "name" => "ox",
+      "version" => "2.14.29",
+      "platform" => "ruby",
+      "sha256" => "206736d5a8dade9dca10cf72022bc157ad6ca3eecaba3853918426ed88e12dc2",
+      "dependencies" => [
+        {"name" => "bigdecimal", "version" => "4.1.2"}
+      ],
+      "entrypoint" => {
+        "requires" => ["ox"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "kgio",
+      "version" => "2.11.4",
+      "platform" => "ruby",
+      "sha256" => "bda7a2146115998a5b07154e708e0ac02c38dcee7e793c33e2e14f600fdfffc6",
+      "dependencies" => [],
+      "entrypoint" => {
+        "requires" => ["kgio"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "raindrops",
+      "version" => "0.20.1",
+      "platform" => "ruby",
+      "sha256" => "aa0eb9ff6834f2d9e232ba688bd49cb30be893bc5a3452e74722c94c1fab4730",
+      "dependencies" => [],
+      "entrypoint" => {
+        "requires" => ["raindrops"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
     }
   ].map(&:freeze).freeze
 
