@@ -29,12 +29,14 @@
 | **BC**([issue](../../issues/atomic-builtin-small-widths.md)) | **`__atomic_*` ビルトインが 1 / 2 バイトの対象を拒否する**(4 / 8 バイト限定と自己申告) | 1 バイトのスピンロックを持つ gem。`iodine` 0.7.59 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 4 / 8 バイト限定のビルトインを一覧にしてから足す |
 | **BE**([issue](../../issues/attribute-statement-after-label.md)) | **ラベルの直後に単独で置いた属性の文を拒否する**(`case 1: __attribute__ ((fallthrough)); case 2:`)。AY の修正はブロックの要素として現れる形だけを直した | 空の case から次の case へ落とすときに属性を書く gem。実在の gem ではまだ見ていない | **実測**(2026-09-13、最小再現で `expected expression`。gcc は通る) | ラベルの後の文を読む経路(`parse_nested_statement` → `parse_statement`)にも同じ判定を入れる |
 | **BF**([issue](../../issues/unprototyped-function-redeclaration.md)) | **旧形式で宣言した名前付き関数を、仮引数付きで再宣言・定義・呼び出しできない**(`void f(); void f(int x) {...}`)。関数の宣言表が `prototyped` を運ばない | 古いヘッダの `int f();` 形の宣言と、同じ翻訳単位の定義。実在の gem ではまだ見ていない | **実測**(2026-09-14、3 形とも。BD の修正の前後で同じ結果なので前からある不足) | BD が `Type` にまとめた互換の規則をそのまま使えるよう、宣言表の持ち方を先に決める |
+| **BG**([issue](../../issues/bundled-stdlib-alloca.md)) | **同梱 `stdlib.h` が `alloca` を宣言しない**(glibc は `__USE_MISC` で `<alloca.h>` を含む。`<alloca.h>` を直接含めば通る) | `<stdlib.h>` だけで `alloca` を呼ぶコード。`amalgalite` 2.0.0 の同梱 SQLite が AL を越えた先で止まる。**対照の gcc は通る** | **実測**(2026-09-14、最小再現) | §2 の同梱ヘッダの洗い出しの対象。AF / AR と同じ `<stdlib.h>` の話 |
+| **BH**([issue](../../issues/rmake-suffix-rule-generated-source.md)) | **rmake が、別の規則で生成されるソースを経由して接尾辞規則(`.c.o`)をつなげない**。作れないことを報告せずにリンクまで進む | ソースを Makefile の規則で生成する gem。`numo-narray` 0.9.2.1 が AO・BD を越えた先で止まる(`t_bit.o` が無い)。**対照(GNU make)は通る** | **実測**(2026-09-14、最小の Makefile で再現。前提条件のワイルドカードだけなら通る) | 作れない前提条件はその場で報告して止めること |
 
 ## 2. 未解消の負債
 
 | 負債 | 影響 | 優先 | 詳細 |
 |---|---|---|---|
-| **同梱ヘッダの範囲が「コーパスが使った分だけ」**([issue](../../issues/bundled-headers-coverage-audit.md)) | コーパスの外の gem で抜けが当たり続ける(AF / AM / AQ / AR / BA / BB の 6 件)。同梱ヘッダと glibc 本体のヘッダが混ざる所で型が衝突する(AU) | 高 | 1 件ずつ塞がず、ヘッダごとに glibc が `_GNU_SOURCE` のもとで宣言する名前と突き合わせて、足す / 意図して外すを決める |
+| **同梱ヘッダの範囲が「コーパスが使った分だけ」**([issue](../../issues/bundled-headers-coverage-audit.md)) | コーパスの外の gem で抜けが当たり続ける(AF / AM / AQ / AR / BA / BB / BG の 7 件)。同梱ヘッダと glibc 本体のヘッダが混ざる所で型が衝突する(AU) | 高 | 1 件ずつ塞がず、ヘッダごとに glibc が `_GNU_SOURCE` のもとで宣言する名前と突き合わせて、足す / 意図して外すを決める |
 
 ## 3. 環境が無くて測れていないこと
 

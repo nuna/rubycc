@@ -298,6 +298,20 @@ module CorpusCandidateLoadRecipes
         "requires" => ["liquid", "liquid/c"],
         "sanity_kind" => "entrypoint_loaded"
       }
+    },
+    {
+      "name" => "do_sqlite3",
+      "version" => "0.10.17",
+      "platform" => "ruby",
+      "sha256" => "8ebdac3d05c2711b7a8215937cbb5f5c97082a12515d3cab50e6f1273129bf3f",
+      "dependencies" => [
+        {"name" => "bigdecimal", "version" => "4.1.3"},
+        {"name" => "data_objects", "version" => "0.10.17"}
+      ],
+      "entrypoint" => {
+        "requires" => ["bigdecimal", "do_sqlite3"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
     }
   ].map(&:freeze).freeze
 

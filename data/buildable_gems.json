@@ -1153,5 +1153,38 @@
       }
     ],
     "notes": ""
+  },
+  "herb": {
+    "builds": [
+      {
+        "versions": ["0.10.4"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-14",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by require (tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+      }
+    ],
+    "notes": ""
+  },
+  "unicode": {
+    "builds": [
+      {
+        "versions": ["0.4.4.5"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-14",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by require (tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+      }
+    ],
+    "notes": ""
+  },
+  "do_sqlite3": {
+    "builds": [
+      {
+        "versions": ["0.10.17"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-14",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by requiring the gem's own documented entrypoint (bigdecimal, do_sqlite3) (tools/verify_corpus_candidate.rb --mode load_sanity --compiler rubycc). Recipe dependencies (bigdecimal, data_objects) were installed with the host toolchain first, so this establishes the claim for the candidate's own shared object only."
+      }
+    ],
+    "notes": ""
   }
 }
