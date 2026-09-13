@@ -129,6 +129,67 @@ module CorpusCandidateLoadRecipes
         "requires" => ["oj/introspect"],
         "sanity_kind" => "entrypoint_loaded"
       }
+    },
+    {
+      "name" => "gvltools",
+      "version" => "0.5.0",
+      "platform" => "ruby",
+      "sha256" => "a15e480b3860e7e9661e5e53aff9b1802fe9018fa42a5e845adc2a19a7bcc65d",
+      "dependencies" => [],
+      "entrypoint" => {
+        "requires" => ["gvltools"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "levenshtein",
+      "version" => "0.2.2",
+      "platform" => "ruby",
+      "sha256" => "e2088ce4eaf4460e48c1812f43f5d89c50835830e74adcb4317cc477d4f1bf98",
+      "dependencies" => [],
+      "entrypoint" => {
+        "requires" => ["levenshtein"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "sequel_pg",
+      "version" => "1.20.0",
+      "platform" => "ruby",
+      "sha256" => "230a8094cf4cb07754a928fa3a3fe1c34794a81001c978c6c51d5bd5acbd33a2",
+      "dependencies" => [
+        {"name" => "pg", "version" => "1.6.3"},
+        {"name" => "sequel", "version" => "5.108.0"}
+      ],
+      "entrypoint" => {
+        "requires" => ["sequel", "sequel/adapters/postgres"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "panko_serializer",
+      "version" => "0.8.5",
+      "platform" => "ruby",
+      "sha256" => "ba95efee24a3b3abe4e025b4b9f1c39944b321a53f2a4cd6c5a9d5bd6540c929",
+      "dependencies" => [
+        {"name" => "oj", "version" => "3.17.6"},
+        {"name" => "activesupport", "version" => "8.1.3.1"}
+      ],
+      "entrypoint" => {
+        "requires" => ["panko_serializer"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "digest-murmurhash",
+      "version" => "1.1.1",
+      "platform" => "ruby",
+      "sha256" => "4011022fb64e5c8dc78d74f199c713e5c3f1969cc2678a48d985b45704625d51",
+      "dependencies" => [],
+      "entrypoint" => {
+        "requires" => ["digest/murmurhash"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
     }
   ].map(&:freeze).freeze
 
