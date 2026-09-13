@@ -16,7 +16,6 @@
 | **AF**([issue](../../issues/bundled-stdlib-getloadavg.md)) | **同梱 `stdlib.h` に `getloadavg` の宣言が無い**(glibc は `__USE_MISC` の枝に置く) | `getloadavg` を呼ぶ gem。`vmstat` 2.3.1 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `implicit declaration`) | **`_DEFAULT_SOURCE` の枝ごと見て決める** — 1 つずつ塞ぐと回数が増える |
 | **AG**([issue](../../issues/zero-length-array.md)) | **長さ 0 の配列(GNU 拡張)を拒否する**。規格(6.7.6.2p1)には忠実だが gcc は既定で受理する | `binding_ninja` 0.2.3 の `dummy_method_arg[0]` が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `array size must be positive`) | 受理するか対象外にするかを**根拠付きで決めてから**実装する。フレキシブル配列メンバの扱いを先に測る |
 | **AH**([issue](../../issues/thread-local-storage.md)) | **スレッドローカル記憶域が無い** — C11 の `_Thread_local` も GNU の `__thread` も `expected type specifier` で拒否する。コンパイラに言及が 1 つも無く、記憶域クラスとしてまるごと無い | TLS 変数を宣言するヘッダを含む gem。`pg_query` 6.2.3 が同梱 postgres ヘッダの `__thread` で、`scout_apm` 6.3.0 が `allocations.c:29` の `static __thread` で落ち、**対照の gcc はどちらもビルドに成功する** | **実測**(2026-09-13、最小再現で両方とも拒否) | **マイルストーン級**。ELF の TLS セクション・TLS 再配置・`%fs` / `tpidr_el0` 相対の生成が要り、拡張は `.so` なので**動的モデルでないと実在の gem に効かない** |
-| **AI**([issue](../../issues/extern-initializer-file-scope.md)) | **ファイルスコープの `extern int x = 1;` を拒否する**。C11 6.9.2p1 の例が示すとおり外部定義であり、制約違反はブロックスコープの場合だけ(6.7.9p5) | 同梱 libev を持つ gem。`cool.io` 1.9.5 の `ev.c:1845` が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で gcc は警告・rubycc はエラー) | ファイルスコープ側の判定を外し、ブロックスコープのエラーは保つ |
 | **AJ**([issue](../../issues/variadic-aggregate-argument.md)) | **可変長引数に構造体・共用体を値で渡せない**(`not supported yet` と自己申告) | `semctl` に `union semun` を渡す gem。`semian` 0.28.4 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 固定引数の構造体渡しは実装済み。x86-64 と AArch64 の両方で、呼ぶ側・呼ばれる側の両向きを gcc と突き合わせる |
 | **AK**([issue](../../issues/labels-as-values.md)) | **ラベルのアドレス(`&&label` / `goto *p`、GNU 拡張)を受け付けない**。診断は `expected expression` で原因を伝えない | 表引きのディスパッチを持つ gem。`strptime` 0.2.5 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
 | **AL**([issue](../../issues/expansion-budget-source-tokens.md)) | **マクロ展開の予算(100 万)がソースを素通りするトークンまで数える**。マクロの無い大きな表が「暴走マクロ」として止まる | 巨大な表を持つ gem。`unicode` 0.4.4.5 の `unidata.map`(24,555 行)が該当し、**対照の gcc は通る** | **実測**(2026-09-13、80,000 行の生成入力で再現。45,000 行は通る) | 置換で生まれたトークンだけを数えれば、上限はコメントどおりの意味になる |
@@ -50,6 +49,10 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ AI**(ファイルスコープの `extern int x = 1;` を拒否する):
+  `extern-initializer-file-scope-1` で解消。C11 6.9.2p1 の例のとおり外部定義として
+  受理し、IR 生成器が `.data` に実体を出すよう変えた。制約違反はブロックスコープの
+  場合だけ(6.7.9p5)なので、そちらのエラーはそのまま残した。
 - **ギャップ AD**(`ELFReader` が返す名前が UTF-8 タグ付き):
   `elf-reader-name-encoding-1` で解消。**起票から解消まで同じ日**である —
   `ar-reader-name-encoding-1` が `ArReader` 側だけを規約に揃えた結果、

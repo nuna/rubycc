@@ -14354,3 +14354,51 @@ R7 は「多くの gem は `#ifdef __GNUC__` の `#else` 側に移植可能な�
 除外基準には上げていない。**R10 の分母に入っていない gem を、測れた範囲を越えて対象外と書かない**ためである。
 
 **検証**: `rake test` **3,528 runs / 15,895 assertions / 0 failures / 0 errors / 39 skips**。
+
+## extern-initializer-file-scope-1 — 初期化子があるかどうかで、`extern` の意味は変わる
+
+**課題**([issue](../../issues/extern-initializer-file-scope.md)、GAPS **AI**): ファイルスコープの
+`extern int x = 1;` を rubycc は `'x' has both 'extern' and initializer` で拒否していたが、
+C11 6.9.2p1 は例そのもので `extern int i3 = 3; // definition, external linkage` を挙げており、
+**初期化子を伴う `extern` はファイルスコープでは外部定義**である。gcc は警告だけで通す
+(2026-09-13、このホストの gcc 13.3 で実測)。制約違反になるのは**ブロックスコープの場合だけ**
+(6.7.9p5)で、こちらは既存のエラーのままにする。
+
+### 直したのは 2 箇所 — パーサの拒否と、IR 生成器の分岐
+
+`lib/rubycc/front/parser.rb` の `parse_global_declarator`(ファイルスコープ)から
+`spec_info.storage == :extern` のときの `error_at` を削除し、コメントを
+「ファイルスコープでは受理し外部定義として扱う・ブロックスコープでは拒否する」という
+規格条文つきの説明に置き換えた。`parse_init_declarator`(ブロックスコープ)側は
+呼び出し元(`parse_declaration`)がブロック内の宣言だけを扱うことを確認した上で、
+拒否はそのまま残し、コメントに同じ条文の対比を足した。
+
+パーサを直すだけでは足りなかった。`lib/rubycc/ir/generator.rb#declare_global` は
+`decl.storage == :extern` を無条件に「実体を持たない参照」の分岐(`declare_extern_global`)へ
+送っていたため、初期化子を持つ `extern` 宣言もリンカ向けの未定義参照のままになり、
+`.data` に実体が出ない。分岐条件を `decl.storage == :extern && !has_init` に変え、
+初期化子を持つ場合は `extern` の有無に関わらず `merge_object_definition`(通常の定義と
+同じ経路)へ流すようにした。この経路のリンケージ計算(`decl.storage == :static ? :internal
+: :external`)は `extern` でも `:external` を返すので、変更は条件式 1 行で足りた。
+
+### 検証
+
+構造体ポインタの実例(cool.io 同梱 libev の `EV_API_DECL struct ev_loop *ev_default_loop_ptr = 0;`、
+`EV_API_DECL` は `extern` に展開)を模した gcc 差分テストを、スカラーの場合と並べて
+`test/test_extern_initializer_file_scope.rb` に追加した。定義側と参照側を別の翻訳単位に分け、
+両方 gcc/両方 rubycc/定義 gcc・参照 rubycc の混成の 3 通りをリンクして実行し、
+`link_units_and_run`(`test/support/execution_helper.rb`、`test_extern_incomplete_array.rb` が
+先に確立した多翻訳単位パターン)で比較した。ブロックスコープのエラーは
+`test/test_diagnostics.rb` の既存テストを block-scope 版に差し替え、上の新ファイルにも
+同じ主張を重複させた(直した 2 箇所のうち直していない側が壊れていないことを、
+その箇所を持つファイルの中でも確認するため)。
+
+サンプルは `examples/m6/extern_initializer_file_scope_1_definition.c`
+(スカラー・struct・struct へのポインタの 3 つを 1 ファイルの中で定義)。
+サンプルは単一翻訳単位で完結する必要があるため、多翻訳単位のリンク確認自体は
+このサンプルではなく上記のテストが担う。
+
+**検証**: `test_extern_initializer_file_scope.rb` **4 runs / 0 failures**、
+`test_diagnostics.rb` **238 runs / 0 failures**、`test_extern_incomplete_array.rb`
+**11 runs / 0 failures**、`test_examples.rb` **55 runs / 0 failures**(いずれも 2026-09-13)。
+`rake test` 全体で **3,534 runs / 15,907 assertions / 0 failures / 0 errors / 39 skips**。
