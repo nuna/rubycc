@@ -23,6 +23,7 @@ DESIGN の R10 は、gem のインストール成功と gem 自身のテスト�
 | **G** | **無効化できない経路でベクトル組み込み関数(SIMD intrinsics)を使う** | rubycc は `__m256i` 等のベクトル型も `_mm256_*` の組み込み関数も持たない。**ゲートで落とせるものは対象内である** — コーパスの多くの gem は `arm_neon.h` / `cpuid.h` をprobe の裏に置いており、probe が失敗すればスカラ経路になる。対象外になるのは、**gcc と同じ枝を選んだ上で**ベクトル経路が必須になる形である |
 | **H** | **対応しないと決めた C の機能を必須の経路で使う** | VLA・`_Generic`・ワイド文字列・`#pragma push_macro` など、ROADMAP §3 で**診断エラーにすると決めた**もの。**基準 A/B と違い、これは rubycc 側の範囲の話**なので、決定が変われば対象内に戻る |
 | **I** | **拡張が C 以外の言語(Rust)で書かれている** | rubycc は C コンパイラであり、`Cargo.toml` を持ち C ソースが 0 件の拡張(rb-sys / magnus 系)には、コンパイルする対象が無い。**基準 A(C++)を広げずに別に立てた** — A の既存の記録の意味を動かさないため |
+| **J** | **`__GNUC__` を前提にし、それ以外のときの経路を持たない** | DESIGN R7 は `__GNUC__` を定義しないと決めており、その前提は「多くの gem は `#ifdef __GNUC__` の `#else` 側に移植可能なフォールバックを持つ」ことである。**フォールバックが無い gem はこの前提の外にある。** H と同じく rubycc 側の範囲の話なので、R7 が変われば対象内に戻る |
 
 Cには例外がある。`--use-system-libraries` や `--enable-system-libraries` など、
 gemが提供するシステムライブラリ利用モードは対象内である。DESIGN R10が
@@ -47,6 +48,9 @@ gemが提供するシステムライブラリ利用モードは対象内であ�
 | **thrift** | H | `ext/struct.c:243` の `char name_buf[RSTRING_LEN(field_name) + 2];` — 大きさが実行時の値で決まる**可変長配列(VLA)** | **実測**(2026-09-13、`tools/verify_corpus_candidate.rb`)。rubycc は `array size must be an integer constant` で拒否、**対照の gcc はビルドに成功する**。cbor と同じ文言だが、**同じ文言は定数畳み込みの欠陥でも出る**ので、該当行を読んで VLA と確かめてから記録した |
 | **commonmarker** | I | `Cargo.toml` / `ext/commonmarker/Cargo.toml` を持ち、**C ソースは 0 件** | **実測**(2026-09-13、`tools/verify_corpus_candidate.rb` の静的段が `review_required` で停止。`static.native_sources` が空、`build_manifests` に Cargo 一式) |
 | **prometheus-client-mmap** | I | 拡張 `ext/fast_mmaped_file_rs` が Rust で、**C ソースは 0 件** | **実測**(同日、同じ静的段で停止。`build_manifests` に Cargo 一式) |
+| **code_ownership** | I | 拡張 `ext/code_ownership/Cargo.toml` が Rust。C / ヘッダの 14 件は**すべて `ext/cargo-vendor/` 以下**(同梱 crate のテスト入力など)で、拡張のソースではない | **実測**(2026-09-13、`tools/verify_corpus_candidate.rb` の静的段が `review_required` で停止。`static.native_sources` の 14 件を確認) |
+| **zookeeper** | C | `ext/extconf.rb` が同梱の `zkc-3.4.5.tar.gz` を展開して `./configure` を走らせ、生成された Makefile のレシピ(バッククォート入りの libtool 呼び出し)を rmake が `unsupported shell construct` で拒否する | **実測**(2026-09-13、同上)。rubycc は `build_failed`、**対照の gcc はビルドに成功する** — rubycc の C の欠陥ではなく、`configure` 系のビルドであることが理由である |
+| **concurrent-ruby-ext** | J | `ext/concurrent-ruby-ext/atomic_reference.c` が `memory_barrier()` を `__GNUC__` / `__INTEL_COMPILER` / `_MSC_VER` / macOS の分岐でだけ定義し、どれにも当たらないときの定義が無い。`extconf.rb` もこれを補う判定をしない | **実測**(2026-09-13、同上)。rubycc は `implicit declaration of function 'memory_barrier'`、**対照の gcc はビルドとロードに成功する** |
 
 `nokogiri --use-system-libraries` と `sqlite3 --enable-system-libraries` は、
 それぞれシステムライブラリを使う対象内の経路である。
