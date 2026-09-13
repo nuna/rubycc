@@ -35,6 +35,7 @@ gemが提供するシステムライブラリ利用モードは対象内であ�
 |---|---|---|---|
 | **ffi** | B | `ext/ffi_c/libffi` に `.S` アセンブリを含む | gem の ext ソースとビルド対象の確認 |
 | **bcrypt** | B | `ext/mri/extconf.rb` が `$objs` に `x86.o` を列挙し、同梱の `x86.S` から生成する | gem の extconf とソースの確認 |
+| **x25519** | B | ビルド対象の `cputest.c:21` と `fp25519_x64.c:766` に**実体のあるインラインアセンブリ**がある | **実測**(2026-09-13、`tools/verify_corpus_candidate.rb`)。rubycc は `non-empty inline assembly is not supported` で拒否、**対照の gcc はビルドとロードに成功する**。移植可能な経路へ切り替える手段が gem にあるかは確かめていない |
 | **nokogiri の vendored ビルド** | C | mini_portile 経由で libxml2 等の `configure` を実行する | gem の extconf とインストール経路の確認 |
 | **grpc** | A | C++ 拡張 | DESIGN §3.3 |
 | **rice** | A | C++ 拡張を作るためのライブラリ | DESIGN §3.3 |
@@ -47,6 +48,9 @@ gemが提供するシステムライブラリ利用モードは対象内であ�
 | **cbor** | H | `ext/cbor/packer.h:271` の `char buf[len];` — **可変長配列(VLA)**。上流のソースにも `/* XXX */` と注釈がある | **実測**(2026-09-13、`tools/verify_corpus_candidate.rb`)。rubycc は `array size must be an integer constant` で拒否、**対照の gcc は通る**。VLA は ROADMAP §3 で診断エラーと決めた既知の範囲外(c-testsuite 00207 も同じ理由で skip) |
 | **thrift** | H | `ext/struct.c:243` の `char name_buf[RSTRING_LEN(field_name) + 2];` — 大きさが実行時の値で決まる**可変長配列(VLA)** | **実測**(2026-09-13、`tools/verify_corpus_candidate.rb`)。rubycc は `array size must be an integer constant` で拒否、**対照の gcc はビルドに成功する**。cbor と同じ文言だが、**同じ文言は定数畳み込みの欠陥でも出る**ので、該当行を読んで VLA と確かめてから記録した |
 | **damerau-levenshtein** | H | `ext/damerau_levenshtein/damerau_levenshtein.c:27-28` の `long long s[sl]; long long t[tl];` — 大きさが `RARRAY_LEN` で決まる**可変長配列(VLA)** | **実測**(2026-09-13、`tools/verify_corpus_candidate.rb`)。rubycc は `array size must be an integer constant` で拒否、**対照の gcc はビルドとロードに成功する**。thrift と同じく、該当行を読んで VLA と確かめてから記録した |
+| **yaji** | H | `ext/yaji/parser_ext.c:59` の `char buf[len+1];` — 大きさが引数で決まる**可変長配列(VLA)** | **実測**(2026-09-13、`tools/verify_corpus_candidate.rb`)。rubycc は `array size must be an integer constant` で拒否、**対照の gcc はビルドとロードに成功する**。該当行を読んで VLA と確かめてから記録した |
+| **fast_underscore** | H | `ext/fast_underscore/fast_underscore.c:301-302` の `char segment[RSTRING_LEN(string) * 2 * sizeof(unsigned int) * 2];` など — 大きさが文字列の長さで決まる**可変長配列(VLA)** | **実測**(2026-09-13、`tools/verify_corpus_candidate.rb`)。rubycc は `array size must be an integer constant` で拒否、**対照の gcc はビルドとロードに成功する**。該当行を読んで VLA と確かめてから記録した |
+| **blurhash** | H | `ext/blurhash/encode.c:26` の `float factors[yComponents][xComponents][3];` — 次元が引数で決まる**多次元の可変長配列(VLA)** | **実測**(2026-09-13、`tools/verify_corpus_candidate.rb`)。rubycc は `array size must be an integer constant` で拒否、**対照の gcc はビルドとロードに成功する**。該当行を読んで VLA と確かめてから記録した |
 | **commonmarker** | I | `Cargo.toml` / `ext/commonmarker/Cargo.toml` を持ち、**C ソースは 0 件** | **実測**(2026-09-13、`tools/verify_corpus_candidate.rb` の静的段が `review_required` で停止。`static.native_sources` が空、`build_manifests` に Cargo 一式) |
 | **prometheus-client-mmap** | I | 拡張 `ext/fast_mmaped_file_rs` が Rust で、**C ソースは 0 件** | **実測**(同日、同じ静的段で停止。`build_manifests` に Cargo 一式) |
 | **code_ownership** | I | 拡張 `ext/code_ownership/Cargo.toml` が Rust。C / ヘッダの 14 件は**すべて `ext/cargo-vendor/` 以下**(同梱 crate のテスト入力など)で、拡張のソースではない | **実測**(2026-09-13、`tools/verify_corpus_candidate.rb` の静的段が `review_required` で停止。`static.native_sources` の 14 件を確認) |

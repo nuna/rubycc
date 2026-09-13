@@ -21,6 +21,13 @@ steps: []
 string-scrub-0.1.1 requires Ruby version >= 1.9.3, < 2.1. The current ruby version is 3.4.5.
 ```
 
+ランク 4501〜8500 の走査(buildable-gems-batch-4)でも**さらに 2 件**入った。どちらもインストールの段で止まった:
+
+| gem | 要求 |
+|---|---|
+| `digest-sha3` 1.1.0 | Ruby `~> 2.2` |
+| `google-cloud-debugger` 0.42.2 | Ruby `~> 2.5` |
+
 `tools/scan_popular_gems.rb` が `running_ruby_satisfies?` を呼ぶのは、事前フィルタの 1 箇所
 (1539 行)だけである。そこでは満たさないと分かっても、「アーカイブの取得は別の版に解決されうる」
 という理由でダウンロードに回す。**ダウンロードした版の spec を、候補にする前に見直していない。**

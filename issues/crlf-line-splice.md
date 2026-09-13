@@ -13,7 +13,7 @@ steps: []
 ## 課題
 
 **`\` の直後が `\r\n` だと、rubycc は行連結と認めずに字句エラーにする。** gcc は通す。
-2026-09-13 にこのホスト(WSL2 / gcc 14.2)で最小再現を測った:
+2026-09-13 にこのホスト(WSL2 / gcc 13.3。起票時は「gcc 14.2」と誤記していた)で最小再現を測った:
 
 | 入力(すべて CRLF 改行) | gcc | rubycc |
 |---|---|---|
@@ -48,6 +48,16 @@ CRLF で、113 行目が
 
 と継続しているため `build_load` に失敗する(2026-09-13 実測)。**対照(host gcc)は成功する**ので、
 これは環境でも gem の性質でもなく rubycc の欠陥である。
+
+**2 件目がある。** コーパス候補 `gc_tracer` 1.5.1 は `ext/gc_tracer/gc_logging.c` が CRLF で、
+106 行目のマクロ定義 `static void TRACE_FUNC(name)(VALUE tpval, void *data) { \` の `\` の直後が
+`\r\n` になっている。rubycc は `gc_logging.c:106:59: error: unexpected character` で落ち、
+**対照の gcc はビルドとロードに成功する**(2026-09-13 実測、buildable-gems-batch-4)。
+
+**3 件目もある。** コーパス候補 `pngdefry` 0.1.3 の同梱 `ext/pngdefry/miniz.c` は CRLF で、
+1291 行目 `if (pIn_buf_cur >= pIn_buf_end) { \` の `\` の直後が `\r\n` になっている。rubycc は
+`miniz.c:1291:37: error: unexpected character` で落ち、**対照の gcc はビルドとロードに成功する**
+(2026-09-13 実測、buildable-gems-batch-4-2)。
 
 CRLF で配られる gem は珍しくない。**1 行でも継続行があれば落ちる**ので、
 落ち方は「ソースの見た目には何も問題が無いのに字句エラー」になり、原因に辿り着きにくい。

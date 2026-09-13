@@ -14600,3 +14600,144 @@ Ruby の `ruby/internal/config.h:25` が `#include RUBY_EXTCONF_H` する。対�
 **6 runs / 32 assertions / 0 failures**。`rake test` 全体で
 **3,552 runs / 16,666 assertions / 0 failures / 0 errors / 39 skips**。`numo-narray` 0.9.2.1 の
 `build_load` は、マージ後に台帳の手順(`tools/verify_corpus_candidate.rb --update`)で測る。
+
+## buildable-gems-batch-4-1 — 直した欠陥の向こうに、次の欠陥がいた
+
+**内容**: ランク 4501〜8500 の走査で出た候補 95 件を `build_load` に流し、**台帳を 60 → 98 件**にした。
+**rubycc の欠陥を 7 件**起票し(GAPS AX〜BD)、既存の AE / AL / AN に gem を足した。
+同梱ヘッダの抜けが 6 件になったので、1 件ずつ塞がずにまとめて洗い出す負債を §2 に立てた。
+
+**走査**: 4,000 件のうち 3,794 件を**ダウンロードせずに**決着した(697,666,261 バイト)。
+候補表 110 行から C ソースが 0 件の 15 件を除いて 95 件。
+
+**台帳に入った 38 件**:
+
+- バッチの前に 2 件 — **splitclient-rb**(レシピ。実行時依存 9 件の版を固定した。最新版を入れると
+  `redis` 6.0.0 と `json` 3.0.2 が gem の要求範囲を外れて読み込めなかった)と、**brotli**
+  (`stdc-no-vla-macro-1`、PR #144 の後に測り直して `build_load_pass`)
+- `build_load_pass` が 31 件 — field_test / fast-polylines / kdtree / allocations / oroku_saki /
+  bloomfilter-rb / vagrant / pathname / readline-ext / c_geohash / pitchfork / xorcist / fast_haversine /
+  tunemygc / gvl_timing / classifier / websocket-native / bloom_fit / rotoscope / bloom-filter / io-extra /
+  malloc_trim / absolute_time / duktape / pkcs11 / rusage / distance_measures / clocale / getsource /
+  pdf417 / home_run
+- レシピの `documented_load_pass` が 5 件 — llhttp / quirc / looksee / dedup(依存なし)、tomlib(bigdecimal 4.1.2)
+
+### 直した欠陥の向こうに、次の欠陥がいた
+
+numo-narray は、バッチ 3 で起票した AO(`#include` の絶対パス)で止まっていた。AO を直した rubycc
+(`include-absolute-path-1`、PR #145)で測り直すと、**今度は `ndloop.c:359` で止まった** —
+仮引数付きの関数ポインタを旧形式の `void (*)()` へ代入する形で、C11 6.7.6.3p15 では互換な型なのに
+rubycc が拒否していた(GAPS **BD**)。**1 つ目を直すまで、2 つ目は見えなかった。**
+brotli は `__STDC_NO_VLA__` 1 つで通ったが、**直すたびに 1 件増える保証は無い**。
+
+最初は 359 行目を読み違えて(1 行上の `lp->vargs = args;` を見た)、両辺とも `VALUE` なのに拒否されている
+と誤解しかけた。エラーの行番号どおりに読み直して、関数ポインタの代入だと分かった。
+
+### rubycc の欠陥 — 対照は通り、rubycc だけが落ちた
+
+| gem | 原因 | 記録 |
+|---|---|---|
+| string_undump | エスケープ **`\e`**(GNU 拡張)を拒否 | GAPS **AX** |
+| liquid-c | 文として書いた **`__attribute__ ((fallthrough));`** を拒否 | GAPS **AY** |
+| herb | **`__builtin_strlen`** が無い | GAPS **AZ** |
+| ruby-termios | 同梱 `termios.h` に **`tcflow`**(POSIX)が無い | GAPS **BA** |
+| serialport | 同梱 `sys/ioctl.h` に **`TIOCMGET`** が無い | GAPS **BB** |
+| iodine | **`__atomic_*` が 1 / 2 バイト**の対象を拒否 | GAPS **BC** |
+| numo-narray(バッチ 3) | 仮引数付きの関数ポインタを **`void (*)()` へ代入できない** | GAPS **BD** |
+| gc_tracer | CRLF の行連結(`\` の直後が `\r\n`) | 既存の **AE** に 2 件目 |
+| amalgalite | 同梱 SQLite(22 万行超)で**展開予算**を超える | 既存の **AL** に 2 件目 |
+| github-markdown / gctools / semacode-ruby19 / picky / allocation_tracer | gcc 13 が警告にとどめる診断。**整数とポインタの変換**(`-Wint-conversion`)が 4 つ目の診断として加わった | 既存の **AN** を 9 件に広げた |
+
+**同梱ヘッダの抜けが 6 件目になった**(AF / AM / AQ / AR / BA / BB)。同梱ヘッダは「コーパスのサンプルが
+使った分だけ」を再現する方針で作られており、**コーパスの外の gem を流し始めると、その絞り込みが当たり続ける**。
+1 件ずつ塞ぐ前に、ヘッダごとに glibc と名前の一覧を突き合わせる作業を
+[bundled-headers-coverage-audit](../../issues/bundled-headers-coverage-audit.md)(GAPS §2)に立てた。
+
+**AN は 9 件になった。** 起票時は 1 件だった。判断(gcc 13 と 14 のどちらに揃えるか)を急ぐ理由が増えた。
+
+### 除外した 3 件と、残りの分類
+
+blurhash(`float factors[yComponents][xComponents][3];`)と yaji(`char buf[len+1];`)は本物の VLA なので
+基準 **H**、x25519 は実体のあるインラインアセンブリなので基準 **B** で除外一覧に載せた。
+
+| 分類 | gem |
+|---|---|
+| **保留** | pycall(拡張を読むのは `PyCall.init` を呼んだときで、`require` を並べるだけのレシピでは書けない)/ coderunner(依存の rb-gsl がホストの GSL を要る)/ bert(`bert.rb` は `bert/c/decode` を探すが、拡張は `lib/decode.so` に入る — gcc でビルドしても入口から読まれない) |
+| Ruby の拡張ではない | sqlite_extensions-uuid(SQLite のロード可能な拡張で、`Init_` が無い) |
+| この Ruby では C をビルドしない | wdm(Windows 専用)/ symbol-fstring(`Symbol#name` があれば何もしない) |
+| ホストのライブラリ・道具が無い | cairo-gobject / pango / gtk2 / gtk3 / gstreamer(mkmf-gnome)/ exif / capng_c / hive_geoip2 / journald-native / duckdb / gsl / gs2crmod / ruby-xslt / rroonga / h3 |
+| Ruby 3.4 で動かない古い gem | digest-sha3 / google-cloud-debugger(Ruby の版を要求)/ SystemTimer(`rubysig.h`)/ libsqreen(`rb_cData`)/ ruby18_source_location(`node.h`)/ linecache19 / ruby-debug-base19(`ruby_core_source`) |
+| ハーネスが依存 gem を入れていない | nokogiri-xmlsec-instructure(nokogiri)/ ibm_db(zip) |
+| Windows 専用 | win32-api / win32console |
+| Rust / 静的段で停止 | rubydex(Cargo)/ webp-ffi |
+| 対照も失敗(原因は未調査) | rgeo-proj4 / do_postgres / do_mysql / ruby-mcrypt / gda / ruby-pcap / dbm / ruby-audio / mmap2 / perftools.rb |
+
+digest-sha3 と google-cloud-debugger は、走査が Ruby の版を満たさない gem を候補に入れる弱点
+([scan-required-ruby-version-after-fetch](../../issues/scan-required-ruby-version-after-fetch.md))の 2 件目と 3 件目である。
+
+### 走査器の弱点がもう 1 つ
+
+次の窓(ランク 8501〜)は、bestgems の 1 ページで行数やランクが見出しと合わないと**走査全体が止まる**ために、
+2 回続けて途中で終わった。[scan-bestgems-short-page](../../issues/scan-bestgems-short-page.md) に起票した。
+
+**検証**: `rake test` **3,552 runs / 17,787 assertions / 0 failures / 0 errors / 39 skips**。
+
+## buildable-gems-batch-4-2 — 台帳が 100 件に届いた
+
+**内容**: ランク 8541〜8940 の走査で出た候補 6 件を `build_load` に流し、**台帳を 98 → 100 件**にした。
+ユーザ指示「ビルドできる gem を 100 まで増やしたい」の到達点である。
+
+**走査**: 次の窓(ランク 8501〜12500)は bestgems の不整合なページで 2 回止まった
+([scan-bestgems-short-page](../../issues/scan-bestgems-short-page.md))。**読めていた範囲**(ランク 8541〜8940)に
+窓を絞って走査し直し、400 件のうち 381 件をダウンロードせずに決着した(187,444,780 バイト)。
+候補表 7 行から C ソースが 0 件の 1 件(sup)を除いて 6 件。
+
+**台帳に入った 2 件**:
+
+- `build_load_pass` — readapt
+- レシピの `documented_load_pass` — **aead**(依存は systemu 2.6.5 / macaddr 1.7.2。入口は `aead` と `aead/cipher`)
+
+### aead — 単独では読めず、入口からなら読める理由
+
+rubycc でビルドした `aead.so` は、単独の `require` で `undefined symbol: ERR_peek_error` になった。
+**対照の gcc でビルドした `.so` は単独でも読める。** 違いは rubycc の欠陥ではなく、**決めてある設計**から来ていた:
+
+- aead の Makefile は、rubycc 側も対照側も `-lcrypto` を持たない(`LIBS = $(LIBRUBYARG_SHARED) -lm -lpthread -lc`)。
+  拡張は OpenSSL の関数を未解決のまま持ち、先に読まれた `openssl.so` が載せた libcrypto に頼っている
+  (Ruby は拡張を `RTLD_GLOBAL` で読む)
+- gcc の `.so` は遅延バインドなので、呼ばれるまで解決しない。**rubycc の `.so` は `DT_FLAGS` に `BIND_NOW`、
+  `DT_FLAGS_1` に `NOW` を持ち**、読み込んだ時点で全部を解決する。これは STEPS の共有ライブラリの節で
+  「即時バインドを既定にして遅延リゾルバを不採用」と**決めた挙動**である(`lib/rubycc/link/shared_linker.rb:26`)
+- 最小再現で確かめた: 呼ばれない関数の中でだけ未定義の関数を参照する拡張は、gcc 版は `require` でき、
+  rubycc 版は `undefined symbol` で落ちる
+
+**gem 自身の入口(`aead/cipher`)は `openssl` を先に読む**ので、入口から読めば rubycc 版も読める。
+台帳の主張(ビルドでき、利用者と同じ読み方でロードできた)には、この読み方で足りる。
+
+この挙動は、**他の拡張が載せたライブラリに頼る拡張**を単独で読む汎用検査に対して、今後も同じ形で現れる。
+即時バインドの判断そのものを見直す根拠にはまだならない(実害は、単独の `require` という誰もしない読み方に限られる)。
+
+### 残りの 4 件
+
+| gem | 分類 | 記録 |
+|---|---|---|
+| pngdefry | 同梱 `miniz.c` が CRLF で、`\` の直後が `\r\n` の行連結 | 既存の GAPS **AE** に 3 件目 |
+| ruby_deep_clone | `rb_hash_foreach` の第 2 引数が互換でないポインタ | 既存の GAPS **AN** に 10 件目 |
+| fast_underscore | `char segment[RSTRING_LEN(string) * ...];` の本物の VLA | 除外基準 **H** |
+| autotest-fsevent | `extconf.rb` が macOS(`uname -s` が `Darwin`)でだけビルドし、それ以外では空の Makefile を書く | この環境では C をビルドしない |
+
+### 100 件までの道のり
+
+| 段階 | 台帳 | 主な出来事 |
+|---|---|---|
+| batch-1 | 0 → 22 | 別台帳を立て、ハーネスの盲点(単独 `require`)を入口のレシピで塞いだ |
+| batch-2 | 22 → 38 | 欠陥 6 件を起票。除外基準 J を新設 |
+| batch-3 | 38 → 60 | 欠陥 8 件を起票。AI を直して cool.io が通った |
+| batch-4-1 | 60 → 98 | 欠陥 7 件を起票。AP / AO を直して brotli が通り、numo-narray は次の欠陥(BD)で止まった |
+| batch-4-2 | 98 → 100 | 走査器の弱点を回避して 6 件を追加走査 |
+
+**欠陥の起票は 26 件**(AE〜BD。AW だけはバッチではなく `stdc-no-vla-macro-1` のレビューで見つけた)、
+うち **3 件を直した**(AI / AP / AO)。100 件は、欠陥を直すより
+走査の窓を広げるほうが早く増えた結果である。**起票した欠陥は、どれも実在の gem が 1 件以上止まっている**。
+
+**検証**: `rake test` **3,552 runs / 17,837 assertions / 0 failures / 0 errors / 39 skips**。
