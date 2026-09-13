@@ -25,7 +25,6 @@
 | **AS**([issue](../../issues/rmake-gnu-make-conditionals.md)) | **rmake が GNU make の条件文(`ifeq` など)を読めない**。パーサは代入とルール以外をすべて拒否する | 同梱ライブラリの手書き Makefile を make に渡す gem。`hiredis-client` 0.30.1 が該当し、**対照(GNU make)は通る** | **実測**(2026-09-13) | **対応するか対象外にするかが未決**。mkmf の Makefile は条件文を使わない |
 | **AT**([issue](../../issues/typeof-operator.md)) | **`typeof`(GNU 拡張、C23 で標準化)を受け付けない**。未宣言の関数として報告される | `algorithms` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
 | **AU**([issue](../../issues/bundled-pthread-attr-guard.md)) | **同梱 `pthread.h` が `pthread_attr_t` を glibc のガード(`__have_pthread_attr_t`)無しで定義する**。`<netdb.h>` の `sigevent_t.h` と型の再定義になる | `_GNU_SOURCE` のもとで `<netdb.h>` を含む gem。`trilogy` 2.13.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`<pthread.h>` + `<netdb.h>` の最小再現) | 同梱 `pthread.h` の他の型にも同じ穴が無いかを数える |
-| **AV**([issue](../../issues/include-duplicate-system-dir.md)) | **`-I/usr/include` を渡すと、glibc 本体のヘッダが同梱ヘッダより先に見つかる**。gcc はシステムと重なる `-I` を無視する | `dir_config` に `/usr` を渡す古い gem。`do_sqlite3` 0.10.17 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`#include <stdio.h>` だけで再現) | gcc の規則(`-isystem` / `-idirafter` を含む)を測ってから合わせる |
 | **AZ**([issue](../../issues/builtin-strlen.md)) | **`__builtin_strlen` が無い**。未宣言の関数として報告される | `herb` 0.10.4 が `hb_string.h:27` のマクロの中で使い、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 文字列リテラルの場合に定数へ畳むかを gcc と比べて決める |
 | **BA**([issue](../../issues/bundled-termios-tcflow.md)) | **同梱 `termios.h` に `tcflow`(POSIX)と `TCO*` / `TCI*` の定数が無い** | `ruby-termios` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | §2 の同梱ヘッダの洗い出しの対象 |
 | **BB**([issue](../../issues/bundled-ioctl-tiocm.md)) | **同梱 `sys/ioctl.h` に `TIOCMGET` / `TIOCM_*` が無い** | `serialport` 1.4.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | aarch64 の要求番号を測ってから、共通層に置くかを決める |
@@ -61,6 +60,9 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ AV**(`-I/usr/include` で glibc 本体のヘッダが同梱ヘッダより先に見つかる):
+  `include-duplicate-system-dir-1` で解消。gcc と同じく、システムのディレクトリと実ディレクトリが一致する
+  `-I` / `-isystem` / `-idirafter` を探索パスから外した(末尾のスラッシュ・`..`・シンボリックリンクも同じとみなす)。
 - **ギャップ AY**(文として書いた `__attribute__ ((fallthrough));` を拒否する):
   `attribute-statement-1` で解消。属性の並びの後が宣言でなく `;` なら、空の文として読む(gcc の「空の宣言」と同じ形)。
   R7 のとおり属性の中身は構文として受理して捨てる。**ラベルの直後に単独で置いた形は残った**(BE)。

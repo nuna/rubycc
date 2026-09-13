@@ -566,10 +566,23 @@ module Rubycc
         @working_directory = Dir.pwd.b
         system_paths = system_includes ? default_system_include_paths : []
         @system_include_paths = system_paths.map { |path| absolute_path(path) }
+        # A caller directory (-I/-isystem/-idirafter, all folded into
+        # `include_paths` by the driver) that names the same directory as one
+        # already on the system search path is dropped, matching gcc: measured
+        # 2026-09-13 with `gcc -v -E`, `-I`, `-isystem` and `-idirafter` are all
+        # reported as "ignoring duplicate directory" and vanish from the search
+        # list when they duplicate a system directory (the multiarch directory
+        # included), while a directory that does not duplicate one keeps both
+        # its position ahead of the system path and its order relative to the
+        # other surviving caller directories. The comparison follows the real
+        # directory (a trailing slash, a ".." segment and a symlink to a system
+        # directory were all measured as duplicates too) rather than the
+        # literal spelling; see #real_directory_path.
+        deduped_include_paths = reject_system_duplicate_paths(include_paths, @system_include_paths)
         # Bytes (lib/rubycc.rb): the only spot where a caller's -I (already
         # bytes) and the bundled/libc directories (process-derived, so not)
         # merge before joining with a header name, itself bytes.
-        @include_paths = (include_paths + system_paths).map do |path|
+        @include_paths = (deduped_include_paths + system_paths).map do |path|
           path.encoding == Encoding::BINARY ? path : path.b
         end
         # #resolve_include's cache keys a resolved path off @include_paths (and,
@@ -617,6 +630,32 @@ module Rubycc
       def hermetic_headers?
         value = ENV[HERMETIC_HEADERS_ENV]
         !value.nil? && !value.empty? && value != "0"
+      end
+
+      # Drops any of `include_paths` (the caller's -I/-isystem/-idirafter
+      # directories, in command-line order) that names the same real directory
+      # as one of `system_paths` (already absolute), keeping every other
+      # directory's position. This is gcc's "ignoring duplicate directory"
+      # rule (see #preprocess for what was measured).
+      def reject_system_duplicate_paths(include_paths, system_paths)
+        return include_paths if include_paths.empty?
+
+        real_system_paths = system_paths.map { |path| real_directory_path(path) }
+        include_paths.reject { |path| real_system_paths.include?(real_directory_path(path)) }
+      end
+
+      # The directory `path` names, resolved past symlinks and ".." segments
+      # (File.realpath) so two different spellings of the same directory
+      # compare equal -- gcc's duplicate check does the same (a symlink to
+      # /usr/include and "/usr/include/x86_64-linux-gnu/.." were both measured
+      # as duplicates of /usr/include). Falls back to the lexically expanded
+      # path when the directory does not exist, since realpath has nothing to
+      # resolve against and gcc reports a missing directory separately from a
+      # duplicate one (not modeled here).
+      def real_directory_path(path)
+        File.realpath(absolute_path(path))
+      rescue SystemCallError
+        absolute_path(path)
       end
 
       # Applies the driver's command-line `-D`/`-U` requests before the source is

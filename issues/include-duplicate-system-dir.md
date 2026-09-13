@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-13
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-13
+branch: gap-fixes-wave-2
+pr: 148
+steps: [include-duplicate-system-dir-1]
 ---
 
 # `-I/usr/include` を渡すと、glibc 本体のヘッダが同梱ヘッダより先に見つかる
@@ -51,6 +51,22 @@ rubycc の既定の探索パスは、同梱ヘッダの後に `/usr/include/x86_
 
 buildable-gems-batch-3 で、rubycc だけが落ちて対照は通った 1 件。
 
+### 2026-09-13(実装)
+
+`gcc -v -E` で規則を測った。`-I` / `-isystem` / `-idirafter` のどれでも、システムのディレクトリと
+実ディレクトリが一致すれば `ignoring duplicate directory` として外れる(末尾のスラッシュ・`..`・
+シンボリックリンクも一致とみなす)。重ならない `-I` は位置も順序も変わらない。rubycc も同じ規則で外すようにした。
+
+ユーザー同士の重複と、存在しないディレクトリについての gcc の挙動は、受け入れ条件の外なので追っていない(STEPS)。
+
 ## 決着
 
-(未着手)
+**解消した**(`include-duplicate-system-dir-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| rubycc `-I/usr/include` で `#include <stdio.h>` が通る | `test/test_include_duplicate_system_dir.rb` で確認(gcc 差分の実行を含む) |
+| gcc と同じ規則を実測で決めて実装する(`-isystem` / `-idirafter` を含む) | 3 つとも同じ扱いと測り、同じく外した |
+| 重ならない `-I` の順序は変わらない | 同じテストで固定 |
+| `do_sqlite3` 0.10.17 が rubycc でビルドできる | **マージ後に台帳の手順で測る** |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

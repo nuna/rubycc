@@ -15012,3 +15012,90 @@ rubycc が実装していない警告のための検査であり、実装する�
 
 ラベルの直後に単独で置いた形は、統合時に最小再現で rubycc が `expected expression` で落ちることを確かめ、
 [attribute-statement-after-label](../../issues/attribute-statement-after-label.md)(GAPS **BE**)に起票した。
+
+## include-duplicate-system-dir-1 — システムのディレクトリと同じ `-I` は無視する
+
+**課題**([issue](../../issues/include-duplicate-system-dir.md)、GAPS **AV**): `-I/usr/include`
+を付けると、`#include <stdio.h>` だけの翻訳単位が rubycc では通らなくなる
+(`/usr/include/stdio.h:655:12: error: expected ';'`)。gcc は通す。rubycc の既定の探索パスは
+同梱ヘッダの**後**に `/usr/include/x86_64-linux-gnu` と `/usr/include` を置くが、
+`-I` はその同梱ヘッダより**前**に積まれるため、`-I/usr/include` を渡すと glibc 本体の
+`stdio.h` が同梱ヘッダより先に見つかり、そこにある `__fortified_attr_access`
+(同梱の `sys/cdefs.h` が定義しないマクロ)で落ちる。実在の gem `do_sqlite3` 0.10.17 の
+`extconf.rb:11`(`dir_config("sqlite3", [..., "/usr"])`)がこの形で `-I/usr/include` を足す。
+
+### gcc の実測 — システムのディレクトリと重なる `-I`/`-isystem`/`-idirafter` は無視される
+
+2026-09-13、このホスト(WSL2、gcc 13.3)で `gcc -v -E` を使って確かめた:
+
+| ソース(`#include <stdio.h>`) | 結果 |
+|---|---|
+| `-I/usr/include` | `ignoring duplicate directory "/usr/include"`。探索リストは無指定時と同じ順序 |
+| `-isystem /usr/include` | 同上(`-isystem` も同じ理由で無視される) |
+| `-idirafter /usr/include` | 同上(`-idirafter` も同じ理由で無視される) |
+| `-I/usr/include/` (末尾スラッシュ) | 同上。文言は与えたままの綴り(`"/usr/include/"`)を表示するが、無視の判定は実ディレクトリで行われる |
+| `-I/usr/include/x86_64-linux-gnu/..` | 同上(`..` を含む綴りも実ディレクトリとして `/usr/include` と一致) |
+| `-I` にシステムのディレクトリへのシンボリックリンク | 同上(シンボリックリンク先で一致) |
+| `-I/usr/include/x86_64-linux-gnu`(multiarch ディレクトリそのもの) | 同上 |
+| `-I/tmp/myinc`(システムと重ならない、独自ヘッダを含むディレクトリ) | 無視されない。探索リストの先頭(システムより前)に残る |
+| `-I/tmp/myinc -I/usr/include` / `-I/usr/include -I/tmp/myinc`(順序を入れ替え) | どちらも `/tmp/myinc` だけが残り、位置は変わらない(重ならない `-I` の順序は保たれる) |
+| `-I/tmp/does-not-exist -I/tmp/does-not-exist`(存在しないディレクトリの重複) | `ignoring nonexistent directory` (`duplicate` ではない別の診断。今回の対象外) |
+
+`ignoring duplicate` は診断文言こそ与えた綴りをそのまま表示するが、判定自体は
+シンボリックリンクや `..` を解決した**実ディレクトリ**で行われている(いずれも
+`stat` の dev/ino が一致するのと同じ状況で重複と判定された)。
+
+### 決定 — 「重ならない `-I` は順序を変えない」を満たす最小の規則を実装する
+
+受け入れ条件が要求するのは「システムのディレクトリと重なる `-I` を無視する」ことと
+「重ならない `-I` の順序を変えない」ことの 2 点であり、上の実測はどちらも
+「-I/-isystem/-idirafter のうち、システムディレクトリ(同梱ヘッダも含む rubycc の
+既定探索パス全体)と実ディレクトリが一致するものだけを取り除き、他は元の順序のまま
+残す」という 1 つの規則で説明できる。
+
+一方、`-I/tmp/myinc -I/tmp/myinc`(ユーザー同士の重複)も gcc は 2 個目を無視したが、
+これは issue の受け入れ条件が求めている範囲(システムのディレクトリとの重複)の外側
+なので実装しない。存在しないディレクトリの `ignoring nonexistent directory` も同様に
+別の診断であり、対象外(GAPS には残さない — 受け入れ条件外の挙動差は issue の対象外と
+判断したため、別課題として起票しない)。
+
+rubycc の driver は `-I`/`-isystem`/`-iquote`/`-idirafter` を区別せず 1 本の
+`@include_paths` 配列に畳み込んでいる(`lib/rubycc/driver.rb`)。上の実測で
+`-isystem`/`-idirafter` も `-I` と同じに無視されると分かったので、この畳み込みを
+変える理由はなく、Preprocessor 側で「畳み込んだ後の 1 本のリストからシステムと
+重なるものを削る」だけで規則を満たせる。
+
+### 実装 — 実ディレクトリ比較で重複を落とす。`File.realpath` failsafe 付き
+
+`Preprocessor#preprocess` が `@include_paths` を組み立てる箇所
+(`lib/rubycc/preprocess/preprocessor.rb`)に、システムパスと実ディレクトリが一致する
+呼び出し側のディレクトリを取り除く `#reject_system_duplicate_paths` を挟んだ。
+比較は `#real_directory_path`(`File.realpath` でシンボリックリンクと `..` を解決し、
+対象が存在しない場合だけ字句展開(`File.expand_path` 相当の `#absolute_path`)に
+フォールバックする)で行う。存在しないディレクトリ同士は実測どおり別の診断
+(`ignoring nonexistent directory`)の対象であり rubycc は診断自体を実装していないため、
+フォールバックは「重複判定だけは字句一致で行う」という最小限にとどめた。
+
+システムパス側は同梱ヘッダ・multiarch ディレクトリ・`/usr/include` を含む
+`default_system_include_paths` の全体(距離適用前の絶対パス化済みの `@system_include_paths`)
+であり、bundled 側との重複も同じ規則で落ちる(実測はしていないが、
+「システムのディレクトリと重なる `-I` を無視する」という受け入れ条件の文言どおり、
+同梱ヘッダをシステムディレクトリの一種として扱う一貫性を優先した — 実利用でこの経路が
+踏まれるのは考えにくいが、動作を分ける理由もない)。
+
+### 検証
+
+`test/test_include_duplicate_system_dir.rb`(新規)10 runs / 12 assertions / 0 failures /
+**0 skips**(このホストに `/usr/include/stdio.h` と gcc の双方があるため、
+`-I`/`-isystem`/`-idirafter` それぞれの実コンパイルとリンク実行の gcc 差分検証が
+スキップされずに走った)。
+
+`test/test_preprocessor.rb` 230 runs / 476 assertions / 0 failures、
+`test/test_driver.rb` 31 runs / 141 assertions / 0 failures、
+`test/test_include_absolute_path.rb` 10 runs / 14 assertions / 0 failures、
+`test/test_include_path_encoding.rb` 6 runs / 32 assertions / 0 failures
+(いずれも既存分、退行なし。2026-09-13 このホストで実行)。
+
+C サンプルは追加しない: この課題の挙動はコマンドライン引数(`-I`/`-isystem`/`-idirafter`と
+そのディレクトリの中身)に依存し、`examples/` の C ソース 1 本では再現できない
+(examples はソース差分のみを比較する仕組みで、ビルドフラグを差し替える経路を持たない)。
