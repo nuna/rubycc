@@ -14868,3 +14868,68 @@ failures**、`test_scanner.rb` **16 runs / 28 assertions / 0 failures**、`test_
 (LF だけのファイルは元から通っていたため)。`include-absolute-path-1` が「機種依存の値は 1 ファイルに
 恒久固定できない」としてサンプルを見送ったのと同種の判断で、ここでは「改行のバイト列」がその
 固定できない値にあたる。回帰の担保は `test/test_crlf_line_splice.rb` に置いた。
+
+## extension-struct-member-1 — 構造体のメンバ宣言の頭の `__extension__` を受け付ける
+
+**課題**([issue](../../issues/extension-struct-member.md)、GAPS **AW**): `__extension__`(pedantic
+警告を黙らせるだけの GNU マーカー)を構造体・共用体のメンバ宣言の頭に付けると、rubycc は
+`expected type specifier` で拒否していた(gcc は通す)。パーサは宣言の頭に並ぶ `__extension__` を
+`parse_external_declaration`(`lib/rubycc/front/parser.rb:518`、`skip_extension_markers` は
+1638 行から)で読み飛ばしていたが、**構造体のメンバ宣言を読む `parse_struct_body` では
+読み飛ばしていなかった**(2026-09-13 実測、このホスト・WSL2・gcc 13.3)。
+
+glibc の `<threads.h>` が読み込む `bits/atomic_wide_counter.h:27` の
+`__extension__ unsigned long long int __value64;` がこの形で、`<threads.h>` 自体が
+rubycc でコンパイルできない原因になっていた。
+
+### 実装
+
+`parse_struct_body`(`lib/rubycc/front/parser.rb`)のメンバ宣言ループで、既存の
+`skip_extension_markers`(`parse_external_declaration` が使うのと同じメソッド)を
+`spec_tok = peek` の直前で呼ぶだけの変更。新しい読み飛ばしロジックは追加していない —
+既存のヘルパーを新しい呼び出し箇所から使っただけなので、読み飛ばしの意味は
+外部宣言・ブロックスコープ宣言と揃っている。
+
+### 検証
+
+`test/test_extension_struct_member.rb`(新規)を gcc 差分で追加:
+
+- 構造体メンバへの前置(issue の再現そのもの)・共用体メンバへの前置・入れ子構造体の
+  メンバへの前置の 3 形で、`sizeof` / `offsetof` が gcc と一致することを確認
+  (2026-09-13 実測、このホスト): `struct { __extension__ unsigned long long int v; int w; }`
+  は `sizeof=16 offsetof(v)=0 offsetof(w)=8`、共用体は `sizeof=8 offsetof(v)=0 offsetof(w)=0`、
+  入れ子構造体は外側 `sizeof=32` で `pre` が 0・`nested` が 8 のオフセット、いずれも gcc と一致。
+- `<threads.h>` を使う `thrd_create` / `thrd_join` のプログラム(issue と同じ形)が
+  rubycc でビルド・リンク・実行でき、gcc と同じ出力(`42`)になることを確認
+  (2026-09-13 実測、glibc 2.39・gcc 13.3)。`-pthread` を付けなくても両者とも成功する
+  (glibc 2.34 以降 pthread シンボルは libc に統合されているため)。**追いかけるべき「その先の
+  エラー」は無かった** — `__extension__` の修正だけで `<threads.h>` は最後まで通った。
+
+### `__STDC_NO_THREADS__` の再測定
+
+`stdc-no-vla-macro-1` は、glibc の `<threads.h>` がこの `__extension__` で止まっていたことを
+根拠に `__STDC_NO_THREADS__` を定義していた。この issue を閉じたことで根拠が消えたので、
+2026-09-13 に測り直した: 上の `thrd_create`/`thrd_join` のプログラムが rubycc で
+コンパイル・リンク・実行まで成功し、出力が gcc と一致する。C11 6.10.8.3 はこのマクロを
+`<threads.h>` 対応の有無**だけ**に結びつけているので、**`__STDC_NO_THREADS__` を
+`PREDEFINED_CONDITIONAL_FEATURE_MACROS` から外した**(`lib/rubycc/preprocess/preprocessor.rb`)。
+コメントも「対応済みなので定義しない」側(`__STDC_NO_ATOMICS__` と同じ扱い)に書き換えた。
+
+`test/test_preprocessor.rb` の `test_stdc_no_vla_and_kin_are_predefined` から
+`__STDC_NO_THREADS__` の断定を外し、`__STDC_NO_ATOMICS__` と対になる
+`test_stdc_no_threads_is_not_predefined`(`#ifdef` で偽側に落ちることを確認)を追加した。
+`test/test_stdc_no_vla_macro.rb` は `__STDC_NO_THREADS__` に触れていなかったため変更なし。
+
+### サンプル
+
+`examples/m6/extension_struct_member_1_member_prefix.c` — 構造体・共用体・入れ子構造体の
+それぞれのメンバに `__extension__` を前置し、`sizeof`/`offsetof` を出力する。`<threads.h>` は
+システムヘッダ(glibc)への依存になるためサンプルには含めず、issue の再現に忠実な
+最小形のみを収録した。`test/test_examples.rb` が gcc 差分で検証する。
+
+### 実装した AI エージェントへの申し送り(R11)
+
+既存 OSS コンパイラ(chibicc 等)の実装を参照・模倣していない。既存の
+`skip_extension_markers` ヘルパーを新しい呼び出し箇所(`parse_struct_body`)へ
+追加しただけで、判断はすべて ISO C 6.7.2.1(struct-declaration-list)と、
+issue に書かれた実測結果に基づく。

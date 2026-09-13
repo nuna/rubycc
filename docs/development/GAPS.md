@@ -26,7 +26,6 @@
 | **AT**([issue](../../issues/typeof-operator.md)) | **`typeof`(GNU 拡張、C23 で標準化)を受け付けない**。未宣言の関数として報告される | `algorithms` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
 | **AU**([issue](../../issues/bundled-pthread-attr-guard.md)) | **同梱 `pthread.h` が `pthread_attr_t` を glibc のガード(`__have_pthread_attr_t`)無しで定義する**。`<netdb.h>` の `sigevent_t.h` と型の再定義になる | `_GNU_SOURCE` のもとで `<netdb.h>` を含む gem。`trilogy` 2.13.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`<pthread.h>` + `<netdb.h>` の最小再現) | 同梱 `pthread.h` の他の型にも同じ穴が無いかを数える |
 | **AV**([issue](../../issues/include-duplicate-system-dir.md)) | **`-I/usr/include` を渡すと、glibc 本体のヘッダが同梱ヘッダより先に見つかる**。gcc はシステムと重なる `-I` を無視する | `dir_config` に `/usr` を渡す古い gem。`do_sqlite3` 0.10.17 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`#include <stdio.h>` だけで再現) | gcc の規則(`-isystem` / `-idirafter` を含む)を測ってから合わせる |
-| **AW**([issue](../../issues/extension-struct-member.md)) | **構造体のメンバ宣言の頭の `__extension__` を受け付けない**(宣言の頭の形は通る) | glibc の `<threads.h>` を使うコード。`bits/atomic_wide_counter.h:27` で止まるので、`thrd_create` のプログラムがビルドできない(**gcc は通る**) | **実測**(2026-09-13、最小再現) | 閉じたら `__STDC_NO_THREADS__` の定義を測り直す(`stdc-no-vla-macro-1`) |
 | **AY**([issue](../../issues/attribute-statement.md)) | **文として書いた `__attribute__ ((fallthrough));` を拒否する**。文の頭の属性を宣言の始まりとして読む | `-Wimplicit-fallthrough` を黙らせる gem。`liquid-c` 4.2.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `expected type specifier`) | 宣言の頭の属性の扱いは変えない |
 | **AZ**([issue](../../issues/builtin-strlen.md)) | **`__builtin_strlen` が無い**。未宣言の関数として報告される | `herb` 0.10.4 が `hb_string.h:27` のマクロの中で使い、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 文字列リテラルの場合に定数へ畳むかを gcc と比べて決める |
 | **BA**([issue](../../issues/bundled-termios-tcflow.md)) | **同梱 `termios.h` に `tcflow`(POSIX)と `TCO*` / `TCI*` の定数が無い** | `ruby-termios` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | §2 の同梱ヘッダの洗い出しの対象 |
@@ -62,6 +61,9 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ AW**(構造体のメンバ宣言の頭の `__extension__` を受け付けない):
+  `extension-struct-member-1` で解消。メンバ宣言でも既存の読み飛ばしを使った。glibc の `<threads.h>` が
+  rubycc でビルド・実行できるようになったので、`__STDC_NO_THREADS__` の定義を外した(C11 6.10.8.3)。
 - **ギャップ AE**(CRLF の行末で行連結が働かない):
   `crlf-line-splice-1` で解消。翻訳フェーズ 1 で `\r\n` と単独の `\r` をどちらも改行に写像した。
   起票時は「単独の `\r` を改行扱いしない」と書いたが、gcc を測ると単独の `\r` もトークンの種類を問わず改行として扱う

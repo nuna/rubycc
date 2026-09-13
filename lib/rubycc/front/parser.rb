@@ -1854,6 +1854,13 @@ module Rubycc
             next
           end
 
+          # A leading "__extension__" (a GNU marker that silences pedantic
+          # warnings) prefixes a member declaration with no semantic effect,
+          # just as it does an external declaration (see
+          # #parse_external_declaration); glibc's <bits/atomic_wide_counter.h>
+          # relies on this to declare a member with such a prefix.
+          skip_extension_markers
+
           spec_tok = peek
           # An _Alignas among a member declaration's specifiers belongs to every
           # declarator it introduces, exactly as the base type does, so it is
