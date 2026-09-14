@@ -155,6 +155,41 @@ class TestFunctionDefinitionParenthesizedName < Minitest::Test
     C
   end
 
+  # --- a pointer prefix inside the parentheses is not a parenthesized name ----
+  #
+  # "(*g)" (or any other shape that gives the parenthesized name a type other
+  # than the plain function this suffix describes) means the outer "(a, b)"
+  # belongs to the *pointee* function type, not to g's own declarator -- unlike
+  # "(add)", where the parentheses are pure grouping around a bare name. Such a
+  # declarator is never a function definition's declarator (there is no
+  # function name for a following "{" to attach to), so a non-empty identifier
+  # list there is only ever the prototype/declaration case 6.7.6.3p3 forbids.
+  # Measured 2026-09-14 with gcc 13.3 (regression case for
+  # function-definition-parenthesized-name-1, which read "(*g)"'s "(a, b)" as
+  # g's own function_params).
+
+  def test_pointer_prefix_with_identifier_list_is_diagnosed
+    error = assert_raises(Rubycc::CompileError) { compile("int (*g)(a, b);") }
+    assert_match(/only allowed in a function definition/, error.message)
+  end
+
+  def test_doubly_parenthesized_pointer_prefix_with_identifier_list_is_diagnosed
+    error = assert_raises(Rubycc::CompileError) { compile("int (*(g))(a, b);") }
+    assert_match(/only allowed in a function definition/, error.message)
+  end
+
+  def test_qualified_pointer_prefix_with_identifier_list_is_diagnosed
+    error = assert_raises(Rubycc::CompileError) { compile("int (* const g)(a, b);") }
+    assert_match(/only allowed in a function definition/, error.message)
+  end
+
+  # The same pointer-in-parentheses shape with a real prototype (no identifier
+  # list) is an ordinary function-pointer object declaration and must still
+  # compile.
+  def test_prototyped_pointer_in_parentheses_still_compiles
+    compile("int (*fp)(int a, int b);\n")
+  end
+
   # --- a definition through a typedef is still rejected -----------------------
   #
   # 6.9.1p2 forbids *inheriting* the function type from a typedef name; a

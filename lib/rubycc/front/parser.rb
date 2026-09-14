@@ -2772,11 +2772,27 @@ module Rubycc
       def parse_declarator_core(name_mode:, allow_incomplete_array:, allow_zero_length_array:)
         if peek.punct?("(") && paren_starts_declarator?
           advance # "("
-          name_tok, build, inner_params =
+          name_tok, build, inner_params, inner_pointer_quals =
             parse_declarator_builder(name_mode: name_mode,
                                      allow_incomplete_array: allow_incomplete_array,
                                      allow_zero_length_array: allow_zero_length_array)
           expect_punct(")")
+          # :none only means "no suffix has surfaced yet, and none of this
+          # inner declarator's own text rules one out" — true of a bare name,
+          # possibly renested in more parentheses ("(add)", "((h))"), where an
+          # enclosing suffix can still turn out to be *that name's* function
+          # suffix. A leading "*" on this inner declarator ("(*g)", "(*(g))")
+          # already answers what the name is (a pointer), so an enclosing
+          # suffix instead wraps the pointee, never the name's own parameters
+          # — collapse to the pre-existing nil right here, the same value
+          # #parse_declarator would settle on once nothing further attaches.
+          # A suffix already borne by the inner declarator itself (an array,
+          # as in "(a[2])", or a function already claimed by a name buried
+          # further in, as in "(*g(int a))") is unaffected: :none only ever
+          # holds when nothing inner claimed a function suffix yet, so those
+          # cases already carry their own non-:none function_params by the
+          # time they reach here.
+          inner_params = nil if inner_params == :none && !inner_pointer_quals.empty?
           [name_tok, build, inner_params]
         elsif peek.type == :ident && name_mode != :forbidden
           name_tok = advance

@@ -5,7 +5,7 @@ opened: 2026-09-14
 closed: 2026-09-14
 branch: gap-fixes-wave-4
 pr: 151
-steps: [function-definition-parenthesized-name-1]
+steps: [function-definition-parenthesized-name-1, function-definition-parenthesized-name-2]
 ---
 
 # 関数名を括弧で囲んだ関数定義 `int (f)(int a) { ... }` を拒否する
@@ -54,6 +54,12 @@ int main(void) { return add(1, 2) - 3; }
 原因は宣言子の解析にあった。括弧の中が識別子だけで接尾辞を持たないとき、「この段に接尾辞なし」を表す番兵 `:none` を返さず、
 `nil` に落としていた。外側の段はこれを「中の名前がもう関数の接尾辞を持っている」と読み、自分の仮引数並びを捨てていた。
 `nil` は「typedef 経由の関数型」を表す既存の番兵でもあるので、typedef 経由の定義と取り違えた。
+
+### 2026-09-14(回帰の修正)
+
+-1 を入れた後の全体テストで、`test_knr_function_definitions.rb` の `int (*g)(a, b);` の診断が「仮引数名だけの並びは関数定義でしか使えない」から
+「関数宣言子が要る」に変わった。括弧の中に `*` があるときも「接尾辞なし」の番兵が外へ伝わり、外側の `(a, b)` を定義の仮引数並びとして
+採っていた。括弧の中の宣言子がポインタの前置を持つときは、以前どおり `nil` に畳むようにした(`function-definition-parenthesized-name-2`)。
 
 ## 決着
 

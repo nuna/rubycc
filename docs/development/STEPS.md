@@ -16605,3 +16605,81 @@ GAPS §2 の負債(`issues/bundled-headers-coverage-audit.md`)。同梱ヘッダ
   `issues/bundled-headers-coverage-audit.md` に残した
 
 vmstat などの gem としてのビルドとロードは、この PR の後に台帳の測り直しで扱う。
+
+## function-definition-parenthesized-name-2 — 丸括弧内の宣言子にポインタが付く場合は `:none` を転送しない
+
+**課題**: `function-definition-parenthesized-name-1`(commit b9ac9f4)がリグレッションを持ち込んでいた。
+`test/test_knr_function_definitions.rb:295`(`test_constraint_violations_are_diagnosed`)の
+`"int (*g)(a, b);"` ケースが、期待する
+`/only allowed in a function definition/` ではなく
+`"knr.c:1:7: error: expected a function declarator"` を返して落ちていた(2026-09-14、このホスト実測、
+フルスイート実行時に検出)。
+
+### 原因
+
+`-1` は「丸括弧の内側にサフィックスの無い階層」が番兵 `:none` を返すようにし(`nil` に落とさず)、
+`int (add)(int a, int b)` のような外側の `(int a, int b)` を正しく `function_params` として拾えるように
+した。ところがこの `:none` は「丸括弧の内側の宣言子が**裸の識別子**(さらに丸括弧で入れ子にしてもよい:
+`(add)`, `((h))`)だった」場合にのみ、「まだどの階層も関数サフィックスを確定していない」ことの意味を持つ。
+
+`int (*g)(a, b);` では、丸括弧の内側の宣言子は `*g`(先頭にポインタが付く)であり、`g` は「この外側の
+`(...)` が直接記述している関数」そのものではなく「関数へのポインタ」である。したがって外側の `(a, b)`
+は `g` 自身の `function_params` ではなく、`g` が指す関数型の仮引数であるべきだが、`-1` はポインタの
+有無を見ずに `:none` を無条件に外側へ転送していたため、外側の `#parse_direct_declarator` がこの
+`(a, b)`(識別子リスト)を `g` の `function_params` として採用してしまっていた。結果、
+`#reject_unsurfaced_identifier_lists` がこれを拒否対象から除外し(「採用された `function_params` と
+`equal?` だから拒否しない」)、識別子リストがそのまま素通りして
+`#parse_old_style_function_definition` の `error_at(name_tok, "expected a function declarator")`
+(`type.function?` が偽になるため)という誤った診断に落ちていた。`-1` 以前はこの階層が無条件に `nil` を
+返していたため、この誤った採用は起きていなかった。
+
+### 対処
+
+`#parse_declarator_core` の丸括弧分岐で、内側の `#parse_declarator_builder` 呼び出しから
+`function_params` に加えてポインタ接頭辞のリスト(`pointer_quals`、戻り値の4番目。従来は捨てていた)も
+受け取るようにし、次の規則を実装した:
+
+> `inner_params` が `:none` で、かつ内側の宣言子自身にポインタ接頭辞がある場合に限り、`:none` を
+> `nil`(-1 以前の値)へ潰す。
+
+「内側の宣言子自身のポインタ」だけを見ればよいのは、`:none` が一度でも `nil` へ確定した階層は
+`#parse_direct_declarator` の既存の分岐(`if inner_params != :none then inner_params`)がそのまま
+外側へ転送し続けるため — 途中のどこかの階層でポインタが現れた時点で以後ずっと `nil` のまま伝播する。
+逆に `:none` が生き残るのは、途中のどの階層にもポインタが無く、かつどの階層の直接のサフィックスも
+関数でなかった場合のみで、それはまさに「まだ名前の型が確定していない」ケースに一致する。
+
+配列サフィックスが内側にある場合(`int (a[2])(x);`)はこの規則の対象外 — ポインタが無いので
+`pointer_quals` は空のまま、変更前と同じ挙動(`:none` を転送し、外側の `(x)` が識別子リストとして
+`a` の `function_params` に採用される)。これは gcc が同じ入力に対して "parameter names (without
+types) in function declaration" という警告を出しつつ、別途 "declaration of 'a' as array of
+functions" というエラーで拒否する(2026-09-14、gcc 13.3 実測)のと整合しており、この規則が動かす
+必要のない領域だった。
+
+`int (*g(int a))(int b)`(名前 `g` 自身が関数で、外側のサフィックスは `g` が返す関数ポインタの
+仮引数)のように、内側の階層がすでに `:none` 以外の `function_params`(`g` 自身の `(int a)`)を
+確定させているケースは、この規則の条件(`inner_params == :none`)に該当しないため無変更 — `-1` が
+実装した「`(*g(int a))(int b)` は `int a` を報告する」という挙動を壊さない。
+
+変更点は `lib/rubycc/front/parser.rb` の `#parse_declarator_core` 1箇所のみ(丸括弧分岐で
+`pointer_quals` を受け取り、`:none` を `nil` に潰す1行を追加)。
+
+### テスト
+
+`test/test_function_definition_parenthesized_name.rb` に回帰ケースを4件追加(19 runs, 26 assertions):
+`int (*g)(a, b);` / `int (*(g))(a, b);` / `int (* const g)(a, b);` が
+`/only allowed in a function definition/` で拒否されること、`int (*fp)(int a, int b);`
+(識別子リストではなく本物のプロトタイプ)が引き続きコンパイルできること。gcc は上記いずれの
+識別子リスト形にも警告のみ("parameter names (without types) in function declaration")で、
+プロトタイプ形は無警告(2026-09-14、gcc 13.3 実測)。
+
+既存スイートは以下がすべて 0 failures / 0 errors(2026-09-14、このホスト):
+`test/test_knr_function_definitions.rb`(13 runs）、
+`test/test_function_definition_parenthesized_name.rb`(19 runs)、
+`test/test_parser.rb`(332 runs)、`test/test_diagnostics.rb`(238 runs)、
+`test/test_examples.rb`(68 runs)、`test/test_c_suite.rb`(223 runs, 11 skips)、
+`test/test_c_suite_aarch64.rb`(444 runs, 22 skips)、
+`test/test_examples_aarch64.rb`(580 runs, 22 skips)、
+`test/test_unprototyped_function_pointer_compat.rb`(13 runs)、
+`test/test_unprototyped_function_redeclaration.rb`(43 runs)、
+`test/test_block_scope_function_decl.rb`(13 runs)、`test/test_type.rb`(92 runs)、
+`test/test_flexible_array_member.rb`(16 runs)。
