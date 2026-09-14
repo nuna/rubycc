@@ -59,11 +59,13 @@ class TestVariadicAggregateArgument < Minitest::Test
     ["d4", "struct d4 { double a, b, c, d; };", "v.a = s; v.b = s + 0.5; v.c = s * 0.25; v.d = -s;",
      "%.17g %.17g %.17g %.17g", "p->a, p->b, p->c, p->d"],
     # 16-byte alignment through a member, which AAPCS64 counts (an even
-    # register pair). A type-level __attribute__((aligned(16))) is not used
-    # here: aarch64 gcc 13.3 gives it no even pair, fixed or variadic, while
-    # rubycc's shared aggregate plan does (measured 2026-09-14) — a named-
-    # argument disagreement this step does not change.
+    # register pair, a 16-aligned stack slot), and through an attribute on the
+    # aggregate itself, which it does not (aarch64 gcc 13.3 gives `t16` no even
+    # pair, fixed or variadic — measured 2026-09-14; see
+    # aapcs64-aligned-attribute-aggregate-1). System V counts both.
     ["a16", "struct a16 { _Alignas(16) long a; long b; };", "v.a = s * 3; v.b = s * 7 + 1;",
+     "%ld %ld", "p->a, p->b"],
+    ["t16", "struct t16 { long a, b; } __attribute__((aligned(16)));", "v.a = s * 5 - 2; v.b = s * 9 + 4;",
      "%ld %ld", "p->a, p->b"],
   ].freeze
 

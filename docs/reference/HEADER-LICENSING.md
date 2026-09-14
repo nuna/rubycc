@@ -116,14 +116,14 @@ musl の宣言セット/形状を出発点にし、glibc の対象 arch(x86-64 /
 | `include/libc/glibc/x86_64/stdint.h` | 幅を glibc x86-64 LP64 に固定(実測) |
 | `include/libc/glibc/x86_64/sys/select.h` | `fd_set` を glibc x86-64 に固定 |
 | `include/libc/glibc/x86_64/sys/time.h` | `struct timeval` メンバを glibc x86-64 に固定(実測) |
-| `include/libc/glibc/x86_64/sys/types.h` | 全幅・符号を glibc x86-64 LP64 に固定(実測)。glibc の内部名 `__*_t`(`__caddr_t` ほか)・`int8_t`〜`int64_t` の幅・整列・符号も実測(2026-09-14) |
+| `include/libc/glibc/x86_64/sys/types.h` | 全幅・符号を glibc x86-64 LP64 に固定(実測)。glibc の内部名 `__*_t`(`__caddr_t` ほか)・`int8_t`〜`int64_t` の幅・整列・符号も実測(2026-09-14)。BSD 短縮名(`u_char`/`u_short`/`u_int`/`u_long`/`ushort`/`uint`/`ulong`/`u_int8_t`〜`u_int64_t`)も実測、`ushort` は `unsigned char`(1 バイト)から glibc と同じ `unsigned short`(2 バイト)に訂正(2026-09-14) |
 | `include/libc/glibc/x86_64/time.h` | `time_t`=long、`struct tm` の tm_gmtoff/tm_zone 拡張(実測) |
 | `include/libc/glibc/aarch64/endian.h` | little-endian aarch64 に固定(x86-64 版とバイト一致) |
 | `include/libc/glibc/aarch64/inttypes.h` | LP64 の "l" 形(x86-64 版とバイト一致) |
 | `include/libc/glibc/aarch64/stdint.h` | 幅を glibc aarch64 LP64 に固定。WCHAR_MIN/MAX は unsigned(0/UINT32_MAX)で x86-64 と相違(実測) |
 | `include/libc/glibc/aarch64/sys/select.h` | `fd_set` を glibc aarch64 に固定(x86-64 版とバイト一致) |
 | `include/libc/glibc/aarch64/sys/time.h` | `struct timeval` を glibc aarch64 に固定(x86-64 版とバイト一致) |
-| `include/libc/glibc/aarch64/sys/types.h` | 全幅・符号を glibc aarch64 LP64 に固定。nlink_t/blksize_t=32bit で x86-64 と相違(実測)。内部名 `__*_t` も同様で、`__nlink_t`/`__blksize_t` だけが x86-64 と相違(実測 2026-09-14) |
+| `include/libc/glibc/aarch64/sys/types.h` | 全幅・符号を glibc aarch64 LP64 に固定。nlink_t/blksize_t=32bit で x86-64 と相違(実測)。内部名 `__*_t` も同様で、`__nlink_t`/`__blksize_t` だけが x86-64 と相違(実測 2026-09-14)。BSD 短縮名も実測、`ushort` を `unsigned short` に訂正(x86-64 版とバイト一致、2026-09-14) |
 | `include/libc/glibc/aarch64/time.h` | `time_t`=long、`struct tm` 拡張(x86-64 版とバイト一致) |
 
 ### 3.3 clean-room(49 本)

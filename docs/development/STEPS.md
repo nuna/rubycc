@@ -16683,3 +16683,67 @@ functions" というエラーで拒否する(2026-09-14、gcc 13.3 実測)のと
 `test/test_unprototyped_function_redeclaration.rb`(43 runs)、
 `test/test_block_scope_function_decl.rb`(13 runs)、`test/test_type.rb`(92 runs)、
 `test/test_flexible_array_member.rb`(16 runs)。
+
+## bundled-sys-types-ushort-1 — `ushort` の幅を glibc に合わせる(GAPS BN)
+
+GAPS 表の行 BN。同梱 `sys/types.h`(x86-64/aarch64 とも)の
+`typedef unsigned char ushort;` が誤りで、glibc は `unsigned short` として定義している。
+2026-09-14 にこのホスト(WSL2 / gcc 13.3)で確認済み: `#include <sys/types.h>` の後
+`return sizeof(ushort);` は gcc が 2、rubycc(同梱ヘッダ)が 1 を返す。
+
+### 原因
+
+`include/libc/glibc/{x86_64,aarch64}/sys/types.h` の「BSD short-hand integer names」節
+(217 行目付近、両 arch とも同一)は次の 7 行を並べているが、`ushort` だけ型が違っていた:
+
+```c
+typedef unsigned char  u_char;
+typedef unsigned short u_short;
+typedef unsigned int   u_int;
+typedef unsigned long  u_long;
+typedef unsigned char  ushort;   /* 誤り。glibc は unsigned short */
+typedef unsigned int   uint;
+typedef unsigned long  ulong;
+```
+
+`u_char`(1 バイト)と `ushort`(本来 2 バイト)を書き間違えたとみられる形での混同。
+
+### 対処
+
+`ushort` の typedef を `unsigned short` に直した(両 arch)。この節にある残り 10 個
+(`u_char`・`u_short`・`u_int`・`u_long`・`uint`・`ulong`・`u_int8_t`〜`u_int64_t`)は
+`gcc -std=c11 -D_GNU_SOURCE` で実測したところ全て既に一致していた(x86-64/aarch64 とも
+byte-identical: `u_char`=1、`u_short`=2、`u_int`=4、`u_long`=8、`uint`=4、`ulong`=8、
+`u_int8_t`=1、`u_int16_t`=2、`u_int32_t`=4、`u_int64_t`=8、いずれも符号なし)。
+aarch64 は `aarch64-linux-gnu-gcc` の静的リンク実行ファイルを `qemu-aarch64` で走らせて測り、
+x86-64 と全項目一致することを確認した(2026-09-14)。
+
+`test/test_header_abi.rb` の `SYS_TYPES` Spec に `SYS_TYPES_BSD` という新しい glibc 専用の
+名前リストを足し、既存の `SYS_TYPES_INTERNAL`(`__*_t` 群)と同じやり方で `glibc:` バンドルの
+`sizes`/`ints`(符号性は `(T)-1 < 0`)に混ぜた。これらの名前は `_GNU_SOURCE`(実際には
+`_DEFAULT_SOURCE` でも見える)の下でのみ glibc が公開する一方、同梱ヘッダは無条件に公開して
+いるため、既存の `__*_t` 群と同じ理由で `glibc:` バンドル扱いにした。
+
+`docs/reference/HEADER-LICENSING.md` §3.2 の x86-64/aarch64 `sys/types.h` の行に、
+BSD 短縮名を実測したことと `ushort` の訂正を追記した(ABI 値が動いた変更なので
+`bundled-pthread-attr-guard-1` の判断基準どおり台帳を更新)。
+`tools/audit_bundled_headers.rb --output` を再実行して差分を確認したが、`ushort` は
+既存の名前の型を直しただけ(名前の追加・削除ではない)なので
+`docs/development/BUNDLED-HEADERS-COVERAGE.md` の出力は 1 バイトも変わらず、再生成は不要だった。
+
+### テスト
+
+2026-09-14、いずれも `ruby -rbundler/setup -Ilib -Itest <file>` で実行、0 failures / 0 errors:
+
+- `test/test_header_abi.rb`: 130 runs, 385 assertions
+- `test/test_bundled_headers_coverage.rb`: 8 runs, 48 assertions
+- `test/test_audit_bundled_headers.rb`: 4 runs, 17 assertions
+- `test/test_doc_links.rb`: 3 runs, 45 assertions
+- `test/test_examples.rb`: 68 runs, 69 assertions
+- `test/test_examples_aarch64.rb`: 580 runs, 1009 assertions, 22 skips
+- `test/test_c_suite.rb`: 223 runs, 439 assertions, 11 skips
+- `test/test_c_suite_aarch64.rb`: 444 runs, 869 assertions, 22 skips
+
+### 残された観点
+
+なし。同節にある BSD 短縮名は全て測定済みで、`ushort` 以外に不一致は見つからなかった。

@@ -46,6 +46,13 @@ module Rubycc
     # NGRN up so its first integer register is even-numbered, landing it in an
     # aligned x-register pair (System V has no such register rule — a 16-byte
     # argument takes two consecutive registers of either parity).
+    #
+    # Which alignment counts differs between the two. System V takes the
+    # aggregate's whole #alignment, an aggregate-level __attribute__((aligned))
+    # included; AAPCS64 takes only its members' (StructType#natural_alignment),
+    # so a `struct { long a, b; } __attribute__((aligned(16)))` is 16-aligned on
+    # an x86-64 stack but neither pair-rounded nor 16-aligned on aarch64
+    # (measured 2026-09-14, gcc 13.3 on both).
     AggregatePlan = Data.define(:mode, :pieces, :align16)
 
     # One argument as the placement pass sees it: the candidate kind of each of
@@ -376,8 +383,16 @@ module Rubycc
       #  * any other aggregate of 16 bytes or less takes one or two consecutive
       #    integer registers, whatever its members are (a packed struct
       #    included: AAPCS64 has no unaligned-field escape to memory). One whose
-      #    alignment is 16 must start at an even-numbered register, which is
-      #    what `align16` asks the placer for.
+      #    *natural* alignment is 16 must start at an even-numbered register
+      #    (stage C.8) and, spilled, on a 16-aligned stack slot — what `align16`
+      #    asks the placer for. The standard phrases both rules in terms of the
+      #    argument's natural alignment, and for a composite that is its
+      #    members' alignment, not one an attribute on the aggregate itself
+      #    raised: gcc 13.3 pair-rounds and 16-aligns a struct whose __int128,
+      #    _Alignas(16) or aligned(16) *member* makes it 16-aligned, but neither
+      #    for `struct { long a, b; } __attribute__((aligned(16)))`, fixed or
+      #    variadic (measured 2026-09-14). A packed struct's members count at
+      #    alignment 1, so `packed, aligned(16)` is not rounded either.
       #  * anything larger travels by reference: the caller copies it and passes
       #    the copy's address.
       def aggregate_plan(type)
@@ -390,7 +405,7 @@ module Rubycc
 
         if type.size <= MAX_REGISTER_AGGREGATE
           pieces = Array.new((type.size + 7) / 8) { |i| AbiPiece.new(offset: 8 * i, size: 8, kind: :gp) }
-          return AggregatePlan.new(mode: :registers, pieces: pieces, align16: type.alignment >= 16)
+          return AggregatePlan.new(mode: :registers, pieces: pieces, align16: type.natural_alignment >= 16)
         end
 
         AggregatePlan.new(mode: :by_reference, pieces: [], align16: false)

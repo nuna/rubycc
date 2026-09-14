@@ -23,6 +23,12 @@
    of them is a scalar or pointer typedef, so the second, identical
    definition a glibc header brings in through its own bits/types.h is a
    compatible redefinition (C11 6.7p3).
+
+   bundled-sys-types-ushort-1 (GAPS BN): the BSD short-hand names below were
+   also measured against glibc on both arches on 2026-09-14 (byte-identical
+   to the x86-64 layer). `ushort` was wrong (`unsigned char`, 1 byte) against
+   glibc's `unsigned short` (2 bytes); every other name in the section
+   already matched.
    Coverage against glibc's <sys/types.h> under _GNU_SOURCE (audited
    2026-09-14). Intentionally left out:
    omitted: fsid_t -- glibc defines __fsid_t in bits/types.h as a struct
@@ -219,7 +225,7 @@ typedef unsigned char  u_char;
 typedef unsigned short u_short;
 typedef unsigned int   u_int;
 typedef unsigned long  u_long;
-typedef unsigned char  ushort;
+typedef unsigned short ushort;
 typedef unsigned int   uint;
 typedef unsigned long  ulong;
 typedef unsigned char  u_int8_t;

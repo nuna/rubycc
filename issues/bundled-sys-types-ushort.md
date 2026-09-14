@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-14
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-14
+branch: gap-fixes-wave-5
+pr: 153
+steps: [bundled-sys-types-ushort-1]
 ---
 
 # 同梱 `sys/types.h` の `ushort` が `unsigned char` になっている
@@ -44,6 +44,16 @@ x86-64 と aarch64 の同梱ヘッダの両方(`include/libc/glibc/{x86_64,aarch
 
 `bundled-headers-coverage-audit-2` の統合時に、報告された形を最小再現で確かめて起票した。
 
+### 2026-09-14(実装)
+
+同じ節の BSD の省略名 11 個(`u_char` 〜 `u_int64_t`)を両 arch で gcc と測った。食い違いは `ushort` だけで、`unsigned short` に直した。
+
 ## 決着
 
-(未着手)
+**解消した**(`bundled-sys-types-ushort-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| `ushort` の大きさ・整列・符号が両 arch で gcc と一致する | `test/test_header_abi.rb` の `SYS_TYPES` に BSD の省略名を足して確認 |
+| 同じ節の他の省略名も gcc と突き合わせる | 11 個すべて測った。他は一致していた |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

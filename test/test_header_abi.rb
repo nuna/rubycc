@@ -387,6 +387,18 @@ class TestHeaderAbi < Minitest::Test
     __clock_t
   ].freeze
 
+  # bundled-sys-types-ushort-1 (GAPS BN): the BSD short-hand names the bundled
+  # header's own "BSD short-hand integer names" section declares (u_char,
+  # u_short, u_int, u_long, ushort, uint, ulong, u_int8_t..u_int64_t). Measured
+  # 2026-09-14 against glibc's own <sys/types.h> on both x86-64 and aarch64:
+  # every one of these already matched the bundled header's definition except
+  # ushort, which the bundled header spelled as `unsigned char` (1 byte)
+  # against glibc's `unsigned short` (2 bytes) -- fixed alongside this Spec.
+  SYS_TYPES_BSD = %w[
+    u_char u_short u_int u_long ushort uint ulong
+    u_int8_t u_int16_t u_int32_t u_int64_t
+  ].freeze
+
   SYS_TYPES = HeaderAbiHarness::Spec.new(
     header: "sys/types.h",
     sizes: %w[ssize_t off_t pid_t uid_t gid_t mode_t dev_t ino_t nlink_t
@@ -395,8 +407,8 @@ class TestHeaderAbi < Minitest::Test
     glibc: {
       defines: ["_GNU_SOURCE"],
       sizes: SYS_TYPES_INTERNAL + %w[__caddr_t __timer_t int8_t int16_t
-                                     int32_t int64_t quad_t u_quad_t],
-      ints: SYS_TYPES_INTERNAL.map { |t| "(#{t})-1 < 0" }
+                                     int32_t int64_t quad_t u_quad_t] + SYS_TYPES_BSD,
+      ints: (SYS_TYPES_INTERNAL + SYS_TYPES_BSD).map { |t| "(#{t})-1 < 0" }
     }
   )
 

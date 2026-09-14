@@ -20,7 +20,6 @@
 | **AT**([issue](../../issues/typeof-operator.md)) | **`typeof`(GNU 拡張、C23 で標準化)を受け付けない**。未宣言の関数として報告される | `algorithms` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
 | **BI**([issue](../../issues/aarch64-cross-sysroot-include.md)) | **x86-64 ホストで `-target aarch64` のとき、同梱していないシステムヘッダをクロス sysroot(`/usr/aarch64-linux-gnu/include`)から探さない**。ホストの x86-64 版 `/usr/include/netdb.h` を読んで `bits/stdint-uintn.h` で落ちる | x86-64 ホストでの aarch64 クロステスト。`<netdb.h>` を含むコードを aarch64 で検証できない。**対照の `aarch64-linux-gnu-gcc` は通る** | **実測**(2026-09-14、`#include <netdb.h>` の最小再現)。ネイティブ aarch64 ホストは未測定 | sysroot を決め打ちにするか、クロス gcc に問い合わせるかを決める |
 | **BK**([issue](../../issues/aapcs64-aligned-attribute-aggregate.md)) | **AArch64 で、型に付けた `aligned(16)` の構造体を引数に渡すと、置くレジスタが gcc とずれる**(int 3 個の後で gcc は x3/x4、rubycc は x4/x5)。メンバの `_Alignas(16)` / `__int128` なら一致する | 型の属性で 16 バイトに揃えた構造体を、gcc でコンパイルした関数との間で値渡しするコード。固定引数・可変長引数の両方。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、`variadic-aggregate-argument-1` の行列) | AAPCS64 の規則の根拠を確かめてから、`aggregate_plan` の判定を直す |
-| **BN**([issue](../../issues/bundled-sys-types-ushort.md)) | **同梱 `sys/types.h` の `ushort` が `unsigned char`**(glibc は `unsigned short`)。x86-64 / aarch64 の両方 | `ushort` を構造体のメンバや引数に使うコード(gcc でコンパイルしたものと ABI が合わない)。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、`sizeof(ushort)` が gcc 2 / rubycc 1) | 同じ節の他の省略名もまとめて gcc と突き合わせる |
 | **BO**([issue](../../issues/glibc-alloca-without-gnuc.md)) | **glibc 本体の `<alloca.h>` を読む経路で、`alloca` がリンク時に未定義参照になる**(glibc は `__GNUC__` のときだけ組み込みに写し、rubycc は `__GNUC__` を定義しない) | aarch64 のクロス sysroot を使う例題テストなど、同梱ヘッダより先に glibc 本体の `<alloca.h>` を読む構成。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、例題に `alloca` を入れて aarch64 で) | どの経路で glibc 本体の `<alloca.h>` を読むかを先に測る |
 | **BP**([issue](../../issues/glibc-public-headers-mixed.md)) | **同梱しない glibc の公開ヘッダ 186 本のうち、rubycc だけが落ちるものが 23 本ある**(`__BEGIN_DECLS` が無いように見える形が多い) | それらのヘッダを含む gem。該当する gem は数えていない | **実測**(2026-09-14、`tools/audit_bundled_headers.rb` の混在の調査、x86-64) | 23 本の原因を最小再現で確かめ、同梱ヘッダの側と rubycc 本体の側に分ける |
 
@@ -52,6 +51,8 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ BN**(同梱 `sys/types.h` の `ushort` が `unsigned char`):
+  `bundled-sys-types-ushort-1` で解消。同じ節の BSD の省略名 11 個を両 arch で gcc と測り、食い違っていた `ushort` だけを `unsigned short` に直した。
 - **ギャップ AF・AM・AQ・AR・BA・BB・BG・BL**(同梱ヘッダの抜けと共有ガード):
   `bundled-headers-coverage-audit-2` で解消。突き合わせの表(`bundled-headers-coverage-audit-1`)から同梱ヘッダの側に足した。
   共有ガードの点検で見つかった `siginfo_t` の同じ形の穴も直した。§2 の負債は、分類が残る分だけ優先を中に下げて残した。
