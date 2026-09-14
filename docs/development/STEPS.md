@@ -16394,3 +16394,92 @@ gcc も rubycc も引き続き拒否することを1件、既存の診断文言�
 サンプル `examples/m6/function_definition_parenthesized_name_1_dodge_macro.c` を足した
 (x86-64・AArch64(qemu-aarch64)双方で `test/test_examples.rb` / `test/test_examples_aarch64.rb` が
 gcc 差分で検証)。
+
+## bundled-headers-coverage-audit-1 — 同梱 libc ヘッダを glibc の同名ヘッダと機械的に突き合わせる
+
+GAPS §2 の負債(`issues/bundled-headers-coverage-audit.md`)。同梱ヘッダの宣言漏れで実在の gem が
+落ちた件が 2026-09-13〜14 に 7 件(AF・AM・AQ・AR・BA・BB・BG)起票された。1 件ずつ塞ぐ前に、
+全同梱ヘッダについて「glibc の同名ヘッダが `_GNU_SOURCE` のもとで見せる名前」と
+「同梱ヘッダが見せる名前」の差を x86-64 と aarch64 の両方で出す道具を作った。
+
+### 原因
+
+同梱ヘッダは Step 123 / 124(M5 H2)などで「コーパスのサンプルが `#include` で届く範囲」に
+絞って作られた。`rake corpus:census` はヘッダの**有無**しか見ないので、届いたヘッダの中で
+**どの名前が使われるか**、また **glibc 本体のヘッダが同梱ヘッダの隣に並んだとき何を期待するか**
+(AU・AM・AQ の形)は、gem を流して落ちるまで分からなかった。
+
+### 対処
+
+`tools/audit_bundled_headers.rb` を追加した。測り方:
+
+- **glibc 側**: `<H>` だけを含む翻訳単位を `gcc -E -dD -std=gnu17 -D_GNU_SOURCE`
+  (aarch64 は `aarch64-linux-gnu-gcc`)で前処理する。`#define` 行からマクロを、前処理済みの本文から
+  宣言(関数・変数・typedef・struct/union/enum タグ・列挙子)を拾う。宣言を読むのは自前の小さな
+  宣言子スキャナで、同梱側にも**同じスキャナ**を通すので、スキャナの誤りは両側に同じく出て差には現れない。
+- **帰属**: linemarker の include スタックで、各名前を**最も内側の公開ヘッダ**に帰属させる
+  (`bits/`・`gnu/`・`asm/`・`asm-generic/`・`linux/` は内部とみなす。`features.h`・`sys/cdefs.h` 等は
+  配管として数えない)。`<H>` に帰属する名前が「glibc の `<H>` の名前」、それ以外の公開ヘッダは
+  「取り込み」(glibc の `<stdlib.h>` → `<alloca.h>`・`<sys/types.h>` など)として別に並べる。
+- **同梱側**: 同じコンパイラに `-nostdinc` と rubycc の同梱の探索順(`include/`、
+  `include/libc/glibc/<arch>/`、`include/libc/`)を渡す(hermetic と同じ。ホストのヘッダは混ざらない)。
+- **段階**: 不足する名前ごとに、`-std=c11`・`_POSIX_C_SOURCE=200809L`・`_XOPEN_SOURCE=700`・
+  gcc の既定(`_DEFAULT_SOURCE`)・`_GNU_SOURCE` のどこで初めて見えるかを付ける(ガードの付け方を決める材料)。
+- **共有ガード(AU の形)**: glibc の `<H>` が立てる `__have_*` / `__*_defined` を列挙し、
+  同梱側が同じガードを立てるか(`honoured`)、ガード対象の型を定義しないか(`absent`)、
+  型を定義するのにガードを立てないか(`unguarded`)に分ける。`unguarded` と `honoured` は、
+  **そのガードのファイルを読む、同梱されていない glibc の公開ヘッダ**(`gcc -M -D_GNU_SOURCE` の依存一覧で探し、
+  名前の短い順に最大 3 本)と同梱の `<H>` を両方の順で並べて rubycc(x86-64)でコンパイルし、実際に落ちるかを測る。
+  honoured も測るのは、ガードを立てると glibc 側がそのファイルを丸ごと読み飛ばし、相手のヘッダがそのファイル経由で
+  得ていた型やマクロまで消えるため(-2 の `<sys/pidfd.h>` の件)。読むヘッダが無いときだけ内部ファイルを直接含める(`direct`)。
+  gcc も拒む組み合わせは n/a。ガードが glibc の `<H>` 自身の本文にあるものは `self` とし、glibc の `<H>` と同梱の `<H>` は
+  同じ翻訳単位に並ばないので測らない。
+- **混在の調査**: `libc6-dev` の公開ヘッダのうち同梱しない 186 本を 1 本ずつ `_GNU_SOURCE` のもとで
+  gcc と rubycc(既定の探索順)でコンパイルし、rubycc だけが落ちるものを最初のエラーと共に並べる。
+  同梱ヘッダの抜けが**glibc 本体のヘッダの失敗**として現れる所(AM の `<spawn.h>`、AQ の `<net/if.h>`)を拾う。
+- **意図して外した名前**: 同梱ヘッダの冒頭コメントの `omitted: 名前 ... -- 理由` を読み
+  (`CPU_*` のような末尾 `*` の族指定と、`<sys/types.h>` のような取り込みの指定を受ける)、
+  不足のうちそこに書かれていないものを「未記載」として数える。
+
+結果は `docs/development/BUNDLED-HEADERS-COVERAGE.md`(生成物。再生成は
+`ruby tools/audit_bundled_headers.rb --output docs/development/BUNDLED-HEADERS-COVERAGE.md`)に置き、
+`docs/README.md` の索引に 1 行足した。glibc のヘッダ本文は一切写していない(出力は名前と、それが見える場所だけ。R11、
+`docs/reference/HEADER-LICENSING.md` §6)。
+
+### 測定結果(2026-09-14、このホスト WSL2 / gcc 13.3 / glibc 2.39、aarch64 は同梱パッケージのクロス gcc 13 / glibc 2.39)
+
+このステップの時点(同梱ヘッダは 0ced183 のまま)の表。実行時間は約 28 秒(両 arch + 混在調査)。
+
+- 同梱 libc ヘッダ 54 本(`include/libc/**`、arch 層は同名を 1 本と数える)。両 arch とも不足 0 は 9 本。
+- 公開名の不足の合計は x86-64 3,413 / aarch64 3,375。大半は `math.h`(777 / 779)・`sys/syscall.h`(312 / 256)・
+  `netinet/in.h`(267)・`sys/socket.h`(239)など、定数を大量に持つヘッダ。arch で数が違うのは
+  `fcntl.h`・`link.h`・`math.h`・`signal.h`・`sys/mman.h`・`sys/syscall.h` の 6 本。
+- 意図して外した旨を `omitted:` で書いていたヘッダは 0 本(この書式はこのステップで決めた)。
+- 7 件の gap は表から全部読める: `stdlib.h` の不足に `getloadavg`(default)・`qsort_r`(gnu)、
+  取り込み不足に `alloca.h`、`sched.h` の不足に `struct sched_param`、`sys/types.h` の予約名の型の不足に
+  `__caddr_t`、`termios.h` の不足に `tcflow`・`TCOON` 等、`sys/ioctl.h` の不足に `TIOCMGET`・`TIOCM_*`。
+- 混在の調査: 同梱しない glibc の公開ヘッダ 186 本のうち、gcc が通し rubycc が落ちるものが **37 本**。
+  うち `<spawn.h>`(AM)・`<net/if.h>`・`<net/if_ppp.h>`・`<net/if_shaper.h>`(AQ)の他に、
+  同梱 `<sys/types.h>` から glibc の内部名(`__pid_t`・`__daddr_t`・`__uint64_t`・`__off64_t`)や
+  `int32_t` が得られずに落ちるもの(`sys/procfs.h`・`sys/mtio.h`・`sys/quota.h`・`sys/sendfile.h`・`utmp.h` など)があり、
+  AQ の範囲を `__caddr_t` 1 つより広く取る根拠になった(-2 で対処)。
+- 共有ガード: 実在の glibc ヘッダとの組で**ガードが原因で**落ちるのは、同梱 `signal.h` の `union sigval` だけだった。
+  `<aio.h>`・`<sys/pidfd.h>`(と、この表の外で報告された `<netdb.h>`)を `<signal.h>` と並べると両順とも
+  `redefinition of 'union sigval'` になる(GAPS BL。glibc 側のガードは `____sigval_t_defined`)。
+  `__rusage_defined`(`sys/resource.h` の `struct rusage`)は内部ファイルを直接含めると衝突するが、同梱しない glibc ヘッダで
+  そのファイルを読むものが無い。probe に出る他の失敗(`<net/if.h>` の `__caddr_t`、`<thread_db.h>` → `<sys/procfs.h>` の `__pid_t`)は
+  AQ の形の名前不足で、ガードの衝突ではない。スカラーの typedef(`time_t`・`clock_t` 等)は同じ型の再定義なので両順とも通る。
+
+### テスト
+
+- `test/test_audit_bundled_headers.rb`(新規、4 runs / 17 assertions / 0 failures): 宣言子スキャナを手書きの C
+  (glibc のテキストは使わない)で確かめる 2 件、`omitted:` の読み取り 1 件、`<alloca.h>` を両 arch で実際に測って
+  `alloca` が glibc 側の名前に入り不足が 0 であることを確かめる 1 件。
+- `test/test_doc_links.rb` 3 runs / 0 failures(索引の 1 行)。
+
+### 残された観点(このステップでは直していない)
+
+- 共有ガードの BL(`union sigval`)は -2 で直す
+- 混在の調査で rubycc だけが落ちる glibc ヘッダは、-2 の後に `issues/glibc-public-headers-mixed.md`(GAPS BP)に起票した
+- 分類(足す / 意図して外す)はこのステップでは 1 本も済ませていない。-2 の後に残る分は
+  `issues/bundled-headers-coverage-audit.md` の作業ログに書いた
