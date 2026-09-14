@@ -312,6 +312,43 @@ module CorpusCandidateLoadRecipes
         "requires" => ["bigdecimal", "do_sqlite3"],
         "sanity_kind" => "entrypoint_loaded"
       }
+    },
+    {
+      "name" => "semian",
+      "version" => "0.28.4",
+      "platform" => "ruby",
+      "sha256" => "cde4367ef7aa9dc5d40549f14a2b0e7541f6ab995e92ff651ffb9c7b7ab36baa",
+      "dependencies" => [
+        {"name" => "concurrent-ruby", "version" => "1.3.8"}
+      ],
+      "entrypoint" => {
+        "requires" => ["semian"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "trilogy",
+      "version" => "2.13.0",
+      "platform" => "ruby",
+      "sha256" => "b817a5854e8bd59e7929de58771941b22a30345ad741b458802189592583f244",
+      "dependencies" => [
+        {"name" => "bigdecimal", "version" => "4.1.3"}
+      ],
+      "entrypoint" => {
+        "requires" => ["bigdecimal", "trilogy"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
+    },
+    {
+      "name" => "enumerable-statistics",
+      "version" => "2.0.9",
+      "platform" => "ruby",
+      "sha256" => "9d92f049489b6ad794789814250e8a40e40e5aa6fc742bc7c6192e1ac52cbe3c",
+      "dependencies" => [],
+      "entrypoint" => {
+        "requires" => ["enumerable/statistics"],
+        "sanity_kind" => "entrypoint_loaded"
+      }
     }
   ].map(&:freeze).freeze
 
