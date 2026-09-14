@@ -16093,3 +16093,106 @@ const char *p = __func__;  // warning: '__func__' is not defined outside of func
   宣言があればそちらが優先される)。有効な C プログラムはこれらを宣言しない
   (C99 6.4.2.1p7 により予約識別子)ため実害はない想定だが、gcc の
   「宣言不可」自体を再現してはいない。
+
+## variadic-aggregate-argument-1 — 可変長引数の構造体・共用体を値で渡し、`va_arg` で読む(GAPS AJ)
+
+### 原因
+
+2026-09-14、このホスト(WSL2 / gcc 13.3 / aarch64-linux-gnu-gcc 13.3)で、修正前の rubycc が
+**呼び出し側と呼ばれ側の両方**を拒否していることを両ターゲットで測った:
+
+```text
+error: passing a struct to a variadic function is not supported yet            (呼び出し側、x86-64 / aarch64)
+error: second argument to 'va_arg' has type 'struct s', which va_arg cannot yield (呼ばれ側、x86-64 / aarch64)
+```
+
+呼び出し側は `promote_variadic_argument` が struct を一律に拒否していた。呼ばれ側は
+`require_va_arg_type` がスカラーしか受け付けず、va_arg の降ろしも 1 スロット読みしか無かった。
+固定引数の構造体渡し(`lower_struct_argument`)と両規約の分類(`aggregate_plan`)は既にあった。
+
+### 対処
+
+**呼び出し側は固定引数の経路をそのまま使う。** `lower_variadic_argument` が struct / union を
+`lower_struct_argument` へ回すだけにした。可変長専用の規則はどちらのターゲットにも無い
+(2026-09-14 実測。下の行列)。
+
+- System V: 分類(INTEGER / SSE / MEMORY)は固定引数と同じ。`%al` はバックエンドが
+  xmm に積んだ引数を全部数えており、構造体の `:sse8` 片もそこに入るので追加の手当ては要らなかった
+- AAPCS64(Linux): HFA・16 バイト以下の整数レジスタ渡し・16 バイト超の参照渡し(呼び出し側の
+  コピーのアドレス)が固定引数と同じに効く。Apple の変種(無名引数はすべてスタック)とは違う
+
+**呼ばれ側 `va_arg(ap, struct T)` は、同じ `aggregate_plan` で探す新しい降ろし**
+(`gen_va_arg_aggregate`)。新しい IR 命令は無く、既存の load/store/分岐/`:and` への脱糖である。
+値は他の集約と同じくアドレス。
+
+- System V: MEMORY 分類は overflow_arg_area から直接。レジスタ分類は、INTEGER 片の数と
+  SSE 片の数が **gp_offset と fp_offset の両方に同時に収まる**ときだけ退避領域から読み、
+  各 eightbyte を一時オブジェクトの元のオフセットへ集める(GP スロットは 8 バイト間隔、
+  xmm スロットは 16 バイト間隔で、構造体の並びとは交互にならないため)。収まらなければ
+  両カウンタを**動かさずに**スタックから読む。呼び出し側の placer が「両方入るときだけ取る、
+  入らなければ後続の小さい引数にレジスタを残す」のと対になっている
+- AAPCS64: 参照渡しは GP スロットのポインタを既存のスカラー walk で取り、たどる。HFA は
+  `__vr_offs`(メンバごとに 16 バイトスロット)から一時オブジェクトへ集める。それ以外は
+  `__gr_offs` の連続スロットを直接指す。offs は「進める前に 0 以上ならスタック」「進めて
+  格納してから正ならスタック」の 2 回判定し、はみ出した集約は offs を正のまま残す
+  (そのファイルは以後使い切り。呼び出し側の NGRN/NSRN = 8 と対)。16 バイト境界の集約は
+  offs を偶数レジスタへ、スタックポインタを 16 へ切り上げる
+- 不完全型の `va_arg(ap, struct p)` は `has incomplete type 'struct p'` と診断する
+
+### 測定した行列(2026-09-14)
+
+`test/test_variadic_aggregate_argument.rb`。17 形 × 前置き 14 通り = 238 呼び出しで、gcc 同士の出力
+(対照)と、片側を rubycc に替えた出力が一致することを求める。
+
+| 形 | x86-64 の分類 | AArch64 の分類 |
+|---|---|---|
+| `struct {int}`・`union {int; float}`・`struct {char[6]}`・`union semun` 相当 | INTEGER 1 | GP 1 |
+| `struct {double}` | SSE 1 | HFA 1 |
+| `struct {float, float}` | SSE 1(2 個詰め) | HFA 2(s0, s1) |
+| `struct {int ×3}`・`struct {long ×2}` | INTEGER 2 | GP 2 |
+| `struct {long; double}`・`struct {double; int}` | INTEGER+SSE / SSE+INTEGER | GP 2 |
+| `struct {double ×2}`・`struct {float ×3}`・`struct {float ×4}` | SSE 2 | HFA 2〜4 |
+| `struct {int[5]}`・`struct {long ×3}` | MEMORY | 参照渡し |
+| `struct {double ×4}`(32 バイト) | MEMORY | **HFA 4(v レジスタ)** |
+| `struct { _Alignas(16) long a; long b; }` | INTEGER 2(スタックでは 16 境界) | GP 偶数ペア |
+
+前置きは int 0〜9 個 × double 0〜9 個の 14 通りで、両ターゲットの整数レジスタ上限
+(x86-64 は 6、AArch64 は 8。名前付き 2 個を含む)とベクタレジスタ上限(8)の手前・ちょうど・
+越えを通す。集約の後に int・double・2 個目の同じ集約・long を続け、はみ出した集約が後に残す
+状態(System V はレジスタを後続に残す、AAPCS64 は使い切り)も読む。
+
+| | rubycc 呼び出し → gcc 呼ばれ側 | gcc 呼び出し → rubycc 呼ばれ側 |
+|---|---|---|
+| x86-64 | 238 行一致 | 238 行一致 |
+| AArch64(qemu-aarch64) | 238 行一致 | 238 行一致 |
+
+### テスト
+
+- `test/test_variadic_aggregate_argument.rb`(新規): 上の行列。4 runs, 12 assertions, 0 failures
+- `test/test_c_suite.rb`: c-testsuite の `00140`(可変長への struct 渡し)と `00204`
+  (struct 値渡し・HFA・struct `va_arg`)を SKIP から外した。両ターゲットで通る
+  (x86-64 223 runs / 11 skips、AArch64 側を含めて 444 runs / 22 skips、いずれも 0 failures)
+- `test/test_diagnostics.rb`: 旧来の拒否 3 件を、「可変長への struct 渡しがコンパイルできる」
+  「不完全型の `va_arg` を診断する(struct 直書き・typedef 経由)」に置き換えた
+- `examples/m6/variadic_aggregate_argument_1_semctl_shape.c`: semctl の形(名前付き int 3 個の後に
+  union を値で)と、各分類の集約・レジスタ上限を越える前置き
+- 実在 gem: `semian` 0.28.4 の `ext/semian/*.c` 4 本が extconf と同じ定義
+  (`-D_GNU_SOURCE -DHAVE_RB_THREAD_CALL_WITHOUT_GVL -DHAVE_RUBY_THREAD_H` ほか)で rubycc で
+  コンパイルできる(2026-09-14、x86-64)。`sysv_semaphores.c:90` の
+  `semctl(sem_id, 0, IPC_STAT, sem_opts)` が今回の対象。gem install・ロード・上流テストは未実施
+
+### 残された観点
+
+- **AArch64 で型に付けた `__attribute__((aligned(16)))` の扱いが gcc と違う(固定引数も同じ)。**
+  2026-09-14 実測、名前付き int 3 個の後に `struct { long a, b; } __attribute__((aligned(16)))` を
+  渡すと、aarch64 gcc 13.3 は **x3/x4**(偶数ペアにしない)、rubycc は **x4/x5** に置く。
+  `__int128` メンバや `_Alignas(16)` メンバなら gcc も x4/x5 で、rubycc と一致する。
+  AAPCS64 の自然な整列はメンバの整列から決まり、型への属性は数えないと読める。rubycc の
+  `AAPCS64Convention#aggregate_plan` は `type.alignment >= 16` で判定しているのでずれる。
+  **この差は可変長に固有ではなく、固定引数の既存挙動**なので本ステップでは直さず、行列からは
+  メンバ側の `_Alignas(16)` に替えた。x86-64 は型属性の形でも両方向一致した。
+  `issues/aapcs64-aligned-attribute-aggregate.md`(GAPS BK)に起票した
+- 128 ビット整数を可変長に渡すこと(`passing a 128-bit integer to a variadic function`)は
+  範囲外とし、従来どおり診断する。必要とする gem はまだ見ていない
+- `long double` を含む構造体は測っていない。rubycc の `long double` が 8 バイトである件(GAPS S)の範囲
+- semian の gem としてのビルドとロードは、台帳の測り直しで扱う

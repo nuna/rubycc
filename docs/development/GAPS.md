@@ -15,7 +15,6 @@
 | **AF**([issue](../../issues/bundled-stdlib-getloadavg.md)) | **同梱 `stdlib.h` に `getloadavg` の宣言が無い**(glibc は `__USE_MISC` の枝に置く) | `getloadavg` を呼ぶ gem。`vmstat` 2.3.1 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `implicit declaration`) | **`_DEFAULT_SOURCE` の枝ごと見て決める** — 1 つずつ塞ぐと回数が増える |
 | **AG**([issue](../../issues/zero-length-array.md)) | **長さ 0 の配列(GNU 拡張)を拒否する**。規格(6.7.6.2p1)には忠実だが gcc は既定で受理する | `binding_ninja` 0.2.3 の `dummy_method_arg[0]` が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `array size must be positive`) | 受理するか対象外にするかを**根拠付きで決めてから**実装する。フレキシブル配列メンバの扱いを先に測る |
 | **AH**([issue](../../issues/thread-local-storage.md)) | **スレッドローカル記憶域が無い** — C11 の `_Thread_local` も GNU の `__thread` も `expected type specifier` で拒否する。コンパイラに言及が 1 つも無く、記憶域クラスとしてまるごと無い | TLS 変数を宣言するヘッダを含む gem。`pg_query` 6.2.3 が同梱 postgres ヘッダの `__thread` で、`scout_apm` 6.3.0 が `allocations.c:29` の `static __thread` で落ち、**対照の gcc はどちらもビルドに成功する** | **実測**(2026-09-13、最小再現で両方とも拒否) | **マイルストーン級**。ELF の TLS セクション・TLS 再配置・`%fs` / `tpidr_el0` 相対の生成が要り、拡張は `.so` なので**動的モデルでないと実在の gem に効かない** |
-| **AJ**([issue](../../issues/variadic-aggregate-argument.md)) | **可変長引数に構造体・共用体を値で渡せない**(`not supported yet` と自己申告) | `semctl` に `union semun` を渡す gem。`semian` 0.28.4 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 固定引数の構造体渡しは実装済み。x86-64 と AArch64 の両方で、呼ぶ側・呼ばれる側の両向きを gcc と突き合わせる |
 | **AK**([issue](../../issues/labels-as-values.md)) | **ラベルのアドレス(`&&label` / `goto *p`、GNU 拡張)を受け付けない**。診断は `expected expression` で原因を伝えない | 表引きのディスパッチを持つ gem。`strptime` 0.2.5 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
 | **AM**([issue](../../issues/bundled-sched-param.md)) | **同梱 `sched.h` に `struct sched_param` が無い**。glibc の `<spawn.h>` がメンバに持つので、`<spawn.h>` ごと読めない | `<spawn.h>` を含む gem。`posix-spawn` 0.3.15 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `incomplete type`) | AF と同じ系統。**`<spawn.h>` が他に何を要るかを先に測って**まとめて決める |
 | **AN**([issue](../../issues/incompatible-function-pointer-argument.md)) | **gcc 13 が警告にとどめる 4 つの診断をエラーにする** — 互換でないポインタ・暗黙の関数宣言・暗黙の int(`expected type specifier` で原因を伝えない)・整数とポインタの変換。gcc 14 はどれも既定でエラー | 古い書き方の gem。`hpricot` / `fast_xs` / `fast_trie` / `zipruby` / `github-markdown` / `gctools` / `semacode-ruby19` / `picky` / `allocation_tracer` / `ruby_deep_clone` の 10 件が該当し、**対照の gcc 13 はどれも通る** | **実測**(2026-09-13、gcc 13 のみ。gcc 14 はこのホストに無い) | **警告に下げるかエラーを保つかが未決**。対照の版で結論が変わる |
@@ -28,6 +27,7 @@
 | **BC**([issue](../../issues/atomic-builtin-small-widths.md)) | **`__atomic_*` ビルトインが 1 / 2 バイトの対象を拒否する**(4 / 8 バイト限定と自己申告) | 1 バイトのスピンロックを持つ gem。`iodine` 0.7.59 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 4 / 8 バイト限定のビルトインを一覧にしてから足す |
 | **BG**([issue](../../issues/bundled-stdlib-alloca.md)) | **同梱 `stdlib.h` が `alloca` を宣言しない**(glibc は `__USE_MISC` で `<alloca.h>` を含む。`<alloca.h>` を直接含めば通る) | `<stdlib.h>` だけで `alloca` を呼ぶコード。`amalgalite` 2.0.0 の同梱 SQLite が AL を越えた先で止まる。**対照の gcc は通る** | **実測**(2026-09-14、最小再現) | §2 の同梱ヘッダの洗い出しの対象。AF / AR と同じ `<stdlib.h>` の話 |
 | **BI**([issue](../../issues/aarch64-cross-sysroot-include.md)) | **x86-64 ホストで `-target aarch64` のとき、同梱していないシステムヘッダをクロス sysroot(`/usr/aarch64-linux-gnu/include`)から探さない**。ホストの x86-64 版 `/usr/include/netdb.h` を読んで `bits/stdint-uintn.h` で落ちる | x86-64 ホストでの aarch64 クロステスト。`<netdb.h>` を含むコードを aarch64 で検証できない。**対照の `aarch64-linux-gnu-gcc` は通る** | **実測**(2026-09-14、`#include <netdb.h>` の最小再現)。ネイティブ aarch64 ホストは未測定 | sysroot を決め打ちにするか、クロス gcc に問い合わせるかを決める |
+| **BK**([issue](../../issues/aapcs64-aligned-attribute-aggregate.md)) | **AArch64 で、型に付けた `aligned(16)` の構造体を引数に渡すと、置くレジスタが gcc とずれる**(int 3 個の後で gcc は x3/x4、rubycc は x4/x5)。メンバの `_Alignas(16)` / `__int128` なら一致する | 型の属性で 16 バイトに揃えた構造体を、gcc でコンパイルした関数との間で値渡しするコード。固定引数・可変長引数の両方。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、`variadic-aggregate-argument-1` の行列) | AAPCS64 の規則の根拠を確かめてから、`aggregate_plan` の判定を直す |
 
 ## 2. 未解消の負債
 
@@ -57,6 +57,9 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ AJ**(可変長引数に構造体・共用体を値で渡せない):
+  `variadic-aggregate-argument-1` で解消。呼び出し側は固定引数と同じ経路で渡し、呼ばれ側の `va_arg(ap, struct T)` は同じ分類で値を探す。
+  x86-64 と AArch64 の両方で、両方向とも 238 通りの呼び出しが gcc 同士と一致した(2026-09-14)。
 - **ギャップ BJ**(定義済み識別子 `__func__` が無い):
   `predefined-identifier-func-1` で解消。構文解析の段で、囲む関数の名前の文字列リテラルに置き換える。
   `__FUNCTION__` / `__PRETTY_FUNCTION__` も同じ(C モードの gcc の実測どおり)。ファイルスコープの `__func__` は gcc と同じ警告を出して `""` になる。

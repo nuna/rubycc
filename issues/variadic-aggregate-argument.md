@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-13
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-14
+branch: gap-fixes-wave-4
+pr: 151
+steps: [variadic-aggregate-argument-1]
 ---
 
 # 可変長引数に構造体・共用体を値で渡せない
@@ -67,6 +67,20 @@ semctl(sem_id, 0, IPC_STAT, sem_opts);
 
 buildable-gems-batch-2 の 34 件のうち、rubycc だけが落ちて対照は通った 1 件。
 
+### 2026-09-14(実装)
+
+修正前は、呼び出し側だけでなく呼ばれ側の `va_arg(ap, struct T)` も拒否していた(両アーキで確認)。呼び出し側は固定引数と
+同じ経路に回し、呼ばれ側は同じ分類(`aggregate_plan`)で値を探す降ろしを足した。行列を回すなかで、AArch64 で型に付けた
+`aligned(16)` の構造体の置き場所が gcc とずれることを見つけた。固定引数にもある既存の不一致なので、
+[`aapcs64-aligned-attribute-aggregate`](aapcs64-aligned-attribute-aggregate.md)(BK)に起票した。
+
 ## 決着
 
-(未着手)
+**解消した**(`variadic-aggregate-argument-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 大きさと中身の違う構造体・共用体を可変長で渡し、両方向で gcc 同士と一致する | `test/test_variadic_aggregate_argument.rb`。17 形 × 前置き 14 通り = 238 呼び出しが両方向で一致 |
+| x86-64 と AArch64 の両方で確かめる | 同じテストで両アーキ(AArch64 は qemu-aarch64) |
+| `semian` 0.28.4 が rubycc でビルドできる | `ext/semian/*.c` の 4 本はコンパイルできた(2026-09-14)。gem としてのビルドとロードは、この PR の後に測り直して台帳に記録する |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

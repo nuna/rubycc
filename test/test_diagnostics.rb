@@ -209,12 +209,13 @@ class TestDiagnostics < Minitest::Test
     assert_match(/incompatible type for argument 1 of 'f'/, error.description)
   end
 
-  # A struct has no promoted form the variable part can carry here.
-  def test_struct_passed_to_variadic_function_is_rejected
+  # A struct in the variable part is passed as a named one would be
+  # (variadic-aggregate-argument-1); it used to be refused here. Its run-time
+  # agreement with gcc is test_variadic_aggregate_argument.rb's job.
+  def test_struct_passed_to_variadic_function_compiles
     source = "struct p { int x; }; int f(int a, ...) { return a; } " \
-             "int main(void) { struct p s; return f(1, s); }"
-    error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/passing a struct to a variadic function is not supported yet/, error.description)
+             "int main(void) { struct p s; s.x = 0; return f(1, s); }"
+    compile(source)
   end
 
   # A variadic/non-variadic mismatch makes the function-pointer signatures
@@ -262,21 +263,22 @@ class TestDiagnostics < Minitest::Test
     assert_match(/fetching a 'long double' with 'va_arg' is not supported yet/, error.description)
   end
 
-  # va_arg of a struct has no scalar argument slot to read here.
-  def test_va_arg_of_struct_type_is_rejected
-    source = "struct p { int x; }; int f(int a, ...) { __builtin_va_list ap; " \
-             "__builtin_va_start(ap, a); struct p s = __builtin_va_arg(ap, struct p); return s.x; }"
+  # va_arg of an incomplete struct has no size to step over. (A complete one is
+  # fetched since variadic-aggregate-argument-1.)
+  def test_va_arg_of_incomplete_struct_type_is_rejected
+    source = "struct p; int f(int a, ...) { __builtin_va_list ap; " \
+             "__builtin_va_start(ap, a); __builtin_va_arg(ap, struct p); return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/second argument to 'va_arg' has type 'struct p', which va_arg cannot yield/, error.description)
+    assert_match(/second argument to 'va_arg' has incomplete type 'struct p'/, error.description)
   end
 
-  # The same restriction applies after a struct tag is hidden behind a typedef;
-  # the diagnostic must not depend on spelling the type with `struct` directly.
-  def test_va_arg_of_typedef_struct_type_is_rejected
-    source = "typedef struct p { int x; } p_t; int f(int a, ...) { __builtin_va_list ap; " \
-             "__builtin_va_start(ap, a); p_t s = __builtin_va_arg(ap, p_t); return s.x; }"
+  # The same restriction applies after the tag is hidden behind a typedef; the
+  # diagnostic must not depend on spelling the type with `struct` directly.
+  def test_va_arg_of_incomplete_typedef_struct_type_is_rejected
+    source = "typedef struct p p_t; int f(int a, ...) { __builtin_va_list ap; " \
+             "__builtin_va_start(ap, a); __builtin_va_arg(ap, p_t); return 0; }"
     error = assert_raises(Rubycc::CompileError) { compile(source) }
-    assert_match(/second argument to 'va_arg' has type 'struct p', which va_arg cannot yield/, error.description)
+    assert_match(/second argument to 'va_arg' has incomplete type 'struct p'/, error.description)
   end
 
   # A va_* builtin's first argument must be a va_list (a __va_list_tag pointer),
