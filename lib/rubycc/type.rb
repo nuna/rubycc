@@ -838,6 +838,7 @@ module Rubycc
         @members = nil
         @size = nil
         @alignment = nil
+        @natural_alignment = nil
         @complete = false
       end
 
@@ -981,7 +982,7 @@ module Rubycc
       # bit-field's declared type raises the aggregate's alignment. It does not
       # under the x86-64 System V psABI (the default) and does under AAPCS64.
       def define(raw_members, packed: false, aligned: nil, unnamed_bitfields_align: false)
-        @members, @size, @alignment =
+        @members, @size, @alignment, @natural_alignment =
           if union?
             layout_union(raw_members, packed, aligned, unnamed_bitfields_align)
           else
@@ -1005,6 +1006,20 @@ module Rubycc
         raise "incomplete struct has no alignment" unless @complete
 
         @alignment
+      end
+
+      # The alignment the members alone give the aggregate: #alignment before an
+      # aggregate-level __attribute__((aligned(N))) raised it. Each member still
+      # counts at its own boundary — its type's alignment (including an attribute
+      # that type carries) and any _Alignas on the member — so only the attribute
+      # written on this very struct/union is left out. AAPCS64 decides a
+      # composite argument's even-register round-up and stack-slot alignment by
+      # this value (its "natural alignment" of a composite type), which is why
+      # it is kept apart from #alignment. Guarded like #size.
+      def natural_alignment
+        raise "incomplete struct has no alignment" unless @complete
+
+        @natural_alignment
       end
 
       # Two struct types are identical only when they are the same object (the
@@ -1070,7 +1085,7 @@ module Rubycc
           end
         end
         struct_alignment = final_alignment(max_alignment, aligned)
-        [members, align_up(bits_to_bytes(bit_pos), struct_alignment), struct_alignment]
+        [members, align_up(bits_to_bytes(bit_pos), struct_alignment), struct_alignment, max_alignment]
       end
 
       # Places one bit-field at bit cursor `bit_pos`, recording a Member for a
@@ -1132,7 +1147,7 @@ module Rubycc
           natural_alignment = member_alignment if member_alignment > natural_alignment
         end
         union_alignment = final_alignment(natural_alignment, aligned)
-        [members, align_up(max_size, union_alignment), union_alignment]
+        [members, align_up(max_size, union_alignment), union_alignment, natural_alignment]
       end
 
       # The number of whole bytes needed to hold `bits` bits (rounding up).

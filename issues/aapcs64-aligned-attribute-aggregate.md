@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-14
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-14
+branch: gap-fixes-wave-5
+pr: 153
+steps: [aapcs64-aligned-attribute-aggregate-1, aapcs64-aligned-attribute-aggregate-2]
 ---
 
 # AArch64 で、型に付けた `aligned(16)` の構造体を引数に渡すと、置くレジスタが gcc とずれる
@@ -47,6 +47,25 @@ x86-64 は一致する。
 `variadic-aggregate-argument-1` の測定行列を回すなかで見つかった。固定引数にもある既存の不一致なので、
 その場では直さずに行列をメンバ側の `_Alignas(16)` に替えた。
 
+### 2026-09-14(実装)
+
+AAPCS64 の文書はこのホストに無く、規則は gcc 13.3 の測定から導いた。偶数レジスタへの切り上げとスタックの 16 境界は、メンバの整列の
+最大値で決まり、構造体・共用体そのものに付けた属性は数えない(packed の集約ではメンバを 1 と数える)。`StructType#natural_alignment` を足し、
+AAPCS64 の判定だけをそれで行うようにした。測定の途中で、別の課題を 3 件起票した: [`aligned-attribute-member-typedef`](aligned-attribute-member-typedef.md)(BQ)、
+[`sysv-over-aligned-aggregate-stack`](sysv-over-aligned-aggregate-stack.md)(BR)、[`sysv-padding-eightbyte-class`](sysv-padding-eightbyte-class.md)(BS)。
+
+### 2026-09-14(回帰の修正)
+
+-1 の後の全体テストで、aarch64 の `__int128` の 4 テストが `undefined method 'natural_alignment' for ... IntegerType` になった。
+`aggregate_plan` は 16 バイトの `__int128` にも呼ばれるが、`natural_alignment` は構造体の型にしか無かった。構造体・共用体では
+`natural_alignment`、それ以外では従来どおり `alignment` を使うようにした(`aapcs64-aligned-attribute-aggregate-2`)。
+
 ## 決着
 
-(未着手)
+**解消した**(`aapcs64-aligned-attribute-aggregate-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 型の属性・メンバの整列の両方の形で、両方向が gcc 同士と一致する(固定引数と可変長引数、戻り値も) | `test/test_aapcs64_aligned_attribute_aggregate.rb`(14 形 × 前置き 0〜9 個、aarch64 と x86-64) |
+| 判定の根拠を STEPS に書く | 測定の行列と、導いた規則を記録(文書は読んでいない) |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |
