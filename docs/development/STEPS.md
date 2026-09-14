@@ -16683,3 +16683,36 @@ functions" というエラーで拒否する(2026-09-14、gcc 13.3 実測)のと
 `test/test_unprototyped_function_redeclaration.rb`(43 runs)、
 `test/test_block_scope_function_decl.rb`(13 runs)、`test/test_type.rb`(92 runs)、
 `test/test_flexible_array_member.rb`(16 runs)。
+
+## ledger-after-wave-4-1 — 4 回目の修正の後に、止まっていた gem を測り直す
+
+**内容**: 方針が決まっている不足の 3 回目(PR #150: BF / BE / BH / AU)と 4 回目(PR #151: BJ / AJ / BC / BM と同梱ヘッダの洗い出し)を
+マージした master 450595d で、その不足で止まっていた gem を `tools/verify_corpus_candidate.rb --update` で測り直した。
+**台帳を 108 → 114 件**にした。
+
+**止めていた不足を越えた gem は 10 件中 9 件**(iodine は測り直していない)。そのうち 6 件が台帳に入り、3 件は次の不足で止まった(posix-spawn は範囲外、ruby-termios は BU、amalgalite は BT)。
+
+**測り直した結果**(2026-09-14、このホスト、master 450595d):
+
+| gem | 止めていた不足 | 結果 |
+|---|---|---|
+| vmstat 2.3.1 | AF(`getloadavg`) | `build_load_pass` |
+| network_interface 0.0.4 | AQ(`__caddr_t`) | `build_load_pass` |
+| serialport 1.4.0 | BB(`TIOCM*`) | `build_load_pass` |
+| semian 0.28.4 | AJ(可変長引数への `union semun`) | ビルドは通ったが、`.so` をそのまま読むと `uninitialized constant Semian` → レシピ(concurrent-ruby 1.3.8、入口は `semian`)で `documented_load_pass` |
+| trilogy 2.13.0 | AU(`pthread_attr_t`)→ BJ(`__func__`) | ビルドは通った。レシピの入口を `trilogy` だけにしたときは `cannot load such file -- bigdecimal` → 入口を `bigdecimal` → `trilogy` の順にして `documented_load_pass`(do_sqlite3 と同じ理由) |
+| enumerable-statistics 2.0.9 | AR(`qsort_r`) | ビルドは通った。入口を `enumerable_statistics` にしたときは拡張が読み込まれなかった(`documented entrypoint did not load the injected extension`)→ 拡張を読むのは `enumerable/statistics` だったので、それを入口にして `documented_load_pass` |
+| posix-spawn 0.3.15 | AM(`struct sched_param`) | **AM は越えたが、可変長配列(`posix-spawn.c:355` の `char *cargv[argc + 1];`)で止まった**。VLA は ROADMAP §3 で診断エラーと決めた範囲外なので、`OUT-OF-SCOPE-GEMS.md` に基準 H で記録した。対照の gcc(`--compiler host`)は `build_load_pass` |
+| ruby-termios 1.1.0 | BA(`tcflow`) | **BA は越えたが、同梱 `unistd.h` に `tcgetpgrp` が無くて止まった**(`termios.c:565`)。GAPS **BU** に起票 |
+| amalgalite 2.0.0 | BG(`alloca`) | **BG は越えたが、関数を `void *` のメンバで初期化する形(`sqlite3.c:135127`)で止まった**。gcc は既定で警告もしない。GAPS **BT** に起票(受け付けるかは未決) |
+| iodine 0.7.59 | BC(1 バイトの atomic) | 測り直していない。atomic の段は越えたが、`__typeof__`(AT、方針未決)で止まることが分かっている |
+
+### ロード手順を足した gem
+
+semian・trilogy・enumerable-statistics は、ビルドは通るが、`build_load` の既定の確かめ方(できた `.so` をそのまま読む)では
+`uninitialized constant Semian` などで落ちる。拡張の初期化が、Ruby 側で先に定義されるモジュールを前提にしているためで、
+do_sqlite3 などと同じく、入口の `require` をロード手順(`tools/corpus_candidate_load_recipes.rb`)に書いた。
+ロード手順は `--mode load_sanity` のときだけ使われる(`verify_corpus_candidate.rb:446`)。最初に `build_load` のまま測って
+手順が効かないように見えたのは、このためだった。
+
+**検証**: `rake test` **3,820 runs / 19,146 assertions / 0 failures / 0 errors / 35 skips**(2026-09-14、このブランチの作業ツリー)。
