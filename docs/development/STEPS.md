@@ -16318,3 +16318,79 @@ mkmf も通していない:
 nand 形(`__atomic_fetch_nand` / `__atomic_nand_fetch` / `__sync_fetch_and_nand` / `__sync_nand_and_fetch`)、
 `__atomic_test_and_set` / `__atomic_clear`、非 `_n` 形。使う gem をまだ見ておらず、未宣言の識別子として
 報告されるので、黙って誤った降ろしになることはない
+
+## function-definition-parenthesized-name-1 — 関数名を丸括弧で包んだ宣言子からの関数定義を受け付ける(GAPS BM)
+
+**課題**(GAPS BM): `int (add)(int a, int b) { return a + b; }` が
+`error: function definition through a typedef is not allowed` という誤った診断で止まっていた
+(2026-09-14、このホスト・gcc 13.3 実測)。`(add)(int a, int b)` は「丸括弧で包んだ宣言子 `(add)`」の後に
+仮引数リストが続く関数宣言子(ISO C11 6.7.6p1, 6.7.6.3)で、括弧を付けない `add(int a, int b)` と
+全く同じ資格を持つ関数定義の宣言子。6.9.1p2 が禁じているのは関数型を **typedef から継承する**ことだけで、
+宣言子の名前そのものを括弧で包むことには触れていない。名前を括弧で包むのは、同名の関数マクロを
+避ける定石(呼び出し `add(` は関数マクロに一致するが、宣言子中の `add)` は一致しない)。
+実例: iodine 0.7.59 の `mustache_parser.h:1018`、
+`MUSTACHE_FUNC int(mustache_build)(mustache_build_args_s args) { ... }`。
+
+### 原因
+
+`lib/rubycc/front/parser.rb` の宣言子解析は、丸括弧を挟んだ入れ子(`#parse_declarator_core` →
+`#parse_declarator_builder` → `#parse_direct_declarator` の相互再帰)を通じて、「この階層に付いている
+関数用の `(...)` サフィックス」を `function_params` として上位へ運ぶ。上位はこの値が番兵 `:none`
+と異なれば「もう関数サフィックスが確定した(名前が typedef 経由の関数型で、宣言子自身にはサフィックスが
+無い)」とみなし、自分自身のサフィックスを無視して**そのまま転送**する設計だった
+(`#parse_direct_declarator` のコメント「A parenthesized core forwards the buried name's own function
+suffix」)。
+
+ところが `(add)` のように**内側に何のサフィックスも付かない単なる識別子**を包んだだけの場合、
+`#parse_direct_declarator` の三項判定は「`inner_params` が `:none`、かつこのレベルの先頭サフィックスも
+関数でない」の分岐に落ち、`if`/`elsif` に `else` が無いため暗黙に **`nil`** を返していた。この `nil` は
+「typedef 経由で関数型に確定したが宣言子にサフィックスが無い」ことを示す番兵と**値として区別が付かない**。
+そのため `(add)` を包む外側の `#parse_declarator_core` は、内側から受け取った `nil` を
+「もう確定済みの関数サフィックス」と誤解し、外側で読んだ本物の `(int a, int b)` サフィックスを
+`function_params` に反映せずに捨てていた。結果、最終的に外部宣言処理へ渡る `function_params` が `nil` になり、
+`type.function?` かつ `function_params.nil?` の分岐(typedef 経由の定義を拒否する分岐)に誤って入っていた。
+
+### 対処
+
+`#parse_direct_declarator` の `function_params` を決める三項式に `else` 節を足し、
+どちらの分岐にも該当しない(=この階層にはサフィックスが無かった)場合は番兵 `:none` を返すよう変更した。
+これで丸括弧の入れ子を再帰的に通っても、「まだどの階層にも関数サフィックスが見つかっていない」状態が
+`nil` に化けずに `:none` のまま外側まで正しく伝播し、外側の本物のサフィックスが読み取られるようになる。
+
+`:none` はこの相互再帰の内部でだけ使う番兵で、外部の呼び出し元(typedef 経由の定義を拒否する
+`#parse_external_declaration` や、typedef 経由のプロトタイプの仮引数を合成する
+`#declarator_prototype_params`)は従来どおり `nil` を「サフィックスがどこにも無かった」の意味で見ている。
+そのため、宣言子解析全体の唯一の外部入口である `#parse_declarator` の末尾で、最終的な
+`function_params` が `:none` のままなら `nil` に変換してから返すようにした。これにより外部の契約
+(「`nil` = typedef 経由でサフィックスなし」)は変えずに、内部の入れ子再帰でだけ起きていた早すぎる
+`nil` への確定を防いでいる。
+
+変更点は `lib/rubycc/front/parser.rb` の2箇所のみ(`#parse_direct_declarator` の三項式、
+`#parse_declarator` の戻り値の正規化)。
+
+### テスト
+
+新規 `test/test_function_definition_parenthesized_name.rb`(15 runs, 17 assertions)。gcc 差分の対象は
+7 形: 課題の再現(`(add)(int a, int b)`)・本体内での仮引数の可視性・`static` 付き
+(`static int (f)(void)`)・ポインタ返り値(`int *(g)(void)`)・二重括弧(`int ((h))(int x)`)・
+K&R(旧形式)の仮引数リストと組み合わせた形・同名の関数マクロを避ける定石そのもの
+(`#define add(x, y) ...` の後に `int (add)(int a, int b)` を定義し、`add(1, 2)` はマクロ展開、
+`(add)(1, 2)` は本物の関数呼び出しになることを両方確認)。すべて gcc・rubycc の実行結果が一致
+(2026-09-14、gcc 13.3)。typedef 経由の定義(`typedef int F(void); F f { return 0; }`)は
+gcc も rubycc も引き続き拒否することを1件、既存の診断文言で確認した。
+
+既存スイートは以下がすべて 0 failures / 0 errors(2026-09-14、このホスト):
+
+| ファイル | runs | failures | errors |
+|---|---|---|---|
+| test/test_function_definition_parenthesized_name.rb(新規) | 15 | 0 | 0 |
+| test/test_parser.rb | 332 | 0 | 0 |
+| test/test_diagnostics.rb | 238 | 0 | 0 |
+| test/test_examples.rb | 66 | 0 | 0 |
+| test/test_examples_aarch64.rb | 576 | 0 | 0(22 skips、既存分) |
+| test/test_c_suite.rb | 223 | 0 | 0(11 skips、既存分) |
+| test/test_c_suite_aarch64.rb | 444 | 0 | 0(22 skips、既存分) |
+
+サンプル `examples/m6/function_definition_parenthesized_name_1_dodge_macro.c` を足した
+(x86-64・AArch64(qemu-aarch64)双方で `test/test_examples.rb` / `test/test_examples_aarch64.rb` が
+gcc 差分で検証)。

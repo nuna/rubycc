@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-14
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-14
+branch: gap-fixes-wave-4
+pr: 151
+steps: [function-definition-parenthesized-name-1]
 ---
 
 # 関数名を括弧で囲んだ関数定義 `int (f)(int a) { ... }` を拒否する
@@ -49,6 +49,18 @@ int main(void) { return add(1, 2) - 3; }
 
 `atomic-builtin-small-widths-1` を実装したエージェントが、iodine の残りの原因として報告した形を最小再現で確かめて起票した。
 
+### 2026-09-14(実装)
+
+原因は宣言子の解析にあった。括弧の中が識別子だけで接尾辞を持たないとき、「この段に接尾辞なし」を表す番兵 `:none` を返さず、
+`nil` に落としていた。外側の段はこれを「中の名前がもう関数の接尾辞を持っている」と読み、自分の仮引数並びを捨てていた。
+`nil` は「typedef 経由の関数型」を表す既存の番兵でもあるので、typedef 経由の定義と取り違えた。
+
 ## 決着
 
-(未着手)
+**解消した**(`function-definition-parenthesized-name-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 再現が通り、gcc と同じ値を返す。`static`・ポインタを返す形・旧形式の仮引数並びでも通る | `test/test_function_definition_parenthesized_name.rb`(二重の括弧、同名マクロを避ける形も) |
+| typedef で関数型を継ぐ定義は拒否したまま | 同じテストで確認(gcc も拒否する) |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

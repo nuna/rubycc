@@ -28,7 +28,6 @@
 | **BI**([issue](../../issues/aarch64-cross-sysroot-include.md)) | **x86-64 ホストで `-target aarch64` のとき、同梱していないシステムヘッダをクロス sysroot(`/usr/aarch64-linux-gnu/include`)から探さない**。ホストの x86-64 版 `/usr/include/netdb.h` を読んで `bits/stdint-uintn.h` で落ちる | x86-64 ホストでの aarch64 クロステスト。`<netdb.h>` を含むコードを aarch64 で検証できない。**対照の `aarch64-linux-gnu-gcc` は通る** | **実測**(2026-09-14、`#include <netdb.h>` の最小再現)。ネイティブ aarch64 ホストは未測定 | sysroot を決め打ちにするか、クロス gcc に問い合わせるかを決める |
 | **BK**([issue](../../issues/aapcs64-aligned-attribute-aggregate.md)) | **AArch64 で、型に付けた `aligned(16)` の構造体を引数に渡すと、置くレジスタが gcc とずれる**(int 3 個の後で gcc は x3/x4、rubycc は x4/x5)。メンバの `_Alignas(16)` / `__int128` なら一致する | 型の属性で 16 バイトに揃えた構造体を、gcc でコンパイルした関数との間で値渡しするコード。固定引数・可変長引数の両方。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、`variadic-aggregate-argument-1` の行列) | AAPCS64 の規則の根拠を確かめてから、`aggregate_plan` の判定を直す |
 | **BL**([issue](../../issues/bundled-signal-sigval-guard.md)) | **同梱 `signal.h` が `union sigval` を glibc のガード無しで定義する**。`_GNU_SOURCE` のもとで `<netdb.h>` と両方含めると、どちらの順でも再定義になる(AU と同じ形) | `<signal.h>` と `<netdb.h>` を両方含む gem。`iodine` 0.7.59 の `fio.c` が該当し、**対照の gcc は通る** | **実測**(2026-09-14、両方の順の最小再現) | §2 の同梱ヘッダの洗い出しで、glibc と共有するガードをまとめて数える |
-| **BM**([issue](../../issues/function-definition-parenthesized-name.md)) | **関数名を括弧で囲んだ関数定義 `int (f)(int a) { ... }` を拒否する**。診断は `function definition through a typedef is not allowed` で原因を伝えない | 同名のマクロの展開を避けて関数名を括弧で囲む gem。`iodine` 0.7.59 の同梱 mustache パーサが該当し、**対照の gcc は通る** | **実測**(2026-09-14、最小再現) | typedef で関数型を継ぐ定義の拒否は保ったまま、括弧で囲んだ関数宣言子を定義に通す |
 
 ## 2. 未解消の負債
 
@@ -58,6 +57,8 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ BM**(関数名を括弧で囲んだ関数定義を拒否する):
+  `function-definition-parenthesized-name-1` で解消。括弧の中の宣言子が「接尾辞なし」を `nil` に落としていたため、外側の仮引数並びが捨てられ、typedef 経由の定義と取り違えていた。
 - **ギャップ BC**(`__atomic_*` ビルトインが 1 / 2 バイトの対象を拒否する):
   `atomic-builtin-small-widths-1` で解消。フェンスを除く 18 形を 1 / 2 / 4 / 8 バイトに広げ、ビット演算の fetch 形 10 形を足した(x86-64 / AArch64)。
   iodine 0.7.59 は atomic の段を越え、残りは AT・BL・BM に移した。

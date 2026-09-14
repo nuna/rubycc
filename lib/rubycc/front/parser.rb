@@ -2586,6 +2586,12 @@ module Rubycc
           parse_declarator_builder(name_mode: name_mode,
                                    allow_incomplete_array: allow_incomplete_array,
                                    allow_zero_length_array: allow_zero_length_array)
+        # :none never escapes this method: every caller outside the
+        # declarator-parsing family expects the pre-existing nil sentinel for
+        # "no suffix supplied parameters anywhere in this declarator" (the
+        # through-a-typedef function definition check, and
+        # #declarator_prototype_params's typedef-sourced prototype).
+        function_params = nil if function_params == :none
         [name_tok, build.call(base), function_params, pointer_quals]
       end
 
@@ -2716,11 +2722,21 @@ module Rubycc
 
         # A parenthesized core forwards the buried name's own function suffix;
         # every other core takes this level's outermost (first textual) suffix.
+        # When neither applies, this level's core carried no suffix of its
+        # own — the sentinel :none propagates unchanged, rather than nil,
+        # because a bare identifier core sitting inside "(" ... ")" (a
+        # parenthesized name, "int (add)(int a, int b)") is not yet known to
+        # be the *final* function_params: the enclosing suffix may still be
+        # the one that makes the declared name a function, and only
+        # #parse_declarator (the single external entry point) may collapse
+        # :none to nil once nothing further can attach.
         function_params =
           if inner_params != :none
             inner_params
           elsif suffixes.first&.first == :function
             suffixes.first[1]
+          else
+            :none
           end
         reject_unsurfaced_identifier_lists(suffixes, function_params)
         [name_tok, build, function_params]
