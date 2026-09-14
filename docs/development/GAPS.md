@@ -24,6 +24,8 @@
 | **BS**([issue](../../issues/sysv-padding-eightbyte-class.md)) | **x86-64 で後半が詰め物だけの集約を可変長引数に渡すと、xmm を 1 つ余分に使う**(gcc は後半にレジスタを割り当てない) | `struct { float a, b; } __attribute__((aligned(16)))` のような形を可変長で gcc とやり取りするコード。固定引数は一致。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、同上) | メンバの無い eightbyte の分類(psABI の NO_CLASS)を確かめてから直す |
 | **BO**([issue](../../issues/glibc-alloca-without-gnuc.md)) | **glibc 本体の `<alloca.h>` を読む経路で、`alloca` がリンク時に未定義参照になる**(glibc は `__GNUC__` のときだけ組み込みに写し、rubycc は `__GNUC__` を定義しない) | aarch64 のクロス sysroot を使う例題テストなど、同梱ヘッダより先に glibc 本体の `<alloca.h>` を読む構成。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、例題に `alloca` を入れて aarch64 で) | どの経路で glibc 本体の `<alloca.h>` を読むかを先に測る |
 | **BP**([issue](../../issues/glibc-public-headers-mixed.md)) | **同梱しない glibc の公開ヘッダ 186 本のうち、rubycc だけが落ちるものが 23 本ある**(`__BEGIN_DECLS` が無いように見える形が多い) | それらのヘッダを含む gem。該当する gem は数えていない | **実測**(2026-09-14、`tools/audit_bundled_headers.rb` の混在の調査、x86-64) | 23 本の原因を最小再現で確かめ、同梱ヘッダの側と rubycc 本体の側に分ける |
+| **BT**([issue](../../issues/function-pointer-void-pointer-init.md)) | **関数を `void *` に暗黙に変換する初期化を拒否する**(`incompatible types in initialization`)。gcc は既定では警告もせず、`-pedantic` のときだけ警告する | 同梱の SQLite(amalgamation)を持つ gem。`amalgalite` 2.0.0 の `sqlite3.c:135127` が該当し、**対照の gcc は通る** | **実測**(2026-09-14、最小再現) | **受け付けるか拒否を保つかが未決**。AN(gcc 13 が警告にとどめる診断)より gcc との差が大きい |
+| **BU**([issue](../../issues/bundled-unistd-process-group.md)) | **同梱 `unistd.h` に `tcgetpgrp` などプロセスグループの関数が無い** | `ruby-termios` 1.1.0 の `termios.c:565` が該当し(BA を越えた先)、**対照の gcc は通る** | **実測**(2026-09-14、最小再現) | §2 の同梱ヘッダの分類で `unistd.h` をまとめて見る |
 
 ## 2. 未解消の負債
 
