@@ -795,6 +795,13 @@ module Rubycc
           raise NotAddressConstant unless node.op == :deref
 
           pointer_value(node.operand)
+        when Front::AST::StringLit
+          # "&\"literal\"" (and "&__func__" — see #gen_address_of) as a static
+          # initializer: the object's own type is the whole char[N+1] array, not
+          # the char* the bare literal decays to.
+          AddressConstant.new(base_kind: :string, symbol: nil,
+                              string_id: intern_string(node.value), offset: 0,
+                              pointee: Type::Array.new(@plain_char, node.value.bytesize + 1))
         else
           raise NotAddressConstant
         end
@@ -3870,6 +3877,16 @@ module Rubycc
           # even for an array literal ("&(int[]){...}" is int(*)[N]).
           addr, type = gen_compound_literal_object(operand)
           [addr, Type::Pointer.new(type)]
+        elsif operand.is_a?(Front::AST::StringLit)
+          # "&\"literal\"" (and "&__func__", the parser's fabricated string
+          # literal for it — see Front::Parser#predefined_function_name_literal):
+          # a string literal is an lvalue of array type char[N+1] (its bytes plus
+          # the NUL), so its address is a pointer to that whole array, not the
+          # char* the bare literal decays to elsewhere.
+          id = intern_string(operand.value)
+          dst = new_vreg
+          emit(:string_addr, dst: dst, a: id)
+          [dst, Type::Pointer.new(Type::Array.new(@plain_char, operand.value.bytesize + 1))]
         else
           error_at(node.token, "lvalue required as unary '&' operand")
         end
@@ -6350,6 +6367,9 @@ module Rubycc
           # "&(T){...}" is a pointer to the unnamed object of type T (no decay),
           # mirroring the CompoundLiteral branch of #gen_address_of.
           Type::Pointer.new(operand.type)
+        elsif operand.is_a?(Front::AST::StringLit)
+          # "&\"literal\"", mirroring the StringLit branch of #gen_address_of.
+          Type::Pointer.new(Type::Array.new(@plain_char, operand.value.bytesize + 1))
         else
           error_at(node.token, "lvalue required as unary '&' operand")
         end

@@ -315,6 +315,12 @@ module Rubycc
       # the "at most one storage class" duplicate check.
       STORAGE_CLASS_KEYWORDS = %w[typedef static extern register auto].freeze
 
+      # The predefined identifiers C99 6.4.2.2 gives every function body:
+      # __func__ is the standard one, __FUNCTION__ and __PRETTY_FUNCTION__ its
+      # GNU synonyms. In C mode gcc gives all three the plain function name (no
+      # C++-style decorated signature) — measured 2026-09-14 with gcc 13.3.
+      PREDEFINED_FUNCTION_NAMES = %w[__func__ __FUNCTION__ __PRETTY_FUNCTION__].freeze
+
       # The non-type parts of a declaration's specifier run, collected by
       # #parse_declaration_specifiers alongside the base type. `storage` is the
       # recorded storage class (nil, :typedef, :static or :extern); `const` is
@@ -446,6 +452,12 @@ module Rubycc
         # #old_style_parameter_abi_types). Every other agreement between
         # declarations of one function is the generator's to enforce.
         @prototype_param_types = {}
+        # The name of the function definition whose body is currently being
+        # parsed, or nil at file scope. #predefined_function_name_literal reads
+        # this to resolve __func__ and its GNU synonyms (C99 6.4.2.2); nested
+        # function definitions are rejected elsewhere, so a single slot (not a
+        # stack) is enough.
+        @current_function_name = nil
       end
 
       # Parses the whole translation unit into an AST::Program. An external
@@ -2128,8 +2140,14 @@ module Rubycc
         @tag_scopes.push({})
         @ordinary_scopes.push({})
         params.each { |param| declare_ordinary_name(param.name, param.type) }
+        # Nested function definitions are rejected elsewhere (see
+        # #parse_external_declaration), so this never nests and a plain
+        # save/restore (rather than a stack) is enough.
+        outer_function_name = @current_function_name
+        @current_function_name = name
         body = []
         body.concat(parse_block_item) until peek.punct?("}")
+        @current_function_name = outer_function_name
         @ordinary_scopes.pop
         @tag_scopes.pop
         expect_punct("}")
@@ -4042,9 +4060,17 @@ module Rubycc
           # An identifier bound to an enum constant folds to its int value on the
           # spot, so the rest of the pipeline never sees an enumerator; one bound
           # to (or shadowed by) an ordinary name stays a variable reference.
+          # __func__ and its GNU synonyms are unbound by construction (nothing
+          # ever declares them in @ordinary_scopes), so entry is nil for them
+          # unless a program declares its own identifier of that name in some
+          # visible scope — that user declaration must win, exactly as it would
+          # shadow the "static const char __func__[] = ..." 6.4.2.2 imagines
+          # right after the enclosing function's opening brace.
           entry = lookup_ordinary(tok.value)
           if entry&.kind == :enum
             AST::IntLit.new(entry.value, tok, Type::Int)
+          elsif entry.nil? && PREDEFINED_FUNCTION_NAMES.include?(tok.value)
+            predefined_function_name_literal(tok)
           else
             AST::VariableRef.new(tok.value, tok)
           end
@@ -4173,6 +4199,44 @@ module Rubycc
           column: token.column,
           source_line: token.source_line
         )
+      end
+
+      # As #error_at, but on the non-fatal channel (see Diagnostics.warn): the
+      # message is written and parsing continues.
+      def warn_at(token, description)
+        Diagnostics.warn(
+          description,
+          filename: token.filename,
+          line: token.line,
+          column: token.column,
+          source_line: token.source_line
+        )
+      end
+
+      # __func__ (C99 6.4.2.2) and its GNU synonyms __FUNCTION__ and
+      # __PRETTY_FUNCTION__ behave as if
+      # "static const char __func__[] = "<function-name>";" were declared right
+      # after the enclosing function's opening brace. Fabricating a string
+      # literal here — rather than teaching the generator a dedicated node —
+      # reuses everything a string literal already gets for free: sizeof
+      # (char[N+1]), pointer decay, and (since the generator interns string
+      # bytes by content, see Generator#intern_string) a single shared object
+      # per distinct function name, so every use inside one function's body
+      # yields the same address without any extra per-function bookkeeping.
+      #
+      # Outside any function (6.4.2.2 defines __func__ only inside one), gcc
+      # 13.3 (measured 2026-09-14) instead yields an empty string with a
+      # warning for __func__ itself; its two GNU synonyms warn nothing there,
+      # and gcc's __PRETTY_FUNCTION__ becomes "top level" rather than "" — not
+      # reproduced here (see docs/development/STEPS.md,
+      # predefined-identifier-func-1) since no observed C source relies on it.
+      def predefined_function_name_literal(tok)
+        if @current_function_name
+          AST::StringLit.new(@current_function_name.b, tok)
+        else
+          warn_at(tok, "'#{tok.value}' is not defined outside of function scope") if tok.value == "__func__"
+          AST::StringLit.new("".b, tok)
+        end
       end
 
       # Folds `node` — a conditional-expression already parsed as a

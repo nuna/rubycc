@@ -57,6 +57,9 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ BJ**(定義済み識別子 `__func__` が無い):
+  `predefined-identifier-func-1` で解消。構文解析の段で、囲む関数の名前の文字列リテラルに置き換える。
+  `__FUNCTION__` / `__PRETTY_FUNCTION__` も同じ(C モードの gcc の実測どおり)。ファイルスコープの `__func__` は gcc と同じ警告を出して `""` になる。
 - **ギャップ AU**(同梱 `pthread.h` が `pthread_attr_t` を glibc のガード無しで定義する):
   `bundled-pthread-attr-guard-1` で解消。glibc と同じく、typedef を `__have_pthread_attr_t` で 1 回に絞り、共用体の中身を別に定義した
   (x86_64 / aarch64 の両方)。`<netdb.h>` と `<pthread.h>` をどちらの順で含めても同じ型になる。他の同梱の型に glibc 共有のガードは無かった。

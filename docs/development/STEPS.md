@@ -15993,3 +15993,103 @@ x86-64 ホストの `-target aarch64` が、同梱していないヘッダ(`<net
 (`/usr/aarch64-linux-gnu/include`)から探さない件は、別の課題として
 `issues/aarch64-cross-sysroot-include.md`(GAPS BI)に起票した。直ったら、上の aarch64 テストを
 実物の `<netdb.h>` に置き換える。
+
+## predefined-identifier-func-1 — __func__ は文字列リテラルとして生やす
+
+GAPS **BJ**。rubycc は `__func__`(ISO C99 6.4.2.2)を一切知らず、`undeclared variable
+'__func__'` で落ちていた(2026-09-14 実測、このホスト、gcc 13.3)。実 gem では
+trilogy 2.13.0 が同梱 OpenSSL 3 経由で `OPENSSL_FUNC`(`<openssl/err.h>`)→ `__func__` を踏む。
+
+### 実測(2026-09-14、このホスト、gcc 13.3.0、`-std=gnu17`)
+
+```c
+#include <stdio.h>
+int main(void) {
+  printf("[%s] %zu\n", __func__, sizeof __func__);
+  printf("[%s]\n", __FUNCTION__);
+  printf("[%s]\n", __PRETTY_FUNCTION__);
+  return 0;
+}
+```
+`[main] 5`、`[main]`、`[main]` — C モードでは `__FUNCTION__`/`__PRETTY_FUNCTION__` は
+`__func__` の単なる別名で、C++ のような装飾シグネチャは付かない。
+
+ファイルスコープでの `__func__` は警告付きで受理され、空文字列(`sizeof` は 1)になる:
+```c
+const char *p = __func__;  // warning: '__func__' is not defined outside of function scope
+```
+`__FUNCTION__`/`__PRETTY_FUNCTION__` は同じ文脈で**警告を出さない**。さらに
+`__PRETTY_FUNCTION__` はファイルスコープで `"top level"` になる(`__FUNCTION__` は `""`)。
+
+ユーザー宣言との衝突は実は起こらない: gcc は `__func__`/`__FUNCTION__`/
+`__PRETTY_FUNCTION__` という綴りの宣言子を**関数内外を問わず一切受理しない**
+(`int __func__ = 5;` は `error: expected identifier or '(' before '__func__'`)。
+予約識別子として宣言不可という扱いで、C99 6.4.2.1p7 の「`_` + 大文字/`_` は
+実装用に予約」を lexer/parser レベルで強制している。
+
+### 実装
+
+`__func__` を**パース時に文字列リテラル(`AST::StringLit`)へ変換**する
+(`lib/rubycc/front/parser.rb`、`Parser#predefined_function_name_literal`)。
+専用の AST ノードや IR 命令を新設せず、文字列リテラルが既に持っている性質
+(sizeof は `bytesize + 1`、代入不可、ポインタへの decay)にただ乗りする。
+
+- `Parser#parse_function_definition` が関数本体の間だけ `@current_function_name` に
+  関数名を入れる(入れ子関数定義は既に禁止されているので単一スロットで足りる)。
+- `parse_primary_expression` の識別子分岐で、`lookup_ordinary` が何も見つけず
+  (=ユーザーがその名前を宣言していない)、かつ綴りが
+  `__func__`/`__FUNCTION__`/`__PRETTY_FUNCTION__` のいずれかなら、
+  `AST::StringLit.new(@current_function_name, tok)` を返す。ユーザーが同名を
+  宣言していれば(rubycc は gcc と違って宣言子としての禁止をしていない)通常の
+  `VariableRef` のまま通る — 「他スコープのユーザー識別子と衝突しない」という
+  仕様は、実質「実装が勝手にスコープへ何かを挿入しない(見つからない時だけ生やす)」
+  という設計でそのまま満たされる。
+- 「1 関数につき 1 オブジェクト、アドレスが安定」は生成器の
+  `#intern_string`(内容アドレッシングの重複排除)にただ乗りして満たしている:
+  同じ関数名の `__func__` を関数内で何度書いても同じバイト列なので同じ文字列 ID に
+  丸められ、実質同じオブジェクトになる。生成器側の変更は「`&`(address-of)が
+  文字列リテラルを受け付けていなかった」1 点だけ(下記)。
+- ファイルスコープ(`@current_function_name` が nil)では `__func__` を空文字列
+  `""` にし、`__func__` のときだけ `warn_at` で gcc と同文言の警告を出す
+  (`Diagnostics.warn`、`Parser#warn_at` を新設。preprocessor の `#warning` が
+  使う経路と同じ)。`__FUNCTION__`/`__PRETTY_FUNCTION__` は警告なしで `""`
+  にする(gcc の `"top level"` は再現しない、下記「残された観点」)。
+
+`lib/rubycc/ir/generator.rb` 側の変更は、`&"文字列リテラル"` (`&__func__` を含む)を
+未対応だった `#gen_address_of`・`#static_address_of_type`・`#object_address`
+(定数畳み込み経路)の 3 箇所に追加しただけ。いずれも「文字列リテラルの実体は
+`char[N+1]`(NUL 込み)配列で、`&` はその配列全体へのポインタ」という既存の
+`#sizeof_operand_type`/`#pointer_value` の扱いと対称に実装した。
+
+### テスト
+
+- `test/test_predefined_identifier_func.rb`(新規): `__func__`/`__FUNCTION__`/
+  `__PRETTY_FUNCTION__` の値と `sizeof`、関数名ごとの追従、入れ子ブロックでの利用、
+  1 関数内の複数参照が同一アドレスになること(`==` と `&` の両方)、ファイルスコープの
+  値と警告文言、ユーザー宣言が優先されること(rubycc のみ、gcc は宣言自体を拒否するため
+  差分にできない)。gcc/rubycc ペアの差分テスト形式(`test_escape_sequence_e.rb` に倣う)。
+  17 runs / 29 assertions / 0 failures。
+- `examples/m6/predefined_identifier_func_1_predefined_identifiers.c`(新規): 上記の
+  代表的な使い方(3 綴りの一致・sizeof・入れ子ブロック・別関数名への追従・
+  アドレス安定性)を 1 本にまとめ、gcc と同一の exit status/stdout であることを
+  手元で実行して確認(`main main main` / `5` / `nested: main` / `inner: add`、
+  exit 0)。ファイルスコープの角(警告が出る形)は例に含めない(README の他の例と
+  同様、正常系の実演に絞った)。
+- `test/test_examples.rb` 64 runs / 0 failures。`test/test_examples_aarch64.rb`
+  572 runs / 0 failures / 26 skips(既存、無関係)。`test/test_c_suite.rb` 223 runs /
+  0 failures / 13 skips(既存)。`test/test_c_suite_aarch64.rb` 444 runs / 0 failures /
+  26 skips(既存)。`test/test_diagnostics.rb`・`test/test_parser.rb`・
+  `test/test_address_constant_globals.rb` も回帰なしを確認。
+
+### gcc に合わせなかったこと(意図)
+
+- ファイルスコープの `__PRETTY_FUNCTION__` が gcc では `"top level"` になる件は
+  再現していない(`""` のまま)。`__FUNCTION__`/`__PRETTY_FUNCTION__` の
+  ファイルスコープでの無警告も、`__func__` と同じ警告文言で代用していない
+  (`__func__` のみ警告)。いずれも実測はしたが、この綴りをファイルスコープで
+  使う実コードは既知のコーパスに見当たらず、優先度を下げた。
+- rubycc は gcc と異なり `__func__`/`__FUNCTION__`/`__PRETTY_FUNCTION__` を
+  宣言子の名前として使うこと自体は禁止していない(通常の識別子として宣言でき、
+  宣言があればそちらが優先される)。有効な C プログラムはこれらを宣言しない
+  (C99 6.4.2.1p7 により予約識別子)ため実害はない想定だが、gcc の
+  「宣言不可」自体を再現してはいない。
