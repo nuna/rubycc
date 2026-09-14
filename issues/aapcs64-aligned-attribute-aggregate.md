@@ -5,7 +5,7 @@ opened: 2026-09-14
 closed: 2026-09-14
 branch: gap-fixes-wave-5
 pr: 153
-steps: [aapcs64-aligned-attribute-aggregate-1]
+steps: [aapcs64-aligned-attribute-aggregate-1, aapcs64-aligned-attribute-aggregate-2]
 ---
 
 # AArch64 で、型に付けた `aligned(16)` の構造体を引数に渡すと、置くレジスタが gcc とずれる
@@ -53,6 +53,12 @@ AAPCS64 の文書はこのホストに無く、規則は gcc 13.3 の測定か�
 最大値で決まり、構造体・共用体そのものに付けた属性は数えない(packed の集約ではメンバを 1 と数える)。`StructType#natural_alignment` を足し、
 AAPCS64 の判定だけをそれで行うようにした。測定の途中で、別の課題を 3 件起票した: [`aligned-attribute-member-typedef`](aligned-attribute-member-typedef.md)(BQ)、
 [`sysv-over-aligned-aggregate-stack`](sysv-over-aligned-aggregate-stack.md)(BR)、[`sysv-padding-eightbyte-class`](sysv-padding-eightbyte-class.md)(BS)。
+
+### 2026-09-14(回帰の修正)
+
+-1 の後の全体テストで、aarch64 の `__int128` の 4 テストが `undefined method 'natural_alignment' for ... IntegerType` になった。
+`aggregate_plan` は 16 バイトの `__int128` にも呼ばれるが、`natural_alignment` は構造体の型にしか無かった。構造体・共用体では
+`natural_alignment`、それ以外では従来どおり `alignment` を使うようにした(`aapcs64-aligned-attribute-aggregate-2`)。
 
 ## 決着
 

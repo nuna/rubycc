@@ -405,7 +405,13 @@ module Rubycc
 
         if type.size <= MAX_REGISTER_AGGREGATE
           pieces = Array.new((type.size + 7) / 8) { |i| AbiPiece.new(offset: 8 * i, size: 8, kind: :gp) }
-          return AggregatePlan.new(mode: :registers, pieces: pieces, align16: type.natural_alignment >= 16)
+          # #natural_alignment (the members' alignment, excluding an
+          # aggregate-level `aligned` attribute) exists only on a
+          # struct/union; every other type reaching here (e.g. __int128) has
+          # no such attribute to exclude, so its plain #alignment already is
+          # its natural alignment.
+          natural_alignment = type.struct? ? type.natural_alignment : type.alignment
+          return AggregatePlan.new(mode: :registers, pieces: pieces, align16: natural_alignment >= 16)
         end
 
         AggregatePlan.new(mode: :by_reference, pieces: [], align16: false)

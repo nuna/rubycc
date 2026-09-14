@@ -16878,3 +16878,56 @@ AAPCS64 の文書はこのホストに無く、参照していない。**規則�
   gcc はその eightbyte にレジスタを割り当てないが、rubycc は SSE に分類して xmm を 2 個使い、可変長の 2 個目を
   `va_arg` が別のスロットから読む(固定引数は一致)。新しいテストの x86-64 側から `f2_attr` を外した。
   `issues/sysv-padding-eightbyte-class.md`(GAPS BS)
+
+## aapcs64-aligned-attribute-aggregate-2 — `natural_alignment` は集約だけの性質、`__int128` には `alignment` を使う
+
+### 原因
+
+`aapcs64-aligned-attribute-aggregate-1` は `AAPCS64Convention#aggregate_plan` の `align16` 判定を
+`type.alignment >= 16` から `type.natural_alignment >= 16` に変えたが、`natural_alignment` は
+`Type::StructType` にしか定義していない。`aggregate_plan` は構造体・共用体だけでなく、レジスタ渡しの
+集約全般(16 バイト以下)に呼ばれ、`__int128`(`Type::IntegerType`)もここを通る。2026-09-14 のフルスイートで
+
+```
+NoMethodError: undefined method 'natural_alignment' for an instance of Rubycc::Type::IntegerType
+    lib/rubycc/ir/call_convention.rb:408:in 'Rubycc::IR::AAPCS64Convention#aggregate_plan'
+```
+
+が `test/test_aarch64_execution.rb`(`test_int128_shift`・`test_int128_multiply_uses_umulh`・
+`test_int128_multiply`)と `test/test_int128_abi.rb`(`test_int128_by_value_abi_aarch64`)の 4 件で発生した。
+
+### 対処
+
+`natural_alignment` は「集約の `aligned` 属性を除いた、メンバだけが決める整列」という構造体・共用体固有の
+概念で、`__int128` のようなスカラー型には属性を除く・除かないの区別自体が無く、`alignment` がそのまま
+自然な整列に当たる。型に `natural_alignment` を生やして揃えるのではなく、`aggregate_plan` 側で
+`type.struct?`(構造体・共用体を指す既存の述語)によって使う整列を切り替えた:
+
+```ruby
+natural_alignment = type.struct? ? type.natural_alignment : type.alignment
+return AggregatePlan.new(mode: :registers, pieces: pieces, align16: natural_alignment >= 16)
+```
+
+構造体以外の型に `natural_alignment` という名前だけの委譲メソッド(`alignment` を返すだけ)を追加する案も
+検討したが、`natural_alignment` は `Type::StructType` のドキュメント(type.rb 1011 行目)が言うとおり
+「集約の属性で引き上げる前の整列」という構造体固有の意味を持つ言葉で、スカラー型に同名のメソッドを生やすと
+その意味を持たない値に同じ名前を与えることになり紛らわしい。呼び出し側 1 箇所だけの分岐のほうが、
+この概念が構造体・共用体にしか無いことをコードの形でも表せると判断した。
+
+`grep -rn natural_alignment lib/ test/` で確認した限り、`aggregate_plan` 以外に `natural_alignment` を
+呼ぶ箇所は無い。
+
+### テスト
+
+いずれも 2026-09-14、`ruby -rbundler/setup -Ilib -Itest <file>`、0 failures / 0 errors:
+
+- `test/test_aarch64_execution.rb` 53 runs、`test/test_int128_abi.rb` 2 runs(いずれも修正対象そのもの)
+- `test/test_aapcs64_aligned_attribute_aggregate.rb` 4 runs、`test/test_variadic_aggregate_argument.rb` 4 runs
+  (前ステップの回帰対象)
+- `test/test_cross_abi.rb` 4 runs、`test/test_aarch64_aggregate_execution.rb` 11 runs、
+  `test/test_aarch64_argument_execution.rb` 13 runs、`test/test_aarch64_variadic_execution.rb` 9 runs、
+  `test/test_examples_aarch64.rb` 582 runs / 22 skips、`test/test_c_suite_aarch64.rb` 444 runs / 22 skips
+- `grep -rli int128 test/*.rb` で見つけた残り: `test/test_atomic_type.rb` 17 runs、
+  `test/test_atomic_builtins.rb` 45 runs、`test/test_diagnostics.rb` 238 runs、
+  `test/test_execution_harness.rb` 244 runs、`test/test_gcc_builtins.rb` 22 runs、
+  `test/test_parser.rb` 332 runs、`test/test_type.rb` 92 runs
