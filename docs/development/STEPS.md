@@ -16747,3 +16747,101 @@ BSD 短縮名を実測したことと `ushort` の訂正を追記した(ABI 値�
 ### 残された観点
 
 なし。同節にある BSD 短縮名は全て測定済みで、`ushort` 以外に不一致は見つからなかった。
+
+## aapcs64-aligned-attribute-aggregate-1 — AArch64 の偶数レジスタ切り上げを、集約の「自然な整列」で決める(GAPS BK)
+
+### 原因
+
+AAPCS64 は、16 バイト整列の引数に対して NGRN を偶数に切り上げ(偶数番から始まる x レジスタ対)、
+スタックに溢れたときは NSAA を 16 に切り上げる。rubycc の `AAPCS64Convention#aggregate_plan` は
+この判定(`align16`)を `type.alignment >= 16` で行っており、集約そのものに付けた
+`__attribute__((aligned(16)))` で上がった整列も数えていた。gcc はそれを数えない。
+
+2026-09-14、このホスト(WSL2 / `aarch64-linux-gnu-gcc` 13.3 + qemu-aarch64、x86-64 は gcc 13.3)で、
+呼び出し側が long を k 個渡した後に集約と long を 1 個渡し、呼ばれ側を「long 8 個 + スタック 8 個」の
+関数として受けて、各ワードがどのレジスタ・スタックスロットに届いたかを読む探針で測った
+(固定引数と可変長引数の両方。`sN` はスタック引数領域の N 番目の eightbyte):
+
+| 形 | 16 の出どころ | gcc(k=1) | gcc(k=3) | gcc(k=9) | 修正前の rubycc |
+|---|---|---|---|---|---|
+| `struct { long a, b; } __attribute__((aligned(16)))` | 集約の属性(`}` の後) | x1/x2 | x3/x4 | s1/s2 | x2/x3・x4/x5・s2/s3(**不一致**) |
+| `struct __attribute__((aligned(16))) T { long a, b; }` | 集約の属性(キーワードの後) | x1/x2 | x3/x4 | s1/s2 | 同上(**不一致**) |
+| `typedef struct { long a, b; } __attribute__((aligned(16))) T` | 集約の属性 | x1/x2 | x3/x4 | s1/s2 | 同上(**不一致**) |
+| `struct { long a; } __attribute__((aligned(16)))` | 集約の属性 | x1 | x3 | s1 | x2・x4・s2(**不一致**) |
+| `struct { float a, b; } __attribute__((aligned(16)))`(HFA でない、GP 1 個) | 集約の属性 | x1 | x3 | s1 | x2・x4・s2(**不一致**) |
+| `union { long a; char c[16]; } __attribute__((aligned(16)))` | 集約の属性 | x1/x2 | x3/x4 | s1/s2 | x2/x3・x4/x5・s2/s3(**不一致**) |
+| `struct { long a, b; } __attribute__((packed, aligned(16)))` | 集約の属性(メンバは packed で 1) | x1/x2 | x3/x4 | s1/s2 | x2/x3・x4/x5・s2/s3(**不一致**) |
+| `struct { _Alignas(16) long a; long b; }` | メンバ | x2/x3 | x4/x5 | s2/s3 | 一致 |
+| `struct { __int128 a; }` | メンバ | x2/x3 | x4/x5 | s2/s3 | 一致 |
+| `struct { struct I i; }`(`I` が属性で 16) | メンバ(の型) | x2/x3 | x4/x5 | s2/s3 | 一致 |
+| `struct { long a __attribute__((aligned(16))); long b; }` | メンバの属性 | x2/x3 | x4/x5 | s2/s3 | x1/x2・x3/x4・s1/s2(**不一致、別件**) |
+| `typedef struct P T __attribute__((aligned(16)))` | typedef 名の属性 | x1/x2 | x3/x4 | s1/s2 | 一致(下記) |
+
+- 固定引数と可変長引数で結果は同じ。k = 0, 2, 6, 7, 8 は切り上げが結果を変えない位置で、全形一致
+- `struct { double a, b; } __attribute__((aligned(16)))` は HFA(v0/v1)、32 バイト整列の 2 形
+  (`aligned(32)` の集約、`_Alignas(32)` のメンバ)は 16 バイトを超えるので参照渡しで、どちらも整列が効かない
+- x86-64(System V)は同じ行列で、集約の属性も含めた整列でスタックスロットを 16 に揃える
+  (`aligned(16)` の集約を 6 個の long の後に渡すと gcc も rubycc も rsp+16 から)。16 バイト整列の形は
+  メンバ属性の形を除いて全て一致した
+
+AAPCS64 の文書はこのホストに無く、参照していない。**規則は測定から導いた**: 偶数レジスタ切り上げと
+スタックスロットの 16 境界はどちらも「メンバの整列の最大値」(集約そのものに付いた属性を除く。
+各メンバはその型の整列 — 型に付いた属性を含む — と、メンバの `_Alignas` を数える。packed の集約では
+メンバは 1)で決まる。規格はこの 2 つの規則を引数の「自然な整列(natural alignment)」で書いており、
+合成型の自然な整列をメンバから決めるという読みと、測定は矛盾しない。
+
+### 対処
+
+- `Type::StructType` に `natural_alignment` を足した。`#layout_struct` / `#layout_union` が、
+  集約の `aligned` 属性で引き上げる前の整列(メンバの境界の最大値)を 4 つ目の値として返し、
+  `#define` がそれを保持する。`#alignment`(レイアウト・`_Alignof`・System V が使う)は変えない
+- `AAPCS64Convention#aggregate_plan` の整数レジスタ集約で、`align16` を
+  `type.natural_alignment >= 16` にした。`align16` は placer の NGRN 切り上げ・スタックの 16 境界と、
+  `emit_va_arg_aggregate_aapcs64` の `__gr_offs` 切り上げ・`__stack` の 16 境界の全部が読むので、
+  呼び出し側(固定・可変長)と呼ばれ側(名前付き引数・`va_arg`)がこの 1 箇所で揃う
+- System V(`SystemVAMD64Convention`)は `type.alignment` のまま。gcc の測定どおり属性を数える
+- IR の契約は変わらない(`AggregatePlan` の形も `align16` の意味も同じで、判定に使う整列だけが変わる)
+
+### テスト
+
+- `test/test_aapcs64_aligned_attribute_aggregate.rb`(新規): 上の 14 形 × 前置き long 0〜9 個を、固定引数
+  (前置きの数ごとに別の関数)、可変長引数(集約・long・2 個目の集約・long を `va_arg` で読む)、
+  戻り値(`T echo(long, T, long)`、奇数番の位置で受けて返す)で回す。gcc 同士の出力を対照に、
+  rubycc 呼び出し → gcc 呼ばれ側、gcc 呼び出し → rubycc 呼ばれ側の両方が一致することを求める。
+  AArch64 は 14 形 × 21 行 = 294 行、x86-64 は下記の 3 形を除く 11 形 × 21 行 = 231 行。
+  4 runs, 12 assertions, 0 failures, 0 errors, 0 skips。修正前の判定(`type.alignment >= 16`)を
+  差し戻すと AArch64 の 2 runs が両方 failure になることを確かめた(2026-09-14)
+- `test/test_variadic_aggregate_argument.rb`: `variadic-aggregate-argument-1` がこのギャップのために
+  外していた型属性の形 `struct t16 { long a, b; } __attribute__((aligned(16)))` を行列に戻した
+  (18 形 × 14 前置き = 252 呼び出し)。4 runs, 12 assertions, 0 failures。修正前の判定では AArch64 の
+  2 runs が failure になる
+- `examples/m6/aapcs64_aligned_attribute_aggregate_1_attribute_vs_member.c`: 属性で 16 の構造体と
+  メンバで 16 の構造体を、奇数個の long の後・レジスタを使い切った後に、固定引数・可変長引数・戻り値で通す。
+  構造体は `#include` より**前**に定義している。`test_examples_aarch64.rb` は rubycc に cross sysroot の
+  glibc ヘッダを読ませ、その `<sys/cdefs.h>`(290 行)は `__GNUC__` も `__clang__` も無いコンパイラに
+  `#define __attribute__(xyz)` を与える。rubycc は DESIGN R7 で `__GNUC__` を定義しないので、`<stdio.h>` の
+  後に書いた属性は消える。最初の版(ヘッダの後に定義)は aarch64 だけ `_Alignof(struct boxed)` が 8 になり
+  gcc(16)と食い違った。修正前の lib でも同じ 8 になることを確かめた(2026-09-14)ので、本ステップの変更とは
+  無関係の、例の実行系の性質である
+- 回帰(2026-09-14、いずれも 0 failures / 0 errors):
+  `test_cross_abi.rb` 4 runs、`test_aarch64_aggregate_execution.rb` 11 runs、
+  `test_aarch64_argument_execution.rb` 13 runs、`test_aarch64_variadic_execution.rb` 9 runs、
+  `test_examples.rb` 69 runs、`test_examples_aarch64.rb` 582 runs / 22 skips、
+  `test_c_suite.rb` 223 runs / 11 skips、`test_c_suite_aarch64.rb` 444 runs / 22 skips、
+  `test_header_abi.rb` 130 runs
+
+### 残された観点
+
+見つかったものは、それぞれ issue にした:
+
+- **メンバの宣言子と typedef 名に付けた `__attribute__((aligned(N)))` を rubycc は捨てている**(`parse_named_member` の
+  position f、`parse_typedef_declaration` の position d)。`struct { long a __attribute__((aligned(16))); long b; }` の整列が
+  gcc は 16、rubycc は 8。レイアウトの欠落なので本ステップでは直さず、新しいテストの形からも外した。
+  `issues/aligned-attribute-member-typedef.md`(GAPS BQ)
+- **x86-64: 32 バイト整列の MEMORY 集約のスタックスロット**。gcc は 32 境界に置き、`va_arg` も 32 に切り上げるが、
+  rubycc は 16 までしか揃えない。新しいテストの x86-64 側から `attr32` / `alignas32` を外した。
+  `issues/sysv-over-aligned-aggregate-stack.md`(GAPS BR)
+- **x86-64: 後ろの eightbyte が全部詰め物の集約**(`struct { float a, b; } __attribute__((aligned(16)))`)。
+  gcc はその eightbyte にレジスタを割り当てないが、rubycc は SSE に分類して xmm を 2 個使い、可変長の 2 個目を
+  `va_arg` が別のスロットから読む(固定引数は一致)。新しいテストの x86-64 側から `f2_attr` を外した。
+  `issues/sysv-padding-eightbyte-class.md`(GAPS BS)
