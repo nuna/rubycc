@@ -267,8 +267,16 @@ module Rubycc
     # sequentially consistent — the IR carries no memory order at all, because
     # the generator lowers every order the source asked for at the strongest one
     # (strengthening an order is always sound; see #gen_builtin_atomic). `size`
-    # is the access width and is only ever 4 or 8: the generator diagnoses every
-    # other width, so no backend needs a narrower or wider case.
+    # is the access width and is 1, 2, 4 or 8: the generator diagnoses every
+    # other width (a 16-byte __int128), so no backend needs a wider case. For a
+    # 1- or 2-byte access the memory traffic is exactly `size` bytes wide, but
+    # the value :atomic_load / :atomic_rmw put in dst has only its low `size`
+    # bytes defined — the bits above are whatever the target's sequence left
+    # there (a zero-extending exclusive load, a 32-bit add's carry, the
+    # operand's own sign bits). The generator therefore follows each narrow
+    # result with a :sext or :zext of that width, chosen by the object's type,
+    # so no backend has to know whether the object is signed. Operands (b, the
+    # desired value, *expected) are read through their low `size` bytes only.
     #
     #   :atomic_fence                  a sequentially-consistent memory fence
     #   :atomic_load dst <- atomic *a   dst gets `size` bytes read atomically
@@ -285,7 +293,9 @@ module Rubycc
     #   :atomic_rmw dst <- rmw(a, b)  an atomic read-modify-write through pointer
     #                               a. b is a [value_vreg, kind] pair; `kind` is
     #                               :exchange, :fetch_add, :fetch_sub,
-    #                               :add_fetch, :sub_fetch or :or_fetch. dst gets
+    #                               :fetch_and, :fetch_or, :fetch_xor,
+    #                               :add_fetch, :sub_fetch, :and_fetch,
+    #                               :or_fetch or :xor_fetch. dst gets
     #                               the value the corresponding builtin returns —
     #                               the value read for :exchange and the
     #                               :fetch_* forms, the value stored for the

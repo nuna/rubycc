@@ -48,9 +48,13 @@ module Rubycc
                     __atomic_compare_exchange_n
                     __atomic_fetch_add __atomic_fetch_sub
                     __atomic_add_fetch __atomic_sub_fetch __atomic_or_fetch
+                    __atomic_and_fetch __atomic_xor_fetch
+                    __atomic_fetch_or __atomic_fetch_and __atomic_fetch_xor
                     __atomic_thread_fence
                     __sync_fetch_and_add __sync_fetch_and_sub
                     __sync_add_and_fetch __sync_sub_and_fetch __sync_or_and_fetch
+                    __sync_and_and_fetch __sync_xor_and_fetch
+                    __sync_fetch_and_or __sync_fetch_and_and __sync_fetch_and_xor
                     __sync_lock_test_and_set __sync_lock_release __sync_synchronize
                     __sync_bool_compare_and_swap __sync_val_compare_and_swap
                     __asm__

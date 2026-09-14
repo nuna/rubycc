@@ -429,11 +429,12 @@ module Rubycc
 
       # One of gcc's __atomic_* builtins. `kind` names the operation — :load,
       # :store, :exchange, :compare_exchange, :fetch_add, :fetch_sub,
-      # :add_fetch, :sub_fetch, :or_fetch or :fence — and `args`
+      # :fetch_and, :fetch_or, :fetch_xor, :add_fetch, :sub_fetch, :and_fetch,
+      # :or_fetch, :xor_fetch or :fence — and `args`
       # holds the argument expressions exactly as written, including the trailing
       # memory-order argument(s) and __atomic_compare_exchange_n's `weak` flag.
       # The parser checks only the argument *count* here; the operand types (and
-      # the 4-or-8-byte width restriction) are the generator's to diagnose, since
+      # the 1/2/4/8-byte width restriction) are the generator's to diagnose, since
       # they need the resolved types. `token` is the builtin keyword.
       #
       # The memory-order arguments are carried through but never inspected: every
@@ -443,8 +444,9 @@ module Rubycc
       BuiltinAtomic = Data.define(:kind, :args, :token)
 
       # One of gcc's legacy __sync_* builtins. `kind` names the operation —
-      # :fetch_add, :fetch_sub, :add_fetch, :sub_fetch, :or_fetch, :exchange,
-      # :release, :fence, :bool_compare_and_swap or :val_compare_and_swap — and
+      # :fetch_add, :fetch_sub, :fetch_and, :fetch_or, :fetch_xor, :add_fetch,
+      # :sub_fetch, :and_fetch, :or_fetch, :xor_fetch, :exchange, :release,
+      # :fence, :bool_compare_and_swap or :val_compare_and_swap — and
       # `args` holds the argument expressions exactly as written. As with
       # BuiltinAtomic the parser checks only the argument *count*; the operand
       # types and the width restriction need resolved types and belong to the

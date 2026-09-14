@@ -2801,18 +2801,31 @@ module Rubycc
         [-(1 << (bits - 1)), (1 << (bits - 1)) - 1]
       end
 
-      # The object widths the __atomic_* builtins lower for. Only these two are
-      # needed by any consumer here (<ruby/atomic.h> operates on `unsigned int`,
-      # `size_t` and `VALUE`), and each maps to one machine instruction pair on
-      # both targets. A 1-, 2- or 16-byte object is diagnosed rather than lowered:
-      # emitting a plainly non-atomic sequence for it would be worse than
-      # refusing, since the caller cannot tell that its atomicity was dropped.
-      ATOMIC_WIDTHS = [4, 8].freeze
+      # The object widths the atomic builtins lower for: every width both
+      # targets have a native atomic access of. x86-64's xchg / lock xadd /
+      # lock cmpxchg and aarch64's LDAR/STLR/LDAXR/STLXR each come in byte,
+      # halfword, word and doubleword forms, so 1 and 2 are as genuinely atomic
+      # as 4 and 8 (<ruby/atomic.h> needs only the latter pair; a one-byte
+      # spinlock such as facil.io's fio_lock_i needs the former). A 16-byte
+      # object (__int128) is still diagnosed rather than lowered: emitting a
+      # plainly non-atomic sequence for it would be worse than refusing, since
+      # the caller cannot tell that its atomicity was dropped.
+      ATOMIC_WIDTHS = [1, 2, 4, 8].freeze
+
+      # The :atomic_rmw kinds that do arithmetic or bitwise work on the value
+      # read — every kind but :exchange. gcc refuses these on a _Bool object
+      # (measured 2026-09-14, gcc 13.3: "operand type '_Bool *' is incompatible
+      # with argument 1 of '__atomic_fetch_add'"), while it accepts the
+      # exchange, load, store and compare-exchange forms there.
+      ATOMIC_ARITHMETIC_KINDS = %i[
+        fetch_add fetch_sub add_fetch sub_fetch
+        fetch_and fetch_or fetch_xor and_fetch or_fetch xor_fetch
+      ].freeze
 
       # One of gcc's __atomic_* builtins. rubycc implements the nine forms
-      # <ruby/atomic.h> uses (Front::Parser::ATOMIC_BUILTINS); every one lowers
-      # to a single IR op that the backends turn into a genuinely atomic machine
-      # sequence.
+      # <ruby/atomic.h> uses plus the rest of the bitwise fetch family
+      # (Front::Parser::ATOMIC_BUILTINS); every one lowers to a single IR op
+      # that the backends turn into a genuinely atomic machine sequence.
       #
       # *Every operation is lowered at sequential consistency*, whatever memory
       # order the call passed. That is deliberate and it is sound: a memory order
@@ -2859,7 +2872,7 @@ module Rubycc
       # spelling as written, so the diagnostics name the builtin the program
       # actually called. The object must be an integer or a pointer
       # of one of ATOMIC_WIDTHS: a floating, aggregate or void target has no
-      # atomic form here, and a width outside that pair has no instruction to
+      # atomic form here, and a width outside that set has no instruction to
       # lower to. Any top-level qualifier on the target ("volatile rb_atomic_t *",
       # which is how <ruby/atomic.h> spells every one of these) is already gone —
       # this subset folds qualifiers away at parse time — so the pointee type
@@ -2873,11 +2886,37 @@ module Rubycc
           error_at(expr.token, "'#{name}' does not support atomic operations on '#{target}'")
         end
         unless ATOMIC_WIDTHS.include?(target.size)
+          widths = "#{ATOMIC_WIDTHS[0..-2].join(", ")} or #{ATOMIC_WIDTHS.last}"
           error_at(expr.token,
-                   "'#{name}' supports atomic objects of #{ATOMIC_WIDTHS.join(" or ")} bytes only, " \
+                   "'#{name}' supports atomic objects of #{widths} bytes only, " \
                    "but '#{target}' has width #{target.size}")
         end
         [vreg, target]
+      end
+
+      # Refuses an arithmetic or bitwise read-modify-write on a _Bool object, as
+      # gcc does (see ATOMIC_ARITHMETIC_KINDS): the result would leave a value
+      # other than 0 or 1 in it. `expr` is the pointer argument, whose token the
+      # diagnostic points at.
+      def check_atomic_arithmetic_object(expr, value_type, kind, name)
+        return unless value_type.bool? && ATOMIC_ARITHMETIC_KINDS.include?(kind)
+
+        error_at(expr.token, "'#{name}' does not support arithmetic or bitwise operations on '_Bool'")
+      end
+
+      # Re-extends the value an :atomic_load / :atomic_rmw left in `dst` to the
+      # object type's own promoted form. For a 1- or 2-byte object those ops
+      # define only the low `size` bytes (see the IR's atomic section) — what
+      # the machine leaves above them differs by target and kind — so the
+      # result is sign- or zero-extended from that width exactly as an ordinary
+      # load of the object would be (:load vs :uload). A 4- or 8-byte result
+      # already is the value and passes through untouched.
+      def atomic_result(dst, value_type)
+        return dst if value_type.size >= 4
+
+        extended = new_vreg
+        emit(value_type.signed? ? :sext : :zext, dst: extended, a: dst, size: value_type.size)
+        extended
       end
 
       # "__atomic_load_n(ptr, order)": reads the object atomically. The result
@@ -2886,7 +2925,7 @@ module Rubycc
         gen_atomic_flag_argument(node.args[1], name, "memory order")
         dst = new_vreg
         emit(:atomic_load, dst: dst, a: ptr, size: value_type.size)
-        [dst, value_type]
+        [atomic_result(dst, value_type), value_type]
       end
 
       # "__atomic_store_n(ptr, value, order)": writes the object atomically. Like
@@ -2898,21 +2937,23 @@ module Rubycc
         [nil, Type::Void]
       end
 
-      # The read-modify-write family: __atomic_exchange_n and the four
-      # fetch/modify pairs, all spelled "(ptr, value, order)". The IR carries the
-      # kind, and the result type is the object's — the value read for
-      # :exchange/:fetch_*, the value stored for :add_fetch/:sub_fetch/:or_fetch.
+      # The read-modify-write family: __atomic_exchange_n and the
+      # fetch/modify pairs (add, sub, and, or, xor), all spelled
+      # "(ptr, value, order)". The IR carries the kind, and the result type is
+      # the object's — the value read for :exchange/:fetch_*, the value stored
+      # for the :*_fetch forms.
       #
       # A pointer-typed object takes its operand unscaled: gcc's atomic builtins
       # add plain bytes rather than applying C's pointer arithmetic (measured —
       # "__atomic_fetch_add(&p, 1, ...)" on an "int *" advances p by one byte),
       # so the operand is converted to the object's type and used as it stands.
       def gen_atomic_rmw(node, ptr, value_type, name)
+        check_atomic_arithmetic_object(node.args[0], value_type, node.kind, name)
         value = gen_atomic_operand(node.args[1], value_type, name)
         gen_atomic_flag_argument(node.args[2], name, "memory order")
         dst = new_vreg
         emit(:atomic_rmw, dst: dst, a: ptr, b: [value, node.kind], size: value_type.size)
-        [dst, value_type]
+        [atomic_result(dst, value_type), value_type]
       end
 
       # "__atomic_compare_exchange_n(ptr, expected, desired, weak, success_order,
@@ -2962,7 +3003,7 @@ module Rubycc
       # argument layout, not in the machine sequence.
       #
       # Only the forms an existing IR op already means correctly are lowered; the
-      # bitwise ones with no matching op stay unrecognized identifiers (see
+      # nand pair, with no matching op, stays an unrecognized identifier (see
       # SYNC_BUILTINS for the list and the reasoning).
       def gen_builtin_sync(node)
         name = node.token.value
@@ -2980,21 +3021,22 @@ module Rubycc
         end
       end
 
-      # The read-modify-write family — __sync_lock_test_and_set and the five
+      # The read-modify-write family — __sync_lock_test_and_set and the
       # fetch/modify spellings — all written "(ptr, value)". The kind the parser
       # recorded is already the IR's, so this is #gen_atomic_rmw's emission
       # without the memory-order argument to consume, and the result type is the
       # object's: the value read for :exchange/:fetch_*, the value stored for
-      # :add_fetch/:sub_fetch/:or_fetch.
+      # the :*_fetch forms.
       #
       # A pointer-typed object takes its operand unscaled here too — measured
       # separately for this family rather than assumed from the __atomic_* one:
       # "__sync_fetch_and_add(&p, 1)" on an "int *" advances p by a single byte.
       def gen_sync_rmw(node, ptr, value_type, name)
+        check_atomic_arithmetic_object(node.args[0], value_type, node.kind, name)
         value = gen_atomic_operand(node.args[1], value_type, name)
         dst = new_vreg
         emit(:atomic_rmw, dst: dst, a: ptr, b: [value, node.kind], size: value_type.size)
-        [dst, value_type]
+        [atomic_result(dst, value_type), value_type]
       end
 
       # "__sync_lock_release(ptr)": writes zero into the object and yields void.
@@ -3037,8 +3079,10 @@ module Rubycc
         emit(:atomic_cas, dst: swapped, a: ptr, b: [expected, newval], size: value_type.size)
         return [swapped, Type::Bool] if node.kind == :bool_compare_and_swap
 
+        # An ordinary read of the slot, extended the way the object's type says
+        # (an unsigned char found as 0xFF is 255, not -1).
         found = new_vreg
-        emit(:load, dst: found, a: expected, size: value_type.size)
+        emit_scalar_load(found, expected, value_type)
         [found, value_type]
       end
 

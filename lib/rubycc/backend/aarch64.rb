@@ -1356,10 +1356,15 @@ module Rubycc
       #
       # Every atomic op lowers at sequential consistency, the strongest order
       # (the IR carries no weaker one — see IR::Generator#gen_builtin_atomic for
-      # why strengthening is always sound), and `size` is only ever 4 or 8, the
-      # generator having diagnosed every other width. The 8-byte forms differ
-      # from the 4-byte ones only in the encoding's size field (bit 30), which is
-      # what the ACQUIRE_/RELEASE_ tables below carry.
+      # why strengthening is always sound), and `size` is 1, 2, 4 or 8, the
+      # generator having diagnosed the 16-byte width. The four widths differ
+      # only in the encoding's size field (bits 31:30 — 00 byte, 01 halfword,
+      # 10 word, 11 doubleword), which is what the LDAR/STLR/LDAXR/STLXR tables
+      # below carry; the narrow loads (ldarb/ldaxrb, ...h) zero-extend into the
+      # W register. The data-processing instructions between them use the W
+      # form for every width below 8: the narrow stores write only the low
+      # byte/halfword, and whatever a combine leaves above it in the register
+      # is removed by the :sext/:zext the generator emits after a narrow result.
       #
       # Everything is built from the armv8-a *baseline* — the load-acquire /
       # store-release exclusive pair and a retry loop — and nothing else. The
@@ -1453,6 +1458,11 @@ module Rubycc
       # the atomic object does not overwrite the value just exchanged into it.
       # It is also the side effect <ruby/atomic.h>'s RUBY_ATOMIC_CAS reads its
       # answer out of, so it is not optional.
+      #
+      # At a narrow width both sides of the 32-bit `cmp` are zero-extended —
+      # INT_LDST's 1/2-byte load is ldrb/ldrh and the exclusive load is
+      # ldaxrb/ldaxrh — so the comparison sees exactly the object's bits, a
+      # signed char holding -1 comparing equal to an expected -1 (both 0xFF).
       def emit_atomic_cas(dst, ptr, expected, desired, size)
         load_reg(A, ptr)      # A = the atomic object's address
         load_reg(B, expected) # B = &expected
@@ -2225,15 +2235,17 @@ module Rubycc
       # acquire/release instructions are *sequentially consistent* with respect
       # to one another (armv8 gives LDAR/STLR the RCsc property, unlike C++'s
       # weaker RCpc acquire/release), so neither needs an extra barrier.
-      LDAR = { 4 => 0x88DFFC00, 8 => 0xC8DFFC00 }.freeze
-      STLR = { 4 => 0x889FFC00, 8 => 0xC89FFC00 }.freeze
+      # The 1- and 2-byte entries are LDARB/LDARH and STLRB/STLRH.
+      LDAR = { 1 => 0x08DFFC00, 2 => 0x48DFFC00, 4 => 0x88DFFC00, 8 => 0xC8DFFC00 }.freeze
+      STLR = { 1 => 0x089FFC00, 2 => 0x489FFC00, 4 => 0x889FFC00, 8 => 0xC89FFC00 }.freeze
 
       # The exclusive pair every read-modify-write sequence is built from: LDAXR
       # takes the exclusive monitor and STLXR releases it, writing 0 into its
       # status register when the store went through and 1 when the monitor had
-      # been lost. The status register is a W register at either access width.
-      LDAXR = { 4 => 0x885FFC00, 8 => 0xC85FFC00 }.freeze
-      STLXR = { 4 => 0x8800FC00, 8 => 0xC800FC00 }.freeze
+      # been lost. The status register is a W register at every access width;
+      # the 1- and 2-byte entries are the b/h forms (LDAXRB, STLXRH, ...).
+      LDAXR = { 1 => 0x085FFC00, 2 => 0x485FFC00, 4 => 0x885FFC00, 8 => 0xC85FFC00 }.freeze
+      STLXR = { 1 => 0x0800FC00, 2 => 0x4800FC00, 4 => 0x8800FC00, 8 => 0xC800FC00 }.freeze
 
       # cbnz w{Rt}, <offset> — the retry branch that closes each of those loops,
       # taken while the store-exclusive keeps reporting failure. The 19-bit
@@ -2247,12 +2259,14 @@ module Rubycc
         exchange: nil,
         fetch_add: ADD_SHIFTED, add_fetch: ADD_SHIFTED,
         fetch_sub: SUB_SHIFTED, sub_fetch: SUB_SHIFTED,
-        or_fetch: ORR_SHIFTED
+        fetch_and: AND_SHIFTED, and_fetch: AND_SHIFTED,
+        fetch_or: ORR_SHIFTED, or_fetch: ORR_SHIFTED,
+        fetch_xor: EOR_SHIFTED, xor_fetch: EOR_SHIFTED
       }.freeze
 
       # The :atomic_rmw kinds whose value is the one *stored* rather than the one
       # read — gcc's "__atomic_<op>_fetch" half of each pair.
-      ATOMIC_RMW_NEW_VALUE_KINDS = %i[add_fetch sub_fetch or_fetch].freeze
+      ATOMIC_RMW_NEW_VALUE_KINDS = %i[add_fetch sub_fetch and_fetch or_fetch xor_fetch].freeze
 
       # Base opcodes for the floating instructions, keyed by the IR operand size
       # (4 float / 8 double), which is the type field the encoding carries. The

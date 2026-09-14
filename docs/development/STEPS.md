@@ -16196,3 +16196,125 @@ error: second argument to 'va_arg' has type 'struct s', which va_arg cannot yiel
   範囲外とし、従来どおり診断する。必要とする gem はまだ見ていない
 - `long double` を含む構造体は測っていない。rubycc の `long double` が 8 バイトである件(GAPS S)の範囲
 - semian の gem としてのビルドとロードは、台帳の測り直しで扱う
+
+## atomic-builtin-small-widths-1 — アトミック組み込みを 1・2 バイトのオブジェクトへ広げ、ビット演算の fetch 形を足す
+
+issue: `issues/atomic-builtin-small-widths.md`(GAPS BC)
+
+### 原因
+
+`IR::Generator::ATOMIC_WIDTHS = [4, 8]` が、アトミック組み込みのオブジェクト幅を 4・8 バイトに限っていた
+(`gen_atomic_object_pointer` がそれ以外を `'<name>' supports atomic objects of 4 or 8 bytes only` で拒否)。
+`<ruby/atomic.h>` が 4・8 バイトしか使わないので、その 2 幅だけを実装していた。IR のコメント・IR.md・両バックエンドの
+atomics 節も「size は 4 か 8 のみ」を前提に書かれていた。
+
+- 2026-09-14 の測定(このホスト、WSL2 / x86-64 / gcc 13.3)。issue の最小再現は 0ced183 では
+  `error: '__atomic_exchange_n' supports atomic objects of 4 or 8 bytes only, but 'unsigned char' has width 1` で失敗し、
+  修正後は x86-64・aarch64 の両方で exit 0 になる
+- iodine 0.7.59 の `ext/iodine/*.c` 31 本を rubycc(x86-64、`-fPIC`、ruby ヘッダを `-I`)で 1 本ずつ `-c`。
+  0ced183 では **1 本が通り、30 本が落ちる**。落ちた 30 本のうち 28 本は `fio.h:3023:39` の上記幅エラー
+  (facil.io の 1 バイトスピンロック `typedef uint8_t volatile fio_lock_i` への `__atomic_exchange_n`)
+
+### 4・8 バイトに限られていた組み込みの一覧(0ced183 時点)
+
+幅の検査は `gen_atomic_object_pointer` の 1 か所で、組み込みの第 1 引数を扱う全形がここを通る。
+つまり **フェンス 2 形を除く全形が 4・8 バイト限定** だった:
+
+| 族 | 4・8 バイト限定だった形 | 幅に関係しない形 |
+|---|---|---|
+| `__atomic_*`(9 形) | `load_n` / `store_n` / `exchange_n` / `compare_exchange_n` / `fetch_add` / `fetch_sub` / `add_fetch` / `sub_fetch` / `or_fetch` | `thread_fence` |
+| `__sync_*`(9 形) | `fetch_and_add` / `fetch_and_sub` / `add_and_fetch` / `sub_and_fetch` / `or_and_fetch` / `lock_test_and_set` / `lock_release` / `bool_compare_and_swap` / `val_compare_and_swap` | `synchronize` |
+| 未実装(識別子のまま) | `__atomic_fetch_and` / `fetch_or` / `fetch_xor` / `and_fetch` / `xor_fetch` / `fetch_nand` / `nand_fetch`、`__sync_fetch_and_and` / `_or` / `_xor` / `_nand`、`__sync_and_and_fetch` / `_xor_` / `_nand_`、`__atomic_test_and_set` / `clear`、非 `_n` 形(`__atomic_load` など) | — |
+
+### 対処
+
+**足した範囲**: 上表で「4・8 バイト限定だった」全 18 形を 1・2・4・8 バイトに広げた。加えて、ビット演算の
+fetch 形を両族に足した — `__atomic_fetch_and` / `fetch_or` / `fetch_xor` / `and_fetch` / `xor_fetch` と
+`__sync_fetch_and_and` / `_or` / `_xor` / `__sync_and_and_fetch` / `__sync_xor_and_fetch`(計 10 形、全幅)。
+依頼の受け入れ条件が `fetch_and` / `or` / `xor` を含んでいたためで、IR に kind を足せば両族とも同じ命令列に
+乗る。**nand の 4 形、`__atomic_test_and_set` / `clear`、非 `_n` 形は引き続き未実装**(undeclared identifier)。
+16 バイト(`__int128`)は引き続き診断する(メッセージは `... of 1, 2, 4 or 8 bytes only`)。
+
+- **幅の表現**: IR の `size` に 1・2 が来るようになった。狭い幅の値の扱いは次の契約にした(ir.rb と IR.md に明記)。
+  メモリアクセスはちょうど `size` バイトで、`:atomic_load` / `:atomic_rmw` が dst に置く値は**下位 `size` バイトしか
+  定義しない**。ジェネレータ(`atomic_result`)が狭い結果の直後に、オブジェクトの型で選んだ `:sext` / `:zext`
+  (同じ幅)を置く。こうするとバックエンドは符号の有無を知らずに済み、x86-64 の 32 ビット加算の桁上がりも、
+  aarch64 の W レジスタでの結合結果も、そのまま残してよい。IR 命令は増やしていない(`:atomic_rmw` の kind が
+  6 から 11 に増えただけ)
+- **x86-64**: アトミックオブジェクトに触る 1 命令だけを幅で切り替える `emit_atomic_access` を置いた。
+  8 バイトは REX.W、2 バイトは 66 前置、1 バイトは opcode の最下位ビット(w ビット)を落とす —
+  `xchg` 86/87・`xadd` 0F C0/C1・`cmpxchg` 0F B0/B1・`mov` 88/89 がどれもこのビットで幅を表す。
+  前置の順は lock → 66 → REX(REX は opcode の直前でなければならない)。狭い読み出しは `movzx`。
+  間のレジスタ演算(`neg` / `add` / `or` …)は狭い幅でも 32 ビットのまま。書き戻されるのは下位だけで、
+  上位は上記の `:sext` / `:zext` が消すため。4・8 バイトのエンコードは変更前とバイト単位で同じ。
+  ビット演算の 6 kind は、従来の `or_fetch` 専用ループを `emit_atomic_bitwise` に一般化した `lock cmpxchg`
+  リトライループで、結合命令(`and` 21 / `or` 09 / `xor` 31)と、返す値(読んだ値 = eax、書いた値 = edx)だけが違う
+- **aarch64**: LDAR / STLR / LDAXR / STLXR の表に b・h 形(サイズ欄 31:30 = 00 / 01)を足した。狭いロードは
+  W レジスタへゼロ拡張する。既存の方針(armv8-a ベースラインの排他ペア + リトライループ。LSE と outline atomics は
+  使わない)はそのまま。`ATOMIC_RMW_OPCODES` に and / eor の kind を足した
+- **compare-exchange の比較**: x86-64 の `cmpxchg` byte / word 形は al / ax だけを比べるので、レジスタでの拡張は
+  比較に入らない。aarch64 は `ldaxrb` / `ldaxrh` と、`*expected` を読む `ldrb` / `ldrh` がどちらもゼロ拡張なので、
+  32 ビットの `cmp` で対象のビットだけを比べる(`signed char` の -1 は両辺とも 0xFF)
+- **`_Bool`**: gcc は算術・ビット演算の read-modify-write を `_Bool` に対して拒否し、exchange / load / store /
+  compare-exchange は通す(2026-09-14 実測、gcc 13.3:
+  `operand type '_Bool *' is incompatible with argument 1 of '__atomic_fetch_add'`。
+  `__sync_fetch_and_add` も同様、`__sync_lock_test_and_set` / `__sync_val_compare_and_swap` は通る)。
+  同じ線を引いた(`ATOMIC_ARITHMETIC_KINDS` と `check_atomic_arithmetic_object`)
+- **ついでに見つけた不具合**: `__sync_val_compare_and_swap` は結果を常に `:load`(符号拡張)で読み戻していたので、
+  狭い `unsigned` オブジェクトでは 0xFF が -1 になるはずだった。4・8 バイトしか通らなかったため表に出ていなかった。
+  `emit_scalar_load`(unsigned なら `:uload`)に替えた
+- 触ったファイル: `lib/rubycc/ir/generator.rb`・`ir.rb`、`lib/rubycc/backend/x86_64.rb`・`aarch64.rb`、
+  `lib/rubycc/front/parser.rb`(組み込み表)・`lexeme_reader.rb`(キーワード)・`ast.rb`(kind のコメント)、
+  `lib/rubycc/preprocess/preprocessor.rb`(`__has_builtin` の表)、`docs/internals/IR.md`
+
+### テスト
+
+2026-09-14、このホスト(x86-64 ネイティブ + aarch64 は cross gcc 静的リンク + qemu-aarch64)。
+
+- 新規 `test/test_atomic_builtin_small_widths.rb`(13 runs / 59 assertions / 0 failures)
+  - 全形(`__atomic_*` 14 形 + `__sync_*` 15 形)を `unsigned char` / `signed char` / `char` / `unsigned short` /
+    `short` / `unsigned int` / `long` で実行し、gcc と出力一致(x86-64・aarch64)。オペランドは幅をあふれる値
+    (250 + 7、120 + 9、`0x180` を 1 バイトへ or、16 ビットマスクを and など)を選び、上位ビットの残りや
+    符号拡張の取り違えが出力に出るようにした
+  - `_Bool` での exchange / CAS / load / store / `__sync_lock_test_and_set` / `val_` / `bool_`、狭いアクセスが隣の
+    バイトを壊さないこと(構造体に詰めた 1・2 バイト)、`__has_builtin` と `sizeof`、`_Bool` の算術形の診断
+  - **マルチスレッド**: 4 スレッド × 20000 回で、1 バイトスピンロック(`__atomic_exchange_n`)が守る `long` が
+    80000 ちょうど、1 バイト `fetch_add` が 128(80000 mod 256)、2 バイト `add_fetch` と 2 バイトの weak CAS
+    ループが 14464(80000 mod 65536)、`signed char` への `__sync_fetch_and_sub` が -128、各スレッドが自分の
+    ビットを or して and で戻す共有バイトが 0。rubycc 版は x86-64・aarch64 とも gcc 版と一致し、
+    固定の期待値とも一致する
+  - 命令列: x86-64 は 1 型あたり `lock xadd` 6・`lock cmpxchg` 17・`xchg` 4 がそれぞれ `%cl` / `%cx`(`%dl` / `%dx`)
+    形で出ること、aarch64 は `ldaxrb` / `ldaxrh` が 1 型あたり 25 で `stlxr*` と同数、`stlxr*` と `cbnz` が同数、
+    `ldarb` / `stlrb` などが所定の数、LSE 命令が出ないこと
+- 既存テストの更新: `test_atomic_builtins.rb`(1・2 バイトの拒否を期待していた 2 件を 16 バイトの拒否に、
+  未実装リストを nand のみに、`SYNC_ARITIES` に新形を追加)。45 runs / 0 failures。
+  `test_atomic_type.rb` の「狭い `_Atomic` への操作は組み込みの診断を保つ」を、`atomic_char` / `atomic_uchar` /
+  `atomic_short` への汎用マクロが gcc と一致する正のテスト(x86-64・aarch64)に置き換えた
+- 実行した既存スイート(すべて 0 failures / 0 errors): `test_atomic_builtins.rb` 45 runs、`test_atomic_type.rb`、
+  `test_examples.rb` 64 runs、`test_examples_aarch64.rb` 572 runs(26 skips)、`test_c_suite.rb` 223 runs(13 skips)、
+  `test_c_suite_aarch64.rb` 444 runs(26 skips)、`test_aarch64_backend.rb` 100 runs、`test_preprocessor.rb` 230 runs、
+  `test_deterministic_build.rb` 13 runs、`test_header_abi.rb` 125 runs
+- iodine 0.7.59 の 31 本の `-c`(上と同じ条件): **修正後は 24 本が通り、7 本が落ちる**。7 本の中に
+  アトミック組み込みのエラーは無い
+
+- マルチスレッドのテストは、総数が既知の値にちょうど一致することで原子性を見ている。
+  非アトミックな実装で実際に落ちることは、このホストでは測っていない。aarch64 は qemu-aarch64 の user mode でだけ走らせた
+
+### iodine の残り(別の課題に移した)
+
+issue の受け入れ条件のうち「iodine 0.7.59 がビルドできる」は**未達**。修正後に残った 7 本の原因は
+すべてアトミックとは別で、2026-09-14 に上の条件で測った。各 `.c` を単独で `-c` しただけで、extconf の `-D` も
+mkmf も通していない:
+
+- `fiobj_ary.c` / `fio_tls_missing.c` / `fiobj_hash.c` / `iodine_store.c` — `expected ';'`。`FIO_ARY_FOR`(`fio.h:4899`)が
+  for の初期化節で `__typeof__` を使う。rubycc に `__typeof__` がそもそも無い。既存の `issues/typeof-operator.md`(GAPS AT、方針未決)に追記した
+- `fiobj_mustache.c` / `iodine_mustache.c` — `mustache_parser.h:1018:19: error: function definition through a typedef is not allowed`。
+  関数名を括弧で囲んだ定義。`issues/function-definition-parenthesized-name.md`(GAPS BM)に起票した
+- `fio.c` — `redefinition of 'union sigval'`。同梱の `include/libc/signal.h` が glibc 共有のガードを見ていない(AU と同じ形)。
+  `issues/bundled-signal-sigval-guard.md`(GAPS BL)に起票した
+
+### 意図して足さなかった形
+
+nand 形(`__atomic_fetch_nand` / `__atomic_nand_fetch` / `__sync_fetch_and_nand` / `__sync_nand_and_fetch`)、
+`__atomic_test_and_set` / `__atomic_clear`、非 `_n` 形。使う gem をまだ見ておらず、未宣言の識別子として
+報告されるので、黙って誤った降ろしになることはない

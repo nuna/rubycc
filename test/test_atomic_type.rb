@@ -389,19 +389,38 @@ class TestAtomicType < Minitest::Test
     assert_match(/expected type specifier/, error.message)
   end
 
-  # The generic macros are the builtins underneath, so an operation the builtins
-  # refuse is refused through the macro too, with the builtin's own diagnostic
-  # naming the width. A narrow _Atomic object is therefore usable as an object
-  # while any atomic operation on it is rejected -- not silently non-atomic.
-  def test_atomic_operations_on_narrow_objects_keep_the_builtin_diagnostic
-    error = assert_raises(Rubycc::CompileError) do
-      compile(<<~C)
-        #include <stdatomic.h>
-        int main(void) { atomic_char narrow = 0; return atomic_load(&narrow); }
-      C
-    end
-    assert_match(/'__atomic_load_n' supports atomic objects of 4 or 8 bytes only/, error.message)
-    assert_match(/has width 1/, error.message)
+  # The generic macros are the builtins underneath, so a narrow _Atomic object
+  # gets exactly what the builtins give a narrow object. Until
+  # atomic-builtin-small-widths-1 that was the builtins' width diagnostic; now
+  # the 1- and 2-byte builtins lower to byte/halfword atomic instructions, so
+  # the macros on an atomic_char / atomic_short must behave as gcc's do,
+  # signedness included.
+  NARROW_MACROS_SOURCE = <<~C
+    #include <stdatomic.h>
+    #include <stdio.h>
+    int main(void) {
+      atomic_char c = 100;
+      atomic_uchar uc = 250;
+      atomic_short s = -2;
+      char oc = atomic_fetch_add(&c, 50);
+      unsigned char ouc = atomic_fetch_add(&uc, 10);
+      short os = atomic_exchange(&s, 7);
+      printf("%d %d %u %u %d\\n", oc, (int)atomic_load(&c), ouc, (unsigned)atomic_load(&uc), os);
+      char expected = -106;
+      int won = atomic_compare_exchange_strong(&c, &expected, 1);
+      printf("%d %d %d\\n", won, expected, (int)atomic_load(&c));
+      atomic_store(&s, -1);
+      printf("%d\\n", (int)atomic_load(&s));
+      return 0;
+    }
+  C
+
+  def test_atomic_operations_on_narrow_objects_match_gcc
+    assert_matches_gcc(NARROW_MACROS_SOURCE, "atomic_type_narrow")
+  end
+
+  def test_aarch64_atomic_operations_on_narrow_objects_match_gcc
+    assert_aarch64_matches_gcc(NARROW_MACROS_SOURCE)
   end
 
   # The macros must reach the same locked instructions the raw builtins do --

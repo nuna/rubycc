@@ -230,10 +230,9 @@ class TestAtomicBuiltins < Minitest::Test
   UNIMPLEMENTED_HAS_BUILTIN_SOURCE = <<~C
     #include <stdio.h>
     #if __has_builtin(__atomic_test_and_set) || \\
-        __has_builtin(__atomic_load) || __has_builtin(__sync_fetch_and_or) || \\
-        __has_builtin(__sync_fetch_and_and) || __has_builtin(__sync_fetch_and_xor) || \\
-        __has_builtin(__sync_fetch_and_nand) || __has_builtin(__sync_and_and_fetch) || \\
-        __has_builtin(__sync_xor_and_fetch) || __has_builtin(__sync_nand_and_fetch)
+        __has_builtin(__atomic_load) || __has_builtin(__atomic_fetch_nand) || \\
+        __has_builtin(__atomic_nand_fetch) || \\
+        __has_builtin(__sync_fetch_and_nand) || __has_builtin(__sync_nand_and_fetch)
     #define ANY_CLAIMED 1
     #else
     #define ANY_CLAIMED 0
@@ -510,11 +509,11 @@ class TestAtomicBuiltins < Minitest::Test
 
   # The __sync_* spellings rubycc deliberately does not lower, each in a call
   # that would compile under gcc. They must stay ordinary identifiers, so the
-  # program is refused instead of silently mislowered.
+  # program is refused instead of silently mislowered. (The and/or/xor forms
+  # left this list in atomic-builtin-small-widths-1, when the IR gained their
+  # :atomic_rmw kinds; the nand pair still has none.)
   UNIMPLEMENTED_SYNC_FORMS = %w[
-    __sync_fetch_and_or __sync_fetch_and_and __sync_fetch_and_xor
-    __sync_fetch_and_nand __sync_and_and_fetch __sync_xor_and_fetch
-    __sync_nand_and_fetch
+    __sync_fetch_and_nand __sync_nand_and_fetch
   ].freeze
 
   # Each implemented form with an argument count one off its signature. gcc
@@ -528,6 +527,11 @@ class TestAtomicBuiltins < Minitest::Test
     "__sync_add_and_fetch" => 2,
     "__sync_sub_and_fetch" => 2,
     "__sync_or_and_fetch" => 2,
+    "__sync_and_and_fetch" => 2,
+    "__sync_xor_and_fetch" => 2,
+    "__sync_fetch_and_or" => 2,
+    "__sync_fetch_and_and" => 2,
+    "__sync_fetch_and_xor" => 2,
     "__sync_lock_test_and_set" => 2,
     "__sync_lock_release" => 1,
     "__sync_synchronize" => 0,
@@ -683,21 +687,17 @@ class TestAtomicBuiltins < Minitest::Test
     assert_aarch64_matches_gcc(VOLATILE_OBJECT_SOURCE)
   end
 
-  # Only 4- and 8-byte objects have a lowering here. A narrower or wider one is
-  # refused rather than compiled to a plainly non-atomic sequence, since the
-  # caller has no way to notice that its atomicity was silently dropped.
-  def test_narrow_and_wide_objects_are_diagnosed
-    {
-      "char" => 1,
-      "short" => 2,
-      "__int128" => 16
-    }.each do |spelling, width|
-      error = assert_raises(Rubycc::CompileError, "expected '#{spelling}' to be refused") do
-        compile("int main(void) { #{spelling} c = 0; return (int)__atomic_load_n(&c, 5); }")
-      end
-      assert_match(/'__atomic_load_n' supports atomic objects of 4 or 8 bytes only/, error.message)
-      assert_match(/has width #{width}/, error.message)
+  # 1-, 2-, 4- and 8-byte objects have a lowering here (the narrow pair since
+  # atomic-builtin-small-widths-1; see test_atomic_builtin_small_widths.rb). A
+  # wider one is refused rather than compiled to a plainly non-atomic sequence,
+  # since the caller has no way to notice that its atomicity was silently
+  # dropped.
+  def test_wide_objects_are_diagnosed
+    error = assert_raises(Rubycc::CompileError, "expected '__int128' to be refused") do
+      compile("int main(void) { __int128 c = 0; return (int)__atomic_load_n(&c, 5); }")
     end
+    assert_match(/'__atomic_load_n' supports atomic objects of 1, 2, 4 or 8 bytes only/, error.message)
+    assert_match(/has width 16/, error.message)
   end
 
   # A floating or aggregate object has no atomic form here at all, whatever its
@@ -919,18 +919,12 @@ class TestAtomicBuiltins < Minitest::Test
     end
   end
 
-  def test_sync_narrow_and_wide_objects_are_diagnosed
-    {
-      "char" => 1,
-      "short" => 2,
-      "__int128" => 16
-    }.each do |spelling, width|
-      error = assert_raises(Rubycc::CompileError, "expected '#{spelling}' to be refused") do
-        compile("int main(void) { #{spelling} c = 0; return (int)__sync_add_and_fetch(&c, 1); }")
-      end
-      assert_match(/'__sync_add_and_fetch' supports atomic objects of 4 or 8 bytes only/, error.message)
-      assert_match(/has width #{width}/, error.message)
+  def test_sync_wide_objects_are_diagnosed
+    error = assert_raises(Rubycc::CompileError, "expected '__int128' to be refused") do
+      compile("int main(void) { __int128 c = 0; return (int)__sync_add_and_fetch(&c, 1); }")
     end
+    assert_match(/'__sync_add_and_fetch' supports atomic objects of 1, 2, 4 or 8 bytes only/, error.message)
+    assert_match(/has width 16/, error.message)
   end
 
   def test_sync_non_integer_objects_are_diagnosed
