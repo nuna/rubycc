@@ -363,11 +363,126 @@ class TestHeaderAbi < Minitest::Test
   )
 
   # <sys/types.h>: the width-critical POSIX typedefs.
+  #
+  # bundled-headers-coverage-audit-2 (GAPS AQ): glibc's own headers that include
+  # <sys/types.h> spell their members with glibc's internal __*_t names
+  # (<net/if.h>'s __caddr_t), so the bundled header now carries them. Those
+  # names are glibc's alone, hence the `glibc:` bundle; each one's width and
+  # alignment is compared, and its signedness through "(T)-1 < 0" for the
+  # scalar ones. int8_t..int64_t and quad_t/u_quad_t are glibc's
+  # <sys/types.h> surface too (fsid_t is not added; see the header). The snippet reads a glibc header that reaches
+  # the bundled <sys/types.h> -- the GAPS AQ reproduction itself -- on the
+  # host run only (<net/if.h> is not bundled, and the aarch64 run cannot read
+  # the cross sysroot's own headers, GAPS BI).
+  SYS_TYPES_INTERNAL = %w[
+    __int8_t __uint8_t __int16_t __uint16_t __int32_t __uint32_t __int64_t __uint64_t
+    __int_least8_t __uint_least8_t __int_least16_t __uint_least16_t
+    __int_least32_t __uint_least32_t __int_least64_t __uint_least64_t
+    __quad_t __u_quad_t __intmax_t __uintmax_t __u_char __u_short __u_int __u_long
+    __dev_t __uid_t __gid_t __ino_t __ino64_t __mode_t __nlink_t __off_t __off64_t
+    __pid_t __rlim_t __rlim64_t __id_t __time_t __useconds_t __suseconds_t
+    __suseconds64_t __daddr_t __key_t __clockid_t __blksize_t __blkcnt_t
+    __blkcnt64_t __fsblkcnt_t __fsblkcnt64_t __fsfilcnt_t __fsfilcnt64_t __fsword_t
+    __ssize_t __syscall_slong_t __syscall_ulong_t __loff_t __intptr_t __socklen_t
+    __clock_t
+  ].freeze
+
   SYS_TYPES = HeaderAbiHarness::Spec.new(
     header: "sys/types.h",
     sizes: %w[ssize_t off_t pid_t uid_t gid_t mode_t dev_t ino_t nlink_t
               blksize_t blkcnt_t fsblkcnt_t time_t clock_t suseconds_t
-              id_t key_t clockid_t timer_t]
+              id_t key_t clockid_t timer_t],
+    glibc: {
+      defines: ["_GNU_SOURCE"],
+      sizes: SYS_TYPES_INTERNAL + %w[__caddr_t __timer_t int8_t int16_t
+                                     int32_t int64_t quad_t u_quad_t],
+      ints: SYS_TYPES_INTERNAL.map { |t| "(#{t})-1 < 0" }
+    }
+  )
+
+  # GAPS BL (bundled-headers-coverage-audit-2): under _GNU_SOURCE glibc's
+  # <netdb.h> reads the file that defines struct sigevent, which defines
+  # union sigval under a guard glibc shares with its own <signal.h>. The
+  # bundled <signal.h> now sets that guard, so the two headers share a unit in
+  # either order; each Spec declares a real struct sigevent (netdb's side)
+  # carrying a union sigval (either side's definition, whichever came first)
+  # and compares both types' layout with gcc. Host only: <netdb.h> is not
+  # bundled and the aarch64 run cannot read the cross sysroot's own headers
+  # (GAPS BI); union sigval's own layout is compared on both arches by SIGNAL.
+  SIGVAL_NETDB_SNIPPET = <<~C.chomp
+    static int abi_sigval_netdb(struct sigevent *ev, siginfo_t *si) {
+      union sigval v = ev->sigev_value;
+      return v.sival_int + si->si_signo;
+    }
+  C
+
+  SIGVAL_NETDB_FORWARD = HeaderAbiHarness::Spec.new(
+    header: "signal.h",
+    also: %w[netdb.h],
+    libc: :glibc,
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[union\ sigval __sigval_t struct\ sigevent],
+    offsets: [["struct sigevent", "sigev_value"], ["union sigval", "sival_ptr"]],
+    snippets: [SIGVAL_NETDB_SNIPPET]
+  )
+
+  SIGVAL_NETDB_REVERSE = HeaderAbiHarness::Spec.new(
+    header: "netdb.h",
+    also: %w[signal.h],
+    libc: :glibc,
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[union\ sigval __sigval_t struct\ sigevent],
+    offsets: [["struct sigevent", "sigev_value"], ["union sigval", "sival_ptr"]],
+    snippets: [SIGVAL_NETDB_SNIPPET]
+  )
+
+  # GAPS AQ's reproduction as an ABI case: glibc's <net/if.h> (not bundled)
+  # read on top of the bundled <sys/types.h>, with struct ifreq's size and
+  # the __caddr_t member's offset compared against gcc. Host only, see above.
+  NET_IF = HeaderAbiHarness::Spec.new(
+    header: "net/if.h",
+    libc: :glibc,
+    defines: ["_GNU_SOURCE"],
+    sizes: %w[struct\ ifreq struct\ ifconf],
+    offsets: [["struct ifreq", "ifr_ifru"]],
+    snippets: ["static char *abi_net_if(struct ifreq *r) { return r->ifr_data; }"]
+  )
+
+  # <stdlib.h> under _GNU_SOURCE (bundled-headers-coverage-audit-2): the calls
+  # the audit added -- getloadavg (GAPS AF), qsort_r (AR, GNU only), alloca
+  # through <alloca.h> (BG), and the POSIX/XSI temp-file, pty and 48-bit
+  # random families -- are each called with their argument types, and
+  # abi_stdlib_gnu runs qsort_r over a context pointer and writes/reads an
+  # alloca'd block so both sides must also agree on what those do.
+  STDLIB_GNU = HeaderAbiHarness::Spec.new(
+    header: "stdlib.h",
+    defines: ["_GNU_SOURCE"],
+    ints: ["abi_stdlib_gnu()"],
+    snippets: [<<~C.chomp]
+      static int abi_cmp_ctx(const void *a, const void *b, void *ctx) {
+        int sign = *(const int *)ctx;
+        return sign * (*(const int *)a - *(const int *)b);
+      }
+      static int abi_stdlib_gnu(void) {
+        int v[4] = { 3, 1, 4, 2 };
+        int down = -1;
+        qsort_r(v, 4, sizeof v[0], abi_cmp_ctx, &down);
+        char *p = alloca(4);
+        p[0] = 'r'; p[3] = 'c';
+        return v[0] * 1000 + v[3] * 100 + (p[0] == 'r') * 10 + (p[3] == 'c');
+      }
+      static long abi_stdlib_decls(char *tmpl, unsigned short *x, unsigned int *seed, char *buf) {
+        double load[3];
+        long rc = getloadavg(load, 3) + rand_r(seed) + mkstemps(tmpl, 2) + (mkdtemp(tmpl) != 0);
+        rc += (long)drand48() + (long)erand48(x) + lrand48() + nrand48(x) + mrand48() + jrand48(x);
+        srand48(1); lcong48(x); rc += seed48(x)[0];
+        rc += (initstate(1, buf, 256) != 0) + (setstate(buf) != 0);
+        rc += posix_openpt(0) + grantpt(0) + unlockpt(0) + (ptsname(0) != 0) + ptsname_r(0, buf, 8);
+        rc += mkostemp(tmpl, 0) + mkostemps(tmpl, 2, 0);
+        rc += (secure_getenv("HOME") != 0) + (canonicalize_file_name(tmpl) != 0);
+        return rc;
+      }
+    C
   )
 
   # <sys/time.h>: struct timeval's 16-byte layout and the BSD time calls.
@@ -676,7 +791,11 @@ class TestHeaderAbi < Minitest::Test
   SIGNAL = HeaderAbiHarness::Spec.new(
     header: "signal.h",
     defines: ["_GNU_SOURCE"],
-    sizes: %w[sig_atomic_t sigset_t struct\ sigaction siginfo_t],
+    # union sigval (GAPS BL) is compared here on both arches; glibc's
+    # __sigval_t spelling is compared by SIGVAL_NETDB_FORWARD/REVERSE, which
+    # keeps this Spec bundle-free (TestHeaderAbiLibcParameterization uses it
+    # as its no-bundle example).
+    sizes: %w[sig_atomic_t sigset_t struct\ sigaction siginfo_t union\ sigval],
     ints: %w[SIGHUP SIGINT SIGQUIT SIGILL SIGTRAP SIGABRT SIGBUS SIGFPE SIGKILL
              SIGUSR1 SIGSEGV SIGUSR2 SIGPIPE SIGALRM SIGTERM SIGSTKFLT SIGCHLD
              SIGCONT SIGSTOP SIGTSTP SIGTTIN SIGTTOU SIGURG SIGXCPU SIGXFSZ
@@ -1232,13 +1351,29 @@ class TestHeaderAbi < Minitest::Test
   # `defines: ["_GNU_SOURCE"]` is needed because the host glibc gates
   # cpu_set_t/CPU_SETSIZE/sched_getcpu behind __USE_GNU, while rubycc's
   # bundled header exposes them unconditionally.
+  #
+  # bundled-headers-coverage-audit-2 (GAPS AM) added struct sched_param (glibc's
+  # <spawn.h> embeds one), the SCHED_* policy numbers and the POSIX
+  # scheduling-policy calls; the snippet redeclares nothing, it calls each one
+  # with its argument types so a missing or mistyped prototype fails to
+  # compile on either side.
   SCHED = HeaderAbiHarness::Spec.new(
     header: "sched.h",
     defines: ["_GNU_SOURCE"],
-    sizes: %w[cpu_set_t],
-    ints: %w[CPU_SETSIZE],
+    sizes: %w[cpu_set_t struct\ sched_param pid_t time_t struct\ timespec],
+    ints: %w[CPU_SETSIZE SCHED_OTHER SCHED_FIFO SCHED_RR SCHED_BATCH SCHED_ISO
+             SCHED_IDLE SCHED_DEADLINE SCHED_RESET_ON_FORK],
+    offsets: [["struct sched_param", "sched_priority"]],
     snippets: [<<~C.chomp]
       static int abi_sched(void) { return sched_yield() + sched_getcpu(); }
+      static int abi_sched_policy(pid_t pid, struct sched_param *p, struct timespec *t, cpu_set_t *set) {
+        int rc = sched_getparam(pid, p) + sched_setparam(pid, p);
+        rc += sched_setscheduler(pid, SCHED_OTHER, p) + sched_getscheduler(pid);
+        rc += sched_get_priority_max(SCHED_FIFO) + sched_get_priority_min(SCHED_RR);
+        rc += sched_rr_get_interval(pid, t);
+        rc += sched_getaffinity(pid, sizeof *set, set) + sched_setaffinity(pid, sizeof *set, set);
+        return rc;
+      }
     C
   )
 
@@ -1272,7 +1407,14 @@ class TestHeaderAbi < Minitest::Test
              ISIG ICANON ECHO ECHOE ECHOK ECHONL NOFLSH TOSTOP IEXTEN XCASE
              B0 B50 B75 B110 B134 B150 B200 B300 B600 B1200 B1800 B2400 B4800
              B9600 B19200 B38400
-             TCSANOW TCSADRAIN TCSAFLUSH TCIFLUSH TCOFLUSH TCIOFLUSH],
+             TCSANOW TCSADRAIN TCSAFLUSH TCIFLUSH TCOFLUSH TCIOFLUSH
+             TCOOFF TCOON TCIOFF TCION
+             IUCLC OLCUC NLDLY NL0 NL1 CRDLY CR0 CR1 CR2 CR3 TABDLY TAB0 TAB1
+             TAB2 TAB3 XTABS BSDLY BS0 BS1 VTDLY VT0 VT1 FFDLY FF0 FF1
+             CBAUD CBAUDEX CIBAUD CMSPAR CRTSCTS ADDRB
+             ECHOCTL ECHOPRT ECHOKE FLUSHO PENDIN EXTPROC EXTA EXTB
+             B57600 B115200 B230400 B460800 B500000 B576000 B921600 B1000000
+             B1152000 B1500000 B2000000 B2500000 B3000000 B3500000 B4000000],
     offsets: [["struct termios", "c_iflag"], ["struct termios", "c_oflag"],
               ["struct termios", "c_cflag"], ["struct termios", "c_lflag"],
               ["struct termios", "c_line"], ["struct termios", "c_cc"]],
@@ -1298,7 +1440,9 @@ class TestHeaderAbi < Minitest::Test
         speed_t os = cfgetospeed(t);
         rc += cfsetispeed(t, is) + cfsetospeed(t, os);
         cfmakeraw(t);
-        return rc;
+        rc += tcflow(fd, TCOON) + cfsetspeed(t, B115200);
+        pid_t sid = tcgetsid(fd);
+        return rc + (int)sid;
       }
     C
   )
@@ -1311,10 +1455,43 @@ class TestHeaderAbi < Minitest::Test
   # in the common layer and this Spec is re-run in the aarch64 class's
   # neutral-layer section below. ioctl resolves from the host libc at link
   # time.
+  #
+  # bundled-headers-coverage-audit-2 (GAPS BB) added every other request number
+  # and bit glibc's <sys/ioctl.h> shows (the omitted few are listed in the
+  # header's own comment); all of them are compared here, on both arches.
+  IOCTL_REQUESTS = %w[
+    TCGETS TCSETS TCSETSW TCSETSF TCGETA TCSETA TCSETAW TCSETAF TCSBRK TCXONC
+    TCFLSH TIOCEXCL TIOCNXCL TIOCSCTTY TIOCGPGRP TIOCSPGRP TIOCOUTQ TIOCSTI
+    TIOCMGET TIOCMBIS TIOCMBIC TIOCMSET TIOCGSOFTCAR TIOCSSOFTCAR TIOCINQ
+    TIOCLINUX TIOCCONS TIOCGSERIAL TIOCSSERIAL TIOCPKT TIOCNOTTY TIOCSETD
+    TIOCGETD TCSBRKP TIOCSBRK TIOCCBRK TIOCGSID TIOCGRS485 TIOCSRS485 TIOCGPTN
+    TIOCSPTLCK TIOCGDEV TCGETX TCSETX TCSETXF TCSETXW TIOCSIG TIOCVHANGUP
+    TIOCGPKT TIOCGPTLCK TIOCGEXCL TIOCGPTPEER TIOCSERCONFIG TIOCSERGWILD
+    TIOCSERSWILD TIOCGLCKTRMIOS TIOCSLCKTRMIOS TIOCSERGSTRUCT TIOCSERGETLSR
+    TIOCSERGETMULTI TIOCSERSETMULTI TIOCMIWAIT TIOCGICOUNT
+    TIOCM_LE TIOCM_DTR TIOCM_RTS TIOCM_ST TIOCM_SR TIOCM_CTS TIOCM_CAR
+    TIOCM_RNG TIOCM_DSR TIOCM_CD TIOCM_RI
+    TIOCPKT_DATA TIOCPKT_FLUSHREAD TIOCPKT_FLUSHWRITE TIOCPKT_STOP
+    TIOCPKT_START TIOCPKT_NOSTOP TIOCPKT_DOSTOP TIOCPKT_IOCTL TIOCSER_TEMT
+    FIONREAD FIONBIO FIONCLEX FIOCLEX FIOASYNC FIOQSIZE
+    N_TTY N_SLIP N_MOUSE N_PPP N_STRIP N_AX25 N_X25 N_6PACK N_MASC N_R3964
+    N_PROFIBUS_FDL N_IRDA N_SMSBLOCK N_HDLC N_SYNC_PPP N_HCI
+    SIOCADDRT SIOCDELRT SIOCRTMSG SIOCGIFNAME SIOCSIFLINK SIOCGIFCONF
+    SIOCGIFFLAGS SIOCSIFFLAGS SIOCGIFADDR SIOCSIFADDR SIOCGIFDSTADDR
+    SIOCSIFDSTADDR SIOCGIFBRDADDR SIOCSIFBRDADDR SIOCGIFNETMASK SIOCSIFNETMASK
+    SIOCGIFMETRIC SIOCSIFMETRIC SIOCGIFMEM SIOCSIFMEM SIOCGIFMTU SIOCSIFMTU
+    SIOCSIFNAME SIOCSIFHWADDR SIOCGIFENCAP SIOCSIFENCAP SIOCGIFHWADDR
+    SIOCGIFSLAVE SIOCSIFSLAVE SIOCADDMULTI SIOCDELMULTI SIOCGIFINDEX
+    SIOGIFINDEX SIOCSIFPFLAGS SIOCGIFPFLAGS SIOCDIFADDR SIOCSIFHWBROADCAST
+    SIOCGIFCOUNT SIOCGIFBR SIOCSIFBR SIOCGIFTXQLEN SIOCSIFTXQLEN SIOCDARP
+    SIOCGARP SIOCSARP SIOCDRARP SIOCGRARP SIOCSRARP SIOCGIFMAP SIOCSIFMAP
+    SIOCADDDLCI SIOCDELDLCI SIOCPROTOPRIVATE SIOCDEVPRIVATE
+  ].freeze
+
   IOCTL = HeaderAbiHarness::Spec.new(
     header: "sys/ioctl.h",
     sizes: %w[struct\ winsize],
-    ints: %w[TIOCGWINSZ TIOCSWINSZ],
+    ints: %w[TIOCGWINSZ TIOCSWINSZ] + IOCTL_REQUESTS,
     offsets: [["struct winsize", "ws_row"], ["struct winsize", "ws_col"],
               ["struct winsize", "ws_xpixel"], ["struct winsize", "ws_ypixel"]],
     snippets: [<<~C.chomp]
@@ -1843,6 +2020,25 @@ class TestHeaderAbi < Minitest::Test
 
   def test_stdlib_abi_matches_gcc
     assert_abi_matches(STDLIB)
+  end
+
+  def test_stdlib_gnu_abi_matches_gcc
+    assert_abi_matches(STDLIB_GNU)
+  end
+
+  def test_sigval_netdb_forward_abi_matches_gcc
+    skip "glibc <netdb.h> not installed" unless File.exist?("/usr/include/netdb.h")
+    assert_abi_matches(SIGVAL_NETDB_FORWARD)
+  end
+
+  def test_sigval_netdb_reverse_abi_matches_gcc
+    skip "glibc <netdb.h> not installed" unless File.exist?("/usr/include/netdb.h")
+    assert_abi_matches(SIGVAL_NETDB_REVERSE)
+  end
+
+  def test_net_if_over_bundled_sys_types_abi_matches_gcc
+    skip "glibc <net/if.h> not installed" unless File.exist?("/usr/include/net/if.h")
+    assert_abi_matches(NET_IF)
   end
 
   def test_string_abi_matches_gcc
@@ -2549,6 +2745,10 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_ioctl_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::IOCTL)
+  end
+
+  def test_stdlib_gnu_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::STDLIB_GNU)
   end
 
   def test_sys_param_abi_matches_cross_gcc

@@ -12,28 +12,23 @@
 |---|---|---|---|---|
 | **S**([第 2 段の issue](../../issues/platform-abi-alignment.md)) | **`long double` の幅が 8 バイト**(`double` として扱う。DESIGN 3.3 の既知の制限)。**可変長引数に渡す経路は解消済み**(`long-double-varargs-1`) | **残るのは幅に依存するもの** — `sizeof` / `_Alignof` / `max_align_t` / 構造体メンバのオフセット、および**名前付き引数と戻り値**(`frexpl` 等の libc 呼び出しは依然不整合) | **実測**(2026-08-13)。`printf("%Lg", x)` は gcc と一致し、oj の失敗テスト名の集合も対照と完全一致(687 runs / 1 failure / 2 errors、名前も同一) | **オブジェクトファイルの ABI が変わる**ので、他の既知逸脱(enum の底型、`wchar_t` の符号性)と**まとめて 1 つの major** で閉じる |
 | **T**([issue](../../issues/struct-returning-initializer-element.md)) | **配列の要素数をパーサが数える文脈で、struct を返す式が単一式初期化子として読めない** | `pt b[] = { {1,2}, fp(), {5,6} };` が gcc では 3 要素になるのに rubycc は拒否する。パーサは `[]` の長さをここで確定させる必要があるが、型表を持たないので `fp()` の型が分からない | **実測**(2026-08-08) | struct を直接初期化する形は通る(atomic-type-13)。**`gaps-s-t-u-2` で診断だけ正直にした**(以前は `excess elements in scalar initializer` という的外れな文言だった)。解消にはパーサ側に型を引く手段が要る |
-| **AF**([issue](../../issues/bundled-stdlib-getloadavg.md)) | **同梱 `stdlib.h` に `getloadavg` の宣言が無い**(glibc は `__USE_MISC` の枝に置く) | `getloadavg` を呼ぶ gem。`vmstat` 2.3.1 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `implicit declaration`) | **`_DEFAULT_SOURCE` の枝ごと見て決める** — 1 つずつ塞ぐと回数が増える |
 | **AG**([issue](../../issues/zero-length-array.md)) | **長さ 0 の配列(GNU 拡張)を拒否する**。規格(6.7.6.2p1)には忠実だが gcc は既定で受理する | `binding_ninja` 0.2.3 の `dummy_method_arg[0]` が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `array size must be positive`) | 受理するか対象外にするかを**根拠付きで決めてから**実装する。フレキシブル配列メンバの扱いを先に測る |
 | **AH**([issue](../../issues/thread-local-storage.md)) | **スレッドローカル記憶域が無い** — C11 の `_Thread_local` も GNU の `__thread` も `expected type specifier` で拒否する。コンパイラに言及が 1 つも無く、記憶域クラスとしてまるごと無い | TLS 変数を宣言するヘッダを含む gem。`pg_query` 6.2.3 が同梱 postgres ヘッダの `__thread` で、`scout_apm` 6.3.0 が `allocations.c:29` の `static __thread` で落ち、**対照の gcc はどちらもビルドに成功する** | **実測**(2026-09-13、最小再現で両方とも拒否) | **マイルストーン級**。ELF の TLS セクション・TLS 再配置・`%fs` / `tpidr_el0` 相対の生成が要り、拡張は `.so` なので**動的モデルでないと実在の gem に効かない** |
-| **AJ**([issue](../../issues/variadic-aggregate-argument.md)) | **可変長引数に構造体・共用体を値で渡せない**(`not supported yet` と自己申告) | `semctl` に `union semun` を渡す gem。`semian` 0.28.4 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 固定引数の構造体渡しは実装済み。x86-64 と AArch64 の両方で、呼ぶ側・呼ばれる側の両向きを gcc と突き合わせる |
 | **AK**([issue](../../issues/labels-as-values.md)) | **ラベルのアドレス(`&&label` / `goto *p`、GNU 拡張)を受け付けない**。診断は `expected expression` で原因を伝えない | 表引きのディスパッチを持つ gem。`strptime` 0.2.5 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
-| **AM**([issue](../../issues/bundled-sched-param.md)) | **同梱 `sched.h` に `struct sched_param` が無い**。glibc の `<spawn.h>` がメンバに持つので、`<spawn.h>` ごと読めない | `<spawn.h>` を含む gem。`posix-spawn` 0.3.15 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `incomplete type`) | AF と同じ系統。**`<spawn.h>` が他に何を要るかを先に測って**まとめて決める |
 | **AN**([issue](../../issues/incompatible-function-pointer-argument.md)) | **gcc 13 が警告にとどめる 4 つの診断をエラーにする** — 互換でないポインタ・暗黙の関数宣言・暗黙の int(`expected type specifier` で原因を伝えない)・整数とポインタの変換。gcc 14 はどれも既定でエラー | 古い書き方の gem。`hpricot` / `fast_xs` / `fast_trie` / `zipruby` / `github-markdown` / `gctools` / `semacode-ruby19` / `picky` / `allocation_tracer` / `ruby_deep_clone` の 10 件が該当し、**対照の gcc 13 はどれも通る** | **実測**(2026-09-13、gcc 13 のみ。gcc 14 はこのホストに無い) | **警告に下げるかエラーを保つかが未決**。対照の版で結論が変わる |
-| **AQ**([issue](../../issues/bundled-sys-types-caddr.md)) | **同梱 `sys/types.h` に glibc の内部名 `__caddr_t` が無い**。glibc の `<net/if.h>` が読めない | `<net/if.h>` を含む gem。`network_interface` 0.0.4 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現で `expected type specifier`) | AF / AM と同じ系統。glibc 本体が使う内部名を数えてから足す |
-| **AR**([issue](../../issues/bundled-stdlib-qsort-r.md)) | **同梱 `stdlib.h` に `qsort_r` が無い**(`_GNU_SOURCE` のもとでも)。Ruby の `config.h` が `_GNU_SOURCE` を定義するので、拡張からは常に見えない | `qsort_r` を呼ぶ gem。`enumerable-statistics` 2.0.9 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、`-D_GNU_SOURCE` 付きの最小再現) | **AF と一緒に** `<stdlib.h>` の GNU / MISC の枝をまとめて見る |
 | **AS**([issue](../../issues/rmake-gnu-make-conditionals.md)) | **rmake が GNU make の条件文(`ifeq` など)を読めない**。パーサは代入とルール以外をすべて拒否する | 同梱ライブラリの手書き Makefile を make に渡す gem。`hiredis-client` 0.30.1 が該当し、**対照(GNU make)は通る** | **実測**(2026-09-13) | **対応するか対象外にするかが未決**。mkmf の Makefile は条件文を使わない |
 | **AT**([issue](../../issues/typeof-operator.md)) | **`typeof`(GNU 拡張、C23 で標準化)を受け付けない**。未宣言の関数として報告される | `algorithms` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
-| **BA**([issue](../../issues/bundled-termios-tcflow.md)) | **同梱 `termios.h` に `tcflow`(POSIX)と `TCO*` / `TCI*` の定数が無い** | `ruby-termios` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | §2 の同梱ヘッダの洗い出しの対象 |
-| **BB**([issue](../../issues/bundled-ioctl-tiocm.md)) | **同梱 `sys/ioctl.h` に `TIOCMGET` / `TIOCM_*` が無い** | `serialport` 1.4.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | aarch64 の要求番号を測ってから、共通層に置くかを決める |
-| **BC**([issue](../../issues/atomic-builtin-small-widths.md)) | **`__atomic_*` ビルトインが 1 / 2 バイトの対象を拒否する**(4 / 8 バイト限定と自己申告) | 1 バイトのスピンロックを持つ gem。`iodine` 0.7.59 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | 4 / 8 バイト限定のビルトインを一覧にしてから足す |
-| **BG**([issue](../../issues/bundled-stdlib-alloca.md)) | **同梱 `stdlib.h` が `alloca` を宣言しない**(glibc は `__USE_MISC` で `<alloca.h>` を含む。`<alloca.h>` を直接含めば通る) | `<stdlib.h>` だけで `alloca` を呼ぶコード。`amalgalite` 2.0.0 の同梱 SQLite が AL を越えた先で止まる。**対照の gcc は通る** | **実測**(2026-09-14、最小再現) | §2 の同梱ヘッダの洗い出しの対象。AF / AR と同じ `<stdlib.h>` の話 |
 | **BI**([issue](../../issues/aarch64-cross-sysroot-include.md)) | **x86-64 ホストで `-target aarch64` のとき、同梱していないシステムヘッダをクロス sysroot(`/usr/aarch64-linux-gnu/include`)から探さない**。ホストの x86-64 版 `/usr/include/netdb.h` を読んで `bits/stdint-uintn.h` で落ちる | x86-64 ホストでの aarch64 クロステスト。`<netdb.h>` を含むコードを aarch64 で検証できない。**対照の `aarch64-linux-gnu-gcc` は通る** | **実測**(2026-09-14、`#include <netdb.h>` の最小再現)。ネイティブ aarch64 ホストは未測定 | sysroot を決め打ちにするか、クロス gcc に問い合わせるかを決める |
+| **BK**([issue](../../issues/aapcs64-aligned-attribute-aggregate.md)) | **AArch64 で、型に付けた `aligned(16)` の構造体を引数に渡すと、置くレジスタが gcc とずれる**(int 3 個の後で gcc は x3/x4、rubycc は x4/x5)。メンバの `_Alignas(16)` / `__int128` なら一致する | 型の属性で 16 バイトに揃えた構造体を、gcc でコンパイルした関数との間で値渡しするコード。固定引数・可変長引数の両方。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、`variadic-aggregate-argument-1` の行列) | AAPCS64 の規則の根拠を確かめてから、`aggregate_plan` の判定を直す |
+| **BN**([issue](../../issues/bundled-sys-types-ushort.md)) | **同梱 `sys/types.h` の `ushort` が `unsigned char`**(glibc は `unsigned short`)。x86-64 / aarch64 の両方 | `ushort` を構造体のメンバや引数に使うコード(gcc でコンパイルしたものと ABI が合わない)。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、`sizeof(ushort)` が gcc 2 / rubycc 1) | 同じ節の他の省略名もまとめて gcc と突き合わせる |
+| **BO**([issue](../../issues/glibc-alloca-without-gnuc.md)) | **glibc 本体の `<alloca.h>` を読む経路で、`alloca` がリンク時に未定義参照になる**(glibc は `__GNUC__` のときだけ組み込みに写し、rubycc は `__GNUC__` を定義しない) | aarch64 のクロス sysroot を使う例題テストなど、同梱ヘッダより先に glibc 本体の `<alloca.h>` を読む構成。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、例題に `alloca` を入れて aarch64 で) | どの経路で glibc 本体の `<alloca.h>` を読むかを先に測る |
+| **BP**([issue](../../issues/glibc-public-headers-mixed.md)) | **同梱しない glibc の公開ヘッダ 186 本のうち、rubycc だけが落ちるものが 23 本ある**(`__BEGIN_DECLS` が無いように見える形が多い) | それらのヘッダを含む gem。該当する gem は数えていない | **実測**(2026-09-14、`tools/audit_bundled_headers.rb` の混在の調査、x86-64) | 23 本の原因を最小再現で確かめ、同梱ヘッダの側と rubycc 本体の側に分ける |
 
 ## 2. 未解消の負債
 
 | 負債 | 影響 | 優先 | 詳細 |
 |---|---|---|---|
-| **同梱ヘッダの範囲が「コーパスが使った分だけ」**([issue](../../issues/bundled-headers-coverage-audit.md)) | コーパスの外の gem で抜けが当たり続ける(AF / AM / AQ / AR / BA / BB / BG の 7 件)。同梱ヘッダと glibc 本体のヘッダが混ざる所で型が衝突する(AU) | 高 | 1 件ずつ塞がず、ヘッダごとに glibc が `_GNU_SOURCE` のもとで宣言する名前と突き合わせて、足す / 意図して外すを決める |
+| **同梱ヘッダの範囲が「コーパスが使った分だけ」**([issue](../../issues/bundled-headers-coverage-audit.md)) | 突き合わせの表([BUNDLED-HEADERS-COVERAGE.md](BUNDLED-HEADERS-COVERAGE.md))はできた。**差分の分類が済んだのは 54 本のうち 5 本**で、残りの同梱ヘッダでは抜けが当たり続ける。共有ガードの点検は x86-64 だけ | 中 | 表を使って、残りのヘッダも足す / 意図して外すを決める。aarch64 の点検は BI の後 |
 
 ## 3. 環境が無くて測れていないこと
 
@@ -57,6 +52,20 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ AF・AM・AQ・AR・BA・BB・BG・BL**(同梱ヘッダの抜けと共有ガード):
+  `bundled-headers-coverage-audit-2` で解消。突き合わせの表(`bundled-headers-coverage-audit-1`)から同梱ヘッダの側に足した。
+  共有ガードの点検で見つかった `siginfo_t` の同じ形の穴も直した。§2 の負債は、分類が残る分だけ優先を中に下げて残した。
+- **ギャップ BM**(関数名を括弧で囲んだ関数定義を拒否する):
+  `function-definition-parenthesized-name-1` で解消。括弧の中の宣言子が「接尾辞なし」を `nil` に落としていたため、外側の仮引数並びが捨てられ、typedef 経由の定義と取り違えていた。
+- **ギャップ BC**(`__atomic_*` ビルトインが 1 / 2 バイトの対象を拒否する):
+  `atomic-builtin-small-widths-1` で解消。フェンスを除く 18 形を 1 / 2 / 4 / 8 バイトに広げ、ビット演算の fetch 形 10 形を足した(x86-64 / AArch64)。
+  iodine 0.7.59 は atomic の段を越え、残りは AT・BL・BM に移した。
+- **ギャップ AJ**(可変長引数に構造体・共用体を値で渡せない):
+  `variadic-aggregate-argument-1` で解消。呼び出し側は固定引数と同じ経路で渡し、呼ばれ側の `va_arg(ap, struct T)` は同じ分類で値を探す。
+  x86-64 と AArch64 の両方で、両方向とも 238 通りの呼び出しが gcc 同士と一致した(2026-09-14)。
+- **ギャップ BJ**(定義済み識別子 `__func__` が無い):
+  `predefined-identifier-func-1` で解消。構文解析の段で、囲む関数の名前の文字列リテラルに置き換える。
+  `__FUNCTION__` / `__PRETTY_FUNCTION__` も同じ(C モードの gcc の実測どおり)。ファイルスコープの `__func__` は gcc と同じ警告を出して `""` になる。
 - **ギャップ AU**(同梱 `pthread.h` が `pthread_attr_t` を glibc のガード無しで定義する):
   `bundled-pthread-attr-guard-1` で解消。glibc と同じく、typedef を `__have_pthread_attr_t` で 1 回に絞り、共用体の中身を別に定義した
   (x86_64 / aarch64 の両方)。`<netdb.h>` と `<pthread.h>` をどちらの順で含めても同じ型になる。他の同梱の型に glibc 共有のガードは無かった。

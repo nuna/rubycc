@@ -795,6 +795,13 @@ module Rubycc
           raise NotAddressConstant unless node.op == :deref
 
           pointer_value(node.operand)
+        when Front::AST::StringLit
+          # "&\"literal\"" (and "&__func__" — see #gen_address_of) as a static
+          # initializer: the object's own type is the whole char[N+1] array, not
+          # the char* the bare literal decays to.
+          AddressConstant.new(base_kind: :string, symbol: nil,
+                              string_id: intern_string(node.value), offset: 0,
+                              pointee: Type::Array.new(@plain_char, node.value.bytesize + 1))
         else
           raise NotAddressConstant
         end
@@ -2210,12 +2217,14 @@ module Rubycc
       # 48 the argument has spilled onto the stack (overflow_arg_area, then that
       # pointer += 8). Both arms deposit the argument's address into one slot the
       # merge point loads through, the load width and signedness following `type`.
-      # Only an int/long/unsigned/pointer-sized object type is admissible (see
-      # #require_va_arg_type); a promotable or aggregate type is diagnosed.
+      # A complete struct or union takes a walk of its own
+      # (#gen_va_arg_aggregate); a promotable type is diagnosed (see
+      # #require_va_arg_type).
       def gen_va_arg(node)
         ap = gen_va_list_address(node.ap, node.token, "va_arg")
         type = node.type
         require_va_arg_type(type, node.token)
+        return gen_va_arg_aggregate(ap, type) if type.struct?
 
         result_addr = new_vreg
         overflow_label = new_label
@@ -2373,6 +2382,207 @@ module Rubycc
         emit(:copy, dst: result_addr, a: stack)
         emit(:store, a: stack_field, b: bump(stack, 8, size: 8), size: 8)
         emit(:label, a: end_label)
+      end
+
+      # --- va_arg of a struct or union ---------------------------------------
+      #
+      # A caller passes an aggregate in the variable part exactly as it would a
+      # named one (#lower_variadic_argument), so the walk asks the same
+      # AggregatePlan where the value went. The result is, like every
+      # aggregate's value, an address: into the save or stack area itself when
+      # the bytes already lie there contiguously in the aggregate's own layout,
+      # or a stack copy the register pieces are gathered into when they do not.
+
+      # "__builtin_va_arg(ap, struct T)": returns [address, type].
+      def gen_va_arg_aggregate(ap, type)
+        plan = @convention.aggregate_plan(type)
+        result_addr = new_vreg
+        if @convention.va_list_abi == :aapcs64
+          emit_va_arg_aggregate_aapcs64(ap, type, plan, result_addr)
+        else
+          emit_va_arg_aggregate_system_v(ap, type, plan, result_addr)
+        end
+        [result_addr, type]
+      end
+
+      # The System V walk (psABI 3.5.7). A MEMORY-class aggregate is always on
+      # the stack. A register-class one needs every one of its INTEGER and SSE
+      # eightbytes to fit in what remains of the save area — the two counters
+      # are tested as a unit, just as the caller's placer committed both files
+      # or neither — and otherwise it is on the stack whole, leaving both
+      # counters where they were for a later, smaller argument. Its INTEGER
+      # eightbytes lie in consecutive 8-byte GP slots and its SSE ones in
+      # consecutive 16-byte xmm slots, two runs that do not interleave the way
+      # the aggregate's own eightbytes do, so each is copied to its offset in a
+      # stack temporary.
+      def emit_va_arg_aggregate_system_v(ap, type, plan, result_addr)
+        tag = @convention.va_list_tag
+        overflow_disp = tag.member("overflow_arg_area").offset
+        if plan.mode == :memory
+          take_from_stack_area(ap, overflow_disp, type, plan.align16, result_addr)
+          return
+        end
+
+        overflow_label = new_label
+        end_label = new_label
+        gp_count = plan.pieces.count { |piece| piece.kind == :gp }
+        sse_count = plan.pieces.size - gp_count
+        # gp_offset runs 0..48 over six 8-byte slots and fp_offset 48..176 over
+        # eight 16-byte ones; `count` more slots fit while offset <= end - need.
+        gp_field, gp = load_save_area_offset(ap, tag.member("gp_offset").offset, 48 - 8 * gp_count,
+                                             overflow_label, gp_count)
+        fp_field, fp = load_save_area_offset(ap, tag.member("fp_offset").offset, 176 - 16 * sse_count,
+                                             overflow_label, sse_count)
+
+        # Register arm: gather each eightbyte from the run its class lives in.
+        reg_save = new_vreg
+        emit(:load, dst: reg_save, a: offset_address(ap, tag.member("reg_save_area").offset), size: 8)
+        copy = new_vreg
+        emit(:object_addr, dst: copy, a: new_object(round_up_to_eightbyte(type.size)))
+        next_slot = { gp: 0, sse: 0 }
+        plan.pieces.each do |piece|
+          if piece.kind == :gp
+            offset, stride, run = gp, 8, :gp
+          else
+            offset, stride, run = fp, 16, :sse
+          end
+          slot = new_vreg
+          emit(:add, dst: slot, a: reg_save, b: convert(offset, from: Type::UInt, to: Type::Long), size: 8)
+          value = new_vreg
+          emit(:load, dst: value, a: piece_address(slot, stride * next_slot[run]), size: 8)
+          emit(:store, a: piece_address(copy, piece.offset), b: value, size: 8)
+          next_slot[run] += 1
+        end
+        emit(:copy, dst: result_addr, a: copy)
+        emit(:store, a: gp_field, b: bump(gp, 8 * gp_count), size: 4) if gp_count.positive?
+        emit(:store, a: fp_field, b: bump(fp, 16 * sse_count), size: 4) if sse_count.positive?
+        emit(:jump, a: end_label)
+
+        emit(:label, a: overflow_label)
+        take_from_stack_area(ap, overflow_disp, type, plan.align16, result_addr)
+        emit(:label, a: end_label)
+      end
+
+      # Loads one System V save-area counter (the 4-byte unsigned field at
+      # `disp` in the tag) and branches to `overflow_label` unless it is at most
+      # `last`, the highest offset that still leaves room for the argument's
+      # slots of that class. Returns [field_address, counter], or [nil, nil]
+      # without emitting anything when the argument has no slot of the class
+      # (`count` zero), so that counter is neither tested nor advanced.
+      def load_save_area_offset(ap, disp, last, overflow_label, count)
+        return [nil, nil] unless count.positive?
+
+        field = offset_address(ap, disp)
+        counter = new_vreg
+        emit(:uload, dst: counter, a: field, size: 4)
+        limit = new_vreg
+        emit(:const, dst: limit, a: last + 1)
+        below = new_vreg
+        emit(:ult, dst: below, a: counter, b: limit)
+        emit(:jump_if_zero, a: below, b: overflow_label)
+        [field, counter]
+      end
+
+      # The AAPCS64 walk (the "va_arg" algorithm the standard gives for its
+      # va_list). An aggregate it passes by reference is a pointer in an
+      # integer slot, fetched by the scalar walk and followed. Otherwise an HFA
+      # draws on the vector file and every other aggregate on the integer one,
+      # needing one slot per member (16 bytes each) or per eightbyte (8 bytes
+      # each). The offset is tested before it is advanced (a non-negative one
+      # means the file was already spent) and *after* (a positive one means
+      # the aggregate did not fit), and it is stored back in between — so an
+      # aggregate that spills leaves the file exhausted, the counterpart of the
+      # caller's placer setting NGRN/NSRN to eight (6.4.2 stage C). A 16-byte
+      # aligned integer aggregate first rounds the offset up to an even
+      # register, as stage C.8 rounds NGRN.
+      def emit_va_arg_aggregate_aapcs64(ap, type, plan, result_addr)
+        tag = @convention.va_list_tag
+        overflow_label = new_label
+        end_label = new_label
+        if plan.mode == :by_reference
+          slot = new_vreg
+          emit_va_arg_aapcs64_dispatch(ap, tag.member("__gr_offs").offset, tag.member("__gr_top").offset, 8,
+                                       slot, overflow_label, end_label)
+          emit(:load, dst: result_addr, a: slot, size: 8)
+          return
+        end
+
+        hfa = plan.pieces.all? { |piece| FP_KINDS.include?(piece.kind) }
+        offs_name, top_name, step = hfa ? ["__vr_offs", "__vr_top", 16] : ["__gr_offs", "__gr_top", 8]
+        offs_field = offset_address(ap, tag.member(offs_name).offset)
+        offs = new_vreg
+        emit(:load, dst: offs, a: offs_field, size: 4)
+        zero = new_vreg
+        emit(:const, dst: zero, a: 0)
+        below = new_vreg
+        emit(:lt, dst: below, a: offs, b: zero)
+        emit(:jump_if_zero, a: below, b: overflow_label)
+
+        offs = align_up16(offs) if plan.align16
+        new_offs = bump(offs, step * plan.pieces.size)
+        emit(:store, a: offs_field, b: new_offs, size: 4)
+        fits = new_vreg
+        emit(:le, dst: fits, a: new_offs, b: zero)
+        emit(:jump_if_zero, a: fits, b: overflow_label)
+
+        # Register arm. An integer aggregate's eightbytes lie in consecutive
+        # 8-byte slots — its own layout — so the value is read in place. An HFA
+        # member sits in the low bytes of its own 16-byte vector slot, so the
+        # members are gathered into a stack copy at their natural offsets.
+        top = new_vreg
+        emit(:load, dst: top, a: offset_address(ap, tag.member(top_name).offset), size: 8)
+        base = new_vreg
+        emit(:add, dst: base, a: top, b: convert(offs, from: Type::Int, to: Type::Long), size: 8)
+        if hfa
+          copy = new_vreg
+          emit(:object_addr, dst: copy, a: new_object(round_up_to_eightbyte(type.size)))
+          plan.pieces.each_with_index do |piece, i|
+            value = new_vreg
+            emit(:load, dst: value, a: piece_address(base, step * i), size: piece.size)
+            emit(:store, a: piece_address(copy, piece.offset), b: value, size: piece.size)
+          end
+          emit(:copy, dst: result_addr, a: copy)
+        else
+          emit(:copy, dst: result_addr, a: base)
+        end
+        emit(:jump, a: end_label)
+
+        # Overflow arm: the aggregate is on the stack whole, packed into
+        # ceil(size/8) eightbytes (an HFA included — see
+        # CallConvention.memory_pieces).
+        emit(:label, a: overflow_label)
+        take_from_stack_area(ap, tag.member("__stack").offset, type, plan.align16, result_addr)
+        emit(:label, a: end_label)
+      end
+
+      # Takes an aggregate from the stack argument area whose next-argument
+      # pointer is the tag field at `disp` (System V's overflow_arg_area,
+      # AAPCS64's __stack): the value is there in its own layout, so its
+      # address is that pointer — first rounded up to 16 for a 16-byte aligned
+      # aggregate, which both conventions start on a 16-byte boundary — and the
+      # pointer then steps past ceil(size/8) eightbytes.
+      def take_from_stack_area(ap, disp, type, align16, result_addr)
+        field = offset_address(ap, disp)
+        addr = new_vreg
+        emit(:load, dst: addr, a: field, size: 8)
+        addr = align_up16(addr, size: 8) if align16
+        emit(:copy, dst: result_addr, a: addr)
+        emit(:store, a: field, b: bump(addr, round_up_to_eightbyte(type.size), size: 8), size: 8)
+      end
+
+      # A vreg holding `value` rounded up to a multiple of 16, at 32-bit width
+      # (a signed save-area offset) or 64-bit (`size` 8, a pointer).
+      def align_up16(value, size: nil)
+        mask = new_vreg
+        emit(:const, dst: mask, a: -16, size: size)
+        aligned = new_vreg
+        emit(:and, dst: aligned, a: bump(value, 15, size: size), b: mask, size: size)
+        aligned
+      end
+
+      # `bytes` rounded up to whole eightbytes.
+      def round_up_to_eightbyte(bytes)
+        (bytes + 7) / 8 * 8
       end
 
       # A vreg holding `value + amount`. `size` selects 32- or 64-bit addition
@@ -2591,18 +2801,31 @@ module Rubycc
         [-(1 << (bits - 1)), (1 << (bits - 1)) - 1]
       end
 
-      # The object widths the __atomic_* builtins lower for. Only these two are
-      # needed by any consumer here (<ruby/atomic.h> operates on `unsigned int`,
-      # `size_t` and `VALUE`), and each maps to one machine instruction pair on
-      # both targets. A 1-, 2- or 16-byte object is diagnosed rather than lowered:
-      # emitting a plainly non-atomic sequence for it would be worse than
-      # refusing, since the caller cannot tell that its atomicity was dropped.
-      ATOMIC_WIDTHS = [4, 8].freeze
+      # The object widths the atomic builtins lower for: every width both
+      # targets have a native atomic access of. x86-64's xchg / lock xadd /
+      # lock cmpxchg and aarch64's LDAR/STLR/LDAXR/STLXR each come in byte,
+      # halfword, word and doubleword forms, so 1 and 2 are as genuinely atomic
+      # as 4 and 8 (<ruby/atomic.h> needs only the latter pair; a one-byte
+      # spinlock such as facil.io's fio_lock_i needs the former). A 16-byte
+      # object (__int128) is still diagnosed rather than lowered: emitting a
+      # plainly non-atomic sequence for it would be worse than refusing, since
+      # the caller cannot tell that its atomicity was dropped.
+      ATOMIC_WIDTHS = [1, 2, 4, 8].freeze
+
+      # The :atomic_rmw kinds that do arithmetic or bitwise work on the value
+      # read — every kind but :exchange. gcc refuses these on a _Bool object
+      # (measured 2026-09-14, gcc 13.3: "operand type '_Bool *' is incompatible
+      # with argument 1 of '__atomic_fetch_add'"), while it accepts the
+      # exchange, load, store and compare-exchange forms there.
+      ATOMIC_ARITHMETIC_KINDS = %i[
+        fetch_add fetch_sub add_fetch sub_fetch
+        fetch_and fetch_or fetch_xor and_fetch or_fetch xor_fetch
+      ].freeze
 
       # One of gcc's __atomic_* builtins. rubycc implements the nine forms
-      # <ruby/atomic.h> uses (Front::Parser::ATOMIC_BUILTINS); every one lowers
-      # to a single IR op that the backends turn into a genuinely atomic machine
-      # sequence.
+      # <ruby/atomic.h> uses plus the rest of the bitwise fetch family
+      # (Front::Parser::ATOMIC_BUILTINS); every one lowers to a single IR op
+      # that the backends turn into a genuinely atomic machine sequence.
       #
       # *Every operation is lowered at sequential consistency*, whatever memory
       # order the call passed. That is deliberate and it is sound: a memory order
@@ -2649,7 +2872,7 @@ module Rubycc
       # spelling as written, so the diagnostics name the builtin the program
       # actually called. The object must be an integer or a pointer
       # of one of ATOMIC_WIDTHS: a floating, aggregate or void target has no
-      # atomic form here, and a width outside that pair has no instruction to
+      # atomic form here, and a width outside that set has no instruction to
       # lower to. Any top-level qualifier on the target ("volatile rb_atomic_t *",
       # which is how <ruby/atomic.h> spells every one of these) is already gone —
       # this subset folds qualifiers away at parse time — so the pointee type
@@ -2663,11 +2886,37 @@ module Rubycc
           error_at(expr.token, "'#{name}' does not support atomic operations on '#{target}'")
         end
         unless ATOMIC_WIDTHS.include?(target.size)
+          widths = "#{ATOMIC_WIDTHS[0..-2].join(", ")} or #{ATOMIC_WIDTHS.last}"
           error_at(expr.token,
-                   "'#{name}' supports atomic objects of #{ATOMIC_WIDTHS.join(" or ")} bytes only, " \
+                   "'#{name}' supports atomic objects of #{widths} bytes only, " \
                    "but '#{target}' has width #{target.size}")
         end
         [vreg, target]
+      end
+
+      # Refuses an arithmetic or bitwise read-modify-write on a _Bool object, as
+      # gcc does (see ATOMIC_ARITHMETIC_KINDS): the result would leave a value
+      # other than 0 or 1 in it. `expr` is the pointer argument, whose token the
+      # diagnostic points at.
+      def check_atomic_arithmetic_object(expr, value_type, kind, name)
+        return unless value_type.bool? && ATOMIC_ARITHMETIC_KINDS.include?(kind)
+
+        error_at(expr.token, "'#{name}' does not support arithmetic or bitwise operations on '_Bool'")
+      end
+
+      # Re-extends the value an :atomic_load / :atomic_rmw left in `dst` to the
+      # object type's own promoted form. For a 1- or 2-byte object those ops
+      # define only the low `size` bytes (see the IR's atomic section) — what
+      # the machine leaves above them differs by target and kind — so the
+      # result is sign- or zero-extended from that width exactly as an ordinary
+      # load of the object would be (:load vs :uload). A 4- or 8-byte result
+      # already is the value and passes through untouched.
+      def atomic_result(dst, value_type)
+        return dst if value_type.size >= 4
+
+        extended = new_vreg
+        emit(value_type.signed? ? :sext : :zext, dst: extended, a: dst, size: value_type.size)
+        extended
       end
 
       # "__atomic_load_n(ptr, order)": reads the object atomically. The result
@@ -2676,7 +2925,7 @@ module Rubycc
         gen_atomic_flag_argument(node.args[1], name, "memory order")
         dst = new_vreg
         emit(:atomic_load, dst: dst, a: ptr, size: value_type.size)
-        [dst, value_type]
+        [atomic_result(dst, value_type), value_type]
       end
 
       # "__atomic_store_n(ptr, value, order)": writes the object atomically. Like
@@ -2688,21 +2937,23 @@ module Rubycc
         [nil, Type::Void]
       end
 
-      # The read-modify-write family: __atomic_exchange_n and the four
-      # fetch/modify pairs, all spelled "(ptr, value, order)". The IR carries the
-      # kind, and the result type is the object's — the value read for
-      # :exchange/:fetch_*, the value stored for :add_fetch/:sub_fetch/:or_fetch.
+      # The read-modify-write family: __atomic_exchange_n and the
+      # fetch/modify pairs (add, sub, and, or, xor), all spelled
+      # "(ptr, value, order)". The IR carries the kind, and the result type is
+      # the object's — the value read for :exchange/:fetch_*, the value stored
+      # for the :*_fetch forms.
       #
       # A pointer-typed object takes its operand unscaled: gcc's atomic builtins
       # add plain bytes rather than applying C's pointer arithmetic (measured —
       # "__atomic_fetch_add(&p, 1, ...)" on an "int *" advances p by one byte),
       # so the operand is converted to the object's type and used as it stands.
       def gen_atomic_rmw(node, ptr, value_type, name)
+        check_atomic_arithmetic_object(node.args[0], value_type, node.kind, name)
         value = gen_atomic_operand(node.args[1], value_type, name)
         gen_atomic_flag_argument(node.args[2], name, "memory order")
         dst = new_vreg
         emit(:atomic_rmw, dst: dst, a: ptr, b: [value, node.kind], size: value_type.size)
-        [dst, value_type]
+        [atomic_result(dst, value_type), value_type]
       end
 
       # "__atomic_compare_exchange_n(ptr, expected, desired, weak, success_order,
@@ -2752,7 +3003,7 @@ module Rubycc
       # argument layout, not in the machine sequence.
       #
       # Only the forms an existing IR op already means correctly are lowered; the
-      # bitwise ones with no matching op stay unrecognized identifiers (see
+      # nand pair, with no matching op, stays an unrecognized identifier (see
       # SYNC_BUILTINS for the list and the reasoning).
       def gen_builtin_sync(node)
         name = node.token.value
@@ -2770,21 +3021,22 @@ module Rubycc
         end
       end
 
-      # The read-modify-write family — __sync_lock_test_and_set and the five
+      # The read-modify-write family — __sync_lock_test_and_set and the
       # fetch/modify spellings — all written "(ptr, value)". The kind the parser
       # recorded is already the IR's, so this is #gen_atomic_rmw's emission
       # without the memory-order argument to consume, and the result type is the
       # object's: the value read for :exchange/:fetch_*, the value stored for
-      # :add_fetch/:sub_fetch/:or_fetch.
+      # the :*_fetch forms.
       #
       # A pointer-typed object takes its operand unscaled here too — measured
       # separately for this family rather than assumed from the __atomic_* one:
       # "__sync_fetch_and_add(&p, 1)" on an "int *" advances p by a single byte.
       def gen_sync_rmw(node, ptr, value_type, name)
+        check_atomic_arithmetic_object(node.args[0], value_type, node.kind, name)
         value = gen_atomic_operand(node.args[1], value_type, name)
         dst = new_vreg
         emit(:atomic_rmw, dst: dst, a: ptr, b: [value, node.kind], size: value_type.size)
-        [dst, value_type]
+        [atomic_result(dst, value_type), value_type]
       end
 
       # "__sync_lock_release(ptr)": writes zero into the object and yields void.
@@ -2827,8 +3079,10 @@ module Rubycc
         emit(:atomic_cas, dst: swapped, a: ptr, b: [expected, newval], size: value_type.size)
         return [swapped, Type::Bool] if node.kind == :bool_compare_and_swap
 
+        # An ordinary read of the slot, extended the way the object's type says
+        # (an unsigned char found as 0xFF is 255, not -1).
         found = new_vreg
-        emit(:load, dst: found, a: expected, size: value_type.size)
+        emit_scalar_load(found, expected, value_type)
         [found, value_type]
       end
 
@@ -2881,11 +3135,17 @@ module Rubycc
       # Rejects a va_arg type-name that cannot be fetched. A char/short/_Bool (or
       # their unsigned forms) is of promotable type: it was widened to int by the
       # default argument promotions at the call, so va_arg(char) would read the
-      # wrong width — the caller must use the promoted type. A struct/union, void,
-      # function or array has no scalar argument slot to read here at all. Only an
-      # int/unsigned/long/unsigned long (enum being int already) or a pointer is
-      # admissible.
+      # wrong width — the caller must use the promoted type. Void, a function
+      # or an array has no argument slot to read at all. Admissible are an
+      # int/unsigned/long/unsigned long (enum being int already), a double, a
+      # pointer, and a complete struct or union (see #gen_va_arg_aggregate) —
+      # an incomplete one has no size to step over.
       def require_va_arg_type(type, token)
+        if type.struct?
+          return if type.complete?
+
+          error_at(token, "second argument to 'va_arg' has incomplete type '#{type}'")
+        end
         if type.integer? && type.size < 4
           error_at(token, "second argument to 'va_arg' is of promotable type '#{type}'")
         end
@@ -3870,6 +4130,16 @@ module Rubycc
           # even for an array literal ("&(int[]){...}" is int(*)[N]).
           addr, type = gen_compound_literal_object(operand)
           [addr, Type::Pointer.new(type)]
+        elsif operand.is_a?(Front::AST::StringLit)
+          # "&\"literal\"" (and "&__func__", the parser's fabricated string
+          # literal for it — see Front::Parser#predefined_function_name_literal):
+          # a string literal is an lvalue of array type char[N+1] (its bytes plus
+          # the NUL), so its address is a pointer to that whole array, not the
+          # char* the bare literal decays to elsewhere.
+          id = intern_string(operand.value)
+          dst = new_vreg
+          emit(:string_addr, dst: dst, a: id)
+          [dst, Type::Pointer.new(Type::Array.new(@plain_char, operand.value.bytesize + 1))]
         else
           error_at(node.token, "lvalue required as unary '&' operand")
         end
@@ -4355,29 +4625,37 @@ module Rubycc
       end
 
       # Lowers one argument in a variadic call's variable part to its [vreg,
-      # kind] ABI slot pairs. Every type but `long double` takes the default
-      # argument promotions and lands in a single slot; a `long double` is the
-      # one argument whose value has to change shape on the way out, so it takes
-      # a path of its own and may occupy more than one slot.
+      # kind] ABI slot pairs. A scalar takes the default argument promotions
+      # and lands in a single slot; a `long double` is the one scalar whose
+      # value has to change shape on the way out, so it takes a path of its own
+      # and may occupy more than one slot.
+      #
+      # A struct or union is passed exactly as it would be as a named argument
+      # (#lower_struct_argument): neither target's convention has a separate
+      # rule for an anonymous aggregate. Measured 2026-09-14 against gcc 13.3
+      # (x86-64) and aarch64-linux-gnu-gcc 13.3 (under qemu-aarch64), for
+      # aggregates of 4 to 32 bytes with and without floating members: System V
+      # classifies it by the same eightbyte rules (its SSE eightbytes count
+      # toward al like any other xmm argument, which the backend's count of
+      # :sse8 slots already covers), and Linux AAPCS64 gives it the same HFA,
+      # integer-register and by-reference treatment, where the Apple variant
+      # would stack every anonymous argument instead.
       def lower_variadic_argument(vreg, arg_type, placer, token)
         return lower_variadic_long_double(vreg, placer) if arg_type == Type::LongDouble
+        return lower_struct_argument(vreg, arg_type, placer) if arg_type.struct?
 
         [place_scalar_argument(*promote_variadic_argument(vreg, arg_type, token), placer)]
       end
 
-      # The default argument promotions applied to an argument in a variadic
-      # call's variable part (6.5.2.2p6), returning the [vreg, kind] pair the
-      # call lowering wants: an integer narrower than int (char, short and their
-      # unsigned forms, and _Bool) widens to int, a `float` widens to `double`
-      # (so it travels as an :sse8 in an xmm register, which al then counts),
-      # while int, long, their unsigned forms, double and any pointer pass
-      # through unchanged. A struct has no promoted form the callee could recover
-      # through va_arg in a register/stack layout this step models, so passing
-      # one is rejected.
+      # The default argument promotions applied to a scalar argument in a
+      # variadic call's variable part (6.5.2.2p6), returning the [vreg, kind]
+      # pair the call lowering wants: an integer narrower than int (char, short
+      # and their unsigned forms, and _Bool) widens to int, a `float` widens to
+      # `double` (so it travels as an :sse8 in an xmm register, which al then
+      # counts), while int, long, their unsigned forms, double and any pointer
+      # pass through unchanged. An aggregate never reaches here (see
+      # #lower_variadic_argument).
       def promote_variadic_argument(vreg, arg_type, token)
-        if arg_type.struct?
-          error_at(token, "passing a struct to a variadic function is not supported yet")
-        end
         # A 128-bit integer has no default-promoted form this step can hand a
         # variadic callee to recover through va_arg, so passing one is diagnosed.
         if wide128?(arg_type)
@@ -6350,6 +6628,9 @@ module Rubycc
           # "&(T){...}" is a pointer to the unnamed object of type T (no decay),
           # mirroring the CompoundLiteral branch of #gen_address_of.
           Type::Pointer.new(operand.type)
+        elsif operand.is_a?(Front::AST::StringLit)
+          # "&\"literal\"", mirroring the StringLit branch of #gen_address_of.
+          Type::Pointer.new(Type::Array.new(@plain_char, operand.value.bytesize + 1))
         else
           error_at(node.token, "lvalue required as unary '&' operand")
         end

@@ -206,13 +206,15 @@ module Rubycc
       RESTRICT_SPELLINGS = %w[restrict __restrict __restrict__].freeze
 
       # The gcc __atomic_* builtins this subset lowers, mapping each keyword to
-      # its [AST::BuiltinAtomic kind, argument count]. The nine object forms
-      # cover <ruby/atomic.h>; the fence is also supported because C11 library
-      # headers and libev use it without an _Atomic object. The test-and-set and
-      # the generic (non-"_n") address-taking forms remain deliberately absent,
-      # so a program using one of those gets an "undeclared identifier" rather
-      # than a silently wrong lowering. (The legacy __sync_* family has its own
-      # table below.)
+      # its [AST::BuiltinAtomic kind, argument count]. The first nine object
+      # forms cover <ruby/atomic.h>; the and/or/xor fetch forms complete the
+      # bitwise family (facil.io and other lock/flag code use them); the fence is
+      # also supported because C11 library headers and libev use it without an
+      # _Atomic object. The nand pair, the test-and-set and the generic
+      # (non-"_n") address-taking forms remain deliberately absent, so a program
+      # using one of those gets an "undeclared identifier" rather than a
+      # silently wrong lowering. (The legacy __sync_* family has its own table
+      # below.)
       #
       # The counts include the trailing memory-order argument(s) gcc's signatures
       # take — one for every form but __atomic_compare_exchange_n, which takes a
@@ -227,6 +229,11 @@ module Rubycc
         "__atomic_add_fetch" => [:add_fetch, 3],
         "__atomic_sub_fetch" => [:sub_fetch, 3],
         "__atomic_or_fetch" => [:or_fetch, 3],
+        "__atomic_and_fetch" => [:and_fetch, 3],
+        "__atomic_xor_fetch" => [:xor_fetch, 3],
+        "__atomic_fetch_or" => [:fetch_or, 3],
+        "__atomic_fetch_and" => [:fetch_and, 3],
+        "__atomic_fetch_xor" => [:fetch_xor, 3],
         "__atomic_thread_fence" => [:fence, 1]
       }.freeze
 
@@ -238,11 +245,11 @@ module Rubycc
       # directly rather than through a pointer.
       #
       # The set is exactly the forms an existing IR op already gives the right
-      # meaning for. The bitwise members with no matching op — __sync_fetch_and_or,
-      # __sync_fetch_and_and, __sync_fetch_and_xor, __sync_fetch_and_nand,
-      # __sync_and_and_fetch, __sync_xor_and_fetch and __sync_nand_and_fetch —
-      # stay deliberately absent for the same reason the missing __atomic_* forms
-      # do: a program using one gets an "undeclared identifier" instead of a
+      # meaning for. The and/or/xor members arrived with the :atomic_rmw kinds
+      # the matching __atomic_* forms needed; the nand pair —
+      # __sync_fetch_and_nand and __sync_nand_and_fetch — has no op and stays
+      # deliberately absent for the same reason the missing __atomic_* forms do:
+      # a program using one gets an "undeclared identifier" instead of a
       # silently wrong lowering.
       #
       # gcc tolerates extra trailing arguments on all of these (its documented
@@ -254,6 +261,11 @@ module Rubycc
         "__sync_add_and_fetch" => [:add_fetch, 2],
         "__sync_sub_and_fetch" => [:sub_fetch, 2],
         "__sync_or_and_fetch" => [:or_fetch, 2],
+        "__sync_and_and_fetch" => [:and_fetch, 2],
+        "__sync_xor_and_fetch" => [:xor_fetch, 2],
+        "__sync_fetch_and_or" => [:fetch_or, 2],
+        "__sync_fetch_and_and" => [:fetch_and, 2],
+        "__sync_fetch_and_xor" => [:fetch_xor, 2],
         "__sync_lock_test_and_set" => [:exchange, 2],
         "__sync_lock_release" => [:release, 1],
         "__sync_synchronize" => [:fence, 0],
@@ -314,6 +326,12 @@ module Rubycc
       # they are consumed without being recorded; all five still participate in
       # the "at most one storage class" duplicate check.
       STORAGE_CLASS_KEYWORDS = %w[typedef static extern register auto].freeze
+
+      # The predefined identifiers C99 6.4.2.2 gives every function body:
+      # __func__ is the standard one, __FUNCTION__ and __PRETTY_FUNCTION__ its
+      # GNU synonyms. In C mode gcc gives all three the plain function name (no
+      # C++-style decorated signature) — measured 2026-09-14 with gcc 13.3.
+      PREDEFINED_FUNCTION_NAMES = %w[__func__ __FUNCTION__ __PRETTY_FUNCTION__].freeze
 
       # The non-type parts of a declaration's specifier run, collected by
       # #parse_declaration_specifiers alongside the base type. `storage` is the
@@ -446,6 +464,12 @@ module Rubycc
         # #old_style_parameter_abi_types). Every other agreement between
         # declarations of one function is the generator's to enforce.
         @prototype_param_types = {}
+        # The name of the function definition whose body is currently being
+        # parsed, or nil at file scope. #predefined_function_name_literal reads
+        # this to resolve __func__ and its GNU synonyms (C99 6.4.2.2); nested
+        # function definitions are rejected elsewhere, so a single slot (not a
+        # stack) is enough.
+        @current_function_name = nil
       end
 
       # Parses the whole translation unit into an AST::Program. An external
@@ -2128,8 +2152,14 @@ module Rubycc
         @tag_scopes.push({})
         @ordinary_scopes.push({})
         params.each { |param| declare_ordinary_name(param.name, param.type) }
+        # Nested function definitions are rejected elsewhere (see
+        # #parse_external_declaration), so this never nests and a plain
+        # save/restore (rather than a stack) is enough.
+        outer_function_name = @current_function_name
+        @current_function_name = name
         body = []
         body.concat(parse_block_item) until peek.punct?("}")
+        @current_function_name = outer_function_name
         @ordinary_scopes.pop
         @tag_scopes.pop
         expect_punct("}")
@@ -2556,6 +2586,12 @@ module Rubycc
           parse_declarator_builder(name_mode: name_mode,
                                    allow_incomplete_array: allow_incomplete_array,
                                    allow_zero_length_array: allow_zero_length_array)
+        # :none never escapes this method: every caller outside the
+        # declarator-parsing family expects the pre-existing nil sentinel for
+        # "no suffix supplied parameters anywhere in this declarator" (the
+        # through-a-typedef function definition check, and
+        # #declarator_prototype_params's typedef-sourced prototype).
+        function_params = nil if function_params == :none
         [name_tok, build.call(base), function_params, pointer_quals]
       end
 
@@ -2686,11 +2722,21 @@ module Rubycc
 
         # A parenthesized core forwards the buried name's own function suffix;
         # every other core takes this level's outermost (first textual) suffix.
+        # When neither applies, this level's core carried no suffix of its
+        # own — the sentinel :none propagates unchanged, rather than nil,
+        # because a bare identifier core sitting inside "(" ... ")" (a
+        # parenthesized name, "int (add)(int a, int b)") is not yet known to
+        # be the *final* function_params: the enclosing suffix may still be
+        # the one that makes the declared name a function, and only
+        # #parse_declarator (the single external entry point) may collapse
+        # :none to nil once nothing further can attach.
         function_params =
           if inner_params != :none
             inner_params
           elsif suffixes.first&.first == :function
             suffixes.first[1]
+          else
+            :none
           end
         reject_unsurfaced_identifier_lists(suffixes, function_params)
         [name_tok, build, function_params]
@@ -2726,11 +2772,27 @@ module Rubycc
       def parse_declarator_core(name_mode:, allow_incomplete_array:, allow_zero_length_array:)
         if peek.punct?("(") && paren_starts_declarator?
           advance # "("
-          name_tok, build, inner_params =
+          name_tok, build, inner_params, inner_pointer_quals =
             parse_declarator_builder(name_mode: name_mode,
                                      allow_incomplete_array: allow_incomplete_array,
                                      allow_zero_length_array: allow_zero_length_array)
           expect_punct(")")
+          # :none only means "no suffix has surfaced yet, and none of this
+          # inner declarator's own text rules one out" — true of a bare name,
+          # possibly renested in more parentheses ("(add)", "((h))"), where an
+          # enclosing suffix can still turn out to be *that name's* function
+          # suffix. A leading "*" on this inner declarator ("(*g)", "(*(g))")
+          # already answers what the name is (a pointer), so an enclosing
+          # suffix instead wraps the pointee, never the name's own parameters
+          # — collapse to the pre-existing nil right here, the same value
+          # #parse_declarator would settle on once nothing further attaches.
+          # A suffix already borne by the inner declarator itself (an array,
+          # as in "(a[2])", or a function already claimed by a name buried
+          # further in, as in "(*g(int a))") is unaffected: :none only ever
+          # holds when nothing inner claimed a function suffix yet, so those
+          # cases already carry their own non-:none function_params by the
+          # time they reach here.
+          inner_params = nil if inner_params == :none && !inner_pointer_quals.empty?
           [name_tok, build, inner_params]
         elsif peek.type == :ident && name_mode != :forbidden
           name_tok = advance
@@ -3803,11 +3865,11 @@ module Rubycc
         AST::BuiltinOverflow.new(op, args, keyword_tok)
       end
 
-      # "__atomic_xxx ( ... )": one of the nine gcc atomic builtins rubycc
-      # lowers. The keyword decides the kind and the exact argument count, both
-      # of which ATOMIC_BUILTINS records; everything else (operand types, the
-      # 4-or-8-byte width restriction) needs resolved types and is the
-      # generator's to diagnose.
+      # "__atomic_xxx ( ... )": one of the gcc atomic builtins rubycc lowers.
+      # The keyword decides the kind and the exact argument count, both of which
+      # ATOMIC_BUILTINS records; everything else (operand types, the 1/2/4/8-byte
+      # width restriction) needs resolved types and is the generator's to
+      # diagnose.
       def parse_builtin_atomic
         keyword_tok = advance # the "__atomic_..." keyword
         kind, arity = ATOMIC_BUILTINS.fetch(keyword_tok.value)
@@ -4042,9 +4104,17 @@ module Rubycc
           # An identifier bound to an enum constant folds to its int value on the
           # spot, so the rest of the pipeline never sees an enumerator; one bound
           # to (or shadowed by) an ordinary name stays a variable reference.
+          # __func__ and its GNU synonyms are unbound by construction (nothing
+          # ever declares them in @ordinary_scopes), so entry is nil for them
+          # unless a program declares its own identifier of that name in some
+          # visible scope — that user declaration must win, exactly as it would
+          # shadow the "static const char __func__[] = ..." 6.4.2.2 imagines
+          # right after the enclosing function's opening brace.
           entry = lookup_ordinary(tok.value)
           if entry&.kind == :enum
             AST::IntLit.new(entry.value, tok, Type::Int)
+          elsif entry.nil? && PREDEFINED_FUNCTION_NAMES.include?(tok.value)
+            predefined_function_name_literal(tok)
           else
             AST::VariableRef.new(tok.value, tok)
           end
@@ -4173,6 +4243,44 @@ module Rubycc
           column: token.column,
           source_line: token.source_line
         )
+      end
+
+      # As #error_at, but on the non-fatal channel (see Diagnostics.warn): the
+      # message is written and parsing continues.
+      def warn_at(token, description)
+        Diagnostics.warn(
+          description,
+          filename: token.filename,
+          line: token.line,
+          column: token.column,
+          source_line: token.source_line
+        )
+      end
+
+      # __func__ (C99 6.4.2.2) and its GNU synonyms __FUNCTION__ and
+      # __PRETTY_FUNCTION__ behave as if
+      # "static const char __func__[] = "<function-name>";" were declared right
+      # after the enclosing function's opening brace. Fabricating a string
+      # literal here — rather than teaching the generator a dedicated node —
+      # reuses everything a string literal already gets for free: sizeof
+      # (char[N+1]), pointer decay, and (since the generator interns string
+      # bytes by content, see Generator#intern_string) a single shared object
+      # per distinct function name, so every use inside one function's body
+      # yields the same address without any extra per-function bookkeeping.
+      #
+      # Outside any function (6.4.2.2 defines __func__ only inside one), gcc
+      # 13.3 (measured 2026-09-14) instead yields an empty string with a
+      # warning for __func__ itself; its two GNU synonyms warn nothing there,
+      # and gcc's __PRETTY_FUNCTION__ becomes "top level" rather than "" — not
+      # reproduced here (see docs/development/STEPS.md,
+      # predefined-identifier-func-1) since no observed C source relies on it.
+      def predefined_function_name_literal(tok)
+        if @current_function_name
+          AST::StringLit.new(@current_function_name.b, tok)
+        else
+          warn_at(tok, "'#{tok.value}' is not defined outside of function scope") if tok.value == "__func__"
+          AST::StringLit.new("".b, tok)
+        end
       end
 
       # Folds `node` — a conditional-expression already parsed as a

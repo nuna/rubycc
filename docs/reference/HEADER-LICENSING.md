@@ -107,7 +107,7 @@ musl の宣言セット/形状を出発点にし、glibc の対象 arch(x86-64 /
 | `include/libc/arpa/inet.h` | 宣言セット。UAPI の不要な連鎖は省略 |
 | `include/libc/math.h` | `FP_*` / `math_errhandling` を glibc 実測値に |
 | `include/libc/stdio.h` | FILE 不透明型、`BUFSIZ`/`TMP_MAX` 等を glibc 実測値に |
-| `include/libc/stdlib.h` | `div_t`/`ldiv_t`/`lldiv_t` の LP64 レイアウト、`RAND_MAX`/`EXIT_*` |
+| `include/libc/stdlib.h` | `div_t`/`ldiv_t`/`lldiv_t` の LP64 レイアウト、`RAND_MAX`/`EXIT_*`。`getloadavg`・`qsort_r`(`__USE_GNU`)・`<alloca.h>` の取り込みなど glibc の `_DEFAULT_SOURCE` / `_GNU_SOURCE` の枝の宣言は、gcc への再宣言が衝突しないことで形を実測(2026-09-14、両 arch) |
 | `include/libc/string.h` | 純粋プロトタイプ(arch 非依存) |
 | `include/libc/strings.h` | 純粋プロトタイプ(arch 非依存) |
 | `include/libc/unistd.h` | ABI 型付き名の LP64 幅。`_SC_IOV_MAX` は 60 |
@@ -116,14 +116,14 @@ musl の宣言セット/形状を出発点にし、glibc の対象 arch(x86-64 /
 | `include/libc/glibc/x86_64/stdint.h` | 幅を glibc x86-64 LP64 に固定(実測) |
 | `include/libc/glibc/x86_64/sys/select.h` | `fd_set` を glibc x86-64 に固定 |
 | `include/libc/glibc/x86_64/sys/time.h` | `struct timeval` メンバを glibc x86-64 に固定(実測) |
-| `include/libc/glibc/x86_64/sys/types.h` | 全幅・符号を glibc x86-64 LP64 に固定(実測) |
+| `include/libc/glibc/x86_64/sys/types.h` | 全幅・符号を glibc x86-64 LP64 に固定(実測)。glibc の内部名 `__*_t`(`__caddr_t` ほか)・`int8_t`〜`int64_t` の幅・整列・符号も実測(2026-09-14) |
 | `include/libc/glibc/x86_64/time.h` | `time_t`=long、`struct tm` の tm_gmtoff/tm_zone 拡張(実測) |
 | `include/libc/glibc/aarch64/endian.h` | little-endian aarch64 に固定(x86-64 版とバイト一致) |
 | `include/libc/glibc/aarch64/inttypes.h` | LP64 の "l" 形(x86-64 版とバイト一致) |
 | `include/libc/glibc/aarch64/stdint.h` | 幅を glibc aarch64 LP64 に固定。WCHAR_MIN/MAX は unsigned(0/UINT32_MAX)で x86-64 と相違(実測) |
 | `include/libc/glibc/aarch64/sys/select.h` | `fd_set` を glibc aarch64 に固定(x86-64 版とバイト一致) |
 | `include/libc/glibc/aarch64/sys/time.h` | `struct timeval` を glibc aarch64 に固定(x86-64 版とバイト一致) |
-| `include/libc/glibc/aarch64/sys/types.h` | 全幅・符号を glibc aarch64 LP64 に固定。nlink_t/blksize_t=32bit で x86-64 と相違(実測) |
+| `include/libc/glibc/aarch64/sys/types.h` | 全幅・符号を glibc aarch64 LP64 に固定。nlink_t/blksize_t=32bit で x86-64 と相違(実測)。内部名 `__*_t` も同様で、`__nlink_t`/`__blksize_t` だけが x86-64 と相違(実測 2026-09-14) |
 | `include/libc/glibc/aarch64/time.h` | `time_t`=long、`struct tm` 拡張(x86-64 版とバイト一致) |
 
 ### 3.3 clean-room(49 本)
@@ -164,9 +164,9 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 | `include/libc/sys/uio.h` | **POSIX/kernel UAPI の struct iovec**。`_RUBYCC_STRUCT_IOVEC` ガードを共有し、readv/writev を宣言する | なし(UAPI 由来) |
 | `include/libc/sys/resource.h` | **POSIX/kernel UAPI の struct rlimit・struct rusage と RLIMIT_*/RUSAGE_* 値**。struct timeval は sys/time.h と共通のガードを使用する。getrlimit/setrlimit/getrusage は POSIX 宣言 | なし(UAPI 由来) |
 | `include/libc/dirent.h` | **glibc/Linux ABI の struct dirent**。DIR は不完全型 `struct __dirstream` とし、struct dirent の対象 ABI レイアウトに対応する。opendir/readdir/closedir/rewinddir/readdir_r/fdopendir/dirfd は POSIX 宣言 | なし(glibc/UAPI) |
-| `include/libc/sched.h` | **glibc の cpu_set_t**。128/8 の不透明 blob と CPU_SETSIZE を提供する。sched_yield/sched_getcpu の宣言に対応し、CPU_SET 等のアフィニティ操作マクロ群は対象外 | なし(glibc ABI) |
-| `include/libc/termios.h` | **glibc/Linux ABI の struct termios**。NCCS=32 の `c_cc` 配列を含む 60 バイトのレイアウト、主要フラグ定数・V* 添字・B* ボーレート値を提供する。tcgetattr/tcsetattr/tcflush/tcdrain/tcsendbreak/cfgetispeed/cfsetispeed/cfgetospeed/cfsetospeed を宣言する。cfmakeraw は対象外 | なし(glibc/UAPI 実測) |
-| `include/libc/sys/ioctl.h` | **struct winsize の 8 バイトレイアウト**と TIOCGWINSZ/TIOCSWINSZ の値を提供する。ioctl は Linux/glibc 宣言。 | なし(glibc/UAPI 実測) |
+| `include/libc/sched.h` | **glibc の cpu_set_t**。128/8 の不透明 blob と CPU_SETSIZE を提供する。**`struct sched_param`(4 バイト)と `SCHED_*` の値**(実測 2026-09-14、両 arch 一致)、POSIX のスケジューリング方針の関数と sched_yield/sched_getcpu/アフィニティ関数の宣言を持つ。CPU_SET 等のアフィニティ操作マクロ群と clone 系は対象外 | なし(glibc ABI) |
+| `include/libc/termios.h` | **glibc/Linux ABI の struct termios**。NCCS=32 の `c_cc` 配列を含む 60 バイトのレイアウト、主要フラグ定数・V* 添字・B* ボーレート値を提供する。tcgetattr/tcsetattr/tcflush/tcdrain/tcsendbreak/cfgetispeed/cfsetispeed/cfgetospeed/cfsetospeed/cfmakeraw を宣言する。**tcflow/tcgetsid/cfsetspeed と `TCO*`/`TCI*`・B57600 以上のボーレート・遅延ビット・CRTSCTS 等の値**を追加(実測 2026-09-14、両 arch 一致) | なし(glibc/UAPI 実測) |
+| `include/libc/sys/ioctl.h` | **struct winsize の 8 バイトレイアウト**と TIOCGWINSZ/TIOCSWINSZ の値を提供する。ioctl は Linux/glibc 宣言。**`TIOCM*`・`TC*`/`TIOC*`・`FIO*`・`N_*`・`SIOC*` の 165 個の値**を追加(実測 2026-09-14、x86-64 と aarch64 で全件一致のため共通層) | なし(glibc/UAPI 実測) |
 | `include/libc/sys/param.h` | glibc 互換シムとして MIN/MAX/howmany/roundup の 4 マクロを提供する。BSD 名エイリアス、ビットマップ操作マクロは対象外 | なし(glibc ABI 実測) |
 | `include/libc/glibc/x86_64/fcntl.h` の隣に置く `sys/fcntl.h`(x86-64) | `#include <fcntl.h>` のみの 1 行シム。fcntl.h と同じ arch 層に置く | なし(glibc ABI 実測) |
 | `include/libc/glibc/aarch64/fcntl.h` の隣に置く `sys/fcntl.h`(aarch64) | x86-64 版と同じ 1 行シム | なし(glibc ABI 実測) |

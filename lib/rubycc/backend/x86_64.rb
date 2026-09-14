@@ -1043,9 +1043,16 @@ module Rubycc
       #
       # The four atomic ops all lower at sequential consistency, the strongest
       # order (the IR carries no weaker one — see IR::Generator#gen_builtin_atomic
-      # for why strengthening is always sound). `size` is only ever 4 or 8, the
-      # generator having diagnosed every other width, so each helper distinguishes
-      # exactly those two: an 8-byte form is the 4-byte one with a REX.W prefix.
+      # for why strengthening is always sound). `size` is 1, 2, 4 or 8. Only the
+      # instruction that touches the atomic object changes with it (see
+      # #emit_atomic_access): an 8-byte form is the 4-byte one with a REX.W
+      # prefix, a 2-byte form carries the 66 operand-size prefix, and a 1-byte
+      # form is the same opcode with its low "w" bit clear — xchg (86/87), xadd
+      # (0F C0/C1), cmpxchg (0F B0/B1) and mov (88/89) all encode the byte width
+      # in that bit. The register arithmetic around it (neg, add, or, ...) stays
+      # 32-bit for the narrow widths: only the low byte/word of each value is
+      # ever written back to memory, and the carries it leaves above them are
+      # removed by the :sext/:zext the generator emits after a narrow result.
       #
       # x86-64's memory model (Intel SDM 3A §8.2, "loads are not reordered with
       # other loads, stores are not reordered with other stores, and a store is
@@ -1065,29 +1072,64 @@ module Rubycc
         emit(0x0F, 0xAE, 0xF0)
       end
 
+      # Emits the one instruction of an atomic sequence whose memory operand is
+      # the atomic object itself, at access width `size` (see the section
+      # comment for how the width is encoded). `opcode` is the 4/8-byte form's
+      # opcode bytes and `modrm` the ModR/M byte; `lock` adds the F0 prefix.
+      # Prefix order is lock, operand size, REX — REX has to be the byte
+      # immediately before the opcode.
+      def emit_atomic_access(size, opcode, modrm, lock: false)
+        emit(0xF0) if lock
+        emit(0x66) if size == 2
+        emit(0x48) if size == 8
+        last = size == 1 ? opcode.last & ~1 : opcode.last
+        emit(*opcode[0...-1], last, modrm)
+      end
+
+      # Reads `size` bytes from the address `modrm` names into eax/rax. The 4-
+      # and 8-byte widths are a plain mov; the narrow ones are movzx, so eax
+      # holds the object's bits with nothing above them — which matters for the
+      # compare-exchange paths, whose eax is the value cmpxchg compares against
+      # (cmpxchg's byte/word forms read only al/ax, so a zero upper part is not
+      # needed for the comparison, but it keeps what reaches dst well-defined).
+      def emit_atomic_read(size, modrm)
+        case size
+        when 1 then emit(0x0F, 0xB6, modrm)            # movzx eax, byte [..]
+        when 2 then emit(0x0F, 0xB7, modrm)            # movzx eax, word [..]
+        else        emit_atomic_access(size, [0x8B], modrm) # mov eax/rax, [..]
+        end
+      end
+
       # :atomic_load — a sequentially consistent read. On this target that is an
       # ordinary aligned mov (see the section comment), so the code is exactly
-      # #emit_load's 4/8-byte case; it is spelled out separately because the
-      # *reason* it is a plain mov is a property of x86-64's model, not of the IR.
+      # #emit_uload's; it is spelled out separately because the *reason* it is a
+      # plain mov is a property of x86-64's model, not of the IR.
       def emit_atomic_load(dst, ptr_vreg, size)
         load_reg(EAX, ptr_vreg)         # rax = pointer value
-        emit(0x48) if size == 8         # REX.W
-        emit(0x8B, 0x00)                # mov eax/rax, [rax]
+        emit_atomic_read(size, 0x00)    # eax/rax <- [rax]
         store_reg(EAX, dst)
       end
 
       # :atomic_store — a sequentially consistent write, lowered as an exchange
-      # whose result is thrown away. `xchg r/m, r` (87 /r) is atomic and, being
+      # whose result is thrown away. `xchg r/m, r` (86/87 /r) is atomic and, being
       # implicitly locked, is also the full barrier a seq_cst store needs; a mov
       # followed by an mfence would be equivalent and longer.
       def emit_atomic_store(ptr_vreg, value_vreg, size)
         load_binary_operands(ptr_vreg, value_vreg) # rax = destination address, rcx = value
-        emit(0x48) if size == 8         # REX.W
-        emit(0x87, 0x08)                # xchg [rax], ecx/rcx
+        emit_atomic_access(size, [0x87], 0x08)     # xchg [rax], cl/cx/ecx/rcx
       end
 
-      # :atomic_rmw — the read-modify-write family. Three shapes cover the six
-      # kinds:
+      # The bitwise :atomic_rmw kinds, each with the register-form opcode of
+      # its `op edx, esi` (r/m32, r32) and whether the builtin answers with the
+      # value stored (the "_fetch" half) rather than the value read.
+      ATOMIC_BITWISE_KINDS = {
+        fetch_and: [0x21, false], and_fetch: [0x21, true],
+        fetch_or: [0x09, false], or_fetch: [0x09, true],
+        fetch_xor: [0x31, false], xor_fetch: [0x31, true]
+      }.freeze
+
+      # :atomic_rmw — the read-modify-write family. Three shapes cover the
+      # eleven kinds:
       #
       #   :exchange   `xchg [rax], ecx` leaves the previous value in ecx.
       #   the add family  `lock xadd [rax], ecx` (F0 0F C1 /r) writes the sum and
@@ -1098,10 +1140,12 @@ module Rubycc
       #     recompute it from the exchange-add's own result (old + operand == new),
       #     which is both shorter and lock-free by construction — and is what gcc
       #     itself emits. The operand is kept in edx across the xadd for that.
-      #   :or_fetch   has no exchange-or instruction to derive from, so it is the
-      #     one kind that needs a compare-exchange retry loop (see below).
+      #   the bitwise family (and/or/xor, either half) has no exchange-and-op
+      #     instruction to derive from, so it is a compare-exchange retry loop
+      #     (see #emit_atomic_bitwise).
       def emit_atomic_rmw(dst, ptr_vreg, value_vreg, kind, size)
-        return emit_atomic_or_fetch(dst, ptr_vreg, value_vreg, size) if kind == :or_fetch
+        bitwise = ATOMIC_BITWISE_KINDS[kind]
+        return emit_atomic_bitwise(dst, ptr_vreg, value_vreg, *bitwise, size) if bitwise
 
         load_binary_operands(ptr_vreg, value_vreg) # rax = address, rcx = operand
         negate = kind == :fetch_sub || kind == :sub_fetch
@@ -1115,12 +1159,9 @@ module Rubycc
           emit(0x89, 0xCA)              # mov edx/rdx, ecx/rcx   (save the addend)
         end
         if kind == :exchange
-          emit(0x48) if size == 8
-          emit(0x87, 0x08)              # xchg [rax], ecx/rcx
+          emit_atomic_access(size, [0x87], 0x08)              # xchg [rax], cl/cx/ecx/rcx
         else
-          emit(0xF0)                    # lock
-          emit(0x48) if size == 8
-          emit(0x0F, 0xC1, 0x08)        # xadd [rax], ecx/rcx  (ecx <- old)
+          emit_atomic_access(size, [0x0F, 0xC1], 0x08, lock: true) # lock xadd [rax], ..  (rcx <- old)
         end
         if keep
           emit(0x48) if size == 8
@@ -1129,8 +1170,9 @@ module Rubycc
         store_reg(ECX, dst)
       end
 
-      # :atomic_rmw with kind :or_fetch — the one member of the family with no
-      # single-instruction form, so it retries a compare-exchange until it wins:
+      # :atomic_rmw with a bitwise kind — no single instruction exchanges and
+      # combines, so it retries a compare-exchange until it wins (shown for the
+      # or kinds; and/xor differ only in the combining opcode):
       #
       #     mov  eax, [rdi]          ; eax = the value we are betting on
       #   loop:
@@ -1139,30 +1181,35 @@ module Rubycc
       #     lock cmpxchg [rdi], edx  ; if [rdi] is still eax, store edx and set ZF;
       #                              ; otherwise reload eax with what is there now
       #     jne  loop
-      #     mov  eax, edx            ; the value stored is the result
+      #     mov  eax, edx            ; only for the "_fetch" half: the value stored
+      #
+      # On the way out eax is the value that was read (cmpxchg succeeded, so it
+      # matched) and edx the one written, so each half just names its register.
+      # At a narrow width the read is a movzx and the cmpxchg a byte/word form
+      # (see #emit_atomic_access); cmpxchg then reloads only al/ax on failure, so
+      # the zero upper part the movzx left in eax survives every retry.
       #
       # cmpxchg reads and writes eax implicitly, so the address and the operand
       # are held in rdi/rsi (which no other operand of this instruction needs)
       # rather than in the usual rax/rcx scratch pair. The retry branch's
       # displacement is computed from the emitted byte count rather than recorded
       # as a fixup, because both ends are inside this one instruction's code.
-      def emit_atomic_or_fetch(dst, ptr_vreg, value_vreg, size)
+      def emit_atomic_bitwise(dst, ptr_vreg, value_vreg, combine, new_value, size)
         load_reg(EDI, ptr_vreg)         # rdi = address
         load_reg(ESI, value_vreg)       # rsi = operand
-        emit(0x48) if size == 8
-        emit(0x8B, 0x07)                # mov eax/rax, [rdi]
+        emit_atomic_read(size, 0x07)    # eax/rax <- [rdi]
         loop_start = @code.bytesize
         emit(0x48) if size == 8
         emit(0x89, 0xC2)                # mov edx/rdx, eax/rax
         emit(0x48) if size == 8
-        emit(0x09, 0xF2)                # or edx/rdx, esi/rsi
-        emit(0xF0)                      # lock
-        emit(0x48) if size == 8
-        emit(0x0F, 0xB1, 0x17)          # cmpxchg [rdi], edx/rdx
+        emit(combine, 0xF2)             # and/or/xor edx/rdx, esi/rsi
+        emit_atomic_access(size, [0x0F, 0xB1], 0x17, lock: true) # lock cmpxchg [rdi], dl/dx/edx/rdx
         emit(0x75)                      # jne rel8
         emit((loop_start - (@code.bytesize + 1)) & 0xFF)
-        emit(0x48) if size == 8
-        emit(0x89, 0xD0)                # mov eax/rax, edx/rdx  (the value stored)
+        if new_value
+          emit(0x48) if size == 8
+          emit(0x89, 0xD0)              # mov eax/rax, edx/rdx  (the value stored)
+        end
         store_reg(EAX, dst)
       end
 
@@ -1183,21 +1230,22 @@ module Rubycc
       # `expected` that aliases the atomic object itself would otherwise have the
       # freshly exchanged value overwritten by the old one. `sete` does not
       # disturb the flags, so the `je` still reads cmpxchg's ZF.
+      #
+      # At a narrow width the three memory accesses (the read of *expected, the
+      # cmpxchg and the write-back) take their byte/word forms, and cmpxchg
+      # compares only al/ax against the object — so how *expected or desired was
+      # extended in its register never enters the comparison.
       def emit_atomic_cas(dst, ptr_vreg, expected_vreg, desired_vreg, size)
         load_reg(EDI, ptr_vreg)         # rdi = the atomic object's address
         load_reg(ESI, expected_vreg)    # rsi = &expected
         load_reg(EDX, desired_vreg)     # rdx = the value to store
-        emit(0x48) if size == 8
-        emit(0x8B, 0x06)                # mov eax/rax, [rsi]
-        emit(0xF0)                      # lock
-        emit(0x48) if size == 8
-        emit(0x0F, 0xB1, 0x17)          # cmpxchg [rdi], edx/rdx
+        emit_atomic_read(size, 0x06)    # eax/rax <- [rsi]
+        emit_atomic_access(size, [0x0F, 0xB1], 0x17, lock: true) # lock cmpxchg [rdi], dl/dx/edx/rdx
         emit(0x0F, 0x94, 0xC1)          # sete cl
         emit(0x74)                      # je skip
         skip_patch = @code.bytesize
         emit(0x00)                      # placeholder, filled in below
-        emit(0x48) if size == 8
-        emit(0x89, 0x06)                # mov [rsi], eax/rax
+        emit_atomic_access(size, [0x89], 0x06) # mov [rsi], al/ax/eax/rax
         @code.setbyte(skip_patch, @code.bytesize - (skip_patch + 1))
         emit(0x0F, 0xB6, 0xC1)          # movzx eax, cl  ->  the _Bool result
         store_reg(EAX, dst)

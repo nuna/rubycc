@@ -35,6 +35,11 @@ DESIGN R7 の「それでも必要な最小限の拡張」の一覧には無い�
 `ext/algorithms/string/string.c:29` で `d = xmalloc(sizeof(typeof(d)) * s1_len * s2_len);` と書いている。
 **対照の gcc はビルドとロードに成功する**(2026-09-13 実測、buildable-gems-batch-3)。
 
+**`__typeof__` の綴りも同じく通らない。** `iodine` 0.7.59 は、同梱の facil.io の `FIO_ARY_FOR`(`fio.h:4899`)が
+for の初期化節で `__typeof__(...)` を使い、`fiobj_ary.c` / `fio_tls_missing.c` / `fiobj_hash.c` / `iodine_store.c` の
+4 本が `expected ';'` で落ちる(2026-09-14 実測、`atomic-builtin-small-widths-1` の後)。for の外の宣言
+`__typeof__(a) q = a;` も同じ `expected ';'` になり、`lib/` に `__typeof__` を扱うコードは無い(同日、grep で確認)。
+
 ## 受け入れ条件
 
 **先に方針を決める**(実装するか、対象外にするか)。どちらでも、診断は直す。
@@ -55,6 +60,11 @@ DESIGN R7 の「それでも必要な最小限の拡張」の一覧には無い�
 ### 2026-09-13(起票)
 
 buildable-gems-batch-3 で、rubycc だけが落ちて対照は通った 1 件。
+
+### 2026-09-14
+
+1 / 2 バイトの atomic(BC)を直した後に、iodine 0.7.59 が `__typeof__` で落ちることが分かった。該当する gem は 2 件になった。
+方針はまだ決めていない。
 
 ## 決着
 

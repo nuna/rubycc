@@ -15993,3 +15993,693 @@ x86-64 ホストの `-target aarch64` が、同梱していないヘッダ(`<net
 (`/usr/aarch64-linux-gnu/include`)から探さない件は、別の課題として
 `issues/aarch64-cross-sysroot-include.md`(GAPS BI)に起票した。直ったら、上の aarch64 テストを
 実物の `<netdb.h>` に置き換える。
+
+## predefined-identifier-func-1 — __func__ は文字列リテラルとして生やす
+
+GAPS **BJ**。rubycc は `__func__`(ISO C99 6.4.2.2)を一切知らず、`undeclared variable
+'__func__'` で落ちていた(2026-09-14 実測、このホスト、gcc 13.3)。実 gem では
+trilogy 2.13.0 が同梱 OpenSSL 3 経由で `OPENSSL_FUNC`(`<openssl/err.h>`)→ `__func__` を踏む。
+
+### 実測(2026-09-14、このホスト、gcc 13.3.0、`-std=gnu17`)
+
+```c
+#include <stdio.h>
+int main(void) {
+  printf("[%s] %zu\n", __func__, sizeof __func__);
+  printf("[%s]\n", __FUNCTION__);
+  printf("[%s]\n", __PRETTY_FUNCTION__);
+  return 0;
+}
+```
+`[main] 5`、`[main]`、`[main]` — C モードでは `__FUNCTION__`/`__PRETTY_FUNCTION__` は
+`__func__` の単なる別名で、C++ のような装飾シグネチャは付かない。
+
+ファイルスコープでの `__func__` は警告付きで受理され、空文字列(`sizeof` は 1)になる:
+```c
+const char *p = __func__;  // warning: '__func__' is not defined outside of function scope
+```
+`__FUNCTION__`/`__PRETTY_FUNCTION__` は同じ文脈で**警告を出さない**。さらに
+`__PRETTY_FUNCTION__` はファイルスコープで `"top level"` になる(`__FUNCTION__` は `""`)。
+
+ユーザー宣言との衝突は実は起こらない: gcc は `__func__`/`__FUNCTION__`/
+`__PRETTY_FUNCTION__` という綴りの宣言子を**関数内外を問わず一切受理しない**
+(`int __func__ = 5;` は `error: expected identifier or '(' before '__func__'`)。
+予約識別子として宣言不可という扱いで、C99 6.4.2.1p7 の「`_` + 大文字/`_` は
+実装用に予約」を lexer/parser レベルで強制している。
+
+### 実装
+
+`__func__` を**パース時に文字列リテラル(`AST::StringLit`)へ変換**する
+(`lib/rubycc/front/parser.rb`、`Parser#predefined_function_name_literal`)。
+専用の AST ノードや IR 命令を新設せず、文字列リテラルが既に持っている性質
+(sizeof は `bytesize + 1`、代入不可、ポインタへの decay)にただ乗りする。
+
+- `Parser#parse_function_definition` が関数本体の間だけ `@current_function_name` に
+  関数名を入れる(入れ子関数定義は既に禁止されているので単一スロットで足りる)。
+- `parse_primary_expression` の識別子分岐で、`lookup_ordinary` が何も見つけず
+  (=ユーザーがその名前を宣言していない)、かつ綴りが
+  `__func__`/`__FUNCTION__`/`__PRETTY_FUNCTION__` のいずれかなら、
+  `AST::StringLit.new(@current_function_name, tok)` を返す。ユーザーが同名を
+  宣言していれば(rubycc は gcc と違って宣言子としての禁止をしていない)通常の
+  `VariableRef` のまま通る — 「他スコープのユーザー識別子と衝突しない」という
+  仕様は、実質「実装が勝手にスコープへ何かを挿入しない(見つからない時だけ生やす)」
+  という設計でそのまま満たされる。
+- 「1 関数につき 1 オブジェクト、アドレスが安定」は生成器の
+  `#intern_string`(内容アドレッシングの重複排除)にただ乗りして満たしている:
+  同じ関数名の `__func__` を関数内で何度書いても同じバイト列なので同じ文字列 ID に
+  丸められ、実質同じオブジェクトになる。生成器側の変更は「`&`(address-of)が
+  文字列リテラルを受け付けていなかった」1 点だけ(下記)。
+- ファイルスコープ(`@current_function_name` が nil)では `__func__` を空文字列
+  `""` にし、`__func__` のときだけ `warn_at` で gcc と同文言の警告を出す
+  (`Diagnostics.warn`、`Parser#warn_at` を新設。preprocessor の `#warning` が
+  使う経路と同じ)。`__FUNCTION__`/`__PRETTY_FUNCTION__` は警告なしで `""`
+  にする(gcc の `"top level"` は再現しない、下記「残された観点」)。
+
+`lib/rubycc/ir/generator.rb` 側の変更は、`&"文字列リテラル"` (`&__func__` を含む)を
+未対応だった `#gen_address_of`・`#static_address_of_type`・`#object_address`
+(定数畳み込み経路)の 3 箇所に追加しただけ。いずれも「文字列リテラルの実体は
+`char[N+1]`(NUL 込み)配列で、`&` はその配列全体へのポインタ」という既存の
+`#sizeof_operand_type`/`#pointer_value` の扱いと対称に実装した。
+
+### テスト
+
+- `test/test_predefined_identifier_func.rb`(新規): `__func__`/`__FUNCTION__`/
+  `__PRETTY_FUNCTION__` の値と `sizeof`、関数名ごとの追従、入れ子ブロックでの利用、
+  1 関数内の複数参照が同一アドレスになること(`==` と `&` の両方)、ファイルスコープの
+  値と警告文言、ユーザー宣言が優先されること(rubycc のみ、gcc は宣言自体を拒否するため
+  差分にできない)。gcc/rubycc ペアの差分テスト形式(`test_escape_sequence_e.rb` に倣う)。
+  17 runs / 29 assertions / 0 failures。
+- `examples/m6/predefined_identifier_func_1_predefined_identifiers.c`(新規): 上記の
+  代表的な使い方(3 綴りの一致・sizeof・入れ子ブロック・別関数名への追従・
+  アドレス安定性)を 1 本にまとめ、gcc と同一の exit status/stdout であることを
+  手元で実行して確認(`main main main` / `5` / `nested: main` / `inner: add`、
+  exit 0)。ファイルスコープの角(警告が出る形)は例に含めない(README の他の例と
+  同様、正常系の実演に絞った)。
+- `test/test_examples.rb` 64 runs / 0 failures。`test/test_examples_aarch64.rb`
+  572 runs / 0 failures / 26 skips(既存、無関係)。`test/test_c_suite.rb` 223 runs /
+  0 failures / 13 skips(既存)。`test/test_c_suite_aarch64.rb` 444 runs / 0 failures /
+  26 skips(既存)。`test/test_diagnostics.rb`・`test/test_parser.rb`・
+  `test/test_address_constant_globals.rb` も回帰なしを確認。
+
+### gcc に合わせなかったこと(意図)
+
+- ファイルスコープの `__PRETTY_FUNCTION__` が gcc では `"top level"` になる件は
+  再現していない(`""` のまま)。`__FUNCTION__`/`__PRETTY_FUNCTION__` の
+  ファイルスコープでの無警告も、`__func__` と同じ警告文言で代用していない
+  (`__func__` のみ警告)。いずれも実測はしたが、この綴りをファイルスコープで
+  使う実コードは既知のコーパスに見当たらず、優先度を下げた。
+- rubycc は gcc と異なり `__func__`/`__FUNCTION__`/`__PRETTY_FUNCTION__` を
+  宣言子の名前として使うこと自体は禁止していない(通常の識別子として宣言でき、
+  宣言があればそちらが優先される)。有効な C プログラムはこれらを宣言しない
+  (C99 6.4.2.1p7 により予約識別子)ため実害はない想定だが、gcc の
+  「宣言不可」自体を再現してはいない。
+
+## variadic-aggregate-argument-1 — 可変長引数の構造体・共用体を値で渡し、`va_arg` で読む(GAPS AJ)
+
+### 原因
+
+2026-09-14、このホスト(WSL2 / gcc 13.3 / aarch64-linux-gnu-gcc 13.3)で、修正前の rubycc が
+**呼び出し側と呼ばれ側の両方**を拒否していることを両ターゲットで測った:
+
+```text
+error: passing a struct to a variadic function is not supported yet            (呼び出し側、x86-64 / aarch64)
+error: second argument to 'va_arg' has type 'struct s', which va_arg cannot yield (呼ばれ側、x86-64 / aarch64)
+```
+
+呼び出し側は `promote_variadic_argument` が struct を一律に拒否していた。呼ばれ側は
+`require_va_arg_type` がスカラーしか受け付けず、va_arg の降ろしも 1 スロット読みしか無かった。
+固定引数の構造体渡し(`lower_struct_argument`)と両規約の分類(`aggregate_plan`)は既にあった。
+
+### 対処
+
+**呼び出し側は固定引数の経路をそのまま使う。** `lower_variadic_argument` が struct / union を
+`lower_struct_argument` へ回すだけにした。可変長専用の規則はどちらのターゲットにも無い
+(2026-09-14 実測。下の行列)。
+
+- System V: 分類(INTEGER / SSE / MEMORY)は固定引数と同じ。`%al` はバックエンドが
+  xmm に積んだ引数を全部数えており、構造体の `:sse8` 片もそこに入るので追加の手当ては要らなかった
+- AAPCS64(Linux): HFA・16 バイト以下の整数レジスタ渡し・16 バイト超の参照渡し(呼び出し側の
+  コピーのアドレス)が固定引数と同じに効く。Apple の変種(無名引数はすべてスタック)とは違う
+
+**呼ばれ側 `va_arg(ap, struct T)` は、同じ `aggregate_plan` で探す新しい降ろし**
+(`gen_va_arg_aggregate`)。新しい IR 命令は無く、既存の load/store/分岐/`:and` への脱糖である。
+値は他の集約と同じくアドレス。
+
+- System V: MEMORY 分類は overflow_arg_area から直接。レジスタ分類は、INTEGER 片の数と
+  SSE 片の数が **gp_offset と fp_offset の両方に同時に収まる**ときだけ退避領域から読み、
+  各 eightbyte を一時オブジェクトの元のオフセットへ集める(GP スロットは 8 バイト間隔、
+  xmm スロットは 16 バイト間隔で、構造体の並びとは交互にならないため)。収まらなければ
+  両カウンタを**動かさずに**スタックから読む。呼び出し側の placer が「両方入るときだけ取る、
+  入らなければ後続の小さい引数にレジスタを残す」のと対になっている
+- AAPCS64: 参照渡しは GP スロットのポインタを既存のスカラー walk で取り、たどる。HFA は
+  `__vr_offs`(メンバごとに 16 バイトスロット)から一時オブジェクトへ集める。それ以外は
+  `__gr_offs` の連続スロットを直接指す。offs は「進める前に 0 以上ならスタック」「進めて
+  格納してから正ならスタック」の 2 回判定し、はみ出した集約は offs を正のまま残す
+  (そのファイルは以後使い切り。呼び出し側の NGRN/NSRN = 8 と対)。16 バイト境界の集約は
+  offs を偶数レジスタへ、スタックポインタを 16 へ切り上げる
+- 不完全型の `va_arg(ap, struct p)` は `has incomplete type 'struct p'` と診断する
+
+### 測定した行列(2026-09-14)
+
+`test/test_variadic_aggregate_argument.rb`。17 形 × 前置き 14 通り = 238 呼び出しで、gcc 同士の出力
+(対照)と、片側を rubycc に替えた出力が一致することを求める。
+
+| 形 | x86-64 の分類 | AArch64 の分類 |
+|---|---|---|
+| `struct {int}`・`union {int; float}`・`struct {char[6]}`・`union semun` 相当 | INTEGER 1 | GP 1 |
+| `struct {double}` | SSE 1 | HFA 1 |
+| `struct {float, float}` | SSE 1(2 個詰め) | HFA 2(s0, s1) |
+| `struct {int ×3}`・`struct {long ×2}` | INTEGER 2 | GP 2 |
+| `struct {long; double}`・`struct {double; int}` | INTEGER+SSE / SSE+INTEGER | GP 2 |
+| `struct {double ×2}`・`struct {float ×3}`・`struct {float ×4}` | SSE 2 | HFA 2〜4 |
+| `struct {int[5]}`・`struct {long ×3}` | MEMORY | 参照渡し |
+| `struct {double ×4}`(32 バイト) | MEMORY | **HFA 4(v レジスタ)** |
+| `struct { _Alignas(16) long a; long b; }` | INTEGER 2(スタックでは 16 境界) | GP 偶数ペア |
+
+前置きは int 0〜9 個 × double 0〜9 個の 14 通りで、両ターゲットの整数レジスタ上限
+(x86-64 は 6、AArch64 は 8。名前付き 2 個を含む)とベクタレジスタ上限(8)の手前・ちょうど・
+越えを通す。集約の後に int・double・2 個目の同じ集約・long を続け、はみ出した集約が後に残す
+状態(System V はレジスタを後続に残す、AAPCS64 は使い切り)も読む。
+
+| | rubycc 呼び出し → gcc 呼ばれ側 | gcc 呼び出し → rubycc 呼ばれ側 |
+|---|---|---|
+| x86-64 | 238 行一致 | 238 行一致 |
+| AArch64(qemu-aarch64) | 238 行一致 | 238 行一致 |
+
+### テスト
+
+- `test/test_variadic_aggregate_argument.rb`(新規): 上の行列。4 runs, 12 assertions, 0 failures
+- `test/test_c_suite.rb`: c-testsuite の `00140`(可変長への struct 渡し)と `00204`
+  (struct 値渡し・HFA・struct `va_arg`)を SKIP から外した。両ターゲットで通る
+  (x86-64 223 runs / 11 skips、AArch64 側を含めて 444 runs / 22 skips、いずれも 0 failures)
+- `test/test_diagnostics.rb`: 旧来の拒否 3 件を、「可変長への struct 渡しがコンパイルできる」
+  「不完全型の `va_arg` を診断する(struct 直書き・typedef 経由)」に置き換えた
+- `examples/m6/variadic_aggregate_argument_1_semctl_shape.c`: semctl の形(名前付き int 3 個の後に
+  union を値で)と、各分類の集約・レジスタ上限を越える前置き
+- 実在 gem: `semian` 0.28.4 の `ext/semian/*.c` 4 本が extconf と同じ定義
+  (`-D_GNU_SOURCE -DHAVE_RB_THREAD_CALL_WITHOUT_GVL -DHAVE_RUBY_THREAD_H` ほか)で rubycc で
+  コンパイルできる(2026-09-14、x86-64)。`sysv_semaphores.c:90` の
+  `semctl(sem_id, 0, IPC_STAT, sem_opts)` が今回の対象。gem install・ロード・上流テストは未実施
+
+### 残された観点
+
+- **AArch64 で型に付けた `__attribute__((aligned(16)))` の扱いが gcc と違う(固定引数も同じ)。**
+  2026-09-14 実測、名前付き int 3 個の後に `struct { long a, b; } __attribute__((aligned(16)))` を
+  渡すと、aarch64 gcc 13.3 は **x3/x4**(偶数ペアにしない)、rubycc は **x4/x5** に置く。
+  `__int128` メンバや `_Alignas(16)` メンバなら gcc も x4/x5 で、rubycc と一致する。
+  AAPCS64 の自然な整列はメンバの整列から決まり、型への属性は数えないと読める。rubycc の
+  `AAPCS64Convention#aggregate_plan` は `type.alignment >= 16` で判定しているのでずれる。
+  **この差は可変長に固有ではなく、固定引数の既存挙動**なので本ステップでは直さず、行列からは
+  メンバ側の `_Alignas(16)` に替えた。x86-64 は型属性の形でも両方向一致した。
+  `issues/aapcs64-aligned-attribute-aggregate.md`(GAPS BK)に起票した
+- 128 ビット整数を可変長に渡すこと(`passing a 128-bit integer to a variadic function`)は
+  範囲外とし、従来どおり診断する。必要とする gem はまだ見ていない
+- `long double` を含む構造体は測っていない。rubycc の `long double` が 8 バイトである件(GAPS S)の範囲
+- semian の gem としてのビルドとロードは、台帳の測り直しで扱う
+
+## atomic-builtin-small-widths-1 — アトミック組み込みを 1・2 バイトのオブジェクトへ広げ、ビット演算の fetch 形を足す
+
+issue: `issues/atomic-builtin-small-widths.md`(GAPS BC)
+
+### 原因
+
+`IR::Generator::ATOMIC_WIDTHS = [4, 8]` が、アトミック組み込みのオブジェクト幅を 4・8 バイトに限っていた
+(`gen_atomic_object_pointer` がそれ以外を `'<name>' supports atomic objects of 4 or 8 bytes only` で拒否)。
+`<ruby/atomic.h>` が 4・8 バイトしか使わないので、その 2 幅だけを実装していた。IR のコメント・IR.md・両バックエンドの
+atomics 節も「size は 4 か 8 のみ」を前提に書かれていた。
+
+- 2026-09-14 の測定(このホスト、WSL2 / x86-64 / gcc 13.3)。issue の最小再現は 0ced183 では
+  `error: '__atomic_exchange_n' supports atomic objects of 4 or 8 bytes only, but 'unsigned char' has width 1` で失敗し、
+  修正後は x86-64・aarch64 の両方で exit 0 になる
+- iodine 0.7.59 の `ext/iodine/*.c` 31 本を rubycc(x86-64、`-fPIC`、ruby ヘッダを `-I`)で 1 本ずつ `-c`。
+  0ced183 では **1 本が通り、30 本が落ちる**。落ちた 30 本のうち 28 本は `fio.h:3023:39` の上記幅エラー
+  (facil.io の 1 バイトスピンロック `typedef uint8_t volatile fio_lock_i` への `__atomic_exchange_n`)
+
+### 4・8 バイトに限られていた組み込みの一覧(0ced183 時点)
+
+幅の検査は `gen_atomic_object_pointer` の 1 か所で、組み込みの第 1 引数を扱う全形がここを通る。
+つまり **フェンス 2 形を除く全形が 4・8 バイト限定** だった:
+
+| 族 | 4・8 バイト限定だった形 | 幅に関係しない形 |
+|---|---|---|
+| `__atomic_*`(9 形) | `load_n` / `store_n` / `exchange_n` / `compare_exchange_n` / `fetch_add` / `fetch_sub` / `add_fetch` / `sub_fetch` / `or_fetch` | `thread_fence` |
+| `__sync_*`(9 形) | `fetch_and_add` / `fetch_and_sub` / `add_and_fetch` / `sub_and_fetch` / `or_and_fetch` / `lock_test_and_set` / `lock_release` / `bool_compare_and_swap` / `val_compare_and_swap` | `synchronize` |
+| 未実装(識別子のまま) | `__atomic_fetch_and` / `fetch_or` / `fetch_xor` / `and_fetch` / `xor_fetch` / `fetch_nand` / `nand_fetch`、`__sync_fetch_and_and` / `_or` / `_xor` / `_nand`、`__sync_and_and_fetch` / `_xor_` / `_nand_`、`__atomic_test_and_set` / `clear`、非 `_n` 形(`__atomic_load` など) | — |
+
+### 対処
+
+**足した範囲**: 上表で「4・8 バイト限定だった」全 18 形を 1・2・4・8 バイトに広げた。加えて、ビット演算の
+fetch 形を両族に足した — `__atomic_fetch_and` / `fetch_or` / `fetch_xor` / `and_fetch` / `xor_fetch` と
+`__sync_fetch_and_and` / `_or` / `_xor` / `__sync_and_and_fetch` / `__sync_xor_and_fetch`(計 10 形、全幅)。
+依頼の受け入れ条件が `fetch_and` / `or` / `xor` を含んでいたためで、IR に kind を足せば両族とも同じ命令列に
+乗る。**nand の 4 形、`__atomic_test_and_set` / `clear`、非 `_n` 形は引き続き未実装**(undeclared identifier)。
+16 バイト(`__int128`)は引き続き診断する(メッセージは `... of 1, 2, 4 or 8 bytes only`)。
+
+- **幅の表現**: IR の `size` に 1・2 が来るようになった。狭い幅の値の扱いは次の契約にした(ir.rb と IR.md に明記)。
+  メモリアクセスはちょうど `size` バイトで、`:atomic_load` / `:atomic_rmw` が dst に置く値は**下位 `size` バイトしか
+  定義しない**。ジェネレータ(`atomic_result`)が狭い結果の直後に、オブジェクトの型で選んだ `:sext` / `:zext`
+  (同じ幅)を置く。こうするとバックエンドは符号の有無を知らずに済み、x86-64 の 32 ビット加算の桁上がりも、
+  aarch64 の W レジスタでの結合結果も、そのまま残してよい。IR 命令は増やしていない(`:atomic_rmw` の kind が
+  6 から 11 に増えただけ)
+- **x86-64**: アトミックオブジェクトに触る 1 命令だけを幅で切り替える `emit_atomic_access` を置いた。
+  8 バイトは REX.W、2 バイトは 66 前置、1 バイトは opcode の最下位ビット(w ビット)を落とす —
+  `xchg` 86/87・`xadd` 0F C0/C1・`cmpxchg` 0F B0/B1・`mov` 88/89 がどれもこのビットで幅を表す。
+  前置の順は lock → 66 → REX(REX は opcode の直前でなければならない)。狭い読み出しは `movzx`。
+  間のレジスタ演算(`neg` / `add` / `or` …)は狭い幅でも 32 ビットのまま。書き戻されるのは下位だけで、
+  上位は上記の `:sext` / `:zext` が消すため。4・8 バイトのエンコードは変更前とバイト単位で同じ。
+  ビット演算の 6 kind は、従来の `or_fetch` 専用ループを `emit_atomic_bitwise` に一般化した `lock cmpxchg`
+  リトライループで、結合命令(`and` 21 / `or` 09 / `xor` 31)と、返す値(読んだ値 = eax、書いた値 = edx)だけが違う
+- **aarch64**: LDAR / STLR / LDAXR / STLXR の表に b・h 形(サイズ欄 31:30 = 00 / 01)を足した。狭いロードは
+  W レジスタへゼロ拡張する。既存の方針(armv8-a ベースラインの排他ペア + リトライループ。LSE と outline atomics は
+  使わない)はそのまま。`ATOMIC_RMW_OPCODES` に and / eor の kind を足した
+- **compare-exchange の比較**: x86-64 の `cmpxchg` byte / word 形は al / ax だけを比べるので、レジスタでの拡張は
+  比較に入らない。aarch64 は `ldaxrb` / `ldaxrh` と、`*expected` を読む `ldrb` / `ldrh` がどちらもゼロ拡張なので、
+  32 ビットの `cmp` で対象のビットだけを比べる(`signed char` の -1 は両辺とも 0xFF)
+- **`_Bool`**: gcc は算術・ビット演算の read-modify-write を `_Bool` に対して拒否し、exchange / load / store /
+  compare-exchange は通す(2026-09-14 実測、gcc 13.3:
+  `operand type '_Bool *' is incompatible with argument 1 of '__atomic_fetch_add'`。
+  `__sync_fetch_and_add` も同様、`__sync_lock_test_and_set` / `__sync_val_compare_and_swap` は通る)。
+  同じ線を引いた(`ATOMIC_ARITHMETIC_KINDS` と `check_atomic_arithmetic_object`)
+- **ついでに見つけた不具合**: `__sync_val_compare_and_swap` は結果を常に `:load`(符号拡張)で読み戻していたので、
+  狭い `unsigned` オブジェクトでは 0xFF が -1 になるはずだった。4・8 バイトしか通らなかったため表に出ていなかった。
+  `emit_scalar_load`(unsigned なら `:uload`)に替えた
+- 触ったファイル: `lib/rubycc/ir/generator.rb`・`ir.rb`、`lib/rubycc/backend/x86_64.rb`・`aarch64.rb`、
+  `lib/rubycc/front/parser.rb`(組み込み表)・`lexeme_reader.rb`(キーワード)・`ast.rb`(kind のコメント)、
+  `lib/rubycc/preprocess/preprocessor.rb`(`__has_builtin` の表)、`docs/internals/IR.md`
+
+### テスト
+
+2026-09-14、このホスト(x86-64 ネイティブ + aarch64 は cross gcc 静的リンク + qemu-aarch64)。
+
+- 新規 `test/test_atomic_builtin_small_widths.rb`(13 runs / 59 assertions / 0 failures)
+  - 全形(`__atomic_*` 14 形 + `__sync_*` 15 形)を `unsigned char` / `signed char` / `char` / `unsigned short` /
+    `short` / `unsigned int` / `long` で実行し、gcc と出力一致(x86-64・aarch64)。オペランドは幅をあふれる値
+    (250 + 7、120 + 9、`0x180` を 1 バイトへ or、16 ビットマスクを and など)を選び、上位ビットの残りや
+    符号拡張の取り違えが出力に出るようにした
+  - `_Bool` での exchange / CAS / load / store / `__sync_lock_test_and_set` / `val_` / `bool_`、狭いアクセスが隣の
+    バイトを壊さないこと(構造体に詰めた 1・2 バイト)、`__has_builtin` と `sizeof`、`_Bool` の算術形の診断
+  - **マルチスレッド**: 4 スレッド × 20000 回で、1 バイトスピンロック(`__atomic_exchange_n`)が守る `long` が
+    80000 ちょうど、1 バイト `fetch_add` が 128(80000 mod 256)、2 バイト `add_fetch` と 2 バイトの weak CAS
+    ループが 14464(80000 mod 65536)、`signed char` への `__sync_fetch_and_sub` が -128、各スレッドが自分の
+    ビットを or して and で戻す共有バイトが 0。rubycc 版は x86-64・aarch64 とも gcc 版と一致し、
+    固定の期待値とも一致する
+  - 命令列: x86-64 は 1 型あたり `lock xadd` 6・`lock cmpxchg` 17・`xchg` 4 がそれぞれ `%cl` / `%cx`(`%dl` / `%dx`)
+    形で出ること、aarch64 は `ldaxrb` / `ldaxrh` が 1 型あたり 25 で `stlxr*` と同数、`stlxr*` と `cbnz` が同数、
+    `ldarb` / `stlrb` などが所定の数、LSE 命令が出ないこと
+- 既存テストの更新: `test_atomic_builtins.rb`(1・2 バイトの拒否を期待していた 2 件を 16 バイトの拒否に、
+  未実装リストを nand のみに、`SYNC_ARITIES` に新形を追加)。45 runs / 0 failures。
+  `test_atomic_type.rb` の「狭い `_Atomic` への操作は組み込みの診断を保つ」を、`atomic_char` / `atomic_uchar` /
+  `atomic_short` への汎用マクロが gcc と一致する正のテスト(x86-64・aarch64)に置き換えた
+- 実行した既存スイート(すべて 0 failures / 0 errors): `test_atomic_builtins.rb` 45 runs、`test_atomic_type.rb`、
+  `test_examples.rb` 64 runs、`test_examples_aarch64.rb` 572 runs(26 skips)、`test_c_suite.rb` 223 runs(13 skips)、
+  `test_c_suite_aarch64.rb` 444 runs(26 skips)、`test_aarch64_backend.rb` 100 runs、`test_preprocessor.rb` 230 runs、
+  `test_deterministic_build.rb` 13 runs、`test_header_abi.rb` 125 runs
+- iodine 0.7.59 の 31 本の `-c`(上と同じ条件): **修正後は 24 本が通り、7 本が落ちる**。7 本の中に
+  アトミック組み込みのエラーは無い
+
+- マルチスレッドのテストは、総数が既知の値にちょうど一致することで原子性を見ている。
+  非アトミックな実装で実際に落ちることは、このホストでは測っていない。aarch64 は qemu-aarch64 の user mode でだけ走らせた
+
+### iodine の残り(別の課題に移した)
+
+issue の受け入れ条件のうち「iodine 0.7.59 がビルドできる」は**未達**。修正後に残った 7 本の原因は
+すべてアトミックとは別で、2026-09-14 に上の条件で測った。各 `.c` を単独で `-c` しただけで、extconf の `-D` も
+mkmf も通していない:
+
+- `fiobj_ary.c` / `fio_tls_missing.c` / `fiobj_hash.c` / `iodine_store.c` — `expected ';'`。`FIO_ARY_FOR`(`fio.h:4899`)が
+  for の初期化節で `__typeof__` を使う。rubycc に `__typeof__` がそもそも無い。既存の `issues/typeof-operator.md`(GAPS AT、方針未決)に追記した
+- `fiobj_mustache.c` / `iodine_mustache.c` — `mustache_parser.h:1018:19: error: function definition through a typedef is not allowed`。
+  関数名を括弧で囲んだ定義。`issues/function-definition-parenthesized-name.md`(GAPS BM)に起票した
+- `fio.c` — `redefinition of 'union sigval'`。同梱の `include/libc/signal.h` が glibc 共有のガードを見ていない(AU と同じ形)。
+  `issues/bundled-signal-sigval-guard.md`(GAPS BL)に起票した
+
+### 意図して足さなかった形
+
+nand 形(`__atomic_fetch_nand` / `__atomic_nand_fetch` / `__sync_fetch_and_nand` / `__sync_nand_and_fetch`)、
+`__atomic_test_and_set` / `__atomic_clear`、非 `_n` 形。使う gem をまだ見ておらず、未宣言の識別子として
+報告されるので、黙って誤った降ろしになることはない
+
+## function-definition-parenthesized-name-1 — 関数名を丸括弧で包んだ宣言子からの関数定義を受け付ける(GAPS BM)
+
+**課題**(GAPS BM): `int (add)(int a, int b) { return a + b; }` が
+`error: function definition through a typedef is not allowed` という誤った診断で止まっていた
+(2026-09-14、このホスト・gcc 13.3 実測)。`(add)(int a, int b)` は「丸括弧で包んだ宣言子 `(add)`」の後に
+仮引数リストが続く関数宣言子(ISO C11 6.7.6p1, 6.7.6.3)で、括弧を付けない `add(int a, int b)` と
+全く同じ資格を持つ関数定義の宣言子。6.9.1p2 が禁じているのは関数型を **typedef から継承する**ことだけで、
+宣言子の名前そのものを括弧で包むことには触れていない。名前を括弧で包むのは、同名の関数マクロを
+避ける定石(呼び出し `add(` は関数マクロに一致するが、宣言子中の `add)` は一致しない)。
+実例: iodine 0.7.59 の `mustache_parser.h:1018`、
+`MUSTACHE_FUNC int(mustache_build)(mustache_build_args_s args) { ... }`。
+
+### 原因
+
+`lib/rubycc/front/parser.rb` の宣言子解析は、丸括弧を挟んだ入れ子(`#parse_declarator_core` →
+`#parse_declarator_builder` → `#parse_direct_declarator` の相互再帰)を通じて、「この階層に付いている
+関数用の `(...)` サフィックス」を `function_params` として上位へ運ぶ。上位はこの値が番兵 `:none`
+と異なれば「もう関数サフィックスが確定した(名前が typedef 経由の関数型で、宣言子自身にはサフィックスが
+無い)」とみなし、自分自身のサフィックスを無視して**そのまま転送**する設計だった
+(`#parse_direct_declarator` のコメント「A parenthesized core forwards the buried name's own function
+suffix」)。
+
+ところが `(add)` のように**内側に何のサフィックスも付かない単なる識別子**を包んだだけの場合、
+`#parse_direct_declarator` の三項判定は「`inner_params` が `:none`、かつこのレベルの先頭サフィックスも
+関数でない」の分岐に落ち、`if`/`elsif` に `else` が無いため暗黙に **`nil`** を返していた。この `nil` は
+「typedef 経由で関数型に確定したが宣言子にサフィックスが無い」ことを示す番兵と**値として区別が付かない**。
+そのため `(add)` を包む外側の `#parse_declarator_core` は、内側から受け取った `nil` を
+「もう確定済みの関数サフィックス」と誤解し、外側で読んだ本物の `(int a, int b)` サフィックスを
+`function_params` に反映せずに捨てていた。結果、最終的に外部宣言処理へ渡る `function_params` が `nil` になり、
+`type.function?` かつ `function_params.nil?` の分岐(typedef 経由の定義を拒否する分岐)に誤って入っていた。
+
+### 対処
+
+`#parse_direct_declarator` の `function_params` を決める三項式に `else` 節を足し、
+どちらの分岐にも該当しない(=この階層にはサフィックスが無かった)場合は番兵 `:none` を返すよう変更した。
+これで丸括弧の入れ子を再帰的に通っても、「まだどの階層にも関数サフィックスが見つかっていない」状態が
+`nil` に化けずに `:none` のまま外側まで正しく伝播し、外側の本物のサフィックスが読み取られるようになる。
+
+`:none` はこの相互再帰の内部でだけ使う番兵で、外部の呼び出し元(typedef 経由の定義を拒否する
+`#parse_external_declaration` や、typedef 経由のプロトタイプの仮引数を合成する
+`#declarator_prototype_params`)は従来どおり `nil` を「サフィックスがどこにも無かった」の意味で見ている。
+そのため、宣言子解析全体の唯一の外部入口である `#parse_declarator` の末尾で、最終的な
+`function_params` が `:none` のままなら `nil` に変換してから返すようにした。これにより外部の契約
+(「`nil` = typedef 経由でサフィックスなし」)は変えずに、内部の入れ子再帰でだけ起きていた早すぎる
+`nil` への確定を防いでいる。
+
+変更点は `lib/rubycc/front/parser.rb` の2箇所のみ(`#parse_direct_declarator` の三項式、
+`#parse_declarator` の戻り値の正規化)。
+
+### テスト
+
+新規 `test/test_function_definition_parenthesized_name.rb`(15 runs, 17 assertions)。gcc 差分の対象は
+7 形: 課題の再現(`(add)(int a, int b)`)・本体内での仮引数の可視性・`static` 付き
+(`static int (f)(void)`)・ポインタ返り値(`int *(g)(void)`)・二重括弧(`int ((h))(int x)`)・
+K&R(旧形式)の仮引数リストと組み合わせた形・同名の関数マクロを避ける定石そのもの
+(`#define add(x, y) ...` の後に `int (add)(int a, int b)` を定義し、`add(1, 2)` はマクロ展開、
+`(add)(1, 2)` は本物の関数呼び出しになることを両方確認)。すべて gcc・rubycc の実行結果が一致
+(2026-09-14、gcc 13.3)。typedef 経由の定義(`typedef int F(void); F f { return 0; }`)は
+gcc も rubycc も引き続き拒否することを1件、既存の診断文言で確認した。
+
+既存スイートは以下がすべて 0 failures / 0 errors(2026-09-14、このホスト):
+
+| ファイル | runs | failures | errors |
+|---|---|---|---|
+| test/test_function_definition_parenthesized_name.rb(新規) | 15 | 0 | 0 |
+| test/test_parser.rb | 332 | 0 | 0 |
+| test/test_diagnostics.rb | 238 | 0 | 0 |
+| test/test_examples.rb | 66 | 0 | 0 |
+| test/test_examples_aarch64.rb | 576 | 0 | 0(22 skips、既存分) |
+| test/test_c_suite.rb | 223 | 0 | 0(11 skips、既存分) |
+| test/test_c_suite_aarch64.rb | 444 | 0 | 0(22 skips、既存分) |
+
+サンプル `examples/m6/function_definition_parenthesized_name_1_dodge_macro.c` を足した
+(x86-64・AArch64(qemu-aarch64)双方で `test/test_examples.rb` / `test/test_examples_aarch64.rb` が
+gcc 差分で検証)。
+
+## bundled-headers-coverage-audit-1 — 同梱 libc ヘッダを glibc の同名ヘッダと機械的に突き合わせる
+
+GAPS §2 の負債(`issues/bundled-headers-coverage-audit.md`)。同梱ヘッダの宣言漏れで実在の gem が
+落ちた件が 2026-09-13〜14 に 7 件(AF・AM・AQ・AR・BA・BB・BG)起票された。1 件ずつ塞ぐ前に、
+全同梱ヘッダについて「glibc の同名ヘッダが `_GNU_SOURCE` のもとで見せる名前」と
+「同梱ヘッダが見せる名前」の差を x86-64 と aarch64 の両方で出す道具を作った。
+
+### 原因
+
+同梱ヘッダは Step 123 / 124(M5 H2)などで「コーパスのサンプルが `#include` で届く範囲」に
+絞って作られた。`rake corpus:census` はヘッダの**有無**しか見ないので、届いたヘッダの中で
+**どの名前が使われるか**、また **glibc 本体のヘッダが同梱ヘッダの隣に並んだとき何を期待するか**
+(AU・AM・AQ の形)は、gem を流して落ちるまで分からなかった。
+
+### 対処
+
+`tools/audit_bundled_headers.rb` を追加した。測り方:
+
+- **glibc 側**: `<H>` だけを含む翻訳単位を `gcc -E -dD -std=gnu17 -D_GNU_SOURCE`
+  (aarch64 は `aarch64-linux-gnu-gcc`)で前処理する。`#define` 行からマクロを、前処理済みの本文から
+  宣言(関数・変数・typedef・struct/union/enum タグ・列挙子)を拾う。宣言を読むのは自前の小さな
+  宣言子スキャナで、同梱側にも**同じスキャナ**を通すので、スキャナの誤りは両側に同じく出て差には現れない。
+- **帰属**: linemarker の include スタックで、各名前を**最も内側の公開ヘッダ**に帰属させる
+  (`bits/`・`gnu/`・`asm/`・`asm-generic/`・`linux/` は内部とみなす。`features.h`・`sys/cdefs.h` 等は
+  配管として数えない)。`<H>` に帰属する名前が「glibc の `<H>` の名前」、それ以外の公開ヘッダは
+  「取り込み」(glibc の `<stdlib.h>` → `<alloca.h>`・`<sys/types.h>` など)として別に並べる。
+- **同梱側**: 同じコンパイラに `-nostdinc` と rubycc の同梱の探索順(`include/`、
+  `include/libc/glibc/<arch>/`、`include/libc/`)を渡す(hermetic と同じ。ホストのヘッダは混ざらない)。
+- **段階**: 不足する名前ごとに、`-std=c11`・`_POSIX_C_SOURCE=200809L`・`_XOPEN_SOURCE=700`・
+  gcc の既定(`_DEFAULT_SOURCE`)・`_GNU_SOURCE` のどこで初めて見えるかを付ける(ガードの付け方を決める材料)。
+- **共有ガード(AU の形)**: glibc の `<H>` が立てる `__have_*` / `__*_defined` を列挙し、
+  同梱側が同じガードを立てるか(`honoured`)、ガード対象の型を定義しないか(`absent`)、
+  型を定義するのにガードを立てないか(`unguarded`)に分ける。`unguarded` と `honoured` は、
+  **そのガードのファイルを読む、同梱されていない glibc の公開ヘッダ**(`gcc -M -D_GNU_SOURCE` の依存一覧で探し、
+  名前の短い順に最大 3 本)と同梱の `<H>` を両方の順で並べて rubycc(x86-64)でコンパイルし、実際に落ちるかを測る。
+  honoured も測るのは、ガードを立てると glibc 側がそのファイルを丸ごと読み飛ばし、相手のヘッダがそのファイル経由で
+  得ていた型やマクロまで消えるため(-2 の `<sys/pidfd.h>` の件)。読むヘッダが無いときだけ内部ファイルを直接含める(`direct`)。
+  gcc も拒む組み合わせは n/a。ガードが glibc の `<H>` 自身の本文にあるものは `self` とし、glibc の `<H>` と同梱の `<H>` は
+  同じ翻訳単位に並ばないので測らない。
+- **混在の調査**: `libc6-dev` の公開ヘッダのうち同梱しない 186 本を 1 本ずつ `_GNU_SOURCE` のもとで
+  gcc と rubycc(既定の探索順)でコンパイルし、rubycc だけが落ちるものを最初のエラーと共に並べる。
+  同梱ヘッダの抜けが**glibc 本体のヘッダの失敗**として現れる所(AM の `<spawn.h>`、AQ の `<net/if.h>`)を拾う。
+- **意図して外した名前**: 同梱ヘッダの冒頭コメントの `omitted: 名前 ... -- 理由` を読み
+  (`CPU_*` のような末尾 `*` の族指定と、`<sys/types.h>` のような取り込みの指定を受ける)、
+  不足のうちそこに書かれていないものを「未記載」として数える。
+
+結果は `docs/development/BUNDLED-HEADERS-COVERAGE.md`(生成物。再生成は
+`ruby tools/audit_bundled_headers.rb --output docs/development/BUNDLED-HEADERS-COVERAGE.md`)に置き、
+`docs/README.md` の索引に 1 行足した。glibc のヘッダ本文は一切写していない(出力は名前と、それが見える場所だけ。R11、
+`docs/reference/HEADER-LICENSING.md` §6)。
+
+### 測定結果(2026-09-14、このホスト WSL2 / gcc 13.3 / glibc 2.39、aarch64 は同梱パッケージのクロス gcc 13 / glibc 2.39)
+
+このステップの時点(同梱ヘッダは 0ced183 のまま)の表。実行時間は約 28 秒(両 arch + 混在調査)。
+
+- 同梱 libc ヘッダ 54 本(`include/libc/**`、arch 層は同名を 1 本と数える)。両 arch とも不足 0 は 9 本。
+- 公開名の不足の合計は x86-64 3,413 / aarch64 3,375。大半は `math.h`(777 / 779)・`sys/syscall.h`(312 / 256)・
+  `netinet/in.h`(267)・`sys/socket.h`(239)など、定数を大量に持つヘッダ。arch で数が違うのは
+  `fcntl.h`・`link.h`・`math.h`・`signal.h`・`sys/mman.h`・`sys/syscall.h` の 6 本。
+- 意図して外した旨を `omitted:` で書いていたヘッダは 0 本(この書式はこのステップで決めた)。
+- 7 件の gap は表から全部読める: `stdlib.h` の不足に `getloadavg`(default)・`qsort_r`(gnu)、
+  取り込み不足に `alloca.h`、`sched.h` の不足に `struct sched_param`、`sys/types.h` の予約名の型の不足に
+  `__caddr_t`、`termios.h` の不足に `tcflow`・`TCOON` 等、`sys/ioctl.h` の不足に `TIOCMGET`・`TIOCM_*`。
+- 混在の調査: 同梱しない glibc の公開ヘッダ 186 本のうち、gcc が通し rubycc が落ちるものが **37 本**。
+  うち `<spawn.h>`(AM)・`<net/if.h>`・`<net/if_ppp.h>`・`<net/if_shaper.h>`(AQ)の他に、
+  同梱 `<sys/types.h>` から glibc の内部名(`__pid_t`・`__daddr_t`・`__uint64_t`・`__off64_t`)や
+  `int32_t` が得られずに落ちるもの(`sys/procfs.h`・`sys/mtio.h`・`sys/quota.h`・`sys/sendfile.h`・`utmp.h` など)があり、
+  AQ の範囲を `__caddr_t` 1 つより広く取る根拠になった(-2 で対処)。
+- 共有ガード: 実在の glibc ヘッダとの組で**ガードが原因で**落ちるのは、同梱 `signal.h` の `union sigval` だけだった。
+  `<aio.h>`・`<sys/pidfd.h>`(と、この表の外で報告された `<netdb.h>`)を `<signal.h>` と並べると両順とも
+  `redefinition of 'union sigval'` になる(GAPS BL。glibc 側のガードは `____sigval_t_defined`)。
+  `__rusage_defined`(`sys/resource.h` の `struct rusage`)は内部ファイルを直接含めると衝突するが、同梱しない glibc ヘッダで
+  そのファイルを読むものが無い。probe に出る他の失敗(`<net/if.h>` の `__caddr_t`、`<thread_db.h>` → `<sys/procfs.h>` の `__pid_t`)は
+  AQ の形の名前不足で、ガードの衝突ではない。スカラーの typedef(`time_t`・`clock_t` 等)は同じ型の再定義なので両順とも通る。
+
+### テスト
+
+- `test/test_audit_bundled_headers.rb`(新規、4 runs / 17 assertions / 0 failures): 宣言子スキャナを手書きの C
+  (glibc のテキストは使わない)で確かめる 2 件、`omitted:` の読み取り 1 件、`<alloca.h>` を両 arch で実際に測って
+  `alloca` が glibc 側の名前に入り不足が 0 であることを確かめる 1 件。
+- `test/test_doc_links.rb` 3 runs / 0 failures(索引の 1 行)。
+
+### 残された観点(このステップでは直していない)
+
+- 共有ガードの BL(`union sigval`)は -2 で直す
+- 混在の調査で rubycc だけが落ちる glibc ヘッダは、-2 の後に `issues/glibc-public-headers-mixed.md`(GAPS BP)に起票した
+- 分類(足す / 意図して外す)はこのステップでは 1 本も済ませていない。-2 の後に残る分は
+  `issues/bundled-headers-coverage-audit.md` の作業ログに書いた
+
+## bundled-headers-coverage-audit-2 — 監査表から同梱ヘッダの 8 件の穴を塞ぐ(AF・AM・AQ・AR・BA・BB・BG・BL)
+
+-1 の表(`docs/development/BUNDLED-HEADERS-COVERAGE.md`)から、GAPS の AF・AM・AQ・AR・BA・BB・BG と、
+作業中に追加された BL(`issues/bundled-signal-sigval-guard.md`)を塞いだ。触った同梱ヘッダは
+`stdlib.h`・`sched.h`・`termios.h`・`sys/ioctl.h`・`sys/types.h`(両 arch)・`signal.h`。
+前の 5 本は、glibc の同名ヘッダとの差の**全項目**を「足す / 意図して外す(理由)」に分け、
+外すものを各ヘッダの冒頭コメントに `omitted: 名前 ... -- 理由` の形で書いた(`signal.h` はガードだけを直し、名前の分類はしていない)。
+
+### 原因
+
+どれも同梱ヘッダを「コーパスのサンプルが届いた範囲」に絞った結果で、形は 3 つに分かれる。
+
+- **名前が無い**(AF・AR・BG・BA・BB): `stdlib.h` に `getloadavg`(glibc は `__USE_MISC`)・`qsort_r`(`__USE_GNU`)が無く、
+  glibc が `__USE_MISC` で含める `<alloca.h>` を含めていなかった。`termios.h` に `tcflow` と `TCO*`/`TCI*` が無く、
+  `sys/ioctl.h` に `TIOCM*` が無かった。
+- **glibc 本体のヘッダが同梱ヘッダの隣で要る名前が無い**(AM・AQ): glibc の `<spawn.h>` は `<sched.h>` の
+  `struct sched_param` をメンバに持ち、`<net/if.h>` は `<sys/types.h>` の内部名 `__caddr_t` を使う。
+  -1 の混在の調査で、同じ形が `__pid_t`(`sys/procfs.h`)・`__daddr_t`(`sys/mtio.h`)・`__uint64_t`(`sys/quota.h`)・
+  `__off64_t`(`sys/sendfile.h`)・`int32_t`(`utmp.h`・`lastlog.h`・`protocols/rwhod.h`)にもあると分かった。
+- **glibc と共有するガードを立てない**(BL、AU と同じ形): glibc の `<netdb.h>` は `_GNU_SOURCE` のもとで
+  `struct sigevent` のファイルを読み、そこが `union sigval` を glibc 自身の `<signal.h>` と共有するガードの下で定義する。
+  同梱 `signal.h` の `union sigval` はガードなしだったので、`<signal.h>` と `<netdb.h>` を `_GNU_SOURCE` で並べると
+  **どちらの順でも** `redefinition of 'union sigval'` になった(2026-09-14、修正前の同梱ヘッダを 0ced183 から取り出して再測定。
+  gcc は両順とも通す)。
+
+### 対処
+
+値・大きさは全てリファレンスコンパイラに印字させて測ってから書いた(glibc のヘッダ本文は写していない。R11、
+`docs/reference/HEADER-LICENSING.md` §6)。宣言の形は、glibc のヘッダを含めた後に同梱側の宣言を並べて gcc と
+`aarch64-linux-gnu-gcc` の `-fsyntax-only` に通し、衝突する再宣言が 1 件も無いことで確かめた(2026-09-14、両 arch)。
+
+- **`stdlib.h`**(AF・AR・BG): `getloadavg`・`<alloca.h>` の取り込み・`mkstemps`・`mkdtemp`・`rand_r`・
+  `initstate`/`setstate`・48 ビット乱数(`drand48` ほか 9 個)・疑似端末(`posix_openpt`/`grantpt`/`unlockpt`/`ptsname`)を
+  無条件に、`qsort_r`・`mkostemp`・`mkostemps`・`secure_getenv`・`canonicalize_file_name`・`ptsname_r` を `__USE_GNU` の下に置いた。
+  **見え方の規則**: gcc の既定(`_DEFAULT_SOURCE`)で glibc が見せる名前は、このヘッダの従来どおり無条件。`_GNU_SOURCE` でだけ
+  見せる名前は `__USE_GNU` の下に置く。`_GNU_SOURCE` なしで自前の `qsort_r`(BSD 順の互換 shim が珍しくない)を定義する
+  プログラムと衝突させないためで、そのために `<features.h>` を含めるようにした。外したもの(待ち状態マクロ、`<sys/types.h>` の
+  取り込み、`*_r` 系の再入可能乱数、`ecvt` 系、`arc4random*`(glibc 2.36 以降にしかない)、`locale_t`/`*_l`、`_FloatN` の
+  `strfrom*`/`strtof128*` 系、LFS64 別名など)は理由と共に冒頭コメントにある。
+- **`sched.h`**(AM): `struct sched_param`(4 バイト、`sched_priority` は 0)、`SCHED_OTHER`/`FIFO`/`RR` と
+  `__USE_GNU` の下の `SCHED_BATCH`〜`SCHED_RESET_ON_FORK`、POSIX のスケジューリング方針の 7 関数と `__USE_GNU` の
+  `sched_setaffinity`/`getaffinity`、それらが使う `pid_t`/`time_t`/`struct timespec`(`time.h` などと共有のガード)。
+  外したもの: `CPU_*`(glibc 内部のビット配置を再現することになる)、`clone` 系と `CLONE_*`。
+- **`sys/types.h`**(AQ、両 arch): glibc の `<sys/types.h>` が見せるスカラーの内部名 `__*_t` 60 個、`int8_t`〜`int64_t`、
+  `quad_t`/`u_quad_t`。**aarch64 は `__nlink_t`・`__blksize_t` が 32 ビット**で x86-64 と違う(実測)。どれもスカラーか
+  ポインタの typedef なので、glibc のヘッダが後から `bits/types.h` で同じものを定義しても互換な再定義(C11 6.7p3)で通る。
+  **`fsid_t` は外した**: 一度 `__fsid_t`(構造体)を足したところ、glibc の `bits/types.h` がガードなしで別の構造体として
+  定義しているため、`<aio.h>`・`<mqueue.h>`・`<semaphore.h>`・`<sys/acct.h>`・`<sys/sem.h>`・`<net/if_ppp.h>` の 6 本が
+  混在の調査で新たに落ちた(2026-09-14 実測)。構造体の typedef は互換な再定義にならないので、足さないことにした。
+- **`termios.h`**(BA): `tcflow`・`tcgetsid`・`cfsetspeed`、`TCOOFF`/`TCOON`/`TCIOFF`/`TCION`(0〜3)、`B57600`〜`B4000000`、
+  `CBAUD`・`CBAUDEX`・`CIBAUD`・`CMSPAR`・`CRTSCTS`・`ADDRB`、`ECHOCTL` ほかの `c_lflag` 拡張、出力遅延ビット、`IUCLC`/`OLCUC`、
+  `tcgetsid` 用の `pid_t`。追加した 58 個の値は両 arch で全て一致したので共通層のまま。serialport が使う名前
+  (`B921600`・`CRTSCTS`・`CMSPAR` など)も含む。外したもの: `CCEQ`、`TIOCSER_TEMT`(`sys/ioctl.h` 側に置いた)、
+  `<sys/ttydefaults.h>` の取り込み。Step 124 のコメントが外していた `tcgetsid`/`cfsetspeed` もここで足した。
+- **`sys/ioctl.h`**(BB): issue の「次の一歩」どおり、**aarch64 の要求番号を先に測った**。追加候補 165 個の値を gcc と
+  `aarch64-linux-gnu-gcc`(qemu 実行)に印字させ、**全件一致**した(両方ともカーネルの汎用の番号付けを使う)ので共通層に置いた。
+  `TIOCM*` 要求と `TIOCM_*` ビット、残りの端末要求、`FIO*`、`N_*`、`SIOC*` を、測った数値のまま(`_IOR` 等の符号化ではなく)書いた。
+  `SIOC*` を足したのは、network_interface の extconf が `have_macro` で `SIOCGIFHWADDR` などを調べるためで、欠けていると
+  エラーにならずに**gcc のビルドより機能の少ない gem ができる**。外したもの: `struct termio`/`NCC`、`IOC_*` の符号化補助、
+  glibc 自身も不完全型のままにしている構造体の大きさを埋め込む `TCGETS2` 系と `TIOC[GS]ISO7816`、`<sys/ttydefaults.h>`。
+- **`signal.h`**(BL): `union sigval` を glibc と共有するガード `____sigval_t_defined` の下に置き、同じガードが覆う
+  `__sigval_t` も定義した(ガードの名前と綴りは両 arch の `gcc -E -dD` で読んだ。`bundled-pthread-attr-guard-1` と同じ扱い)。
+  BL を直した後で -1 のガード probe(実在の glibc ヘッダとの組、honoured も測る)を回し直したところ、
+  もう 1 件 `__siginfo_t_defined` で本物の衝突が出た: `<signal.h>` と glibc の `<sys/pidfd.h>`(`bits/types/siginfo_t.h` を読む)は、
+  両側の `si_pid` などのメンバマクロが相手の構造体を書き換えて**両順とも** `expected ';'` になる(BL の修正後に測定。修正前は
+  `union sigval` の再定義で先に落ちていた)。`siginfo_t` と `si_*` マクロを同じガードの下に入れた。
+  ガードを立てると glibc 側はそのファイルを丸ごと読み飛ばすので、**そのファイルが推移的に持ち込んでいたもの**も消える。
+  実際に `<signal.h>` → `<sys/pidfd.h>` の順で、まず `__pid_t`(`sys/pidfd.h:31` の `expected ')'`)、次に `__THROW`(同じ行の
+  `expected ';'`)が足りなくなった。そこで `signal.h` に `__pid_t`/`__uid_t`/`__clock_t`(glibc と同じスカラー型なので互換な再定義)を置き、
+  glibc の `<signal.h>` と同じく `<features.h>` を含めるようにした(`<sys/cdefs.h>` が来る)。どちらも ABI の値は動かしていない。
+
+由来台帳(`docs/reference/HEADER-LICENSING.md` §3.2 / §3.3)の `stdlib.h`・`sched.h`・`termios.h`・`sys/ioctl.h`・
+`sys/types.h`(両 arch)の行に追加分を書き足した。ファイル数は動いていないので §3.4 の集計(81 本)は変わらない。
+`signal.h` は ABI の値を 1 つも動かしていないので、`bundled-pthread-attr-guard-1` と同じ判断で台帳の行は変えていない。
+
+### 測定結果(2026-09-14、このホスト WSL2 / gcc 13.3 / glibc 2.39、aarch64 はクロス gcc 13 / glibc 2.39)
+
+- 8 件の最小再現(issue の本文どおり、`-D_GNU_SOURCE`)と BL の 2 順、`<sys/pidfd.h>` の 2 順、`#include <spawn.h>` だけの単位:
+  **修正前は全て rubycc だけが落ち、修正後は全て gcc と同じく通る**(12 本)。
+- 監査表の触った 5 本(両 arch とも同じ): `stdlib.h` 不足 108 → 83・未記載 0、`sched.h` 73 → 52・未記載 0、`termios.h` 64 → 2・未記載 0、
+  `sys/ioctl.h` 172 → 13・未記載 0、`sys/types.h` 21 → 15・未記載 0(`fsid_t` を外した分 1 件増えている)。
+- 混在の調査(同梱しない glibc の公開ヘッダ 186 本): rubycc だけが落ちるものが **37 → 23 本**。
+  通るようになったのは `spawn.h`・`net/if.h`・`net/if_ppp.h`・`net/if_shaper.h`・`sys/procfs.h`・`proc_service.h`・`sys/mtio.h`・
+  `sys/quota.h`・`sys/sendfile.h`・`sys/fsuid.h`・`utmp.h`・`lastlog.h`・`protocols/rwhod.h`・`nss.h` の 14 本で、新たに落ちたものは無い。
+- 共有ガード: 実在の glibc ヘッダとの組で落ちるものは、`__rusage_defined`(同梱しない glibc ヘッダでこのファイルを読むものが無く、
+  直接含めたときだけ衝突する)と、`<time.h>` と `<thread_db.h>` の組(`thread_db.h:281` で両順とも落ちるが、`thread_db.h` は
+  単独でも同じ行で落ちるので、ガードの穴ではない)だけになった。**同梱ヘッダの型で、実在の glibc ヘッダと並べて BL と同じ形で落ちるものは残っていない**
+  (x86-64。aarch64 は GAPS BI のため rubycc で glibc 本体のヘッダを読めず、未測定)。
+
+### テスト
+
+- `test/test_header_abi.rb`: `SCHED`(`struct sched_param`・`SCHED_*`・新しい関数の呼び出し)、`TERMIOS`(追加した 58 個の値と
+  `tcflow`/`tcgetsid`/`cfsetspeed` の呼び出し)、`IOCTL`(165 個の値)、`SYS_TYPES`(glibc の内部名 60 個の大きさ・整列・符号と
+  `__caddr_t`・`int8_t`〜`int64_t`・`quad_t`)、`SIGNAL`(`union sigval` の大きさ・整列)を拡張し、両 arch のクラスで走らせた。
+  `STDLIB_GNU`(新規、両 arch): `qsort_r` を文脈ポインタ付きで実際に並べ、`alloca` の領域に書いて読む。
+  x86-64 だけのもの: `NET_IF`(AQ の再現そのもの。同梱 `sys/types.h` の上の glibc `<net/if.h>` で `struct ifreq` の大きさとオフセット)、
+  `SIGVAL_NETDB_FORWARD`/`REVERSE`(BL の両順。`struct sigevent`・`union sigval`・`__sigval_t` の大きさとオフセット)。
+- `test/test_bundled_headers_coverage.rb`(新規): 触った 5 本が両 arch で「未記載 0」であること、7 件の名前が不足に無いこと、
+  同梱しない glibc ヘッダ 10 本(`spawn.h`・`net/if.h`・`utmp.h`・`sys/procfs.h` と、`__fsid_t` を足したときに落ちた 6 本)が
+  rubycc で通ること、`<signal.h>` と `<netdb.h>`・`<sys/pidfd.h>` を両順で並べて通ること。
+- 修正前の対照: 0ced183 の `lib/` と `include/` を `git archive` で作業場所の外に取り出し、BL と pidfd の 4 本が修正前は
+  `redefinition of 'union sigval'` で落ちることを測った。7 件の再現も修正前は issue の本文どおりのエラーで落ちる(2026-09-14)。
+- 実行結果(2026-09-14、いずれも 0 failures / 0 errors): `test_bundled_headers_coverage.rb` 8 runs / 48 assertions、
+  `test_audit_bundled_headers.rb` 4 runs / 17 assertions、`test_header_abi.rb` 130 runs / 385 assertions / 0 skips、
+  `test_doc_links.rb` 3 runs、`test_examples.rb` 64 runs、`test_examples_aarch64.rb` 572 runs / 26 skips(既存)、
+  `test_c_suite.rb` 223 runs / 13 skips(既存)、`test_c_suite_aarch64.rb` 444 runs / 26 skips(既存)。
+
+### 残された観点(このステップでは直していない)
+
+見つかったものは、それぞれ issue にした:
+
+- **glibc 本体の `<alloca.h>` を読む経路で `alloca` がリンクできない**(`__GNUC__` を定義しないため)。
+  `issues/glibc-alloca-without-gnuc.md`(GAPS BO)。例からは `alloca` を外し、同梱ヘッダの経路は `STDLIB_GNU` で確かめている
+- **同梱 `sys/types.h` の `ushort` が `unsigned char`**(glibc は `unsigned short`)。`<stdlib.h>` から `<sys/types.h>` を
+  取り込まなかった理由の 1 つでもある。`issues/bundled-sys-types-ushort.md`(GAPS BN)
+- **混在の調査で残る 23 本**。`issues/glibc-public-headers-mixed.md`(GAPS BP)
+- **分類していない同梱ヘッダ(54 本のうち 49 本と `signal.h` の名前の不足)、aarch64 の共有ガードの点検、`fsid_t` / 同梱
+  `sys/statfs.h` の `__fsid_t`**(glibc の `bits/types.h` がガード無しの構造体で定義する)。親の
+  `issues/bundled-headers-coverage-audit.md` に残した
+
+vmstat などの gem としてのビルドとロードは、この PR の後に台帳の測り直しで扱う。
+
+## function-definition-parenthesized-name-2 — 丸括弧内の宣言子にポインタが付く場合は `:none` を転送しない
+
+**課題**: `function-definition-parenthesized-name-1`(commit b9ac9f4)がリグレッションを持ち込んでいた。
+`test/test_knr_function_definitions.rb:295`(`test_constraint_violations_are_diagnosed`)の
+`"int (*g)(a, b);"` ケースが、期待する
+`/only allowed in a function definition/` ではなく
+`"knr.c:1:7: error: expected a function declarator"` を返して落ちていた(2026-09-14、このホスト実測、
+フルスイート実行時に検出)。
+
+### 原因
+
+`-1` は「丸括弧の内側にサフィックスの無い階層」が番兵 `:none` を返すようにし(`nil` に落とさず)、
+`int (add)(int a, int b)` のような外側の `(int a, int b)` を正しく `function_params` として拾えるように
+した。ところがこの `:none` は「丸括弧の内側の宣言子が**裸の識別子**(さらに丸括弧で入れ子にしてもよい:
+`(add)`, `((h))`)だった」場合にのみ、「まだどの階層も関数サフィックスを確定していない」ことの意味を持つ。
+
+`int (*g)(a, b);` では、丸括弧の内側の宣言子は `*g`(先頭にポインタが付く)であり、`g` は「この外側の
+`(...)` が直接記述している関数」そのものではなく「関数へのポインタ」である。したがって外側の `(a, b)`
+は `g` 自身の `function_params` ではなく、`g` が指す関数型の仮引数であるべきだが、`-1` はポインタの
+有無を見ずに `:none` を無条件に外側へ転送していたため、外側の `#parse_direct_declarator` がこの
+`(a, b)`(識別子リスト)を `g` の `function_params` として採用してしまっていた。結果、
+`#reject_unsurfaced_identifier_lists` がこれを拒否対象から除外し(「採用された `function_params` と
+`equal?` だから拒否しない」)、識別子リストがそのまま素通りして
+`#parse_old_style_function_definition` の `error_at(name_tok, "expected a function declarator")`
+(`type.function?` が偽になるため)という誤った診断に落ちていた。`-1` 以前はこの階層が無条件に `nil` を
+返していたため、この誤った採用は起きていなかった。
+
+### 対処
+
+`#parse_declarator_core` の丸括弧分岐で、内側の `#parse_declarator_builder` 呼び出しから
+`function_params` に加えてポインタ接頭辞のリスト(`pointer_quals`、戻り値の4番目。従来は捨てていた)も
+受け取るようにし、次の規則を実装した:
+
+> `inner_params` が `:none` で、かつ内側の宣言子自身にポインタ接頭辞がある場合に限り、`:none` を
+> `nil`(-1 以前の値)へ潰す。
+
+「内側の宣言子自身のポインタ」だけを見ればよいのは、`:none` が一度でも `nil` へ確定した階層は
+`#parse_direct_declarator` の既存の分岐(`if inner_params != :none then inner_params`)がそのまま
+外側へ転送し続けるため — 途中のどこかの階層でポインタが現れた時点で以後ずっと `nil` のまま伝播する。
+逆に `:none` が生き残るのは、途中のどの階層にもポインタが無く、かつどの階層の直接のサフィックスも
+関数でなかった場合のみで、それはまさに「まだ名前の型が確定していない」ケースに一致する。
+
+配列サフィックスが内側にある場合(`int (a[2])(x);`)はこの規則の対象外 — ポインタが無いので
+`pointer_quals` は空のまま、変更前と同じ挙動(`:none` を転送し、外側の `(x)` が識別子リストとして
+`a` の `function_params` に採用される)。これは gcc が同じ入力に対して "parameter names (without
+types) in function declaration" という警告を出しつつ、別途 "declaration of 'a' as array of
+functions" というエラーで拒否する(2026-09-14、gcc 13.3 実測)のと整合しており、この規則が動かす
+必要のない領域だった。
+
+`int (*g(int a))(int b)`(名前 `g` 自身が関数で、外側のサフィックスは `g` が返す関数ポインタの
+仮引数)のように、内側の階層がすでに `:none` 以外の `function_params`(`g` 自身の `(int a)`)を
+確定させているケースは、この規則の条件(`inner_params == :none`)に該当しないため無変更 — `-1` が
+実装した「`(*g(int a))(int b)` は `int a` を報告する」という挙動を壊さない。
+
+変更点は `lib/rubycc/front/parser.rb` の `#parse_declarator_core` 1箇所のみ(丸括弧分岐で
+`pointer_quals` を受け取り、`:none` を `nil` に潰す1行を追加)。
+
+### テスト
+
+`test/test_function_definition_parenthesized_name.rb` に回帰ケースを4件追加(19 runs, 26 assertions):
+`int (*g)(a, b);` / `int (*(g))(a, b);` / `int (* const g)(a, b);` が
+`/only allowed in a function definition/` で拒否されること、`int (*fp)(int a, int b);`
+(識別子リストではなく本物のプロトタイプ)が引き続きコンパイルできること。gcc は上記いずれの
+識別子リスト形にも警告のみ("parameter names (without types) in function declaration")で、
+プロトタイプ形は無警告(2026-09-14、gcc 13.3 実測)。
+
+既存スイートは以下がすべて 0 failures / 0 errors(2026-09-14、このホスト):
+`test/test_knr_function_definitions.rb`(13 runs）、
+`test/test_function_definition_parenthesized_name.rb`(19 runs)、
+`test/test_parser.rb`(332 runs)、`test/test_diagnostics.rb`(238 runs)、
+`test/test_examples.rb`(68 runs)、`test/test_c_suite.rb`(223 runs, 11 skips)、
+`test/test_c_suite_aarch64.rb`(444 runs, 22 skips)、
+`test/test_examples_aarch64.rb`(580 runs, 22 skips)、
+`test/test_unprototyped_function_pointer_compat.rb`(13 runs)、
+`test/test_unprototyped_function_redeclaration.rb`(43 runs)、
+`test/test_block_scope_function_decl.rb`(13 runs)、`test/test_type.rb`(92 runs)、
+`test/test_flexible_array_member.rb`(16 runs)。

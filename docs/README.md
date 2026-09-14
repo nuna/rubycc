@@ -100,6 +100,7 @@ R10 の合格率は 3 つの文書に書き写されていて、そのうち 2 �
 | [RELEASE-CHECKLIST.md](development/RELEASE-CHECKLIST.md) | v1.0 の非機能要件チェックリストとリリース手順 |
 | [R10-CORPUS-SCAN.md](development/R10-CORPUS-SCAN.md) | **生成物**。コーパスの機械ゲートと provenance |
 | [R10-MANUAL-CLASSIFICATION.md](development/R10-MANUAL-CLASSIFICATION.md) | **生成物**。R10 の手動分類台帳 |
+| [BUNDLED-HEADERS-COVERAGE.md](development/BUNDLED-HEADERS-COVERAGE.md) | **生成物**。同梱 libc ヘッダと glibc の同名ヘッダの名前の突き合わせ(x86-64 / aarch64)・共有ガード・glibc 本体のヘッダとの混在 |
 | [security-dos-review.md](development/security-dos-review.md) | DoS フェイルセーフの設計と上限値の根拠 |
 | [WORKLOG-2026-09-11.md](development/WORKLOG-2026-09-11.md) | 2026-09-07〜11 の作業ログ(中断時点の状態と再開手順) |
 | [corpus-candidate-evaluation](development/corpus-candidate-evaluation) | corpus 候補発見の固定実験manifest・集計・評価結果 |

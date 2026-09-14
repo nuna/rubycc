@@ -22,6 +22,13 @@
 #ifndef _RUBYCC_SIGNAL_H
 #define _RUBYCC_SIGNAL_H
 
+/* As glibc's <signal.h> does: this brings <sys/cdefs.h>'s __THROW and kin.
+   A glibc header that follows this one and relied on glibc's siginfo_t file
+   to bring them (<sys/pidfd.h>) no longer gets that file once the siginfo_t
+   guard below is set (measured 2026-09-14: "expected ';'" at the __THROW of
+   sys/pidfd.h:31 without this include). */
+#include <features.h>
+
 #ifndef _RUBYCC_SIG_ATOMIC_T
 #define _RUBYCC_SIG_ATOMIC_T
 typedef int sig_atomic_t;
@@ -34,6 +41,19 @@ typedef int pid_t;
 #define _RUBYCC_UID_T
 typedef unsigned int uid_t;
 #endif
+
+/* glibc's internal spellings of the member types of its own siginfo_t.
+   Setting glibc's siginfo_t guard below makes a later glibc header skip
+   glibc's siginfo_t file entirely -- including the internal types that file
+   would have brought in -- and glibc's <sys/pidfd.h> declares pidfd_open over
+   __pid_t on the strength of it (measured 2026-09-14: "expected ')'" at
+   sys/pidfd.h:31 once the guard was set, before these typedefs were added).
+   Each is the same scalar type glibc uses on both arches (measured, see
+   <sys/types.h>), so glibc's own later definition is a compatible
+   redefinition (C11 6.7p3). */
+typedef int           __pid_t;
+typedef unsigned int  __uid_t;
+typedef long          __clock_t;
 
 /* The signal-handler function-pointer type. */
 typedef void (*__sighandler_t)(int);
@@ -53,17 +73,41 @@ typedef struct { unsigned long __val[1024 / (8 * sizeof(unsigned long))]; } __si
 typedef __sigset_t sigset_t;
 #endif
 
-/* The value delivered with a queued signal (POSIX real-time signals). */
+/* The value delivered with a queued signal (POSIX real-time signals):
+   8 bytes, 8-byte aligned (measured, both arches). glibc defines this union
+   in a second place too -- the file behind struct sigevent, which <netdb.h>
+   reads under __USE_GNU -- and keeps the two to one definition with a shared
+   guard that also covers its __sigval_t spelling (guard name and spelling
+   read off `gcc -E -dD` on both arches, 2026-09-14). Setting that same
+   guard here, and defining __sigval_t under it, is what lets <signal.h> and
+   <netdb.h> share a _GNU_SOURCE unit in either order (GAPS BL; iodine's
+   fio.c includes both). Before bundled-headers-coverage-audit-2 this union
+   was unguarded, and rubycc rejected both orders with "redefinition of
+   'union sigval'" where gcc accepts them. */
+#ifndef ____sigval_t_defined
+#define ____sigval_t_defined
 union sigval {
   int   sival_int;
   void *sival_ptr;
 };
+typedef union sigval __sigval_t;
+#endif
 
 /* siginfo_t: 128 bytes, 8-byte aligned (measured). The common fields sit at
    fixed offsets ahead of the _sifields union; the union's largest member is the
    28-int pad that fixes the total size. The user-facing member names below are
    provided as macros onto the union arms, exactly as glibc's ABI exposes them,
-   so si_pid / si_addr / si_band and kin resolve to the measured offsets. */
+   so si_pid / si_addr / si_band and kin resolve to the measured offsets.
+   glibc's own siginfo_t lives behind the guard set below, and other glibc
+   headers than <signal.h> read that file too (<sys/pidfd.h> does). Without
+   the shared guard each side's si_* member macros rewrote the other side's
+   struct, and rubycc rejected <signal.h> next to <sys/pidfd.h> in both orders
+   ("expected ';'", measured 2026-09-14 by tools/audit_bundled_headers.rb's
+   guard probe; gcc accepts both). The macros sit inside the guard with the
+   typedef: when glibc's definition arrives first, its own member macros are
+   already in place and address the same measured offsets. */
+#ifndef __siginfo_t_defined
+#define __siginfo_t_defined 1
 typedef struct {
   int si_signo;   /* offset 0 */
   int si_errno;   /* offset 4 */
@@ -102,6 +146,7 @@ typedef struct {
 #define si_value  _sifields.__rt.si_value
 #define si_band   _sifields.__sigpoll.si_band
 #define si_fd     _sifields.__sigpoll.si_fd
+#endif /* __siginfo_t_defined */
 
 /* struct sigaction: 152 bytes, 8-byte aligned (measured, both arches). The
    handler union is first, then the 128-byte sa_mask, sa_flags at offset 136 and

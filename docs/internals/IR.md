@@ -254,7 +254,7 @@ Instruction(op, dst:, a:, b:, size:)
 
 | 命令 | 形 | 意味 |
 |---|---|---|
-| :va_start | a = __va_list_tag のアドレス vreg、b = 取り囲む関数の固定パラメータ数 | ターゲットの va_list フィールドを初期化する。SysV は 4 フィールド(gp_offset / fp_offset / overflow_arg_area / reg_save_area)、AAPCS64 は 5 フィールド(__stack / __gr_top / __vr_top / __gr_offs / __vr_offs)。名前付きパラメータが消費済みの GP/SSE レジスタ数は b ではなく **Function.param_kinds のカウントから導出**する。SysV: gp_offset = 8×count(:gp)、fp_offset = 48 + 16×(count(:sse4)+count(:sse8))、overflow_arg_area の開始は count(:mem) を反映、reg_save_area は退避領域を指す。AAPCS64: __gr_offs = −(8−count(:gp)−count(:pad))×8、__vr_offs = −(8−count(:sse4/:sse8))×16(退避領域の末尾 __gr_top/__vr_top からの負オフセットで 0 に向かって増える)、__stack の開始は count(:mem)+count(:pad_stack) を反映し、__gr_top/__vr_top は退避領域とスタック引数の境界を指す。**va_arg / va_end / va_copy に専用命令は無い** — ジェネレータが通常の load/store/分岐に降ろす(SysV の double は fp_offset を `:ult 176` で分岐しレジスタ側 +=16 / あふれ側 +=8;AAPCS64 は offs を `:lt 0` で分岐しレジスタ側は top+offs、offs += 8/16;va_copy はタグ全体の :memcpy) |
+| :va_start | a = __va_list_tag のアドレス vreg、b = 取り囲む関数の固定パラメータ数 | ターゲットの va_list フィールドを初期化する。SysV は 4 フィールド(gp_offset / fp_offset / overflow_arg_area / reg_save_area)、AAPCS64 は 5 フィールド(__stack / __gr_top / __vr_top / __gr_offs / __vr_offs)。名前付きパラメータが消費済みの GP/SSE レジスタ数は b ではなく **Function.param_kinds のカウントから導出**する。SysV: gp_offset = 8×count(:gp)、fp_offset = 48 + 16×(count(:sse4)+count(:sse8))、overflow_arg_area の開始は count(:mem) を反映、reg_save_area は退避領域を指す。AAPCS64: __gr_offs = −(8−count(:gp)−count(:pad))×8、__vr_offs = −(8−count(:sse4/:sse8))×16(退避領域の末尾 __gr_top/__vr_top からの負オフセットで 0 に向かって増える)、__stack の開始は count(:mem)+count(:pad_stack) を反映し、__gr_top/__vr_top は退避領域とスタック引数の境界を指す。**va_arg / va_end / va_copy に専用命令は無い** — ジェネレータが通常の load/store/分岐に降ろす(SysV の double は fp_offset を `:ult 176` で分岐しレジスタ側 +=16 / あふれ側 +=8;AAPCS64 は offs を `:lt 0` で分岐しレジスタ側は top+offs、offs += 8/16;va_copy はタグ全体の :memcpy)。**struct / union の va_arg** も同じく既存命令への脱糖で、呼び出し側が名前付き引数と同じ `aggregate_plan` で渡すので同じ計画で探す。値は他の集約と同じくアドレスで、SysV は MEMORY 分類なら overflow_arg_area から直接、レジスタ分類なら GP / SSE 両カウンタが**両方とも**収まるときだけ各 eightbyte を退避領域から一時オブジェクトへ集め(収まらなければ両カウンタを動かさずスタックから)、AAPCS64 は参照渡しなら GP スロットのポインタをたどり、HFA は 16 バイトのベクタスロットから一時オブジェクトへ集め、それ以外は GR 退避領域を直接指す。AAPCS64 は offs を進めてから格納し、はみ出したら正の値のまま残す(そのファイルは以後使い切り)。16 バイト境界の集約は offs とスタックポインタを 16 に切り上げる(`:and`) |
 
 ### スタック領域確保
 
@@ -276,16 +276,22 @@ gcc の `__atomic_*` 組み込み(ジェネレータが扱う 5 つの IR 命令
 (seq_cst)で降ろすため。オーダの強化は常に意味論的に妥当(制約を増やすだけ)なので、
 `__ATOMIC_RELAXED` を seq_cst として実装するのは正しく、診断にするより堅牢である
 (同じ理由で `__atomic_compare_exchange_n` の `weak` も無視して常に strong)。
-`size` は load/store/rmw/cas では 4 か 8 のみ — それ以外の幅はジェネレータが診断
-するので、バックエンドに狭い/広いケースは無い。
+`size` は load/store/rmw/cas では 1・2・4・8 のいずれか — 16 バイト(`__int128`)は
+ジェネレータが診断するので、バックエンドに広いケースは無い。**1・2 バイトのとき、
+メモリアクセスはちょうど `size` バイト幅だが、`:atomic_load` / `:atomic_rmw` が dst に
+置く値は下位 `size` バイトしか定義されない**(上位ビットはターゲットの命令列次第 —
+ゼロ拡張する排他ロード、32 ビット加算の桁上がり、オペランド自身の符号ビットなど)。
+そのためジェネレータは狭い結果の直後に、オブジェクトの型で選んだ `:sext` / `:zext`
+(同じ幅)を必ず置く。バックエンドはオブジェクトの符号の有無を知らなくてよい。
+オペランド(b・desired・\*expected)も下位 `size` バイトだけが読まれる。
 
 | 命令 | 形 | 意味 |
 |---|---|---|
 | :atomic_fence | — | 逐次一貫なメモリフェンス。x86-64 は `mfence`、AArch64 は `dmb ish` |
-| :atomic_load | dst ← atomic *a。size = 4/8 | ポインタ a から `size` バイトを逐次一貫に読む。`:load` と別命令なのは 2 ターゲットで形が違うから — x86-64 は整列した素の `mov` が既に seq_cst ロード、aarch64 は acquire 形(`ldar`)が要る |
-| :atomic_store | *a ← b。size = 4/8 | ポインタ a へ b の `size` バイトを逐次一貫に書く。x86-64 は `xchg`(暗黙の lock が seq_cst ストアに必要な後続バリアを兼ねる)、aarch64 は `stlr` |
-| :atomic_rmw | dst ← rmw(a, b)。b = [値 vreg, kind]、size = 4/8 | ポインタ a を通したアトミックな read-modify-write。kind は `:exchange` / `:fetch_add` / `:fetch_sub` / `:add_fetch` / `:sub_fetch` / `:or_fetch`。dst には対応する組み込みの戻り値(`:exchange` と `:fetch_*` は**読んだ値**、`:*_fetch` は**書いた値**。結果を捨てる場合は nil)。x86-64 は `xchg` / `lock xadd`(`:fetch_sub` は `neg` してから、`:*_fetch` はオペランドを退避して加え直す)で、`:or_fetch` だけ `lock cmpxchg` リトライループ。aarch64 は全 kind が LDAXR/STLXR リトライループ 1 本 |
-| :atomic_cas | dst ← cas(a, b)。b = [expected ポインタ vreg, desired vreg]、size = 4/8 | `__atomic_compare_exchange_n`。*a が \*expected と等しければ *a ← desired で dst = 1、等しくなければ *a は不変で dst = 0 かつ**実際に読めた値を expected 経由で書き戻す**(`<ruby/atomic.h>` の RUBY_ATOMIC_CAS はこの副作用から答えを取り出すので必須)。書き戻しは失敗経路のみ(分岐でガード)— expected が a に別名で重なった場合に、交換したばかりの値を古い値で潰さないため。dst は _Bool(0/1)で nil にならない |
+| :atomic_load | dst ← atomic *a。size = 1/2/4/8 | ポインタ a から `size` バイトを逐次一貫に読む。`:load` と別命令なのは 2 ターゲットで形が違うから — x86-64 は整列した素の `mov`(1/2 バイトは `movzx`)が既に seq_cst ロード、aarch64 は acquire 形(`ldar` / `ldarb` / `ldarh`)が要る |
+| :atomic_store | *a ← b。size = 1/2/4/8 | ポインタ a へ b の `size` バイトを逐次一貫に書く。x86-64 は `xchg`(暗黙の lock が seq_cst ストアに必要な後続バリアを兼ねる)、aarch64 は `stlr` / `stlrb` / `stlrh` |
+| :atomic_rmw | dst ← rmw(a, b)。b = [値 vreg, kind]、size = 1/2/4/8 | ポインタ a を通したアトミックな read-modify-write。kind は `:exchange` / `:fetch_add` / `:fetch_sub` / `:fetch_and` / `:fetch_or` / `:fetch_xor` / `:add_fetch` / `:sub_fetch` / `:and_fetch` / `:or_fetch` / `:xor_fetch`。dst には対応する組み込みの戻り値(`:exchange` と `:fetch_*` は**読んだ値**、`:*_fetch` は**書いた値**。結果を捨てる場合は nil)。x86-64 は `xchg` / `lock xadd`(`:fetch_sub` は `neg` してから、`:*_fetch` はオペランドを退避して加え直す)で、ビット演算の 6 kind(and/or/xor の fetch 前後)は `lock cmpxchg` リトライループ。aarch64 は全 kind が LDAXR/STLXR(1/2 バイトは `b` / `h` 形)リトライループ 1 本 |
+| :atomic_cas | dst ← cas(a, b)。b = [expected ポインタ vreg, desired vreg]、size = 1/2/4/8 | `__atomic_compare_exchange_n`。1/2 バイトの比較は**ゼロ拡張どうし**で行う(x86-64 は `cmpxchg` の byte/word 形がそもそも下位だけを比べ、aarch64 は `ldaxrb`/`ldaxrh` と `ldrb`/`ldrh` がどちらもゼロ拡張するので 32 ビット `cmp` で足りる)。*a が \*expected と等しければ *a ← desired で dst = 1、等しくなければ *a は不変で dst = 0 かつ**実際に読めた値を expected 経由で書き戻す**(`<ruby/atomic.h>` の RUBY_ATOMIC_CAS はこの副作用から答えを取り出すので必須)。書き戻しは失敗経路のみ(分岐でガード)— expected が a に別名で重なった場合に、交換したばかりの値を古い値で潰さないため。dst は _Bool(0/1)で nil にならない |
 
 `:atomic_rmw` と `:atomic_cas` のリトライループ・分岐は **1 つの IR 命令の内側で閉じる**ので、
 ラベル機構(`:label` / `@fixups`)は使わず、発行済みバイト数から変位を直接計算する

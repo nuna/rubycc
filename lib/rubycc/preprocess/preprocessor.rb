@@ -256,7 +256,8 @@ module Rubycc
       # constant/choose folds, the count-leading/trailing-zero scans and the
       # set-bit count (each in its plain, "l" and "ll" spelling), the
       # unreachable hint, memcpy, strlen, the three overflow-checked arithmetic
-      # forms, the nine __atomic_* forms and the ten legacy __sync_* forms. Every
+      # forms, the fourteen __atomic_* object forms plus the fence and the
+      # fifteen legacy __sync_* forms (every one but the nand pair). Every
       # other builtin query is false, so a header that guards a fallback behind
       # __has_builtin (e.g. json's bswap path) takes the fallback for one rubycc
       # does not provide. Kept in sync with the parser's builtin keywords. Kept
@@ -275,10 +276,14 @@ module Rubycc
                           __atomic_compare_exchange_n
                           __atomic_fetch_add __atomic_fetch_sub
                           __atomic_add_fetch __atomic_sub_fetch
-                          __atomic_or_fetch __atomic_thread_fence
+                          __atomic_or_fetch __atomic_and_fetch __atomic_xor_fetch
+                          __atomic_fetch_or __atomic_fetch_and __atomic_fetch_xor
+                          __atomic_thread_fence
                           __sync_fetch_and_add __sync_fetch_and_sub
                           __sync_add_and_fetch __sync_sub_and_fetch
-                          __sync_or_and_fetch __sync_lock_test_and_set
+                          __sync_or_and_fetch __sync_and_and_fetch __sync_xor_and_fetch
+                          __sync_fetch_and_or __sync_fetch_and_and __sync_fetch_and_xor
+                          __sync_lock_test_and_set
                           __sync_lock_release __sync_synchronize
                           __sync_bool_compare_and_swap
                           __sync_val_compare_and_swap].to_h { |name| [name, true] }.freeze
