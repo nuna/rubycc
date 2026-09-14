@@ -51,6 +51,26 @@ steps: []
 
 buildable-gems-batch-4 で termios が 5 件目になったので、1 件ずつ塞ぐ前に全体を見る作業として起票した。
 
+### 2026-09-14(第 1 段、`gap-fixes-wave-4`、PR 151)
+
+- `bundled-headers-coverage-audit-1`: 突き合わせの道具 `tools/audit_bundled_headers.rb` と、その生成物
+  [`BUNDLED-HEADERS-COVERAGE.md`](../docs/development/BUNDLED-HEADERS-COVERAGE.md) を作った。同梱ヘッダ 54 本すべてについて、
+  glibc が `_GNU_SOURCE` のもとで宣言する名前との差分(x86-64 / aarch64)、共有ガード、glibc 本体のヘッダとの混在を出す
+- `bundled-headers-coverage-audit-2`: 表から AF・AM・AQ・AR・BA・BB・BG と、途中で見つかった BL(`union sigval`)を直した。
+  共有ガードの点検で `siginfo_t` にも同じ穴があり(`<sys/pidfd.h>` と並べると両順とも落ちる)、同じ形で直した。
+  混在の調査では、同梱しない glibc の公開ヘッダ 186 本のうち rubycc だけが落ちるものが 37 本から 23 本に減った
+
+**受け入れ条件のうち、残っているもの:**
+
+- 差分の分類(足す / 意図して外す)が済んだのは 54 本のうち 5 本(`stdlib.h`・`sched.h`・`termios.h`・`sys/ioctl.h`・`sys/types.h`)だけ。
+  `signal.h` はガードだけを直し、名前の不足(x86-64 152 / aarch64 177)は分類していない
+- 共有ガードの点検は x86-64 だけ。aarch64 は [`aarch64-cross-sysroot-include`](aarch64-cross-sysroot-include.md)(BI)が直るまで測れない
+- `fsid_t` は、glibc の `bits/types.h` がガード無しの構造体で定義するので足さなかった。同梱 `sys/statfs.h` の `__fsid_t` も、
+  `bits/types.h` を読む glibc ヘッダと並べると衝突するはず(未測定)
+
+見つかった別の課題は、それぞれ起票した: [`bundled-sys-types-ushort`](bundled-sys-types-ushort.md)(BN)、
+[`glibc-alloca-without-gnuc`](glibc-alloca-without-gnuc.md)(BO)、[`glibc-public-headers-mixed`](glibc-public-headers-mixed.md)(BP)。
+
 ## 決着
 
 (未着手)

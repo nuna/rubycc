@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-14
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-14
+branch: gap-fixes-wave-4
+pr: 151
+steps: [bundled-headers-coverage-audit-2]
 ---
 
 # 同梱 `signal.h` が `union sigval` を glibc のガード無しで定義する
@@ -54,6 +54,19 @@ AU を直したときの点検は、`pthread.h` の型だけを見ていた。
 
 `atomic-builtin-small-widths-1` を実装したエージェントが、iodine の残りの原因として報告した形を、最小再現で両方の順について確かめて起票した。
 
+### 2026-09-14(実装)
+
+[`bundled-headers-coverage-audit`](bundled-headers-coverage-audit.md) の突き合わせの表から、同梱ヘッダ側に足す形で直した(`bundled-headers-coverage-audit-2`)。
+修正前の同梱ヘッダでは rubycc だけが落ち、修正後は gcc と同じく通ることを測った。
+
 ## 決着
 
-(未着手)
+**解消した**(`bundled-headers-coverage-audit-2`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 上の 2 つの順が、どちらも `_GNU_SOURCE` のもとで通る | `test/test_bundled_headers_coverage.rb` で確認(x86-64。aarch64 は BI のため glibc 本体のヘッダと並べられない) |
+| `union sigval` の大きさと整列が両 arch で gcc と一致したまま | `test/test_header_abi.rb` |
+| 共有ガードを持つ型を数え、同じ形の抜けが残っていないことを確かめる | `siginfo_t` にも同じ穴があり、同じ形で直した。修正後、ガードが原因で落ちる同梱の型は無い(x86-64) |
+| gem がビルドできる | この PR の後に master で測り直して台帳に記録する |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

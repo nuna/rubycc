@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-13
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-14
+branch: gap-fixes-wave-4
+pr: 151
+steps: [bundled-headers-coverage-audit-2]
 ---
 
 # 同梱 `sys/ioctl.h` にモデム制御線の要求番号(`TIOCMGET` / `TIOCM_*`)が無い
@@ -53,6 +53,17 @@ rubycc は `<sys/ioctl.h>` を同梱の `include/libc/sys/ioctl.h`(36 行)に解
 
 buildable-gems-batch-4 で、rubycc だけが落ちて対照は通った 1 件。
 
+### 2026-09-14(実装)
+
+[`bundled-headers-coverage-audit`](bundled-headers-coverage-audit.md) の突き合わせの表から、同梱ヘッダ側に足す形で直した(`bundled-headers-coverage-audit-2`)。
+修正前の同梱ヘッダでは rubycc だけが落ち、修正後は gcc と同じく通ることを測った。
+
 ## 決着
 
-(未着手)
+**解消した**(`bundled-headers-coverage-audit-2`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 最小再現が通る | `TIOCMGET` / `TIOCM_DTR` などが gcc と同じく通る。`test/test_bundled_headers_coverage.rb` と `test/test_header_abi.rb` で確認(x86-64 / aarch64) |
+| gem がビルドできる | この PR の後に master で測り直して台帳に記録する |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

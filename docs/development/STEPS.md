@@ -16483,3 +16483,125 @@ GAPS §2 の負債(`issues/bundled-headers-coverage-audit.md`)。同梱ヘッダ
 - 混在の調査で rubycc だけが落ちる glibc ヘッダは、-2 の後に `issues/glibc-public-headers-mixed.md`(GAPS BP)に起票した
 - 分類(足す / 意図して外す)はこのステップでは 1 本も済ませていない。-2 の後に残る分は
   `issues/bundled-headers-coverage-audit.md` の作業ログに書いた
+
+## bundled-headers-coverage-audit-2 — 監査表から同梱ヘッダの 8 件の穴を塞ぐ(AF・AM・AQ・AR・BA・BB・BG・BL)
+
+-1 の表(`docs/development/BUNDLED-HEADERS-COVERAGE.md`)から、GAPS の AF・AM・AQ・AR・BA・BB・BG と、
+作業中に追加された BL(`issues/bundled-signal-sigval-guard.md`)を塞いだ。触った同梱ヘッダは
+`stdlib.h`・`sched.h`・`termios.h`・`sys/ioctl.h`・`sys/types.h`(両 arch)・`signal.h`。
+前の 5 本は、glibc の同名ヘッダとの差の**全項目**を「足す / 意図して外す(理由)」に分け、
+外すものを各ヘッダの冒頭コメントに `omitted: 名前 ... -- 理由` の形で書いた(`signal.h` はガードだけを直し、名前の分類はしていない)。
+
+### 原因
+
+どれも同梱ヘッダを「コーパスのサンプルが届いた範囲」に絞った結果で、形は 3 つに分かれる。
+
+- **名前が無い**(AF・AR・BG・BA・BB): `stdlib.h` に `getloadavg`(glibc は `__USE_MISC`)・`qsort_r`(`__USE_GNU`)が無く、
+  glibc が `__USE_MISC` で含める `<alloca.h>` を含めていなかった。`termios.h` に `tcflow` と `TCO*`/`TCI*` が無く、
+  `sys/ioctl.h` に `TIOCM*` が無かった。
+- **glibc 本体のヘッダが同梱ヘッダの隣で要る名前が無い**(AM・AQ): glibc の `<spawn.h>` は `<sched.h>` の
+  `struct sched_param` をメンバに持ち、`<net/if.h>` は `<sys/types.h>` の内部名 `__caddr_t` を使う。
+  -1 の混在の調査で、同じ形が `__pid_t`(`sys/procfs.h`)・`__daddr_t`(`sys/mtio.h`)・`__uint64_t`(`sys/quota.h`)・
+  `__off64_t`(`sys/sendfile.h`)・`int32_t`(`utmp.h`・`lastlog.h`・`protocols/rwhod.h`)にもあると分かった。
+- **glibc と共有するガードを立てない**(BL、AU と同じ形): glibc の `<netdb.h>` は `_GNU_SOURCE` のもとで
+  `struct sigevent` のファイルを読み、そこが `union sigval` を glibc 自身の `<signal.h>` と共有するガードの下で定義する。
+  同梱 `signal.h` の `union sigval` はガードなしだったので、`<signal.h>` と `<netdb.h>` を `_GNU_SOURCE` で並べると
+  **どちらの順でも** `redefinition of 'union sigval'` になった(2026-09-14、修正前の同梱ヘッダを 0ced183 から取り出して再測定。
+  gcc は両順とも通す)。
+
+### 対処
+
+値・大きさは全てリファレンスコンパイラに印字させて測ってから書いた(glibc のヘッダ本文は写していない。R11、
+`docs/reference/HEADER-LICENSING.md` §6)。宣言の形は、glibc のヘッダを含めた後に同梱側の宣言を並べて gcc と
+`aarch64-linux-gnu-gcc` の `-fsyntax-only` に通し、衝突する再宣言が 1 件も無いことで確かめた(2026-09-14、両 arch)。
+
+- **`stdlib.h`**(AF・AR・BG): `getloadavg`・`<alloca.h>` の取り込み・`mkstemps`・`mkdtemp`・`rand_r`・
+  `initstate`/`setstate`・48 ビット乱数(`drand48` ほか 9 個)・疑似端末(`posix_openpt`/`grantpt`/`unlockpt`/`ptsname`)を
+  無条件に、`qsort_r`・`mkostemp`・`mkostemps`・`secure_getenv`・`canonicalize_file_name`・`ptsname_r` を `__USE_GNU` の下に置いた。
+  **見え方の規則**: gcc の既定(`_DEFAULT_SOURCE`)で glibc が見せる名前は、このヘッダの従来どおり無条件。`_GNU_SOURCE` でだけ
+  見せる名前は `__USE_GNU` の下に置く。`_GNU_SOURCE` なしで自前の `qsort_r`(BSD 順の互換 shim が珍しくない)を定義する
+  プログラムと衝突させないためで、そのために `<features.h>` を含めるようにした。外したもの(待ち状態マクロ、`<sys/types.h>` の
+  取り込み、`*_r` 系の再入可能乱数、`ecvt` 系、`arc4random*`(glibc 2.36 以降にしかない)、`locale_t`/`*_l`、`_FloatN` の
+  `strfrom*`/`strtof128*` 系、LFS64 別名など)は理由と共に冒頭コメントにある。
+- **`sched.h`**(AM): `struct sched_param`(4 バイト、`sched_priority` は 0)、`SCHED_OTHER`/`FIFO`/`RR` と
+  `__USE_GNU` の下の `SCHED_BATCH`〜`SCHED_RESET_ON_FORK`、POSIX のスケジューリング方針の 7 関数と `__USE_GNU` の
+  `sched_setaffinity`/`getaffinity`、それらが使う `pid_t`/`time_t`/`struct timespec`(`time.h` などと共有のガード)。
+  外したもの: `CPU_*`(glibc 内部のビット配置を再現することになる)、`clone` 系と `CLONE_*`。
+- **`sys/types.h`**(AQ、両 arch): glibc の `<sys/types.h>` が見せるスカラーの内部名 `__*_t` 60 個、`int8_t`〜`int64_t`、
+  `quad_t`/`u_quad_t`。**aarch64 は `__nlink_t`・`__blksize_t` が 32 ビット**で x86-64 と違う(実測)。どれもスカラーか
+  ポインタの typedef なので、glibc のヘッダが後から `bits/types.h` で同じものを定義しても互換な再定義(C11 6.7p3)で通る。
+  **`fsid_t` は外した**: 一度 `__fsid_t`(構造体)を足したところ、glibc の `bits/types.h` がガードなしで別の構造体として
+  定義しているため、`<aio.h>`・`<mqueue.h>`・`<semaphore.h>`・`<sys/acct.h>`・`<sys/sem.h>`・`<net/if_ppp.h>` の 6 本が
+  混在の調査で新たに落ちた(2026-09-14 実測)。構造体の typedef は互換な再定義にならないので、足さないことにした。
+- **`termios.h`**(BA): `tcflow`・`tcgetsid`・`cfsetspeed`、`TCOOFF`/`TCOON`/`TCIOFF`/`TCION`(0〜3)、`B57600`〜`B4000000`、
+  `CBAUD`・`CBAUDEX`・`CIBAUD`・`CMSPAR`・`CRTSCTS`・`ADDRB`、`ECHOCTL` ほかの `c_lflag` 拡張、出力遅延ビット、`IUCLC`/`OLCUC`、
+  `tcgetsid` 用の `pid_t`。追加した 58 個の値は両 arch で全て一致したので共通層のまま。serialport が使う名前
+  (`B921600`・`CRTSCTS`・`CMSPAR` など)も含む。外したもの: `CCEQ`、`TIOCSER_TEMT`(`sys/ioctl.h` 側に置いた)、
+  `<sys/ttydefaults.h>` の取り込み。Step 124 のコメントが外していた `tcgetsid`/`cfsetspeed` もここで足した。
+- **`sys/ioctl.h`**(BB): issue の「次の一歩」どおり、**aarch64 の要求番号を先に測った**。追加候補 165 個の値を gcc と
+  `aarch64-linux-gnu-gcc`(qemu 実行)に印字させ、**全件一致**した(両方ともカーネルの汎用の番号付けを使う)ので共通層に置いた。
+  `TIOCM*` 要求と `TIOCM_*` ビット、残りの端末要求、`FIO*`、`N_*`、`SIOC*` を、測った数値のまま(`_IOR` 等の符号化ではなく)書いた。
+  `SIOC*` を足したのは、network_interface の extconf が `have_macro` で `SIOCGIFHWADDR` などを調べるためで、欠けていると
+  エラーにならずに**gcc のビルドより機能の少ない gem ができる**。外したもの: `struct termio`/`NCC`、`IOC_*` の符号化補助、
+  glibc 自身も不完全型のままにしている構造体の大きさを埋め込む `TCGETS2` 系と `TIOC[GS]ISO7816`、`<sys/ttydefaults.h>`。
+- **`signal.h`**(BL): `union sigval` を glibc と共有するガード `____sigval_t_defined` の下に置き、同じガードが覆う
+  `__sigval_t` も定義した(ガードの名前と綴りは両 arch の `gcc -E -dD` で読んだ。`bundled-pthread-attr-guard-1` と同じ扱い)。
+  BL を直した後で -1 のガード probe(実在の glibc ヘッダとの組、honoured も測る)を回し直したところ、
+  もう 1 件 `__siginfo_t_defined` で本物の衝突が出た: `<signal.h>` と glibc の `<sys/pidfd.h>`(`bits/types/siginfo_t.h` を読む)は、
+  両側の `si_pid` などのメンバマクロが相手の構造体を書き換えて**両順とも** `expected ';'` になる(BL の修正後に測定。修正前は
+  `union sigval` の再定義で先に落ちていた)。`siginfo_t` と `si_*` マクロを同じガードの下に入れた。
+  ガードを立てると glibc 側はそのファイルを丸ごと読み飛ばすので、**そのファイルが推移的に持ち込んでいたもの**も消える。
+  実際に `<signal.h>` → `<sys/pidfd.h>` の順で、まず `__pid_t`(`sys/pidfd.h:31` の `expected ')'`)、次に `__THROW`(同じ行の
+  `expected ';'`)が足りなくなった。そこで `signal.h` に `__pid_t`/`__uid_t`/`__clock_t`(glibc と同じスカラー型なので互換な再定義)を置き、
+  glibc の `<signal.h>` と同じく `<features.h>` を含めるようにした(`<sys/cdefs.h>` が来る)。どちらも ABI の値は動かしていない。
+
+由来台帳(`docs/reference/HEADER-LICENSING.md` §3.2 / §3.3)の `stdlib.h`・`sched.h`・`termios.h`・`sys/ioctl.h`・
+`sys/types.h`(両 arch)の行に追加分を書き足した。ファイル数は動いていないので §3.4 の集計(81 本)は変わらない。
+`signal.h` は ABI の値を 1 つも動かしていないので、`bundled-pthread-attr-guard-1` と同じ判断で台帳の行は変えていない。
+
+### 測定結果(2026-09-14、このホスト WSL2 / gcc 13.3 / glibc 2.39、aarch64 はクロス gcc 13 / glibc 2.39)
+
+- 8 件の最小再現(issue の本文どおり、`-D_GNU_SOURCE`)と BL の 2 順、`<sys/pidfd.h>` の 2 順、`#include <spawn.h>` だけの単位:
+  **修正前は全て rubycc だけが落ち、修正後は全て gcc と同じく通る**(12 本)。
+- 監査表の触った 5 本(両 arch とも同じ): `stdlib.h` 不足 108 → 83・未記載 0、`sched.h` 73 → 52・未記載 0、`termios.h` 64 → 2・未記載 0、
+  `sys/ioctl.h` 172 → 13・未記載 0、`sys/types.h` 21 → 15・未記載 0(`fsid_t` を外した分 1 件増えている)。
+- 混在の調査(同梱しない glibc の公開ヘッダ 186 本): rubycc だけが落ちるものが **37 → 23 本**。
+  通るようになったのは `spawn.h`・`net/if.h`・`net/if_ppp.h`・`net/if_shaper.h`・`sys/procfs.h`・`proc_service.h`・`sys/mtio.h`・
+  `sys/quota.h`・`sys/sendfile.h`・`sys/fsuid.h`・`utmp.h`・`lastlog.h`・`protocols/rwhod.h`・`nss.h` の 14 本で、新たに落ちたものは無い。
+- 共有ガード: 実在の glibc ヘッダとの組で落ちるものは、`__rusage_defined`(同梱しない glibc ヘッダでこのファイルを読むものが無く、
+  直接含めたときだけ衝突する)と、`<time.h>` と `<thread_db.h>` の組(`thread_db.h:281` で両順とも落ちるが、`thread_db.h` は
+  単独でも同じ行で落ちるので、ガードの穴ではない)だけになった。**同梱ヘッダの型で、実在の glibc ヘッダと並べて BL と同じ形で落ちるものは残っていない**
+  (x86-64。aarch64 は GAPS BI のため rubycc で glibc 本体のヘッダを読めず、未測定)。
+
+### テスト
+
+- `test/test_header_abi.rb`: `SCHED`(`struct sched_param`・`SCHED_*`・新しい関数の呼び出し)、`TERMIOS`(追加した 58 個の値と
+  `tcflow`/`tcgetsid`/`cfsetspeed` の呼び出し)、`IOCTL`(165 個の値)、`SYS_TYPES`(glibc の内部名 60 個の大きさ・整列・符号と
+  `__caddr_t`・`int8_t`〜`int64_t`・`quad_t`)、`SIGNAL`(`union sigval` の大きさ・整列)を拡張し、両 arch のクラスで走らせた。
+  `STDLIB_GNU`(新規、両 arch): `qsort_r` を文脈ポインタ付きで実際に並べ、`alloca` の領域に書いて読む。
+  x86-64 だけのもの: `NET_IF`(AQ の再現そのもの。同梱 `sys/types.h` の上の glibc `<net/if.h>` で `struct ifreq` の大きさとオフセット)、
+  `SIGVAL_NETDB_FORWARD`/`REVERSE`(BL の両順。`struct sigevent`・`union sigval`・`__sigval_t` の大きさとオフセット)。
+- `test/test_bundled_headers_coverage.rb`(新規): 触った 5 本が両 arch で「未記載 0」であること、7 件の名前が不足に無いこと、
+  同梱しない glibc ヘッダ 10 本(`spawn.h`・`net/if.h`・`utmp.h`・`sys/procfs.h` と、`__fsid_t` を足したときに落ちた 6 本)が
+  rubycc で通ること、`<signal.h>` と `<netdb.h>`・`<sys/pidfd.h>` を両順で並べて通ること。
+- 修正前の対照: 0ced183 の `lib/` と `include/` を `git archive` で作業場所の外に取り出し、BL と pidfd の 4 本が修正前は
+  `redefinition of 'union sigval'` で落ちることを測った。7 件の再現も修正前は issue の本文どおりのエラーで落ちる(2026-09-14)。
+- 実行結果(2026-09-14、いずれも 0 failures / 0 errors): `test_bundled_headers_coverage.rb` 8 runs / 48 assertions、
+  `test_audit_bundled_headers.rb` 4 runs / 17 assertions、`test_header_abi.rb` 130 runs / 385 assertions / 0 skips、
+  `test_doc_links.rb` 3 runs、`test_examples.rb` 64 runs、`test_examples_aarch64.rb` 572 runs / 26 skips(既存)、
+  `test_c_suite.rb` 223 runs / 13 skips(既存)、`test_c_suite_aarch64.rb` 444 runs / 26 skips(既存)。
+
+### 残された観点(このステップでは直していない)
+
+見つかったものは、それぞれ issue にした:
+
+- **glibc 本体の `<alloca.h>` を読む経路で `alloca` がリンクできない**(`__GNUC__` を定義しないため)。
+  `issues/glibc-alloca-without-gnuc.md`(GAPS BO)。例からは `alloca` を外し、同梱ヘッダの経路は `STDLIB_GNU` で確かめている
+- **同梱 `sys/types.h` の `ushort` が `unsigned char`**(glibc は `unsigned short`)。`<stdlib.h>` から `<sys/types.h>` を
+  取り込まなかった理由の 1 つでもある。`issues/bundled-sys-types-ushort.md`(GAPS BN)
+- **混在の調査で残る 23 本**。`issues/glibc-public-headers-mixed.md`(GAPS BP)
+- **分類していない同梱ヘッダ(54 本のうち 49 本と `signal.h` の名前の不足)、aarch64 の共有ガードの点検、`fsid_t` / 同梱
+  `sys/statfs.h` の `__fsid_t`**(glibc の `bits/types.h` がガード無しの構造体で定義する)。親の
+  `issues/bundled-headers-coverage-audit.md` に残した
+
+vmstat などの gem としてのビルドとロードは、この PR の後に台帳の測り直しで扱う。

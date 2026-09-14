@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-14
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-14
+branch: gap-fixes-wave-4
+pr: 151
+steps: [bundled-headers-coverage-audit-2]
 ---
 
 # 同梱 `stdlib.h` が `alloca` を宣言しない(glibc は `__USE_MISC` で `<alloca.h>` を含む)
@@ -50,6 +50,17 @@ rubycc の同梱 `include/libc/stdlib.h` にはその枝が無い。Ruby の拡�
 
 2 回目の修正(#148)の後に、止まっていた gem を測り直して見つけた。
 
+### 2026-09-14(実装)
+
+[`bundled-headers-coverage-audit`](bundled-headers-coverage-audit.md) の突き合わせの表から、同梱ヘッダ側に足す形で直した(`bundled-headers-coverage-audit-2`)。
+修正前の同梱ヘッダでは rubycc だけが落ち、修正後は gcc と同じく通ることを測った。
+
 ## 決着
 
-(未着手)
+**解消した**(`bundled-headers-coverage-audit-2`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 最小再現が通る | `<stdlib.h>` だけで呼ぶ `alloca`が gcc と同じく通る。`test/test_bundled_headers_coverage.rb` と `test/test_header_abi.rb` で確認(x86-64 / aarch64) |
+| gem がビルドできる | この PR の後に master で測り直して台帳に記録する |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

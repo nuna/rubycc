@@ -23,11 +23,24 @@
    cfsetispeed/cfgetospeed/cfsetospeed/tcdrain/tcsendbreak are declared as
    the POSIX-mandated companions of tcgetattr/tcsetattr even though no corpus
    sample calls them, the same completeness precedent pwd.h/grp.h set for
-   their reentrant *_r siblings. Not included: tcflow/tcgetsid/cfsetspeed and
-   the termio.h/sgtty.h fallback paths (BSD/pre-POSIX ioctl-based terminal
-   control that HAVE_TERMIOS_H skips on Linux), and the NLDLY/CRDLY/TABDLY/
-   BSDLY/VTDLY/FFDLY output-delay bits (line-printer timing, not used to
-   build raw mode). cfmakeraw was missing from that Step 124 pass: the corpus
+   their reentrant *_r siblings. Step 124 left out tcflow/tcgetsid/
+   cfsetspeed, the output-delay bits and the baud rates above B38400;
+   bundled-headers-coverage-audit-2 added all of them (GAPS BA: ruby-termios
+   calls tcflow; serialport uses B57600..B4000000, CRTSCTS, CMSPAR, CBAUD and
+   the ECHOCTL/ECHOKE/ECHOPRT bits) together with the TCOOFF/TCOON/TCIOFF/
+   TCION tcflow actions and pid_t for tcgetsid. Every added value was printed
+   by the glibc oracle on x86-64 and aarch64 on 2026-09-14 and the two agree,
+   so this stays in the common layer (TERMIOS case). The termio.h/sgtty.h
+   fallback paths (BSD/pre-POSIX ioctl-based terminal control that
+   HAVE_TERMIOS_H skips on Linux) are not reproduced.
+   Coverage against glibc's <termios.h> under _GNU_SOURCE (audited
+   2026-09-14, tools/audit_bundled_headers.rb). Intentionally left out:
+   omitted: CCEQ -- a function-like comparison macro for c_cc slots; no
+   corpus user. omitted: TIOCSER_TEMT -- the serial-driver status bit glibc
+   also shows here; it belongs to TIOCSERGETLSR and the bundled
+   <sys/ioctl.h> provides it. omitted: <sys/ttydefaults.h> -- the TTYDEF_*
+   default terminal settings glibc pulls in; no corpus user.
+   cfmakeraw was missing from that Step 124 pass: the corpus
    census that drove it only looks at which headers a #include reaches, not
    which functions the reached header's caller actually calls, so a function
    io-console calls without pulling in any new header slipped past it.
@@ -42,6 +55,10 @@
 typedef unsigned char cc_t;
 typedef unsigned int speed_t;
 typedef unsigned int tcflag_t;
+#ifndef _RUBYCC_PID_T
+#define _RUBYCC_PID_T
+typedef int pid_t;
+#endif
 
 /* Size of c_cc (measured, both arches). */
 #define NCCS 32
@@ -92,6 +109,7 @@ struct termios {
 #define IXOFF   0010000
 #define IMAXBEL 0020000
 #define IUTF8   0040000
+#define IUCLC   0001000
 
 /* c_oflag bits. */
 #define OPOST  0000001
@@ -101,6 +119,32 @@ struct termios {
 #define ONLRET 0000040
 #define OFILL  0000100
 #define OFDEL  0000200
+#define OLCUC  0000002
+
+/* c_oflag output-delay fields and their settings (line-printer timing). */
+#define NLDLY  0000400
+#define NL0    0000000
+#define NL1    0000400
+#define CRDLY  0003000
+#define CR0    0000000
+#define CR1    0001000
+#define CR2    0002000
+#define CR3    0003000
+#define TABDLY 0014000
+#define TAB0   0000000
+#define TAB1   0004000
+#define TAB2   0010000
+#define TAB3   0014000
+#define XTABS  0014000
+#define BSDLY  0020000
+#define BS0    0000000
+#define BS1    0020000
+#define VTDLY  0040000
+#define VT0    0000000
+#define VT1    0040000
+#define FFDLY  0100000
+#define FF0    0000000
+#define FF1    0100000
 
 /* c_cflag bits. */
 #define CSIZE  0000060
@@ -114,6 +158,14 @@ struct termios {
 #define PARODD 0001000
 #define HUPCL  0002000
 #define CLOCAL 0004000
+/* Linux c_cflag extensions: the baud-rate field masks, and hardware flow
+   control / mark-space parity. */
+#define CBAUD   0010017
+#define CBAUDEX 0010000
+#define CIBAUD  002003600000
+#define CMSPAR  010000000000
+#define CRTSCTS 020000000000u
+#define ADDRB   004000000000
 
 /* c_lflag bits. */
 #define ISIG   0000001
@@ -129,6 +181,12 @@ struct termios {
    unconditionally, the same flat-surface choice sys/resource.h made for
    RUSAGE_THREAD). */
 #define XCASE  0000004
+#define ECHOCTL 0001000
+#define ECHOPRT 0002000
+#define ECHOKE  0004000
+#define FLUSHO  0010000
+#define PENDIN  0040000
+#define EXTPROC 0200000
 
 /* Baud rate selectors, for cfsetispeed/cfsetospeed (the traditional POSIX
    set; the GNU-extension rates above B38400, e.g. B57600/B115200, are not
@@ -149,6 +207,24 @@ struct termios {
 #define B9600  0000015
 #define B19200 0000016
 #define B38400 0000017
+#define EXTA   B19200
+#define EXTB   B38400
+/* The Linux extended rates (CBAUDEX set). */
+#define B57600   0010001
+#define B115200  0010002
+#define B230400  0010003
+#define B460800  0010004
+#define B500000  0010005
+#define B576000  0010006
+#define B921600  0010007
+#define B1000000 0010010
+#define B1152000 0010011
+#define B1500000 0010012
+#define B2000000 0010013
+#define B2500000 0010014
+#define B3000000 0010015
+#define B3500000 0010016
+#define B4000000 0010017
 
 /* tcsetattr's __optional_actions. */
 #define TCSANOW   0
@@ -160,7 +236,15 @@ struct termios {
 #define TCOFLUSH  1
 #define TCIOFLUSH 2
 
+/* tcflow's __action: suspend/restart output, send STOP/START. */
+#define TCOOFF 0
+#define TCOON  1
+#define TCIOFF 2
+#define TCION  3
+
 int tcgetattr(int __fd, struct termios *__termios_p);
+int tcflow(int __fd, int __action);
+pid_t tcgetsid(int __fd);
 int tcsetattr(int __fd, int __optional_actions, const struct termios *__termios_p);
 int tcflush(int __fd, int __queue_selector);
 int tcdrain(int __fd);
@@ -169,6 +253,8 @@ speed_t cfgetispeed(const struct termios *__termios_p);
 speed_t cfgetospeed(const struct termios *__termios_p);
 int cfsetispeed(struct termios *__termios_p, speed_t __speed);
 int cfsetospeed(struct termios *__termios_p, speed_t __speed);
+/* Sets both speeds at once (BSD; glibc shows it under __USE_MISC). */
+int cfsetspeed(struct termios *__termios_p, speed_t __speed);
 
 /* cfmakeraw is a BSD/GNU extension, not POSIX (POSIX only standardizes the
    getattr/setattr/cfset*speed calls above); glibc and the BSDs all provide it
