@@ -2,10 +2,61 @@
    Derived from musl's <unistd.h> declaration set; the few ABI-typed names
    (ssize_t, off_t, pid_t, ...) reuse the shared _RUBYCC_* guards and carry the
    LP64 widths. The STDIN_FILENO / *_OK values are the standard ones. Common
-   layer: the surface is declarations plus universal constants. */
+   layer: the surface is declarations plus universal constants.
+
+   Coverage against glibc's <unistd.h> under _GNU_SOURCE (audited 2026-09-15,
+   glibc 2.39, x86-64 and aarch64, with tools/audit_bundled_headers.rb; table
+   in docs/development/BUNDLED-HEADERS-COVERAGE.md). Visibility rule, the
+   same one bundled-headers-coverage-audit-2 set for stdlib.h/sched.h: a name
+   glibc shows in gcc's default mode (_DEFAULT_SOURCE and below) is declared
+   unconditionally, as this header always has; a name glibc shows only under
+   _GNU_SOURCE is declared under __USE_GNU too (hence the <features.h>
+   include added here). bundled-unistd-process-group-1 (GAPS BU) added the
+   process-group and session functions ruby-termios 1.1.0's tcgetpgrp needs
+   (getpgrp/setpgid/getpgid/setsid/getsid/tcgetpgrp/tcsetpgrp/setpgrp),
+   together with the rest of the plain POSIX/GNU declarations judged
+   plausible for a gem's C extension to call directly (getgroups,
+   getlogin/getlogin_r, fchdir, chroot, daemon, nice, sync, syncfs, lockf and
+   its F_LOCK/F_TEST/F_TLOCK/F_ULOCK commands, getentropy, dup3, pipe2,
+   environ, gettid) and the SEEK_DATA/SEEK_HOLE lseek() origins and the
+   TEMP_FAILURE_RETRY retry-on-EINTR macro. Every added prototype was
+   verified against glibc's own <unistd.h> by redeclaring it immediately
+   before `#include <unistd.h>` under gcc (a conflicting redeclaration is a
+   hard error) on both x86-64 and aarch64, and F_LOCK/F_ULOCK/F_TLOCK/F_TEST/
+   SEEK_DATA/SEEK_HOLE's values were measured with `gcc -E -dM` on both and
+   agree (0/1/2/3, 3/4). Intentionally left out:
+   omitted: execle fexecve execveat execvpe -- the exec family's variant
+   members, already covered by execv/execvp/execve/execl/execlp above, no
+   corpus user for the rest.
+   omitted: faccessat fchownat lchown linkat readlinkat symlinkat unlinkat --
+   the openat-relative filesystem calls, no corpus user.
+   omitted: setegid seteuid setregid setreuid setresgid setresuid getresgid
+   getresuid -- privilege-management calls: the corpus's privilege-drop code
+   goes through Ruby's Process::Sys, which the interpreter implements as a
+   direct syscall, not through a gem's C extension calling this header.
+   omitted: gethostid socklen_t swab -- rarely used, and socklen_t is already
+   declared by the bundled <sys/socket.h>.
+   omitted: L_INCR L_SET L_XTND -- superseded lseek() whence aliases,
+   SEEK_SET/SEEK_CUR/SEEK_END above are the ones every caller uses.
+   omitted: acct closefrom crypt endusershell getdomainname getdtablesize
+   getpass getusershell getwd profil revoke setdomainname sethostid
+   sethostname setlogin setusershell ttyslot ualarm vfork vhangup -- obsolete
+   or rarely used, no corpus user.
+   omitted: CLOSE_RANGE_CLOEXEC CLOSE_RANGE_UNSHARE close_range -- glibc 2.34
+   and later only, declaring them would promise a symbol an older host glibc
+   does not have (the same reasoning stdlib.h's arc4random* omission uses).
+   omitted: copy_file_range eaccess euidaccess get_current_dir_name
+   group_member -- no corpus user.
+   omitted: ftruncate64 lockf64 lseek64 off64_t pread64 pwrite64 truncate64
+   -- LFS64 aliases, identical to the unsuffixed calls on an LP64 target, no
+   corpus user.
+   omitted: <stddef.h> -- only size_t is needed, and it is declared here
+   directly. */
 
 #ifndef _RUBYCC_UNISTD_H
 #define _RUBYCC_UNISTD_H
+
+#include <features.h>
 
 #ifndef NULL
 #define NULL ((void*)0)
@@ -53,6 +104,13 @@ typedef long intptr_t;
 #define W_OK 2
 #define R_OK 4
 
+/* lockf() commands (GAPS BU), measured with `gcc -E -dM <unistd.h>` under
+   _GNU_SOURCE on both x86-64 and aarch64 (0/1/2/3, agreeing). */
+#define F_ULOCK 0
+#define F_LOCK  1
+#define F_TLOCK 2
+#define F_TEST  3
+
 /* POSIX option macro: the monotonic clock option is supported, and the two C
    libraries say so with different strengths. glibc's value is 0, meaning
    support must still be confirmed at runtime via
@@ -77,6 +135,14 @@ typedef long intptr_t;
 #define SEEK_CUR 1
 #define SEEK_END 2
 #endif
+#ifdef __USE_GNU
+/* Sparse-file lseek() origins (GAPS BU): seek to the next byte containing
+   data, or the next hole, at or after the given offset. Values measured with
+   `gcc -E -dM <unistd.h>` under _GNU_SOURCE on both x86-64 and aarch64
+   (3/4, agreeing). */
+#define SEEK_DATA 3
+#define SEEK_HOLE 4
+#endif
 
 int     access(const char *__name, int __type);
 int     close(int __fd);
@@ -87,19 +153,41 @@ ssize_t pread(int __fd, void *__buf, size_t __nbytes, off_t __offset);
 ssize_t pwrite(int __fd, const void *__buf, size_t __n, off_t __offset);
 off_t   lseek(int __fd, off_t __offset, int __whence);
 int     pipe(int __pipedes[2]);
+#ifdef __USE_GNU
+/* pipe() with O_CLOEXEC/O_NONBLOCK set atomically (GAPS BU); event-loop
+   gems use it to avoid a fork() racing a plain fcntl(F_SETFD, FD_CLOEXEC). */
+int     pipe2(int __pipedes[2], int __flags);
+#endif
 int     dup(int __fd);
 int     dup2(int __fd, int __fd2);
+#ifdef __USE_GNU
+/* dup2() with O_CLOEXEC set atomically on the new descriptor (GAPS BU). */
+int     dup3(int __fd, int __fd2, int __flags);
+#endif
 int     unlink(const char *__name);
 int     rmdir(const char *__path);
 int     chdir(const char *__path);
+/* fchdir()/chroot() (GAPS BU): the fd-relative and root-relative companions
+   of chdir(), for callers that already hold an open directory descriptor or
+   that sandbox themselves into a subtree. */
+int     fchdir(int __fd);
+int     chroot(const char *__path);
 char   *getcwd(char *__buf, size_t __size);
 int     fsync(int __fd);
 /* Linux exposes fdatasync() from <unistd.h>; bootsnap probes it and then calls
    it when flushing its cache. Keep the declaration in the bundled surface so
    the probe and the extension compile against the same measured ABI. */
 int     fdatasync(int __fd);
+void    sync(void);
+#ifdef __USE_GNU
+/* sync(), narrowed to the filesystem __fd lives on (GAPS BU). */
+int     syncfs(int __fd);
+#endif
 int     ftruncate(int __fd, off_t __length);
 int     truncate(const char *__file, off_t __length);
+/* Advisory record locking over a byte range of __fd (GAPS BU), the POSIX
+   companion of the F_LOCK/F_TLOCK/F_ULOCK/F_TEST commands above. */
+int     lockf(int __fd, int __cmd, off_t __len);
 int     isatty(int __fd);
 char   *ttyname(int __fd);
 /* ttyname's POSIX reentrant pair: the caller supplies the buffer instead of
@@ -112,10 +200,33 @@ int     chown(const char *__file, uid_t __owner, gid_t __group);
 int     fchown(int __fd, uid_t __owner, gid_t __group);
 int     gethostname(char *__name, size_t __len);
 int     getpagesize(void);
+/* Fills __buffer with __length bytes straight from the kernel's entropy pool
+   (GAPS BU); the sysrandom gem wraps this call directly. */
+int     getentropy(void *__buffer, size_t __length);
 
 pid_t   fork(void);
 pid_t   getpid(void);
 pid_t   getppid(void);
+#ifdef __USE_GNU
+/* The calling thread's kernel id, distinct from getpid()'s process id
+   (GAPS BU); logging libraries tag messages with it. */
+pid_t   gettid(void);
+#endif
+/* Process-group and session functions (GAPS BU): tcgetpgrp/tcsetpgrp query
+   and set a terminal's foreground process group, and the rest manage a
+   process's own group and session membership. ruby-termios 1.1.0's
+   termios.c calls tcgetpgrp() right after the tcflow() bundled-headers-
+   coverage-audit-2 (GAPS BA) added. */
+pid_t   getpgrp(void);
+int     setpgid(pid_t __pid, pid_t __pgid);
+pid_t   getpgid(pid_t __pid);
+pid_t   setsid(void);
+pid_t   getsid(pid_t __pid);
+/* The obsolete X/Open zero-argument spelling of setpgid(getpid(), 0), kept
+   for callers that still use it. */
+int     setpgrp(void);
+pid_t   tcgetpgrp(int __fd);
+int     tcsetpgrp(int __fd, pid_t __pgrp);
 /* GNU's raw system-call escape hatch; libev's io_uring backend uses it when
    the libc wrapper is not available. */
 long    syscall(long __number, ...);
@@ -125,11 +236,23 @@ gid_t   getgid(void);
 gid_t   getegid(void);
 int     setuid(uid_t __uid);
 int     setgid(gid_t __gid);
+/* Fills __list with up to __size of the calling process's supplementary
+   group ids (GAPS BU). */
+int     getgroups(int __size, gid_t __list[]);
+/* The login name associated with the calling process's controlling terminal
+   (GAPS BU), and its POSIX reentrant pair. */
+char   *getlogin(void);
+int     getlogin_r(char *__name, size_t __size);
 
 unsigned int alarm(unsigned int __seconds);
 unsigned int sleep(unsigned int __seconds);
 int     usleep(useconds_t __useconds);
 int     pause(void);
+/* Adjusts the calling process's nice value by __inc (GAPS BU). */
+int     nice(int __inc);
+/* Forks into a detached background process (GAPS BU); server gems call it
+   to daemonize instead of hand-rolling the fork/setsid/chdir dance. */
+int     daemon(int __nochdir, int __noclose);
 
 int     execv(const char *__path, char *const __argv[]);
 int     execvp(const char *__file, char *const __argv[]);
@@ -190,5 +313,27 @@ int     brk(void *__addr);
 extern char *optarg;
 extern int optind, opterr, optopt;
 int getopt(int __argc, char *const __argv[], const char *__optstring);
+
+#ifdef __USE_GNU
+/* The process's environment, as a NULL-terminated array of "NAME=value"
+   strings (GAPS BU); code that walks or replaces the environment wholesale
+   reads this instead of going through getenv()/setenv() one name at a time. */
+extern char **environ;
+
+/* Retries __expression while it evaluates to -1 with errno set to EINTR
+   (GAPS BU), the standard guard around a blocking syscall that a signal can
+   interrupt. Clean-room rewrite of the well-known GNU macro's behavior --
+   it does not copy glibc's text, only its documented effect -- as a
+   statement expression so it can be used as an ordinary function-call
+   operand. Requires <errno.h> to be included at the call site, exactly as
+   glibc's own version does. */
+#define TEMP_FAILURE_RETRY(expression) \
+  (__extension__ \
+    ({ long int __rubycc_tfr_result; \
+       do { \
+         __rubycc_tfr_result = (long int) (expression); \
+       } while (__rubycc_tfr_result == -1L && errno == EINTR); \
+       __rubycc_tfr_result; }))
+#endif
 
 #endif /* _RUBYCC_UNISTD_H */

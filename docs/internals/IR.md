@@ -57,8 +57,8 @@ IR::Program
 | `name` | シンボル名(String) |
 | `insts` | 命令のフラットな配列 |
 | `vreg_count` | 使用 vreg 数(バックエンドのフレームサイズ計算用) |
-| `param_count` | **ABI スロット数**(パラメータ数ではない)。スカラパラメータは 1 スロット、struct パラメータは規約が切り分ける**ピース数**(System V は eightbyte ごと、AAPCS64 の HFA はメンバごと、参照渡しはポインタ 1 つ)、レジスタ返しできない戻り値の関数は隠れ結果ポインタが先頭に 1 スロット加わる。**スロットは vreg 0..param_count-1 を占める**規約で、バックエンドが着信引数レジスタ / スタック引数をこのスロットへ写す。struct パラメータのスロットからの再組み立て(stack object への :store)はジェネレータがプロローグ IR で行う |
-| `param_kinds` | 長さ param_count の配列。各 ABI スロットの**着信位置**(`:gp` 整数レジスタ、`:sse4`/`:sse8` ベクタレジスタ、`:mem` スタック)を宣言順に持つ。配置はジェネレータが呼び出し側と同じシミュレーションで確定済みで、バックエンドはこの指定に従うだけ(超過時は契約違反として raise)。**分類はターゲット依存**(`IR::CallConvention`): 整数引数レジスタ数は System V AMD64 が 6、AAPCS64 が 8 であり、さらに**集約の切り分け方自体が異なる** — `struct { float a, b; }` は System V では 1 個の `:sse8` スロット(xmm0)、AAPCS64 では HFA として 2 個の `:sse4` スロット(s0/s1)になる。一部の規約にしかない機構を名指すタグが 1 種ある — `:indirect_result` は専用レジスタ(AAPCS64 の x8)で渡す隠れ結果ポインタ。参照渡しされる集約に専用タグは不要で、ジェネレータが呼び出し側のコピーへの通常の `:gp` ポインタに落とす。**16 バイト整列集約(`__int128` や `_Alignas(16)`)には整列 pad スロットが 2 種入りうる** — `:pad` は整数レジスタ 1 本(AAPCS64 の偶数レジスタペア規則で 1 本を空ける)、`:pad_stack` はスタック 1 eightbyte(両規約でスタック溢れ時に 16 バイト境界へ詰める)。いずれも値を運ばず、バックエンドは該当カウンタを進めるだけ(スロットは書かれない)。ジェネレータが placer の報告(`pad_gp`/`pad_stack`)から集約ピースの直前に前置する |
+| `param_count` | **ABI スロット数**(パラメータ数ではない)。スカラパラメータは 1 スロット、struct パラメータは規約が切り分ける**ピース数**(System V は eightbyte ごと — 詰め物だけの eightbyte は NO_CLASS でピースを持たない —、AAPCS64 の HFA はメンバごと、参照渡しはポインタ 1 つ)、レジスタ返しできない戻り値の関数は隠れ結果ポインタが先頭に 1 スロット加わる。**スロットは vreg 0..param_count-1 を占める**規約で、バックエンドが着信引数レジスタ / スタック引数をこのスロットへ写す。struct パラメータのスロットからの再組み立て(stack object への :store)はジェネレータがプロローグ IR で行う |
+| `param_kinds` | 長さ param_count の配列。各 ABI スロットの**着信位置**(`:gp` 整数レジスタ、`:sse4`/`:sse8` ベクタレジスタ、`:mem` スタック)を宣言順に持つ。配置はジェネレータが呼び出し側と同じシミュレーションで確定済みで、バックエンドはこの指定に従うだけ(超過時は契約違反として raise)。**分類はターゲット依存**(`IR::CallConvention`): 整数引数レジスタ数は System V AMD64 が 6、AAPCS64 が 8 であり、さらに**集約の切り分け方自体が異なる** — `struct { float a, b; }` は System V では 1 個の `:sse8` スロット(xmm0)、AAPCS64 では HFA として 2 個の `:sse4` スロット(s0/s1)になる。一部の規約にしかない機構を名指すタグが 1 種ある — `:indirect_result` は専用レジスタ(AAPCS64 の x8)で渡す隠れ結果ポインタ。参照渡しされる集約に専用タグは不要で、ジェネレータが呼び出し側のコピーへの通常の `:gp` ポインタに落とす。**16 バイト整列集約(`__int128` や `_Alignas(16)`)には整列 pad スロットが 2 種入りうる** — `:pad` は整数レジスタ 1 本(AAPCS64 の偶数レジスタペア規則で 1 本を空ける)、`:pad_stack` はスタック 1 eightbyte(両規約でスタック溢れ時に 16 バイト境界へ詰める。System V の 32/64 バイト整列集約はスタック引数領域でも自身の整列境界から始まるので、境界に届くまで `:pad_stack` が最大 7 個続く)。いずれも値を運ばず、バックエンドは該当カウンタを進めるだけ(スロットは書かれない)。ジェネレータが placer の報告(`pad_gp`/`pad_stack`)から集約ピースの直前に前置する |
 | `stack_objects` | オブジェクト id で索引する配列。各要素は集約オブジェクト(配列・struct)のバイトサイズ。バックエンドは vreg スロットの下に配置し :object_addr を解決する |
 | `linkage` | `:external`(通常)/ `:internal`(`static`。STB_LOCAL で発行) |
 | `variadic` | `...` 付き定義なら true。バックエンドがレジスタ退避領域つきプロローグを出す |
@@ -147,7 +147,7 @@ Instruction(op, dst:, a:, b:, size:)
 | :const | 8 = 64 bit 即値ロード(long/ポインタ定数)。それ以外は 32 bit 即値 |
 | 浮動小数点演算(:fadd 系・:f 比較) | 浮動小数点オペランド幅(4 = float / 8 = double) |
 | :itof / :ftoi / :ftof | :itof は変換**先**の浮動小数点幅、:ftoi / :ftof は変換**元**の幅(§5) |
-| :call / :call_indirect | nil、または **[fixed, ret] ペア**(どちらかが非 nil のとき)。fixed = 可変長 callee の固定パラメータ数(非可変長は nil)で、x86-64 のバックエンドは call 直前に al = 使用 xmm 数を出し、AArch64 はこの値を使わない。ret = 戻り値が float/double なら :sse4/:sse8、レジスタ返しの struct なら **[buffer_vreg, pieces]**(pieces は `IR::AbiPiece` の配列で各ピースの offset / size / kind を持ち、戻りレジスタから散布)、それ以外は nil(ターゲットの整数戻りレジスタ) |
+| :call / :call_indirect | nil、または **[fixed, ret] ペア**(どちらかが非 nil のとき)、またはスタック引数領域の開始境界が ABI の 16 を超えるときだけ **[fixed, ret, area_alignment]**(area_alignment は 32 / 64。System V で 32/64 バイト整列の MEMORY 集約がスタックに載る呼び出し。x86-64 のバックエンドは push の前に rsp をその境界へ切り下げ、call 後に元の rsp へ戻す。callee の va_arg がオフセットではなく overflow_arg_area のアドレス自体を切り上げるため、領域の絶対アドレスを揃える必要がある)。fixed = 可変長 callee の固定パラメータ数(非可変長は nil)で、x86-64 のバックエンドは call 直前に al = 使用 xmm 数を出し、AArch64 はこの値を使わない。ret = 戻り値が float/double なら :sse4/:sse8、レジスタ返しの struct なら **[buffer_vreg, pieces]**(pieces は `IR::AbiPiece` の配列で各ピースの offset / size / kind を持ち、戻りレジスタから散布)、それ以外は nil(ターゲットの整数戻りレジスタ) |
 | :ret | nil = 整数/ポインタ戻り値(x86-64 は rax、AArch64 は x0)。4/8 = 浮動小数点戻り値(x86-64 は xmm0、AArch64 は v0)。**AbiPiece 配列** = レジスタ返しの struct(a の指すバッファから各ピースを自身の offset・幅で戻りレジスタへ収集) |
 | :memcpy | コピーするバイト数(struct 全体代入) |
 
@@ -227,7 +227,7 @@ Instruction(op, dst:, a:, b:, size:)
 
 | 命令 | 形 | 意味 |
 |---|---|---|
-| :call | dst ← f(args)。a = callee 名(String)、b = **[vreg, kind] ペアの配列**(左から右。kind は :gp / :sse4 / :sse8 / :mem、および §2 param_kinds の :indirect_result / :pad / :pad_stack。:pad / :pad_stack は 16 バイト整列集約の整列 pad で vreg は nil) | kind は**ジェネレータがターゲットの CallConvention で配置シミュレーションを行い確定済みの着信位置**(以下は x86_64 の場合): :gp は edi..r9d の次の空き、:sse4/:sse8 は xmm0..7 の次の空き(movss/movsd でロード)、:mem は 8 バイトスロット内容のまま逆順 push のスタック渡し(:mem 同士は左→右の順序を保つ)。バックエンドは指定に従うだけで、超過(7 個目の :gp 等)は契約違反として raise。struct 引数はジェネレータが規約のピースごとの複数ペアに展開済み(all-or-nothing 規則も配置時に適用済み。AAPCS64 が参照渡しする集約はコピーへの :gp ポインタ 1 つに縮約済み)。隠れ結果ポインタ戻りの callee には [vreg, kind] ペアが先頭に加わる。`size` = nil または [fixed, ret](§4)。可変長 callee には call 直前に al = 使用 xmm 数(mov al, imm8) |
+| :call | dst ← f(args)。a = callee 名(String)、b = **[vreg, kind] ペアの配列**(左から右。kind は :gp / :sse4 / :sse8 / :mem、および §2 param_kinds の :indirect_result / :pad / :pad_stack。:pad / :pad_stack は整列集約の整列 pad で vreg は nil。System V の 32/64 バイト整列集約の前には :pad_stack が複数並びうる) | kind は**ジェネレータがターゲットの CallConvention で配置シミュレーションを行い確定済みの着信位置**(以下は x86_64 の場合): :gp は edi..r9d の次の空き、:sse4/:sse8 は xmm0..7 の次の空き(movss/movsd でロード)、:mem は 8 バイトスロット内容のまま逆順 push のスタック渡し(:mem 同士は左→右の順序を保つ)。バックエンドは指定に従うだけで、超過(7 個目の :gp 等)は契約違反として raise。struct 引数はジェネレータが規約のピースごとの複数ペアに展開済み(all-or-nothing 規則も配置時に適用済み。AAPCS64 が参照渡しする集約はコピーへの :gp ポインタ 1 つに縮約済み)。隠れ結果ポインタ戻りの callee には [vreg, kind] ペアが先頭に加わる。`size` = nil または [fixed, ret](§4)。可変長 callee には call 直前に al = 使用 xmm 数(mov al, imm8) |
 | :call_indirect | dst ← (*a)(args)。a = 関数アドレスの vreg、b = [vreg, kind] ペアの配列 | 引数・size の扱いは :call と同一。バックエンドはターゲットの非引数 scratch レジスタ(x86-64 は r10、AArch64 は x9)経由で call |
 | :func_addr | dst ← &func。a = 関数名(String) | 関数指示子の退化・`&f` の値。:global_addr 同様の PC 相対再配置で解決 |
 
@@ -254,7 +254,7 @@ Instruction(op, dst:, a:, b:, size:)
 
 | 命令 | 形 | 意味 |
 |---|---|---|
-| :va_start | a = __va_list_tag のアドレス vreg、b = 取り囲む関数の固定パラメータ数 | ターゲットの va_list フィールドを初期化する。SysV は 4 フィールド(gp_offset / fp_offset / overflow_arg_area / reg_save_area)、AAPCS64 は 5 フィールド(__stack / __gr_top / __vr_top / __gr_offs / __vr_offs)。名前付きパラメータが消費済みの GP/SSE レジスタ数は b ではなく **Function.param_kinds のカウントから導出**する。SysV: gp_offset = 8×count(:gp)、fp_offset = 48 + 16×(count(:sse4)+count(:sse8))、overflow_arg_area の開始は count(:mem) を反映、reg_save_area は退避領域を指す。AAPCS64: __gr_offs = −(8−count(:gp)−count(:pad))×8、__vr_offs = −(8−count(:sse4/:sse8))×16(退避領域の末尾 __gr_top/__vr_top からの負オフセットで 0 に向かって増える)、__stack の開始は count(:mem)+count(:pad_stack) を反映し、__gr_top/__vr_top は退避領域とスタック引数の境界を指す。**va_arg / va_end / va_copy に専用命令は無い** — ジェネレータが通常の load/store/分岐に降ろす(SysV の double は fp_offset を `:ult 176` で分岐しレジスタ側 +=16 / あふれ側 +=8;AAPCS64 は offs を `:lt 0` で分岐しレジスタ側は top+offs、offs += 8/16;va_copy はタグ全体の :memcpy)。**struct / union の va_arg** も同じく既存命令への脱糖で、呼び出し側が名前付き引数と同じ `aggregate_plan` で渡すので同じ計画で探す。値は他の集約と同じくアドレスで、SysV は MEMORY 分類なら overflow_arg_area から直接、レジスタ分類なら GP / SSE 両カウンタが**両方とも**収まるときだけ各 eightbyte を退避領域から一時オブジェクトへ集め(収まらなければ両カウンタを動かさずスタックから)、AAPCS64 は参照渡しなら GP スロットのポインタをたどり、HFA は 16 バイトのベクタスロットから一時オブジェクトへ集め、それ以外は GR 退避領域を直接指す。AAPCS64 は offs を進めてから格納し、はみ出したら正の値のまま残す(そのファイルは以後使い切り)。16 バイト境界の集約は offs とスタックポインタを 16 に切り上げる(`:and`) |
+| :va_start | a = __va_list_tag のアドレス vreg、b = 取り囲む関数の固定パラメータ数 | ターゲットの va_list フィールドを初期化する。SysV は 4 フィールド(gp_offset / fp_offset / overflow_arg_area / reg_save_area)、AAPCS64 は 5 フィールド(__stack / __gr_top / __vr_top / __gr_offs / __vr_offs)。名前付きパラメータが消費済みの GP/SSE レジスタ数は b ではなく **Function.param_kinds のカウントから導出**する。SysV: gp_offset = 8×count(:gp)、fp_offset = 48 + 16×(count(:sse4)+count(:sse8))、overflow_arg_area の開始は count(:mem) を反映、reg_save_area は退避領域を指す。AAPCS64: __gr_offs = −(8−count(:gp)−count(:pad))×8、__vr_offs = −(8−count(:sse4/:sse8))×16(退避領域の末尾 __gr_top/__vr_top からの負オフセットで 0 に向かって増える)、__stack の開始は count(:mem)+count(:pad_stack) を反映し、__gr_top/__vr_top は退避領域とスタック引数の境界を指す。**va_arg / va_end / va_copy に専用命令は無い** — ジェネレータが通常の load/store/分岐に降ろす(SysV の double は fp_offset を `:ult 176` で分岐しレジスタ側 +=16 / あふれ側 +=8;AAPCS64 は offs を `:lt 0` で分岐しレジスタ側は top+offs、offs += 8/16;va_copy はタグ全体の :memcpy)。**struct / union の va_arg** も同じく既存命令への脱糖で、呼び出し側が名前付き引数と同じ `aggregate_plan` で渡すので同じ計画で探す。値は他の集約と同じくアドレスで、SysV は MEMORY 分類なら overflow_arg_area から直接、レジスタ分類なら GP / SSE 両カウンタが**両方とも**収まるときだけ各 eightbyte を退避領域から一時オブジェクトへ集め(収まらなければ両カウンタを動かさずスタックから)、AAPCS64 は参照渡しなら GP スロットのポインタをたどり、HFA は 16 バイトのベクタスロットから一時オブジェクトへ集め、それ以外は GR 退避領域を直接指す。AAPCS64 は offs を進めてから格納し、はみ出したら正の値のまま残す(そのファイルは以後使い切り)。16 バイト境界の集約は offs とスタックポインタを 16 に切り上げる(`:and`)。SysV の 32/64 バイト整列集約(常に MEMORY 分類)は overflow_arg_area を自身の整列(32 / 64)に切り上げる — 呼び出し側が領域をその境界に揃えている(`:call` の area_alignment)ことが前提 |
 
 ### スタック領域確保
 
@@ -328,6 +328,10 @@ IR 自体の仕様ではないが、IR を書く側・読む側が共有する�
   `:sse4` / `:sse8` は xmm0..xmm7、`:mem` は `[rbp + 16 + 8k]` の
   スタック eightbyte に対応する。呼び出し側はスタック引数を逆順に配置し、
   必要な 16 バイト整列 pad を加えてから call し、終了後に領域を戻す。
+  `:call` の size が area_alignment(32 / 64)を持つときは、push の前に
+  `mov rax, rsp; and rsp, -N; push rax` で rsp を切り下げて元の値を積み、
+  call 時点の rsp が N の倍数になる pad を選ぶ。call 後は領域を戻してから
+  `mov rsp, [rsp]` で元の rsp に復帰する。
   可変長 callee には call 前に al へ使用した xmm レジスタ数を入れる。
 - **戻り値**: 整数・ポインタと MEMORY struct の隠れ結果ポインタは rax、
   float/double は xmm0。レジスタ返し struct は `IR::AbiPiece` の kind 順に

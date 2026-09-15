@@ -16931,3 +16931,393 @@ return AggregatePlan.new(mode: :registers, pieces: pieces, align16: natural_alig
   `test/test_atomic_builtins.rb` 45 runs、`test/test_diagnostics.rb` 238 runs、
   `test/test_execution_harness.rb` 244 runs、`test/test_gcc_builtins.rb` 22 runs、
   `test/test_parser.rb` 332 runs、`test/test_type.rb` 92 runs
+
+## sysv-padding-eightbyte-class-1 — System V で、詰め物だけの eightbyte にレジスタを割り当てない(GAPS BS)
+
+### 原因
+
+System V の分類(psABI 3.2.3)では、どのフィールドも掛からない eightbyte は NO_CLASS になる。
+rubycc の `SystemVAMD64Convention#aggregate_plan` は NO_CLASS の eightbyte を「SSE とみなす」として
+`:sse8` のピースを作っていたので、後半が詰め物だけの集約(`struct { float a, b; } __attribute__((aligned(16)))`
+など)は xmm を 1 個余分に使っていた。gcc はその eightbyte にレジスタを割り当てない。
+
+ピースの列は、呼び出し側の読み出し(`lower_struct_argument`)・呼ばれ側の組み立て(`bind_struct_parameter`)・
+戻り値(バックエンドの `each_return_eightbyte`)・placer のレジスタ数・`%al`(バックエンドが数える `:sse8` の数)・
+`va_arg` の GP / SSE の数の全部が読むので、分類の 1 箇所の食い違いが、そのまま 6 箇所の食い違いになっていた。
+
+### 対処
+
+- `SystemVAMD64Convention#aggregate_plan` は、クラスの付かなかった eightbyte のピースを作らないようにした
+  (`filter_map`)。残るピースは自分のオフセットを保つので、上記の 6 箇所は追加の変更なしで揃う
+- スタックに溢れたときは従来どおり `CallConvention.memory_pieces(size)` で ceil(size/8) 個の eightbyte
+  (詰め物を含む)を積む。gcc も 16 バイトを積む(8 個の double の後の行で一致)
+- ピースが 1 個も無い(全 eightbyte が NO_CLASS の)集約: placer は空の要求を従来どおりスタック行きにする
+  (`kinds.all?(:mem)` は空で真)。`emit_va_arg_aggregate_system_v` はこれまでレジスタ側に分岐して何も読まず、
+  呼び出し側と食い違うので、MEMORY と同じくスタックから取るようにした。大きさ 0 なら 0 eightbyte で何も動かない
+- AArch64 は変えていない(`AAPCS64Convention` は eightbyte 分類を使わない)。新しいテストの aarch64 側と
+  `test_examples_aarch64.rb` で変わらないことを確かめた
+- IR の契約は変わらない(「集約はピースごとに 1 スロット」のまま)。System V で詰め物だけの eightbyte が
+  ピースを持たないことを `ir.rb` の `:call` の説明と `docs/internals/IR.md` の `param_count` に書き足した
+
+### 測定行列
+
+2026-09-15、このホスト(WSL2 / gcc 13.3、x86-64)で、gcc は `gcc -O1 -S` の出力、rubycc は `objdump -d` で、
+各形を固定引数 `f(T, double)`・可変長引数 `v(2, T, T[, 1.0])`・戻り値 `T r(void)` で渡したときのレジスタを読んだ:
+
+| 形 | eightbyte の分類 | gcc 固定(T / 後続 double) | gcc 可変(`%al`) | gcc 戻り値 | 修正前の rubycc |
+|---|---|---|---|---|---|
+| `struct { float a, b; } aligned(16)` | SSE / NO_CLASS | xmm0 / xmm1 | 2 | xmm0 | xmm0+xmm1 / xmm2、`%al` 4、戻り値 xmm0+xmm1(**不一致**) |
+| `struct { double d; } aligned(16)` | SSE / NO_CLASS | xmm0 / xmm1 | 2 | xmm0 | 同上(**不一致**) |
+| `union { float f; double d; } aligned(16)` | SSE / NO_CLASS | xmm0 / xmm1 | 2 | xmm0 | 同上(**不一致**) |
+| `struct { int a; } aligned(16)` | INTEGER / NO_CLASS | edi / xmm0 | 1(double 1 個を含む) | eax | rdi+xmm0 / xmm1、`%al` 3、戻り値 rax+xmm0(**不一致**) |
+| `union { float f; int i; } aligned(16)` | INTEGER / NO_CLASS | edi / xmm0 | 1(同上) | eax | 同上(**不一致**) |
+| `struct { float a, b; char pad[8]; }`(後半は配列メンバで詰め物ではない) | SSE / INTEGER | xmm0+rdi / xmm1 | 2 | xmm0+rax | 一致 |
+| `struct { char c; } aligned(32)`(32 バイト) | MEMORY | スタック(32 境界) | 0 | 隠れポインタ | `%al` は一致(32 境界は別件、下記) |
+| 大きさ 0 の集約(GNU の空構造体、長さ 0 の配列だけ) | — | 何も渡さない | — | — | 一致 |
+
+- 修正後の rubycc は上の表の gcc の列と全行で一致した(`%al` は 2・1・2・1・2・2・0)
+- **固定引数が「一致する」ように見えていた理由**: `aapcs64-aligned-attribute-aggregate-1` のテストが集約の後に
+  long しか渡していなかったからである。余分な xmm を使っても、後ろにベクタ引数が無ければ位置はずれない。
+  集約の後に double を置くと、固定引数でも 1 レジスタずれる(新しいテストの `fix` 行で確かめた)
+- **可変長引数がずれた理由**: rubycc の `va_arg` が集約 1 個ごとに `fp_offset` を 32 進めていた。gcc 呼び出し側が
+  xmm1 に置いた 2 個目の集約を xmm2 の退避スロットから読み、逆に rubycc 呼び出し側は 2 個目を xmm2 に置くので
+  gcc の `va_arg` が xmm1 から読むと食い違っていた。`%al` も 2 個渡しで gcc の 2 に対し 4 だった
+- **戻り値は値が狂わなかった**。余分に動かすレジスタは詰め物の 8 バイトを運ぶだけで、受け取り側も詰め物に書き戻す
+
+### テスト
+
+- `test/test_sysv_padding_eightbyte_class.rb`(新規): 11 形(後半が詰め物の 9 形 — 上の 5 形、float 1 個、
+  typedef の long 1 個、入れ子、int + float — と、対照の配列メンバ・float 3 個)× 前置き
+  (long, double)= (0,0)(0,5)(0,6)(0,7)(0,8)(4,0)(5,0)(6,0)(5,7) を、固定引数(集約・double・long・
+  2 個目の集約・float)、可変長引数(同じ並びを `va_arg` で読む)、戻り値で回す。gcc 同士の出力を対照に、
+  rubycc 呼び出し → gcc 呼ばれ側、gcc 呼び出し → rubycc 呼ばれ側の両方の一致を求める。x86-64 では gcc で
+  作る 3 つ目の翻訳単位に、`%al` を大域変数に記録して本体へ飛ぶアセンブリの踏み台を置き、呼ばれ側が
+  `%al` も出力するので、呼び出し側のベクタレジスタ数も比べる。AArch64 も同じ形で回し、変わらないことを見る。
+  1 run あたり 11 × 19 = 209 行。4 runs, 12 assertions, 0 failures。修正前の lib では x86-64 の
+  2 runs が両方 failure になる(2026-09-15)
+- `test/test_aapcs64_aligned_attribute_aggregate.rb`: x86-64 側から外していた `f2_attr` を戻した
+  (12 形 × 21 行 = 252 行)。4 runs, 12 assertions, 0 failures。修正前の lib では x86-64 の 2 runs が
+  failure になる(2026-09-15)
+- `examples/m6/sysv_padding_eightbyte_class_1_padded_float_pair.c`: 後半が詰め物の構造体 2 種を、double を
+  挟んで固定引数・xmm を使い切る位置・可変長引数・戻り値で通す。1 翻訳単位を rubycc が両側とも作るので
+  修正前の lib でも gcc と同じ出力になる(ABI の食い違いは上の差分テストが見る)。型は `#include` より前に定義
+- 回帰(2026-09-15、いずれも 0 failures / 0 errors):
+  `test_variadic_aggregate_argument.rb` 4 runs、`test_cross_abi.rb` 4 runs、`test_int128_abi.rb` 2 runs、
+  `test_c_suite.rb` 223 runs / 11 skips、`test_c_suite_aarch64.rb` 444 runs / 22 skips、
+  `test_examples.rb` 70 runs、`test_examples_aarch64.rb` 584 runs / 22 skips、
+  `test_aarch64_aggregate_execution.rb` 11 runs、`test_aarch64_execution.rb` 53 runs、
+  `test_aarch64_variadic_execution.rb` 9 runs、`test_execution_harness.rb` 244 runs、
+  `test_alignas.rb` 11 runs、`test_flexible_array_member.rb` 16 runs、`test_header_abi.rb` 130 runs、
+  `test_doc_links.rb` 3 runs
+- 全体(2026-09-15): `rake test` 3832 runs, 19241 assertions, 0 failures, 0 errors, 35 skips(559 秒)
+
+### 残された観点
+
+- **名前の無いビットフィールドは、System V の分類に数えられていない**。rubycc は名前の無いビットフィールドの
+  `Member` を作らない(`Type#place_bitfield`)ので、分類がその記憶域を見ない。gcc は INTEGER として数える
+  (2026-09-15、gcc 13.3):
+  - `struct { int : 8; } __attribute__((aligned(8)))`(8 バイト、名前付きメンバ無し)は gcc が edi で渡す。
+    rubycc は全 eightbyte が NO_CLASS になるので、修正前は xmm0、修正後はスタックで、どちらも gcc と食い違う
+    (gcc の呼ばれ側で受けると、修正前は long も double も、修正後は long が壊れる)。rubycc 同士では
+    上の `va_arg` の変更で一致する
+  - `struct { float f; int : 8; }` は gcc が rdi(INTEGER)で渡すのに対し、rubycc は xmm0。本ステップの
+    変更の影響は受けない(修正前も後も同じ)
+  - レイアウトではなく分類の欠落で、本ステップの範囲外なので直していない。`issues/sysv-unnamed-bitfield-class.md`(GAPS BV)に起票した
+    (統合時に 2 翻訳単位の最小再現でも確かめた: gcc の呼ばれ側に rubycc から渡すと `struct { float f; int : 8; }` の値が壊れる)
+- x86-64 側で `test_aapcs64_aligned_attribute_aggregate.rb` の `X86_64_EXCLUDED` に残る 2 形
+  (`attr32` = `struct { long a, b; } __attribute__((aligned(32)))`、`alignas32` = `_Alignas(32)` のメンバ):
+  gcc は 32 バイト整列の MEMORY 集約のスタックスロットを 32 に揃える(long 1 個をスタックに積んだ後は
+  rsp+32 から始まり、`va_arg` も overflow ポインタを 32 に切り上げる)のに対し、rubycc は溢れた引数を
+  高々 16 にしか揃えない。既知のギャップ(GAPS BR、`issues/sysv-over-aligned-aggregate-stack.md`)で、本ステップでは扱っていない
+
+## bundled-unistd-process-group-1 — 同梱 `unistd.h` にプロセスグループ・セッション関数を足す(GAPS BU)
+
+`issues/bundled-unistd-process-group.md` の課題を塞いだ。同梱の `unistd.h` は `tcgetpgrp` を含む
+プロセスグループ・セッション系の関数を持たず、`ruby-termios` 1.1.0 の `termios.c:565` が呼ぶ
+`tcgetpgrp` が暗黙宣言エラーで落ちていた(2026-09-14 に issue が測定、gcc は通す)。
+
+### 原因
+
+`unistd.h` は `bundled-headers-coverage-audit`(親 issue)が挙げた「まだ分類していない 49 本」の
+1 本で、`tools/audit_bundled_headers.rb` で測ると glibc の `<unistd.h>` に対して**不足 90・未記載 91**
+(2026-09-14 時点の表)だった。`tcgetpgrp`/`tcsetpgrp`/`getpgrp`/`setpgid`/`getpgid`/`setsid`/`getsid`
+はこの 90 件の一部で、未分類のまま残っていた。
+
+### 対処
+
+`tools/audit_bundled_headers.rb --header unistd.h` の表を使い、90 件全てを「足す(30 件)/
+意図して外す(60 件 + `<stddef.h>` の取り込み不足 1 件)」に分類した(2026-09-15 実測、
+glibc 2.39、x86-64 と aarch64)。
+
+- **足した 30 件**: プロセスグループ・セッション系(`getpgrp`/`setpgid`/`getpgid`/`setsid`/
+  `getsid`/`tcgetpgrp`/`tcsetpgrp`/`setpgrp`。issue の必須項目)に加えて、gem の C 拡張が直接
+  呼ぶ可能性が高いと判断した平文の POSIX/GNU 宣言: `getgroups`・`getlogin`/`getlogin_r`・
+  `fchdir`・`chroot`・`daemon`・`nice`・`sync`・`syncfs`・`lockf`(と `F_LOCK`/`F_TEST`/`F_TLOCK`/
+  `F_ULOCK`)・`getentropy`(sysrandom gem が直接ラップする)・`dup3`・`pipe2`・`environ`・
+  `gettid`・`SEEK_DATA`/`SEEK_HOLE`・`TEMP_FAILURE_RETRY`。
+  すべて glibc 自身の `<unistd.h>` を含める直前に同じ宣言を書いて gcc の `-fsyntax-only` に
+  通し(衝突する再宣言はエラーになる)、x86-64 と `aarch64-linux-gnu-gcc` の両方で確かめた
+  (2026-09-15)。`F_LOCK`/`F_ULOCK`/`F_TLOCK`/`F_TEST`(0/1/2/3)と `SEEK_DATA`/`SEEK_HOLE`(3/4)の
+  値は `gcc -E -dM` の印字で両 arch とも一致することを確かめた。**見え方の規則**は
+  `bundled-headers-coverage-audit-2` が `stdlib.h`/`sched.h` に敷いたものと同じ: glibc が
+  `_DEFAULT_SOURCE` 以下で見せる名前は無条件、`_GNU_SOURCE` でだけ見せる名前
+  (`dup3`/`pipe2`/`environ`/`gettid`/`syncfs`/`SEEK_DATA`/`SEEK_HOLE`/`TEMP_FAILURE_RETRY`)は
+  `__USE_GNU` の下に置いた。そのため `unistd.h` に `<features.h>` の include を新規に足した。
+  `TEMP_FAILURE_RETRY` は glibc の同名マクロの**挙動だけ**を再現したクリーンルーム実装
+  (文面は写していない。R11、`docs/reference/HEADER-LICENSING.md` §6)。
+- **外した 60 件**は理由ごとに 9 グループにまとめ、`unistd.h` 冒頭コメントに
+  `omitted: 名前 ... -- 理由` の形で書いた: exec 系の亜種(`execle`/`fexecve`/`execveat`/
+  `execvpe`、既存の execv/execvp/execve/execl/execlp で足りる)、openat 系のパス操作
+  (`faccessat` ほか 6 件、コーパスに利用者なし)、権限管理系(`setegid` ほか 7 件、コーパスの
+  権限降格は Ruby の `Process::Sys` が直接 syscall する形で、gem の C 拡張がこのヘッダ経由で
+  呼ぶ形ではない)、`gethostid`/`socklen_t`(`sys/socket.h` に既にある)/`swab`、
+  `L_INCR`/`L_SET`/`L_XTND`(既存の `SEEK_SET` 等で足りる)、obsolete/rarely used な 20 件
+  (`acct`/`crypt`/`getpass` ほか)、glibc 2.34 以降にしかない `close_range` 系
+  (`stdlib.h` の `arc4random*` 除外と同じ理由)、コーパスに利用者のない GNU 拡張 5 件
+  (`copy_file_range` ほか)、LFS64 別名 7 件(`stdlib.h` の `mkstemp64` 系除外と同じ理由、
+  LP64 では無印と同一)。`<stddef.h>` の取り込み不足は、`size_t` をこのヘッダが直接宣言して
+  いるので同様に外した。
+
+`docs/reference/HEADER-LICENSING.md` §3.2 の `include/libc/unistd.h` の行に、足した宣言と
+実測した値を追記した(2026-09-15)。ファイル数は動いていないので §3.4 の集計(81 本)は不変。
+
+### テスト
+
+- `test/test_bundled_headers_coverage.rb`: `AUDITED` に `unistd.h` を足し、「未記載 0」を
+  確認する既存の仕組みに乗せた。issue のプロセスグループ 7 件が不足に無いことを確かめる
+  `test_bundled_unistd_process_group_functions_are_declared` と、issue 本文どおりの再現
+  (`tcgetpgrp(0) == -2`)をコンパイルする `test_tcgetpgrp_is_declared` を追加。
+- `tools/audit_bundled_headers.rb --header unistd.h` の再実行で、両 arch とも
+  **不足 90 → 60・未記載 91 → 0** を確認(2026-09-15)。
+- `docs/development/BUNDLED-HEADERS-COVERAGE.md` を再生成した(unistd.h の行と節のみ差分)。
+- 実行結果(2026-09-15、いずれも 0 failures / 0 errors):
+  `test_bundled_headers_coverage.rb` 11 runs / 56 assertions、
+  `test_audit_bundled_headers.rb` 4 runs / 17 assertions、
+  `test_header_abi.rb` 130 runs / 385 assertions / 0 skips、
+  `test_doc_links.rb` 3 runs、
+  `test_examples.rb` 69 runs、
+  `test_examples_aarch64.rb` 582 runs / 22 skips(既存)、
+  `test_c_suite.rb` 223 runs / 11 skips(既存)、
+  `test_c_suite_aarch64.rb` 444 runs / 22 skips(既存)。
+  フルスイート(`rake test`)は **3829 runs, 19235 assertions, 0 failures, 0 errors, 35 skips**
+  (2026-09-15、この worktree)。
+
+### 残された観点(このステップでは直していない)
+
+- `ruby-termios` 1.1.0 本体のビルド・テストの再実走は、このステップの必須テストには
+  含めていない(issue の受け入れ条件にはあるが、この PR の後の台帳の測り直しで行う)。`tcgetpgrp` を呼ぶ行(`termios.c:565`)を grep で確認し、issue 本文どおりの
+  最小再現がコンパイルできることのみ確かめた。
+- 分類していない同梱ヘッダ(親 issue `bundled-headers-coverage-audit.md` に残る 48 本)は
+  未着手のまま。
+
+## sysv-over-aligned-aggregate-stack-1 — x86-64 で 32/64 バイト整列の集約をスタック上の自身の境界に置く
+
+### 原因
+
+System V の配置(`SystemVAMD64Convention::Placer`)は、スタックに溢れた集約を `align16` の真偽だけで扱っており、
+揃える先は最大 16 バイトだった(pad は 0 か 1 eightbyte)。`va_arg` の `take_from_stack_area` も 16 までしか
+切り上げない。さらに呼び出し側はスタック引数領域を 16 バイト境界にしか置かないので、仮にオフセットを
+32 に揃えても、callee の `va_arg` がアドレス自体を 32/64 に切り上げる gcc の実装とは食い違う。
+
+測定(2026-09-15、このホスト WSL2 / gcc 13.3、`-O1` の呼び出し側と `-O0` の callee。callee が
+`__builtin_frame_address(0) + 16` から着信スタック引数領域を走査し、集約の先頭語と後続 long を値で探した。
+k は集約より前にスタックに載った long の数。固定引数は整数レジスタ 6 本を long で埋めた後に k 個、
+可変長引数は `int` の後に long 5 + k 個):
+
+| 形 | size | k=0 | k=1 | k=2 | k=3 | 後続 long |
+|---|---|---|---|---|---|---|
+| `struct { long a, b; } __attribute__((aligned(32)))` | 32 | 0 | 32 | 32 | 32 | 集約の直後(k=0 で 32、k≥1 で 64) |
+| `struct { _Alignas(32) long a; long b; }` | 32 | 0 | 32 | 32 | 32 | 同上 |
+| `struct { long a[5]; } __attribute__((aligned(32)))` | 64 | 0 | 32 | 32 | 32 | 64 / 96 |
+| `struct { long a, b; } __attribute__((aligned(64)))` | 64 | 0 | 64 | 64 | 64 | 64 / 128 |
+| `struct { _Alignas(64) long a; long b; }` | 64 | 0 | 64 | 64 | 64 | 64 / 128 |
+
+- 固定引数と可変長引数で、全セルが一致した。
+- 領域の先頭アドレスは gcc の呼び出し側で常に集約の整列の倍数だった。gcc は呼び出し側の関数の
+  プロローグで `andq $-64, %rsp` を出してフレームを揃え直している(`-S` の出力で確認)。
+- gcc の callee は固定引数を着信 rsp からのオフセットで読む(`movdqa 40(%rsp)`)。一方
+  `va_arg(ap, struct a64)` は `overflow_arg_area` のアドレスに 63 を足して `-64` で and する。
+- 集約の型属性 `aligned(N)` とメンバの `_Alignas(N)` は区別されない(AAPCS64 と違って System V は
+  型全体の整列を数える)。
+- メンバに付ける `__attribute__((aligned(32)))` は rubycc が効かせない(`sizeof` 16・整列 8 のまま。
+  このホストで rubycc の出力オブジェクトを gcc の `main` から呼んで確認)ため、行列から外した。
+
+### 対処
+
+- `AggregatePlan` と `ArgumentRequest` に `stack_alignment`(スタック上のスロットの境界、バイト)を足した。
+  既定値は `align16 ? 16 : 8` で、AAPCS64 の計画はこれを渡さない。System V の `aggregate_plan` だけが
+  `[type.alignment, 8].max` を渡す。32/64 整列の集約は必ず 32/64 バイト以上あるので MEMORY 分類に落ち、
+  レジスタ分類の分岐には来ない。
+- System V の placer は `pad_stack` を「0 か 1」から「境界までの eightbyte 数(最大 7)」に変えた。
+  `-@nsaa % (stack_alignment / 8)` で求める。ジェネレータは `:pad_stack` ピースをその数だけ前置する。
+  IR の `:pad_stack` は 1 個 = 1 eightbyte のままなので、両バックエンドの着信側(`spill_parameters`・
+  `emit_va_start` の数え方)は変更不要。rubycc の callee は gcc と同じオフセットで固定引数を読む。
+- placer は溢れた引数の `stack_alignment` の最大値を `area_alignment` として持つ(初期値 16)。
+  ジェネレータはそれが 16 を超えるときだけ、`:call` / `:call_indirect` の size 記述子を
+  `[fixed, ret, area_alignment]` の 3 要素にする。それ以外の呼び出しは従来の形のまま。
+  `simplify.rb` と `promotion.rb` が `size&.last` で ret を読んでいたので、`[1]` に直した。
+- x86-64 バックエンドは、`area_alignment` があると push の前に `mov rax, rsp; and rsp, -N; push rax` を出す。
+  続く pad は、call 時点の rsp が N の倍数になるように選ぶ(`-(8 + 8×スタック引数数) % N`)。
+  call の後は領域を戻してから `mov rsp, [rsp]` で元の rsp に戻す。
+  gcc のようにフレーム全体を揃え直さず、呼び出しごとに閉じる形にした。こうするとフレーム配置・
+  `:alloca`・昇格レジスタの退避に影響しない。rax は引数のロード前なので壊してよい。
+  バイトを出した時点でスロット常駐は自動的に無効になる(`SlotResidency`)。
+- `va_arg` の `take_from_stack_area` は `stack_alignment` を受け取り、8 を超えるときにそこまで
+  ポインタを切り上げる。`align_up16` は `align_up(value, alignment)` に一般化し、AAPCS64 の offs の
+  切り上げは `align_up(offs, 16)` のままにした。
+- AArch64 は変えていない。32/64 整列の集約は 16 バイトを超えるので参照渡しになる。AAPCS64 の placer の
+  `area_alignment` は常に 16。
+- `docs/internals/IR.md`(param_kinds の `:pad_stack`、`:call` の size 記述子、va_arg、§6.2)と
+  `ir.rb` の `:call` コメントを更新した。
+
+### テスト
+
+- `test/test_sysv_over_aligned_aggregate_stack.rb`(新規)
+  - 7 形(`aligned(32)`・`_Alignas(32)`・40 バイト分の long を持つ `aligned(32)`・double 3 個の `aligned(32)`・
+    `aligned(64)`・`_Alignas(64)`・72 バイト分の `aligned(64)`)を、前置 long 0〜9 個の固定引数・
+    可変長引数(`va_arg`)・戻り値で渡す。
+  - 1 呼び出しに 3 個の過整列集約、double と `__int128` 構造体を混ぜた可変長部、関数ポインタ経由の呼び出し、
+    `__builtin_alloca` で rsp を動かした後の呼び出し、受け取った集約を callee から gcc 側へ渡し直す呼び出しも含む。
+  - gcc 同士の出力を正解として、rubycc 呼び出し側 → gcc callee、gcc 呼び出し側 → rubycc callee の
+    両方向を x86-64 と aarch64 で比べる。4 runs、0 failures。
+  - 効いていることの確認として、9e4d5d2 の `lib` を取り出して同じテストを走らせると x86-64 の両方向が
+    失敗し(aarch64 は通る)、修正後の木では 4 runs 0 failures になる。
+- `test/test_aapcs64_aligned_attribute_aggregate.rb` の x86-64 側に `attr32` / `alignas32` を戻した
+  (除外は `f2_attr` のみ)。4 runs、0 failures。
+- プローブで得た上の行列を、rubycc の呼び出し側 + gcc -O0 の callee でも取り直した。集約と後続 long の
+  オフセットは全セルで gcc 同士と一致した。領域先頭の 64 での剰余は 32 整列の形で gcc と 32 ずれるが、
+  必要な 32 の倍数であることは同じ。
+- `examples/m6/sysv_over_aligned_aggregate_stack_1_stacked_slots.c` を追加した。
+
+### 残された観点
+
+- メンバに付ける `__attribute__((aligned(N)))` を rubycc が無視する(GAPS BQ、`issues/aligned-attribute-member-typedef.md`。別ステップで対応中)。`struct { long a __attribute__((aligned(32))); long b; }`
+  が `sizeof` 16・整列 8 になる(gcc は 32・32)。配置規則とは別の、レイアウトの課題。
+- 32/64 整列の集約を受け取った rubycc の callee は、値を 16 バイト境界のスタックオブジェクトへコピーする。
+  そのため `&x` が 32/64 の倍数になるとは限らない(引数の受け渡しは一致する)。
+- 128 バイト以上の整列は測っていない。`stack_alignment` は型の整列をそのまま使う。
+
+## aligned-attribute-member-typedef-1 — メンバの宣言子・typedef 名・変数に付けた `aligned` を読む(GAPS BQ)
+
+### 原因
+
+`__attribute__((aligned(N)))` を**構造体そのもの**に付けた形(position b / c)と `_Alignas` は効いていたが、
+**メンバの宣言子**(position f)・**typedef 名**(position d)・**変数の宣言子**に付けた同じ属性は
+`parse_attribute_specifiers` の戻り値を捨てるだけで、診断も出さずに落ちていた。
+2026-09-15 にこのホスト(WSL2 / gcc 13.3、aarch64 は `aarch64-linux-gnu-gcc` 13.3 + qemu-aarch64)で測った再現:
+
+```c
+struct m { long a __attribute__((aligned(16))); long b; };
+typedef long al16 __attribute__((aligned(16)));
+struct t { al16 a; long b; };
+/* _Alignof(struct m), sizeof(struct m), _Alignof(struct t), _Alignof(al16) */
+```
+
+| | 出力 |
+|---|---|
+| gcc 13.3(x86-64・aarch64 とも) | `16 16 16 16` |
+| 修正前の rubycc(両アーキ) | `8 16 8 8` |
+
+gcc の規則も同じ日に測った(**x86-64 と aarch64 で 1 行も違わなかった**):
+
+- **メンバの宣言子の `aligned(N)`**: そのメンバの基準境界を N まで**引き上げるだけで下げない**
+  (`char c; long a __attribute__((aligned(4)));` の `a` は 8 のまま)。`_Alignas` と同じ振る舞い
+- **メンバの `packed`**: そのメンバの基準境界を 1 に落とす。`packed, aligned(4)` は 4。
+  構造体側が packed でもメンバの `aligned(N)` はそのまま効く(packed 構造体の `aligned(16)` メンバは 16、
+  `aligned(4)` メンバは 4 — つまり基準が 1 に落ちた上で N まで上がる)
+- **typedef 名の `aligned(N)`**: 型の境界を**置き換える**。gcc は typedef でだけ**下げも**する
+  (`typedef long t4 __attribute__((aligned(4)))` は `_Alignof` 4、char の後で offset 4)。**`sizeof` は変わらない**
+  (`typedef char t32c __attribute__((aligned(32)))` は大きさ 1・境界 32)。typedef の連鎖と配列には伝わるが、
+  **ポインタには伝わらない**(`_Alignof(t16 *)` は 8)。`packed` 単独は無視(gcc は警告を出して 8 のまま)
+- **指定子位置(position a)の属性**は宣言の**各宣言子**に付く(`long __attribute__((aligned(16))) a, b;` は両方 16、
+  ポインタ宣言子にも付く)。ただし**無名メンバでは無視される**
+  (`char c; __attribute__((aligned(16))) struct { int x; };` は境界 4 のまま。同じ位置の `_Alignas` は効く)
+- **変数の宣言子**: 境界を上げる。gcc は下げもする(`long g __attribute__((aligned(4)))` の `__alignof__` は 4)
+- 要素の大きさを境界が割り切れない配列は 2 つの文言で拒否される:
+  大きさ < 境界が `alignment of array elements is greater than element size`、
+  大きさ > 境界で非倍数が `size of array element is not a multiple of its alignment`
+
+### 対処
+
+**整列を型に持たせず、宣言の属性として持ち回る**設計にした。`Type::IntegerType` などは共有シングルトンで、
+`Type::StructType` は同一性で比較する(自己参照型のため)から、整列だけ違う型の変種を作ると
+同一性比較・互換性判定の前提が崩れる。一方で観測できる差(`sizeof` / `_Alignof` / `offsetof` /
+オブジェクトの配置)は「宣言ごとの境界」で全て表せる。
+
+- `Parser::DeclSpecInfo` に `type_alignment` を足した。指定子の typedef 名が持つ境界で、
+  `#inherited_type_alignment` が宣言子ごとに「その型自身と、その配列にだけ伝える」判定をする
+  (ポインタ・関数には伝えない)。配列のときは gcc の 2 つの拒否をここで出す
+- typedef の束縛(`OrdinaryName(:typedef, ...)`)を `[type, const]` から `[type, const, alignment]` の
+  3 つ組にした。`#typedef_alignment` が「属性の `aligned` があればそれ(置き換え)、無ければ継承」を決める
+- `StructType#define` の raw メンバ要素に 5 番目 `base_alignment` を足した。`#member_boundary` は
+  `packed ? 1 : (base_alignment || type.alignment)` を基準にし、`alignas`(= `_Alignas` と
+  メンバの `aligned(N)` の強い方)で引き上げる。メンバの `packed` は `base_alignment` を 1 にする形で表す。
+  **AAPCS64 の `natural_alignment` はメンバの境界の最大値なので、この 1 箇所でメンバ属性も typedef の境界も数に入る**
+- 変数は `#object_alignment_request` が `_Alignas` / 属性の `aligned` / typedef の境界の最大を要求として返す。
+  `#alignas_boundary` の「弱められない」検査(6.7.5p4)は typedef の境界を基準にする
+  (gcc も `_Alignas(8) t16 x;` を拒否し `_Alignas(4) t4 x;` を通す)
+- `_Alignof` は型だけでは足りないので、`AST::AlignofType` に `alignment` を足し、
+  `#parse_type_name_with_alignment` が型名と一緒に境界を返す(`_Alignas(type-name)` も同じ経路)。
+  定数評価器と `Generator#gen_alignof` が `alignment || type.alignment` を使う
+- 引数渡しの規則(`AAPCS64Convention#aggregate_plan` / System V)は**変更していない**。
+  `natural_alignment` と `alignment` の定義がそのままで、メンバの境界だけが正しくなる
+- 型名の解決が `#parse_type_name_with_alignment` 1 本になり、`#parse_type_specifier` は
+  呼ばれなくなったので消した(説明はそのまま移した)
+
+### テスト
+
+引数渡しの行列を両アーキで測り直した(2026-09-15、gcc 13.3。呼ばれ側を long 16 個の関数として受け、
+各語がどのレジスタ・スタック語に届いたかを読む探針。`sN` はスタック引数領域の N 番目の eightbyte。
+k は集約の前に置いた long の数):
+
+| 形 | 16 の出どころ | aarch64 k=1 / 3 / 9 | x86-64 k=7 / 9 |
+|---|---|---|---|
+| `struct { long a, b; }`(対照) | — | x1/x2・x3/x4・s1/s2 | s1/s2・s3/s4 |
+| `struct { long a __attribute__((aligned(16))); long b; }` | メンバの属性 | **x2/x3・x4/x5・s2/s3** | **s2/s3・s4/s5** |
+| `struct { t16 a; long b; }`(`t16` は aligned(16) の long typedef) | メンバの型(typedef) | **x2/x3・x4/x5・s2/s3** | **s2/s3・s4/s5** |
+| `struct { T i; }`(`T` は typedef 名に aligned(16)) | メンバの型(typedef) | **x2/x3・x4/x5・s2/s3** | **s2/s3・s4/s5** |
+| `T`(typedef 名に aligned(16))を値渡し | typedef 名の属性 | x1/x2・x3/x4・s1/s2(数えない) | s1/s2・s3/s4(数えない) |
+| `typedef struct {…} T __attribute__((aligned(16)))` を値渡し | 同上 | x1/x2・x3/x4・s1/s2(数えない) | s1/s2・s3/s4(数えない) |
+| `t16` 単体(スカラー)を値渡し | typedef 名の属性 | x1・x3・s1(数えない) | s1・s3(数えない) |
+
+つまり**メンバ由来の 16 は両 ABI が数え**(AArch64 は偶数レジスタ対、System V は 16 境界のスタックスロット)、
+**typedef 名に付けた属性は両 ABI とも数えない** — `aapcs64-aligned-attribute-aggregate-1` が
+集約自身の属性について測った結果と同じ扱いで、そのステップの規則(自然な整列で決める)は変更不要だった。
+`struct { int x; t4 a; int y; }`(`t4` は aligned(4) の long typedef)は x86-64 では long が
+eightbyte をまたぐので MEMORY 級になり、k=1 でもスタックに載る(gcc・rubycc 一致)。
+
+- `test/test_aligned_attribute_member_typedef.rb`(新規): 再現・メンバ 21 形・typedef 33 形・
+  オブジェクト 23 個(アドレスの剰余で境界を読む。rubycc には式の `__alignof__` が無いため)を
+  gcc 差分で両アーキ検証し、配列要素の 2 つの拒否・`_Alignas` と typedef 境界の関係・
+  自動記憶域の上限を診断で検証する。11 runs, 53 assertions, 0 failures(2026-09-15)
+- `test/test_aapcs64_aligned_attribute_aggregate.rb`: 前ステップが「別件」として外していた
+  メンバ属性の形を戻し、typedef 由来の 4 形(スカラー typedef のメンバ・typedef 名のメンバ・
+  境界を下げた typedef のメンバ・スカラー typedef 単体)を足して 19 形にした。4 runs, 12 assertions, 0 failures
+- **修正前の lib(9e4d5d2)でこの 2 ファイルを走らせると 15 runs 中 13 failures / 2 errors**(2026-09-15)。
+  x86-64 側も落ちるので、メンバ由来の 16 は System V でも観測できる差だと確かめられる
+- `examples/m6/aligned_attribute_member_typedef_1_cache_line_counters.c`: 64 バイト境界の
+  カウンタ typedef、メンバ属性で 16 になる構造体、境界を下げる typedef、packed 構造体の
+  `aligned(4)` メンバ、32 バイト境界の静的配列。`aapcs64` の例と同じ理由で**型は `#include` より前**に置く
+  (aarch64 の例走者は glibc の `<sys/cdefs.h>` を読み、`__GNUC__` の無いコンパイラでは
+  `__attribute__` が消えるため)
+- 回帰(2026-09-15、いずれも 0 failures / 0 errors): `test_variadic_aggregate_argument.rb` ・
+  `test_cross_abi.rb` ・`test_type.rb` ・`test_parser.rb` ・`test_header_abi.rb` ・`test_alignas.rb` を
+  まとめて 577 runs、`test_examples.rb` 70 runs、`test_examples.rb` + `test_examples_aarch64.rb` 584 runs / 22 skips、
+  `test_c_suite.rb` 223 runs / 11 skips、`test_c_suite.rb` + `test_c_suite_aarch64.rb` 444 runs / 22 skips
+- フルスイート(`rake test`、2026-09-16): **3839 runs, 19282 assertions, 0 failures, 0 errors, 35 skips**
+
+### 残された観点
+
+- **自動記憶域の局所オブジェクトは、typedef の境界を要求にしない**。フレームが与える境界
+  (スタックオブジェクト 16・スカラーのスロット 8)のままにしてある。要求にすると
+  `Generator#reject_overaligned_automatic` が `t16 x;` のような**ごく普通の局所宣言を全部拒否**してしまう
+  (gcc は通し、rubycc も本ステップ以前は通していた)。宣言子に**自分で書いた** `aligned(N)` と `_Alignas` は
+  従来どおり上限超過を診断する。実行時にスタックを再整列するプロローグを両バックエンドが
+  出せるようになるまでの妥協で、スカラー局所が 16 バイト境界を要求する形だけが gcc と違う。
+  プロローグでの再整列そのものは `issues/overaligned-automatic-object.md`(GAPS BW)に起票した
+- 変数の境界を**下げる**要求(gcc の `__alignof__` は 4 を返す)は、rubycc では型の境界のまま(厳しい側)。
+  配置としては妥当で、rubycc にはオブジェクトの境界を読み戻す構文が無いので観測できない
+- ビットフィールドに付けた `aligned` / ビットフィールドの型が持つ typedef の境界は数えていない
+  (宣言子の後の属性はそもそも読んでいない)。パラメータの境界も従来どおり呼び出し規約に任せる
+- `packed` を typedef に単独で書いた場合は gcc と同じく無視するが、gcc が出す警告に当たるものは出ない
+  (このフロントエンドは警告を出さない)

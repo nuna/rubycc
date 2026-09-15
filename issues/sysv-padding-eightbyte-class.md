@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-14
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-16
+branch: gap-fixes-wave-6
+pr: 154
+steps: [sysv-padding-eightbyte-class-1]
 ---
 
 # x86-64 で、後半が詰め物だけの構造体を可変長引数に渡すと、xmm を 1 つ余分に使う
@@ -37,6 +37,19 @@ System V の分類では、メンバの無い eightbyte は NO_CLASS になる(p
 
 `aapcs64-aligned-attribute-aggregate-1` の測定行列で見つかった。テストの x86-64 側からは理由を書いて外した。
 
+### 2026-09-16(実装)
+
+どのフィールドも掛からない eightbyte(psABI の NO_CLASS)にピースを作らないようにした。起票時は可変長引数だけの食い違いと書いたが、
+**固定引数でも 1 レジスタずれていた** — 既存のテストが集約の後に `long` しか置いていなかったため見えていなかった。集約の後に `double` を置くと出る。
+測定の途中で、名前の無いビットフィールドが分類に数えられていないことも分かり、[`sysv-unnamed-bitfield-class`](sysv-unnamed-bitfield-class.md)(BV)に起票した。
+
 ## 決着
 
-(未着手)
+**解消した**(`sysv-padding-eightbyte-class-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 可変長引数で両方向が gcc と一致し、`%al` も同じ | `test/test_sysv_padding_eightbyte_class.rb`(11 形 × 前置き 9 通り、gcc の踏み台で `%al` を記録) |
+| 固定引数と戻り値でも一致したまま | 同じテストで確認(固定引数のずれも直った) |
+| `test_aapcs64_aligned_attribute_aggregate.rb` の `f2_attr` を戻す | 戻して 0 failures |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

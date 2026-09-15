@@ -948,11 +948,16 @@ module Rubycc
       end
 
       # Lays out the aggregate from `raw_members` (an array of [name, Type,
-      # bit_width, alignas] entries in declaration order; an anonymous
-      # struct/union member has a nil name, a plain member a nil bit_width — see
-      # #layout_struct for how a bit-field is placed — and `alignas` is the
-      # boundary a C11 _Alignas asked for on that one member, nil for none, a
-      # trailing field a caller with no such member may leave off entirely).
+      # bit_width, alignas, base_alignment] entries in declaration order; an
+      # anonymous struct/union member has a nil name, a plain member a nil
+      # bit_width — see #layout_struct for how a bit-field is placed — and
+      # `alignas` is the boundary a C11 _Alignas or a member-declarator
+      # __attribute__((aligned(N))) asked for on that one member, nil for none).
+      # `base_alignment` replaces the type's own alignment as the member's
+      # starting boundary, nil for none: the boundary an aligned typedef gave
+      # the member's type (which may be smaller than the type's natural one), or
+      # 1 for a member-declarator __attribute__((packed)). The two trailing
+      # fields may be left off by a caller with no such member.
       # A struct follows the System V AMD64 rules:
       # each member starts at
       # the next offset that satisfies its own alignment (inserting padding as
@@ -1064,9 +1069,9 @@ module Rubycc
         bit_pos = 0
         max_alignment = 1
         members = []
-        raw_members.each do |name, type, bit_width, alignas|
+        raw_members.each do |name, type, bit_width, alignas, base_alignment|
           if bit_width.nil?
-            member_alignment = member_boundary(type, packed, alignas)
+            member_alignment = member_boundary(type, packed, alignas, base_alignment)
             byte_offset = align_up(bits_to_bytes(bit_pos), member_alignment)
             members << Member.new(name: name, type: type, offset: byte_offset)
             # A flexible array member (the trailing "T name[]") sits at its
@@ -1123,11 +1128,11 @@ module Rubycc
         members = []
         max_size = 0
         natural_alignment = 1
-        raw_members.each do |name, type, bit_width, alignas|
+        raw_members.each do |name, type, bit_width, alignas, base_alignment|
           if bit_width.nil?
             members << Member.new(name: name, type: type, offset: 0)
             byte_size = type.size
-            member_alignment = member_boundary(type, packed, alignas)
+            member_alignment = member_boundary(type, packed, alignas, base_alignment)
           else
             unnamed_alignment = unnamed_bitfields_align && name.nil? ? type.alignment : 1
             if bit_width.zero?
@@ -1163,13 +1168,17 @@ module Rubycc
         aligned && aligned > natural ? aligned : natural
       end
 
-      # One plain member's boundary: its type's own alignment, dropped to 1 byte
-      # by a `packed` aggregate, and raised by an _Alignas the member itself
-      # carries. The parser refuses an _Alignas weaker than the member's type,
-      # so the request only ever raises; taking the larger of the two keeps that
-      # true against a `packed` 1 as well.
-      def member_boundary(type, packed, alignas)
-        natural = packed ? 1 : type.alignment
+      # One plain member's boundary: its type's own alignment (or the
+      # `base_alignment` that replaces it — an aligned typedef's boundary, or 1
+      # for a member-level packed), dropped to 1 byte by a `packed` aggregate,
+      # and raised by an _Alignas or aligned(N) the member itself carries. That
+      # request only ever raises: gcc 13.3 ignores a member aligned(N) below
+      # the base boundary and applies it in full under packing (measured
+      # 2026-09-15: "char c; long a __attribute__((aligned(4)));" puts `a` at
+      # 8, the same member of a packed struct at 4), and the parser refuses an
+      # _Alignas weaker than the member's type.
+      def member_boundary(type, packed, alignas, base_alignment = nil)
+        natural = packed ? 1 : (base_alignment || type.alignment)
         alignas && alignas > natural ? alignas : natural
       end
 

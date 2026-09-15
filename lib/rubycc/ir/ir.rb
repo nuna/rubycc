@@ -127,7 +127,8 @@ module Rubycc
     #                           slot's low bits carrying its value). A by-value
     #                           struct argument fans out into one [vreg, kind] pair
     #                           per piece its convention cuts it into (a System V
-    #                           eightbyte's class :gp/:sse8, an AAPCS64 HFA
+    #                           eightbyte's class :gp/:sse8 and no pair at all for
+    #                           a NO_CLASS eightbyte of padding only, an AAPCS64 HFA
     #                           member's :sse4/:sse8, or :mem per eightbyte when it
     #                           spills whole), all placed together so the argument
     #                           stays in registers or spills as a unit; an
@@ -145,8 +146,19 @@ module Rubycc
     #                           travels as two ordinary :mem eightbytes instead, and
     #                           :sse16 never reaches that backend. A call whose struct result comes back
     #                           through a hidden pointer also prepends that
-    #                           [vreg, kind] pointer as the first argument. `size` is nil, or a
-    #                           [fixed, ret] pair when either half is non-nil:
+    #                           [vreg, kind] pointer as the first argument. A
+    #                           :pad_stack pair (vreg nil) is one stack eightbyte
+    #                           reserved to align the aggregate behind it; a
+    #                           32/64-aligned System V aggregate may be preceded
+    #                           by several. `size` is nil, or a
+    #                           [fixed, ret] pair when either half is non-nil,
+    #                           or [fixed, ret, area_alignment] when the stack
+    #                           argument area must start on a boundary past the
+    #                           ABI's 16 (32 or 64, from an over-aligned MEMORY
+    #                           aggregate on the stack): the x86-64 backend then
+    #                           rounds rsp down to it before pushing and restores
+    #                           rsp after the call, since the callee's va_arg
+    #                           rounds the absolute overflow pointer.
     #                           `fixed` is the callee's fixed parameter count for a
     #                           variadic call (else nil), which makes the backend
     #                           set al to the count of xmm registers it used before
@@ -164,7 +176,8 @@ module Rubycc
     #                           address (a function pointer value), b = the
     #                           [arg_vreg, kind] pairs (the same generator-fixed
     #                           :gp/:sse4/:sse8/:mem placement as :call); `size`
-    #                           carries the same [fixed, ret] pair.
+    #                           carries the same [fixed, ret(, area_alignment)]
+    #                           descriptor.
     #                           The backend calls through a scratch register
     #   :func_addr dst <- &func(a)  dst gets the address of the function named a
     #                           (a String symbol), the value a function
