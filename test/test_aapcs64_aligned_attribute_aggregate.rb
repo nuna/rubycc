@@ -23,9 +23,11 @@ require_relative "test_helper"
 # spent — as a fixed argument and as a variadic one, and comes back as a
 # return value.
 #
-# x86-64 runs the same cases minus the 32-byte-aligned shapes (see
-# X86_64_EXCLUDED): System V counts the whole alignment, attribute included,
-# and rubycc already agreed with gcc there on every 16-aligned shape.
+# x86-64 runs the same cases minus the shape X86_64_EXCLUDED names: System V
+# counts the whole alignment, attribute included, and rubycc already agreed
+# with gcc there on every 16-aligned shape. The two 32-byte-aligned shapes
+# joined it with sysv-over-aligned-aggregate-stack-1, which starts such an
+# aggregate on a 32-aligned stack slot as gcc does.
 class TestAapcs64AlignedAttributeAggregate < Minitest::Test
   include ExecutionHelper
   include AArch64ExecutionHelper
@@ -69,15 +71,12 @@ class TestAapcs64AlignedAttributeAggregate < Minitest::Test
      "v.a = s * 59; v.b = s + 61;", 16],
   ].freeze
 
-  # A System V gap, not the AAPCS64 rule this file pins, keeps two shapes off
-  # the x86-64 half (measured 2026-09-14 against gcc 13.3): gcc puts a
-  # 32-byte-aligned MEMORY aggregate (attr32 / alignas32) on a 32-aligned
-  # stack slot (after one stacked long it starts at rsp+32, and its va_arg
-  # rounds the overflow pointer up to 32); rubycc aligns spilled arguments to
-  # at most 16. f2_attr, whose second eightbyte is all padding, runs on both
-  # halves since sysv-padding-eightbyte-class-1 gave that eightbyte no
-  # register (test_sysv_padding_eightbyte_class.rb covers it in depth).
-  X86_64_EXCLUDED = %w[attr32 alignas32].freeze
+# Both System V gaps that used to keep shapes off the x86-64 half are closed:
+# sysv-padding-eightbyte-class-1 gave a padding-only eightbyte no register
+# (f2_attr), and sysv-over-aligned-aggregate-stack-1 put a 32-byte-aligned
+# MEMORY aggregate on a 32-aligned stack slot (attr32 / alignas32), both as
+# gcc 13.3 does. Every shape now runs on both halves.
+X86_64_EXCLUDED = [].freeze
 
   # Long arguments ahead of the aggregate. On aarch64, 0..6 leave room for a
   # pair (odd and even NGRN), 7 cannot fit one, and 8 and 9 put it on the

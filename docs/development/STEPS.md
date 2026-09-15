@@ -17109,3 +17109,90 @@ glibc 2.39、x86-64 と aarch64)。
   最小再現がコンパイルできることのみ確かめた。
 - 分類していない同梱ヘッダ(親 issue `bundled-headers-coverage-audit.md` に残る 48 本)は
   未着手のまま。
+
+## sysv-over-aligned-aggregate-stack-1 — x86-64 で 32/64 バイト整列の集約をスタック上の自身の境界に置く
+
+### 原因
+
+System V の配置(`SystemVAMD64Convention::Placer`)は、スタックに溢れた集約を `align16` の真偽だけで扱っており、
+揃える先は最大 16 バイトだった(pad は 0 か 1 eightbyte)。`va_arg` の `take_from_stack_area` も 16 までしか
+切り上げない。さらに呼び出し側はスタック引数領域を 16 バイト境界にしか置かないので、仮にオフセットを
+32 に揃えても、callee の `va_arg` がアドレス自体を 32/64 に切り上げる gcc の実装とは食い違う。
+
+測定(2026-09-15、このホスト WSL2 / gcc 13.3、`-O1` の呼び出し側と `-O0` の callee。callee が
+`__builtin_frame_address(0) + 16` から着信スタック引数領域を走査し、集約の先頭語と後続 long を値で探した。
+k は集約より前にスタックに載った long の数。固定引数は整数レジスタ 6 本を long で埋めた後に k 個、
+可変長引数は `int` の後に long 5 + k 個):
+
+| 形 | size | k=0 | k=1 | k=2 | k=3 | 後続 long |
+|---|---|---|---|---|---|---|
+| `struct { long a, b; } __attribute__((aligned(32)))` | 32 | 0 | 32 | 32 | 32 | 集約の直後(k=0 で 32、k≥1 で 64) |
+| `struct { _Alignas(32) long a; long b; }` | 32 | 0 | 32 | 32 | 32 | 同上 |
+| `struct { long a[5]; } __attribute__((aligned(32)))` | 64 | 0 | 32 | 32 | 32 | 64 / 96 |
+| `struct { long a, b; } __attribute__((aligned(64)))` | 64 | 0 | 64 | 64 | 64 | 64 / 128 |
+| `struct { _Alignas(64) long a; long b; }` | 64 | 0 | 64 | 64 | 64 | 64 / 128 |
+
+- 固定引数と可変長引数で、全セルが一致した。
+- 領域の先頭アドレスは gcc の呼び出し側で常に集約の整列の倍数だった。gcc は呼び出し側の関数の
+  プロローグで `andq $-64, %rsp` を出してフレームを揃え直している(`-S` の出力で確認)。
+- gcc の callee は固定引数を着信 rsp からのオフセットで読む(`movdqa 40(%rsp)`)。一方
+  `va_arg(ap, struct a64)` は `overflow_arg_area` のアドレスに 63 を足して `-64` で and する。
+- 集約の型属性 `aligned(N)` とメンバの `_Alignas(N)` は区別されない(AAPCS64 と違って System V は
+  型全体の整列を数える)。
+- メンバに付ける `__attribute__((aligned(32)))` は rubycc が効かせない(`sizeof` 16・整列 8 のまま。
+  このホストで rubycc の出力オブジェクトを gcc の `main` から呼んで確認)ため、行列から外した。
+
+### 対処
+
+- `AggregatePlan` と `ArgumentRequest` に `stack_alignment`(スタック上のスロットの境界、バイト)を足した。
+  既定値は `align16 ? 16 : 8` で、AAPCS64 の計画はこれを渡さない。System V の `aggregate_plan` だけが
+  `[type.alignment, 8].max` を渡す。32/64 整列の集約は必ず 32/64 バイト以上あるので MEMORY 分類に落ち、
+  レジスタ分類の分岐には来ない。
+- System V の placer は `pad_stack` を「0 か 1」から「境界までの eightbyte 数(最大 7)」に変えた。
+  `-@nsaa % (stack_alignment / 8)` で求める。ジェネレータは `:pad_stack` ピースをその数だけ前置する。
+  IR の `:pad_stack` は 1 個 = 1 eightbyte のままなので、両バックエンドの着信側(`spill_parameters`・
+  `emit_va_start` の数え方)は変更不要。rubycc の callee は gcc と同じオフセットで固定引数を読む。
+- placer は溢れた引数の `stack_alignment` の最大値を `area_alignment` として持つ(初期値 16)。
+  ジェネレータはそれが 16 を超えるときだけ、`:call` / `:call_indirect` の size 記述子を
+  `[fixed, ret, area_alignment]` の 3 要素にする。それ以外の呼び出しは従来の形のまま。
+  `simplify.rb` と `promotion.rb` が `size&.last` で ret を読んでいたので、`[1]` に直した。
+- x86-64 バックエンドは、`area_alignment` があると push の前に `mov rax, rsp; and rsp, -N; push rax` を出す。
+  続く pad は、call 時点の rsp が N の倍数になるように選ぶ(`-(8 + 8×スタック引数数) % N`)。
+  call の後は領域を戻してから `mov rsp, [rsp]` で元の rsp に戻す。
+  gcc のようにフレーム全体を揃え直さず、呼び出しごとに閉じる形にした。こうするとフレーム配置・
+  `:alloca`・昇格レジスタの退避に影響しない。rax は引数のロード前なので壊してよい。
+  バイトを出した時点でスロット常駐は自動的に無効になる(`SlotResidency`)。
+- `va_arg` の `take_from_stack_area` は `stack_alignment` を受け取り、8 を超えるときにそこまで
+  ポインタを切り上げる。`align_up16` は `align_up(value, alignment)` に一般化し、AAPCS64 の offs の
+  切り上げは `align_up(offs, 16)` のままにした。
+- AArch64 は変えていない。32/64 整列の集約は 16 バイトを超えるので参照渡しになる。AAPCS64 の placer の
+  `area_alignment` は常に 16。
+- `docs/internals/IR.md`(param_kinds の `:pad_stack`、`:call` の size 記述子、va_arg、§6.2)と
+  `ir.rb` の `:call` コメントを更新した。
+
+### テスト
+
+- `test/test_sysv_over_aligned_aggregate_stack.rb`(新規)
+  - 7 形(`aligned(32)`・`_Alignas(32)`・40 バイト分の long を持つ `aligned(32)`・double 3 個の `aligned(32)`・
+    `aligned(64)`・`_Alignas(64)`・72 バイト分の `aligned(64)`)を、前置 long 0〜9 個の固定引数・
+    可変長引数(`va_arg`)・戻り値で渡す。
+  - 1 呼び出しに 3 個の過整列集約、double と `__int128` 構造体を混ぜた可変長部、関数ポインタ経由の呼び出し、
+    `__builtin_alloca` で rsp を動かした後の呼び出し、受け取った集約を callee から gcc 側へ渡し直す呼び出しも含む。
+  - gcc 同士の出力を正解として、rubycc 呼び出し側 → gcc callee、gcc 呼び出し側 → rubycc callee の
+    両方向を x86-64 と aarch64 で比べる。4 runs、0 failures。
+  - 効いていることの確認として、9e4d5d2 の `lib` を取り出して同じテストを走らせると x86-64 の両方向が
+    失敗し(aarch64 は通る)、修正後の木では 4 runs 0 failures になる。
+- `test/test_aapcs64_aligned_attribute_aggregate.rb` の x86-64 側に `attr32` / `alignas32` を戻した
+  (除外は `f2_attr` のみ)。4 runs、0 failures。
+- プローブで得た上の行列を、rubycc の呼び出し側 + gcc -O0 の callee でも取り直した。集約と後続 long の
+  オフセットは全セルで gcc 同士と一致した。領域先頭の 64 での剰余は 32 整列の形で gcc と 32 ずれるが、
+  必要な 32 の倍数であることは同じ。
+- `examples/m6/sysv_over_aligned_aggregate_stack_1_stacked_slots.c` を追加した。
+
+### 残された観点
+
+- メンバに付ける `__attribute__((aligned(N)))` を rubycc が無視する(GAPS BQ、`issues/aligned-attribute-member-typedef.md`。別ステップで対応中)。`struct { long a __attribute__((aligned(32))); long b; }`
+  が `sizeof` 16・整列 8 になる(gcc は 32・32)。配置規則とは別の、レイアウトの課題。
+- 32/64 整列の集約を受け取った rubycc の callee は、値を 16 バイト境界のスタックオブジェクトへコピーする。
+  そのため `&x` が 32/64 の倍数になるとは限らない(引数の受け渡しは一致する)。
+- 128 バイト以上の整列は測っていない。`stack_alignment` は型の整列をそのまま使う。

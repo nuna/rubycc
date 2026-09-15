@@ -28,9 +28,12 @@ module Rubycc
 
       # The two alignment-pad ABI pieces (see AAPCS64::Placer#pad_gp/#pad_stack).
       # A pad reserves one integer register (:pad) or one stack eightbyte
-      # (:pad_stack) ahead of a 16-byte-aligned aggregate so it starts on an
-      # aligned boundary; it moves no data, so its offset and size go unread —
-      # only its kind, which steers the backend's counter over it.
+      # (:pad_stack) ahead of an over-aligned aggregate so it starts on an
+      # aligned boundary — a 16-byte one on either convention, which takes at
+      # most one pad, or a 32/64-byte one on System V's stack, which may take
+      # several :pad_stack in a row. A pad moves no data, so its offset and
+      # size go unread — only its kind, which steers the backend's counter over
+      # it.
       PAD_GP_PIECE = AbiPiece.new(offset: 0, size: 8, kind: :pad)
       PAD_STACK_PIECE = AbiPiece.new(offset: 0, size: 8, kind: :pad_stack)
 
@@ -1269,7 +1272,8 @@ module Rubycc
         return ArgumentRequest.new(kinds: [argument_kind(type)], align16: false, mem_eightbytes: eightbytes) if plan.nil?
         return ArgumentRequest.new(kinds: [:gp], align16: false, mem_eightbytes: 1) if plan.mode == :by_reference
 
-        ArgumentRequest.new(kinds: plan.pieces.map(&:kind), align16: plan.align16, mem_eightbytes: eightbytes)
+        ArgumentRequest.new(kinds: plan.pieces.map(&:kind), align16: plan.align16, mem_eightbytes: eightbytes,
+                            stack_alignment: plan.stack_alignment)
       end
 
       # The pieces an argument of `type` is actually taken apart into, now that
@@ -1291,15 +1295,16 @@ module Rubycc
           else
             plan.pieces
           end
-        # A convention that aligns a 16-byte aggregate reports the pad it reserved
-        # ahead of it (at most one, register or stack). The pad is a piece of its
-        # own so the flattened kind sequence carries it: the backend advances the
-        # matching counter over it without moving data, and the aggregate's own
-        # pieces then land where the standard places them.
+        # A convention that aligns an aggregate reports the pad it reserved ahead
+        # of it: one register, or as many stack eightbytes as it took to reach
+        # the aggregate's boundary (up to seven for a 64-aligned one on System
+        # V). Each pad is a piece of its own so the flattened kind sequence
+        # carries it: the backend advances the matching counter over it without
+        # moving data, and the aggregate's own pieces then land where the
+        # standard places them.
         return [PAD_GP_PIECE] + data if pad_gp.positive?
-        return [PAD_STACK_PIECE] + data if pad_stack.positive?
 
-        data
+        Array.new(pad_stack, PAD_STACK_PIECE) + data
       end
 
       # Reassembles a struct parameter from its incoming ABI slots into a fresh
@@ -2418,12 +2423,12 @@ module Rubycc
       def emit_va_arg_aggregate_system_v(ap, type, plan, result_addr)
         tag = @convention.va_list_tag
         overflow_disp = tag.member("overflow_arg_area").offset
-        # A register-class plan with no pieces at all (every eightbyte NO_CLASS)
-        # asks the caller's placer for no register, and the placer sends it to
-        # the stack like a MEMORY aggregate (Placer#place), so it is taken from
-        # there too.
-        if plan.mode == :memory || plan.pieces.empty?
-          take_from_stack_area(ap, overflow_disp, type, plan.align16, result_addr)
+# A register-class plan with no pieces at all (every eightbyte NO_CLASS)
+# asks the caller's placer for no register, and the placer sends it to
+# the stack like a MEMORY aggregate (Placer#place), so it is taken from
+# there too.
+if plan.mode == :memory || plan.pieces.empty?
+  take_from_stack_area(ap, overflow_disp, type, plan.stack_alignment, result_addr)
           return
         end
 
@@ -2463,7 +2468,7 @@ module Rubycc
         emit(:jump, a: end_label)
 
         emit(:label, a: overflow_label)
-        take_from_stack_area(ap, overflow_disp, type, plan.align16, result_addr)
+        take_from_stack_area(ap, overflow_disp, type, plan.stack_alignment, result_addr)
         emit(:label, a: end_label)
       end
 
@@ -2522,7 +2527,7 @@ module Rubycc
         emit(:lt, dst: below, a: offs, b: zero)
         emit(:jump_if_zero, a: below, b: overflow_label)
 
-        offs = align_up16(offs) if plan.align16
+        offs = align_up(offs, 16) if plan.align16
         new_offs = bump(offs, step * plan.pieces.size)
         emit(:store, a: offs_field, b: new_offs, size: 4)
         fits = new_vreg
@@ -2555,32 +2560,37 @@ module Rubycc
         # ceil(size/8) eightbytes (an HFA included — see
         # CallConvention.memory_pieces).
         emit(:label, a: overflow_label)
-        take_from_stack_area(ap, tag.member("__stack").offset, type, plan.align16, result_addr)
+        take_from_stack_area(ap, tag.member("__stack").offset, type, plan.stack_alignment, result_addr)
         emit(:label, a: end_label)
       end
 
       # Takes an aggregate from the stack argument area whose next-argument
       # pointer is the tag field at `disp` (System V's overflow_arg_area,
       # AAPCS64's __stack): the value is there in its own layout, so its
-      # address is that pointer — first rounded up to 16 for a 16-byte aligned
-      # aggregate, which both conventions start on a 16-byte boundary — and the
-      # pointer then steps past ceil(size/8) eightbytes.
-      def take_from_stack_area(ap, disp, type, align16, result_addr)
+      # address is that pointer — first rounded up to the aggregate's
+      # `stack_alignment` when that is past the area's own eight (16 for a
+      # 16-byte aligned aggregate on either convention, 32 or 64 for an
+      # over-aligned System V MEMORY one) — and the pointer then steps past
+      # ceil(size/8) eightbytes. The rounding is of the pointer itself, which
+      # is only right because a caller keeps the whole area aligned that far
+      # (see SystemVAMD64Convention::Placer#area_alignment).
+      def take_from_stack_area(ap, disp, type, stack_alignment, result_addr)
         field = offset_address(ap, disp)
         addr = new_vreg
         emit(:load, dst: addr, a: field, size: 8)
-        addr = align_up16(addr, size: 8) if align16
+        addr = align_up(addr, stack_alignment, size: 8) if stack_alignment > 8
         emit(:copy, dst: result_addr, a: addr)
         emit(:store, a: field, b: bump(addr, round_up_to_eightbyte(type.size), size: 8), size: 8)
       end
 
-      # A vreg holding `value` rounded up to a multiple of 16, at 32-bit width
-      # (a signed save-area offset) or 64-bit (`size` 8, a pointer).
-      def align_up16(value, size: nil)
+      # A vreg holding `value` rounded up to a multiple of `alignment` (a power
+      # of two), at 32-bit width (a signed save-area offset) or 64-bit (`size`
+      # 8, a pointer).
+      def align_up(value, alignment, size: nil)
         mask = new_vreg
-        emit(:const, dst: mask, a: -16, size: size)
+        emit(:const, dst: mask, a: -alignment, size: size)
         aligned = new_vreg
-        emit(:and, dst: aligned, a: bump(value, 15, size: size), b: mask, size: size)
+        emit(:and, dst: aligned, a: bump(value, alignment - 1, size: size), b: mask, size: size)
         aligned
       end
 
@@ -4391,11 +4401,11 @@ module Rubycc
       def gen_direct_call(node, name, sig = @signatures[name])
         plumb = struct_return_plumbing(sig[:return_type])
         variadic = sig[:variadic] || !sig[:prototyped]
-        args = lower_call_arguments(node, sig[:param_types], variadic, name, plumb[:hidden])
+        args, area_alignment = lower_call_arguments(node, sig[:param_types], variadic, name, plumb[:hidden])
         fixed = variadic ? sig[:param_types].size : nil
         emit_call_result(plumb, sig[:return_type]) do |dst|
           emit(:call, dst: dst, a: name, b: args,
-                      size: call_size(fixed, call_ret_descriptor(sig[:return_type], plumb)))
+                      size: call_size(fixed, call_ret_descriptor(sig[:return_type], plumb), area_alignment))
         end
       end
 
@@ -4422,11 +4432,12 @@ module Rubycc
         func_type = called_function_type(callee_type, node.token)
         plumb = struct_return_plumbing(func_type.return_type)
         variadic = func_type.variadic || !func_type.prototyped
-        args = lower_call_arguments(node, func_type.param_types, variadic, nil, plumb[:hidden])
+        args, area_alignment = lower_call_arguments(node, func_type.param_types, variadic, nil, plumb[:hidden])
         fixed = variadic ? func_type.param_types.size : nil
         emit_call_result(plumb, func_type.return_type) do |dst|
           emit(:call_indirect, dst: dst, a: target, b: args,
-                               size: call_size(fixed, call_ret_descriptor(func_type.return_type, plumb)))
+                               size: call_size(fixed, call_ret_descriptor(func_type.return_type, plumb),
+                                               area_alignment))
         end
       end
 
@@ -4492,10 +4503,18 @@ module Rubycc
       # halves are. `fixed` is the callee's fixed parameter count for a variadic
       # call (nil otherwise), which the backend turns into the al = xmm-count the
       # ABI wants; `ret` is the return descriptor from #call_ret_descriptor.
-      def call_size(fixed, ret)
-        return nil if fixed.nil? && ret.nil?
+      #
+      # A third element, `area_alignment`, is appended only when the stack
+      # argument area has to start on a boundary past the ABI's 16 (a System V
+      # MEMORY aggregate aligned to 32 or 64 is on the stack; see
+      # SystemVAMD64Convention::Placer#area_alignment), so every other call's
+      # descriptor keeps its old shape.
+      def call_size(fixed, ret, area_alignment = 16)
+        over_aligned = area_alignment > 16
+        return nil if fixed.nil? && ret.nil? && !over_aligned
+        return [fixed, ret] unless over_aligned
 
-        [fixed, ret]
+        [fixed, ret, area_alignment]
       end
 
       # The FunctionType a call's callee names, or a diagnostic when the callee
@@ -4528,6 +4547,11 @@ module Rubycc
       # what lets an aggregate be taken apart in the shape it actually travels
       # in (its convention's register pieces, or plain eightbytes when it
       # spills) without holding its loads back behind the rest of the list.
+      #
+      # Returns [args, area_alignment]: the [vreg, kind] pairs, and the
+      # boundary the placer found the stack argument area has to start on
+      # (see SystemVAMD64Convention::Placer#area_alignment), which rides on the
+      # call's size descriptor when it is past the ABI's 16 (#call_size).
       def lower_call_arguments(node, param_types, variadic, name, hidden)
         callee_desc = name ? "function '#{name}'" : "function pointer"
         fixed = param_types.size
@@ -4553,7 +4577,7 @@ module Rubycc
             end
           )
         end
-        args
+        [args, placer.area_alignment]
       end
 
       # Lowers a fixed (named-parameter) argument to its [vreg, kind] ABI slot
@@ -4740,7 +4764,7 @@ module Rubycc
                                                      align16: plan.align16,
                                                      mem_eightbytes: eightbytes))
         pieces = placement == :stack ? CallConvention.memory_pieces(LONG_DOUBLE_IMAGE_SIZE) : plan.pieces
-        pieces = [PAD_STACK_PIECE] + pieces if placer.pad_stack.positive?
+        pieces = Array.new(placer.pad_stack, PAD_STACK_PIECE) + pieces
         pieces.map do |piece|
           next [nil, piece.kind] if pad_piece?(piece.kind)
           next [base, piece.kind] if piece.kind == :sse16
@@ -5463,8 +5487,8 @@ module Rubycc
       end
 
       # Whether an ABI piece is an alignment pad — a slot that consumes an
-      # integer register (:pad) or a stack eightbyte (:pad_stack) so a 16-byte
-      # aligned aggregate begins on an aligned boundary, but carries no data.
+      # integer register (:pad) or a stack eightbyte (:pad_stack) so an
+      # over-aligned aggregate begins on an aligned boundary, but carries no data.
       # The reassembly and disassembly of an aggregate skip it, while the
       # backend's sequential placement still advances its counter over it.
       def pad_piece?(kind)

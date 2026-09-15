@@ -155,9 +155,10 @@ module Rubycc
         case op
         when :call, :call_indirect
           inst.b.each { |vreg, kind| blocked[vreg] = true if vreg && VECTOR_KIND[kind] }
-          # `size` is the [fixed, ret] descriptor; a :sse4/:sse8 result comes
-          # back in xmm0 and is written to dst's slot with movss/movsd.
-          blocked[inst.dst] = true if !inst.dst.nil? && VECTOR_KIND[inst.size&.last]
+          # `size` is the [fixed, ret(, area_alignment)] descriptor; a
+          # :sse4/:sse8 result comes back in xmm0 and is written to dst's slot
+          # with movss/movsd.
+          blocked[inst.dst] = true if !inst.dst.nil? && VECTOR_KIND[inst.size&.[](1)]
         when :ret
           # An integer return's `size` is nil and a struct's an AbiPiece array;
           # only a float/double return carries a width, and that one is read out

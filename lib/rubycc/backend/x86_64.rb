@@ -348,9 +348,10 @@ module Rubycc
             store_reg(EAX, i)
             next_stack += 1
           when :pad_stack
-            # A 16-alignment pad occupies one incoming stack eightbyte with no
+            # An alignment pad occupies one incoming stack eightbyte with no
             # bound parameter, so its slot is left unwritten and only the counter
-            # advances (see the caller's matching gap in #emit_call_args).
+            # advances (see the caller's matching gap in #emit_call_args). A
+            # 32/64-aligned aggregate is preceded by as many as it took.
             next_stack += 1
           else
             raise "unknown parameter kind #{kind.inspect}"
@@ -538,13 +539,14 @@ module Rubycc
       # adjustment, and read the result back (see #store_call_result). `size` is
       # the [fixed, ret] descriptor (or nil).
       def emit_call(dst, name, args, size)
-        fixed, ret = size || [nil, nil]
-        reclaim, sse_count = emit_call_args(args)
+        fixed, ret, area_alignment = size || [nil, nil, nil]
+        reclaim, sse_count = emit_call_args(args, area_alignment)
         emit_variadic_al(fixed, sse_count)
         emit(0xE8)                          # call rel32
         @relocations << { kind: :call, offset: @code.bytesize, symbol: name }
         emit_bytes([0].pack("l<"))          # linker patches this via R_X86_64_PLT32
         emit_reclaim_stack_args(reclaim)
+        emit_restore_realigned_rsp if area_alignment
         store_call_result(dst, ret)
       end
 
@@ -555,12 +557,13 @@ module Rubycc
       # comes after the r10 load so it lands right before the call, and r10 (a
       # distinct register) is not disturbed by it.
       def emit_call_indirect(dst, target_vreg, args, size)
-        fixed, ret = size || [nil, nil]
-        reclaim, sse_count = emit_call_args(args)
+        fixed, ret, area_alignment = size || [nil, nil, nil]
+        reclaim, sse_count = emit_call_args(args, area_alignment)
         load_reg(R10, target_vreg)          # mov r10, [rbp + disp]
         emit_variadic_al(fixed, sse_count)
         emit(0x41, 0xFF, 0xD2)              # call r10
         emit_reclaim_stack_args(reclaim)
+        emit_restore_realigned_rsp if area_alignment
         store_call_result(dst, ret)
       end
 
@@ -648,13 +651,30 @@ module Rubycc
       # pushed first so rsp stays 16-aligned at the call, as the ABI requires (the
       # prologue already leaves it 16-aligned). All arguments live in rbp-relative
       # slots, so the rsp changes never disturb a not-yet-loaded one.
-      def emit_call_args(args)
+      #
+      # `area_alignment` (nil, or 32/64 from the call's size descriptor) asks
+      # for more than the 16 the frame provides: a stacked argument aligned
+      # that far must sit on such a boundary in absolute terms, since the
+      # callee's va_arg rounds the pointer rather than the offset. rsp is
+      # saved in rax (no argument is loaded yet), rounded down to the
+      # boundary, and the saved value pushed just under it; the pad under that
+      # is chosen so the area below comes out aligned. The caller undoes it
+      # with #emit_restore_realigned_rsp once the pushed area is reclaimed.
+      def emit_call_args(args, area_alignment = nil)
         gp_args, sse_args, stack_args = classify_call_args(args)
-        pad = stack_args.size.odd? ? 8 : 0
+        if area_alignment
+          emit(0x48, 0x89, 0xE0)            # mov rax, rsp
+          emit(0x48, 0x81, 0xE4)            # and rsp, imm32 (sign-extended)
+          emit_bytes([-area_alignment].pack("l<"))
+          emit(0x50)                        # push rax (the rsp to come back to)
+          pad = -(8 + stack_args.size * 8) % area_alignment
+        else
+          pad = stack_args.size.odd? ? 8 : 0
+        end
         emit_sub_rsp(pad) if pad.positive?
         stack_args.reverse_each do |vreg|
           if vreg == :pad_stack
-            emit_sub_rsp(8)                 # reserve a 16-alignment gap, no value stored
+            emit_sub_rsp(8)                 # reserve an alignment gap, no value stored
           else
             load_reg(EAX, vreg)             # rax = argument value (whole eightbyte)
             emit(0x50)                      # push rax
@@ -695,9 +715,10 @@ module Rubycc
           when :mem
             stack_args << vreg
           when :pad_stack
-            # A 16-alignment pad is a stack eightbyte carrying no value; it holds
+            # An alignment pad is a stack eightbyte carrying no value; it holds
             # its place in the stacked-argument order so the aggregate behind it
-            # lands on a 16-byte boundary (see the gap in #emit_call_args).
+            # lands on its 16/32/64-byte boundary (see the gap in
+            # #emit_call_args).
             stack_args << :pad_stack
           else
             raise "unknown call argument kind #{kind.inspect}"
@@ -713,6 +734,14 @@ module Rubycc
 
         emit(0x48, 0x81, 0xC4)              # add rsp, imm32
         emit_bytes([bytes].pack("L<"))
+      end
+
+      # Returns rsp to where it was before #emit_call_args realigned it for an
+      # over-aligned stack argument area. Once the pushed area and its pad are
+      # reclaimed, rsp points at the saved value, so "mov rsp, [rsp]" is the
+      # whole restore; rax and xmm0 (the result) are left alone.
+      def emit_restore_realigned_rsp
+        emit(0x48, 0x8B, 0x24, 0x24)        # mov rsp, [rsp]
       end
 
       # sub rsp, imm32 — reserves `bytes` of stack space (the pre-call alignment
@@ -1352,7 +1381,7 @@ module Rubycc
       def emit_va_start(ap_vreg, _named)
         gp_named = @param_kinds.count(:gp)
         sse_named = @param_kinds.count(:sse4) + @param_kinds.count(:sse8)
-        # A 16-alignment pad consumes a stacked slot like a spilled named
+        # An alignment pad consumes a stacked slot like a spilled named
         # parameter, so the variable part begins past it too.
         stack_named = @param_kinds.count(:mem) + @param_kinds.count(:pad_stack)
 

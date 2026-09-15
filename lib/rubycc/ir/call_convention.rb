@@ -53,14 +53,31 @@ module Rubycc
     # so a `struct { long a, b; } __attribute__((aligned(16)))` is 16-aligned on
     # an x86-64 stack but neither pair-rounded nor 16-aligned on aarch64
     # (measured 2026-09-14, gcc 13.3 on both).
-    AggregatePlan = Data.define(:mode, :pieces, :align16)
+    #
+    # `stack_alignment` is the byte boundary the aggregate's slot in the stack
+    # argument area starts on (8 for an ordinary one, 16 with align16). Only
+    # System V ever asks for more than 16: it places a MEMORY aggregate aligned
+    # to 32 or 64 on a slot of that alignment, and its va_arg rounds the
+    # overflow pointer up the same way (measured 2026-09-15, gcc 13.3). AAPCS64
+    # never does, since anything that large travels by reference there, so it
+    # leaves the field to default from align16.
+    AggregatePlan = Data.define(:mode, :pieces, :align16, :stack_alignment) do
+      def initialize(mode:, pieces:, align16:, stack_alignment: align16 ? 16 : 8)
+        super
+      end
+    end
 
     # One argument as the placement pass sees it: the candidate kind of each of
-    # its ABI slots, whether its aggregate is 16-byte aligned, and how many
+    # its ABI slots, whether its aggregate is 16-byte aligned, the boundary its
+    # stack slot starts on (see AggregatePlan#stack_alignment), and how many
     # stack eightbytes it occupies should it spill (ceil(size/8), so the placer
-    # can track the stack offset a 16-byte-aligned aggregate must be padded up
+    # can track the stack offset an over-aligned aggregate must be padded up
     # to). Placement only ever needs to count and align, never to know a C type.
-    ArgumentRequest = Data.define(:kinds, :align16, :mem_eightbytes)
+    ArgumentRequest = Data.define(:kinds, :align16, :mem_eightbytes, :stack_alignment) do
+      def initialize(kinds:, align16:, mem_eightbytes:, stack_alignment: align16 ? 16 : 8)
+        super
+      end
+    end
 
     # The part of a target's calling convention the IR generator has to know
     # about, so that where every argument lands is decided once — where the
@@ -192,9 +209,19 @@ module Rubycc
         # is placed on a 16-byte-aligned stack slot when it spills, so its plan
         # carries the alignment for the placer to pad NSAA up to — even for a
         # MEMORY-class aggregate, whose stack slot the psABI aligns the same way.
+        #
+        # The rule does not stop at 16. gcc 13.3 starts a 32- or 64-aligned
+        # MEMORY aggregate (an aligned(N) type attribute or an _Alignas(N)
+        # member alike) at an argument-area offset that is a multiple of N:
+        # after one to three stacked longs, a 32-aligned one sits at offset 32
+        # and a 64-aligned one at 64, fixed or variadic (measured 2026-09-15).
+        # Such an aggregate is at least N bytes long, so it is always MEMORY
+        # class and never reaches the register branch below.
         align16 = type.alignment >= 16
+        stack_alignment = [type.alignment, 8].max
         if size > 16 || unaligned_field?(type, 0)
-          return AggregatePlan.new(mode: :memory, pieces: CallConvention.memory_pieces(size), align16: align16)
+          return AggregatePlan.new(mode: :memory, pieces: CallConvention.memory_pieces(size), align16: align16,
+                                   stack_alignment: stack_alignment)
         end
 
         eightbytes = Array.new((size + 7) / 8, nil)
@@ -324,6 +351,7 @@ module Rubycc
           @next_sse = 0
           @nsaa = 0        # next stacked argument, counted in eightbytes
           @pad_stack = 0
+          @area_alignment = 16
         end
 
         # System V has no even-register-pair rule — a 16-byte argument takes two
@@ -333,11 +361,22 @@ module Rubycc
           0
         end
 
-        # One stack eightbyte the most recent #place reserved to 16-align a
-        # spilled 16-byte-aligned argument (the psABI aligns a stacked argument to
-        # its natural alignment, so an __int128 that overflowed the registers onto
-        # an odd stack offset starts a slot later). Zero otherwise.
+        # How many stack eightbytes the most recent #place reserved to align a
+        # spilled over-aligned argument (the psABI aligns a stacked argument to
+        # its alignment, so an __int128 that overflowed the registers onto an
+        # odd stack offset starts one slot later, and a 32-aligned aggregate
+        # behind a single stacked long starts three later). Zero otherwise.
         attr_reader :pad_stack
+
+        # The boundary the whole stack argument area must start on at the call
+        # for every argument placed so far to be aligned in absolute terms: the
+        # ABI's 16, raised by any spilled argument aligned to more. Offsets
+        # alone are not enough past 16, because the callee's va_arg rounds the
+        # overflow *pointer* up to the aggregate's alignment — gcc 13.3 realigns
+        # its caller's frame so that pointer and the offset agree (measured
+        # 2026-09-15), and a caller that left the area merely 16-aligned would
+        # have its argument read from the wrong place.
+        attr_reader :area_alignment
 
         # :registers when the argument takes the registers its request asks for,
         # :stack when it passes in the overflow area. A request that is already
@@ -353,8 +392,10 @@ module Rubycc
                    !(@next_gp + need_gp <= @convention.gp_registers &&
                      @next_sse + need_sse <= @convention.fp_registers)
           if spills
-            @pad_stack = 1 if request.align16 && @nsaa.odd?
+            slot_eightbytes = request.stack_alignment / 8
+            @pad_stack = -@nsaa % slot_eightbytes
             @nsaa += @pad_stack + request.mem_eightbytes
+            @area_alignment = [@area_alignment, request.stack_alignment].max
             return :stack
           end
 
@@ -529,6 +570,14 @@ module Rubycc
         # pad slot, so the backend's sequential register/stack handout skips the
         # same place the standard reserves.
         attr_reader :pad_gp, :pad_stack
+
+        # The boundary the stack argument area starts on at the call. No
+        # argument here is aligned past 16 on the stack (an aggregate large
+        # enough to be travels by reference), so it is always the standard's
+        # 16; see the System V placer's for when it is not.
+        def area_alignment
+          16
+        end
 
         def place(request)
           @pad_gp = 0

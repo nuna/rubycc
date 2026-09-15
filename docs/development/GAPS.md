@@ -20,7 +20,6 @@
 | **AT**([issue](../../issues/typeof-operator.md)) | **`typeof`(GNU 拡張、C23 で標準化)を受け付けない**。未宣言の関数として報告される | `algorithms` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
 | **BI**([issue](../../issues/aarch64-cross-sysroot-include.md)) | **x86-64 ホストで `-target aarch64` のとき、同梱していないシステムヘッダをクロス sysroot(`/usr/aarch64-linux-gnu/include`)から探さない**。ホストの x86-64 版 `/usr/include/netdb.h` を読んで `bits/stdint-uintn.h` で落ちる | x86-64 ホストでの aarch64 クロステスト。`<netdb.h>` を含むコードを aarch64 で検証できない。**対照の `aarch64-linux-gnu-gcc` は通る** | **実測**(2026-09-14、`#include <netdb.h>` の最小再現)。ネイティブ aarch64 ホストは未測定 | sysroot を決め打ちにするか、クロス gcc に問い合わせるかを決める |
 | **BQ**([issue](../../issues/aligned-attribute-member-typedef.md)) | **メンバの宣言子と typedef 名に付けた `aligned` 属性を捨てる**。`struct { long a __attribute__((aligned(16))); long b; }` の整列が gcc は 16、rubycc は 8。診断は出ない | 構造体の配置が gcc とずれ、gcc でコンパイルしたコードと構造体をやり取りすると壊れる。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、`_Alignof` の最小再現) | メンバ・typedef・変数の宣言子の属性をまとめて gcc と突き合わせる |
-| **BR**([issue](../../issues/sysv-over-aligned-aggregate-stack.md)) | **x86-64 で 32 バイト整列の集約を値で渡すと、スタックの置き場所が gcc とずれる**(gcc は 32 境界、rubycc は 16 まで) | 32 バイト以上に揃えた構造体を gcc の関数と値渡しするコード。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、`aapcs64-aligned-attribute-aggregate-1` の行列の x86-64 側) | 固定引数と `va_arg` の両方で 32 / 64 境界を gcc に合わせる |
 | **BO**([issue](../../issues/glibc-alloca-without-gnuc.md)) | **glibc 本体の `<alloca.h>` を読む経路で、`alloca` がリンク時に未定義参照になる**(glibc は `__GNUC__` のときだけ組み込みに写し、rubycc は `__GNUC__` を定義しない) | aarch64 のクロス sysroot を使う例題テストなど、同梱ヘッダより先に glibc 本体の `<alloca.h>` を読む構成。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、例題に `alloca` を入れて aarch64 で) | どの経路で glibc 本体の `<alloca.h>` を読むかを先に測る |
 | **BP**([issue](../../issues/glibc-public-headers-mixed.md)) | **同梱しない glibc の公開ヘッダ 186 本のうち、rubycc だけが落ちるものが 23 本ある**(`__BEGIN_DECLS` が無いように見える形が多い) | それらのヘッダを含む gem。該当する gem は数えていない | **実測**(2026-09-14、`tools/audit_bundled_headers.rb` の混在の調査、x86-64) | 23 本の原因を最小再現で確かめ、同梱ヘッダの側と rubycc 本体の側に分ける |
 | **BT**([issue](../../issues/function-pointer-void-pointer-init.md)) | **関数を `void *` に暗黙に変換する初期化を拒否する**(`incompatible types in initialization`)。gcc は既定では警告もせず、`-pedantic` のときだけ警告する | 同梱の SQLite(amalgamation)を持つ gem。`amalgalite` 2.0.0 の `sqlite3.c:135127` が該当し、**対照の gcc は通る** | **実測**(2026-09-14、最小再現) | **受け付けるか拒否を保つかが未決**。AN(gcc 13 が警告にとどめる診断)より gcc との差が大きい |
@@ -54,6 +53,8 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ BR**(x86-64 で 32 バイト整列の集約のスタックの置き場所がずれる):
+  `sysv-over-aligned-aggregate-stack-1` で解消。`AggregatePlan` に `stack_alignment` を持たせ、スタック引数領域の整列(`:pad_stack` の連続と呼び出し側の rsp の切り上げ)と `va_arg` の切り上げに通した。
 - **ギャップ BU**(同梱 `unistd.h` にプロセスグループの関数が無い):
   `bundled-unistd-process-group-1` で解消。突き合わせの表から `unistd.h` の不足 90 件を分類し、30 件を足して 60 件は理由付きで見送った。
   足した宣言は、glibc 本体の `<unistd.h>` の直前で再宣言して衝突しないことを両 arch で確かめた。

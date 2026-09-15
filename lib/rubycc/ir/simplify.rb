@@ -176,10 +176,11 @@ module Rubycc
           # Each argument is a [vreg, kind] pair, whose vreg is nil for an
           # alignment pad; an indirect call also reads its target, and a struct
           # result read back in registers is scattered into a buffer whose
-          # address is a further read (the second half of the size pair).
+          # address is a further read (the `ret` element of the size
+          # descriptor, [fixed, ret] or [fixed, ret, area_alignment]).
           inst.b.each { |vreg, _kind| yield vreg unless vreg.nil? }
           yield inst.a if inst.op == :call_indirect
-          ret = inst.size&.last
+          ret = inst.size&.[](1)
           yield ret.first if ret.is_a?(Array)
         when :ret
           a = inst.a
