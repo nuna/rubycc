@@ -127,7 +127,8 @@ module Rubycc
     #                           slot's low bits carrying its value). A by-value
     #                           struct argument fans out into one [vreg, kind] pair
     #                           per piece its convention cuts it into (a System V
-    #                           eightbyte's class :gp/:sse8, an AAPCS64 HFA
+    #                           eightbyte's class :gp/:sse8 and no pair at all for
+    #                           a NO_CLASS eightbyte of padding only, an AAPCS64 HFA
     #                           member's :sse4/:sse8, or :mem per eightbyte when it
     #                           spills whole), all placed together so the argument
     #                           stays in registers or spills as a unit; an

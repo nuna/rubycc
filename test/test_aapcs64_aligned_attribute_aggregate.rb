@@ -69,17 +69,15 @@ class TestAapcs64AlignedAttributeAggregate < Minitest::Test
      "v.a = s * 59; v.b = s + 61;", 16],
   ].freeze
 
-  # Two System V gaps, neither the AAPCS64 rule this file pins, keep shapes
-  # off the x86-64 half (both measured 2026-09-14 against gcc 13.3):
-  #  * attr32 / alignas32: gcc puts a 32-byte-aligned MEMORY aggregate on a
-  #    32-aligned stack slot (after one stacked long it starts at rsp+32, and
-  #    its va_arg rounds the overflow pointer up to 32); rubycc aligns spilled
-  #    arguments to at most 16.
-  #  * f2_attr: its second eightbyte is all padding. gcc gives that eightbyte
-  #    no register (a variadic call of two f2_attr sets %al = 2, one xmm
-  #    each); rubycc classes it SSE, so its va_arg steps over two xmm slots
-  #    and reads the next f2_attr from the wrong one. Fixed arguments agree.
-  X86_64_EXCLUDED = %w[attr32 alignas32 f2_attr].freeze
+  # A System V gap, not the AAPCS64 rule this file pins, keeps two shapes off
+  # the x86-64 half (measured 2026-09-14 against gcc 13.3): gcc puts a
+  # 32-byte-aligned MEMORY aggregate (attr32 / alignas32) on a 32-aligned
+  # stack slot (after one stacked long it starts at rsp+32, and its va_arg
+  # rounds the overflow pointer up to 32); rubycc aligns spilled arguments to
+  # at most 16. f2_attr, whose second eightbyte is all padding, runs on both
+  # halves since sysv-padding-eightbyte-class-1 gave that eightbyte no
+  # register (test_sysv_padding_eightbyte_class.rb covers it in depth).
+  X86_64_EXCLUDED = %w[attr32 alignas32].freeze
 
   # Long arguments ahead of the aggregate. On aarch64, 0..6 leave room for a
   # pair (odd and even NGRN), 7 cannot fit one, and 8 and 9 put it on the

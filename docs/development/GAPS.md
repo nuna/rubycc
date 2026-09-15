@@ -21,11 +21,11 @@
 | **BI**([issue](../../issues/aarch64-cross-sysroot-include.md)) | **x86-64 ホストで `-target aarch64` のとき、同梱していないシステムヘッダをクロス sysroot(`/usr/aarch64-linux-gnu/include`)から探さない**。ホストの x86-64 版 `/usr/include/netdb.h` を読んで `bits/stdint-uintn.h` で落ちる | x86-64 ホストでの aarch64 クロステスト。`<netdb.h>` を含むコードを aarch64 で検証できない。**対照の `aarch64-linux-gnu-gcc` は通る** | **実測**(2026-09-14、`#include <netdb.h>` の最小再現)。ネイティブ aarch64 ホストは未測定 | sysroot を決め打ちにするか、クロス gcc に問い合わせるかを決める |
 | **BQ**([issue](../../issues/aligned-attribute-member-typedef.md)) | **メンバの宣言子と typedef 名に付けた `aligned` 属性を捨てる**。`struct { long a __attribute__((aligned(16))); long b; }` の整列が gcc は 16、rubycc は 8。診断は出ない | 構造体の配置が gcc とずれ、gcc でコンパイルしたコードと構造体をやり取りすると壊れる。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、`_Alignof` の最小再現) | メンバ・typedef・変数の宣言子の属性をまとめて gcc と突き合わせる |
 | **BR**([issue](../../issues/sysv-over-aligned-aggregate-stack.md)) | **x86-64 で 32 バイト整列の集約を値で渡すと、スタックの置き場所が gcc とずれる**(gcc は 32 境界、rubycc は 16 まで) | 32 バイト以上に揃えた構造体を gcc の関数と値渡しするコード。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、`aapcs64-aligned-attribute-aggregate-1` の行列の x86-64 側) | 固定引数と `va_arg` の両方で 32 / 64 境界を gcc に合わせる |
-| **BS**([issue](../../issues/sysv-padding-eightbyte-class.md)) | **x86-64 で後半が詰め物だけの集約を可変長引数に渡すと、xmm を 1 つ余分に使う**(gcc は後半にレジスタを割り当てない) | `struct { float a, b; } __attribute__((aligned(16)))` のような形を可変長で gcc とやり取りするコード。固定引数は一致。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、同上) | メンバの無い eightbyte の分類(psABI の NO_CLASS)を確かめてから直す |
 | **BO**([issue](../../issues/glibc-alloca-without-gnuc.md)) | **glibc 本体の `<alloca.h>` を読む経路で、`alloca` がリンク時に未定義参照になる**(glibc は `__GNUC__` のときだけ組み込みに写し、rubycc は `__GNUC__` を定義しない) | aarch64 のクロス sysroot を使う例題テストなど、同梱ヘッダより先に glibc 本体の `<alloca.h>` を読む構成。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、例題に `alloca` を入れて aarch64 で) | どの経路で glibc 本体の `<alloca.h>` を読むかを先に測る |
 | **BP**([issue](../../issues/glibc-public-headers-mixed.md)) | **同梱しない glibc の公開ヘッダ 186 本のうち、rubycc だけが落ちるものが 23 本ある**(`__BEGIN_DECLS` が無いように見える形が多い) | それらのヘッダを含む gem。該当する gem は数えていない | **実測**(2026-09-14、`tools/audit_bundled_headers.rb` の混在の調査、x86-64) | 23 本の原因を最小再現で確かめ、同梱ヘッダの側と rubycc 本体の側に分ける |
 | **BT**([issue](../../issues/function-pointer-void-pointer-init.md)) | **関数を `void *` に暗黙に変換する初期化を拒否する**(`incompatible types in initialization`)。gcc は既定では警告もせず、`-pedantic` のときだけ警告する | 同梱の SQLite(amalgamation)を持つ gem。`amalgalite` 2.0.0 の `sqlite3.c:135127` が該当し、**対照の gcc は通る** | **実測**(2026-09-14、最小再現) | **受け付けるか拒否を保つかが未決**。AN(gcc 13 が警告にとどめる診断)より gcc との差が大きい |
 | **BU**([issue](../../issues/bundled-unistd-process-group.md)) | **同梱 `unistd.h` に `tcgetpgrp` などプロセスグループの関数が無い** | `ruby-termios` 1.1.0 の `termios.c:565` が該当し(BA を越えた先)、**対照の gcc は通る** | **実測**(2026-09-14、最小再現) | §2 の同梱ヘッダの分類で `unistd.h` をまとめて見る |
+| **BV**([issue](../../issues/sysv-unnamed-bitfield-class.md)) | **x86-64 の分類が、名前の無いビットフィールドの記憶域を数えない**。gcc は INTEGER に数えるが、rubycc は `Member` を作らないので見ない | 名前の無いビットフィールドを持つ構造体を、gcc でコンパイルしたコードと値でやり取りするコード。**実在の gem ではまだ見ていない** | **実測**(2026-09-16、2 翻訳単位の最小再現で値が壊れる) | 名前の無いビットフィールドは記憶域を占めるので、詰め物(BS)とは別に数える |
 
 ## 2. 未解消の負債
 
@@ -55,6 +55,9 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ BS**(x86-64 で後半が詰め物だけの集約が xmm を余分に使う):
+  `sysv-padding-eightbyte-class-1` で解消。どのフィールドも掛からない eightbyte(NO_CLASS)はピースを作らず、レジスタを取らない。
+  固定引数でも 1 レジスタずれていたことが、集約の後に double を置く形で分かった。
 - **ギャップ BK**(AArch64 で型属性 `aligned(16)` の構造体の置き場所が gcc とずれる):
   `aapcs64-aligned-attribute-aggregate-1` で解消。AAPCS64 の偶数レジスタへの切り上げとスタックの 16 境界を、集約そのものの属性を除いた「メンバの整列」で決めるようにした。
   規則は gcc 13.3 の測定から導いた(AAPCS64 の文書は読んでいない)。

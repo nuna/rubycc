@@ -16931,3 +16931,101 @@ return AggregatePlan.new(mode: :registers, pieces: pieces, align16: natural_alig
   `test/test_atomic_builtins.rb` 45 runs、`test/test_diagnostics.rb` 238 runs、
   `test/test_execution_harness.rb` 244 runs、`test/test_gcc_builtins.rb` 22 runs、
   `test/test_parser.rb` 332 runs、`test/test_type.rb` 92 runs
+
+## sysv-padding-eightbyte-class-1 — System V で、詰め物だけの eightbyte にレジスタを割り当てない(GAPS BS)
+
+### 原因
+
+System V の分類(psABI 3.2.3)では、どのフィールドも掛からない eightbyte は NO_CLASS になる。
+rubycc の `SystemVAMD64Convention#aggregate_plan` は NO_CLASS の eightbyte を「SSE とみなす」として
+`:sse8` のピースを作っていたので、後半が詰め物だけの集約(`struct { float a, b; } __attribute__((aligned(16)))`
+など)は xmm を 1 個余分に使っていた。gcc はその eightbyte にレジスタを割り当てない。
+
+ピースの列は、呼び出し側の読み出し(`lower_struct_argument`)・呼ばれ側の組み立て(`bind_struct_parameter`)・
+戻り値(バックエンドの `each_return_eightbyte`)・placer のレジスタ数・`%al`(バックエンドが数える `:sse8` の数)・
+`va_arg` の GP / SSE の数の全部が読むので、分類の 1 箇所の食い違いが、そのまま 6 箇所の食い違いになっていた。
+
+### 対処
+
+- `SystemVAMD64Convention#aggregate_plan` は、クラスの付かなかった eightbyte のピースを作らないようにした
+  (`filter_map`)。残るピースは自分のオフセットを保つので、上記の 6 箇所は追加の変更なしで揃う
+- スタックに溢れたときは従来どおり `CallConvention.memory_pieces(size)` で ceil(size/8) 個の eightbyte
+  (詰め物を含む)を積む。gcc も 16 バイトを積む(8 個の double の後の行で一致)
+- ピースが 1 個も無い(全 eightbyte が NO_CLASS の)集約: placer は空の要求を従来どおりスタック行きにする
+  (`kinds.all?(:mem)` は空で真)。`emit_va_arg_aggregate_system_v` はこれまでレジスタ側に分岐して何も読まず、
+  呼び出し側と食い違うので、MEMORY と同じくスタックから取るようにした。大きさ 0 なら 0 eightbyte で何も動かない
+- AArch64 は変えていない(`AAPCS64Convention` は eightbyte 分類を使わない)。新しいテストの aarch64 側と
+  `test_examples_aarch64.rb` で変わらないことを確かめた
+- IR の契約は変わらない(「集約はピースごとに 1 スロット」のまま)。System V で詰め物だけの eightbyte が
+  ピースを持たないことを `ir.rb` の `:call` の説明と `docs/internals/IR.md` の `param_count` に書き足した
+
+### 測定行列
+
+2026-09-15、このホスト(WSL2 / gcc 13.3、x86-64)で、gcc は `gcc -O1 -S` の出力、rubycc は `objdump -d` で、
+各形を固定引数 `f(T, double)`・可変長引数 `v(2, T, T[, 1.0])`・戻り値 `T r(void)` で渡したときのレジスタを読んだ:
+
+| 形 | eightbyte の分類 | gcc 固定(T / 後続 double) | gcc 可変(`%al`) | gcc 戻り値 | 修正前の rubycc |
+|---|---|---|---|---|---|
+| `struct { float a, b; } aligned(16)` | SSE / NO_CLASS | xmm0 / xmm1 | 2 | xmm0 | xmm0+xmm1 / xmm2、`%al` 4、戻り値 xmm0+xmm1(**不一致**) |
+| `struct { double d; } aligned(16)` | SSE / NO_CLASS | xmm0 / xmm1 | 2 | xmm0 | 同上(**不一致**) |
+| `union { float f; double d; } aligned(16)` | SSE / NO_CLASS | xmm0 / xmm1 | 2 | xmm0 | 同上(**不一致**) |
+| `struct { int a; } aligned(16)` | INTEGER / NO_CLASS | edi / xmm0 | 1(double 1 個を含む) | eax | rdi+xmm0 / xmm1、`%al` 3、戻り値 rax+xmm0(**不一致**) |
+| `union { float f; int i; } aligned(16)` | INTEGER / NO_CLASS | edi / xmm0 | 1(同上) | eax | 同上(**不一致**) |
+| `struct { float a, b; char pad[8]; }`(後半は配列メンバで詰め物ではない) | SSE / INTEGER | xmm0+rdi / xmm1 | 2 | xmm0+rax | 一致 |
+| `struct { char c; } aligned(32)`(32 バイト) | MEMORY | スタック(32 境界) | 0 | 隠れポインタ | `%al` は一致(32 境界は別件、下記) |
+| 大きさ 0 の集約(GNU の空構造体、長さ 0 の配列だけ) | — | 何も渡さない | — | — | 一致 |
+
+- 修正後の rubycc は上の表の gcc の列と全行で一致した(`%al` は 2・1・2・1・2・2・0)
+- **固定引数が「一致する」ように見えていた理由**: `aapcs64-aligned-attribute-aggregate-1` のテストが集約の後に
+  long しか渡していなかったからである。余分な xmm を使っても、後ろにベクタ引数が無ければ位置はずれない。
+  集約の後に double を置くと、固定引数でも 1 レジスタずれる(新しいテストの `fix` 行で確かめた)
+- **可変長引数がずれた理由**: rubycc の `va_arg` が集約 1 個ごとに `fp_offset` を 32 進めていた。gcc 呼び出し側が
+  xmm1 に置いた 2 個目の集約を xmm2 の退避スロットから読み、逆に rubycc 呼び出し側は 2 個目を xmm2 に置くので
+  gcc の `va_arg` が xmm1 から読むと食い違っていた。`%al` も 2 個渡しで gcc の 2 に対し 4 だった
+- **戻り値は値が狂わなかった**。余分に動かすレジスタは詰め物の 8 バイトを運ぶだけで、受け取り側も詰め物に書き戻す
+
+### テスト
+
+- `test/test_sysv_padding_eightbyte_class.rb`(新規): 11 形(後半が詰め物の 9 形 — 上の 5 形、float 1 個、
+  typedef の long 1 個、入れ子、int + float — と、対照の配列メンバ・float 3 個)× 前置き
+  (long, double)= (0,0)(0,5)(0,6)(0,7)(0,8)(4,0)(5,0)(6,0)(5,7) を、固定引数(集約・double・long・
+  2 個目の集約・float)、可変長引数(同じ並びを `va_arg` で読む)、戻り値で回す。gcc 同士の出力を対照に、
+  rubycc 呼び出し → gcc 呼ばれ側、gcc 呼び出し → rubycc 呼ばれ側の両方の一致を求める。x86-64 では gcc で
+  作る 3 つ目の翻訳単位に、`%al` を大域変数に記録して本体へ飛ぶアセンブリの踏み台を置き、呼ばれ側が
+  `%al` も出力するので、呼び出し側のベクタレジスタ数も比べる。AArch64 も同じ形で回し、変わらないことを見る。
+  1 run あたり 11 × 19 = 209 行。4 runs, 12 assertions, 0 failures。修正前の lib では x86-64 の
+  2 runs が両方 failure になる(2026-09-15)
+- `test/test_aapcs64_aligned_attribute_aggregate.rb`: x86-64 側から外していた `f2_attr` を戻した
+  (12 形 × 21 行 = 252 行)。4 runs, 12 assertions, 0 failures。修正前の lib では x86-64 の 2 runs が
+  failure になる(2026-09-15)
+- `examples/m6/sysv_padding_eightbyte_class_1_padded_float_pair.c`: 後半が詰め物の構造体 2 種を、double を
+  挟んで固定引数・xmm を使い切る位置・可変長引数・戻り値で通す。1 翻訳単位を rubycc が両側とも作るので
+  修正前の lib でも gcc と同じ出力になる(ABI の食い違いは上の差分テストが見る)。型は `#include` より前に定義
+- 回帰(2026-09-15、いずれも 0 failures / 0 errors):
+  `test_variadic_aggregate_argument.rb` 4 runs、`test_cross_abi.rb` 4 runs、`test_int128_abi.rb` 2 runs、
+  `test_c_suite.rb` 223 runs / 11 skips、`test_c_suite_aarch64.rb` 444 runs / 22 skips、
+  `test_examples.rb` 70 runs、`test_examples_aarch64.rb` 584 runs / 22 skips、
+  `test_aarch64_aggregate_execution.rb` 11 runs、`test_aarch64_execution.rb` 53 runs、
+  `test_aarch64_variadic_execution.rb` 9 runs、`test_execution_harness.rb` 244 runs、
+  `test_alignas.rb` 11 runs、`test_flexible_array_member.rb` 16 runs、`test_header_abi.rb` 130 runs、
+  `test_doc_links.rb` 3 runs
+- 全体(2026-09-15): `rake test` 3832 runs, 19241 assertions, 0 failures, 0 errors, 35 skips(559 秒)
+
+### 残された観点
+
+- **名前の無いビットフィールドは、System V の分類に数えられていない**。rubycc は名前の無いビットフィールドの
+  `Member` を作らない(`Type#place_bitfield`)ので、分類がその記憶域を見ない。gcc は INTEGER として数える
+  (2026-09-15、gcc 13.3):
+  - `struct { int : 8; } __attribute__((aligned(8)))`(8 バイト、名前付きメンバ無し)は gcc が edi で渡す。
+    rubycc は全 eightbyte が NO_CLASS になるので、修正前は xmm0、修正後はスタックで、どちらも gcc と食い違う
+    (gcc の呼ばれ側で受けると、修正前は long も double も、修正後は long が壊れる)。rubycc 同士では
+    上の `va_arg` の変更で一致する
+  - `struct { float f; int : 8; }` は gcc が rdi(INTEGER)で渡すのに対し、rubycc は xmm0。本ステップの
+    変更の影響は受けない(修正前も後も同じ)
+  - レイアウトではなく分類の欠落で、本ステップの範囲外なので直していない。`issues/sysv-unnamed-bitfield-class.md`(GAPS BV)に起票した
+    (統合時に 2 翻訳単位の最小再現でも確かめた: gcc の呼ばれ側に rubycc から渡すと `struct { float f; int : 8; }` の値が壊れる)
+- x86-64 側で `test_aapcs64_aligned_attribute_aggregate.rb` の `X86_64_EXCLUDED` に残る 2 形
+  (`attr32` = `struct { long a, b; } __attribute__((aligned(32)))`、`alignas32` = `_Alignas(32)` のメンバ):
+  gcc は 32 バイト整列の MEMORY 集約のスタックスロットを 32 に揃える(long 1 個をスタックに積んだ後は
+  rsp+32 から始まり、`va_arg` も overflow ポインタを 32 に切り上げる)のに対し、rubycc は溢れた引数を
+  高々 16 にしか揃えない。既知のギャップ(GAPS BR、`issues/sysv-over-aligned-aggregate-stack.md`)で、本ステップでは扱っていない

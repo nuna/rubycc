@@ -2418,7 +2418,11 @@ module Rubycc
       def emit_va_arg_aggregate_system_v(ap, type, plan, result_addr)
         tag = @convention.va_list_tag
         overflow_disp = tag.member("overflow_arg_area").offset
-        if plan.mode == :memory
+        # A register-class plan with no pieces at all (every eightbyte NO_CLASS)
+        # asks the caller's placer for no register, and the placer sends it to
+        # the stack like a MEMORY aggregate (Placer#place), so it is taken from
+        # there too.
+        if plan.mode == :memory || plan.pieces.empty?
           take_from_stack_area(ap, overflow_disp, type, plan.align16, result_addr)
           return
         end

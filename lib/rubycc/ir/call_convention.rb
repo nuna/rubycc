@@ -199,9 +199,18 @@ module Rubycc
 
         eightbytes = Array.new((size + 7) / 8, nil)
         classify_eightbytes(eightbytes, type, 0)
-        # A NO_CLASS eightbyte (only padding fell in it) defaults to SSE, the
-        # psABI's benign choice; INTEGER otherwise wins over SSE per #merge_class.
-        pieces = eightbytes.each_with_index.map do |cls, i|
+        # An eightbyte no field fell in (padding only, as the upper half of
+        # `struct { float a, b; } __attribute__((aligned(16)))`) stays NO_CLASS
+        # and becomes no piece at all: it takes no register, and the
+        # eightbytes that do carry data keep their own offsets. gcc 13.3 passes
+        # that struct in xmm0 alone, `struct { int a; } aligned(16)` in edi
+        # alone, returns them in xmm0 / eax alone, and sets %al = 2 for two of
+        # the first in a variadic call (measured 2026-09-15). Should it spill,
+        # the aggregate still takes ceil(size/8) stack eightbytes, padding
+        # included, since a spilled argument is cut by CallConvention.memory_pieces.
+        pieces = eightbytes.each_with_index.filter_map do |cls, i|
+          next if cls.nil?
+
           AbiPiece.new(offset: 8 * i, size: 8, kind: cls == :integer ? :gp : :sse8)
         end
         AggregatePlan.new(mode: :registers, pieces: pieces, align16: align16)
@@ -332,7 +341,10 @@ module Rubycc
 
         # :registers when the argument takes the registers its request asks for,
         # :stack when it passes in the overflow area. A request that is already
-        # all-:mem (a MEMORY-classified aggregate) never wanted a register.
+        # all-:mem (a MEMORY-classified aggregate) never wanted a register, and
+        # neither does an empty one — an aggregate every eightbyte of which is
+        # NO_CLASS — which goes to the stack the same way (for a zero-size
+        # aggregate that is zero eightbytes, i.e. nothing).
         def place(request)
           @pad_stack = 0
           need_gp = request.kinds.count(:gp)
