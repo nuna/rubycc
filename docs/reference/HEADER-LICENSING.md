@@ -110,7 +110,7 @@ musl の宣言セット/形状を出発点にし、glibc の対象 arch(x86-64 /
 | `include/libc/stdlib.h` | `div_t`/`ldiv_t`/`lldiv_t` の LP64 レイアウト、`RAND_MAX`/`EXIT_*`。`getloadavg`・`qsort_r`(`__USE_GNU`)・`<alloca.h>` の取り込みなど glibc の `_DEFAULT_SOURCE` / `_GNU_SOURCE` の枝の宣言は、gcc への再宣言が衝突しないことで形を実測(2026-09-14、両 arch) |
 | `include/libc/string.h` | 純粋プロトタイプ(arch 非依存) |
 | `include/libc/strings.h` | 純粋プロトタイプ(arch 非依存) |
-| `include/libc/unistd.h` | ABI 型付き名の LP64 幅。`_SC_IOV_MAX` は 60 |
+| `include/libc/unistd.h` | ABI 型付き名の LP64 幅。`_SC_IOV_MAX` は 60。process-group/session の宣言(`tcgetpgrp`/`tcsetpgrp`/`getpgrp`/`setpgid`/`getpgid`/`setsid`/`getsid`/`setpgrp`)と、`getgroups`/`getlogin`/`getlogin_r`/`fchdir`/`chroot`/`daemon`/`nice`/`sync`/`syncfs`/`lockf`/`getentropy`・`dup3`/`pipe2`/`environ`/`gettid`(`__USE_GNU`)の宣言、`F_LOCK`/`F_TEST`/`F_TLOCK`/`F_ULOCK`(0/1/2/3)と `SEEK_DATA`/`SEEK_HOLE`(3/4、`__USE_GNU`)の値は、gcc への再宣言が衝突しないことと `gcc -E -dM` の印字で形と値を実測(2026-09-15、両 arch) |
 | `include/libc/glibc/x86_64/endian.h` | little-endian x86-64 に固定 |
 | `include/libc/glibc/x86_64/inttypes.h` | 64bit/MAX/PTR/fast16+ の "l" 形(実測) |
 | `include/libc/glibc/x86_64/stdint.h` | 幅を glibc x86-64 LP64 に固定(実測) |

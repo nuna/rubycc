@@ -17029,3 +17029,83 @@ rubycc の `SystemVAMD64Convention#aggregate_plan` は NO_CLASS の eightbyte �
   gcc は 32 バイト整列の MEMORY 集約のスタックスロットを 32 に揃える(long 1 個をスタックに積んだ後は
   rsp+32 から始まり、`va_arg` も overflow ポインタを 32 に切り上げる)のに対し、rubycc は溢れた引数を
   高々 16 にしか揃えない。既知のギャップ(GAPS BR、`issues/sysv-over-aligned-aggregate-stack.md`)で、本ステップでは扱っていない
+
+## bundled-unistd-process-group-1 — 同梱 `unistd.h` にプロセスグループ・セッション関数を足す(GAPS BU)
+
+`issues/bundled-unistd-process-group.md` の課題を塞いだ。同梱の `unistd.h` は `tcgetpgrp` を含む
+プロセスグループ・セッション系の関数を持たず、`ruby-termios` 1.1.0 の `termios.c:565` が呼ぶ
+`tcgetpgrp` が暗黙宣言エラーで落ちていた(2026-09-14 に issue が測定、gcc は通す)。
+
+### 原因
+
+`unistd.h` は `bundled-headers-coverage-audit`(親 issue)が挙げた「まだ分類していない 49 本」の
+1 本で、`tools/audit_bundled_headers.rb` で測ると glibc の `<unistd.h>` に対して**不足 90・未記載 91**
+(2026-09-14 時点の表)だった。`tcgetpgrp`/`tcsetpgrp`/`getpgrp`/`setpgid`/`getpgid`/`setsid`/`getsid`
+はこの 90 件の一部で、未分類のまま残っていた。
+
+### 対処
+
+`tools/audit_bundled_headers.rb --header unistd.h` の表を使い、90 件全てを「足す(30 件)/
+意図して外す(60 件 + `<stddef.h>` の取り込み不足 1 件)」に分類した(2026-09-15 実測、
+glibc 2.39、x86-64 と aarch64)。
+
+- **足した 30 件**: プロセスグループ・セッション系(`getpgrp`/`setpgid`/`getpgid`/`setsid`/
+  `getsid`/`tcgetpgrp`/`tcsetpgrp`/`setpgrp`。issue の必須項目)に加えて、gem の C 拡張が直接
+  呼ぶ可能性が高いと判断した平文の POSIX/GNU 宣言: `getgroups`・`getlogin`/`getlogin_r`・
+  `fchdir`・`chroot`・`daemon`・`nice`・`sync`・`syncfs`・`lockf`(と `F_LOCK`/`F_TEST`/`F_TLOCK`/
+  `F_ULOCK`)・`getentropy`(sysrandom gem が直接ラップする)・`dup3`・`pipe2`・`environ`・
+  `gettid`・`SEEK_DATA`/`SEEK_HOLE`・`TEMP_FAILURE_RETRY`。
+  すべて glibc 自身の `<unistd.h>` を含める直前に同じ宣言を書いて gcc の `-fsyntax-only` に
+  通し(衝突する再宣言はエラーになる)、x86-64 と `aarch64-linux-gnu-gcc` の両方で確かめた
+  (2026-09-15)。`F_LOCK`/`F_ULOCK`/`F_TLOCK`/`F_TEST`(0/1/2/3)と `SEEK_DATA`/`SEEK_HOLE`(3/4)の
+  値は `gcc -E -dM` の印字で両 arch とも一致することを確かめた。**見え方の規則**は
+  `bundled-headers-coverage-audit-2` が `stdlib.h`/`sched.h` に敷いたものと同じ: glibc が
+  `_DEFAULT_SOURCE` 以下で見せる名前は無条件、`_GNU_SOURCE` でだけ見せる名前
+  (`dup3`/`pipe2`/`environ`/`gettid`/`syncfs`/`SEEK_DATA`/`SEEK_HOLE`/`TEMP_FAILURE_RETRY`)は
+  `__USE_GNU` の下に置いた。そのため `unistd.h` に `<features.h>` の include を新規に足した。
+  `TEMP_FAILURE_RETRY` は glibc の同名マクロの**挙動だけ**を再現したクリーンルーム実装
+  (文面は写していない。R11、`docs/reference/HEADER-LICENSING.md` §6)。
+- **外した 60 件**は理由ごとに 9 グループにまとめ、`unistd.h` 冒頭コメントに
+  `omitted: 名前 ... -- 理由` の形で書いた: exec 系の亜種(`execle`/`fexecve`/`execveat`/
+  `execvpe`、既存の execv/execvp/execve/execl/execlp で足りる)、openat 系のパス操作
+  (`faccessat` ほか 6 件、コーパスに利用者なし)、権限管理系(`setegid` ほか 7 件、コーパスの
+  権限降格は Ruby の `Process::Sys` が直接 syscall する形で、gem の C 拡張がこのヘッダ経由で
+  呼ぶ形ではない)、`gethostid`/`socklen_t`(`sys/socket.h` に既にある)/`swab`、
+  `L_INCR`/`L_SET`/`L_XTND`(既存の `SEEK_SET` 等で足りる)、obsolete/rarely used な 20 件
+  (`acct`/`crypt`/`getpass` ほか)、glibc 2.34 以降にしかない `close_range` 系
+  (`stdlib.h` の `arc4random*` 除外と同じ理由)、コーパスに利用者のない GNU 拡張 5 件
+  (`copy_file_range` ほか)、LFS64 別名 7 件(`stdlib.h` の `mkstemp64` 系除外と同じ理由、
+  LP64 では無印と同一)。`<stddef.h>` の取り込み不足は、`size_t` をこのヘッダが直接宣言して
+  いるので同様に外した。
+
+`docs/reference/HEADER-LICENSING.md` §3.2 の `include/libc/unistd.h` の行に、足した宣言と
+実測した値を追記した(2026-09-15)。ファイル数は動いていないので §3.4 の集計(81 本)は不変。
+
+### テスト
+
+- `test/test_bundled_headers_coverage.rb`: `AUDITED` に `unistd.h` を足し、「未記載 0」を
+  確認する既存の仕組みに乗せた。issue のプロセスグループ 7 件が不足に無いことを確かめる
+  `test_bundled_unistd_process_group_functions_are_declared` と、issue 本文どおりの再現
+  (`tcgetpgrp(0) == -2`)をコンパイルする `test_tcgetpgrp_is_declared` を追加。
+- `tools/audit_bundled_headers.rb --header unistd.h` の再実行で、両 arch とも
+  **不足 90 → 60・未記載 91 → 0** を確認(2026-09-15)。
+- `docs/development/BUNDLED-HEADERS-COVERAGE.md` を再生成した(unistd.h の行と節のみ差分)。
+- 実行結果(2026-09-15、いずれも 0 failures / 0 errors):
+  `test_bundled_headers_coverage.rb` 11 runs / 56 assertions、
+  `test_audit_bundled_headers.rb` 4 runs / 17 assertions、
+  `test_header_abi.rb` 130 runs / 385 assertions / 0 skips、
+  `test_doc_links.rb` 3 runs、
+  `test_examples.rb` 69 runs、
+  `test_examples_aarch64.rb` 582 runs / 22 skips(既存)、
+  `test_c_suite.rb` 223 runs / 11 skips(既存)、
+  `test_c_suite_aarch64.rb` 444 runs / 22 skips(既存)。
+  フルスイート(`rake test`)は **3829 runs, 19235 assertions, 0 failures, 0 errors, 35 skips**
+  (2026-09-15、この worktree)。
+
+### 残された観点(このステップでは直していない)
+
+- `ruby-termios` 1.1.0 本体のビルド・テストの再実走は、このステップの必須テストには
+  含めていない(issue の受け入れ条件にはあるが、この PR の後の台帳の測り直しで行う)。`tcgetpgrp` を呼ぶ行(`termios.c:565`)を grep で確認し、issue 本文どおりの
+  最小再現がコンパイルできることのみ確かめた。
+- 分類していない同梱ヘッダ(親 issue `bundled-headers-coverage-audit.md` に残る 48 本)は
+  未着手のまま。

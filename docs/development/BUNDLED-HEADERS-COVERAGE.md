@@ -2,7 +2,7 @@
 
 > **Generated artifact.** `ruby tools/audit_bundled_headers.rb --output docs/development/BUNDLED-HEADERS-COVERAGE.md` で再生成する。手で編集しない。
 
-測定日: 2026-09-14。オラクル:
+測定日: 2026-09-15。オラクル:
 - x86_64: `gcc`(gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0、glibc 2.39)
 - aarch64: `aarch64-linux-gnu-gcc`(aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0、glibc 2.39)
 
@@ -75,7 +75,7 @@
 | [`sys/wait.h`](#syswaith) | 7 | 10 | 7 | 16 | `stddef.h` `sys/ucontext.h` `unistd.h` `endian.h` `sys/procfs.h` `sys/select.h` `sys/time.h` `sys/types.h` `sys/user.h` | 1 |
 | [`termios.h`](#termiosh) | 2 | 0 | 2 | 0 | `sys/ttydefaults.h` | — |
 | [`time.h`](#timeh) | 63 | 64 | 63 | 64 | `stddef.h` | 5 |
-| [`unistd.h`](#unistdh) | 90 | 91 | 90 | 91 | `stddef.h` | — |
+| [`unistd.h`](#unistdh) | 60 | 0 | 60 | 0 | `stddef.h` | — |
 
 ## ヘッダ別
 
@@ -724,13 +724,13 @@
 
 ### unistd.h
 
-**x86_64 / aarch64** — glibc の `<unistd.h>` の公開名 166、不足 90、未記載 91
+**x86_64 / aarch64** — glibc の `<unistd.h>` の公開名 166、不足 60、未記載 0
 
-- 不足(iso): **`execle`** **`getgroups`** **`getlogin`** **`getpgrp`** **`setpgid`** **`setsid`** **`tcgetpgrp`** **`tcsetpgrp`**
-- 不足(posix): **`faccessat`** **`fchdir`** **`fchownat`** **`fexecve`** **`getlogin_r`** **`getpgid`** **`getsid`** **`lchown`** **`linkat`** **`readlinkat`** **`setegid`** **`seteuid`** **`symlinkat`** **`unlinkat`**
-- 不足(xopen): **`F_LOCK`** **`F_TEST`** **`F_TLOCK`** **`F_ULOCK`** **`gethostid`** **`lockf`** **`nice`** **`setpgrp`** **`setregid`** **`setreuid`** **`socklen_t`** **`swab`** **`sync`**
-- 不足(default): **`L_INCR`** **`L_SET`** **`L_XTND`** **`acct`** **`chroot`** **`closefrom`** **`crypt`** **`daemon`** **`endusershell`** **`getdomainname`** **`getdtablesize`** **`getentropy`** **`getpass`** **`getusershell`** **`getwd`** **`profil`** **`revoke`** **`setdomainname`** **`sethostid`** **`sethostname`** **`setlogin`** **`setusershell`** **`ttyslot`** **`ualarm`** **`vfork`** **`vhangup`**
-- 不足(gnu): **`CLOSE_RANGE_CLOEXEC`** **`CLOSE_RANGE_UNSHARE`** **`SEEK_DATA`** **`SEEK_HOLE`** **`TEMP_FAILURE_RETRY`** **`close_range`** **`copy_file_range`** **`dup3`** **`eaccess`** **`environ`** **`euidaccess`** **`execveat`** **`execvpe`** **`ftruncate64`** **`get_current_dir_name`** **`getresgid`** **`getresuid`** **`gettid`** **`group_member`** **`lockf64`** **`lseek64`** **`off64_t`** **`pipe2`** **`pread64`** **`pwrite64`** **`setresgid`** **`setresuid`** **`syncfs`** **`truncate64`**
+- 不足(iso): `execle`
+- 不足(posix): `faccessat` `fchownat` `fexecve` `lchown` `linkat` `readlinkat` `setegid` `seteuid` `symlinkat` `unlinkat`
+- 不足(xopen): `gethostid` `setregid` `setreuid` `socklen_t` `swab`
+- 不足(default): `L_INCR` `L_SET` `L_XTND` `acct` `closefrom` `crypt` `endusershell` `getdomainname` `getdtablesize` `getpass` `getusershell` `getwd` `profil` `revoke` `setdomainname` `sethostid` `sethostname` `setlogin` `setusershell` `ttyslot` `ualarm` `vfork` `vhangup`
+- 不足(gnu): `CLOSE_RANGE_CLOEXEC` `CLOSE_RANGE_UNSHARE` `close_range` `copy_file_range` `eaccess` `euidaccess` `execveat` `execvpe` `ftruncate64` `get_current_dir_name` `getresgid` `getresuid` `group_member` `lockf64` `lseek64` `off64_t` `pread64` `pwrite64` `setresgid` `setresuid` `truncate64`
 - 取り込み不足: `stddef.h`
 - 予約名の型: `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clock_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsid_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__key_t` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__pid_t` `__quad_t` `__rlim64_t` `__rlim_t` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uid_t` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t`
 - ガード `__gid_t_defined` → `gid_t`: self

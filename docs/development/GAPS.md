@@ -24,7 +24,6 @@
 | **BO**([issue](../../issues/glibc-alloca-without-gnuc.md)) | **glibc 本体の `<alloca.h>` を読む経路で、`alloca` がリンク時に未定義参照になる**(glibc は `__GNUC__` のときだけ組み込みに写し、rubycc は `__GNUC__` を定義しない) | aarch64 のクロス sysroot を使う例題テストなど、同梱ヘッダより先に glibc 本体の `<alloca.h>` を読む構成。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、例題に `alloca` を入れて aarch64 で) | どの経路で glibc 本体の `<alloca.h>` を読むかを先に測る |
 | **BP**([issue](../../issues/glibc-public-headers-mixed.md)) | **同梱しない glibc の公開ヘッダ 186 本のうち、rubycc だけが落ちるものが 23 本ある**(`__BEGIN_DECLS` が無いように見える形が多い) | それらのヘッダを含む gem。該当する gem は数えていない | **実測**(2026-09-14、`tools/audit_bundled_headers.rb` の混在の調査、x86-64) | 23 本の原因を最小再現で確かめ、同梱ヘッダの側と rubycc 本体の側に分ける |
 | **BT**([issue](../../issues/function-pointer-void-pointer-init.md)) | **関数を `void *` に暗黙に変換する初期化を拒否する**(`incompatible types in initialization`)。gcc は既定では警告もせず、`-pedantic` のときだけ警告する | 同梱の SQLite(amalgamation)を持つ gem。`amalgalite` 2.0.0 の `sqlite3.c:135127` が該当し、**対照の gcc は通る** | **実測**(2026-09-14、最小再現) | **受け付けるか拒否を保つかが未決**。AN(gcc 13 が警告にとどめる診断)より gcc との差が大きい |
-| **BU**([issue](../../issues/bundled-unistd-process-group.md)) | **同梱 `unistd.h` に `tcgetpgrp` などプロセスグループの関数が無い** | `ruby-termios` 1.1.0 の `termios.c:565` が該当し(BA を越えた先)、**対照の gcc は通る** | **実測**(2026-09-14、最小再現) | §2 の同梱ヘッダの分類で `unistd.h` をまとめて見る |
 | **BV**([issue](../../issues/sysv-unnamed-bitfield-class.md)) | **x86-64 の分類が、名前の無いビットフィールドの記憶域を数えない**。gcc は INTEGER に数えるが、rubycc は `Member` を作らないので見ない | 名前の無いビットフィールドを持つ構造体を、gcc でコンパイルしたコードと値でやり取りするコード。**実在の gem ではまだ見ていない** | **実測**(2026-09-16、2 翻訳単位の最小再現で値が壊れる) | 名前の無いビットフィールドは記憶域を占めるので、詰め物(BS)とは別に数える |
 
 ## 2. 未解消の負債
@@ -55,6 +54,9 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ BU**(同梱 `unistd.h` にプロセスグループの関数が無い):
+  `bundled-unistd-process-group-1` で解消。突き合わせの表から `unistd.h` の不足 90 件を分類し、30 件を足して 60 件は理由付きで見送った。
+  足した宣言は、glibc 本体の `<unistd.h>` の直前で再宣言して衝突しないことを両 arch で確かめた。
 - **ギャップ BS**(x86-64 で後半が詰め物だけの集約が xmm を余分に使う):
   `sysv-padding-eightbyte-class-1` で解消。どのフィールドも掛からない eightbyte(NO_CLASS)はピースを作らず、レジスタを取らない。
   固定引数でも 1 レジスタずれていたことが、集約の後に double を置く形で分かった。

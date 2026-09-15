@@ -12,7 +12,7 @@ require_relative "../tools/audit_bundled_headers"
 class TestBundledHeadersCoverage < Minitest::Test
   A = AuditBundledHeaders
 
-  AUDITED = %w[stdlib.h sched.h termios.h sys/ioctl.h sys/types.h].freeze
+  AUDITED = %w[stdlib.h sched.h termios.h sys/ioctl.h sys/types.h unistd.h].freeze
 
   AUDITED.each do |header|
     define_method("test_#{header.gsub(/\W/, "_")}_accounts_for_every_glibc_name") do
@@ -94,6 +94,24 @@ class TestBundledHeadersCoverage < Minitest::Test
     assert_empty termios.missing.keys & %w[tcflow TCOOFF TCOON TCIOFF TCION] # BA
     ioctl = A.audit("sys/ioctl.h", "x86_64", guard_probe: false)
     assert_empty ioctl.missing.keys & %w[TIOCMGET TIOCMSET TIOCMBIS TIOCMBIC TIOCM_DTR] # BB
+  end
+
+  # bundled-unistd-process-group-1 (GAPS BU): ruby-termios 1.1.0's termios.c
+  # calls tcgetpgrp() right after the tcflow() call BA added.
+  def test_bundled_unistd_process_group_functions_are_declared
+    skip "gcc unavailable" unless A.available_arches.include?("x86_64")
+
+    unistd = A.audit("unistd.h", "x86_64", guard_probe: false)
+    assert_empty unistd.missing.keys &
+                 %w[tcgetpgrp tcsetpgrp getpgrp setpgid getpgid setsid getsid]
+  end
+
+  def test_tcgetpgrp_is_declared
+    source = <<~C
+      #include <unistd.h>
+      int main(void) { return tcgetpgrp(0) == -2; }
+    C
+    Rubycc::Compiler.new.compile(source, filename: "probe.c", target: "x86_64", libc: "glibc")
   end
 
   private
