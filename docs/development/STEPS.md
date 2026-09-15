@@ -17321,3 +17321,30 @@ eightbyte をまたぐので MEMORY 級になり、k=1 でもスタックに載�
   (宣言子の後の属性はそもそも読んでいない)。パラメータの境界も従来どおり呼び出し規約に任せる
 - `packed` を typedef に単独で書いた場合は gcc と同じく無視するが、gcc が出す警告に当たるものは出ない
   (このフロントエンドは警告を出さない)
+
+## ledger-after-wave-6-1 — 6 回目の修正の後に、止まっていた gem を測り直す
+
+**内容**: 方針が決まっている不足の 6 回目(PR #154: BS / BU / BR / BQ)をマージした master 5f13e54 で、その不足で
+止まっていた gem を測り直した。**台帳は 114 件のまま**で、記録できたものは無い。
+
+**測り直した結果**(2026-09-16、このホスト、master 5f13e54):
+
+| gem | 止めていた不足 | 結果 |
+|---|---|---|
+| ruby-termios 1.1.0 | BU(`tcgetpgrp`) | **BU は越えたが、次の不足で止まった** — `termios.c:759` の `_POSIX_VDISABLE` が同梱 `unistd.h` に無い。GAPS **BX** に起票 |
+
+BS・BR・BQ は ABI の食い違いで、**それで止まっていた gem は無い**(どれも `aapcs64-aligned-attribute-aggregate-1` の
+測定中に見つけたもの)。iodine は AT(`typeof`、方針未決)、amalgalite は BT(関数を `void *` で初期化、方針未決)で
+止まったままなので測り直していない。
+
+### 洗い出しの表の穴(BX)
+
+`_POSIX_VDISABLE` は、`bundled-unistd-process-group-1` が分類した `unistd.h` の表で「不足」にも「未記載」にも
+出ていなかった。原因は `tools/audit_bundled_headers.rb` の `reserved?` で、名前が `_` + 大文字で始まると
+処理系の予約名として差分から外す(typedef とタグだけ別枠)。glibc が**利用者向けに**予約領域の綴りを与えている
+マクロ(`_POSIX_*` / `_SC_*` / `_CS_*` / `_PC_*` など)も、この網に掛かって表から消える。
+
+つまり、分類済み 6 本の「未記載 0 件」は**この分だけ弱い**。道具を直してから数え直す必要があり、
+`issues/audit-reserved-public-macros.md`(BX)に起票した。
+
+**検証**: 文書とデータだけの変更で、`rake test` はブランチ全体の結果を PR に記録する。
