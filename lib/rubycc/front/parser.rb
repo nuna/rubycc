@@ -345,8 +345,13 @@ module Rubycc
       # declaration; only the init attributes are read back from it, and only
       # where they are admitted at all (see #parse_declaration_specifiers).
       # `alignas` is the strongest _Alignas the run asked for (an Alignas, or nil
-      # when none appeared). volatile and register/auto leave no trace here.
-      DeclSpecInfo = Data.define(:storage, :const, :inline_p, :noreturn_p, :attributes, :alignas)
+      # when none appeared). `type_alignment` is the boundary an aligned typedef
+      # name among the specifiers carries ("typedef long t16
+      # __attribute__((aligned(16))); t16 x;"), nil when the base type came from
+      # anywhere else; see #inherited_type_alignment for which declarators it
+      # reaches. volatile and register/auto leave no trace here.
+      DeclSpecInfo = Data.define(:storage, :const, :inline_p, :noreturn_p, :attributes, :alignas,
+                                 :type_alignment)
 
       # One parsed GNU attribute: its normalized `name`, the folded `argument`
       # (an integer for "aligned" and for the init attributes' priority, nil for
@@ -384,9 +389,11 @@ module Rubycc
       EnumTag = Data.define(:tag)
 
       # An entry in the ordinary-identifier scope (see @ordinary_scopes). `kind`
-      # is :typedef for a typedef name (`value` a [resolved Rubycc::Type, const?]
-      # pair, the flag carrying a "typedef const int" so a use folds it back into
-      # the object's const-ness), :enum
+      # is :typedef for a typedef name (`value` a [resolved Rubycc::Type, const?,
+      # alignment] triple, the flag carrying a "typedef const int" so a use folds
+      # it back into the object's const-ness, and `alignment` the boundary an
+      # aligned attribute gave the typedef name, nil for none — the Type itself
+      # stays the shared one, see #typedef_alignment), :enum
       # for an enumeration constant (`value` its Integer value), or :ordinary for
       # a variable, parameter or function name (`value` nil). The ordinary
       # entries carry no payload; they exist only so a declarator can shadow a
@@ -582,10 +589,11 @@ module Rubycc
         name_tok, type, function_params, pointer_quals =
           parse_declarator(base_type, allow_incomplete_array: true)
         # A GNU attribute may trail the declarator (position d):
-        # "int f(void) __attribute__((noreturn));". Accepted and discarded, on a
-        # function prototype/definition or a variable alike — except an init
-        # attribute, which is claimed below. The specifier-position attributes
-        # belong to every declarator of this declaration, so they join it here.
+        # "int f(void) __attribute__((noreturn));". Accepted and discarded on a
+        # function prototype/definition, except an init attribute, which is
+        # claimed below; on a variable an aligned(N) raises its boundary (see
+        # #object_alignment_request). The specifier-position attributes belong
+        # to every declarator of this declaration, so they join it here.
         #
         # gcc rejects the *definition* form ("void f(void)
         # __attribute__((constructor)) { }") with "attributes should be specified
@@ -862,7 +870,7 @@ module Rubycc
       # at ";".
       def parse_external_declaration_list(base_type, first_name_tok, first_type, first_params,
                                           first_pointer_quals, spec_info, return_tok, first_attributes)
-        decls = [parse_external_declarator(first_name_tok, first_type, first_params,
+        decls = [parse_external_declarator(base_type, first_name_tok, first_type, first_params,
                                            first_pointer_quals, spec_info, return_tok, first_attributes)]
         while peek.punct?(",")
           advance
@@ -870,7 +878,7 @@ module Rubycc
           # position d: a trailing attribute on this declarator, joined by the
           # specifier-position ones the whole declaration shares.
           attributes = spec_info.attributes + parse_attribute_specifiers(init_attributes: :allow)
-          decls << parse_external_declarator(name_tok, type, params, pointer_quals, spec_info,
+          decls << parse_external_declarator(base_type, name_tok, type, params, pointer_quals, spec_info,
                                              return_tok, attributes)
         end
         expect_punct(";")
@@ -884,8 +892,9 @@ module Rubycc
       # #parse_global_declarator, which reads any "=" initializer). `spec_info`
       # carries the shared storage class and the "inline"/"_Noreturn" flags,
       # legal only on the function declarators (an object declarator rejects
-      # them downstream).
-      def parse_external_declarator(name_tok, type, params, pointer_quals, spec_info, return_tok,
+      # them downstream). `base_type` is the specifier run's type, which tells
+      # an object declarator whether an aligned typedef's boundary reaches it.
+      def parse_external_declarator(base_type, name_tok, type, params, pointer_quals, spec_info, return_tok,
                                     attributes)
         # This declarator ends at a "," or a ";", so it is a declaration and not
         # a definition — the one place 6.7.6.3p3 allows a non-empty identifier
@@ -910,7 +919,7 @@ module Rubycc
           # initializer is invisible until the program misbehaves at run time.
           reject_init_attributes(attributes)
           register_visibility_attributes(name_tok.value, attributes)
-          parse_global_declarator(type, name_tok, pointer_quals, spec_info)
+          parse_global_declarator(type, name_tok, pointer_quals, spec_info, attributes, base_type)
         end
       end
 
@@ -943,9 +952,12 @@ module Rubycc
       # scalar-integer initializer (a call, another variable, ...) is still
       # rejected with "unsupported initializer for global variable"; the deferred
       # forms the generator cannot fold reach the same diagnostic there.
-      def parse_global_declarator(type, name_tok, pointer_quals, spec_info)
+      def parse_global_declarator(type, name_tok, pointer_quals, spec_info, attributes, base_type)
         reject_void_type(type, name_tok)
         reject_object_specifiers(name_tok, spec_info)
+        # Read off the declarator's own type, before an initializer may rebuild
+        # an inferred "[]" bound into a fresh array type.
+        inherited = inherited_type_alignment(type, base_type, spec_info, name_tok)
         const = declarator_object_const(type, spec_info.const, pointer_quals)
         initializer_value = nil
         initializer_node = nil
@@ -990,19 +1002,7 @@ module Rubycc
         # "[]" bound is already in place when the "cannot reduce" check runs.
         AST::GlobalDecl.new(name_tok.value, type, initializer_value, initializer_node, name_tok, const,
                             spec_info.storage,
-                            alignas_boundary(spec_info.alignas, type, "'#{name_tok.value}'"))
-      end
-
-      # A bare type-specifier list with no storage class, used where a type is
-      # written with no declaration to hang it on: the type-name of a cast,
-      # sizeof, _Alignof or compound literal. It resolves to a single
-      # Rubycc::Type, discarding the (always-false) typedef flag. A type-name
-      # declares no object, so it has nothing for an _Alignas to align
-      # (6.7.5p2) — gcc refuses one here and so does this.
-      def parse_type_specifier
-        type, spec_info = parse_declaration_specifiers(allow_storage_class: false)
-        reject_alignas(spec_info.alignas, "type name")
-        type
+                            object_alignment_request(spec_info, attributes, type, inherited, name_tok))
       end
 
       # declaration-specifiers = (storage-class-specifier | type-qualifier |
@@ -1043,6 +1043,7 @@ module Rubycc
         inline_p = false
         noreturn_p = false
         typedef_const = false # const folded in from a const typedef name
+        typedef_alignment = nil # the boundary an aligned typedef name carries
         atomic_tok = nil # the first "_Atomic" written as a qualifier, for its diagnostic
         alignas = nil    # the strongest _Alignas the run asked for
         loop do
@@ -1111,14 +1112,18 @@ module Rubycc
           elsif tok.keyword?("__attribute__")
             # A GNU attribute may open the specifier run or sit between
             # specifiers (position a): "__attribute__((const)) int f(...)",
-            # "int __attribute__((unused)) x;". None affects an object's type, so
-            # the collected attributes are only kept for the caller's sake (the
-            # init attributes, where this context admits them at all).
+            # "int __attribute__((unused)) x;". None changes the base type, so
+            # the collected attributes are kept for the declarators, which
+            # share them: the init attributes (where this context admits them
+            # at all), and aligned/packed, which every object, member and
+            # typedef declarator of the run applies to itself (gcc 13.3,
+            # measured 2026-09-15: "long __attribute__((aligned(16))) a, b;"
+            # puts both members on 16).
             attributes.concat(
               parse_attribute_specifiers(init_attributes: allow_init_attributes ? :allow : :reject)
             )
           elsif composite.nil? && specs.empty? && tok.type == :ident && typedef_name?(tok.value)
-            composite, typedef_const = lookup_ordinary(tok.value).value
+            composite, typedef_const, typedef_alignment = lookup_ordinary(tok.value).value
             advance
           else
             break
@@ -1129,7 +1134,7 @@ module Rubycc
         # const to the declaration, OR-ed with any const written here directly.
         spec_info = DeclSpecInfo.new(storage: storage, const: const_p || typedef_const,
                                      inline_p: inline_p, noreturn_p: noreturn_p, attributes: attributes,
-                                     alignas: alignas)
+                                     alignas: alignas, type_alignment: typedef_alignment)
         base = if composite
                  composite
                else
@@ -1179,11 +1184,13 @@ module Rubycc
       # _Alignof rejects the same operands rather than reaching Type's "incomplete
       # struct has no alignment" guard.
       def alignment_of_type_name(alignas_tok)
-        type = parse_type_name
+        type, alignment = parse_type_name_with_alignment
         unless alignment_known?(type)
           error_at(alignas_tok, "invalid application of '_Alignas' to an incomplete type")
         end
-        type.alignment
+        # An aligned typedef's boundary is the type-name's own (measured with
+        # gcc 13.3, 2026-09-15: "_Alignas(t16) char c;" gives c 16).
+        alignment || type.alignment
       end
 
       # Whether `type` has a boundary that can be read right now. Void and a
@@ -1223,16 +1230,130 @@ module Rubycc
       # Returns the requested boundary (an Integer), or nil when nothing was
       # asked for. `what` names the declarator in the diagnostic (gcc's wording:
       # "'x'" for a named one, "unnamed field" for an anonymous member).
-      def alignas_boundary(alignas, type, what)
+      # `type_alignment` is the boundary an aligned typedef gave the declared
+      # type, which is what the request is measured against when present
+      # (gcc 13.3, 2026-09-15: "_Alignas(8) t16 x;" is refused and
+      # "_Alignas(4) t4 x;" accepted, t16/t4 being long typedefs aligned 16/4).
+      def alignas_boundary(alignas, type, what, type_alignment = nil)
         return nil if alignas.nil?
 
         # An incomplete declared type has no boundary to compare against; such a
         # declarator is refused for being incomplete downstream, so the check is
         # skipped rather than tripping Type's guard here.
-        if alignment_known?(type) && alignas.alignment < type.alignment
+        if alignment_known?(type) && alignas.alignment < (type_alignment || type.alignment)
           error_at(alignas.token, "'_Alignas' specifiers cannot reduce alignment of #{what}")
         end
         alignas.alignment
+      end
+
+      # The boundary an aligned typedef hands the type a declarator declares
+      # (DeclSpecInfo#type_alignment), or nil when there is none to hand on.
+      # gcc 13.3 carries it to the declared type itself and to an array of it,
+      # and through no other derivation — a pointer to it or a function
+      # returning it has its own boundary (measured 2026-09-15: with t4 a long
+      # typedef aligned 4, _Alignof(t4[2]) is 4 and _Alignof(t4 *) 8). An array
+      # is also where gcc refuses an element whose size its boundary does not
+      # divide, so that check runs here, wherever such an array is declared.
+      # `token` locates that diagnostic.
+      def inherited_type_alignment(type, base_type, spec_info, token)
+        alignment = spec_info.type_alignment
+        return nil if alignment.nil?
+
+        arrays = 0
+        until type.equal?(base_type)
+          return nil unless type.array?
+
+          type = type.element
+          arrays += 1
+        end
+        reject_misaligned_array_element(base_type, alignment, token) if arrays.positive?
+        alignment
+      end
+
+      # Refuses an array whose element type is aligned more strictly than its
+      # size allows, since the second element could not be on that boundary.
+      # gcc 13.3's two wordings (measured 2026-09-15): an element smaller than
+      # its boundary ("typedef long t16 __attribute__((aligned(16))); t16
+      # a[2];"), and one whose size is larger but not a multiple (a 24-byte
+      # struct typedef aligned 16). An element with no size yet is left for the
+      # incomplete-type diagnostics downstream.
+      def reject_misaligned_array_element(element, alignment, token)
+        return unless alignment_known?(element)
+        return if element.array? && element.incomplete?
+
+        size = element.size
+        if size < alignment
+          error_at(token, "alignment of array elements is greater than element size")
+        elsif (size % alignment).nonzero?
+          error_at(token, "size of array element is not a multiple of its alignment")
+        end
+      end
+
+      # The boundary a typedef declarator gives the name it declares: an
+      # aligned(N) among its attributes (the specifier-position ones and those
+      # trailing the name), which *replaces* the type's boundary — gcc 13.3
+      # lowers it as readily as it raises it (measured 2026-09-15: "typedef long
+      # t4 __attribute__((aligned(4)));" has _Alignof 4 and sits at offset 4
+      # after a char) — or else the boundary an aligned typedef in the
+      # specifiers hands on (so "typedef t16 t16b;" is aligned 16 too). The size
+      # never changes. A lone `packed` on a typedef has no effect (gcc 13.3
+      # ignores it with a warning; _Alignof stays 8 for a long). nil when
+      # neither applies, or for a function type, which has no boundary.
+      def typedef_alignment(type, base_type, spec_info, attributes, name_tok)
+        inherited = inherited_type_alignment(type, base_type, spec_info, name_tok)
+        return nil if type.function?
+
+        aligned, = resolve_layout_attributes(attributes)
+        aligned || inherited
+      end
+
+      # The boundary an object declarator (file scope, block scope, static or
+      # automatic) asks for on top of its type's own: the strongest of its
+      # _Alignas (checked against the type's boundary, 6.7.5p4), an aligned(N)
+      # among its attributes and the boundary an aligned typedef hands its type
+      # (`inherited`, from #inherited_type_alignment). nil when none asks for
+      # anything. The generator places the object on the larger of this and its
+      # type's alignment, so a request *below* the type's alignment —
+      # "long g __attribute__((aligned(4)));", or an object of a typedef aligned
+      # 4 — keeps the natural boundary. gcc 13.3 gives such an object the lower
+      # one (measured 2026-09-15: __alignof__ 4); the stricter placement is
+      # still a valid address for it, and nothing in this compiler can read an
+      # object's boundary back.
+      #
+      # An `automatic` object does not take `inherited` as a request. The
+      # generator refuses an automatic request stronger than the frame gives
+      # (16 for a stack object, 8 for a scalar's slot — see
+      # Generator#reject_overaligned_automatic), which is right for a boundary
+      # written on the object itself, but would refuse every local of a scalar
+      # typedef aligned 16 — an ordinary declaration gcc accepts, and one that
+      # compiled before typedef boundaries were read at all. Such a local keeps
+      # the frame's boundary instead (an aggregate still lands on 16).
+      def object_alignment_request(spec_info, attributes, type, inherited, name_tok, automatic: false)
+        requested = alignas_boundary(spec_info.alignas, type, "'#{name_tok.value}'", inherited)
+        aligned, = resolve_layout_attributes(attributes)
+        [requested, aligned, automatic ? nil : inherited].compact.max
+      end
+
+      # The [name, type, nil, alignas, base_alignment] entry StructType#define
+      # lays a plain member out from (see #member_boundary there). `attributes`
+      # are the member declaration's specifier-position ones plus those
+      # trailing this declarator (position f). Measured with gcc 13.3 on both
+      # targets, 2026-09-15:
+      #   * aligned(N) raises the member's boundary to N and never lowers it
+      #     ("char c; long a __attribute__((aligned(4)));" keeps `a` at 8); in
+      #     a packed struct it applies in full (the same member lands at 4), so
+      #     it joins the _Alignas request, which behaves exactly so;
+      #   * packed drops the member's own boundary to 1 before that
+      #     ("long a __attribute__((packed, aligned(4)))" is at 4);
+      #   * an aligned typedef's boundary replaces the type's, larger or smaller,
+      #     and a packed struct still drops it to 1.
+      # `what` names the member in an _Alignas diagnostic and `token` locates
+      # the array-element one.
+      def plain_member_entry(name, type, member_base, member_spec, attributes, what, token)
+        inherited = inherited_type_alignment(type, member_base, member_spec, token)
+        aligned, packed = resolve_layout_attributes(attributes)
+        requested = [alignas_boundary(member_spec.alignas, type, what, inherited), aligned].compact.max
+        [name, type, nil, requested, packed ? 1 : inherited]
       end
 
       # Whether the "_Atomic" at `peek` opens the parenthesized
@@ -1902,15 +2023,16 @@ module Rubycc
           skip_extension_markers
 
           spec_tok = peek
-          # An _Alignas among a member declaration's specifiers belongs to every
-          # declarator it introduces, exactly as the base type does, so it is
-          # carried alongside it rather than folded into the type.
+          # An _Alignas, an aligned/packed attribute or an aligned typedef's
+          # boundary among a member declaration's specifiers belongs to every
+          # declarator it introduces, exactly as the base type does, so the
+          # whole specifier info is carried alongside it rather than folded into
+          # the type.
           member_base, member_spec = parse_declaration_specifiers(allow_storage_class: false)
-          alignas = member_spec.alignas
           if peek.punct?(";")
-            parse_anonymous_member(member_base, spec_tok, raw_members, seen, flex, alignas)
+            parse_anonymous_member(member_base, spec_tok, raw_members, seen, flex, member_spec)
           else
-            parse_member_declarators(member_base, spec_tok, raw_members, seen, flex, alignas)
+            parse_member_declarators(member_base, spec_tok, raw_members, seen, flex, member_spec)
           end
           expect_punct(";")
         end
@@ -1928,7 +2050,7 @@ module Rubycc
       # declares nothing and is rejected. The member is recorded with a nil name
       # and its inner type; every name it exposes transparently is added to
       # `seen` so a later member cannot shadow one of them.
-      def parse_anonymous_member(member_base, spec_tok, raw_members, seen, flex, alignas = nil)
+      def parse_anonymous_member(member_base, spec_tok, raw_members, seen, flex, member_spec)
         reject_member_after_flexible_array(flex, spec_tok)
         unless member_base.struct? && member_base.tag.nil?
           error_at(spec_tok, "declaration does not declare anything")
@@ -1938,7 +2060,13 @@ module Rubycc
           seen[name] = true
         end
         flex[:others] += 1
-        raw_members << [nil, member_base, nil, alignas_boundary(alignas, member_base, "unnamed field")]
+        # An aligned/packed attribute among an anonymous member's specifiers has
+        # no effect: gcc 13.3 leaves "char c; __attribute__((aligned(16)))
+        # struct { int x; };" with x at 4 and the whole aggregate aligned 4 on
+        # both targets (measured 2026-09-15), while an _Alignas in the same
+        # place is honoured. So only the _Alignas reaches the entry.
+        raw_members << plain_member_entry(nil, member_base, member_base, member_spec, [],
+                                          "unnamed field", spec_tok)
       end
 
       # The comma-separated struct-declarators sharing `member_base`. Each is
@@ -1949,22 +2077,22 @@ module Rubycc
       # shapes the layout but declares nothing (6.7.2.1). A member may not be a
       # bare function; a pointer to one is fine. Each named member is checked for
       # a duplicate against `seen` (which already holds any transparently exposed
-      # names) and then added to it. Every recorded entry is
-      # [name, Type, bit_width, alignas], bit_width nil for a plain member and
-      # alignas the boundary an _Alignas asked for (nil for none).
-      def parse_member_declarators(member_base, spec_tok, raw_members, seen, flex, alignas = nil)
+      # names) and then added to it. A bit-field's entry is [name, Type,
+      # bit_width]; a plain member's is built by #plain_member_entry from
+      # `member_spec`, the declaration's shared specifier info.
+      def parse_member_declarators(member_base, spec_tok, raw_members, seen, flex, member_spec)
         loop do
           reject_member_after_flexible_array(flex, spec_tok)
           if peek.punct?(":")
             advance # ":"
             # A bit-field has no address of its own to align, so 6.7.5p2 forbids
             # an _Alignas on one.
-            reject_alignas(alignas, "bit-field")
+            reject_alignas(member_spec.alignas, "bit-field")
             # An unnamed bit-field declares no member, so it does not satisfy the
             # "a FAM needs another named member" rule (flex[:others] untouched).
             raw_members << [nil, member_base, parse_bitfield_width(member_base, spec_tok)]
           else
-            parse_named_member(member_base, raw_members, seen, flex, alignas)
+            parse_named_member(member_base, raw_members, seen, flex, member_spec)
           end
           break unless peek.punct?(",")
 
@@ -1977,7 +2105,7 @@ module Rubycc
       # constraint violation (6.7.2.1p3, "only an unnamed member may be
       # zero-width"). A plain member may not be a function, void, or an
       # incomplete aggregate by value.
-      def parse_named_member(member_base, raw_members, seen, flex, alignas = nil)
+      def parse_named_member(member_base, raw_members, seen, flex, member_spec)
         # A trailing "[]" (an incomplete array) is admitted here so the last
         # member may be a flexible array member; #reject_flexible_array_member
         # then enforces the 6.7.2.1p18 constraints (struct only, and never
@@ -1991,7 +2119,7 @@ module Rubycc
         reject_identifier_list(params)
         if peek.punct?(":")
           advance # ":"
-          reject_alignas(alignas, "bit-field '#{name_tok.value}'")
+          reject_alignas(member_spec.alignas, "bit-field '#{name_tok.value}'")
           width = parse_bitfield_width(type, name_tok)
           error_at(name_tok, "named bit-field '#{name_tok.value}' has zero width") if width.zero?
           register_member_name(name_tok, seen)
@@ -1999,11 +2127,11 @@ module Rubycc
           raw_members << [name_tok.value, type, width]
         else
           # A GNU attribute may trail a member declarator (position f):
-          # "int m __attribute__((packed));". Accepted and discarded — a
-          # member-level packed/aligned has no effect on this subset's layout
-          # (only a whole-struct attribute steers #layout_struct, and only an
-          # _Alignas raises a single member's boundary).
-          parse_attribute_specifiers
+          # "long m __attribute__((aligned(16)));". Its aligned/packed shape
+          # this one member's boundary (see #plain_member_entry), joined by the
+          # specifier-position ones every declarator of the declaration shares;
+          # every other attribute is accepted and discarded.
+          attributes = member_spec.attributes + parse_attribute_specifiers
           error_at(name_tok, "field '#{name_tok.value}' declared as a function") if type.function?
           reject_void_type(type, name_tok)
           reject_incomplete_member(type, name_tok)
@@ -2014,8 +2142,8 @@ module Rubycc
           else
             flex[:others] += 1
           end
-          raw_members << [name_tok.value, type, nil,
-                          alignas_boundary(alignas, type, "'#{name_tok.value}'")]
+          raw_members << plain_member_entry(name_tok.value, type, member_base, member_spec, attributes,
+                                            "'#{name_tok.value}'", name_tok)
         end
       end
 
@@ -2366,7 +2494,10 @@ module Rubycc
           # A typedef names a type, never a function this unit defines, so an
           # identifier list ("typedef int F(a, b);") could not be a definition.
           reject_identifier_list(params)
-          parse_attribute_specifiers # position d: a trailing attribute on the typedef name
+          # position d: a trailing attribute on the typedef name, joined by the
+          # specifier-position ones; an aligned(N) among them sets the boundary
+          # the name carries (see #typedef_alignment).
+          attributes = spec_info.attributes + parse_attribute_specifiers
           # A typedef declares a type, not an object, so there is nothing for an
           # _Alignas to align (6.7.5p2).
           reject_alignas(spec_info.alignas, "typedef '#{name_tok.value}'")
@@ -2378,7 +2509,8 @@ module Rubycc
           # top-level rule applies, so "typedef const int *cp;" (a pointer to
           # const) is not itself const.
           const = declarator_object_const(type, spec_info.const, pointer_quals)
-          declare_typedef_name(name_tok, type, const)
+          declare_typedef_name(name_tok, type, const,
+                               typedef_alignment(type, base_type, spec_info, attributes, name_tok))
           break unless peek.punct?(",")
 
           advance # ","
@@ -2393,8 +2525,13 @@ module Rubycc
         # nested-function refusal below), so an identifier list here supplies no
         # types either.
         reject_identifier_list(params)
-        parse_attribute_specifiers # position d: a trailing attribute on this local declarator
+        # position d: a trailing attribute on this local declarator, joined by
+        # the specifier-position ones (see #object_alignment_request).
+        attributes = spec_info.attributes + parse_attribute_specifiers
         reject_void_type(type, name_tok)
+        # Read off the declarator's own type, before an initializer may rebuild
+        # an inferred "[]" bound into a fresh array type.
+        inherited = type.function? ? nil : inherited_type_alignment(type, base_type, spec_info, name_tok)
         # A body here would be a *nested function definition* — a GNU extension,
         # not the block-scope function *declaration* 6.2.2p5 blesses (which ends
         # at the ";" and only names an external function). It needs a trampoline
@@ -2441,8 +2578,12 @@ module Rubycc
         declare_ordinary_name(name_tok.value, type)
         # The boundary is settled against the *finished* type, so an inferred
         # "[]" bound is already in place when the "cannot reduce" check runs.
+        # No recorded storage class (none, `auto` or `register`) is an automatic
+        # object; `static` and `extern` ones live in a section, which honours
+        # any boundary.
         AST::VariableDecl.new(name_tok.value, type, initializer, name_tok, const, spec_info.storage,
-                              alignas_boundary(spec_info.alignas, type, "'#{name_tok.value}'"))
+                              object_alignment_request(spec_info, attributes, type, inherited, name_tok,
+                                                       automatic: spec_info.storage.nil?))
       end
 
       # Rejects the declaration specifiers that may sit on a function but not on
@@ -3682,9 +3823,9 @@ module Rubycc
       def parse_alignof
         alignof_tok = advance # "_Alignof"
         expect_punct("(")
-        type = parse_type_name
+        type, alignment = parse_type_name_with_alignment
         expect_punct(")")
-        AST::AlignofType.new(type, alignof_tok)
+        AST::AlignofType.new(type, alignof_tok, alignment)
       end
 
       # "__builtin_va_start ( assignment-expression , identifier )": the va_list
@@ -4001,9 +4142,23 @@ module Rubycc
       # a plain pointer type can be written there ("sizeof(int (*)(int))",
       # "(int (*)(int))p").
       def parse_type_name(allow_incomplete_array: false)
-        _name_tok, type = parse_declarator(parse_type_specifier, name_mode: :forbidden,
-                                                                 allow_incomplete_array: allow_incomplete_array)
-        type
+        parse_type_name_with_alignment(allow_incomplete_array: allow_incomplete_array).first
+      end
+
+      # The same, together with the boundary an aligned typedef hands it
+      # (see #inherited_type_alignment), nil when there is none — the one thing
+      # a written type carries beyond its Rubycc::Type, which only _Alignof and
+      # "_Alignas ( type-name )" read. Every type-name goes through here, so an
+      # array of an over-aligned element is refused wherever it is written.
+      def parse_type_name_with_alignment(allow_incomplete_array: false)
+        start_tok = peek
+        base, spec_info = parse_declaration_specifiers(allow_storage_class: false)
+        # A type-name declares no object, so it has nothing for an _Alignas to
+        # align (6.7.5p2) — gcc refuses one here and so does this.
+        reject_alignas(spec_info.alignas, "type name")
+        _name_tok, type = parse_declarator(base, name_mode: :forbidden,
+                                                 allow_incomplete_array: allow_incomplete_array)
+        [type, inherited_type_alignment(type, base, spec_info, start_tok)]
       end
 
       # A compound literal "( type-name ) { initializer-list }" (6.5.2.5), the
@@ -4185,18 +4340,20 @@ module Rubycc
         @ordinary_scopes.last[name] = OrdinaryName.new(:ordinary, type)
       end
 
-      # Binds a typedef name to its resolved type (and whether it names a
-      # const-qualified object type) in the current ordinary scope. C permits a
-      # typedef name to be redeclared in the same scope when the new declaration
-      # names the same type; a different type remains a redefinition diagnostic.
-      def declare_typedef_name(name_tok, type, const)
+      # Binds a typedef name to its resolved type (whether it names a
+      # const-qualified object type, and the boundary an aligned attribute gave
+      # it, nil for none) in the current ordinary scope. C permits a typedef
+      # name to be redeclared in the same scope when the new declaration names
+      # the same type; a different type remains a redefinition diagnostic. A
+      # redeclaration keeps the first binding, boundary included.
+      def declare_typedef_name(name_tok, type, const, alignment = nil)
         existing = @ordinary_scopes.last[name_tok.value]
         if existing
-          return if existing.kind == :typedef && existing.value == [type, const]
+          return if existing.kind == :typedef && existing.value[0, 2] == [type, const]
 
           error_at(name_tok, "redefinition of typedef '#{name_tok.value}'")
         end
-        @ordinary_scopes.last[name_tok.value] = OrdinaryName.new(:typedef, [type, const])
+        @ordinary_scopes.last[name_tok.value] = OrdinaryName.new(:typedef, [type, const, alignment])
       end
 
       # The innermost ordinary-scope entry for `name`, or nil when none binds it.

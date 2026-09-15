@@ -2099,7 +2099,7 @@ module Rubycc
         when Front::AST::SizeofType
           gen_sizeof(node.type, node.token)
         when Front::AST::AlignofType
-          gen_alignof(node.type, node.token)
+          gen_alignof(node.type, node.token, node.alignment)
         when Front::AST::BuiltinOffsetof
           gen_offsetof(node)
         when Front::AST::Cast
@@ -3603,7 +3603,9 @@ if plan.mode == :memory || plan.pieces.empty?
       # _Alignof folds to a size_t (unsigned long) constant, the resolved type's
       # alignment, mirroring #gen_sizeof: a void, function or incomplete type has
       # no alignment and is rejected the same way sizeof rejects a missing size.
-      def gen_alignof(type, token)
+      # `alignment`, when non-nil, is the boundary an aligned typedef gave the
+      # written type (AST::AlignofType#alignment) and replaces the type's own.
+      def gen_alignof(type, token, alignment = nil)
         error_at(token, "invalid application of '_Alignof' to void type") if type.void?
         error_at(token, "invalid application of '_Alignof' to a function type") if type.function?
         require_complete(type, token)
@@ -3611,7 +3613,7 @@ if plan.mode == :memory || plan.pieces.empty?
         dst = new_vreg
         # An alignment is a small power of two, so a 32-bit mov already leaves a
         # valid unsigned long value (its upper half zeroed).
-        emit(:const, dst: dst, a: type.alignment)
+        emit(:const, dst: dst, a: alignment || type.alignment)
         [dst, Type::ULong]
       end
 

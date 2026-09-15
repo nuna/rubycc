@@ -17196,3 +17196,128 @@ k は集約より前にスタックに載った long の数。固定引数は整
 - 32/64 整列の集約を受け取った rubycc の callee は、値を 16 バイト境界のスタックオブジェクトへコピーする。
   そのため `&x` が 32/64 の倍数になるとは限らない(引数の受け渡しは一致する)。
 - 128 バイト以上の整列は測っていない。`stack_alignment` は型の整列をそのまま使う。
+
+## aligned-attribute-member-typedef-1 — メンバの宣言子・typedef 名・変数に付けた `aligned` を読む(GAPS BQ)
+
+### 原因
+
+`__attribute__((aligned(N)))` を**構造体そのもの**に付けた形(position b / c)と `_Alignas` は効いていたが、
+**メンバの宣言子**(position f)・**typedef 名**(position d)・**変数の宣言子**に付けた同じ属性は
+`parse_attribute_specifiers` の戻り値を捨てるだけで、診断も出さずに落ちていた。
+2026-09-15 にこのホスト(WSL2 / gcc 13.3、aarch64 は `aarch64-linux-gnu-gcc` 13.3 + qemu-aarch64)で測った再現:
+
+```c
+struct m { long a __attribute__((aligned(16))); long b; };
+typedef long al16 __attribute__((aligned(16)));
+struct t { al16 a; long b; };
+/* _Alignof(struct m), sizeof(struct m), _Alignof(struct t), _Alignof(al16) */
+```
+
+| | 出力 |
+|---|---|
+| gcc 13.3(x86-64・aarch64 とも) | `16 16 16 16` |
+| 修正前の rubycc(両アーキ) | `8 16 8 8` |
+
+gcc の規則も同じ日に測った(**x86-64 と aarch64 で 1 行も違わなかった**):
+
+- **メンバの宣言子の `aligned(N)`**: そのメンバの基準境界を N まで**引き上げるだけで下げない**
+  (`char c; long a __attribute__((aligned(4)));` の `a` は 8 のまま)。`_Alignas` と同じ振る舞い
+- **メンバの `packed`**: そのメンバの基準境界を 1 に落とす。`packed, aligned(4)` は 4。
+  構造体側が packed でもメンバの `aligned(N)` はそのまま効く(packed 構造体の `aligned(16)` メンバは 16、
+  `aligned(4)` メンバは 4 — つまり基準が 1 に落ちた上で N まで上がる)
+- **typedef 名の `aligned(N)`**: 型の境界を**置き換える**。gcc は typedef でだけ**下げも**する
+  (`typedef long t4 __attribute__((aligned(4)))` は `_Alignof` 4、char の後で offset 4)。**`sizeof` は変わらない**
+  (`typedef char t32c __attribute__((aligned(32)))` は大きさ 1・境界 32)。typedef の連鎖と配列には伝わるが、
+  **ポインタには伝わらない**(`_Alignof(t16 *)` は 8)。`packed` 単独は無視(gcc は警告を出して 8 のまま)
+- **指定子位置(position a)の属性**は宣言の**各宣言子**に付く(`long __attribute__((aligned(16))) a, b;` は両方 16、
+  ポインタ宣言子にも付く)。ただし**無名メンバでは無視される**
+  (`char c; __attribute__((aligned(16))) struct { int x; };` は境界 4 のまま。同じ位置の `_Alignas` は効く)
+- **変数の宣言子**: 境界を上げる。gcc は下げもする(`long g __attribute__((aligned(4)))` の `__alignof__` は 4)
+- 要素の大きさを境界が割り切れない配列は 2 つの文言で拒否される:
+  大きさ < 境界が `alignment of array elements is greater than element size`、
+  大きさ > 境界で非倍数が `size of array element is not a multiple of its alignment`
+
+### 対処
+
+**整列を型に持たせず、宣言の属性として持ち回る**設計にした。`Type::IntegerType` などは共有シングルトンで、
+`Type::StructType` は同一性で比較する(自己参照型のため)から、整列だけ違う型の変種を作ると
+同一性比較・互換性判定の前提が崩れる。一方で観測できる差(`sizeof` / `_Alignof` / `offsetof` /
+オブジェクトの配置)は「宣言ごとの境界」で全て表せる。
+
+- `Parser::DeclSpecInfo` に `type_alignment` を足した。指定子の typedef 名が持つ境界で、
+  `#inherited_type_alignment` が宣言子ごとに「その型自身と、その配列にだけ伝える」判定をする
+  (ポインタ・関数には伝えない)。配列のときは gcc の 2 つの拒否をここで出す
+- typedef の束縛(`OrdinaryName(:typedef, ...)`)を `[type, const]` から `[type, const, alignment]` の
+  3 つ組にした。`#typedef_alignment` が「属性の `aligned` があればそれ(置き換え)、無ければ継承」を決める
+- `StructType#define` の raw メンバ要素に 5 番目 `base_alignment` を足した。`#member_boundary` は
+  `packed ? 1 : (base_alignment || type.alignment)` を基準にし、`alignas`(= `_Alignas` と
+  メンバの `aligned(N)` の強い方)で引き上げる。メンバの `packed` は `base_alignment` を 1 にする形で表す。
+  **AAPCS64 の `natural_alignment` はメンバの境界の最大値なので、この 1 箇所でメンバ属性も typedef の境界も数に入る**
+- 変数は `#object_alignment_request` が `_Alignas` / 属性の `aligned` / typedef の境界の最大を要求として返す。
+  `#alignas_boundary` の「弱められない」検査(6.7.5p4)は typedef の境界を基準にする
+  (gcc も `_Alignas(8) t16 x;` を拒否し `_Alignas(4) t4 x;` を通す)
+- `_Alignof` は型だけでは足りないので、`AST::AlignofType` に `alignment` を足し、
+  `#parse_type_name_with_alignment` が型名と一緒に境界を返す(`_Alignas(type-name)` も同じ経路)。
+  定数評価器と `Generator#gen_alignof` が `alignment || type.alignment` を使う
+- 引数渡しの規則(`AAPCS64Convention#aggregate_plan` / System V)は**変更していない**。
+  `natural_alignment` と `alignment` の定義がそのままで、メンバの境界だけが正しくなる
+- 型名の解決が `#parse_type_name_with_alignment` 1 本になり、`#parse_type_specifier` は
+  呼ばれなくなったので消した(説明はそのまま移した)
+
+### テスト
+
+引数渡しの行列を両アーキで測り直した(2026-09-15、gcc 13.3。呼ばれ側を long 16 個の関数として受け、
+各語がどのレジスタ・スタック語に届いたかを読む探針。`sN` はスタック引数領域の N 番目の eightbyte。
+k は集約の前に置いた long の数):
+
+| 形 | 16 の出どころ | aarch64 k=1 / 3 / 9 | x86-64 k=7 / 9 |
+|---|---|---|---|
+| `struct { long a, b; }`(対照) | — | x1/x2・x3/x4・s1/s2 | s1/s2・s3/s4 |
+| `struct { long a __attribute__((aligned(16))); long b; }` | メンバの属性 | **x2/x3・x4/x5・s2/s3** | **s2/s3・s4/s5** |
+| `struct { t16 a; long b; }`(`t16` は aligned(16) の long typedef) | メンバの型(typedef) | **x2/x3・x4/x5・s2/s3** | **s2/s3・s4/s5** |
+| `struct { T i; }`(`T` は typedef 名に aligned(16)) | メンバの型(typedef) | **x2/x3・x4/x5・s2/s3** | **s2/s3・s4/s5** |
+| `T`(typedef 名に aligned(16))を値渡し | typedef 名の属性 | x1/x2・x3/x4・s1/s2(数えない) | s1/s2・s3/s4(数えない) |
+| `typedef struct {…} T __attribute__((aligned(16)))` を値渡し | 同上 | x1/x2・x3/x4・s1/s2(数えない) | s1/s2・s3/s4(数えない) |
+| `t16` 単体(スカラー)を値渡し | typedef 名の属性 | x1・x3・s1(数えない) | s1・s3(数えない) |
+
+つまり**メンバ由来の 16 は両 ABI が数え**(AArch64 は偶数レジスタ対、System V は 16 境界のスタックスロット)、
+**typedef 名に付けた属性は両 ABI とも数えない** — `aapcs64-aligned-attribute-aggregate-1` が
+集約自身の属性について測った結果と同じ扱いで、そのステップの規則(自然な整列で決める)は変更不要だった。
+`struct { int x; t4 a; int y; }`(`t4` は aligned(4) の long typedef)は x86-64 では long が
+eightbyte をまたぐので MEMORY 級になり、k=1 でもスタックに載る(gcc・rubycc 一致)。
+
+- `test/test_aligned_attribute_member_typedef.rb`(新規): 再現・メンバ 21 形・typedef 33 形・
+  オブジェクト 23 個(アドレスの剰余で境界を読む。rubycc には式の `__alignof__` が無いため)を
+  gcc 差分で両アーキ検証し、配列要素の 2 つの拒否・`_Alignas` と typedef 境界の関係・
+  自動記憶域の上限を診断で検証する。11 runs, 53 assertions, 0 failures(2026-09-15)
+- `test/test_aapcs64_aligned_attribute_aggregate.rb`: 前ステップが「別件」として外していた
+  メンバ属性の形を戻し、typedef 由来の 4 形(スカラー typedef のメンバ・typedef 名のメンバ・
+  境界を下げた typedef のメンバ・スカラー typedef 単体)を足して 19 形にした。4 runs, 12 assertions, 0 failures
+- **修正前の lib(9e4d5d2)でこの 2 ファイルを走らせると 15 runs 中 13 failures / 2 errors**(2026-09-15)。
+  x86-64 側も落ちるので、メンバ由来の 16 は System V でも観測できる差だと確かめられる
+- `examples/m6/aligned_attribute_member_typedef_1_cache_line_counters.c`: 64 バイト境界の
+  カウンタ typedef、メンバ属性で 16 になる構造体、境界を下げる typedef、packed 構造体の
+  `aligned(4)` メンバ、32 バイト境界の静的配列。`aapcs64` の例と同じ理由で**型は `#include` より前**に置く
+  (aarch64 の例走者は glibc の `<sys/cdefs.h>` を読み、`__GNUC__` の無いコンパイラでは
+  `__attribute__` が消えるため)
+- 回帰(2026-09-15、いずれも 0 failures / 0 errors): `test_variadic_aggregate_argument.rb` ・
+  `test_cross_abi.rb` ・`test_type.rb` ・`test_parser.rb` ・`test_header_abi.rb` ・`test_alignas.rb` を
+  まとめて 577 runs、`test_examples.rb` 70 runs、`test_examples.rb` + `test_examples_aarch64.rb` 584 runs / 22 skips、
+  `test_c_suite.rb` 223 runs / 11 skips、`test_c_suite.rb` + `test_c_suite_aarch64.rb` 444 runs / 22 skips
+- フルスイート(`rake test`、2026-09-16): **3839 runs, 19282 assertions, 0 failures, 0 errors, 35 skips**
+
+### 残された観点
+
+- **自動記憶域の局所オブジェクトは、typedef の境界を要求にしない**。フレームが与える境界
+  (スタックオブジェクト 16・スカラーのスロット 8)のままにしてある。要求にすると
+  `Generator#reject_overaligned_automatic` が `t16 x;` のような**ごく普通の局所宣言を全部拒否**してしまう
+  (gcc は通し、rubycc も本ステップ以前は通していた)。宣言子に**自分で書いた** `aligned(N)` と `_Alignas` は
+  従来どおり上限超過を診断する。実行時にスタックを再整列するプロローグを両バックエンドが
+  出せるようになるまでの妥協で、スカラー局所が 16 バイト境界を要求する形だけが gcc と違う。
+  プロローグでの再整列そのものは `issues/overaligned-automatic-object.md`(GAPS BW)に起票した
+- 変数の境界を**下げる**要求(gcc の `__alignof__` は 4 を返す)は、rubycc では型の境界のまま(厳しい側)。
+  配置としては妥当で、rubycc にはオブジェクトの境界を読み戻す構文が無いので観測できない
+- ビットフィールドに付けた `aligned` / ビットフィールドの型が持つ typedef の境界は数えていない
+  (宣言子の後の属性はそもそも読んでいない)。パラメータの境界も従来どおり呼び出し規約に任せる
+- `packed` を typedef に単独で書いた場合は gcc と同じく無視するが、gcc が出す警告に当たるものは出ない
+  (このフロントエンドは警告を出さない)

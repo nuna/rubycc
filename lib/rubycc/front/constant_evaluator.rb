@@ -531,7 +531,7 @@ module Rubycc
           raise NotConstant, node.token
         end
 
-        type.alignment
+        node.alignment || type.alignment
       end
 
       # __builtin_offsetof(type-name, member-designator) folds to the byte offset

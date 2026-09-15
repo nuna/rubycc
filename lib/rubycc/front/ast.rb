@@ -153,7 +153,10 @@ module Rubycc
       # parenthesized type-name form exists; unlike sizeof there is no operand
       # form. The result folds to a size_t (unsigned long) constant, exactly
       # like SizeofType, and is rejected for a void, function or incomplete type.
-      AlignofType = Data.define(:type, :token)
+      # `alignment` is the boundary an aligned typedef gave the written type
+      # ("typedef long t16 __attribute__((aligned(16)))"), which replaces
+      # `type.alignment` when non-nil; the Type itself is the shared one.
+      AlignofType = Data.define(:type, :token, :alignment)
 
       # A cast "( type-name ) operand" (ISO C 6.5.4). `type` is the resolved
       # Rubycc::Type the operand is converted to and `operand` is the

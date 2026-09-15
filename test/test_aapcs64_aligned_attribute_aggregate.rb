@@ -23,11 +23,10 @@ require_relative "test_helper"
 # spent — as a fixed argument and as a variadic one, and comes back as a
 # return value.
 #
-# x86-64 runs the same cases minus the shape X86_64_EXCLUDED names: System V
-# counts the whole alignment, attribute included, and rubycc already agreed
-# with gcc there on every 16-aligned shape. The two 32-byte-aligned shapes
-# joined it with sysv-over-aligned-aggregate-stack-1, which starts such an
-# aggregate on a 32-aligned stack slot as gcc does.
+# x86-64 runs every one of these shapes too: System V counts the whole
+# alignment, attribute included, and the two System V gaps that once kept
+# shapes off this half are closed (sysv-padding-eightbyte-class-1 and
+# sysv-over-aligned-aggregate-stack-1), so X86_64_EXCLUDED is empty.
 class TestAapcs64AlignedAttributeAggregate < Minitest::Test
   include ExecutionHelper
   include AArch64ExecutionHelper
@@ -64,6 +63,21 @@ class TestAapcs64AlignedAttributeAggregate < Minitest::Test
     ["nested", "struct nested_in { long a, b; } __attribute__((aligned(16)));\n" \
                "struct nested { struct nested_in i; };", "struct nested",
      "v.i.a = s * 41; v.i.b = s + 43;", 16],
+    # aligned-attribute-member-typedef-1: the attribute on a member declarator
+    # and an aligned typedef used as a member's type, both member-level (rubycc
+    # used to drop the attribute in both places, 2026-09-14), and an aligned
+    # scalar typedef passed on its own.
+    ["mem_attr", "struct mem_attr { long a __attribute__((aligned(16))); long b; };", "struct mem_attr",
+     "v.a = s * 67; v.b = s + 71;", 16],
+    ["tdef_scalar_m", "typedef long tdef_l16 __attribute__((aligned(16)));\n" \
+                      "struct tdef_scalar_m { tdef_l16 a; long b; };", "struct tdef_scalar_m",
+     "v.a = s * 73; v.b = s - 79;", 16],
+    ["tdef_name_m", "struct tdef_name_m { tdef_name i; };", "struct tdef_name_m",
+     "v.i.a = s * 83; v.i.b = s + 89;", 16],
+    ["tdef_l4_m", "typedef long tdef_l4 __attribute__((aligned(4)));\n" \
+                  "struct tdef_l4_m { int x; tdef_l4 a; int y; };", "struct tdef_l4_m",
+     "v.x = (int)s; v.a = s * 97; v.y = (int)(s + 101);", 16],
+    ["scalar_l16", "", "tdef_l16", "v = s * 103 + 1;", 8],
     # 32-byte alignment: larger than 16 bytes, so AAPCS64 passes a copy's address.
     ["attr32", "struct attr32 { long a, b; } __attribute__((aligned(32)));", "struct attr32",
      "v.a = s * 47; v.b = s + 53;", 16],
@@ -71,12 +85,12 @@ class TestAapcs64AlignedAttributeAggregate < Minitest::Test
      "v.a = s * 59; v.b = s + 61;", 16],
   ].freeze
 
-# Both System V gaps that used to keep shapes off the x86-64 half are closed:
-# sysv-padding-eightbyte-class-1 gave a padding-only eightbyte no register
-# (f2_attr), and sysv-over-aligned-aggregate-stack-1 put a 32-byte-aligned
-# MEMORY aggregate on a 32-aligned stack slot (attr32 / alignas32), both as
-# gcc 13.3 does. Every shape now runs on both halves.
-X86_64_EXCLUDED = [].freeze
+  # Both System V gaps that used to keep shapes off the x86-64 half are closed:
+  # sysv-padding-eightbyte-class-1 gave a padding-only eightbyte no register
+  # (f2_attr), and sysv-over-aligned-aggregate-stack-1 put a 32-byte-aligned
+  # MEMORY aggregate on a 32-aligned stack slot (attr32 / alignas32), both as
+  # gcc 13.3 does. Every shape now runs on both halves.
+  X86_64_EXCLUDED = [].freeze
 
   # Long arguments ahead of the aggregate. On aarch64, 0..6 leave room for a
   # pair (odd and even NGRN), 7 cannot fit one, and 8 and 9 put it on the
