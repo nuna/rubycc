@@ -577,7 +577,12 @@ class TestHeaderAbi < Minitest::Test
   # ttyname_r (Step 167, M5 H6): io-console's other real-build gap alongside
   # termios.h's cfmakeraw, added as ttyname's POSIX reentrant pair; it carries
   # no numeric surface of its own, so it is likewise just called in the
-  # snippet to prove it is usable. fdatasync() is a declaration-only check here:
+  # snippet to prove it is usable. _POSIX_VDISABLE (audit-reserved-public-
+  # macros-1, GAPS BX) is another measured POSIX option macro, ruby-termios
+  # 1.1.0's Termios::POSIX_VDISABLE; it is checked on every libc rather than
+  # bundled under `glibc:` because it is POSIX's constant, not glibc's, and a
+  # libc whose value differs from the bundled 0 has to be found here rather
+  # than in a gem. fdatasync() is a declaration-only check here:
   # bootsnap calls it, but invoking it in an ABI probe would make the probe
   # mutate a caller-supplied descriptor.
   UNISTD = HeaderAbiHarness::Spec.new(
@@ -588,7 +593,7 @@ class TestHeaderAbi < Minitest::Test
              _SC_ARG_MAX _SC_CHILD_MAX _SC_CLK_TCK _SC_NGROUPS_MAX
              _SC_OPEN_MAX _SC_PAGESIZE _SC_PAGE_SIZE _SC_NPROCESSORS_CONF
              _SC_NPROCESSORS_ONLN _SC_PHYS_PAGES _SC_AVPHYS_PAGES _SC_IOV_MAX
-             _POSIX_MONOTONIC_CLOCK _CS_PATH _PC_PIPE_BUF],
+             _POSIX_MONOTONIC_CLOCK _CS_PATH _PC_PIPE_BUF _POSIX_VDISABLE],
     snippets: [<<~C.chomp]
       static long abi_unistd(int fd, const char *path, void *buf, unsigned long n) {
         return read(fd, buf, n) + write(fd, buf, n) + pread(fd, buf, n, 0)

@@ -37,7 +37,12 @@
    no locale_t. omitted: strfrom* strtof128* strtof32* strtof64* -- ISO/IEC TS
    18661 interfaces over _FloatN types rubycc does not model.
    omitted: mkstemp64 mkstemps64 mkostemp64 mkostemps64 -- LFS64 aliases,
-   identical to the unsuffixed calls on an LP64 target; no corpus user. */
+   identical to the unsuffixed calls on an LP64 target; no corpus user.
+   Re-audited 2026-09-16 under audit-reserved-public-macros-1 (GAPS BX),
+   which widened the diff to the reserved spellings a program writes
+   (_POSIX_*, _SC_*, ioctl's _IO*, and the standard functions spelled with a
+   leading underscore): the only one glibc's <stdlib.h> owns is _Exit, which
+   this header already declares, so nothing was added or left out here. */
 
 #ifndef _RUBYCC_STDLIB_H
 #define _RUBYCC_STDLIB_H

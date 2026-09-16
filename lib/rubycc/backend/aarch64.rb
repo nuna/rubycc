@@ -324,7 +324,7 @@ module Rubycc
         # to seed __gr_offs / __vr_offs past the registers the fixed arguments
         # consumed.
         @param_kinds = ir_func.param_kinds
-        layout_frame(ir_func.vreg_count, ir_func.stack_objects, ir_func.insts, ir_func.variadic)
+        layout_frame(ir_func)
         emit_prologue(ir_func.param_kinds, ir_func.variadic)
         ir_func.insts.each { |inst| emit_instruction(inst) }
         resolve_fixups
@@ -364,25 +364,44 @@ module Rubycc
       # the previous, then one 8-byte save slot per promoted register. All
       # offsets are non-negative displacements from the frame base, which this
       # method also decides (see #frame_base_register).
-      def layout_frame(vreg_count, stack_objects, insts, variadic)
+      #
+      # A function holding an over-aligned automatic object asks for more than
+      # that: its frame alignment (IR::Function#frame_alignment) is 32 or 64
+      # rather than 16, each offset is rounded to the boundary its own object or
+      # slot asked for, and the prologue puts the frame base itself on the
+      # frame's boundary — which is what turns a rounded offset into a correctly
+      # aligned address. One 16-byte cell just above the saved record then keeps
+      # the sp the function was entered with, since sp no longer stands a fixed
+      # distance from it.
+      def layout_frame(ir_func)
+        insts = ir_func.insts
         # Whether this function allocates dynamically decides two things at
         # once: which register names the fixed frame (see #frame_base_register)
         # and whether a static outgoing argument area is worth reserving. It is
         # a property of the whole function, not of a path through it, because a
         # slot's address must not depend on which branch reached it.
         @uses_alloca = insts.any? { |inst| inst.op == :alloca }
+        @frame_alignment = ir_func.frame_alignment
+        @realigned = @frame_alignment > IR::Function::BASE_FRAME_ALIGNMENT
         # An alloca function reserves no static outgoing area: sp stops naming
         # the bottom of the fixed frame the moment a block is allocated, so the
         # area would be unreachable at the one moment it is needed. Each call
         # lowers sp for its own area instead (see #place_arguments).
         @outgoing_size = @uses_alloca ? 0 : outgoing_argument_bytes(insts)
         @save_offset = @outgoing_size
-        vreg_region = align16(vreg_count * 8)
-        running = @save_offset + SAVE_AREA_SIZE + vreg_region
+        running = @save_offset + SAVE_AREA_SIZE
+        @entry_sp_offset = nil
+        if @realigned
+          @entry_sp_offset = running
+          running += SAVE_AREA_SIZE # one 8-byte cell, padded so the rest stays 16-aligned
+        end
+        @slot_offsets = layout_slots(running, ir_func.vreg_count, ir_func.slot_aligns)
+        running = align16(@slot_offsets.empty? ? running : @slot_offsets.last + 8)
         @object_offsets = []
-        stack_objects.each do |object_size|
-          @object_offsets << running
-          running += align16(object_size)
+        ir_func.stack_objects.each_with_index do |object_size, id|
+          offset = align_up(running, object_alignment(ir_func.object_aligns[id]))
+          @object_offsets << offset
+          running = offset + align16(object_size)
         end
         # One save slot per promoted register, above every object. The
         # registers are callee-saved, so a function that takes one over has to
@@ -414,7 +433,7 @@ module Rubycc
         # The whole block is 192 bytes, a multiple of 16, so the frame stays
         # 16-aligned; a non-variadic function reserves nothing here.
         @vr_save_offset = @gr_save_offset = @gr_top_offset = @vr_top_offset = nil
-        if variadic
+        if ir_func.variadic
           @vr_save_offset = running
           running += FP_ARG_REGISTERS.size * 16
           @vr_top_offset = running
@@ -422,7 +441,29 @@ module Rubycc
           running += ARG_REGISTERS.size * 8
           @gr_top_offset = running
         end
-        @frame_size = align16(running)
+        @frame_size = align_up(running, @frame_alignment)
+      end
+
+      # The virtual-register slots' offsets from the frame base, indexed by vreg
+      # number, laid out from `base` upward. Every slot is eight bytes, so a
+      # function asking for nothing gets exactly base + 8*n apiece; a slot that
+      # asks for a stronger boundary (an over-aligned scalar local) is pushed up
+      # to the next multiple of it, leaving the gap unused. The frame base sits
+      # on the frame's own boundary, so an offset that is a multiple of the
+      # slot's boundary is an address on it.
+      def layout_slots(base, vreg_count, slot_aligns)
+        running = base
+        Array.new(vreg_count) do |vreg|
+          offset = align_up(running, slot_aligns[vreg] || 8)
+          running = offset + 8
+          offset
+        end
+      end
+
+      # The boundary a stack object is placed on: what it asked for, or the 16
+      # bytes every object gets whether it asked or not.
+      def object_alignment(requested)
+        requested && requested > 16 ? requested : 16
       end
 
       # The size of the outgoing argument area: eight bytes per stack argument
@@ -447,9 +488,11 @@ module Rubycc
         align16(widest * 8)
       end
 
-      # sp + 8*n above the saved record: the byte offset of vreg n's slot.
+      # The byte offset of vreg n's slot from the frame base, from the table
+      # #layout_slots built for this function. It is the plain 8*n above the
+      # saved record unless some slot asked for a boundary stronger than 8.
       def slot_offset(vreg)
-        @save_offset + SAVE_AREA_SIZE + 8 * vreg
+        @slot_offsets[vreg]
       end
 
       # The byte offset of incoming stack argument `index`. The caller laid its
@@ -460,6 +503,35 @@ module Rubycc
       # that address.
       def incoming_stack_offset(index)
         @frame_size + 8 * index
+      end
+
+      # Puts the address of incoming stack argument `index` into `reg`. A
+      # realigned frame stands an unknown distance below the caller's sp — the
+      # mask decided it at run time — so the address is built from the entry sp
+      # the prologue parked in the frame instead of from a fixed offset. The
+      # 8*index displacement is one or two add-immediates (#emit_base_address
+      # would clobber its own base past 16 MB of stack arguments, which is two
+      # million of them).
+      def emit_incoming_stack_address(reg, index)
+        if @realigned
+          load_frame_at(reg, @entry_sp_offset)
+          emit_base_address(reg, reg, 8 * index) if index.positive?
+        else
+          emit_slot_address(reg, incoming_stack_offset(index))
+        end
+      end
+
+      # Loads incoming stack argument `index` into `reg`, as a whole eightbyte.
+      # The ADDR scratch carries the address in a realigned frame; it is never a
+      # promoted register, so it cannot be the `reg` a promoted parameter is
+      # spilled straight into.
+      def load_incoming_stack(reg, index)
+        if @realigned
+          emit_incoming_stack_address(ADDR, index)
+          emit_word(0xF9400000 | (ADDR << 5) | reg) # ldr x, [ADDR]
+        else
+          load_frame_at(reg, incoming_stack_offset(index))
+        end
       end
 
       # Lowers sp by the frame size, saves x29/x30 into the record just above
@@ -476,10 +548,20 @@ module Rubycc
       # base. The record itself is therefore stored against sp explicitly rather
       # than through #frame_base_register, which at that instant would name a
       # register holding the caller's value.
+      #
+      # A function with an over-aligned automatic object takes neither route:
+      # #emit_realigned_frame_base lowers sp, masks it onto the frame's boundary
+      # and anchors x29 there, for the same reason an alloca function anchors
+      # it — the distance from sp to anything the caller left behind is no
+      # longer fixed.
       def emit_prologue(param_kinds, variadic)
-        adjust_sp(@frame_size, sub: true)
-        emit_save_record(store: true, base: SP)
-        emit_add_imm(FP, SP, 0, shift12: false) if @uses_alloca # mov x29, sp
+        if @realigned
+          emit_realigned_frame_base
+        else
+          adjust_sp(@frame_size, sub: true)
+          emit_save_record(store: true, base: SP)
+          emit_add_imm(FP, SP, 0, shift12: false) if @uses_alloca # mov x29, sp
+        end
         # Before anything writes a promoted register — which the parameter
         # spilling right below is the first thing to do, a promoted parameter
         # being moved straight from the register it arrived in — and after the
@@ -487,6 +569,41 @@ module Rubycc
         emit_save_promoted_registers
         spill_parameters(param_kinds)
         save_argument_registers if variadic
+      end
+
+      # Puts the frame on its own boundary, which lowering sp by the frame size
+      # cannot do — the sp a function is entered with is only ever 16-aligned.
+      # sp is dropped past the whole frame plus one boundary's worth of slack
+      # and masked down to the boundary, the slack being what guarantees the
+      # mask still leaves the frame room; x29 then names the base, as it does in
+      # an alloca function, since sp is no longer a fixed distance from anything
+      # the caller left behind. The sp the function was entered with goes into
+      # the frame cell #layout_frame reserved for it: the incoming stack
+      # arguments are measured from there (#emit_incoming_stack_address) and the
+      # epilogue puts sp back to it.
+      #
+      # The two scratches are free here — no argument register is among them and
+      # the prologue has not spilled anything yet — and the caller's x29 reaches
+      # the saved record before x29 is overwritten, as in the alloca path.
+      def emit_realigned_frame_base
+        emit_add_imm(A, SP, 0, shift12: false)      # mov A, sp (the entry sp)
+        adjust_sp(@frame_size + @frame_alignment, sub: true)
+        emit_add_imm(B, SP, 0, shift12: false)      # mov B, sp
+        emit_word(and_not_mask(@frame_alignment) | (B << 5) | B) # and B, B, #-alignment
+        emit_add_imm(SP, B, 0, shift12: false)      # mov sp, B
+        emit_save_record(store: true, base: SP)
+        emit_add_imm(FP, SP, 0, shift12: false)     # mov x29, sp
+        store_frame_at(A, @entry_sp_offset)
+      end
+
+      # The AND (immediate) word that rounds a register down to `alignment`
+      # (a power of two): "and Xd, Xn, #-alignment" with the Rn/Rd fields left
+      # at zero for the caller to fill. -2^k is a run of 64-k ones rotated into
+      # the top, which is exactly what the N/immr/imms bitmask encoding names,
+      # so no constant has to be materialized first.
+      def and_not_mask(alignment)
+        bits = alignment.bit_length - 1
+        0x92400000 | ((64 - bits) << 16) | ((63 - bits) << 10)
       end
 
       # Saves the promoted registers into their frame slots, one "str Xn,
@@ -551,7 +668,7 @@ module Rubycc
         vr_offs = -(FP_ARG_REGISTERS.size - named_fp) * 16
 
         load_reg(A, ap_vreg) # A = &__va_list
-        emit_slot_address(B, incoming_stack_offset(named_stack))
+        emit_incoming_stack_address(B, named_stack)
         emit_piece_access(B, A, 0, 8, load: false, fp: false)
         emit_slot_address(B, @gr_top_offset)
         emit_piece_access(B, A, 8, 8, load: false, fp: false)
@@ -564,6 +681,8 @@ module Rubycc
       end
 
       # Restores x29/x30, raises sp back, and returns. Emitted at every :ret.
+      # A realigned frame returns through the entry sp it parked in the frame
+      # instead (see the branch at the top of the method).
       #
       # In an alloca function sp is wherever the last allocation left it, so it
       # is first brought back to the fixed frame from the anchor in x29. That
@@ -580,6 +699,20 @@ module Rubycc
       # fact reached through x29 there, so the order is not what makes this
       # correct; it is what keeps the two cases reading the same way.
       def emit_epilogue
+        if @realigned
+          # sp is not a fixed distance from anything the caller left behind, so
+          # it is put back from the cell the prologue kept the entry sp in
+          # rather than raised by the frame size. That single move also releases
+          # every :alloca block, exactly as the "mov sp, x29" below does. The
+          # record is reloaded through x29 while it still names the frame, and
+          # the load reads its base before it writes x29 back.
+          emit_restore_promoted_registers
+          load_frame_at(A, @entry_sp_offset)
+          emit_save_record(store: false)
+          emit_add_imm(SP, A, 0, shift12: false) # mov sp, A
+          emit_word(0xD65F03C0) # ret (branch to x30)
+          return
+        end
         emit_add_imm(SP, FP, 0, shift12: false) if @uses_alloca # mov sp, x29
         emit_restore_promoted_registers
         emit_save_record(store: false)
@@ -632,7 +765,7 @@ module Rubycc
             # it through A first. #store_reg then emits nothing at all, the
             # value being already home.
             target = @promoted[i] || A
-            load_frame_at(target, incoming_stack_offset(next_stack))
+            load_incoming_stack(target, next_stack)
             store_reg(target, i)
             next_stack += 1
           when :pad
@@ -2012,7 +2145,7 @@ module Rubycc
       # the two cases cannot drift apart — and an ordinary function's output is
       # unchanged, since the answer is still sp.
       def frame_base_register
-        @uses_alloca ? FP : SP
+        @uses_alloca || @realigned ? FP : SP
       end
 
       # add Rd, Rn, #imm12 (optionally << 12). Rn = 31 addresses sp here.
@@ -2311,6 +2444,11 @@ module Rubycc
         4 => { load: 0xB9400000, store: 0xB9000000 },
         8 => { load: 0xF9400000, store: 0xF9000000 }
       }.freeze
+
+      # Rounds `value` up to a multiple of `alignment` (a power of two).
+      def align_up(value, alignment)
+        (value + alignment - 1) & ~(alignment - 1)
+      end
 
       def align16(value)
         (value + 15) & ~15

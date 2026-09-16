@@ -432,8 +432,60 @@ module AuditBundledHeaders
     [last, false]
   end
 
+  # A name in the underscore space the standards reserve to the implementation,
+  # but which a *program* is meant to write in its own source, and which
+  # therefore belongs in the diff like any other public name. The test applied
+  # here is exactly that -- "does a program spell this name?" -- not "who owns
+  # the spelling":
+  #
+  #   * the option and limit constants POSIX and X/Open define for a program to
+  #     test with #if or pass along (_POSIX_*, _POSIX2_*, _XOPEN_*, _XBS5_*,
+  #     _LFS_*, _LFS64_*); _POSIX_VDISABLE, which ruby-termios 1.1.0 writes, is
+  #     one of these;
+  #   * the query arguments of sysconf/confstr/pathconf (_SC_*, _CS_*, _PC_*)
+  #     and of nl_langinfo (_NL_*, _DATE_FMT);
+  #   * the ioctl request constructors <asm-generic/ioctl.h> publishes (_IO,
+  #     _IOR, _IOW, _IOWR, their _BAD variants, and the _IOC_* fields they are
+  #     assembled from), which a driver-facing extension writes to name a
+  #     request the libc headers do not;
+  #   * the functions a standard itself spells with a leading underscore
+  #     (_Exit; POSIX.1-2024's _Fork).
+  #
+  # Everything else in the space is the implementation talking to itself and
+  # stays out of the diff: every __-prefixed name; include and type guards
+  # (_STDLIB_H, _BITS_*, __have_*, _*_defined, rubycc's own _RUBYCC_*); the
+  # feature-test macros a program *defines* rather than reads (_POSIX_SOURCE,
+  # _POSIX_C_SOURCE, _XOPEN_SOURCE, _XOPEN_SOURCE_EXTENDED and kin, all of
+  # which carry _SOURCE as a word); glibc's reports about its own layout
+  # (_HAVE_STRUCT_*, _STATBUF_ST_*, _DIRENT_HAVE_*, _UTSNAME_*_LENGTH, and the
+  # _IO_* innards of <stdio.h>); and the names a public macro merely expands
+  # to (_REG_* behind REG_*, _ElfW behind ElfW). None of those can appear in a
+  # gem's source, so a bundled header not having one is not a gap.
+  # (audit-reserved-public-macros-1)
+  PUBLIC_RESERVED_PREFIXES = %w[_POSIX_ _POSIX2_ _XOPEN_ _XBS5_ _LFS_ _LFS64_
+                                _SC_ _CS_ _PC_ _NL_ _IOC_].freeze
+  PUBLIC_RESERVED_NAMES = Set.new(%w[_Exit _Fork _DATE_FMT
+                                     _IO _IOC _IOR _IOW _IOWR
+                                     _IOR_BAD _IOW_BAD _IOWR_BAD]).freeze
+
+  # A feature-test macro (_XOPEN_SOURCE, _POSIX_C_SOURCE, ...) or an include
+  # guard (_XOPEN_LIM_H), which share the public families' prefixes but are
+  # written by the program's build and by glibc's own files respectively.
+  FEATURE_TEST_OR_GUARD = /_SOURCE(?:_|\z)|_H_*\z/
+
+  def public_reserved?(name)
+    return false if name.match?(FEATURE_TEST_OR_GUARD)
+
+    PUBLIC_RESERVED_NAMES.include?(name) ||
+      PUBLIC_RESERVED_PREFIXES.any? { |prefix| name.start_with?(prefix) }
+  end
+
+  # True for a name that is the implementation's alone, and so is not counted
+  # as missing when a bundled header lacks it. See #public_reserved? for the
+  # line between the two halves of the reserved space.
   def reserved?(name)
-    name.sub(/\A(?:struct|union|enum) /, "").match?(/\A_[A-Z_]/)
+    stem = name.sub(/\A(?:struct|union|enum) /, "")
+    stem.match?(/\A_[A-Z_]/) && !public_reserved?(stem)
   end
 
   # The "omitted: NAME ... -- reason" lines of a bundled header's first
@@ -693,8 +745,12 @@ module AuditBundledHeaders
     out << "- **同梱側**は同じコンパイラで `-nostdinc` と rubycc の同梱の探索順(`include/`、" \
            "`include/libc/glibc/<arch>/`、`include/libc/`)で前処理する(hermetic と同じ。ホストのヘッダは混ざらない)。" \
            "同梱の `<H>` から見える名前はすべて数える(同梱の別ヘッダ経由でも見えれば足りている)。"
-    out << "- **不足**は glibc の `<H>` の名前のうち、同梱の `<H>` から見えないもの(`_` + 大文字 / `__` で始まる予約名は除く)。" \
-           "括弧の中は、その名前を最初に見せる feature-test の段階: `iso`(`-std=c11`)・`posix`(`_POSIX_C_SOURCE=200809L`)・" \
+    out << "- **不足**は glibc の `<H>` の名前のうち、同梱の `<H>` から見えないもの。" \
+           "`_` + 大文字 / `__` で始まる**予約名**は、処理系が自分のために使う綴り(インクルードガード・`__have_*` などの型ガード・" \
+           "プログラムが**書く**側の feature-test マクロ・glibc が自分のレイアウトを報告するマクロ・公開マクロの展開先)は除き、" \
+           "**規格が予約領域の綴りをプログラムに使わせているもの**は数える(`_POSIX_*`・`_POSIX2_*`・`_XOPEN_*`・`_XBS5_*`・`_LFS*`・" \
+           "`_SC_*`・`_CS_*`・`_PC_*`・`_NL_*`・ioctl の `_IO*`・`_Exit`/`_Fork`。線引きは `tools/audit_bundled_headers.rb` の " \
+           "`#public_reserved?`)。括弧の中は、その名前を最初に見せる feature-test の段階: `iso`(`-std=c11`)・`posix`(`_POSIX_C_SOURCE=200809L`)・" \
            "`xopen`(`_XOPEN_SOURCE=700`)・`default`(gcc の既定 = `_DEFAULT_SOURCE` = `__USE_MISC`)・`gnu`(`_GNU_SOURCE` でだけ)。"
     out << "- **未記載**は、不足のうち同梱ヘッダの冒頭コメントの `omitted: 名前 ... -- 理由` で意図して外したと書かれていないもの。"
     out << "- **取り込み不足**は、glibc の `<H>` が含む公開ヘッダのうち、同梱の `<H>` が含まないもの(その中の名前は上の不足に数えない)。"

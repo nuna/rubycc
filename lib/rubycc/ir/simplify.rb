@@ -82,7 +82,8 @@ module Rubycc
 
         [Function.new(function.name, rewritten, function.vreg_count, function.param_count,
                       function.stack_objects, function.linkage, function.variadic,
-                      function.param_kinds),
+                      function.param_kinds,
+                      object_aligns: function.object_aligns, slot_aligns: function.slot_aligns),
          reads, writes]
       end
 

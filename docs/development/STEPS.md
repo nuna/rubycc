@@ -17348,3 +17348,387 @@ BS・BR・BQ は ABI の食い違いで、**それで止まっていた gem は�
 `issues/audit-reserved-public-macros.md`(BX)に起票した。
 
 **検証**: 文書とデータだけの変更で、`rake test` はブランチ全体の結果を PR に記録する。
+
+## audit-reserved-public-macros-1 — 予約領域のうち「プログラムが書く綴り」を監査の差分に入れる(GAPS BX)
+
+`issues/audit-reserved-public-macros.md` の課題を塞いだ。`tools/audit_bundled_headers.rb` は名前が
+`_` + 大文字で始まると無条件に「処理系の予約名」として差分から外していたため、glibc が**利用者向けに
+公開している**マクロが表に出ず、`docs/development/BUNDLED-HEADERS-COVERAGE.md` の「未記載 0 件」が
+その分だけ弱い主張になっていた。実害は `ruby-termios` 1.1.0 で、`bundled-unistd-process-group-1`
+(GAPS BU)が `tcgetpgrp` を通した先の `termios.c:759` で `_POSIX_VDISABLE` を使い、そこで止まっていた。
+
+### 原因
+
+`reserved?` の判定が `name.match?(/\A_[A-Z_]/)` の 1 行で、**綴りの持ち主**(予約領域か否か)だけを見て
+いた。規格には「予約領域の綴りを、規格自身がプログラムに使わせる」名前があり、それらも同じ網に
+かかっていた。このホスト(WSL2、gcc 13.3 / aarch64-linux-gnu-gcc 13.3、glibc 2.39)で測った再現
+(rubycc 側は修正前の 2026-09-16、gcc 側は 2026-09-17 に測り直しても同じ):
+
+```c
+#include <unistd.h>
+int main(void) { return _POSIX_VDISABLE; }
+```
+
+| | 結果 |
+|---|---|
+| gcc 13.3 | ok。`gcc -E -dM -D_GNU_SOURCE <unistd.h>` の印字は `'\0'`(値 0)で、x86-64 と aarch64 で一致(2026-09-17 実測) |
+| rubycc(修正前) | `error: undeclared variable '_POSIX_VDISABLE'` |
+
+同じ形で表から落ちていた名前は、同梱 37 本の全体で 441 件(`__` で始まらない予約名。2026-09-16 実測)だった。
+
+### 対処
+
+#### 1. 線引き — 「プログラムが自分のソースに書く綴りか」で切る
+
+`public_reserved?` を新設し、`reserved?` を「予約領域で、かつ `public_reserved?` でない」に変えた。
+判定の基準は**綴りの所有者ではなく用途**である。根拠は `tools/audit_bundled_headers.rb` の
+`#public_reserved?` のコメントに書いた。
+
+**(a) 差分に入れる(プログラムが書く)**
+
+| 族 | 何に使うか |
+|---|---|
+| `_POSIX_*` `_POSIX2_*` `_XOPEN_*` `_XBS5_*` `_LFS_*` `_LFS64_*` | POSIX / X-Open のオプション・版数・プログラミング環境マクロ(`#if` で読む)。`_POSIX_VDISABLE` もここ |
+| `_SC_*` `_CS_*` `_PC_*` | `sysconf` / `confstr` / `pathconf` の引数 |
+| `_NL_*` `_DATE_FMT` | `nl_langinfo` の item コード |
+| `_IO` `_IOR` `_IOW` `_IOWR` `_IO*_BAD` `_IOC` `_IOC_*` | ioctl 要求番号の構成マクロ(カーネル UAPI の公開面) |
+| `_Exit` `_Fork` | 規格自身が先頭下線で綴った関数 |
+
+**(b) 差分から外す(処理系が自分のために使う)**
+
+- `__` で始まる名前すべて(`__caddr_t`・`__have_*`)。従来どおり typedef とタグだけ「予約名の型」に数える
+- インクルードガード・型ガード(`_STDLIB_H`・`_BITS_*`・`_*_defined`・rubycc 自身の `_RUBYCC_*`)。
+  (a) の接頭辞を持つガード(`_XOPEN_LIM_H`)も末尾 `_H` で落とす
+- プログラムが**読む**のではなく**定義する**側の feature-test マクロ(`_POSIX_C_SOURCE`・`_XOPEN_SOURCE`・
+  `_XOPEN_SOURCE_EXTENDED`。語として `_SOURCE` を含むもの)
+- glibc が自分のレイアウトを報告するマクロ(`_HAVE_STRUCT_*`・`_STATBUF_ST_*`・`_DIRENT_HAVE_*`・
+  `_UTSNAME_*_LENGTH`・`<stdio.h>` の `_IO_*` 内部)
+- 公開マクロの展開先にすぎない名前(`REG_*` の実体 `_REG_*`、`ElfW` の実体 `_ElfW`)
+
+**(b) はどれも gem のソースに現れえないので、同梱ヘッダに無くてもギャップではない**——これが線の芯である。
+
+#### 2. 表の作り直し
+
+`ruby tools/audit_bundled_headers.rb --output docs/development/BUNDLED-HEADERS-COVERAGE.md` を再実行した
+(2026-09-16。表の 測定日 行はその日付)。表の読み方の節(生成元も道具の中)にも、何を数えて何を外すかを書き足した。
+差分が出たのは 5 本だけで、残り 32 本は不変:
+
+| ヘッダ | 不足(前 → 後) | 増えた内訳 |
+|---|---|---|
+| `unistd.h` | 60 → 432(x86-64)/ 438(aarch64) | `_SC_*` 206・`_CS_*` 66・`_POSIX_*` 54・`_PC_*` 20・`_XOPEN_*` 11・`_POSIX2_*` 7・`_LFS64_*` 3・`_LFS_*` 2・`_XBS5_*` 2・`_Fork` 1 |
+| `sys/ioctl.h` | 13 → 41 | `_IO`/`_IOR`/`_IOW`/`_IOWR`/`_IO*_BAD`/`_IOC`/`_IOC_*` の 28 件 |
+| `langinfo.h` | 38 → 328 | `_NL_*` と `_DATE_FMT` |
+| `limits.h` | 53 → 100 | `_POSIX_*_MAX` 等の POSIX 下限値と `_XOPEN_IOV_MAX` |
+| `dirent.h` | 42 → 79 | `<bits/posix1_lim.h>` 経由の `_POSIX_*` |
+
+arch 差は `unistd.h` の 6 件だけで、aarch64 の glibc だけが見せる ILP32 プログラミング環境マクロ
+(`_POSIX_V6_ILP32_OFF32`・`_POSIX_V6_ILP32_OFFBIG`・`_POSIX_V7_ILP32_OFF32`・`_POSIX_V7_ILP32_OFFBIG`・
+`_XBS5_ILP32_OFF32`・`_XBS5_ILP32_OFFBIG`)である(2026-09-16 実測)。
+
+#### 3. 分類済み 6 本の数え直し
+
+新たに現れた名前を「足す / 意図して外す」に振り直した。**未記載は 6 本とも 0 のまま**である。
+
+- **`unistd.h`(+372 / +378)**: `_POSIX_VDISABLE` を足した。値は `gcc -E -dM -D_GNU_SOURCE <unistd.h>` の
+  印字で x86-64・aarch64 とも文字定数 `'\0'`(= 0)と実測し(2026-09-16、2026-09-17 に再測定して同値)、共通層に
+  `#define _POSIX_VDISABLE 0` として置いた(glibc の文面は写さず実測値を書いている。R11、
+  `docs/reference/HEADER-LICENSING.md` §4.4/§6)。残り 371/377 件は 4 本の `omitted:` 行にまとめた。
+  理由は**ヘッダ本文が `_SC_`/`_CS_`/`_PC_` について既に書いていた判断の延長**である:
+  これらはどれも**ホストの libc が答える番号・値**で、glibc の更新ごとに両 arch で測り直す surface に
+  なる。だから消費者が現れるたびに 1 件ずつ足す(`_SC_*` 12 件・`_CS_PATH`/`_PC_PIPE_BUF`・
+  `_POSIX_MONOTONIC_CLOCK`/`_POSIX_TIMERS` がその形で、今回の `_POSIX_VDISABLE` も同じ)。
+  `_Fork` だけは別の理由で、ホストの libc が `_Fork@@GLIBC_2.34` として出していることを
+  `nm -D --with-symbol-versions` で両 arch とも確かめた(2026-09-16、2026-09-17 に再測定して同じ)ので、`close_range` と同じ
+  「古いホスト glibc に無い記号を約束しない」で外した。
+- **`sys/ioctl.h`(+28)**: 28 件すべてを外した。このヘッダは要求番号を**実測した数値そのもの**で与える
+  方針(既存の `IOC_IN`/`IOC_OUT`/`IOCSIZE_MASK` 除外と同じ)なので構成マクロに消費者がおらず、
+  足すと符号化のビット配置(`_IOC_*BITS`/`*SHIFT`)という第二の測定面を抱え込む。
+- **`stdlib.h`(+0)**: glibc の `<stdlib.h>` が持つ該当名は `_Exit` だけで、同梱は既に宣言している。
+- **`sched.h`・`termios.h`・`sys/types.h`(x86-64/aarch64 の両層)(+0)**: glibc 側の予約名がガードか
+  `__` 名しかない。4 本(+ arch 層)には「2026-09-16 に測り直して 0 件だった」ことを冒頭コメントに
+  1 文ずつ残した。`termios.h` には、`_POSIX_VDISABLE` が POSIX 上は `<unistd.h>` のマクロであること
+  (ruby-termios も両方を include している)も書いた。
+
+`docs/reference/HEADER-LICENSING.md` §3.2 の `include/libc/unistd.h` の行に `_POSIX_VDISABLE` の実測を
+追記した。ファイル数は動いていないので §3.4 の集計(81 本)は不変。
+
+#### 4. `ruby-termios` 1.1.0 がこの段を越えた
+
+修正前は `termios.c:759: error: undeclared variable '_POSIX_VDISABLE'`(2026-09-16 実測)。修正後は
+`RUBYCC=1 gem install ruby-termios-1.1.0.gem` が **`Successfully installed ruby-termios-1.1.0`** まで通り
+(`Makefile` の `CC` が rubycc であることを確認)、生成された `termios.so` が `require "termios"` で読め、
+`Termios::POSIX_VDISABLE == 0`・`Termios::NCCS == 32`・`Termios::VINTR == 0` を返し、
+`Termios.tcgetattr($stdin)` が非 tty で `Errno::ENOTTY` を上げる(= ホスト libc に届いている)ところまで
+確かめた(2026-09-16 実測、2026-09-17 にワークツリー `audit-reserved-public-macros` で再実行、x86-64)。**この gem はこれで
+ビルド・ロードとも通る**。gem 本体のテストスイートは上流にも同梱物にも無い(`examples/` だけ)ので、
+`data/verified_gems.json` に足せる「本体テスト実走」の証拠はこの gem では取れない。
+
+### テスト
+
+- `test/test_audit_bundled_headers.rb`: 線引きの単体テスト
+  `test_the_reserved_space_is_split_into_what_a_program_writes_and_what_it_does_not` を追加。
+  (a) 側 22 件・(b) 側 18 件を名指しで検査し、`struct` 接頭辞の剥がしも見る。
+- `test/test_bundled_headers_coverage.rb`: issue 本文どおりの再現をコンパイルする
+  `test_bundled_unistd_posix_vdisable_is_defined` と、監査が `_POSIX_VDISABLE` を公開名として数え
+  `_UNISTD_H` は数えないことを見る `test_the_reserved_names_a_program_writes_are_audited` を追加。
+  既存の「分類済み 6 本は未記載 0」検査はそのまま通る。
+- `test/test_header_abi.rb`: `UNISTD` の `ints` に `_POSIX_VDISABLE` を足し、両 arch で gcc の値と
+  一致することを常時検査する。musl の値はこのホストで測れないので、libc をまたぐ齟齬はここで出す。
+- 実行結果(2026-09-17、ワークツリー `audit-reserved-public-macros`、いずれも 0 failures / 0 errors):
+  `test_audit_bundled_headers.rb` 5 runs / 98 assertions、
+  `test_bundled_headers_coverage.rb` 13 runs / 62 assertions、
+  `test_header_abi.rb` 130 runs / 385 assertions / 0 skips、
+  `test_doc_links.rb` 3 runs / 45 assertions、
+  `test_examples.rb` 72 runs / 73 assertions、
+  `test_examples_aarch64.rb` 588 runs / 1017 assertions / 22 skips(既存)、
+  `test_c_suite.rb` 223 runs / 439 assertions / 11 skips(既存)、
+  `test_c_suite_aarch64.rb` 444 runs / 869 assertions / 22 skips(既存)。
+  フルスイート(`rake test`)は **3857 runs, 19482 assertions, 0 failures, 0 errors, 35 skips**
+  (2026-09-17、同ワークツリー。skip 35 件は既存の対象外項目)。
+
+### 残された観点
+
+- **`langinfo.h`・`limits.h`・`dirent.h` の未記載が増えた**(39 → 329、54 → 101、43 → 80)。3 本とも
+  まだ分類していないヘッダ(`bundled-headers-coverage-audit` が残した 49 本の一部)なので、
+  未記載が増えること自体は表の趣旨どおりである。ただし `limits.h` の `_POSIX_*_MAX` は `#if` で読む
+  下限値で、gem が触る見込みは `_NL_*` より高い。
+- **musl での `_POSIX_VDISABLE` は未測定**(このホストに musl toolchain が無い)。CI の musl 実行で
+  ABI ハーネスが検査する。
+- **`_IO*` を足していない**ので、同梱 `<sys/ioctl.h>` に無い要求番号を自前で組み立てる gem はなお
+  落ちる。実例が出たら 1 件の issue にする。
+
+## sysv-unnamed-bitfield-class-1 — 名前の無いビットフィールドの記憶域を分類に数える(GAPS BV)
+
+### 原因
+
+名前の無いビットフィールドは**メンバを宣言しないが記憶域は占める**。rubycc の
+`Type::StructType#define`(`place_bitfield` / `layout_union`)は名前のあるビットフィールドにしか
+`Member` を作らず、名前の無いものはカーソルを進めるだけだったので、**レイアウトは合っているのに
+分類だけがその記憶域を見ていなかった**(`sizeof` / `_Alignof` / `offsetof` は測定前から gcc と一致)。
+結果、両 ABI で食い違っていた。
+
+- **x86-64 System V**: `SystemVAMD64Convention#classify_eightbytes` は members しか歩かないので、
+  `struct { float f; int : 8; }` の最初の eightbyte を SSE と分類していた(gcc は SSE と INTEGER を
+  併合して INTEGER)。メンバが 1 つも無い `struct { int : 8; }` は全 eightbyte が NO_CLASS になり、
+  `sysv-padding-eightbyte-class-1` の「どのフィールドも掛からない eightbyte はピースを作らない」規則に
+  落ちて**丸ごとスタック行き**になっていた。**名前の無いビットフィールドは詰め物ではない**ので、
+  この 2 つを分けるのが本ステップの要点である
+- **AArch64 AAPCS64**: `homogeneous_members` は `member.bitfield?` で HFA を失格にするが、名前の無い
+  ビットフィールドは member ではないので素通りしていた。`union { double d; int : 8; }` は double 1 個の
+  HFA に見えて d0 に載っていた(gcc は x0)
+
+測定の途中で、**分類とは別の食い違い**が 1 つ出た。x86-64 の gcc は、**名前でたどれるメンバを 1 つも
+持たない集約**(C では名前の無いビットフィールドだけの集約でしか作れない)を次のように扱う:
+
+- レジスタが空いていれば分類どおり 1 本使う(`struct { int : 8; }` は edi)
+- **スタック引数領域は 1 バイトも使わない**。溢れたときは次の引数が 1 スロット手前に詰まり、
+  `va_arg` も overflow ポインタを進めない。16 バイト境界の指定があっても詰め物を入れない
+- 16 バイトを超える(psABI なら MEMORY の)大きさでも、**レジスタもスタックも隠し戻り値ポインタも
+  使わない**。`struct { int : 8; } __attribute__((aligned(32)))` を返す関数は隠しポインタを取らず、
+  その後ろの引数は**第 1 整数レジスタ**に入る
+
+AArch64 の gcc にこの規則は無い(1 バイト書いて 8 バイト進め、16 バイト超は参照渡し)。
+
+### 対処
+
+- `Type::UnnamedBitfield`(`bit_offset` / `bit_width`)を新設し、`StructType#unnamed_bitfields` に
+  **幅 0 でない**名前の無いビットフィールドの記憶域だけを記録した。`Member` は増やさない —
+  名前でたどれない記憶域なので、メンバ検索・初期化子・丸ごとコピーはこれまでどおり `members` だけを見る。
+  幅 0(`int : 0;`)は記憶域を占めないので記録しない(カーソルの整列だけは従来どおり)
+- System V: `classify_eightbytes` が members の後に `unnamed_bitfields` も畳み込む
+  (`classify_bitfield` は member ではなく `bit_offset` / `bit_width` を取る形にした)。
+  これで「フィールドが掛かる eightbyte」と「詰め物だけの eightbyte」が正しく分かれる
+- AAPCS64: `homogeneous_members` は `unnamed_bitfields` が空でなければ HFA を失格にする。
+  幅 0 は記録されないので HFA のままで、これは gcc と同じ判断
+- 「メンバの無い集約はスタックを取らない」規則は `CallConvention#stack_eightbytes(type)`
+  (既定 ceil(size/8))を新設し、`SystemVAMD64Convention` だけが `empty_aggregate?` のときに 0 を返す
+  形で入れた。generator 側は 3 箇所がこの 1 つの答えを読む:
+  `abi_request`(placer に渡す `mem_eightbytes`)・`placed_pieces`(溢れたときのピース列)・
+  `take_from_stack_area`(`va_arg` の overflow ポインタの前進)
+- **0 バイトの引数は整列も要求しない**。`struct { int : 8; } __attribute__((aligned(16)))` は
+  16 バイト境界だが gcc は場所も詰め物も与えないので、`abi_request` は `mem_eightbytes` が 0 のとき
+  `align16: false` にし、`take_from_stack_area` はポインタの切り上げも省く
+- 16 バイト超のメンバの無い集約は、`aggregate_plan` が MEMORY ではなく**ピースの無いレジスタ計画**を
+  返すようにした。これ 1 つで「レジスタを取らない」「`stack_eightbytes` が 0 なのでスタックも取らない」
+  「`hidden_result?` が偽なので隠しポインタも取らない」の 3 つが同時に言える
+- IR の契約は変わらない(「集約はピースごとに 1 スロット」のまま。ピースが 0 個になり得ることは
+  `sysv-padding-eightbyte-class-1` で既に生じている)
+
+### 測定行列
+
+2026-09-16(gcc の測定)と 2026-09-17(rubycc との差分)に、このホスト(WSL2 / gcc 13.3)で測った。
+gcc 側は x86-64 が `gcc -O1 -S`、aarch64 が
+`aarch64-linux-gnu-gcc -O1 -S` の出力を読み、`f(T, double)` の固定引数・`v(1, T, 2.0)` の可変長引数・
+`T r(void)` の戻り値で測った。「修正前」は同じ形を新しい差分テストに載せて pristine の lib
+(c9faa14)で走らせた結果である。
+
+| 形 | size(x86/a64) | gcc x86-64(T / 後続 double) | 修正前 rubycc | gcc aarch64 |
+|---|---|---|---|---|
+| `struct { float f; int : 8; }` | 8 / 8 | rdi / xmm0(eb0 は SSE+INTEGER→INTEGER) | xmm0 / xmm1(**不一致**) | x0 / d0 |
+| `struct { int : 8; float f; }` | 8 / 8 | rdi / xmm0 | xmm0(**不一致**) | x0 |
+| `struct { float a, b; int : 8; }` | 12 / 12 | xmm0+edi / xmm1 | xmm0 のみ(**不一致**) | x0+w1 |
+| `struct { float a, b, c; int : 8; }` | 16 / 16 | xmm0+rdi / xmm1 | xmm0+xmm1(**不一致**) | x0+x1 |
+| `struct { double d; int : 8; }` | 16 / 16 | xmm0+rdi / xmm1 | xmm0+xmm1(**不一致**) | x0+x1 |
+| `struct { int : 8; double d; }` | 16 / 16 | edi+xmm0 / xmm1 | xmm0+xmm1(**不一致**) | x0+x1 |
+| `struct { int a : 4; int : 8; float f; }` | 8 / 8 | rdi / xmm0 | 一致(名前付きが既に INTEGER) | x0 |
+| `union { double d; int : 8; }` | 8 / 8 | rdi / xmm0 | xmm0(**不一致**) | x0(**修正前は d0 で不一致**) |
+| `union { float f; int : 8; }` | 4 / 4 | edi / xmm0 | xmm0(**不一致**) | w0(**修正前は s0 で不一致**) |
+| `struct { int : 8; }` | 1 / 4 | edi / xmm0 | スタック(**不一致**) | w0 |
+| `struct { int : 8; } aligned(8)` | 8 / 8 | rdi / xmm0 | スタック(**不一致**) | x0 |
+| `struct { int : 8; } aligned(16)` | 16 / 16 | rdi 1 本だけ(eb1 は NO_CLASS) | スタック(**不一致**) | x0+x1 |
+| `struct { struct { int : 8; } in; }` | 1 / 4 | rdi 1 本 | スタック(**不一致**) | w0 |
+| `struct { int : 8; } aligned(32)` | 32 / 32 | **何も渡さない・隠しポインタも無し** | MEMORY(スタック 4 個 + 隠しポインタ、**不一致**) | 参照渡し(コピーのアドレス) |
+| `struct { float f; int : 0; }` | 4 / 4 | xmm0(幅 0 は何も占めない) | 一致 | s0(HFA のまま) |
+| `struct { float a; int : 0; float b; }` | 8 / 8 | xmm0 | 一致 | s0+s1(HFA) |
+
+溢れ位置(x86-64、整数レジスタを 6 個使い切った後)の測定:
+
+| 形 | gcc 呼び出し側 | gcc 呼ばれ側 / `va_arg` | 修正前 rubycc |
+|---|---|---|---|
+| `struct { char c; }`(対照) | 8 バイト積む | 次の引数は +8 | 一致 |
+| `struct { int : 8; }` | **積まない** | 次の引数は **+0**、`va_arg` も overflow ポインタを進めない | 8 バイト積む(**不一致**) |
+| `struct { int : 8; } aligned(16)` | **積まない**(16 境界への詰め物も無し) | 同上 | 16 バイト + 詰め物(**不一致**) |
+
+- 修正後の rubycc は上の全行で gcc と一致した(`%al` も含む)
+- **戻り値**も分類に従って変わる(`struct { float f; int : 8; }` は rax、`struct { double d; int : 8; }` は
+  xmm0+rax)。メンバの無い形は読める値を持たないので、gcc は値を 1 バイトも動かさない
+- 幅 0 のビットフィールドについて gcc は
+  「the ABI of passing C structures with zero-width bit-fields has changed in GCC 12.1」という note を出す。
+  gcc 13.3 の現在の挙動(何も占めない)に合わせてある
+
+### テスト
+
+- `test/test_sysv_unnamed_bitfield_class.rb`(新規): 16 形(float/double と混ざる 6 形、名前付きと並ぶ
+  1 形、union 2 形、メンバの無い 5 形 — 1・8・16・32 バイトと入れ子 —、対照の幅 0 が 2 形)× 前置き
+  (long, double)=(0,0)(0,7)(0,8)(4,0)(6,0)(5,7) を、固定引数(集約・double・long・2 個目の集約・float)、
+  可変長引数(同じ並びを `va_arg` で読む)、戻り値で回す。gcc 同士の出力を対照に、
+  rubycc 呼び出し → gcc 呼ばれ側、gcc 呼び出し → rubycc 呼ばれ側の両方の一致を求める。
+  x86-64 では gcc で作る 3 つ目の翻訳単位に `%al` を記録するアセンブリの踏み台を置き、
+  呼ばれ側が `%al` も出力するので、呼び出し側のベクタレジスタ数も比べる。aarch64 も同じ形で回す。
+  1 run あたり 16 × 13 = 208 行。4 runs, 12 assertions, 0 failures。
+  **修正前の lib(c9faa14)では 4 runs すべてが failure** — x86-64 は 13 形が食い違い
+  (メンバの無い形は 32 バイトの形で出力が途中で壊れるところまで行く)、aarch64 は union 2 形が
+  HFA 判定で食い違う(2026-09-17)
+- `examples/m6/sysv_unnamed_bitfield_class_1_reserved_bits.c`: 予約ビットを持つ 5 形(float と、
+  double と、幅 0 と、メンバの無い aligned(8) と、union)を固定引数・レジスタを使い切る位置・
+  可変長引数・戻り値で通し、`sizeof` / `_Alignof` も出力する。1 翻訳単位を rubycc が両側とも作るので
+  修正前の lib でも gcc と同じ出力になる(ABI の食い違いは上の差分テストが見る)。
+  型は `#include` より前に定義
+- 回帰(2026-09-17、いずれも 0 failures / 0 errors):
+  `test_sysv_padding_eightbyte_class.rb` 4 runs、`test_sysv_over_aligned_aggregate_stack.rb` 4 runs、
+  `test_aapcs64_aligned_attribute_aggregate.rb` 4 runs、`test_aligned_attribute_member_typedef.rb` 11 runs、
+  `test_variadic_aggregate_argument.rb` 4 runs、`test_cross_abi.rb` 4 runs、`test_type.rb` 92 runs、
+  `test_examples.rb` 73 runs、`test_examples_aarch64.rb` 590 runs / 22 skips、
+  `test_c_suite.rb` 223 runs / 11 skips、`test_c_suite_aarch64.rb` 444 runs / 22 skips
+- 全体(2026-09-17、settled な worktree で 1 回): `rake test` 3860 runs, 19409 assertions,
+  0 failures, 0 errors, 35 skips
+
+### 残された観点
+
+- gcc の「メンバの無い集約は場所を取らない」規則は**分類ではなく配置**の規則で、x86-64 にしか無い。
+  C では名前の無いビットフィールドだけの集約でしか作れない形なので本ステップで揃えたが、規則としては
+  「レジスタは 1 本取るのにスタックは 0 バイト」という不連続で、gcc の `TYPE_EMPTY_P` の扱いに由来する。
+  このホストに clang が無いので**対照は gcc 13.3 の 1 つだけ**である
+- 名前の無いビットフィールドが eightbyte 境界を**跨ぐ**形は測れていない。宣言型の記憶域単位を跨げない
+  という規則(6.7.2.1)があるため `packed` 無しでは作れず、parser は `packed` とビットフィールドの
+  併用を拒む
+
+## overaligned-automatic-object-1 — フレームより強く整列した自動記憶域のオブジェクトを、再整列したフレームに置く
+
+### 原因
+
+フレームは 16 バイト境界の基準点から作られ、スタックオブジェクト(集約・`__int128`)は 16 バイト単位、
+スカラーは 8 バイトの vreg スロット 1 枠に置かれる。**それより強い境界を要求されても出す術が無かった**ので、
+`Generator#reject_overaligned_automatic` が宣言そのものを診断していた(GAPS BW、
+`issues/overaligned-automatic-object.md`)。`aligned-attribute-member-typedef-1` は、typedef の境界を
+局所宣言の要求に持ち上げると `t16 x;` のような普通の宣言までこの診断に当たるため、**局所オブジェクトの
+要求から `inherited` を落として**いた。
+
+**gcc は 1 つの方式ではなく、ターゲットごとに別の方式を使う**(2026-09-17、このホスト WSL2 /
+gcc 13.3・aarch64-linux-gnu-gcc 13.3、`-O0 -fno-stack-protector` の `-S` 出力):
+
+| ターゲット | 形 | 列 |
+|---|---|---|
+| x86-64 | 通常 | `pushq %rbp` / `movq %rsp,%rbp` / **`andq $-32,%rsp`** / `subq $N,%rsp`。局所は rsp 基準、`rbp` は入口のフレームポインタのままなので**着信スタック引数は `16(%rbp)` / `24(%rbp)`**、`va_list` の `overflow_arg_area` も `16(%rbp)`。出口は `leave` |
+| x86-64 | 可変長引数 | `subq $176,%rsp` を**マスクより前**に出し、`andq $-32,%rsp` / `addq $24,%rsp` で退避領域を置き直す。`overflow_arg_area` は同じく `16(%rbp)` |
+| x86-64 | `alloca` 併用 | `leaq 8(%rsp),%r10` / `andq $-32,%rsp` / `pushq -8(%r10)`(戻り番地を積み直す)/ `pushq %rbp` / `movq %rsp,%rbp` / `pushq %r10` / `subq $N,%rsp`。出口は `movq -8(%rbp),%r10` / `leave` / `leaq -8(%r10),%rsp` / `ret` |
+| aarch64 | すべて | **再整列しない**。フレームを多めに取り(32 バイトの 64 整列配列に `sub sp, sp, #144`)、**アドレスを取るところで実行時に切り上げる**(`add x0, sp, 144` / `sub x0, x0, #80` / `add x0, x0, 63` / `lsr x0, x0, 6` / `lsl x0, x0, 6`)。sp は 16 整列のまま、着信引数も `va_list` も従来どおり |
+
+観測できるのは**アドレスと値だけ**なので、rubycc は gcc の列を写さず(R11)、**両ターゲットで 1 つの方式**に
+した。プロローグで再整列し、フレーム基底自体を要求境界に乗せる形である。
+
+### 対処
+
+- `IR::Function` に `object_aligns`(stack_objects と並ぶ疎な配列)と `slot_aligns`(vreg → 境界の疎な Hash)を
+  キーワード引数で足し、`#frame_alignment` が「16 とそれらの最大値」を返す。**16 を超えるときだけ**
+  バックエンドが再整列する。既存の 8 引数の呼び出し側(テストを含む)はそのまま動く。
+- ジェネレータは `reject_overaligned_automatic` を `automatic_alignment` に置き換えた。宣言の要求
+  (`_Alignas` / `aligned` 属性 / 整列 typedef を parser が `alignas` に畳んだもの)と、集約なら型自身の境界の
+  強いほうを採る(不完全型は境界を訊けない — 訊くと raise する — ので飛ばす。その宣言は
+  「invalid use of incomplete type」に向かう)。集約は `new_object(size, align)` 経由で `object_aligns` に、
+  スカラーは vreg スロットの要求として `slot_aligns` に載る。**上限は 4096**
+  (`MAX_AUTOMATIC_ALIGNMENT`)で、超えると診断する — 再整列はフレーム + 境界ぶんを 1 手で下げるので、
+  ページを飛び越えて guard page を素通りしかねないため。静的記憶域に上限は無い(従来どおり)。
+- parser の `object_alignment_request` から `automatic:` を外した。**typedef 由来の境界が局所宣言でも
+  要求になる**(`aligned-attribute-member-typedef-1` が保留していた点)。
+- 値渡しの集約パラメータのコピーと複合リテラルのオブジェクトも、型の境界を `new_object` に渡すようにした。
+- **x86-64**: `push rbp` の直後に `mov r11, rsp`(入口のフレームポインタ)/ `sub rsp, frame_size + N` /
+  `and rsp, -N` / `lea rbp, [rsp + frame_size]` と進め、r11 をフレーム最下部の 8 バイト語へ格納する。
+  **`rbp` 自体が N 境界に乗る**ので、N の倍数の変位がそのまま N 整列アドレスになる(スロットとオブジェクトの
+  変位は各自の要求境界に切り上げ、`slot_disp` は `-8*(n+1)` の式から関数ごとの表引きに変えた)。
+  入口のフレームポインタが `rbp` でなくこの語にあるので、**着信 `:mem` パラメータと `va_start` の
+  `overflow_arg_area` はこの語 + 16 + 8k** から測る。エピローグは `leave` の代わりに
+  `mov rsp, [rbp + entry]` / `pop rbp` で、`:alloca` の領域も同時に解放される。
+- **AArch64**: `mov A, sp`(入口 sp)/ `sub sp, sp, #frame_size + N` / `and B, B, #-N`(`-2^k` は
+  bitmask immediate なので 1 命令)/ `mov sp, B` / `stp x29,x30,[sp,#save]` / `mov x29, sp` /
+  入口 sp をフレームのセルへ `str`。**フレーム基底レジスタは `:alloca` の場合と同じく x29**
+  (`frame_base_register` の条件に `@realigned` を足した)。`sp + frame_size + 8k` は成り立たなくなるので、
+  **着信スタック引数と `__stack` はこのセルから**組み立てる。エピローグはセルから sp を戻すので
+  `:alloca` の領域も同時に解放される。
+- 16 しか要求しない関数の出力は**両バックエンドとも 1 バイトも変わらない**(スロット表・オブジェクト配置の
+  一般化は、要求が無いとき従来式と同じ値を返す)。
+- `docs/internals/IR.md`(Function の表、§6.2、§6.3)と `ir.rb` のコメントを更新した。
+
+### テスト
+
+- `test/test_overaligned_automatic_object.rb`(新規): 課題の再現、配置(16/32/64 のスカラー・構造体・配列を、
+  平関数・スタック引数を取る関数・可変長引数の関数・可変長 + スタック引数・入れ子ブロック・ループの中で)、
+  再整列したフレームが**フレームの利用者をすべて保つ**こと(スタック引数付きの呼び出し、32 整列集約を渡す
+  呼び出し = `area_alignment` 経路、`__builtin_alloca`、隠れポインタの構造体返し、再帰、昇格レジスタを
+  使い切る本体)を、x86-64 と aarch64(qemu)で gcc 差分検証する。`frame_alignment` が要求の最大値に
+  なることも IR で読む。**7 runs, 18 assertions, 0 failures**(2026-09-17)
+- `test/test_alignas.rb`: 自動記憶域の上限を診断していた
+  `test_overaligned_automatic_objects_are_refused` を、**gcc 差分で境界を読み戻す**
+  `test_overaligned_automatic_objects_are_realigned`(+ aarch64)に置き換え、4096 超の診断と
+  静的記憶域が無制限であることを別のテストにした。13 runs, 68 assertions, 0 failures
+- `test/test_aligned_attribute_member_typedef.rb`: 同じく
+  `test_overaligned_automatic_attribute_requests_are_refused` を、属性 3 形と**typedef 由来の 2 形**を
+  gcc 差分で読み戻す `..._are_honoured`(+ aarch64)に置き換えた。12 runs, 49 assertions, 0 failures
+- 回帰(2026-09-17、いずれも 0 failures / 0 errors): `test_sysv_over_aligned_aggregate_stack.rb` 4 runs・
+  `test_aapcs64_aligned_attribute_aggregate.rb` 4 runs・`test_variadic_aggregate_argument.rb` 4 runs・
+  `test_x86_64_backend.rb` 20 runs・`test_aarch64_backend.rb` 100 runs・`test_aarch64_execution.rb` 53 runs・
+  `test_examples.rb` 73 runs・`test_examples_aarch64.rb` 590 runs / 22 skips・`test_c_suite.rb` 223 runs / 11 skips・
+  `test_c_suite_aarch64.rb` 444 runs / 22 skips
+- フルスイート(`rake test`): **統合セッションで実走して記入する**(実装中の木で 2 回走らせたときは
+  いずれも 3866 runs, 19410 assertions, 0 failures, 0 errors, 35 skips)
+- `examples/m6/overaligned_automatic_object_1_cache_line_scratch.c`: 64 バイトのキャッシュライン用
+  scratch・32 整列の構造体・16 整列のカウンタを 1 つの関数に置き、スタック引数を取る関数・可変長引数の関数・
+  `__builtin_alloca` を併用する関数でも同じことをする。`aapcs64` の例と同じ理由で**型は `#include` より前**に置く
+
+### 残された観点
+
+- **上限 4096 は rubycc 独自**。gcc は 2^28 まで通す。再整列のプロローグが frame + 境界を 1 手で下げるため、
+  ページを跨ぐ要求には probe が要る(`-fstack-clash-protection` 相当)。必要になったら probe を書いて上限を上げる
+- **要求したスカラーが昇格レジスタに載った場合も再整列する**。スロットが使われないので境界は観測できず、
+  フレームを揃える意味は無い(gcc はレジスタに載せて揃えない)。`frame_alignment` を IR 側で決めている
+  ぶんの無駄で、正しさには影響しない
+- **値渡しの集約パラメータのコピーを型の境界に置くようにした**。`aligned(32)` の 32 バイト集約を値で受けた
+  callee で `&w % 32` を読むと(2026-09-17 測定):**変更前は x86-64 で rubycc 0 / gcc 1(弱すぎた)**、
+  変更後は x86-64 が一致し、**aarch64 は rubycc 1 / gcc 0** になる。AAPCS64 は 16 バイト超の集約を
+  参照渡しするので gcc の callee は呼び出し側のコピーをそのまま読み、その境界は呼び出し側の都合で決まる。
+  rubycc は callee 側でコピーを作るぶん、gcc より**強い**側にずれる(弱くなることは無い)。
+  値には出ず、パラメータのアドレスの剰余を読む形だけの差なので、その 1 形だけテストの探針から外した
+- x86-64 の再整列フレームは **rbp の連鎖を切る**(rbp は保存した rbp ではなくフレーム境界を指す)。
+  gcc の通常形は連鎖を保つ。デバッガのフレーム巻き戻しにしか効かず、rubycc は CFI を出していないので
+  観測点は無い
+- 再整列は**関数単位**で、要求したオブジェクトがブロックの中にあっても関数のフレーム全体が揃う。gcc も同じ

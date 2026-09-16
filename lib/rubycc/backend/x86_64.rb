@@ -101,9 +101,16 @@ module Rubycc
       # register, so it can hold an indirect call's target without clobbering
       # any argument already loaded into edi..r9d.
       R10 = 10
-      # The stack pointer's register number (its ModR/M reg/rm field). It is only
-      # ever named as the source of a "mov [rbp+disp], rsp" that captures the
-      # post-alloca rsp as the block's base address.
+      # r11 is the other System V caller-saved scratch that is not an argument
+      # register. Only a realigning prologue uses it, to carry the entry frame
+      # pointer from before the mask to the frame word that keeps it
+      # (#emit_realigned_frame_base), and only there — so no slot residency is
+      # ever keyed by it.
+      R11 = 11
+      # The stack pointer's register number (its ModR/M reg/rm field). It is
+      # named as the source of a "mov [rbp+disp], rsp" that captures the
+      # post-alloca rsp as the block's base address, and as the destination of
+      # the "mov rsp, [rbp+disp]" a realigned frame's epilogue returns through.
       RSP = 4
 
       # The registers whole-function promotion hands out, in the order it hands
@@ -207,8 +214,7 @@ module Rubycc
         # Kept for :va_start, which derives its gp_offset/fp_offset seeds and
         # overflow start from the named parameters' register classes.
         @param_kinds = ir_func.param_kinds
-        emit_prologue(ir_func.vreg_count, ir_func.param_count, ir_func.param_kinds,
-                      ir_func.stack_objects, ir_func.variadic)
+        emit_prologue(ir_func)
         ir_func.insts.each { |inst| emit_instruction(inst) }
         resolve_fixups
 
@@ -246,12 +252,24 @@ module Rubycc
       # Each object is placed at a 16-byte-aligned size below the previous one,
       # and @object_offsets[id] records the rbp-relative displacement of the
       # object's base (its lowest address, i.e. element 0).
-      def emit_prologue(vreg_count, param_count, param_kinds, stack_objects, variadic)
-        vreg_region = align16(vreg_count * 8)
+      #
+      # A function holding an over-aligned automatic object asks for more than
+      # that: its frame alignment (IR::Function#frame_alignment) is 32 or 64
+      # rather than 16, every displacement is rounded to the boundary its own
+      # object or slot asked for, and rbp itself is put on the frame's boundary
+      # by #emit_realigned_frame_base — which is what turns a rounded
+      # displacement into a correctly aligned address.
+      def emit_prologue(ir_func)
+        vreg_count = ir_func.vreg_count
+        variadic = ir_func.variadic
+        @frame_alignment = ir_func.frame_alignment
+        @realigned = @frame_alignment > IR::Function::BASE_FRAME_ALIGNMENT
+        @slot_offsets = layout_slots(vreg_count, ir_func.slot_aligns)
+        vreg_region = align16(-(@slot_offsets.last || 0))
         @object_offsets = []
         running = vreg_region
-        stack_objects.each do |object_size|
-          running += align16(object_size)
+        ir_func.stack_objects.each_with_index do |object_size, id|
+          running = align_up(running + object_size, object_alignment(ir_func.object_aligns[id]))
           @object_offsets << -running
         end
         # One save slot per promoted register. The registers are callee-saved,
@@ -276,20 +294,77 @@ module Rubycc
           running += 176
           @reg_save_area_offset = -running
         end
-        frame_size = align16(running)
+        # The word a realigned frame keeps the entry frame pointer in (the
+        # address of the caller's saved rbp, which is where rbp itself would
+        # have pointed). Nothing above it moves, so it costs an ordinary frame
+        # further down and only in a function that realigns.
+        @entry_anchor_disp = nil
+        if @realigned
+          running += 8
+          @entry_anchor_disp = -running
+        end
+        frame_size = align_up(running, @frame_alignment)
         emit(0x55)                          # push rbp
-        emit(0x48, 0x89, 0xE5)              # mov rbp, rsp
-        emit(0x48, 0x81, 0xEC)              # sub rsp, imm32
-        emit_bytes([frame_size].pack("L<"))
+        if @realigned
+          emit_realigned_frame_base(frame_size)
+        else
+          emit(0x48, 0x89, 0xE5)            # mov rbp, rsp
+          emit(0x48, 0x81, 0xEC)            # sub rsp, imm32
+          emit_bytes([frame_size].pack("L<"))
+        end
         # Before anything writes a promoted register — which the parameter
         # spilling right below is the first thing to do, a promoted parameter
         # being moved straight from its incoming argument register.
         emit_save_promoted_registers
-        spill_parameters(param_kinds)
+        spill_parameters(ir_func.param_kinds)
         if variadic
           emit_save_gp_registers
           emit_save_xmm_registers
         end
+      end
+
+      # The virtual-register slots' rbp-relative displacements, indexed by vreg
+      # number. Every slot is eight bytes and they run downward from rbp, so a
+      # function asking for nothing gets exactly -8*(n+1) apiece; a slot that
+      # asks for a stronger boundary (an over-aligned scalar local) is pushed
+      # down to the next multiple of it, leaving the gap unused. rbp itself sits
+      # on the frame's boundary, so a displacement that is a multiple of the
+      # slot's boundary is an address on it.
+      def layout_slots(vreg_count, slot_aligns)
+        running = 0
+        Array.new(vreg_count) do |vreg|
+          running = align_up(running + 8, slot_aligns[vreg] || 8)
+          -running
+        end
+      end
+
+      # The boundary a stack object is placed on: what it asked for, or the 16
+      # bytes every object gets whether it asked or not.
+      def object_alignment(requested)
+        requested && requested > 16 ? requested : 16
+      end
+
+      # Puts rbp on the frame's own boundary, which "push rbp; mov rbp, rsp"
+      # cannot do — the entry rsp is only ever 16-aligned. rsp is dropped past
+      # the whole frame plus one boundary's worth of slack, masked down to the
+      # boundary, and rbp set the frame's size above it; the slack is what
+      # guarantees the mask cannot leave rbp back above the saved rbp. The
+      # address the frame pointer would have had is kept in a frame word
+      # instead, which is where the incoming stack arguments are measured from
+      # (#emit_load_incoming_arg) and what the epilogue puts rsp back to.
+      #
+      # r11 carries it across to that word: it is caller-saved, is not an
+      # argument register and is not a promotion register, so nothing arriving
+      # in this prologue is disturbed by using it.
+      def emit_realigned_frame_base(frame_size)
+        emit(0x49, 0x89, 0xE3)              # mov r11, rsp  (the entry frame pointer)
+        emit_sub_rsp(frame_size + @frame_alignment)
+        emit(0x48, 0x81, 0xE4)              # and rsp, imm32 (sign-extended)
+        emit_bytes([-@frame_alignment].pack("l<"))
+        emit(0x48, 0x8D, 0xAC, 0x24)        # lea rbp, [rsp + disp32]
+        emit_bytes([frame_size].pack("l<"))
+        emit(0x4C, 0x89)                    # mov [rbp + disp], r11
+        emit_modrm_rbp_disp(R11 & 7, @entry_anchor_disp)
       end
 
       # Saves the promoted registers into their frame slots, "mov [rbp+disp],
@@ -343,8 +418,7 @@ module Rubycc
             store_xmm(next_sse, i, kind == :sse8 ? 8 : 4)
             next_sse += 1
           when :mem
-            emit(0x48, 0x8B)                # mov rax, [rbp + disp]
-            emit_modrm_rbp_disp(EAX, 16 + 8 * next_stack)
+            emit_load_incoming_arg(EAX, next_stack)
             store_reg(EAX, i)
             next_stack += 1
           when :pad_stack
@@ -356,6 +430,25 @@ module Rubycc
           else
             raise "unknown parameter kind #{kind.inspect}"
           end
+        end
+      end
+
+      # Loads incoming stack argument `index` (the caller pushed them from the
+      # first upward) into `reg`. It is measured from the entry frame pointer:
+      # the return address sits at +8 from it and the first stack argument at
+      # +16. In an ordinary function rbp *is* that pointer; in a realigned one
+      # rbp has moved onto the frame's boundary and r11 still carries it, this
+      # being the prologue (see #emit_realigned_frame_base).
+      def emit_load_incoming_arg(reg, index)
+        disp = 16 + 8 * index
+        if @realigned
+          emit(0x48 | (reg >= 8 ? 0x04 : 0) | 0x01) # REX.W + REX.B (r11 in rm)
+          emit(0x8B)                        # mov r64, [r11 + disp]
+          emit_modrm_base_disp(reg & 7, R11 & 7, disp)
+        else
+          emit(0x48 | (reg >= 8 ? 0x04 : 0)) # REX.W
+          emit(0x8B)                        # mov r64, [rbp + disp]
+          emit_modrm_rbp_disp(reg & 7, disp)
         end
       end
 
@@ -770,7 +863,19 @@ module Rubycc
         # After the value is loaded, since it may itself come out of a promoted
         # register, and before "leave" while rbp still addresses the frame.
         emit_restore_promoted_registers
-        emit(0xC9)                          # leave
+        if @realigned
+          # rbp is on the frame's own boundary rather than on the caller's
+          # saved rbp, so "leave" would not find it: rsp is put back from the
+          # word the prologue kept the entry frame pointer in, which also
+          # releases every :alloca block, and the caller's rbp is popped from
+          # under it. The pair is "leave" spelled out for a frame whose base
+          # moved.
+          emit(0x48, 0x8B)                  # mov rsp, [rbp + disp]
+          emit_modrm_rbp_disp(RSP, @entry_anchor_disp)
+          emit(0x5D)                        # pop rbp
+        else
+          emit(0xC9)                        # leave
+        end
         emit(0xC3)                          # ret
       end
 
@@ -1374,9 +1479,13 @@ module Rubycc
       #   [rax+4]  fp_offset = 48 + 16 * sse_named      (past the saved GP block,
       #                                            then the xmm registers the named
       #                                            parameters consumed)
-      #   [rax+8]  overflow_arg_area = rbp + 16 + 8*stack_named (the first stacked
-      #                                            variable argument, past any
-      #                                            named parameter that spilled)
+      #   [rax+8]  overflow_arg_area = entry frame pointer + 16 + 8*stack_named
+      #                                            (the first stacked variable
+      #                                            argument, past any named
+      #                                            parameter that spilled; the
+      #                                            entry frame pointer is rbp
+      #                                            unless the frame was
+      #                                            realigned)
       #   [rax+16] reg_save_area = rbp + @reg_save_area_offset
       def emit_va_start(ap_vreg, _named)
         gp_named = @param_kinds.count(:gp)
@@ -1391,8 +1500,18 @@ module Rubycc
         emit(0xC7, 0x40, 0x04)              # mov dword [rax+4], imm32
         emit_bytes([48 + 16 * sse_named].pack("l<"))
         # overflow_arg_area
-        emit(0x4C, 0x8D)                    # REX.WR lea r10, [rbp + disp]
-        emit_modrm_rbp_disp(R10 & 7, 16 + 8 * stack_named)
+        if @realigned
+          # The entry frame pointer the stacked arguments are measured from is
+          # in a frame word rather than in rbp (see #emit_realigned_frame_base),
+          # so it is loaded first and the displacement added to it.
+          emit(0x4C, 0x8B)                  # REX.WR mov r10, [rbp + disp]
+          emit_modrm_rbp_disp(R10 & 7, @entry_anchor_disp)
+          emit(0x4D, 0x8D)                  # REX.WRB lea r10, [r10 + disp]
+          emit_modrm_base_disp(R10 & 7, R10 & 7, 16 + 8 * stack_named)
+        else
+          emit(0x4C, 0x8D)                  # REX.WR lea r10, [rbp + disp]
+          emit_modrm_rbp_disp(R10 & 7, 16 + 8 * stack_named)
+        end
         emit(0x4C, 0x89, 0x50, 0x08)        # mov [rax+8], r10
         # reg_save_area
         emit(0x4C, 0x8D)                    # REX.WR lea r10, [rbp + disp]
@@ -1405,8 +1524,9 @@ module Rubycc
       # -16), lowers rsp by that amount, and captures the resulting rsp as the
       # block's base address. The rounding keeps rsp 16-aligned — so the block is
       # 16-byte aligned as gcc guarantees, and a later call still meets the ABI's
-      # alignment — while the storage lives until the function's "leave" (mov
-      # rsp, rbp) reclaims the whole frame on return. Every vreg slot and stack
+      # alignment — while the storage lives until the function's exit reclaims
+      # the whole frame on return ("leave", or the reload of the entry frame
+      # pointer a realigned frame returns through). Every vreg slot and stack
       # object is rbp-relative, so the moved rsp disturbs none of them; a call's
       # push-based argument setup works off this lowered rsp and restores it
       # afterwards, leaving the block intact across the call.
@@ -2180,8 +2300,27 @@ module Rubycc
         !rm_operand?(b) || (slot_resident_in?(EAX, b) && !slot_resident_in?(EAX, a))
       end
 
+      # A vreg slot's rbp-relative displacement, from the table #layout_slots
+      # built for this function. It is -8*(vreg+1) unless some slot asked for a
+      # boundary stronger than 8 (an over-aligned scalar local), which spaces
+      # the run out from that slot down.
       def slot_disp(vreg)
-        -8 * (vreg + 1)
+        @slot_offsets[vreg]
+      end
+
+      # Emits the ModR/M byte (+ displacement bytes) for a memory operand of the
+      # form [base + disp], `base` being the low three bits of a base register
+      # that needs no SIB byte (rsp's 100 does, and is never passed here). Only
+      # a realigned frame's two reaches for the entry frame pointer use it; the
+      # rbp-relative form below is the one on the hot path and stays its own.
+      def emit_modrm_base_disp(reg, base, disp)
+        if disp >= -128 && disp <= 127
+          emit(0x40 | (reg << 3) | base)    # mod=01 (disp8)
+          emit(disp & 0xFF)
+        else
+          emit(0x80 | (reg << 3) | base)    # mod=10 (disp32)
+          emit_bytes([disp].pack("l<"))
+        end
       end
 
       # Emits the ModR/M byte (+ displacement bytes) for a memory operand of
@@ -2210,6 +2349,11 @@ module Rubycc
 
       def align16(value)
         (value + 15) & ~15
+      end
+
+      # Rounds `value` up to a multiple of `alignment` (a power of two).
+      def align_up(value, alignment)
+        (value + alignment - 1) & ~(alignment - 1)
       end
 
       # Fixed-arity on purpose: this is the instruction-encoding hot path, and

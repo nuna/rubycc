@@ -47,7 +47,14 @@
    Building io-console for real (Step 167) surfaced the gap -- mkmf's
    have_func probe for it passed regardless (it declares the function itself
    before linking), so -DHAVE_CFMAKERAW was set and the implicit-declaration
-   error only showed up compiling the body -- and cfmakeraw was added then. */
+   error only showed up compiling the body -- and cfmakeraw was added then.
+   Re-audited on 2026-09-16 under audit-reserved-public-macros-1 (GAPS BX),
+   which widened the diff to the reserved spellings a program writes: this
+   header gained none, because glibc's <termios.h> owns no such name.
+   _POSIX_VDISABLE, the c_cc[] value ruby-termios stores to disable a special
+   character, is POSIX's <unistd.h> macro and lives in the bundled <unistd.h>;
+   a caller that uses it with this header includes <unistd.h> too, as
+   ruby-termios does. */
 
 #ifndef _RUBYCC_TERMIOS_H
 #define _RUBYCC_TERMIOS_H

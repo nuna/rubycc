@@ -33,7 +33,12 @@
    process-creation and namespace API; no corpus user.
    omitted: sched_priority -- glibc's self-referential compatibility macro
    for the member name; the member itself is provided.
-   omitted: <stddef.h> -- only size_t is needed, and it is declared here. */
+   omitted: <stddef.h> -- only size_t is needed, and it is declared here.
+   Re-audited 2026-09-16 under audit-reserved-public-macros-1 (GAPS BX),
+   which widened the diff to the reserved spellings a program writes
+   (_POSIX_*, _SC_*, ioctl's _IO*, ...): glibc's <sched.h> owns none of
+   them -- every reserved name it shows is an include guard or a __ name --
+   so nothing was added or left out here. */
 
 #ifndef _RUBYCC_SCHED_H
 #define _RUBYCC_SCHED_H

@@ -37,16 +37,24 @@ module Rubycc
       PAD_GP_PIECE = AbiPiece.new(offset: 0, size: 8, kind: :pad)
       PAD_STACK_PIECE = AbiPiece.new(offset: 0, size: 8, kind: :pad_stack)
 
-      # The boundaries an automatic object is guaranteed to land on. Both
-      # backends build the frame from a 16-byte-aligned base and then place each
-      # stack object (an aggregate or a 128-bit integer) a 16-byte-rounded
-      # distance from it, while a scalar lives in one cell of the 8-byte
-      # virtual-register run. An _Alignas asking for more than that would need a
-      # prologue that realigns the stack pointer at run time, which neither
-      # backend emits, so #reject_overaligned_automatic refuses the declaration
-      # rather than letting it compile to a weaker boundary than it asked for.
+      # The boundaries an automatic object lands on for free. Both backends
+      # build the frame from a 16-byte-aligned base and then place each stack
+      # object (an aggregate or a 128-bit integer) a 16-byte-rounded distance
+      # from it, while a scalar lives in one cell of the 8-byte virtual-register
+      # run. A declaration asking for more is carried down to the backend as an
+      # object/slot boundary (IR::Function#object_aligns / #slot_aligns), which
+      # makes its prologue realign the stack pointer and place the frame on that
+      # boundary instead.
       STACK_OBJECT_ALIGNMENT = 16
       VREG_SLOT_ALIGNMENT = 8
+
+      # The strongest boundary an automatic object may ask for. A realigning
+      # prologue reserves the boundary itself on top of the frame, so an absurd
+      # request would walk the stack pointer past the guard page in one step
+      # with no probe in between; the page size is where that is cut off. A
+      # static-duration object has no such ceiling — the section layout honours
+      # any power of two — so only an automatic one is held to it.
+      MAX_AUTOMATIC_ALIGNMENT = 4096
 
       # The merged state of a file-scope object's tentative/real definitions
       # (6.9.2), one per name in @object_records. `type` and `linkage` are the
@@ -1053,6 +1061,13 @@ module Rubycc
         # the object's byte size. The backend lays them out below the vreg
         # slots and resolves :object_addr against this table.
         @stack_objects = []
+        # The boundaries those objects and the vreg slots ask for, when a
+        # declaration asks for one past what the frame gives for free (16 bytes
+        # for an object, 8 for a slot). Both stay empty in almost every
+        # function, and an empty pair is what tells the backend its ordinary
+        # prologue will do (IR::Function#frame_alignment).
+        @stack_object_aligns = []
+        @slot_aligns = {}
         # Symbol tables form a scope stack (innermost last), each mapping a
         # variable name to its Local binding. The shared file-scope globals sit
         # at the bottom so a local of the same name shadows a global; the
@@ -1127,7 +1142,8 @@ module Rubycc
         end
 
         Function.new(func.name, @insts, @vreg_count, @param_count, @stack_objects, linkage,
-                     func.variadic, @param_kinds)
+                     func.variadic, @param_kinds,
+                     object_aligns: @stack_object_aligns, slot_aligns: @slot_aligns)
       end
 
       # Binds the function's parameters and records its ABI slot layout. Each C
@@ -1264,13 +1280,22 @@ module Rubycc
       # value travels as an ordinary pointer to a copy, which is all the
       # register files see of it).
       def abi_request(type, plan)
-        eightbytes = (type.size + 7) / 8
+        eightbytes = @convention.stack_eightbytes(type)
         # A scalar is never 16-byte aligned in this subset (the widest is an
         # 8-byte double or long), and a by-reference aggregate travels as a plain
         # 8-byte pointer, so only a register/memory aggregate carries alignment —
         # from its plan, where the convention worked it out.
         return ArgumentRequest.new(kinds: [argument_kind(type)], align16: false, mem_eightbytes: eightbytes) if plan.nil?
         return ArgumentRequest.new(kinds: [:gp], align16: false, mem_eightbytes: 1) if plan.mode == :by_reference
+        # An aggregate that occupies no stack bytes asks for no stack boundary
+        # either: there is nothing to align, so it must not push a following
+        # argument up a slot. `struct { int : 8; } __attribute__((aligned(16)))`
+        # is the shape where the two rules meet — 16-byte aligned, but with no
+        # named member, so gcc gives it neither room nor padding (measured
+        # 2026-09-16).
+        if eightbytes.zero?
+          return ArgumentRequest.new(kinds: plan.pieces.map(&:kind), align16: false, mem_eightbytes: 0)
+        end
 
         ArgumentRequest.new(kinds: plan.pieces.map(&:kind), align16: plan.align16, mem_eightbytes: eightbytes,
                             stack_alignment: plan.stack_alignment)
@@ -1283,6 +1308,11 @@ module Rubycc
       # aarch64 HFA that runs out of vector registers is packed into the stack
       # area, not spread one member per slot). A by-reference aggregate is one
       # pointer either way, and a scalar one slot carrying its own value.
+      #
+      # How many eightbytes a spilled aggregate occupies is the convention's to
+      # say (CallConvention#stack_eightbytes), not ceil(size/8) read off the
+      # type: System V gives an aggregate with no named member none at all, and
+      # such an argument then travels as no piece whatsoever.
       def placed_pieces(type, plan, placement, pad_gp = 0, pad_stack = 0)
         data =
           if plan.nil?
@@ -1291,7 +1321,7 @@ module Rubycc
           elsif plan.mode == :by_reference
             [AbiPiece.new(offset: 0, size: 8, kind: placement == :stack ? :mem : :gp)]
           elsif placement == :stack
-            CallConvention.memory_pieces(type.size)
+            CallConvention.memory_pieces(8 * @convention.stack_eightbytes(type))
           else
             plan.pieces
           end
@@ -1317,9 +1347,18 @@ module Rubycc
       # spacing while a System V eightbyte lands every 8. A trailing eightbyte's
       # full 8-byte store stays within the 16-byte-aligned, rounded-up stack
       # object even when the struct's size is not a multiple of 8.
+      # The object is placed on the parameter type's own boundary, not merely on
+      # the 16 every stack object gets: the parameter *is* an object of that
+      # type, so an over-aligned aggregate parameter has to start where its type
+      # says. Measured 2026-09-17 with gcc 13.3 (a 32-byte aggregate declared
+      # __attribute__((aligned(32))) passed by value, its address read back
+      # modulo 32): gcc gives 1 on x86-64 and 0 on aarch64, where AAPCS64 passes
+      # it by reference and the callee reads the caller's own copy rather than
+      # making one. This placement therefore matches gcc on x86-64 and is
+      # stronger than it on aarch64 — never weaker than either.
       def bind_struct_parameter(param, slot_vregs, pieces, by_reference)
         type = param.type
-        object_id = new_object(type.size)
+        object_id = new_object(type.size, type.alignment)
         @scopes.last[param.name] = Local.new(type: type, storage: object_id, global: false, const: param.const)
         base = new_vreg
         emit(:object_addr, dst: base, a: object_id)
@@ -1792,35 +1831,40 @@ module Rubycc
         # An array or a struct is an aggregate lowered onto a stack object; a
         # scalar (int, pointer) takes a vreg slot.
         else
-          reject_overaligned_automatic(decl)
+          align = automatic_alignment(decl)
           if decl.type.array? || decl.type.struct?
-            gen_aggregate_decl(decl, scope)
+            gen_aggregate_decl(decl, scope, align)
           elsif wide128?(decl.type)
-            gen_int128_decl(decl, scope)
+            gen_int128_decl(decl, scope, align)
           else
-            gen_scalar_decl(decl, scope)
+            gen_scalar_decl(decl, scope, align)
           end
         end
       end
 
-      # Rejects an automatic object whose _Alignas asks for a stronger boundary
-      # than the frame gives it (see STACK_OBJECT_ALIGNMENT/VREG_SLOT_ALIGNMENT).
-      # A static-duration object has no such ceiling — the section layout honours
-      # any power of two — so only this path checks.
-      def reject_overaligned_automatic(decl)
-        requested = decl.alignas
-        return if requested.nil?
-
-        limit = if decl.type.array? || decl.type.struct? || wide128?(decl.type)
-                  STACK_OBJECT_ALIGNMENT
-                else
-                  VREG_SLOT_ALIGNMENT
-                end
-        return if requested <= limit
-
-        error_at(decl.token,
-                 "requested alignment #{requested} for '#{decl.name}' exceeds the #{limit} bytes " \
-                 "an automatic object is laid out on")
+      # The boundary this automatic object is placed on: the strongest of its
+      # declaration's request (an _Alignas, an aligned attribute, or the
+      # boundary an aligned typedef hands it — the parser has already folded the
+      # three into `alignas`) and its type's own. nil asks for nothing past what
+      # the frame gives for free, which is the answer for almost every local and
+      # what keeps almost every prologue the plain one.
+      def automatic_alignment(decl)
+        # A scalar's type boundary is never stronger than the 8 bytes its slot
+        # already stands on, so only an aggregate consults its type — where an
+        # aligned attribute on the struct itself ("struct s { ... }
+        # __attribute__((aligned(32)))") lives. An incomplete one has no
+        # boundary to ask (it raises); the declaration is on its way to the
+        # "invalid use of incomplete type" diagnostic its lowering emits, and an
+        # object that reserves nothing needs no boundary to get there.
+        aggregate = decl.type.array? || decl.type.struct?
+        natural = decl.type.alignment if aggregate && !incomplete_type?(decl.type)
+        align = [decl.alignas, natural].compact.max
+        if align && align > MAX_AUTOMATIC_ALIGNMENT
+          error_at(decl.token,
+                   "requested alignment #{align} for '#{decl.name}' exceeds the " \
+                   "#{MAX_AUTOMATIC_ALIGNMENT} bytes an automatic object can be realigned to")
+        end
+        align
       end
 
       # A block-scope function declaration ("int f(int);" written inside a body,
@@ -1871,8 +1915,8 @@ module Rubycc
       # initializer ("__int128 x = {5};") is unwrapped first; every initializer is
       # then converted to the 128-bit type (widening a narrower source with sign or
       # zero fill) and copied into the object with #store_int128.
-      def gen_int128_decl(decl, scope)
-        base = bind_stack_object(scope, decl.name, decl.type, decl.const)
+      def gen_int128_decl(decl, scope, align = nil)
+        base = bind_stack_object(scope, decl.name, decl.type, decl.const, align)
         return unless decl.initializer
 
         value_node = decl.initializer
@@ -1933,12 +1977,16 @@ module Rubycc
       # resolved to its single scalar value first; every other initializer is a
       # plain expression. The binding is created before the initializer runs, so
       # a (pathological) self-reference resolves to this very variable.
-      def gen_scalar_decl(decl, scope)
+      def gen_scalar_decl(decl, scope, align = nil)
         # A scalar's type is always complete for the built-in scalars, but a
         # forward-referenced enum ("enum E x;" with E undefined) reaches here as
         # an incomplete type that has no storage to reserve, so it is rejected.
         require_complete(decl.type, decl.token)
         vreg = new_vreg
+        # A scalar lives in its virtual-register slot, so a boundary stronger
+        # than the 8 bytes that run gives is asked of the slot itself; the
+        # backend then spaces the run out and realigns the frame under it.
+        @slot_aligns[vreg] = align if align && align > VREG_SLOT_ALIGNMENT
         scope[decl.name] = Local.new(type: decl.type, storage: vreg, global: false, const: decl.const)
         return unless decl.initializer
 
@@ -1961,7 +2009,7 @@ module Rubycc
       # copy-initialized from a whole-struct expression ("struct s a = b;"). The
       # binding is created before the initializer is lowered so a member's
       # initializer could refer back to the object.
-      def gen_aggregate_decl(decl, scope)
+      def gen_aggregate_decl(decl, scope, align = nil)
         type = decl.type
         init = decl.initializer
 
@@ -1970,13 +2018,13 @@ module Rubycc
                                                         type_of: method(:initializer_expression_type))
           type = resolved.type
           require_complete(type, decl.token)
-          base = bind_stack_object(scope, decl.name, type, decl.const)
+          base = bind_stack_object(scope, decl.name, type, decl.const, align)
           lower_resolved_init(base, type, resolved.entries)
           return
         end
 
         require_complete(type, decl.token)
-        base = bind_stack_object(scope, decl.name, type, decl.const)
+        base = bind_stack_object(scope, decl.name, type, decl.const, align)
         return unless init
 
         # The only non-structural aggregate initializer is a whole-struct copy;
@@ -1994,9 +2042,10 @@ module Rubycc
 
       # Reserves a stack object for `type`, binds `name` to it, and returns a
       # vreg holding the object's base address (the destination every placement
-      # is written through).
-      def bind_stack_object(scope, name, type, const)
-        object_id = new_object(type.size)
+      # is written through). `align` is the boundary the declaration asks the
+      # object to start on, nil for the 16 bytes every stack object gets anyway.
+      def bind_stack_object(scope, name, type, const, align = nil)
+        object_id = new_object(type.size, align)
         scope[name] = Local.new(type: type, storage: object_id, global: false, const: const)
         base = new_vreg
         emit(:object_addr, dst: base, a: object_id)
@@ -2570,17 +2619,24 @@ if plan.mode == :memory || plan.pieces.empty?
       # address is that pointer — first rounded up to the aggregate's
       # `stack_alignment` when that is past the area's own eight (16 for a
       # 16-byte aligned aggregate on either convention, 32 or 64 for an
-      # over-aligned System V MEMORY one) — and the pointer then steps past
-      # ceil(size/8) eightbytes. The rounding is of the pointer itself, which
+      # over-aligned System V MEMORY one) — and the pointer then steps past the
+      # eightbytes the convention says the aggregate occupies there, which is
+      # ceil(size/8) for all but the System V aggregate with no named member (no
+      # room at all, so the pointer does not move and the next argument is read
+      # from where this one was). The rounding is of the pointer itself, which
       # is only right because a caller keeps the whole area aligned that far
       # (see SystemVAMD64Convention::Placer#area_alignment).
       def take_from_stack_area(ap, disp, type, stack_alignment, result_addr)
+        eightbytes = @convention.stack_eightbytes(type)
         field = offset_address(ap, disp)
         addr = new_vreg
         emit(:load, dst: addr, a: field, size: 8)
-        addr = align_up(addr, stack_alignment, size: 8) if stack_alignment > 8
+        # A zero-footprint aggregate is not rounded up either: the caller left
+        # the area exactly as it was, so rounding the pointer would step over an
+        # argument that is really there.
+        addr = align_up(addr, stack_alignment, size: 8) if stack_alignment > 8 && eightbytes.positive?
         emit(:copy, dst: result_addr, a: addr)
-        emit(:store, a: field, b: bump(addr, round_up_to_eightbyte(type.size), size: 8), size: 8)
+        emit(:store, a: field, b: bump(addr, 8 * eightbytes, size: 8), size: 8)
       end
 
       # A vreg holding `value` rounded up to a multiple of `alignment` (a power
@@ -3715,7 +3771,7 @@ if plan.mode == :memory || plan.pieces.empty?
       def gen_compound_literal_object(node)
         type = node.type
         require_complete(type, node.token)
-        object_id = new_object(type.size)
+        object_id = new_object(type.size, type.alignment)
         base = new_vreg
         emit(:object_addr, dst: base, a: object_id)
         resolved = Front::InitializerResolver.resolve(type, node.initializer,
@@ -6755,10 +6811,14 @@ if plan.mode == :memory || plan.pieces.empty?
       end
 
       # Reserves a stack object of `byte_size` bytes, returning its id (an index
-      # into @stack_objects the backend lays out below the vreg slots).
-      def new_object(byte_size)
+      # into @stack_objects the backend lays out below the vreg slots). `align`
+      # is the boundary the object has to start on when the declaration asks for
+      # one past the 16 bytes the backend gives every object; nil otherwise,
+      # which is what every compiler-made scratch object passes.
+      def new_object(byte_size, align = nil)
         id = @stack_objects.size
         @stack_objects << byte_size
+        @stack_object_aligns[id] = align if align && align > STACK_OBJECT_ALIGNMENT
         id
       end
 
