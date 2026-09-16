@@ -17732,3 +17732,28 @@ gcc 13.3・aarch64-linux-gnu-gcc 13.3、`-O0 -fno-stack-protector` の `-S` 出�
   gcc の通常形は連鎖を保つ。デバッガのフレーム巻き戻しにしか効かず、rubycc は CFI を出していないので
   観測点は無い
 - 再整列は**関数単位**で、要求したオブジェクトがブロックの中にあっても関数のフレーム全体が揃う。gcc も同じ
+
+## ledger-after-wave-7-1 — 7 回目の修正の後に、止まっていた gem を測り直す
+
+**内容**: 方針が決まっている不足の 7 回目(PR #156: BX / BV / BW)をマージした master 5f777e3 で、その不足で
+止まっていた gem を測り直した。**台帳を 114 → 115 件**にした。
+
+**測り直した結果**(2026-09-17、このホスト、master 5f777e3):
+
+| gem | 止めていた不足 | 結果 |
+|---|---|---|
+| ruby-termios 1.1.0 | BA(`tcflow`)→ BU(`tcgetpgrp`)→ BX(`_POSIX_VDISABLE`) | `build_load_pass` |
+
+**この gem は 3 つの不足を順に踏んだ。** 最初は同梱 `termios.h` の `tcflow` と `TCO*`(BA、
+`bundled-headers-coverage-audit-2`)、次に同梱 `unistd.h` のプロセスグループ関数(BU、
+`bundled-unistd-process-group-1`)、最後に `_POSIX_VDISABLE`(BX、`audit-reserved-public-macros-1`)である。
+**同じ 1 本のヘッダの分類を 2 度やり直してようやく通った**のは、2 度目の分類(BU)が使った表に
+利用者向けの予約名が出ていなかったためで、その穴自体が BX だった。
+
+BV(名前の無いビットフィールドの分類)と BW(過整列の局所オブジェクト)は、それで止まっていた gem が無い。
+どちらも先行ステップの測定行列から見つけたもので、**実在の gem で踏んだ記録はまだ無い**。
+
+iodine は AT(`typeof`、方針未決)、amalgalite は BT(関数を `void *` で初期化、方針未決)で止まったままなので
+測り直していない。
+
+**検証**: データと文書だけの変更で、`rake test` はブランチ全体の結果を PR に記録する。

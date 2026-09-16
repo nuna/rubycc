@@ -1252,5 +1252,16 @@
       }
     ],
     "notes": ""
+  },
+  "ruby-termios": {
+    "builds": [
+      {
+        "versions": ["1.1.0"],
+        "environment": "glibc x86_64 / ruby 3.4.5",
+        "verified_at": "2026-09-17",
+        "evidence": "RUBYCC=1 gem install succeeded with the extension built through rmake (gem_make.out names exe/rmake and the generated Makefile names exe/rubycc), and every shared object it produced was proven loaded by require (tools/verify_corpus_candidate.rb --mode build_load --compiler rubycc)."
+      }
+    ],
+    "notes": ""
   }
 }
