@@ -390,6 +390,17 @@ module Rubycc
     # byte sizes of aggregate stack objects (arrays); the backend lays these
     # out below the virtual-register slots and resolves :object_addr against
     # them.
+    # `object_aligns` is the parallel array of the boundaries those objects ask
+    # for, `slot_aligns` a vreg -> boundary Hash for the virtual-register slots
+    # that ask for one, and both are sparse: a nil entry (and a vreg absent from
+    # the Hash) asks for nothing beyond what the frame gives anyway (16 bytes
+    # for an object, 8 for a slot). An entry past that is an over-aligned
+    # automatic object — an _Alignas, an aligned attribute or an aligned
+    # typedef on a local — and #frame_alignment reports the strongest of them,
+    # which is the boundary the backend's prologue has to realign the stack
+    # pointer to before it can place the frame (see backend/x86_64.rb and
+    # backend/aarch64.rb). A function that asks for nothing keeps the 16 every
+    # frame already stands on and its prologue is byte-for-byte the old one.
     # `linkage` is :external for an ordinary function (a global symbol the
     # linker can resolve across translation units) or :internal for a `static`
     # one (a file-local symbol, emitted STB_LOCAL so it stays private to this
@@ -398,9 +409,15 @@ module Rubycc
     # backend emit a register-save-area prologue so :va_start / __builtin_va_arg
     # can reach the variable arguments; a fixed-arity function leaves it false.
     class Function
-      attr_reader :name, :insts, :vreg_count, :param_count, :stack_objects, :linkage, :variadic, :param_kinds
+      attr_reader :name, :insts, :vreg_count, :param_count, :stack_objects, :linkage, :variadic, :param_kinds,
+                  :object_aligns, :slot_aligns
 
-      def initialize(name, insts, vreg_count, param_count, stack_objects, linkage, variadic, param_kinds)
+      # The boundary every frame already stands on, and the floor #frame_alignment
+      # never reports less than.
+      BASE_FRAME_ALIGNMENT = 16
+
+      def initialize(name, insts, vreg_count, param_count, stack_objects, linkage, variadic, param_kinds,
+                     object_aligns: nil, slot_aligns: nil)
         @name = name
         @insts = insts
         @vreg_count = vreg_count
@@ -409,6 +426,16 @@ module Rubycc
         @linkage = linkage
         @variadic = variadic
         @param_kinds = param_kinds
+        @object_aligns = object_aligns || []
+        @slot_aligns = slot_aligns || {}
+      end
+
+      # The boundary this function's frame base has to sit on: the strongest
+      # boundary any object or slot in it asks for, never below the 16 both
+      # conventions already promise. A value past 16 is what makes a backend
+      # emit a realigning prologue.
+      def frame_alignment
+        [BASE_FRAME_ALIGNMENT, *@object_aligns.compact, *@slot_aligns.values].max
       end
     end
 

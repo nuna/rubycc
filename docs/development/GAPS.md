@@ -19,7 +19,6 @@
 | **AS**([issue](../../issues/rmake-gnu-make-conditionals.md)) | **rmake が GNU make の条件文(`ifeq` など)を読めない**。パーサは代入とルール以外をすべて拒否する | 同梱ライブラリの手書き Makefile を make に渡す gem。`hiredis-client` 0.30.1 が該当し、**対照(GNU make)は通る** | **実測**(2026-09-13) | **対応するか対象外にするかが未決**。mkmf の Makefile は条件文を使わない |
 | **AT**([issue](../../issues/typeof-operator.md)) | **`typeof`(GNU 拡張、C23 で標準化)を受け付けない**。未宣言の関数として報告される | `algorithms` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
 | **BI**([issue](../../issues/aarch64-cross-sysroot-include.md)) | **x86-64 ホストで `-target aarch64` のとき、同梱していないシステムヘッダをクロス sysroot(`/usr/aarch64-linux-gnu/include`)から探さない**。ホストの x86-64 版 `/usr/include/netdb.h` を読んで `bits/stdint-uintn.h` で落ちる | x86-64 ホストでの aarch64 クロステスト。`<netdb.h>` を含むコードを aarch64 で検証できない。**対照の `aarch64-linux-gnu-gcc` は通る** | **実測**(2026-09-14、`#include <netdb.h>` の最小再現)。ネイティブ aarch64 ホストは未測定 | sysroot を決め打ちにするか、クロス gcc に問い合わせるかを決める |
-| **BW**([issue](../../issues/overaligned-automatic-object.md)) | **フレームの境界より強く整列した自動記憶域のオブジェクトを拒否する**(`_Alignas(32) long x;` など)。gcc はプロローグでスタックを整列し直して通す | SIMD やキャッシュラインに合わせて局所バッファを整列する拡張。**実在の gem ではまだ見ていない** | **実測**(2026-09-16、最小再現。gcc は 32 バイト境界に置く) | プロローグでの再整列を両バックエンドに入れる。引数領域の切り上げ(BR)と同じ仕組みに寄せられるかを見る |
 | **BO**([issue](../../issues/glibc-alloca-without-gnuc.md)) | **glibc 本体の `<alloca.h>` を読む経路で、`alloca` がリンク時に未定義参照になる**(glibc は `__GNUC__` のときだけ組み込みに写し、rubycc は `__GNUC__` を定義しない) | aarch64 のクロス sysroot を使う例題テストなど、同梱ヘッダより先に glibc 本体の `<alloca.h>` を読む構成。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、例題に `alloca` を入れて aarch64 で) | どの経路で glibc 本体の `<alloca.h>` を読むかを先に測る |
 | **BP**([issue](../../issues/glibc-public-headers-mixed.md)) | **同梱しない glibc の公開ヘッダ 186 本のうち、rubycc だけが落ちるものが 23 本ある**(`__BEGIN_DECLS` が無いように見える形が多い) | それらのヘッダを含む gem。該当する gem は数えていない | **実測**(2026-09-14、`tools/audit_bundled_headers.rb` の混在の調査、x86-64) | 23 本の原因を最小再現で確かめ、同梱ヘッダの側と rubycc 本体の側に分ける |
 | **BT**([issue](../../issues/function-pointer-void-pointer-init.md)) | **関数を `void *` に暗黙に変換する初期化を拒否する**(`incompatible types in initialization`)。gcc は既定では警告もせず、`-pedantic` のときだけ警告する | 同梱の SQLite(amalgamation)を持つ gem。`amalgalite` 2.0.0 の `sqlite3.c:135127` が該当し、**対照の gcc は通る** | **実測**(2026-09-14、最小再現) | **受け付けるか拒否を保つかが未決**。AN(gcc 13 が警告にとどめる診断)より gcc との差が大きい |
@@ -52,6 +51,9 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ BW**(フレームの境界より強く整列した自動記憶域のオブジェクトを拒否する):
+  `overaligned-automatic-object-1` で解消。両バックエンドにプロローグでの再整列を入れ、要求した境界にオブジェクトを置く。
+  16 しか要求しない関数の出力は 1 バイトも変わらない。BQ が保留していた「typedef 由来の境界を局所宣言の要求にする」も有効にした。
 - **ギャップ BV**(x86-64 の分類が名前の無いビットフィールドの記憶域を数えない):
   `sysv-unnamed-bitfield-class-1` で解消。幅 0 でない名前の無いビットフィールドの記憶域を型に記録し、分類と AAPCS64 の HFA 判定が見るようにした。
   gcc の「名前でたどれるメンバが 1 つも無い集約はスタックを取らない」規則も、同じ形でしか作れないので合わせた。

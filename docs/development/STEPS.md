@@ -17632,3 +17632,103 @@ gcc 側は x86-64 が `gcc -O1 -S`、aarch64 が
 - 名前の無いビットフィールドが eightbyte 境界を**跨ぐ**形は測れていない。宣言型の記憶域単位を跨げない
   という規則(6.7.2.1)があるため `packed` 無しでは作れず、parser は `packed` とビットフィールドの
   併用を拒む
+
+## overaligned-automatic-object-1 — フレームより強く整列した自動記憶域のオブジェクトを、再整列したフレームに置く
+
+### 原因
+
+フレームは 16 バイト境界の基準点から作られ、スタックオブジェクト(集約・`__int128`)は 16 バイト単位、
+スカラーは 8 バイトの vreg スロット 1 枠に置かれる。**それより強い境界を要求されても出す術が無かった**ので、
+`Generator#reject_overaligned_automatic` が宣言そのものを診断していた(GAPS BW、
+`issues/overaligned-automatic-object.md`)。`aligned-attribute-member-typedef-1` は、typedef の境界を
+局所宣言の要求に持ち上げると `t16 x;` のような普通の宣言までこの診断に当たるため、**局所オブジェクトの
+要求から `inherited` を落として**いた。
+
+**gcc は 1 つの方式ではなく、ターゲットごとに別の方式を使う**(2026-09-17、このホスト WSL2 /
+gcc 13.3・aarch64-linux-gnu-gcc 13.3、`-O0 -fno-stack-protector` の `-S` 出力):
+
+| ターゲット | 形 | 列 |
+|---|---|---|
+| x86-64 | 通常 | `pushq %rbp` / `movq %rsp,%rbp` / **`andq $-32,%rsp`** / `subq $N,%rsp`。局所は rsp 基準、`rbp` は入口のフレームポインタのままなので**着信スタック引数は `16(%rbp)` / `24(%rbp)`**、`va_list` の `overflow_arg_area` も `16(%rbp)`。出口は `leave` |
+| x86-64 | 可変長引数 | `subq $176,%rsp` を**マスクより前**に出し、`andq $-32,%rsp` / `addq $24,%rsp` で退避領域を置き直す。`overflow_arg_area` は同じく `16(%rbp)` |
+| x86-64 | `alloca` 併用 | `leaq 8(%rsp),%r10` / `andq $-32,%rsp` / `pushq -8(%r10)`(戻り番地を積み直す)/ `pushq %rbp` / `movq %rsp,%rbp` / `pushq %r10` / `subq $N,%rsp`。出口は `movq -8(%rbp),%r10` / `leave` / `leaq -8(%r10),%rsp` / `ret` |
+| aarch64 | すべて | **再整列しない**。フレームを多めに取り(32 バイトの 64 整列配列に `sub sp, sp, #144`)、**アドレスを取るところで実行時に切り上げる**(`add x0, sp, 144` / `sub x0, x0, #80` / `add x0, x0, 63` / `lsr x0, x0, 6` / `lsl x0, x0, 6`)。sp は 16 整列のまま、着信引数も `va_list` も従来どおり |
+
+観測できるのは**アドレスと値だけ**なので、rubycc は gcc の列を写さず(R11)、**両ターゲットで 1 つの方式**に
+した。プロローグで再整列し、フレーム基底自体を要求境界に乗せる形である。
+
+### 対処
+
+- `IR::Function` に `object_aligns`(stack_objects と並ぶ疎な配列)と `slot_aligns`(vreg → 境界の疎な Hash)を
+  キーワード引数で足し、`#frame_alignment` が「16 とそれらの最大値」を返す。**16 を超えるときだけ**
+  バックエンドが再整列する。既存の 8 引数の呼び出し側(テストを含む)はそのまま動く。
+- ジェネレータは `reject_overaligned_automatic` を `automatic_alignment` に置き換えた。宣言の要求
+  (`_Alignas` / `aligned` 属性 / 整列 typedef を parser が `alignas` に畳んだもの)と、集約なら型自身の境界の
+  強いほうを採る(不完全型は境界を訊けない — 訊くと raise する — ので飛ばす。その宣言は
+  「invalid use of incomplete type」に向かう)。集約は `new_object(size, align)` 経由で `object_aligns` に、
+  スカラーは vreg スロットの要求として `slot_aligns` に載る。**上限は 4096**
+  (`MAX_AUTOMATIC_ALIGNMENT`)で、超えると診断する — 再整列はフレーム + 境界ぶんを 1 手で下げるので、
+  ページを飛び越えて guard page を素通りしかねないため。静的記憶域に上限は無い(従来どおり)。
+- parser の `object_alignment_request` から `automatic:` を外した。**typedef 由来の境界が局所宣言でも
+  要求になる**(`aligned-attribute-member-typedef-1` が保留していた点)。
+- 値渡しの集約パラメータのコピーと複合リテラルのオブジェクトも、型の境界を `new_object` に渡すようにした。
+- **x86-64**: `push rbp` の直後に `mov r11, rsp`(入口のフレームポインタ)/ `sub rsp, frame_size + N` /
+  `and rsp, -N` / `lea rbp, [rsp + frame_size]` と進め、r11 をフレーム最下部の 8 バイト語へ格納する。
+  **`rbp` 自体が N 境界に乗る**ので、N の倍数の変位がそのまま N 整列アドレスになる(スロットとオブジェクトの
+  変位は各自の要求境界に切り上げ、`slot_disp` は `-8*(n+1)` の式から関数ごとの表引きに変えた)。
+  入口のフレームポインタが `rbp` でなくこの語にあるので、**着信 `:mem` パラメータと `va_start` の
+  `overflow_arg_area` はこの語 + 16 + 8k** から測る。エピローグは `leave` の代わりに
+  `mov rsp, [rbp + entry]` / `pop rbp` で、`:alloca` の領域も同時に解放される。
+- **AArch64**: `mov A, sp`(入口 sp)/ `sub sp, sp, #frame_size + N` / `and B, B, #-N`(`-2^k` は
+  bitmask immediate なので 1 命令)/ `mov sp, B` / `stp x29,x30,[sp,#save]` / `mov x29, sp` /
+  入口 sp をフレームのセルへ `str`。**フレーム基底レジスタは `:alloca` の場合と同じく x29**
+  (`frame_base_register` の条件に `@realigned` を足した)。`sp + frame_size + 8k` は成り立たなくなるので、
+  **着信スタック引数と `__stack` はこのセルから**組み立てる。エピローグはセルから sp を戻すので
+  `:alloca` の領域も同時に解放される。
+- 16 しか要求しない関数の出力は**両バックエンドとも 1 バイトも変わらない**(スロット表・オブジェクト配置の
+  一般化は、要求が無いとき従来式と同じ値を返す)。
+- `docs/internals/IR.md`(Function の表、§6.2、§6.3)と `ir.rb` のコメントを更新した。
+
+### テスト
+
+- `test/test_overaligned_automatic_object.rb`(新規): 課題の再現、配置(16/32/64 のスカラー・構造体・配列を、
+  平関数・スタック引数を取る関数・可変長引数の関数・可変長 + スタック引数・入れ子ブロック・ループの中で)、
+  再整列したフレームが**フレームの利用者をすべて保つ**こと(スタック引数付きの呼び出し、32 整列集約を渡す
+  呼び出し = `area_alignment` 経路、`__builtin_alloca`、隠れポインタの構造体返し、再帰、昇格レジスタを
+  使い切る本体)を、x86-64 と aarch64(qemu)で gcc 差分検証する。`frame_alignment` が要求の最大値に
+  なることも IR で読む。**7 runs, 18 assertions, 0 failures**(2026-09-17)
+- `test/test_alignas.rb`: 自動記憶域の上限を診断していた
+  `test_overaligned_automatic_objects_are_refused` を、**gcc 差分で境界を読み戻す**
+  `test_overaligned_automatic_objects_are_realigned`(+ aarch64)に置き換え、4096 超の診断と
+  静的記憶域が無制限であることを別のテストにした。13 runs, 68 assertions, 0 failures
+- `test/test_aligned_attribute_member_typedef.rb`: 同じく
+  `test_overaligned_automatic_attribute_requests_are_refused` を、属性 3 形と**typedef 由来の 2 形**を
+  gcc 差分で読み戻す `..._are_honoured`(+ aarch64)に置き換えた。12 runs, 49 assertions, 0 failures
+- 回帰(2026-09-17、いずれも 0 failures / 0 errors): `test_sysv_over_aligned_aggregate_stack.rb` 4 runs・
+  `test_aapcs64_aligned_attribute_aggregate.rb` 4 runs・`test_variadic_aggregate_argument.rb` 4 runs・
+  `test_x86_64_backend.rb` 20 runs・`test_aarch64_backend.rb` 100 runs・`test_aarch64_execution.rb` 53 runs・
+  `test_examples.rb` 73 runs・`test_examples_aarch64.rb` 590 runs / 22 skips・`test_c_suite.rb` 223 runs / 11 skips・
+  `test_c_suite_aarch64.rb` 444 runs / 22 skips
+- フルスイート(`rake test`): **統合セッションで実走して記入する**(実装中の木で 2 回走らせたときは
+  いずれも 3866 runs, 19410 assertions, 0 failures, 0 errors, 35 skips)
+- `examples/m6/overaligned_automatic_object_1_cache_line_scratch.c`: 64 バイトのキャッシュライン用
+  scratch・32 整列の構造体・16 整列のカウンタを 1 つの関数に置き、スタック引数を取る関数・可変長引数の関数・
+  `__builtin_alloca` を併用する関数でも同じことをする。`aapcs64` の例と同じ理由で**型は `#include` より前**に置く
+
+### 残された観点
+
+- **上限 4096 は rubycc 独自**。gcc は 2^28 まで通す。再整列のプロローグが frame + 境界を 1 手で下げるため、
+  ページを跨ぐ要求には probe が要る(`-fstack-clash-protection` 相当)。必要になったら probe を書いて上限を上げる
+- **要求したスカラーが昇格レジスタに載った場合も再整列する**。スロットが使われないので境界は観測できず、
+  フレームを揃える意味は無い(gcc はレジスタに載せて揃えない)。`frame_alignment` を IR 側で決めている
+  ぶんの無駄で、正しさには影響しない
+- **値渡しの集約パラメータのコピーを型の境界に置くようにした**。`aligned(32)` の 32 バイト集約を値で受けた
+  callee で `&w % 32` を読むと(2026-09-17 測定):**変更前は x86-64 で rubycc 0 / gcc 1(弱すぎた)**、
+  変更後は x86-64 が一致し、**aarch64 は rubycc 1 / gcc 0** になる。AAPCS64 は 16 バイト超の集約を
+  参照渡しするので gcc の callee は呼び出し側のコピーをそのまま読み、その境界は呼び出し側の都合で決まる。
+  rubycc は callee 側でコピーを作るぶん、gcc より**強い**側にずれる(弱くなることは無い)。
+  値には出ず、パラメータのアドレスの剰余を読む形だけの差なので、その 1 形だけテストの探針から外した
+- x86-64 の再整列フレームは **rbp の連鎖を切る**(rbp は保存した rbp ではなくフレーム境界を指す)。
+  gcc の通常形は連鎖を保つ。デバッガのフレーム巻き戻しにしか効かず、rubycc は CFI を出していないので
+  観測点は無い
+- 再整列は**関数単位**で、要求したオブジェクトがブロックの中にあっても関数のフレーム全体が揃う。gcc も同じ

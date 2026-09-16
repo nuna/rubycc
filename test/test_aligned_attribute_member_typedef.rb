@@ -218,6 +218,46 @@ class TestAlignedAttributeMemberTypedef < Minitest::Test
     }
   C
 
+  # The three automatic declarations that used to be refused — an aligned
+  # attribute on a scalar, on an aggregate and in specifier position on an array
+  # — plus the two whose boundary comes from a typedef rather than from the
+  # declaration itself (a scalar typedef aligned 16 and a struct typedef aligned
+  # 32), which the parser used to hold back for automatic objects.
+  AUTOMATIC_ATTRIBUTE_SOURCE = <<~C
+    typedef long t16 __attribute__((aligned(16)));
+    typedef struct { long a, b; } box32 __attribute__((aligned(32)));
+
+    #include <stdio.h>
+
+    static int aligned_to(const void *p, unsigned long boundary) {
+      return ((unsigned long)p % boundary) == 0;
+    }
+
+    static long attributes(long n) {
+      long x __attribute__((aligned(16))) = n;
+      struct { long a; } box __attribute__((aligned(32)));
+      __attribute__((aligned(64))) char buf[4];
+      box.a = n + 1;
+      buf[0] = (char)n;
+      return x + box.a + buf[0] +
+             1000L * aligned_to(&x, 16) +
+             2000L * aligned_to(&box, 32) +
+             4000L * aligned_to(buf, 64);
+    }
+
+    static long typedefs(long n) {
+      t16 x = n;
+      box32 box;
+      box.a = n + 1;
+      return x + box.a + 1000L * aligned_to(&x, 16) + 2000L * aligned_to(&box, 32);
+    }
+
+    int main(void) {
+      printf("%ld %ld\\n", attributes(5), typedefs(7));
+      return 0;
+    }
+  C
+
   def setup
     skip "gcc unavailable (needed to link and cross-check)" unless tool?("gcc")
   end
@@ -252,6 +292,10 @@ class TestAlignedAttributeMemberTypedef < Minitest::Test
 
   def test_aarch64_object_alignments_match_gcc
     assert_aarch64_matches_gcc(OBJECT_SOURCE)
+  end
+
+  def test_aarch64_automatic_attribute_requests_are_honoured
+    assert_aarch64_matches_gcc(AUTOMATIC_ATTRIBUTE_SOURCE)
   end
 
   # An array whose element type is aligned more strictly than its size allows
@@ -293,24 +337,14 @@ class TestAlignedAttributeMemberTypedef < Minitest::Test
                                  "int main(void) { return 0; }\n", filename: "keep.c", target: host_target)
   end
 
-  # An aligned attribute written on an automatic object is held to the same
-  # ceiling as its _Alignas (see TestAlignas#test_overaligned_automatic_objects_are_refused):
-  # the frame gives 16 bytes to a stack object and 8 to a scalar's slot. A
-  # local whose *type* is an aligned typedef is not refused — that would reject
-  # any local of a scalar typedef aligned 16 — and keeps the frame's boundary.
-  def test_overaligned_automatic_attribute_requests_are_refused
-    {
-      "long x __attribute__((aligned(16)));" => /requested alignment 16 for 'x' exceeds the 8 bytes/,
-      "struct { long a; } box __attribute__((aligned(32)));" => /requested alignment 32 for 'box' exceeds the 16 bytes/,
-      "__attribute__((aligned(64))) char buf[4];" => /requested alignment 64 for 'buf' exceeds the 16 bytes/
-    }.each do |declaration, pattern|
-      error = compile_error("int main(void) { #{declaration} return 0; }\n", "automatic.c")
-      assert_match(pattern, error.message, "expected '#{declaration}' to be refused")
-    end
-
-    Rubycc::Compiler.new.compile("typedef long t16 __attribute__((aligned(16)));\n" \
-                                 "int main(void) { t16 x = 1; return (int)x - 1; }\n",
-                                 filename: "typedef_local.c", target: host_target)
+  # An aligned attribute written on an automatic object, and the boundary an
+  # aligned typedef hands a local, reach the frame like an _Alignas does: the
+  # prologue realigns the stack pointer and the object lands where it asked
+  # (step overaligned-automatic-object-1). Before that step the attribute forms
+  # were refused and the typedef-derived boundary was dropped on the floor, so
+  # the same declarations are read back here against gcc.
+  def test_overaligned_automatic_attribute_requests_are_honoured
+    assert_matches_gcc(AUTOMATIC_ATTRIBUTE_SOURCE, "automatic_attribute")
   end
 
   private

@@ -17,12 +17,12 @@ require_relative "test_helper"
 # The constraint violations 6.7.5p2 and p4 list are checked against rubycc's own
 # diagnostics, whose wording follows gcc's for each of them.
 #
-# One boundary is rubycc's own rather than gcc's: an *automatic* object may only
-# ask for what the frame already gives it (16 bytes for a stack object, 8 for a
-# scalar's virtual-register slot). gcc realigns the stack pointer at run time
-# for a stronger request; neither rubycc backend emits such a prologue, so the
-# declaration is refused rather than compiled to a weaker boundary than it asked
-# for. See test_overaligned_automatic_objects_are_refused.
+# An *automatic* object may ask for a boundary past the 16 bytes the frame
+# stands on: both backends then realign the stack pointer in the prologue and
+# place the frame on that boundary (step overaligned-automatic-object-1). One
+# ceiling is rubycc's own rather than gcc's — the request may not exceed a page,
+# since the realigning prologue reserves the boundary itself with no probe in
+# between. See test_overaligned_automatic_objects_are_realigned.
 class TestAlignas < Minitest::Test
   include ExecutionHelper
   include AArch64ExecutionHelper
@@ -78,12 +78,11 @@ class TestAlignas < Minitest::Test
     }
   C
 
-  # An _Alignas on an object rather than a member. Every static-duration object
-  # here is checked by taking its address modulo the boundary it asked for, so a
-  # dropped specifier shows up as a non-zero remainder. The automatic objects
-  # stay within what the frame guarantees (16 for a stack object, 8 for a
-  # scalar). The specifier is written before the type on some declarations and
-  # after it on others, both of which C11 admits.
+  # An _Alignas on an object rather than a member. Every object here is checked
+  # by taking its address modulo the boundary it asked for, so a dropped
+  # specifier shows up as a non-zero remainder. The specifier is written before
+  # the type on some declarations and after it on others, both of which C11
+  # admits.
   OBJECT_ALIGNMENT_SOURCE = <<~C
     #include <stdio.h>
 
@@ -112,6 +111,71 @@ class TestAlignas < Minitest::Test
       printf("%d %d %d\\n", aligned_to(&box, 16), aligned_to(local_buf, 8),
              aligned_to(&value, 8));
       printf("%d %d %.1f %zu\\n", internal, no_effect, value, sizeof(wide));
+      return 0;
+    }
+  C
+
+  # Automatic objects asking for 16, 32 and 64 bytes, in every shape the frame
+  # places differently: a scalar (a virtual-register slot), an aggregate and an
+  # array (stack objects), in a plain function, in one that also takes stack
+  # arguments, in a variadic one, and in a nested block. Each address is read
+  # back modulo its boundary, and each value too, so a realigned frame that
+  # placed an object right but lost track of a stack argument or of va_arg still
+  # shows up.
+  OVERALIGNED_AUTOMATIC_SOURCE = <<~C
+    #include <stdarg.h>
+    #include <stdio.h>
+
+    static int aligned_to(const void *p, unsigned long boundary) {
+      return ((unsigned long)p % boundary) == 0;
+    }
+
+    static long plain(long n) {
+      _Alignas(32) long scalar = n;
+      _Alignas(64) struct { long a, b; } box;
+      _Alignas(16) char text[20];
+      box.a = n + 1;
+      text[0] = (char)n;
+      return scalar + box.a + text[0] +
+             1000L * aligned_to(&scalar, 32) +
+             2000L * aligned_to(&box, 64) +
+             4000L * aligned_to(text, 16);
+    }
+
+    static long stacked(long a, long b, long c, long d, long e, long f, long g, long h) {
+      _Alignas(64) long buf[4];
+      buf[0] = a + h;
+      buf[1] = g;
+      return buf[0] + buf[1] + 1000L * aligned_to(buf, 64);
+    }
+
+    static long variable(int count, ...) {
+      _Alignas(32) long seen[2];
+      va_list ap;
+      va_start(ap, count);
+      seen[0] = va_arg(ap, long);
+      seen[1] = (long)va_arg(ap, double);
+      va_end(ap);
+      return seen[0] + seen[1] + 1000L * aligned_to(seen, 32);
+    }
+
+    static long nested(int n) {
+      long total = 0;
+      {
+        _Alignas(64) struct { long a, b; } inner;
+        inner.a = n;
+        total += inner.a + 1000L * aligned_to(&inner, 64);
+      }
+      {
+        _Alignas(16) int small = 3;
+        total += small + 2000L * aligned_to(&small, 16);
+      }
+      return total;
+    }
+
+    int main(void) {
+      printf("%ld %ld %ld %ld\\n", plain(5), stacked(1, 2, 3, 4, 5, 6, 7, 8),
+             variable(1, 2L, 3.0), nested(9));
       return 0;
     }
   C
@@ -171,6 +235,10 @@ class TestAlignas < Minitest::Test
 
   def test_aarch64_object_alignments_match_gcc
     assert_aarch64_matches_gcc(OBJECT_ALIGNMENT_SOURCE)
+  end
+
+  def test_aarch64_overaligned_automatic_objects_are_realigned
+    assert_aarch64_matches_gcc(OVERALIGNED_AUTOMATIC_SOURCE)
   end
 
   def test_aarch64_upb_shaped_program_matches_gcc
@@ -241,22 +309,27 @@ class TestAlignas < Minitest::Test
     end
   end
 
-  # An automatic object is laid out at a fixed distance from a 16-byte-aligned
-  # frame base, so a stack object (an aggregate or a 128-bit integer) is good for
-  # 16 bytes and a scalar's virtual-register slot for 8. A stronger request would
-  # need a run-time realigning prologue neither backend emits, so it is a
-  # diagnostic rather than a silently weaker boundary. A static-duration object
-  # in the same block has no such ceiling (OBJECT_ALIGNMENT_SOURCE asks for 256).
-  def test_overaligned_automatic_objects_are_refused
-    {
-      "_Alignas(32) struct { int a; } box;" => /exceeds the 16 bytes/,
-      "_Alignas(64) char buf[4];" => /exceeds the 16 bytes/,
-      "_Alignas(16) int scalar;" => /exceeds the 8 bytes/
-    }.each do |declaration, pattern|
-      source = "int main(void) { #{declaration} return 0; }\n"
-      error = compile_error(source, "overaligned.c")
-      assert_match(pattern, error.message, "expected '#{declaration}' to be refused")
-    end
+  # An automatic object asking for a boundary past the 16 bytes the frame stands
+  # on (an aggregate) or the 8 its virtual-register slot stands on (a scalar):
+  # the prologue realigns the stack pointer and the object lands where it asked,
+  # which is what the address remainders below read back. gcc is the oracle for
+  # every line.
+  def test_overaligned_automatic_objects_are_realigned
+    assert_matches_gcc(OVERALIGNED_AUTOMATIC_SOURCE, "overaligned_automatic")
+  end
+
+  # The one ceiling rubycc keeps where gcc has none: a realigning prologue drops
+  # the stack pointer by the frame plus the boundary itself in a single step, so
+  # a request past a page could carry it over the guard page with no access in
+  # between. A static-duration object in the same block is unaffected
+  # (OBJECT_ALIGNMENT_SOURCE asks for 256, and the source below for 8192).
+  def test_automatic_alignment_past_a_page_is_refused
+    error = compile_error("int main(void) { _Alignas(8192) char buf[4]; return buf[0]; }\n",
+                          "overaligned.c")
+    assert_match(/requested alignment 8192 for 'buf' exceeds the 4096 bytes/, error.message)
+
+    Rubycc::Compiler.new.compile("int main(void) { static _Alignas(8192) char buf[4]; return buf[0]; }\n",
+                                 filename: "static_page.c", target: host_target)
   end
 
   private

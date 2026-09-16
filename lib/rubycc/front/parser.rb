@@ -1320,18 +1320,18 @@ module Rubycc
       # still a valid address for it, and nothing in this compiler can read an
       # object's boundary back.
       #
-      # An `automatic` object does not take `inherited` as a request. The
-      # generator refuses an automatic request stronger than the frame gives
-      # (16 for a stack object, 8 for a scalar's slot — see
-      # Generator#reject_overaligned_automatic), which is right for a boundary
-      # written on the object itself, but would refuse every local of a scalar
-      # typedef aligned 16 — an ordinary declaration gcc accepts, and one that
-      # compiled before typedef boundaries were read at all. Such a local keeps
-      # the frame's boundary instead (an aggregate still lands on 16).
-      def object_alignment_request(spec_info, attributes, type, inherited, name_tok, automatic: false)
+      # An automatic object asks for the same three as any other. It used to
+      # drop `inherited`, since the generator then refused an automatic request
+      # stronger than the frame gave (16 for a stack object, 8 for a scalar's
+      # slot) and a local of a scalar typedef aligned 16 — an ordinary
+      # declaration gcc accepts — would have been refused with it. The backends
+      # now realign the stack pointer for such a local (see
+      # IR::Function#frame_alignment), so the boundary a typedef hands a local
+      # is carried down like every other request.
+      def object_alignment_request(spec_info, attributes, type, inherited, name_tok)
         requested = alignas_boundary(spec_info.alignas, type, "'#{name_tok.value}'", inherited)
         aligned, = resolve_layout_attributes(attributes)
-        [requested, aligned, automatic ? nil : inherited].compact.max
+        [requested, aligned, inherited].compact.max
       end
 
       # The [name, type, nil, alignas, base_alignment] entry StructType#define
@@ -2578,12 +2578,8 @@ module Rubycc
         declare_ordinary_name(name_tok.value, type)
         # The boundary is settled against the *finished* type, so an inferred
         # "[]" bound is already in place when the "cannot reduce" check runs.
-        # No recorded storage class (none, `auto` or `register`) is an automatic
-        # object; `static` and `extern` ones live in a section, which honours
-        # any boundary.
         AST::VariableDecl.new(name_tok.value, type, initializer, name_tok, const, spec_info.storage,
-                              object_alignment_request(spec_info, attributes, type, inherited, name_tok,
-                                                       automatic: spec_info.storage.nil?))
+                              object_alignment_request(spec_info, attributes, type, inherited, name_tok))
       end
 
       # Rejects the declaration specifiers that may sit on a function but not on
