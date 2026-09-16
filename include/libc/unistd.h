@@ -51,7 +51,37 @@
    -- LFS64 aliases, identical to the unsuffixed calls on an LP64 target, no
    corpus user.
    omitted: <stddef.h> -- only size_t is needed, and it is declared here
-   directly. */
+   directly.
+
+   audit-reserved-public-macros-1 (GAPS BX) made the audit count the reserved
+   spellings the standards hand to programs, which is most of what this header
+   publishes: the query arguments of sysconf/confstr/pathconf and the POSIX /
+   X-Open option and version macros. _POSIX_VDISABLE was added below for
+   ruby-termios 1.1.0; the families it did not bring in are listed next, and
+   all of them rest on the same judgment the _SC_/_CS_/_PC_ comments in the
+   body state -- each of these names is a *host-numbered* or *host-valued*
+   constant that has to be re-measured on both arches at every glibc release,
+   so they are added one consumer at a time rather than en bloc, and an
+   unconsumed one is pure surface.
+   omitted: _SC_* -- sysconf() arguments; the twelve the corpus asks for are
+   defined in the body with their measured numbers, and the rest of glibc's
+   <bits/confname.h> enumeration has no corpus caller.
+   omitted: _CS_* _PC_* -- confstr()/pathconf() arguments; _CS_PATH and
+   _PC_PIPE_BUF are defined in the body (etc's own test suite exercises
+   exactly those two), the rest has no corpus caller.
+   omitted: _POSIX_* _POSIX2_* _XOPEN_* _XBS5_* _LFS_* _LFS64_* -- the POSIX
+   and X/Open option, version and programming-environment macros a program
+   tests with #if. The three the corpus needs are in the body
+   (_POSIX_MONOTONIC_CLOCK for stackprof, _POSIX_TIMERS, _POSIX_VDISABLE for
+   ruby-termios). The rest state what the *host's* libc supports, so rubycc
+   answering them from a bundled header would be asserting something about a
+   libc it does not ship; where a gem's #if arm matters, adding the single
+   macro with its measured value (as those three were) is the fix.
+   omitted: _Fork -- POSIX.1-2024's async-signal-safe fork(), which the host
+   libc exports as _Fork@@GLIBC_2.34 on both arches (measured with `nm -D
+   --with-symbol-versions` on 2026-09-16), so declaring it would promise a
+   symbol an older host glibc does not have (the same reasoning close_range
+   uses above); no corpus user either. */
 
 #ifndef _RUBYCC_UNISTD_H
 #define _RUBYCC_UNISTD_H
@@ -129,6 +159,21 @@ typedef long intptr_t;
 #define _POSIX_MONOTONIC_CLOCK 0
 #endif
 #define _POSIX_TIMERS 200809L
+
+/* _POSIX_VDISABLE: the c_cc[] entry value that disables a terminal special
+   character, i.e. what a caller stores into termios.c_cc[VINTR] to turn that
+   character off. It is POSIX's, not glibc's, and a program writes it directly:
+   ruby-termios 1.1.0 publishes it as Termios::POSIX_VDISABLE
+   (ext/termios.c:759), which is where that gem stopped once
+   bundled-unistd-process-group-1 had cleared tcgetpgrp (measured 2026-09-16).
+   Value measured with `gcc -E -dM -D_GNU_SOURCE <unistd.h>` on x86-64 and
+   aarch64 on 2026-09-16: glibc writes it as a character constant worth 0 on
+   both, so the constant is arch-independent and lives in this common layer.
+   No musl toolchain was available on that host to measure musl's value; the
+   ABI harness checks this macro against whichever libc it runs on
+   (test/test_header_abi.rb's UNISTD case), so a disagreement surfaces there
+   rather than as a wrong constant in a built gem. */
+#define _POSIX_VDISABLE 0
 
 #ifndef SEEK_SET
 #define SEEK_SET 0

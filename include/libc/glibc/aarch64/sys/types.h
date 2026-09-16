@@ -40,7 +40,13 @@
    omitted: pthread_* union pthread_attr_t -- the pthreads objects, whose
    arch-specific opaque layouts live in the bundled <pthread.h>; no corpus
    user reaches them through <sys/types.h>. omitted: <endian.h>
-   <sys/select.h> <stddef.h> -- glibc pulls these in; include them directly. */
+   <sys/select.h> <stddef.h> -- glibc pulls these in; include them directly.
+   Re-audited 2026-09-16 under audit-reserved-public-macros-1 (GAPS BX),
+   which widened the diff to the reserved spellings a program writes
+   (_POSIX_*, _SC_*, ioctl's _IO*, ...): glibc's <sys/types.h> owns none of
+   them -- its reserved names are the __*_t ABI typedefs counted separately
+   as "reserved types" plus include guards -- so nothing was added or left
+   out here. */
 
 #ifndef _RUBYCC_SYS_TYPES_H
 #define _RUBYCC_SYS_TYPES_H

@@ -114,6 +114,31 @@ class TestBundledHeadersCoverage < Minitest::Test
     Rubycc::Compiler.new.compile(source, filename: "probe.c", target: "x86_64", libc: "glibc")
   end
 
+  # audit-reserved-public-macros-1 (GAPS BX): the audit used to drop every
+  # name starting with "_" + an upper-case letter, so the POSIX macros glibc
+  # spells in that space were neither provided nor recorded. _POSIX_VDISABLE
+  # is the one a real gem stopped on -- ruby-termios 1.1.0's termios.c:759
+  # publishes it as Termios::POSIX_VDISABLE -- and it is now a name the audit
+  # counts (the assertion below) as well as one the bundled <unistd.h>
+  # defines (the compile).
+  def test_bundled_unistd_posix_vdisable_is_defined
+    source = <<~C
+      #include <unistd.h>
+      int main(void) { return _POSIX_VDISABLE; }
+    C
+    Rubycc::Compiler.new.compile(source, filename: "probe.c", target: "x86_64", libc: "glibc")
+  end
+
+  def test_the_reserved_names_a_program_writes_are_audited
+    skip "gcc unavailable" unless A.available_arches.include?("x86_64")
+
+    unistd = A.audit("unistd.h", "x86_64", guard_probe: false)
+    assert_includes unistd.glibc_own, "_POSIX_VDISABLE",
+                    "a name programs write belongs to the measured surface"
+    refute_includes unistd.missing.keys, "_POSIX_VDISABLE"
+    refute_includes unistd.glibc_own, "_UNISTD_H", "an include guard is not a public name"
+  end
+
   private
 
   def host_x86_64?

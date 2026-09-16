@@ -66,6 +66,40 @@ class TestAuditBundledHeaders < Minitest::Test
     end
   end
 
+  # audit-reserved-public-macros-1: the line the audit draws through the
+  # reserved underscore space. A name a program is meant to write counts as a
+  # public name (and so as missing when a bundled header lacks it); a name the
+  # implementation keeps for itself does not.
+  def test_the_reserved_space_is_split_into_what_a_program_writes_and_what_it_does_not
+    public_names = %w[_POSIX_VDISABLE _POSIX_VERSION _POSIX2_C_BIND _XOPEN_UNIX
+                      _XBS5_LP64_OFF64 _LFS_LARGEFILE _LFS64_STDIO
+                      _SC_PAGESIZE _CS_PATH _PC_NAME_MAX _NL_TIME_FIRST_WEEKDAY
+                      _DATE_FMT _IO _IOR _IOW _IOWR _IOR_BAD _IOC _IOC_SIZEBITS
+                      _Exit _Fork]
+    public_names.each do |name|
+      assert A.public_reserved?(name), "#{name} is a spelling programs write"
+      refute A.reserved?(name), "#{name} must not be skipped as reserved"
+    end
+
+    internal_names = %w[__caddr_t __have_pthread_attr_t _POSIX_C_SOURCE
+                        _POSIX_SOURCE _XOPEN_SOURCE _UNISTD_H _BITS_TYPES_H
+                        _RUBYCC_UNISTD_H _HAVE_STRUCT_TERMIOS_C_ISPEED
+                        _STATBUF_ST_NSEC _DIRENT_HAVE_D_TYPE
+                        _UTSNAME_NODENAME_LENGTH _IO_EOF_SEEN _IO_lock_t
+                        _REG_NOMATCH
+                        _ElfW _SIGSET_NWORDS _STRUCT_TIMESPEC]
+    internal_names.each do |name|
+      refute A.public_reserved?(name), "#{name} is the implementation's own"
+      assert A.reserved?(name), "#{name} must be skipped as reserved"
+    end
+
+    # The struct/union/enum prefix is stripped before either test is applied.
+    assert A.reserved?("struct _IO_FILE")
+    refute A.reserved?("enum _POSIX_VDISABLE")
+    # An unreserved name is never "reserved", whatever its shape.
+    refute A.reserved?("tcgetpgrp")
+  end
+
   # A whole measurement, on a header small enough to state the answer for:
   # glibc's <alloca.h> owns `alloca` (a function and a macro), and the bundled
   # one provides it, so nothing is missing on any arch whose oracle is here.

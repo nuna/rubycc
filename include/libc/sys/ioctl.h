@@ -31,7 +31,22 @@
    structs (struct termios2, struct serial_iso7816) glibc itself leaves
    incomplete, so glibc's own spelling of them does not compile either.
    omitted: <sys/ttydefaults.h> -- the TTYDEF_* default terminal settings
-   glibc pulls in; no corpus user. */
+   glibc pulls in; no corpus user.
+
+   audit-reserved-public-macros-1 (GAPS BX) made the audit count reserved
+   spellings a program is meant to write, which brought the kernel's request
+   *constructors* into the diff alongside the IOC_* helpers already left out
+   above.
+   omitted: _IO _IOC _IOR _IOW _IOWR _IOR_BAD _IOW_BAD _IOWR_BAD _IOC_* --
+   the <asm-generic/ioctl.h> encoding macros that build a request number out
+   of a direction, a type letter, a command number and an argument size. This
+   header gives every request it provides as the measured number the encoding
+   produces (see the note above), so the macros have no consumer here; a gem
+   that had to name a request this header does not list would need them, but
+   the corpus has none, and providing them would add the encoding's own bit
+   layout (the _IOC_*BITS/*SHIFT widths, which are per-arch in the kernel even
+   though x86-64 and aarch64 share the asm-generic values) as a second surface
+   to re-measure at every kernel release. */
 
 #ifndef _RUBYCC_SYS_IOCTL_H
 #define _RUBYCC_SYS_IOCTL_H

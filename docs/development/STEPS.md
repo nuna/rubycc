@@ -17348,3 +17348,151 @@ BS・BR・BQ は ABI の食い違いで、**それで止まっていた gem は�
 `issues/audit-reserved-public-macros.md`(BX)に起票した。
 
 **検証**: 文書とデータだけの変更で、`rake test` はブランチ全体の結果を PR に記録する。
+
+## audit-reserved-public-macros-1 — 予約領域のうち「プログラムが書く綴り」を監査の差分に入れる(GAPS BX)
+
+`issues/audit-reserved-public-macros.md` の課題を塞いだ。`tools/audit_bundled_headers.rb` は名前が
+`_` + 大文字で始まると無条件に「処理系の予約名」として差分から外していたため、glibc が**利用者向けに
+公開している**マクロが表に出ず、`docs/development/BUNDLED-HEADERS-COVERAGE.md` の「未記載 0 件」が
+その分だけ弱い主張になっていた。実害は `ruby-termios` 1.1.0 で、`bundled-unistd-process-group-1`
+(GAPS BU)が `tcgetpgrp` を通した先の `termios.c:759` で `_POSIX_VDISABLE` を使い、そこで止まっていた。
+
+### 原因
+
+`reserved?` の判定が `name.match?(/\A_[A-Z_]/)` の 1 行で、**綴りの持ち主**(予約領域か否か)だけを見て
+いた。規格には「予約領域の綴りを、規格自身がプログラムに使わせる」名前があり、それらも同じ網に
+かかっていた。このホスト(WSL2、gcc 13.3 / aarch64-linux-gnu-gcc 13.3、glibc 2.39)で測った再現
+(rubycc 側は修正前の 2026-09-16、gcc 側は 2026-09-17 に測り直しても同じ):
+
+```c
+#include <unistd.h>
+int main(void) { return _POSIX_VDISABLE; }
+```
+
+| | 結果 |
+|---|---|
+| gcc 13.3 | ok。`gcc -E -dM -D_GNU_SOURCE <unistd.h>` の印字は `'\0'`(値 0)で、x86-64 と aarch64 で一致(2026-09-17 実測) |
+| rubycc(修正前) | `error: undeclared variable '_POSIX_VDISABLE'` |
+
+同じ形で表から落ちていた名前は、同梱 37 本の全体で 441 件(`__` で始まらない予約名。2026-09-16 実測)だった。
+
+### 対処
+
+#### 1. 線引き — 「プログラムが自分のソースに書く綴りか」で切る
+
+`public_reserved?` を新設し、`reserved?` を「予約領域で、かつ `public_reserved?` でない」に変えた。
+判定の基準は**綴りの所有者ではなく用途**である。根拠は `tools/audit_bundled_headers.rb` の
+`#public_reserved?` のコメントに書いた。
+
+**(a) 差分に入れる(プログラムが書く)**
+
+| 族 | 何に使うか |
+|---|---|
+| `_POSIX_*` `_POSIX2_*` `_XOPEN_*` `_XBS5_*` `_LFS_*` `_LFS64_*` | POSIX / X-Open のオプション・版数・プログラミング環境マクロ(`#if` で読む)。`_POSIX_VDISABLE` もここ |
+| `_SC_*` `_CS_*` `_PC_*` | `sysconf` / `confstr` / `pathconf` の引数 |
+| `_NL_*` `_DATE_FMT` | `nl_langinfo` の item コード |
+| `_IO` `_IOR` `_IOW` `_IOWR` `_IO*_BAD` `_IOC` `_IOC_*` | ioctl 要求番号の構成マクロ(カーネル UAPI の公開面) |
+| `_Exit` `_Fork` | 規格自身が先頭下線で綴った関数 |
+
+**(b) 差分から外す(処理系が自分のために使う)**
+
+- `__` で始まる名前すべて(`__caddr_t`・`__have_*`)。従来どおり typedef とタグだけ「予約名の型」に数える
+- インクルードガード・型ガード(`_STDLIB_H`・`_BITS_*`・`_*_defined`・rubycc 自身の `_RUBYCC_*`)。
+  (a) の接頭辞を持つガード(`_XOPEN_LIM_H`)も末尾 `_H` で落とす
+- プログラムが**読む**のではなく**定義する**側の feature-test マクロ(`_POSIX_C_SOURCE`・`_XOPEN_SOURCE`・
+  `_XOPEN_SOURCE_EXTENDED`。語として `_SOURCE` を含むもの)
+- glibc が自分のレイアウトを報告するマクロ(`_HAVE_STRUCT_*`・`_STATBUF_ST_*`・`_DIRENT_HAVE_*`・
+  `_UTSNAME_*_LENGTH`・`<stdio.h>` の `_IO_*` 内部)
+- 公開マクロの展開先にすぎない名前(`REG_*` の実体 `_REG_*`、`ElfW` の実体 `_ElfW`)
+
+**(b) はどれも gem のソースに現れえないので、同梱ヘッダに無くてもギャップではない**——これが線の芯である。
+
+#### 2. 表の作り直し
+
+`ruby tools/audit_bundled_headers.rb --output docs/development/BUNDLED-HEADERS-COVERAGE.md` を再実行した
+(2026-09-16。表の 測定日 行はその日付)。表の読み方の節(生成元も道具の中)にも、何を数えて何を外すかを書き足した。
+差分が出たのは 5 本だけで、残り 32 本は不変:
+
+| ヘッダ | 不足(前 → 後) | 増えた内訳 |
+|---|---|---|
+| `unistd.h` | 60 → 432(x86-64)/ 438(aarch64) | `_SC_*` 206・`_CS_*` 66・`_POSIX_*` 54・`_PC_*` 20・`_XOPEN_*` 11・`_POSIX2_*` 7・`_LFS64_*` 3・`_LFS_*` 2・`_XBS5_*` 2・`_Fork` 1 |
+| `sys/ioctl.h` | 13 → 41 | `_IO`/`_IOR`/`_IOW`/`_IOWR`/`_IO*_BAD`/`_IOC`/`_IOC_*` の 28 件 |
+| `langinfo.h` | 38 → 328 | `_NL_*` と `_DATE_FMT` |
+| `limits.h` | 53 → 100 | `_POSIX_*_MAX` 等の POSIX 下限値と `_XOPEN_IOV_MAX` |
+| `dirent.h` | 42 → 79 | `<bits/posix1_lim.h>` 経由の `_POSIX_*` |
+
+arch 差は `unistd.h` の 6 件だけで、aarch64 の glibc だけが見せる ILP32 プログラミング環境マクロ
+(`_POSIX_V6_ILP32_OFF32`・`_POSIX_V6_ILP32_OFFBIG`・`_POSIX_V7_ILP32_OFF32`・`_POSIX_V7_ILP32_OFFBIG`・
+`_XBS5_ILP32_OFF32`・`_XBS5_ILP32_OFFBIG`)である(2026-09-16 実測)。
+
+#### 3. 分類済み 6 本の数え直し
+
+新たに現れた名前を「足す / 意図して外す」に振り直した。**未記載は 6 本とも 0 のまま**である。
+
+- **`unistd.h`(+372 / +378)**: `_POSIX_VDISABLE` を足した。値は `gcc -E -dM -D_GNU_SOURCE <unistd.h>` の
+  印字で x86-64・aarch64 とも文字定数 `'\0'`(= 0)と実測し(2026-09-16、2026-09-17 に再測定して同値)、共通層に
+  `#define _POSIX_VDISABLE 0` として置いた(glibc の文面は写さず実測値を書いている。R11、
+  `docs/reference/HEADER-LICENSING.md` §4.4/§6)。残り 371/377 件は 4 本の `omitted:` 行にまとめた。
+  理由は**ヘッダ本文が `_SC_`/`_CS_`/`_PC_` について既に書いていた判断の延長**である:
+  これらはどれも**ホストの libc が答える番号・値**で、glibc の更新ごとに両 arch で測り直す surface に
+  なる。だから消費者が現れるたびに 1 件ずつ足す(`_SC_*` 12 件・`_CS_PATH`/`_PC_PIPE_BUF`・
+  `_POSIX_MONOTONIC_CLOCK`/`_POSIX_TIMERS` がその形で、今回の `_POSIX_VDISABLE` も同じ)。
+  `_Fork` だけは別の理由で、ホストの libc が `_Fork@@GLIBC_2.34` として出していることを
+  `nm -D --with-symbol-versions` で両 arch とも確かめた(2026-09-16、2026-09-17 に再測定して同じ)ので、`close_range` と同じ
+  「古いホスト glibc に無い記号を約束しない」で外した。
+- **`sys/ioctl.h`(+28)**: 28 件すべてを外した。このヘッダは要求番号を**実測した数値そのもの**で与える
+  方針(既存の `IOC_IN`/`IOC_OUT`/`IOCSIZE_MASK` 除外と同じ)なので構成マクロに消費者がおらず、
+  足すと符号化のビット配置(`_IOC_*BITS`/`*SHIFT`)という第二の測定面を抱え込む。
+- **`stdlib.h`(+0)**: glibc の `<stdlib.h>` が持つ該当名は `_Exit` だけで、同梱は既に宣言している。
+- **`sched.h`・`termios.h`・`sys/types.h`(x86-64/aarch64 の両層)(+0)**: glibc 側の予約名がガードか
+  `__` 名しかない。4 本(+ arch 層)には「2026-09-16 に測り直して 0 件だった」ことを冒頭コメントに
+  1 文ずつ残した。`termios.h` には、`_POSIX_VDISABLE` が POSIX 上は `<unistd.h>` のマクロであること
+  (ruby-termios も両方を include している)も書いた。
+
+`docs/reference/HEADER-LICENSING.md` §3.2 の `include/libc/unistd.h` の行に `_POSIX_VDISABLE` の実測を
+追記した。ファイル数は動いていないので §3.4 の集計(81 本)は不変。
+
+#### 4. `ruby-termios` 1.1.0 がこの段を越えた
+
+修正前は `termios.c:759: error: undeclared variable '_POSIX_VDISABLE'`(2026-09-16 実測)。修正後は
+`RUBYCC=1 gem install ruby-termios-1.1.0.gem` が **`Successfully installed ruby-termios-1.1.0`** まで通り
+(`Makefile` の `CC` が rubycc であることを確認)、生成された `termios.so` が `require "termios"` で読め、
+`Termios::POSIX_VDISABLE == 0`・`Termios::NCCS == 32`・`Termios::VINTR == 0` を返し、
+`Termios.tcgetattr($stdin)` が非 tty で `Errno::ENOTTY` を上げる(= ホスト libc に届いている)ところまで
+確かめた(2026-09-16 実測、2026-09-17 にワークツリー `audit-reserved-public-macros` で再実行、x86-64)。**この gem はこれで
+ビルド・ロードとも通る**。gem 本体のテストスイートは上流にも同梱物にも無い(`examples/` だけ)ので、
+`data/verified_gems.json` に足せる「本体テスト実走」の証拠はこの gem では取れない。
+
+### テスト
+
+- `test/test_audit_bundled_headers.rb`: 線引きの単体テスト
+  `test_the_reserved_space_is_split_into_what_a_program_writes_and_what_it_does_not` を追加。
+  (a) 側 22 件・(b) 側 18 件を名指しで検査し、`struct` 接頭辞の剥がしも見る。
+- `test/test_bundled_headers_coverage.rb`: issue 本文どおりの再現をコンパイルする
+  `test_bundled_unistd_posix_vdisable_is_defined` と、監査が `_POSIX_VDISABLE` を公開名として数え
+  `_UNISTD_H` は数えないことを見る `test_the_reserved_names_a_program_writes_are_audited` を追加。
+  既存の「分類済み 6 本は未記載 0」検査はそのまま通る。
+- `test/test_header_abi.rb`: `UNISTD` の `ints` に `_POSIX_VDISABLE` を足し、両 arch で gcc の値と
+  一致することを常時検査する。musl の値はこのホストで測れないので、libc をまたぐ齟齬はここで出す。
+- 実行結果(2026-09-17、ワークツリー `audit-reserved-public-macros`、いずれも 0 failures / 0 errors):
+  `test_audit_bundled_headers.rb` 5 runs / 98 assertions、
+  `test_bundled_headers_coverage.rb` 13 runs / 62 assertions、
+  `test_header_abi.rb` 130 runs / 385 assertions / 0 skips、
+  `test_doc_links.rb` 3 runs / 45 assertions、
+  `test_examples.rb` 72 runs / 73 assertions、
+  `test_examples_aarch64.rb` 588 runs / 1017 assertions / 22 skips(既存)、
+  `test_c_suite.rb` 223 runs / 439 assertions / 11 skips(既存)、
+  `test_c_suite_aarch64.rb` 444 runs / 869 assertions / 22 skips(既存)。
+  フルスイート(`rake test`)は **3857 runs, 19482 assertions, 0 failures, 0 errors, 35 skips**
+  (2026-09-17、同ワークツリー。skip 35 件は既存の対象外項目)。
+
+### 残された観点
+
+- **`langinfo.h`・`limits.h`・`dirent.h` の未記載が増えた**(39 → 329、54 → 101、43 → 80)。3 本とも
+  まだ分類していないヘッダ(`bundled-headers-coverage-audit` が残した 49 本の一部)なので、
+  未記載が増えること自体は表の趣旨どおりである。ただし `limits.h` の `_POSIX_*_MAX` は `#if` で読む
+  下限値で、gem が触る見込みは `_NL_*` より高い。
+- **musl での `_POSIX_VDISABLE` は未測定**(このホストに musl toolchain が無い)。CI の musl 実行で
+  ABI ハーネスが検査する。
+- **`_IO*` を足していない**ので、同梱 `<sys/ioctl.h>` に無い要求番号を自前で組み立てる gem はなお
+  落ちる。実例が出たら 1 件の issue にする。
