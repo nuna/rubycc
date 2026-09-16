@@ -17496,3 +17496,139 @@ arch 差は `unistd.h` の 6 件だけで、aarch64 の glibc だけが見せる
   ABI ハーネスが検査する。
 - **`_IO*` を足していない**ので、同梱 `<sys/ioctl.h>` に無い要求番号を自前で組み立てる gem はなお
   落ちる。実例が出たら 1 件の issue にする。
+
+## sysv-unnamed-bitfield-class-1 — 名前の無いビットフィールドの記憶域を分類に数える(GAPS BV)
+
+### 原因
+
+名前の無いビットフィールドは**メンバを宣言しないが記憶域は占める**。rubycc の
+`Type::StructType#define`(`place_bitfield` / `layout_union`)は名前のあるビットフィールドにしか
+`Member` を作らず、名前の無いものはカーソルを進めるだけだったので、**レイアウトは合っているのに
+分類だけがその記憶域を見ていなかった**(`sizeof` / `_Alignof` / `offsetof` は測定前から gcc と一致)。
+結果、両 ABI で食い違っていた。
+
+- **x86-64 System V**: `SystemVAMD64Convention#classify_eightbytes` は members しか歩かないので、
+  `struct { float f; int : 8; }` の最初の eightbyte を SSE と分類していた(gcc は SSE と INTEGER を
+  併合して INTEGER)。メンバが 1 つも無い `struct { int : 8; }` は全 eightbyte が NO_CLASS になり、
+  `sysv-padding-eightbyte-class-1` の「どのフィールドも掛からない eightbyte はピースを作らない」規則に
+  落ちて**丸ごとスタック行き**になっていた。**名前の無いビットフィールドは詰め物ではない**ので、
+  この 2 つを分けるのが本ステップの要点である
+- **AArch64 AAPCS64**: `homogeneous_members` は `member.bitfield?` で HFA を失格にするが、名前の無い
+  ビットフィールドは member ではないので素通りしていた。`union { double d; int : 8; }` は double 1 個の
+  HFA に見えて d0 に載っていた(gcc は x0)
+
+測定の途中で、**分類とは別の食い違い**が 1 つ出た。x86-64 の gcc は、**名前でたどれるメンバを 1 つも
+持たない集約**(C では名前の無いビットフィールドだけの集約でしか作れない)を次のように扱う:
+
+- レジスタが空いていれば分類どおり 1 本使う(`struct { int : 8; }` は edi)
+- **スタック引数領域は 1 バイトも使わない**。溢れたときは次の引数が 1 スロット手前に詰まり、
+  `va_arg` も overflow ポインタを進めない。16 バイト境界の指定があっても詰め物を入れない
+- 16 バイトを超える(psABI なら MEMORY の)大きさでも、**レジスタもスタックも隠し戻り値ポインタも
+  使わない**。`struct { int : 8; } __attribute__((aligned(32)))` を返す関数は隠しポインタを取らず、
+  その後ろの引数は**第 1 整数レジスタ**に入る
+
+AArch64 の gcc にこの規則は無い(1 バイト書いて 8 バイト進め、16 バイト超は参照渡し)。
+
+### 対処
+
+- `Type::UnnamedBitfield`(`bit_offset` / `bit_width`)を新設し、`StructType#unnamed_bitfields` に
+  **幅 0 でない**名前の無いビットフィールドの記憶域だけを記録した。`Member` は増やさない —
+  名前でたどれない記憶域なので、メンバ検索・初期化子・丸ごとコピーはこれまでどおり `members` だけを見る。
+  幅 0(`int : 0;`)は記憶域を占めないので記録しない(カーソルの整列だけは従来どおり)
+- System V: `classify_eightbytes` が members の後に `unnamed_bitfields` も畳み込む
+  (`classify_bitfield` は member ではなく `bit_offset` / `bit_width` を取る形にした)。
+  これで「フィールドが掛かる eightbyte」と「詰め物だけの eightbyte」が正しく分かれる
+- AAPCS64: `homogeneous_members` は `unnamed_bitfields` が空でなければ HFA を失格にする。
+  幅 0 は記録されないので HFA のままで、これは gcc と同じ判断
+- 「メンバの無い集約はスタックを取らない」規則は `CallConvention#stack_eightbytes(type)`
+  (既定 ceil(size/8))を新設し、`SystemVAMD64Convention` だけが `empty_aggregate?` のときに 0 を返す
+  形で入れた。generator 側は 3 箇所がこの 1 つの答えを読む:
+  `abi_request`(placer に渡す `mem_eightbytes`)・`placed_pieces`(溢れたときのピース列)・
+  `take_from_stack_area`(`va_arg` の overflow ポインタの前進)
+- **0 バイトの引数は整列も要求しない**。`struct { int : 8; } __attribute__((aligned(16)))` は
+  16 バイト境界だが gcc は場所も詰め物も与えないので、`abi_request` は `mem_eightbytes` が 0 のとき
+  `align16: false` にし、`take_from_stack_area` はポインタの切り上げも省く
+- 16 バイト超のメンバの無い集約は、`aggregate_plan` が MEMORY ではなく**ピースの無いレジスタ計画**を
+  返すようにした。これ 1 つで「レジスタを取らない」「`stack_eightbytes` が 0 なのでスタックも取らない」
+  「`hidden_result?` が偽なので隠しポインタも取らない」の 3 つが同時に言える
+- IR の契約は変わらない(「集約はピースごとに 1 スロット」のまま。ピースが 0 個になり得ることは
+  `sysv-padding-eightbyte-class-1` で既に生じている)
+
+### 測定行列
+
+2026-09-16(gcc の測定)と 2026-09-17(rubycc との差分)に、このホスト(WSL2 / gcc 13.3)で測った。
+gcc 側は x86-64 が `gcc -O1 -S`、aarch64 が
+`aarch64-linux-gnu-gcc -O1 -S` の出力を読み、`f(T, double)` の固定引数・`v(1, T, 2.0)` の可変長引数・
+`T r(void)` の戻り値で測った。「修正前」は同じ形を新しい差分テストに載せて pristine の lib
+(c9faa14)で走らせた結果である。
+
+| 形 | size(x86/a64) | gcc x86-64(T / 後続 double) | 修正前 rubycc | gcc aarch64 |
+|---|---|---|---|---|
+| `struct { float f; int : 8; }` | 8 / 8 | rdi / xmm0(eb0 は SSE+INTEGER→INTEGER) | xmm0 / xmm1(**不一致**) | x0 / d0 |
+| `struct { int : 8; float f; }` | 8 / 8 | rdi / xmm0 | xmm0(**不一致**) | x0 |
+| `struct { float a, b; int : 8; }` | 12 / 12 | xmm0+edi / xmm1 | xmm0 のみ(**不一致**) | x0+w1 |
+| `struct { float a, b, c; int : 8; }` | 16 / 16 | xmm0+rdi / xmm1 | xmm0+xmm1(**不一致**) | x0+x1 |
+| `struct { double d; int : 8; }` | 16 / 16 | xmm0+rdi / xmm1 | xmm0+xmm1(**不一致**) | x0+x1 |
+| `struct { int : 8; double d; }` | 16 / 16 | edi+xmm0 / xmm1 | xmm0+xmm1(**不一致**) | x0+x1 |
+| `struct { int a : 4; int : 8; float f; }` | 8 / 8 | rdi / xmm0 | 一致(名前付きが既に INTEGER) | x0 |
+| `union { double d; int : 8; }` | 8 / 8 | rdi / xmm0 | xmm0(**不一致**) | x0(**修正前は d0 で不一致**) |
+| `union { float f; int : 8; }` | 4 / 4 | edi / xmm0 | xmm0(**不一致**) | w0(**修正前は s0 で不一致**) |
+| `struct { int : 8; }` | 1 / 4 | edi / xmm0 | スタック(**不一致**) | w0 |
+| `struct { int : 8; } aligned(8)` | 8 / 8 | rdi / xmm0 | スタック(**不一致**) | x0 |
+| `struct { int : 8; } aligned(16)` | 16 / 16 | rdi 1 本だけ(eb1 は NO_CLASS) | スタック(**不一致**) | x0+x1 |
+| `struct { struct { int : 8; } in; }` | 1 / 4 | rdi 1 本 | スタック(**不一致**) | w0 |
+| `struct { int : 8; } aligned(32)` | 32 / 32 | **何も渡さない・隠しポインタも無し** | MEMORY(スタック 4 個 + 隠しポインタ、**不一致**) | 参照渡し(コピーのアドレス) |
+| `struct { float f; int : 0; }` | 4 / 4 | xmm0(幅 0 は何も占めない) | 一致 | s0(HFA のまま) |
+| `struct { float a; int : 0; float b; }` | 8 / 8 | xmm0 | 一致 | s0+s1(HFA) |
+
+溢れ位置(x86-64、整数レジスタを 6 個使い切った後)の測定:
+
+| 形 | gcc 呼び出し側 | gcc 呼ばれ側 / `va_arg` | 修正前 rubycc |
+|---|---|---|---|
+| `struct { char c; }`(対照) | 8 バイト積む | 次の引数は +8 | 一致 |
+| `struct { int : 8; }` | **積まない** | 次の引数は **+0**、`va_arg` も overflow ポインタを進めない | 8 バイト積む(**不一致**) |
+| `struct { int : 8; } aligned(16)` | **積まない**(16 境界への詰め物も無し) | 同上 | 16 バイト + 詰め物(**不一致**) |
+
+- 修正後の rubycc は上の全行で gcc と一致した(`%al` も含む)
+- **戻り値**も分類に従って変わる(`struct { float f; int : 8; }` は rax、`struct { double d; int : 8; }` は
+  xmm0+rax)。メンバの無い形は読める値を持たないので、gcc は値を 1 バイトも動かさない
+- 幅 0 のビットフィールドについて gcc は
+  「the ABI of passing C structures with zero-width bit-fields has changed in GCC 12.1」という note を出す。
+  gcc 13.3 の現在の挙動(何も占めない)に合わせてある
+
+### テスト
+
+- `test/test_sysv_unnamed_bitfield_class.rb`(新規): 16 形(float/double と混ざる 6 形、名前付きと並ぶ
+  1 形、union 2 形、メンバの無い 5 形 — 1・8・16・32 バイトと入れ子 —、対照の幅 0 が 2 形)× 前置き
+  (long, double)=(0,0)(0,7)(0,8)(4,0)(6,0)(5,7) を、固定引数(集約・double・long・2 個目の集約・float)、
+  可変長引数(同じ並びを `va_arg` で読む)、戻り値で回す。gcc 同士の出力を対照に、
+  rubycc 呼び出し → gcc 呼ばれ側、gcc 呼び出し → rubycc 呼ばれ側の両方の一致を求める。
+  x86-64 では gcc で作る 3 つ目の翻訳単位に `%al` を記録するアセンブリの踏み台を置き、
+  呼ばれ側が `%al` も出力するので、呼び出し側のベクタレジスタ数も比べる。aarch64 も同じ形で回す。
+  1 run あたり 16 × 13 = 208 行。4 runs, 12 assertions, 0 failures。
+  **修正前の lib(c9faa14)では 4 runs すべてが failure** — x86-64 は 13 形が食い違い
+  (メンバの無い形は 32 バイトの形で出力が途中で壊れるところまで行く)、aarch64 は union 2 形が
+  HFA 判定で食い違う(2026-09-17)
+- `examples/m6/sysv_unnamed_bitfield_class_1_reserved_bits.c`: 予約ビットを持つ 5 形(float と、
+  double と、幅 0 と、メンバの無い aligned(8) と、union)を固定引数・レジスタを使い切る位置・
+  可変長引数・戻り値で通し、`sizeof` / `_Alignof` も出力する。1 翻訳単位を rubycc が両側とも作るので
+  修正前の lib でも gcc と同じ出力になる(ABI の食い違いは上の差分テストが見る)。
+  型は `#include` より前に定義
+- 回帰(2026-09-17、いずれも 0 failures / 0 errors):
+  `test_sysv_padding_eightbyte_class.rb` 4 runs、`test_sysv_over_aligned_aggregate_stack.rb` 4 runs、
+  `test_aapcs64_aligned_attribute_aggregate.rb` 4 runs、`test_aligned_attribute_member_typedef.rb` 11 runs、
+  `test_variadic_aggregate_argument.rb` 4 runs、`test_cross_abi.rb` 4 runs、`test_type.rb` 92 runs、
+  `test_examples.rb` 73 runs、`test_examples_aarch64.rb` 590 runs / 22 skips、
+  `test_c_suite.rb` 223 runs / 11 skips、`test_c_suite_aarch64.rb` 444 runs / 22 skips
+- 全体(2026-09-17、settled な worktree で 1 回): `rake test` 3860 runs, 19409 assertions,
+  0 failures, 0 errors, 35 skips
+
+### 残された観点
+
+- gcc の「メンバの無い集約は場所を取らない」規則は**分類ではなく配置**の規則で、x86-64 にしか無い。
+  C では名前の無いビットフィールドだけの集約でしか作れない形なので本ステップで揃えたが、規則としては
+  「レジスタは 1 本取るのにスタックは 0 バイト」という不連続で、gcc の `TYPE_EMPTY_P` の扱いに由来する。
+  このホストに clang が無いので**対照は gcc 13.3 の 1 つだけ**である
+- 名前の無いビットフィールドが eightbyte 境界を**跨ぐ**形は測れていない。宣言型の記憶域単位を跨げない
+  という規則(6.7.2.1)があるため `packed` 無しでは作れず、parser は `packed` とビットフィールドの
+  併用を拒む

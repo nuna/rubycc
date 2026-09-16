@@ -795,7 +795,10 @@ module Rubycc
     # so ABI classification and diagnostics have a byte anchor — this subset
     # diagnoses every bit-field *access*, so no read or write ever consults these
     # bit fields to extract a value (recorded M2 debt). An unnamed bit-field
-    # declares no member and is never recorded here; it only shapes the layout.
+    # declares no member and is never recorded here: no program can name it, so
+    # it must not answer a member lookup, appear in an initializer or be walked
+    # by a whole-object copy. Its *storage* is recorded apart, as an
+    # UnnamedBitfield in StructType#unnamed_bitfields.
     Member = Data.define(:name, :type, :offset, :bit_width, :bit_offset) do
       def initialize(name:, type:, offset:, bit_width: nil, bit_offset: nil)
         super
@@ -807,6 +810,19 @@ module Rubycc
         !bit_width.nil?
       end
     end
+
+    # The storage one unnamed bit-field of non-zero width occupies: `bit_width`
+    # bits starting at `bit_offset`, measured in bits from the start of the
+    # enclosing aggregate (a union's are all at 0). It is not a Member — there
+    # is nothing to name, read or write — but both ABIs' argument classification
+    # has to see the bits: the x86-64 System V psABI classes an eightbyte an
+    # unnamed bit-field reaches INTEGER (gcc 13.3 passes `struct { float f;
+    # int : 8; }` in rdi, not xmm0), and AAPCS64 lets any bit-field, named or
+    # not, disqualify a homogeneous floating aggregate (gcc passes
+    # `union { double d; int : 8; }` in x0, not d0) — both measured 2026-09-16.
+    # A zero-width bit-field occupies nothing and is never recorded here; it
+    # only realigns the layout cursor.
+    UnnamedBitfield = Data.define(:bit_offset, :bit_width)
 
     # A structure or a union type. Both are aggregates (6.7.2.1) that share this
     # one class, told apart by `kind` (:struct or :union); a union differs only
@@ -832,10 +848,18 @@ module Rubycc
     class StructType
       attr_reader :tag, :kind, :members
 
+      # The UnnamedBitfield spans this aggregate's unnamed bit-fields of
+      # non-zero width occupy, in declaration order; empty for an aggregate
+      # without one and for an incomplete type. Only ABI classification reads
+      # it: these bits belong to no member, so every other walk over the
+      # aggregate (member lookup, initializers, copies) sees #members alone.
+      attr_reader :unnamed_bitfields
+
       def initialize(tag, kind: :struct)
         @tag = tag
         @kind = kind
         @members = nil
+        @unnamed_bitfields = [].freeze
         @size = nil
         @alignment = nil
         @natural_alignment = nil
@@ -987,7 +1011,7 @@ module Rubycc
       # bit-field's declared type raises the aggregate's alignment. It does not
       # under the x86-64 System V psABI (the default) and does under AAPCS64.
       def define(raw_members, packed: false, aligned: nil, unnamed_bitfields_align: false)
-        @members, @size, @alignment, @natural_alignment =
+        @members, @size, @alignment, @natural_alignment, @unnamed_bitfields =
           if union?
             layout_union(raw_members, packed, aligned, unnamed_bitfields_align)
           else
@@ -1049,7 +1073,9 @@ module Rubycc
       # (or at a 1-byte boundary when `packed`), and bit-fields packed into
       # storage units by the System V x86-64 rules, the whole rounded up to the
       # aggregate's alignment. `aligned` (when set) raises that final alignment.
-      # Returns [members, size, alignment].
+      # Returns [members, size, alignment, natural alignment, unnamed
+      # bit-fields] — the last of which is the storage no member names
+      # (see UnnamedBitfield), kept apart so only ABI classification sees it.
       #
       # A running bit cursor (`bit_pos`, bits from the start) drives both kinds so
       # a bit-field and its neighbours share bytes exactly as gcc lays them out. A
@@ -1069,6 +1095,7 @@ module Rubycc
         bit_pos = 0
         max_alignment = 1
         members = []
+        unnamed_bitfields = []
         raw_members.each do |name, type, bit_width, alignas, base_alignment|
           if bit_width.nil?
             member_alignment = member_boundary(type, packed, alignas, base_alignment)
@@ -1083,25 +1110,28 @@ module Rubycc
             bit_pos = (byte_offset + member_size) * 8
             max_alignment = member_alignment if member_alignment > max_alignment
           else
-            bit_pos = place_bitfield(members, name, type, bit_width, bit_pos,
+            bit_pos = place_bitfield(members, unnamed_bitfields, name, type, bit_width, bit_pos,
                                      unnamed_bitfields_align) do |alignment|
               max_alignment = alignment if alignment > max_alignment
             end
           end
         end
         struct_alignment = final_alignment(max_alignment, aligned)
-        [members, align_up(bits_to_bytes(bit_pos), struct_alignment), struct_alignment, max_alignment]
+        [members, align_up(bits_to_bytes(bit_pos), struct_alignment), struct_alignment, max_alignment,
+         unnamed_bitfields.freeze]
       end
 
       # Places one bit-field at bit cursor `bit_pos`, recording a Member for a
-      # named one and yielding alignof(T) so #layout_struct can raise the
-      # aggregate's alignment — for a named field always, for an unnamed one only
-      # when `unnamed_bitfields_align` (AAPCS64). Returns the advanced cursor.
+      # named one and an UnnamedBitfield for an unnamed one of non-zero width,
+      # and yielding alignof(T) so #layout_struct can raise the aggregate's
+      # alignment — for a named field always, for an unnamed one only when
+      # `unnamed_bitfields_align` (AAPCS64). Returns the advanced cursor.
       # A zero-width field is always unnamed (the parser rejects a named one) and
       # merely realigns the cursor to the next storage-unit boundary; it still
       # contributes its container's alignment under AAPCS64, which is why the
-      # yield precedes the early return.
-      def place_bitfield(members, name, type, bit_width, bit_pos, unnamed_bitfields_align)
+      # yield precedes the early return. It occupies no storage, so it is the one
+      # bit-field that records nothing at all.
+      def place_bitfield(members, unnamed_bitfields, name, type, bit_width, bit_pos, unnamed_bitfields_align)
         unit_bits = type.size * 8
         yield type.alignment if unnamed_bitfields_align && name.nil?
         return align_up(bit_pos, unit_bits) if bit_width.zero?
@@ -1111,6 +1141,8 @@ module Rubycc
           members << Member.new(name: name, type: type, offset: bit_pos / 8,
                                 bit_width: bit_width, bit_offset: bit_pos)
           yield type.alignment
+        else
+          unnamed_bitfields << UnnamedBitfield.new(bit_offset: bit_pos, bit_width: bit_width)
         end
         bit_pos + bit_width
       end
@@ -1123,9 +1155,12 @@ module Rubycc
       # `T : 0` nothing at all) under the x86-64 System V psABI, and its
       # container's alignment as well under AAPCS64 — the same divergence
       # #layout_struct documents, selected by `unnamed_bitfields_align`.
-      # Returns [members, size, alignment].
+      # Returns [members, size, alignment, natural alignment, unnamed
+      # bit-fields] — the last of which is the storage no member names
+      # (see UnnamedBitfield), kept apart so only ABI classification sees it.
       def layout_union(raw_members, packed, aligned, unnamed_bitfields_align)
         members = []
+        unnamed_bitfields = []
         max_size = 0
         natural_alignment = 1
         raw_members.each do |name, type, bit_width, alignas, base_alignment|
@@ -1146,13 +1181,16 @@ module Rubycc
               members << Member.new(name: name, type: type, offset: 0,
                                     bit_width: bit_width, bit_offset: 0)
               member_alignment = type.alignment
+            else
+              unnamed_bitfields << UnnamedBitfield.new(bit_offset: 0, bit_width: bit_width)
             end
           end
           max_size = byte_size if byte_size > max_size
           natural_alignment = member_alignment if member_alignment > natural_alignment
         end
         union_alignment = final_alignment(natural_alignment, aligned)
-        [members, align_up(max_size, union_alignment), union_alignment, natural_alignment]
+        [members, align_up(max_size, union_alignment), union_alignment, natural_alignment,
+         unnamed_bitfields.freeze]
       end
 
       # The number of whole bytes needed to hold `bits` bits (rounding up).

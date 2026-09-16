@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-16
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-17
+branch: gap-fixes-wave-7
+pr: 156
+steps: [sysv-unnamed-bitfield-class-1]
 ---
 
 # x86-64 の分類が、名前の無いビットフィールドの記憶域を数えない
@@ -59,6 +59,20 @@ gcc は最初の eightbyte を INTEGER に分類する(名前の無いビット�
 
 BS の統合時に、報告された形を最小再現(2 翻訳単位)で確かめて起票した。
 
+### 2026-09-17(実装)
+
+レイアウト(`sizeof` / `_Alignof` / `offsetof`)は修正前から gcc と一致していて、ずれていたのは分類と配置だけだった。幅 0 でない名前の無い
+ビットフィールドの記憶域を型に持たせ、System V の分類と AAPCS64 の HFA 判定が数えるようにした(`Member` は増やさないので、メンバ検索や
+初期化子の扱いは変わらない)。測定中に、gcc が「名前でたどれるメンバを 1 つも持たない集約」にスタック引数領域も隠し戻り値ポインタも与えない
+ことが分かり(x86-64、`TYPE_EMPTY_P` 由来)、受け入れ条件がその形を含むので合わせた。
+
 ## 決着
 
-(未着手)
+**解消した**(`sysv-unnamed-bitfield-class-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 再現が両方向で gcc 同士と一致する | `test/test_sysv_unnamed_bitfield_class.rb`(16 形 × 前置き 6 種、両方向・両 arch、x86-64 は `%al` も比較)。修正前の lib では 4 runs すべて失敗 |
+| 名前の無いビットフィールドだけの構造体・浮動小数点との混在・幅 0 を固定 / 可変長 / 戻り値で測る | 同じテストの行列で確認 |
+| AArch64 でも一致する | 共用体の 2 形が修正前はずれていた。修正後は一致 |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

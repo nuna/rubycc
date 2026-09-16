@@ -143,4 +143,5 @@ C 言語機能をほとんど追加しないため、サンプルを持つのは
 | `sysv_padding_eightbyte_class_1_padded_float_pair.c` | Step sysv-padding-eightbyte-class-1: 後半 8 バイトが詰め物だけの 16 バイト整列構造体(float 2 個・int 1 個)を、double を挟んで固定引数・可変長引数・戻り値で渡す。System V はその eightbyte にレジスタを割り当てない |
 | `sysv_over_aligned_aggregate_stack_1_stacked_slots.c` | Step sysv-over-aligned-aggregate-stack-1: 32 バイト整列(型属性)と 64 バイト整列(`_Alignas` メンバ)の構造体を、整数レジスタを使い切った後の固定引数・`va_arg`・戻り値で渡す(x86-64 ではスタック引数領域でも自身の 32/64 バイト境界から始まり、AArch64 では参照渡しになる) |
 | `aligned_attribute_member_typedef_1_cache_line_counters.c` | Step aligned-attribute-member-typedef-1: メンバの宣言子・typedef 名・変数に付けた `aligned` で、64 バイト境界のカウンタ・16 バイト境界の構造体(値渡しと可変長引数も)・境界を下げる typedef・packed 構造体の `aligned(4)` メンバを組む |
+| `sysv_unnamed_bitfield_class_1_reserved_bits.c` | Step sysv-unnamed-bitfield-class-1: 名前の無いビットフィールド(予約ビット)を持つ構造体・共用体を、固定引数・レジスタを使い切った位置・可変長引数・戻り値で渡す。記憶域を占めるビットフィールドは分類に数えられ(x86-64 では整数レジスタ、AArch64 では HFA 失格)、幅 0 のものは何も占めない |
 ` エスケープを含むリテラルが途中で止まることも示す。コーパス候補 `herb` 0.10.4 の `src/include/lib/hb_string.h:27` がこの builtin をマクロの中で使っており、その形(`HB_STRLEN`)も再現する。`test_examples.rb` が gcc 差分で検証する |

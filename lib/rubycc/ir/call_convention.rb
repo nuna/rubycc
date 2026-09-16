@@ -147,6 +147,17 @@ module Rubycc
         Array.new((size + 7) / 8) { |i| AbiPiece.new(offset: 8 * i, size: 8, kind: :mem) }
       end
 
+      # How many eightbytes a value of `type` occupies in the stack argument
+      # area when it does not travel in registers: ceil(size/8), the whole
+      # rounded-up value. The caller writes that many, the callee reads them
+      # back from the same offsets and a va_arg steps the overflow pointer by
+      # them, so this is the one place the footprint is decided.
+      # SystemVAMD64Convention overrides it for the one shape gcc gives no room
+      # at all.
+      def stack_eightbytes(type)
+        (type.size + 7) / 8
+      end
+
       # The convention's plan for passing an aggregate of `type` by value.
       def aggregate_plan(_type)
         raise NotImplementedError
@@ -220,6 +231,17 @@ module Rubycc
         align16 = type.alignment >= 16
         stack_alignment = [type.alignment, 8].max
         if size > 16 || unaligned_field?(type, 0)
+          # An aggregate with no named member is the exception MEMORY does not
+          # fit: there is nothing to lay in the stack area and nothing to write
+          # through a hidden return pointer, and gcc 13.3 passes and returns it
+          # as exactly that — `struct { int : 8; } __attribute__((aligned(32)))`
+          # takes no register, no stack room and no hidden pointer, so the
+          # argument after it lands in the *first* integer register and a
+          # function returning it just returns (measured 2026-09-16). A register
+          # plan with no pieces says all three at once (#stack_eightbytes gives
+          # it no room, and IR::Generator#hidden_result? asks for no pointer).
+          return AggregatePlan.new(mode: :registers, pieces: [], align16: false) if empty_aggregate?(type)
+
           return AggregatePlan.new(mode: :memory, pieces: CallConvention.memory_pieces(size), align16: align16,
                                    stack_alignment: stack_alignment)
         end
@@ -247,6 +269,22 @@ module Rubycc
         Placer.new(self)
       end
 
+      # An aggregate with no named member takes no room in the stack argument
+      # area at all, however large it is. gcc 13.3 does this to every shape a
+      # program cannot name a field of — `struct { int : 8; }`, that struct as
+      # a member of another, `union { int : 8; }`, an array of them, and one
+      # over-aligned to 32 bytes — while still giving it a register when one is
+      # free: measured 2026-09-16, caller and callee alike, with the argument
+      # *after* it moving up into the slot it did not take. So the register
+      # handout follows the ordinary classification (an unnamed bit-field's
+      # storage is INTEGER like any other bit-field's) and only the memory
+      # footprint is zero, which is the discontinuity this override carries.
+      # AAPCS64 has no such rule — aarch64 gcc stores the byte and steps a whole
+      # slot (same measurement) — so it stays out of CallConvention.
+      def stack_eightbytes(type)
+        empty_aggregate?(type) ? 0 : super
+      end
+
       # psABI 3.2.3: `long double` is the 80-bit x87 extended format, classified
       # X87 (its low eightbyte) and X87UP (its high one). Neither class has a
       # register to be handed out in an argument list, so the value always
@@ -262,6 +300,24 @@ module Rubycc
       end
 
       private
+
+      # Whether `type` declares no member a program could name a field of: an
+      # aggregate whose every member is itself one (a struct or union declaring
+      # nothing but unnamed bit-fields has no members at all, so it is one), or
+      # an array of such an element. A named bit-field, a scalar or a pointer
+      # anywhere inside settles it the other way, and so does an array of
+      # unknown length (a flexible array member, which this subset refuses to
+      # pass by value anyway). Unnamed bit-fields are deliberately *not*
+      # consulted: they are storage the classification counts, but no member.
+      def empty_aggregate?(type)
+        if type.struct?
+          type.members.all? { |m| !m.bitfield? && empty_aggregate?(m.type) }
+        elsif type.array?
+          !type.length.nil? && (type.length.zero? || empty_aggregate?(type.element))
+        else
+          false
+        end
+      end
 
       # Whether any scalar field of `type`, placed at absolute byte offset
       # `base`, sits on an offset that does not satisfy its own alignment — the
@@ -292,10 +348,20 @@ module Rubycc
         if type.struct?
           type.members.each do |m|
             if m.bitfield?
-              classify_bitfield(eightbytes, base, m)
+              classify_bitfield(eightbytes, base, m.bit_offset, m.bit_width)
             else
               classify_eightbytes(eightbytes, m.type, base + m.offset)
             end
+          end
+          # An unnamed bit-field names nothing but occupies its bits, so the
+          # eightbytes it reaches hold a field and are classed INTEGER like any
+          # other bit-field's. That is what keeps it apart from padding, which
+          # #aggregate_plan leaves NO_CLASS: gcc 13.3 passes `struct { float f;
+          # int : 8; }` in rdi and `struct { int : 8; }` in edi, where an
+          # eightbyte of pure padding gets no register at all (measured
+          # 2026-09-16).
+          type.unnamed_bitfields.each do |bf|
+            classify_bitfield(eightbytes, base, bf.bit_offset, bf.bit_width)
           end
         elsif type.array?
           type.length.times { |i| classify_eightbytes(eightbytes, type.element, base + i * type.element.size) }
@@ -311,15 +377,15 @@ module Rubycc
         end
       end
 
-      # Folds a bit-field member into the eightbytes its bits span. Every
-      # bit-field type in this subset is an integer type, so the field
+      # Folds one bit-field — named or not — into the eightbytes its bits span.
+      # Every bit-field type in this subset is an integer type, so the field
       # contributes INTEGER to each eightbyte it touches (a field wide enough, or
       # placed so, that it straddles an eightbyte boundary marks both). `base` is
-      # the enclosing aggregate's byte offset and the member's `bit_offset` its
-      # bit position within that aggregate.
-      def classify_bitfield(eightbytes, base, member)
-        first_bit = base * 8 + member.bit_offset
-        last_bit = first_bit + member.bit_width - 1
+      # the enclosing aggregate's byte offset and `bit_offset` the field's bit
+      # position within that aggregate.
+      def classify_bitfield(eightbytes, base, bit_offset, bit_width)
+        first_bit = base * 8 + bit_offset
+        last_bit = first_bit + bit_width - 1
         (first_bit / 64..last_bit / 64).each do |index|
           eightbytes[index] = merge_class(eightbytes[index], :integer)
         end
@@ -522,8 +588,19 @@ module Rubycc
 
       # The [element_size, count] of an aggregate's members, or nil when they
       # disagree (or when there are none, an aggregate C cannot form anyway).
+      #
+      # An unnamed bit-field disqualifies the aggregate exactly as a named one
+      # does: it is storage of an integer type, so nothing built around it is
+      # homogeneously floating. Without this an aggregate whose unnamed
+      # bit-field hides under a float member's own size would look like an HFA —
+      # gcc 13.3 passes `union { double d; int : 8; }` in x0 and
+      # `union { float f; int : 8; }` in w0, never in a vector register
+      # (measured 2026-09-16). A zero-width bit-field records no storage and so
+      # does not disqualify anything, which is gcc's choice too: it passes
+      # `struct { float a; int : 0; float b; }` in s0/s1 (same measurement).
       def homogeneous_members(type)
         return nil if type.members.nil? || type.members.empty?
+        return nil unless type.unnamed_bitfields.empty?
 
         size = nil
         count = 0

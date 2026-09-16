@@ -1264,13 +1264,22 @@ module Rubycc
       # value travels as an ordinary pointer to a copy, which is all the
       # register files see of it).
       def abi_request(type, plan)
-        eightbytes = (type.size + 7) / 8
+        eightbytes = @convention.stack_eightbytes(type)
         # A scalar is never 16-byte aligned in this subset (the widest is an
         # 8-byte double or long), and a by-reference aggregate travels as a plain
         # 8-byte pointer, so only a register/memory aggregate carries alignment —
         # from its plan, where the convention worked it out.
         return ArgumentRequest.new(kinds: [argument_kind(type)], align16: false, mem_eightbytes: eightbytes) if plan.nil?
         return ArgumentRequest.new(kinds: [:gp], align16: false, mem_eightbytes: 1) if plan.mode == :by_reference
+        # An aggregate that occupies no stack bytes asks for no stack boundary
+        # either: there is nothing to align, so it must not push a following
+        # argument up a slot. `struct { int : 8; } __attribute__((aligned(16)))`
+        # is the shape where the two rules meet — 16-byte aligned, but with no
+        # named member, so gcc gives it neither room nor padding (measured
+        # 2026-09-16).
+        if eightbytes.zero?
+          return ArgumentRequest.new(kinds: plan.pieces.map(&:kind), align16: false, mem_eightbytes: 0)
+        end
 
         ArgumentRequest.new(kinds: plan.pieces.map(&:kind), align16: plan.align16, mem_eightbytes: eightbytes,
                             stack_alignment: plan.stack_alignment)
@@ -1283,6 +1292,11 @@ module Rubycc
       # aarch64 HFA that runs out of vector registers is packed into the stack
       # area, not spread one member per slot). A by-reference aggregate is one
       # pointer either way, and a scalar one slot carrying its own value.
+      #
+      # How many eightbytes a spilled aggregate occupies is the convention's to
+      # say (CallConvention#stack_eightbytes), not ceil(size/8) read off the
+      # type: System V gives an aggregate with no named member none at all, and
+      # such an argument then travels as no piece whatsoever.
       def placed_pieces(type, plan, placement, pad_gp = 0, pad_stack = 0)
         data =
           if plan.nil?
@@ -1291,7 +1305,7 @@ module Rubycc
           elsif plan.mode == :by_reference
             [AbiPiece.new(offset: 0, size: 8, kind: placement == :stack ? :mem : :gp)]
           elsif placement == :stack
-            CallConvention.memory_pieces(type.size)
+            CallConvention.memory_pieces(8 * @convention.stack_eightbytes(type))
           else
             plan.pieces
           end
@@ -2570,17 +2584,24 @@ if plan.mode == :memory || plan.pieces.empty?
       # address is that pointer — first rounded up to the aggregate's
       # `stack_alignment` when that is past the area's own eight (16 for a
       # 16-byte aligned aggregate on either convention, 32 or 64 for an
-      # over-aligned System V MEMORY one) — and the pointer then steps past
-      # ceil(size/8) eightbytes. The rounding is of the pointer itself, which
+      # over-aligned System V MEMORY one) — and the pointer then steps past the
+      # eightbytes the convention says the aggregate occupies there, which is
+      # ceil(size/8) for all but the System V aggregate with no named member (no
+      # room at all, so the pointer does not move and the next argument is read
+      # from where this one was). The rounding is of the pointer itself, which
       # is only right because a caller keeps the whole area aligned that far
       # (see SystemVAMD64Convention::Placer#area_alignment).
       def take_from_stack_area(ap, disp, type, stack_alignment, result_addr)
+        eightbytes = @convention.stack_eightbytes(type)
         field = offset_address(ap, disp)
         addr = new_vreg
         emit(:load, dst: addr, a: field, size: 8)
-        addr = align_up(addr, stack_alignment, size: 8) if stack_alignment > 8
+        # A zero-footprint aggregate is not rounded up either: the caller left
+        # the area exactly as it was, so rounding the pointer would step over an
+        # argument that is really there.
+        addr = align_up(addr, stack_alignment, size: 8) if stack_alignment > 8 && eightbytes.positive?
         emit(:copy, dst: result_addr, a: addr)
-        emit(:store, a: field, b: bump(addr, round_up_to_eightbyte(type.size), size: 8), size: 8)
+        emit(:store, a: field, b: bump(addr, 8 * eightbytes, size: 8), size: 8)
       end
 
       # A vreg holding `value` rounded up to a multiple of `alignment` (a power
