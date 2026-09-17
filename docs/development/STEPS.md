@@ -17883,3 +17883,135 @@ iodine は AT(`typeof`、方針未決)、amalgalite は BT(関数を `void *` �
 実測では実害が出ていない(公開ヘッダはどれも `bits/wordsize.h` を直接引くので 64 が戻る。`struct utmpx` / `struct statvfs` / `struct timex` の
 大きさとオフセットが gcc と一致することを 2026-09-18 に確認した)。`<sys/cdefs.h>` だけを含んで `__WORDSIZE` を読む形でしか出ないので、
 実際に踏む例が出てから起票する。
+
+## glibc-alloca-without-gnuc-1 — libc の名前のままの `alloca` を組み込みとして呼び出し位置で認識する(GAPS BO)
+
+### 原因
+
+**glibc 本体の `<alloca.h>` を読む経路では、`alloca(n)` の呼び出しがリンクできなかった。**
+2026-09-18 にこのホスト(WSL2 / gcc 13.3 / glibc 2.39 / クロス gcc 13)で測った事実:
+
+- glibc の `/usr/include/alloca.h` は `extern void *alloca (size_t) __THROW;` を宣言した後、
+  **`#ifdef __GNUC__` のときだけ** `#define alloca(size) __builtin_alloca (size)` を置く。
+  rubycc は `__GNUC__` を定義しない(DESIGN R7)ので、マクロは付かず**名前のままの呼び出し**が残る
+- `alloca` という名前のシンボルはどの libc にも無い。残った呼び出しはリンカまで届く:
+  - x86-64: `rubycc -nostdinc -I<同梱 include> -I/usr/include/x86_64-linux-gnu -I/usr/include`
+    → `rubycc: error: undefined reference to 'alloca'`
+  - aarch64: `rubycc -target aarch64 -nostdinc -I<同梱 include> -I/usr/aarch64-linux-gnu/include -c`
+    → 生成した `.o` の未定義シンボルが `alloca` と `printf`。`aarch64-linux-gnu-gcc` でリンクすると
+    `undefined reference to 'alloca'`
+
+**どの探索順でそうなるか**も測った。既定の探索順(`Preprocessor::DEFAULT_SYSTEM_INCLUDE_PATHS`)は
+同梱 freestanding → 同梱 libc(arch 層 → 共通層)→ ホスト libc の順で、**同梱の `<alloca.h>` が先に当たる**。
+同梱ヘッダはマクロを無条件に置くので、この経路は最初から通っていた(`test_header_abi.rb` の
+`STDLIB_GNU`/`ALLOCA` が確認している)。しかも `-I/usr/include` を明示しても
+`#reject_system_duplicate_paths` が既定路と重複する `-I` を落とすため、**既定路のままでは
+glibc 本体の `<alloca.h>` には届かない**(実測: `-I/usr/include/x86_64-linux-gnu -I/usr/include`
+付きでも同梱ヘッダが読まれ、`__builtin_alloca` に展開された)。glibc 本体を読むのは
+**同梱 libc 層を外した経路**だけである:
+
+- `-nostdinc`(`system_includes: false`)+ libc のヘッダディレクトリを `-I` で与えた構成
+- そのうち実際にテストで走るのが aarch64 の例題・c-testsuite 実行系
+  (`TestCSuiteAArch64::CROSS_SYSTEM_INCLUDE_PATHS` = 同梱 freestanding +
+  `/usr/aarch64-linux-gnu/include`)。起票はここで見つかっている
+
+**gcc の振る舞い**(同じ日、`-std=gnu17` = 本プロジェクトの対照標準 `REFERENCE_STD_FLAG`):
+gcc は `alloca` を**その名前のまま組み込み関数として知っている**。宣言だけが見えている翻訳単位でも
+呼び出しをその場で展開し、`alloca` の再配置を残さない。`-U__GNUC__` でマクロを消しても同じ。
+一方 `-std=c17`(厳格 ISO、GNU のライブラリ組み込みを引っ込める)では呼び出しを残し、
+**gcc 自身も `undefined reference to 'alloca'` でリンクに失敗する**。つまりこれは
+「gcc は魔法でリンクできる」話ではなく、**GNU モードの組み込み関数**の話である。
+
+### 対処
+
+**`alloca` を呼び出し位置(`Ir::Generator#gen_call`)で組み込みとして認識する**ことにした。
+`__builtin_alloca` と同じ `:alloca` 命令に落とすので、バックエンド・IR の契約は一切変わらない。
+
+- `ALLOCA_BUILTIN_NAME`(= `"alloca"`)を `BUILTIN_LIBCALLS` の隣に置き、
+  `#alloca_builtin_call?` が真のとき `#gen_alloca_by_name` が `:alloca` を emit する
+- **字句のキーワードにはしない**。同梱ヘッダも glibc 本体も `void *alloca(size_t)` を*宣言*しており、
+  キーワードではその宣言自体が構文エラーになる。呼び出し位置での認識なら、
+  `alloca` という名前の変数が隠す規則(`lookup_variable` が既に見ている)もそのまま効く
+- **どの宣言を組み込みと見なすか**は gcc を 10 通り測って合わせた(下表)。合わない形は
+  素通りさせて通常の直接呼び出しにする ⇒ **gcc と同じ未定義参照**になる。引数の個数が 1 でない形も
+  素通りさせ、既存の arity 検査が gcc と同じく可視の宣言に対して診断する
+- 引数は**可視の宣言の仮引数型**へ変換してから size_t へ変換する。式の型は**宣言の戻り値型**
+  (gcc も宣言の型を使う)で、`#call_return_type` が同じノードに対して返す型と一致する
+
+#### 採らなかった案
+
+- **`__GNUC__` を定義する** — R7 に反する(GNU 拡張の実装面積が一気に増える)
+- **同梱の `<alloca.h>` をその経路でも勝たせる** — 当の経路は「同梱 libc 層を外して libc 本体の
+  ヘッダで測る」ことが目的(aarch64 の例題実行系)。勝たせると測定の意味が消える。
+  そもそも自前で `void *alloca(size_t);` と宣言しただけのコード(autoconf の分岐)は救えない
+- **`alloca` の実体をランタイムに持つ** — 呼び出し規約上、返した領域は戻った瞬間に無効で、
+  関数として正しく実装できない(gcc も持っていない)
+- **字句のキーワードにする** — 上記のとおりヘッダの宣言が通らなくなる
+
+### 測定行列(2026-09-18、gcc 13.3 `-std=gnu17` / rubycc は glibc 本体のヘッダ経路)
+
+`alloca` の宣言を変えて、組み込みに展開されるか(= リンクできて `6 7` を印字するか)を見た。
+
+| 宣言 | gcc | rubycc(対処後) |
+|---|---|---|
+| `void *alloca(unsigned long)`(glibc・同梱ヘッダの形) | 組み込み | 組み込み |
+| `void *alloca(long)` | 組み込み | 組み込み |
+| `void *alloca(unsigned long long)` | 組み込み | 組み込み |
+| `typedef unsigned long my_size; void *alloca(my_size)` | 組み込み | 組み込み |
+| `char *alloca(unsigned long)` | 組み込み(無警告。戻り値型は宣言のまま) | 組み込み |
+| `void *alloca()`(プロトタイプ無し) | 組み込み(引数型の警告のみ) | 組み込み |
+| `char *alloca()`(プロトタイプ無し) | **通常の呼び出し** → 未定義参照 | 通常の呼び出し → 未定義参照 |
+| `void *alloca(unsigned int)` | **通常の呼び出し** → 未定義参照 | 通常の呼び出し → 未定義参照 |
+| `void *alloca(unsigned long, ...)` | **通常の呼び出し** → 未定義参照 | 通常の呼び出し → 未定義参照 |
+| `long alloca(unsigned long)` | **通常の呼び出し** → 未定義参照 | 通常の呼び出し → 未定義参照 |
+
+読み取った規則(そのまま `#alloca_builtin_call?` に書いた):**戻り値がポインタ**であり、かつ
+**プロトタイプがあれば非可変長の整数仮引数 1 個で size_t と同じ幅**、**プロトタイプが無ければ
+戻り値が `void *`**。プロトタイプ有りでは戻り値のポインタ先を問わない(`char *` も採る)のに、
+無しでは `void *` でないと採らない、という非対称も実測どおりに写した。
+
+同じ日に測った呼び出し側の 4 形(いずれも gcc と一致):
+
+- `int alloca = 5;` — 変数が組み込みを隠す(両者 5 を印字)
+- `alloca(16, 2)` — 両者とも診断(rubycc は `too many arguments to function 'alloca'`)
+- 自前で `void *alloca(size_t)` を**定義**した翻訳単位 — gcc も rubycc も呼び出しは**組み込み**になり、
+  定義は呼ばれない
+- `void *(*f)(size_t) = alloca;`(アドレスを取る) — gcc も rubycc も未定義参照。
+  組み込みになるのは**直接の呼び出しだけ**
+
+### テスト
+
+- `test/test_glibc_alloca_without_gnuc.rb`(新設、5 ケース・6 アサーション)。
+  rubycc 側を「同梱 freestanding + ホスト libc のディレクトリ、`system_includes: false`」で
+  コンパイルする ⇒ aarch64 実行系と同じ形の探索順をホスト arch で再現する。対照は素の gcc。
+  ヘッダ経由・プロトタイプ無し・gcc が組み込みと見なさない形(両者とも未定義参照)・
+  変数による遮蔽・**同梱ヘッダ経路の回帰**(既定の探索順)の 5 つ。
+  対処前は 2 failures(ヘッダ経由とプロトタイプ無しが `:unresolved`)、対処後 0 failures
+- `examples/m6/glibc_alloca_without_gnuc_1_stack_blocks.c`(新設)。
+  実行時サイズのブロック・同時に生きる 2 ブロック・ループ内で毎回確保して関数の出口で
+  まとめて解放されるブロック・別関数へ渡すブロック。**同じファイルが両方の経路を通る**
+  (`test_examples.rb` は同梱ヘッダ、`test_examples_aarch64.rb` はクロス sysroot の glibc 本体)。
+  対処前は aarch64 側がリンクできない(`undefined reference to 'alloca'` が 5 箇所)
+- 実走(2026-09-18、このホスト): 新テスト 5 runs / 0 failures、`test_header_abi.rb` 130 runs
+  (`STDLIB_GNU`・`ALLOCA` を含む)、`test_examples.rb` 75 runs、`test_examples_aarch64.rb` 594 runs、
+  `test_c_suite.rb` 223 runs、`test_c_suite_aarch64.rb` 444 runs、
+  `grep -rl alloca test/` で挙がる 19 ファイル(parser / preprocessor / gcc_builtins / driver /
+  elf_writer / offsetof / execution_harness / flexible_array_member / x86_64_backend /
+  aarch64_backend / aarch64_execution / aarch64_float_execution / overaligned_automatic_object /
+  sysv_over_aligned_aggregate_stack / audit_bundled_headers / bundled_headers_coverage /
+  host_header_shim / shared_object / aarch64_shared_object)すべて 0 failures
+
+### 残された観点
+
+- **`__has_builtin(alloca)` は 0 のまま**。gcc は 1 を返す(2026-09-18 実測)。1 を名乗るには
+  「宣言が無くても呼べる」ことまで揃える必要があり(gcc は暗黙宣言の警告だけで組み込みに展開する)、
+  rubycc は暗黙の関数宣言を一律にエラーにしている。`builtin_signatures` の種(memcpy / strlen と
+  同じ `builtin_seed`)を `alloca` にも置けば揃うが、その場合
+  `extern void *alloca(unsigned int);` のような**宣言の食い違いが警告ではなくエラーになり**、
+  上の測定行列で合わせたばかりの「gcc が組み込みと見なさない形は通常の呼び出しにする」が壊れる。
+  今回は**呼び出し位置の認識だけ**に留め、`KNOWN_BUILTINS` は触っていない
+- 組み込みになるのは**直接の呼び出しだけ**で、アドレスを取る形は未定義参照のまま(gcc と同じ)。
+  実在のコードで `alloca` のアドレスを取る例は見ていない
+- GAPS BI(このホストの aarch64 クロス sysroot が `/usr/aarch64-linux-gnu/include` にあり、
+  rubycc の aarch64 既定探索路が期待する `/usr/include/aarch64-linux-gnu` ではない)は**未解決のまま**。
+  本ステップはその経路を**直さずに**、そこで壊れていた `alloca` だけを直している

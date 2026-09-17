@@ -4440,10 +4440,109 @@ if plan.mode == :memory || plan.pieces.empty?
           unless @signatures.key?(callee.name)
             error_at(node.token, "implicit declaration of function '#{callee.name}'")
           end
+          sig = @signatures.fetch(callee.name)
+          return gen_alloca_by_name(node, sig) if alloca_builtin_call?(callee.name, node, sig)
+
           gen_direct_call(node, callee.name)
         else
           gen_indirect_call(node)
         end
+      end
+
+      # Whether this direct call is a call of the stack allocator under its libc
+      # name (ALLOCA_BUILTIN_NAME) rather than a call of an ordinary function
+      # that happens to be spelled that way.
+      #
+      # The test is the one gcc applies, measured 2026-09-18 on gcc 13.3
+      # -std=gnu17 by declaring `alloca` ten ways and looking for an `alloca`
+      # relocation in the object:
+      #
+      #   * a prototype is taken when it returns a pointer and has exactly one
+      #     non-variadic integer parameter as wide as size_t. Both halves are
+      #     looser than type compatibility and were measured, not assumed:
+      #     "char *alloca(unsigned long)" is taken (silently, though char * is
+      #     not the builtin's void *), and so are `long` and `unsigned long
+      #     long` parameters, while a narrower `unsigned int` one is not;
+      #   * a declaration with no prototype is taken only as "void *alloca();".
+      #     The same declaration returning char * is not -- the one place gcc
+      #     does insist on the builtin's own return type.
+      #
+      # Everything else gcc declines, warning "conflicting types for built-in
+      # function" and emitting the call, which then fails to link. Declining
+      # here means the same thing: the call falls through to the ordinary direct
+      # call path and produces the very undefined reference gcc produces, so
+      # rubycc and gcc agree on all ten shapes rather than on the common ones.
+      #
+      # An argument count other than one falls through too, so the existing
+      # arity check reports it against the visible declaration -- what gcc does
+      # with "alloca(16, 2)" (measured the same day: "too many arguments to
+      # function 'alloca'", nothing about a builtin).
+      #
+      # The caller has already established that no variable of the name is in
+      # scope, which is gcc's shadowing rule as well: an object named `alloca`
+      # hides the allocator (measured the same day -- "int alloca = 5;" compiles
+      # and prints 5, under both compilers).
+      def alloca_builtin_call?(name, node, sig)
+        return false unless name == ALLOCA_BUILTIN_NAME && node.args.size == 1
+
+        return_type = sig[:return_type]
+        return false unless return_type.pointer?
+        return return_type.target.void? unless sig[:prototyped]
+
+        !sig[:variadic] && sig[:param_types].size == 1 &&
+          sig[:param_types].first.integer? && sig[:param_types].first.size == Type::ULong.size
+      end
+
+      # Lowers "alloca(n)" — the allocator called under its libc name — into the
+      # very :alloca op __builtin_alloca lowers to (#gen_builtin_alloca).
+      #
+      # glibc's own <alloca.h> maps the name onto __builtin_alloca only under
+      # __GNUC__, which rubycc does not define (DESIGN R7), so a translation unit
+      # that reads glibc's header instead of the bundled one (any include order
+      # that reaches the host or sysroot /usr/include before the bundled libc
+      # layer — the aarch64 cross sysroot the example tests compile against is
+      # one) keeps a plain call of a function named `alloca`. No libc defines
+      # such a symbol: the call reaches the linker as "undefined reference to
+      # `alloca'" (measured 2026-09-18 on both targets). gcc does not emit that
+      # call either — it knows the libc name as a builtin of its own and expands
+      # it in place with only the extern declaration visible (measured the same
+      # day: gcc 13.3 -std=gnu17 leaves no `alloca` relocation; strict -std=c17,
+      # which withdraws the GNU library builtins, does emit one and then fails to
+      # link exactly as rubycc did). Following gcc's GNU mode is following the
+      # standard every differential here compares against
+      # (ExecutionHelper::REFERENCE_STD_FLAG).
+      #
+      # The argument takes the conversion the *visible declaration* asks for
+      # before the op's own conversion to size_t, so a prototype that spells the
+      # count signed converts the way it says it does; under an unprototyped
+      # declaration there is no parameter type to convert to, so the argument
+      # goes to size_t from its own type, and a non-integer one is diagnosed
+      # rather than passed on (gcc warns and converts instead — a program that
+      # asks an unprototyped allocator for a pointer's worth of bytes is not one
+      # to guess about). The result carries the declared return type, which is
+      # what gcc gives the expression (measured 2026-09-18: with "extern char
+      # *alloca(unsigned long);" visible, _Generic picks the char * arm) and what
+      # #call_return_type already reports for the same node.
+      def gen_alloca_by_name(node, sig)
+        arg = node.args.first
+        vreg, arg_type = gen_value(arg)
+        size =
+          if sig[:prototyped]
+            param_type = sig[:param_types].first
+            unless compatible_assignment?(param_type, arg, arg_type)
+              error_at(node.token, "incompatible type for argument 1 of '#{ALLOCA_BUILTIN_NAME}'")
+            end
+            converted = convert_for_assignment(vreg, arg_type, param_type, token: node.token)
+            convert(converted, from: param_type, to: Type::ULong, token: node.token)
+          else
+            unless arg_type.integer?
+              error_at(arg.token, "argument to '#{ALLOCA_BUILTIN_NAME}' is not of integer type")
+            end
+            convert(vreg, from: arg_type, to: Type::ULong, token: node.token)
+          end
+        dst = new_vreg
+        emit(:alloca, dst: dst, a: size)
+        [dst, sig[:return_type]]
       end
 
       # A direct call to the named function, checked against `sig` — the
@@ -6772,6 +6871,15 @@ if plan.mode == :memory || plan.pieces.empty?
       # folding (Front::Parser#parse_builtin_memcpy, #parse_builtin_strlen): the
       # callee name the rewritten call keeps -> the libc function it calls.
       BUILTIN_LIBCALLS = { "__builtin_memcpy" => "memcpy", "__builtin_strlen" => "strlen" }.freeze
+
+      # The libc name of the stack allocator, which is a builtin under its own
+      # name as well as under __builtin_alloca: a call of it is lowered in place
+      # (#gen_alloca_by_name) rather than left for a linker that has no such
+      # symbol to resolve. It is not a keyword — both the bundled <alloca.h> and
+      # glibc's declare `void *alloca(size_t)`, which a keyword could not be —
+      # so the recognition happens at the call site, where a variable of the
+      # name still shadows it (#alloca_builtin_call?).
+      ALLOCA_BUILTIN_NAME = "alloca"
 
       # gcc's fixed prototypes for the libc functions behind BUILTIN_LIBCALLS,
       # keyed by the libc name and each marked `builtin_seed: true`. They serve
