@@ -11,6 +11,12 @@
 #ifndef _RUBYCC_MATH_H
 #define _RUBYCC_MATH_H
 
+/* glibc's own <features.h> (and the <sys/cdefs.h> it pulls in) is visible after
+   a bare include of glibc's same-name header, and the glibc headers that
+   include this one lean on that for __BEGIN_DECLS / __THROW (measured
+   2026-09-18, glibc-public-headers-mixed-1). */
+#include <features.h>
+
 /* Special magnitudes. rubycc does not implement gcc's __builtin_huge_val/inf/nan
    family, so these use the classic overflow-literal and 0/0 spellings, which
    both toolchains fold to the same IEEE 754 infinity / quiet-NaN bit patterns

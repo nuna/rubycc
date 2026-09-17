@@ -2,7 +2,7 @@
 
 > **Generated artifact.** `ruby tools/audit_bundled_headers.rb --output docs/development/BUNDLED-HEADERS-COVERAGE.md` で再生成する。手で編集しない。
 
-測定日: 2026-09-16。オラクル:
+測定日: 2026-09-18。オラクル:
 - x86_64: `gcc`(gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0、glibc 2.39)
 - aarch64: `aarch64-linux-gnu-gcc`(aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0、glibc 2.39)
 
@@ -66,9 +66,9 @@
 | [`sys/stat.h`](#sysstath) | 56 | 56 | 56 | 56 | — | 1 |
 | [`sys/statfs.h`](#sysstatfsh) | 3 | 3 | 3 | 3 | — | — |
 | [`sys/syscall.h`](#syssyscallh) | 312 | 312 | 256 | 256 | — | — |
-| [`sys/time.h`](#systimeh) | 6 | 7 | 6 | 7 | `sys/select.h` | 1 |
+| [`sys/time.h`](#systimeh) | 6 | 6 | 6 | 6 | — | 1 |
 | [`sys/timerfd.h`](#systimerfdh) | 0 | 1 | 0 | 1 | `stddef.h` | — |
-| [`sys/types.h`](#systypesh) | 15 | 0 | 15 | 0 | `endian.h` `stddef.h` `sys/select.h` | 4 |
+| [`sys/types.h`](#systypesh) | 15 | 0 | 15 | 0 | `stddef.h` | 4 |
 | [`sys/uio.h`](#sysuioh) | 16 | 20 | 16 | 20 | `endian.h` `stddef.h` `sys/select.h` `sys/types.h` | 1 |
 | [`sys/un.h`](#sysunh) | 1 | 4 | 1 | 4 | `stddef.h` `string.h` `strings.h` | — |
 | [`sys/utsname.h`](#sysutsnameh) | 1 | 1 | 1 | 1 | — | — |
@@ -528,7 +528,7 @@
 - 不足(gnu): **`RLIM64_INFINITY`** **`RUSAGE_LWP`** **`getrlimit64`** **`prlimit`** **`prlimit64`** **`rlim64_t`** **`setrlimit64`** **`struct rlimit64`**
 - 予約名の型: `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clock_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsid_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__key_t` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__pid_t` `__priority_which_t` `__quad_t` `__rlim64_t` `__rlim_t` `__rlimit_resource_t` `__rusage_who_t` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uid_t` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t` `enum __priority_which` `enum __rlimit_resource` `enum __rusage_who`
 - ガード `__id_t_defined` → `id_t`: absent
-- ガード `__rusage_defined` → `struct rusage`: unguarded(<sys/resource.h>, direct: x86_64-linux-gnu/bits/types/struct_rusage.h:33:1: error: redefinition of 'struct rusage'; direct, <sys/resource.h>: libc/sys/resource.h:59:1: error: redefinition of 'struct rusage')
+- ガード `__rusage_defined` → `struct rusage`: unguarded(<sys/resource.h>, direct: x86_64-linux-gnu/bits/types/struct_rusage.h:33:1: error: redefinition of 'struct rusage'; direct, <sys/resource.h>: libc/sys/resource.h:65:1: error: redefinition of 'struct rusage')
 - ガード `__timeval_defined` → `struct timeval`: honoured(<sys/resource.h>, <aio.h>: ok; <aio.h>, <sys/resource.h>: ok; <sys/resource.h>, <fts.h>: ok; <fts.h>, <sys/resource.h>: ok; <sys/resource.h>, <ftw.h>: ok; <ftw.h>, <sys/resource.h>: ok)
 - 余剰: `suseconds_t` `time_t`
 
@@ -601,12 +601,11 @@
 
 ### sys/time.h
 
-**x86_64 / aarch64** — glibc の `<sys/time.h>` の公開名 24、不足 6、未記載 7
+**x86_64 / aarch64** — glibc の `<sys/time.h>` の公開名 24、不足 6、未記載 6
 
 - 不足(default): **`adjtime`** **`futimes`** **`lutimes`**
 - 不足(gnu): **`TIMESPEC_TO_TIMEVAL`** **`TIMEVAL_TO_TIMESPEC`** **`futimesat`**
-- 取り込み不足: `sys/select.h`
-- 予約名の型: `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clock_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsid_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__itimer_which_t` `__key_t` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__pid_t` `__quad_t` `__rlim64_t` `__rlim_t` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uid_t` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t` `enum __itimer_which`
+- 予約名の型: `__fsid_t` `__itimer_which_t` `__sig_atomic_t` `enum __itimer_which`
 - ガード `__suseconds_t_defined` → `suseconds_t`: self
 - ガード `__time_t_defined` → `time_t`: unguarded(<sys/time.h>, <aio.h>: ok; <aio.h>, <sys/time.h>: ok; <sys/time.h>, <fts.h>: ok; <fts.h>, <sys/time.h>: ok; <sys/time.h>, <ftw.h>: ok; <ftw.h>, <sys/time.h>: ok)
 - ガード `__timeval_defined` → `struct timeval`: honoured(<sys/time.h>, <aio.h>: ok; <aio.h>, <sys/time.h>: ok; <sys/time.h>, <fts.h>: ok; <fts.h>, <sys/time.h>: ok; <sys/time.h>, <ftw.h>: ok; <ftw.h>, <sys/time.h>: ok)
@@ -623,7 +622,7 @@
 
 - 不足(posix): `pthread_attr_t` `pthread_barrier_t` `pthread_barrierattr_t` `pthread_cond_t` `pthread_condattr_t` `pthread_key_t` `pthread_mutex_t` `pthread_mutexattr_t` `pthread_once_t` `pthread_rwlock_t` `pthread_rwlockattr_t` `pthread_spinlock_t` `pthread_t` `union pthread_attr_t`
 - 不足(default): `fsid_t`
-- 取り込み不足: `endian.h` `stddef.h` `sys/select.h`
+- 取り込み不足: `stddef.h`
 - 予約名の型: `__atomic_wide_counter` `__fsid_t` `__once_flag` `__pthread_list_t` `__pthread_slist_t` `__sig_atomic_t` `__thrd_t` `__tss_t` `struct __pthread_cond_s` `struct __pthread_internal_list` `struct __pthread_internal_slist` `struct __pthread_mutex_s` `struct __pthread_rwlock_arch_t`
 - ガード `__blkcnt_t_defined` → `blkcnt_t`: self
 - ガード `__blksize_t_defined` → `blksize_t`: self
@@ -716,9 +715,9 @@
 - 予約名の型: `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clock_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsid_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__key_t` `__locale_t` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__pid_t` `__quad_t` `__rlim64_t` `__rlim_t` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uid_t` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t` `struct __locale_struct`
 - ガード `__clock_t_defined` → `clock_t`: unguarded(<time.h>, <aio.h>: ok; <aio.h>, <time.h>: ok; <time.h>, <fts.h>: ok; <fts.h>, <time.h>: ok; <time.h>, <ftw.h>: ok; <ftw.h>, <time.h>: ok)
 - ガード `__clockid_t_defined` → `clockid_t`: unguarded(<time.h>, <aio.h>: ok; <aio.h>, <time.h>: ok; <time.h>, <fts.h>: ok; <fts.h>, <time.h>: ok; <time.h>, <ftw.h>: ok; <ftw.h>, <time.h>: ok)
-- ガード `__itimerspec_defined` → `struct itimerspec`: unguarded(<time.h>, <threads.h>: ok; <threads.h>, <time.h>: ok; <time.h>, <thread_db.h>: thread_db.h:281:3: error: expected type specifier; <thread_db.h>, <time.h>: thread_db.h:281:3: error: expected type specifier)
+- ガード `__itimerspec_defined` → `struct itimerspec`: unguarded(<time.h>, <threads.h>: ok; <threads.h>, <time.h>: ok; <time.h>, <thread_db.h>: ok; <thread_db.h>, <time.h>: ok)
 - ガード `__pid_t_defined` → `pid_t`: self
-- ガード `__struct_tm_defined` → `struct tm`: honoured(<time.h>, <threads.h>: ok; <threads.h>, <time.h>: ok; <time.h>, <thread_db.h>: thread_db.h:281:3: error: expected type specifier; <thread_db.h>, <time.h>: thread_db.h:281:3: error: expected type specifier)
+- ガード `__struct_tm_defined` → `struct tm`: honoured(<time.h>, <threads.h>: ok; <threads.h>, <time.h>: ok; <time.h>, <thread_db.h>: ok; <thread_db.h>, <time.h>: ok)
 - ガード `__time_t_defined` → `time_t`: unguarded(<time.h>, <aio.h>: ok; <aio.h>, <time.h>: ok; <time.h>, <fts.h>: ok; <fts.h>, <time.h>: ok; <time.h>, <ftw.h>: ok; <ftw.h>, <time.h>: ok)
 - ガード `__timer_t_defined` → `timer_t`: unguarded(<time.h>, <aio.h>: ok; <aio.h>, <time.h>: ok; <time.h>, <fts.h>: ok; <fts.h>, <time.h>: ok; <time.h>, <ftw.h>: ok; <ftw.h>, <time.h>: ok)
 - ガード `__timeval_defined` → `struct timeval`: absent
@@ -765,30 +764,12 @@
 
 ## glibc 本体のヘッダとの混在(x86-64)
 
-`libc6-dev` の公開ヘッダのうち rubycc が同梱しない 186 本を、1 本ずつ `#define _GNU_SOURCE` のもとで含め、gcc と rubycc(既定の探索順 = 同梱が先、ホストの glibc が後)でコンパイルした。gcc が通し rubycc が落ちたもの23 本と、rubycc の最初のエラー。同梱ヘッダの抜けが **glibc 本体のヘッダの失敗**として現れる所(GAPS AM の `<spawn.h>`、AQ の `<net/if.h>`)を拾うための一覧で、原因が同梱ヘッダでないもの(rubycc 本体の未対応)も混ざる。
+`libc6-dev` の公開ヘッダのうち rubycc が同梱しない 186 本を、1 本ずつ `#define _GNU_SOURCE` のもとで含め、gcc と rubycc(既定の探索順 = 同梱が先、ホストの glibc が後)でコンパイルした。gcc が通し rubycc が落ちたもの5 本と、rubycc の最初のエラー。同梱ヘッダの抜けが **glibc 本体のヘッダの失敗**として現れる所(GAPS AM の `<spawn.h>`、AQ の `<net/if.h>`)を拾うための一覧で、原因が同梱ヘッダでないもの(rubycc 本体の未対応)も混ざる。
 
 | ヘッダ | rubycc の最初のエラー |
 |---|---|
-| `arpa/nameser.h` | arpa/nameser.h:398:1: error: expected type specifier |
 | `complex.h` | bits/cmathcalls.h:55:13: error: expected ';' |
-| `error.h` | bits/error.h:40:53: error: implicit declaration of function '__builtin_va_arg_pack' |
-| `glob.h` | glob.h:27:1: error: expected type specifier |
-| `net/ethernet.h` | net/ethernet.h:29:1: error: expected type specifier |
-| `net/if_arp.h` | net/if_arp.h:28:1: error: expected type specifier |
 | `netatalk/at.h` | asm/swab.h:10:2: error: non-empty inline assembly is not supported |
-| `netinet/in_systm.h` | netinet/in_systm.h:25:1: error: expected type specifier |
-| `netinet/ip.h` | netinet/ip.h:114:18: error: duplicate member 'ip_v' |
-| `netinet/ip_icmp.h` | netinet/ip_icmp.h:24:1: error: expected type specifier |
-| `netipx/ipx.h` | netipx/ipx.h:25:1: error: expected type specifier |
-| `obstack.h` | obstack.h:190:52: error: expected ';' |
-| `stdbit.h` | stdbit.h:67:25: error: extra tokens at end of #if expression |
-| `stdio_ext.h` | stdio_ext.h:42:1: error: expected type specifier |
-| `sys/eventfd.h` | sys/eventfd.h:30:1: error: expected type specifier |
-| `sys/fanotify.h` | sys/fanotify.h:25:1: error: expected type specifier |
 | `sys/platform/x86.h` | bits/platform/features.h:37:3: error: non-empty inline assembly is not supported |
-| `sys/poll.h` | sys/poll.h:55:5: error: expected ';' |
 | `sys/rseq.h` | asm/swab.h:10:2: error: non-empty inline assembly is not supported |
-| `sys/signalfd.h` | sys/signalfd.h:53:1: error: expected type specifier |
 | `tgmath.h` | tgmath.h:795:1: error: "Unsupported compiler; you cannot use <tgmath.h>" |
-| `thread_db.h` | thread_db.h:281:3: error: expected type specifier |
-| `utmpx.h` | utmpx.h:26:1: error: expected type specifier |

@@ -41,6 +41,12 @@
 #ifndef _RUBYCC_SETJMP_H
 #define _RUBYCC_SETJMP_H
 
+/* glibc's own <features.h> (and the <sys/cdefs.h> it pulls in) is visible after
+   a bare include of glibc's same-name header, and the glibc headers that
+   include this one lean on that for __BEGIN_DECLS / __THROW (measured
+   2026-09-18, glibc-public-headers-mixed-1). */
+#include <features.h>
+
 /* The opaque saved-context blocks. glibc stores the callee-saved registers,
    stack pointer and program counter (and, for sigjmp_buf, the saved signal
    mask) inside; rubycc reproduces only the measured size and alignment as an

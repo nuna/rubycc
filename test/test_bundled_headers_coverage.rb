@@ -38,10 +38,28 @@ class TestBundledHeadersCoverage < Minitest::Test
   MIXED_GLIBC_HEADERS = %w[spawn.h net/if.h utmp.h sys/procfs.h
                            aio.h mqueue.h semaphore.h sys/acct.h sys/sem.h net/if_ppp.h].freeze
 
+  # The glibc headers the mixing survey found failing under rubycc alone on
+  # 2026-09-18 (23 of the 186 it does not bundle) and that
+  # glibc-public-headers-mixed-1 fixed. Four causes, each of which a later
+  # change could bring back: the bundled headers not pulling in <features.h>,
+  # so __BEGIN_DECLS reached nothing (<net/ethernet.h> and eight more); the
+  # bundled <sys/types.h> not pulling in <endian.h>/<sys/select.h>, so
+  # <netinet/ip.h> declared every bit-field of struct ip twice and
+  # <thread_db.h> lost sigset_t; names missing from the bundled <sys/cdefs.h>
+  # (<sys/poll.h>, <stdbit.h>) or defined there without the builtin behind
+  # them (<error.h>); and gcc's predefined type-name macros being absent
+  # (<glob.h>).
+  MIXED_GLIBC_HEADERS_FIXED = %w[arpa/nameser.h error.h glob.h net/ethernet.h
+                                 net/if_arp.h netinet/in_systm.h netinet/ip.h
+                                 netinet/ip_icmp.h netipx/ipx.h obstack.h
+                                 stdbit.h stdio_ext.h sys/eventfd.h
+                                 sys/fanotify.h sys/poll.h sys/signalfd.h
+                                 thread_db.h utmpx.h].freeze
+
   def test_glibc_headers_read_over_the_bundled_ones_compile
     skip "x86-64 glibc headers not installed" unless File.exist?("/usr/include/spawn.h") && host_x86_64?
 
-    failures = MIXED_GLIBC_HEADERS.filter_map do |header|
+    failures = (MIXED_GLIBC_HEADERS + MIXED_GLIBC_HEADERS_FIXED).filter_map do |header|
       source = "#define _GNU_SOURCE 1\n#include <#{header}>\nint probe;\n"
       Rubycc::Compiler.new.compile(source, filename: "probe.c", target: "x86_64", libc: "glibc")
       nil

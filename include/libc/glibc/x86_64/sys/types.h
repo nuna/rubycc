@@ -33,8 +33,8 @@
    keeps its own copy.
    omitted: pthread_* union pthread_attr_t -- the pthreads objects, whose
    arch-specific opaque layouts live in the bundled <pthread.h>; no corpus
-   user reaches them through <sys/types.h>. omitted: <endian.h>
-   <sys/select.h> <stddef.h> -- glibc pulls these in; include them directly.
+   user reaches them through <sys/types.h>. omitted: <stddef.h> -- glibc
+   pulls this in; include it directly.
    Re-audited 2026-09-16 under audit-reserved-public-macros-1 (GAPS BX),
    which widened the diff to the reserved spellings a program writes
    (_POSIX_*, _SC_*, ioctl's _IO*, ...): glibc's <sys/types.h> owns none of
@@ -44,6 +44,23 @@
 
 #ifndef _RUBYCC_SYS_TYPES_H
 #define _RUBYCC_SYS_TYPES_H
+
+/* glibc's own <features.h> (and the <sys/cdefs.h> it pulls in) is visible after
+   a bare include of glibc's same-name header, and the glibc headers that
+   include this one lean on that for __BEGIN_DECLS / __THROW (measured
+   2026-09-18, glibc-public-headers-mixed-1). */
+#include <features.h>
+
+/* glibc's <sys/types.h> pulls in <endian.h> and <sys/select.h>, and its own
+   headers count on that: <netinet/ip.h> picks the member order of struct ip by
+   comparing __BYTE_ORDER against __LITTLE_ENDIAN and __BIG_ENDIAN, and with all
+   three absent both #if branches are taken and every bit-field is declared twice
+   (measured 2026-09-18: "duplicate member 'ip_v'",
+   glibc-public-headers-mixed-1). Both were left out here with "include them
+   directly", which holds for a program but not for a glibc header that includes
+   this file. */
+#include <endian.h>
+#include <sys/select.h>
 
 #ifndef _RUBYCC_SIZE_T
 #define _RUBYCC_SIZE_T

@@ -1163,6 +1163,44 @@ class TestPreprocessor < Minitest::Test
     assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
   end
 
+  # --- type-name predefined macros (gcc -dM spellings) -----------------------
+
+  def test_type_name_predefined_macros_expand_to_gcc_spellings
+    # glibc's headers use these where a type specifier stands (<glob.h> writes
+    # `typedef __SIZE_TYPE__ __size_t;'), so the replacement has to be gcc's own
+    # token sequence. Values are `gcc -dM -E -x c /dev/null`, 2026-09-18.
+    {
+      "__SIZE_TYPE__" => %w[long unsigned int],
+      "__PTRDIFF_TYPE__" => %w[long int],
+      "__INT8_TYPE__" => %w[signed char],
+      "__UINT64_TYPE__" => %w[long unsigned int],
+      "__INT_FAST16_TYPE__" => %w[long int],
+      "__CHAR16_TYPE__" => %w[short unsigned int]
+    }.each do |name, spelling|
+      assert_equal spelling, pp(name).reject(&:eof?).map(&:value),
+                   "#{name} should expand to gcc's exact type spelling"
+    end
+  end
+
+  def test_wchar_type_macro_follows_the_target
+    # wchar_t is signed on x86-64 and unsigned on aarch64 (measured with both
+    # gccs on 2026-09-18), and it is the only type-name macro that differs.
+    assert_equal %w[int], pp("__WCHAR_TYPE__").reject(&:eof?).map(&:value)
+
+    aarch64 = Rubycc::Preprocess::Preprocessor.new(
+      arch_macros: Rubycc::Preprocess::Preprocessor::AARCH64_ARCH_MACROS,
+      libc_arch: "aarch64"
+    )
+    assert_equal %w[unsigned int],
+                 aarch64.run("__WCHAR_TYPE__", filename: "t.c", system_includes: false)
+                        .reject(&:eof?).map(&:value)
+  end
+
+  def test_type_name_predefined_macro_is_undefinable
+    source = "#undef __SIZE_TYPE__\n#ifdef __SIZE_TYPE__\nint yes;\n#else\nint no;\n#endif"
+    assert_equal ["int", "no", ";"], pp(source).reject(&:eof?).map(&:value)
+  end
+
   def test_byte_order_macros_expand_to_gcc_values
     # __BYTE_ORDER__ and __FLOAT_WORD_ORDER__ carry gcc's replacement text — a
     # reference to __ORDER_LITTLE_ENDIAN__, not the number — so plain expansion

@@ -17757,3 +17757,129 @@ iodine は AT(`typeof`、方針未決)、amalgalite は BT(関数を `void *` �
 測り直していない。
 
 **検証**: データと文書だけの変更で、`rake test` はブランチ全体の結果を PR に記録する。
+
+## glibc-public-headers-mixed-1 — 同梱していない glibc の公開ヘッダを、同梱ヘッダの上で読めるようにする
+
+### 原因
+
+`tools/audit_bundled_headers.rb` の混在の調査(同梱していない glibc の公開ヘッダ 186 本を
+1 本ずつ `#define _GNU_SOURCE` のもとで含め、gcc と rubycc で比べる)で、gcc は通し rubycc だけが
+落ちるものが **23 本**あった(2026-09-18 に再測。`bundled-headers-coverage-audit-2` の
+2026-09-14 の測定と同じ本数)。23 本を最小再現まで割ると、原因は 5 つだった。
+
+- **同梱ヘッダが `<features.h>` を取り込んでいない**(10 本 —
+  `arpa/nameser.h`・`net/ethernet.h`・`net/if_arp.h`・`netinet/in_systm.h`・`netipx/ipx.h`・
+  `obstack.h`・`stdio_ext.h`・`sys/eventfd.h`・`sys/fanotify.h`・`sys/signalfd.h`)。
+  glibc の公開ヘッダは `<features.h>` → `<sys/cdefs.h>` を(直接または他の公開ヘッダ経由で)必ず
+  引き込むので、**それを含めた後は `__BEGIN_DECLS`・`__THROW` が見えている**のが glibc の契約である。
+  同梱ヘッダ 71 ファイル(54 綴り)のうち `<features.h>` を含めていたのは `assert.h`・`sched.h`・`signal.h`・
+  `stdlib.h`・`unistd.h` の 5 本だけで、残りは含めていなかった。そのため例えば
+  `<net/ethernet.h>` は `<sys/types.h>`(同梱側が先に当たる)・`<stdint.h>`(同上)を読んでも
+  `__BEGIN_DECLS` を手に入れられず、29 行目の `__BEGIN_DECLS` が型指定子の位置に残って
+  `expected type specifier` になっていた。**同梱の `features.h` 自身は `<sys/cdefs.h>` を
+  含んでいる**ので、原因は features.h の中身ではなく「誰も features.h に到達しない」ことだった
+- **同梱の `<sys/types.h>` が `<endian.h>` と `<sys/select.h>` を取り込んでいない**(2 本 —
+  `netinet/ip.h`・`netinet/ip_icmp.h`)。`<netinet/ip.h>` は `struct ip` のメンバの並びを
+  `__BYTE_ORDER == __LITTLE_ENDIAN` と `__BYTE_ORDER == __BIG_ENDIAN` の 2 つの `#if` で選ぶ。
+  3 つとも未定義だと `#if` では全て 0 に畳まれて**両方の枝が採られ**、ビットフィールドが
+  2 度ずつ宣言されて `duplicate member 'ip_v'` になっていた。この取り込みは冒頭コメントで
+  `omitted: <endian.h> <sys/select.h> <stddef.h> -- glibc pulls these in; include them directly`
+  と意図的に外していたもので、**プログラムについては正しいが、この同梱ヘッダを読む glibc の
+  ヘッダについては成り立たない**
+- **同梱の `<sys/time.h>` が `bits/types.h` 相当と `<sys/select.h>` を取り込んでいない**(2 本 —
+  `utmpx.h`・`thread_db.h`)。glibc の `<sys/time.h>` は `<bits/types.h>` と `<sys/select.h>` を
+  読むので、そこから `__pid_t` と `sigset_t` が見えている。`<utmpx.h>` は `<features.h>` と
+  `<sys/time.h>` しか含まずに `typedef __pid_t pid_t;` と書き、`<thread_db.h>` は
+  `<pthread.h>`・`<stdint.h>`・`<sys/types.h>`・`<sys/procfs.h>` だけで `sigset_t` のメンバを
+  宣言する。どちらも同梱側の `<sys/time.h>` からは何も来ず `expected type specifier` になっていた
+- **同梱の `<sys/cdefs.h>` に名前が足りない / 中身の無い名前を名乗っていた**(3 本)。
+  `gcc -E -dM` で測った glibc の `<sys/cdefs.h>` の 140 個のうち 34 個が同梱側に無かった。
+  そのうち `sys/poll.h` は `__fortified_attr_access`(`poll` の宣言に付く)、`stdbit.h` は
+  `__glibc_has_builtin` が無くて落ちていた。逆に `error.h` は、同梱側が
+  `__va_arg_pack` / `__va_arg_pack_len` を**定義していたせい**で落ちていた:
+  glibc の `<error.h>` は `#if defined __extern_always_inline && defined __va_arg_pack` で
+  インライン版(`<bits/error.h>`)を選ぶので、名乗った以上はそちらへ進み、
+  rubycc に無い `__builtin_va_arg_pack` に当たっていた
+- **gcc の型名の定義済みマクロが無い**(1 本 — `glob.h`)。`<glob.h>` は `<stddef.h>` に依存せずに
+  型を名指すため `typedef __SIZE_TYPE__ __size_t;` と書く。rubycc は `__SIZE_MAX__` のような
+  数値のマクロは持っていたが、`__SIZE_TYPE__` のような**型名のマクロを 1 つも持っていなかった**
+
+残る 5 本(`complex.h`・`tgmath.h`・`netatalk/at.h`・`sys/rseq.h`・`sys/platform/x86.h`)は
+同梱ヘッダの話ではなく、rubycc 本体に無い機能が原因である(後述の「残された観点」)。
+
+### 対処
+
+- **同梱ヘッダ 62 本に `#include <features.h>` を足した**。どの綴りに足すかは推測せず、
+  「glibc の同名ヘッダを単独で含めた後に `__BEGIN_DECLS` が見えるか」を gcc で 1 本ずつ測って
+  決めた(2026-09-18、このホスト)。54 綴り中 `sys/syscall.h` だけが「見えない」で、そこには
+  足していない。`sys/cdefs.h` は定義する側なので対象外、`features.h` 自身も対象外。
+  足した 62 ファイルのうち `__USE_*` を `#if` で読んでいるものは 1 つも無いので、
+  **同梱ヘッダが見せる名前は 1 つも増減していない**(増えるのは、その後に読まれる glibc 側の
+  ヘッダから見える plumbing だけ)
+- **同梱の `<sys/types.h>`(両 arch)に `<endian.h>` と `<sys/select.h>` を足し**、冒頭コメントの
+  `omitted:` 行を `<stddef.h>` だけに直した。監査表の「取り込み不足」も
+  `endian.h stddef.h sys/select.h` → `stddef.h` に減る
+- **同梱の `<sys/time.h>`(両 arch)に `<sys/types.h>` と `<sys/select.h>` を足した**。
+  glibc の `<sys/time.h>` が `<bits/types.h>` と `<sys/select.h>` を読むのに対応する
+  (rubycc は `__*_t` の一式を `<sys/types.h>` に置いている)。監査表の
+  `sys/time.h` の「取り込み不足」`sys/select.h` も消え、未記載は 7 → 6 になった
+- **同梱の `<sys/cdefs.h>` に 16 個の綴りを足し、2 個を外した**。足したのは
+  `__attribute_nonnull__`・`__returns_nonnull`・`__attribute_copy__`(注釈、空)、
+  `__warnattr`・`__errordecl`・`__glibc_macro_warning`・`__glibc_macro_warning1`(診断専用。
+  `__errordecl` だけは宣言そのものでもあるので宣言を 1 つ残す)、
+  `__glibc_has_builtin`・`__glibc_has_attribute`(rubycc 自身の `#if` 演算子
+  `__has_builtin` / `__has_attribute` にそのまま渡す)・`__glibc_has_extension`(clang の綴りなので
+  glibc 自身と同じく 0)、`__fortified_attr_access`・`__REDIRECT_FORTIFY`・`__REDIRECT_FORTIFY_NTH`、
+  `__LDBL_REDIR2_DECL`・`__REDIRECT_LDBL`・`__REDIRECT_NTH_LDBL`。
+  外したのは `__va_arg_pack` / `__va_arg_pack_len` で、**持っていない機能を名乗らない**のが
+  ここでの正しい答えである(glibc 側の利用箇所はすべて `defined __va_arg_pack` で守られており、
+  名前が無ければ out-of-line の宣言が選ばれる)
+- **gcc の型名の定義済みマクロ 35 個を前処理系に足した**
+  (`Preprocess::Preprocessor::PREDEFINED_TYPE_MACROS` と `WCHAR_TYPE_MACRO` / `WCHAR_TYPES`)。
+  置換テキストは `gcc -dM -E -x c /dev/null` の逐語で、**両 arch で一致するのは 34 個、
+  `__WCHAR_TYPE__` だけが x86-64 で `int`・aarch64 で `unsigned int`** と違う(2026-09-18 実測)。
+  違う 1 個だけを `libc_arch` で切り替え、残りは共通表に置いた。数値の表と同じく
+  再走査して pp トークン列にするので、`long unsigned int` のような複数トークンの値も
+  そのまま宣言の型指定子として使える
+- 由来台帳(`docs/reference/HEADER-LICENSING.md` §3)は変えていない。ファイルの増減が無く
+  (§3.4 の 81 本のまま)、ABI の値を 1 つも動かしていないため
+  (`bundled-pthread-attr-guard-1`・`signal.h` と同じ判断)。glibc のヘッダ本文は写していない
+  (R11、§6)。足した綴りはすべて `gcc -E -dM` が印字した**名前の一覧**から決め、本体は自分で書いた
+
+### テスト
+
+- 混在の調査(同梱しない glibc の公開ヘッダ 186 本、x86-64、2026-09-18):
+  rubycc だけが落ちるものが **23 → 5 本**。通るようになったのは
+  `arpa/nameser.h`・`error.h`・`glob.h`・`net/ethernet.h`・`net/if_arp.h`・`netinet/in_systm.h`・
+  `netinet/ip.h`・`netinet/ip_icmp.h`・`netipx/ipx.h`・`obstack.h`・`stdbit.h`・`stdio_ext.h`・
+  `sys/eventfd.h`・`sys/fanotify.h`・`sys/poll.h`・`sys/signalfd.h`・`thread_db.h`・`utmpx.h` の
+  **18 本**で、新たに落ちたものは無い
+- `test/test_bundled_headers_coverage.rb` に `MIXED_GLIBC_HEADERS_FIXED`(上の 18 本)を足し、
+  既存の `MIXED_GLIBC_HEADERS` と同じ単位でコンパイルするようにした。
+  13 runs / 62 assertions / 0 failures
+- `test/test_preprocessor.rb` に型名マクロの 3 件を足した(gcc の綴りとの一致、
+  `__WCHAR_TYPE__` の arch 切り替え、`#undef` できること)。233 runs / 485 assertions / 0 failures
+- `docs/development/BUNDLED-HEADERS-COVERAGE.md` を再生成した(測定日 2026-09-18)。
+  `sys/types.h` の取り込み不足 3 → 1、`sys/time.h` の未記載 7 → 6・取り込み不足 1 → 0、
+  `time.h` の共有ガードの probe が `<thread_db.h>` との 2 順とも ok になった。
+  新しい error は 1 件も出ていない
+- 他に走らせたもの(すべて 0 failures): `test_audit_bundled_headers`(5 runs)、
+  `test_header_abi`(130 runs)、`test_doc_links`(3 runs)、`test_examples`(74 runs)、
+  `test_examples_aarch64`(592 runs / 22 skips)、`test_c_suite`(223 runs / 11 skips)、
+  `test_c_suite_aarch64`(444 runs / 22 skips)、`test_freestanding_headers`・
+  `test_host_header_shim`・`test_include_*`・`test_distroless_example`・
+  `test_bundled_pthread_attr_guard`・`test_extension_build`・`test_ruby_smoke`・
+  `test_mkmf_corpus`・`test_gem_install`
+
+### 残された観点
+
+同梱ヘッダの側では直せない 5 本。どれも rubycc 本体に無い機能が原因で、統合時に最小再現で確かめ、それぞれ issue にした。
+
+- **`complex.h`** — `_Complex` 型が無い(`double _Complex f(double _Complex z);` の 1 行で `expected ';'`)。`issues/complex-type.md`(GAPS BY)
+- **`tgmath.h`** — `#if __GNUC_PREREQ (2, 7)` が偽で `#error` になり、通しても `_Generic` が無い。`issues/generic-selection.md`(GAPS BZ)。`<tgmath.h>` 自体を対象外にするかは、その issue で決める
+- **`netatalk/at.h`・`sys/rseq.h`・`sys/platform/x86.h`** — オペランド付きの拡張インラインアセンブリ(`asm/swab.h` 経由の 2 本と、glibc の `bits/platform/features.h` の `%%fs:` 相対の 1 本)。`issues/extended-inline-asm-operands.md`(GAPS CA)
+
+同梱 `<sys/cdefs.h>` が glibc の同名ヘッダを丸ごと止めるため `__WORDSIZE` / `__TIMESIZE` が定義されない件は、
+実測では実害が出ていない(公開ヘッダはどれも `bits/wordsize.h` を直接引くので 64 が戻る。`struct utmpx` / `struct statvfs` / `struct timex` の
+大きさとオフセットが gcc と一致することを 2026-09-18 に確認した)。`<sys/cdefs.h>` だけを含んで `__WORDSIZE` を読む形でしか出ないので、
+実際に踏む例が出てから起票する。

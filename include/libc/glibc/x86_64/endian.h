@@ -7,6 +7,12 @@
 #ifndef _RUBYCC_ENDIAN_H
 #define _RUBYCC_ENDIAN_H
 
+/* glibc's own <features.h> (and the <sys/cdefs.h> it pulls in) is visible after
+   a bare include of glibc's same-name header, and the glibc headers that
+   include this one lean on that for __BEGIN_DECLS / __THROW (measured
+   2026-09-18, glibc-public-headers-mixed-1). */
+#include <features.h>
+
 #define __LITTLE_ENDIAN 1234
 #define __BIG_ENDIAN    4321
 #define __PDP_ENDIAN    3412

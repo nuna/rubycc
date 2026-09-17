@@ -49,6 +49,12 @@
 #ifndef _RUBYCC_SYS_STATFS_H
 #define _RUBYCC_SYS_STATFS_H
 
+/* glibc's own <features.h> (and the <sys/cdefs.h> it pulls in) is visible after
+   a bare include of glibc's same-name header, and the glibc headers that
+   include this one lean on that for __BEGIN_DECLS / __THROW (measured
+   2026-09-18, glibc-public-headers-mixed-1). */
+#include <features.h>
+
 /* The filesystem identifier statfs reports. Measured: 8 bytes, 4-byte
    aligned, i.e. a pair of 4-byte ints rather than one 8-byte word. */
 #ifndef _RUBYCC_FSID_T

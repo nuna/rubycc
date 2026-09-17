@@ -30,6 +30,12 @@
 #ifndef _RUBYCC_LANGINFO_H
 #define _RUBYCC_LANGINFO_H
 
+/* glibc's own <features.h> (and the <sys/cdefs.h> it pulls in) is visible after
+   a bare include of glibc's same-name header, and the glibc headers that
+   include this one lean on that for __BEGIN_DECLS / __THROW (measured
+   2026-09-18, glibc-public-headers-mixed-1). */
+#include <features.h>
+
 /* The item selector. Measured: 4 bytes, 4-byte aligned, signed. glibc reaches
    for this typedef through <nl_types.h>; rubycc has no such header, so it is
    given here under its own guard. */

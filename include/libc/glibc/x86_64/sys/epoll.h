@@ -33,6 +33,12 @@
 #ifndef _RUBYCC_SYS_EPOLL_H
 #define _RUBYCC_SYS_EPOLL_H
 
+/* glibc's own <features.h> (and the <sys/cdefs.h> it pulls in) is visible after
+   a bare include of glibc's same-name header, and the glibc headers that
+   include this one lean on that for __BEGIN_DECLS / __THROW (measured
+   2026-09-18, glibc-public-headers-mixed-1). */
+#include <features.h>
+
 #include <stdint.h>
 
 /* epoll_ctl operations (measured, both arches). */

@@ -7,6 +7,23 @@
 #ifndef _RUBYCC_SYS_TIME_H
 #define _RUBYCC_SYS_TIME_H
 
+/* glibc's own <features.h> (and the <sys/cdefs.h> it pulls in) is visible after
+   a bare include of glibc's same-name header, and the glibc headers that
+   include this one lean on that for __BEGIN_DECLS / __THROW (measured
+   2026-09-18, glibc-public-headers-mixed-1). */
+#include <features.h>
+
+/* glibc's <sys/time.h> reads <bits/types.h> and includes <sys/select.h>, so
+   both the internal scalar names (__pid_t and kin) and sigset_t / fd_set are
+   visible to whatever includes it. The glibc headers that reach this file
+   rely on that: <utmpx.h> spells its pid_t typedef with __pid_t, and
+   <thread_db.h> declares a sigset_t member having included only <pthread.h>,
+   <stdint.h>, <sys/types.h> and <sys/procfs.h> (measured 2026-09-18,
+   glibc-public-headers-mixed-1). rubycc keeps the __*_t set in
+   <sys/types.h>. */
+#include <sys/types.h>
+#include <sys/select.h>
+
 #ifndef _RUBYCC_TIME_T
 #define _RUBYCC_TIME_T
 typedef long time_t;

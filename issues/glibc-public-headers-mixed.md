@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-14
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-18
+branch: gap-fixes-wave-8
+pr: 158
+steps: [glibc-public-headers-mixed-1]
 ---
 
 # 同梱しない glibc の公開ヘッダのうち、rubycc だけが落ちるものが 23 本ある
@@ -42,6 +42,21 @@ rubycc だけが落ちるものが 23 本ある**(2026-09-14、x86-64、`bundled
 
 `bundled-headers-coverage-audit-2` の混在の調査の結果から起票した。
 
+### 2026-09-18(実装)
+
+調査をやり直し、23 本の原因を 5 つに分けた。最大のものは「同梱ヘッダが `<features.h>` に届いていない」で、同梱ヘッダ 71 本のうち
+`<features.h>` を含んでいたのは 5 本だけだった(`__BEGIN_DECLS` が型指定子の位置に残る)。ほかに `<sys/types.h>` と `<sys/time.h>` の取り込み不足、
+同梱 `<sys/cdefs.h>` の名前の不足、そして gcc の**型名マクロ**(`__SIZE_TYPE__` 系 35 個)が丸ごと無かったこと。`__va_arg_pack` は逆に、
+無い機能を広告していたので外した(glibc の `<error.h>` がそれを見て組み込み版を選んでいた)。残る 5 本は BY(`_Complex`)・BZ(`_Generic`)・
+CA(オペランド付きインラインアセンブリ)に分けて起票した。
+
 ## 決着
 
-(未着手)
+**解消した**(`glibc-public-headers-mixed-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 23 本の原因を最小再現で確かめ、同梱ヘッダ側と rubycc 本体側に分ける | 18 本が同梱ヘッダ・前処理器の側で、直した。残り 5 本は本体の機能で、3 件の issue に分けた |
+| 同梱ヘッダ側のものは直す | 上記。新たに落ちるようになったヘッダは無い |
+| 表を作り直し、rubycc だけが落ちる本数を記録する | `BUNDLED-HEADERS-COVERAGE.md` を再生成(混在の表は 23 行 → 5 行) |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

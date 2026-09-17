@@ -85,6 +85,37 @@
 #define __attr_dealloc_free
 
 #define __nonnull(params)
+#define __attribute_nonnull__(params)
+#define __returns_nonnull
+#define __attribute_copy__(arg)
+
+/* Diagnostic-only spellings. glibc attaches a compile-time message to a name
+   with these; rubycc emits no such diagnostic, so each expands to nothing --
+   except __errordecl, which glibc also uses as the declaration itself, so it
+   has to leave one behind. Names measured against glibc's <sys/cdefs.h> on
+   2026-09-18 with `gcc -E -dM` (glibc-public-headers-mixed-1). */
+#define __warnattr(msg)
+#define __errordecl(name, msg) extern void name (void)
+#define __glibc_macro_warning1(msg)
+#define __glibc_macro_warning(msg)
+
+/* Feature predicates glibc's headers ask before reaching for a compiler
+   extension. rubycc answers the builtin and attribute ones honestly through
+   its own #if operators; __has_extension is a clang spelling rubycc does not
+   have, and 0 is the answer glibc itself gives without it. */
+#define __glibc_has_builtin(name) __has_builtin (name)
+#define __glibc_has_attribute(attr) __has_attribute (attr)
+#define __glibc_has_extension(ext) 0
+
+/* Fortification plumbing: __fortified_attr_access is the buffer-access
+   annotation glibc puts on the unfortified declaration of a function that has
+   a _FORTIFY_SOURCE variant (<sys/poll.h> puts it on poll, and without the
+   spelling the declaration does not parse, measured 2026-09-18), and the
+   __REDIRECT_FORTIFY pair is __REDIRECT under a different name. */
+#define __fortified_attr_access(access, index, size)
+#define __REDIRECT_FORTIFY(name, proto, alias)     name proto
+#define __REDIRECT_FORTIFY_NTH(name, proto, alias) name proto
+
 #define __always_inline    __inline
 #define __extern_inline    extern __inline
 #define __extern_always_inline extern __inline
@@ -119,10 +150,19 @@
 #define __LDBL_REDIR1(name, proto, alias) name proto
 #define __LDBL_REDIR1_NTH(name, proto, alias) name proto
 #define __LDBL_REDIR_DECL(name)
+#define __LDBL_REDIR2_DECL(name)
+#define __REDIRECT_LDBL(name, proto, alias)     name proto
+#define __REDIRECT_NTH_LDBL(name, proto, alias) name proto
 
-/* Variadic-macro argument pack forwarding (GCC builtins). */
-#define __va_arg_pack()       __builtin_va_arg_pack()
-#define __va_arg_pack_len()   __builtin_va_arg_pack_len()
+/* Variadic-macro argument pack forwarding (__builtin_va_arg_pack and kin).
+   Deliberately *not* defined: rubycc has no such builtin, and every glibc
+   header that reaches for the forwarding uses `defined __va_arg_pack' (or the
+   _len spelling) as the feature test, so leaving the names absent selects the
+   plain out-of-line declaration instead. Defining them made <error.h> read
+   <bits/error.h>, whose __extern_always_inline body calls __va_arg_pack (),
+   and the compile failed on the builtin (measured 2026-09-18,
+   glibc-public-headers-mixed-1). The gated users are <error.h>, <fcntl.h>,
+   <mqueue.h> and the bits/*2.h fortify files. */
 
 /* Bounds/fortify plumbing: no fortification, no BOS instrumentation. */
 #define __bos(ptr)  __builtin_object_size(ptr, __USE_FORTIFY_LEVEL > 1)
