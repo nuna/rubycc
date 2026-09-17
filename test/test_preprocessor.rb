@@ -1488,8 +1488,12 @@ class TestPreprocessor < Minitest::Test
     end
 
     # The x86-64 baseline constant still describes the x86-64 instance exactly,
-    # so the default target's search path is unchanged.
-    assert_equal pp::LIBC_SYSTEM_INCLUDE_PATHS, x86.last(2)
+    # so the default target's search path is unchanged. Its length is asked of
+    # the constant rather than written as 2: a host that has the cross sysroot
+    # for a target installed searches that too (see
+    # TestAArch64CrossSysrootInclude), and this assertion is about the constant
+    # agreeing with the instance, not about how many directories there are.
+    assert_equal pp::LIBC_SYSTEM_INCLUDE_PATHS, x86.last(pp::LIBC_SYSTEM_INCLUDE_PATHS.size)
   end
 
   def test_unknown_libc_arch_has_no_host_search_path

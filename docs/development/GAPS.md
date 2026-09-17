@@ -18,7 +18,7 @@
 | **AN**([issue](../../issues/incompatible-function-pointer-argument.md)) | **gcc 13 が警告にとどめる 4 つの診断をエラーにする** — 互換でないポインタ・暗黙の関数宣言・暗黙の int(`expected type specifier` で原因を伝えない)・整数とポインタの変換。gcc 14 はどれも既定でエラー | 古い書き方の gem。`hpricot` / `fast_xs` / `fast_trie` / `zipruby` / `github-markdown` / `gctools` / `semacode-ruby19` / `picky` / `allocation_tracer` / `ruby_deep_clone` の 10 件が該当し、**対照の gcc 13 はどれも通る** | **実測**(2026-09-13、gcc 13 のみ。gcc 14 はこのホストに無い) | **警告に下げるかエラーを保つかが未決**。対照の版で結論が変わる |
 | **AS**([issue](../../issues/rmake-gnu-make-conditionals.md)) | **rmake が GNU make の条件文(`ifeq` など)を読めない**。パーサは代入とルール以外をすべて拒否する | 同梱ライブラリの手書き Makefile を make に渡す gem。`hiredis-client` 0.30.1 が該当し、**対照(GNU make)は通る** | **実測**(2026-09-13) | **対応するか対象外にするかが未決**。mkmf の Makefile は条件文を使わない |
 | **AT**([issue](../../issues/typeof-operator.md)) | **`typeof`(GNU 拡張、C23 で標準化)を受け付けない**。未宣言の関数として報告される | `algorithms` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
-| **BI**([issue](../../issues/aarch64-cross-sysroot-include.md)) | **x86-64 ホストで `-target aarch64` のとき、同梱していないシステムヘッダをクロス sysroot(`/usr/aarch64-linux-gnu/include`)から探さない**。ホストの x86-64 版 `/usr/include/netdb.h` を読んで `bits/stdint-uintn.h` で落ちる | x86-64 ホストでの aarch64 クロステスト。`<netdb.h>` を含むコードを aarch64 で検証できない。**対照の `aarch64-linux-gnu-gcc` は通る** | **実測**(2026-09-14、`#include <netdb.h>` の最小再現)。ネイティブ aarch64 ホストは未測定 | sysroot を決め打ちにするか、クロス gcc に問い合わせるかを決める |
+| **CB**([issue](../../issues/int128-typedef-spellings.md)) | **`__int128_t` / `__uint128_t` の綴りが無い**(`__int128` と `unsigned __int128` は通る)。gcc は定義済みの typedef として持つ | `-target aarch64` で `<sys/ucontext.h>` を含むコード(クロス sysroot の `sys/user.h` が使う)。**実在の gem ではまだ見ていない**。**対照の gcc は通る** | **実測**(2026-09-18、最小再現) | gcc がキーワードの別名として見せているのか、定義済み typedef なのかを測ってから足す |
 | **BY**([issue](../../issues/complex-type.md)) | **`_Complex` 型が無い**(ISO C11 6.2.5p11)。`<complex.h>` を含む翻訳単位が 1 つもコンパイルできない | `<complex.h>` を含む gem。**実在の gem ではまだ見ていない**。**対照の gcc は通る** | **実測**(2026-09-18、1 行の最小再現) | **実装するか対象外にするかが未決**。外すなら `__STDC_NO_COMPLEX__` を定義して診断を直す |
 | **BZ**([issue](../../issues/generic-selection.md)) | **`_Generic`(ISO C11 6.5.1.1)が無い**。`<tgmath.h>` はコンパイラ判定の `#error` で先に止まる | 型総称マクロを書く gem。**実在の gem ではまだ見ていない**。c-testsuite にも skip がある。**対照の gcc は通る** | **実測**(2026-09-18、最小再現) | **実装するか対象外を明文化するかが未決** |
 | **CA**([issue](../../issues/extended-inline-asm-operands.md)) | **出力オペランド付きの拡張インラインアセンブリが無い**(空のアセンブリだけ受け付ける) | `asm/swab.h` を経由する UAPI ヘッダ(`netatalk/at.h`・`sys/rseq.h`)と `<sys/platform/x86.h>`。**実在の gem ではまだ見ていない**。**対照の gcc は通る** | **実測**(2026-09-18、最小再現) | **実装するか対象外を明文化するかが未決**。実装するなら基本形とセグメント相対の 2 段に分ける |
@@ -52,6 +52,10 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ BI**(x86-64 ホストで `-target aarch64` のとき、クロス sysroot を探さない):
+  `aarch64-cross-sysroot-include-1` で解消。multiarch のディレクトリ → 存在するクロス sysroot → `/usr/include` の順に探す。
+  クロスコンパイラへの問い合わせは、`-print-sysroot` が `/` を返し `-print-search-dirs` が include を出さないうえ、翻訳単位ごとに別コンパイラを起動することになるので採らなかった。
+  AU の aarch64 テストは、手書きの代替をやめて実物の `<netdb.h>` を読むようになった。
 - **ギャップ BO**(glibc 本体の `<alloca.h>` を読む経路で `alloca` がリンクできない):
   `glibc-alloca-without-gnuc-1` で解消。libc の名前のままの `alloca` 呼び出しを、`__builtin_alloca` と同じ `:alloca` に降ろす。
   組み込みと見なす宣言の形は gcc を 10 通り測って合わせ、見なさない形は従来どおり普通の呼び出しにする(gcc と同じ結果になる)。

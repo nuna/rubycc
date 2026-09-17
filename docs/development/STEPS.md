@@ -18015,3 +18015,165 @@ gcc は `alloca` を**その名前のまま組み込み関数として知って�
 - GAPS BI(このホストの aarch64 クロス sysroot が `/usr/aarch64-linux-gnu/include` にあり、
   rubycc の aarch64 既定探索路が期待する `/usr/include/aarch64-linux-gnu` ではない)は**未解決のまま**。
   本ステップはその経路を**直さずに**、そこで壊れていた `alloca` だけを直している
+
+## aarch64-cross-sysroot-include-1 — 同梱していないシステムヘッダをクロス sysroot からも探す(GAPS BI)
+
+### 原因
+
+**x86-64 のホストで `-target aarch64` を付けると、rubycc が同梱していないシステムヘッダを
+ホスト自身の x86-64 版から読み、その先で落ちた。** 2026-09-18 にこのホスト
+(WSL2 / Ubuntu 24.04 / x86-64、`libc6-dev-arm64-cross` + クロス gcc 13.3 導入済み)で
+起票時の再現をもう一度測った:
+
+```c
+#include <netdb.h>
+int main(void) { return 0; }
+```
+
+| | 結果 |
+|---|---|
+| `aarch64-linux-gnu-gcc -c` | ok |
+| `rubycc -target aarch64 -c`(対処前) | `/usr/include/netdb.h:28:1: error: bits/stdint-uintn.h: No such file or directory` |
+
+`Preprocessor.libc_system_include_paths_for("aarch64")` は
+`["/usr/include/aarch64-linux-gnu", "/usr/include"]` を返す。同じ日に測った事実:
+
+- **`/usr/include/aarch64-linux-gnu` はこのホストに無い**。Debian/Ubuntu のクロス libc パッケージは
+  独立した sysroot に置く: `dpkg -S /usr/aarch64-linux-gnu/include/netdb.h` →
+  `libc6-dev-arm64-cross`。`/usr/aarch64-linux-gnu/include` には 141 エントリ(`bits/` を含む)
+- そのため探索は `/usr/include` まで落ち、**x86-64 版の `netdb.h`** が当たる。それが引く
+  `bits/stdint-uintn.h` は x86-64 の multiarch ディレクトリにしか無いので見つからない
+- ギャップ V(aarch64 ホストで multiarch ディレクトリを探さなかった件)で multiarch 名を
+  target 別にした判断とは矛盾しない。**同じ問いに 2 通りのレイアウトがある**という話で、
+  ネイティブ aarch64 ホストは multiarch 側、クロスするホストは sysroot 側にヘッダを置く
+  (両者が同時に存在する構成は無い)
+
+`aarch64-linux-gnu-gcc -E -v` が angled include に対して報告する探索順(同日実測):
+
+```
+ignoring nonexistent directory "/usr/include/aarch64-linux-gnu"
+#include <...> search starts here:
+ /usr/lib/gcc-cross/aarch64-linux-gnu/13/include      ← コンパイラ私物(rubycc は同梱 include/ で置き換え)
+ /usr/lib/gcc-cross/aarch64-linux-gnu/13/../../../../aarch64-linux-gnu/include   ← /usr/aarch64-linux-gnu/include
+ /usr/include
+```
+
+**gcc 自身が「無いディレクトリは黙って落とし、sysroot を先に、`/usr/include` を最後に」置いている。**
+
+### 選択肢の比較(いずれもこのホストで実測、2026-09-18)
+
+| 案 | 実測 | 判断 |
+|---|---|---|
+| 1. クロス sysroot のパスを multiarch の隣に**決め打ち**する | `/usr/aarch64-linux-gnu/include` は cross パッケージの `--includedir` そのもの(`aarch64-linux-gnu-gcc -v` の configure 行に `--includedir=/usr/aarch64-linux-gnu/include`)。コストはゼロ、結果は決定的 | **採用** |
+| 2. クロスコンパイラに問い合わせる | `-print-sysroot` → **`/`**(2 つのディレクトリのどちらも指さない・空でもない)。`-print-search-dirs` → **include 系は 1 つも出ない**(programs / libraries だけ。`.../aarch64-linux-gnu/lib/` から `../../../..` で逆算するしかない)。`-E -v` on 空ファイル → 正しい一覧が出るが、**毎コンパイルで別のコンパイラを起動**することになる | 却下 |
+| 3. 候補ディレクトリを固定順に並べ、**存在するものだけ**探索する | 案 1 の上に `File.directory?` を 1 回足すだけ。gcc 自身の "ignoring nonexistent directory" と同じ振る舞い | **採用(案 1 と組で)** |
+
+案 2 を採らない理由は 3 つとも実測に基づく:
+
+- **`-print-sysroot` は使えない。** このホストのクロス gcc は `--with-sysroot=/` で構成されており、
+  答は `/` である。sysroot ではなく `--includedir` にヘッダが置かれているので、
+  この問い合わせでは何も分からない
+- **`-E -v` は当たるが高い。** rubycc は**ホストに gcc が無くても動く**ことを前提にしている
+  (`Preprocess::GlibcVersion` が「ホストの gcc に訊かず C ライブラリ本体を測る」のと同じ理由)。
+  翻訳単位ごとにクロス gcc を起動するのは N1 にも反する。安いチェック(stat 1 回)で足りる
+- **リンク側の既存判断と揃う。** `Link::LibraryResolver::TARGET_SYSTEM_DIRS` は既に
+  `/usr/aarch64-linux-gnu/lib` を、`Link::ExecutableLinker::AARCH64_LIBC_PATHS` は
+  `/usr/aarch64-linux-gnu/lib/libc.so.6` を決め打ちしている。今回はその**include 側の片割れ**であって、
+  新しい種類の仮定ではない
+
+環境変数や `--sysroot` フラグ(案 3 の変種)は**採らなかった**。今回のホストでは既定で正解に
+なる以上、利用者に何かを設定させる理由が無く、動かせる摘みを増やすと既定の探索順が
+「何も指定しなければどうなるか」で説明できなくなる。必要になった時点で起票する(残された観点)。
+
+### 対処
+
+`Preprocessor::LIBC_CROSS_SYSROOT_INCLUDE_DIRS`(target → クロス sysroot の include)を
+`LIBC_MULTIARCH_INCLUDE_DIRS` の隣に置き、`.libc_system_include_paths_for` が
+**multiarch → クロス sysroot(存在するときだけ)→ `/usr/include`** を返すようにした。
+
+- **条件付きなのは sysroot の 1 件だけ。** ネイティブなホストは自分の arch のクロスパッケージを
+  持たないので、**既存のホストの探索順は 1 バイトも変わらない**(下の実測)
+- **`/usr/include` はクロス時も最後に残す。** gcc も同じ(上の `-E -v`)。target 非依存の
+  サードパーティヘッダはそこにしか無く、target ごとに中身が違う libc ヘッダは
+  同梱 arch 層か sysroot で先に当たるので、ホストの arch のヘッダを黙って読む形は残らない
+  (`test_cross_target_resolves_system_headers_in_the_sysroot` がそれを測る)
+- x86-64 側の項(`/usr/x86_64-linux-gnu/include`、`libc6-dev-amd64-cross` の置き場)も対称に置いた。
+  このホストには**存在しない**ので x86-64 の探索順には影響しない
+- **どちらのレイアウトも無いホスト**では今までどおり `/usr/include` に落ちる。そのままでは
+  「x86-64 の netdb.h の中で落ちる」という読み手を誤らせる診断になるので、
+  **クロスコンパイルのときに限り** "No such file or directory" に 1 節を足した:
+
+  ```
+  bits/stdint-uintn.h: No such file or directory (this compile targets aarch64, but no
+  aarch64 libc headers are installed on this x86_64 host -- neither /usr/include/aarch64-linux-gnu
+  nor /usr/aarch64-linux-gnu/include exists -- so only this host's own /usr/include was searched)
+  ```
+
+  条件は 3 つ全部(target ≠ ホストの CPU・ホスト libc のディレクトリを実際に探索した・
+  候補 2 つとも不在)。これにより **multiarch でないネイティブホスト**(Fedora 等。
+  `/usr/include/x86_64-linux-gnu` が無く `/usr/include` が正解)では出ない。
+  判定は `.absent_target_libc_headers_note` という**引数だけの純関数**にしてある —
+  「ヘッダが入っていないホスト」の挙動を、**ヘッダが入っているホスト**で検査できるようにするため
+
+### 実測(2026-09-18、このホスト)
+
+- 再現: `rubycc -target aarch64 -c` が **exit 0**(対処前は上のエラー)。
+  `<netdb.h>` を使う差分プログラム(`sizeof(struct addrinfo)` ほか + `getaddrinfo`)を qemu で走らせ、
+  `aarch64-linux-gnu-gcc` と**出力・終了状態とも一致**(`48 32 32` / `1025 -2` / …)
+- 解決先: aarch64 で `#include <netdb.h>` を前処理したときトークンが名乗るファイルは
+  `/usr/aarch64-linux-gnu/include/{netdb.h,bits/netdb.h,rpc/netdb.h}` の 3 本のみ。
+  **`/usr/include/` 由来は 0 本**
+- **x86-64 の探索順は不変。** 既定のシステム探索路は前後ともに
+  `[同梱 include, 同梱 libc/glibc/x86_64, 同梱 libc, /usr/include/x86_64-linux-gnu, /usr/include]`。
+  `<stdio.h> + <netdb.h> + <pthread.h>` を含むソースの `rubycc -E` 出力は
+  **前後で 16700 バイトの完全一致**(`diff` 0 行)
+- 診断の退避経路: `LIBC_CROSS_SYSROOT_INCLUDE_DIRS` を存在しないパスに差し替えた仮想ホストで、
+  上の 1 節付きのエラーになることを確認(スクラッチ確認。テストでは純関数側を検査)
+
+### テスト
+
+- `test/test_aarch64_cross_sysroot_include.rb`(新設、7 runs / 26 assertions / 0 skips)。
+  探索路の形(2 レイアウトの「在るものだけ探す」を **arch ごとに iff で**表明するので
+  ネイティブ aarch64 ホストでも真)・ホスト target の探索路が不変であること・
+  診断の純関数の 3 ケース・**解決先が sysroot であること**(前処理後のトークンが名乗るファイル名を読む)・
+  **`<netdb.h>` を使うプログラムのクロス gcc 差分**(qemu 実行)。
+  クロスヘッダを要するものは `skip_unless_aarch64_cross_headers`(新設。
+  `AArch64ExecutionHelper::SYSROOT_INCLUDE_DIR` の存在で判定)で skip する
+- **手書きの代替が 2 か所とも実物の `<netdb.h>` になった**(起票時の受け入れ条件):
+  - `test/test_bundled_pthread_attr_guard.rb` の `TestBundledPthreadAttrGuardAarch64` —
+    stand-in を削除し、x86-64 側と同じ両方向の include 順 + 完全型の実行差分(3 ケース)に置き換え
+  - `test/test_header_abi.rb` の `TestHeaderAbiAarch64` — 手組みの
+    `run_pthread_attr_guard_case_aarch64` / `assert_pthread_attr_guard_matches` を削除し、
+    x86-64 と**同じ Spec**(`PTHREAD_ATTR_NETDB_FORWARD` / `REVERSE`)を
+    `assert_abi_matches_aarch64` に渡す形にした
+- `test/test_preprocessor.rb` の既存表明 `x86.last(2)` を `x86.last(定数の長さ)` にした。
+  「定数と実インスタンスが一致する」ことが趣旨で、ディレクトリの本数ではないため
+- 実走(いずれも 0 failures / 0 errors): 新テスト 7 runs、`test_preprocessor.rb` 233 runs、
+  `test_driver.rb` 31 runs、`test_include_absolute_path.rb` 10 runs、
+  `test_include_duplicate_system_dir.rb` 10 runs、`test_bundled_pthread_attr_guard.rb` 8 runs、
+  `test_header_abi.rb` 130 runs、`test_examples.rb` 75 runs、`test_examples_aarch64.rb` 594 runs
+  (22 skips)、`test_c_suite.rb` 223 runs(11 skips)、`test_c_suite_aarch64.rb` 444 runs(22 skips)。
+  巻き添えの確認として `test_freestanding_headers.rb` 10 / `test_glibc_alloca_without_gnuc.rb` 5 /
+  `test_include_path_encoding.rb` 6 / `test_cli.rb` 10 / `test_aarch64_shared_object.rb` 23 /
+  `test_platform_literals.rb` 1 も 0 failures
+- **例題は足していない。** このステップが直したのは**既定の探索順**であり、
+  `examples/` の aarch64 実行系(`test_examples_aarch64.rb`)は
+  `system_includes: false` + 明示 `-I` で走るので、例題を足しても直した経路を通らない。
+  同じ理由で直前のヘッダ系ステップ(`glibc-public-headers-mixed-1`)も例題を足していない
+
+### 残された観点
+
+- **`test_c_suite_aarch64.rb` / `test_examples_aarch64.rb` はまだ明示パス**
+  (`CROSS_SYSTEM_INCLUDE_PATHS` = 同梱 freestanding + `/usr/aarch64-linux-gnu/include`、
+  `system_includes: false`)。既定路でも通るようになったが、**測っているものが変わる**
+  (同梱 libc 層を読むか、sysroot の glibc 本体を読むか)ので今回は触っていない。
+  移すなら「どちらの経路を常時検証したいのか」を決めてからにする
+- **sysroot の場所を利用者が指定する手段は無い**(`--sysroot` / 環境変数)。
+  Debian/Ubuntu 以外のクロス配置(`/opt/...` に展開した sysroot 等)は現状 `-I` で渡すしかない。
+  実例に当たったら起票する
+- **ネイティブ aarch64 ホストでの実測は無い**(このホストでは `/usr/include/aarch64-linux-gnu` が
+  作れない)。探索路の表明は「存在するものだけを含む」という iff の形にしてあるので
+  ネイティブ側でも真になるはずだが、確認は aarch64 実機の CI に委ねる
+- **クロス sysroot の `bits/` を読めても、そこから先で別の未対応に当たることはある**。
+  実測: `-target aarch64` で `<sys/ucontext.h>` を読むと `/usr/aarch64-linux-gnu/include/sys/user.h:32`
+  の `__uint128_t` で落ちる(2026-09-18)。これは探索順ではなく型の未対応で、別件

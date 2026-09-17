@@ -116,57 +116,65 @@ class TestBundledPthreadAttrGuard < Minitest::Test
   end
 end
 
-# The aarch64 counterpart, checked against a hand-written stand-in for the
-# colliding declaration rather than the real <netdb.h>: rubycc's aarch64
-# system-header search cannot resolve <netdb.h> (or any header rubycc does not
-# bundle) at all on the aarch64-linux-gnu cross toolchain this repository's CI
-# installs -- rubycc's search for the aarch64 target expects the native
-# multiarch layout (/usr/include/aarch64-linux-gnu + /usr/include, see
-# Rubycc::Preprocess::Preprocessor::LIBC_MULTIARCH_INCLUDE_DIRS), but the cross
-# package (installed on every push's *default* x86-64 runner,
-# .github/workflows/test.yml, not only a developer sandbox) keeps its own
-# sysroot at /usr/aarch64-linux-gnu/include instead, so
-# /usr/include/aarch64-linux-gnu does not exist there and the preprocessor
-# falls through to the host's own x86-64 /usr/include/netdb.h, which then
-# fails to find the x86-64-only bits/stdint-uintn.h it needs (measured
-# 2026-09-14). That is a pre-existing gap in how rubycc's default aarch64
-# system search path relates to this Debian cross-toolchain layout, unrelated
-# to the header fix this file guards -- so, like
-# test_header_abi.rb's TestHeaderAbiAarch64#test_pthread_attr_guard_forward/
-# reverse_abi_matches_cross_gcc, this checks the actual mechanism instead of
-# one specific header that uses it: a hand-written stand-in for glibc's own
-# pthread_attr_t forward declaration (the same guarded typedef
-# bits/types/sigevent_t.h and bits/pthreadtypes.h each carry -- not copied
-# from either file, since the guard name and the "typedef a forward-declared
-# tag" shape are the shared ABI convention itself, not a creative expression;
-# R11 / docs/reference/HEADER-LICENSING.md #4, the same reasoning Step 147
-# already applied to __sigset_t).
+# The aarch64 counterpart of the cases above, on the same real <netdb.h>.
+#
+# It was written against a hand-written stand-in for the colliding declaration
+# instead, because rubycc's aarch64 search could not resolve <netdb.h> (or any
+# other header rubycc does not bundle) on the cross toolchain this repository's
+# CI installs: the search expected the native multiarch layout, while the cross
+# package keeps its headers in its own sysroot, so the preprocessor fell through
+# to this host's x86-64 /usr/include and died inside it (GAPS row BI). That gap
+# is closed -- rubycc now searches whichever of the two layouts exists
+# (Preprocess::Preprocessor::LIBC_CROSS_SYSROOT_INCLUDE_DIRS,
+# aarch64-cross-sysroot-include-1) -- so this file can pin what its x86-64 half
+# pins: glibc's own two declarations of pthread_attr_t, in both include orders,
+# against the bundled header's guard.
+#
+# The stand-in is gone rather than kept alongside: what it stood in for is the
+# real thing, and TestAArch64CrossSysrootInclude now covers the resolution it
+# was working around. The cases skip where the cross headers are not installed
+# (they are on every push's x86-64 runner, .github/workflows/test.yml).
 class TestBundledPthreadAttrGuardAarch64 < Minitest::Test
   include ExecutionHelper
   include AArch64ExecutionHelper
 
   def setup
     skip_unless_aarch64_toolchain
+    skip_unless_aarch64_cross_headers
   end
 
-  STAND_IN = <<~C.chomp
-    #ifndef __have_pthread_attr_t
-    typedef union pthread_attr_t pthread_attr_t;
-    # define __have_pthread_attr_t 1
-    #endif
-  C
-
-  # <pthread.h> first, then the stand-in -- mirrors
-  # TestBundledPthreadAttrGuard's PTHREAD_THEN_NETDB order.
-  def test_pthread_then_stand_in_compiles
-    source = build_source("#include <pthread.h>\n#{STAND_IN}")
+  # <pthread.h> first, then <netdb.h> -- the issue's own order, the one
+  # TestBundledPthreadAttrGuard::PTHREAD_THEN_NETDB pins on the host.
+  def test_pthread_then_netdb_compiles
+    source = build_source("#include <pthread.h>\n#include <netdb.h>")
     assert_compiles(source, "forward")
   end
 
-  # The stand-in first, then <pthread.h> -- mirrors NETDB_THEN_PTHREAD.
-  def test_stand_in_then_pthread_compiles
-    source = build_source("#{STAND_IN}\n#include <pthread.h>")
+  # The reverse order, mirroring NETDB_THEN_PTHREAD.
+  def test_netdb_then_pthread_compiles
+    source = build_source("#include <netdb.h>\n#include <pthread.h>")
     assert_compiles(source, "reverse")
+  end
+
+  # pthread_attr_t as a real object inside a real struct sigevent, the aarch64
+  # counterpart of #test_pthread_attr_t_is_a_complete_type_after_both_headers:
+  # a fix that only forward-declared the type would still fail here, and the
+  # sizes are read back through an execution oracle rather than asserted, so the
+  # cross gcc's own answer is what rubycc has to reproduce.
+  def test_pthread_attr_t_is_a_complete_type_after_both_headers
+    assert_aarch64_matches_gcc(<<~C)
+      #define _GNU_SOURCE 1
+      #include <pthread.h>
+      #include <netdb.h>
+      #include <stdio.h>
+      int main(void) {
+        pthread_attr_t attr;
+        struct sigevent sev;
+        sev.sigev_notify_attributes = &attr;
+        printf("%zu %zu\\n", sizeof(attr), sizeof(sev));
+        return pthread_attr_init(&attr);
+      }
+    C
   end
 
   private
