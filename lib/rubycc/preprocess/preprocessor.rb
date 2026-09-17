@@ -419,6 +419,62 @@ module Rubycc
         "__FLOAT_WORD_ORDER__" => "__ORDER_LITTLE_ENDIAN__"
       }.freeze
 
+        # The type-name macros gcc predefines: for each of its fundamental
+        # typedefs, the spelling of the underlying type. They are not numbers and
+        # never appear in a #if -- glibc's headers use them where a type specifier
+        # stands, to name a type without depending on <stddef.h>: <glob.h> writes
+        # `typedef __SIZE_TYPE__ __size_t;' and does not parse at all when the
+        # macro is absent (measured 2026-09-18, glibc-public-headers-mixed-1).
+        # The replacement texts are the verbatim ones `gcc -dM -E -x c /dev/null`
+        # prints, so a declaration built out of them has gcc's type exactly; they
+        # are re-scanned into pp-tokens like the numeric group above, because most
+        # are several tokens long. Measured on both targets on 2026-09-18: every
+        # one below agrees between x86-64 and aarch64, and the single one that
+        # does not is WCHAR_TYPE_MACRO.
+        PREDEFINED_TYPE_MACROS = {
+          "__SIZE_TYPE__" => "long unsigned int",
+          "__PTRDIFF_TYPE__" => "long int",
+          "__WINT_TYPE__" => "unsigned int",
+          "__INTMAX_TYPE__" => "long int",
+          "__UINTMAX_TYPE__" => "long unsigned int",
+          "__INTPTR_TYPE__" => "long int",
+          "__UINTPTR_TYPE__" => "long unsigned int",
+          "__SIG_ATOMIC_TYPE__" => "int",
+          "__CHAR16_TYPE__" => "short unsigned int",
+          "__CHAR32_TYPE__" => "unsigned int",
+          "__INT8_TYPE__" => "signed char",
+          "__INT16_TYPE__" => "short int",
+          "__INT32_TYPE__" => "int",
+          "__INT64_TYPE__" => "long int",
+          "__UINT8_TYPE__" => "unsigned char",
+          "__UINT16_TYPE__" => "short unsigned int",
+          "__UINT32_TYPE__" => "unsigned int",
+          "__UINT64_TYPE__" => "long unsigned int",
+          "__INT_LEAST8_TYPE__" => "signed char",
+          "__INT_LEAST16_TYPE__" => "short int",
+          "__INT_LEAST32_TYPE__" => "int",
+          "__INT_LEAST64_TYPE__" => "long int",
+          "__UINT_LEAST8_TYPE__" => "unsigned char",
+          "__UINT_LEAST16_TYPE__" => "short unsigned int",
+          "__UINT_LEAST32_TYPE__" => "unsigned int",
+          "__UINT_LEAST64_TYPE__" => "long unsigned int",
+          "__INT_FAST8_TYPE__" => "signed char",
+          "__INT_FAST16_TYPE__" => "long int",
+          "__INT_FAST32_TYPE__" => "long int",
+          "__INT_FAST64_TYPE__" => "long int",
+          "__UINT_FAST8_TYPE__" => "unsigned char",
+          "__UINT_FAST16_TYPE__" => "long unsigned int",
+          "__UINT_FAST32_TYPE__" => "long unsigned int",
+          "__UINT_FAST64_TYPE__" => "long unsigned int"
+        }.freeze
+
+        # The one type-name macro whose spelling is target specific: wchar_t is
+        # signed on x86-64 and unsigned on aarch64 (both measured 2026-09-18 with
+        # the same `gcc -dM -E` as the table above). Kept apart from it rather
+        # than duplicated per target, because it is the only difference.
+        WCHAR_TYPE_MACRO = "__WCHAR_TYPE__"
+        WCHAR_TYPES = { "x86_64" => "int", "aarch64" => "unsigned int" }.freeze
+
       # The libc this host's C library is: "musl" or "glibc" (see LIBCS). Read
       # from RbConfig's arch triplet, which is how MRI itself distinguishes a
       # musl build ("x86_64-linux-musl") from a glibc one ("x86_64-linux") --
@@ -511,6 +567,8 @@ module Rubycc
         @macros["__CHAR_UNSIGNED__"] = predefined_target_macro if char_unsigned
         @macros[LIBC_MUSL_MACRO] = predefined_target_macro if libc == "musl"
         PREDEFINED_NUMERIC_MACROS.each { |name, text| @macros[name] = predefined_numeric_macro(text) }
+        PREDEFINED_TYPE_MACROS.each { |name, text| @macros[name] = predefined_numeric_macro(text) }
+        @macros[WCHAR_TYPE_MACRO] = predefined_numeric_macro(WCHAR_TYPES.fetch(libc_arch))
         # The glibc version pair, defined only on a glibc target and only when
         # the version could be measured. They are ordinary numeric macros like
         # the ones above (a translation unit may #undef or redefine them), and
@@ -1097,13 +1155,14 @@ module Rubycc
         Macro.new(:object, [], false, [token])
       end
 
-      # A PREDEFINED_NUMERIC_MACROS entry: an ordinary object macro whose
-      # replacement is `text` re-scanned into pp-tokens, so a multi-token value
-      # (like __WCHAR_MIN__'s parenthesized expression) becomes a proper token
-      # list without hand-building each token. The scanner appends an :eof (and
-      # never a newline for a single line), dropped here. As with the target
-      # macros the tokens carry a placeholder "<built-in>" location that #relocate
-      # replaces with the use site before any diagnostic could reference it.
+      # A PREDEFINED_NUMERIC_MACROS or PREDEFINED_TYPE_MACROS entry: an ordinary
+      # object macro whose replacement is `text` re-scanned into pp-tokens, so a
+      # multi-token value (__WCHAR_MIN__'s parenthesized expression, __SIZE_TYPE__'s
+      # type name) becomes a proper token list without hand-building each token.
+      # The scanner appends an :eof (and never a newline for a single line),
+      # dropped here. As with the target macros the tokens carry a placeholder
+      # "<built-in>" location that #relocate replaces with the use site before any
+      # diagnostic could reference it.
       def predefined_numeric_macro(text)
         tokens = Scanner.new(text, filename: "<built-in>").scan.reject(&:eof?)
         Macro.new(:object, [], false, tokens)

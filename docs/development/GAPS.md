@@ -19,8 +19,9 @@
 | **AS**([issue](../../issues/rmake-gnu-make-conditionals.md)) | **rmake が GNU make の条件文(`ifeq` など)を読めない**。パーサは代入とルール以外をすべて拒否する | 同梱ライブラリの手書き Makefile を make に渡す gem。`hiredis-client` 0.30.1 が該当し、**対照(GNU make)は通る** | **実測**(2026-09-13) | **対応するか対象外にするかが未決**。mkmf の Makefile は条件文を使わない |
 | **AT**([issue](../../issues/typeof-operator.md)) | **`typeof`(GNU 拡張、C23 で標準化)を受け付けない**。未宣言の関数として報告される | `algorithms` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
 | **BI**([issue](../../issues/aarch64-cross-sysroot-include.md)) | **x86-64 ホストで `-target aarch64` のとき、同梱していないシステムヘッダをクロス sysroot(`/usr/aarch64-linux-gnu/include`)から探さない**。ホストの x86-64 版 `/usr/include/netdb.h` を読んで `bits/stdint-uintn.h` で落ちる | x86-64 ホストでの aarch64 クロステスト。`<netdb.h>` を含むコードを aarch64 で検証できない。**対照の `aarch64-linux-gnu-gcc` は通る** | **実測**(2026-09-14、`#include <netdb.h>` の最小再現)。ネイティブ aarch64 ホストは未測定 | sysroot を決め打ちにするか、クロス gcc に問い合わせるかを決める |
-| **BO**([issue](../../issues/glibc-alloca-without-gnuc.md)) | **glibc 本体の `<alloca.h>` を読む経路で、`alloca` がリンク時に未定義参照になる**(glibc は `__GNUC__` のときだけ組み込みに写し、rubycc は `__GNUC__` を定義しない) | aarch64 のクロス sysroot を使う例題テストなど、同梱ヘッダより先に glibc 本体の `<alloca.h>` を読む構成。**実在の gem ではまだ見ていない** | **実測**(2026-09-14、例題に `alloca` を入れて aarch64 で) | どの経路で glibc 本体の `<alloca.h>` を読むかを先に測る |
-| **BP**([issue](../../issues/glibc-public-headers-mixed.md)) | **同梱しない glibc の公開ヘッダ 186 本のうち、rubycc だけが落ちるものが 23 本ある**(`__BEGIN_DECLS` が無いように見える形が多い) | それらのヘッダを含む gem。該当する gem は数えていない | **実測**(2026-09-14、`tools/audit_bundled_headers.rb` の混在の調査、x86-64) | 23 本の原因を最小再現で確かめ、同梱ヘッダの側と rubycc 本体の側に分ける |
+| **BY**([issue](../../issues/complex-type.md)) | **`_Complex` 型が無い**(ISO C11 6.2.5p11)。`<complex.h>` を含む翻訳単位が 1 つもコンパイルできない | `<complex.h>` を含む gem。**実在の gem ではまだ見ていない**。**対照の gcc は通る** | **実測**(2026-09-18、1 行の最小再現) | **実装するか対象外にするかが未決**。外すなら `__STDC_NO_COMPLEX__` を定義して診断を直す |
+| **BZ**([issue](../../issues/generic-selection.md)) | **`_Generic`(ISO C11 6.5.1.1)が無い**。`<tgmath.h>` はコンパイラ判定の `#error` で先に止まる | 型総称マクロを書く gem。**実在の gem ではまだ見ていない**。c-testsuite にも skip がある。**対照の gcc は通る** | **実測**(2026-09-18、最小再現) | **実装するか対象外を明文化するかが未決** |
+| **CA**([issue](../../issues/extended-inline-asm-operands.md)) | **出力オペランド付きの拡張インラインアセンブリが無い**(空のアセンブリだけ受け付ける) | `asm/swab.h` を経由する UAPI ヘッダ(`netatalk/at.h`・`sys/rseq.h`)と `<sys/platform/x86.h>`。**実在の gem ではまだ見ていない**。**対照の gcc は通る** | **実測**(2026-09-18、最小再現) | **実装するか対象外を明文化するかが未決**。実装するなら基本形とセグメント相対の 2 段に分ける |
 | **BT**([issue](../../issues/function-pointer-void-pointer-init.md)) | **関数を `void *` に暗黙に変換する初期化を拒否する**(`incompatible types in initialization`)。gcc は既定では警告もせず、`-pedantic` のときだけ警告する | 同梱の SQLite(amalgamation)を持つ gem。`amalgalite` 2.0.0 の `sqlite3.c:135127` が該当し、**対照の gcc は通る** | **実測**(2026-09-14、最小再現) | **受け付けるか拒否を保つかが未決**。AN(gcc 13 が警告にとどめる診断)より gcc との差が大きい |
 
 ## 2. 未解消の負債
@@ -51,6 +52,12 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ BO**(glibc 本体の `<alloca.h>` を読む経路で `alloca` がリンクできない):
+  `glibc-alloca-without-gnuc-1` で解消。libc の名前のままの `alloca` 呼び出しを、`__builtin_alloca` と同じ `:alloca` に降ろす。
+  組み込みと見なす宣言の形は gcc を 10 通り測って合わせ、見なさない形は従来どおり普通の呼び出しにする(gcc と同じ結果になる)。
+- **ギャップ BP**(同梱しない glibc の公開ヘッダで rubycc だけが落ちる 23 本):
+  `glibc-public-headers-mixed-1` で 23 本 → 5 本。原因は 5 つで、同梱ヘッダが `<features.h>` に届いていなかったこと、`<sys/types.h>` / `<sys/time.h>` の取り込み不足、
+  同梱 `<sys/cdefs.h>` の名前の不足(と、無い機能を広告していた 1 組)、gcc の型名マクロ(`__SIZE_TYPE__` 系)が丸ごと無かったこと。残る 5 本は BY・BZ・CA に分けた。
 - **ギャップ BW**(フレームの境界より強く整列した自動記憶域のオブジェクトを拒否する):
   `overaligned-automatic-object-1` で解消。両バックエンドにプロローグでの再整列を入れ、要求した境界にオブジェクトを置く。
   16 しか要求しない関数の出力は 1 バイトも変わらない。BQ が保留していた「typedef 由来の境界を局所宣言の要求にする」も有効にした。

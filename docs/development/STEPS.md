@@ -17757,3 +17757,261 @@ iodine は AT(`typeof`、方針未決)、amalgalite は BT(関数を `void *` �
 測り直していない。
 
 **検証**: データと文書だけの変更で、`rake test` はブランチ全体の結果を PR に記録する。
+
+## glibc-public-headers-mixed-1 — 同梱していない glibc の公開ヘッダを、同梱ヘッダの上で読めるようにする
+
+### 原因
+
+`tools/audit_bundled_headers.rb` の混在の調査(同梱していない glibc の公開ヘッダ 186 本を
+1 本ずつ `#define _GNU_SOURCE` のもとで含め、gcc と rubycc で比べる)で、gcc は通し rubycc だけが
+落ちるものが **23 本**あった(2026-09-18 に再測。`bundled-headers-coverage-audit-2` の
+2026-09-14 の測定と同じ本数)。23 本を最小再現まで割ると、原因は 5 つだった。
+
+- **同梱ヘッダが `<features.h>` を取り込んでいない**(10 本 —
+  `arpa/nameser.h`・`net/ethernet.h`・`net/if_arp.h`・`netinet/in_systm.h`・`netipx/ipx.h`・
+  `obstack.h`・`stdio_ext.h`・`sys/eventfd.h`・`sys/fanotify.h`・`sys/signalfd.h`)。
+  glibc の公開ヘッダは `<features.h>` → `<sys/cdefs.h>` を(直接または他の公開ヘッダ経由で)必ず
+  引き込むので、**それを含めた後は `__BEGIN_DECLS`・`__THROW` が見えている**のが glibc の契約である。
+  同梱ヘッダ 71 ファイル(54 綴り)のうち `<features.h>` を含めていたのは `assert.h`・`sched.h`・`signal.h`・
+  `stdlib.h`・`unistd.h` の 5 本だけで、残りは含めていなかった。そのため例えば
+  `<net/ethernet.h>` は `<sys/types.h>`(同梱側が先に当たる)・`<stdint.h>`(同上)を読んでも
+  `__BEGIN_DECLS` を手に入れられず、29 行目の `__BEGIN_DECLS` が型指定子の位置に残って
+  `expected type specifier` になっていた。**同梱の `features.h` 自身は `<sys/cdefs.h>` を
+  含んでいる**ので、原因は features.h の中身ではなく「誰も features.h に到達しない」ことだった
+- **同梱の `<sys/types.h>` が `<endian.h>` と `<sys/select.h>` を取り込んでいない**(2 本 —
+  `netinet/ip.h`・`netinet/ip_icmp.h`)。`<netinet/ip.h>` は `struct ip` のメンバの並びを
+  `__BYTE_ORDER == __LITTLE_ENDIAN` と `__BYTE_ORDER == __BIG_ENDIAN` の 2 つの `#if` で選ぶ。
+  3 つとも未定義だと `#if` では全て 0 に畳まれて**両方の枝が採られ**、ビットフィールドが
+  2 度ずつ宣言されて `duplicate member 'ip_v'` になっていた。この取り込みは冒頭コメントで
+  `omitted: <endian.h> <sys/select.h> <stddef.h> -- glibc pulls these in; include them directly`
+  と意図的に外していたもので、**プログラムについては正しいが、この同梱ヘッダを読む glibc の
+  ヘッダについては成り立たない**
+- **同梱の `<sys/time.h>` が `bits/types.h` 相当と `<sys/select.h>` を取り込んでいない**(2 本 —
+  `utmpx.h`・`thread_db.h`)。glibc の `<sys/time.h>` は `<bits/types.h>` と `<sys/select.h>` を
+  読むので、そこから `__pid_t` と `sigset_t` が見えている。`<utmpx.h>` は `<features.h>` と
+  `<sys/time.h>` しか含まずに `typedef __pid_t pid_t;` と書き、`<thread_db.h>` は
+  `<pthread.h>`・`<stdint.h>`・`<sys/types.h>`・`<sys/procfs.h>` だけで `sigset_t` のメンバを
+  宣言する。どちらも同梱側の `<sys/time.h>` からは何も来ず `expected type specifier` になっていた
+- **同梱の `<sys/cdefs.h>` に名前が足りない / 中身の無い名前を名乗っていた**(3 本)。
+  `gcc -E -dM` で測った glibc の `<sys/cdefs.h>` の 140 個のうち 34 個が同梱側に無かった。
+  そのうち `sys/poll.h` は `__fortified_attr_access`(`poll` の宣言に付く)、`stdbit.h` は
+  `__glibc_has_builtin` が無くて落ちていた。逆に `error.h` は、同梱側が
+  `__va_arg_pack` / `__va_arg_pack_len` を**定義していたせい**で落ちていた:
+  glibc の `<error.h>` は `#if defined __extern_always_inline && defined __va_arg_pack` で
+  インライン版(`<bits/error.h>`)を選ぶので、名乗った以上はそちらへ進み、
+  rubycc に無い `__builtin_va_arg_pack` に当たっていた
+- **gcc の型名の定義済みマクロが無い**(1 本 — `glob.h`)。`<glob.h>` は `<stddef.h>` に依存せずに
+  型を名指すため `typedef __SIZE_TYPE__ __size_t;` と書く。rubycc は `__SIZE_MAX__` のような
+  数値のマクロは持っていたが、`__SIZE_TYPE__` のような**型名のマクロを 1 つも持っていなかった**
+
+残る 5 本(`complex.h`・`tgmath.h`・`netatalk/at.h`・`sys/rseq.h`・`sys/platform/x86.h`)は
+同梱ヘッダの話ではなく、rubycc 本体に無い機能が原因である(後述の「残された観点」)。
+
+### 対処
+
+- **同梱ヘッダ 62 本に `#include <features.h>` を足した**。どの綴りに足すかは推測せず、
+  「glibc の同名ヘッダを単独で含めた後に `__BEGIN_DECLS` が見えるか」を gcc で 1 本ずつ測って
+  決めた(2026-09-18、このホスト)。54 綴り中 `sys/syscall.h` だけが「見えない」で、そこには
+  足していない。`sys/cdefs.h` は定義する側なので対象外、`features.h` 自身も対象外。
+  足した 62 ファイルのうち `__USE_*` を `#if` で読んでいるものは 1 つも無いので、
+  **同梱ヘッダが見せる名前は 1 つも増減していない**(増えるのは、その後に読まれる glibc 側の
+  ヘッダから見える plumbing だけ)
+- **同梱の `<sys/types.h>`(両 arch)に `<endian.h>` と `<sys/select.h>` を足し**、冒頭コメントの
+  `omitted:` 行を `<stddef.h>` だけに直した。監査表の「取り込み不足」も
+  `endian.h stddef.h sys/select.h` → `stddef.h` に減る
+- **同梱の `<sys/time.h>`(両 arch)に `<sys/types.h>` と `<sys/select.h>` を足した**。
+  glibc の `<sys/time.h>` が `<bits/types.h>` と `<sys/select.h>` を読むのに対応する
+  (rubycc は `__*_t` の一式を `<sys/types.h>` に置いている)。監査表の
+  `sys/time.h` の「取り込み不足」`sys/select.h` も消え、未記載は 7 → 6 になった
+- **同梱の `<sys/cdefs.h>` に 16 個の綴りを足し、2 個を外した**。足したのは
+  `__attribute_nonnull__`・`__returns_nonnull`・`__attribute_copy__`(注釈、空)、
+  `__warnattr`・`__errordecl`・`__glibc_macro_warning`・`__glibc_macro_warning1`(診断専用。
+  `__errordecl` だけは宣言そのものでもあるので宣言を 1 つ残す)、
+  `__glibc_has_builtin`・`__glibc_has_attribute`(rubycc 自身の `#if` 演算子
+  `__has_builtin` / `__has_attribute` にそのまま渡す)・`__glibc_has_extension`(clang の綴りなので
+  glibc 自身と同じく 0)、`__fortified_attr_access`・`__REDIRECT_FORTIFY`・`__REDIRECT_FORTIFY_NTH`、
+  `__LDBL_REDIR2_DECL`・`__REDIRECT_LDBL`・`__REDIRECT_NTH_LDBL`。
+  外したのは `__va_arg_pack` / `__va_arg_pack_len` で、**持っていない機能を名乗らない**のが
+  ここでの正しい答えである(glibc 側の利用箇所はすべて `defined __va_arg_pack` で守られており、
+  名前が無ければ out-of-line の宣言が選ばれる)
+- **gcc の型名の定義済みマクロ 35 個を前処理系に足した**
+  (`Preprocess::Preprocessor::PREDEFINED_TYPE_MACROS` と `WCHAR_TYPE_MACRO` / `WCHAR_TYPES`)。
+  置換テキストは `gcc -dM -E -x c /dev/null` の逐語で、**両 arch で一致するのは 34 個、
+  `__WCHAR_TYPE__` だけが x86-64 で `int`・aarch64 で `unsigned int`** と違う(2026-09-18 実測)。
+  違う 1 個だけを `libc_arch` で切り替え、残りは共通表に置いた。数値の表と同じく
+  再走査して pp トークン列にするので、`long unsigned int` のような複数トークンの値も
+  そのまま宣言の型指定子として使える
+- 由来台帳(`docs/reference/HEADER-LICENSING.md` §3)は変えていない。ファイルの増減が無く
+  (§3.4 の 81 本のまま)、ABI の値を 1 つも動かしていないため
+  (`bundled-pthread-attr-guard-1`・`signal.h` と同じ判断)。glibc のヘッダ本文は写していない
+  (R11、§6)。足した綴りはすべて `gcc -E -dM` が印字した**名前の一覧**から決め、本体は自分で書いた
+
+### テスト
+
+- 混在の調査(同梱しない glibc の公開ヘッダ 186 本、x86-64、2026-09-18):
+  rubycc だけが落ちるものが **23 → 5 本**。通るようになったのは
+  `arpa/nameser.h`・`error.h`・`glob.h`・`net/ethernet.h`・`net/if_arp.h`・`netinet/in_systm.h`・
+  `netinet/ip.h`・`netinet/ip_icmp.h`・`netipx/ipx.h`・`obstack.h`・`stdbit.h`・`stdio_ext.h`・
+  `sys/eventfd.h`・`sys/fanotify.h`・`sys/poll.h`・`sys/signalfd.h`・`thread_db.h`・`utmpx.h` の
+  **18 本**で、新たに落ちたものは無い
+- `test/test_bundled_headers_coverage.rb` に `MIXED_GLIBC_HEADERS_FIXED`(上の 18 本)を足し、
+  既存の `MIXED_GLIBC_HEADERS` と同じ単位でコンパイルするようにした。
+  13 runs / 62 assertions / 0 failures
+- `test/test_preprocessor.rb` に型名マクロの 3 件を足した(gcc の綴りとの一致、
+  `__WCHAR_TYPE__` の arch 切り替え、`#undef` できること)。233 runs / 485 assertions / 0 failures
+- `docs/development/BUNDLED-HEADERS-COVERAGE.md` を再生成した(測定日 2026-09-18)。
+  `sys/types.h` の取り込み不足 3 → 1、`sys/time.h` の未記載 7 → 6・取り込み不足 1 → 0、
+  `time.h` の共有ガードの probe が `<thread_db.h>` との 2 順とも ok になった。
+  新しい error は 1 件も出ていない
+- 他に走らせたもの(すべて 0 failures): `test_audit_bundled_headers`(5 runs)、
+  `test_header_abi`(130 runs)、`test_doc_links`(3 runs)、`test_examples`(74 runs)、
+  `test_examples_aarch64`(592 runs / 22 skips)、`test_c_suite`(223 runs / 11 skips)、
+  `test_c_suite_aarch64`(444 runs / 22 skips)、`test_freestanding_headers`・
+  `test_host_header_shim`・`test_include_*`・`test_distroless_example`・
+  `test_bundled_pthread_attr_guard`・`test_extension_build`・`test_ruby_smoke`・
+  `test_mkmf_corpus`・`test_gem_install`
+
+### 残された観点
+
+同梱ヘッダの側では直せない 5 本。どれも rubycc 本体に無い機能が原因で、統合時に最小再現で確かめ、それぞれ issue にした。
+
+- **`complex.h`** — `_Complex` 型が無い(`double _Complex f(double _Complex z);` の 1 行で `expected ';'`)。`issues/complex-type.md`(GAPS BY)
+- **`tgmath.h`** — `#if __GNUC_PREREQ (2, 7)` が偽で `#error` になり、通しても `_Generic` が無い。`issues/generic-selection.md`(GAPS BZ)。`<tgmath.h>` 自体を対象外にするかは、その issue で決める
+- **`netatalk/at.h`・`sys/rseq.h`・`sys/platform/x86.h`** — オペランド付きの拡張インラインアセンブリ(`asm/swab.h` 経由の 2 本と、glibc の `bits/platform/features.h` の `%%fs:` 相対の 1 本)。`issues/extended-inline-asm-operands.md`(GAPS CA)
+
+同梱 `<sys/cdefs.h>` が glibc の同名ヘッダを丸ごと止めるため `__WORDSIZE` / `__TIMESIZE` が定義されない件は、
+実測では実害が出ていない(公開ヘッダはどれも `bits/wordsize.h` を直接引くので 64 が戻る。`struct utmpx` / `struct statvfs` / `struct timex` の
+大きさとオフセットが gcc と一致することを 2026-09-18 に確認した)。`<sys/cdefs.h>` だけを含んで `__WORDSIZE` を読む形でしか出ないので、
+実際に踏む例が出てから起票する。
+
+## glibc-alloca-without-gnuc-1 — libc の名前のままの `alloca` を組み込みとして呼び出し位置で認識する(GAPS BO)
+
+### 原因
+
+**glibc 本体の `<alloca.h>` を読む経路では、`alloca(n)` の呼び出しがリンクできなかった。**
+2026-09-18 にこのホスト(WSL2 / gcc 13.3 / glibc 2.39 / クロス gcc 13)で測った事実:
+
+- glibc の `/usr/include/alloca.h` は `extern void *alloca (size_t) __THROW;` を宣言した後、
+  **`#ifdef __GNUC__` のときだけ** `#define alloca(size) __builtin_alloca (size)` を置く。
+  rubycc は `__GNUC__` を定義しない(DESIGN R7)ので、マクロは付かず**名前のままの呼び出し**が残る
+- `alloca` という名前のシンボルはどの libc にも無い。残った呼び出しはリンカまで届く:
+  - x86-64: `rubycc -nostdinc -I<同梱 include> -I/usr/include/x86_64-linux-gnu -I/usr/include`
+    → `rubycc: error: undefined reference to 'alloca'`
+  - aarch64: `rubycc -target aarch64 -nostdinc -I<同梱 include> -I/usr/aarch64-linux-gnu/include -c`
+    → 生成した `.o` の未定義シンボルが `alloca` と `printf`。`aarch64-linux-gnu-gcc` でリンクすると
+    `undefined reference to 'alloca'`
+
+**どの探索順でそうなるか**も測った。既定の探索順(`Preprocessor::DEFAULT_SYSTEM_INCLUDE_PATHS`)は
+同梱 freestanding → 同梱 libc(arch 層 → 共通層)→ ホスト libc の順で、**同梱の `<alloca.h>` が先に当たる**。
+同梱ヘッダはマクロを無条件に置くので、この経路は最初から通っていた(`test_header_abi.rb` の
+`STDLIB_GNU`/`ALLOCA` が確認している)。しかも `-I/usr/include` を明示しても
+`#reject_system_duplicate_paths` が既定路と重複する `-I` を落とすため、**既定路のままでは
+glibc 本体の `<alloca.h>` には届かない**(実測: `-I/usr/include/x86_64-linux-gnu -I/usr/include`
+付きでも同梱ヘッダが読まれ、`__builtin_alloca` に展開された)。glibc 本体を読むのは
+**同梱 libc 層を外した経路**だけである:
+
+- `-nostdinc`(`system_includes: false`)+ libc のヘッダディレクトリを `-I` で与えた構成
+- そのうち実際にテストで走るのが aarch64 の例題・c-testsuite 実行系
+  (`TestCSuiteAArch64::CROSS_SYSTEM_INCLUDE_PATHS` = 同梱 freestanding +
+  `/usr/aarch64-linux-gnu/include`)。起票はここで見つかっている
+
+**gcc の振る舞い**(同じ日、`-std=gnu17` = 本プロジェクトの対照標準 `REFERENCE_STD_FLAG`):
+gcc は `alloca` を**その名前のまま組み込み関数として知っている**。宣言だけが見えている翻訳単位でも
+呼び出しをその場で展開し、`alloca` の再配置を残さない。`-U__GNUC__` でマクロを消しても同じ。
+一方 `-std=c17`(厳格 ISO、GNU のライブラリ組み込みを引っ込める)では呼び出しを残し、
+**gcc 自身も `undefined reference to 'alloca'` でリンクに失敗する**。つまりこれは
+「gcc は魔法でリンクできる」話ではなく、**GNU モードの組み込み関数**の話である。
+
+### 対処
+
+**`alloca` を呼び出し位置(`Ir::Generator#gen_call`)で組み込みとして認識する**ことにした。
+`__builtin_alloca` と同じ `:alloca` 命令に落とすので、バックエンド・IR の契約は一切変わらない。
+
+- `ALLOCA_BUILTIN_NAME`(= `"alloca"`)を `BUILTIN_LIBCALLS` の隣に置き、
+  `#alloca_builtin_call?` が真のとき `#gen_alloca_by_name` が `:alloca` を emit する
+- **字句のキーワードにはしない**。同梱ヘッダも glibc 本体も `void *alloca(size_t)` を*宣言*しており、
+  キーワードではその宣言自体が構文エラーになる。呼び出し位置での認識なら、
+  `alloca` という名前の変数が隠す規則(`lookup_variable` が既に見ている)もそのまま効く
+- **どの宣言を組み込みと見なすか**は gcc を 10 通り測って合わせた(下表)。合わない形は
+  素通りさせて通常の直接呼び出しにする ⇒ **gcc と同じ未定義参照**になる。引数の個数が 1 でない形も
+  素通りさせ、既存の arity 検査が gcc と同じく可視の宣言に対して診断する
+- 引数は**可視の宣言の仮引数型**へ変換してから size_t へ変換する。式の型は**宣言の戻り値型**
+  (gcc も宣言の型を使う)で、`#call_return_type` が同じノードに対して返す型と一致する
+
+#### 採らなかった案
+
+- **`__GNUC__` を定義する** — R7 に反する(GNU 拡張の実装面積が一気に増える)
+- **同梱の `<alloca.h>` をその経路でも勝たせる** — 当の経路は「同梱 libc 層を外して libc 本体の
+  ヘッダで測る」ことが目的(aarch64 の例題実行系)。勝たせると測定の意味が消える。
+  そもそも自前で `void *alloca(size_t);` と宣言しただけのコード(autoconf の分岐)は救えない
+- **`alloca` の実体をランタイムに持つ** — 呼び出し規約上、返した領域は戻った瞬間に無効で、
+  関数として正しく実装できない(gcc も持っていない)
+- **字句のキーワードにする** — 上記のとおりヘッダの宣言が通らなくなる
+
+### 測定行列(2026-09-18、gcc 13.3 `-std=gnu17` / rubycc は glibc 本体のヘッダ経路)
+
+`alloca` の宣言を変えて、組み込みに展開されるか(= リンクできて `6 7` を印字するか)を見た。
+
+| 宣言 | gcc | rubycc(対処後) |
+|---|---|---|
+| `void *alloca(unsigned long)`(glibc・同梱ヘッダの形) | 組み込み | 組み込み |
+| `void *alloca(long)` | 組み込み | 組み込み |
+| `void *alloca(unsigned long long)` | 組み込み | 組み込み |
+| `typedef unsigned long my_size; void *alloca(my_size)` | 組み込み | 組み込み |
+| `char *alloca(unsigned long)` | 組み込み(無警告。戻り値型は宣言のまま) | 組み込み |
+| `void *alloca()`(プロトタイプ無し) | 組み込み(引数型の警告のみ) | 組み込み |
+| `char *alloca()`(プロトタイプ無し) | **通常の呼び出し** → 未定義参照 | 通常の呼び出し → 未定義参照 |
+| `void *alloca(unsigned int)` | **通常の呼び出し** → 未定義参照 | 通常の呼び出し → 未定義参照 |
+| `void *alloca(unsigned long, ...)` | **通常の呼び出し** → 未定義参照 | 通常の呼び出し → 未定義参照 |
+| `long alloca(unsigned long)` | **通常の呼び出し** → 未定義参照 | 通常の呼び出し → 未定義参照 |
+
+読み取った規則(そのまま `#alloca_builtin_call?` に書いた):**戻り値がポインタ**であり、かつ
+**プロトタイプがあれば非可変長の整数仮引数 1 個で size_t と同じ幅**、**プロトタイプが無ければ
+戻り値が `void *`**。プロトタイプ有りでは戻り値のポインタ先を問わない(`char *` も採る)のに、
+無しでは `void *` でないと採らない、という非対称も実測どおりに写した。
+
+同じ日に測った呼び出し側の 4 形(いずれも gcc と一致):
+
+- `int alloca = 5;` — 変数が組み込みを隠す(両者 5 を印字)
+- `alloca(16, 2)` — 両者とも診断(rubycc は `too many arguments to function 'alloca'`)
+- 自前で `void *alloca(size_t)` を**定義**した翻訳単位 — gcc も rubycc も呼び出しは**組み込み**になり、
+  定義は呼ばれない
+- `void *(*f)(size_t) = alloca;`(アドレスを取る) — gcc も rubycc も未定義参照。
+  組み込みになるのは**直接の呼び出しだけ**
+
+### テスト
+
+- `test/test_glibc_alloca_without_gnuc.rb`(新設、5 ケース・6 アサーション)。
+  rubycc 側を「同梱 freestanding + ホスト libc のディレクトリ、`system_includes: false`」で
+  コンパイルする ⇒ aarch64 実行系と同じ形の探索順をホスト arch で再現する。対照は素の gcc。
+  ヘッダ経由・プロトタイプ無し・gcc が組み込みと見なさない形(両者とも未定義参照)・
+  変数による遮蔽・**同梱ヘッダ経路の回帰**(既定の探索順)の 5 つ。
+  対処前は 2 failures(ヘッダ経由とプロトタイプ無しが `:unresolved`)、対処後 0 failures
+- `examples/m6/glibc_alloca_without_gnuc_1_stack_blocks.c`(新設)。
+  実行時サイズのブロック・同時に生きる 2 ブロック・ループ内で毎回確保して関数の出口で
+  まとめて解放されるブロック・別関数へ渡すブロック。**同じファイルが両方の経路を通る**
+  (`test_examples.rb` は同梱ヘッダ、`test_examples_aarch64.rb` はクロス sysroot の glibc 本体)。
+  対処前は aarch64 側がリンクできない(`undefined reference to 'alloca'` が 5 箇所)
+- 実走(2026-09-18、このホスト): 新テスト 5 runs / 0 failures、`test_header_abi.rb` 130 runs
+  (`STDLIB_GNU`・`ALLOCA` を含む)、`test_examples.rb` 75 runs、`test_examples_aarch64.rb` 594 runs、
+  `test_c_suite.rb` 223 runs、`test_c_suite_aarch64.rb` 444 runs、
+  `grep -rl alloca test/` で挙がる 19 ファイル(parser / preprocessor / gcc_builtins / driver /
+  elf_writer / offsetof / execution_harness / flexible_array_member / x86_64_backend /
+  aarch64_backend / aarch64_execution / aarch64_float_execution / overaligned_automatic_object /
+  sysv_over_aligned_aggregate_stack / audit_bundled_headers / bundled_headers_coverage /
+  host_header_shim / shared_object / aarch64_shared_object)すべて 0 failures
+
+### 残された観点
+
+- **`__has_builtin(alloca)` は 0 のまま**。gcc は 1 を返す(2026-09-18 実測)。1 を名乗るには
+  「宣言が無くても呼べる」ことまで揃える必要があり(gcc は暗黙宣言の警告だけで組み込みに展開する)、
+  rubycc は暗黙の関数宣言を一律にエラーにしている。`builtin_signatures` の種(memcpy / strlen と
+  同じ `builtin_seed`)を `alloca` にも置けば揃うが、その場合
+  `extern void *alloca(unsigned int);` のような**宣言の食い違いが警告ではなくエラーになり**、
+  上の測定行列で合わせたばかりの「gcc が組み込みと見なさない形は通常の呼び出しにする」が壊れる。
+  今回は**呼び出し位置の認識だけ**に留め、`KNOWN_BUILTINS` は触っていない
+- 組み込みになるのは**直接の呼び出しだけ**で、アドレスを取る形は未定義参照のまま(gcc と同じ)。
+  実在のコードで `alloca` のアドレスを取る例は見ていない
+- GAPS BI(このホストの aarch64 クロス sysroot が `/usr/aarch64-linux-gnu/include` にあり、
+  rubycc の aarch64 既定探索路が期待する `/usr/include/aarch64-linux-gnu` ではない)は**未解決のまま**。
+  本ステップはその経路を**直さずに**、そこで壊れていた `alloca` だけを直している

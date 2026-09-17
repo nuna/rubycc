@@ -10,6 +10,12 @@
 #ifndef _RUBYCC_NETINET_TCP_H
 #define _RUBYCC_NETINET_TCP_H
 
+/* glibc's own <features.h> (and the <sys/cdefs.h> it pulls in) is visible after
+   a bare include of glibc's same-name header, and the glibc headers that
+   include this one lean on that for __BEGIN_DECLS / __THROW (measured
+   2026-09-18, glibc-public-headers-mixed-1). */
+#include <features.h>
+
 #define TCP_NODELAY      1
 #define TCP_MAXSEG       2
 #define TCP_CORK         3
