@@ -36,6 +36,16 @@ module AArch64ExecutionHelper
   # the cross toolchain, not an assumption about a host that could vary.
   SYSROOT_LIBC = "#{SYSROOT}/lib/libc.so.6"
 
+  # The same sysroot's include directory: where the cross package keeps the
+  # target's libc headers, since this host's /usr/include holds its own
+  # architecture's. It is what rubycc searches for an aarch64 target whenever it
+  # exists (Preprocess::Preprocessor::LIBC_CROSS_SYSROOT_INCLUDE_DIRS,
+  # aarch64-cross-sysroot-include-1), so a test about a header rubycc does not
+  # bundle needs it present -- the cross gcc alone is not enough, and a host
+  # running aarch64 natively has its headers in the multiarch directory instead
+  # and none of this here.
+  SYSROOT_INCLUDE_DIR = "#{SYSROOT}/include"
+
   # The canonical on-target dynamic-loader path a consumer executable names in
   # its PT_INTERP; qemu resolves it beneath QEMU_LD_PREFIX, so it is the target
   # spelling (not the host sysroot path, which qemu would prefix a second time).
@@ -72,6 +82,20 @@ module AArch64ExecutionHelper
 
     skip "aarch64 execution toolchain (#{AArch64ExecutionHelper::QEMU}, " \
          "#{AArch64ExecutionHelper::CROSS_GCC}) is not installed"
+  end
+
+  # True when the cross package's libc *headers* are installed. Separate from
+  # #available?, which asks about the tools: a host can have the cross compiler
+  # and qemu while the headers sit elsewhere (or nowhere).
+  def self.cross_headers_available?
+    File.directory?(SYSROOT_INCLUDE_DIR)
+  end
+
+  # Skips the calling test unless those headers are installed.
+  def skip_unless_aarch64_cross_headers
+    return if AArch64ExecutionHelper.cross_headers_available?
+
+    skip "aarch64 cross libc headers (#{AArch64ExecutionHelper::SYSROOT_INCLUDE_DIR}) are not installed"
   end
 
   # Skips the calling test unless the sysroot loader/libc are also present, so

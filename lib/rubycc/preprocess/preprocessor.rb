@@ -5,6 +5,7 @@ require_relative "scanner"
 require_relative "token_converter"
 require_relative "constant_expression"
 require_relative "glibc_version"
+require_relative "../link/library_resolver"
 require_relative "../front/constant_evaluator"
 require_relative "../compile_error"
 
@@ -105,11 +106,89 @@ module Rubycc
         "aarch64" => "/usr/include/aarch64-linux-gnu"
       }.freeze
 
+      # The cross-toolchain sysroot's include directory for each target: where a
+      # Debian/Ubuntu cross libc package (libc6-dev-arm64-cross and kin) puts the
+      # target's headers when the target is *not* this machine. It is a second
+      # layout for the same question LIBC_MULTIARCH_INCLUDE_DIRS answers, and the
+      # two never describe the same host: a machine running the target natively
+      # has the headers in its own multiarch directory and no sysroot, while a
+      # machine cross-compiling for the target has the sysroot and no multiarch
+      # directory for it. Both are therefore offered, and only the one that
+      # exists is searched (see .libc_system_include_paths_for).
+      #
+      # Measured on this x86-64 host 2026-09-18 (Ubuntu 24.04, gcc-13 cross
+      # package): /usr/include/aarch64-linux-gnu does not exist, while
+      # libc6-dev-arm64-cross owns /usr/aarch64-linux-gnu/include/netdb.h, and
+      # `aarch64-linux-gnu-gcc -E -v` reports exactly
+      # ".../aarch64-linux-gnu/include" then "/usr/include" for angled includes
+      # (its own private directory aside, which BUNDLED_INCLUDE_DIR replaces).
+      # The same measurement is why the aarch64 link side already names
+      # /usr/aarch64-linux-gnu/lib (Link::LibraryResolver::TARGET_SYSTEM_DIRS,
+      # Link::ExecutableLinker::AARCH64_LIBC_PATHS) -- this is the include-side
+      # half of a path pair those two already treat as a fact of the packaging.
+      #
+      # The x86-64 entry is the same convention one triple over
+      # (libc6-dev-amd64-cross installs into /usr/x86_64-linux-gnu/include); it
+      # is what an AArch64 host cross-compiling for x86-64 needs, and it costs an
+      # ordinary x86-64 host nothing because the directory is absent there
+      # (verified absent on this host the same day).
+      LIBC_CROSS_SYSROOT_INCLUDE_DIRS = {
+        "x86_64" => "/usr/x86_64-linux-gnu/include",
+        "aarch64" => "/usr/aarch64-linux-gnu/include"
+      }.freeze
+
+      # The libc system directories for `libc_arch`: the target's multiarch
+      # directory, then its cross sysroot's include directory *when that
+      # directory exists*, then /usr/include.
+      #
+      # Only the sysroot entry is conditional, and the condition is what keeps
+      # every host that worked before working identically: on a native host the
+      # sysroot for its own architecture is not installed, so the list is the
+      # two entries it has always been, byte for byte. Where it is installed the
+      # entry sits ahead of /usr/include, which is what makes a cross compile
+      # read the target's <netdb.h> instead of falling through to this host's own
+      # (the failure this closes: /usr/include/netdb.h reached for the x86-64-only
+      # bits/stdint-uintn.h and the compile died there).
+      #
+      # Dropping a directory that does not exist is also what gcc does with the
+      # same two candidates -- `aarch64-linux-gnu-gcc -E -v` prints "ignoring
+      # nonexistent directory \"/usr/include/aarch64-linux-gnu\"" and searches
+      # its sysroot instead (measured 2026-09-18) -- so the resulting order is
+      # the cross compiler's own, not an invention. The check is a single
+      # File.directory? per Preprocessor, not a question put to another compiler:
+      # `aarch64-linux-gnu-gcc -print-sysroot` answers "/" on this host, which
+      # names neither directory, and rubycc must work on a machine with no gcc
+      # at all (the reason Preprocess::GlibcVersion measures the C library itself
+      # rather than asking a compiler).
+      #
+      # /usr/include stays last on a cross compile, as it is for gcc above: it is
+      # where a target-independent third-party header still lives, and every libc
+      # header the target actually disagrees about is now found earlier -- in the
+      # bundled arch layer or in the sysroot.
       def self.libc_system_include_paths_for(libc_arch)
         multiarch = LIBC_MULTIARCH_INCLUDE_DIRS.fetch(libc_arch) do
           raise ArgumentError, "unsupported libc arch: #{libc_arch.inspect}"
         end
-        [multiarch, "/usr/include"].freeze
+        sysroot = LIBC_CROSS_SYSROOT_INCLUDE_DIRS[libc_arch]
+        sysroot = nil unless sysroot && File.directory?(sysroot)
+        [multiarch, *sysroot, "/usr/include"].freeze
+      end
+
+      # The clause #missing_header_description appends when a header was not
+      # found, or nil when there is nothing worth adding. `headers_present` says
+      # whether either of the target's candidate directories above is installed.
+      #
+      # Kept a pure function of its three inputs (and not a predicate over this
+      # host's filesystem) so the case it describes -- a target whose headers are
+      # *not* installed -- can be asserted on a host where they are, which is
+      # every host this repository's aarch64 tests run on.
+      def self.absent_target_libc_headers_note(libc_arch, host_arch, headers_present)
+        return nil if headers_present || libc_arch == host_arch
+
+        "this compile targets #{libc_arch}, but no #{libc_arch} libc headers are installed on " \
+          "this #{host_arch} host -- neither #{LIBC_MULTIARCH_INCLUDE_DIRS[libc_arch]} nor " \
+          "#{LIBC_CROSS_SYSROOT_INCLUDE_DIRS[libc_arch]} exists -- so only this host's own " \
+          "/usr/include was searched"
       end
 
       # The x86-64 baseline, kept as a constant for the same reason
@@ -488,6 +567,16 @@ module Rubycc
         RbConfig::CONFIG["arch"].to_s.include?("musl") ? "musl" : "glibc"
       end
 
+      # This host's own CPU in the LIBC_ARCHS spelling, used only to tell a
+      # cross compile from a native one in the diagnostic above. The normalizing
+      # is Link::LibraryResolver's, so "what machine is this" has one answer
+      # across the compiler rather than one per component; a CPU neither of them
+      # knows simply never equals a supported libc_arch, which is the right
+      # answer for the one question asked of it.
+      def self.host_libc_arch
+        Link::LibraryResolver.normalize_target(RbConfig::CONFIG["host_cpu"])
+      end
+
       # The glibc version macros, predefined on a glibc target so the bundled
       # <features.h> does not have to name a version it cannot know. __GLIBC__
       # is a constant (glibc's major has been 2 since 1997); the minor is
@@ -560,6 +649,11 @@ module Rubycc
         # follows the same `libc_arch` as the bundled layer above, so a compile
         # never looks for another target's `bits/` (GAPS V).
         @libc_system_include_paths = self.class.libc_system_include_paths_for(libc_arch)
+        # The target these two follow, kept for the "no such file" diagnostic:
+        # a header that is missing because this host carries no headers for the
+        # target at all reads very differently from one that is simply absent
+        # (see #missing_header_description).
+        @libc_arch = libc_arch
         # name (String) => Macro.
         @macros = {}
         (arch_macros + PREDEFINED_PLATFORM_MACROS).each { |name| @macros[name] = predefined_target_macro }
@@ -636,6 +730,10 @@ module Rubycc
         # several translation units may chdir between them.
         @working_directory = Dir.pwd.b
         system_paths = system_includes ? default_system_include_paths : []
+        # Whether this run searched the host libc directories at all: -nostdinc
+        # (system_includes false) and the hermetic mode both drop them, and a
+        # diagnostic about which of them exist would be beside the point then.
+        @libc_system_paths_searched = system_includes && !hermetic_headers?
         @system_include_paths = system_paths.map { |path| absolute_path(path) }
         # A caller directory (-I/-isystem/-idirafter, all folded into
         # `include_paths` by the driver) that names the same directory as one
@@ -1408,7 +1506,7 @@ module Rubycc
         end
 
         index, path = search_include_paths(name, 0)
-        raise_at(hash, "#{name}: No such file or directory") unless path
+        raise_at(hash, missing_header_description(name)) unless path
 
         record_include_origin(path, index)
         @resolve_cache[key] = path
@@ -1433,10 +1531,48 @@ module Rubycc
         return resolve_include(kind, name, includer, hash) unless origin
 
         index, path = search_include_paths(name, origin + 1)
-        raise_at(hash, "#{name}: No such file or directory") unless path
+        raise_at(hash, missing_header_description(name)) unless path
 
         record_include_origin(path, index)
         path
+      end
+
+      # The text of the "not found along the search path" diagnostic for `name`.
+      # Normally it is the bare gcc wording; it grows one clause in the single
+      # case where the wording alone would send the reader looking in the wrong
+      # place -- a compile for another machine on a host that has no headers for
+      # that machine. There the search path holds only this host's own
+      # /usr/include, so *every* header the bundled layers do not carry either
+      # goes missing or, worse, is answered by the wrong architecture's copy,
+      # and the first symptom is a header failing to find something it includes
+      # (measured 2026-09-18: with no aarch64 headers installed, an x86-64 host
+      # answers "#include <netdb.h>" from its own /usr/include and the compile
+      # dies inside it on bits/stdint-uintn.h, naming neither the target nor the
+      # missing package).
+      #
+      # The clause is deliberately narrow. It needs a cross compile (the target
+      # differs from this host's CPU, so "this host's /usr/include" really is
+      # the wrong library), a run that actually searched the host libc
+      # directories, and both of the target's candidate directories absent --
+      # which is also what makes it silent on a machine where either layout is
+      # installed, and on a non-multiarch native host (Fedora and kin have no
+      # /usr/include/x86_64-linux-gnu, and their /usr/include is exactly right).
+      def missing_header_description(name)
+        base = "#{name}: No such file or directory"
+        return base unless @libc_system_paths_searched
+
+        note = self.class.absent_target_libc_headers_note(@libc_arch, self.class.host_libc_arch,
+                                                          target_libc_header_dir_present?)
+        note ? "#{base} (#{note})" : base
+      end
+
+      # Whether either of the target's two candidate libc header directories is
+      # installed. Probed here rather than remembered from
+      # .libc_system_include_paths_for because it is asked once, on the way out
+      # of a failing compile, and never on the path a successful one takes.
+      def target_libc_header_dir_present?
+        [LIBC_MULTIARCH_INCLUDE_DIRS[@libc_arch],
+         LIBC_CROSS_SYSROOT_INCLUDE_DIRS[@libc_arch]].any? { |dir| dir && File.directory?(dir) }
       end
 
       # The first directory in @include_paths, starting the scan at `start`,

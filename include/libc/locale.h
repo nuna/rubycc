@@ -17,10 +17,20 @@
    two arches (an all-pointer-and-char struct has no arch-dependent field
    widths on either LP64 target), so this header is arch-neutral, unlike
    pthread.h/setjmp.h/sys/stat.h.
-   Not included: glibc's locale_t / newlocale / uselocale / freelocale /
-   duplocale extensions. No corpus sample census hit needs them, so they are
-   left out to keep the surface to what is actually used (bigdecimal's use of
-   struct lconv via localeconv). */
+   Coverage against glibc's <locale.h> under _GNU_SOURCE (audited 2026-09-18,
+   glibc 2.39, both arches, with tools/audit_bundled_headers.rb; table in
+   docs/development/BUNDLED-HEADERS-COVERAGE.md). Nothing was added: glibc's
+   remaining names are all the locale-object extension, which no corpus sample
+   census hit needs (bigdecimal, the gem that put this header on the list,
+   reaches struct lconv through localeconv). Leaving it out is also what lets
+   <stdlib.h>, <string.h>, <strings.h>, <ctype.h>, <time.h> and <langinfo.h>
+   leave out their own *_l entry points; if a consumer appears, the type and
+   its five calls arrive together. Intentionally left out:
+   omitted: locale_t newlocale duplocale freelocale uselocale LC_GLOBAL_LOCALE
+   LC_*_MASK -- the locale-object API: a locale_t is a pointer to glibc's own
+   per-category state, and the category *masks* are a second numbering
+   alongside the LC_* numbers above, measured from the same host libc.
+   omitted: <stddef.h> -- only NULL is needed, and it is defined here. */
 
 #ifndef _RUBYCC_LOCALE_H
 #define _RUBYCC_LOCALE_H

@@ -10,9 +10,22 @@ require_relative "../tools/audit_bundled_headers"
 # glibc adds later, or a line dropped from a comment, fails here rather than as
 # the next gem's build error.
 class TestBundledHeadersCoverage < Minitest::Test
+  include ExecutionHelper
+
   A = AuditBundledHeaders
 
-  AUDITED = %w[stdlib.h sched.h termios.h sys/ioctl.h sys/types.h unistd.h].freeze
+  # bundled-headers-core-batch-1 classified the core batch: the string,
+  # formatted-I/O, arithmetic and signal headers, plus the four arch-layer
+  # headers a C extension reads limits and clocks out of.
+  # bundled-headers-io-batch-1 classified the socket, file and process headers
+  # from sys/socket.h on; sys/stat.h and sys/select.h are the arch-layer
+  # copies, audited on each arch against that arch's own file.
+  AUDITED = %w[stdlib.h sched.h termios.h sys/ioctl.h sys/types.h unistd.h
+               stdio.h string.h strings.h math.h signal.h assert.h locale.h
+               langinfo.h ctype.h errno.h limits.h time.h
+               sys/socket.h sys/mman.h sys/wait.h sys/uio.h sys/un.h sys/resource.h
+               sys/statfs.h sys/param.h sys/utsname.h netinet/in.h netinet/tcp.h
+               arpa/inet.h poll.h dirent.h pwd.h grp.h sys/stat.h sys/select.h].freeze
 
   AUDITED.each do |header|
     define_method("test_#{header.gsub(/\W/, "_")}_accounts_for_every_glibc_name") do
@@ -147,6 +160,77 @@ class TestBundledHeadersCoverage < Minitest::Test
     Rubycc::Compiler.new.compile(source, filename: "probe.c", target: "x86_64", libc: "glibc")
   end
 
+  # bundled-headers-core-batch-1: the names in this batch that rubycc rejected
+  # before it and gcc accepts. Each one is what a gem's C extension writes:
+  # a path buffer's size, the errno POSIX spells ENOTSUP, the unlocked getc a
+  # reader loop uses, the float companion of an ISO C99 rounding call, the
+  # GNU spelling of the handler type with an si_code to switch on, and ISO
+  # C11's own clock read. Measured failing on 2026-09-18 (for example
+  # "error: array size must be an integer constant" for PATH_MAX).
+  CORE_BATCH_REPROS = {
+    "limits.h" => "char abi_buf[PATH_MAX]; int main(void) { return sizeof abi_buf + IOV_MAX + INT_WIDTH; }",
+    "errno.h" => "int main(void) { return ENOTSUP; }",
+    "stdio.h" => "int main(void) { flockfile(stdin); int c = getc_unlocked(stdin); funlockfile(stdin); return c; }",
+    "math.h" => "int main(void) { int q; return (int)lrintf(1.5f) + ilogbf(2.0f) + (int)remquo(4, 2, &q) + (int)j0(1.0); }",
+    "signal.h" => "static void h(int s) { (void)s; } int main(void) { sig_t f = h; return (f != 0) + SI_USER + CLD_EXITED + SEGV_MAPERR; }",
+    "time.h" => "int main(void) { struct timespec ts; return timespec_get(&ts, TIME_UTC); }",
+    "string.h" => "int main(void) { char b[4]; explicit_bzero(b, sizeof b); return b[0]; }"
+  }.freeze
+
+  def test_the_core_batch_names_compile
+    failures = CORE_BATCH_REPROS.filter_map do |header, body|
+      source = "#include <#{header}>\n#{body}\n"
+      Rubycc::Compiler.new.compile(source, filename: "probe.c", target: "x86_64", libc: "glibc")
+      nil
+    rescue Rubycc::Error => e
+      "<#{header}>: #{e.message.lines.first.strip}"
+    end
+    assert_empty failures
+  end
+
+  # bundled-sigstksz-1 (GAPS CC): the sigaltstack repro from
+  # issues/bundled-sigstksz.md, run for real rather than merely compiled. On
+  # glibc 2.34 and later, SIGSTKSZ / MINSIGSTKSZ (bundled <signal.h>) and
+  # PTHREAD_STACK_MIN (bundled <pthread.h>) all resolve to a sysconf() call
+  # made against the host's real libc at run time, so this proves the actual
+  # returned value agrees with gcc's own build, not just that the macros
+  # compile.
+  # <unistd.h> is deliberately not included: glibc's <signal.h> pulls it in
+  # under _GNU_SOURCE, so SIGSTKSZ has to work with <signal.h> alone.
+  SIGSTKSZ_REPRO = <<~C
+    #define _GNU_SOURCE
+    #include <signal.h>
+    #include <stdlib.h>
+    #include <pthread.h>
+    #include <stdio.h>
+    int main(void) {
+      stack_t ss;
+      ss.ss_size = SIGSTKSZ;
+      ss.ss_sp = malloc(ss.ss_size);
+      ss.ss_flags = 0;
+      printf("%ld %ld %ld\\n", (long)ss.ss_size, (long)MINSIGSTKSZ, (long)PTHREAD_STACK_MIN);
+      return sigaltstack(&ss, 0);
+    }
+  C
+
+  def test_sigaltstack_repro_matches_gcc
+    skip "gcc unavailable" unless host_x86_64?
+
+    in_tmpdir do |dir|
+      gcc_object = File.join(dir, "gcc.o")
+      compile_with_gcc(SIGSTKSZ_REPRO, gcc_object)
+      gcc_status, gcc_stdout = link_and_run(gcc_object)
+      assert_equal 0, gcc_status, "gcc's own build of the repro is expected to exit 0"
+
+      rubycc_object = File.join(dir, "rubycc.o")
+      compile_with_rubycc(SIGSTKSZ_REPRO, rubycc_object)
+      rubycc_status, rubycc_stdout = link_and_run(rubycc_object)
+
+      assert_equal gcc_status, rubycc_status
+      assert_equal gcc_stdout, rubycc_stdout
+    end
+  end
+
   def test_the_reserved_names_a_program_writes_are_audited
     skip "gcc unavailable" unless A.available_arches.include?("x86_64")
 
@@ -155,6 +239,29 @@ class TestBundledHeadersCoverage < Minitest::Test
                     "a name programs write belongs to the measured surface"
     refute_includes unistd.missing.keys, "_POSIX_VDISABLE"
     refute_includes unistd.glibc_own, "_UNISTD_H", "an include guard is not a public name"
+  end
+
+  # bundled-headers-io-batch-1: glibc's <arpa/inet.h> includes <netinet/in.h>,
+  # its <netinet/in.h> and <netinet/tcp.h> include <sys/socket.h>, and programs
+  # lean on that -- each unit below uses a name only the pulled-in header
+  # declares. All three compiled under gcc and failed under rubycc before this
+  # step (measured 2026-09-18).
+  PULLED_IN = {
+    "arpa/inet.h" => "struct sockaddr_in sin; int probe(void) { sin.sin_family = AF_INET; return (int) sizeof sin; }",
+    "netinet/in.h" => "int probe(void) { socklen_t n = 0; return socket(AF_INET, SOCK_STREAM, 0) + (int) n; }",
+    "netinet/tcp.h" => "int probe(int fd) { int one = 1; " \
+                       "return setsockopt(fd, SOL_TCP, TCP_NODELAY, &one, (socklen_t) sizeof one); }"
+  }.freeze
+
+  def test_socket_headers_pull_in_what_glibc_pulls_in
+    failures = PULLED_IN.filter_map do |header, body|
+      source = "#define _GNU_SOURCE 1\n#include <#{header}>\n#{body}\n"
+      Rubycc::Compiler.new.compile(source, filename: "probe.c", target: "x86_64", libc: "glibc")
+      nil
+    rescue Rubycc::Error => e
+      "<#{header}>: #{e.message.lines.first.strip}"
+    end
+    assert_empty failures
   end
 
   private

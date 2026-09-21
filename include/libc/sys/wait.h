@@ -34,11 +34,38 @@
    <string.h> reaches for <strings.h> to reproduce glibc's __USE_MISC
    pull-in). pid_t arrives with it.
 
-   Not included: wait3/wait4 (they take a `struct rusage *`, which would mean
-   either cross-including <sys/resource.h> or duplicating struct rusage under
-   a shared guard, and no corpus census hit needs them -- nio4r, the gem that
-   put this header on the list, reaches only waitpid and the status macros),
-   the obsolete `union wait` overloads, and WAIT_ANY/WAIT_MYPGRP. */
+   Coverage against glibc's <sys/wait.h> under _GNU_SOURCE (audited
+   2026-09-18, glibc 2.39, x86-64 and aarch64, with
+   tools/audit_bundled_headers.rb; table in
+   docs/development/BUNDLED-HEADERS-COVERAGE.md). Seven names were missing;
+   five were added and two are deliberate. Added: wait3 and wait4, which
+   report a reaped child's resource usage and are the reason a gem that times
+   its subprocesses reaches this header at all. Step 124 left them out to
+   avoid cross-including <sys/resource.h>; that cross-include is now here, and
+   it is safe because both headers define struct timeval under the shared
+   __timeval_defined guard, so neither redefines the other's. Both prototypes
+   were checked by declaring them immediately before `#include <sys/wait.h>`
+   under gcc and aarch64-linux-gnu-gcc on 2026-09-18 (a conflicting
+   redeclaration is a hard error): clean on both arches. Also added are the
+   three status-*constructing* macros glibc publishes next to the
+   status-reading ones above -- WCOREFLAG and W_EXITCODE / W_STOPCODE -- whose
+   bodies are again rubycc's own spelling of measured behaviour, not glibc's
+   text: WCOREFLAG printed 128, W_EXITCODE(3,0) 768, W_EXITCODE(0,9) 9,
+   W_EXITCODE(5,11) 1291, W_STOPCODE(1) 383 and W_STOPCODE(19) 4991 on both
+   arches, which is exactly the encoding this header's own comment already
+   states (exit code in bits 8..15, signal in bits 0..6, 0x7f as the stopped
+   marker).
+   omitted: WAIT_ANY WAIT_MYPGRP -- the BSD spellings of waitpid()'s -1 and 0
+   pid arguments, which a caller writes as -1 and 0.
+   omitted: <stddef.h> <sys/ucontext.h> <unistd.h> <endian.h> <sys/procfs.h>
+   <sys/select.h> <sys/time.h> <sys/types.h> <sys/user.h> -- glibc reaches
+   siginfo_t and pid_t here through its split types layer and its <signal.h>,
+   which drags the whole signal-context and types chain along; rubycc includes
+   the bundled <signal.h> instead (see the paragraph above), which brings
+   siginfo_t and pid_t and nothing else.
+
+   The obsolete `union wait` overloads are not reproduced either; they are not
+   in the audit's difference because glibc only declares them for C++. */
 
 #ifndef _RUBYCC_SYS_WAIT_H
 #define _RUBYCC_SYS_WAIT_H
@@ -50,6 +77,9 @@
 #include <features.h>
 
 #include <signal.h>
+/* struct rusage, for wait3/wait4. Both headers define struct timeval under
+   the shared __timeval_defined guard, so this include never redefines it. */
+#include <sys/resource.h>
 
 #ifndef _RUBYCC_ID_T
 #define _RUBYCC_ID_T
@@ -112,6 +142,13 @@ typedef unsigned int id_t;
 #endif
 #define WIFCONTINUED(status) ((status) == 0xffff)
 #define WCOREDUMP(status)    ((status) & 0x80)
+#define WCOREFLAG            0x80
+
+/* The same encoding read the other way: build a status word the wait macros
+   above will decode as the given exit code / stopping signal (measured, see
+   the header note). */
+#define W_EXITCODE(ret, sig) (((ret) << 8) | (sig))
+#define W_STOPCODE(sig)      (((sig) << 8) | 0x7f)
 
 /* waitid's id interpretation. Measured: a 4-byte, 4-byte-aligned enum whose
    enumerators run 0, 1, 2 (and 3 for the recent P_PIDFD addition). */
@@ -135,6 +172,8 @@ typedef enum {
 #define CLD_CONTINUED 6
 
 pid_t wait(int *__status);
+pid_t wait3(int *__status, int __options, struct rusage *__usage);
+pid_t wait4(pid_t __pid, int *__status, int __options, struct rusage *__usage);
 pid_t waitpid(pid_t __pid, int *__status, int __options);
 int   waitid(idtype_t __idtype, id_t __id, siginfo_t *__infop, int __options);
 

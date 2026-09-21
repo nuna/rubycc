@@ -1,6 +1,16 @@
 /* rubycc bundled <strings.h>: the BSD byte-string declarations (POSIX). Derived
    from musl's <strings.h> declaration set; pure prototypes, nothing arch
-   specific. Common layer. */
+   specific. Common layer.
+
+   Coverage against glibc's <strings.h> under _GNU_SOURCE (audited 2026-09-18,
+   glibc 2.39, both arches, with tools/audit_bundled_headers.rb; table in
+   docs/development/BUNDLED-HEADERS-COVERAGE.md). Nothing was added; glibc's
+   remaining three names are the locale-object half.
+   omitted: locale_t strcasecmp_l strncasecmp_l -- the locale-object API, which
+   the bundled <locale.h> deliberately leaves out (the same line <stdlib.h>
+   draws); a consumer of it needs newlocale/uselocale too, so the family is
+   added as a whole when one appears. omitted: <stddef.h> -- only size_t is
+   needed, and it is declared here directly. */
 
 #ifndef _RUBYCC_STRINGS_H
 #define _RUBYCC_STRINGS_H

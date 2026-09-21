@@ -18015,3 +18015,636 @@ gcc は `alloca` を**その名前のまま組み込み関数として知って�
 - GAPS BI(このホストの aarch64 クロス sysroot が `/usr/aarch64-linux-gnu/include` にあり、
   rubycc の aarch64 既定探索路が期待する `/usr/include/aarch64-linux-gnu` ではない)は**未解決のまま**。
   本ステップはその経路を**直さずに**、そこで壊れていた `alloca` だけを直している
+
+## aarch64-cross-sysroot-include-1 — 同梱していないシステムヘッダをクロス sysroot からも探す(GAPS BI)
+
+### 原因
+
+**x86-64 のホストで `-target aarch64` を付けると、rubycc が同梱していないシステムヘッダを
+ホスト自身の x86-64 版から読み、その先で落ちた。** 2026-09-18 にこのホスト
+(WSL2 / Ubuntu 24.04 / x86-64、`libc6-dev-arm64-cross` + クロス gcc 13.3 導入済み)で
+起票時の再現をもう一度測った:
+
+```c
+#include <netdb.h>
+int main(void) { return 0; }
+```
+
+| | 結果 |
+|---|---|
+| `aarch64-linux-gnu-gcc -c` | ok |
+| `rubycc -target aarch64 -c`(対処前) | `/usr/include/netdb.h:28:1: error: bits/stdint-uintn.h: No such file or directory` |
+
+`Preprocessor.libc_system_include_paths_for("aarch64")` は
+`["/usr/include/aarch64-linux-gnu", "/usr/include"]` を返す。同じ日に測った事実:
+
+- **`/usr/include/aarch64-linux-gnu` はこのホストに無い**。Debian/Ubuntu のクロス libc パッケージは
+  独立した sysroot に置く: `dpkg -S /usr/aarch64-linux-gnu/include/netdb.h` →
+  `libc6-dev-arm64-cross`。`/usr/aarch64-linux-gnu/include` には 141 エントリ(`bits/` を含む)
+- そのため探索は `/usr/include` まで落ち、**x86-64 版の `netdb.h`** が当たる。それが引く
+  `bits/stdint-uintn.h` は x86-64 の multiarch ディレクトリにしか無いので見つからない
+- ギャップ V(aarch64 ホストで multiarch ディレクトリを探さなかった件)で multiarch 名を
+  target 別にした判断とは矛盾しない。**同じ問いに 2 通りのレイアウトがある**という話で、
+  ネイティブ aarch64 ホストは multiarch 側、クロスするホストは sysroot 側にヘッダを置く
+  (両者が同時に存在する構成は無い)
+
+`aarch64-linux-gnu-gcc -E -v` が angled include に対して報告する探索順(同日実測):
+
+```
+ignoring nonexistent directory "/usr/include/aarch64-linux-gnu"
+#include <...> search starts here:
+ /usr/lib/gcc-cross/aarch64-linux-gnu/13/include      ← コンパイラ私物(rubycc は同梱 include/ で置き換え)
+ /usr/lib/gcc-cross/aarch64-linux-gnu/13/../../../../aarch64-linux-gnu/include   ← /usr/aarch64-linux-gnu/include
+ /usr/include
+```
+
+**gcc 自身が「無いディレクトリは黙って落とし、sysroot を先に、`/usr/include` を最後に」置いている。**
+
+### 選択肢の比較(いずれもこのホストで実測、2026-09-18)
+
+| 案 | 実測 | 判断 |
+|---|---|---|
+| 1. クロス sysroot のパスを multiarch の隣に**決め打ち**する | `/usr/aarch64-linux-gnu/include` は cross パッケージの `--includedir` そのもの(`aarch64-linux-gnu-gcc -v` の configure 行に `--includedir=/usr/aarch64-linux-gnu/include`)。コストはゼロ、結果は決定的 | **採用** |
+| 2. クロスコンパイラに問い合わせる | `-print-sysroot` → **`/`**(2 つのディレクトリのどちらも指さない・空でもない)。`-print-search-dirs` → **include 系は 1 つも出ない**(programs / libraries だけ。`.../aarch64-linux-gnu/lib/` から `../../../..` で逆算するしかない)。`-E -v` on 空ファイル → 正しい一覧が出るが、**毎コンパイルで別のコンパイラを起動**することになる | 却下 |
+| 3. 候補ディレクトリを固定順に並べ、**存在するものだけ**探索する | 案 1 の上に `File.directory?` を 1 回足すだけ。gcc 自身の "ignoring nonexistent directory" と同じ振る舞い | **採用(案 1 と組で)** |
+
+案 2 を採らない理由は 3 つとも実測に基づく:
+
+- **`-print-sysroot` は使えない。** このホストのクロス gcc は `--with-sysroot=/` で構成されており、
+  答は `/` である。sysroot ではなく `--includedir` にヘッダが置かれているので、
+  この問い合わせでは何も分からない
+- **`-E -v` は当たるが高い。** rubycc は**ホストに gcc が無くても動く**ことを前提にしている
+  (`Preprocess::GlibcVersion` が「ホストの gcc に訊かず C ライブラリ本体を測る」のと同じ理由)。
+  翻訳単位ごとにクロス gcc を起動するのは N1 にも反する。安いチェック(stat 1 回)で足りる
+- **リンク側の既存判断と揃う。** `Link::LibraryResolver::TARGET_SYSTEM_DIRS` は既に
+  `/usr/aarch64-linux-gnu/lib` を、`Link::ExecutableLinker::AARCH64_LIBC_PATHS` は
+  `/usr/aarch64-linux-gnu/lib/libc.so.6` を決め打ちしている。今回はその**include 側の片割れ**であって、
+  新しい種類の仮定ではない
+
+環境変数や `--sysroot` フラグ(案 3 の変種)は**採らなかった**。今回のホストでは既定で正解に
+なる以上、利用者に何かを設定させる理由が無く、動かせる摘みを増やすと既定の探索順が
+「何も指定しなければどうなるか」で説明できなくなる。必要になった時点で起票する(残された観点)。
+
+### 対処
+
+`Preprocessor::LIBC_CROSS_SYSROOT_INCLUDE_DIRS`(target → クロス sysroot の include)を
+`LIBC_MULTIARCH_INCLUDE_DIRS` の隣に置き、`.libc_system_include_paths_for` が
+**multiarch → クロス sysroot(存在するときだけ)→ `/usr/include`** を返すようにした。
+
+- **条件付きなのは sysroot の 1 件だけ。** ネイティブなホストは自分の arch のクロスパッケージを
+  持たないので、**既存のホストの探索順は 1 バイトも変わらない**(下の実測)
+- **`/usr/include` はクロス時も最後に残す。** gcc も同じ(上の `-E -v`)。target 非依存の
+  サードパーティヘッダはそこにしか無く、target ごとに中身が違う libc ヘッダは
+  同梱 arch 層か sysroot で先に当たるので、ホストの arch のヘッダを黙って読む形は残らない
+  (`test_cross_target_resolves_system_headers_in_the_sysroot` がそれを測る)
+- x86-64 側の項(`/usr/x86_64-linux-gnu/include`、`libc6-dev-amd64-cross` の置き場)も対称に置いた。
+  このホストには**存在しない**ので x86-64 の探索順には影響しない
+- **どちらのレイアウトも無いホスト**では今までどおり `/usr/include` に落ちる。そのままでは
+  「x86-64 の netdb.h の中で落ちる」という読み手を誤らせる診断になるので、
+  **クロスコンパイルのときに限り** "No such file or directory" に 1 節を足した:
+
+  ```
+  bits/stdint-uintn.h: No such file or directory (this compile targets aarch64, but no
+  aarch64 libc headers are installed on this x86_64 host -- neither /usr/include/aarch64-linux-gnu
+  nor /usr/aarch64-linux-gnu/include exists -- so only this host's own /usr/include was searched)
+  ```
+
+  条件は 3 つ全部(target ≠ ホストの CPU・ホスト libc のディレクトリを実際に探索した・
+  候補 2 つとも不在)。これにより **multiarch でないネイティブホスト**(Fedora 等。
+  `/usr/include/x86_64-linux-gnu` が無く `/usr/include` が正解)では出ない。
+  判定は `.absent_target_libc_headers_note` という**引数だけの純関数**にしてある —
+  「ヘッダが入っていないホスト」の挙動を、**ヘッダが入っているホスト**で検査できるようにするため
+
+### 実測(2026-09-18、このホスト)
+
+- 再現: `rubycc -target aarch64 -c` が **exit 0**(対処前は上のエラー)。
+  `<netdb.h>` を使う差分プログラム(`sizeof(struct addrinfo)` ほか + `getaddrinfo`)を qemu で走らせ、
+  `aarch64-linux-gnu-gcc` と**出力・終了状態とも一致**(`48 32 32` / `1025 -2` / …)
+- 解決先: aarch64 で `#include <netdb.h>` を前処理したときトークンが名乗るファイルは
+  `/usr/aarch64-linux-gnu/include/{netdb.h,bits/netdb.h,rpc/netdb.h}` の 3 本のみ。
+  **`/usr/include/` 由来は 0 本**
+- **x86-64 の探索順は不変。** 既定のシステム探索路は前後ともに
+  `[同梱 include, 同梱 libc/glibc/x86_64, 同梱 libc, /usr/include/x86_64-linux-gnu, /usr/include]`。
+  `<stdio.h> + <netdb.h> + <pthread.h>` を含むソースの `rubycc -E` 出力は
+  **前後で 16700 バイトの完全一致**(`diff` 0 行)
+- 診断の退避経路: `LIBC_CROSS_SYSROOT_INCLUDE_DIRS` を存在しないパスに差し替えた仮想ホストで、
+  上の 1 節付きのエラーになることを確認(スクラッチ確認。テストでは純関数側を検査)
+
+### テスト
+
+- `test/test_aarch64_cross_sysroot_include.rb`(新設、7 runs / 26 assertions / 0 skips)。
+  探索路の形(2 レイアウトの「在るものだけ探す」を **arch ごとに iff で**表明するので
+  ネイティブ aarch64 ホストでも真)・ホスト target の探索路が不変であること・
+  診断の純関数の 3 ケース・**解決先が sysroot であること**(前処理後のトークンが名乗るファイル名を読む)・
+  **`<netdb.h>` を使うプログラムのクロス gcc 差分**(qemu 実行)。
+  クロスヘッダを要するものは `skip_unless_aarch64_cross_headers`(新設。
+  `AArch64ExecutionHelper::SYSROOT_INCLUDE_DIR` の存在で判定)で skip する
+- **手書きの代替が 2 か所とも実物の `<netdb.h>` になった**(起票時の受け入れ条件):
+  - `test/test_bundled_pthread_attr_guard.rb` の `TestBundledPthreadAttrGuardAarch64` —
+    stand-in を削除し、x86-64 側と同じ両方向の include 順 + 完全型の実行差分(3 ケース)に置き換え
+  - `test/test_header_abi.rb` の `TestHeaderAbiAarch64` — 手組みの
+    `run_pthread_attr_guard_case_aarch64` / `assert_pthread_attr_guard_matches` を削除し、
+    x86-64 と**同じ Spec**(`PTHREAD_ATTR_NETDB_FORWARD` / `REVERSE`)を
+    `assert_abi_matches_aarch64` に渡す形にした
+- `test/test_preprocessor.rb` の既存表明 `x86.last(2)` を `x86.last(定数の長さ)` にした。
+  「定数と実インスタンスが一致する」ことが趣旨で、ディレクトリの本数ではないため
+- 実走(いずれも 0 failures / 0 errors): 新テスト 7 runs、`test_preprocessor.rb` 233 runs、
+  `test_driver.rb` 31 runs、`test_include_absolute_path.rb` 10 runs、
+  `test_include_duplicate_system_dir.rb` 10 runs、`test_bundled_pthread_attr_guard.rb` 8 runs、
+  `test_header_abi.rb` 130 runs、`test_examples.rb` 75 runs、`test_examples_aarch64.rb` 594 runs
+  (22 skips)、`test_c_suite.rb` 223 runs(11 skips)、`test_c_suite_aarch64.rb` 444 runs(22 skips)。
+  巻き添えの確認として `test_freestanding_headers.rb` 10 / `test_glibc_alloca_without_gnuc.rb` 5 /
+  `test_include_path_encoding.rb` 6 / `test_cli.rb` 10 / `test_aarch64_shared_object.rb` 23 /
+  `test_platform_literals.rb` 1 も 0 failures
+- **例題は足していない。** このステップが直したのは**既定の探索順**であり、
+  `examples/` の aarch64 実行系(`test_examples_aarch64.rb`)は
+  `system_includes: false` + 明示 `-I` で走るので、例題を足しても直した経路を通らない。
+  同じ理由で直前のヘッダ系ステップ(`glibc-public-headers-mixed-1`)も例題を足していない
+
+### 残された観点
+
+- **`test_c_suite_aarch64.rb` / `test_examples_aarch64.rb` はまだ明示パス**
+  (`CROSS_SYSTEM_INCLUDE_PATHS` = 同梱 freestanding + `/usr/aarch64-linux-gnu/include`、
+  `system_includes: false`)。既定路でも通るようになったが、**測っているものが変わる**
+  (同梱 libc 層を読むか、sysroot の glibc 本体を読むか)ので今回は触っていない。
+  移すなら「どちらの経路を常時検証したいのか」を決めてからにする
+- **sysroot の場所を利用者が指定する手段は無い**(`--sysroot` / 環境変数)。
+  Debian/Ubuntu 以外のクロス配置(`/opt/...` に展開した sysroot 等)は現状 `-I` で渡すしかない。
+  実例に当たったら起票する
+- **ネイティブ aarch64 ホストでの実測は無い**(このホストでは `/usr/include/aarch64-linux-gnu` が
+  作れない)。探索路の表明は「存在するものだけを含む」という iff の形にしてあるので
+  ネイティブ側でも真になるはずだが、確認は aarch64 実機の CI に委ねる
+- **クロス sysroot の `bits/` を読めても、そこから先で別の未対応に当たることはある**。
+  実測: `-target aarch64` で `<sys/ucontext.h>` を読むと `/usr/aarch64-linux-gnu/include/sys/user.h:32`
+  の `__uint128_t` で落ちる(2026-09-18)。これは探索順ではなく型の未対応で、別件
+
+## bundled-headers-core-batch-1 — 同梱ヘッダの中核 12 本(文字列・入出力・算術・シグナル・上限・時刻)を glibc と突き合わせて分類する
+
+GAPS §2 の負債(`issues/bundled-headers-coverage-audit.md`)の続き。`bundled-headers-coverage-audit-2` が
+5 本、`bundled-unistd-process-group-1` が `unistd.h` を分類した後に残っていた未分類ヘッダのうち、
+C 拡張がほぼ必ず含める 12 本を 1 バッチで扱った: 共通層の `stdio.h`・`string.h`・`strings.h`・`math.h`・
+`signal.h`・`assert.h`・`locale.h`・`langinfo.h` と、arch 層(`include/libc/glibc/{x86_64,aarch64}/`)の
+`ctype.h`・`errno.h`・`limits.h`・`time.h`。ソケット・ファイル系のヘッダは別バッチ(別ワークツリー)で扱った。
+
+### 原因
+
+12 本とも「コーパスのサンプルが届いた範囲」に絞って作られ、glibc の同名ヘッダとの差の分類が一度も
+されていなかった。`tools/audit_bundled_headers.rb` で測ると(2026-09-18、glibc 2.39、gcc 13.3 /
+aarch64-linux-gnu-gcc 13.3)、12 本の不足は x86-64 1,537 / aarch64 1,564、未記載は 1,548 / 1,581 だった。
+大半は型ごとに綴りを変えた同じ関数(`math.h` の `_FloatN` 版)や glibc 内部の名前(`langinfo.h` の `_NL_*`)
+だが、**gcc では通り rubycc では落ちる、gem が普通に書く名前**も混ざっていた。このホストで測った再現
+(いずれも `-D_GNU_SOURCE` なし、修正前 2026-09-18):
+
+| 再現 | rubycc(修正前) |
+|---|---|
+| `#include <limits.h>` + `char buf[PATH_MAX];` | `error: array size must be an integer constant` |
+| `#include <errno.h>` + `return ENOTSUP;` | `error: undeclared variable 'ENOTSUP'` |
+| `#include <stdio.h>` + `getc_unlocked(stdin)` | `error: implicit declaration of function 'getc_unlocked'` |
+| `#include <math.h>` + `lrintf(1.5f)` | `error: implicit declaration of function 'lrintf'` |
+| `#include <signal.h>` + `sighandler_t h;`(`_GNU_SOURCE`) | `error: expected type specifier` |
+| `#include <time.h>` + `timespec_get(&ts, TIME_UTC)` | `error: implicit declaration of function 'timespec_get'` |
+
+gcc は 6 本とも通す。`PATH_MAX` は同梱ヘッダのどこにも無かった(glibc は `<linux/limits.h>` と
+`bits/posix1_lim.h` に置き、プログラムからは `<limits.h>` 経由でしか見えない)。
+
+### 対処
+
+12 本の不足を全て「足す / 意図して外す(理由)」に分け、外すものを各ヘッダの冒頭コメントに
+`omitted: 名前 ... -- 理由` の形で書いた。**見え方の規則**は `bundled-headers-coverage-audit-2` と同じ
+(glibc が gcc の既定 = `_DEFAULT_SOURCE` 以下で見せる名前は無条件、`_GNU_SOURCE` でだけ見せる名前は
+`__USE_GNU` の下)。`string.h` で Step 124 が無条件に宣言していた GNU 名(`memmem` など)は、ソースが
+それに頼っているので動かしていない。
+
+**測り方**: 足した宣言は全て自分で書き、glibc 自身のヘッダの直前(または直後)に並べて gcc と
+`aarch64-linux-gnu-gcc` の `-fsyntax-only -D_GNU_SOURCE` に通した(衝突する再宣言はエラーになる。
+わざと型を変えた宣言で落ちることも確かめた)。値は glibc のヘッダを含めたプログラムを両 arch で
+コンパイルして印字させた(aarch64 は qemu-aarch64 とクロス sysroot で実行)。**比べた値は全件、両 arch で一致**
+したので、共通層のヘッダは共通層のまま、arch 層は各 arch で別に測った値を書いた(R8)。glibc のヘッダ本文は
+写していない(R11、`docs/reference/HEADER-LICENSING.md` §6)。いずれも 2026-09-18 の測定。
+
+| ヘッダ | 不足(前 → 後、x86-64 / aarch64) | 足した | 未記載(前 → 後) |
+|---|---|---|---|
+| `stdio.h` | 56 → 28 | 28 | 58 → 0 |
+| `string.h` | 16 → 13 | 3 | 17 → 0 |
+| `strings.h` | 3 → 3 | 0 | 4 → 0 |
+| `math.h` | 777 / 779 → 730 / 732 | 47 | 777 / 779 → 0 |
+| `signal.h` | 152 / 177 → 53 / 79 | 99 / 98 | 155 / 186 → 0 |
+| `assert.h` | 1 → 1 | 0 | 1 → 0 |
+| `locale.h` | 19 → 19 | 0 | 20 → 0 |
+| `langinfo.h` | 328 → 328 | 0 | 329 → 0 |
+| `ctype.h`(両 arch 層) | 20 → 20 | 0 | 20 → 0 |
+| `errno.h`(両 arch 層) | 2 → 1 | 1 | 2 → 0 |
+| `limits.h`(両 arch 層) | 100 → 68 | 32 | 101 → 0 |
+| `time.h`(両 arch 層) | 63 → 57 | 6 | 64 → 0 |
+| 計 | 1,537 / 1,564 → 1,321 / 1,349 | 216 / 215 | 1,548 / 1,581 → 0 |
+
+(未記載には取り込み不足のヘッダも 1 件ずつ数える。`signal.h` で arch によって「足した」数が 1 違うのは、
+glibc のスレッド型(`pthread_t` を含む)が aarch64 では監査の帰属上 `<signal.h>` の名前にならず、
+もともと不足に数えられていなかったため。x86-64 だけの不足に `pthread_mutex_t` などのスレッド型 12 個(`union pthread_attr_t` を含む)が残り、
+aarch64 だけの不足はシグナルフレームのレジスタ状態 49 個である。2026-09-22 に再測。)
+
+ヘッダごとの内容:
+
+- **`limits.h`**: システム上限 19 個(`PATH_MAX` 4096・`NAME_MAX` 255・`PIPE_BUF` 4096・`IOV_MAX` 1024・
+  `HOST_NAME_MAX`・`LOGIN_NAME_MAX`・`TTY_NAME_MAX`・`NGROUPS_MAX`・`MAX_CANON`・`MAX_INPUT`・`LINE_MAX`・
+  `RE_DUP_MAX`・`NZERO`・`SSIZE_MAX`・`LONG_BIT`・`WORD_BIT`・`XATTR_*` 3 個)と C23 の `*_WIDTH`/`BOOL_MAX`
+  13 個。外したもの: `_POSIX_*`/`_POSIX2_*`/`_XOPEN_IOV_MAX`(規格の下限値で、本物の上限を足したので要らない)、
+  POSIX.2 のユーティリティ上限、メッセージカタログの `NL_*`、aio・タイマ・メッセージキュー・セマフォの上限、
+  スレッドの上限(**`PTHREAD_STACK_MIN` は glibc 2.34 以降 `sysconf` 呼び出しに展開される**ので定数を書けない)、
+  `<syslimits.h>`。
+- **`errno.h`**: `ENOTSUP`(`EOPNOTSUPP` の別名、両 arch とも 95)。外したもの: `error_t`。
+- **`stdio.h`**: `va_list`(POSIX が `<stdio.h>` に定義させる。glibc と同じガード `_VA_LIST_DEFINED`)、
+  `flockfile`/`ftrylockfile`/`funlockfile` と `_unlocked` 系 16 個(`fgets_unlocked`/`fputs_unlocked` は
+  `__USE_GNU`)、`fmemopen`・`open_memstream`・`vdprintf`・`renameat`・`setbuffer`・`setlinebuf`・`ctermid`、
+  `SEEK_DATA`/`SEEK_HOLE`(3/4、`__USE_GNU`。同梱 `unistd.h` と同じ値)。外したもの: `fopencookie` 系、
+  LFS64 別名、`renameat2`/`RENAME_*`、`obstack_*printf`、`tempnam` などの旧来の名前、`<stdarg.h>`/`<stddef.h>`。
+- **`string.h`**: `explicit_bzero`、`strverscmp`/`rawmemchr`(`__USE_GNU`)。外したもの: `locale_t`/`*_l`、
+  `strdupa`/`strndupa`、GNU の `basename`(`<libgen.h>` が同名をマクロで置き換える)、glibc 2.32 以降の
+  `sig*_np`/`strerror*_np`、`memfrob`/`strfry`。
+- **`math.h`**: ISO C99 の float/long double 版 18 個(`lrintf`・`llroundl`・`ilogbf`・`remquo`・`nexttoward` など)、
+  XSI の Bessel 関数 18 個と `signgam`・`MAXFLOAT`、`lgamma_r` 3 個、`exp10`/`sincos` 各 3 個(`__USE_GNU`)。
+  外したもの: `_FloatN` 版(TS 18661)、`M_*f`/`M_*l`、IEEE 754-2019 / C23 の追加(`fmaximum*` など)、
+  C23 の縮小演算(`fadd` など)、SVID/BSD の旧名(`drem`・`finite`・`gamma`・`isnanf` など)、
+  `FP_FAST_FMA`/`FP_FAST_FMAF`(**このヘッダの唯一の arch 差**。glibc はコンパイラが FMA 命令を持つと見るときに定義し、
+  aarch64 では常に、x86-64 では `-mfma` のときだけ現れる)。
+- **`signal.h`**: si_code 定数 61 個(`SI_*`・`CLD_*`・`SEGV_*`・`BUS_*`・`ILL_*`・`FPE_*`・`TRAP_*`・`POLL_*`。glibc では
+  列挙子)、siginfo_t の残りのメンバ 13 個(`si_utime`/`si_stime`/`si_int`/`si_ptr`/`si_timerid`/`si_overrun`/
+  `si_addr_lsb`/`si_lower`/`si_upper`/`si_pkey`/`si_call_addr`/`si_syscall`/`si_arch`)と、それを置く union の腕
+  (`__timer`・`__sigsys` を新設、`__sigchld`・`__sigfault` を延長)、`stack_t`(glibc と共有のガード
+  `__stack_t_defined`)・`sigaltstack`・`SS_ONSTACK`/`SS_DISABLE`、`sigwait`・`sigwaitinfo`・`sigtimedwait`・
+  `sigqueue`・`killpg`・`siginterrupt`・`psignal`・`psiginfo`、`pthread_kill`/`pthread_sigmask` とその `pthread_t`、
+  `sig_t`/`sighandler_t`(後者は `__USE_GNU`)、`sigval_t`(ガード `__sigval_t_defined`)、`SA_STACK`/`SA_INTERRUPT`、
+  `sigisemptyset`/`sigandset`/`sigorset`(`__USE_GNU`)。**メンバ名の変更が 1 つある**: `__rt` の腕の
+  `si_value` を glibc と同じ `si_sigval` にした。マクロ `si_int` の置換列が `si_value` を含むと、マクロ `si_value` が
+  そこで再展開されて壊れるため(`si_value` マクロ自体の置換先を変えただけで、利用者から見える綴りは変わらない)。
+  offsetof 20 個と siginfo_t の大きさ 128・`stack_t` の 24/0/8/16 は rubycc でコンパイルして gcc の値と一致した。
+  外したもの: `struct sigevent`/`SIGEV_*`(`<time.h>` の POSIX タイマとまとめて外した。`pthread_attr_t` を
+  埋め込み、glibc は `<netdb.h>` と `__sigevent_t_defined` で共有する)、`pthread_t` 以外のスレッド型、
+  `SIGSTKSZ`/`MINSIGSTKSZ`(**glibc 2.34 以降 `sysconf` 呼び出し**)、BSD/System V の旧インタフェース、
+  シグナルフレーム内のレジスタ状態(x86-64 の `struct _fpstate` 系と aarch64 の SVE/ZA 系。**この 2 arch の
+  差は全部ここ**)、`pthread_sigqueue`/`tgkill`、取り込み不足のヘッダ。
+- **`time.h`**: `timespec_get`・`clock_nanosleep`・`clock_getcpuclockid`、`CLOCK_REALTIME_ALARM`/
+  `CLOCK_BOOTTIME_ALARM`/`CLOCK_TAI`(8/9/11)。`struct itimerspec` を glibc と共有のガード `__itimerspec_defined`
+  の下に置いた(`struct tm` と同じ扱い。監査の probe は両順とも ok)。外したもの: POSIX タイマ、`adjtimex` 系、
+  `getdate` 系、`dysize`、glibc 2.34 以降の `timespec_getres`、`locale_t`/`*_l`、`struct timeval`
+  (同梱 `<sys/time.h>` が定義する)、`<stddef.h>`。
+- **`strings.h`・`ctype.h`・`locale.h`・`langinfo.h`・`assert.h`**: 足したものは無い。どれも残りは
+  locale オブジェクト API(`locale_t` と `*_l`。`stdlib.h` が既に外していた線を、`<locale.h>` を起点に全ヘッダで揃えた)、
+  glibc 内部の名前(`_NL_*`)、struct lconv と重複する GNU の `nl_langinfo` 項目、`assert_perror` などで、
+  従来コメントの散文にあった判断を `omitted:` 行に書き直した。
+
+**ガード**: 新しく立てたのは `__itimerspec_defined`(`time.h`)・`__stack_t_defined`・`__sigval_t_defined`
+(`signal.h`)の 3 つで、監査の probe(実在の glibc ヘッダと両順で並べて rubycc でコンパイル)は全件 ok。
+`signal.h` の `time_t` は `sched.h` と同じく `_RUBYCC_TIME_T` で置いたので `__time_t_defined` が unguarded
+に数えられる(スカラーの typedef なので互換な再定義。probe も ok)。
+
+**組み合わせ**: 同梱 `sys/wait.h` も `CLD_*` を同じ値で定義している(同一の置換列なので再定義は許される)。
+`signal.h`↔`sys/wait.h`・`stdio.h`↔`unistd.h`(`SEEK_DATA`)・`stdarg.h`↔`stdio.h`(`va_list`)・
+`signal.h`↔`pthread.h`(`pthread_t`)・`signal.h`↔`time.h`/`sched.h`(`struct timespec`)・`sys/timerfd.h`→`time.h`
+を両順、両 arch、`_GNU_SOURCE` の有無で rubycc に通し、全て通った(2026-09-18)。
+
+由来台帳(`docs/reference/HEADER-LICENSING.md` §3.2 / §3.3)の `math.h`・`stdio.h`・`string.h`・`signal.h`・
+`time.h`/`limits.h`/`errno.h`(両 arch)の行に追加分と測り方を書き足した。ファイル数は動いていないので §3.4 の
+集計(81 本)は変わらない。`strings.h`・`ctype.h`・`locale.h`・`langinfo.h`・`assert.h` はコメントだけの変更なので
+行は変えていない。
+
+### テスト
+
+- `test/test_bundled_headers_coverage.rb`: `AUDITED` に 12 本を足した(両 arch で「未記載 0」を常時検査)。
+  原因節の再現を 1 単位ずつコンパイルする `test_the_core_batch_names_compile`(7 本)を追加。
+- `test/test_header_abi.rb`(両 arch のクラスで走るものは aarch64 でも検査される):
+  `SIGNAL` に `stack_t` の大きさ、si_code 定数 61 個・`SS_*`・`SA_INTERRUPT`/`SA_STACK`、siginfo_t の追加メンバ
+  13 個と `stack_t` の offsetof、新しい呼び出しの宣言。`LIMITS` に上限 19 個と `*_WIDTH` 13 個(オラクル側で
+  見えるよう `_GNU_SOURCE` を定義)。`TIME` に clock id 3 個と `struct itimerspec` の大きさ・offsetof、
+  `timespec_get` ほか。`ERRNO` に `ENOTSUP`/`EOPNOTSUPP`。`STDIO` に `va_list` の大きさと `L_ctermid`、
+  `<stdio.h>` だけで `va_list` を使う関数と `_unlocked` 系。`MATH` に `MAXFLOAT`(X/Open の名前で gcc の既定では
+  見えないので `_GNU_SOURCE` を定義)と C99/XSI の宣言。`STRING` に `explicit_bzero` の呼び出し。
+  libm を要る呼び出し(`signgam` を含む)は `sizeof` の中に置いた(既存の `MATH` と同じ方針)。
+- `docs/development/BUNDLED-HEADERS-COVERAGE.md` を再生成した。差分は 12 本の行と節だけで、混在の調査
+  (同梱しない glibc ヘッダ 186 本)で rubycc だけが落ちるものは 5 本のまま増えていない。
+- 実行結果(2026-09-22 に再実行、ワークツリー `agent-a12dcce9134604a68`、いずれも 0 failures / 0 errors):
+  `test_bundled_headers_coverage.rb` 26 runs / 136 assertions、
+  `test_audit_bundled_headers.rb` 5 runs / 98 assertions、
+  `test_header_abi.rb` 130 runs / 385 assertions / 0 skips、
+  `test_doc_links.rb` 3 runs / 45 assertions、
+  `test_examples.rb` 75 runs / 76 assertions、
+  `test_examples_aarch64.rb` 594 runs / 1023 assertions / 22 skips(既存)、
+  `test_c_suite.rb` 223 runs / 439 assertions / 11 skips(既存)、
+  `test_c_suite_aarch64.rb` 444 runs / 869 assertions / 22 skips(既存)。
+  フルスイートは統合側で回す。
+
+### 残された観点(このステップでは直していない)
+
+- **POSIX タイマ(`timer_create` 系と `struct sigevent`)は外したまま**。足すなら `pthread_attr_t` の埋め込みと
+  `__sigevent_t_defined` のガード(`<netdb.h>` と共有)を一緒に扱う。利用者が出たら 1 件の issue にする。
+- **`SIGSTKSZ`/`MINSIGSTKSZ`/`PTHREAD_STACK_MIN` は glibc 2.34 以降 `sysconf` 呼び出し**なので書いていない。
+  統合時に測り直すと、`static char s[SIGSTKSZ];` は gcc でも通らない(定数でない)が、`ss.ss_size = SIGSTKSZ;` のような
+  実行時の値として使う形は gcc が通り rubycc が落ちる。`issues/bundled-sigstksz.md`(GAPS CC)に起票した。
+- **locale オブジェクト API(`locale_t`・`newlocale`/`uselocale` と各ヘッダの `*_l`)** は全ヘッダで外した。
+  利用者が現れたら型と 5 関数と `*_l` をまとめて足す。
+- 同梱 `pthread.h` は `pthread_kill` などの仮引数名に `__thread`(gcc では TLS のキーワード)を使っている。
+  rubycc は通すので実害は無いが、`signal.h` 側の同じ宣言は `__th` で書いた。
+- 未分類の同梱ヘッダ(親 issue に残る分)は、ソケット・ファイル系のバッチと合わせて親 issue の作業ログで数え直す。
+
+## bundled-headers-io-batch-1 — ソケット・ファイル・プロセス系の同梱ヘッダ 18 本を glibc と突き合わせて分類する
+
+GAPS §2 の負債(`issues/bundled-headers-coverage-audit.md`)の続き。`bundled-headers-coverage-audit-2` と
+`bundled-unistd-process-group-1` が分類した 6 本に続けて、ソケット・ファイル・プロセス系の 18 本
+(`sys/socket.h`・`sys/mman.h`・`sys/wait.h`・`sys/uio.h`・`sys/un.h`・`sys/resource.h`・`sys/statfs.h`・
+`sys/param.h`・`sys/utsname.h`・`netinet/in.h`・`netinet/tcp.h`・`arpa/inet.h`・`poll.h`・`dirent.h`・`pwd.h`・
+`grp.h` と、arch 層の `sys/stat.h`・`sys/select.h`)について、glibc の同名ヘッダとの差の全項目を
+「足す / 意図して外す(理由)」に分けた。同じ時期に別のバッチ(stdio/string/math/signal と arch 層の
+ctype/errno/limits/time)が並行して分類している。
+
+### 原因
+
+どの 18 本も Step 123 / 124(M5 H2)などで「コーパスのサンプルが届いた範囲」に絞って作られ、
+`tools/audit_bundled_headers.rb` の表(2026-09-18、glibc 2.39)では不足が両 arch で合計 890 件前後、
+「未記載」はさらに取り込み不足の分だけ多かった。形は 3 つに分かれる。
+
+- **名前が無い**: ソケットオプション(`SO_*` 73 個、`IP_*`/`IPV6_*`)、`CMSG_*`、`MAXPATHLEN`、`wait4`、`SUN_LEN` など。
+  `sys/socket.h` は Step 88 から `struct msghdr`/`struct cmsghdr` を持つのに `CMSG_*` が無く、
+  SCM_RIGHTS による fd 渡しの制御バッファを書く手段が無かった。
+- **glibc が含めるヘッダを含めない**: glibc の `<netinet/in.h>`・`<netinet/tcp.h>` は `<sys/socket.h>` を、
+  `<arpa/inet.h>` は `<netinet/in.h>` を含める。同梱側は含めていなかったので、
+  `<arpa/inet.h>` だけで `struct sockaddr_in` を使う、`<netinet/in.h>` だけで `socket()` を呼ぶ、
+  `<netinet/tcp.h>` だけで `setsockopt(..., SOL_TCP, TCP_NODELAY, ..., (socklen_t) ...)` を書く単位が、
+  gcc では通り rubycc では落ちた。
+- **ヘッダ冒頭の「対象外」判断が測定の前提を失っていた**: `sys/socket.h` の AF_ 族は「測っていない値は足さない」、
+  `sys/param.h` の BSD 名は「limits.h を別名で再導出するだけ」、`sys/wait.h` の `wait3`/`wait4` は
+  「`<sys/resource.h>` を相互に含めたくない」を理由に外していた。どれも一度の測定で両 arch の全値が取れ、
+  共有ガードで衝突も起きないので、理由として残らない。
+
+修正前の再現(2026-09-18、7bb66af の `lib/` と `include/` を `git archive` で作業場所の外に取り出して測定、
+x86-64・aarch64 とも同じ結果。gcc はどれも通す):
+
+| 単位(`-D_GNU_SOURCE`) | 修正前の rubycc |
+|---|---|
+| `<arpa/inet.h>` + `struct sockaddr_in sin; sin.sin_family = AF_INET;` | `invalid use of incomplete type 'struct sockaddr_in'` |
+| `<netinet/in.h>` + `socket(AF_INET, SOCK_STREAM, 0)` | `implicit declaration of function 'socket'` |
+| `<netinet/tcp.h>` + `setsockopt(fd, SOL_TCP, TCP_NODELAY, &one, (socklen_t) sizeof one)` | `expected ')'`(`socklen_t` が無い) |
+| `<sys/socket.h>` + `CMSG_FIRSTHDR(m)` | `implicit declaration of function 'CMSG_FIRSTHDR'` |
+| `<sys/param.h>` + `char buf[MAXPATHLEN];` | `array size must be an integer constant` |
+| `<netinet/in.h>` + `struct ip_mreq m;` | `invalid use of incomplete type 'struct ip_mreq'` |
+| `<sys/un.h>` + `SUN_LEN(a)` | `implicit declaration of function 'SUN_LEN'` |
+| `<sys/wait.h>` + `wait4(-1, &st, 0, r)` | `implicit declaration of function 'wait4'` |
+
+修正後は 8 本とも両 arch で通る。
+
+### 対処
+
+値・大きさ・オフセットはすべてリファレンスコンパイラに印字させて測ってから書いた(glibc のヘッダ本文は
+写していない。R11、`docs/reference/HEADER-LICENSING.md` §6)。追加した関数宣言はすべて、glibc の同名ヘッダを
+含める**直前**に同じ宣言を書いて `gcc` と `aarch64-linux-gnu-gcc` の `-fsyntax-only` に通し、衝突する再宣言が
+無いことを確かめた(2026-09-18、両 arch)。**見え方の規則**は既存の各ヘッダの方針に従う: これらのヘッダは
+Linux 拡張を従来から無条件に見せているので、追加分も無条件。
+
+- **値の追加(閉じた番号空間は一度に測る)**: `sys/socket.h` の残りの AF_/PF_/SOCK_/SOL_/SO_/MSG_/SCM_ と
+  socket ioctl 番号・`SOMAXCONN`(223 個)、`netinet/in.h` の IPPROTO_/IP_/IPV6_/MCAST_/SOL_IP 系/INADDR_/
+  IN_CLASS 系(181 個)、`netinet/tcp.h` の TCP_/SOL_TCP/TCPI_OPT_/TCPOPT_/TCPOLEN_/TH_(81 個)、
+  `sys/mman.h` の MAP_/PROT_/MADV_/POSIX_MADV_/MCL_/MREMAP_/MFD_(47 個)。`gcc` と
+  `aarch64-linux-gnu-gcc`(qemu 実行)に印字させ、**全件一致**したので共通層に置いた。
+  ソケットオプションは欠けても extconf がエラーにしないので、`bundled-headers-coverage-audit-2` の
+  `SIOC*` と同じく「gcc より機能の少ない gem ができる」形の穴である。
+- **arch で値が違うもの**(4 + 1 件): `MAP_32BIT`/`MAP_ABOVE4G`(x86-64 だけ、64/128)・`PROT_BTI`/`PROT_MTE`
+  (aarch64 だけ、16/32)、`EXEC_PAGESIZE`(x86-64 4096 / aarch64 65536。glibc は port が扱う最大のページサイズを
+  答える)。共通層のヘッダの中で `__x86_64__`/`__aarch64__` で分けた(`math.h`・`float.h` と同じ扱い)。
+- **レイアウトの追加**: `struct ucred`(12 バイト・整列 4)・`struct mmsghdr`(64 バイト・整列 8、`msg_len` は 56)、
+  `netinet/in.h` の `struct ip_mreq`/`ip_mreqn`/`ip_mreq_source`/`ipv6_mreq`/`in_pktinfo`/`in6_pktinfo`/
+  `group_req`/`group_source_req`(8/12/12/20/12/20/136/264 バイト)。大きさと全メンバのオフセットを両 arch で
+  測り一致、メンバの型は `__builtin_types_compatible_p` で glibc の型と照合した(両 arch とも 23/23)。
+- **本文を持つマクロは自前の綴りを差分で確かめた**:
+  - `CMSG_ALIGN`/`CMSG_LEN`/`CMSG_SPACE`/`CMSG_DATA`/`CMSG_FIRSTHDR`/`CMSG_NXTHDR`: 長さ 0〜1023 の全件と、
+    3 レコードを持つ 512 バイトの制御バッファを `msg_controllen` 0〜511 の全件で走査して glibc と比べ、
+    両 arch で不一致 0。測定で分かった事実が 2 つある: `CMSG_ALIGN` は `sizeof(size_t)` に切り上げる。
+    glibc 2.39 の `__cmsg_nxthdr` は「現在のレコード + ヘッダ 1 つ分」が収まるかだけを見て、
+    **次のレコードの `cmsg_len` は見ない**(最初に書いた、次の `cmsg_len` まで確かめる版は 80 件食い違った)。
+    glibc はこれをインライン関数に隠すが、マクロでは引数を複数回評価するしかない(カーネル UAPI の同名マクロと同じ)。
+  - `IN_CLASSA`〜`IN_BADCLASS`: 2^32 の全アドレスで glibc と比べて不一致 0(両 arch)。
+    `IN6_IS_ADDR_*`/`IN6_ARE_ADDR_EQUAL`: アドレスのバイトで書き、40 万件の構造化+疑似乱数のアドレスで不一致 0(両 arch)。
+  - `SUN_LEN`(`sun_path` のオフセット 2 + strlen、"/tmp/x" で 8)、`W_EXITCODE`/`W_STOPCODE`/`WCOREFLAG`
+    (`sys/wait.h` のコメントが既に書いていた符号化)、`DTTOIF`/`IFTODT`(12 ビットのシフト)、
+    `setbit`/`clrbit`/`isset`/`isclr`(ビット n はバイト n/8 のマスク 1<<(n%8))、`powerof2`。
+- **取り込みの追加**: `netinet/in.h` → `<sys/socket.h>`、`netinet/tcp.h` → `<stdint.h>`・`<sys/socket.h>`、
+  `arpa/inet.h` → `<netinet/in.h>`、`sys/un.h` → `<stddef.h>`・`<string.h>`(`SUN_LEN` 用)、
+  `sys/wait.h` → `<sys/resource.h>`(`wait3`/`wait4` の `struct rusage`)。どれも既存の共有ガードで衝突しない。
+- **`sys/resource.h` の選択子の型**: glibc は `_GNU_SOURCE` のもとで `getrlimit`/`setrlimit`/`getpriority`/
+  `setpriority` の第 1 引数を enum(`enum __rlimit_resource`・`enum __priority_which`)にし、同梱の `int` と
+  並べると gcc は衝突と言う(2026-09-18 実測)。既存の `getrlimit`/`setrlimit` から既にそうで、両者は
+  同じ翻訳単位に並ばない。`_DEFAULT_SOURCE` では glibc も `int` で、5 つの宣言がそこでは衝突しないことを
+  両 arch で確かめた。`getpriority`/`setpriority` は既存に合わせて `int` で足し、`_GNU_SOURCE` でしか
+  存在しない `prlimit` は glibc 内部の enum を再現することになるので外した。
+- **外したもの**は各ヘッダの冒頭コメントに `omitted: 名前 ... -- 理由` で書いた。主な理由:
+  LFS64 別名(LP64 では無印と同一。`statfs64`・`dirent64`・`stat64`・`rlimit64`・`preadv64` など)、
+  古いホスト glibc に無い記号(`process_madvise`/`process_mrelease` 2.35/2.36、`getdents64` 2.30、
+  `preadv2`/`pwritev2` 2.26 など。`close_range` と同じ理由)、コーパスに利用者のない特殊 API
+  (RFC 3542 の `inet6_opt_*`/`inet6_rth_*`、全状態のソースフィルタ API、pkey_*、`statx`)、
+  スナップショットにすぎない構造体(glibc の `struct tcp_info` は 104 バイトで固定、カーネルは伸び続ける)、
+  他のヘッダの面(`dirent.h` に `<bits/posix1_lim.h>` 経由で現れる `PATH_MAX`/`NAME_MAX`/`_POSIX_*` は
+  `<limits.h>` の側で判断する)。`netinet/in.h` の `SCM_SRCRT` は glibc 2.39 が未定義の `IPV6_RXSRCRT` に展開され、
+  gcc でも使うとコンパイルエラーになる(2026-09-18 実測)ので、再現するものが無い。
+- 由来台帳(`docs/reference/HEADER-LICENSING.md` §3.2 / §3.3)の 18 行に追加分を書き足し、`sys/param.h` の行の
+  「BSD 名エイリアス・ビットマップ操作マクロは対象外」は書き換えた。ABI の値を 1 つも動かしていない
+  `poll.h`・`sys/statfs.h`(コメントだけの変更)の行は変えていない。ファイル数は動いていないので §3.4 の集計(81 本)は不変。
+
+### 測定結果(2026-09-18、このホスト WSL2 / gcc 13.3 / glibc 2.39、aarch64 はクロス gcc 13.3 / glibc 2.39)
+
+監査表の不足(x86-64 / aarch64、前 → 後)と、追加・外した件数。**未記載は 18 本とも両 arch で 0**。
+
+| ヘッダ | 不足 前 → 後 | 追加 | 外した(名前 + 取り込み) |
+|---|---|---|---|
+| `sys/socket.h` | 239 → 5 | 234 | 5 + 4 |
+| `netinet/in.h` | 267 → 56 | 211(+ `<sys/socket.h>` の取り込み) | 56 + 4 |
+| `netinet/tcp.h` | 90 → 8 | 82(+ `<stdint.h>`・`<sys/socket.h>`) | 8 + 4 |
+| `arpa/inet.h` | 5 → 5 | 0(+ `<netinet/in.h>`・`<sys/socket.h>`) | 5 + 3 |
+| `sys/mman.h` | 72 / 71 → 13 / 12 | 58(うち arch 限定 2 + 2) | 13 / 12 + 1 |
+| `sys/stat.h`(両 arch 層) | 56 → 36 | 20 | 36 |
+| `dirent.h` | 79 → 69 | 10 | 69 + 1 |
+| `sys/resource.h` | 20 → 8 | 12 | 8 |
+| `sys/uio.h` | 16 → 13 | 3 | 13 + 4 |
+| `sys/param.h` | 18 → 0 | 18 | 0 + 9 / 12 |
+| `sys/wait.h` | 7 → 2 | 5 | 2 + 3 / 9 |
+| `grp.h` | 9 → 4 | 5 | 4 + 1 |
+| `pwd.h` | 7 → 5 | 2 | 5 + 1 |
+| `sys/un.h` | 1 → 0 | 1(+ `<stddef.h>`・`<string.h>`) | 0 + 1 |
+| `sys/statfs.h` | 3 → 3 | 0 | 3 |
+| `sys/utsname.h` | 1 → 0 | 1 | 0 |
+| `sys/select.h`(両 arch 層) | 1 → 0 | 1 | 0 |
+| `poll.h` | 0 → 0 | 0 | 0 + 1 |
+
+- 混在の調査(同梱しない glibc の公開ヘッダ 186 本): rubycc だけが落ちるものは修正前後とも同じ 5 本
+  (`complex.h`・`netatalk/at.h`・`sys/platform/x86.h`・`sys/rseq.h`・`tgmath.h`。どれも同梱ヘッダが原因ではない)。
+  `netinet/in.h` が `<sys/socket.h>` を含めるようになっても、新たに落ちたものは無い。
+- 共有ガードの probe(x86-64): 18 本に関わる組はすべて ok。`__rusage_defined` は従来どおり内部ファイルを直接含めたときだけ衝突する。
+- `docs/development/BUNDLED-HEADERS-COVERAGE.md` を再生成した(差分は 18 本の行と節だけ)。
+
+### テスト
+
+- `test/test_bundled_headers_coverage.rb`: `AUDITED` に 18 本を足し、「未記載 0」を両 arch で確かめる既存の仕組みに乗せた。
+  上の表の最初の 3 本(取り込みの穴)を rubycc でコンパイルする `test_socket_headers_pull_in_what_glibc_pulls_in` を追加。
+- `test/test_header_abi.rb`: `SOCKET`(223 値、`CMSG_*` の値と制御バッファの走査 3 通り、`struct ucred`/`struct mmsghdr`)、
+  `NETINET_IN`(181 値、IPv4 分類 10 件、10 個の IPv6 アドレスを全述語で分類、8 構造体の大きさとオフセット)、
+  `TCP`(81 値と `tcp_seq`)、`MMAN`(47 値と新しい呼び出し)、`SYS_STAT`・`SYS_SELECT`・`DIRENT`・`RESOURCE`・`WAIT`・
+  `SYS_PARAM`・`UIO`・`PWD`・`GRP`・`UTSNAME`・`SOCKADDR_UN`(`SUN_LEN`)・`ARPA_INET`(`<arpa/inet.h>` だけで `struct sockaddr_in`)を拡張した。
+  どれも既存の Spec なので x86-64 と aarch64(neutral 層の節)の両方で走る。追加分は `glibc:` の束に入れた
+  (musl の実走でまだ測っていないため。musl のヘッダの穴を rubycc の失敗として報告しないように)。
+  arch 限定の 4 値は `MMAN_X86_64`(x86-64 ホストだけ)と `MMAN_AARCH64`(aarch64 クラス)に分けた。
+- 修正前の対照: 7bb66af の `lib/` と `include/` を `git archive` で取り出し、上の 8 本の再現が両 arch とも
+  修正前は落ちることを測った(2026-09-18)。
+- 実行結果(2026-09-22、この worktree、いずれも 0 failures / 0 errors):
+  `test_bundled_headers_coverage.rb` 32 runs / 172 assertions、
+  `test_audit_bundled_headers.rb` 5 runs / 98 assertions、
+  `test_header_abi.rb` 132 runs / 391 assertions / 0 skips、
+  `test_doc_links.rb` 3 runs / 45 assertions、
+  `test_examples.rb` 75 runs、
+  `test_examples_aarch64.rb` 594 runs / 22 skips(既存)、
+  `test_c_suite.rb` 223 runs / 11 skips(既存)、
+  `test_c_suite_aarch64.rb` 444 runs / 22 skips(既存)。
+
+### 残された観点(このステップでは直していない)
+
+- `<limits.h>` の POSIX 上限(`PATH_MAX` など)は、並行した `bundled-headers-core-batch-1` が足した。`dirent.h` からはそちらへ回した。
+- musl で追加分を測っていない(`test_header_abi.rb` の `glibc:` 束)。musl の CI 実走で共通リストへ移せるものを確かめる。
+- 監査の段階ラベルは宣言の有無を見るだけで、`_GNU_SOURCE` での型の違い(`sys/resource.h` の enum)は表に出ない。
+
+## int128-typedef-spellings-1 — gcc の定義済み typedef `__int128_t` / `__uint128_t` を受け付ける(GAPS row CB)
+
+### 原因
+
+**rubycc は `__int128` / `unsigned __int128`(字句解析器のキーワード、
+`lib/rubycc/front/lexeme_reader.rb:38`)は受け付けるが、gcc が定義済みの typedef として持つ
+`__int128_t` / `__uint128_t` の綴りを受け付けなかった。** issue の再現を 2026-09-18 にこのホスト
+(WSL2 / gcc 13.3)で測ったとおり:
+
+```c
+int main(void) { __int128 a = 1; unsigned __int128 b = 2; __int128_t c = 3; return (int)(a + b + c) - 6; }
+```
+
+| | 結果 |
+|---|---|
+| gcc 13.3 | ok |
+| rubycc(対処前) | `error: expected ';'`(`__int128_t` の位置) |
+
+着手前に、この 2 つが「定義済み typedef」か「キーワードの別名」かを 2026-09-22 に同じホストで測った:
+
+```c
+typedef int __int128_t;              // 受理(-Wall -Wextra -pedantic -Werror でも)。
+                                      // __int128 とは異なる型への typedef なのに黙って通る
+{ typedef int __int128_t; ... }      // 受理。ブロックスコープの typedef が外側の
+                                      // (定義済みの)束縛を通常どおり隠す
+struct __int128_t { int x; };        // 受理。タグ名前空間と typedef 名前空間は別
+typedef __int128 __int128_t;         // 受理(同一型への再宣言、通常の typedef 規則)
+typedef int __int128_t; typedef long __int128_t;
+                                      // REJECTED: "conflicting types for '__int128_t'"
+```
+
+つまり gcc は `__int128_t` / `__uint128_t` を**定義済みの typedef 名**として予約しているが、
+「本物の先行宣言」としては扱っていない: **プログラムが書いた最初の typedef が型の一致を問わず
+黙って勝ち**、2 回目以降の再宣言だけが通常どおり型の衝突をチェックされる。これは
+`__builtin_va_list` の既存の予約のされ方(`lib/rubycc/front/parser.rb`)と同じ形。
+
+### 対処
+
+`__builtin_va_list` と同じ仕組みを流用した。パーサの outermost `@ordinary_scopes` に
+`__int128_t => Type::Int128`、`__uint128_t => Type::UInt128` を typedef としてあらかじめ束縛する
+(`Parser#initialize`)。ただしこの 2 エントリの `OrdinaryName#value` に 4 番目の要素として
+`true`(弱い/予約済みの意)を持たせ、`Parser#declare_typedef_name` に
+「既存の typedef エントリが弱いものなら、型の一致を問わず新しい宣言で無条件に置き換える」
+分岐を追加した。置き換え後のエントリは弱いマーカーを持たない通常の typedef になるので、
+**2 回目以降の再宣言は既存の「redefinition of typedef」チェックにそのまま合流する** ——
+上の測定結果すべて(初回は型を問わず通る・ブロックで隠せる・タグ名前空間と無関係・
+2 回目以降は型が違うと衝突)が、新規の特別扱いなしに一本の分岐で再現される。
+
+`Type::Int128` / `Type::UInt128`(`lib/rubycc/type.rb`)は `__int128` / `unsigned __int128` が
+すでに使っている共有インスタンスなので、sizeof・_Alignof・算術・変換・引数渡し
+(generator の `#wide128?` はインスタンス比較ではなくサイズ 16 で判定)は変更なしにそのまま揃う。
+`-target aarch64` の `#include <sys/ucontext.h>`(クロス sysroot の `sys/user.h:32` が
+`__uint128_t vregs[32];` を使う)もこの型解決だけで通るようになった(2026-09-22、
+このホストの `aarch64-linux-gnu-gcc` 対照で確認)。
+
+### テスト
+
+新規 `test/test_int128_typedef_spellings.rb`(11 runs、0 failures、aarch64 ツールチェイン導入済みの
+ためスキップ 0): issue の再現(x86-64 / aarch64、gcc 差分)・sizeof/_Alignof/算術が
+`__int128`/`unsigned __int128` と一致すること(x86-64 / aarch64、gcc 差分)・上記の測定 5 件
+(file-scope typedef、ブロックでの隠蔽、タグ名前空間の独立、同一型の再宣言、2 回目の型衝突が
+gcc 同様に rejected)・`-target aarch64` での `#include <sys/ucontext.h>`(cross sysroot ヘッダ
+導入時のみ、`test_aarch64_cross_sysroot_include.rb` と同じガード)。
+
+巻き添えの確認(いずれも 0 failures / 0 errors): `test_int128_abi.rb` 2 runs、
+`test_parser.rb` 332 runs、`test_type.rb` 92 runs、`test_aarch64_cross_sysroot_include.rb` 7 runs、
+`test_examples.rb` 75 runs、`test_examples_aarch64.rb` 594 runs(22 skips、既存)、
+`test_c_suite.rb` 223 runs(11 skips、既存)、`test_c_suite_aarch64.rb` 444 runs(22 skips、既存)。
+
+### 残された観点
+
+- **`__builtin_va_list` 自身の「弱い」再宣言許容は今回検証していない**(gcc は
+  `typedef int __builtin_va_list;` も無診断で通す、2026-09-22 実測)。今回の変更で
+  `declare_typedef_name` の弱マーカー機構自体は `__builtin_va_list` にも使えるが、
+  既存の 3 要素 value 配列のままなので `value[3]` が nil = 弱くない、という後方互換の
+  挙動のままにしてある。`__builtin_va_list` を弱くするかどうかは別課題(この issue の
+  範囲外)。
+- 実在の gem でこの綴りを踏んだ例はまだ観測していない(issue記載のとおり)。
+
+## bundled-sigstksz-1 — SIGSTKSZ / MINSIGSTKSZ / PTHREAD_STACK_MIN as a sysconf() call
+
+**原因**: `bundled-headers-core-batch-1`(2026-09-18)が同梱 `signal.h` を分類した際、glibc 2.34 以降
+`SIGSTKSZ` / `MINSIGSTKSZ` が定数ではなく `sysconf()` 呼び出しに展開されることを見つけて、
+両マクロと同梱 `unistd.h` の `_SC_SIGSTKSZ`(未定義だった)を意図して除外していた
+(`PTHREAD_STACK_MIN` も同梱 `limits.h` で同じ理由により除外)。結果、`sigaltstack` の
+典型的な使い方(`stack_t ss; ss.ss_size = SIGSTKSZ; ...`)が rubycc では
+`error: undeclared variable 'SIGSTKSZ'` になる一方、gcc は通す
+(2026-09-22、WSL2 / gcc 13.3 / glibc 2.39 で実測、issues/bundled-sigstksz.md)。
+
+**対処**: `_SC_SIGSTKSZ` / `_SC_MINSIGSTKSZ` / `_SC_THREAD_STACK_MIN` の値を x86-64(gcc 13.3)と
+aarch64(aarch64-linux-gnu-gcc 13.3、qemu-aarch64)の両方で実測し(2026-09-22、
+`sysconf()` を呼ぶ小さな C プログラムで直接出力: 250 / 249 / 75、両 arch 一致)、
+同梱 `unistd.h` に追加した(十二個から十五個へ)。`SIGSTKSZ` / `MINSIGSTKSZ` は同梱
+`signal.h` に、`PTHREAD_STACK_MIN` は同梱 `pthread.h`(x86_64・aarch64 両方の glibc 層)に、
+それぞれ glibc の実際の展開形(`gcc -E -dM -D_GNU_SOURCE` で確認: `SIGSTKSZ` ->
+`sysconf (_SC_SIGSTKSZ)`、`MINSIGSTKSZ` -> `SIGSTKSZ`、`PTHREAD_STACK_MIN` ->
+`__sysconf (75)`)を、公開名 `_SC_THREAD_STACK_MIN` 経由の互換な形で追加した。
+`sysconf()` は同梱 `unistd.h` と同じプロトタイプで前方宣言し(両ヘッダとも
+`<unistd.h>` を取り込まない既存方針を保つため)、呼び出し側が `<unistd.h>` も
+`#include` する必要がある旨をコメントに明記した(`<unistd.h>` 自身の
+`TEMP_FAILURE_RETRY` が `<errno.h>` の同時 `#include` を要求するのと同じ扱い)。
+可視性は `__USE_GNU` に統一し、この 3 マクロの「_GNU_SOURCE でだけ見える」扱いを
+既存の簡略化ルール(`bundled-headers-coverage-audit-2` が確立)に合わせた。実際の
+glibc は `PTHREAD_STACK_MIN` を `_DEFAULT_SOURCE` でも(アーキ依存の静的定数として)
+見せるが、その静的経路は corpus 利用者が無く対象外とした。同梱 `limits.h`
+(x86_64・aarch64)の `PTHREAD_STACK_MIN` omitted 行はそのまま残し(`<limits.h>` 単体
+からの到達は未対応)、`<pthread.h>` を主たる置き場にした旨を追記した。
+
+**テスト**: issues/bundled-sigstksz.md の再現プログラム(`sigaltstack` + `SIGSTKSZ` +
+`MINSIGSTKSZ` + `PTHREAD_STACK_MIN`)を x86-64(gcc)と aarch64(cross gcc + qemu-aarch64)
+の両方で rubycc ビルドと gcc ビルドを実行して比較し、一致を確認した(2026-09-22):
+x86-64 は `SIGSTKSZ=8192 MINSIGSTKSZ=8192 PTHREAD_STACK_MIN=16384`、aarch64 は
+`SIGSTKSZ=20480 MINSIGSTKSZ=20480 PTHREAD_STACK_MIN=131072`、両方とも exit 0 で一致。
+`test/test_bundled_headers_coverage.rb` に `test_sigaltstack_repro_matches_gcc` を追加し、
+この再現を実行してリンクし gcc オラクルの標準出力・終了コードと突き合わせる形で常時検証する。
+`test/test_header_abi.rb` の `UNISTD` Spec に `_SC_SIGSTKSZ` / `_SC_MINSIGSTKSZ` /
+`_SC_THREAD_STACK_MIN` を `glibc:` 側の `ints` として追加した(musl でこの三つが同じ
+番号を持つかは未実測のため、既存の `_ISupper` 等と同じ scoping)。
+targeted tests(すべて 0 failures):
+`test/test_bundled_headers_coverage.rb`(27 runs)、`test/test_audit_bundled_headers.rb`
+(5 runs)、`test/test_header_abi.rb`(130 runs)、`test/test_doc_links.rb`(3 runs)、
+`test/test_examples.rb`(75 runs)、`test/test_examples_aarch64.rb`(594 runs、22 skips)、
+`test/test_c_suite.rb`(223 runs、11 skips)、`test/test_c_suite_aarch64.rb`(444 runs、22 skips)。
+
+**残された観点**:
+- glibc 2.34 未満(SIGSTKSZ/MINSIGSTKSZ/PTHREAD_STACK_MIN が定数だった版)向けの分岐は
+  未対応。issues/bundled-sigstksz.md の「着手前に確かめること」が指す、rubycc が対象にする
+  glibc の下限をどこに置くかは未決着のまま。
+- `_DEFAULT_SOURCE`(`_GNU_SOURCE` を経ない)での `PTHREAD_STACK_MIN` の可視性(実際の glibc は
+  アーキ依存の静的定数 16384/131072 をここでも見せる)は対象外のまま。corpus 利用者が
+  出た時点で追加する。
+- musl での `_SC_SIGSTKSZ` / `_SC_MINSIGSTKSZ` / `_SC_THREAD_STACK_MIN` の番号(そもそも
+  存在するかどうかを含め)は未実測。
+
+### 統合時の修正
+
+担当の実装は `sysconf()` を前方宣言し、「呼び出し側は `<unistd.h>` も含める必要がある(glibc と同じ)」としていたが、
+統合時に測ると **glibc の `<signal.h>` は `_GNU_SOURCE` のもとで `<unistd.h>` を自分で取り込む**(`bits/sigstksz.h:24`)ので、
+`<signal.h>` と `<stdlib.h>` だけの再現が gcc では通り、rubycc では `_SC_SIGSTKSZ` が無くて落ちた。同梱 `<signal.h>` も
+`__USE_GNU` のもとで `<unistd.h>` を取り込む形に改め、`omitted:` の取り込み一覧から `<unistd.h>` を外した。テストの再現からも
+`<unistd.h>` を外し、`<signal.h>` だけで通る形を確かめるようにした(2026-09-22)。

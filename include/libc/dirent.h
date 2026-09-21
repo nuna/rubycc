@@ -21,7 +21,55 @@
    Linux/glibc values (measured, both arches agree).
    opendir/readdir/closedir/rewinddir/readdir_r/fdopendir/dirfd are POSIX
    declarations whose bodies resolve from the host libc at link time
-   (Step 123, M5 H2). */
+   (Step 123, M5 H2).
+
+   Coverage against glibc's <dirent.h> under _GNU_SOURCE (audited 2026-09-18,
+   glibc 2.39, x86-64 and aarch64, with tools/audit_bundled_headers.rb; table
+   in docs/development/BUNDLED-HEADERS-COVERAGE.md). Seventy-nine names were
+   missing. Ten were added -- everything the difference holds that is actually
+   about reading a directory:
+
+     - seekdir/telldir, the position pair a caller uses to resume a scan;
+     - scandir/scandirat with the two comparators glibc ships for them,
+       alphasort and versionsort (scandir is how most C code lists a directory
+       in one call, and it is useless without a comparator);
+     - d_fileno, the BSD spelling of d_ino, defined here as a member macro
+       onto the field above the same way sys/stat.h aliases st_atime;
+     - MAXNAMLEN, measured 255 on both arches -- the d_name[256] above is
+       exactly that plus the terminating NUL;
+     - DTTOIF/IFTODT, which convert between the DT_* values above and the
+       S_IF* file-type bits of <sys/stat.h>. Their bodies are rubycc's own
+       spelling of measured behaviour, not glibc's text: DTTOIF printed 16384
+       for DT_DIR, 32768 for DT_REG, 40960 for DT_LNK, 49152 for DT_SOCK and 0
+       for DT_UNKNOWN, and IFTODT printed 8 for 0100644, 4 for 0040755, 10 for
+       0120777 and 0 for 0 -- i.e. a shift by 12 in either direction, with
+       IFTODT masking the mode down to its type bits first.
+
+   Every added prototype was checked by declaring it immediately before
+   `#include <dirent.h>` under gcc and aarch64-linux-gnu-gcc on 2026-09-18 (a
+   conflicting redeclaration is a hard error): clean on both arches. The other
+   sixty-nine are deliberate:
+   omitted: AIO_PRIO_DELTA_MAX DELAYTIMER_MAX HOST_NAME_MAX LOGIN_NAME_MAX
+   MAX_CANON MAX_INPUT MQ_PRIO_MAX NAME_MAX NGROUPS_MAX PATH_MAX PIPE_BUF
+   PTHREAD_DESTRUCTOR_ITERATIONS PTHREAD_KEYS_MAX PTHREAD_STACK_MIN RTSIG_MAX
+   SEM_VALUE_MAX SSIZE_MAX TTY_NAME_MAX XATTR_LIST_MAX XATTR_NAME_MAX
+   XATTR_SIZE_MAX _POSIX_* -- the POSIX limit and option macros, which are not
+   this header's surface at all: glibc shows them here only because its
+   <dirent.h> reaches for <bits/posix1_lim.h> on the way to a NAME_MAX it
+   wants itself, and the header a program asks them from is <limits.h>, where
+   rubycc's own answer for them belongs.
+   omitted: getdirentries -- the BSD raw directory-block read, superseded by
+   readdir above and with no corpus user.
+   omitted: getdents64 -- the raw 64-bit directory-block read, glibc 2.30 and
+   later only, so declaring it would promise a symbol an older host glibc does
+   not export (the same reasoning unistd.h's close_range omission uses).
+   omitted: struct dirent64 ino64_t readdir64 readdir64_r scandir64
+   scandirat64 alphasort64 versionsort64 getdirentries64 -- LFS64 aliases; on
+   an LP64 target struct dirent64 is byte-for-byte struct dirent above, so the
+   unsuffixed names already are the 64-bit interface (the same reasoning
+   sys/statfs.h and unistd.h use).
+   omitted: <stddef.h> -- only size_t is needed, and this header's calls take
+   it nowhere; ino_t/off_t are declared here directly. */
 
 #ifndef _RUBYCC_DIRENT_H
 #define _RUBYCC_DIRENT_H
@@ -55,6 +103,11 @@ struct dirent {
   char d_name[256];        /* offset 19: null-terminated filename */
 };
 
+/* The BSD spelling of d_ino, and the longest name that fits in d_name
+   (measured 255, both arches). */
+#define d_fileno d_ino
+#define MAXNAMLEN 255
+
 /* File-type values for d_type (measured, both arches agree). */
 #define DT_UNKNOWN 0
 #define DT_FIFO    1
@@ -66,6 +119,12 @@ struct dirent {
 #define DT_SOCK    12
 #define DT_WHT     14
 
+/* Between a d_type value above and the S_IF* file-type bits of <sys/stat.h>:
+   a shift by 12, with IFTODT masking the mode to its type bits first
+   (measured, see the header note). */
+#define DTTOIF(dirtype) ((dirtype) << 12)
+#define IFTODT(mode)    (((mode) & 0170000) >> 12)
+
 DIR *opendir(const char *__name);
 DIR *fdopendir(int __fd);
 struct dirent *readdir(DIR *__dirp);
@@ -74,5 +133,18 @@ int readdir_r(DIR *__restrict __dirp, struct dirent *__restrict __entry,
 int closedir(DIR *__dirp);
 void rewinddir(DIR *__dirp);
 int dirfd(DIR *__dirp);
+long telldir(DIR *__dirp);
+void seekdir(DIR *__dirp, long __pos);
+
+/* One-call directory listing, and the two orderings glibc ships for it. */
+int scandir(const char *__restrict __dir, struct dirent ***__restrict __namelist,
+            int (*__selector)(const struct dirent *),
+            int (*__cmp)(const struct dirent **, const struct dirent **));
+int scandirat(int __dfd, const char *__restrict __dir,
+              struct dirent ***__restrict __namelist,
+              int (*__selector)(const struct dirent *),
+              int (*__cmp)(const struct dirent **, const struct dirent **));
+int alphasort(const struct dirent **__e1, const struct dirent **__e2);
+int versionsort(const struct dirent **__e1, const struct dirent **__e2);
 
 #endif /* _RUBYCC_DIRENT_H */

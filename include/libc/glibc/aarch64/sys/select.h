@@ -3,7 +3,15 @@
    __FD_SETSIZE is 1024 and __fd_mask is `long`, giving a 128-byte set (measured).
    The typedef guards reuse glibc's (__sigset_t_defined) so a host <signal.h> on
    the path does not redefine sigset_t. ABI switch layer: FD_SETSIZE and the mask
-   width are arch specific. */
+   width are arch specific.
+
+   Coverage against glibc's <sys/select.h> under _GNU_SOURCE (audited
+   2026-09-18, glibc 2.39, x86-64 and aarch64, with
+   tools/audit_bundled_headers.rb; table in
+   docs/development/BUNDLED-HEADERS-COVERAGE.md). The one name that was
+   missing, NFDBITS, is below -- the un-underscored spelling of the bits per
+   mask word that BSD-heritage code writes when it walks an fd_set by hand
+   (measured: 64 on both arches). Nothing is left out. */
 
 #ifndef _RUBYCC_SYS_SELECT_H
 #define _RUBYCC_SYS_SELECT_H
@@ -55,6 +63,9 @@ typedef struct {
 typedef __fd_mask fd_mask;
 
 #define FD_SETSIZE __FD_SETSIZE
+/* Bits per fd_set word, for code that walks __fds_bits itself (measured: 64
+   on both arches). */
+#define NFDBITS __NFDBITS
 
 #define __FD_ELT(d)  ((d) / __NFDBITS)
 #define __FD_MASK(d) ((__fd_mask) (1UL << ((d) % __NFDBITS)))

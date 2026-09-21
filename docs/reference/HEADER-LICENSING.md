@@ -104,27 +104,27 @@ musl の宣言セット/形状を出発点にし、glibc の対象 arch(x86-64 /
 | ファイル | glibc ABI 追従の内容 |
 |---|---|
 | `include/libc/alloca.h` | builtin マッピングのみ(arch 非依存) |
-| `include/libc/arpa/inet.h` | 宣言セット。UAPI の不要な連鎖は省略 |
-| `include/libc/math.h` | `FP_*` / `math_errhandling` を glibc 実測値に |
-| `include/libc/stdio.h` | FILE 不透明型、`BUFSIZ`/`TMP_MAX` 等を glibc 実測値に |
+| `include/libc/arpa/inet.h` | 宣言セット。UAPI の不要な連鎖は省略。glibc と同じく `<netinet/in.h>` を含める(bundled-headers-io-batch-1、2026-09-18、両 arch) |
+| `include/libc/math.h` | `FP_*` / `math_errhandling` を glibc 実測値に。ISO C99 の float/long double 版(`lrintf` 等)・XSI の Bessel 関数と `signgam`・`lgamma_r` 系・`exp10`/`sincos`(`__USE_GNU`)の宣言は、glibc の `<math.h>` と並べて gcc で衝突しないことを実測し、`MAXFLOAT` は印字で実測(2026-09-18、両 arch、`bundled-headers-core-batch-1`) |
+| `include/libc/stdio.h` | FILE 不透明型、`BUFSIZ`/`TMP_MAX` 等を glibc 実測値に。`va_list`(glibc と同じガード `_VA_LIST_DEFINED`)、`flockfile` 系と `_unlocked` 系・`fmemopen`/`open_memstream`/`vdprintf`/`renameat`/`setbuffer`/`setlinebuf`/`ctermid` の宣言は gcc への再宣言が衝突しないことで、`SEEK_DATA`/`SEEK_HOLE`(3/4、`__USE_GNU`)は印字で実測(2026-09-18、両 arch、`bundled-headers-core-batch-1`) |
 | `include/libc/stdlib.h` | `div_t`/`ldiv_t`/`lldiv_t` の LP64 レイアウト、`RAND_MAX`/`EXIT_*`。`getloadavg`・`qsort_r`(`__USE_GNU`)・`<alloca.h>` の取り込みなど glibc の `_DEFAULT_SOURCE` / `_GNU_SOURCE` の枝の宣言は、gcc への再宣言が衝突しないことで形を実測(2026-09-14、両 arch) |
-| `include/libc/string.h` | 純粋プロトタイプ(arch 非依存) |
+| `include/libc/string.h` | 純粋プロトタイプ(arch 非依存)。`explicit_bzero` と `strverscmp`/`rawmemchr`(`__USE_GNU`)の宣言は gcc への再宣言が衝突しないことで実測(2026-09-18、両 arch、`bundled-headers-core-batch-1`) |
 | `include/libc/strings.h` | 純粋プロトタイプ(arch 非依存) |
 | `include/libc/unistd.h` | ABI 型付き名の LP64 幅。`_SC_IOV_MAX` は 60。process-group/session の宣言(`tcgetpgrp`/`tcsetpgrp`/`getpgrp`/`setpgid`/`getpgid`/`setsid`/`getsid`/`setpgrp`)と、`getgroups`/`getlogin`/`getlogin_r`/`fchdir`/`chroot`/`daemon`/`nice`/`sync`/`syncfs`/`lockf`/`getentropy`・`dup3`/`pipe2`/`environ`/`gettid`(`__USE_GNU`)の宣言、`F_LOCK`/`F_TEST`/`F_TLOCK`/`F_ULOCK`(0/1/2/3)と `SEEK_DATA`/`SEEK_HOLE`(3/4、`__USE_GNU`)の値は、gcc への再宣言が衝突しないことと `gcc -E -dM` の印字で形と値を実測(2026-09-15、両 arch)。`_POSIX_VDISABLE` は `gcc -E -dM -D_GNU_SOURCE` の印字で実測(2026-09-16、両 arch とも値 0。glibc は文字定数で綴るがテキストは写経せず、実測値を書いている) |
 | `include/libc/glibc/x86_64/endian.h` | little-endian x86-64 に固定 |
 | `include/libc/glibc/x86_64/inttypes.h` | 64bit/MAX/PTR/fast16+ の "l" 形(実測) |
 | `include/libc/glibc/x86_64/stdint.h` | 幅を glibc x86-64 LP64 に固定(実測) |
-| `include/libc/glibc/x86_64/sys/select.h` | `fd_set` を glibc x86-64 に固定 |
+| `include/libc/glibc/x86_64/sys/select.h` | `fd_set` を glibc x86-64 に固定。`NFDBITS`(64)を実測して追加(bundled-headers-io-batch-1、2026-09-18、両 arch) |
 | `include/libc/glibc/x86_64/sys/time.h` | `struct timeval` メンバを glibc x86-64 に固定(実測) |
 | `include/libc/glibc/x86_64/sys/types.h` | 全幅・符号を glibc x86-64 LP64 に固定(実測)。glibc の内部名 `__*_t`(`__caddr_t` ほか)・`int8_t`〜`int64_t` の幅・整列・符号も実測(2026-09-14)。BSD 短縮名(`u_char`/`u_short`/`u_int`/`u_long`/`ushort`/`uint`/`ulong`/`u_int8_t`〜`u_int64_t`)も実測、`ushort` は `unsigned char`(1 バイト)から glibc と同じ `unsigned short`(2 バイト)に訂正(2026-09-14) |
-| `include/libc/glibc/x86_64/time.h` | `time_t`=long、`struct tm` の tm_gmtoff/tm_zone 拡張(実測) |
+| `include/libc/glibc/x86_64/time.h` | `time_t`=long、`struct tm` の tm_gmtoff/tm_zone 拡張(実測)。`CLOCK_REALTIME_ALARM`/`CLOCK_BOOTTIME_ALARM`/`CLOCK_TAI`(8/9/11)は印字で、`timespec_get`/`clock_nanosleep`/`clock_getcpuclockid` の宣言は再宣言で実測。`struct itimerspec` を glibc と共有のガード `__itimerspec_defined` の下に置いた(2026-09-18、両 arch、`bundled-headers-core-batch-1`) |
 | `include/libc/glibc/aarch64/endian.h` | little-endian aarch64 に固定(x86-64 版とバイト一致) |
 | `include/libc/glibc/aarch64/inttypes.h` | LP64 の "l" 形(x86-64 版とバイト一致) |
 | `include/libc/glibc/aarch64/stdint.h` | 幅を glibc aarch64 LP64 に固定。WCHAR_MIN/MAX は unsigned(0/UINT32_MAX)で x86-64 と相違(実測) |
-| `include/libc/glibc/aarch64/sys/select.h` | `fd_set` を glibc aarch64 に固定(x86-64 版とバイト一致) |
+| `include/libc/glibc/aarch64/sys/select.h` | `fd_set` を glibc aarch64 に固定(x86-64 版とバイト一致)。`NFDBITS`(64)を実測して追加(bundled-headers-io-batch-1、2026-09-18、両 arch) |
 | `include/libc/glibc/aarch64/sys/time.h` | `struct timeval` を glibc aarch64 に固定(x86-64 版とバイト一致) |
 | `include/libc/glibc/aarch64/sys/types.h` | 全幅・符号を glibc aarch64 LP64 に固定。nlink_t/blksize_t=32bit で x86-64 と相違(実測)。内部名 `__*_t` も同様で、`__nlink_t`/`__blksize_t` だけが x86-64 と相違(実測 2026-09-14)。BSD 短縮名も実測、`ushort` を `unsigned short` に訂正(x86-64 版とバイト一致、2026-09-14) |
-| `include/libc/glibc/aarch64/time.h` | `time_t`=long、`struct tm` 拡張(x86-64 版とバイト一致) |
+| `include/libc/glibc/aarch64/time.h` | `time_t`=long、`struct tm` 拡張(x86-64 版とバイト一致)。追加した clock id 3 個と 3 関数、`__itimerspec_defined` は x86-64 版と同じ内容を aarch64 で別に実測(qemu)(2026-09-18、両 arch、`bundled-headers-core-batch-1`) |
 
 ### 3.3 clean-room(49 本)
 
@@ -136,41 +136,41 @@ musl のテキスト派生ではない。公開 ABI / ISO C / カーネル UAPI 
 | `include/libc/features.h` | POSIX/glibc の feature-test プロトコル。`__USE_*` 集合と glibc バージョンマクロは実測 ABI | 形状のみ参照(テキスト派生なし) |
 | `include/libc/sys/cdefs.h` | glibc の公開マクロ契約(挙動)。musl に対応物なし・glibc からのコピーもなし | なし |
 | `include/libc/glibc/x86_64/ctype.h` | 公開 `_ISbit` 式とアクセサ signature から機構を再現(glibc からコピーせず、musl の 0/1 返しとも異なる) | なし |
-| `include/libc/glibc/x86_64/limits.h` | ISO 規定値 + long/char 幅を glibc x86-64 LP64 に固定。char 符号性は `__CHAR_UNSIGNED__` で分岐 | なし(musl 非参照) |
-| `include/libc/glibc/x86_64/errno.h` | **Linux/asm-generic UAPI の errno 値**を実測整数定数として再現(§4) | なし(UAPI 由来) |
-| `include/libc/glibc/x86_64/sys/stat.h` | **Linux x86-64 kernel ABI の struct stat レイアウト**(実測 144 バイト)と S_IF* 値(§4) | なし(UAPI 由来) |
+| `include/libc/glibc/x86_64/limits.h` | ISO 規定値 + long/char 幅を glibc x86-64 LP64 に固定。char 符号性は `__CHAR_UNSIGNED__` で分岐。システム上限(`PATH_MAX`・`NAME_MAX`・`PIPE_BUF`・`IOV_MAX` ほか 19 個)と C23 の `*_WIDTH`/`BOOL_MAX`(13 個)は glibc の印字で実測(2026-09-18、両 arch、`bundled-headers-core-batch-1`) | なし(musl 非参照) |
+| `include/libc/glibc/x86_64/errno.h` | **Linux/asm-generic UAPI の errno 値**を実測整数定数として再現(§4)。`ENOTSUP` は `EOPNOTSUPP` の別名(両方 95 と実測(2026-09-18、両 arch、`bundled-headers-core-batch-1`)) | なし(UAPI 由来) |
+| `include/libc/glibc/x86_64/sys/stat.h` | **Linux x86-64 kernel ABI の struct stat レイアウト**(実測 144 バイト)と S_IF* 値(§4)。`*at` 系・`mknod`・`utimensat`/`futimens`/`lchmod` の宣言(gcc への再宣言で形を確認)、`UTIME_NOW`/`UTIME_OMIT`(0x3fffffff/0x3ffffffe)・`ACCESSPERMS`/`ALLPERMS`/`DEFFILEMODE`(0777/07777/0666)・`S_BLKSIZE`(512)・`S_IREAD`/`S_IWRITE`/`S_IEXEC`・`S_TYPEIS*`(常に 0)を実測して追加(bundled-headers-io-batch-1、2026-09-18、両 arch) | なし(UAPI 由来) |
 | `include/libc/glibc/aarch64/ctype.h` | x86-64 版と同一機構(バイト一致) | なし |
 | `include/libc/locale.h` | ISO C11 7.11 の公開インタフェース(struct lconv のメンバ名・型・順序は7.11.1.1 が規定)。`LC_*` 値と struct lconv の対象 ABI レイアウトに対応する。setlocale/localeconv は POSIX/ISO C 宣言 | なし |
 | `include/libc/glibc/x86_64/setjmp.h` | **jmp_buf/sigjmp_buf のサイズ/アライメント**(glibc ABI・200/8)。内部フィールドは不透明 blob とする。`sigsetjmp` は `__sigsetjmp` へのマクロとして扱う | なし(glibc ABI) |
 | `include/libc/glibc/aarch64/setjmp.h` | 同上。jmp_buf/sigjmp_buf は 312/8 とする | なし(glibc ABI) |
-| `include/libc/glibc/aarch64/limits.h` | ISO 値 + glibc aarch64 LP64 幅。char 符号性は `__CHAR_UNSIGNED__` で分岐(x86-64 版とバイト一致) | なし(musl 非参照) |
-| `include/libc/glibc/aarch64/errno.h` | Linux/asm-generic UAPI の errno 値(aarch64 も x86-64 と同一値・§4) | なし(UAPI 由来) |
-| `include/libc/glibc/aarch64/sys/stat.h` | **Linux aarch64 kernel ABI の struct stat レイアウト**(実測 128 バイト・並び替え・nlink_t/blksize_t=32bit)と S_IF* 値(§4) | なし(UAPI 由来) |
+| `include/libc/glibc/aarch64/limits.h` | ISO 値 + glibc aarch64 LP64 幅。char 符号性は `__CHAR_UNSIGNED__` で分岐(x86-64 版とバイト一致)。追加したシステム上限と `*_WIDTH` は aarch64 で別に実測(qemu。値は x86-64 と全件一致)(2026-09-18、両 arch、`bundled-headers-core-batch-1`) | なし(musl 非参照) |
+| `include/libc/glibc/aarch64/errno.h` | Linux/asm-generic UAPI の errno 値(aarch64 も x86-64 と同一値・§4)。`ENOTSUP` は `EOPNOTSUPP` の別名(95 と実測(2026-09-18、両 arch、`bundled-headers-core-batch-1`)) | なし(UAPI 由来) |
+| `include/libc/glibc/aarch64/sys/stat.h` | **Linux aarch64 kernel ABI の struct stat レイアウト**(実測 128 バイト・並び替え・nlink_t/blksize_t=32bit)と S_IF* 値(§4)。x86-64 版と同じ追加(値は両 arch 一致)(bundled-headers-io-batch-1、2026-09-18、両 arch) | なし(UAPI 由来) |
 | `include/libc/glibc/x86_64/fcntl.h` | **Linux UAPI の O_*/F_*/AT_* 値と struct flock レイアウト**(実測・§4)。open/creat/fcntl は POSIX 宣言 | なし(UAPI 由来) |
 | `include/libc/glibc/aarch64/fcntl.h` | 同上。O_DIRECT/O_DIRECTORY/O_NOFOLLOW が x86-64 と入れ替わる(arch 別 uapi/asm/fcntl.h・実測) | なし(UAPI 由来) |
 | `include/libc/poll.h` | **Linux UAPI の POLL* 値**(asm-generic/poll.h・実測・§4)。struct pollfd は POSIX 宣言。両 arch 同一値のため共通層 | なし(UAPI 由来) |
 | `include/libc/dlfcn.h` | **glibc の動的リンク ABI(bits/dlfcn.h)の RTLD_* 値**を実測再現。dlopen/dlsym 等は POSIX 宣言でホスト libc から解決(kernel UAPI ではない)。両 arch 同一のため共通層 | なし(glibc ABI 実測) |
-| `include/libc/sys/mman.h` | **Linux UAPI の PROT_/MAP_/MS_/MADV_ 値と MAP_FAILED**(asm-generic/mman・実測・§4)。mmap/munmap 等は POSIX 宣言。両 arch 同一のため共通層 | なし(UAPI 由来) |
-| `include/libc/signal.h` | **シグナル番号・SA_ フラグと sigset_t/siginfo_t/struct sigaction のレイアウト**(kernel UAPI + glibc ABI・実測 offsetof・§4)。signal/kill/sigaction 等は POSIX 宣言。両 arch 同一のため共通層 | なし(UAPI+glibc ABI 実測) |
-| `include/libc/sys/socket.h` | **AF_/SOCK_/SO_/MSG_ 値と sockaddr/sockaddr_storage/msghdr/iovec 等のレイアウト**(kernel UAPI + glibc ABI・§4)。socket/bind/connect 等は POSIX 宣言。`AF_NETLINK`/`PF_NETLINK`(値 16)と Linux 拡張 `accept4` の宣言を含む。両 arch 同一のため共通層 | なし(UAPI+glibc ABI) |
-| `include/libc/netinet/in.h` | **IPPROTO_/INADDR_ 値と sockaddr_in/in6・in6_addr のレイアウト**(kernel UAPI linux/in.h+in6.h・§4)。arpa/inet.h/sys/socket.h と共有ガードで共存する。`INET_ADDRSTRLEN`/`INET6_ADDRSTRLEN`(16/46)と、libc の実オブジェクトである `in6addr_any`/`in6addr_loopback` の extern 宣言を含む。両 arch 同一のため共通層 | なし(UAPI+glibc ABI) |
-| `include/libc/netinet/tcp.h` | **TCP_ ソケットオプション名**(kernel UAPI linux/tcp.h)。TCP 状態機械の 11 状態(`TCP_ESTABLISHED` 1 〜 `TCP_CLOSING` 11)を含む。両 arch 同一のため共通層 | なし(UAPI 由来) |
-| `include/libc/sys/un.h` | **struct sockaddr_un の 110 バイトレイアウト**(kernel UAPI linux/un.h・実測 offsetof・§4)。両 arch 同一のため共通層 | なし(UAPI 由来) |
+| `include/libc/sys/mman.h` | **Linux UAPI の PROT_/MAP_/MS_/MADV_ 値と MAP_FAILED**(asm-generic/mman・実測・§4)。mmap/munmap 等は POSIX 宣言。両 arch 同一のため共通層。残りの MAP_/PROT_/MADV_・`POSIX_MADV_*`・`MCL_*`・`MREMAP_*`・`MFD_*` の値(47 個、両 arch 一致)と、片方の arch にだけある `MAP_32BIT`/`MAP_ABOVE4G`(x86-64: 64/128)・`PROT_BTI`/`PROT_MTE`(aarch64: 16/32)を arch 判定の下に実測して追加。`posix_madvise`/`mincore`/`mremap`/`remap_file_pages`/`mlockall`/`munlockall`/`memfd_create`/`shm_open`/`shm_unlink` の宣言は gcc への再宣言で形を確認(bundled-headers-io-batch-1、2026-09-18、両 arch) | なし(UAPI 由来) |
+| `include/libc/signal.h` | **シグナル番号・SA_ フラグと sigset_t/siginfo_t/struct sigaction のレイアウト**(kernel UAPI + glibc ABI・実測 offsetof・§4)。signal/kill/sigaction 等は POSIX 宣言。両 arch 同一のため共通層。si_code 定数(`SI_*`・`CLD_*`・`SEGV_*`・`BUS_*`・`ILL_*`・`FPE_*`・`TRAP_*`・`POLL_*`)、`SS_*`・`SA_INTERRUPT`、siginfo_t の残りのメンバ(`si_utime` ほか 12 個)の offsetof、`stack_t` のレイアウトは印字で、`sigwait`/`sigqueue`/`sigaltstack`/`pthread_sigmask` 等の宣言は再宣言で実測(両 arch とも全件一致(2026-09-18、両 arch、`bundled-headers-core-batch-1`)) | なし(UAPI+glibc ABI 実測) |
+| `include/libc/sys/socket.h` | **AF_/SOCK_/SO_/MSG_ 値と sockaddr/sockaddr_storage/msghdr/iovec 等のレイアウト**(kernel UAPI + glibc ABI・§4)。socket/bind/connect 等は POSIX 宣言。`AF_NETLINK`/`PF_NETLINK`(値 16)と Linux 拡張 `accept4` の宣言を含む。両 arch 同一のため共通層。残りの AF_/PF_/SOCK_/SOL_/SO_/MSG_/SCM_ 値と socket ioctl 要求番号・`SOMAXCONN`(223 個、全件両 arch 一致)、`struct ucred`(12 バイト)・`struct mmsghdr`(64 バイト)のレイアウト、`sockatmark`/`recvmmsg`/`sendmmsg` の宣言を実測して追加。`CMSG_*` は rubycc 自身の綴りで、glibc との差分測定(長さ 0〜1023 と制御バッファの走査)で一致を確認(bundled-headers-io-batch-1、2026-09-18、両 arch) | なし(UAPI+glibc ABI) |
+| `include/libc/netinet/in.h` | **IPPROTO_/INADDR_ 値と sockaddr_in/in6・in6_addr のレイアウト**(kernel UAPI linux/in.h+in6.h・§4)。arpa/inet.h/sys/socket.h と共有ガードで共存する。`INET_ADDRSTRLEN`/`INET6_ADDRSTRLEN`(16/46)と、libc の実オブジェクトである `in6addr_any`/`in6addr_loopback` の extern 宣言を含む。両 arch 同一のため共通層。glibc と同じく `<sys/socket.h>` を含める。残りの IPPROTO_/IP_/IPV6_/MCAST_/SOL_IP 系/INADDR_/IN_CLASS 値(181 個、全件両 arch 一致)、マルチキャスト・pktinfo 系 8 構造体のレイアウトとメンバ型、`s6_addr16`/`s6_addr32` を実測して追加。`IN_CLASS*`/`IN6_IS_ADDR_*` は rubycc 自身の綴りで、glibc との差分測定(IPv4 は 2^32 全件)で一致を確認(bundled-headers-io-batch-1、2026-09-18、両 arch) | なし(UAPI+glibc ABI) |
+| `include/libc/netinet/tcp.h` | **TCP_ ソケットオプション名**(kernel UAPI linux/tcp.h)。TCP 状態機械の 11 状態(`TCP_ESTABLISHED` 1 〜 `TCP_CLOSING` 11)を含む。両 arch 同一のため共通層。残りの TCP_ オプション・`SOL_TCP`・`TCPI_OPT_*`・`TCPOPT_*`/`TCPOLEN_*`・`TH_*`(81 個、全件両 arch 一致)と `tcp_seq`(uint32_t)を実測して追加。glibc と同じく `<stdint.h>`/`<sys/socket.h>` を含める(bundled-headers-io-batch-1、2026-09-18、両 arch) | なし(UAPI 由来) |
+| `include/libc/sys/un.h` | **struct sockaddr_un の 110 バイトレイアウト**(kernel UAPI linux/un.h・実測 offsetof・§4)。両 arch 同一のため共通層。`SUN_LEN` を実測した挙動(sun_path のオフセット 2 + strlen)から rubycc 自身の綴りで追加し、そのために `<stddef.h>`/`<string.h>` を含める(bundled-headers-io-batch-1、2026-09-18、両 arch) | なし(UAPI 由来) |
 | `include/libc/glibc/x86_64/pthread.h` | **pthreads opaque 型のサイズ/アライメント**(glibc ABI・実測。内部フィールドは不再現の不透明 blob・§4)。pthread_* は POSIX 宣言 | なし(glibc ABI 実測) |
 | `include/libc/glibc/aarch64/pthread.h` | 同上。mutex_t/attr_t/mutexattr_t/condattr_t が x86-64 より広い(実測。arch 依存ゆえ 2 本) | なし(glibc ABI 実測) |
-| `include/libc/pwd.h` | **POSIX の struct passwd**(メンバ名・型・順序は公開契約)。LP64 の対象 ABI レイアウトに対応する。getpwnam/getpwuid/getpwent/setpwent/endpwent/getpwnam_r/getpwuid_r は POSIX 宣言 | なし |
-| `include/libc/grp.h` | **POSIX の struct group**。対象 ABI レイアウトに対応する。getgrnam/getgrgid/getgrent/setgrent/endgrent/getgrnam_r/getgrgid_r は POSIX 宣言 | なし |
-| `include/libc/sys/utsname.h` | **Linux kernel ABI の struct utsname**。6 個の 65 バイト char 配列を含む 390 バイトのレイアウトに対応する。uname は POSIX 宣言 | なし(kernel ABI) |
-| `include/libc/sys/uio.h` | **POSIX/kernel UAPI の struct iovec**。`_RUBYCC_STRUCT_IOVEC` ガードを共有し、readv/writev を宣言する | なし(UAPI 由来) |
-| `include/libc/sys/resource.h` | **POSIX/kernel UAPI の struct rlimit・struct rusage と RLIMIT_*/RUSAGE_* 値**。struct timeval は sys/time.h と共通のガードを使用する。getrlimit/setrlimit/getrusage は POSIX 宣言 | なし(UAPI 由来) |
-| `include/libc/dirent.h` | **glibc/Linux ABI の struct dirent**。DIR は不完全型 `struct __dirstream` とし、struct dirent の対象 ABI レイアウトに対応する。opendir/readdir/closedir/rewinddir/readdir_r/fdopendir/dirfd は POSIX 宣言 | なし(glibc/UAPI) |
+| `include/libc/pwd.h` | **POSIX の struct passwd**(メンバ名・型・順序は公開契約)。LP64 の対象 ABI レイアウトに対応する。getpwnam/getpwuid/getpwent/setpwent/endpwent/getpwnam_r/getpwuid_r は POSIX 宣言。`getpwent_r` の宣言(gcc への再宣言で形を確認)と `NSS_BUFLEN_PASSWD`(1024)を追加(bundled-headers-io-batch-1、2026-09-18、両 arch) | なし |
+| `include/libc/grp.h` | **POSIX の struct group**。対象 ABI レイアウトに対応する。getgrnam/getgrgid/getgrent/setgrent/endgrent/getgrnam_r/getgrgid_r は POSIX 宣言。`getgrent_r`/`getgrouplist`/`initgroups`/`setgroups` の宣言(gcc への再宣言で形を確認)と `NSS_BUFLEN_GROUP`(1024)を追加(bundled-headers-io-batch-1、2026-09-18、両 arch) | なし |
+| `include/libc/sys/utsname.h` | **Linux kernel ABI の struct utsname**。6 個の 65 バイト char 配列を含む 390 バイトのレイアウトに対応する。uname は POSIX 宣言。`SYS_NMLN`(65)を追加(bundled-headers-io-batch-1、2026-09-18、両 arch) | なし(kernel ABI) |
+| `include/libc/sys/uio.h` | **POSIX/kernel UAPI の struct iovec**。`_RUBYCC_STRUCT_IOVEC` ガードを共有し、readv/writev を宣言する。`UIO_MAXIOV`(1024)と `preadv`/`pwritev` の宣言(gcc への再宣言で形を確認)を追加(bundled-headers-io-batch-1、2026-09-18、両 arch) | なし(UAPI 由来) |
+| `include/libc/sys/resource.h` | **POSIX/kernel UAPI の struct rlimit・struct rusage と RLIMIT_*/RUSAGE_* 値**。struct timeval は sys/time.h と共通のガードを使用する。getrlimit/setrlimit/getrusage は POSIX 宣言。`PRIO_*`(0/1/2、-20/20)・`RLIMIT_OFILE`・`RLIM_NLIMITS`・`RLIM_SAVED_CUR`/`RLIM_SAVED_MAX`(= RLIM_INFINITY)・`id_t` と `getpriority`/`setpriority` の宣言を実測して追加。選択子の型は従来どおり `int`(glibc は `_GNU_SOURCE` で enum にするが、`_DEFAULT_SOURCE` の形と一致することを再宣言で確認)(bundled-headers-io-batch-1、2026-09-18、両 arch) | なし(UAPI 由来) |
+| `include/libc/dirent.h` | **glibc/Linux ABI の struct dirent**。DIR は不完全型 `struct __dirstream` とし、struct dirent の対象 ABI レイアウトに対応する。opendir/readdir/closedir/rewinddir/readdir_r/fdopendir/dirfd は POSIX 宣言。`telldir`/`seekdir`/`scandir`/`scandirat`/`alphasort`/`versionsort` の宣言(gcc への再宣言で形を確認)、`d_fileno`・`MAXNAMLEN`(255)、実測した挙動(12 ビットのシフト)による `DTTOIF`/`IFTODT` を追加(bundled-headers-io-batch-1、2026-09-18、両 arch) | なし(glibc/UAPI) |
 | `include/libc/sched.h` | **glibc の cpu_set_t**。128/8 の不透明 blob と CPU_SETSIZE を提供する。**`struct sched_param`(4 バイト)と `SCHED_*` の値**(実測 2026-09-14、両 arch 一致)、POSIX のスケジューリング方針の関数と sched_yield/sched_getcpu/アフィニティ関数の宣言を持つ。CPU_SET 等のアフィニティ操作マクロ群と clone 系は対象外 | なし(glibc ABI) |
 | `include/libc/termios.h` | **glibc/Linux ABI の struct termios**。NCCS=32 の `c_cc` 配列を含む 60 バイトのレイアウト、主要フラグ定数・V* 添字・B* ボーレート値を提供する。tcgetattr/tcsetattr/tcflush/tcdrain/tcsendbreak/cfgetispeed/cfsetispeed/cfgetospeed/cfsetospeed/cfmakeraw を宣言する。**tcflow/tcgetsid/cfsetspeed と `TCO*`/`TCI*`・B57600 以上のボーレート・遅延ビット・CRTSCTS 等の値**を追加(実測 2026-09-14、両 arch 一致) | なし(glibc/UAPI 実測) |
 | `include/libc/sys/ioctl.h` | **struct winsize の 8 バイトレイアウト**と TIOCGWINSZ/TIOCSWINSZ の値を提供する。ioctl は Linux/glibc 宣言。**`TIOCM*`・`TC*`/`TIOC*`・`FIO*`・`N_*`・`SIOC*` の 165 個の値**を追加(実測 2026-09-14、x86-64 と aarch64 で全件一致のため共通層) | なし(glibc/UAPI 実測) |
-| `include/libc/sys/param.h` | glibc 互換シムとして MIN/MAX/howmany/roundup の 4 マクロを提供する。BSD 名エイリアス、ビットマップ操作マクロは対象外 | なし(glibc ABI 実測) |
+| `include/libc/sys/param.h` | glibc 互換シムとして MIN/MAX/howmany/roundup、BSD 名エイリアス(`MAXPATHLEN` 4096 ほか 12 個、値は実測)、`EXEC_PAGESIZE`(x86-64 4096 / aarch64 65536 を arch 判定の下に)、ビットマップ操作マクロと `powerof2`(実測した挙動から rubycc 自身の綴り)を提供する(BSD 名以降は bundled-headers-io-batch-1、2026-09-18、両 arch) | なし(glibc ABI 実測) |
 | `include/libc/glibc/x86_64/fcntl.h` の隣に置く `sys/fcntl.h`(x86-64) | `#include <fcntl.h>` のみの 1 行シム。fcntl.h と同じ arch 層に置く | なし(glibc ABI 実測) |
 | `include/libc/glibc/aarch64/fcntl.h` の隣に置く `sys/fcntl.h`(aarch64) | x86-64 版と同じ 1 行シム | なし(glibc ABI 実測) |
-| `include/libc/sys/wait.h` | waitpid/waitid のオプション定数・`idtype_t`・`CLD_*`、wait ステータスの符号化と WIF*/WEXITSTATUS/WTERMSIG/WSTOPSIG/WCOREDUMP 等のマクロを提供する。`siginfo_t` は `<signal.h>` から得る。wait/waitpid/waitid を宣言する | なし(kernel ABI 実測) |
+| `include/libc/sys/wait.h` | waitpid/waitid のオプション定数・`idtype_t`・`CLD_*`、wait ステータスの符号化と WIF*/WEXITSTATUS/WTERMSIG/WSTOPSIG/WCOREDUMP 等のマクロを提供する。`siginfo_t` は `<signal.h>` から得る。wait/waitpid/waitid を宣言する。`wait3`/`wait4` の宣言(gcc への再宣言で形を確認、そのために `<sys/resource.h>` を含める)と、実測した符号化による `WCOREFLAG`/`W_EXITCODE`/`W_STOPCODE` を追加(bundled-headers-io-batch-1、2026-09-18、両 arch) | なし(kernel ABI 実測) |
 | `include/libc/glibc/x86_64/sys/epoll.h` | Linux UAPI の epoll 定数と `struct epoll_event` を提供する。x86-64 は packed の 12 バイト・align 1・data@4 | なし(UAPI 実測) |
 | `include/libc/glibc/aarch64/sys/epoll.h` | Linux UAPI の epoll 定数と `struct epoll_event` を提供する。aarch64 は自然レイアウトの 16 バイト・align 8・data@8 | なし(UAPI 実測) |
 | `include/libc/langinfo.h` | glibc の `nl_item` 番号とカテゴリ・インデックスの合成規則、`nl_langinfo` の宣言を提供する | なし(glibc ABI 実測) |

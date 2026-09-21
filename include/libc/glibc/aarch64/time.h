@@ -4,7 +4,39 @@
    layout matches the reference ABI (measured). The struct guards reuse glibc's
    (__struct_tm_defined, _STRUCT_TIMESPEC) so a host header coexisting on the
    path does not redefine. ABI switch layer: time_t width and struct tm layout
-   are arch specific. */
+   are arch specific.
+
+   Coverage against glibc's <time.h> under _GNU_SOURCE (audited 2026-09-18,
+   glibc 2.39, both arches, with tools/audit_bundled_headers.rb; table in
+   docs/development/BUNDLED-HEADERS-COVERAGE.md). Added there: timespec_get
+   (ISO C11's own way to read a clock, which rubycc rejected before -- measured
+   2026-09-18), clock_nanosleep, clock_getcpuclockid, and the three clock ids
+   this header was missing (each printed from the glibc oracle on x86-64 and,
+   separately, on aarch64 under qemu on 2026-09-18; the two agreed). struct
+   itimerspec also moved behind glibc's own __itimerspec_defined guard, the
+   treatment struct tm already had. Every added prototype was written here and
+   then placed ahead of glibc's <time.h> under gcc and aarch64-linux-gnu-gcc,
+   where a conflicting redeclaration is an error (2026-09-18, both clean).
+   Intentionally left out:
+   omitted: timer_create timer_delete timer_settime timer_gettime
+   timer_getoverrun struct sigevent sigevent_t SIGEV_NONE SIGEV_SIGNAL
+   SIGEV_THREAD SIGEV_THREAD_ID -- the POSIX per-process timers. Their
+   notification block embeds a pthread_attr_t and glibc shares its definition
+   with <netdb.h> behind __sigevent_t_defined, so providing it means carrying
+   that layout and that guard; no corpus user asks for them yet.
+   omitted: struct timex clock_adjtime ADJ_* MOD_* STA_* -- the kernel clock
+   discipline (adjtimex), whose struct is a kernel UAPI layout of its own and
+   which only an NTP daemon calls. omitted: getdate getdate_r getdate_err --
+   the DATEMSK-file date parser; strptime above is what sources use.
+   omitted: dysize -- a days-in-year helper glibc inherited from SunOS.
+   omitted: timespec_getres -- glibc 2.34 and later only, so declaring it would
+   promise a symbol an older host glibc does not have (the line <stdlib.h>
+   draws at arc4random). omitted: locale_t strftime_l strptime_l -- the
+   locale-object API the bundled <locale.h> leaves out.
+   omitted: struct timeval -- glibc shows it here only because struct timex
+   embeds one; the bundled <sys/time.h> defines it, under the guard glibc
+   shares (__timeval_defined). omitted: <stddef.h> -- only size_t and NULL are
+   needed, and both are declared here directly. */
 
 #ifndef _RUBYCC_TIME_H
 #define _RUBYCC_TIME_H
@@ -56,6 +88,9 @@ typedef int pid_t;
 #define CLOCK_REALTIME_COARSE    5
 #define CLOCK_MONOTONIC_COARSE   6
 #define CLOCK_BOOTTIME           7
+#define CLOCK_REALTIME_ALARM     8
+#define CLOCK_BOOTTIME_ALARM     9
+#define CLOCK_TAI                11
 #define TIMER_ABSTIME            1
 
 #ifndef _STRUCT_TIMESPEC
@@ -83,10 +118,16 @@ struct tm {
 };
 #endif
 
+/* glibc keeps struct itimerspec in a file of its own and guards it with
+   __itimerspec_defined, so setting the same guard keeps a glibc header that
+   reads that file (timerfd, mqueue) from defining it a second time. */
+#ifndef __itimerspec_defined
+#define __itimerspec_defined 1
 struct itimerspec {
   struct timespec it_interval;
   struct timespec it_value;
 };
+#endif
 
 clock_t clock(void);
 time_t time(time_t *__timer);
@@ -105,6 +146,12 @@ char *ctime_r(const time_t *__restrict __timer, char *__restrict __buf);
 char *strptime(const char *__restrict __s, const char *__restrict __fmt, struct tm *__tp);
 
 int nanosleep(const struct timespec *__requested_time, struct timespec *__remaining);
+/* ISO C11's clock read: __base is TIME_UTC, and the return value is __base on
+   success rather than 0. */
+int timespec_get(struct timespec *__ts, int __base);
+int clock_nanosleep(clockid_t __clock_id, int __flags,
+                    const struct timespec *__requested_time, struct timespec *__remaining);
+int clock_getcpuclockid(pid_t __pid, clockid_t *__clock_id);
 int clock_gettime(clockid_t __clock_id, struct timespec *__tp);
 int clock_settime(clockid_t __clock_id, const struct timespec *__tp);
 int clock_getres(clockid_t __clock_id, struct timespec *__res);
