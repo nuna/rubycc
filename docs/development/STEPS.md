@@ -18506,3 +18506,82 @@ Linux 拡張を従来から無条件に見せているので、追加分も無�
 - `<limits.h>` の POSIX 上限(`PATH_MAX` など)は、並行した `bundled-headers-core-batch-1` が足した。`dirent.h` からはそちらへ回した。
 - musl で追加分を測っていない(`test_header_abi.rb` の `glibc:` 束)。musl の CI 実走で共通リストへ移せるものを確かめる。
 - 監査の段階ラベルは宣言の有無を見るだけで、`_GNU_SOURCE` での型の違い(`sys/resource.h` の enum)は表に出ない。
+
+## int128-typedef-spellings-1 — gcc の定義済み typedef `__int128_t` / `__uint128_t` を受け付ける(GAPS row CB)
+
+### 原因
+
+**rubycc は `__int128` / `unsigned __int128`(字句解析器のキーワード、
+`lib/rubycc/front/lexeme_reader.rb:38`)は受け付けるが、gcc が定義済みの typedef として持つ
+`__int128_t` / `__uint128_t` の綴りを受け付けなかった。** issue の再現を 2026-09-18 にこのホスト
+(WSL2 / gcc 13.3)で測ったとおり:
+
+```c
+int main(void) { __int128 a = 1; unsigned __int128 b = 2; __int128_t c = 3; return (int)(a + b + c) - 6; }
+```
+
+| | 結果 |
+|---|---|
+| gcc 13.3 | ok |
+| rubycc(対処前) | `error: expected ';'`(`__int128_t` の位置) |
+
+着手前に、この 2 つが「定義済み typedef」か「キーワードの別名」かを 2026-09-22 に同じホストで測った:
+
+```c
+typedef int __int128_t;              // 受理(-Wall -Wextra -pedantic -Werror でも)。
+                                      // __int128 とは異なる型への typedef なのに黙って通る
+{ typedef int __int128_t; ... }      // 受理。ブロックスコープの typedef が外側の
+                                      // (定義済みの)束縛を通常どおり隠す
+struct __int128_t { int x; };        // 受理。タグ名前空間と typedef 名前空間は別
+typedef __int128 __int128_t;         // 受理(同一型への再宣言、通常の typedef 規則)
+typedef int __int128_t; typedef long __int128_t;
+                                      // REJECTED: "conflicting types for '__int128_t'"
+```
+
+つまり gcc は `__int128_t` / `__uint128_t` を**定義済みの typedef 名**として予約しているが、
+「本物の先行宣言」としては扱っていない: **プログラムが書いた最初の typedef が型の一致を問わず
+黙って勝ち**、2 回目以降の再宣言だけが通常どおり型の衝突をチェックされる。これは
+`__builtin_va_list` の既存の予約のされ方(`lib/rubycc/front/parser.rb`)と同じ形。
+
+### 対処
+
+`__builtin_va_list` と同じ仕組みを流用した。パーサの outermost `@ordinary_scopes` に
+`__int128_t => Type::Int128`、`__uint128_t => Type::UInt128` を typedef としてあらかじめ束縛する
+(`Parser#initialize`)。ただしこの 2 エントリの `OrdinaryName#value` に 4 番目の要素として
+`true`(弱い/予約済みの意)を持たせ、`Parser#declare_typedef_name` に
+「既存の typedef エントリが弱いものなら、型の一致を問わず新しい宣言で無条件に置き換える」
+分岐を追加した。置き換え後のエントリは弱いマーカーを持たない通常の typedef になるので、
+**2 回目以降の再宣言は既存の「redefinition of typedef」チェックにそのまま合流する** ——
+上の測定結果すべて(初回は型を問わず通る・ブロックで隠せる・タグ名前空間と無関係・
+2 回目以降は型が違うと衝突)が、新規の特別扱いなしに一本の分岐で再現される。
+
+`Type::Int128` / `Type::UInt128`(`lib/rubycc/type.rb`)は `__int128` / `unsigned __int128` が
+すでに使っている共有インスタンスなので、sizeof・_Alignof・算術・変換・引数渡し
+(generator の `#wide128?` はインスタンス比較ではなくサイズ 16 で判定)は変更なしにそのまま揃う。
+`-target aarch64` の `#include <sys/ucontext.h>`(クロス sysroot の `sys/user.h:32` が
+`__uint128_t vregs[32];` を使う)もこの型解決だけで通るようになった(2026-09-22、
+このホストの `aarch64-linux-gnu-gcc` 対照で確認)。
+
+### テスト
+
+新規 `test/test_int128_typedef_spellings.rb`(11 runs、0 failures、aarch64 ツールチェイン導入済みの
+ためスキップ 0): issue の再現(x86-64 / aarch64、gcc 差分)・sizeof/_Alignof/算術が
+`__int128`/`unsigned __int128` と一致すること(x86-64 / aarch64、gcc 差分)・上記の測定 5 件
+(file-scope typedef、ブロックでの隠蔽、タグ名前空間の独立、同一型の再宣言、2 回目の型衝突が
+gcc 同様に rejected)・`-target aarch64` での `#include <sys/ucontext.h>`(cross sysroot ヘッダ
+導入時のみ、`test_aarch64_cross_sysroot_include.rb` と同じガード)。
+
+巻き添えの確認(いずれも 0 failures / 0 errors): `test_int128_abi.rb` 2 runs、
+`test_parser.rb` 332 runs、`test_type.rb` 92 runs、`test_aarch64_cross_sysroot_include.rb` 7 runs、
+`test_examples.rb` 75 runs、`test_examples_aarch64.rb` 594 runs(22 skips、既存)、
+`test_c_suite.rb` 223 runs(11 skips、既存)、`test_c_suite_aarch64.rb` 444 runs(22 skips、既存)。
+
+### 残された観点
+
+- **`__builtin_va_list` 自身の「弱い」再宣言許容は今回検証していない**(gcc は
+  `typedef int __builtin_va_list;` も無診断で通す、2026-09-22 実測)。今回の変更で
+  `declare_typedef_name` の弱マーカー機構自体は `__builtin_va_list` にも使えるが、
+  既存の 3 要素 value 配列のままなので `value[3]` が nil = 弱くない、という後方互換の
+  挙動のままにしてある。`__builtin_va_list` を弱くするかどうかは別課題(この issue の
+  範囲外)。
+- 実在の gem でこの綴りを踏んだ例はまだ観測していない(issue記載のとおり)。

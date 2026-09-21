@@ -451,8 +451,20 @@ module Rubycc
         # target's va_list type (a one-element __va_list_tag array), exactly as
         # gcc predeclares it, so "__builtin_va_list ap;" is parsed as a
         # declaration with no dedicated keyword and a program may still shadow the
-        # name.
-        @ordinary_scopes = [{ "__builtin_va_list" => OrdinaryName.new(:typedef, [@builtin_va_list, false]) }]
+        # name. It is also pre-seeded with `__int128_t` and `__uint128_t`, gcc's
+        # predefined typedef spellings of `__int128` and `unsigned __int128`
+        # (measured 2026-09-22, gcc 13.3: unlike `__int128` itself, which is a
+        # keyword, these two are ordinary identifiers bound to a typedef — a
+        # file-scope "typedef int __int128_t;" is accepted with no diagnostic,
+        # even under -Wall -Wextra -pedantic -Werror, and only the *next*
+        # redeclaration of the name is checked for a type conflict). The fourth
+        # OrdinaryName#value slot, true only for these two entries, marks that
+        # weak, once-only-overridable seeding; see #declare_typedef_name.
+        @ordinary_scopes = [{
+          "__builtin_va_list" => OrdinaryName.new(:typedef, [@builtin_va_list, false]),
+          "__int128_t" => OrdinaryName.new(:typedef, [Type::Int128, false, nil, true]),
+          "__uint128_t" => OrdinaryName.new(:typedef, [Type::UInt128, false, nil, true]),
+        }]
         # The constructor/destructor registrations the unit asked for, keyed by
         # function name (see #register_init_attributes). Filled as declarations
         # are read and handed to AST::Program whole, because the attribute may be
@@ -4342,10 +4354,25 @@ module Rubycc
       # name to be redeclared in the same scope when the new declaration names
       # the same type; a different type remains a redefinition diagnostic. A
       # redeclaration keeps the first binding, boundary included.
+      #
+      # `__int128_t` and `__uint128_t` start out as a *weak* entry instead
+      # (value[3] true, see the constructor's seeding): gcc predeclares these
+      # two names but does not treat them as a real prior declaration, so the
+      # first program-written typedef of the name silently replaces it
+      # regardless of type (measured 2026-09-22). That replacement is an
+      # ordinary (non-weak) entry, so a second, further redeclaration is
+      # checked for a conflict as usual. `__builtin_va_list`'s own seeding is
+      # unaffected — its value array has no fourth element, so it stays on the
+      # ordinary (non-weak) path above.
       def declare_typedef_name(name_tok, type, const, alignment = nil)
         existing = @ordinary_scopes.last[name_tok.value]
         if existing
           return if existing.kind == :typedef && existing.value[0, 2] == [type, const]
+
+          if existing.kind == :typedef && existing.value[3]
+            @ordinary_scopes.last[name_tok.value] = OrdinaryName.new(:typedef, [type, const, alignment])
+            return
+          end
 
           error_at(name_tok, "redefinition of typedef '#{name_tok.value}'")
         end
