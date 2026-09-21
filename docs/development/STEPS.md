@@ -18585,3 +18585,66 @@ gcc 同様に rejected)・`-target aarch64` での `#include <sys/ucontext.h>`(c
   挙動のままにしてある。`__builtin_va_list` を弱くするかどうかは別課題(この issue の
   範囲外)。
 - 実在の gem でこの綴りを踏んだ例はまだ観測していない(issue記載のとおり)。
+
+## bundled-sigstksz-1 — SIGSTKSZ / MINSIGSTKSZ / PTHREAD_STACK_MIN as a sysconf() call
+
+**原因**: `bundled-headers-core-batch-1`(2026-09-18)が同梱 `signal.h` を分類した際、glibc 2.34 以降
+`SIGSTKSZ` / `MINSIGSTKSZ` が定数ではなく `sysconf()` 呼び出しに展開されることを見つけて、
+両マクロと同梱 `unistd.h` の `_SC_SIGSTKSZ`(未定義だった)を意図して除外していた
+(`PTHREAD_STACK_MIN` も同梱 `limits.h` で同じ理由により除外)。結果、`sigaltstack` の
+典型的な使い方(`stack_t ss; ss.ss_size = SIGSTKSZ; ...`)が rubycc では
+`error: undeclared variable 'SIGSTKSZ'` になる一方、gcc は通す
+(2026-09-22、WSL2 / gcc 13.3 / glibc 2.39 で実測、issues/bundled-sigstksz.md)。
+
+**対処**: `_SC_SIGSTKSZ` / `_SC_MINSIGSTKSZ` / `_SC_THREAD_STACK_MIN` の値を x86-64(gcc 13.3)と
+aarch64(aarch64-linux-gnu-gcc 13.3、qemu-aarch64)の両方で実測し(2026-09-22、
+`sysconf()` を呼ぶ小さな C プログラムで直接出力: 250 / 249 / 75、両 arch 一致)、
+同梱 `unistd.h` に追加した(十二個から十五個へ)。`SIGSTKSZ` / `MINSIGSTKSZ` は同梱
+`signal.h` に、`PTHREAD_STACK_MIN` は同梱 `pthread.h`(x86_64・aarch64 両方の glibc 層)に、
+それぞれ glibc の実際の展開形(`gcc -E -dM -D_GNU_SOURCE` で確認: `SIGSTKSZ` ->
+`sysconf (_SC_SIGSTKSZ)`、`MINSIGSTKSZ` -> `SIGSTKSZ`、`PTHREAD_STACK_MIN` ->
+`__sysconf (75)`)を、公開名 `_SC_THREAD_STACK_MIN` 経由の互換な形で追加した。
+`sysconf()` は同梱 `unistd.h` と同じプロトタイプで前方宣言し(両ヘッダとも
+`<unistd.h>` を取り込まない既存方針を保つため)、呼び出し側が `<unistd.h>` も
+`#include` する必要がある旨をコメントに明記した(`<unistd.h>` 自身の
+`TEMP_FAILURE_RETRY` が `<errno.h>` の同時 `#include` を要求するのと同じ扱い)。
+可視性は `__USE_GNU` に統一し、この 3 マクロの「_GNU_SOURCE でだけ見える」扱いを
+既存の簡略化ルール(`bundled-headers-coverage-audit-2` が確立)に合わせた。実際の
+glibc は `PTHREAD_STACK_MIN` を `_DEFAULT_SOURCE` でも(アーキ依存の静的定数として)
+見せるが、その静的経路は corpus 利用者が無く対象外とした。同梱 `limits.h`
+(x86_64・aarch64)の `PTHREAD_STACK_MIN` omitted 行はそのまま残し(`<limits.h>` 単体
+からの到達は未対応)、`<pthread.h>` を主たる置き場にした旨を追記した。
+
+**テスト**: issues/bundled-sigstksz.md の再現プログラム(`sigaltstack` + `SIGSTKSZ` +
+`MINSIGSTKSZ` + `PTHREAD_STACK_MIN`)を x86-64(gcc)と aarch64(cross gcc + qemu-aarch64)
+の両方で rubycc ビルドと gcc ビルドを実行して比較し、一致を確認した(2026-09-22):
+x86-64 は `SIGSTKSZ=8192 MINSIGSTKSZ=8192 PTHREAD_STACK_MIN=16384`、aarch64 は
+`SIGSTKSZ=20480 MINSIGSTKSZ=20480 PTHREAD_STACK_MIN=131072`、両方とも exit 0 で一致。
+`test/test_bundled_headers_coverage.rb` に `test_sigaltstack_repro_matches_gcc` を追加し、
+この再現を実行してリンクし gcc オラクルの標準出力・終了コードと突き合わせる形で常時検証する。
+`test/test_header_abi.rb` の `UNISTD` Spec に `_SC_SIGSTKSZ` / `_SC_MINSIGSTKSZ` /
+`_SC_THREAD_STACK_MIN` を `glibc:` 側の `ints` として追加した(musl でこの三つが同じ
+番号を持つかは未実測のため、既存の `_ISupper` 等と同じ scoping)。
+targeted tests(すべて 0 failures):
+`test/test_bundled_headers_coverage.rb`(27 runs)、`test/test_audit_bundled_headers.rb`
+(5 runs)、`test/test_header_abi.rb`(130 runs)、`test/test_doc_links.rb`(3 runs)、
+`test/test_examples.rb`(75 runs)、`test/test_examples_aarch64.rb`(594 runs、22 skips)、
+`test/test_c_suite.rb`(223 runs、11 skips)、`test/test_c_suite_aarch64.rb`(444 runs、22 skips)。
+
+**残された観点**:
+- glibc 2.34 未満(SIGSTKSZ/MINSIGSTKSZ/PTHREAD_STACK_MIN が定数だった版)向けの分岐は
+  未対応。issues/bundled-sigstksz.md の「着手前に確かめること」が指す、rubycc が対象にする
+  glibc の下限をどこに置くかは未決着のまま。
+- `_DEFAULT_SOURCE`(`_GNU_SOURCE` を経ない)での `PTHREAD_STACK_MIN` の可視性(実際の glibc は
+  アーキ依存の静的定数 16384/131072 をここでも見せる)は対象外のまま。corpus 利用者が
+  出た時点で追加する。
+- musl での `_SC_SIGSTKSZ` / `_SC_MINSIGSTKSZ` / `_SC_THREAD_STACK_MIN` の番号(そもそも
+  存在するかどうかを含め)は未実測。
+
+### 統合時の修正
+
+担当の実装は `sysconf()` を前方宣言し、「呼び出し側は `<unistd.h>` も含める必要がある(glibc と同じ)」としていたが、
+統合時に測ると **glibc の `<signal.h>` は `_GNU_SOURCE` のもとで `<unistd.h>` を自分で取り込む**(`bits/sigstksz.h:24`)ので、
+`<signal.h>` と `<stdlib.h>` だけの再現が gcc では通り、rubycc では `_SC_SIGSTKSZ` が無くて落ちた。同梱 `<signal.h>` も
+`__USE_GNU` のもとで `<unistd.h>` を取り込む形に改め、`omitted:` の取り込み一覧から `<unistd.h>` を外した。テストの再現からも
+`<unistd.h>` を外し、`<signal.h>` だけで通る形を確かめるようにした(2026-09-22)。

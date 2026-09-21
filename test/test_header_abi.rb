@@ -661,7 +661,13 @@ class TestHeaderAbi < Minitest::Test
   # libc whose value differs from the bundled 0 has to be found here rather
   # than in a gem. fdatasync() is a declaration-only check here:
   # bootsnap calls it, but invoking it in an ABI probe would make the probe
-  # mutate a caller-supplied descriptor.
+  # mutate a caller-supplied descriptor. _SC_SIGSTKSZ, _SC_MINSIGSTKSZ and
+  # _SC_THREAD_STACK_MIN (bundled-sigstksz-1, GAPS CC) are the sysconf()
+  # arguments the bundled <signal.h>/<pthread.h> expand SIGSTKSZ, MINSIGSTKSZ
+  # and PTHREAD_STACK_MIN to on glibc 2.34+; unlike the rest of the _SC_* set,
+  # which is old enough to predate glibc and musl diverging, these three are
+  # glibc's own 2.34+ enum values, so they are checked under `glibc:` below
+  # rather than assumed to also be musl's without measuring it.
   UNISTD = HeaderAbiHarness::Spec.new(
     header: "unistd.h",
     sizes: %w[ssize_t off_t pid_t uid_t gid_t],
@@ -671,6 +677,7 @@ class TestHeaderAbi < Minitest::Test
              _SC_OPEN_MAX _SC_PAGESIZE _SC_PAGE_SIZE _SC_NPROCESSORS_CONF
              _SC_NPROCESSORS_ONLN _SC_PHYS_PAGES _SC_AVPHYS_PAGES _SC_IOV_MAX
              _POSIX_MONOTONIC_CLOCK _CS_PATH _PC_PIPE_BUF _POSIX_VDISABLE],
+    glibc: { ints: %w[_SC_SIGSTKSZ _SC_MINSIGSTKSZ _SC_THREAD_STACK_MIN] },
     snippets: [<<~C.chomp]
       static long abi_unistd(int fd, const char *path, void *buf, unsigned long n) {
         return read(fd, buf, n) + write(fd, buf, n) + pread(fd, buf, n, 0)

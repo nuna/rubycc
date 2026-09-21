@@ -50,10 +50,6 @@
    set here only because struct sigevent above reaches for it; the bundled
    <pthread.h> is where they live (pthread_t is the exception, since
    pthread_kill and pthread_sigmask below are declared over it).
-   omitted: SIGSTKSZ MINSIGSTKSZ -- not constants in glibc 2.34 and later
-   (measured 2026-09-18: both expand to a sysconf call, because the signal
-   frame's size depends on the CPU's register state), so a number written here
-   could contradict the host; a caller of sigaltstack below picks its own size.
    omitted: sigblock sigsetmask siggetmask sigmask sigstack struct sigstack
    sigreturn gsignal ssignal sighold sigrelse sigignore sigpause sigset
    sysv_signal SIG_HOLD -- the BSD and System V signal interfaces, superseded
@@ -72,10 +68,24 @@
    below. omitted: <sys/ucontext.h> <sys/procfs.h> <sys/user.h> -- the same
    saved state, reached as whole headers. omitted: pthread_sigqueue tgkill --
    GNU extensions for queueing to, and killing, one thread of a group; no
-   corpus user. omitted: <unistd.h> <sys/types.h> <sys/select.h> <sys/time.h>
+   corpus user. omitted: <sys/types.h> <sys/select.h> <sys/time.h>
    <endian.h> <stddef.h> -- glibc pulls these in for pid_t, sigset_t's
    companions and size_t; each type this header needs is declared here
-   directly, under the guard glibc shares for it. */
+   directly, under the guard glibc shares for it.
+
+   bundled-sigstksz-1 (GAPS CC) added SIGSTKSZ and MINSIGSTKSZ below, in the
+   form the 2026-09-18 pass had left out: glibc 2.34 and later expands both to
+   a sysconf() call rather than a constant (measured 2026-09-22 with `gcc -E
+   -dM -D_GNU_SOURCE <signal.h>` on x86-64 and aarch64, both agreeing:
+   `SIGSTKSZ` -> `sysconf (_SC_SIGSTKSZ)`, `MINSIGSTKSZ` -> `SIGSTKSZ`), and
+   the two macros are declared under __USE_GNU below, the same simplified
+   gating this header already gives every other name glibc shows only under
+_GNU_SOURCE. Under __USE_GNU this header also pulls in <unistd.h>, as
+glibc's own <signal.h> does there (its bits/sigstksz.h includes it;
+measured 2026-09-22 with `gcc -E -D_GNU_SOURCE <signal.h>`), so SIGSTKSZ
+works with <signal.h> alone and sysconf() and _SC_SIGSTKSZ come from the
+one declaration <unistd.h> already gives them. Outside __USE_GNU glibc
+pulls in neither, and neither does this header. */
 
 #ifndef _RUBYCC_SIGNAL_H
 #define _RUBYCC_SIGNAL_H
@@ -491,6 +501,14 @@ int siginterrupt(int __sig, int __interrupt);
 void psignal(int __sig, const char *__s);
 void psiginfo(const siginfo_t *__info, const char *__s);
 int sigaltstack(const stack_t *__ss, stack_t *__oss);
+
+/* SIGSTKSZ / MINSIGSTKSZ (bundled-sigstksz-1, GAPS CC): see the top comment
+   for the measurement and for why <unistd.h> is pulled in here. */
+#ifdef __USE_GNU
+#include <unistd.h>
+#define SIGSTKSZ (sysconf(_SC_SIGSTKSZ))
+#define MINSIGSTKSZ SIGSTKSZ
+#endif
 
 /* The per-thread half of the interface. pthread_t is the same scalar the
    bundled <pthread.h> defines, so the two declarations are a compatible

@@ -102,6 +102,26 @@ typedef union { char __size[8];  long __align; } pthread_rwlockattr_t;
 #define PTHREAD_RWLOCK_INITIALIZER { { 0 } }
 #define PTHREAD_ONCE_INIT 0
 
+/* PTHREAD_STACK_MIN (bundled-sigstksz-1, GAPS CC): like SIGSTKSZ in the
+   bundled <signal.h>, glibc 2.34 and later replaces this constant with a
+   sysconf() call (measured 2026-09-22 with `gcc -E -dM -D_GNU_SOURCE
+   <pthread.h>` on x86-64 and aarch64, both agreeing: `PTHREAD_STACK_MIN` ->
+   `__sysconf (75)`, where 75 is glibc's own private numeric alias for
+   _SC_THREAD_STACK_MIN rather than that public name itself). rubycc uses the
+   public _SC_THREAD_STACK_MIN name instead, which the bundled <unistd.h>
+   gives the same measured value (75), so this is a compatible expansion, not
+   a copy of glibc's internal spelling. sysconf() is forward declared here
+   (this header does not otherwise pull in <unistd.h>) with the same
+   prototype the bundled <unistd.h> gives it; a caller needs <unistd.h>
+   included too, for _SC_THREAD_STACK_MIN, the same requirement the bundled
+   <signal.h> documents for SIGSTKSZ. Gated on __USE_GNU, the same
+   simplification the rest of this project's headers use for a name glibc
+   shows only under _GNU_SOURCE. */
+#ifdef __USE_GNU
+extern long sysconf(int __name);
+#define PTHREAD_STACK_MIN (sysconf(_SC_THREAD_STACK_MIN))
+#endif
+
 int  pthread_create(pthread_t *__thread, const pthread_attr_t *__attr, void *(*__start)(void *), void *__arg);
 int  pthread_join(pthread_t __thread, void **__retval);
 int  pthread_detach(pthread_t __thread);

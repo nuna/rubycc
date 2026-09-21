@@ -63,9 +63,13 @@
    constant that has to be re-measured on both arches at every glibc release,
    so they are added one consumer at a time rather than en bloc, and an
    unconsumed one is pure surface.
-   omitted: _SC_* -- sysconf() arguments; the twelve the corpus asks for are
-   defined in the body with their measured numbers, and the rest of glibc's
-   <bits/confname.h> enumeration has no corpus caller.
+   omitted: _SC_* -- sysconf() arguments; the fifteen defined in the body with
+   their measured numbers are the twelve the corpus asks for plus
+   _SC_SIGSTKSZ, _SC_MINSIGSTKSZ and _SC_THREAD_STACK_MIN (bundled-sigstksz-1,
+   GAPS CC, measured 2026-09-22), which the bundled <signal.h>'s SIGSTKSZ /
+   MINSIGSTKSZ and the bundled <pthread.h>'s PTHREAD_STACK_MIN expand to on
+   glibc 2.34 and later; the rest of glibc's <bits/confname.h> enumeration has
+   no corpus caller.
    omitted: _CS_* _PC_* -- confstr()/pathconf() arguments; _CS_PATH and
    _PC_PIPE_BUF are defined in the body (etc's own test suite exercises
    exactly those two), the rest has no corpus caller.
@@ -321,6 +325,16 @@ int     execlp(const char *__file, const char *__arg, ...);
 #define _SC_NPROCESSORS_ONLN 84
 #define _SC_PHYS_PAGES       85
 #define _SC_AVPHYS_PAGES     86
+/* The three sysconf() arguments the bundled <signal.h> (SIGSTKSZ,
+   MINSIGSTKSZ) and <pthread.h> (PTHREAD_STACK_MIN) expand to on glibc 2.34
+   and later, since none of the three is a compile-time constant there
+   (bundled-sigstksz-1, GAPS CC). Measured by running the sigaltstack repro
+   from issues/bundled-sigstksz.md's `sysconf` calls on 2026-09-22: 250, 249
+   and 75 on both x86-64 (gcc 13.3) and aarch64 (aarch64-linux-gnu-gcc 13.3
+   under qemu-aarch64), so the values live in this common layer. */
+#define _SC_MINSIGSTKSZ      249
+#define _SC_SIGSTKSZ         250
+#define _SC_THREAD_STACK_MIN 75
 long    sysconf(int __name);
 
 /* confstr()/fpathconf()/pathconf() are likewise answered by the host's

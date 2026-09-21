@@ -1,11 +1,11 @@
 ---
-status: open
+status: done
 kind: gap
 opened: 2026-09-22
-closed:
-branch:
-pr:
-steps: []
+closed: 2026-09-22
+branch: gap-fixes-wave-9
+pr: 159
+steps: [bundled-sigstksz-1]
 ---
 
 # 同梱 `signal.h` に `SIGSTKSZ` / `MINSIGSTKSZ` が無い
@@ -59,6 +59,19 @@ glibc 2.34 以降、`SIGSTKSZ` は `sysconf (_SC_SIGSTKSZ)` に、`MINSIGSTKSZ` 
 `bundled-headers-core-batch-1` の統合時に、報告された形(`static char s[SIGSTKSZ]`)が gcc でも通らないことが分かったため、
 実行時の値として使う形で測り直して起票した。
 
+### 2026-09-22(実装)
+
+`_SC_SIGSTKSZ`(250)/ `_SC_MINSIGSTKSZ`(249)/ `_SC_THREAD_STACK_MIN`(75)を両 arch で測って同梱 `unistd.h` に足し、`SIGSTKSZ` と
+`MINSIGSTKSZ` を `signal.h` に、`PTHREAD_STACK_MIN` を `pthread.h` に、glibc と同じ展開の形で足した。統合時に、glibc の `<signal.h>` が
+`_GNU_SOURCE` のもとで `<unistd.h>` を取り込むことが分かり、同梱側も同じにした(`<signal.h>` だけで `SIGSTKSZ` が使える)。
+
 ## 決着
 
-(未着手)
+**解消した**(`bundled-sigstksz-1`。設計判断の本文は [STEPS.md](../docs/development/STEPS.md) の該当節)。
+
+| 受け入れ条件 | 結果 |
+|---|---|
+| 再現が rubycc でコンパイル・実行でき、gcc と同じ結果になる(両 arch) | `test/test_bundled_headers_coverage.rb` の再現(`<unistd.h>` を含めない形)。x86-64 は 8192 / 8192 / 16384、aarch64 は 20480 / 20480 / 131072 で gcc と一致 |
+| `_SC_*` の値を両 arch で測って足し、3 つのマクロを glibc と同じ展開の形で足す | 上記。`test/test_header_abi.rb` に `_SC_*` の値を追加 |
+| `sysconf` がホストの libc で意味のある値を返す | 上の実行結果 |
+| `rake test` が 0 failures | ブランチ全体の結果を PR に記録する |

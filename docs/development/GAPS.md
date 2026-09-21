@@ -18,7 +18,6 @@
 | **AN**([issue](../../issues/incompatible-function-pointer-argument.md)) | **gcc 13 が警告にとどめる 4 つの診断をエラーにする** — 互換でないポインタ・暗黙の関数宣言・暗黙の int(`expected type specifier` で原因を伝えない)・整数とポインタの変換。gcc 14 はどれも既定でエラー | 古い書き方の gem。`hpricot` / `fast_xs` / `fast_trie` / `zipruby` / `github-markdown` / `gctools` / `semacode-ruby19` / `picky` / `allocation_tracer` / `ruby_deep_clone` の 10 件が該当し、**対照の gcc 13 はどれも通る** | **実測**(2026-09-13、gcc 13 のみ。gcc 14 はこのホストに無い) | **警告に下げるかエラーを保つかが未決**。対照の版で結論が変わる |
 | **AS**([issue](../../issues/rmake-gnu-make-conditionals.md)) | **rmake が GNU make の条件文(`ifeq` など)を読めない**。パーサは代入とルール以外をすべて拒否する | 同梱ライブラリの手書き Makefile を make に渡す gem。`hiredis-client` 0.30.1 が該当し、**対照(GNU make)は通る** | **実測**(2026-09-13) | **対応するか対象外にするかが未決**。mkmf の Makefile は条件文を使わない |
 | **AT**([issue](../../issues/typeof-operator.md)) | **`typeof`(GNU 拡張、C23 で標準化)を受け付けない**。未宣言の関数として報告される | `algorithms` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
-| **CC**([issue](../../issues/bundled-sigstksz.md)) | **同梱 `signal.h` に `SIGSTKSZ` / `MINSIGSTKSZ` が無い**(glibc 2.34 以降は `sysconf (_SC_SIGSTKSZ)` に展開される。同梱 `unistd.h` に `_SC_SIGSTKSZ` も無い) | `sigaltstack` で代替シグナルスタックを張る拡張。**実在の gem ではまだ見ていない**。**対照の gcc は通る** | **実測**(2026-09-22、実行時の値として使う形の最小再現) | `_SC_*` の値を両 arch で測ってから、glibc と同じ展開の形で足す |
 | **BY**([issue](../../issues/complex-type.md)) | **`_Complex` 型が無い**(ISO C11 6.2.5p11)。`<complex.h>` を含む翻訳単位が 1 つもコンパイルできない | `<complex.h>` を含む gem。**実在の gem ではまだ見ていない**。**対照の gcc は通る** | **実測**(2026-09-18、1 行の最小再現) | **実装するか対象外にするかが未決**。外すなら `__STDC_NO_COMPLEX__` を定義して診断を直す |
 | **BZ**([issue](../../issues/generic-selection.md)) | **`_Generic`(ISO C11 6.5.1.1)が無い**。`<tgmath.h>` はコンパイラ判定の `#error` で先に止まる | 型総称マクロを書く gem。**実在の gem ではまだ見ていない**。c-testsuite にも skip がある。**対照の gcc は通る** | **実測**(2026-09-18、最小再現) | **実装するか対象外を明文化するかが未決** |
 | **CA**([issue](../../issues/extended-inline-asm-operands.md)) | **出力オペランド付きの拡張インラインアセンブリが無い**(空のアセンブリだけ受け付ける) | `asm/swab.h` を経由する UAPI ヘッダ(`netatalk/at.h`・`sys/rseq.h`)と `<sys/platform/x86.h>`。**実在の gem ではまだ見ていない**。**対照の gcc は通る** | **実測**(2026-09-18、最小再現) | **実装するか対象外を明文化するかが未決**。実装するなら基本形とセグメント相対の 2 段に分ける |
@@ -52,6 +51,9 @@
 
 ## 5. 閉じたギャップ(参照のみ)
 
+- **ギャップ CC**(同梱 `signal.h` に `SIGSTKSZ` / `MINSIGSTKSZ` が無い):
+  `bundled-sigstksz-1` で解消。`_SC_SIGSTKSZ` / `_SC_MINSIGSTKSZ` / `_SC_THREAD_STACK_MIN` を両 arch で測って同梱 `unistd.h` に足し、`SIGSTKSZ` 系を glibc と同じく `sysconf` の呼び出しとして足した。
+  glibc と同じく、`_GNU_SOURCE` のもとで `<signal.h>` が `<unistd.h>` を取り込む。
 - **ギャップ CB**(`__int128_t` / `__uint128_t` の綴りが無い):
   `int128-typedef-spellings-1` で解消。gcc はこの 2 つを「プログラムが最初に書いた typedef が型を問わず勝つ」定義済み typedef として扱うので、
   既存の `__builtin_va_list` の予約と同じ仕組みに合流させた。`-target aarch64` で `<sys/ucontext.h>` が通るようになった。

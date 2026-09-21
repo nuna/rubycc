@@ -10,6 +10,8 @@ require_relative "../tools/audit_bundled_headers"
 # glibc adds later, or a line dropped from a comment, fails here rather than as
 # the next gem's build error.
 class TestBundledHeadersCoverage < Minitest::Test
+  include ExecutionHelper
+
   A = AuditBundledHeaders
 
   # bundled-headers-core-batch-1 classified the core batch: the string,
@@ -184,6 +186,49 @@ class TestBundledHeadersCoverage < Minitest::Test
       "<#{header}>: #{e.message.lines.first.strip}"
     end
     assert_empty failures
+  end
+
+  # bundled-sigstksz-1 (GAPS CC): the sigaltstack repro from
+  # issues/bundled-sigstksz.md, run for real rather than merely compiled. On
+  # glibc 2.34 and later, SIGSTKSZ / MINSIGSTKSZ (bundled <signal.h>) and
+  # PTHREAD_STACK_MIN (bundled <pthread.h>) all resolve to a sysconf() call
+  # made against the host's real libc at run time, so this proves the actual
+  # returned value agrees with gcc's own build, not just that the macros
+  # compile.
+  # <unistd.h> is deliberately not included: glibc's <signal.h> pulls it in
+  # under _GNU_SOURCE, so SIGSTKSZ has to work with <signal.h> alone.
+  SIGSTKSZ_REPRO = <<~C
+    #define _GNU_SOURCE
+    #include <signal.h>
+    #include <stdlib.h>
+    #include <pthread.h>
+    #include <stdio.h>
+    int main(void) {
+      stack_t ss;
+      ss.ss_size = SIGSTKSZ;
+      ss.ss_sp = malloc(ss.ss_size);
+      ss.ss_flags = 0;
+      printf("%ld %ld %ld\\n", (long)ss.ss_size, (long)MINSIGSTKSZ, (long)PTHREAD_STACK_MIN);
+      return sigaltstack(&ss, 0);
+    }
+  C
+
+  def test_sigaltstack_repro_matches_gcc
+    skip "gcc unavailable" unless host_x86_64?
+
+    in_tmpdir do |dir|
+      gcc_object = File.join(dir, "gcc.o")
+      compile_with_gcc(SIGSTKSZ_REPRO, gcc_object)
+      gcc_status, gcc_stdout = link_and_run(gcc_object)
+      assert_equal 0, gcc_status, "gcc's own build of the repro is expected to exit 0"
+
+      rubycc_object = File.join(dir, "rubycc.o")
+      compile_with_rubycc(SIGSTKSZ_REPRO, rubycc_object)
+      rubycc_status, rubycc_stdout = link_and_run(rubycc_object)
+
+      assert_equal gcc_status, rubycc_status
+      assert_equal gcc_stdout, rubycc_stdout
+    end
   end
 
   def test_the_reserved_names_a_program_writes_are_audited

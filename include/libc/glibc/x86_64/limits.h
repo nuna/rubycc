@@ -26,7 +26,10 @@
    omitted: PTHREAD_KEYS_MAX PTHREAD_DESTRUCTOR_ITERATIONS PTHREAD_STACK_MIN --
    thread limits; PTHREAD_STACK_MIN is not even a constant in glibc 2.34 and
    later (measured 2026-09-18: it expands to a sysconf call), so a number
-   written here could contradict the host.
+   written here could contradict the host -- bundled-sigstksz-1 (GAPS CC)
+   added it as that sysconf() call to the bundled <pthread.h> instead, glibc's
+   own primary home for the macro; this header still leaves it out, since a
+   caller reaching it only through <limits.h> has no corpus example.
    omitted: <syslimits.h> -- gcc's own plumbing header, reached from gcc's
    <limits.h> and empty of public names. */
 
