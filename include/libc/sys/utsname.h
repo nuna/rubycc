@@ -14,7 +14,16 @@
    __USE_GNU (plain `domainname' vs. `__domainname'); rubycc's bundled header
    exposes the flat `domainname' spelling unconditionally, the same choice
    sys/stat.h's unconditional st_atim makes. uname is a POSIX declaration whose
-   body resolves from the host libc at link time (Step 123, M5 H2). */
+   body resolves from the host libc at link time (Step 123, M5 H2).
+
+   Coverage against glibc's <sys/utsname.h> under _GNU_SOURCE (audited
+   2026-09-18, glibc 2.39, x86-64 and aarch64, with
+   tools/audit_bundled_headers.rb; table in
+   docs/development/BUNDLED-HEADERS-COVERAGE.md). The one name that was
+   missing, SYS_NMLN, is below: it is the BSD-heritage spelling of the same
+   per-field length, measured at 65 on both arches, and a program that takes
+   `char host[SYS_NMLN]' before calling uname() is the reason it exists.
+   Nothing is left out. */
 
 #ifndef _RUBYCC_SYS_UTSNAME_H
 #define _RUBYCC_SYS_UTSNAME_H
@@ -26,6 +35,9 @@
 #include <features.h>
 
 #define _UTSNAME_LENGTH 65
+
+/* The BSD-heritage name for the same length (measured: 65 on both arches). */
+#define SYS_NMLN _UTSNAME_LENGTH
 
 struct utsname {
   char sysname[_UTSNAME_LENGTH];    /* Operating system name. */

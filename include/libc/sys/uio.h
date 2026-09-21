@@ -10,7 +10,34 @@
    pointer-and-size_t struct has no arch-dependent field widths on either LP64
    target), so this header lives in the common layer. readv/writev are POSIX
    declarations whose bodies resolve from the host libc at link time
-   (Step 123, M5 H2). */
+   (Step 123, M5 H2).
+
+   Coverage against glibc's <sys/uio.h> under _GNU_SOURCE (audited 2026-09-18,
+   glibc 2.39, x86-64 and aarch64, with tools/audit_bundled_headers.rb; table
+   in docs/development/BUNDLED-HEADERS-COVERAGE.md). Sixteen names were
+   missing; three were added and thirteen are deliberate. Added: UIO_MAXIOV
+   (measured 1024 on both arches -- the kernel's per-call iovec-count ceiling,
+   which a gem batching writes has to clamp to), and preadv/pwritev, the
+   positional forms every gem that does scatter/gather I/O at an explicit
+   offset reaches for. Both prototypes were checked by declaring them
+   immediately before `#include <sys/uio.h>` under gcc and
+   aarch64-linux-gnu-gcc (a conflicting redeclaration is a hard error) on
+   2026-09-18. Visibility rule as elsewhere: preadv/pwritev are what glibc
+   shows in gcc's default mode, so they are declared unconditionally.
+   omitted: preadv2 pwritev2 RWF_APPEND RWF_DSYNC RWF_HIPRI RWF_NOWAIT
+   RWF_SYNC -- the flagged forms of the same two calls, glibc 2.26 and later
+   only and with no corpus user; adding them would promise symbols an older
+   host glibc does not export (the same reasoning unistd.h's close_range
+   omission uses).
+   omitted: process_vm_readv process_vm_writev -- cross-process memory
+   transfer, a debugger/tracer interface no gem's C extension reaches.
+   omitted: preadv64 preadv64v2 pwritev64 pwritev64v2 -- LFS64 aliases,
+   identical to the unsuffixed calls on an LP64 target, no corpus user.
+   omitted: <endian.h> <stddef.h> <sys/select.h> <sys/types.h> -- glibc gets
+   ssize_t/size_t/off_t here by pulling in the whole <sys/types.h> chain,
+   which drags <endian.h> and <sys/select.h> along with it; this header
+   declares the three typedefs directly instead, under the shared _RUBYCC_*
+   guards. */
 
 #ifndef _RUBYCC_SYS_UIO_H
 #define _RUBYCC_SYS_UIO_H
@@ -29,6 +56,14 @@ typedef unsigned long size_t;
 #define _RUBYCC_SSIZE_T
 typedef long ssize_t;
 #endif
+#ifndef _RUBYCC_OFF_T
+#define _RUBYCC_OFF_T
+typedef long off_t;
+#endif
+
+/* The largest iovec count one readv/writev call accepts (measured: 1024 on
+   both arches). */
+#define UIO_MAXIOV 1024
 
 /* struct iovec: 16 bytes, 8-byte aligned (measured, both arches). Shared with
    sys/socket.h under the same guard. */
@@ -42,5 +77,7 @@ struct iovec {
 
 ssize_t readv(int __fd, const struct iovec *__iov, int __iovcnt);
 ssize_t writev(int __fd, const struct iovec *__iov, int __iovcnt);
+ssize_t preadv(int __fd, const struct iovec *__iov, int __iovcnt, off_t __offset);
+ssize_t pwritev(int __fd, const struct iovec *__iov, int __iovcnt, off_t __offset);
 
 #endif /* _RUBYCC_SYS_UIO_H */

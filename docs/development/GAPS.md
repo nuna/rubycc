@@ -29,7 +29,7 @@
 
 | 負債 | 影響 | 優先 | 詳細 |
 |---|---|---|---|
-| **同梱ヘッダの範囲が「コーパスが使った分だけ」**([issue](../../issues/bundled-headers-coverage-audit.md)) | 突き合わせの表([BUNDLED-HEADERS-COVERAGE.md](BUNDLED-HEADERS-COVERAGE.md))はできた。**差分の分類が済んだのは 18 本**(6 本 + 基本の組 12 本)で、残りの同梱ヘッダでは抜けが当たり続ける。共有ガードの点検は x86-64 だけ | 中 | 表を使って、残りのヘッダも足す / 意図して外すを決める |
+| **同梱ヘッダの範囲が「コーパスが使った分だけ」**([issue](../../issues/bundled-headers-coverage-audit.md)) | 突き合わせの表([BUNDLED-HEADERS-COVERAGE.md](BUNDLED-HEADERS-COVERAGE.md))はできた。**差分の分類が済んだのは 36 本**(6 本 + 基本の組 12 本 + ソケット・ファイルの組 18 本)で、残りの同梱ヘッダでは抜けが当たり続ける。共有ガードの点検は x86-64 だけ | 中 | 表を使って、残りのヘッダも足す / 意図して外すを決める |
 
 ## 3. 環境が無くて測れていないこと
 

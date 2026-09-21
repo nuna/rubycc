@@ -18345,3 +18345,164 @@ aarch64 だけの不足はシグナルフレームのレジスタ状態 49 個�
 - 同梱 `pthread.h` は `pthread_kill` などの仮引数名に `__thread`(gcc では TLS のキーワード)を使っている。
   rubycc は通すので実害は無いが、`signal.h` 側の同じ宣言は `__th` で書いた。
 - 未分類の同梱ヘッダ(親 issue に残る分)は、ソケット・ファイル系のバッチと合わせて親 issue の作業ログで数え直す。
+
+## bundled-headers-io-batch-1 — ソケット・ファイル・プロセス系の同梱ヘッダ 18 本を glibc と突き合わせて分類する
+
+GAPS §2 の負債(`issues/bundled-headers-coverage-audit.md`)の続き。`bundled-headers-coverage-audit-2` と
+`bundled-unistd-process-group-1` が分類した 6 本に続けて、ソケット・ファイル・プロセス系の 18 本
+(`sys/socket.h`・`sys/mman.h`・`sys/wait.h`・`sys/uio.h`・`sys/un.h`・`sys/resource.h`・`sys/statfs.h`・
+`sys/param.h`・`sys/utsname.h`・`netinet/in.h`・`netinet/tcp.h`・`arpa/inet.h`・`poll.h`・`dirent.h`・`pwd.h`・
+`grp.h` と、arch 層の `sys/stat.h`・`sys/select.h`)について、glibc の同名ヘッダとの差の全項目を
+「足す / 意図して外す(理由)」に分けた。同じ時期に別のバッチ(stdio/string/math/signal と arch 層の
+ctype/errno/limits/time)が並行して分類している。
+
+### 原因
+
+どの 18 本も Step 123 / 124(M5 H2)などで「コーパスのサンプルが届いた範囲」に絞って作られ、
+`tools/audit_bundled_headers.rb` の表(2026-09-18、glibc 2.39)では不足が両 arch で合計 890 件前後、
+「未記載」はさらに取り込み不足の分だけ多かった。形は 3 つに分かれる。
+
+- **名前が無い**: ソケットオプション(`SO_*` 73 個、`IP_*`/`IPV6_*`)、`CMSG_*`、`MAXPATHLEN`、`wait4`、`SUN_LEN` など。
+  `sys/socket.h` は Step 88 から `struct msghdr`/`struct cmsghdr` を持つのに `CMSG_*` が無く、
+  SCM_RIGHTS による fd 渡しの制御バッファを書く手段が無かった。
+- **glibc が含めるヘッダを含めない**: glibc の `<netinet/in.h>`・`<netinet/tcp.h>` は `<sys/socket.h>` を、
+  `<arpa/inet.h>` は `<netinet/in.h>` を含める。同梱側は含めていなかったので、
+  `<arpa/inet.h>` だけで `struct sockaddr_in` を使う、`<netinet/in.h>` だけで `socket()` を呼ぶ、
+  `<netinet/tcp.h>` だけで `setsockopt(..., SOL_TCP, TCP_NODELAY, ..., (socklen_t) ...)` を書く単位が、
+  gcc では通り rubycc では落ちた。
+- **ヘッダ冒頭の「対象外」判断が測定の前提を失っていた**: `sys/socket.h` の AF_ 族は「測っていない値は足さない」、
+  `sys/param.h` の BSD 名は「limits.h を別名で再導出するだけ」、`sys/wait.h` の `wait3`/`wait4` は
+  「`<sys/resource.h>` を相互に含めたくない」を理由に外していた。どれも一度の測定で両 arch の全値が取れ、
+  共有ガードで衝突も起きないので、理由として残らない。
+
+修正前の再現(2026-09-18、7bb66af の `lib/` と `include/` を `git archive` で作業場所の外に取り出して測定、
+x86-64・aarch64 とも同じ結果。gcc はどれも通す):
+
+| 単位(`-D_GNU_SOURCE`) | 修正前の rubycc |
+|---|---|
+| `<arpa/inet.h>` + `struct sockaddr_in sin; sin.sin_family = AF_INET;` | `invalid use of incomplete type 'struct sockaddr_in'` |
+| `<netinet/in.h>` + `socket(AF_INET, SOCK_STREAM, 0)` | `implicit declaration of function 'socket'` |
+| `<netinet/tcp.h>` + `setsockopt(fd, SOL_TCP, TCP_NODELAY, &one, (socklen_t) sizeof one)` | `expected ')'`(`socklen_t` が無い) |
+| `<sys/socket.h>` + `CMSG_FIRSTHDR(m)` | `implicit declaration of function 'CMSG_FIRSTHDR'` |
+| `<sys/param.h>` + `char buf[MAXPATHLEN];` | `array size must be an integer constant` |
+| `<netinet/in.h>` + `struct ip_mreq m;` | `invalid use of incomplete type 'struct ip_mreq'` |
+| `<sys/un.h>` + `SUN_LEN(a)` | `implicit declaration of function 'SUN_LEN'` |
+| `<sys/wait.h>` + `wait4(-1, &st, 0, r)` | `implicit declaration of function 'wait4'` |
+
+修正後は 8 本とも両 arch で通る。
+
+### 対処
+
+値・大きさ・オフセットはすべてリファレンスコンパイラに印字させて測ってから書いた(glibc のヘッダ本文は
+写していない。R11、`docs/reference/HEADER-LICENSING.md` §6)。追加した関数宣言はすべて、glibc の同名ヘッダを
+含める**直前**に同じ宣言を書いて `gcc` と `aarch64-linux-gnu-gcc` の `-fsyntax-only` に通し、衝突する再宣言が
+無いことを確かめた(2026-09-18、両 arch)。**見え方の規則**は既存の各ヘッダの方針に従う: これらのヘッダは
+Linux 拡張を従来から無条件に見せているので、追加分も無条件。
+
+- **値の追加(閉じた番号空間は一度に測る)**: `sys/socket.h` の残りの AF_/PF_/SOCK_/SOL_/SO_/MSG_/SCM_ と
+  socket ioctl 番号・`SOMAXCONN`(223 個)、`netinet/in.h` の IPPROTO_/IP_/IPV6_/MCAST_/SOL_IP 系/INADDR_/
+  IN_CLASS 系(181 個)、`netinet/tcp.h` の TCP_/SOL_TCP/TCPI_OPT_/TCPOPT_/TCPOLEN_/TH_(81 個)、
+  `sys/mman.h` の MAP_/PROT_/MADV_/POSIX_MADV_/MCL_/MREMAP_/MFD_(47 個)。`gcc` と
+  `aarch64-linux-gnu-gcc`(qemu 実行)に印字させ、**全件一致**したので共通層に置いた。
+  ソケットオプションは欠けても extconf がエラーにしないので、`bundled-headers-coverage-audit-2` の
+  `SIOC*` と同じく「gcc より機能の少ない gem ができる」形の穴である。
+- **arch で値が違うもの**(4 + 1 件): `MAP_32BIT`/`MAP_ABOVE4G`(x86-64 だけ、64/128)・`PROT_BTI`/`PROT_MTE`
+  (aarch64 だけ、16/32)、`EXEC_PAGESIZE`(x86-64 4096 / aarch64 65536。glibc は port が扱う最大のページサイズを
+  答える)。共通層のヘッダの中で `__x86_64__`/`__aarch64__` で分けた(`math.h`・`float.h` と同じ扱い)。
+- **レイアウトの追加**: `struct ucred`(12 バイト・整列 4)・`struct mmsghdr`(64 バイト・整列 8、`msg_len` は 56)、
+  `netinet/in.h` の `struct ip_mreq`/`ip_mreqn`/`ip_mreq_source`/`ipv6_mreq`/`in_pktinfo`/`in6_pktinfo`/
+  `group_req`/`group_source_req`(8/12/12/20/12/20/136/264 バイト)。大きさと全メンバのオフセットを両 arch で
+  測り一致、メンバの型は `__builtin_types_compatible_p` で glibc の型と照合した(両 arch とも 23/23)。
+- **本文を持つマクロは自前の綴りを差分で確かめた**:
+  - `CMSG_ALIGN`/`CMSG_LEN`/`CMSG_SPACE`/`CMSG_DATA`/`CMSG_FIRSTHDR`/`CMSG_NXTHDR`: 長さ 0〜1023 の全件と、
+    3 レコードを持つ 512 バイトの制御バッファを `msg_controllen` 0〜511 の全件で走査して glibc と比べ、
+    両 arch で不一致 0。測定で分かった事実が 2 つある: `CMSG_ALIGN` は `sizeof(size_t)` に切り上げる。
+    glibc 2.39 の `__cmsg_nxthdr` は「現在のレコード + ヘッダ 1 つ分」が収まるかだけを見て、
+    **次のレコードの `cmsg_len` は見ない**(最初に書いた、次の `cmsg_len` まで確かめる版は 80 件食い違った)。
+    glibc はこれをインライン関数に隠すが、マクロでは引数を複数回評価するしかない(カーネル UAPI の同名マクロと同じ)。
+  - `IN_CLASSA`〜`IN_BADCLASS`: 2^32 の全アドレスで glibc と比べて不一致 0(両 arch)。
+    `IN6_IS_ADDR_*`/`IN6_ARE_ADDR_EQUAL`: アドレスのバイトで書き、40 万件の構造化+疑似乱数のアドレスで不一致 0(両 arch)。
+  - `SUN_LEN`(`sun_path` のオフセット 2 + strlen、"/tmp/x" で 8)、`W_EXITCODE`/`W_STOPCODE`/`WCOREFLAG`
+    (`sys/wait.h` のコメントが既に書いていた符号化)、`DTTOIF`/`IFTODT`(12 ビットのシフト)、
+    `setbit`/`clrbit`/`isset`/`isclr`(ビット n はバイト n/8 のマスク 1<<(n%8))、`powerof2`。
+- **取り込みの追加**: `netinet/in.h` → `<sys/socket.h>`、`netinet/tcp.h` → `<stdint.h>`・`<sys/socket.h>`、
+  `arpa/inet.h` → `<netinet/in.h>`、`sys/un.h` → `<stddef.h>`・`<string.h>`(`SUN_LEN` 用)、
+  `sys/wait.h` → `<sys/resource.h>`(`wait3`/`wait4` の `struct rusage`)。どれも既存の共有ガードで衝突しない。
+- **`sys/resource.h` の選択子の型**: glibc は `_GNU_SOURCE` のもとで `getrlimit`/`setrlimit`/`getpriority`/
+  `setpriority` の第 1 引数を enum(`enum __rlimit_resource`・`enum __priority_which`)にし、同梱の `int` と
+  並べると gcc は衝突と言う(2026-09-18 実測)。既存の `getrlimit`/`setrlimit` から既にそうで、両者は
+  同じ翻訳単位に並ばない。`_DEFAULT_SOURCE` では glibc も `int` で、5 つの宣言がそこでは衝突しないことを
+  両 arch で確かめた。`getpriority`/`setpriority` は既存に合わせて `int` で足し、`_GNU_SOURCE` でしか
+  存在しない `prlimit` は glibc 内部の enum を再現することになるので外した。
+- **外したもの**は各ヘッダの冒頭コメントに `omitted: 名前 ... -- 理由` で書いた。主な理由:
+  LFS64 別名(LP64 では無印と同一。`statfs64`・`dirent64`・`stat64`・`rlimit64`・`preadv64` など)、
+  古いホスト glibc に無い記号(`process_madvise`/`process_mrelease` 2.35/2.36、`getdents64` 2.30、
+  `preadv2`/`pwritev2` 2.26 など。`close_range` と同じ理由)、コーパスに利用者のない特殊 API
+  (RFC 3542 の `inet6_opt_*`/`inet6_rth_*`、全状態のソースフィルタ API、pkey_*、`statx`)、
+  スナップショットにすぎない構造体(glibc の `struct tcp_info` は 104 バイトで固定、カーネルは伸び続ける)、
+  他のヘッダの面(`dirent.h` に `<bits/posix1_lim.h>` 経由で現れる `PATH_MAX`/`NAME_MAX`/`_POSIX_*` は
+  `<limits.h>` の側で判断する)。`netinet/in.h` の `SCM_SRCRT` は glibc 2.39 が未定義の `IPV6_RXSRCRT` に展開され、
+  gcc でも使うとコンパイルエラーになる(2026-09-18 実測)ので、再現するものが無い。
+- 由来台帳(`docs/reference/HEADER-LICENSING.md` §3.2 / §3.3)の 18 行に追加分を書き足し、`sys/param.h` の行の
+  「BSD 名エイリアス・ビットマップ操作マクロは対象外」は書き換えた。ABI の値を 1 つも動かしていない
+  `poll.h`・`sys/statfs.h`(コメントだけの変更)の行は変えていない。ファイル数は動いていないので §3.4 の集計(81 本)は不変。
+
+### 測定結果(2026-09-18、このホスト WSL2 / gcc 13.3 / glibc 2.39、aarch64 はクロス gcc 13.3 / glibc 2.39)
+
+監査表の不足(x86-64 / aarch64、前 → 後)と、追加・外した件数。**未記載は 18 本とも両 arch で 0**。
+
+| ヘッダ | 不足 前 → 後 | 追加 | 外した(名前 + 取り込み) |
+|---|---|---|---|
+| `sys/socket.h` | 239 → 5 | 234 | 5 + 4 |
+| `netinet/in.h` | 267 → 56 | 211(+ `<sys/socket.h>` の取り込み) | 56 + 4 |
+| `netinet/tcp.h` | 90 → 8 | 82(+ `<stdint.h>`・`<sys/socket.h>`) | 8 + 4 |
+| `arpa/inet.h` | 5 → 5 | 0(+ `<netinet/in.h>`・`<sys/socket.h>`) | 5 + 3 |
+| `sys/mman.h` | 72 / 71 → 13 / 12 | 58(うち arch 限定 2 + 2) | 13 / 12 + 1 |
+| `sys/stat.h`(両 arch 層) | 56 → 36 | 20 | 36 |
+| `dirent.h` | 79 → 69 | 10 | 69 + 1 |
+| `sys/resource.h` | 20 → 8 | 12 | 8 |
+| `sys/uio.h` | 16 → 13 | 3 | 13 + 4 |
+| `sys/param.h` | 18 → 0 | 18 | 0 + 9 / 12 |
+| `sys/wait.h` | 7 → 2 | 5 | 2 + 3 / 9 |
+| `grp.h` | 9 → 4 | 5 | 4 + 1 |
+| `pwd.h` | 7 → 5 | 2 | 5 + 1 |
+| `sys/un.h` | 1 → 0 | 1(+ `<stddef.h>`・`<string.h>`) | 0 + 1 |
+| `sys/statfs.h` | 3 → 3 | 0 | 3 |
+| `sys/utsname.h` | 1 → 0 | 1 | 0 |
+| `sys/select.h`(両 arch 層) | 1 → 0 | 1 | 0 |
+| `poll.h` | 0 → 0 | 0 | 0 + 1 |
+
+- 混在の調査(同梱しない glibc の公開ヘッダ 186 本): rubycc だけが落ちるものは修正前後とも同じ 5 本
+  (`complex.h`・`netatalk/at.h`・`sys/platform/x86.h`・`sys/rseq.h`・`tgmath.h`。どれも同梱ヘッダが原因ではない)。
+  `netinet/in.h` が `<sys/socket.h>` を含めるようになっても、新たに落ちたものは無い。
+- 共有ガードの probe(x86-64): 18 本に関わる組はすべて ok。`__rusage_defined` は従来どおり内部ファイルを直接含めたときだけ衝突する。
+- `docs/development/BUNDLED-HEADERS-COVERAGE.md` を再生成した(差分は 18 本の行と節だけ)。
+
+### テスト
+
+- `test/test_bundled_headers_coverage.rb`: `AUDITED` に 18 本を足し、「未記載 0」を両 arch で確かめる既存の仕組みに乗せた。
+  上の表の最初の 3 本(取り込みの穴)を rubycc でコンパイルする `test_socket_headers_pull_in_what_glibc_pulls_in` を追加。
+- `test/test_header_abi.rb`: `SOCKET`(223 値、`CMSG_*` の値と制御バッファの走査 3 通り、`struct ucred`/`struct mmsghdr`)、
+  `NETINET_IN`(181 値、IPv4 分類 10 件、10 個の IPv6 アドレスを全述語で分類、8 構造体の大きさとオフセット)、
+  `TCP`(81 値と `tcp_seq`)、`MMAN`(47 値と新しい呼び出し)、`SYS_STAT`・`SYS_SELECT`・`DIRENT`・`RESOURCE`・`WAIT`・
+  `SYS_PARAM`・`UIO`・`PWD`・`GRP`・`UTSNAME`・`SOCKADDR_UN`(`SUN_LEN`)・`ARPA_INET`(`<arpa/inet.h>` だけで `struct sockaddr_in`)を拡張した。
+  どれも既存の Spec なので x86-64 と aarch64(neutral 層の節)の両方で走る。追加分は `glibc:` の束に入れた
+  (musl の実走でまだ測っていないため。musl のヘッダの穴を rubycc の失敗として報告しないように)。
+  arch 限定の 4 値は `MMAN_X86_64`(x86-64 ホストだけ)と `MMAN_AARCH64`(aarch64 クラス)に分けた。
+- 修正前の対照: 7bb66af の `lib/` と `include/` を `git archive` で取り出し、上の 8 本の再現が両 arch とも
+  修正前は落ちることを測った(2026-09-18)。
+- 実行結果(2026-09-22、この worktree、いずれも 0 failures / 0 errors):
+  `test_bundled_headers_coverage.rb` 32 runs / 172 assertions、
+  `test_audit_bundled_headers.rb` 5 runs / 98 assertions、
+  `test_header_abi.rb` 132 runs / 391 assertions / 0 skips、
+  `test_doc_links.rb` 3 runs / 45 assertions、
+  `test_examples.rb` 75 runs、
+  `test_examples_aarch64.rb` 594 runs / 22 skips(既存)、
+  `test_c_suite.rb` 223 runs / 11 skips(既存)、
+  `test_c_suite_aarch64.rb` 444 runs / 22 skips(既存)。
+
+### 残された観点(このステップでは直していない)
+
+- `<limits.h>` の POSIX 上限(`PATH_MAX` など)は、並行した `bundled-headers-core-batch-1` が足した。`dirent.h` からはそちらへ回した。
+- musl で追加分を測っていない(`test_header_abi.rb` の `glibc:` 束)。musl の CI 実走で共通リストへ移せるものを確かめる。
+- 監査の段階ラベルは宣言の有無を見るだけで、`_GNU_SOURCE` での型の違い(`sys/resource.h` の enum)は表に出ない。

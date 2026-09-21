@@ -37,14 +37,23 @@
    with 4-byte alignment -- two 4-byte ints, not one 8-byte word, which is
    why f_fsid cannot simply be written as a long.
 
-   Not included: struct statfs64 / statfs64 / fstatfs64 (measured, statfs64
-   is byte-for-byte the same 120-byte layout on both LP64 targets, so the
-   plain names already are the 64-bit interface here), and the ST_* mount
-   flag names, which measurement confirms <sys/statfs.h> does not define at
-   all -- they belong to <sys/statvfs.h>, which rubycc does not bundle. nio4r,
-   the gem that put this header on the list, reaches statfs and f_type only,
-   from libev's ev_stat backend deciding whether a filesystem is local enough
-   for inotify to be trusted. */
+   The ST_* mount flag names are not here either, and measurement confirms
+   <sys/statfs.h> does not define them at all -- they belong to
+   <sys/statvfs.h>, which rubycc does not bundle. nio4r, the gem that put this
+   header on the list, reaches statfs and f_type only, from libev's ev_stat
+   backend deciding whether a filesystem is local enough for inotify to be
+   trusted.
+
+   Coverage against glibc's <sys/statfs.h> under _GNU_SOURCE (audited
+   2026-09-18, glibc 2.39, x86-64 and aarch64, with
+   tools/audit_bundled_headers.rb; table in
+   docs/development/BUNDLED-HEADERS-COVERAGE.md). Three names were missing and
+   all three are deliberate:
+   omitted: struct statfs64 statfs64 fstatfs64 -- the LFS64 spellings, which
+   measurement makes redundant here: struct statfs64 is byte-for-byte the same
+   120-byte layout as struct statfs on both LP64 targets, so the unsuffixed
+   names above already are the 64-bit interface (the same reasoning stdlib.h
+   and unistd.h use for their own LFS64 aliases). */
 
 #ifndef _RUBYCC_SYS_STATFS_H
 #define _RUBYCC_SYS_STATFS_H

@@ -12,9 +12,26 @@
    getpwnam_r/getpwuid_r are POSIX declarations whose bodies resolve from the
    host libc at link time (getpwnam_r/getpwuid_r answer through NSS, so their
    result is a host runtime fact, not something rubycc computes).
-   Not included: fgetpwent/putpwent/getpw (glibc/BSD extensions no corpus
-   sample census hit needs), left out to keep the surface to what etc's use of
-   getpwnam/getpwuid actually requires (Step 123, M5 H2). */
+   Coverage against glibc's <pwd.h> under _GNU_SOURCE (audited 2026-09-18,
+   glibc 2.39, x86-64 and aarch64, with tools/audit_bundled_headers.rb; table
+   in docs/development/BUNDLED-HEADERS-COVERAGE.md). Seven names were missing;
+   two were added and five are deliberate. Added: getpwent_r, the reentrant
+   form of the getpwent enumeration above (the one missing call that fits the
+   thread-safe pattern the _r pair already sets here), checked by declaring it
+   immediately before `#include <pwd.h>` under gcc and aarch64-linux-gnu-gcc
+   on 2026-09-18 -- clean on both arches; and NSS_BUFLEN_PASSWD, the buffer
+   size glibc suggests for getpwnam_r/getpwuid_r, measured 1024 on both
+   arches. A caller that does not size its buffer from this has to guess or
+   loop on ERANGE.
+   omitted: FILE fgetpwent fgetpwent_r putpwent -- the calls that read and
+   write a passwd-format *stream* rather than the system database; supporting
+   them would mean pulling <stdio.h> in here for FILE (which is why FILE shows
+   up as a missing name of its own), and the corpus reaches this header for
+   getpwnam/getpwuid only.
+   omitted: getpw -- the obsolete fixed-buffer lookup, superseded by
+   getpwuid_r above and unsafe by construction.
+   omitted: <stddef.h> -- only size_t is needed, and it is declared here
+   directly. */
 
 #ifndef _RUBYCC_PWD_H
 #define _RUBYCC_PWD_H
@@ -38,6 +55,10 @@ typedef unsigned int uid_t;
 typedef unsigned int gid_t;
 #endif
 
+/* Buffer size glibc suggests for the getpwnam_r/getpwuid_r/getpwent_r
+   lookups below (measured 1024, both arches). */
+#define NSS_BUFLEN_PASSWD 1024
+
 /* A record in the user database. Member names, types and order are the
    POSIX.1 public contract; every offset below was measured against the glibc
    oracle on both x86-64 and aarch64 and the two agreed byte for byte. */
@@ -60,5 +81,7 @@ int getpwnam_r(const char *__restrict __name, struct passwd *__restrict __result
                char *__restrict __buffer, size_t __buflen, struct passwd **__restrict __result);
 int getpwuid_r(uid_t __uid, struct passwd *__restrict __resultbuf,
                char *__restrict __buffer, size_t __buflen, struct passwd **__restrict __result);
+int getpwent_r(struct passwd *__restrict __resultbuf, char *__restrict __buffer,
+               size_t __buflen, struct passwd **__restrict __result);
 
 #endif /* _RUBYCC_PWD_H */

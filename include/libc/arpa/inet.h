@@ -8,8 +8,28 @@
    for __BYTE_ORDER / __LITTLE_ENDIAN and the ntohs/ntohl functions. glibc's real
    <arpa/inet.h> fans out into the whole socket + kernel-UAPI chain (netinet/in.h,
    sys/socket.h and the asm/asm-generic socket headers); the bundled header
-   collapses that -- no target gem uses sockets, so the socket UAPI surface is
-   deliberately not reproduced (measurement-driven, per the B7 plan). */
+   collapsed that at the time -- no target gem used sockets, so the socket UAPI
+   surface was deliberately not reproduced (measurement-driven, per the B7
+   plan).
+
+   Coverage against glibc's <arpa/inet.h> under _GNU_SOURCE (audited
+   2026-09-18, glibc 2.39, x86-64 and aarch64, with
+   tools/audit_bundled_headers.rb; table in
+   docs/development/BUNDLED-HEADERS-COVERAGE.md). Since then rubycc has
+   bundled <netinet/in.h> and <sys/socket.h>, so the collapse is undone where
+   it mattered: this header now includes <netinet/in.h> (which in turn
+   includes <sys/socket.h>), as glibc's does. Before, a program that included
+   only <arpa/inet.h> and then filled a struct sockaddr_in -- the ordinary
+   pairing with inet_pton -- compiled under gcc and failed under rubycc. The
+   address types below keep their guards, shared with <netinet/in.h>, so the
+   include redefines nothing. Five names are missing and all are deliberate:
+   omitted: inet_net_ntop inet_net_pton inet_neta inet_nsap_addr
+   inet_nsap_ntoa -- the BIND-heritage network-number and OSI NSAP
+   converters, with no corpus user; inet_pton/inet_ntop above are the
+   conversions programs use.
+   omitted: <stddef.h> <sys/select.h> <sys/types.h> -- glibc reaches them
+   through its <netinet/in.h> chain; the bundled chain declares the types it
+   needs directly. */
 
 #ifndef _RUBYCC_ARPA_INET_H
 #define _RUBYCC_ARPA_INET_H
@@ -22,6 +42,8 @@
 
 #include <stdint.h>
 #include <endian.h>
+/* glibc's <arpa/inet.h> includes <netinet/in.h>; programs rely on it. */
+#include <netinet/in.h>
 
 #ifndef _RUBYCC_SOCKLEN_T
 #define _RUBYCC_SOCKLEN_T

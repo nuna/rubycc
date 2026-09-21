@@ -10,7 +10,39 @@
    Both the layout and the S_IF* octal values are ABI facts reproduced by
    measurement, not copied text (see docs/HEADER-LICENSING.md). The S_IF* values
    are the kernel ABI, identical to x86-64. Placed in the glibc/aarch64 layer
-   because they are kernel-ABI specific. */
+   because they are kernel-ABI specific.
+
+   Coverage against glibc's <sys/stat.h> under _GNU_SOURCE (audited
+   2026-09-18, glibc 2.39, x86-64 and aarch64, with
+   tools/audit_bundled_headers.rb; table in
+   docs/development/BUNDLED-HEADERS-COVERAGE.md). The difference is the same
+   on both arches: fifty-six names were missing, of which twenty were added
+   and thirty-six are deliberate. Added, in three groups: the *at forms of the
+   calls already here (fchmodat, mkdirat, mkfifoat, mknodat) plus mknod
+   itself, which is how a C extension creates a device or FIFO node; the
+   nanosecond timestamp setters utimensat and futimens with the UTIME_NOW /
+   UTIME_OMIT sentinels their tv_nsec takes (measured 0x3fffffff and
+   0x3ffffffe on both arches) and lchmod; and the BSD-heritage permission
+   spellings S_IREAD / S_IWRITE / S_IEXEC, the composite masks ACCESSPERMS
+   0777, ALLPERMS 07777 and DEFFILEMODE 0666, S_BLKSIZE 512, and the POSIX
+   S_TYPEISMQ / S_TYPEISSEM / S_TYPEISSHM predicates, which measured 0 for
+   every stat on Linux (the three object types they ask about are not
+   distinguishable in st_mode here) and are written below as that measured
+   constant answer. Every added prototype was checked by declaring it
+   immediately before `#include <sys/stat.h>` under gcc and
+   aarch64-linux-gnu-gcc on 2026-09-18 (a conflicting redeclaration is a hard
+   error): clean on both arches.
+   omitted: statx struct statx struct statx_timestamp STATX_* -- the extended
+   stat interface, glibc 2.28 and later only; it would also add a second
+   measured layout (struct statx is its own 256-byte kernel ABI with its own
+   reserved slots) for a call no corpus gem makes.
+   omitted: struct stat64 stat64 fstat64 lstat64 fstatat64 -- LFS64 aliases;
+   on an LP64 target struct stat64 is byte-for-byte struct stat above, so the
+   unsuffixed names already are the 64-bit interface (the same reasoning
+   sys/statfs.h and unistd.h use).
+   omitted: getumask -- a glibc-only read of the current umask, which the
+   umask() above can already do by setting and restoring, and which no corpus
+   gem calls. */
 
 #ifndef _RUBYCC_SYS_STAT_H
 #define _RUBYCC_SYS_STAT_H
@@ -129,6 +161,28 @@ struct stat {
 #define S_IXOTH (S_IXGRP >> 3)
 #define S_IRWXO (S_IRWXG >> 3)
 
+/* Composite permission masks and the BSD-heritage single-bit spellings
+   (measured: 0777, 07777, 0666, 512 on both arches). */
+#define ACCESSPERMS (S_IRWXU | S_IRWXG | S_IRWXO)
+#define ALLPERMS    (S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO)
+#define DEFFILEMODE (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH)
+#define S_BLKSIZE   512
+#define S_IREAD     S_IRUSR
+#define S_IWRITE    S_IWUSR
+#define S_IEXEC     S_IXUSR
+
+/* POSIX message-queue / semaphore / shared-memory predicates. Linux does not
+   distinguish those three object types in st_mode, and glibc answers 0 for
+   every stat (measured, both arches), so that is what these are. */
+#define S_TYPEISMQ(buf)  ((void) (buf), 0)
+#define S_TYPEISSEM(buf) ((void) (buf), 0)
+#define S_TYPEISSHM(buf) ((void) (buf), 0)
+
+/* tv_nsec sentinels for utimensat/futimens: "now" and "leave alone"
+   (measured 0x3fffffff and 0x3ffffffe on both arches). */
+#define UTIME_NOW  0x3fffffff
+#define UTIME_OMIT 0x3ffffffe
+
 int stat(const char *__restrict __file, struct stat *__restrict __buf);
 int fstat(int __fd, struct stat *__buf);
 int lstat(const char *__restrict __file, struct stat *__restrict __buf);
@@ -138,5 +192,13 @@ int fchmod(int __fd, mode_t __mode);
 int mkdir(const char *__path, mode_t __mode);
 int mkfifo(const char *__path, mode_t __mode);
 mode_t umask(mode_t __mask);
+int mknod(const char *__path, mode_t __mode, dev_t __dev);
+int mknodat(int __fd, const char *__path, mode_t __mode, dev_t __dev);
+int mkdirat(int __fd, const char *__path, mode_t __mode);
+int mkfifoat(int __fd, const char *__path, mode_t __mode);
+int fchmodat(int __fd, const char *__file, mode_t __mode, int __flag);
+int lchmod(const char *__file, mode_t __mode);
+int utimensat(int __fd, const char *__path, const struct timespec __times[2], int __flags);
+int futimens(int __fd, const struct timespec __times[2]);
 
 #endif /* _RUBYCC_SYS_STAT_H */

@@ -583,6 +583,12 @@ class TestHeaderAbi < Minitest::Test
   # <sys/select.h>: fd_set's 128-byte layout, FD_SETSIZE, and the FD_* macros.
   SYS_SELECT = HeaderAbiHarness::Spec.new(
     header: "sys/select.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      ints: %w[NFDBITS]
+    },
     sizes: %w[fd_set],
     ints: %w[FD_SETSIZE],
     snippets: [<<~C.chomp]
@@ -725,6 +731,23 @@ class TestHeaderAbi < Minitest::Test
   # <sys/stat.h>: struct stat's 144-byte kernel layout and the S_IF* mode bits.
   SYS_STAT = HeaderAbiHarness::Spec.new(
     header: "sys/stat.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      ints: %w[ACCESSPERMS ALLPERMS DEFFILEMODE S_BLKSIZE S_IREAD S_IWRITE S_IEXEC
+               UTIME_NOW UTIME_OMIT] +
+            ["S_TYPEISMQ(&abi_st)", "S_TYPEISSEM(&abi_st)", "S_TYPEISSHM(&abi_st)"],
+      snippets: [<<~C.chomp]
+        static struct stat abi_st;
+        static int abi_stat_at(int dfd, const char *p, const struct timespec ts[2]) {
+          return mknod(p, S_IFIFO | 0600, 0) + mknodat(dfd, p, S_IFIFO | 0600, 0)
+               + mkdirat(dfd, p, 0700) + mkfifoat(dfd, p, 0600)
+               + fchmodat(dfd, p, 0600, 0) + lchmod(p, 0600)
+               + utimensat(dfd, p, ts, 0) + futimens(dfd, ts);
+        }
+      C
+    },
     sizes: %w[struct\ stat mode_t],
     ints: ["S_IFMT", "S_IFDIR", "S_IFREG", "S_IFLNK", "S_IFCHR", "S_IFBLK",
            "S_IFIFO", "S_IFSOCK", "S_ISUID", "S_ISGID", "S_ISVTX", "S_IRWXU",
@@ -844,6 +867,31 @@ class TestHeaderAbi < Minitest::Test
   # unconditionally, while the host glibc gates them behind __USE_MISC/__USE_GNU.
   MMAN = HeaderAbiHarness::Spec.new(
     header: "sys/mman.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      sizes: %w[mode_t],
+      ints: %w[PROT_GROWSDOWN PROT_GROWSUP MAP_DENYWRITE MAP_EXECUTABLE MAP_NONBLOCK MAP_HUGETLB
+               MAP_SYNC MAP_FIXED_NOREPLACE MAP_FILE MAP_TYPE MAP_SHARED_VALIDATE MAP_HUGE_SHIFT
+               MAP_HUGE_MASK MREMAP_MAYMOVE MREMAP_FIXED MREMAP_DONTUNMAP MFD_CLOEXEC
+               MFD_ALLOW_SEALING MFD_HUGETLB MFD_NOEXEC_SEAL MFD_EXEC MCL_CURRENT MCL_FUTURE
+               MCL_ONFAULT MADV_REMOVE MADV_DONTFORK MADV_DOFORK MADV_MERGEABLE MADV_UNMERGEABLE
+               MADV_HUGEPAGE MADV_NOHUGEPAGE MADV_DONTDUMP MADV_DODUMP MADV_WIPEONFORK
+               MADV_KEEPONFORK MADV_COLD MADV_PAGEOUT MADV_POPULATE_READ MADV_POPULATE_WRITE
+               MADV_DONTNEED_LOCKED MADV_COLLAPSE MADV_HWPOISON POSIX_MADV_NORMAL POSIX_MADV_RANDOM
+               POSIX_MADV_SEQUENTIAL POSIX_MADV_WILLNEED POSIX_MADV_DONTNEED],
+      snippets: [<<~C.chomp]
+        static int abi_mman_more(void *p, size_t n, unsigned char *vec) {
+          void *q = mremap(p, n, n * 2, MREMAP_MAYMOVE);
+          int fd = memfd_create("abi", MFD_CLOEXEC);
+          int sfd = shm_open("/abi", 0, 0600);
+          return posix_madvise(p, n, POSIX_MADV_NORMAL) + mincore(p, n, vec)
+               + (q == MAP_FAILED) + mlockall(MCL_CURRENT | MCL_FUTURE) + munlockall()
+               + fd + sfd + shm_unlink("/abi") + remap_file_pages(p, n, 0, 0, 0);
+        }
+      C
+    },
     defines: ["_GNU_SOURCE"],
     sizes: %w[size_t off_t],
     ints: %w[PROT_NONE PROT_READ PROT_WRITE PROT_EXEC
@@ -860,6 +908,21 @@ class TestHeaderAbi < Minitest::Test
         return munmap(m, n);
       }
     C
+  )
+
+  # bundled-headers-io-batch-1 (2026-09-18): the four <sys/mman.h> flags that
+  # exist on one arch only -- MAP_32BIT/MAP_ABOVE4G on x86-64 (64, 128) and
+  # PROT_BTI/PROT_MTE on aarch64 (16, 32), measured -- which the common-layer
+  # header writes under an arch test. Each Spec runs only on its own arch.
+  MMAN_X86_64 = HeaderAbiHarness::Spec.new(
+    header: "sys/mman.h",
+    defines: ["_GNU_SOURCE"],
+    ints: %w[MAP_32BIT MAP_ABOVE4G]
+  )
+  MMAN_AARCH64 = HeaderAbiHarness::Spec.new(
+    header: "sys/mman.h",
+    defines: ["_GNU_SOURCE"],
+    ints: %w[PROT_BTI PROT_MTE]
   )
 
   # <signal.h> (Step 87, M5 H2): the signalling interface. Its ABI is
@@ -972,6 +1035,81 @@ class TestHeaderAbi < Minitest::Test
   # snippet exercises them by real call against a loopback socket.
   SOCKET = HeaderAbiHarness::Spec.new(
     header: "sys/socket.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      sizes: %w[struct\ ucred struct\ mmsghdr],
+      ints: %w[AF_ALG AF_APPLETALK AF_ASH AF_ATMPVC AF_ATMSVC AF_AX25 AF_BLUETOOTH AF_BRIDGE
+               AF_CAIF AF_CAN AF_DECnet AF_ECONET AF_FILE AF_IB AF_IEEE802154 AF_IPX AF_IRDA
+               AF_ISDN AF_IUCV AF_KCM AF_KEY AF_LLC AF_MAX AF_MCTP AF_MPLS AF_NETBEUI AF_NETROM
+               AF_NFC AF_PACKET AF_PHONET AF_PPPOX AF_QIPCRTR AF_RDS AF_ROSE AF_ROUTE AF_RXRPC
+               AF_SECURITY AF_SMC AF_SNA AF_TIPC AF_VSOCK AF_WANPIPE AF_X25 AF_XDP PF_ALG
+               PF_APPLETALK PF_ASH PF_ATMPVC PF_ATMSVC PF_AX25 PF_BLUETOOTH PF_BRIDGE PF_CAIF
+               PF_CAN PF_DECnet PF_ECONET PF_FILE PF_IB PF_IEEE802154 PF_IPX PF_IRDA PF_ISDN
+               PF_IUCV PF_KCM PF_KEY PF_LLC PF_MAX PF_MCTP PF_MPLS PF_NETBEUI PF_NETROM PF_NFC
+               PF_PACKET PF_PHONET PF_PPPOX PF_QIPCRTR PF_RDS PF_ROSE PF_ROUTE PF_RXRPC PF_SECURITY
+               PF_SMC PF_SNA PF_TIPC PF_VSOCK PF_WANPIPE PF_X25 PF_XDP SOCK_RDM SOCK_DCCP SOL_AAL
+               SOL_ALG SOL_ATM SOL_BLUETOOTH SOL_CAIF SOL_DCCP SOL_DECNET SOL_IRDA SOL_IUCV SOL_KCM
+               SOL_LLC SOL_MCTP SOL_MPTCP SOL_NETBEUI SOL_NETLINK SOL_NFC SOL_PACKET SOL_PNPIPE
+               SOL_PPPOL2TP SOL_RAW SOL_RDS SOL_RXRPC SOL_SMC SOL_TIPC SOL_TLS SOL_X25 SOL_XDP
+               SO_ACCEPTCONN SO_ATTACH_BPF SO_ATTACH_FILTER SO_ATTACH_REUSEPORT_CBPF
+               SO_ATTACH_REUSEPORT_EBPF SO_BINDTODEVICE SO_BINDTOIFINDEX SO_BPF_EXTENSIONS
+               SO_BSDCOMPAT SO_BUF_LOCK SO_BUSY_POLL SO_BUSY_POLL_BUDGET SO_CNX_ADVICE SO_COOKIE
+               SO_DEBUG SO_DETACH_BPF SO_DETACH_FILTER SO_DETACH_REUSEPORT_BPF SO_DOMAIN
+               SO_DONTROUTE SO_GET_FILTER SO_INCOMING_CPU SO_INCOMING_NAPI_ID SO_LOCK_FILTER
+               SO_MARK SO_MAX_PACING_RATE SO_MEMINFO SO_NETNS_COOKIE SO_NOFCS SO_NO_CHECK
+               SO_OOBINLINE SO_PASSCRED SO_PASSPIDFD SO_PASSSEC SO_PEEK_OFF SO_PEERCRED
+               SO_PEERGROUPS SO_PEERNAME SO_PEERPIDFD SO_PEERSEC SO_PREFER_BUSY_POLL SO_PRIORITY
+               SO_PROTOCOL SO_RCVBUFFORCE SO_RCVLOWAT SO_RCVMARK SO_RCVTIMEO SO_RCVTIMEO_NEW
+               SO_RCVTIMEO_OLD SO_RESERVE_MEM SO_RXQ_OVFL SO_SECURITY_AUTHENTICATION
+               SO_SECURITY_ENCRYPTION_NETWORK SO_SECURITY_ENCRYPTION_TRANSPORT SO_SELECT_ERR_QUEUE
+               SO_SNDBUFFORCE SO_SNDLOWAT SO_SNDTIMEO SO_SNDTIMEO_NEW SO_SNDTIMEO_OLD SO_TIMESTAMP
+               SO_TIMESTAMPING SO_TIMESTAMPING_NEW SO_TIMESTAMPING_OLD SO_TIMESTAMPNS
+               SO_TIMESTAMPNS_NEW SO_TIMESTAMPNS_OLD SO_TIMESTAMP_NEW SO_TIMESTAMP_OLD SO_TXREHASH
+               SO_TXTIME SO_WIFI_STATUS SO_ZEROCOPY MSG_BATCH MSG_CMSG_CLOEXEC MSG_CONFIRM
+               MSG_CTRUNC MSG_DONTROUTE MSG_EOR MSG_ERRQUEUE MSG_FASTOPEN MSG_FIN MSG_MORE
+               MSG_PROXY MSG_RST MSG_SYN MSG_TRYHARD MSG_WAITFORONE MSG_ZEROCOPY SCM_CREDENTIALS
+               SCM_PIDFD SCM_RIGHTS SCM_SECURITY SCM_TIMESTAMP SCM_TIMESTAMPING
+               SCM_TIMESTAMPING_OPT_STATS SCM_TIMESTAMPING_PKTINFO SCM_TIMESTAMPNS SCM_TXTIME
+               SCM_WIFI_STATUS SIOCATMARK SIOCGPGRP SIOCSPGRP FIOGETOWN FIOSETOWN SOMAXCONN] +
+            ["CMSG_ALIGN(0)", "CMSG_ALIGN(1)", "CMSG_ALIGN(13)", "CMSG_LEN(0)",
+             "CMSG_LEN(12)", "CMSG_SPACE(0)", "CMSG_SPACE(12)", "CMSG_SPACE(17)",
+             "abi_cmsg_walk(0)", "abi_cmsg_walk(1)", "abi_cmsg_walk(2)"],
+      offsets: [["struct ucred", "pid"], ["struct ucred", "uid"], ["struct ucred", "gid"],
+                ["struct mmsghdr", "msg_hdr"], ["struct mmsghdr", "msg_len"]],
+      snippets: [<<~C.chomp]
+        /* Builds a control buffer of an SCM_RIGHTS record (three fds) and an
+           SCM_CREDENTIALS record, then walks it with the CMSG_* macros. `cut` shrinks
+           msg_controllen so the walk has to stop early, the case CMSG_NXTHDR's bounds
+           check exists for. The answer packs where each step landed. */
+        static long abi_cmsg_walk(int cut) {
+          static unsigned char buf[CMSG_SPACE(3 * sizeof(int)) + CMSG_SPACE(sizeof(struct ucred))];
+          struct msghdr m;
+          struct cmsghdr *c;
+          long r = 0;
+          int i;
+          for (i = 0; i < (int) sizeof buf; i++) buf[i] = 0;
+          m.msg_control = buf;
+          m.msg_controllen = sizeof buf;
+          c = CMSG_FIRSTHDR(&m);
+          c->cmsg_len = CMSG_LEN(3 * sizeof(int));
+          c->cmsg_level = SOL_SOCKET;
+          c->cmsg_type = SCM_RIGHTS;
+          c = CMSG_NXTHDR(&m, c);
+          c->cmsg_len = CMSG_LEN(sizeof(struct ucred));
+          c->cmsg_level = SOL_SOCKET;
+          c->cmsg_type = SCM_CREDENTIALS;
+          m.msg_controllen = sizeof buf - (size_t) cut * 20;
+          for (c = CMSG_FIRSTHDR(&m); c != 0; c = CMSG_NXTHDR(&m, c))
+            r = r * 1000 + ((unsigned char *) CMSG_DATA(c) - buf) * 10 + c->cmsg_type;
+          return r;
+        }
+        static int abi_socket_more(int fd, struct mmsghdr *v, struct timespec *t) {
+          return sockatmark(fd) + recvmmsg(fd, v, 1, MSG_DONTWAIT, t) + sendmmsg(fd, v, 1, MSG_MORE);
+        }
+      C
+    },
     defines: ["_GNU_SOURCE"],
     sizes: %w[socklen_t sa_family_t struct\ sockaddr struct\ sockaddr_storage
               struct\ msghdr struct\ iovec struct\ linger],
@@ -1022,6 +1160,22 @@ class TestHeaderAbi < Minitest::Test
   # through the same <endian.h> the endian case already asserts.
   ARPA_INET = HeaderAbiHarness::Spec.new(
     header: "arpa/inet.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      ints: ["abi_arpa_sockaddr()"],
+      snippets: [<<~C.chomp]
+        /* <arpa/inet.h> alone must bring struct sockaddr_in and AF_INET, as glibc's
+           does through <netinet/in.h>. */
+        static long abi_arpa_sockaddr(void) {
+          struct sockaddr_in sin;
+          sin.sin_family = AF_INET;
+          sin.sin_port = htons(80);
+          return (long) sizeof sin * 1000 + sin.sin_family * 10 + (inet_pton(AF_INET, "127.0.0.1", &sin.sin_addr) == 1);
+        }
+      C
+    },
     sizes: ["in_addr_t", "in_port_t", "socklen_t", "struct in_addr"],
     ints: ["ntohs(0x1234)", "ntohl(0x12345678)", "htons(0x1234)", "htonl(0x12345678)",
            "__BYTE_ORDER", "__LITTLE_ENDIAN", "__BIG_ENDIAN"],
@@ -1046,6 +1200,117 @@ class TestHeaderAbi < Minitest::Test
   # pulls in AF_INET for the snippet without redefining anything.
   NETINET_IN = HeaderAbiHarness::Spec.new(
     header: "netinet/in.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      sizes: %w[struct\ ip_mreq struct\ ip_mreqn struct\ ip_mreq_source struct\ ipv6_mreq
+                struct\ in_pktinfo struct\ in6_pktinfo struct\ group_req struct\ group_source_req],
+      ints: %w[IPPROTO_AH IPPROTO_BEETPH IPPROTO_COMP IPPROTO_DCCP IPPROTO_DSTOPTS IPPROTO_EGP
+               IPPROTO_ENCAP IPPROTO_ESP IPPROTO_ETHERNET IPPROTO_FRAGMENT IPPROTO_GRE
+               IPPROTO_HOPOPTS IPPROTO_ICMPV6 IPPROTO_IDP IPPROTO_IGMP IPPROTO_IPIP IPPROTO_L2TP
+               IPPROTO_MAX IPPROTO_MH IPPROTO_MPLS IPPROTO_MPTCP IPPROTO_MTP IPPROTO_NONE
+               IPPROTO_PIM IPPROTO_PUP IPPROTO_ROUTING IPPROTO_RSVP IPPROTO_SCTP IPPROTO_TP
+               IPPROTO_UDPLITE SOL_ICMPV6 SOL_IP SOL_IPV6 IP_ADD_MEMBERSHIP
+               IP_ADD_SOURCE_MEMBERSHIP IP_BIND_ADDRESS_NO_PORT IP_BLOCK_SOURCE IP_CHECKSUM
+               IP_DEFAULT_MULTICAST_LOOP IP_DEFAULT_MULTICAST_TTL IP_DROP_MEMBERSHIP
+               IP_DROP_SOURCE_MEMBERSHIP IP_FREEBIND IP_HDRINCL IP_IPSEC_POLICY IP_LOCAL_PORT_RANGE
+               IP_MAX_MEMBERSHIPS IP_MINTTL IP_MSFILTER IP_MTU IP_MTU_DISCOVER IP_MULTICAST_ALL
+               IP_MULTICAST_IF IP_MULTICAST_LOOP IP_MULTICAST_TTL IP_NODEFRAG IP_OPTIONS
+               IP_ORIGDSTADDR IP_PASSSEC IP_PKTINFO IP_PKTOPTIONS IP_PMTUDISC IP_PMTUDISC_DO
+               IP_PMTUDISC_DONT IP_PMTUDISC_INTERFACE IP_PMTUDISC_OMIT IP_PMTUDISC_PROBE
+               IP_PMTUDISC_WANT IP_PROTOCOL IP_RECVERR IP_RECVERR_RFC4884 IP_RECVFRAGSIZE
+               IP_RECVOPTS IP_RECVORIGDSTADDR IP_RECVRETOPTS IP_RECVTOS IP_RECVTTL IP_RETOPTS
+               IP_ROUTER_ALERT IP_TOS IP_TRANSPARENT IP_TTL IP_UNBLOCK_SOURCE IP_UNICAST_IF
+               IP_XFRM_POLICY IPV6_2292DSTOPTS IPV6_2292HOPLIMIT IPV6_2292HOPOPTS IPV6_2292PKTINFO
+               IPV6_2292PKTOPTIONS IPV6_2292RTHDR IPV6_ADDRFORM IPV6_ADDR_PREFERENCES
+               IPV6_ADD_MEMBERSHIP IPV6_AUTHHDR IPV6_AUTOFLOWLABEL IPV6_CHECKSUM IPV6_DONTFRAG
+               IPV6_DROP_MEMBERSHIP IPV6_DSTOPTS IPV6_FREEBIND IPV6_HDRINCL IPV6_HOPLIMIT
+               IPV6_HOPOPTS IPV6_IPSEC_POLICY IPV6_JOIN_ANYCAST IPV6_JOIN_GROUP IPV6_LEAVE_ANYCAST
+               IPV6_LEAVE_GROUP IPV6_MINHOPCOUNT IPV6_MTU IPV6_MTU_DISCOVER IPV6_MULTICAST_ALL
+               IPV6_MULTICAST_HOPS IPV6_MULTICAST_IF IPV6_MULTICAST_LOOP IPV6_NEXTHOP
+               IPV6_ORIGDSTADDR IPV6_PATHMTU IPV6_PKTINFO IPV6_PMTUDISC_DO IPV6_PMTUDISC_DONT
+               IPV6_PMTUDISC_INTERFACE IPV6_PMTUDISC_OMIT IPV6_PMTUDISC_PROBE IPV6_PMTUDISC_WANT
+               IPV6_RECVDSTOPTS IPV6_RECVERR IPV6_RECVERR_RFC4884 IPV6_RECVFRAGSIZE
+               IPV6_RECVHOPLIMIT IPV6_RECVHOPOPTS IPV6_RECVORIGDSTADDR IPV6_RECVPATHMTU
+               IPV6_RECVPKTINFO IPV6_RECVRTHDR IPV6_RECVTCLASS IPV6_ROUTER_ALERT
+               IPV6_ROUTER_ALERT_ISOLATE IPV6_RTHDR IPV6_RTHDRDSTOPTS IPV6_RTHDR_LOOSE
+               IPV6_RTHDR_STRICT IPV6_RTHDR_TYPE_0 IPV6_RXDSTOPTS IPV6_RXHOPOPTS IPV6_TCLASS
+               IPV6_TRANSPARENT IPV6_UNICAST_HOPS IPV6_UNICAST_IF IPV6_V6ONLY IPV6_XFRM_POLICY
+               MCAST_BLOCK_SOURCE MCAST_EXCLUDE MCAST_INCLUDE MCAST_JOIN_GROUP
+               MCAST_JOIN_SOURCE_GROUP MCAST_LEAVE_GROUP MCAST_LEAVE_SOURCE_GROUP MCAST_MSFILTER
+               MCAST_UNBLOCK_SOURCE INADDR_ALLHOSTS_GROUP INADDR_ALLRTRS_GROUP
+               INADDR_ALLSNOOPERS_GROUP INADDR_DUMMY INADDR_MAX_LOCAL_GROUP INADDR_UNSPEC_GROUP
+               IN_CLASSA_HOST IN_CLASSA_MAX IN_CLASSA_NET IN_CLASSA_NSHIFT IN_CLASSB_HOST
+               IN_CLASSB_MAX IN_CLASSB_NET IN_CLASSB_NSHIFT IN_CLASSC_HOST IN_CLASSC_NET
+               IN_CLASSC_NSHIFT IN_LOOPBACKNET IPPORT_RESERVED IPPORT_USERRESERVED] +
+            ["IN_CLASSA(0x0a000001)", "IN_CLASSA(0xc0a80001)", "IN_CLASSB(0x80a80001)",
+             "IN_CLASSC(0xc0a80001)", "IN_CLASSD(0xe0000001)", "IN_MULTICAST(0xe00000fb)",
+             "IN_EXPERIMENTAL(0xf0000001)", "IN_EXPERIMENTAL(0xe0000001)",
+             "IN_BADCLASS(0xffffffff)", "IN_BADCLASS(0xe0000001)",
+             "abi_in6_classes(0)", "abi_in6_classes(1)", "abi_in6_classes(2)",
+             "abi_in6_classes(3)", "abi_in6_classes(4)", "abi_in6_classes(5)",
+             "abi_in6_classes(6)", "abi_in6_classes(7)", "abi_in6_classes(8)",
+             "abi_in6_classes(9)"],
+      offsets: [["struct ip_mreq", "imr_multiaddr"],
+                ["struct ip_mreq", "imr_interface"],
+                ["struct ip_mreqn", "imr_multiaddr"],
+                ["struct ip_mreqn", "imr_address"],
+                ["struct ip_mreqn", "imr_ifindex"],
+                ["struct ip_mreq_source", "imr_multiaddr"],
+                ["struct ip_mreq_source", "imr_interface"],
+                ["struct ip_mreq_source", "imr_sourceaddr"],
+                ["struct ipv6_mreq", "ipv6mr_multiaddr"],
+                ["struct ipv6_mreq", "ipv6mr_interface"],
+                ["struct in_pktinfo", "ipi_ifindex"],
+                ["struct in_pktinfo", "ipi_spec_dst"],
+                ["struct in_pktinfo", "ipi_addr"],
+                ["struct in6_pktinfo", "ipi6_addr"],
+                ["struct in6_pktinfo", "ipi6_ifindex"],
+                ["struct group_req", "gr_interface"],
+                ["struct group_req", "gr_group"],
+                ["struct group_source_req", "gsr_interface"],
+                ["struct group_source_req", "gsr_group"],
+                ["struct group_source_req", "gsr_source"]],
+      snippets: [<<~C.chomp]
+        /* One address per case, classified by every IN6_* predicate at once: the
+           answer is a bit per predicate, so any one predicate disagreeing with gcc's
+           changes the printed number. */
+        static long abi_in6_classes(int which) {
+          static const unsigned char addrs[10][16] = {
+            {0},                                                   /* :: */
+            {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},                     /* ::1 */
+            {0xfe,0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,1},               /* fe80::1 */
+            {0xfe,0xc0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},               /* fec0::1 */
+            {0,0,0,0,0,0,0,0,0,0,0xff,0xff,192,168,0,1},           /* ::ffff:192.168.0.1 */
+            {0,0,0,0,0,0,0,0,0,0,0,0,10,0,0,1},                    /* ::10.0.0.1 */
+            {0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,1},               /* ff02::1 */
+            {0xff,0x05,0,0,0,0,0,0,0,0,0,0,0,0,0,2},               /* ff05::2 */
+            {0xff,0x0e,0,0,0,0,0,0,0,0,0,0,0,0,0,0x10},            /* ff0e::10 */
+            {0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,1}          /* 2001:db8::1 */
+          };
+          struct in6_addr a, b;
+          int i;
+          for (i = 0; i < 16; i++) { a.s6_addr[i] = addrs[which][i]; b.s6_addr[i] = addrs[which][i]; }
+          long r = (IN6_IS_ADDR_UNSPECIFIED(&a) != 0)
+                 | (IN6_IS_ADDR_LOOPBACK(&a) != 0) << 1
+                 | (IN6_IS_ADDR_MULTICAST(&a) != 0) << 2
+                 | (IN6_IS_ADDR_LINKLOCAL(&a) != 0) << 3
+                 | (IN6_IS_ADDR_SITELOCAL(&a) != 0) << 4
+                 | (IN6_IS_ADDR_V4MAPPED(&a) != 0) << 5
+                 | (IN6_IS_ADDR_V4COMPAT(&a) != 0) << 6
+                 | (IN6_IS_ADDR_MC_NODELOCAL(&a) != 0) << 7
+                 | (IN6_IS_ADDR_MC_LINKLOCAL(&a) != 0) << 8
+                 | (IN6_IS_ADDR_MC_SITELOCAL(&a) != 0) << 9
+                 | (IN6_IS_ADDR_MC_ORGLOCAL(&a) != 0) << 10
+                 | (IN6_IS_ADDR_MC_GLOBAL(&a) != 0) << 11
+                 | (IN6_ARE_ADDR_EQUAL(&a, &b) != 0) << 12;
+          b.s6_addr[15] ^= 1;
+          r |= (long) (IN6_ARE_ADDR_EQUAL(&a, &b) != 0) << 13;
+          return r * 100 + a.s6_addr16[1] % 100 + (long) (a.s6_addr32[3] % 7);
+        }
+      C
+    },
     also: ["sys/socket.h", "string.h"],
     defines: ["_GNU_SOURCE"],
     sizes: %w[in_addr_t in_port_t sa_family_t struct\ in_addr struct\ in6_addr
@@ -1085,6 +1350,28 @@ class TestHeaderAbi < Minitest::Test
   # option macros are checked -- the header carries no struct rubycc reproduces.
   TCP = HeaderAbiHarness::Spec.new(
     header: "netinet/tcp.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      sizes: %w[tcp_seq],
+      ints: %w[TCP_SYNCNT TCP_LINGER2 TCP_DEFER_ACCEPT TCP_WINDOW_CLAMP TCP_CONGESTION TCP_MD5SIG
+               TCP_COOKIE_TRANSACTIONS TCP_THIN_LINEAR_TIMEOUTS TCP_THIN_DUPACK TCP_REPAIR
+               TCP_REPAIR_QUEUE TCP_QUEUE_SEQ TCP_REPAIR_OPTIONS TCP_TIMESTAMP TCP_NOTSENT_LOWAT
+               TCP_CC_INFO TCP_SAVE_SYN TCP_SAVED_SYN TCP_REPAIR_WINDOW TCP_FASTOPEN_CONNECT
+               TCP_ULP TCP_MD5SIG_EXT TCP_FASTOPEN_KEY TCP_FASTOPEN_NO_COOKIE TCP_ZEROCOPY_RECEIVE
+               TCP_CM_INQ TCP_INQ TCP_TX_DELAY SOL_TCP TCP_CA_CWR TCP_CA_Disorder TCP_CA_Loss
+               TCP_CA_Open TCP_CA_Recovery TCP_COOKIE_IN_ALWAYS TCP_COOKIE_MAX TCP_COOKIE_MIN
+               TCP_COOKIE_OUT_NEVER TCP_COOKIE_PAIR_SIZE TCP_MAXWIN TCP_MAX_WINSHIFT
+               TCP_MD5SIG_FLAG_IFINDEX TCP_MD5SIG_FLAG_PREFIX TCP_MD5SIG_MAXKEYLEN TCP_MSS
+               TCP_MSS_DEFAULT TCP_MSS_DESIRED TCP_NO_QUEUE TCP_QUEUES_NR TCP_RECV_QUEUE
+               TCP_REPAIR_OFF TCP_REPAIR_OFF_NO_WP TCP_REPAIR_ON TCP_SEND_QUEUE TCP_S_DATA_IN
+               TCP_S_DATA_OUT TCPI_OPT_ECN TCPI_OPT_ECN_SEEN TCPI_OPT_SACK TCPI_OPT_SYN_DATA
+               TCPI_OPT_TIMESTAMPS TCPI_OPT_WSCALE TCPOLEN_MAXSEG TCPOLEN_SACK_PERMITTED
+               TCPOLEN_TIMESTAMP TCPOLEN_TSTAMP_APPA TCPOLEN_WINDOW TCPOPT_EOL TCPOPT_MAXSEG
+               TCPOPT_NOP TCPOPT_SACK TCPOPT_SACK_PERMITTED TCPOPT_TIMESTAMP TCPOPT_TSTAMP_HDR
+               TCPOPT_WINDOW TH_FIN TH_SYN TH_RST TH_PUSH TH_ACK TH_URG],
+    },
     defines: ["_GNU_SOURCE"],
     ints: %w[TCP_NODELAY TCP_MAXSEG TCP_CORK TCP_KEEPIDLE TCP_KEEPINTVL
              TCP_KEEPCNT TCP_INFO TCP_QUICKACK TCP_USER_TIMEOUT TCP_FASTOPEN
@@ -1099,6 +1386,22 @@ class TestHeaderAbi < Minitest::Test
   # 110-byte layout (a 108-byte sun_path) is arch-neutral (common layer).
   SOCKADDR_UN = HeaderAbiHarness::Spec.new(
     header: "sys/un.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      ints: ["abi_sun_len(0)", "abi_sun_len(1)"],
+      snippets: [<<~C.chomp]
+        static unsigned long abi_sun_len(int longer) {
+          struct sockaddr_un a;
+          const char *p = longer ? "/var/run/abi-probe.sock" : "/tmp/x";
+          int i = 0;
+          a.sun_family = 1; /* AF_UNIX: glibc's <sys/un.h> alone does not define it */
+          do { a.sun_path[i] = p[i]; } while (p[i++] != 0);
+          return SUN_LEN(&a);
+        }
+      C
+    },
     defines: ["_GNU_SOURCE"],
     sizes: %w[struct\ sockaddr_un],
     offsets: [["struct sockaddr_un", "sun_family"], ["struct sockaddr_un", "sun_path"]],
@@ -1333,6 +1636,17 @@ class TestHeaderAbi < Minitest::Test
   # functions but never calls them from main -- about needing at runtime).
   PWD = HeaderAbiHarness::Spec.new(
     header: "pwd.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      ints: %w[NSS_BUFLEN_PASSWD],
+      snippets: [<<~C.chomp]
+        static int abi_pwd_more(struct passwd *rb, char *buf, size_t n, struct passwd **res) {
+          return getpwent_r(rb, buf, n, res);
+        }
+      C
+    },
     sizes: %w[struct\ passwd],
     offsets: [["struct passwd", "pw_name"], ["struct passwd", "pw_passwd"],
               ["struct passwd", "pw_uid"], ["struct passwd", "pw_gid"],
@@ -1360,6 +1674,19 @@ class TestHeaderAbi < Minitest::Test
   # pwd.h's do.
   GRP = HeaderAbiHarness::Spec.new(
     header: "grp.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      ints: %w[NSS_BUFLEN_GROUP],
+      snippets: [<<~C.chomp]
+        static int abi_grp_more(const char *user, gid_t g, struct group *rb, char *buf, size_t n,
+                                struct group **res, gid_t *groups, int *ng) {
+          return getgrent_r(rb, buf, n, res) + getgrouplist(user, g, groups, ng)
+               + initgroups(user, g) + setgroups(0, groups);
+        }
+      C
+    },
     sizes: %w[struct\ group],
     offsets: [["struct group", "gr_name"], ["struct group", "gr_passwd"],
               ["struct group", "gr_gid"], ["struct group", "gr_mem"]],
@@ -1387,6 +1714,12 @@ class TestHeaderAbi < Minitest::Test
   # that spelling (rather than `__domainname`) under __USE_GNU.
   UTSNAME = HeaderAbiHarness::Spec.new(
     header: "sys/utsname.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      ints: %w[SYS_NMLN],
+    },
     defines: ["_GNU_SOURCE"],
     sizes: %w[struct\ utsname],
     offsets: [["struct utsname", "sysname"], ["struct utsname", "nodename"],
@@ -1403,6 +1736,17 @@ class TestHeaderAbi < Minitest::Test
   # section below. readv/writev resolve from the host libc at link time.
   UIO = HeaderAbiHarness::Spec.new(
     header: "sys/uio.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      ints: %w[UIO_MAXIOV],
+      snippets: [<<~C.chomp]
+        static long abi_uio_more(int fd, const struct iovec *iov, int n) {
+          return preadv(fd, iov, n, 0) + pwritev(fd, iov, n, 0);
+        }
+      C
+    },
     sizes: %w[struct\ iovec],
     offsets: [["struct iovec", "iov_base"], ["struct iovec", "iov_len"]],
     snippets: [<<~C.chomp]
@@ -1423,6 +1767,20 @@ class TestHeaderAbi < Minitest::Test
   # __USE_GNU.
   RESOURCE = HeaderAbiHarness::Spec.new(
     header: "sys/resource.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      sizes: %w[id_t],
+      ints: %w[PRIO_PROCESS PRIO_PGRP PRIO_USER PRIO_MIN PRIO_MAX RLIMIT_OFILE RLIM_NLIMITS] +
+            ["RLIM_SAVED_CUR == RLIM_INFINITY", "RLIM_SAVED_MAX == RLIM_INFINITY"],
+      snippets: [<<~C.chomp]
+        static int abi_resource_more(void) {
+          int p = getpriority(PRIO_PROCESS, 0);
+          return p + setpriority(PRIO_PROCESS, 0, p);
+        }
+      C
+    },
     defines: ["_GNU_SOURCE"],
     sizes: %w[struct\ rlimit struct\ rusage rlim_t],
     ints: %w[RLIMIT_CPU RLIMIT_FSIZE RLIMIT_DATA RLIMIT_STACK RLIMIT_CORE RLIMIT_RSS
@@ -1456,6 +1814,24 @@ class TestHeaderAbi < Minitest::Test
   # resolve from the host libc at link time.
   DIRENT = HeaderAbiHarness::Spec.new(
     header: "dirent.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      defines: ["_GNU_SOURCE"],
+      ints: ["MAXNAMLEN", "DTTOIF(DT_REG)", "DTTOIF(DT_DIR)", "DTTOIF(DT_SOCK)",
+             "DTTOIF(DT_UNKNOWN)", "IFTODT(0100644)", "IFTODT(0040755)",
+             "IFTODT(0120777)", "IFTODT(0)"],
+      offsets: [["struct dirent", "d_fileno"]],
+      snippets: [<<~C.chomp]
+        static int abi_dirent_more(DIR *d, const char *path, int dfd, struct dirent ***list) {
+          long pos = telldir(d);
+          seekdir(d, pos);
+          return (int) pos + scandir(path, list, 0, alphasort)
+               + scandirat(dfd, path, list, 0, versionsort);
+        }
+      C
+    },
     sizes: %w[struct\ dirent],
     ints: %w[DT_UNKNOWN DT_FIFO DT_CHR DT_DIR DT_BLK DT_REG DT_LNK DT_SOCK DT_WHT],
     offsets: [["struct dirent", "d_ino"], ["struct dirent", "d_off"],
@@ -1646,6 +2022,26 @@ class TestHeaderAbi < Minitest::Test
   # layer, re-run in the aarch64 class's neutral-layer section below.
   SYS_PARAM = HeaderAbiHarness::Spec.new(
     header: "sys/param.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      ints: %w[CANBSIZ DEV_BSIZE HZ MAXHOSTNAMELEN MAXPATHLEN MAXSYMLINKS NBBY NCARGS
+               NGROUPS NOFILE NOGROUP EXEC_PAGESIZE] +
+            ["sizeof(NODEV)", "NODEV == (dev_t)-1", "powerof2(8)", "powerof2(9)",
+             "powerof2(0)", "abi_param_bits(0)", "abi_param_bits(1)"],
+      snippets: [<<~C.chomp]
+        /* Sets bits 3, 9 and 17, clears 9, and packs the four bytes and the
+           isset/isclr answers so any difference in bit numbering shows. */
+        static long abi_param_bits(int clear) {
+          unsigned char a[4] = {0, 0, 0, 0};
+          setbit(a, 3); setbit(a, 9); setbit(a, 17);
+          if (clear) clrbit(a, 9);
+          return ((long) a[0] << 24 | (long) a[1] << 16 | (long) a[2] << 8 | a[3]) * 1000
+               + (isset(a, 9) != 0) * 100 + (isclr(a, 4) != 0) * 10 + (isset(a, 17) != 0);
+        }
+      C
+    },
     ints: ["MIN(3, 5)", "MIN(5, 3)", "MAX(3, 5)", "MAX(5, 3)",
            "howmany(10, 3)", "howmany(9, 3)", "roundup(10, 8)", "roundup(16, 8)"]
   )
@@ -1689,6 +2085,19 @@ class TestHeaderAbi < Minitest::Test
   # static libc at link time.
   WAIT = HeaderAbiHarness::Spec.new(
     header: "sys/wait.h",
+    # bundled-headers-io-batch-1 (2026-09-18): the names that step added, probed
+    # on glibc only -- no musl run has measured them yet, so they sit in the
+    # glibc bundle rather than risk reporting a musl header's gap as rubycc's.
+    glibc: {
+      ints: ["WCOREFLAG", "W_EXITCODE(3, 0)", "W_EXITCODE(0, 9)", "W_EXITCODE(5, 11)",
+             "W_STOPCODE(1)", "W_STOPCODE(19)", "WIFSTOPPED(W_STOPCODE(19))",
+             "WEXITSTATUS(W_EXITCODE(42, 0))"],
+      snippets: [<<~C.chomp]
+        static int abi_wait_more(pid_t pid, int *st, struct rusage *ru) {
+          return (int) wait3(st, WNOHANG, ru) + (int) wait4(pid, st, WNOHANG, ru);
+        }
+      C
+    },
     defines: ["_GNU_SOURCE"],
     sizes: %w[idtype_t pid_t id_t],
     ints: %w[WNOHANG WUNTRACED WCONTINUED WEXITED WSTOPPED WNOWAIT
@@ -2138,6 +2547,11 @@ class TestHeaderAbi < Minitest::Test
 
   def test_mman_abi_matches_gcc
     assert_abi_matches(MMAN)
+  end
+
+  def test_mman_x86_64_only_flags_abi_matches_gcc
+    skip "x86-64-only flags; this host is not x86-64" unless RbConfig::CONFIG["host_cpu"].to_s.match?(/x86_64|amd64/)
+    assert_abi_matches(MMAN_X86_64)
   end
 
   def test_signal_abi_matches_gcc
@@ -2798,6 +3212,10 @@ class TestHeaderAbiAarch64 < Minitest::Test
 
   def test_mman_abi_matches_cross_gcc
     assert_abi_matches_aarch64(TestHeaderAbi::MMAN)
+  end
+
+  def test_mman_aarch64_only_flags_abi_matches_cross_gcc
+    assert_abi_matches_aarch64(TestHeaderAbi::MMAN_AARCH64)
   end
 
   def test_signal_abi_matches_cross_gcc

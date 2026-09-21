@@ -23,27 +23,27 @@
 | ヘッダ | x86_64 不足 | x86_64 未記載 | aarch64 不足 | aarch64 未記載 | 取り込み不足 | unguarded |
 |---|---|---|---|---|---|---|
 | [`alloca.h`](#allocah) | 0 | 1 | 0 | 1 | `stddef.h` | — |
-| [`arpa/inet.h`](#arpaineth) | 5 | 10 | 5 | 10 | `netinet/in.h` `stddef.h` `sys/select.h` `sys/socket.h` `sys/types.h` | — |
+| [`arpa/inet.h`](#arpaineth) | 5 | 0 | 5 | 0 | `stddef.h` `sys/select.h` `sys/types.h` | — |
 | [`assert.h`](#asserth) | 1 | 0 | 1 | 0 | — | — |
 | [`ctype.h`](#ctypeh) | 20 | 0 | 20 | 0 | — | — |
-| [`dirent.h`](#direnth) | 79 | 80 | 79 | 80 | `stddef.h` | — |
+| [`dirent.h`](#direnth) | 69 | 0 | 69 | 0 | `stddef.h` | — |
 | [`dlfcn.h`](#dlfcnh) | 20 | 21 | 20 | 21 | `stddef.h` | — |
 | [`endian.h`](#endianh) | 0 | 0 | 0 | 0 | — | — |
 | [`errno.h`](#errnoh) | 1 | 0 | 1 | 0 | — | — |
 | [`fcntl.h`](#fcntlh) | 154 | 155 | 153 | 154 | `stddef.h` | — |
 | [`features.h`](#featuresh) | 0 | 0 | 0 | 0 | — | — |
-| [`grp.h`](#grph) | 9 | 10 | 9 | 10 | `stddef.h` | — |
+| [`grp.h`](#grph) | 4 | 0 | 4 | 0 | `stddef.h` | — |
 | [`inttypes.h`](#inttypesh) | 42 | 42 | 42 | 42 | — | — |
 | [`langinfo.h`](#langinfoh) | 328 | 0 | 328 | 0 | `nl_types.h` | — |
 | [`limits.h`](#limitsh) | 68 | 0 | 68 | 0 | `syslimits.h` | — |
 | [`link.h`](#linkh) | 49 | 56 | 42 | 49 | `dlfcn.h` `elf.h` `endian.h` `stddef.h` `stdint.h` `sys/select.h` `sys/types.h` | — |
 | [`locale.h`](#localeh) | 19 | 0 | 19 | 0 | `stddef.h` | — |
 | [`math.h`](#mathh) | 730 | 0 | 732 | 0 | — | — |
-| [`netinet/in.h`](#netinetinh) | 267 | 272 | 267 | 272 | `endian.h` `stddef.h` `sys/select.h` `sys/socket.h` `sys/types.h` | — |
-| [`netinet/tcp.h`](#netinettcph) | 90 | 96 | 90 | 96 | `endian.h` `stddef.h` `stdint.h` `sys/select.h` `sys/socket.h` `sys/types.h` | — |
-| [`poll.h`](#pollh) | 0 | 1 | 0 | 1 | `sys/poll.h` | — |
+| [`netinet/in.h`](#netinetinh) | 56 | 0 | 56 | 0 | `endian.h` `stddef.h` `sys/select.h` `sys/types.h` | — |
+| [`netinet/tcp.h`](#netinettcph) | 8 | 0 | 8 | 0 | `endian.h` `stddef.h` `sys/select.h` `sys/types.h` | — |
+| [`poll.h`](#pollh) | 0 | 0 | 0 | 0 | `sys/poll.h` | — |
 | [`pthread.h`](#pthreadh) | 136 | 139 | 136 | 139 | `sched.h` `stddef.h` `time.h` | — |
-| [`pwd.h`](#pwdh) | 7 | 8 | 7 | 8 | `stddef.h` | — |
+| [`pwd.h`](#pwdh) | 5 | 0 | 5 | 0 | `stddef.h` | — |
 | [`regex.h`](#regexh) | 76 | 79 | 76 | 79 | `endian.h` `sys/select.h` `sys/types.h` | — |
 | [`sched.h`](#schedh) | 52 | 0 | 52 | 0 | `stddef.h` | 1 |
 | [`setjmp.h`](#setjmph) | 0 | 0 | 0 | 0 | — | — |
@@ -58,21 +58,21 @@
 | [`sys/fcntl.h`](#sysfcntlh) | 0 | 1 | 0 | 1 | `stddef.h` | — |
 | [`sys/inotify.h`](#sysinotifyh) | 0 | 0 | 0 | 0 | — | — |
 | [`sys/ioctl.h`](#sysioctlh) | 41 | 0 | 41 | 0 | `sys/ttydefaults.h` | — |
-| [`sys/mman.h`](#sysmmanh) | 72 | 73 | 71 | 72 | `stddef.h` | — |
-| [`sys/param.h`](#sysparamh) | 18 | 27 | 18 | 30 | `endian.h` `limits.h` `signal.h` `stddef.h` `sys/select.h` `sys/types.h` `sys/ucontext.h` `syslimits.h` `unistd.h` `sys/procfs.h` `sys/time.h` `sys/user.h` | — |
-| [`sys/resource.h`](#sysresourceh) | 20 | 20 | 20 | 20 | — | 1 |
-| [`sys/select.h`](#sysselecth) | 1 | 1 | 1 | 1 | — | 2 |
-| [`sys/socket.h`](#syssocketh) | 239 | 243 | 239 | 243 | `endian.h` `stddef.h` `sys/select.h` `sys/types.h` | 2 |
-| [`sys/stat.h`](#sysstath) | 56 | 56 | 56 | 56 | — | 1 |
-| [`sys/statfs.h`](#sysstatfsh) | 3 | 3 | 3 | 3 | — | — |
+| [`sys/mman.h`](#sysmmanh) | 13 | 0 | 12 | 0 | `stddef.h` | — |
+| [`sys/param.h`](#sysparamh) | 0 | 0 | 0 | 0 | `endian.h` `limits.h` `signal.h` `stddef.h` `sys/select.h` `sys/types.h` `sys/ucontext.h` `syslimits.h` `unistd.h` `sys/procfs.h` `sys/time.h` `sys/user.h` | — |
+| [`sys/resource.h`](#sysresourceh) | 8 | 0 | 8 | 0 | — | 1 |
+| [`sys/select.h`](#sysselecth) | 0 | 0 | 0 | 0 | — | 2 |
+| [`sys/socket.h`](#syssocketh) | 5 | 0 | 5 | 0 | `endian.h` `stddef.h` `sys/select.h` `sys/types.h` | 2 |
+| [`sys/stat.h`](#sysstath) | 36 | 0 | 36 | 0 | — | 1 |
+| [`sys/statfs.h`](#sysstatfsh) | 3 | 0 | 3 | 0 | — | — |
 | [`sys/syscall.h`](#syssyscallh) | 312 | 312 | 256 | 256 | — | — |
 | [`sys/time.h`](#systimeh) | 6 | 6 | 6 | 6 | — | 1 |
 | [`sys/timerfd.h`](#systimerfdh) | 0 | 1 | 0 | 1 | `stddef.h` | — |
 | [`sys/types.h`](#systypesh) | 15 | 0 | 15 | 0 | `stddef.h` | 4 |
-| [`sys/uio.h`](#sysuioh) | 16 | 20 | 16 | 20 | `endian.h` `stddef.h` `sys/select.h` `sys/types.h` | 1 |
-| [`sys/un.h`](#sysunh) | 1 | 4 | 1 | 4 | `stddef.h` `string.h` `strings.h` | — |
-| [`sys/utsname.h`](#sysutsnameh) | 1 | 1 | 1 | 1 | — | — |
-| [`sys/wait.h`](#syswaith) | 7 | 10 | 7 | 16 | `stddef.h` `sys/ucontext.h` `unistd.h` `endian.h` `sys/procfs.h` `sys/select.h` `sys/time.h` `sys/types.h` `sys/user.h` | 1 |
+| [`sys/uio.h`](#sysuioh) | 13 | 0 | 13 | 0 | `endian.h` `stddef.h` `sys/select.h` `sys/types.h` | 1 |
+| [`sys/un.h`](#sysunh) | 0 | 0 | 0 | 0 | — | — |
+| [`sys/utsname.h`](#sysutsnameh) | 0 | 0 | 0 | 0 | — | — |
+| [`sys/wait.h`](#syswaith) | 2 | 0 | 2 | 0 | `stddef.h` `sys/ucontext.h` `unistd.h` `endian.h` `sys/procfs.h` `sys/select.h` `sys/time.h` `sys/types.h` `sys/user.h` | 1 |
 | [`termios.h`](#termiosh) | 2 | 0 | 2 | 0 | `sys/ttydefaults.h` | — |
 | [`time.h`](#timeh) | 57 | 0 | 57 | 0 | `stddef.h` | 4 |
 | [`unistd.h`](#unistdh) | 432 | 0 | 438 | 0 | `stddef.h` | — |
@@ -87,10 +87,10 @@
 
 ### arpa/inet.h
 
-**x86_64 / aarch64** — glibc の `<arpa/inet.h>` の公開名 14、不足 5、未記載 10
+**x86_64 / aarch64** — glibc の `<arpa/inet.h>` の公開名 14、不足 5、未記載 0
 
-- 不足(default): **`inet_net_ntop`** **`inet_net_pton`** **`inet_neta`** **`inet_nsap_addr`** **`inet_nsap_ntoa`**
-- 取り込み不足: `netinet/in.h` `stddef.h` `sys/select.h` `sys/socket.h` `sys/types.h`
+- 不足(default): `inet_net_ntop` `inet_net_pton` `inet_neta` `inet_nsap_addr` `inet_nsap_ntoa`
+- 取り込み不足: `stddef.h` `sys/select.h` `sys/types.h`
 
 ### assert.h
 
@@ -110,13 +110,10 @@
 
 ### dirent.h
 
-**x86_64 / aarch64** — glibc の `<dirent.h>` の公開名 98、不足 79、未記載 80
+**x86_64 / aarch64** — glibc の `<dirent.h>` の公開名 98、不足 69、未記載 0
 
-- 不足(iso): **`d_fileno`**
-- 不足(posix): **`alphasort`** **`scandir`**
-- 不足(xopen): **`seekdir`** **`telldir`**
-- 不足(default): **`AIO_PRIO_DELTA_MAX`** **`DELAYTIMER_MAX`** **`DTTOIF`** **`HOST_NAME_MAX`** **`IFTODT`** **`LOGIN_NAME_MAX`** **`MAXNAMLEN`** **`MAX_CANON`** **`MAX_INPUT`** **`MQ_PRIO_MAX`** **`NAME_MAX`** **`NGROUPS_MAX`** **`PATH_MAX`** **`PIPE_BUF`** **`PTHREAD_DESTRUCTOR_ITERATIONS`** **`PTHREAD_KEYS_MAX`** **`PTHREAD_STACK_MIN`** **`RTSIG_MAX`** **`SEM_VALUE_MAX`** **`SSIZE_MAX`** **`TTY_NAME_MAX`** **`XATTR_LIST_MAX`** **`XATTR_NAME_MAX`** **`XATTR_SIZE_MAX`** **`_POSIX_AIO_LISTIO_MAX`** **`_POSIX_AIO_MAX`** **`_POSIX_ARG_MAX`** **`_POSIX_CHILD_MAX`** **`_POSIX_CLOCKRES_MIN`** **`_POSIX_DELAYTIMER_MAX`** **`_POSIX_HOST_NAME_MAX`** **`_POSIX_LINK_MAX`** **`_POSIX_LOGIN_NAME_MAX`** **`_POSIX_MAX_CANON`** **`_POSIX_MAX_INPUT`** **`_POSIX_MQ_OPEN_MAX`** **`_POSIX_MQ_PRIO_MAX`** **`_POSIX_NAME_MAX`** **`_POSIX_NGROUPS_MAX`** **`_POSIX_OPEN_MAX`** **`_POSIX_PATH_MAX`** **`_POSIX_PIPE_BUF`** **`_POSIX_RE_DUP_MAX`** **`_POSIX_RTSIG_MAX`** **`_POSIX_SEM_NSEMS_MAX`** **`_POSIX_SEM_VALUE_MAX`** **`_POSIX_SIGQUEUE_MAX`** **`_POSIX_SSIZE_MAX`** **`_POSIX_STREAM_MAX`** **`_POSIX_SYMLINK_MAX`** **`_POSIX_SYMLOOP_MAX`** **`_POSIX_THREAD_DESTRUCTOR_ITERATIONS`** **`_POSIX_THREAD_KEYS_MAX`** **`_POSIX_THREAD_THREADS_MAX`** **`_POSIX_TIMER_MAX`** **`_POSIX_TTY_NAME_MAX`** **`_POSIX_TZNAME_MAX`** **`getdirentries`**
-- 不足(gnu): **`_POSIX_FD_SETSIZE`** **`_POSIX_HIWAT`** **`_POSIX_QLIMIT`** **`_POSIX_UIO_MAXIOV`** **`alphasort64`** **`getdents64`** **`getdirentries64`** **`ino64_t`** **`readdir64`** **`readdir64_r`** **`scandir64`** **`scandirat`** **`scandirat64`** **`struct dirent64`** **`versionsort`** **`versionsort64`**
+- 不足(default): `AIO_PRIO_DELTA_MAX` `DELAYTIMER_MAX` `HOST_NAME_MAX` `LOGIN_NAME_MAX` `MAX_CANON` `MAX_INPUT` `MQ_PRIO_MAX` `NAME_MAX` `NGROUPS_MAX` `PATH_MAX` `PIPE_BUF` `PTHREAD_DESTRUCTOR_ITERATIONS` `PTHREAD_KEYS_MAX` `PTHREAD_STACK_MIN` `RTSIG_MAX` `SEM_VALUE_MAX` `SSIZE_MAX` `TTY_NAME_MAX` `XATTR_LIST_MAX` `XATTR_NAME_MAX` `XATTR_SIZE_MAX` `_POSIX_AIO_LISTIO_MAX` `_POSIX_AIO_MAX` `_POSIX_ARG_MAX` `_POSIX_CHILD_MAX` `_POSIX_CLOCKRES_MIN` `_POSIX_DELAYTIMER_MAX` `_POSIX_HOST_NAME_MAX` `_POSIX_LINK_MAX` `_POSIX_LOGIN_NAME_MAX` `_POSIX_MAX_CANON` `_POSIX_MAX_INPUT` `_POSIX_MQ_OPEN_MAX` `_POSIX_MQ_PRIO_MAX` `_POSIX_NAME_MAX` `_POSIX_NGROUPS_MAX` `_POSIX_OPEN_MAX` `_POSIX_PATH_MAX` `_POSIX_PIPE_BUF` `_POSIX_RE_DUP_MAX` `_POSIX_RTSIG_MAX` `_POSIX_SEM_NSEMS_MAX` `_POSIX_SEM_VALUE_MAX` `_POSIX_SIGQUEUE_MAX` `_POSIX_SSIZE_MAX` `_POSIX_STREAM_MAX` `_POSIX_SYMLINK_MAX` `_POSIX_SYMLOOP_MAX` `_POSIX_THREAD_DESTRUCTOR_ITERATIONS` `_POSIX_THREAD_KEYS_MAX` `_POSIX_THREAD_THREADS_MAX` `_POSIX_TIMER_MAX` `_POSIX_TTY_NAME_MAX` `_POSIX_TZNAME_MAX` `getdirentries`
+- 不足(gnu): `_POSIX_FD_SETSIZE` `_POSIX_HIWAT` `_POSIX_QLIMIT` `_POSIX_UIO_MAXIOV` `alphasort64` `getdents64` `getdirentries64` `ino64_t` `readdir64` `readdir64_r` `scandir64` `scandirat64` `struct dirent64` `versionsort64`
 - 取り込み不足: `stddef.h`
 - 予約名の型: `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clock_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsid_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__key_t` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__pid_t` `__quad_t` `__rlim64_t` `__rlim_t` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uid_t` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t`
 - ガード `__ino64_t_defined` → `ino64_t`: absent
@@ -186,10 +183,10 @@
 
 ### grp.h
 
-**x86_64 / aarch64** — glibc の `<grp.h>` の公開名 18、不足 9、未記載 10
+**x86_64 / aarch64** — glibc の `<grp.h>` の公開名 18、不足 4、未記載 0
 
-- 不足(default): **`FILE`** **`NSS_BUFLEN_GROUP`** **`fgetgrent`** **`fgetgrent_r`** **`getgrouplist`** **`initgroups`** **`setgroups`**
-- 不足(gnu): **`getgrent_r`** **`putgrent`**
+- 不足(default): `FILE` `fgetgrent` `fgetgrent_r`
+- 不足(gnu): `putgrent`
 - 取り込み不足: `stddef.h`
 - 予約名の型: `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clock_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsid_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__key_t` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__pid_t` `__quad_t` `__rlim64_t` `__rlim_t` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uid_t` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t`
 - ガード `__FILE_defined` → `FILE`: absent
@@ -261,25 +258,24 @@
 
 ### netinet/in.h
 
-**x86_64 / aarch64** — glibc の `<netinet/in.h>` の公開名 298、不足 267、未記載 272
+**x86_64 / aarch64** — glibc の `<netinet/in.h>` の公開名 298、不足 56、未記載 0
 
-- 不足(iso): **`IN6_ARE_ADDR_EQUAL`** **`IN6_IS_ADDR_LINKLOCAL`** **`IN6_IS_ADDR_LOOPBACK`** **`IN6_IS_ADDR_MC_GLOBAL`** **`IN6_IS_ADDR_MC_LINKLOCAL`** **`IN6_IS_ADDR_MC_NODELOCAL`** **`IN6_IS_ADDR_MC_ORGLOCAL`** **`IN6_IS_ADDR_MC_SITELOCAL`** **`IN6_IS_ADDR_MULTICAST`** **`IN6_IS_ADDR_SITELOCAL`** **`IN6_IS_ADDR_UNSPECIFIED`** **`IN6_IS_ADDR_V4COMPAT`** **`IN6_IS_ADDR_V4MAPPED`** **`INADDR_ALLHOSTS_GROUP`** **`INADDR_ALLRTRS_GROUP`** **`INADDR_ALLSNOOPERS_GROUP`** **`INADDR_DUMMY`** **`INADDR_MAX_LOCAL_GROUP`** **`INADDR_UNSPEC_GROUP`** **`IN_BADCLASS`** **`IN_CLASSA`** **`IN_CLASSA_HOST`** **`IN_CLASSA_MAX`** **`IN_CLASSA_NET`** **`IN_CLASSA_NSHIFT`** **`IN_CLASSB`** **`IN_CLASSB_HOST`** **`IN_CLASSB_MAX`** **`IN_CLASSB_NET`** **`IN_CLASSB_NSHIFT`** **`IN_CLASSC`** **`IN_CLASSC_HOST`** **`IN_CLASSC_NET`** **`IN_CLASSC_NSHIFT`** **`IN_CLASSD`** **`IN_EXPERIMENTAL`** **`IN_LOOPBACKNET`** **`IN_MULTICAST`** **`IPPORT_BIFFUDP`** **`IPPORT_CMDSERVER`** **`IPPORT_DAYTIME`** **`IPPORT_DISCARD`** **`IPPORT_ECHO`** **`IPPORT_EFSSERVER`** **`IPPORT_EXECSERVER`** **`IPPORT_FINGER`** **`IPPORT_FTP`** **`IPPORT_LOGINSERVER`** **`IPPORT_MTP`** **`IPPORT_NAMESERVER`** **`IPPORT_NETSTAT`** **`IPPORT_RESERVED`** **`IPPORT_RJE`** **`IPPORT_ROUTESERVER`** **`IPPORT_SMTP`** **`IPPORT_SUPDUP`** **`IPPORT_SYSTAT`** **`IPPORT_TELNET`** **`IPPORT_TFTP`** **`IPPORT_TIMESERVER`** **`IPPORT_TTYLINK`** **`IPPORT_USERRESERVED`** **`IPPORT_WHOIS`** **`IPPORT_WHOSERVER`** **`IPPROTO_AH`** **`IPPROTO_BEETPH`** **`IPPROTO_COMP`** **`IPPROTO_DCCP`** **`IPPROTO_DSTOPTS`** **`IPPROTO_EGP`** **`IPPROTO_ENCAP`** **`IPPROTO_ESP`** **`IPPROTO_ETHERNET`** **`IPPROTO_FRAGMENT`** **`IPPROTO_GRE`** **`IPPROTO_HOPOPTS`** **`IPPROTO_ICMPV6`** **`IPPROTO_IDP`** **`IPPROTO_IGMP`** **`IPPROTO_IPIP`** **`IPPROTO_L2TP`** **`IPPROTO_MAX`** **`IPPROTO_MH`** **`IPPROTO_MPLS`** **`IPPROTO_MPTCP`** **`IPPROTO_MTP`** **`IPPROTO_NONE`** **`IPPROTO_PIM`** **`IPPROTO_PUP`** **`IPPROTO_ROUTING`** **`IPPROTO_RSVP`** **`IPPROTO_SCTP`** **`IPPROTO_TP`** **`IPPROTO_UDPLITE`** **`IPV6_2292DSTOPTS`** **`IPV6_2292HOPLIMIT`** **`IPV6_2292HOPOPTS`** **`IPV6_2292PKTINFO`** **`IPV6_2292PKTOPTIONS`** **`IPV6_2292RTHDR`** **`IPV6_ADDRFORM`** **`IPV6_ADDR_PREFERENCES`** **`IPV6_ADD_MEMBERSHIP`** **`IPV6_AUTHHDR`** **`IPV6_AUTOFLOWLABEL`** **`IPV6_CHECKSUM`** **`IPV6_DONTFRAG`** **`IPV6_DROP_MEMBERSHIP`** **`IPV6_DSTOPTS`** **`IPV6_FREEBIND`** **`IPV6_HDRINCL`** **`IPV6_HOPLIMIT`** **`IPV6_HOPOPTS`** **`IPV6_IPSEC_POLICY`** **`IPV6_JOIN_ANYCAST`** **`IPV6_JOIN_GROUP`** **`IPV6_LEAVE_ANYCAST`** **`IPV6_LEAVE_GROUP`** **`IPV6_MINHOPCOUNT`** **`IPV6_MTU`** **`IPV6_MTU_DISCOVER`** **`IPV6_MULTICAST_ALL`** **`IPV6_MULTICAST_HOPS`** **`IPV6_MULTICAST_IF`** **`IPV6_MULTICAST_LOOP`** **`IPV6_NEXTHOP`** **`IPV6_ORIGDSTADDR`** **`IPV6_PATHMTU`** **`IPV6_PKTINFO`** **`IPV6_PMTUDISC_DO`** **`IPV6_PMTUDISC_DONT`** **`IPV6_PMTUDISC_INTERFACE`** **`IPV6_PMTUDISC_OMIT`** **`IPV6_PMTUDISC_PROBE`** **`IPV6_PMTUDISC_WANT`** **`IPV6_RECVDSTOPTS`** **`IPV6_RECVERR`** **`IPV6_RECVERR_RFC4884`** **`IPV6_RECVFRAGSIZE`** **`IPV6_RECVHOPLIMIT`** **`IPV6_RECVHOPOPTS`** **`IPV6_RECVORIGDSTADDR`** **`IPV6_RECVPATHMTU`** **`IPV6_RECVPKTINFO`** **`IPV6_RECVRTHDR`** **`IPV6_RECVTCLASS`** **`IPV6_ROUTER_ALERT`** **`IPV6_ROUTER_ALERT_ISOLATE`** **`IPV6_RTHDR`** **`IPV6_RTHDRDSTOPTS`** **`IPV6_RTHDR_LOOSE`** **`IPV6_RTHDR_STRICT`** **`IPV6_RTHDR_TYPE_0`** **`IPV6_RXDSTOPTS`** **`IPV6_RXHOPOPTS`** **`IPV6_TCLASS`** **`IPV6_TRANSPARENT`** **`IPV6_UNICAST_HOPS`** **`IPV6_UNICAST_IF`** **`IPV6_V6ONLY`** **`IPV6_XFRM_POLICY`** **`IP_ADD_MEMBERSHIP`** **`IP_ADD_SOURCE_MEMBERSHIP`** **`IP_BIND_ADDRESS_NO_PORT`** **`IP_BLOCK_SOURCE`** **`IP_CHECKSUM`** **`IP_DEFAULT_MULTICAST_LOOP`** **`IP_DEFAULT_MULTICAST_TTL`** **`IP_DROP_MEMBERSHIP`** **`IP_DROP_SOURCE_MEMBERSHIP`** **`IP_FREEBIND`** **`IP_HDRINCL`** **`IP_IPSEC_POLICY`** **`IP_LOCAL_PORT_RANGE`** **`IP_MAX_MEMBERSHIPS`** **`IP_MINTTL`** **`IP_MSFILTER`** **`IP_MTU`** **`IP_MTU_DISCOVER`** **`IP_MULTICAST_ALL`** **`IP_MULTICAST_IF`** **`IP_MULTICAST_LOOP`** **`IP_MULTICAST_TTL`** **`IP_NODEFRAG`** **`IP_OPTIONS`** **`IP_ORIGDSTADDR`** **`IP_PASSSEC`** **`IP_PKTINFO`** **`IP_PKTOPTIONS`** **`IP_PMTUDISC`** **`IP_PMTUDISC_DO`** **`IP_PMTUDISC_DONT`** **`IP_PMTUDISC_INTERFACE`** **`IP_PMTUDISC_OMIT`** **`IP_PMTUDISC_PROBE`** **`IP_PMTUDISC_WANT`** **`IP_PROTOCOL`** **`IP_RECVERR`** **`IP_RECVERR_RFC4884`** **`IP_RECVFRAGSIZE`** **`IP_RECVOPTS`** **`IP_RECVORIGDSTADDR`** **`IP_RECVRETOPTS`** **`IP_RECVTOS`** **`IP_RECVTTL`** **`IP_RETOPTS`** **`IP_ROUTER_ALERT`** **`IP_TOS`** **`IP_TRANSPARENT`** **`IP_TTL`** **`IP_UNBLOCK_SOURCE`** **`IP_UNICAST_IF`** **`IP_XFRM_POLICY`** **`SCM_SRCRT`** **`SOL_ICMPV6`** **`SOL_IP`** **`SOL_IPV6`** **`struct ipv6_mreq`**
-- 不足(default): **`GROUP_FILTER_SIZE`** **`IP_MSFILTER_SIZE`** **`MCAST_BLOCK_SOURCE`** **`MCAST_EXCLUDE`** **`MCAST_INCLUDE`** **`MCAST_JOIN_GROUP`** **`MCAST_JOIN_SOURCE_GROUP`** **`MCAST_LEAVE_GROUP`** **`MCAST_LEAVE_SOURCE_GROUP`** **`MCAST_MSFILTER`** **`MCAST_UNBLOCK_SOURCE`** **`bindresvport`** **`bindresvport6`** **`s6_addr16`** **`s6_addr32`** **`struct group_filter`** **`struct group_req`** **`struct group_source_req`** **`struct in_pktinfo`** **`struct ip_mreq`** **`struct ip_mreq_source`** **`struct ip_mreqn`** **`struct ip_msfilter`** **`struct ip_opts`**
-- 不足(gnu): **`getipv4sourcefilter`** **`getsourcefilter`** **`inet6_opt_append`** **`inet6_opt_find`** **`inet6_opt_finish`** **`inet6_opt_get_val`** **`inet6_opt_init`** **`inet6_opt_next`** **`inet6_opt_set_val`** **`inet6_option_alloc`** **`inet6_option_append`** **`inet6_option_find`** **`inet6_option_init`** **`inet6_option_next`** **`inet6_option_space`** **`inet6_rth_add`** **`inet6_rth_getaddr`** **`inet6_rth_init`** **`inet6_rth_reverse`** **`inet6_rth_segments`** **`inet6_rth_space`** **`setipv4sourcefilter`** **`setsourcefilter`** **`struct in6_pktinfo`** **`struct ip6_mtuinfo`**
-- 取り込み不足: `endian.h` `stddef.h` `sys/select.h` `sys/socket.h` `sys/types.h`
+- 不足(iso): `IPPORT_BIFFUDP` `IPPORT_CMDSERVER` `IPPORT_DAYTIME` `IPPORT_DISCARD` `IPPORT_ECHO` `IPPORT_EFSSERVER` `IPPORT_EXECSERVER` `IPPORT_FINGER` `IPPORT_FTP` `IPPORT_LOGINSERVER` `IPPORT_MTP` `IPPORT_NAMESERVER` `IPPORT_NETSTAT` `IPPORT_RJE` `IPPORT_ROUTESERVER` `IPPORT_SMTP` `IPPORT_SUPDUP` `IPPORT_SYSTAT` `IPPORT_TELNET` `IPPORT_TFTP` `IPPORT_TIMESERVER` `IPPORT_TTYLINK` `IPPORT_WHOIS` `IPPORT_WHOSERVER` `SCM_SRCRT`
+- 不足(default): `GROUP_FILTER_SIZE` `IP_MSFILTER_SIZE` `bindresvport` `bindresvport6` `struct group_filter` `struct ip_msfilter` `struct ip_opts`
+- 不足(gnu): `getipv4sourcefilter` `getsourcefilter` `inet6_opt_append` `inet6_opt_find` `inet6_opt_finish` `inet6_opt_get_val` `inet6_opt_init` `inet6_opt_next` `inet6_opt_set_val` `inet6_option_alloc` `inet6_option_append` `inet6_option_find` `inet6_option_init` `inet6_option_next` `inet6_option_space` `inet6_rth_add` `inet6_rth_getaddr` `inet6_rth_init` `inet6_rth_reverse` `inet6_rth_segments` `inet6_rth_space` `setipv4sourcefilter` `setsourcefilter` `struct ip6_mtuinfo`
+- 取り込み不足: `endian.h` `stddef.h` `sys/select.h` `sys/types.h`
 - 予約名の型: `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clock_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsid_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__key_t` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__pid_t` `__quad_t` `__rlim64_t` `__rlim_t` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uid_t` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t`
 
 ### netinet/tcp.h
 
-**x86_64 / aarch64** — glibc の `<netinet/tcp.h>` の公開名 111、不足 90、未記載 96
+**x86_64 / aarch64** — glibc の `<netinet/tcp.h>` の公開名 111、不足 8、未記載 0
 
-- 不足(iso): **`TCP_CC_INFO`** **`TCP_CM_INQ`** **`TCP_CONGESTION`** **`TCP_COOKIE_TRANSACTIONS`** **`TCP_DEFER_ACCEPT`** **`TCP_FASTOPEN_CONNECT`** **`TCP_FASTOPEN_KEY`** **`TCP_FASTOPEN_NO_COOKIE`** **`TCP_INQ`** **`TCP_LINGER2`** **`TCP_MD5SIG`** **`TCP_MD5SIG_EXT`** **`TCP_NOTSENT_LOWAT`** **`TCP_QUEUE_SEQ`** **`TCP_REPAIR`** **`TCP_REPAIR_OFF`** **`TCP_REPAIR_OFF_NO_WP`** **`TCP_REPAIR_ON`** **`TCP_REPAIR_OPTIONS`** **`TCP_REPAIR_QUEUE`** **`TCP_REPAIR_WINDOW`** **`TCP_SAVED_SYN`** **`TCP_SAVE_SYN`** **`TCP_SYNCNT`** **`TCP_THIN_DUPACK`** **`TCP_THIN_LINEAR_TIMEOUTS`** **`TCP_TIMESTAMP`** **`TCP_TX_DELAY`** **`TCP_ULP`** **`TCP_WINDOW_CLAMP`** **`TCP_ZEROCOPY_RECEIVE`**
-- 不足(default): **`SOL_TCP`** **`TCPI_OPT_ECN`** **`TCPI_OPT_ECN_SEEN`** **`TCPI_OPT_SACK`** **`TCPI_OPT_SYN_DATA`** **`TCPI_OPT_TIMESTAMPS`** **`TCPI_OPT_WSCALE`** **`TCPOLEN_MAXSEG`** **`TCPOLEN_SACK_PERMITTED`** **`TCPOLEN_TIMESTAMP`** **`TCPOLEN_TSTAMP_APPA`** **`TCPOLEN_WINDOW`** **`TCPOPT_EOL`** **`TCPOPT_MAXSEG`** **`TCPOPT_NOP`** **`TCPOPT_SACK`** **`TCPOPT_SACK_PERMITTED`** **`TCPOPT_TIMESTAMP`** **`TCPOPT_TSTAMP_HDR`** **`TCPOPT_WINDOW`** **`TCP_CA_CWR`** **`TCP_CA_Disorder`** **`TCP_CA_Loss`** **`TCP_CA_Open`** **`TCP_CA_Recovery`** **`TCP_COOKIE_IN_ALWAYS`** **`TCP_COOKIE_MAX`** **`TCP_COOKIE_MIN`** **`TCP_COOKIE_OUT_NEVER`** **`TCP_COOKIE_PAIR_SIZE`** **`TCP_MAXWIN`** **`TCP_MAX_WINSHIFT`** **`TCP_MD5SIG_FLAG_IFINDEX`** **`TCP_MD5SIG_FLAG_PREFIX`** **`TCP_MD5SIG_MAXKEYLEN`** **`TCP_MSS`** **`TCP_MSS_DEFAULT`** **`TCP_MSS_DESIRED`** **`TCP_NO_QUEUE`** **`TCP_QUEUES_NR`** **`TCP_RECV_QUEUE`** **`TCP_SEND_QUEUE`** **`TCP_S_DATA_IN`** **`TCP_S_DATA_OUT`** **`TH_ACK`** **`TH_FIN`** **`TH_PUSH`** **`TH_RST`** **`TH_SYN`** **`TH_URG`** **`enum tcp_ca_state`** **`struct tcp_cookie_transactions`** **`struct tcp_info`** **`struct tcp_md5sig`** **`struct tcp_repair_opt`** **`struct tcp_repair_window`** **`struct tcp_zerocopy_receive`** **`struct tcphdr`** **`tcp_seq`**
-- 取り込み不足: `endian.h` `stddef.h` `stdint.h` `sys/select.h` `sys/socket.h` `sys/types.h`
+- 不足(default): `enum tcp_ca_state` `struct tcp_cookie_transactions` `struct tcp_info` `struct tcp_md5sig` `struct tcp_repair_opt` `struct tcp_repair_window` `struct tcp_zerocopy_receive` `struct tcphdr`
+- 取り込み不足: `endian.h` `stddef.h` `sys/select.h` `sys/types.h`
 
 ### poll.h
 
-**x86_64 / aarch64** — glibc の `<poll.h>` の公開名 0、不足 0、未記載 1
+**x86_64 / aarch64** — glibc の `<poll.h>` の公開名 0、不足 0、未記載 0
 
 - 取り込み不足: `sys/poll.h`
 
@@ -301,10 +297,10 @@
 
 ### pwd.h
 
-**x86_64 / aarch64** — glibc の `<pwd.h>` の公開名 17、不足 7、未記載 8
+**x86_64 / aarch64** — glibc の `<pwd.h>` の公開名 17、不足 5、未記載 0
 
-- 不足(default): **`FILE`** **`NSS_BUFLEN_PASSWD`** **`fgetpwent`** **`fgetpwent_r`** **`getpwent_r`** **`putpwent`**
-- 不足(gnu): **`getpw`**
+- 不足(default): `FILE` `fgetpwent` `fgetpwent_r` `putpwent`
+- 不足(gnu): `getpw`
 - 取り込み不足: `stddef.h`
 - 予約名の型: `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clock_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsid_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__key_t` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__pid_t` `__quad_t` `__rlim64_t` `__rlim_t` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uid_t` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t`
 - ガード `__FILE_defined` → `FILE`: absent
@@ -480,57 +476,48 @@
 
 ### sys/mman.h
 
-**x86_64** — glibc の `<sys/mman.h>` の公開名 104、不足 72、未記載 73
+**x86_64** — glibc の `<sys/mman.h>` の公開名 104、不足 13、未記載 0
 
-- 不足(iso): **`MAP_32BIT`** **`MAP_ABOVE4G`** **`MAP_DENYWRITE`** **`MAP_EXECUTABLE`** **`MAP_FILE`** **`MAP_FIXED_NOREPLACE`** **`MAP_HUGETLB`** **`MAP_HUGE_MASK`** **`MAP_HUGE_SHIFT`** **`MAP_NONBLOCK`** **`MAP_SHARED_VALIDATE`** **`MAP_SYNC`** **`MAP_TYPE`** **`MCL_CURRENT`** **`MCL_FUTURE`** **`MCL_ONFAULT`** **`PROT_GROWSDOWN`** **`PROT_GROWSUP`** **`mlockall`** **`mode_t`** **`munlockall`** **`shm_open`** **`shm_unlink`**
-- 不足(posix): **`POSIX_MADV_DONTNEED`** **`POSIX_MADV_NORMAL`** **`POSIX_MADV_RANDOM`** **`POSIX_MADV_SEQUENTIAL`** **`POSIX_MADV_WILLNEED`** **`posix_madvise`**
-- 不足(default): **`MADV_COLD`** **`MADV_COLLAPSE`** **`MADV_DODUMP`** **`MADV_DOFORK`** **`MADV_DONTDUMP`** **`MADV_DONTFORK`** **`MADV_DONTNEED_LOCKED`** **`MADV_HUGEPAGE`** **`MADV_HWPOISON`** **`MADV_KEEPONFORK`** **`MADV_MERGEABLE`** **`MADV_NOHUGEPAGE`** **`MADV_PAGEOUT`** **`MADV_POPULATE_READ`** **`MADV_POPULATE_WRITE`** **`MADV_REMOVE`** **`MADV_UNMERGEABLE`** **`MADV_WIPEONFORK`** **`SHADOW_STACK_SET_TOKEN`** **`mincore`**
-- 不足(gnu): **`MFD_ALLOW_SEALING`** **`MFD_CLOEXEC`** **`MFD_EXEC`** **`MFD_HUGETLB`** **`MFD_NOEXEC_SEAL`** **`MLOCK_ONFAULT`** **`MREMAP_DONTUNMAP`** **`MREMAP_FIXED`** **`MREMAP_MAYMOVE`** **`PKEY_DISABLE_ACCESS`** **`PKEY_DISABLE_WRITE`** **`memfd_create`** **`mlock2`** **`mmap64`** **`mremap`** **`pkey_alloc`** **`pkey_free`** **`pkey_get`** **`pkey_mprotect`** **`pkey_set`** **`process_madvise`** **`process_mrelease`** **`remap_file_pages`**
+- 不足(default): `SHADOW_STACK_SET_TOKEN`
+- 不足(gnu): `MLOCK_ONFAULT` `PKEY_DISABLE_ACCESS` `PKEY_DISABLE_WRITE` `mlock2` `mmap64` `pkey_alloc` `pkey_free` `pkey_get` `pkey_mprotect` `pkey_set` `process_madvise` `process_mrelease`
 - 取り込み不足: `stddef.h`
 - 予約名の型: `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clock_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsid_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__key_t` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__pid_t` `__quad_t` `__rlim64_t` `__rlim_t` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uid_t` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t`
-- ガード `__mode_t_defined` → `mode_t`: absent
+- ガード `__mode_t_defined` → `mode_t`: self
 - ガード `__off_t_defined` → `off_t`: self
 
-**aarch64** — glibc の `<sys/mman.h>` の公開名 103、不足 71、未記載 72
+**aarch64** — glibc の `<sys/mman.h>` の公開名 103、不足 12、未記載 0
 
-- 不足(iso): **`MAP_DENYWRITE`** **`MAP_EXECUTABLE`** **`MAP_FILE`** **`MAP_FIXED_NOREPLACE`** **`MAP_HUGETLB`** **`MAP_HUGE_MASK`** **`MAP_HUGE_SHIFT`** **`MAP_NONBLOCK`** **`MAP_SHARED_VALIDATE`** **`MAP_SYNC`** **`MAP_TYPE`** **`MCL_CURRENT`** **`MCL_FUTURE`** **`MCL_ONFAULT`** **`PROT_BTI`** **`PROT_GROWSDOWN`** **`PROT_GROWSUP`** **`PROT_MTE`** **`mlockall`** **`mode_t`** **`munlockall`** **`shm_open`** **`shm_unlink`**
-- 不足(posix): **`POSIX_MADV_DONTNEED`** **`POSIX_MADV_NORMAL`** **`POSIX_MADV_RANDOM`** **`POSIX_MADV_SEQUENTIAL`** **`POSIX_MADV_WILLNEED`** **`posix_madvise`**
-- 不足(default): **`MADV_COLD`** **`MADV_COLLAPSE`** **`MADV_DODUMP`** **`MADV_DOFORK`** **`MADV_DONTDUMP`** **`MADV_DONTFORK`** **`MADV_DONTNEED_LOCKED`** **`MADV_HUGEPAGE`** **`MADV_HWPOISON`** **`MADV_KEEPONFORK`** **`MADV_MERGEABLE`** **`MADV_NOHUGEPAGE`** **`MADV_PAGEOUT`** **`MADV_POPULATE_READ`** **`MADV_POPULATE_WRITE`** **`MADV_REMOVE`** **`MADV_UNMERGEABLE`** **`MADV_WIPEONFORK`** **`mincore`**
-- 不足(gnu): **`MFD_ALLOW_SEALING`** **`MFD_CLOEXEC`** **`MFD_EXEC`** **`MFD_HUGETLB`** **`MFD_NOEXEC_SEAL`** **`MLOCK_ONFAULT`** **`MREMAP_DONTUNMAP`** **`MREMAP_FIXED`** **`MREMAP_MAYMOVE`** **`PKEY_DISABLE_ACCESS`** **`PKEY_DISABLE_WRITE`** **`memfd_create`** **`mlock2`** **`mmap64`** **`mremap`** **`pkey_alloc`** **`pkey_free`** **`pkey_get`** **`pkey_mprotect`** **`pkey_set`** **`process_madvise`** **`process_mrelease`** **`remap_file_pages`**
+- 不足(gnu): `MLOCK_ONFAULT` `PKEY_DISABLE_ACCESS` `PKEY_DISABLE_WRITE` `mlock2` `mmap64` `pkey_alloc` `pkey_free` `pkey_get` `pkey_mprotect` `pkey_set` `process_madvise` `process_mrelease`
 - 取り込み不足: `stddef.h`
 - 予約名の型: `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clock_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsid_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__key_t` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__pid_t` `__quad_t` `__rlim64_t` `__rlim_t` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uid_t` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t`
-- ガード `__mode_t_defined` → `mode_t`: absent
+- ガード `__mode_t_defined` → `mode_t`: self
 - ガード `__off_t_defined` → `off_t`: self
 
 ### sys/param.h
 
-**x86_64** — glibc の `<sys/param.h>` の公開名 22、不足 18、未記載 27
+**x86_64** — glibc の `<sys/param.h>` の公開名 22、不足 0、未記載 0
 
-- 不足(iso): **`CANBSIZ`** **`DEV_BSIZE`** **`EXEC_PAGESIZE`** **`HZ`** **`MAXHOSTNAMELEN`** **`MAXPATHLEN`** **`MAXSYMLINKS`** **`NBBY`** **`NCARGS`** **`NGROUPS`** **`NODEV`** **`NOFILE`** **`NOGROUP`** **`clrbit`** **`isclr`** **`isset`** **`powerof2`** **`setbit`**
 - 取り込み不足: `endian.h` `limits.h` `signal.h` `stddef.h` `sys/select.h` `sys/types.h` `sys/ucontext.h` `syslimits.h` `unistd.h`
 
-**aarch64** — glibc の `<sys/param.h>` の公開名 22、不足 18、未記載 30
+**aarch64** — glibc の `<sys/param.h>` の公開名 22、不足 0、未記載 0
 
-- 不足(iso): **`CANBSIZ`** **`DEV_BSIZE`** **`EXEC_PAGESIZE`** **`HZ`** **`MAXHOSTNAMELEN`** **`MAXPATHLEN`** **`MAXSYMLINKS`** **`NBBY`** **`NCARGS`** **`NGROUPS`** **`NODEV`** **`NOFILE`** **`NOGROUP`** **`clrbit`** **`isclr`** **`isset`** **`powerof2`** **`setbit`**
 - 取り込み不足: `endian.h` `limits.h` `signal.h` `stddef.h` `sys/procfs.h` `sys/select.h` `sys/time.h` `sys/types.h` `sys/ucontext.h` `sys/user.h` `syslimits.h` `unistd.h`
 
 ### sys/resource.h
 
-**x86_64 / aarch64** — glibc の `<sys/resource.h>` の公開名 48、不足 20、未記載 20
+**x86_64 / aarch64** — glibc の `<sys/resource.h>` の公開名 48、不足 8、未記載 0
 
-- 不足(iso): **`PRIO_MAX`** **`PRIO_MIN`** **`PRIO_PGRP`** **`PRIO_PROCESS`** **`PRIO_USER`** **`RLIMIT_OFILE`** **`RLIM_NLIMITS`** **`RLIM_SAVED_CUR`** **`RLIM_SAVED_MAX`** **`getpriority`** **`id_t`** **`setpriority`**
-- 不足(gnu): **`RLIM64_INFINITY`** **`RUSAGE_LWP`** **`getrlimit64`** **`prlimit`** **`prlimit64`** **`rlim64_t`** **`setrlimit64`** **`struct rlimit64`**
+- 不足(gnu): `RLIM64_INFINITY` `RUSAGE_LWP` `getrlimit64` `prlimit` `prlimit64` `rlim64_t` `setrlimit64` `struct rlimit64`
 - 予約名の型: `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clock_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsid_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__key_t` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__pid_t` `__priority_which_t` `__quad_t` `__rlim64_t` `__rlim_t` `__rlimit_resource_t` `__rusage_who_t` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uid_t` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t` `enum __priority_which` `enum __rlimit_resource` `enum __rusage_who`
-- ガード `__id_t_defined` → `id_t`: absent
-- ガード `__rusage_defined` → `struct rusage`: unguarded(<sys/resource.h>, direct: x86_64-linux-gnu/bits/types/struct_rusage.h:33:1: error: redefinition of 'struct rusage'; direct, <sys/resource.h>: libc/sys/resource.h:65:1: error: redefinition of 'struct rusage')
+- ガード `__id_t_defined` → `id_t`: self
+- ガード `__rusage_defined` → `struct rusage`: unguarded(<sys/resource.h>, direct: x86_64-linux-gnu/bits/types/struct_rusage.h:33:1: error: redefinition of 'struct rusage'; direct, <sys/resource.h>: libc/sys/resource.h:110:1: error: redefinition of 'struct rusage')
 - ガード `__timeval_defined` → `struct timeval`: honoured(<sys/resource.h>, <aio.h>: ok; <aio.h>, <sys/resource.h>: ok; <sys/resource.h>, <fts.h>: ok; <fts.h>, <sys/resource.h>: ok; <sys/resource.h>, <ftw.h>: ok; <ftw.h>, <sys/resource.h>: ok)
 - 余剰: `suseconds_t` `time_t`
 
 ### sys/select.h
 
-**x86_64 / aarch64** — glibc の `<sys/select.h>` の公開名 15、不足 1、未記載 1
+**x86_64 / aarch64** — glibc の `<sys/select.h>` の公開名 15、不足 0、未記載 0
 
-- 不足(default): **`NFDBITS`**
 - 予約名の型: `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clock_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsid_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__key_t` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__pid_t` `__quad_t` `__rlim64_t` `__rlim_t` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uid_t` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t`
 - ガード `____sigset_t_defined` → `__sigset_t`: unguarded(<sys/select.h>, <aio.h>: ok; <aio.h>, <sys/select.h>: ok; <sys/select.h>, <fts.h>: ok; <fts.h>, <sys/select.h>: ok; <sys/select.h>, <ftw.h>: ok; <ftw.h>, <sys/select.h>: ok)
 - ガード `__sigset_t_defined` → `sigset_t`: honoured(<sys/select.h>, <aio.h>: ok; <aio.h>, <sys/select.h>: ok; <sys/select.h>, <fts.h>: ok; <fts.h>, <sys/select.h>: ok; <sys/select.h>, <ftw.h>: ok; <ftw.h>, <sys/select.h>: ok)
@@ -540,12 +527,10 @@
 
 ### sys/socket.h
 
-**x86_64 / aarch64** — glibc の `<sys/socket.h>` の公開名 302、不足 239、未記載 243
+**x86_64 / aarch64** — glibc の `<sys/socket.h>` の公開名 302、不足 5、未記載 0
 
-- 不足(iso): **`AF_ALG`** **`AF_APPLETALK`** **`AF_ASH`** **`AF_ATMPVC`** **`AF_ATMSVC`** **`AF_AX25`** **`AF_BLUETOOTH`** **`AF_BRIDGE`** **`AF_CAIF`** **`AF_CAN`** **`AF_DECnet`** **`AF_ECONET`** **`AF_FILE`** **`AF_IB`** **`AF_IEEE802154`** **`AF_IPX`** **`AF_IRDA`** **`AF_ISDN`** **`AF_IUCV`** **`AF_KCM`** **`AF_KEY`** **`AF_LLC`** **`AF_MAX`** **`AF_MCTP`** **`AF_MPLS`** **`AF_NETBEUI`** **`AF_NETROM`** **`AF_NFC`** **`AF_PACKET`** **`AF_PHONET`** **`AF_PPPOX`** **`AF_QIPCRTR`** **`AF_RDS`** **`AF_ROSE`** **`AF_ROUTE`** **`AF_RXRPC`** **`AF_SECURITY`** **`AF_SMC`** **`AF_SNA`** **`AF_TIPC`** **`AF_VSOCK`** **`AF_WANPIPE`** **`AF_X25`** **`AF_XDP`** **`CMSG_ALIGN`** **`CMSG_DATA`** **`CMSG_FIRSTHDR`** **`CMSG_LEN`** **`CMSG_NXTHDR`** **`CMSG_SPACE`** **`MSG_BATCH`** **`MSG_CMSG_CLOEXEC`** **`MSG_CONFIRM`** **`MSG_CTRUNC`** **`MSG_DONTROUTE`** **`MSG_EOR`** **`MSG_ERRQUEUE`** **`MSG_FASTOPEN`** **`MSG_FIN`** **`MSG_MORE`** **`MSG_PROXY`** **`MSG_RST`** **`MSG_SYN`** **`MSG_WAITFORONE`** **`MSG_ZEROCOPY`** **`PF_ALG`** **`PF_APPLETALK`** **`PF_ASH`** **`PF_ATMPVC`** **`PF_ATMSVC`** **`PF_AX25`** **`PF_BLUETOOTH`** **`PF_BRIDGE`** **`PF_CAIF`** **`PF_CAN`** **`PF_DECnet`** **`PF_ECONET`** **`PF_FILE`** **`PF_IB`** **`PF_IEEE802154`** **`PF_IPX`** **`PF_IRDA`** **`PF_ISDN`** **`PF_IUCV`** **`PF_KCM`** **`PF_KEY`** **`PF_LLC`** **`PF_MAX`** **`PF_MCTP`** **`PF_MPLS`** **`PF_NETBEUI`** **`PF_NETROM`** **`PF_NFC`** **`PF_PACKET`** **`PF_PHONET`** **`PF_PPPOX`** **`PF_QIPCRTR`** **`PF_RDS`** **`PF_ROSE`** **`PF_ROUTE`** **`PF_RXRPC`** **`PF_SECURITY`** **`PF_SMC`** **`PF_SNA`** **`PF_TIPC`** **`PF_VSOCK`** **`PF_WANPIPE`** **`PF_X25`** **`PF_XDP`** **`SCM_RIGHTS`** **`SOCK_DCCP`** **`SOCK_PACKET`** **`SOCK_RDM`** **`SOL_AAL`** **`SOL_ALG`** **`SOL_ATM`** **`SOL_BLUETOOTH`** **`SOL_CAIF`** **`SOL_DCCP`** **`SOL_DECNET`** **`SOL_IRDA`** **`SOL_IUCV`** **`SOL_KCM`** **`SOL_LLC`** **`SOL_MCTP`** **`SOL_MPTCP`** **`SOL_NETBEUI`** **`SOL_NETLINK`** **`SOL_NFC`** **`SOL_PACKET`** **`SOL_PNPIPE`** **`SOL_PPPOL2TP`** **`SOL_RAW`** **`SOL_RDS`** **`SOL_RXRPC`** **`SOL_SMC`** **`SOL_TIPC`** **`SOL_TLS`** **`SOL_X25`** **`SOL_XDP`** **`SOMAXCONN`** **`SO_ACCEPTCONN`** **`SO_DEBUG`** **`SO_DONTROUTE`** **`SO_OOBINLINE`** **`SO_RCVLOWAT`** **`SO_RCVTIMEO`** **`SO_SNDLOWAT`** **`SO_SNDTIMEO`** **`SO_TIMESTAMP`** **`SO_TIMESTAMPING`** **`SO_TIMESTAMPNS`**
-- 不足(posix): **`sockatmark`**
-- 不足(default): **`FIOGETOWN`** **`FIOSETOWN`** **`SCM_TIMESTAMP`** **`SCM_TIMESTAMPING`** **`SCM_TIMESTAMPING_OPT_STATS`** **`SCM_TIMESTAMPING_PKTINFO`** **`SCM_TIMESTAMPNS`** **`SCM_TXTIME`** **`SCM_WIFI_STATUS`** **`SIOCATMARK`** **`SIOCGPGRP`** **`SIOCGSTAMPNS_OLD`** **`SIOCGSTAMP_OLD`** **`SIOCSPGRP`** **`SO_ATTACH_BPF`** **`SO_ATTACH_FILTER`** **`SO_ATTACH_REUSEPORT_CBPF`** **`SO_ATTACH_REUSEPORT_EBPF`** **`SO_BINDTODEVICE`** **`SO_BINDTOIFINDEX`** **`SO_BPF_EXTENSIONS`** **`SO_BSDCOMPAT`** **`SO_BUF_LOCK`** **`SO_BUSY_POLL`** **`SO_BUSY_POLL_BUDGET`** **`SO_CNX_ADVICE`** **`SO_COOKIE`** **`SO_DETACH_BPF`** **`SO_DETACH_FILTER`** **`SO_DETACH_REUSEPORT_BPF`** **`SO_DOMAIN`** **`SO_GET_FILTER`** **`SO_INCOMING_CPU`** **`SO_INCOMING_NAPI_ID`** **`SO_LOCK_FILTER`** **`SO_MARK`** **`SO_MAX_PACING_RATE`** **`SO_MEMINFO`** **`SO_NETNS_COOKIE`** **`SO_NOFCS`** **`SO_NO_CHECK`** **`SO_PASSCRED`** **`SO_PASSPIDFD`** **`SO_PASSSEC`** **`SO_PEEK_OFF`** **`SO_PEERCRED`** **`SO_PEERGROUPS`** **`SO_PEERNAME`** **`SO_PEERPIDFD`** **`SO_PEERSEC`** **`SO_PREFER_BUSY_POLL`** **`SO_PRIORITY`** **`SO_PROTOCOL`** **`SO_RCVBUFFORCE`** **`SO_RCVMARK`** **`SO_RCVTIMEO_NEW`** **`SO_RCVTIMEO_OLD`** **`SO_RESERVE_MEM`** **`SO_RXQ_OVFL`** **`SO_SECURITY_AUTHENTICATION`** **`SO_SECURITY_ENCRYPTION_NETWORK`** **`SO_SECURITY_ENCRYPTION_TRANSPORT`** **`SO_SELECT_ERR_QUEUE`** **`SO_SNDBUFFORCE`** **`SO_SNDTIMEO_NEW`** **`SO_SNDTIMEO_OLD`** **`SO_TIMESTAMPING_NEW`** **`SO_TIMESTAMPING_OLD`** **`SO_TIMESTAMPNS_NEW`** **`SO_TIMESTAMPNS_OLD`** **`SO_TIMESTAMP_NEW`** **`SO_TIMESTAMP_OLD`** **`SO_TXREHASH`** **`SO_TXTIME`** **`SO_WIFI_STATUS`** **`SO_ZEROCOPY`** **`isfdtype`** **`struct osockaddr`**
-- 不足(gnu): **`MSG_TRYHARD`** **`SCM_CREDENTIALS`** **`SCM_PIDFD`** **`SCM_SECURITY`** **`recvmmsg`** **`sendmmsg`** **`struct mmsghdr`** **`struct ucred`**
+- 不足(iso): `SOCK_PACKET`
+- 不足(default): `SIOCGSTAMPNS_OLD` `SIOCGSTAMP_OLD` `isfdtype` `struct osockaddr`
 - 取り込み不足: `endian.h` `stddef.h` `sys/select.h` `sys/types.h`
 - 予約名の型: `__CONST_SOCKADDR_ARG` `__SOCKADDR_ARG` `__kernel_caddr_t` `__kernel_clock_t` `__kernel_clockid_t` `__kernel_daddr_t` `__kernel_fd_set` `__kernel_fsid_t` `__kernel_gid16_t` `__kernel_gid32_t` `__kernel_gid_t` `__kernel_ino_t` `__kernel_ipc_pid_t` `__kernel_key_t` `__kernel_loff_t` `__kernel_long_t` `__kernel_mode_t` `__kernel_mqd_t` `__kernel_off_t` `__kernel_old_dev_t` `__kernel_old_gid_t` `__kernel_old_time_t` `__kernel_old_uid_t` `__kernel_pid_t` `__kernel_ptrdiff_t` `__kernel_sighandler_t` `__kernel_size_t` `__kernel_ssize_t` `__kernel_suseconds_t` `__kernel_time64_t` `__kernel_time_t` `__kernel_timer_t` `__kernel_uid16_t` `__kernel_uid32_t` `__kernel_uid_t` `__kernel_ulong_t` `enum __socket_type`
 - ガード `__iovec_defined` → `struct iovec`: unguarded(<sys/socket.h>, <netdb.h>: ok; <netdb.h>, <sys/socket.h>: ok; <sys/socket.h>, <mqueue.h>: ok; <mqueue.h>, <sys/socket.h>: ok; <sys/socket.h>, <net/if.h>: ok; <net/if.h>, <sys/socket.h>: ok)
@@ -554,12 +539,9 @@
 
 ### sys/stat.h
 
-**x86_64 / aarch64** — glibc の `<sys/stat.h>` の公開名 110、不足 56、未記載 56
+**x86_64 / aarch64** — glibc の `<sys/stat.h>` の公開名 110、不足 36、未記載 0
 
-- 不足(posix): **`S_TYPEISMQ`** **`S_TYPEISSEM`** **`S_TYPEISSHM`** **`UTIME_NOW`** **`UTIME_OMIT`** **`fchmodat`** **`futimens`** **`mkdirat`** **`mkfifoat`** **`utimensat`**
-- 不足(xopen): **`mknod`** **`mknodat`**
-- 不足(default): **`ACCESSPERMS`** **`ALLPERMS`** **`DEFFILEMODE`** **`S_BLKSIZE`** **`S_IEXEC`** **`S_IREAD`** **`S_IWRITE`** **`lchmod`**
-- 不足(gnu): **`STATX_ALL`** **`STATX_ATIME`** **`STATX_ATTR_APPEND`** **`STATX_ATTR_AUTOMOUNT`** **`STATX_ATTR_COMPRESSED`** **`STATX_ATTR_DAX`** **`STATX_ATTR_ENCRYPTED`** **`STATX_ATTR_IMMUTABLE`** **`STATX_ATTR_MOUNT_ROOT`** **`STATX_ATTR_NODUMP`** **`STATX_ATTR_VERITY`** **`STATX_BASIC_STATS`** **`STATX_BLOCKS`** **`STATX_BTIME`** **`STATX_CTIME`** **`STATX_DIOALIGN`** **`STATX_GID`** **`STATX_INO`** **`STATX_MNT_ID`** **`STATX_MNT_ID_UNIQUE`** **`STATX_MODE`** **`STATX_MTIME`** **`STATX_NLINK`** **`STATX_SIZE`** **`STATX_TYPE`** **`STATX_UID`** **`STATX__RESERVED`** **`fstat64`** **`fstatat64`** **`getumask`** **`lstat64`** **`stat64`** **`statx`** **`struct stat64`** **`struct statx`** **`struct statx_timestamp`**
+- 不足(gnu): `STATX_ALL` `STATX_ATIME` `STATX_ATTR_APPEND` `STATX_ATTR_AUTOMOUNT` `STATX_ATTR_COMPRESSED` `STATX_ATTR_DAX` `STATX_ATTR_ENCRYPTED` `STATX_ATTR_IMMUTABLE` `STATX_ATTR_MOUNT_ROOT` `STATX_ATTR_NODUMP` `STATX_ATTR_VERITY` `STATX_BASIC_STATS` `STATX_BLOCKS` `STATX_BTIME` `STATX_CTIME` `STATX_DIOALIGN` `STATX_GID` `STATX_INO` `STATX_MNT_ID` `STATX_MNT_ID_UNIQUE` `STATX_MODE` `STATX_MTIME` `STATX_NLINK` `STATX_SIZE` `STATX_TYPE` `STATX_UID` `STATX__RESERVED` `fstat64` `fstatat64` `getumask` `lstat64` `stat64` `statx` `struct stat64` `struct statx` `struct statx_timestamp`
 - 予約名の型: `__be16` `__be32` `__be64` `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clock_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsid_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__kernel_caddr_t` `__kernel_clock_t` `__kernel_clockid_t` `__kernel_daddr_t` `__kernel_fd_set` `__kernel_fsid_t` `__kernel_gid16_t` `__kernel_gid32_t` `__kernel_gid_t` `__kernel_ino_t` `__kernel_ipc_pid_t` `__kernel_key_t` `__kernel_loff_t` `__kernel_long_t` `__kernel_mode_t` `__kernel_mqd_t` `__kernel_off_t` `__kernel_old_dev_t` `__kernel_old_gid_t` `__kernel_old_time_t` `__kernel_old_uid_t` `__kernel_pid_t` `__kernel_ptrdiff_t` `__kernel_sighandler_t` `__kernel_size_t` `__kernel_ssize_t` `__kernel_suseconds_t` `__kernel_time64_t` `__kernel_time_t` `__kernel_timer_t` `__kernel_uid16_t` `__kernel_uid32_t` `__kernel_uid_t` `__kernel_ulong_t` `__key_t` `__le16` `__le32` `__le64` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__pid_t` `__poll_t` `__quad_t` `__rlim64_t` `__rlim_t` `__s128` `__s16` `__s32` `__s64` `__s8` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__sum16` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u128` `__u16` `__u32` `__u64` `__u8` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uid_t` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t` `__wsum`
 - ガード `__blkcnt_t_defined` → `blkcnt_t`: self
 - ガード `__blksize_t_defined` → `blksize_t`: self
@@ -577,9 +559,9 @@
 
 ### sys/statfs.h
 
-**x86_64 / aarch64** — glibc の `<sys/statfs.h>` の公開名 6、不足 3、未記載 3
+**x86_64 / aarch64** — glibc の `<sys/statfs.h>` の公開名 6、不足 3、未記載 0
 
-- 不足(gnu): **`fstatfs64`** **`statfs64`** **`struct statfs64`**
+- 不足(gnu): `fstatfs64` `statfs64` `struct statfs64`
 - 予約名の型: `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clock_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__key_t` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__pid_t` `__quad_t` `__rlim64_t` `__rlim_t` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uid_t` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t`
 - 余剰: `fsid_t`
 
@@ -647,41 +629,38 @@
 
 ### sys/uio.h
 
-**x86_64 / aarch64** — glibc の `<sys/uio.h>` の公開名 19、不足 16、未記載 20
+**x86_64 / aarch64** — glibc の `<sys/uio.h>` の公開名 19、不足 13、未記載 0
 
-- 不足(iso): **`UIO_MAXIOV`**
-- 不足(default): **`preadv`** **`pwritev`**
-- 不足(gnu): **`RWF_APPEND`** **`RWF_DSYNC`** **`RWF_HIPRI`** **`RWF_NOWAIT`** **`RWF_SYNC`** **`preadv2`** **`preadv64`** **`preadv64v2`** **`process_vm_readv`** **`process_vm_writev`** **`pwritev2`** **`pwritev64`** **`pwritev64v2`**
+- 不足(gnu): `RWF_APPEND` `RWF_DSYNC` `RWF_HIPRI` `RWF_NOWAIT` `RWF_SYNC` `preadv2` `preadv64` `preadv64v2` `process_vm_readv` `process_vm_writev` `pwritev2` `pwritev64` `pwritev64v2`
 - 取り込み不足: `endian.h` `stddef.h` `sys/select.h` `sys/types.h`
 - ガード `__iovec_defined` → `struct iovec`: unguarded(<sys/uio.h>, <netdb.h>: ok; <netdb.h>, <sys/uio.h>: ok; <sys/uio.h>, <mqueue.h>: ok; <mqueue.h>, <sys/uio.h>: ok; <sys/uio.h>, <net/if.h>: ok; <net/if.h>, <sys/uio.h>: ok)
 
 ### sys/un.h
 
-**x86_64 / aarch64** — glibc の `<sys/un.h>` の公開名 3、不足 1、未記載 4
+**x86_64 / aarch64** — glibc の `<sys/un.h>` の公開名 3、不足 0、未記載 0
 
-- 不足(default): **`SUN_LEN`**
-- 取り込み不足: `stddef.h` `string.h` `strings.h`
+- 不足なし
 
 ### sys/utsname.h
 
-**x86_64 / aarch64** — glibc の `<sys/utsname.h>` の公開名 3、不足 1、未記載 1
+**x86_64 / aarch64** — glibc の `<sys/utsname.h>` の公開名 3、不足 0、未記載 0
 
-- 不足(default): **`SYS_NMLN`**
+- 不足なし
 
 ### sys/wait.h
 
-**x86_64** — glibc の `<sys/wait.h>` の公開名 31、不足 7、未記載 10
+**x86_64** — glibc の `<sys/wait.h>` の公開名 31、不足 2、未記載 0
 
-- 不足(default): **`WAIT_ANY`** **`WAIT_MYPGRP`** **`WCOREFLAG`** **`W_EXITCODE`** **`W_STOPCODE`** **`wait3`** **`wait4`**
+- 不足(default): `WAIT_ANY` `WAIT_MYPGRP`
 - 取り込み不足: `stddef.h` `sys/ucontext.h` `unistd.h`
 - 予約名の型: `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsid_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__key_t` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__quad_t` `__rlim64_t` `__rlim_t` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t`
 - ガード `__id_t_defined` → `id_t`: self
 - ガード `__idtype_t_defined` → `idtype_t`: unguarded(<sys/wait.h>, <wait.h>: ok; <wait.h>, <sys/wait.h>: ok)
 - ガード `__pid_t_defined` → `pid_t`: self
 
-**aarch64** — glibc の `<sys/wait.h>` の公開名 30、不足 7、未記載 16
+**aarch64** — glibc の `<sys/wait.h>` の公開名 30、不足 2、未記載 0
 
-- 不足(default): **`WAIT_ANY`** **`WAIT_MYPGRP`** **`WCOREFLAG`** **`W_EXITCODE`** **`W_STOPCODE`** **`wait3`** **`wait4`**
+- 不足(default): `WAIT_ANY` `WAIT_MYPGRP`
 - 取り込み不足: `endian.h` `stddef.h` `sys/procfs.h` `sys/select.h` `sys/time.h` `sys/types.h` `sys/ucontext.h` `sys/user.h` `unistd.h`
 - 予約名の型: `__blkcnt64_t` `__blkcnt_t` `__blksize_t` `__caddr_t` `__clockid_t` `__daddr_t` `__dev_t` `__fsblkcnt64_t` `__fsblkcnt_t` `__fsfilcnt64_t` `__fsfilcnt_t` `__fsid_t` `__fsword_t` `__gid_t` `__id_t` `__ino64_t` `__ino_t` `__int16_t` `__int32_t` `__int64_t` `__int8_t` `__int_least16_t` `__int_least32_t` `__int_least64_t` `__int_least8_t` `__intmax_t` `__intptr_t` `__key_t` `__loff_t` `__mode_t` `__nlink_t` `__off64_t` `__off_t` `__quad_t` `__rlim64_t` `__rlim_t` `__sig_atomic_t` `__socklen_t` `__ssize_t` `__suseconds64_t` `__suseconds_t` `__syscall_slong_t` `__syscall_ulong_t` `__time_t` `__timer_t` `__u_char` `__u_int` `__u_long` `__u_quad_t` `__u_short` `__uint16_t` `__uint32_t` `__uint64_t` `__uint8_t` `__uint_least16_t` `__uint_least32_t` `__uint_least64_t` `__uint_least8_t` `__uintmax_t` `__useconds_t`
 - ガード `__idtype_t_defined` → `idtype_t`: unguarded

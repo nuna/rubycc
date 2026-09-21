@@ -15,9 +15,15 @@ class TestBundledHeadersCoverage < Minitest::Test
   # bundled-headers-core-batch-1 classified the core batch: the string,
   # formatted-I/O, arithmetic and signal headers, plus the four arch-layer
   # headers a C extension reads limits and clocks out of.
+  # bundled-headers-io-batch-1 classified the socket, file and process headers
+  # from sys/socket.h on; sys/stat.h and sys/select.h are the arch-layer
+  # copies, audited on each arch against that arch's own file.
   AUDITED = %w[stdlib.h sched.h termios.h sys/ioctl.h sys/types.h unistd.h
                stdio.h string.h strings.h math.h signal.h assert.h locale.h
-               langinfo.h ctype.h errno.h limits.h time.h].freeze
+               langinfo.h ctype.h errno.h limits.h time.h
+               sys/socket.h sys/mman.h sys/wait.h sys/uio.h sys/un.h sys/resource.h
+               sys/statfs.h sys/param.h sys/utsname.h netinet/in.h netinet/tcp.h
+               arpa/inet.h poll.h dirent.h pwd.h grp.h sys/stat.h sys/select.h].freeze
 
   AUDITED.each do |header|
     define_method("test_#{header.gsub(/\W/, "_")}_accounts_for_every_glibc_name") do
@@ -188,6 +194,29 @@ class TestBundledHeadersCoverage < Minitest::Test
                     "a name programs write belongs to the measured surface"
     refute_includes unistd.missing.keys, "_POSIX_VDISABLE"
     refute_includes unistd.glibc_own, "_UNISTD_H", "an include guard is not a public name"
+  end
+
+  # bundled-headers-io-batch-1: glibc's <arpa/inet.h> includes <netinet/in.h>,
+  # its <netinet/in.h> and <netinet/tcp.h> include <sys/socket.h>, and programs
+  # lean on that -- each unit below uses a name only the pulled-in header
+  # declares. All three compiled under gcc and failed under rubycc before this
+  # step (measured 2026-09-18).
+  PULLED_IN = {
+    "arpa/inet.h" => "struct sockaddr_in sin; int probe(void) { sin.sin_family = AF_INET; return (int) sizeof sin; }",
+    "netinet/in.h" => "int probe(void) { socklen_t n = 0; return socket(AF_INET, SOCK_STREAM, 0) + (int) n; }",
+    "netinet/tcp.h" => "int probe(int fd) { int one = 1; " \
+                       "return setsockopt(fd, SOL_TCP, TCP_NODELAY, &one, (socklen_t) sizeof one); }"
+  }.freeze
+
+  def test_socket_headers_pull_in_what_glibc_pulls_in
+    failures = PULLED_IN.filter_map do |header, body|
+      source = "#define _GNU_SOURCE 1\n#include <#{header}>\n#{body}\n"
+      Rubycc::Compiler.new.compile(source, filename: "probe.c", target: "x86_64", libc: "glibc")
+      nil
+    rescue Rubycc::Error => e
+      "<#{header}>: #{e.message.lines.first.strip}"
+    end
+    assert_empty failures
   end
 
   private

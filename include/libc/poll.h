@@ -5,7 +5,18 @@
    docs/HEADER-LICENSING.md), the same treatment as errno.h and fcntl.h. struct
    pollfd is a POSIX declaration. Common layer: struct pollfd's layout and every
    POLLIN/POLLOUT/... value are identical on x86-64 and aarch64, unlike
-   fcntl.h's O_DIRECT family. */
+   fcntl.h's O_DIRECT family.
+
+   Coverage against glibc's <poll.h> under _GNU_SOURCE (audited 2026-09-18,
+   glibc 2.39, x86-64 and aarch64, with tools/audit_bundled_headers.rb; table
+   in docs/development/BUNDLED-HEADERS-COVERAGE.md). No name is missing. The
+   one difference is structural:
+   omitted: <sys/poll.h> -- glibc's <poll.h> owns no name of its own, it is a
+   one-line wrapper that includes <sys/poll.h> and lets that file carry
+   everything; rubycc puts the same surface directly in this file, so there is
+   nothing for a bundled <sys/poll.h> to hold (a program that includes
+   <sys/poll.h> by that spelling reaches the host glibc's copy, which the
+   coverage test compiles on top of the bundled headers). */
 
 #ifndef _RUBYCC_POLL_H
 #define _RUBYCC_POLL_H

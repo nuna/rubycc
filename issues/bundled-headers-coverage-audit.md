@@ -78,6 +78,13 @@ buildable-gems-batch-4 で termios が 5 件目になったので、1 件ずつ�
 分類の途中で、rubycc だけが落ちる 6 形(`PATH_MAX`・`ENOTSUP`・`getc_unlocked`・`lrintf`・`sighandler_t`・`timespec_get`)が見つかり、同じステップで直した。
 `SIGSTKSZ` 系は [`bundled-sigstksz`](bundled-sigstksz.md)(CC)に起票した。
 
+### 2026-09-22(ソケット・ファイルの組、`gap-fixes-wave-9`、PR 159)
+
+`bundled-headers-io-batch-1` で 18 本(`sys/socket.h`・`netinet/in.h`・`netinet/tcp.h`・`arpa/inet.h`・`sys/mman.h`・`sys/wait.h`・`sys/uio.h`・`sys/un.h`・
+`sys/resource.h`・`sys/statfs.h`・`sys/param.h`・`sys/utsname.h`・`poll.h`・`dirent.h`・`pwd.h`・`grp.h` と、アーキ層の `sys/stat.h`・`sys/select.h`)を分類し、
+両 arch とも未記載 0 件にした。`<arpa/inet.h>` だけで `struct sockaddr_in` を使う形など、rubycc だけが落ちる形も同じステップで直した(`CMSG_*` は
+長さ 0〜1023 の全件で glibc と照合)。これで分類済みは 36 本になった。
+
 ## 決着
 
 (未着手)

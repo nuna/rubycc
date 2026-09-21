@@ -11,9 +11,25 @@
    getgrent/setgrent/endgrent/getgrnam_r/getgrgid_r are POSIX declarations
    whose bodies resolve from the host libc at link time (the _r variants
    answer through NSS, a host runtime fact, not something rubycc computes).
-   Not included: fgetgrent/putgrent (glibc/BSD extensions no corpus sample
-   census hit needs), left out to keep the surface to what etc's use of
-   getgrnam/getgrgid actually requires (Step 123, M5 H2). */
+   Coverage against glibc's <grp.h> under _GNU_SOURCE (audited 2026-09-18,
+   glibc 2.39, x86-64 and aarch64, with tools/audit_bundled_headers.rb; table
+   in docs/development/BUNDLED-HEADERS-COVERAGE.md). Nine names were missing;
+   five were added and four are deliberate. Added: the supplementary-group
+   trio getgrouplist / initgroups / setgroups, which is how a C extension that
+   changes identity gets the group list right (unistd.h already carries the
+   reading half, getgroups, and left the writing half to this header);
+   getgrent_r, the reentrant form of the getgrent enumeration above; and
+   NSS_BUFLEN_GROUP, the buffer size glibc suggests for the _r lookups,
+   measured 1024 on both arches. Every added prototype was checked by
+   declaring it immediately before `#include <grp.h>` under gcc and
+   aarch64-linux-gnu-gcc on 2026-09-18 -- clean on both arches.
+   omitted: FILE fgetgrent fgetgrent_r putgrent -- the calls that read and
+   write a group-format *stream* rather than the system database; supporting
+   them would mean pulling <stdio.h> in here for FILE (which is why FILE shows
+   up as a missing name of its own), and the corpus reaches this header for
+   getgrnam/getgrgid only.
+   omitted: <stddef.h> -- only size_t is needed, and it is declared here
+   directly. */
 
 #ifndef _RUBYCC_GRP_H
 #define _RUBYCC_GRP_H
@@ -32,6 +48,10 @@ typedef unsigned long size_t;
 #define _RUBYCC_GID_T
 typedef unsigned int gid_t;
 #endif
+
+/* Buffer size glibc suggests for the getgrnam_r/getgrgid_r/getgrent_r
+   lookups below (measured 1024, both arches). */
+#define NSS_BUFLEN_GROUP 1024
 
 /* A record in the group database. Member names, types and order are the
    POSIX.1 public contract; every offset below was measured against the glibc
@@ -52,5 +72,14 @@ int getgrnam_r(const char *__restrict __name, struct group *__restrict __resultb
                char *__restrict __buffer, size_t __buflen, struct group **__restrict __result);
 int getgrgid_r(gid_t __gid, struct group *__restrict __resultbuf,
                char *__restrict __buffer, size_t __buflen, struct group **__restrict __result);
+int getgrent_r(struct group *__restrict __resultbuf, char *__restrict __buffer,
+               size_t __buflen, struct group **__restrict __result);
+
+/* The supplementary-group list of a process. getgrouplist reports the groups
+   a user belongs to, initgroups installs them, setgroups sets them outright
+   (privileged). */
+int getgrouplist(const char *__user, gid_t __group, gid_t *__groups, int *__ngroups);
+int initgroups(const char *__user, gid_t __group);
+int setgroups(size_t __n, const gid_t *__groups);
 
 #endif /* _RUBYCC_GRP_H */
