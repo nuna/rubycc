@@ -5,7 +5,39 @@
    (BUFSIZ, TMP_MAX, ...) are measured, and the three of them the two C
    libraries disagree on are carried under __RUBYCC_LIBC_MUSL__ (see the
    preprocessor's LIBCS). Common layer: only FILE* crosses the ABI and it is a
-   pointer, so nothing here is width sensitive. */
+   pointer, so nothing here is width sensitive.
+
+   Coverage against glibc's <stdio.h> under _GNU_SOURCE (audited 2026-09-18,
+   glibc 2.39, both arches, with tools/audit_bundled_headers.rb; table in
+   docs/development/BUNDLED-HEADERS-COVERAGE.md). Added there: va_list (POSIX
+   has <stdio.h> define it, and glibc does so behind _VA_LIST_DEFINED, which is
+   set here too), the explicit locking calls and the whole _unlocked family
+   (what a C extension reaches for when it has already taken the lock itself --
+   getc_unlocked was rejected by rubycc before, measured 2026-09-18), fmemopen
+   and open_memstream, vdprintf, renameat, setbuffer/setlinebuf and ctermid.
+   Visibility follows bundled-headers-coverage-audit-2's rule: what glibc shows
+   in gcc's default mode is unconditional, what it shows only under _GNU_SOURCE
+   sits under __USE_GNU. Every added prototype was written here and then put
+   next to glibc's own <stdio.h> under gcc and aarch64-linux-gnu-gcc, where a
+   conflicting redeclaration is an error (2026-09-18, both clean); SEEK_DATA
+   and SEEK_HOLE were printed from the oracle on both arches (3 and 4, equal).
+   Intentionally left out:
+   omitted: fopencookie cookie_io_functions_t cookie_read_function_t
+   cookie_write_function_t cookie_seek_function_t cookie_close_function_t --
+   glibc's hook for a caller-defined stream; its seek hook is typed over
+   glibc's internal __off64_t, so providing it means carrying that plumbing as
+   well, and no corpus user opens one. omitted: fopen64 freopen64 tmpfile64
+   fseeko64 ftello64 fgetpos64 fsetpos64 fpos64_t off64_t -- LFS64 aliases,
+   identical to the unsuffixed calls on an LP64 target (the line <stdlib.h>
+   draws at mkstemp64). omitted: renameat2 RENAME_EXCHANGE RENAME_NOREPLACE
+   RENAME_WHITEOUT -- the Linux-only rename with flags; renameat above covers
+   what sources call. omitted: obstack_printf obstack_vprintf -- they print
+   into a GNU obstack, and rubycc bundles no <obstack.h>.
+   omitted: tempnam tmpnam_r cuserid L_cuserid fcloseall getw putw -- the
+   legacy half (tempnam and cuserid are unsafe by construction and tmpnam_r is
+   glibc's own patch over tmpnam; fcloseall, getw and putw have no corpus
+   user). omitted: <stdarg.h> <stddef.h> -- glibc reaches __gnuc_va_list,
+   size_t and NULL through them; all three are declared here directly. */
 
 #ifndef _RUBYCC_STDIO_H
 #define _RUBYCC_STDIO_H
@@ -41,6 +73,14 @@ typedef __builtin_va_list __gnuc_va_list;
 #define _RUBYCC_ISOC_VA_LIST
 typedef __builtin_va_list __isoc_va_list;
 #endif
+/* POSIX has <stdio.h> define va_list as well, for the v*printf family below.
+   glibc sets _VA_LIST_DEFINED when it does; repeating the typedef with the
+   same type is legal either way (C11 6.7p3), so <stdarg.h> included before or
+   after this header is not a conflict. */
+#ifndef _VA_LIST_DEFINED
+#define _VA_LIST_DEFINED 1
+typedef __builtin_va_list va_list;
+#endif
 
 /* FILE: opaque. glibc's tag and guard, so a host <stdio.h> reached later is a
    no-op and code that spells `struct _IO_FILE` stays compatible. */
@@ -62,6 +102,12 @@ typedef struct { long __pos; struct { int __count; int __value; } __state; } fpo
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
+/* The sparse-file whences (Linux). Printed from the glibc oracle as 3 and 4 on
+   both arches (2026-09-18); the bundled <unistd.h> carries the same pair. */
+#ifdef __USE_GNU
+#define SEEK_DATA 3
+#define SEEK_HOLE 4
+#endif
 
 #define _IOFBF 0
 #define _IOLBF 1
@@ -159,5 +205,40 @@ void   perror(const char *__s);
 
 FILE  *popen(const char *__command, const char *__modes);
 int    pclose(FILE *__stream);
+
+/* The controlling terminal's name; L_ctermid above is the buffer size. */
+char  *ctermid(char *__s);
+
+/* Streams that write into memory rather than a file descriptor. */
+FILE  *fmemopen(void *__s, size_t __len, const char *__modes);
+FILE  *open_memstream(char **__bufloc, size_t *__sizeloc);
+int    vdprintf(int __fd, const char *__restrict __format, __gnuc_va_list __arg);
+int    renameat(int __oldfd, const char *__old, int __newfd, const char *__new);
+void   setbuffer(FILE *__restrict __stream, char *__restrict __buf, size_t __size);
+void   setlinebuf(FILE *__stream);
+
+/* Explicit stream locking, and the _unlocked accessors that assume the caller
+   holds the lock (or knows the stream is private). POSIX has the first seven;
+   the rest are glibc's, shown in gcc's default mode. */
+void   flockfile(FILE *__stream);
+int    ftrylockfile(FILE *__stream);
+void   funlockfile(FILE *__stream);
+int    getc_unlocked(FILE *__stream);
+int    getchar_unlocked(void);
+int    putc_unlocked(int __c, FILE *__stream);
+int    putchar_unlocked(int __c);
+void   clearerr_unlocked(FILE *__stream);
+int    feof_unlocked(FILE *__stream);
+int    ferror_unlocked(FILE *__stream);
+int    fileno_unlocked(FILE *__stream);
+int    fflush_unlocked(FILE *__stream);
+int    fgetc_unlocked(FILE *__stream);
+int    fputc_unlocked(int __c, FILE *__stream);
+size_t fread_unlocked(void *__restrict __ptr, size_t __size, size_t __n, FILE *__restrict __stream);
+size_t fwrite_unlocked(const void *__restrict __ptr, size_t __size, size_t __n, FILE *__restrict __stream);
+#ifdef __USE_GNU
+char  *fgets_unlocked(char *__restrict __s, int __n, FILE *__restrict __stream);
+int    fputs_unlocked(const char *__restrict __s, FILE *__restrict __stream);
+#endif
 
 #endif /* _RUBYCC_STDIO_H */

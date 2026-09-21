@@ -21,11 +21,30 @@
    aarch64 (cross gcc + qemu), and nl_item is `int` (4 bytes) on both, so the
    header is arch-neutral.
 
-   Not included: nl_langinfo_l (its locale_t parameter is part of the glibc
-   locale extension set the bundled <locale.h> deliberately leaves out), and
-   glibc's _NL_* internal item names beyond the three composition helpers.
-   nkf, the gem that put this header on the list, reaches nl_langinfo with the
-   POSIX item set. */
+   Coverage against glibc's <langinfo.h> under _GNU_SOURCE (audited 2026-09-18,
+   glibc 2.39, both arches, with tools/audit_bundled_headers.rb; table in
+   docs/development/BUNDLED-HEADERS-COVERAGE.md). Nothing was added: the POSIX
+   item set is complete above, and everything glibc has beyond it is a GNU item
+   or an internal name. nkf, the gem that put this header on the list, reaches
+   nl_langinfo with the POSIX set. Each item is a number this host's libc
+   answers to, so -- as with <unistd.h>'s _SC_* -- they are added one consumer
+   at a time rather than transcribed in bulk. Intentionally left out:
+   omitted: _NL_* -- glibc's internal item names (the per-category tables it
+   builds locales out of), beyond the three composition helpers above.
+   omitted: ALTMON_1 ALTMON_2 ALTMON_3 ALTMON_4 ALTMON_5 ALTMON_6 ALTMON_7
+   ALTMON_8 ALTMON_9 ALTMON_10 ALTMON_11 ALTMON_12 ERA_YEAR NL_LOCALE_NAME
+   _DATE_FMT -- GNU items (glibc 2.27 and later for the ALTMON_ family), no
+   corpus user. omitted: INT_CURR_SYMBOL CURRENCY_SYMBOL MON_DECIMAL_POINT
+   MON_THOUSANDS_SEP MON_GROUPING POSITIVE_SIGN NEGATIVE_SIGN INT_FRAC_DIGITS
+   FRAC_DIGITS P_CS_PRECEDES P_SEP_BY_SPACE N_CS_PRECEDES N_SEP_BY_SPACE
+   P_SIGN_POSN N_SIGN_POSN INT_P_CS_PRECEDES INT_P_SEP_BY_SPACE
+   INT_N_CS_PRECEDES INT_N_SEP_BY_SPACE INT_P_SIGN_POSN INT_N_SIGN_POSN
+   GROUPING -- GNU items that ask nl_langinfo for what localeconv() already
+   reports member by member through struct lconv, which the bundled <locale.h>
+   provides. omitted: locale_t nl_langinfo_l -- the locale-object API the
+   bundled <locale.h> leaves out. omitted: <nl_types.h> -- glibc reaches
+   nl_item through it; rubycc bundles no such header and declares nl_item
+   here. */
 
 #ifndef _RUBYCC_LANGINFO_H
 #define _RUBYCC_LANGINFO_H

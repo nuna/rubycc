@@ -1,7 +1,36 @@
 /* rubycc bundled <string.h>: the memory- and string-manipulation declarations
    (ISO C 7.24, POSIX). Derived from musl's <string.h> declaration set, kept as
    pure prototypes (size_t is the only ABI-typed name, shared via _RUBYCC_SIZE_T)
-   so nothing here is arch specific. Common layer. */
+   so nothing here is arch specific. Common layer.
+
+   Coverage against glibc's <string.h> under _GNU_SOURCE (audited 2026-09-18,
+   glibc 2.39, both arches, with tools/audit_bundled_headers.rb; table in
+   docs/development/BUNDLED-HEADERS-COVERAGE.md). Added there: explicit_bzero
+   (a wipe the compiler may not optimise away -- what a crypto extension
+   reaches for), strverscmp and rawmemchr. The two GNU-only ones follow
+   bundled-headers-coverage-audit-2's visibility rule (a name glibc shows only
+   under _GNU_SOURCE is declared under __USE_GNU, so a program not built with
+   _GNU_SOURCE that writes its own portability shim does not collide); the GNU
+   names Step 124 already declared unconditionally are left where they are,
+   since sources rely on seeing them. Each added prototype was written here and
+   then placed ahead of glibc's own <string.h> under gcc and
+   aarch64-linux-gnu-gcc, where a conflicting redeclaration is an error
+   (2026-09-18, both clean). Intentionally left out:
+   omitted: locale_t strcoll_l strerror_l strxfrm_l -- the locale-object API,
+   which the bundled <locale.h> deliberately leaves out; the family is added as
+   a whole when a consumer appears. omitted: strdupa strndupa -- glibc macros
+   built on alloca inside a statement expression, so what they return dies with
+   the calling function; strdup/strndup say the same thing safely.
+   omitted: basename -- glibc's GNU basename is the one of two same-named
+   functions that <libgen.h> replaces with a macro; bundling one spelling of a
+   name whose meaning depends on which header came first would be worse than
+   not having it. omitted: sigabbrev_np sigdescr_np strerrordesc_np
+   strerrorname_np -- glibc 2.32 and later only, so declaring them would
+   promise symbols an older host glibc does not have (the same line
+   <stdlib.h> draws at arc4random). omitted: memfrob strfry -- the joke
+   interfaces (an XOR "encryption" and a shuffle); no corpus user.
+   omitted: <stddef.h> -- only size_t and NULL are needed, and both are
+   declared here directly. */
 
 #ifndef _RUBYCC_STRING_H
 #define _RUBYCC_STRING_H
@@ -68,6 +97,15 @@ char  *strsep(char **__restrict __stringp, const char *__restrict __delim);
 char  *strchrnul(const char *__s, int __c);
 char  *strcasestr(const char *__haystack, const char *__needle);
 char  *strsignal(int __sig);
+/* A wipe that survives dead-store elimination (glibc 2.25 and later); glibc
+   shows it under _DEFAULT_SOURCE, so it is unconditional here. */
+void   explicit_bzero(void *__s, size_t __n);
+
+/* GNU-only names, gated as glibc gates them (see the visibility rule above). */
+#ifdef __USE_GNU
+int    strverscmp(const char *__s1, const char *__s2);
+void  *rawmemchr(const void *__s, int __c);
+#endif
 
 /* glibc's <string.h> pulls in <strings.h> under __USE_MISC (the default GNU
    environment), so a translation unit that includes only <string.h> still sees

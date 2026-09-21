@@ -71,6 +71,13 @@ buildable-gems-batch-4 で termios が 5 件目になったので、1 件ずつ�
 見つかった別の課題は、それぞれ起票した: [`bundled-sys-types-ushort`](bundled-sys-types-ushort.md)(BN)、
 [`glibc-alloca-without-gnuc`](glibc-alloca-without-gnuc.md)(BO)、[`glibc-public-headers-mixed`](glibc-public-headers-mixed.md)(BP)。
 
+### 2026-09-22(基本の組、`gap-fixes-wave-9`、PR 159)
+
+`bundled-headers-core-batch-1` で 12 本(`stdio.h`・`string.h`・`strings.h`・`math.h`・`signal.h`・`assert.h`・`locale.h`・`langinfo.h` と、
+アーキ層の `ctype.h`・`errno.h`・`limits.h`・`time.h`)を分類し、両 arch とも未記載 0 件にした。足したのは両 arch で 215〜216 名。
+分類の途中で、rubycc だけが落ちる 6 形(`PATH_MAX`・`ENOTSUP`・`getc_unlocked`・`lrintf`・`sighandler_t`・`timespec_get`)が見つかり、同じステップで直した。
+`SIGSTKSZ` 系は [`bundled-sigstksz`](bundled-sigstksz.md)(CC)に起票した。
+
 ## 決着
 
 (未着手)

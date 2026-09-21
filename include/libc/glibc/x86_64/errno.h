@@ -4,7 +4,15 @@
    measured integer constants (an ABI fact, not copied text -- see
    docs/HEADER-LICENSING.md); glibc reaches them via __errno_location, which
    resolves from the host libc at link time. Placed in the glibc/x86-64 layer
-   because the numeric values are kernel-ABI specific. */
+   because the numeric values are kernel-ABI specific.
+
+   Coverage against glibc's <errno.h> under _GNU_SOURCE (audited 2026-09-18,
+   glibc 2.39, both arches, with tools/audit_bundled_headers.rb; table in
+   docs/development/BUNDLED-HEADERS-COVERAGE.md). ENOTSUP was added there.
+   Intentionally left out:
+   omitted: error_t -- the GNU typedef for an error number (an enum on the
+   Hurd, plain int on Linux); glibc shows it only under _GNU_SOURCE and behind
+   its own __error_t_defined guard, and no corpus user spells it. */
 
 #ifndef _RUBYCC_ERRNO_H
 #define _RUBYCC_ERRNO_H
@@ -150,9 +158,13 @@ extern int *__errno_location(void);
 #define ERFKILL          132
 #define EHWPOISON        133
 
-/* Common aliases. */
+/* Common aliases. Linux gives ENOTSUP and EOPNOTSUPP the same number; both
+   spellings were printed from the glibc oracle as 95 on x86-64 and on aarch64
+   (2026-09-18), and ENOTSUP is the ISO C / POSIX spelling a C extension
+   writes. */
 #define EWOULDBLOCK EAGAIN
 #define EDEADLOCK   EDEADLK
+#define ENOTSUP     EOPNOTSUPP
 
 extern char *program_invocation_name;
 extern char *program_invocation_short_name;

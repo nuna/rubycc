@@ -9,7 +9,21 @@
    LIBCS) the classification macros are switched off and the plain function
    calls stand instead -- see the note above them. Placed in the glibc layer
    because that is where the arch-switched headers live; the values themselves
-   are arch independent. */
+   are arch independent.
+   Coverage against glibc's <ctype.h> under _GNU_SOURCE (audited 2026-09-18,
+   glibc 2.39, both arches, with tools/audit_bundled_headers.rb; table in
+   docs/development/BUNDLED-HEADERS-COVERAGE.md). Nothing was added -- every
+   name glibc has beyond the classifiers above is locale-object or legacy.
+   Intentionally left out:
+   omitted: locale_t *_l -- the locale-object API (isalpha_l and kin, plus
+   isascii_l/toascii_l), which the bundled <locale.h> deliberately leaves out;
+   the family is added as a whole when a consumer appears.
+   omitted: _tolower _toupper -- XSI's unchecked case conversion, defined only
+   when the argument is already known to be of the other case; tolower/toupper
+   above answer the same question for every input.
+   omitted: isctype -- GNU's "classify against a raw table mask" entry point,
+   which hands out glibc's internal _IS* bits as a runtime argument; no corpus
+   user. */
 
 #ifndef _RUBYCC_CTYPE_H
 #define _RUBYCC_CTYPE_H

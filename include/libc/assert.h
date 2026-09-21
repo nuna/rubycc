@@ -3,7 +3,16 @@
    shape reference); the __assert_fail prototype matches glibc's so the macro
    links against the host libc when present. Common layer. Deliberately has no
    whole-file include guard: the standard requires assert to be redefined per the
-   current NDEBUG on every inclusion. */
+   current NDEBUG on every inclusion.
+
+   Coverage against glibc's <assert.h> under _GNU_SOURCE (audited 2026-09-18,
+   glibc 2.39, both arches, with tools/audit_bundled_headers.rb; table in
+   docs/development/BUNDLED-HEADERS-COVERAGE.md). Nothing was added.
+   Intentionally left out:
+   omitted: assert_perror -- a GNU-only macro that asserts on an errno value
+   and prints strerror() for it; it needs glibc's own __assert_perror_fail
+   entry point, and no corpus user spells it (plain assert plus strerror says
+   the same thing). */
 
 #include <features.h>
 

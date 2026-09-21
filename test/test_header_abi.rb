@@ -169,14 +169,33 @@ class TestHeaderAbi < Minitest::Test
 
   # <stdio.h>: the glibc macro values and that FILE* and the core stream calls
   # are usable. FILE itself is opaque, so it is probed only through a pointer.
+  # bundled-headers-core-batch-1 added va_list (POSIX has <stdio.h> define it,
+  # so abi_stdio_va compiling at all is the check), the stream-locking calls
+  # and the _unlocked family, fmemopen/open_memstream, setlinebuf and ctermid;
+  # the calls go through sizeof so the probe needs no more of libc than the
+  # declarations. L_ctermid is a value a caller sizes a buffer with.
   STDIO = HeaderAbiHarness::Spec.new(
     header: "stdio.h",
-    sizes: %w[fpos_t],
+    sizes: %w[fpos_t va_list],
     ints: %w[EOF SEEK_SET SEEK_CUR SEEK_END _IOFBF _IOLBF _IONBF
-             BUFSIZ FOPEN_MAX FILENAME_MAX L_tmpnam TMP_MAX],
+             BUFSIZ FOPEN_MAX FILENAME_MAX L_tmpnam L_ctermid TMP_MAX],
     snippets: [<<~C.chomp]
       static int abi_stdio(FILE *f, const char *s) {
         return fputc('x', f) + fputs(s, f) + (stdin != stdout);
+      }
+      static int abi_stdio_va(int fd, const char *f, va_list ap) {
+        return vdprintf(fd, f, ap);
+      }
+      static int abi_stdio_unlocked(FILE *f, const char *s) {
+        return (sizeof(getc_unlocked(f)) == sizeof(int))
+             + (sizeof(putc_unlocked('x', f)) == sizeof(int))
+             + (sizeof(fileno_unlocked(f)) == sizeof(int))
+             + (sizeof(feof_unlocked(f)) == sizeof(int))
+             + (sizeof(fread_unlocked((void *)0, 1, 1, f)) == sizeof(size_t))
+             + (sizeof(fmemopen((void *)0, 1, s)) == sizeof(FILE *))
+             + (sizeof(open_memstream((char **)0, (size_t *)0)) == sizeof(FILE *))
+             + (sizeof(ctermid((char *)0)) == sizeof(char *))
+             + (sizeof(renameat(0, s, 0, s)) == sizeof(int));
       }
     C
   )
@@ -214,6 +233,10 @@ class TestHeaderAbi < Minitest::Test
              + strcasecmp(d, s) + strncasecmp(d, s, 3)
              + (int)strlcpy(d, s, 8) + (int)strlcat(d, s, 16);
       }
+      /* bundled-headers-core-batch-1: explicit_bzero is declared in gcc's
+         default mode, strverscmp and rawmemchr only under _GNU_SOURCE, which
+         the harness does not define -- so only the first is named here. */
+      static int abi_string_bzero(char *d) { explicit_bzero(d, 4); return 0; }
     C
   )
 
@@ -273,25 +296,61 @@ class TestHeaderAbi < Minitest::Test
   # function declarations exist (probed under sizeof so no libm link is needed).
   MATH = HeaderAbiHarness::Spec.new(
     header: "math.h",
+    # MAXFLOAT is X/Open, not part of gcc's default mode (measured 2026-09-18:
+    # glibc shows it under _XOPEN_SOURCE or _GNU_SOURCE only), so the oracle
+    # needs the define to see the name the bundled header defines outright.
+    defines: ["_GNU_SOURCE"],
     ints: %w[FP_NAN FP_INFINITE FP_ZERO FP_SUBNORMAL FP_NORMAL
              MATH_ERRNO MATH_ERREXCEPT math_errhandling FP_ILOGB0 FP_ILOGBNAN],
-    floats: %w[M_PI M_E M_SQRT2 M_LN2 M_LOG2E HUGE_VAL],
+    floats: %w[M_PI M_E M_SQRT2 M_LN2 M_LOG2E HUGE_VAL MAXFLOAT],
     snippets: [<<~C.chomp]
       static int abi_math(double x) {
         return isnan(x) + isinf(x) + (signbit(x) != 0)
              + (sizeof(sqrt(x)) == 8) + (sizeof(pow(x, x)) == 8)
              + (sizeof(floor(x)) == 8) + (sizeof(ldexp(x, 2)) == 8);
       }
+      /* bundled-headers-core-batch-1: the ISO C99 companions this header had
+         only the double half of, the XSI Bessel set with signgam, and
+         lgamma_r. Their return types are the check -- lrintf must be long and
+         llroundf long long, not the int an implicit declaration would give --
+         and sizeof keeps the probe from needing libm. */
+      static int abi_math_c99(float f, double d, long double l) {
+        int q;
+        return (sizeof(lrintf(f)) == sizeof(long))
+             + (sizeof(lrintl(l)) == sizeof(long))
+             + (sizeof(llroundf(f)) == sizeof(long long))
+             + (sizeof(ilogbf(f)) == sizeof(int))
+             + (sizeof(remquo(d, d, &q)) == sizeof(double))
+             + (sizeof(remquof(f, f, &q)) == sizeof(float))
+             + (sizeof(nexttoward(d, l)) == sizeof(double))
+             + (sizeof(scalblnf(f, 2L)) == sizeof(float))
+             + (sizeof(j0(d)) == sizeof(double)) + (sizeof(jnf(1, f)) == sizeof(float))
+             + (sizeof(y1(d)) == sizeof(double))
+             + (sizeof(lgamma_r(d, &q)) == sizeof(double))
+             + (sizeof(signgam) == sizeof(int));
+      }
     C
   )
 
   # <limits.h>: the arithmetic-type ranges. The unsigned maxima print as -1 when
   # cast to (long long), but identically so on both sides, so they still verify.
+  # bundled-headers-core-batch-1 added the system limits (glibc keeps them in
+  # <linux/limits.h> and bits/posix1_lim.h, but a program only ever sees them
+  # through <limits.h>) and the ISO C23 width macros. The widths are visible on
+  # the oracle side only under _GNU_SOURCE, hence the define.
   LIMITS = HeaderAbiHarness::Spec.new(
     header: "limits.h",
+    defines: ["_GNU_SOURCE"],
     ints: %w[CHAR_BIT MB_LEN_MAX SCHAR_MIN SCHAR_MAX UCHAR_MAX CHAR_MIN CHAR_MAX
              SHRT_MIN SHRT_MAX USHRT_MAX INT_MIN INT_MAX UINT_MAX
-             LONG_MIN LONG_MAX ULONG_MAX LLONG_MIN LLONG_MAX ULLONG_MAX]
+             LONG_MIN LONG_MAX ULONG_MAX LLONG_MIN LLONG_MAX ULLONG_MAX
+             PATH_MAX NAME_MAX PIPE_BUF IOV_MAX HOST_NAME_MAX LOGIN_NAME_MAX
+             TTY_NAME_MAX NGROUPS_MAX MAX_CANON MAX_INPUT LINE_MAX RE_DUP_MAX
+             NZERO SSIZE_MAX LONG_BIT WORD_BIT
+             XATTR_NAME_MAX XATTR_SIZE_MAX XATTR_LIST_MAX
+             BOOL_WIDTH BOOL_MAX CHAR_WIDTH SCHAR_WIDTH UCHAR_WIDTH
+             SHRT_WIDTH USHRT_WIDTH INT_WIDTH UINT_WIDTH
+             LONG_WIDTH ULONG_WIDTH LLONG_WIDTH ULLONG_WIDTH]
   )
 
   # <endian.h>: the byte-order identity macros and the host<->be/le conversions.
@@ -346,18 +405,30 @@ class TestHeaderAbi < Minitest::Test
   # calendar-call declarations.
   TIME = HeaderAbiHarness::Spec.new(
     header: "time.h",
-    sizes: ["time_t", "clock_t", "struct tm", "struct timespec"],
+    sizes: ["time_t", "clock_t", "struct tm", "struct timespec", "struct itimerspec"],
     ints: %w[CLOCKS_PER_SEC TIME_UTC CLOCK_REALTIME CLOCK_MONOTONIC
-             CLOCK_PROCESS_CPUTIME_ID TIMER_ABSTIME],
+             CLOCK_PROCESS_CPUTIME_ID TIMER_ABSTIME
+             CLOCK_REALTIME_ALARM CLOCK_BOOTTIME_ALARM CLOCK_TAI],
     offsets: [["struct tm", "tm_sec"], ["struct tm", "tm_min"], ["struct tm", "tm_hour"],
               ["struct tm", "tm_mday"], ["struct tm", "tm_mon"], ["struct tm", "tm_year"],
               ["struct tm", "tm_wday"], ["struct tm", "tm_yday"], ["struct tm", "tm_isdst"],
               ["struct tm", "tm_gmtoff"], ["struct tm", "tm_zone"],
-              ["struct timespec", "tv_sec"], ["struct timespec", "tv_nsec"]],
+              ["struct timespec", "tv_sec"], ["struct timespec", "tv_nsec"],
+              ["struct itimerspec", "it_interval"], ["struct itimerspec", "it_value"]],
     snippets: [<<~C.chomp]
       static time_t abi_time(struct tm *tp) {
         time_t t = time((time_t *)0);
         return t + mktime(tp) + (long)difftime(t, 0);
+      }
+      /* bundled-headers-core-batch-1: ISO C11's own clock read and the two
+         POSIX calls added with it. struct itimerspec moved behind glibc's
+         __itimerspec_defined, so its layout is compared here as well. */
+      static int abi_time_c11(struct timespec *ts, struct itimerspec *it) {
+        clockid_t id;
+        it->it_value = *ts;
+        return (sizeof(timespec_get(ts, TIME_UTC)) == sizeof(int))
+             + (sizeof(clock_nanosleep(CLOCK_MONOTONIC, 0, ts, ts)) == sizeof(int))
+             + (sizeof(clock_getcpuclockid(0, &id)) == sizeof(int));
       }
     C
   )
@@ -646,7 +717,8 @@ class TestHeaderAbi < Minitest::Test
     ints: %w[EPERM ENOENT ESRCH EINTR EIO ENXIO E2BIG ENOEXEC EBADF ECHILD
              EAGAIN ENOMEM EACCES EFAULT EBUSY EEXIST ENODEV ENOTDIR EISDIR
              EINVAL EMFILE ENOSPC EPIPE ERANGE ENAMETOOLONG ENOSYS
-             EWOULDBLOCK EDEADLK ECONNRESET ETIMEDOUT],
+             EWOULDBLOCK EDEADLK ECONNRESET ETIMEDOUT
+             ENOTSUP EOPNOTSUPP],
     snippets: ["static int abi_errno(void) { errno = 0; return errno; }"]
   )
 
@@ -812,7 +884,7 @@ class TestHeaderAbi < Minitest::Test
     # __sigval_t spelling is compared by SIGVAL_NETDB_FORWARD/REVERSE, which
     # keeps this Spec bundle-free (TestHeaderAbiLibcParameterization uses it
     # as its no-bundle example).
-    sizes: %w[sig_atomic_t sigset_t struct\ sigaction siginfo_t union\ sigval],
+    sizes: %w[sig_atomic_t sigset_t struct\ sigaction siginfo_t union\ sigval stack_t],
     ints: %w[SIGHUP SIGINT SIGQUIT SIGILL SIGTRAP SIGABRT SIGBUS SIGFPE SIGKILL
              SIGUSR1 SIGSEGV SIGUSR2 SIGPIPE SIGALRM SIGTERM SIGSTKFLT SIGCHLD
              SIGCONT SIGSTOP SIGTSTP SIGTTIN SIGTTOU SIGURG SIGXCPU SIGXFSZ
@@ -820,14 +892,39 @@ class TestHeaderAbi < Minitest::Test
              SIGRTMIN SIGRTMAX NSIG
              SIG_BLOCK SIG_UNBLOCK SIG_SETMASK
              SA_NOCLDSTOP SA_NOCLDWAIT SA_SIGINFO SA_ONSTACK SA_RESTART
-             SA_NODEFER SA_RESETHAND],
+             SA_NODEFER SA_RESETHAND SA_INTERRUPT SA_STACK
+             SS_ONSTACK SS_DISABLE
+             SI_USER SI_KERNEL SI_QUEUE SI_TIMER SI_MESGQ SI_ASYNCIO SI_SIGIO
+             SI_TKILL SI_ASYNCNL SI_DETHREAD
+             ILL_ILLOPC ILL_ILLOPN ILL_ILLADR ILL_ILLTRP ILL_PRVOPC ILL_PRVREG
+             ILL_COPROC ILL_BADSTK ILL_BADIADDR
+             FPE_INTDIV FPE_INTOVF FPE_FLTDIV FPE_FLTOVF FPE_FLTUND FPE_FLTRES
+             FPE_FLTINV FPE_FLTSUB FPE_FLTUNK FPE_CONDTRAP
+             SEGV_MAPERR SEGV_ACCERR SEGV_BNDERR SEGV_PKUERR SEGV_ACCADI
+             SEGV_ADIDERR SEGV_ADIPERR SEGV_MTEAERR SEGV_MTESERR SEGV_CPERR
+             BUS_ADRALN BUS_ADRERR BUS_OBJERR BUS_MCEERR_AR BUS_MCEERR_AO
+             TRAP_BRKPT TRAP_TRACE TRAP_BRANCH TRAP_HWBKPT TRAP_UNK
+             CLD_EXITED CLD_KILLED CLD_DUMPED CLD_TRAPPED CLD_STOPPED CLD_CONTINUED
+             POLL_IN POLL_OUT POLL_MSG POLL_ERR POLL_PRI POLL_HUP],
     offsets: [["struct sigaction", "sa_handler"], ["struct sigaction", "sa_mask"],
               ["struct sigaction", "sa_flags"], ["struct sigaction", "sa_restorer"],
               ["siginfo_t", "si_signo"], ["siginfo_t", "si_errno"],
               ["siginfo_t", "si_code"], ["siginfo_t", "si_pid"],
               ["siginfo_t", "si_uid"], ["siginfo_t", "si_status"],
               ["siginfo_t", "si_addr"], ["siginfo_t", "si_band"],
-              ["siginfo_t", "si_fd"]],
+              ["siginfo_t", "si_fd"],
+              # bundled-headers-core-batch-1: the rest of the member macros.
+              # Each one names an arm of glibc's _sifields union, so a wrong
+              # arm layout shows up here as a wrong offset rather than as a
+              # handler reading the wrong bytes at run time.
+              ["siginfo_t", "si_utime"], ["siginfo_t", "si_stime"],
+              ["siginfo_t", "si_value"], ["siginfo_t", "si_int"],
+              ["siginfo_t", "si_ptr"], ["siginfo_t", "si_timerid"],
+              ["siginfo_t", "si_overrun"], ["siginfo_t", "si_addr_lsb"],
+              ["siginfo_t", "si_lower"], ["siginfo_t", "si_upper"],
+              ["siginfo_t", "si_pkey"], ["siginfo_t", "si_call_addr"],
+              ["siginfo_t", "si_syscall"], ["siginfo_t", "si_arch"],
+              ["stack_t", "ss_sp"], ["stack_t", "ss_flags"], ["stack_t", "ss_size"]],
     snippets: [<<~C.chomp]
       static void abi_sig_handler(int s) { (void)s; }
       static int abi_signal(void) {
@@ -838,6 +935,26 @@ class TestHeaderAbi < Minitest::Test
         sigaction(SIGINT, &sa, (struct sigaction *)0);
         signal(SIGTERM, SIG_IGN);
         return kill(0, 0) + raise(0) + sigaddset(&sa.sa_mask, SIGUSR1);
+      }
+      /* bundled-headers-core-batch-1: the calls added with the si_code set.
+         sig_t is the BSD spelling of the handler type (sighandler_t is
+         _GNU_SOURCE-only and this Spec defines it, so both are reachable);
+         the calls go through sizeof so the probe links against nothing but
+         what it already used. */
+      static int abi_signal_wait(sigset_t *set, siginfo_t *si, stack_t *ss) {
+        sig_t h = abi_sig_handler;
+        sighandler_t g = h;
+        union sigval v;
+        int sig;
+        v.sival_int = 1;
+        return (sizeof(sigwait(set, &sig)) == sizeof(int))
+             + (sizeof(sigwaitinfo(set, si)) == sizeof(int))
+             + (sizeof(sigqueue(0, 0, v)) == sizeof(int))
+             + (sizeof(sigaltstack(ss, ss)) == sizeof(int))
+             + (sizeof(killpg(0, 0)) == sizeof(int))
+             + (sizeof(siginterrupt(0, 0)) == sizeof(int))
+             + (sizeof(pthread_sigmask(SIG_BLOCK, set, set)) == sizeof(int))
+             + (g == h);
       }
     C
   )

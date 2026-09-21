@@ -12,7 +12,12 @@ require_relative "../tools/audit_bundled_headers"
 class TestBundledHeadersCoverage < Minitest::Test
   A = AuditBundledHeaders
 
-  AUDITED = %w[stdlib.h sched.h termios.h sys/ioctl.h sys/types.h unistd.h].freeze
+  # bundled-headers-core-batch-1 classified the core batch: the string,
+  # formatted-I/O, arithmetic and signal headers, plus the four arch-layer
+  # headers a C extension reads limits and clocks out of.
+  AUDITED = %w[stdlib.h sched.h termios.h sys/ioctl.h sys/types.h unistd.h
+               stdio.h string.h strings.h math.h signal.h assert.h locale.h
+               langinfo.h ctype.h errno.h limits.h time.h].freeze
 
   AUDITED.each do |header|
     define_method("test_#{header.gsub(/\W/, "_")}_accounts_for_every_glibc_name") do
@@ -145,6 +150,34 @@ class TestBundledHeadersCoverage < Minitest::Test
       int main(void) { return _POSIX_VDISABLE; }
     C
     Rubycc::Compiler.new.compile(source, filename: "probe.c", target: "x86_64", libc: "glibc")
+  end
+
+  # bundled-headers-core-batch-1: the names in this batch that rubycc rejected
+  # before it and gcc accepts. Each one is what a gem's C extension writes:
+  # a path buffer's size, the errno POSIX spells ENOTSUP, the unlocked getc a
+  # reader loop uses, the float companion of an ISO C99 rounding call, the
+  # GNU spelling of the handler type with an si_code to switch on, and ISO
+  # C11's own clock read. Measured failing on 2026-09-18 (for example
+  # "error: array size must be an integer constant" for PATH_MAX).
+  CORE_BATCH_REPROS = {
+    "limits.h" => "char abi_buf[PATH_MAX]; int main(void) { return sizeof abi_buf + IOV_MAX + INT_WIDTH; }",
+    "errno.h" => "int main(void) { return ENOTSUP; }",
+    "stdio.h" => "int main(void) { flockfile(stdin); int c = getc_unlocked(stdin); funlockfile(stdin); return c; }",
+    "math.h" => "int main(void) { int q; return (int)lrintf(1.5f) + ilogbf(2.0f) + (int)remquo(4, 2, &q) + (int)j0(1.0); }",
+    "signal.h" => "static void h(int s) { (void)s; } int main(void) { sig_t f = h; return (f != 0) + SI_USER + CLD_EXITED + SEGV_MAPERR; }",
+    "time.h" => "int main(void) { struct timespec ts; return timespec_get(&ts, TIME_UTC); }",
+    "string.h" => "int main(void) { char b[4]; explicit_bzero(b, sizeof b); return b[0]; }"
+  }.freeze
+
+  def test_the_core_batch_names_compile
+    failures = CORE_BATCH_REPROS.filter_map do |header, body|
+      source = "#include <#{header}>\n#{body}\n"
+      Rubycc::Compiler.new.compile(source, filename: "probe.c", target: "x86_64", libc: "glibc")
+      nil
+    rescue Rubycc::Error => e
+      "<#{header}>: #{e.message.lines.first.strip}"
+    end
+    assert_empty failures
   end
 
   def test_the_reserved_names_a_program_writes_are_audited

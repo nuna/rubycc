@@ -6,7 +6,48 @@
    both values are carried under __RUBYCC_LIBC_MUSL__; see the preprocessor's
    LIBCS). Common layer: nothing here is arch specific beyond the (universal on
    the hosted targets' IEEE 754 model; the two target libc ABIs select their
-   distinct FP_ILOGB* values below. */
+   distinct FP_ILOGB* values below.
+
+   Coverage against glibc's <math.h> under _GNU_SOURCE (audited 2026-09-18,
+   glibc 2.39, x86-64 and aarch64, with tools/audit_bundled_headers.rb; table
+   in docs/development/BUNDLED-HEADERS-COVERAGE.md). glibc's <math.h> shows
+   close to a thousand names, almost all of them the same function spelled once
+   per floating type; the audit's difference was classified in full and the
+   families left out are listed below. Added there: the ISO C99 companions this
+   header had only the `double` half of (lrintf and kin -- rubycc rejected
+   lrintf before, measured 2026-09-18), the XSI Bessel functions with signgam
+   and MAXFLOAT, lgamma_r (the thread-safe lgamma a statistics extension wants)
+   and, under __USE_GNU, exp10 and sincos. Every added prototype was written
+   here and then placed next to glibc's own <math.h> under gcc and
+   aarch64-linux-gnu-gcc, where a conflicting redeclaration is an error
+   (2026-09-18, both clean); MAXFLOAT was printed from the oracle on both
+   arches and is the largest finite float, 3.40282347e+38F.
+   Intentionally left out:
+   omitted: *f32 *f32x *f64 *f64x *f128 SNAN* HUGE_VAL_* lgammaf32_r
+   lgammaf32x_r lgammaf64_r lgammaf64x_r lgammaf128_r -- ISO/IEC TS 18661
+   interfaces over the _FloatN types rubycc does not model (the line
+   <stdlib.h> draws at strtof128). omitted: M_*f M_*l -- the float and
+   long-double spellings of the constants above; on this target long double is
+   the same 64-bit double, and a float constant is the double one converted.
+   omitted: fmaximum* fminimum* fmaxmag* fminmag* roundeven* nextup* nextdown*
+   llogb* fromfp* ufromfp* totalorder* totalordermag* getpayload* setpayload*
+   setpayloadsig* canonicalize* iscanonical issignaling issubnormal iszero
+   iseqsig FP_INT_* FP_LLOGB* -- the IEEE 754-2019 / C23 additions, most of
+   them glibc 2.25 or later and none with a corpus user; declaring them would
+   promise symbols an older host glibc does not have.
+   omitted: fadd faddl fdiv fdivl ffma ffmal fmul fmull fsqrt fsqrtl fsub
+   fsubl daddl ddivl dfmal dmull dsqrtl dsubl -- C23's narrowing arithmetic
+   (add two long doubles, round once to float); glibc 2.28 and later.
+   omitted: drem* finite* gamma* scalb scalbf scalbl significand* isinff
+   isinfl isnanf isnanl -- the SVID/BSD legacy, superseded by remainder,
+   isfinite, tgamma/lgamma, scalbn and the type-generic classification macros
+   above, which already answer for float and long double.
+   omitted: FP_FAST_FMA FP_FAST_FMAF -- glibc defines these from the
+   *compiler's* view of whether the target has a fused multiply-add
+   instruction, which is why they appear on aarch64 and, on x86-64, only under
+   -mfma (measured 2026-09-18, the only arch difference in this header's
+   audit); a bundled header cannot answer that for the compiler, and a program
+   reads them only to choose between fma() and a plain a*b+c. */
 
 #ifndef _RUBYCC_MATH_H
 #define _RUBYCC_MATH_H
@@ -189,9 +230,73 @@ double nan(const char *);
 float  nanf(const char *);
 long double nanl(const char *);
 int    ilogb(double);
+int    ilogbf(float);
+int    ilogbl(long double);
 long   lround(double);
 long long llround(double);
 long   lrint(double);
 long long llrint(double);
+long   lroundf(float);
+long   lroundl(long double);
+long long llroundf(float);
+long long llroundl(long double);
+long   lrintf(float);
+long   lrintl(long double);
+long long llrintf(float);
+long long llrintl(long double);
+float  scalblnf(float, long);
+long double scalblnl(long double, long);
+double nexttoward(double, long double);
+float  nexttowardf(float, long double);
+long double nexttowardl(long double, long double);
+double remquo(double, double, int *);
+float  remquof(float, float, int *);
+long double remquol(long double, long double, int *);
+
+/* lgamma writes the sign of the result's gamma into signgam, which makes it
+   unusable from two threads at once; lgamma_r returns that sign through the
+   caller's own int instead. glibc shows the _r form in gcc's default mode. */
+double lgamma_r(double, int *);
+float  lgammaf_r(float, int *);
+long double lgammal_r(long double, int *);
+extern int signgam;
+
+/* The largest finite float, X/Open's older spelling of FLT_MAX. Printed from
+   the glibc oracle on both arches (2026-09-18) and equal to <float.h>'s
+   FLT_MAX there. */
+#define MAXFLOAT 3.40282347e+38F
+
+/* The Bessel functions of the first (j) and second (y) kind: orders 0, 1 and
+   n. POSIX/XSI has the double forms; the float and long-double ones are
+   glibc's, shown in gcc's default mode. */
+double j0(double);
+double j1(double);
+double jn(int, double);
+double y0(double);
+double y1(double);
+double yn(int, double);
+float  j0f(float);
+float  j1f(float);
+float  jnf(int, float);
+float  y0f(float);
+float  y1f(float);
+float  ynf(int, float);
+long double j0l(long double);
+long double j1l(long double);
+long double jnl(int, long double);
+long double y0l(long double);
+long double y1l(long double);
+long double ynl(int, long double);
+
+/* GNU-only names, gated as glibc gates them: base-10 exponentiation, and the
+   pair that computes a sine and a cosine in one call. */
+#ifdef __USE_GNU
+double exp10(double);
+float  exp10f(float);
+long double exp10l(long double);
+void   sincos(double, double *, double *);
+void   sincosf(float, float *, float *);
+void   sincosl(long double, long double *, long double *);
+#endif
 
 #endif /* _RUBYCC_MATH_H */

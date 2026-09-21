@@ -18177,3 +18177,171 @@ ignoring nonexistent directory "/usr/include/aarch64-linux-gnu"
 - **クロス sysroot の `bits/` を読めても、そこから先で別の未対応に当たることはある**。
   実測: `-target aarch64` で `<sys/ucontext.h>` を読むと `/usr/aarch64-linux-gnu/include/sys/user.h:32`
   の `__uint128_t` で落ちる(2026-09-18)。これは探索順ではなく型の未対応で、別件
+
+## bundled-headers-core-batch-1 — 同梱ヘッダの中核 12 本(文字列・入出力・算術・シグナル・上限・時刻)を glibc と突き合わせて分類する
+
+GAPS §2 の負債(`issues/bundled-headers-coverage-audit.md`)の続き。`bundled-headers-coverage-audit-2` が
+5 本、`bundled-unistd-process-group-1` が `unistd.h` を分類した後に残っていた未分類ヘッダのうち、
+C 拡張がほぼ必ず含める 12 本を 1 バッチで扱った: 共通層の `stdio.h`・`string.h`・`strings.h`・`math.h`・
+`signal.h`・`assert.h`・`locale.h`・`langinfo.h` と、arch 層(`include/libc/glibc/{x86_64,aarch64}/`)の
+`ctype.h`・`errno.h`・`limits.h`・`time.h`。ソケット・ファイル系のヘッダは別バッチ(別ワークツリー)で扱った。
+
+### 原因
+
+12 本とも「コーパスのサンプルが届いた範囲」に絞って作られ、glibc の同名ヘッダとの差の分類が一度も
+されていなかった。`tools/audit_bundled_headers.rb` で測ると(2026-09-18、glibc 2.39、gcc 13.3 /
+aarch64-linux-gnu-gcc 13.3)、12 本の不足は x86-64 1,537 / aarch64 1,564、未記載は 1,548 / 1,581 だった。
+大半は型ごとに綴りを変えた同じ関数(`math.h` の `_FloatN` 版)や glibc 内部の名前(`langinfo.h` の `_NL_*`)
+だが、**gcc では通り rubycc では落ちる、gem が普通に書く名前**も混ざっていた。このホストで測った再現
+(いずれも `-D_GNU_SOURCE` なし、修正前 2026-09-18):
+
+| 再現 | rubycc(修正前) |
+|---|---|
+| `#include <limits.h>` + `char buf[PATH_MAX];` | `error: array size must be an integer constant` |
+| `#include <errno.h>` + `return ENOTSUP;` | `error: undeclared variable 'ENOTSUP'` |
+| `#include <stdio.h>` + `getc_unlocked(stdin)` | `error: implicit declaration of function 'getc_unlocked'` |
+| `#include <math.h>` + `lrintf(1.5f)` | `error: implicit declaration of function 'lrintf'` |
+| `#include <signal.h>` + `sighandler_t h;`(`_GNU_SOURCE`) | `error: expected type specifier` |
+| `#include <time.h>` + `timespec_get(&ts, TIME_UTC)` | `error: implicit declaration of function 'timespec_get'` |
+
+gcc は 6 本とも通す。`PATH_MAX` は同梱ヘッダのどこにも無かった(glibc は `<linux/limits.h>` と
+`bits/posix1_lim.h` に置き、プログラムからは `<limits.h>` 経由でしか見えない)。
+
+### 対処
+
+12 本の不足を全て「足す / 意図して外す(理由)」に分け、外すものを各ヘッダの冒頭コメントに
+`omitted: 名前 ... -- 理由` の形で書いた。**見え方の規則**は `bundled-headers-coverage-audit-2` と同じ
+(glibc が gcc の既定 = `_DEFAULT_SOURCE` 以下で見せる名前は無条件、`_GNU_SOURCE` でだけ見せる名前は
+`__USE_GNU` の下)。`string.h` で Step 124 が無条件に宣言していた GNU 名(`memmem` など)は、ソースが
+それに頼っているので動かしていない。
+
+**測り方**: 足した宣言は全て自分で書き、glibc 自身のヘッダの直前(または直後)に並べて gcc と
+`aarch64-linux-gnu-gcc` の `-fsyntax-only -D_GNU_SOURCE` に通した(衝突する再宣言はエラーになる。
+わざと型を変えた宣言で落ちることも確かめた)。値は glibc のヘッダを含めたプログラムを両 arch で
+コンパイルして印字させた(aarch64 は qemu-aarch64 とクロス sysroot で実行)。**比べた値は全件、両 arch で一致**
+したので、共通層のヘッダは共通層のまま、arch 層は各 arch で別に測った値を書いた(R8)。glibc のヘッダ本文は
+写していない(R11、`docs/reference/HEADER-LICENSING.md` §6)。いずれも 2026-09-18 の測定。
+
+| ヘッダ | 不足(前 → 後、x86-64 / aarch64) | 足した | 未記載(前 → 後) |
+|---|---|---|---|
+| `stdio.h` | 56 → 28 | 28 | 58 → 0 |
+| `string.h` | 16 → 13 | 3 | 17 → 0 |
+| `strings.h` | 3 → 3 | 0 | 4 → 0 |
+| `math.h` | 777 / 779 → 730 / 732 | 47 | 777 / 779 → 0 |
+| `signal.h` | 152 / 177 → 53 / 79 | 99 / 98 | 155 / 186 → 0 |
+| `assert.h` | 1 → 1 | 0 | 1 → 0 |
+| `locale.h` | 19 → 19 | 0 | 20 → 0 |
+| `langinfo.h` | 328 → 328 | 0 | 329 → 0 |
+| `ctype.h`(両 arch 層) | 20 → 20 | 0 | 20 → 0 |
+| `errno.h`(両 arch 層) | 2 → 1 | 1 | 2 → 0 |
+| `limits.h`(両 arch 層) | 100 → 68 | 32 | 101 → 0 |
+| `time.h`(両 arch 層) | 63 → 57 | 6 | 64 → 0 |
+| 計 | 1,537 / 1,564 → 1,321 / 1,349 | 216 / 215 | 1,548 / 1,581 → 0 |
+
+(未記載には取り込み不足のヘッダも 1 件ずつ数える。`signal.h` で arch によって「足した」数が 1 違うのは、
+glibc のスレッド型(`pthread_t` を含む)が aarch64 では監査の帰属上 `<signal.h>` の名前にならず、
+もともと不足に数えられていなかったため。x86-64 だけの不足に `pthread_mutex_t` などのスレッド型 12 個(`union pthread_attr_t` を含む)が残り、
+aarch64 だけの不足はシグナルフレームのレジスタ状態 49 個である。2026-09-22 に再測。)
+
+ヘッダごとの内容:
+
+- **`limits.h`**: システム上限 19 個(`PATH_MAX` 4096・`NAME_MAX` 255・`PIPE_BUF` 4096・`IOV_MAX` 1024・
+  `HOST_NAME_MAX`・`LOGIN_NAME_MAX`・`TTY_NAME_MAX`・`NGROUPS_MAX`・`MAX_CANON`・`MAX_INPUT`・`LINE_MAX`・
+  `RE_DUP_MAX`・`NZERO`・`SSIZE_MAX`・`LONG_BIT`・`WORD_BIT`・`XATTR_*` 3 個)と C23 の `*_WIDTH`/`BOOL_MAX`
+  13 個。外したもの: `_POSIX_*`/`_POSIX2_*`/`_XOPEN_IOV_MAX`(規格の下限値で、本物の上限を足したので要らない)、
+  POSIX.2 のユーティリティ上限、メッセージカタログの `NL_*`、aio・タイマ・メッセージキュー・セマフォの上限、
+  スレッドの上限(**`PTHREAD_STACK_MIN` は glibc 2.34 以降 `sysconf` 呼び出しに展開される**ので定数を書けない)、
+  `<syslimits.h>`。
+- **`errno.h`**: `ENOTSUP`(`EOPNOTSUPP` の別名、両 arch とも 95)。外したもの: `error_t`。
+- **`stdio.h`**: `va_list`(POSIX が `<stdio.h>` に定義させる。glibc と同じガード `_VA_LIST_DEFINED`)、
+  `flockfile`/`ftrylockfile`/`funlockfile` と `_unlocked` 系 16 個(`fgets_unlocked`/`fputs_unlocked` は
+  `__USE_GNU`)、`fmemopen`・`open_memstream`・`vdprintf`・`renameat`・`setbuffer`・`setlinebuf`・`ctermid`、
+  `SEEK_DATA`/`SEEK_HOLE`(3/4、`__USE_GNU`。同梱 `unistd.h` と同じ値)。外したもの: `fopencookie` 系、
+  LFS64 別名、`renameat2`/`RENAME_*`、`obstack_*printf`、`tempnam` などの旧来の名前、`<stdarg.h>`/`<stddef.h>`。
+- **`string.h`**: `explicit_bzero`、`strverscmp`/`rawmemchr`(`__USE_GNU`)。外したもの: `locale_t`/`*_l`、
+  `strdupa`/`strndupa`、GNU の `basename`(`<libgen.h>` が同名をマクロで置き換える)、glibc 2.32 以降の
+  `sig*_np`/`strerror*_np`、`memfrob`/`strfry`。
+- **`math.h`**: ISO C99 の float/long double 版 18 個(`lrintf`・`llroundl`・`ilogbf`・`remquo`・`nexttoward` など)、
+  XSI の Bessel 関数 18 個と `signgam`・`MAXFLOAT`、`lgamma_r` 3 個、`exp10`/`sincos` 各 3 個(`__USE_GNU`)。
+  外したもの: `_FloatN` 版(TS 18661)、`M_*f`/`M_*l`、IEEE 754-2019 / C23 の追加(`fmaximum*` など)、
+  C23 の縮小演算(`fadd` など)、SVID/BSD の旧名(`drem`・`finite`・`gamma`・`isnanf` など)、
+  `FP_FAST_FMA`/`FP_FAST_FMAF`(**このヘッダの唯一の arch 差**。glibc はコンパイラが FMA 命令を持つと見るときに定義し、
+  aarch64 では常に、x86-64 では `-mfma` のときだけ現れる)。
+- **`signal.h`**: si_code 定数 61 個(`SI_*`・`CLD_*`・`SEGV_*`・`BUS_*`・`ILL_*`・`FPE_*`・`TRAP_*`・`POLL_*`。glibc では
+  列挙子)、siginfo_t の残りのメンバ 13 個(`si_utime`/`si_stime`/`si_int`/`si_ptr`/`si_timerid`/`si_overrun`/
+  `si_addr_lsb`/`si_lower`/`si_upper`/`si_pkey`/`si_call_addr`/`si_syscall`/`si_arch`)と、それを置く union の腕
+  (`__timer`・`__sigsys` を新設、`__sigchld`・`__sigfault` を延長)、`stack_t`(glibc と共有のガード
+  `__stack_t_defined`)・`sigaltstack`・`SS_ONSTACK`/`SS_DISABLE`、`sigwait`・`sigwaitinfo`・`sigtimedwait`・
+  `sigqueue`・`killpg`・`siginterrupt`・`psignal`・`psiginfo`、`pthread_kill`/`pthread_sigmask` とその `pthread_t`、
+  `sig_t`/`sighandler_t`(後者は `__USE_GNU`)、`sigval_t`(ガード `__sigval_t_defined`)、`SA_STACK`/`SA_INTERRUPT`、
+  `sigisemptyset`/`sigandset`/`sigorset`(`__USE_GNU`)。**メンバ名の変更が 1 つある**: `__rt` の腕の
+  `si_value` を glibc と同じ `si_sigval` にした。マクロ `si_int` の置換列が `si_value` を含むと、マクロ `si_value` が
+  そこで再展開されて壊れるため(`si_value` マクロ自体の置換先を変えただけで、利用者から見える綴りは変わらない)。
+  offsetof 20 個と siginfo_t の大きさ 128・`stack_t` の 24/0/8/16 は rubycc でコンパイルして gcc の値と一致した。
+  外したもの: `struct sigevent`/`SIGEV_*`(`<time.h>` の POSIX タイマとまとめて外した。`pthread_attr_t` を
+  埋め込み、glibc は `<netdb.h>` と `__sigevent_t_defined` で共有する)、`pthread_t` 以外のスレッド型、
+  `SIGSTKSZ`/`MINSIGSTKSZ`(**glibc 2.34 以降 `sysconf` 呼び出し**)、BSD/System V の旧インタフェース、
+  シグナルフレーム内のレジスタ状態(x86-64 の `struct _fpstate` 系と aarch64 の SVE/ZA 系。**この 2 arch の
+  差は全部ここ**)、`pthread_sigqueue`/`tgkill`、取り込み不足のヘッダ。
+- **`time.h`**: `timespec_get`・`clock_nanosleep`・`clock_getcpuclockid`、`CLOCK_REALTIME_ALARM`/
+  `CLOCK_BOOTTIME_ALARM`/`CLOCK_TAI`(8/9/11)。`struct itimerspec` を glibc と共有のガード `__itimerspec_defined`
+  の下に置いた(`struct tm` と同じ扱い。監査の probe は両順とも ok)。外したもの: POSIX タイマ、`adjtimex` 系、
+  `getdate` 系、`dysize`、glibc 2.34 以降の `timespec_getres`、`locale_t`/`*_l`、`struct timeval`
+  (同梱 `<sys/time.h>` が定義する)、`<stddef.h>`。
+- **`strings.h`・`ctype.h`・`locale.h`・`langinfo.h`・`assert.h`**: 足したものは無い。どれも残りは
+  locale オブジェクト API(`locale_t` と `*_l`。`stdlib.h` が既に外していた線を、`<locale.h>` を起点に全ヘッダで揃えた)、
+  glibc 内部の名前(`_NL_*`)、struct lconv と重複する GNU の `nl_langinfo` 項目、`assert_perror` などで、
+  従来コメントの散文にあった判断を `omitted:` 行に書き直した。
+
+**ガード**: 新しく立てたのは `__itimerspec_defined`(`time.h`)・`__stack_t_defined`・`__sigval_t_defined`
+(`signal.h`)の 3 つで、監査の probe(実在の glibc ヘッダと両順で並べて rubycc でコンパイル)は全件 ok。
+`signal.h` の `time_t` は `sched.h` と同じく `_RUBYCC_TIME_T` で置いたので `__time_t_defined` が unguarded
+に数えられる(スカラーの typedef なので互換な再定義。probe も ok)。
+
+**組み合わせ**: 同梱 `sys/wait.h` も `CLD_*` を同じ値で定義している(同一の置換列なので再定義は許される)。
+`signal.h`↔`sys/wait.h`・`stdio.h`↔`unistd.h`(`SEEK_DATA`)・`stdarg.h`↔`stdio.h`(`va_list`)・
+`signal.h`↔`pthread.h`(`pthread_t`)・`signal.h`↔`time.h`/`sched.h`(`struct timespec`)・`sys/timerfd.h`→`time.h`
+を両順、両 arch、`_GNU_SOURCE` の有無で rubycc に通し、全て通った(2026-09-18)。
+
+由来台帳(`docs/reference/HEADER-LICENSING.md` §3.2 / §3.3)の `math.h`・`stdio.h`・`string.h`・`signal.h`・
+`time.h`/`limits.h`/`errno.h`(両 arch)の行に追加分と測り方を書き足した。ファイル数は動いていないので §3.4 の
+集計(81 本)は変わらない。`strings.h`・`ctype.h`・`locale.h`・`langinfo.h`・`assert.h` はコメントだけの変更なので
+行は変えていない。
+
+### テスト
+
+- `test/test_bundled_headers_coverage.rb`: `AUDITED` に 12 本を足した(両 arch で「未記載 0」を常時検査)。
+  原因節の再現を 1 単位ずつコンパイルする `test_the_core_batch_names_compile`(7 本)を追加。
+- `test/test_header_abi.rb`(両 arch のクラスで走るものは aarch64 でも検査される):
+  `SIGNAL` に `stack_t` の大きさ、si_code 定数 61 個・`SS_*`・`SA_INTERRUPT`/`SA_STACK`、siginfo_t の追加メンバ
+  13 個と `stack_t` の offsetof、新しい呼び出しの宣言。`LIMITS` に上限 19 個と `*_WIDTH` 13 個(オラクル側で
+  見えるよう `_GNU_SOURCE` を定義)。`TIME` に clock id 3 個と `struct itimerspec` の大きさ・offsetof、
+  `timespec_get` ほか。`ERRNO` に `ENOTSUP`/`EOPNOTSUPP`。`STDIO` に `va_list` の大きさと `L_ctermid`、
+  `<stdio.h>` だけで `va_list` を使う関数と `_unlocked` 系。`MATH` に `MAXFLOAT`(X/Open の名前で gcc の既定では
+  見えないので `_GNU_SOURCE` を定義)と C99/XSI の宣言。`STRING` に `explicit_bzero` の呼び出し。
+  libm を要る呼び出し(`signgam` を含む)は `sizeof` の中に置いた(既存の `MATH` と同じ方針)。
+- `docs/development/BUNDLED-HEADERS-COVERAGE.md` を再生成した。差分は 12 本の行と節だけで、混在の調査
+  (同梱しない glibc ヘッダ 186 本)で rubycc だけが落ちるものは 5 本のまま増えていない。
+- 実行結果(2026-09-22 に再実行、ワークツリー `agent-a12dcce9134604a68`、いずれも 0 failures / 0 errors):
+  `test_bundled_headers_coverage.rb` 26 runs / 136 assertions、
+  `test_audit_bundled_headers.rb` 5 runs / 98 assertions、
+  `test_header_abi.rb` 130 runs / 385 assertions / 0 skips、
+  `test_doc_links.rb` 3 runs / 45 assertions、
+  `test_examples.rb` 75 runs / 76 assertions、
+  `test_examples_aarch64.rb` 594 runs / 1023 assertions / 22 skips(既存)、
+  `test_c_suite.rb` 223 runs / 439 assertions / 11 skips(既存)、
+  `test_c_suite_aarch64.rb` 444 runs / 869 assertions / 22 skips(既存)。
+  フルスイートは統合側で回す。
+
+### 残された観点(このステップでは直していない)
+
+- **POSIX タイマ(`timer_create` 系と `struct sigevent`)は外したまま**。足すなら `pthread_attr_t` の埋め込みと
+  `__sigevent_t_defined` のガード(`<netdb.h>` と共有)を一緒に扱う。利用者が出たら 1 件の issue にする。
+- **`SIGSTKSZ`/`MINSIGSTKSZ`/`PTHREAD_STACK_MIN` は glibc 2.34 以降 `sysconf` 呼び出し**なので書いていない。
+  統合時に測り直すと、`static char s[SIGSTKSZ];` は gcc でも通らない(定数でない)が、`ss.ss_size = SIGSTKSZ;` のような
+  実行時の値として使う形は gcc が通り rubycc が落ちる。`issues/bundled-sigstksz.md`(GAPS CC)に起票した。
+- **locale オブジェクト API(`locale_t`・`newlocale`/`uselocale` と各ヘッダの `*_l`)** は全ヘッダで外した。
+  利用者が現れたら型と 5 関数と `*_l` をまとめて足す。
+- 同梱 `pthread.h` は `pthread_kill` などの仮引数名に `__thread`(gcc では TLS のキーワード)を使っている。
+  rubycc は通すので実害は無いが、`signal.h` 側の同じ宣言は `__th` で書いた。
+- 未分類の同梱ヘッダ(親 issue に残る分)は、ソケット・ファイル系のバッチと合わせて親 issue の作業ログで数え直す。

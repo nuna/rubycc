@@ -19,6 +19,7 @@
 | **AS**([issue](../../issues/rmake-gnu-make-conditionals.md)) | **rmake が GNU make の条件文(`ifeq` など)を読めない**。パーサは代入とルール以外をすべて拒否する | 同梱ライブラリの手書き Makefile を make に渡す gem。`hiredis-client` 0.30.1 が該当し、**対照(GNU make)は通る** | **実測**(2026-09-13) | **対応するか対象外にするかが未決**。mkmf の Makefile は条件文を使わない |
 | **AT**([issue](../../issues/typeof-operator.md)) | **`typeof`(GNU 拡張、C23 で標準化)を受け付けない**。未宣言の関数として報告される | `algorithms` 1.1.0 が該当し、**対照の gcc は通る** | **実測**(2026-09-13、最小再現) | **実装するか対象外(基準 H)にするかが未決**。どちらでも診断は直す |
 | **CB**([issue](../../issues/int128-typedef-spellings.md)) | **`__int128_t` / `__uint128_t` の綴りが無い**(`__int128` と `unsigned __int128` は通る)。gcc は定義済みの typedef として持つ | `-target aarch64` で `<sys/ucontext.h>` を含むコード(クロス sysroot の `sys/user.h` が使う)。**実在の gem ではまだ見ていない**。**対照の gcc は通る** | **実測**(2026-09-18、最小再現) | gcc がキーワードの別名として見せているのか、定義済み typedef なのかを測ってから足す |
+| **CC**([issue](../../issues/bundled-sigstksz.md)) | **同梱 `signal.h` に `SIGSTKSZ` / `MINSIGSTKSZ` が無い**(glibc 2.34 以降は `sysconf (_SC_SIGSTKSZ)` に展開される。同梱 `unistd.h` に `_SC_SIGSTKSZ` も無い) | `sigaltstack` で代替シグナルスタックを張る拡張。**実在の gem ではまだ見ていない**。**対照の gcc は通る** | **実測**(2026-09-22、実行時の値として使う形の最小再現) | `_SC_*` の値を両 arch で測ってから、glibc と同じ展開の形で足す |
 | **BY**([issue](../../issues/complex-type.md)) | **`_Complex` 型が無い**(ISO C11 6.2.5p11)。`<complex.h>` を含む翻訳単位が 1 つもコンパイルできない | `<complex.h>` を含む gem。**実在の gem ではまだ見ていない**。**対照の gcc は通る** | **実測**(2026-09-18、1 行の最小再現) | **実装するか対象外にするかが未決**。外すなら `__STDC_NO_COMPLEX__` を定義して診断を直す |
 | **BZ**([issue](../../issues/generic-selection.md)) | **`_Generic`(ISO C11 6.5.1.1)が無い**。`<tgmath.h>` はコンパイラ判定の `#error` で先に止まる | 型総称マクロを書く gem。**実在の gem ではまだ見ていない**。c-testsuite にも skip がある。**対照の gcc は通る** | **実測**(2026-09-18、最小再現) | **実装するか対象外を明文化するかが未決** |
 | **CA**([issue](../../issues/extended-inline-asm-operands.md)) | **出力オペランド付きの拡張インラインアセンブリが無い**(空のアセンブリだけ受け付ける) | `asm/swab.h` を経由する UAPI ヘッダ(`netatalk/at.h`・`sys/rseq.h`)と `<sys/platform/x86.h>`。**実在の gem ではまだ見ていない**。**対照の gcc は通る** | **実測**(2026-09-18、最小再現) | **実装するか対象外を明文化するかが未決**。実装するなら基本形とセグメント相対の 2 段に分ける |
@@ -28,7 +29,7 @@
 
 | 負債 | 影響 | 優先 | 詳細 |
 |---|---|---|---|
-| **同梱ヘッダの範囲が「コーパスが使った分だけ」**([issue](../../issues/bundled-headers-coverage-audit.md)) | 突き合わせの表([BUNDLED-HEADERS-COVERAGE.md](BUNDLED-HEADERS-COVERAGE.md))はできた。**差分の分類が済んだのは 54 本のうち 5 本**で、残りの同梱ヘッダでは抜けが当たり続ける。共有ガードの点検は x86-64 だけ | 中 | 表を使って、残りのヘッダも足す / 意図して外すを決める。aarch64 の点検は BI の後 |
+| **同梱ヘッダの範囲が「コーパスが使った分だけ」**([issue](../../issues/bundled-headers-coverage-audit.md)) | 突き合わせの表([BUNDLED-HEADERS-COVERAGE.md](BUNDLED-HEADERS-COVERAGE.md))はできた。**差分の分類が済んだのは 18 本**(6 本 + 基本の組 12 本)で、残りの同梱ヘッダでは抜けが当たり続ける。共有ガードの点検は x86-64 だけ | 中 | 表を使って、残りのヘッダも足す / 意図して外すを決める |
 
 ## 3. 環境が無くて測れていないこと
 
